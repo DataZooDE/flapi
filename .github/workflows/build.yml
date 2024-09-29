@@ -32,6 +32,7 @@ jobs:
       uses: lukka/run-vcpkg@v7
       with:
         vcpkgGitCommitId: '2024.09.23'
+        vcpkgArguments: install --triplet ${{ matrix.arch == 'x64' && 'x64-linux' || 'arm64-osx' }}
 
     - name: Install dependencies (Ubuntu)
       if: runner.os == 'Linux'
