@@ -1,6 +1,7 @@
 #include <stdexcept>
 #include <cstdio>
 #include "crow/json.h"
+#include <yaml-cpp/yaml.h>
 
 #include "sql_template_processor.hpp"
 #include "database_manager.hpp"
@@ -229,6 +230,7 @@ QueryResult DatabaseManager::executeQuery(const EndpointConfig& endpoint, std::m
         cache_manager->refreshCache(config_manager, endpoint, params);
     }
 
+    cache_manager->addQueryCacheParamsIfNecessary(config_manager, endpoint, params);
     std::string processedQuery = processTemplate(endpoint, params);
     return executeQuery(processedQuery, params);
 }
@@ -240,7 +242,6 @@ QueryResult DatabaseManager::executeCacheQuery(const EndpointConfig& endpoint, c
 }
 
 std::string DatabaseManager::processTemplate(const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
-    cache_manager->addQueryCacheParamsIfNecessary(config_manager, endpoint, params);
     return sql_processor->loadAndProcessTemplate(endpoint, params);
 }
 
@@ -353,6 +354,66 @@ QueryResult DatabaseManager::executeQuery(const std::string& query, const std::m
     }
 
     return QueryResult{std::move(json_result), next, total_count};
+}
+
+YAML::Node DatabaseManager::describeSelectQuery(const EndpointConfig& endpoint)
+{
+    YAML::Node properties;
+    
+    try {
+        // Process the SQL template
+        std::map<std::string, std::string> params;
+        cache_manager->addQueryCacheParamsIfNecessary(config_manager, endpoint, params);
+        std::string processedQuery = processTemplate(endpoint, params);
+        
+        // Construct the DESCRIBE query
+        std::string describeQuery = "DESCRIBE SELECT * FROM (" + processedQuery + ") AS subquery";
+        
+        duckdb_connection conn;
+        if (duckdb_connect(db, &conn) == DuckDBError) {
+            throw std::runtime_error("Failed to create database connection");
+        }
+
+        duckdb_result result;
+        if (duckdb_query(conn, describeQuery.c_str(), &result) == DuckDBError) {
+            std::string error_message = duckdb_result_error(&result);
+            duckdb_destroy_result(&result);
+            duckdb_disconnect(&conn);
+            throw std::runtime_error("Query execution failed: " + error_message);
+        }
+        
+        idx_t row_count = duckdb_row_count(&result);
+        for (idx_t i = 0; i < row_count; i++) {
+            std::string column_name = duckdb_value_varchar(&result, 0, i);
+            std::string column_type = duckdb_value_varchar(&result, 1, i);
+            
+            YAML::Node property;
+            if (column_type == "INTEGER" || column_type == "BIGINT") {
+                property["type"] = "integer";
+            } else if (column_type == "DOUBLE" || column_type == "FLOAT") {
+                property["type"] = "number";
+            } else if (column_type == "VARCHAR") {
+                property["type"] = "string";
+            } else if (column_type == "BOOLEAN") {
+                property["type"] = "boolean";
+            } else if (column_type == "DATE" || column_type == "TIME" || column_type == "TIMESTAMP") {
+                property["type"] = "string";
+                property["format"] = "date-time";
+            } else {
+                property["type"] = "string";  // Default to string for unknown types
+            }
+            
+            properties[column_name] = property;
+        }
+        
+        duckdb_destroy_result(&result);
+        duckdb_disconnect(&conn);
+    }
+    catch (const std::exception& e) {
+        CROW_LOG_ERROR << "Error in describeSelectQuery: " << e.what();
+    }
+    
+    return properties;
 }
 
 } // namespace flapi

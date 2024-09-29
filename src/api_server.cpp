@@ -2,14 +2,19 @@
 #include "database_manager.hpp"
 #include "auth_middleware.hpp"
 #include "rate_limit_middleware.hpp"
+#include "open_api_doc_generator.hpp"
+#include <yaml-cpp/yaml.h>
 
 namespace flapi {
 
 APIServer::APIServer(std::shared_ptr<ConfigManager> cm, std::shared_ptr<DatabaseManager> db_manager)
-    : configManager(cm), dbManager(db_manager), requestHandler(dbManager, cm) 
+    : configManager(cm), dbManager(db_manager), requestHandler(dbManager, cm),
+      openAPIDocGenerator(std::make_shared<OpenAPIDocGenerator>(cm, db_manager))
 {
     createApp();
     setupRoutes();
+    setupCORS();
+    
     CROW_LOG_INFO << "APIServer initialized";
 }
 
@@ -52,6 +57,12 @@ void APIServer::setupRoutes() {
             res.end();
         });
 
+    CROW_ROUTE(app, "/doc")
+        .methods("GET"_method)
+        ([this]() {
+            return generateOpenAPIDoc();
+        });
+
     // Endpoint route
     CROW_ROUTE(app, "/<path>")
         .methods("GET"_method, "DELETE"_method)
@@ -61,6 +72,14 @@ void APIServer::setupRoutes() {
         });
 
     CROW_LOG_INFO << "Routes set up completed";
+}
+
+
+void APIServer::setupCORS() {
+    auto& cors = app.get_middleware<crow::CORSHandler>();
+    cors.global()
+        .headers("*")
+        .methods("GET"_method, "DELETE"_method);
 }
 
 void APIServer::handleDynamicRequest(const crow::request& req, crow::response& res) 
@@ -110,6 +129,17 @@ crow::response APIServer::refreshConfig() {
         CROW_LOG_ERROR << "Failed to refresh configuration: " << e.what();
         return crow::response(500, std::string("Failed to refresh configuration: ") + e.what());
     }
+}
+
+// Add this new method to the APIServer class
+crow::response APIServer::generateOpenAPIDoc() {
+    YAML::Node doc = openAPIDocGenerator->generateDoc(app);
+    
+    // Convert YAML::Node to string
+    std::stringstream ss;
+    ss << doc;
+    
+    return crow::response(200, ss.str());
 }
 
 void APIServer::run(int port) {

@@ -37,6 +37,8 @@ public:
     QueryResult executeQuery(const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
     QueryResult executeCacheQuery(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params);
     
+     YAML::Node describeSelectQuery(const EndpointConfig& endpoint);
+
     bool tableExists(const std::string& schema, const std::string& table, bool prefixSearch = false);
     std::vector<std::string> getTableNames(const std::string& schema, const std::string& table, bool prefixSearch = false);
 

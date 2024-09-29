@@ -54,6 +54,7 @@ add_executable(flapi
     src/auth_middleware.cpp
     src/route_translator.cpp
     src/sql_template_processor.cpp
+    src/open_api_doc_generator.cpp
 )
 
 # Link libraries
