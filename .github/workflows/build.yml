@@ -31,7 +31,7 @@ jobs:
     - name: Install vcpkg
       uses: lukka/run-vcpkg@v7
       with:
-        vcpkgGitCommitId: 'your-preferred-vcpkg-commit-id'
+        vcpkgGitCommitId: '2024.09.23'
 
     - name: Install dependencies (Ubuntu)
       if: runner.os == 'Linux'
@@ -73,7 +73,7 @@ jobs:
 
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v2
-      
+
     - name: Build in Docker
       run: |
         docker run --rm --platform linux/arm64 -v ${{ github.workspace }}:/workspace \
@@ -86,7 +86,7 @@ jobs:
           "
 
     - name: Upload artifact
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v4
       with:
         name: flapi-linux-arm64
         path: build/flapi
