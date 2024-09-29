@@ -1,0 +1,92 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        arch: [x64, arm64]
+        exclude:
+          - os: ubuntu-latest
+            arch: arm64
+          - os: macos-latest
+            arch: x64
+
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        submodules: recursive
+
+    - name: Set up CMake
+      uses: lukka/get-cmake@latest
+
+    - name: Install vcpkg
+      uses: lukka/run-vcpkg@v7
+      with:
+        vcpkgGitCommitId: 'your-preferred-vcpkg-commit-id'
+
+    - name: Install dependencies (Ubuntu)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libssl-dev
+
+    - name: Install dependencies (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        brew install openssl
+
+    - name: Configure CMake
+      run: |
+        mkdir build && cd build
+        cmake .. -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build
+      working-directory: build
+      run: cmake --build . --config Release
+
+    - name: Run tests
+      working-directory: build
+      run: ctest -C Release --output-on-failure
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v2
+      with:
+        name: flapi-${{ matrix.os }}-${{ matrix.arch }}
+        path: build/flapi
+
+  build-linux-arm:
+    name: Build on Linux ARM64
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        submodules: recursive
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v1
+
+    - name: Build in Docker
+      run: |
+        docker run --rm --platform linux/arm64 -v ${{ github.workspace }}:/workspace \
+          -w /workspace arm64v8/ubuntu:latest /bin/bash -c "
+            apt-get update && \
+            apt-get install -y build-essential cmake libssl-dev git && \
+            mkdir build && cd build && \
+            cmake .. -DCMAKE_BUILD_TYPE=Release && \
+            cmake --build . --config Release
+          "
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v2
+      with:
+        name: flapi-linux-arm64
+        path: build/flapi

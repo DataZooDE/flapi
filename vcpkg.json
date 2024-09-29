@@ -1,0 +1,13 @@
+{
+  "name": "flapi",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "argparse",
+    "crow",
+    "inja",
+    "yaml-cpp",
+    "jwt-cpp",
+    "openssl",
+    "catch2"
+  ]
+}

@@ -1,0 +1,38 @@
+urlPath: /customers/
+request:
+  - fieldName: id
+    fieldIn: query
+    description: Customer ID
+    required: false
+  - fieldName: segment
+    fieldIn: query
+    description: Customer segment (optional)
+    required: false
+templateSource: customers.sql
+connection: 
+  - customers-parquet
+
+rateLimit:
+  enabled: true
+  max: 100
+  interval: 60  # in seconds
+  
+auth:
+  enabled: true
+  type: basic
+  users:
+    - username: admin
+      password: secret
+      roles: [admin]
+    - username: user
+      password: password
+      roles: [read]
+
+endpoints:
+  - path: /customers2
+    method: GET
+    auth:
+      enabled: true
+      type: bearer
+      jwt_secret: your_secret_key_here
+      jwt_issuer: your_issuer_name

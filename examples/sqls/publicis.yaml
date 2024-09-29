@@ -1,0 +1,17 @@
+urlPath: /publicis/
+request:
+  - fieldName: country
+    fieldIn: query
+    description: Country
+    required: false
+  - fieldName: channel
+    fieldIn: query
+    description: Campaign channel
+    required: false
+templateSource: publicis.sql
+connection:
+  - bigquery-lakehouse
+cache:
+  cacheTableName: 'publicis_cache'
+  cacheSource: publicis_cache.sql
+  refreshTime: 10m
