@@ -76,6 +76,8 @@ void CacheManager::refreshCache(std::shared_ptr<ConfigManager> config_manager, c
     params.emplace("cacheTableName", newCacheTableName);
     params.emplace("cacheRefreshTime", cacheConfig.refreshTime);
 
+    CROW_LOG_INFO << "Starting to refresh cache: " << cacheSchema << "." << newCacheTableName;
+
     db_manager->executeCacheQuery(endpoint, cacheConfig, params);
     
     CROW_LOG_INFO << "Cache refreshed: " << config_manager->getCacheSchema() << "." << newCacheTableName;

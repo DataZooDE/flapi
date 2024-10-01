@@ -15,7 +15,7 @@ std::shared_ptr<DatabaseManager> DatabaseManager::getInstance() {
 
 DatabaseManager::DatabaseManager() {
     // Initialize the database handle to nullptr
-    db = nullptr; // Ensure db is initialized
+    db = nullptr;
 }
 
 DatabaseManager::~DatabaseManager() {
@@ -232,13 +232,13 @@ QueryResult DatabaseManager::executeQuery(const EndpointConfig& endpoint, std::m
 
     cache_manager->addQueryCacheParamsIfNecessary(config_manager, endpoint, params);
     std::string processedQuery = processTemplate(endpoint, params);
-    return executeQuery(processedQuery, params);
+    return executeQuery(processedQuery, params, true);
 }
 
 QueryResult DatabaseManager::executeCacheQuery(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params) 
 {   
     std::string processedQuery = processCacheTemplate(endpoint, cacheConfig, params);
-    return executeQuery(processedQuery, params);
+    return executeQuery(processedQuery, params, false);
 }
 
 std::string DatabaseManager::processTemplate(const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
@@ -249,7 +249,7 @@ std::string DatabaseManager::processCacheTemplate(const EndpointConfig& endpoint
     return sql_processor->loadAndProcessTemplate(endpoint, cacheConfig, params);
 }
 
-QueryResult DatabaseManager::executeQuery(const std::string& query, const std::map<std::string, std::string>& params)
+QueryResult DatabaseManager::executeQuery(const std::string& query, const std::map<std::string, std::string>& params, bool with_pagination)
 {
     duckdb_connection conn;
     if (duckdb_connect(db, &conn) == DuckDBError) {
@@ -263,7 +263,7 @@ QueryResult DatabaseManager::executeQuery(const std::string& query, const std::m
     auto offset = 0;
     auto hasPagination = false;
 
-    if (params.find("limit") != params.end() || params.find("offset") != params.end()) {
+    if (with_pagination && (params.find("limit") != params.end() || params.find("offset") != params.end())) {
         hasPagination = true;
         limit = std::stoll(params.find("limit")->second);
         offset = std::stoll(params.find("offset")->second);
@@ -276,7 +276,9 @@ QueryResult DatabaseManager::executeQuery(const std::string& query, const std::m
         std::string error_message = duckdb_result_error(&result);
         duckdb_destroy_result(&result);
         duckdb_disconnect(&conn);
-        throw std::runtime_error("Query execution failed: " + error_message);
+        std::string pagination_message = with_pagination ? "(with pagination)" : "";
+        error_message = "Query execution failed " + pagination_message + ": " + error_message;
+        throw std::runtime_error(error_message);
     }
 
     crow::json::wvalue json_result;
@@ -336,11 +338,10 @@ QueryResult DatabaseManager::executeQuery(const std::string& query, const std::m
 
     // Execute count query
     int64_t total_count = 0;
-    if (duckdb_query(conn, countQuery.c_str(), &result) == DuckDBSuccess) {
+    if (with_pagination && duckdb_query(conn, countQuery.c_str(), &result) == DuckDBSuccess) {
         total_count = duckdb_value_int64(&result, 0, 0);
     }
     duckdb_destroy_result(&result);
-
     duckdb_disconnect(&conn);
 
     std::string next = "";

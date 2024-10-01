@@ -50,7 +50,7 @@ private:
     std::string processTemplate(const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
     std::string processCacheTemplate(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params);
 
-    QueryResult executeQuery(const std::string& query, const std::map<std::string, std::string>& params = {});
+    QueryResult executeQuery(const std::string& query, const std::map<std::string, std::string>& params = {}, bool with_pagination = true);
 
     duckdb_database db; // Database handle
     std::mutex db_mutex; // Mutex for thread safety
