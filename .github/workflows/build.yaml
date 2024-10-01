@@ -45,3 +45,10 @@ jobs:
     - name: Test
       working-directory: ${{github.workspace}}/build
       run: ctest -C ${{env.BUILD_TYPE}}
+
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: flAPI-build
+        path: ${{github.workspace}}/build/flapi
+        if-no-files-found: error
