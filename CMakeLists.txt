@@ -64,8 +64,8 @@ add_executable(flapi
 )
 
 # Link libraries
-target_link_libraries(flapi PUBLIC 
-    duckdb
+target_link_libraries(flapi PRIVATE 
+    duckdb_static
     Crow::Crow
     pantor::inja
     yaml-cpp::yaml-cpp
