@@ -1,8 +1,8 @@
 #include "request_validator.hpp"
-#include <crow.h>
 #include <regex>
 #include <chrono>
 #include <iomanip>
+#include <sstream>
 #include <algorithm>
 
 namespace flapi {
@@ -22,7 +22,7 @@ std::vector<ValidationError> RequestValidator::validateField(const RequestFieldC
     auto it = params.find(field.fieldName);
     if (it == params.end()) {
         if (field.required) {
-            errors.push_back({field.fieldName, "Missing required parameter"});
+            errors.push_back({field.fieldName, "Required field is missing"});
         }
         return errors;
     }
@@ -30,26 +30,30 @@ std::vector<ValidationError> RequestValidator::validateField(const RequestFieldC
     const std::string& value = it->second;
 
     for (const auto& validator : field.validators) {
-        std::vector<ValidationError> validatorErrors;
         if (validator.type == "string") {
-            validatorErrors = validateString(field.fieldName, value, validator);
+            auto stringErrors = validateString(field.fieldName, value, validator);
+            errors.insert(errors.end(), stringErrors.begin(), stringErrors.end());
         } else if (validator.type == "int") {
-            validatorErrors = validateInt(field.fieldName, value, validator);
+            auto intErrors = validateInt(field.fieldName, value, validator);
+            errors.insert(errors.end(), intErrors.begin(), intErrors.end());
         } else if (validator.type == "email") {
-            validatorErrors = validateEmail(field.fieldName, value);
+            auto emailErrors = validateEmail(field.fieldName, value);
+            errors.insert(errors.end(), emailErrors.begin(), emailErrors.end());
         } else if (validator.type == "uuid") {
-            validatorErrors = validateUUID(field.fieldName, value);
+            auto uuidErrors = validateUUID(field.fieldName, value);
+            errors.insert(errors.end(), uuidErrors.begin(), uuidErrors.end());
         } else if (validator.type == "date") {
-            validatorErrors = validateDate(field.fieldName, value, validator);
+            auto dateErrors = validateDate(field.fieldName, value, validator);
+            errors.insert(errors.end(), dateErrors.begin(), dateErrors.end());
         } else if (validator.type == "time") {
-            validatorErrors = validateTime(field.fieldName, value, validator);
+            auto timeErrors = validateTime(field.fieldName, value, validator);
+            errors.insert(errors.end(), timeErrors.begin(), timeErrors.end());
         } else if (validator.type == "enum") {
-            validatorErrors = validateEnum(field.fieldName, value, validator);
+            auto enumErrors = validateEnum(field.fieldName, value, validator);
+            errors.insert(errors.end(), enumErrors.begin(), enumErrors.end());
         }
-        errors.insert(errors.end(), validatorErrors.begin(), validatorErrors.end());
     }
 
-    // Always check for SQL injection
     auto sqlInjectionErrors = validateSqlInjection(field.fieldName, value);
     errors.insert(errors.end(), sqlInjectionErrors.begin(), sqlInjectionErrors.end());
 
@@ -71,8 +75,11 @@ std::vector<ValidationError> RequestValidator::validateInt(const std::string& fi
     std::vector<ValidationError> errors;
     try {
         int intValue = std::stoi(value);
-        if (intValue < validator.min || intValue > validator.max) {
-            errors.push_back({fieldName, "Integer value out of range"});
+        if (validator.min != 0 && intValue < validator.min) {
+            errors.push_back({fieldName, "Integer is less than the minimum allowed value"});
+        }
+        if (validator.max != 0 && intValue > validator.max) {
+            errors.push_back({fieldName, "Integer is greater than the maximum allowed value"});
         }
     } catch (const std::exception&) {
         errors.push_back({fieldName, "Invalid integer value"});
@@ -177,8 +184,7 @@ std::vector<ValidationError> RequestValidator::validateSqlInjection(const std::s
     
     // List of SQL keywords and characters to check for
     const std::vector<std::string> sqlKeywords = {
-        "SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "TRUNCATE", "ALTER", "CREATE", "TABLE",
-        "FROM", "WHERE", "AND", "OR", "UNION", "--", "/*", "*/", ";"
+        "SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "TRUNCATE", "ALTER", "CREATE", "TABLE"
     };
 
     std::string upperValue = value;

@@ -3,7 +3,6 @@
 #include <vector>
 #include <map>
 #include <string>
-#include <regex>
 #include "config_manager.hpp"
 
 namespace flapi {
@@ -22,9 +21,6 @@ public:
 
 private:
     std::vector<ValidationError> validateField(const RequestFieldConfig& field, const std::map<std::string, std::string>& params);
-    std::vector<ValidationError> validateRequiredField(const RequestFieldConfig& field, const std::map<std::string, std::string>& params);
-
-    // Updated validation methods
     std::vector<ValidationError> validateString(const std::string& fieldName, const std::string& value, const ValidatorConfig& validator);
     std::vector<ValidationError> validateInt(const std::string& fieldName, const std::string& value, const ValidatorConfig& validator);
     std::vector<ValidationError> validateEmail(const std::string& fieldName, const std::string& value);
@@ -32,8 +28,6 @@ private:
     std::vector<ValidationError> validateDate(const std::string& fieldName, const std::string& value, const ValidatorConfig& validator);
     std::vector<ValidationError> validateTime(const std::string& fieldName, const std::string& value, const ValidatorConfig& validator);
     std::vector<ValidationError> validateEnum(const std::string& fieldName, const std::string& value, const ValidatorConfig& validator);
-    
-    // New SQL injection prevention validator
     std::vector<ValidationError> validateSqlInjection(const std::string& fieldName, const std::string& value);
 };
 

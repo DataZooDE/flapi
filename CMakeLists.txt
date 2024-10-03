@@ -48,23 +48,23 @@ include_directories(
     ${JWT_CPP_INCLUDE_DIRS}
 )
 
-# Update the flapi executable
-add_executable(flapi 
-    src/main.cpp
+# Create flapi-lib
+add_library(flapi-lib STATIC
     src/api_server.cpp
-    src/config_manager.cpp
-    src/database_manager.cpp
-    src/cache_manager.cpp
     src/request_handler.cpp
+    src/database_manager.cpp
+    src/config_manager.cpp
+    src/cache_manager.cpp
+    src/sql_template_processor.cpp
+    src/request_validator.cpp
     src/rate_limit_middleware.cpp
     src/auth_middleware.cpp
     src/route_translator.cpp
-    src/sql_template_processor.cpp
     src/open_api_doc_generator.cpp
 )
 
-# Link libraries
-target_link_libraries(flapi PRIVATE 
+# Link libraries to flapi-lib
+target_link_libraries(flapi-lib PRIVATE 
     duckdb_static
     Crow::Crow
     pantor::inja
@@ -74,7 +74,15 @@ target_link_libraries(flapi PRIVATE
     OpenSSL::SSL
 )
 
+# Update the flapi executable
+add_executable(flapi src/main.cpp)
+
+# Link flapi-lib to the main executable
+target_link_libraries(flapi PRIVATE flapi-lib)
+
 set_target_properties(flapi PROPERTIES ENABLE_EXPORTS TRUE)
 
 # Add tests
-#add_subdirectory(test)
+include(CTest)
+include(Catch)
+add_subdirectory(test)

@@ -90,5 +90,51 @@
         "*.ipp": "cpp",
         "*.inc": "cpp",
         "filesystem": "cpp"
+    },
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+    "cmake.configureOnOpen": true,
+    "cmake.buildDirectory": "${workspaceFolder}/build/${buildType}",
+    "cmake.testEnvironment": {
+        "ASAN_OPTIONS": "detect_leaks=0"
+    },
+    "C_Cpp.default.cppStandard": "c++17",
+    "C_Cpp.default.includePath": [
+        "${workspaceFolder}/src/include",
+        "${workspaceFolder}/duckdb/src/include"
+    ],
+    "testMate.cpp.test.advancedExecutables": [
+        {
+            "pattern": "${workspaceFolder}/build/${buildType}/test/flapi_tests",
+            "cwd": "${workspaceFolder}/test",
+            "env": {
+                "ASAN_OPTIONS": "detect_leaks=0"
+            }
+        }
+    ],
+    "testMate.cpp.log.logpanel": true,
+    "testMate.cpp.test.workingDirectory": "${workspaceFolder}/test",
+    "C_Cpp.default.compilerPath": "/usr/bin/clang++",
+    "C_Cpp.default.intelliSenseMode": "linux-clang-x64",
+    "cmake.buildBeforeRun": true,
+    "cmake.defaultVariants": {
+        "buildType": {
+            "default": "Debug",
+            "description": "The build type.",
+            "choices": {
+                "Debug": {
+                    "short": "Debug",
+                    "long": "Disable optimizations - include debug information.",
+                    "buildType": "Debug"
+                },
+                "Release": {
+                    "short": "Release",
+                    "long": "Optimize for speed - exclude debug information.",
+                    "buildType": "Release"
+                }
+            }
+        }
+    },
+    "cmake.configureSettings": {
+        "CMAKE_BUILD_TYPE": "${buildType}"
     }
 }

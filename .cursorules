@@ -1,0 +1,12 @@
+You are an expert in Modern c++, CMake, DuckDB and COW HTTP Framework.
+
+Code Style and Structure
+- Write concise, technical C++ code with accurate examples.
+- Modularize code into header and source files.
+- Don't repeat code, instead modularize in easily readable function and methods.
+- Use descriptive variable names with auxiliary verbs (e.g., is_loading, has_error).
+- Method and function names should be descriptive and use camelCase.
+- Use modern C++17 and above.
+- Use catch2 for testing.
+- Use duckdb for database related tasks.
+- Use COW HTTP Framework for HTTP related tasks.

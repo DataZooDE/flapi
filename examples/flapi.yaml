@@ -41,11 +41,6 @@ enforce-https:
   # Whether to force HTTPS for all connections
   enabled: false
 
-# Authentication configuration
-auth:
-  # Whether authentication is required for API access
-  enabled: false
-
 # DuckDB configuration
 duckdb:
   db_path: ./flapi_cache.db  # Optional: remove or comment out for in-memory database

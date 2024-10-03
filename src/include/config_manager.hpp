@@ -8,6 +8,8 @@
 #include <yaml-cpp/yaml.h>
 #include <filesystem>
 #include <regex>
+#include <stdexcept>
+#include <sstream>
 
 #include "route_translator.hpp"
 
@@ -117,7 +119,7 @@ public:
     // Getters for configuration values
     std::string getProjectName() const;
     std::string getProjectDescription() const;
-    std::string getTemplatePath() const;
+    virtual std::string getTemplatePath() const;
     std::string getCacheSchema() const;
     const std::unordered_map<std::string, ConnectionConfig>& getConnections() const;
     const RateLimitConfig& getRateLimitConfig() const;
@@ -139,7 +141,7 @@ public:
 
     const TemplateConfig& getTemplateConfig() const;
 
-private:
+protected:
     YAML::Node config;
     std::string project_name;
     std::string project_description;
@@ -162,6 +164,29 @@ private:
     void parseTemplateConfig();
 
     std::string makePathRelativeToBasePathIfNecessary(const std::string& value) const;
+
+    // Add these new private methods
+    void validateConfig();
+    void validateEndpointConfig(const YAML::Node& endpoint_config, const std::string& file_path);
+    template<typename T>
+    T getValueOrThrow(const YAML::Node& node, const std::string& key, const std::string& yamlPath) const;
+};
+
+class ConfigurationError : public std::runtime_error {
+public:
+    ConfigurationError(const std::string& message, const std::string& yamlPath = "")
+        : std::runtime_error(formatMessage(message, yamlPath)) {}
+
+private:
+    static std::string formatMessage(const std::string& message, const std::string& yamlPath) {
+        std::ostringstream oss;
+        oss << "Configuration error";
+        if (!yamlPath.empty()) {
+            oss << " at " << yamlPath;
+        }
+        oss << ": " << message;
+        return oss.str();
+    }
 };
 
 } // namespace flapi
