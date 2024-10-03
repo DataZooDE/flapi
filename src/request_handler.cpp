@@ -1,4 +1,5 @@
 #include "request_handler.hpp"
+
 #include <iostream>
 #include <map>
 #include <fstream>
@@ -9,7 +10,7 @@
 namespace flapi {
 
 RequestHandler::RequestHandler(std::shared_ptr<DatabaseManager> db_manager, std::shared_ptr<ConfigManager> config_manager)
-    : db_manager(db_manager), config_manager(config_manager) 
+    : db_manager(db_manager), config_manager(config_manager), validator(std::make_shared<RequestValidator>()) 
 {
     defaultParams["offset"] = "0";
     defaultParams["limit"] = "100";
@@ -57,9 +58,22 @@ void RequestHandler::handleDeleteRequest(const crow::request& req, crow::respons
 void RequestHandler::handleGetRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams) {
     try {
         auto params = combineParameters(req, defaultParams, pathParams);
-        if (!validateRequestParameters(endpoint.requestFields, params)) {
+        auto validationErrors = validator->validateRequestParameters(endpoint.requestFields, params);
+        
+        if (!validationErrors.empty()) {
+            crow::json::wvalue errorResponse;
+            std::vector<crow::json::wvalue> errorMessages;
+            for (const auto& error : validationErrors) {
+                crow::json::wvalue errorJson;
+                errorJson["field"] = error.fieldName;
+                errorJson["message"] = error.errorMessage;
+                errorMessages.push_back(std::move(errorJson));
+            }
+            errorResponse["errors"] = std::move(errorMessages);
+            
             res.code = 400;
-            res.body = "Invalid request parameters";
+            res.set_header("Content-Type", "application/json");
+            res.write(errorResponse.dump());
             res.end();
             return;
         }
@@ -209,24 +223,6 @@ std::string RequestHandler::escapeCSV(const std::string& str) {
     }
     result << '"';
     return result.str();
-}
-
-bool RequestHandler::validateRequestParameters(const std::vector<RequestFieldConfig>& requestFields, const std::map<std::string, std::string>& params) {
-    for (const auto& field : requestFields) {
-        auto it = params.find(field.fieldName);
-        if (it == params.end()) {
-            if (field.required) {
-                CROW_LOG_ERROR << "Missing required parameter: " << field.fieldName;
-                return false;
-            }
-        } else {
-            if (field.required && it->second.empty()) {
-                CROW_LOG_ERROR << "Empty required parameter: " << field.fieldName;
-                return false;
-            }
-        }
-    }
-    return true;
 }
 
 } // namespace flapi

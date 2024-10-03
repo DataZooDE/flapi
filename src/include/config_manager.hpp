@@ -1,11 +1,11 @@
 #pragma once
 
+#include <crow.h>
 #include <chrono>
 #include <string>
 #include <unordered_map>
 #include <vector>
 #include <yaml-cpp/yaml.h>
-#include <nlohmann/json.hpp>
 #include <filesystem>
 #include <regex>
 
@@ -44,13 +44,25 @@ struct AuthConfig {
     std::string jwt_issuer;
 };
 
+struct ValidatorConfig {
+    std::string type;
+    std::string regex;
+    int min;
+    int max;
+    std::string minDate;
+    std::string maxDate;
+    std::string minTime;
+    std::string maxTime;
+    std::vector<std::string> allowedValues;
+    bool preventSqlInjection = true; // New field for SQL injection prevention
+};
 
 struct RequestFieldConfig {
     std::string fieldName;
     std::string fieldIn;
     std::string description;
-    bool required = false;  // Default to false
-    std::vector<std::string> validators;
+    bool required = false;
+    std::vector<ValidatorConfig> validators;
 };
 
 struct CacheConfig {
@@ -114,8 +126,8 @@ public:
     const std::vector<EndpointConfig>& getEndpoints() const;
     std::string getBasePath() const;
 
-    nlohmann::json getFlapiConfig() const;
-    nlohmann::json getEndpointsConfig() const;
+    crow::json::wvalue getFlapiConfig() const;
+    crow::json::wvalue getEndpointsConfig() const;
     void refreshConfig();
 
     const EndpointConfig* getEndpointForPath(const std::string& path) const;

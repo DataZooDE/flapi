@@ -6,6 +6,7 @@
 #include "config_manager.hpp"
 #include "database_manager.hpp"
 #include "sql_template_processor.hpp"
+#include "request_validator.hpp"
 
 namespace flapi {
 
@@ -32,6 +33,7 @@ private:
 
     std::shared_ptr<DatabaseManager> db_manager;
     std::shared_ptr<ConfigManager> config_manager;
+    std::shared_ptr<RequestValidator> validator;
 };
 
 } // namespace flapi

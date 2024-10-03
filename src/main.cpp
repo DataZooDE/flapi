@@ -23,7 +23,6 @@ void set_log_level(const std::string& log_level) {
     }
 }
 
-
 std::shared_ptr<ConfigManager> initializeConfig(const std::string& config_file) {
     std::shared_ptr<ConfigManager> config_manager = std::make_shared<ConfigManager>();
     try {

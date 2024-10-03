@@ -4,10 +4,61 @@ request:
     fieldIn: query
     description: Customer ID
     required: false
+    validators:
+      - type: int
+        min: 1
+        max: 1000000
+        preventSqlInjection: true
+
   - fieldName: segment
     fieldIn: query
     description: Customer segment (optional)
     required: false
+    validators:
+      - type: enum
+        allowedValues: [retail, corporate, vip]
+
+  - fieldName: email
+    fieldIn: query
+    description: Customer email address
+    required: false
+    validators:
+      - type: email
+
+  - fieldName: registration_date
+    fieldIn: query
+    description: Customer registration date
+    required: false
+    validators:
+      - type: date
+        min: "2000-01-01"
+        max: "2023-12-31"
+
+  - fieldName: last_login_time
+    fieldIn: query
+    description: Customer's last login time
+    required: false
+    validators:
+      - type: time
+        min: "00:00:00"
+        max: "23:59:59"
+
+  - fieldName: name
+    fieldIn: query
+    description: Customer name
+    required: false
+    validators:
+      - type: string
+        regex: "^[A-Za-z ]{2,50}$"
+        preventSqlInjection: true
+
+  - fieldName: uuid
+    fieldIn: query
+    description: Customer UUID
+    required: false
+    validators:
+      - type: uuid
+
 templateSource: customers.sql
 connection: 
   - customers-parquet

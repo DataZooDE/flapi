@@ -14,4 +14,4 @@ connection:
 cache:
   cacheTableName: 'publicis_cache'
   cacheSource: publicis_cache.sql
-  refreshTime: 10m 
+  refreshTime: 5m 

@@ -81,9 +81,35 @@ void ConfigManager::loadEndpointConfig(const std::string& config_file) {
             field.fieldName = req["fieldName"].as<std::string>();
             field.fieldIn = req["fieldIn"].as<std::string>();
             field.description = req["description"].as<std::string>("");
+            field.required = req["required"].as<bool>(false);
+
             if (req["validators"]) {
-                field.validators = req["validators"].as<std::vector<std::string>>();
+                for (const auto& validator : req["validators"]) {
+                    ValidatorConfig validatorConfig;
+                    validatorConfig.type = validator["type"].as<std::string>();
+
+                    if (validatorConfig.type == "string") {
+                        validatorConfig.regex = validator["regex"].as<std::string>("");
+                    } else if (validatorConfig.type == "int") {
+                        validatorConfig.min = validator["min"].as<int>(std::numeric_limits<int>::min());
+                        validatorConfig.max = validator["max"].as<int>(std::numeric_limits<int>::max());
+                    } else if (validatorConfig.type == "date") {
+                        validatorConfig.minDate = validator["min"].as<std::string>("");
+                        validatorConfig.maxDate = validator["max"].as<std::string>("");
+                    } else if (validatorConfig.type == "time") {
+                        validatorConfig.minTime = validator["min"].as<std::string>("");
+                        validatorConfig.maxTime = validator["max"].as<std::string>("");
+                    } else if (validatorConfig.type == "enum") {
+                        validatorConfig.allowedValues = validator["allowedValues"].as<std::vector<std::string>>();
+                    }
+
+                    // Parse SQL injection prevention setting
+                    validatorConfig.preventSqlInjection = validator["preventSqlInjection"].as<bool>(true);
+
+                    field.validators.push_back(validatorConfig);
+                }
             }
+
             endpoint.requestFields.push_back(field);
             CROW_LOG_DEBUG << "\tAdded request field: " << field.fieldName << " (" << field.fieldIn << ")";
         }
@@ -251,9 +277,22 @@ void ConfigManager::parseEndpoints() {
                     field.fieldName = req["fieldName"].as<std::string>();
                     field.fieldIn = req["fieldIn"].as<std::string>();
                     field.description = req["description"].as<std::string>("");
-                    if (req["validators"]) {
-                        field.validators = req["validators"].as<std::vector<std::string>>();
+                    if (! req["validators"]) {
+                        continue;
                     }
+
+                    for (const auto& validator : req["validators"]) {
+                        ValidatorConfig validatorConfig;
+                        validatorConfig.type = validator["type"].as<std::string>();
+                        if (validatorConfig.type == "string") {
+                            validatorConfig.regex = validator["regex"].as<std::string>("");
+                        } else if (validatorConfig.type == "int") {
+                            validatorConfig.min = validator["min"].as<int>(std::numeric_limits<int>::min());
+                            validatorConfig.max = validator["max"].as<int>(std::numeric_limits<int>::max());
+                        }
+                        field.validators.push_back(validatorConfig);
+                    }
+                    
                     endpoint.requestFields.push_back(field);
                 }
             }
@@ -281,8 +320,8 @@ bool ConfigManager::isAuthEnabled() const { return auth_enabled; }
 const std::vector<EndpointConfig>& ConfigManager::getEndpoints() const { return endpoints; }
 std::string ConfigManager::getBasePath() const { return base_path.string(); }
 
-nlohmann::json ConfigManager::getFlapiConfig() const {
-    nlohmann::json result;
+crow::json::wvalue ConfigManager::getFlapiConfig() const {
+    crow::json::wvalue result;
     
     // Manually construct the JSON object from the YAML data
     result["name"] = project_name;
@@ -290,17 +329,22 @@ nlohmann::json ConfigManager::getFlapiConfig() const {
     result["template-path"] = template_path;
     
     // Add connections
-    nlohmann::json connectionsJson;
+    crow::json::wvalue connectionsJson;
     for (const auto& [name, conn] : connections) {
-        nlohmann::json connJson;
+        crow::json::wvalue connJson;
         connJson["init"] = conn.init;
         connJson["log-queries"] = conn.log_queries;
         connJson["log-parameters"] = conn.log_parameters;
         connJson["allow"] = conn.allow;
-        connJson["properties"] = conn.properties;
-        connectionsJson[name] = connJson;
+
+        crow::json::wvalue propertiesJson;
+        for (const auto& [key, value] : conn.properties) {
+            propertiesJson[key] = value;
+        }
+        connJson["properties"] = std::move(propertiesJson);
+        connectionsJson[name] = std::move(connJson);
     }
-    result["connections"] = connectionsJson;
+    result["connections"] = std::move(connectionsJson);
     
     // Add rate limit config
     result["rate-limit"]["options"]["interval"] = rate_limit_config.interval;
@@ -310,30 +354,43 @@ nlohmann::json ConfigManager::getFlapiConfig() const {
     result["enforce-https"]["enabled"] = enforce_https;
     result["auth"]["enabled"] = auth_enabled;
     
-    
     return result;
 }
 
-nlohmann::json ConfigManager::getEndpointsConfig() const {
-    nlohmann::json endpointsJson;
+crow::json::wvalue ConfigManager::getEndpointsConfig() const {
+    crow::json::wvalue endpointsJson;
     for (const auto& endpoint : endpoints) {
-        nlohmann::json endpointJson;
+        crow::json::wvalue endpointJson;
         endpointJson["urlPath"] = endpoint.urlPath;
         endpointJson["templateSource"] = endpoint.templateSource;
         endpointJson["connection"] = endpoint.connection;
 
-        nlohmann::json requestJson;
+        std::vector<crow::json::wvalue> requestJson;
         for (const auto& req : endpoint.requestFields) {
-            nlohmann::json fieldJson;
+            crow::json::wvalue fieldJson;
             fieldJson["fieldName"] = req.fieldName;
             fieldJson["fieldIn"] = req.fieldIn;
             fieldJson["description"] = req.description;
-            fieldJson["validators"] = req.validators;
-            requestJson.push_back(fieldJson);
-        }
-        endpointJson["request"] = requestJson;
 
-        endpointsJson[endpoint.urlPath] = endpointJson;
+            std::vector<crow::json::wvalue> validatorsJson;
+            for (const auto& validator : req.validators) {
+                crow::json::wvalue validatorJson;
+                validatorJson["type"] = validator.type;
+                if (validator.type == "string") {
+                    validatorJson["regex"] = validator.regex;
+                } else if (validator.type == "int") {
+                    validatorJson["min"] = validator.min;
+                    validatorJson["max"] = validator.max;   
+                }
+                validatorsJson.push_back(std::move(validatorJson));
+            }
+            fieldJson["validators"] = std::move(validatorsJson);
+            
+            requestJson.push_back(std::move(fieldJson));
+        }
+        endpointJson["request"] = std::move(requestJson);
+
+        endpointsJson[endpoint.urlPath] = std::move(endpointJson);
     }
     return endpointsJson;
 }

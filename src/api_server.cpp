@@ -111,7 +111,7 @@ void APIServer::handleDynamicRequest(const crow::request& req, crow::response& r
 
 crow::response APIServer::getConfig() {
     try {
-        nlohmann::json config;
+        crow::json::wvalue config;
         config["flapi"] = configManager->getFlapiConfig();
         config["endpoints"] = configManager->getEndpointsConfig();
         return crow::response(200, config.dump(2));
