@@ -7,6 +7,7 @@
 #include <yaml-cpp/yaml.h>
 #include <nlohmann/json.hpp>
 #include <filesystem>
+#include <regex>
 
 #include "route_translator.hpp"
 
@@ -77,6 +78,24 @@ struct DuckDBConfig {
     std::string db_path;  // New field for database path
 };
 
+struct TemplateConfig {
+    std::string path;
+    std::vector<std::string> environment_whitelist;
+
+    bool isEnvironmentVariableAllowed(const std::string& varName) const {
+        if (environment_whitelist.empty()) {
+            return false;  // If no whitelist is specified, allow all variables
+        }
+        for (const auto& pattern : environment_whitelist) {
+            std::regex regex(pattern);
+            if (std::regex_match(varName, regex)) {
+                return true;
+            }
+        }
+        return false;
+    }
+};
+
 class ConfigManager {
 public:
     ConfigManager();
@@ -106,6 +125,8 @@ public:
 
     std::unordered_map<std::string, std::string> getPropertiesForTemplates(const std::string& connectionName) const;
 
+    const TemplateConfig& getTemplateConfig() const;
+
 private:
     YAML::Node config;
     std::string project_name;
@@ -119,12 +140,14 @@ private:
     std::vector<EndpointConfig> endpoints;
     std::filesystem::path base_path;
     DuckDBConfig duckdb_config;
+    TemplateConfig template_config;
     
     void parseConfig();
     void parseEndpoints();
     void loadFlapiConfig();
     void loadEndpointConfigs();
     void parseDuckDBConfig();
+    void parseTemplateConfig();
 
     std::string makePathRelativeToBasePathIfNecessary(const std::string& value) const;
 };

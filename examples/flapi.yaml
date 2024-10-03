@@ -2,8 +2,13 @@
 name: example-flapi-project
 description: An example flAPI project demonstrating various configuration options
 
-# The path where SQL templates and API endpoint configurations are stored
-template-path: './sqls'
+# Template configuration
+template:
+  # The path where SQL templates and API endpoint configurations are stored
+  path: './sqls'
+  # Optional: List of regular expressions for whitelisting environment variables
+  environment-whitelist:
+    - '^FLAPI_.*'
 
 # Database connection configurations
 connections:
@@ -48,4 +53,3 @@ duckdb:
   threads: 8
   max_memory: 8GB
   default_order: DESC
-  

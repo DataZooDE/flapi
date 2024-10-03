@@ -14,7 +14,9 @@
             ],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
-            "environment": [],
+            "environment": [
+                { "name": "FLAPI_TEST_VAR", "value": "test" }
+            ],
             "externalConsole": false,
             "MIMode": "gdb",
             "setupCommands": [

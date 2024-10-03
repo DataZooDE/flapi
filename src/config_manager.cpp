@@ -47,20 +47,17 @@ ConfigManager::ConfigManager() : enforce_https(false), auth_enabled(false) {}
 void ConfigManager::loadConfig(const std::string& config_file) {
     config = YAML::LoadFile(config_file);
     base_path = std::filesystem::absolute(std::filesystem::path(config_file)).parent_path();
+    
     parseConfig();
 
     // Load endpoint configurations
-    std::filesystem::path template_path_relative = config["template-path"].as<std::string>();
-    std::filesystem::path template_path_full = (base_path / template_path_relative).lexically_normal();
-    template_path_full = std::filesystem::absolute(template_path_full);
+    CROW_LOG_INFO << "Loading endpoint configurations from: " << getTemplatePath();
     
-    CROW_LOG_INFO << "Loading endpoint configurations from: " << template_path_full.string();
-    
-    if (!std::filesystem::exists(template_path_full)) {
-        throw std::runtime_error("Template path does not exist: " + template_path_full.string());
+    if (!std::filesystem::exists(getTemplatePath())) {
+        throw std::runtime_error("Template path does not exist: " + getTemplatePath());
     }
     
-    for (const auto& entry : std::filesystem::directory_iterator(template_path_full)) {
+    for (const auto& entry : std::filesystem::directory_iterator(getTemplatePath())) {
         if (entry.path().extension() == ".yaml") {
             loadEndpointConfig(entry.path().string());
         }
@@ -146,8 +143,9 @@ void ConfigManager::loadEndpointConfig(const std::string& config_file) {
 void ConfigManager::parseConfig() {
     project_name = config["name"].as<std::string>();
     project_description = config["description"].as<std::string>();
-    std::filesystem::path template_path_relative = config["template-path"].as<std::string>();
-    template_path = std::filesystem::absolute((base_path / template_path_relative).lexically_normal()).string();
+    
+    // Parse template configuration
+    parseTemplateConfig();
 
     // Parse connections
     try {
@@ -190,6 +188,25 @@ void ConfigManager::parseConfig() {
 
     // Parse DuckDB configuration
     parseDuckDBConfig();
+}
+
+void ConfigManager::parseTemplateConfig() {
+    auto template_node = config["template"];
+    if (template_node) {
+        template_config.path = template_node["path"].as<std::string>();
+        std::filesystem::path template_path_relative(template_config.path);
+        template_config.path = std::filesystem::absolute((base_path / template_path_relative).lexically_normal()).string();
+
+        if (template_node["environment-whitelist"]) {
+            template_config.environment_whitelist = template_node["environment-whitelist"].as<std::vector<std::string>>();
+        }
+    } else {
+        throw std::runtime_error("Template configuration is missing in flapi.yaml");
+    }
+}
+
+const TemplateConfig& ConfigManager::getTemplateConfig() const {
+    return template_config;
 }
 
 void ConfigManager::parseDuckDBConfig() {
@@ -255,7 +272,7 @@ void ConfigManager::parseEndpoints() {
 // Implement getter methods
 std::string ConfigManager::getProjectName() const { return project_name; }
 std::string ConfigManager::getProjectDescription() const { return project_description; }
-std::string ConfigManager::getTemplatePath() const { return template_path; }
+std::string ConfigManager::getTemplatePath() const { return template_config.path; }
 std::string ConfigManager::getCacheSchema() const { return cache_schema; }
 const std::unordered_map<std::string, ConnectionConfig>& ConfigManager::getConnections() const { return connections; }
 const RateLimitConfig& ConfigManager::getRateLimitConfig() const { return rate_limit_config; }

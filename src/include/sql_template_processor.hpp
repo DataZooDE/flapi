@@ -6,6 +6,13 @@
 #include <crow.h>
 #include "config_manager.hpp"
 
+#ifdef _WIN32
+#include <stdlib.h>
+#define environ _environ
+#else
+extern char **environ;
+#endif
+
 namespace flapi {
 
 class SQLTemplateProcessor {
@@ -22,6 +29,7 @@ private:
     std::string loadTemplateContent(const std::string& templatePath);
 
     crow::mustache::context createTemplateContext(const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
+    std::map<std::string, std::string> getEnvironmentVariables();
 
     std::string processTemplate(const std::string& templateContent, const crow::mustache::context& ctx);
     crow::mustache::template_t compileTemplate(const std::string& templateSource);
