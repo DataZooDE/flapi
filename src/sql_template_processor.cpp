@@ -68,11 +68,6 @@ crow::mustache::context SQLTemplateProcessor::createTemplateContext(const Endpoi
         }
     }
 
-    // Add request parameters
-    for (const auto& [key, value] : params) {
-        ctx["params"][key] = value;
-    }
-
     // Add cache-related parameters
     if (params.find("cacheSchema") != params.end()) {
         ctx["cache"]["schema"] = params["cacheSchema"];
@@ -89,6 +84,25 @@ crow::mustache::context SQLTemplateProcessor::createTemplateContext(const Endpoi
         params.erase("cacheRefreshTime");
     }
 
+    if (params.find("currentWatermark") != params.end()) {
+        ctx["cache"]["currentWatermark"] = params["currentWatermark"];
+        params.erase("currentWatermark");
+    }
+
+    if (params.find("previousCacheTableName") != params.end()) {
+        ctx["cache"]["previousTable"] = params["previousCacheTableName"];
+        params.erase("previousCacheTableName");
+    }
+
+    if (params.find("previousWatermark") != params.end()) {
+        ctx["cache"]["previousWatermark"] = params["previousWatermark"];
+        params.erase("previousWatermark");
+    }
+
+    // Add request parameters
+    for (const auto& [key, value] : params) {
+        ctx["params"][key] = value;
+    }
 
 
     CROW_LOG_DEBUG << "Template context: " << ctx.dump();
