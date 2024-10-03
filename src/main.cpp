@@ -51,7 +51,7 @@ int main(int argc, char* argv[])
 
     program.add_argument("-p", "--port")
         .help("Port number for the web server")
-        .default_value(8080)
+        .default_value(-1)
         .scan<'i', int>();
 
     program.add_argument("--log-level")

@@ -119,6 +119,9 @@ public:
     // Getters for configuration values
     std::string getProjectName() const;
     std::string getProjectDescription() const;
+    std::string getServerName() const;
+    int getHttpPort() const;
+    void setHttpPort(int port);
     virtual std::string getTemplatePath() const;
     std::string getCacheSchema() const;
     const std::unordered_map<std::string, ConnectionConfig>& getConnections() const;
@@ -147,6 +150,8 @@ protected:
     std::string project_description;
     std::string template_path;
     std::string cache_schema = "flapi_cache";
+    std::string server_name;
+    int http_port;
     std::unordered_map<std::string, ConnectionConfig> connections;
     RateLimitConfig rate_limit_config;
     bool enforce_https;

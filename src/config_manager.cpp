@@ -215,6 +215,10 @@ void ConfigManager::parseConfig() {
     project_name = getValueOrThrow<std::string>(config, "name", "flapi.yaml");
     project_description = getValueOrThrow<std::string>(config, "description", "flapi.yaml");
     
+    server_name = config["server-name"].as<std::string>("localhost");
+    enforce_https = config["enforce-https"]["enabled"].as<bool>(false);
+    http_port = config["http-port"].as<int>(enforce_https ? 8443 : 8080);
+
     // Parse template configuration
     parseTemplateConfig();
 
@@ -235,9 +239,6 @@ void ConfigManager::parseConfig() {
 
         connections[conn_name] = conn_config;
     }
-
-    // Parse enforce-https
-    enforce_https = config["enforce-https"]["enabled"].as<bool>(false);
 
     // Parse auth
     auth_enabled = config["auth"]["enabled"].as<bool>(false);
@@ -351,6 +352,9 @@ void ConfigManager::parseEndpoints() {
 // Implement getter methods
 std::string ConfigManager::getProjectName() const { return project_name; }
 std::string ConfigManager::getProjectDescription() const { return project_description; }
+std::string ConfigManager::getServerName() const { return server_name; }
+int ConfigManager::getHttpPort() const { return http_port; }
+void ConfigManager::setHttpPort(int port) { http_port = port; }
 std::string ConfigManager::getTemplatePath() const { return template_config.path; }
 std::string ConfigManager::getCacheSchema() const { return cache_schema; }
 const std::unordered_map<std::string, ConnectionConfig>& ConfigManager::getConnections() const { return connections; }
