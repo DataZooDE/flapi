@@ -31,7 +31,6 @@ set(CMAKE_INTERPROCEDURAL_OPTIMIZATION FALSE)
 # Find other dependencies
 find_package(Catch2 CONFIG REQUIRED)
 find_package(Crow CONFIG REQUIRED)
-find_package(inja CONFIG REQUIRED)
 find_package(yaml-cpp CONFIG REQUIRED)
 find_package(argparse CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)

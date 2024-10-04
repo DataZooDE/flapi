@@ -148,7 +148,6 @@ protected:
     YAML::Node config;
     std::string project_name;
     std::string project_description;
-    std::string template_path;
     std::string cache_schema = "flapi_cache";
     std::string server_name;
     int http_port;
