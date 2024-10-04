@@ -286,7 +286,7 @@ const DuckDBConfig& ConfigManager::getDuckDBConfig() const {
 }
 
 void ConfigManager::parseEndpoints() {
-    std::filesystem::path endpoints_dir = std::filesystem::path(template_path);
+    std::filesystem::path endpoints_dir = std::filesystem::path(template_config.path);
     
     std::cout << "Parsing endpoints from: " << endpoints_dir << std::endl;
     
@@ -370,7 +370,7 @@ crow::json::wvalue ConfigManager::getFlapiConfig() const {
     // Manually construct the JSON object from the YAML data
     result["name"] = project_name;
     result["description"] = project_description;
-    result["template-path"] = template_path;
+    result["template-path"] = template_config.path;
     
     // Add connections
     crow::json::wvalue connectionsJson;

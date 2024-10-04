@@ -66,7 +66,6 @@ add_library(flapi-lib STATIC
 target_link_libraries(flapi-lib PRIVATE 
     duckdb_static
     Crow::Crow
-    pantor::inja
     yaml-cpp::yaml-cpp
     argparse::argparse
     OpenSSL::Crypto
