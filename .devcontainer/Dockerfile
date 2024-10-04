@@ -1,18 +1,13 @@
-FROM mcr.microsoft.com/vscode/devcontainers/cpp:0-ubuntu-22.04
+FROM mcr.microsoft.com/vscode/devcontainers/cpp:dev-ubuntu-24.04
 
 # Install additional packages
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     && apt-get -y install --no-install-recommends \
     cmake \
     ninja-build \
+    linux-libc-dev \
     && apt-get clean -y && rm -rf /var/lib/apt/lists/*
 
-# Install vcpkg
-RUN git clone https://github.com/Microsoft/vcpkg.git /vcpkg \
-    && /vcpkg/bootstrap-vcpkg.sh
-
-# Add vcpkg to PATH
-ENV PATH="/vcpkg:${PATH}"
 
 # Set up non-root user
 ARG USERNAME=vscode

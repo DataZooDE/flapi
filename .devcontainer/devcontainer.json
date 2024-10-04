@@ -1,5 +1,5 @@
 {
-    "name": "flAPI Development",
+    "name": "flAPI Development Container",
     "build": {
         "dockerfile": "Dockerfile",
         "context": ".."
@@ -14,7 +14,7 @@
             ]
         }
     },
-    "forwardPorts": [],
-    "postCreateCommand": "vcpkg integrate install",
+    "forwardPorts": [8080],
+    "postCreateCommand": "",
     "remoteUser": "vscode"
 }
