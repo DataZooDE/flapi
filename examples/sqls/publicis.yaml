@@ -1,4 +1,4 @@
-urlPath: /publicis/
+urlPath: /publicis
 request:
   - fieldName: country
     fieldIn: query

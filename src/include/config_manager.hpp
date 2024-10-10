@@ -43,7 +43,6 @@ struct AuthConfig {
     std::string jwt_issuer;
 };
 
-
 struct RequestFieldConfig {
     std::string fieldName;
     std::string fieldIn;
@@ -80,30 +79,34 @@ struct DuckDBConfig {
 class ConfigManager {
 public:
     ConfigManager();
+    
+    // Main configuration loading methods
     void loadConfig(const std::string& config_file);
-    void loadEndpointConfig(const std::string& config_file);
+    void refreshConfig();
 
     // Getters for configuration values
     std::string getProjectName() const;
     std::string getProjectDescription() const;
     std::string getTemplatePath() const;
     std::string getCacheSchema() const;
+    std::string getBasePath() const;
     const std::unordered_map<std::string, ConnectionConfig>& getConnections() const;
     const RateLimitConfig& getRateLimitConfig() const;
     bool isHttpsEnforced() const;
     bool isAuthEnabled() const;
     const std::vector<EndpointConfig>& getEndpoints() const;
-    std::string getBasePath() const;
-
-    nlohmann::json getFlapiConfig() const;
-    nlohmann::json getEndpointsConfig() const;
-    void refreshConfig();
-
-    const EndpointConfig* getEndpointForPath(const std::string& path) const;
-
     const DuckDBConfig& getDuckDBConfig() const;
     std::string getDuckDBPath() const;
 
+    // Endpoint-related methods
+    const EndpointConfig* getEndpointForPath(const std::string& path) const;
+    std::string getFullCacheSourcePath(const EndpointConfig& endpoint) const;
+
+    // JSON representation methods
+    nlohmann::json getFlapiConfig() const;
+    nlohmann::json getEndpointsConfig() const;
+
+    // Utility methods
     std::unordered_map<std::string, std::string> getPropertiesForTemplates(const std::string& connectionName) const;
 
 private:
@@ -119,14 +122,24 @@ private:
     std::vector<EndpointConfig> endpoints;
     std::filesystem::path base_path;
     DuckDBConfig duckdb_config;
-    
-    void parseConfig();
-    void parseEndpoints();
-    void loadFlapiConfig();
-    void loadEndpointConfigs();
-    void parseDuckDBConfig();
 
+    // Configuration parsing methods
+    void parseMainConfig();
+    void parseConnections();
+    void parseRateLimitConfig();
+    void parseAuthConfig();
+    void parseDuckDBConfig();
+    void parseEndpoints();
+
+    // Endpoint configuration loading methods
+    void loadEndpointConfigs();
+    void loadEndpointConfigsRecursively(const std::filesystem::path& dir);
+    void loadEndpointConfig(const std::string& base_config_dir, const std::string& config_file);
+
+    // Helper methods
     std::string makePathRelativeToBasePathIfNecessary(const std::string& value) const;
+    void loadFlapiConfig();
+    std::filesystem::path getFullTemplatePath() const; // Add this line
 };
 
 } // namespace flapi

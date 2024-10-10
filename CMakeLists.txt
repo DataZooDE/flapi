@@ -74,6 +74,8 @@ target_link_libraries(flapi PRIVATE
     OpenSSL::SSL
 )
 
+target_link_options(flapi PRIVATE -fsanitize=undefined)
+
 set_target_properties(flapi PROPERTIES ENABLE_EXPORTS TRUE)
 
 # Add tests
