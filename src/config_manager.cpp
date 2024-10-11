@@ -4,7 +4,9 @@
 #include <yaml-cpp/yaml.h>
 #include <fstream>
 #include <iostream>
-#include <crow.h>
+#include <crow.h> // Add this line
+#include <iomanip>
+#include <crow/logging.h>
 
 namespace flapi {
 
@@ -42,75 +44,92 @@ std::chrono::seconds CacheConfig::getRefreshTimeInSeconds() const
     }
 }
 
-ConfigManager::ConfigManager() : enforce_https(false), auth_enabled(false) {}
+ConfigManager::ConfigManager(const std::filesystem::path& config_file) 
+    : config_file(config_file), auth_enabled(false) 
+{}
 
-void ConfigManager::loadConfig(const std::string& config_file) {
-    config = YAML::LoadFile(config_file);
-    base_path = std::filesystem::absolute(std::filesystem::path(config_file)).parent_path();
-    parseMainConfig();
-
-    std::filesystem::path template_path_full = getFullTemplatePath();
-    CROW_LOG_INFO << "Loading endpoint configurations from: " << template_path_full.string();
-    
-    if (!std::filesystem::exists(template_path_full)) {
-        throw std::runtime_error("Template path does not exist: " + template_path_full.string());
+// Main configuration loading and parsing methods
+void ConfigManager::loadConfig() {
+    try {
+        CROW_LOG_INFO << "Loading configuration file: " << config_file;
+        config = YAML::LoadFile(config_file);
+        parseMainConfig();
+        
+        std::filesystem::path template_path = getTemplateConfig().path;
+        loadEndpointConfigsRecursively(template_path);
+        CROW_LOG_INFO << "Configuration loaded successfully";
+    } catch (const YAML::Exception& e) {
+        std::ostringstream error_msg;
+        error_msg << "Error loading configuration file: " << config_file << ", Error: " << e.what();
+        CROW_LOG_ERROR << error_msg.str();
+        CROW_LOG_DEBUG << "Current configuration structure:";
+        printConfig();
+        throw std::runtime_error(error_msg.str());
     }
-    
-    loadEndpointConfigsRecursively(template_path_full);
 }
 
 void ConfigManager::parseMainConfig() {
-    project_name = config["name"].as<std::string>();
-    project_description = config["description"].as<std::string>();
-    template_path = getFullTemplatePath().string();
-
-    parseConnections();
-    parseRateLimitConfig();
-    parseAuthConfig();
-    parseDuckDBConfig();
-}
-
-void ConfigManager::parseConnections() {
     try {
-        auto connections_node = config["connections"];
-        for (const auto& conn : connections_node) {
-            std::string conn_name = conn.first.as<std::string>();
-            ConnectionConfig conn_config;
-            conn_config.init = conn.second["init"].as<std::string>("");
-            conn_config.log_queries = conn.second["log-queries"].as<bool>(false);
-            conn_config.log_parameters = conn.second["log-parameters"].as<bool>(false);
-            conn_config.allow = conn.second["allow"].as<std::string>("*");
+        CROW_LOG_INFO << "Parsing main configuration";
+        base_path = config_file.parent_path();
 
-            auto properties = conn.second["properties"];
-            for (const auto& prop : properties) {
-                conn_config.properties[prop.first.as<std::string>()] = prop.second.as<std::string>();
-            }
+        project_name = safeGet<std::string>(config, "project_name", "project_name");
+        project_description = safeGet<std::string>(config, "project_description", "project_description");
+        server_name = safeGet<std::string>(config, "server_name", "server_name", "localhost");
+        http_port = safeGet<int>(config, "http_port", "http_port", 8080);
 
-            connections[conn_name] = conn_config;
+        CROW_LOG_DEBUG << "Project Name: " << project_name;
+        CROW_LOG_DEBUG << "Server Name: " << server_name;
+        CROW_LOG_DEBUG << "HTTP Port: " << http_port;
+
+        parseHttpsConfig();
+        parseConnections();
+        parseRateLimitConfig();
+        parseAuthConfig();
+        parseDuckDBConfig();
+        parseTemplateConfig();
+
+        if (config["cache_schema"]) {
+            cache_schema = safeGet<std::string>(config, "cache_schema", "cache_schema");
+            CROW_LOG_DEBUG << "Cache Schema: " << cache_schema;
         }
     } catch (const std::exception& e) {
-        throw std::runtime_error("Error parsing connections: " + std::string(e.what()));
+        CROW_LOG_ERROR << "Error in parseMainConfig: " << e.what();
+        throw;
     }
 }
 
-void ConfigManager::parseRateLimitConfig() {
-    try {
-        if (config["rate-limit"]) {
-            auto rate_limit_node = config["rate-limit"]["options"];
-            rate_limit_config.interval = rate_limit_node["interval"].as<int>();
-            rate_limit_config.max = rate_limit_node["max"].as<int>();
+// Template configuration methods
+void ConfigManager::parseTemplateConfig() {
+    CROW_LOG_INFO << "Parsing template configuration";
+    auto template_node = config["template"];
+    if (template_node) {
+        template_config.path = template_node["path"].as<std::string>();
+        std::filesystem::path template_path_relative(template_config.path);
+        template_config.path = std::filesystem::absolute((base_path / template_path_relative).lexically_normal()).string();
+        CROW_LOG_DEBUG << "Template Path: " << template_config.path;
+
+        if (template_node["environment-whitelist"]) {
+            template_config.environment_whitelist = template_node["environment-whitelist"].as<std::vector<std::string>>();
+            std::stringstream whitelist_stream;
+            for (const auto& item : template_config.environment_whitelist) {
+                whitelist_stream << item << " ";
+            }   
+            CROW_LOG_DEBUG << "Environment Whitelist: " << whitelist_stream.str();
         }
-    } catch (const std::exception& e) {
-        throw std::runtime_error("Error parsing rate limit config: " + std::string(e.what()));
+    } else {
+        CROW_LOG_ERROR << "Template configuration is missing in flapi.yaml";
+        throw std::runtime_error("Template configuration is missing in flapi.yaml");
     }
 }
 
-void ConfigManager::parseAuthConfig() {
-    enforce_https = config["enforce-https"]["enabled"].as<bool>(false);
-    auth_enabled = config["auth"]["enabled"].as<bool>(false);
+const TemplateConfig& ConfigManager::getTemplateConfig() const {
+    return template_config;
 }
 
+// DuckDB configuration methods
 void ConfigManager::parseDuckDBConfig() {
+    CROW_LOG_INFO << "Parsing DuckDB configuration";
     if (config["duckdb"]) {
         auto duckdb_node = config["duckdb"];
         for (const auto& setting : duckdb_node) {
@@ -118,226 +137,264 @@ void ConfigManager::parseDuckDBConfig() {
             std::string value = setting.second.as<std::string>();
             if (key == "db_path") {
                 duckdb_config.db_path = value;
+                CROW_LOG_DEBUG << "\tDuckDB Path: " << duckdb_config.db_path;
             } else {
                 duckdb_config.settings[key] = value;
+                CROW_LOG_DEBUG << "\tDuckDB Setting: " << key << " = " << value;
             }
         }
     }
 }
 
-void ConfigManager::loadEndpointConfig(const std::string& base_config_dir, const std::string& config_file) {
-    YAML::Node endpoint_config = YAML::LoadFile(config_file);
-    std::string url_path = endpoint_config["urlPath"].as<std::string>();
-    
-    CROW_LOG_DEBUG << "Loading endpoint config from: " << config_file;
-    CROW_LOG_DEBUG << "URL path: " << url_path;
-
-    EndpointConfig endpoint;
-    endpoint.urlPath = url_path;
-    
-    // Make templateSource path relative to the endpoint config file
-    std::filesystem::path config_dir = std::filesystem::path(config_file).parent_path();
-    std::filesystem::path template_source_path = config_dir / endpoint_config["templateSource"].as<std::string>();
-    endpoint.templateSource = std::filesystem::relative(template_source_path, base_config_dir).string();
-
-    if (endpoint_config["request"]) {
-        for (const auto& req : endpoint_config["request"]) {
-            RequestFieldConfig field;
-            field.fieldName = req["fieldName"].as<std::string>();
-            field.fieldIn = req["fieldIn"].as<std::string>();
-            field.description = req["description"].as<std::string>("");
-            if (req["validators"]) {
-                field.validators = req["validators"].as<std::vector<std::string>>();
-            }
-            endpoint.requestFields.push_back(field);
-            CROW_LOG_DEBUG << "\tAdded request field: " << field.fieldName << " (" << field.fieldIn << ")";
-        }
-    }
-    
-    if (endpoint_config["connection"]) {
-        endpoint.connection = endpoint_config["connection"].as<std::vector<std::string>>();
-    }
-    
-    // Parse rate limit configuration
-    if (endpoint_config["rateLimit"]) {
-        auto rate_limit = endpoint_config["rateLimit"];
-        endpoint.rate_limit.enabled = rate_limit["enabled"].as<bool>(false);
-        endpoint.rate_limit.max = rate_limit["max"].as<int>(0);
-        endpoint.rate_limit.interval = rate_limit["interval"].as<int>(0);
-    } else {
-        endpoint.rate_limit.enabled = false;
-    }
-    
-    // Parse auth configuration
-    if (endpoint_config["auth"]) {
-        auto auth = endpoint_config["auth"];
-        endpoint.auth.enabled = auth["enabled"].as<bool>(false);
-        endpoint.auth.type = auth["type"].as<std::string>("basic");
-        if (auth["users"]) {
-            auto users = auth["users"];
-            for (const auto& user : users) {
-                AuthUser auth_user;
-                auth_user.username = user["username"].as<std::string>();
-                auth_user.password = user["password"].as<std::string>();
-                auth_user.roles = user["roles"].as<std::vector<std::string>>();
-                endpoint.auth.users.push_back(auth_user);
-            }
-        }
-        endpoint.auth.jwt_secret = auth["jwt_secret"].as<std::string>("");
-        endpoint.auth.jwt_issuer = auth["jwt_issuer"].as<std::string>("");
-    } else {
-        endpoint.auth.enabled = false;
-    }
-    // Parse cache configuration
-    if (endpoint_config["cache"]) {
-        auto cache_config = endpoint_config["cache"];
-        
-        CacheConfig cache;
-        endpoint.cache.cacheTableName = cache_config["cacheTableName"].as<std::string>();
-        
-        // Make cacheSource path relative to the endpoint config file
-        if (cache_config["cacheSource"]) {
-            std::filesystem::path cache_source_path = config_dir / cache_config["cacheSource"].as<std::string>();
-            endpoint.cache.cacheSource = std::filesystem::relative(cache_source_path, base_config_dir).string();
-        }
-        
-        endpoint.cache.refreshTime = cache_config["refreshTime"].as<std::string>("1h");
-        endpoint.cache.refreshEndpoint = cache_config["refreshEndpoint"].as<bool>(false);
-        CROW_LOG_DEBUG << "\tAdded cache config: " << endpoint.cache.cacheTableName 
-                       << " (refresh time: " << endpoint.cache.refreshTime << ")";
-        CROW_LOG_DEBUG << "\tCache source: " << endpoint.cache.cacheSource;
-    }
-    
-    endpoints.push_back(endpoint);
-    CROW_LOG_INFO << "Loaded endpoint config for: " << url_path;
-}
-
-void ConfigManager::parseEndpoints() {
-    std::filesystem::path endpoints_dir = std::filesystem::path(template_path);
-    
-    std::cout << "Parsing endpoints from: " << endpoints_dir << std::endl;
-    
-    if (!std::filesystem::exists(endpoints_dir)) {
-        throw std::runtime_error("Endpoints directory does not exist: " + endpoints_dir.string());
-    }
-    
-    for (const auto& entry : std::filesystem::directory_iterator(endpoints_dir)) {
-        if (entry.path().extension() == ".yaml") {
-            loadEndpointConfig(endpoints_dir.string(), entry.path().string());
-        }
-    }
-}
-
-// Implement getter methods
-std::string ConfigManager::getProjectName() const { return project_name; }
-std::string ConfigManager::getProjectDescription() const { return project_description; }
-std::string ConfigManager::getTemplatePath() const { return template_path; }
-std::string ConfigManager::getCacheSchema() const { return cache_schema; }
-const std::unordered_map<std::string, ConnectionConfig>& ConfigManager::getConnections() const { return connections; }
-const RateLimitConfig& ConfigManager::getRateLimitConfig() const { return rate_limit_config; }
-bool ConfigManager::isHttpsEnforced() const { return enforce_https; }
-bool ConfigManager::isAuthEnabled() const { return auth_enabled; }
-const std::vector<EndpointConfig>& ConfigManager::getEndpoints() const { return endpoints; }
-std::string ConfigManager::getBasePath() const { return base_path.string(); }
-
-nlohmann::json ConfigManager::getFlapiConfig() const {
-    nlohmann::json result;
-    
-    // Manually construct the JSON object from the YAML data
-    result["name"] = project_name;
-    result["description"] = project_description;
-    result["template-path"] = template_path;
-    
-    // Add connections
-    nlohmann::json connectionsJson;
-    for (const auto& [name, conn] : connections) {
-        nlohmann::json connJson;
-        connJson["init"] = conn.init;
-        connJson["log-queries"] = conn.log_queries;
-        connJson["log-parameters"] = conn.log_parameters;
-        connJson["allow"] = conn.allow;
-        connJson["properties"] = conn.properties;
-        connectionsJson[name] = connJson;
-    }
-    result["connections"] = connectionsJson;
-    
-    // Add rate limit config
-    result["rate-limit"]["options"]["interval"] = rate_limit_config.interval;
-    result["rate-limit"]["options"]["max"] = rate_limit_config.max;
-    
-    // Add other configurations
-    result["enforce-https"]["enabled"] = enforce_https;
-    result["auth"]["enabled"] = auth_enabled;
-    
-    
-    return result;
-}
-
-nlohmann::json ConfigManager::getEndpointsConfig() const {
-    nlohmann::json endpointsJson;
-    for (const auto& endpoint : endpoints) {
-        nlohmann::json endpointJson;
-        endpointJson["urlPath"] = endpoint.urlPath;
-        endpointJson["templateSource"] = endpoint.templateSource;
-        endpointJson["connection"] = endpoint.connection;
-
-        nlohmann::json requestJson;
-        for (const auto& req : endpoint.requestFields) {
-            nlohmann::json fieldJson;
-            fieldJson["fieldName"] = req.fieldName;
-            fieldJson["fieldIn"] = req.fieldIn;
-            fieldJson["description"] = req.description;
-            fieldJson["validators"] = req.validators;
-            requestJson.push_back(fieldJson);
-        }
-        endpointJson["request"] = requestJson;
-
-        endpointsJson[endpoint.urlPath] = endpointJson;
-    }
-    return endpointsJson;
-}
-
-void ConfigManager::refreshConfig() {
-    loadFlapiConfig();
-    loadEndpointConfigs();
-}
-
-void ConfigManager::loadFlapiConfig() {
-    config = YAML::LoadFile(base_path / "flapi.yaml");
-    parseMainConfig();
-}
-
-void ConfigManager::loadEndpointConfigs() {
-    endpoints.clear();
-    parseEndpoints();
-}
-
-// Add this method to the ConfigManager class implementation
-
-const EndpointConfig* ConfigManager::getEndpointForPath(const std::string& path) const {
-    for (const auto& endpoint : endpoints) {
-        std::vector<std::string> paramNames;
-        std::map<std::string, std::string> pathParams;
-        
-        if (RouteTranslator::matchAndExtractParams(endpoint.urlPath, path, paramNames, pathParams)) {
-            return &endpoint;
-        }
-    }
-    return nullptr;
+const DuckDBConfig& ConfigManager::getDuckDBConfig() const {
+    return duckdb_config;
 }
 
 std::string ConfigManager::getDuckDBPath() const {
     return duckdb_config.db_path.empty() ? ":memory:" : duckdb_config.db_path;
 }
 
-std::string ConfigManager::makePathRelativeToBasePathIfNecessary(const std::string& value) const {
-        if (value.find("./") == 0 || value.find("../") == 0) {
-            std::filesystem::path relativePath(value);
-            std::filesystem::path absolutePath = std::filesystem::absolute(base_path / relativePath).lexically_normal();
-            return absolutePath.string();
+// Endpoint configuration methods
+void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& template_path) {
+    CROW_LOG_INFO << "Loading endpoint configs recursively from: " << template_path;
+    endpoints.clear();
+
+    if (std::filesystem::exists(template_path) && std::filesystem::is_directory(template_path)) {
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(template_path)) {
+            if (entry.is_regular_file()) {
+                auto extension = entry.path().extension();
+                if (extension == ".yaml" || extension == ".yml") {
+                    loadEndpointConfig(entry.path().string());
+                }
+            }
         }
-        return value;
+    } else {
+        CROW_LOG_ERROR << "Template path does not exist or is not a directory: " << template_path;
+        throw std::runtime_error("Template path does not exist or is not a directory: " + template_path.string());
     }
+    CROW_LOG_INFO << "Loaded " << endpoints.size() << " endpoint configurations";
+}
+
+void ConfigManager::loadEndpointConfig(const std::string& config_file) {
+    CROW_LOG_DEBUG << "\tLoading endpoint config from file: " << config_file;
+    YAML::Node endpoint_config = YAML::LoadFile(config_file);
+    EndpointConfig endpoint;
+    
+    endpoint.urlPath = safeGet<std::string>(endpoint_config, "url-path", "url-path");
+    endpoint.method = safeGet<std::string>(endpoint_config, "method", "method", "GET");
+    endpoint.templateSource = safeGet<std::string>(endpoint_config, "template-source", "template-source");
+    
+    CROW_LOG_DEBUG << "\t\tEndpoint: " << endpoint.method << " " << endpoint.urlPath;
+    CROW_LOG_DEBUG << "\t\tTemplate Source: " << endpoint.templateSource;
+    
+    parseEndpointRequestFields(endpoint_config, endpoint);
+    parseEndpointConnection(endpoint_config, endpoint);
+    parseEndpointRateLimit(endpoint_config, endpoint);
+    parseEndpointAuth(endpoint_config, endpoint);
+    parseEndpointCache(endpoint_config, endpoint);
+
+    endpoints.push_back(endpoint);
+}
+
+void ConfigManager::parseEndpointRequestFields(const YAML::Node& endpoint_config, EndpointConfig& endpoint) {
+    if (endpoint_config["request"]) {
+        for (const auto& req : endpoint_config["request"]) {
+            RequestFieldConfig field;
+            field.fieldName = safeGet<std::string>(req, "field-name", "request.field-name");
+            field.fieldIn = safeGet<std::string>(req, "field-in", "request.field-in");
+            field.description = safeGet<std::string>(req, "description", "request.description", "");
+            field.required = safeGet<bool>(req, "required", "request.required", false);
+            
+            parseEndpointValidators(req, field);
+            
+            endpoint.requestFields.push_back(field);
+        }
+    }
+}
+
+void ConfigManager::parseEndpointValidators(const YAML::Node& req, RequestFieldConfig& field) {
+    if (req["validators"]) {
+        for (const auto& validator : req["validators"]) {
+            ValidatorConfig validatorConfig;
+            validatorConfig.type = safeGet<std::string>(validator, "type", "validators.type");
+            
+            if (validatorConfig.type == "int") {
+                validatorConfig.min = safeGet<int>(validator, "min", "validators.min", std::numeric_limits<int>::min());
+                validatorConfig.max = safeGet<int>(validator, "max", "validators.max", std::numeric_limits<int>::max());
+            } else if (validatorConfig.type == "string") {
+                validatorConfig.regex = safeGet<std::string>(validator, "regex", "validators.regex", "");
+            } else if (validatorConfig.type == "enum") {
+                validatorConfig.allowedValues = safeGet<std::vector<std::string>>(validator, "allowedValues", "validators.allowedValues");
+            } else if (validatorConfig.type == "date") {
+                validatorConfig.minDate = safeGet<std::string>(validator, "min", "validators.min", "");
+                validatorConfig.maxDate = safeGet<std::string>(validator, "max", "validators.max", "");
+            } else if (validatorConfig.type == "time") {
+                validatorConfig.minTime = safeGet<std::string>(validator, "min", "validators.min", "");
+                validatorConfig.maxTime = safeGet<std::string>(validator, "max", "validators.max", "");
+            }
+            
+            validatorConfig.preventSqlInjection = safeGet<bool>(validator, "preventSqlInjection", "validators.preventSqlInjection", true);
+            field.validators.push_back(validatorConfig);
+        }
+    }
+}
+
+void ConfigManager::parseEndpointConnection(const YAML::Node& endpoint_config, EndpointConfig& endpoint) {
+    if (endpoint_config["connection"]) {
+        endpoint.connection = safeGet<std::vector<std::string>>(endpoint_config, "connection", "connection");
+    }
+}
+
+void ConfigManager::parseEndpointRateLimit(const YAML::Node& endpoint_config, EndpointConfig& endpoint) {
+    if (endpoint_config["rate-limit"]) {
+        auto rate_limit_node = endpoint_config["rate-limit"];
+        endpoint.rate_limit.enabled = safeGet<bool>(rate_limit_node, "enabled", "rate-limit.enabled", false);
+        endpoint.rate_limit.max = safeGet<int>(rate_limit_node, "max", "rate-limit.max", 100);
+        endpoint.rate_limit.interval = safeGet<int>(rate_limit_node, "interval", "rate-limit.interval", 60);
+    }
+}
+
+void ConfigManager::parseEndpointAuth(const YAML::Node& endpoint_config, EndpointConfig& endpoint) {
+    if (endpoint_config["auth"]) {
+        auto auth_node = endpoint_config["auth"];
+        endpoint.auth.enabled = safeGet<bool>(auth_node, "enabled", "auth.enabled", false);
+        endpoint.auth.type = safeGet<std::string>(auth_node, "type", "auth.type", "");
+        
+        if (auth_node["users"]) {
+            for (const auto& user : auth_node["users"]) {
+                AuthUser auth_user;
+                auth_user.username = safeGet<std::string>(user, "username", "auth.users.username");
+                auth_user.password = safeGet<std::string>(user, "password", "auth.users.password");
+                auth_user.roles = safeGet<std::vector<std::string>>(user, "roles", "auth.users.roles", std::vector<std::string>());
+                endpoint.auth.users.push_back(auth_user);
+            }
+        }
+    }
+}
+
+void ConfigManager::parseEndpointCache(const YAML::Node& endpoint_config, EndpointConfig& endpoint) {
+    CROW_LOG_DEBUG << "\tParsing endpoint cache configuration";
+    if (endpoint_config["cache"]) {
+        auto cache_node = endpoint_config["cache"];
+        endpoint.cache.cacheTableName = safeGet<std::string>(cache_node, "cache-table-name", "cache.cache-table-name", "");
+        endpoint.cache.cacheSource = safeGet<std::string>(cache_node, "cache-source", "cache.cache-source", "");
+        endpoint.cache.refreshTime = safeGet<std::string>(cache_node, "refresh-time", "cache.refresh-time", "");
+        endpoint.cache.refreshEndpoint = safeGet<bool>(cache_node, "refresh-endpoint", "cache.refresh-endpoint", false);
+
+        CROW_LOG_DEBUG << "\t\tCache Table Name: " << endpoint.cache.cacheTableName;
+        CROW_LOG_DEBUG << "\t\tCache Source: " << endpoint.cache.cacheSource;
+        CROW_LOG_DEBUG << "\t\tRefresh Time: " << endpoint.cache.refreshTime;
+        CROW_LOG_DEBUG << "\t\tRefresh Endpoint: " << (endpoint.cache.refreshEndpoint ? "true" : "false");
+    }
+}
+
+// Connection configuration methods
+void ConfigManager::parseConnections() {
+    CROW_LOG_INFO << "Parsing connections";
+    if (config["connections"]) {
+        auto connections_node = config["connections"];
+        for (const auto& connection : connections_node) {
+            std::string name = connection.first.as<std::string>();
+            CROW_LOG_DEBUG << "Parsing connection: " << name;
+            ConnectionConfig conn_config;
+            
+            conn_config.init = safeGet<std::string>(connection.second, "init", "connections." + name + ".init", "");
+            conn_config.log_queries = safeGet<bool>(connection.second, "log-queries", "connections." + name + ".log-queries", false);
+            conn_config.log_parameters = safeGet<bool>(connection.second, "log-parameters", "connections." + name + ".log-parameters", false);
+            
+            CROW_LOG_DEBUG << "Connection " << name << ": log_queries=" << conn_config.log_queries 
+                           << ", log_parameters=" << conn_config.log_parameters;
+
+            if (connection.second["properties"]) {
+                auto properties = connection.second["properties"];
+                for (const auto& prop : properties) {
+                    conn_config.properties[prop.first.as<std::string>()] = prop.second.as<std::string>();
+                }
+            }
+
+            connections[name] = conn_config;
+        }
+    }
+    CROW_LOG_INFO << "Parsed " << connections.size() << " connections";
+}
+
+// Rate limit configuration methods
+void ConfigManager::parseRateLimitConfig() {
+    CROW_LOG_INFO << "Parsing rate limit configuration";
+    if (config["rate_limit"]) {
+        auto rate_limit_node = config["rate_limit"];
+        rate_limit_config.enabled = rate_limit_node["enabled"].as<bool>();
+        rate_limit_config.max = rate_limit_node["max"].as<int>();
+        rate_limit_config.interval = rate_limit_node["interval"].as<int>();
+        CROW_LOG_DEBUG << "Rate Limit: enabled=" << rate_limit_config.enabled 
+                       << ", max=" << rate_limit_config.max 
+                       << ", interval=" << rate_limit_config.interval;
+    }
+}
+
+// Auth configuration methods
+void ConfigManager::parseAuthConfig() {
+    CROW_LOG_INFO << "Parsing auth configuration";
+    if (config["auth"]) {
+        auto auth_node = config["auth"];
+        auth_enabled = auth_node["enabled"].as<bool>();
+        CROW_LOG_DEBUG << "Auth enabled: " << auth_enabled;
+        if (auth_enabled) {
+            AuthConfig auth_config;
+            auth_config.type = auth_node["type"].as<std::string>();
+            auth_config.jwt_secret = auth_node["jwt_secret"].as<std::string>();
+            auth_config.jwt_issuer = auth_node["jwt_issuer"].as<std::string>();
+            CROW_LOG_DEBUG << "Auth type: " << auth_config.type;
+            CROW_LOG_DEBUG << "JWT issuer: " << auth_config.jwt_issuer;
+
+            if (auth_node["users"]) {
+                for (const auto& user : auth_node["users"]) {
+                    AuthUser auth_user;
+                    auth_user.username = user["username"].as<std::string>();
+                    auth_user.password = user["password"].as<std::string>();
+                    if (user["roles"]) {
+                        auth_user.roles = user["roles"].as<std::vector<std::string>>();
+                    }
+                    auth_config.users.push_back(auth_user);
+                    CROW_LOG_DEBUG << "Added user: " << auth_user.username << " with " << auth_user.roles.size() << " roles";
+                }
+            }
+        }
+    }
+}
+
+// HTTPS configuration methods
+void ConfigManager::parseHttpsConfig() {
+    if (config["enforce-https"]) {
+        auto https_node = config["enforce-https"];
+        if (https_node.IsMap()) {
+            https_config.enabled = safeGet<bool>(https_node, "enabled", "enforce-https.enabled", false);
+            
+            if (https_config.enabled) {
+                https_config.ssl_cert_file = safeGet<std::string>(https_node, "ssl-cert-file", "enforce-https.ssl-cert-file", "");
+                https_config.ssl_key_file = safeGet<std::string>(https_node, "ssl-key-file", "enforce-https.ssl-key-file", "");
+
+                if (https_config.ssl_cert_file.empty() || https_config.ssl_key_file.empty()) {
+                    throw ConfigurationError("SSL certificate and key files must be specified when HTTPS is enabled", "enforce-https");
+                }
+            }
+        } else {
+            throw ConfigurationError("'enforce-https' must be a map", "enforce-https");
+        }
+    } else {
+        https_config.enabled = false;
+    }
+}
+
+// Utility methods
+std::string ConfigManager::makePathRelativeToBasePathIfNecessary(const std::string& value) const {
+    if (value.find("./") == 0 || value.find("../") == 0) {
+        std::filesystem::path relativePath(value);
+        std::filesystem::path absolutePath = std::filesystem::absolute(base_path / relativePath).lexically_normal();
+        return absolutePath.string();
+    }
+    return value;
+}
 
 std::unordered_map<std::string, std::string> ConfigManager::getPropertiesForTemplates(const std::string& connectionName) const {
     if (connections.find(connectionName) == connections.end()) {
@@ -354,14 +411,6 @@ std::unordered_map<std::string, std::string> ConfigManager::getPropertiesForTemp
     return propsForTemplates;
 }
 
-void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& dir) {
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(dir)) {
-        if (entry.is_regular_file() && entry.path().extension() == ".yaml") {
-            loadEndpointConfig(dir.string(), entry.path().string());
-        }
-    }
-}
-
 std::string ConfigManager::getFullCacheSourcePath(const EndpointConfig& endpoint) const {
     if (endpoint.cache.cacheSource.empty()) {
         return "";
@@ -369,13 +418,169 @@ std::string ConfigManager::getFullCacheSourcePath(const EndpointConfig& endpoint
     return (base_path / endpoint.cache.cacheSource).string();
 }
 
-std::filesystem::path ConfigManager::getFullTemplatePath() const {
-    std::filesystem::path template_path_relative = config["template-path"].as<std::string>();
-    return std::filesystem::absolute((base_path / template_path_relative).lexically_normal());
+void ConfigManager::printConfig() const {
+    std::cout << "Current configuration structure:" << std::endl;
+    printYamlNode(config);
 }
 
-const DuckDBConfig& ConfigManager::getDuckDBConfig() const {
-    return duckdb_config;
+void ConfigManager::printYamlNode(const YAML::Node& node, int indent) {
+    std::string indent_str(indent * 2, ' ');
+    
+    switch (node.Type()) {
+        case YAML::NodeType::Null:
+            std::cout << indent_str << "(null)" << std::endl;
+            break;
+        case YAML::NodeType::Scalar:
+            std::cout << indent_str << node.Scalar() << std::endl;
+            break;
+        case YAML::NodeType::Sequence:
+            for (std::size_t i = 0; i < node.size(); i++) {
+                std::cout << indent_str << "- ";
+                printYamlNode(node[i], indent + 1);
+            }
+            break;
+        case YAML::NodeType::Map:
+            for (YAML::const_iterator it = node.begin(); it != node.end(); ++it) {
+                std::cout << indent_str << it->first.Scalar() << ": ";
+                if (it->second.IsScalar()) {
+                    std::cout << it->second.Scalar() << std::endl;
+                } else {
+                    std::cout << std::endl;
+                    printYamlNode(it->second, indent + 1);
+                }
+            }
+            break;
+        default:
+            std::cout << indent_str << "Unknown YAML node type" << std::endl;
+    }
+}
+
+// Safe getter methods
+template<typename T>
+T ConfigManager::safeGet(const YAML::Node& node, const std::string& key, const std::string& path, const T& defaultValue) const {
+    if (!node[key]) {
+        return defaultValue;
+    }
+    try {
+        return node[key].as<T>();
+    } catch (const YAML::Exception& e) {
+        throw ConfigurationError("Invalid value for key: " + key + ", Error: " + e.what(), path);
+    }
+}
+
+template<typename T>
+T ConfigManager::safeGet(const YAML::Node& node, const std::string& key, const std::string& path) const {
+    if (!node[key]) {
+        throw ConfigurationError("Missing required key: " + key, path);
+    }
+    try {
+        return node[key].as<T>();
+    } catch (const YAML::Exception& e) {
+        throw ConfigurationError("Invalid value for key: " + key + ", Error: " + e.what(), path);
+    }
+}
+
+// Getter methods
+std::string ConfigManager::getProjectName() const { return project_name; }
+std::string ConfigManager::getProjectDescription() const { return project_description; }
+std::string ConfigManager::getServerName() const { return server_name; }
+int ConfigManager::getHttpPort() const { return http_port; }
+void ConfigManager::setHttpPort(int port) { http_port = port; }
+std::string ConfigManager::getTemplatePath() const { return template_config.path; }
+std::string ConfigManager::getCacheSchema() const { return cache_schema; }
+const std::unordered_map<std::string, ConnectionConfig>& ConfigManager::getConnections() const { return connections; }
+const RateLimitConfig& ConfigManager::getRateLimitConfig() const { return rate_limit_config; }
+bool ConfigManager::isHttpsEnforced() const { return https_config.enabled; }
+bool ConfigManager::isAuthEnabled() const { return auth_enabled; }
+const std::vector<EndpointConfig>& ConfigManager::getEndpoints() const { return endpoints; }
+std::string ConfigManager::getBasePath() const { return base_path.string(); }
+
+// JSON configuration methods
+crow::json::wvalue ConfigManager::getFlapiConfig() const {
+    crow::json::wvalue result;
+    
+    // Manually construct the JSON object from the YAML data
+    result["name"] = project_name;
+    result["description"] = project_description;
+    result["template-path"] = template_config.path;
+    
+    // Add connections
+    crow::json::wvalue connectionsJson;
+    for (const auto& [name, conn] : connections) {
+        crow::json::wvalue connJson;
+        connJson["init"] = conn.init;
+        connJson["log-queries"] = conn.log_queries;
+        connJson["log-parameters"] = conn.log_parameters;
+        connJson["allow"] = conn.allow;
+
+        crow::json::wvalue propertiesJson;
+        for (const auto& [key, value] : conn.properties) {
+            propertiesJson[key] = value;
+        }
+        connJson["properties"] = std::move(propertiesJson);
+        connectionsJson[name] = std::move(connJson);
+    }
+    result["connections"] = std::move(connectionsJson);
+    
+    // Add other configurations
+    result["auth"]["enabled"] = auth_enabled;
+    
+    return result;
+}
+
+crow::json::wvalue ConfigManager::getEndpointsConfig() const {
+    crow::json::wvalue endpointsJson;
+    for (const auto& endpoint : endpoints) {
+        crow::json::wvalue endpointJson;
+        endpointJson["urlPath"] = endpoint.urlPath;
+        endpointJson["templateSource"] = endpoint.templateSource;
+        endpointJson["connection"] = endpoint.connection;
+
+        std::vector<crow::json::wvalue> requestJson;
+        for (const auto& req : endpoint.requestFields) {
+            crow::json::wvalue fieldJson;
+            fieldJson["fieldName"] = req.fieldName;
+            fieldJson["fieldIn"] = req.fieldIn;
+            fieldJson["description"] = req.description;
+
+            std::vector<crow::json::wvalue> validatorsJson;
+            for (const auto& validator : req.validators) {
+                crow::json::wvalue validatorJson;
+                validatorJson["type"] = validator.type;
+                if (validator.type == "string") {
+                    validatorJson["regex"] = validator.regex;
+                } else if (validator.type == "int") {
+                    validatorJson["min"] = validator.min;
+                    validatorJson["max"] = validator.max;   
+                }
+                validatorsJson.push_back(std::move(validatorJson));
+            }
+            fieldJson["validators"] = std::move(validatorsJson);
+            
+            requestJson.push_back(std::move(fieldJson));
+        }
+        endpointJson["request"] = std::move(requestJson);
+
+        endpointsJson[endpoint.urlPath] = std::move(endpointJson);
+    }
+    return endpointsJson;
+}
+
+// Other methods
+void ConfigManager::refreshConfig() {
+    throw std::runtime_error("Not implemented");
+}
+
+const EndpointConfig* ConfigManager::getEndpointForPath(const std::string& path) const {
+    for (const auto& endpoint : endpoints) {
+        std::vector<std::string> paramNames;
+        std::map<std::string, std::string> pathParams;
+        
+        if (RouteTranslator::matchAndExtractParams(endpoint.urlPath, path, paramNames, pathParams)) {
+            return &endpoint;
+        }
+    }
+    return nullptr;
 }
 
 } // namespace flapi

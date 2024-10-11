@@ -1,9 +1,14 @@
 # Project name and description
-name: example-flapi-project
-description: An example flAPI project demonstrating various configuration options
+project_name: example-flapi-project
+project_description: An example flAPI project demonstrating various configuration options
 
-# The path where SQL templates and API endpoint configurations are stored
-template-path: './sqls'
+# Template configuration
+template:
+  # The path where SQL templates and API endpoint configurations are stored
+  path: './sqls'
+  # Optional: List of regular expressions for whitelisting environment variables
+  environment-whitelist:
+    - '^FLAPI_.*'
 
 # Database connection configurations
 connections:
@@ -35,11 +40,8 @@ connections:
 enforce-https:
   # Whether to force HTTPS for all connections
   enabled: false
-
-# Authentication configuration
-auth:
-  # Whether authentication is required for API access
-  enabled: false
+  # ssl-cert-file: './ssl/cert.pem'
+  # ssl-key-file: './ssl/key.pem'
 
 # DuckDB configuration
 duckdb:
@@ -48,4 +50,3 @@ duckdb:
   threads: 8
   max_memory: 8GB
   default_order: DESC
-  

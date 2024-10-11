@@ -16,7 +16,7 @@
                 "&&",
                 "cmake",
                 "--build",
-                "build/debug",
+                "build/Debug",
                 "--config",
                 "Debug",
                 "--target",

@@ -40,5 +40,5 @@ jobs:
       uses: actions/upload-artifact@v3
       with:
         name: flAPI-build
-        path: ${{github.workspace}}/build/release/flapi
+        path: ${{github.workspace}}/build/Release/flapi
         if-no-files-found: error

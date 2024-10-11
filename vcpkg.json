@@ -4,7 +4,6 @@
   "dependencies": [
     "argparse",
     "crow",
-    "inja",
     "yaml-cpp",
     "jwt-cpp",
     "openssl",

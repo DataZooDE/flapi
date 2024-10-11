@@ -48,9 +48,10 @@ bool CacheManager::shouldRefreshCache(std::shared_ptr<ConfigManager> config_mana
 
     auto newestCacheTable = tableNames.front();
 
-    auto tableCreationTime = getTableCreationTime(config_manager->getCacheSchema(), newestCacheTable);
+    auto watermark = CacheWatermark<int64_t>::parseFromTableName(newestCacheTable);
+    auto creationTime = std::chrono::system_clock::time_point(std::chrono::seconds(watermark.watermark));
     auto now = std::chrono::system_clock::now();
-    auto tableAge = std::chrono::duration_cast<std::chrono::seconds>(now - tableCreationTime);
+    auto tableAge = std::chrono::duration_cast<std::chrono::seconds>(now - creationTime);
 
     auto refreshSeconds = cacheConfig.getRefreshTimeInSeconds();
     auto newestTooOld = tableAge > refreshSeconds;
@@ -63,24 +64,26 @@ bool CacheManager::shouldRefreshCache(std::shared_ptr<ConfigManager> config_mana
     return newestTooOld;
 }
 
-std::string CacheManager::getCacheTableName(const CacheConfig& cacheConfig) {
-    return createCacheTableName(cacheConfig.cacheTableName);
-}
-
 void CacheManager::refreshCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
     auto &cacheConfig = endpoint.cache;
-    auto newCacheTableName = createCacheTableName(cacheConfig.cacheTableName);
+    auto currentWatermark = CacheWatermark<int64_t>::now(cacheConfig.cacheTableName);
     auto cacheSchema = config_manager->getCacheSchema();
 
     params.emplace("cacheSchema", cacheSchema);
-    params.emplace("cacheTableName", newCacheTableName);
+    params.emplace("cacheTableName", currentWatermark.tableName);
     params.emplace("cacheRefreshTime", cacheConfig.refreshTime);
+    params.emplace("currentWatermark", std::to_string(currentWatermark.watermark));
 
-    CROW_LOG_INFO << "Starting to refresh cache: " << cacheSchema << "." << newCacheTableName;
+    std::vector<std::string> previousCacheTables = db_manager->getTableNames(cacheSchema, cacheConfig.cacheTableName, true);
+    if (! previousCacheTables.empty()) {
+        addPreviousCacheTableParamsIfNecessary(previousCacheTables.front(), params);
+    }
+    
+    CROW_LOG_INFO << "Starting to refresh cache: " << cacheSchema << "." << currentWatermark.tableName;
 
     db_manager->executeCacheQuery(endpoint, cacheConfig, params);
     
-    CROW_LOG_INFO << "Cache refreshed: " << config_manager->getCacheSchema() << "." << newCacheTableName;
+    CROW_LOG_INFO << "Cache refreshed: " << config_manager->getCacheSchema() << "." << currentWatermark.tableName;
 }
 
 void CacheManager::addQueryCacheParamsIfNecessary(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
@@ -96,26 +99,22 @@ void CacheManager::addQueryCacheParamsIfNecessary(std::shared_ptr<ConfigManager>
         throw std::runtime_error("Cache table not found: '" + cacheTableName + "', this should not happen, cache should be created or refreshed before query.");
     }
 
+    auto currentWatermark = CacheWatermark<int64_t>::parseFromTableName(tableNames.front());
+
     params.emplace("cacheSchema", config_manager->getCacheSchema());
     params.emplace("cacheTableName", tableNames.front());
     params.emplace("cacheRefreshTime", cacheConfig.refreshTime);
-}
+    params.emplace("currentWatermark", std::to_string(currentWatermark.watermark));
 
-std::string CacheManager::createCacheTableName(const std::string& baseName) {
-    auto now = std::chrono::system_clock::now();
-    auto epoch = now.time_since_epoch();
-    auto seconds = std::chrono::duration_cast<std::chrono::seconds>(epoch);
-    return baseName + "_" + std::to_string(seconds.count());
-}
-
-std::chrono::system_clock::time_point CacheManager::getTableCreationTime(const std::string& schema, const std::string& table) {
-    // Extract the timestamp from the table name
-    size_t pos = table.rfind('_');
-    if (pos == std::string::npos) {
-        throw std::runtime_error("Invalid cache table name format: " + table);
+    if (tableNames.size() > 1) {
+        addPreviousCacheTableParamsIfNecessary(tableNames[1], params);
     }
-    int64_t timestamp = std::stoll(table.substr(pos + 1));
-    return std::chrono::system_clock::time_point(std::chrono::seconds(timestamp));
+}
+
+void CacheManager::addPreviousCacheTableParamsIfNecessary(const std::string& cacheTableName, std::map<std::string, std::string>& params) {
+    params.emplace("previousCacheTableName", cacheTableName);
+    auto previousWatermark = CacheWatermark<int64_t>::parseFromTableName(cacheTableName);
+    params.emplace("previousWatermark", std::to_string(previousWatermark.watermark));
 }
 
 } // namespace flapi

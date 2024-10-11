@@ -23,11 +23,10 @@ void set_log_level(const std::string& log_level) {
     }
 }
 
-
 std::shared_ptr<ConfigManager> initializeConfig(const std::string& config_file) {
-    std::shared_ptr<ConfigManager> config_manager = std::make_shared<ConfigManager>();
+    std::shared_ptr<ConfigManager> config_manager = std::make_shared<ConfigManager>(std::filesystem::path(config_file));
     try {
-        config_manager->loadConfig(config_file);
+        config_manager->loadConfig();
     } catch (const std::exception& e) {
         throw std::runtime_error("Error loading configuration file: " + config_file + ", Error: " + std::string(e.what()));
     }
@@ -52,7 +51,7 @@ int main(int argc, char* argv[])
 
     program.add_argument("-p", "--port")
         .help("Port number for the web server")
-        .default_value(8080)
+        .default_value(-1)
         .scan<'i', int>();
 
     program.add_argument("--log-level")
@@ -68,16 +67,21 @@ int main(int argc, char* argv[])
     }
 
     std::string config_file = program.get<std::string>("--config");
-    int port = program.get<int>("--port");
+    int cmd_port = program.get<int>("--port");
     std::string log_level = program.get<std::string>("--log-level");
 
     set_log_level(log_level);
 
     auto config_manager = initializeConfig(config_file);
+
+    if (cmd_port != -1) {
+        config_manager->setHttpPort(cmd_port);
+    }
+
     initializeDatabase(config_manager);
 
     APIServer server(config_manager, DatabaseManager::getInstance());
-    server.run(port);
+    server.run(config_manager->getHttpPort());
 
     return 0;
 }

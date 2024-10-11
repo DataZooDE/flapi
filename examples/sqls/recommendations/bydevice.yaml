@@ -1,18 +1,18 @@
-urlPath: /recommendations/bydevice
+url-path: /recommendations/bydevice
 request:
-  - fieldName: material_number
-    fieldIn: query
+  - field-name: material_number
+    field-in: query
     required: true
     description: get accesories and detergent recommendations for the
       material_number in the form X.XXX-XXX.X
-  - fieldName: country_code
-    fieldIn: query
+  - field-name: country_code
+    field-in: query
     required: false
     description: limit the accessories and detergents for a specific 2-digit country_code
-templateSource: bydevice.sql
+template-source: bydevice.sql
 connection:
   - bigquery-lakehouse
 cache:
-  cacheTableName: recommendations_bydevice_cache
-  cacheSource: bydevice_cache.sql
-  refreshTime: 10m
+  cache-table-name: recommendations_bydevice_cache
+  cache-source: bydevice_cache.sql
+  refresh-time: 10m

@@ -1,12 +1,16 @@
 #pragma once
 
+#include <crow.h>
 #include <chrono>
 #include <string>
 #include <unordered_map>
 #include <vector>
 #include <yaml-cpp/yaml.h>
-#include <nlohmann/json.hpp>
 #include <filesystem>
+#include <regex>
+#include <stdexcept>
+#include <sstream>
+#include <iostream>
 
 #include "route_translator.hpp"
 
@@ -43,12 +47,25 @@ struct AuthConfig {
     std::string jwt_issuer;
 };
 
+struct ValidatorConfig {
+    std::string type;
+    std::string regex;
+    int min;
+    int max;
+    std::string minDate;
+    std::string maxDate;
+    std::string minTime;
+    std::string maxTime;
+    std::vector<std::string> allowedValues;
+    bool preventSqlInjection = true; // New field for SQL injection prevention
+};
+
 struct RequestFieldConfig {
     std::string fieldName;
     std::string fieldIn;
     std::string description;
-    bool required = false;  // Default to false
-    std::vector<std::string> validators;
+    bool required = false;
+    std::vector<ValidatorConfig> validators;
 };
 
 struct CacheConfig {
@@ -76,70 +93,136 @@ struct DuckDBConfig {
     std::string db_path;  // New field for database path
 };
 
+struct TemplateConfig {
+    std::string path;
+    std::vector<std::string> environment_whitelist;
+
+    bool isEnvironmentVariableAllowed(const std::string& varName) const {
+        if (environment_whitelist.empty()) {
+            return false;  // If no whitelist is specified, allow all variables
+        }
+        for (const auto& pattern : environment_whitelist) {
+            std::regex regex(pattern);
+            if (std::regex_match(varName, regex)) {
+                return true;
+            }
+        }
+        return false;
+    }
+};
+
+// Add this new struct after the other config structs
+struct HttpsConfig {
+    bool enabled = false;
+    std::string ssl_cert_file;
+    std::string ssl_key_file;
+};
+
 class ConfigManager {
 public:
-    ConfigManager();
+    ConfigManager(const std::filesystem::path& config_file);
+    void loadConfig();
+    void loadEndpointConfigsRecursively(const std::filesystem::path& dir);
+    void loadEndpointConfig(const std::string& config_file);
     
-    // Main configuration loading methods
-    void loadConfig(const std::string& config_file);
-    void refreshConfig();
-
     // Getters for configuration values
     std::string getProjectName() const;
     std::string getProjectDescription() const;
-    std::string getTemplatePath() const;
+    std::string getServerName() const;
+    int getHttpPort() const;
+    void setHttpPort(int port);
+    virtual std::string getTemplatePath() const;
     std::string getCacheSchema() const;
-    std::string getBasePath() const;
     const std::unordered_map<std::string, ConnectionConfig>& getConnections() const;
     const RateLimitConfig& getRateLimitConfig() const;
+    const DuckDBConfig& getDuckDBConfig() const;
+    const HttpsConfig& getHttpsConfig() const;
     bool isHttpsEnforced() const;
     bool isAuthEnabled() const;
-    const std::vector<EndpointConfig>& getEndpoints() const;
-    const DuckDBConfig& getDuckDBConfig() const;
-    std::string getDuckDBPath() const;
-
-    // Endpoint-related methods
     const EndpointConfig* getEndpointForPath(const std::string& path) const;
-    std::string getFullCacheSourcePath(const EndpointConfig& endpoint) const;
+    const std::vector<EndpointConfig>& getEndpoints() const;
+    const TemplateConfig& getTemplateConfig() const;
+    std::string getBasePath() const;
+    std::string getDuckDBPath() const;
+    std::filesystem::path getFullTemplatePath() const;
 
-    // JSON representation methods
-    nlohmann::json getFlapiConfig() const;
-    nlohmann::json getEndpointsConfig() const;
 
-    // Utility methods
+    void refreshConfig();
     std::unordered_map<std::string, std::string> getPropertiesForTemplates(const std::string& connectionName) const;
 
-private:
+    crow::json::wvalue getFlapiConfig() const;
+    crow::json::wvalue getEndpointsConfig() const;
+
+    void printConfig() const;
+    static void printYamlNode(const YAML::Node& node, int indent = 0);
+
+
+protected:
+    std::filesystem::path config_file;
     YAML::Node config;
     std::string project_name;
     std::string project_description;
-    std::string template_path;
     std::string cache_schema = "flapi_cache";
+    std::string server_name;
+    int http_port = 8080; 
     std::unordered_map<std::string, ConnectionConfig> connections;
     RateLimitConfig rate_limit_config;
-    bool enforce_https;
     bool auth_enabled;
     std::vector<EndpointConfig> endpoints;
     std::filesystem::path base_path;
     DuckDBConfig duckdb_config;
+    TemplateConfig template_config;
+    HttpsConfig https_config;
 
-    // Configuration parsing methods
+    void parseConfig();
+
+    std::string getFullCacheSourcePath(const EndpointConfig& endpoint) const;
+    
     void parseMainConfig();
     void parseConnections();
     void parseRateLimitConfig();
     void parseAuthConfig();
     void parseDuckDBConfig();
-    void parseEndpoints();
+    void parseHttpsConfig();
+    void parseTemplateConfig();
+    void parseEndpointConfig(const std::filesystem::path& config_file);
+    void parseEndpointRequestFields(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
+    void parseEndpointValidators(const YAML::Node& req, RequestFieldConfig& field);
+    void parseEndpointConnection(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
+    void parseEndpointRateLimit(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
+    void parseEndpointAuth(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
+    void parseEndpointCache(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
 
-    // Endpoint configuration loading methods
-    void loadEndpointConfigs();
-    void loadEndpointConfigsRecursively(const std::filesystem::path& dir);
-    void loadEndpointConfig(const std::string& base_config_dir, const std::string& config_file);
-
-    // Helper methods
     std::string makePathRelativeToBasePathIfNecessary(const std::string& value) const;
-    void loadFlapiConfig();
-    std::filesystem::path getFullTemplatePath() const; // Add this line
+
+    void validateConfig();
+    void validateEndpointConfig(const YAML::Node& endpoint_config, const std::string& file_path);
+    template<typename T>
+    T getValueOrThrow(const YAML::Node& node, const std::string& key, const std::string& yamlPath) const;
+
+    template<typename T>
+    T safeGet(const YAML::Node& node, const std::string& key, const std::string& path, const T& defaultValue) const;
+
+    template<typename T>
+    T safeGet(const YAML::Node& node, const std::string& key, const std::string& path) const;
+
+};
+
+class ConfigurationError : public std::runtime_error {
+public:
+    ConfigurationError(const std::string& message, const std::string& yamlPath = "")
+        : std::runtime_error(formatMessage(message, yamlPath)) {}
+
+private:
+    static std::string formatMessage(const std::string& message, const std::string& yamlPath) {
+        std::ostringstream oss;
+        oss << "Configuration error";
+        if (!yamlPath.empty()) {
+            oss << " at " << yamlPath;
+        }
+        oss << ": " << message;
+        return oss.str();
+    }
 };
 
 } // namespace flapi

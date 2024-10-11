@@ -3,6 +3,8 @@
 #include "auth_middleware.hpp"
 #include "rate_limit_middleware.hpp"
 #include "open_api_doc_generator.hpp"
+#include "open_api_page.hpp"
+
 #include <yaml-cpp/yaml.h>
 
 namespace flapi {
@@ -60,6 +62,12 @@ void APIServer::setupRoutes() {
     CROW_ROUTE(app, "/doc")
         .methods("GET"_method)
         ([this]() {
+            return generateOpenAPIPage(configManager);
+        });
+
+    CROW_ROUTE(app, "/doc.yaml")
+        .methods("GET"_method)
+        ([this]() {
             return generateOpenAPIDoc();
         });
 
@@ -111,7 +119,7 @@ void APIServer::handleDynamicRequest(const crow::request& req, crow::response& r
 
 crow::response APIServer::getConfig() {
     try {
-        nlohmann::json config;
+        crow::json::wvalue config;
         config["flapi"] = configManager->getFlapiConfig();
         config["endpoints"] = configManager->getEndpointsConfig();
         return crow::response(200, config.dump(2));
@@ -143,8 +151,12 @@ crow::response APIServer::generateOpenAPIDoc() {
 }
 
 void APIServer::run(int port) {
-    CROW_LOG_INFO << "Server starting on port " << port << "...";
-    app.port(port)
+    if (port > 0) {
+        configManager->setHttpPort(port);
+    }
+
+    CROW_LOG_INFO << "Server starting on port " << configManager->getHttpPort() << "...";
+    app.port(configManager->getHttpPort())
        .server_name("flAPI")
        .multithreaded()
        .run();
