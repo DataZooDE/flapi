@@ -49,6 +49,8 @@ public:
 
     void refreshCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
     void addQueryCacheParamsIfNecessary(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
+    void performGarbageCollection(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::vector<std::string> previousTableNames);
+
 private:
     void addPreviousCacheTableParamsIfNecessary(const std::string& cacheTableName, std::map<std::string, std::string>& params);
 

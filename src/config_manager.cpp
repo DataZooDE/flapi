@@ -280,11 +280,13 @@ void ConfigManager::parseEndpointCache(const YAML::Node& endpoint_config, Endpoi
         endpoint.cache.cacheSource = safeGet<std::string>(cache_node, "cache-source", "cache.cache-source", "");
         endpoint.cache.refreshTime = safeGet<std::string>(cache_node, "refresh-time", "cache.refresh-time", "");
         endpoint.cache.refreshEndpoint = safeGet<bool>(cache_node, "refresh-endpoint", "cache.refresh-endpoint", false);
+        endpoint.cache.maxPreviousTables = safeGet<std::size_t>(cache_node, "max-previous-tables", "cache.max-previous-tables", 5);
 
         CROW_LOG_DEBUG << "\t\tCache Table Name: " << endpoint.cache.cacheTableName;
         CROW_LOG_DEBUG << "\t\tCache Source: " << endpoint.cache.cacheSource;
         CROW_LOG_DEBUG << "\t\tRefresh Time: " << endpoint.cache.refreshTime;
         CROW_LOG_DEBUG << "\t\tRefresh Endpoint: " << (endpoint.cache.refreshEndpoint ? "true" : "false");
+        CROW_LOG_DEBUG << "\t\tMax Previous Tables: " << endpoint.cache.maxPreviousTables;
     }
 }
 

@@ -84,6 +84,8 @@ void CacheManager::refreshCache(std::shared_ptr<ConfigManager> config_manager, c
     db_manager->executeCacheQuery(endpoint, cacheConfig, params);
     
     CROW_LOG_INFO << "Cache refreshed: " << config_manager->getCacheSchema() << "." << currentWatermark.tableName;
+
+    performGarbageCollection(config_manager, endpoint, previousCacheTables);
 }
 
 void CacheManager::addQueryCacheParamsIfNecessary(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
@@ -115,6 +117,42 @@ void CacheManager::addPreviousCacheTableParamsIfNecessary(const std::string& cac
     params.emplace("previousCacheTableName", cacheTableName);
     auto previousWatermark = CacheWatermark<int64_t>::parseFromTableName(cacheTableName);
     params.emplace("previousWatermark", std::to_string(previousWatermark.watermark));
+}
+
+void CacheManager::performGarbageCollection(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::vector<std::string> previousTableNames) {
+    const auto& cacheConfig = endpoint.cache;
+    const auto& cacheSchema = config_manager->getCacheSchema();
+    
+    if (cacheConfig.maxPreviousTables == 0) {
+        return;
+    }
+
+    if (previousTableNames.size() <= cacheConfig.maxPreviousTables) {
+        return;  // No need for garbage collection
+    }
+
+    CROW_LOG_INFO << "Performing garbage collection for cache: " << cacheConfig.cacheTableName;
+
+    // Keep the newest maxPreviousTables tables, drop the rest
+    std::vector<std::string> tablesToDrop(previousTableNames.begin() + cacheConfig.maxPreviousTables, previousTableNames.end());
+
+    if (!tablesToDrop.empty()) {
+        // Construct the DROP TABLE statements
+        std::stringstream dropQuery;
+        dropQuery << "BEGIN TRANSACTION;";
+        for (const auto& tableName : tablesToDrop) {
+            dropQuery << "DROP TABLE IF EXISTS " << cacheSchema << "." << tableName << ";";
+        }
+        dropQuery << "COMMIT;";
+
+        // Execute the DROP TABLE statements in a single transaction
+        try {
+            db_manager->executeQuery(dropQuery.str(), {}, false);
+            CROW_LOG_INFO << "Dropped " << tablesToDrop.size() << " old cache tables for " << cacheConfig.cacheTableName;
+        } catch (const std::exception& e) {
+            CROW_LOG_ERROR << "Error during garbage collection: " << e.what();
+        }
+    }
 }
 
 } // namespace flapi

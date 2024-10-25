@@ -73,6 +73,7 @@ struct CacheConfig {
     std::string cacheSource;
     std::string refreshTime;
     bool refreshEndpoint = false;
+    std::size_t maxPreviousTables = 5;
 
     std::chrono::seconds getRefreshTimeInSeconds() const;
 };
