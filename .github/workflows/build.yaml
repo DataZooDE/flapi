@@ -15,6 +15,12 @@ jobs:
       with:
         submodules: recursive
 
+    - name: Checkout DuckDB
+      run: |
+        cd duckdb
+        git checkout v1.1.2
+        cd ..
+
     - name: Install dependencies
       run: |
         sudo apt-get update
