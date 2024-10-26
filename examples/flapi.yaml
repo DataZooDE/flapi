@@ -36,6 +36,11 @@ connections:
     log-parameters: false
     allow: '*'
 
+# Heartbeat configuration
+heartbeat:
+  enabled: true # Whether to enable the heartbeat worker, off by default
+  worker-interval: 10
+
 # HTTPS enforcement configuration
 enforce-https:
   # Whether to force HTTPS for all connections

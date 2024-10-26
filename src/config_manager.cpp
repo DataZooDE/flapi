@@ -88,6 +88,7 @@ void ConfigManager::parseMainConfig() {
         parseAuthConfig();
         parseDuckDBConfig();
         parseTemplateConfig();
+        parseGlobalHeartbeatConfig();
 
         if (config["cache_schema"]) {
             cache_schema = safeGet<std::string>(config, "cache_schema", "cache_schema");
@@ -176,24 +177,29 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
 }
 
 void ConfigManager::loadEndpointConfig(const std::string& config_file) {
-    CROW_LOG_DEBUG << "\tLoading endpoint config from file: " << config_file;
-    YAML::Node endpoint_config = YAML::LoadFile(config_file);
-    EndpointConfig endpoint;
-    
-    endpoint.urlPath = safeGet<std::string>(endpoint_config, "url-path", "url-path");
-    endpoint.method = safeGet<std::string>(endpoint_config, "method", "method", "GET");
-    endpoint.templateSource = safeGet<std::string>(endpoint_config, "template-source", "template-source");
-    
-    CROW_LOG_DEBUG << "\t\tEndpoint: " << endpoint.method << " " << endpoint.urlPath;
-    CROW_LOG_DEBUG << "\t\tTemplate Source: " << endpoint.templateSource;
-    
-    parseEndpointRequestFields(endpoint_config, endpoint);
-    parseEndpointConnection(endpoint_config, endpoint);
-    parseEndpointRateLimit(endpoint_config, endpoint);
-    parseEndpointAuth(endpoint_config, endpoint);
-    parseEndpointCache(endpoint_config, endpoint);
+    try {
+        CROW_LOG_DEBUG << "\tLoading endpoint config from file: " << config_file;
+        YAML::Node endpoint_config = YAML::LoadFile(config_file);
+        EndpointConfig endpoint;
+        
+        endpoint.urlPath = safeGet<std::string>(endpoint_config, "url-path", "url-path");
+        endpoint.method = safeGet<std::string>(endpoint_config, "method", "method", "GET");
+        endpoint.templateSource = safeGet<std::string>(endpoint_config, "template-source", "template-source");
+        
+        CROW_LOG_DEBUG << "\t\tEndpoint: " << endpoint.method << " " << endpoint.urlPath;
+        CROW_LOG_DEBUG << "\t\tTemplate Source: " << endpoint.templateSource;
+        
+        parseEndpointRequestFields(endpoint_config, endpoint);
+        parseEndpointConnection(endpoint_config, endpoint);
+        parseEndpointRateLimit(endpoint_config, endpoint);
+        parseEndpointAuth(endpoint_config, endpoint);
+        parseEndpointCache(endpoint_config, endpoint);
+        parseEndpointHeartbeat(endpoint_config, endpoint);
 
-    endpoints.push_back(endpoint);
+        endpoints.push_back(endpoint);
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Error loading endpoint config from file: " + config_file + ", Error: " + std::string(e.what()));
+    }
 }
 
 void ConfigManager::parseEndpointRequestFields(const YAML::Node& endpoint_config, EndpointConfig& endpoint) {
@@ -287,6 +293,23 @@ void ConfigManager::parseEndpointCache(const YAML::Node& endpoint_config, Endpoi
         CROW_LOG_DEBUG << "\t\tRefresh Time: " << endpoint.cache.refreshTime;
         CROW_LOG_DEBUG << "\t\tRefresh Endpoint: " << (endpoint.cache.refreshEndpoint ? "true" : "false");
         CROW_LOG_DEBUG << "\t\tMax Previous Tables: " << endpoint.cache.maxPreviousTables;
+    }
+}
+
+void ConfigManager::parseEndpointHeartbeat(const YAML::Node& endpoint_config, EndpointConfig& endpoint) {
+    CROW_LOG_DEBUG << "\tParsing endpoint heartbeat configuration";
+    if (endpoint_config["heartbeat"]) {
+        auto heartbeat_node = endpoint_config["heartbeat"];
+        endpoint.heartbeat.enabled = safeGet<bool>(heartbeat_node, "enabled", "heartbeat.enabled", false);
+        if (endpoint.heartbeat.enabled) {
+            CROW_LOG_DEBUG << "\t\tHeartbeat enabled for endpoint: " << endpoint.urlPath;
+        }
+
+        if (heartbeat_node["params"]) {
+            for (const auto& param : heartbeat_node["params"]) {
+                endpoint.heartbeat.params[param.first.as<std::string>()] = param.second.as<std::string>();
+            }
+        }
     }
 }
 
@@ -385,6 +408,24 @@ void ConfigManager::parseHttpsConfig() {
         }
     } else {
         https_config.enabled = false;
+    }
+}
+
+// Global heartbeat configuration methods
+void ConfigManager::parseGlobalHeartbeatConfig() {
+    CROW_LOG_INFO << "Parsing global heartbeat configuration";
+    if (config["heartbeat"]) {
+        auto heartbeat_node = config["heartbeat"];
+
+        global_heartbeat_config.enabled = safeGet<bool>(heartbeat_node, "enabled", "heartbeat.enabled", false);
+        if (global_heartbeat_config.enabled) {
+            CROW_LOG_DEBUG << "Global heartbeat enabled";
+        }
+
+        global_heartbeat_config.workerInterval = std::chrono::seconds(
+            safeGet<int>(heartbeat_node, "worker-interval", "heartbeat.worker-interval", 10)
+        );
+        CROW_LOG_DEBUG << "Global heartbeat worker interval: " << global_heartbeat_config.workerInterval.count() << " seconds";
     }
 }
 
@@ -584,5 +625,7 @@ const EndpointConfig* ConfigManager::getEndpointForPath(const std::string& path)
     }
     return nullptr;
 }
+
+
 
 } // namespace flapi

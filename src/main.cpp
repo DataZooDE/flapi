@@ -1,10 +1,11 @@
+#include <argparse/argparse.hpp>
+#include <iostream>
+
 #include "api_server.hpp"
+#include "auth_middleware.hpp"
 #include "config_manager.hpp"
 #include "database_manager.hpp"
 #include "rate_limit_middleware.hpp"
-#include "auth_middleware.hpp"
-#include <argparse/argparse.hpp>
-#include <iostream>
 
 using namespace flapi;
 
@@ -28,7 +29,7 @@ std::shared_ptr<ConfigManager> initializeConfig(const std::string& config_file) 
     try {
         config_manager->loadConfig();
     } catch (const std::exception& e) {
-        throw std::runtime_error("Error loading configuration file: " + config_file + ", Error: " + std::string(e.what()));
+        throw std::runtime_error("Error while loading configuration, Details: " + std::string(e.what()));
     }
     return config_manager;
 }
@@ -37,7 +38,7 @@ void initializeDatabase(std::shared_ptr<ConfigManager> config_manager) {
     try {
         DatabaseManager::getInstance()->initializeDBManagerFromConfig(config_manager);
     } catch (const std::exception& e) {
-        throw std::runtime_error("Error creating database: " + std::string(e.what()));
+        throw std::runtime_error("Error creating database, Details: " + std::string(e.what()));
     }
 }
 

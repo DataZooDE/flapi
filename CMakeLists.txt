@@ -50,16 +50,17 @@ include_directories(
 # Create flapi-lib
 add_library(flapi-lib STATIC
     src/api_server.cpp
-    src/request_handler.cpp
-    src/database_manager.cpp
-    src/config_manager.cpp
+    src/auth_middleware.cpp
     src/cache_manager.cpp
-    src/sql_template_processor.cpp
+    src/config_manager.cpp
+    src/database_manager.cpp
+    src/heartbeat_worker.cpp
+    src/open_api_doc_generator.cpp
+    src/request_handler.cpp
     src/request_validator.cpp
     src/rate_limit_middleware.cpp
-    src/auth_middleware.cpp
     src/route_translator.cpp
-    src/open_api_doc_generator.cpp
+    src/sql_template_processor.cpp   
 )
 
 # Link libraries to flapi-lib

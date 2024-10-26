@@ -1,11 +1,11 @@
+#include <yaml-cpp/yaml.h>
+
 #include "api_server.hpp"
-#include "database_manager.hpp"
 #include "auth_middleware.hpp"
-#include "rate_limit_middleware.hpp"
+#include "database_manager.hpp"
 #include "open_api_doc_generator.hpp"
 #include "open_api_page.hpp"
-
-#include <yaml-cpp/yaml.h>
+#include "rate_limit_middleware.hpp"
 
 namespace flapi {
 
@@ -16,8 +16,13 @@ APIServer::APIServer(std::shared_ptr<ConfigManager> cm, std::shared_ptr<Database
     createApp();
     setupRoutes();
     setupCORS();
+    setupHeartbeat();
     
     CROW_LOG_INFO << "APIServer initialized";
+}
+
+APIServer::~APIServer() {
+    heartbeatWorker->stop();
 }
 
 void APIServer::createApp() 
@@ -82,12 +87,16 @@ void APIServer::setupRoutes() {
     CROW_LOG_INFO << "Routes set up completed";
 }
 
-
 void APIServer::setupCORS() {
     auto& cors = app.get_middleware<crow::CORSHandler>();
     cors.global()
         .headers("*")
         .methods("GET"_method, "DELETE"_method);
+}
+
+void APIServer::setupHeartbeat() {
+    heartbeatWorker = std::make_shared<HeartbeatWorker>(configManager, *this);
+    heartbeatWorker->start();
 }
 
 void APIServer::handleDynamicRequest(const crow::request& req, crow::response& res) 
@@ -139,7 +148,6 @@ crow::response APIServer::refreshConfig() {
     }
 }
 
-// Add this new method to the APIServer class
 crow::response APIServer::generateOpenAPIDoc() {
     YAML::Node doc = openAPIDocGenerator->generateDoc(app);
     
@@ -160,6 +168,23 @@ void APIServer::run(int port) {
        .server_name("flAPI")
        .multithreaded()
        .run();
+}
+
+
+void APIServer::requestForEndpoint(const EndpointConfig& endpoint, const std::unordered_map<std::string, std::string>& pathParams) 
+{
+    auto req = crow::request();
+    req.method = crow::HTTPMethod::Get;
+    req.url = endpoint.urlPath;
+
+    std::stringstream qs;
+    for (const auto& [key, value] : pathParams) {
+        qs << key << "=" << value << "&";
+    }
+    req.url_params = qs.str();
+
+    auto res = crow::response();
+    app.handle_full(req, res);
 }
 
 } // namespace flapi

@@ -74,3 +74,6 @@ public
 
 # TernJS port file
 .tern-port
+
+# Ignore dredd test results
+api_test_results.md

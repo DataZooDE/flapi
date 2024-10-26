@@ -2,15 +2,15 @@
 
 #include <crow.h>
 #include <chrono>
+#include <filesystem>
+#include <iostream>
+#include <regex>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
 #include <yaml-cpp/yaml.h>
-#include <filesystem>
-#include <regex>
-#include <stdexcept>
-#include <sstream>
-#include <iostream>
 
 #include "route_translator.hpp"
 
@@ -25,6 +25,11 @@ struct ConnectionConfig {
 
     const std::string& getInit() const { return init; }
     void setInit(const std::string& initSql) { init = initSql; }
+};
+
+struct HeartbeatConfig {
+    bool enabled = false;
+    std::unordered_map<std::string, std::string> params;
 };
 
 struct RateLimitConfig {
@@ -87,6 +92,7 @@ struct EndpointConfig {
     RateLimitConfig rate_limit;
     AuthConfig auth;
     CacheConfig cache;
+    HeartbeatConfig heartbeat;
 };
 
 struct DuckDBConfig {
@@ -112,11 +118,15 @@ struct TemplateConfig {
     }
 };
 
-// Add this new struct after the other config structs
 struct HttpsConfig {
     bool enabled = false;
     std::string ssl_cert_file;
     std::string ssl_key_file;
+};
+
+struct GlobalHeartbeatConfig {
+    bool enabled = false;
+    std::chrono::seconds workerInterval = std::chrono::seconds(60);
 };
 
 class ConfigManager {
@@ -147,6 +157,7 @@ public:
     std::string getDuckDBPath() const;
     std::filesystem::path getFullTemplatePath() const;
 
+    const GlobalHeartbeatConfig& getGlobalHeartbeatConfig() const { return global_heartbeat_config; }
 
     void refreshConfig();
     std::unordered_map<std::string, std::string> getPropertiesForTemplates(const std::string& connectionName) const;
@@ -174,6 +185,7 @@ protected:
     DuckDBConfig duckdb_config;
     TemplateConfig template_config;
     HttpsConfig https_config;
+    GlobalHeartbeatConfig global_heartbeat_config;
 
     void parseConfig();
 
@@ -193,6 +205,8 @@ protected:
     void parseEndpointRateLimit(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
     void parseEndpointAuth(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
     void parseEndpointCache(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
+    void parseGlobalHeartbeatConfig();
+    void parseEndpointHeartbeat(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
 
     std::string makePathRelativeToBasePathIfNecessary(const std::string& value) const;
 
