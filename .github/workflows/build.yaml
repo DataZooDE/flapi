@@ -18,6 +18,7 @@ jobs:
     - name: Checkout submodule
       uses: actions/checkout@v3
       with:
+        repository: duckdb/duckdb
         path: duckdb
         ref: v1.1.2
         
