@@ -49,5 +49,9 @@ run-release: release
 	@echo "Running release version..."
 	@$(RELEASE_DIR)/flapi --config examples/flapi.yaml --log-level info
 
+run-integration-tests: debug
+	@echo "Running integration tests..."
+	@$(CMAKE) --build $(DEBUG_DIR) --target integration_tests
+
 # Phony targets
-.PHONY: all debug release clean run-debug run-release
+.PHONY: all debug release clean run-debug run-release run-integration-tests

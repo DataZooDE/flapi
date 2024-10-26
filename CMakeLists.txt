@@ -85,4 +85,12 @@ set_target_properties(flapi PROPERTIES ENABLE_EXPORTS TRUE)
 # Add tests
 include(CTest)
 include(Catch)
-add_subdirectory(test)
+add_subdirectory(test/cpp)
+
+# Add integration tests
+add_custom_target(integration_tests
+    COMMAND npm install
+    COMMAND npm test
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/test/integration
+    DEPENDS flapi
+)

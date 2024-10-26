@@ -1,0 +1,89 @@
+url-path: /customers/
+request:
+  - field-name: id
+    field-in: query
+    description: Customer ID
+    required: false
+    validators:
+      - type: int
+        min: 1
+        max: 1000000
+        preventSqlInjection: true
+
+  - field-name: segment
+    field-in: query
+    description: Customer segment (optional)
+    required: false
+    validators:
+      - type: enum
+        allowedValues: [retail, corporate, vip]
+
+  - field-name: email
+    field-in: query
+    description: Customer email address
+    required: false
+    validators:
+      - type: email
+
+  - field-name: registration_date
+    field-in: query
+    description: Customer registration date
+    required: false
+    validators:
+      - type: date
+        min: "2000-01-01"
+        max: "2023-12-31"
+
+  - field-name: last_login_time
+    field-in: query
+    description: Customer's last login time
+    required: false
+    validators:
+      - type: time
+        min: "00:00:00"
+        max: "23:59:59"
+
+  - field-name: name
+    field-in: query
+    description: Customer name
+    required: false
+    validators:
+      - type: string
+        regex: "^[A-Za-z ]{2,50}$"
+        preventSqlInjection: true
+
+  - field-name: uuid
+    field-in: query
+    description: Customer UUID
+    required: false
+    validators:
+      - type: uuid
+
+template-source: customers.sql
+connection: 
+  - customers-parquet
+
+rate-limit:
+  enabled: true
+  max: 100
+  interval: 60  # in seconds
+  
+auth:
+  enabled: true
+  type: basic
+  users:
+    - username: admin
+      password: secret
+      roles: [admin]
+    - username: user
+      password: password
+      roles: [read]
+
+endpoints:
+  - path: /customers2
+    method: GET
+    auth:
+      enabled: true
+      type: bearer
+      jwt_secret: your_secret_key_here
+      jwt_issuer: your_issuer_name

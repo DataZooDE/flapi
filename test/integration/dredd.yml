@@ -1,0 +1,23 @@
+color: true
+dry-run: null
+hookfiles: null
+language: nodejs
+require: null
+server: ../../build/Debug/flapi --config ./api_configuration/flapi.yaml
+server-wait: 3
+init: false
+custom: {}
+names: false
+only: []
+reporter: [markdown]
+output: [api_test_results.md]
+header: []
+sorted: false
+user: admin:secret
+inline-errors: false
+details: false
+method: []
+loglevel: warning
+path: []
+blueprint: ./api_blueprint.apib
+endpoint: 'http://localhost:8080'

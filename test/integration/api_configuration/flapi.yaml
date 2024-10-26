@@ -1,0 +1,52 @@
+# Project name and description
+project_name: example-flapi-project
+project_description: An example flAPI project demonstrating various configuration options
+
+# Template configuration
+template:
+  # The path where SQL templates and API endpoint configurations are stored
+  path: './sqls'
+  # Optional: List of regular expressions for whitelisting environment variables
+  environment-whitelist:
+    - '^FLAPI_.*'
+
+# Database connection configurations
+connections:
+  # A BigQuery connection named 'bigquery-lakehouse'
+  bigquery-lakehouse: 
+    # SQL commands to initialize the connection (e.g., loading extensions)
+    init: |
+      INSTALL 'bigquery' FROM 'http://storage.googleapis.com/hafenkran';
+      LOAD 'bigquery';
+    # Connection-specific properties (accessible in templates via {{ context.conn.property_name }})
+    properties:
+      project_id: 'd-kaercher-lakehouse'
+    # Whether to log executed queries
+    log-queries: true
+    # Whether to log request parameters (headers, URL params, etc.)
+    log-parameters: true
+    # Access control for this connection ('*' allows all users)
+    allow: '*'
+
+  # A local Parquet file connection
+  customers-parquet:
+    properties:
+      path: './data/customers.parquet'
+    log-queries: false
+    log-parameters: false
+    allow: '*'
+
+# HTTPS enforcement configuration
+enforce-https:
+  # Whether to force HTTPS for all connections
+  enabled: false
+  # ssl-cert-file: './ssl/cert.pem'
+  # ssl-key-file: './ssl/key.pem'
+
+# DuckDB configuration
+duckdb:
+  db_path: ./flapi_cache.db  # Optional: remove or comment out for in-memory database
+  access_mode: READ_WRITE
+  threads: 8
+  max_memory: 8GB
+  default_order: DESC
