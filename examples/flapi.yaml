@@ -21,20 +21,11 @@ connections:
     # Connection-specific properties (accessible in templates via {{ context.conn.property_name }})
     properties:
       project_id: 'd-kaercher-lakehouse'
-    # Whether to log executed queries
-    log-queries: true
-    # Whether to log request parameters (headers, URL params, etc.)
-    log-parameters: true
-    # Access control for this connection ('*' allows all users)
-    allow: '*'
 
   # A local Parquet file connection
   customers-parquet:
     properties:
       path: './data/customers.parquet'
-    log-queries: false
-    log-parameters: false
-    allow: '*'
 
 # Heartbeat configuration
 heartbeat:
