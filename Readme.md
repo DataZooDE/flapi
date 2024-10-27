@@ -1,4 +1,4 @@
-# flAPI: Instant APIs for Static Datasets
+# flAPI: Instant SQL based APIs
 
 flAPI is a powerful service that automatically generates read-only APIs for datasets by utilizing SQL templates. Built on top of [DuckDB](https://duckdb.org/) and leveraging its SQL engine and extension ecosystem, flAPI offers a seamless way to connect to various data sources and expose them as RESTful APIs.
 
@@ -21,8 +21,6 @@ The easiest way to get started with flAPI is to use the pre-built binary for you
 We currently support the following operating systems:
 
 - Linux
-- MacOS
-- Windows
 
 and have that statically linked against [DuckDB v1.1.2](https://github.com/duckdb/duckdb/releases/tag/v1.1.2).
 
