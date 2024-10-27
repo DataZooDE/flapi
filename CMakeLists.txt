@@ -8,25 +8,19 @@ project(flAPI VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Enable Address Sanitizer only for Debug builds
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -fno-omit-frame-pointer")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -fno-omit-frame-pointer -O0 -g")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
-endif()
-
-# Add flags to speed up build process
-set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -O0 -g")
-set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -Os -DNDEBUG")
-
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG} -fsanitize=address")
+else()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=undefined -fsanitize-undefined-trap-on-error -Os -DNDEBUG")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=undefined -fsanitize-undefined-trap-on-error")
 endif()
 
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--as-needed -Wl,--no-undefined")
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--as-needed -Wl,--no-undefined")
 
 # Disable link-time optimization
-set(CMAKE_INTERPROCEDURAL_OPTIMIZATION FALSE)
+#set(CMAKE_INTERPROCEDURAL_OPTIMIZATION FALSE)
 
 # Find other dependencies
 find_package(Catch2 CONFIG REQUIRED)
@@ -78,9 +72,7 @@ add_executable(flapi src/main.cpp)
 
 # Link flapi-lib to the main executable
 target_link_libraries(flapi PRIVATE flapi-lib)
-
 target_link_options(flapi PRIVATE -fsanitize=undefined)
-
 set_target_properties(flapi PROPERTIES ENABLE_EXPORTS TRUE)
 
 # Add tests
