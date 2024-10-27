@@ -44,7 +44,7 @@ jobs:
       run: make release
 
     - name: Upload build artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: flAPI-build
         path: ${{github.workspace}}/build/Release/flapi
@@ -60,7 +60,7 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: lowercase github.repository_owner
+    - name: Lowercase github.repository_owner
       run: |
         echo "REPOSITORY_OWNER=`echo ${{github.repository_owner}} | tr '[:upper:]' '[:lower:]'`" >>${GITHUB_ENV}
 
