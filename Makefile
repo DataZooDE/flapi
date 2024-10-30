@@ -14,7 +14,8 @@ DEBUG_DIR := $(BUILD_DIR)/Debug
 RELEASE_DIR := $(BUILD_DIR)/Release
 
 # Docker image name
-DOCKER_IMAGE_NAME := flapi
+DOCKER_FILE := docker/development/Dockerfile
+DOCKER_IMAGE_NAME := ghcr.io/datazoode/flapi
 
 # Default target
 all: debug release
@@ -61,7 +62,7 @@ run-integration-tests: debug
 # Build Docker image
 docker: release
 	@echo "Building Docker image..."
-	docker build -t $(DOCKER_IMAGE_NAME):latest .
+	docker build -t $(DOCKER_IMAGE_NAME):latest -f $(DOCKER_FILE) .
 
 # Phony targets
 .PHONY: all debug release clean run-debug run-release run-integration-tests docker-build

@@ -4,11 +4,9 @@ services:
   flapi:
     image: ghcr.io/datazoode/flapi:latest
     environment:
-      - GOOGLE_APPLICATION_CREDENTIALS=/creds/service-account.json
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/examples/service-account.json
     ports:
       - 8080:8080
-    command: --config /app/examples/flapi.yaml
+    command: --config /app/examples/flapi.yaml --log-level debug
     volumes:
       - ../../examples:/app/examples
-      # Mount GCP service account json file from host machine
-      - $HOME/.gcp/sa-dbt-master.json:/creds/service-account.json
