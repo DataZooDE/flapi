@@ -71,5 +71,7 @@ jobs:
         file: ./docker/development/Dockerfile
         push: true
         tags: |
-          ghcr.io/${{ env.REPOSITORY_OWNER }}/flapi:latest
+          ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && format('ghcr.io/{0}/flapi:latest', env.REPOSITORY_OWNER) || '' }}
+          ${{ github.event_name == 'push' && format('ghcr.io/{0}/flapi:branch-{1}', env.REPOSITORY_OWNER, github.ref_name) || '' }}
+          ${{ github.event_name == 'pull_request' && format('ghcr.io/{0}/flapi:pr-{1}', env.REPOSITORY_OWNER, github.event.number) || '' }}
           ghcr.io/${{ env.REPOSITORY_OWNER }}/flapi:${{ github.sha }}
