@@ -2,7 +2,7 @@
 
 #include <crow.h>
 #include "crow/middlewares/cors.h"
-
+#include <algorithm>
 #include <yaml-cpp/yaml.h>
 #include <memory>
 

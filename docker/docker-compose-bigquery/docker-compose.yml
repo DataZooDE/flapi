@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  flapi:
+    image: ghcr.io/datazoode/flapi:latest
+    environment:
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/examples/service-account.json
+    ports:
+      - 8080:8080
+    command: --config /app/examples/flapi.yaml --log-level debug
+    volumes:
+      - ../../examples:/app/examples

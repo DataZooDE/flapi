@@ -182,9 +182,11 @@ void ConfigManager::loadEndpointConfig(const std::string& config_file) {
         YAML::Node endpoint_config = YAML::LoadFile(config_file);
         EndpointConfig endpoint;
         
+        auto endpoint_dir = std::filesystem::path(config_file).parent_path();
+
         endpoint.urlPath = safeGet<std::string>(endpoint_config, "url-path", "url-path");
         endpoint.method = safeGet<std::string>(endpoint_config, "method", "method", "GET");
-        endpoint.templateSource = safeGet<std::string>(endpoint_config, "template-source", "template-source");
+        endpoint.templateSource = (endpoint_dir / safeGet<std::string>(endpoint_config, "template-source", "template-source")).string();
         
         CROW_LOG_DEBUG << "\t\tEndpoint: " << endpoint.method << " " << endpoint.urlPath;
         CROW_LOG_DEBUG << "\t\tTemplate Source: " << endpoint.templateSource;
@@ -193,7 +195,7 @@ void ConfigManager::loadEndpointConfig(const std::string& config_file) {
         parseEndpointConnection(endpoint_config, endpoint);
         parseEndpointRateLimit(endpoint_config, endpoint);
         parseEndpointAuth(endpoint_config, endpoint);
-        parseEndpointCache(endpoint_config, endpoint);
+        parseEndpointCache(endpoint_config, endpoint_dir, endpoint);
         parseEndpointHeartbeat(endpoint_config, endpoint);
 
         endpoints.push_back(endpoint);
@@ -278,12 +280,12 @@ void ConfigManager::parseEndpointAuth(const YAML::Node& endpoint_config, Endpoin
     }
 }
 
-void ConfigManager::parseEndpointCache(const YAML::Node& endpoint_config, EndpointConfig& endpoint) {
+void ConfigManager::parseEndpointCache(const YAML::Node& endpoint_config, const std::filesystem::path& endpoint_dir, EndpointConfig& endpoint) {
     CROW_LOG_DEBUG << "\tParsing endpoint cache configuration";
     if (endpoint_config["cache"]) {
         auto cache_node = endpoint_config["cache"];
         endpoint.cache.cacheTableName = safeGet<std::string>(cache_node, "cache-table-name", "cache.cache-table-name", "");
-        endpoint.cache.cacheSource = safeGet<std::string>(cache_node, "cache-source", "cache.cache-source", "");
+        endpoint.cache.cacheSource = (endpoint_dir / safeGet<std::string>(cache_node, "cache-source", "cache.cache-source")).string();
         endpoint.cache.refreshTime = safeGet<std::string>(cache_node, "refresh-time", "cache.refresh-time", "");
         endpoint.cache.refreshEndpoint = safeGet<bool>(cache_node, "refresh-endpoint", "cache.refresh-endpoint", false);
         endpoint.cache.maxPreviousTables = safeGet<std::size_t>(cache_node, "max-previous-tables", "cache.max-previous-tables", 5);
