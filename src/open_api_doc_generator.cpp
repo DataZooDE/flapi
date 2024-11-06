@@ -21,10 +21,19 @@ YAML::Node OpenAPIDocGenerator::generateDoc(crow::App<crow::CORSHandler, RateLim
     // Servers
     doc["servers"].push_back(YAML::Node());
     std::string serverUrl = app.ssl_used() ? "https://" : "http://";
-    //serverUrl += app.bindaddr().empty() ? "localhost" : app.bindaddr();
     serverUrl += "localhost";
     serverUrl += ":" + std::to_string(app.port());
     doc["servers"][0]["url"] = serverUrl;
+
+    // Security Schemes - define both types
+    doc["components"]["securitySchemes"]["bearerAuth"]["type"] = "http";
+    doc["components"]["securitySchemes"]["bearerAuth"]["scheme"] = "bearer";
+    doc["components"]["securitySchemes"]["bearerAuth"]["bearerFormat"] = "JWT";
+    doc["components"]["securitySchemes"]["bearerAuth"]["description"] = "JWT Authorization header using the Bearer scheme.";
+    
+    doc["components"]["securitySchemes"]["basicAuth"]["type"] = "http";
+    doc["components"]["securitySchemes"]["basicAuth"]["scheme"] = "basic";
+    doc["components"]["securitySchemes"]["basicAuth"]["description"] = "Basic HTTP Authentication";
 
     // Paths
     for (const auto& endpoint : configManager->getEndpoints()) {
@@ -38,7 +47,10 @@ YAML::Node OpenAPIDocGenerator::generatePathItem(const EndpointConfig& endpoint)
 {
     YAML::Node pathItem;
     
+    // Convert method to lowercase
     std::string method = endpoint.method.empty() ? "get" : endpoint.method;
+    std::transform(method.begin(), method.end(), method.begin(), ::tolower);
+    
     YAML::Node operation;
     
     operation["summary"] = "Endpoint for " + endpoint.urlPath;
@@ -54,8 +66,15 @@ YAML::Node OpenAPIDocGenerator::generatePathItem(const EndpointConfig& endpoint)
         operation["x-rate-limit"]["interval"] = endpoint.rate_limit.interval;
     }
     
+    // Add security requirement based on auth type
     if (endpoint.auth.enabled) {
-        operation["security"][0]["bearerAuth"] = YAML::Node(YAML::NodeType::Sequence);
+        operation["security"].push_back(YAML::Node());
+        if (endpoint.auth.type == "basic") {
+            operation["security"][0]["basicAuth"] = YAML::Node(YAML::NodeType::Sequence);
+        } else {
+            // Default to bearer auth for other cases
+            operation["security"][0]["bearerAuth"] = YAML::Node(YAML::NodeType::Sequence);
+        }
     }
     
     pathItem[method] = operation;

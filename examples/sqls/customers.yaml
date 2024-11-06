@@ -80,6 +80,6 @@ auth:
       roles: [read]
 
 heartbeat:
-  enabled: true
+  enabled: false
   params:
     id: 123
