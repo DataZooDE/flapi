@@ -1,0 +1,5 @@
+url-path: /taxi/
+request:
+template-source: taxi.sql
+connection: 
+  - taxi-parquet

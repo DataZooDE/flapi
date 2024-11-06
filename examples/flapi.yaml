@@ -27,6 +27,11 @@ connections:
     properties:
       path: './data/customers.parquet'
 
+  taxi-parquet:
+    properties:
+      path: '~/Downloads/taxi'
+
+      
 # Heartbeat configuration
 heartbeat:
   enabled: true # Whether to enable the heartbeat worker, off by default
