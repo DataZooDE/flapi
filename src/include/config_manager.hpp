@@ -204,7 +204,7 @@ protected:
     void parseEndpointConnection(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
     void parseEndpointRateLimit(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
     void parseEndpointAuth(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
-    void parseEndpointCache(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
+    void parseEndpointCache(const YAML::Node& endpoint_config, const std::filesystem::path& endpoint_dir, EndpointConfig& endpoint);
     void parseGlobalHeartbeatConfig();
     void parseEndpointHeartbeat(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
 
