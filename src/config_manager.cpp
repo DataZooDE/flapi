@@ -276,7 +276,9 @@ void ConfigManager::parseEndpointAuth(const YAML::Node& endpoint_config, Endpoin
             
             AuthFromSecretManagerConfig aws_config;
             aws_config.secret_name = safeGet<std::string>(aws_node, "secret_name", "auth.from-aws-secretmanager.secret_name");
-            aws_config.region = safeGet<std::string>(aws_node, "region", "auth.from-aws-secretmanager.region");
+            if (aws_node["region"]) {
+                aws_config.region = safeGet<std::string>(aws_node, "region", "auth.from-aws-secretmanager.region");
+            }
             aws_config.secret_table = safeGet<std::string>(aws_node, "secret_table", "auth.from-aws-secretmanager.secret_table", "");
             
             if (aws_node["init"]) {
@@ -285,10 +287,10 @@ void ConfigManager::parseEndpointAuth(const YAML::Node& endpoint_config, Endpoin
             
             endpoint.auth.from_aws_secretmanager = aws_config;
             
-            CROW_LOG_DEBUG << "\t\tAWS Secrets Manager configuration:"
-                          << "\n\t\t\tSecret Name: " << aws_config.secret_name
-                          << "\n\t\t\tRegion: " << aws_config.region
-                          << "\n\t\t\tSecret Table: " << aws_config.secret_table;
+            CROW_LOG_DEBUG << "\t\tAWS Secrets Manager configuration:";
+            CROW_LOG_DEBUG << "\n\t\t\tSecret Name: " << aws_config.secret_name;
+            CROW_LOG_DEBUG << "\n\t\t\tRegion: " << aws_config.region;
+            CROW_LOG_DEBUG << "\n\t\t\tSecret Table: " << aws_config.secret_table;
         }
         // Parse inline users if present
         else if (auth_node["users"]) {

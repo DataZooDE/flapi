@@ -8,6 +8,10 @@ auth:
   enabled: true
   type: basic
   from-aws-secretmanager:
-    secret_name: taxi-auth-secret
-    region: us-east-1
+    secret_name: flapi_endpoint_users
     secret_table: taxi_auth
+    init: |
+      CREATE OR REPLACE SECRET flapi_endpoint_users (
+        TYPE S3,
+        PROVIDER CREDENTIAL_CHAIN
+      );
