@@ -3,10 +3,57 @@
 #include "crow/json.h"
 #include <yaml-cpp/yaml.h>
 
+#include "duckdb.hpp"
+#include "duckdb/main/capi/capi_internal.hpp"
+
 #include "sql_template_processor.hpp"
 #include "database_manager.hpp"
 
 namespace flapi {
+
+
+QueryExecutor::QueryExecutor(duckdb_database db) : has_result(false) {
+    if (duckdb_connect(db, &conn) == DuckDBError) {
+        throw std::runtime_error("Failed to create database connection");
+    }
+}
+
+QueryExecutor::~QueryExecutor() {
+    if (has_result) {
+        duckdb_destroy_result(&result);
+    }
+    duckdb_disconnect(&conn);
+}
+
+void QueryExecutor::execute(const std::string& query, const std::string& context) {
+    if (has_result) {
+        duckdb_destroy_result(&result);
+        has_result = false;
+    }
+    
+    if (duckdb_query(conn, query.c_str(), &result) == DuckDBError) {
+        std::string error_message = duckdb_result_error(&result);
+        std::string context_msg = context.empty() ? "" : " during " + context;
+        throw std::runtime_error("Query execution failed" + context_msg + ": " + error_message);
+    }
+    has_result = true;
+}
+
+void QueryExecutor::executePrepared(duckdb_prepared_statement stmt, const std::string& context) {
+    if (has_result) {
+        duckdb_destroy_result(&result);
+        has_result = false;
+    }
+    
+    if (duckdb_execute_prepared(stmt, &result) == DuckDBError) {
+        std::string error_message = duckdb_result_error(&result);
+        std::string context_msg = context.empty() ? "" : " during " + context;
+        throw std::runtime_error("Prepared statement execution failed" + context_msg + ": " + error_message);
+    }
+    has_result = true;
+}
+
+// ------------------------------------------------------------------------------------------------
 
 std::shared_ptr<DatabaseManager> DatabaseManager::getInstance() {
     static std::shared_ptr<DatabaseManager> instance = std::make_shared<DatabaseManager>();
@@ -56,70 +103,53 @@ void DatabaseManager::initializeDBManagerFromConfig(std::shared_ptr<ConfigManage
     }
 }
 
+QueryExecutor DatabaseManager::createQueryExecutor() 
+{
+    if (db == nullptr) {
+        throw std::runtime_error("Database not initialized");
+    }
+    return QueryExecutor(db);
+}
+
 void DatabaseManager::logDuckDBVersion() {
     CROW_LOG_DEBUG << "DuckDB Library Version: " << duckdb_library_version();
 
-    duckdb_connection conn;
-    if (duckdb_connect(db, &conn) == DuckDBError) {
-        throw std::runtime_error("Failed to create database connection for initialization");
-    }
+    auto executor = createQueryExecutor();
+    executor.execute("SELECT version()");
 
-    duckdb_result result;
-    if (duckdb_query(conn, "SELECT version()", &result) == DuckDBError) {
-        throw std::runtime_error("Failed to query DuckDB version");
-    }
-
-    idx_t row_count = duckdb_row_count(&result);
-    idx_t column_count = duckdb_column_count(&result);
-    if (row_count != 1 || column_count != 1) {
+    if (executor.rowCount() != 1 || executor.columnCount() != 1) {
         throw std::runtime_error("Unexpected result format for DuckDB version");
     }
 
-    auto version = duckdb_value_varchar(&result, 0, 0);
+    auto version = duckdb_value_varchar(&executor.result, 0, 0);
     CROW_LOG_DEBUG << "DuckDB DB Version: " << version;
     duckdb_free(version);
-
-    duckdb_destroy_result(&result);
-    duckdb_disconnect(&conn);    
 }
 
 std::vector<std::string> DatabaseManager::getTableNames(const std::string& schema, const std::string& table, bool prefixSearch) {
-    duckdb_connection conn;
-    if (duckdb_connect(db, &conn) == DuckDBError) {
-        throw std::runtime_error("Failed to create database connection to get table names");
-    }
-
     std::string query = "SELECT table_name FROM information_schema.tables WHERE table_schema = '" + schema + "'";
     if (prefixSearch) {
-        query += " OR table_name LIKE '" + table + "%'";
+        query += " AND table_name LIKE '" + table + "%'";
     }
     query += " ORDER BY table_name DESC";
 
-    duckdb_result result;
-    if (duckdb_query(conn, query.c_str(), &result) == DuckDBError) {
-        duckdb_destroy_result(&result);
-        duckdb_disconnect(&conn);
-        throw std::runtime_error("Failed to get table names");
-    }
+    auto executor = createQueryExecutor();
+    executor.execute(query);
 
     std::vector<std::string> table_names;
-    idx_t row_count = duckdb_row_count(&result);
-    for (idx_t row = 0; row < row_count; row++) {
-        const char* table_name = duckdb_value_varchar(&result, 0, row);
+    for (idx_t row = 0; row < executor.rowCount(); row++) {
+        const char* table_name = duckdb_value_varchar(&executor.result, 0, row);
         if (table_name) {
             table_names.push_back(table_name);
         }
         duckdb_free((void*)table_name);
     }
 
-    duckdb_destroy_result(&result);
-    duckdb_disconnect(&conn);
-
     return table_names;
 }
     
-bool DatabaseManager::tableExists(const std::string& schema, const std::string& table, bool prefixSearch) {
-    std::vector<std::string> tableNames = getTableNames(schema, table, prefixSearch);
+bool DatabaseManager::tableExists(const std::string& schema, const std::string& table) {
+    std::vector<std::string> tableNames = getTableNames(schema, table, true);
     return !tableNames.empty();
 }
 
@@ -148,6 +178,17 @@ void DatabaseManager::createAndInitializeDuckDBConfig(std::shared_ptr<ConfigMana
         throw std::runtime_error("Failed to set DuckDB configuration: allow_unsigned_extensions");
     }
 
+    // SET autoinstall_known_extensions=1; && SET autoload_known_extensions=1;
+    if (duckdb_set_config(config, "autoinstall_known_extensions", "1") == DuckDBError) {
+        duckdb_destroy_config(&config);
+        throw std::runtime_error("Failed to set DuckDB configuration: autoinstall_known_extensions");
+    }
+
+    if (duckdb_set_config(config, "autoload_known_extensions", "1") == DuckDBError) {
+        duckdb_destroy_config(&config);
+        throw std::runtime_error("Failed to set DuckDB configuration: autoload_known_extensions");
+    }
+
     // Apply settings from the configuration
     const auto& duckdb_settings = config_manager->getDuckDBConfig().settings;
     for (const auto& [key, value] : duckdb_settings) {
@@ -170,44 +211,28 @@ void DatabaseManager::initializeConnections(std::shared_ptr<ConfigManager> confi
 }
 
 void DatabaseManager::executeInitStatement(const std::string& init_statement) {
-    duckdb_connection conn;
-    if (duckdb_connect(db, &conn) == DuckDBError) {
-        throw std::runtime_error("Failed to create database connection for initialization");
-    }
-
+    auto executor = createQueryExecutor();
+    
     duckdb_extracted_statements stmts = nullptr;
-    idx_t n_statements = duckdb_extract_statements(conn, init_statement.c_str(), &stmts);
+    idx_t n_statements = duckdb_extract_statements(executor.conn, init_statement.c_str(), &stmts);
     if (n_statements == 0) {
         auto error_message = duckdb_extract_statements_error(stmts);
         throw std::runtime_error("Failed to extract statements from init statement: " + init_statement + "\n Error: " + error_message);
     }
 
-    duckdb_state status;
     duckdb_prepared_statement prepared_stmt = nullptr;
-    duckdb_result result;
     for (idx_t i = 0; i < n_statements; i++) {
-        if (duckdb_prepare_extracted_statement(conn, stmts, i, &prepared_stmt) == DuckDBError) {
+        if (duckdb_prepare_extracted_statement(executor.conn, stmts, i, &prepared_stmt) == DuckDBError) {
             duckdb_destroy_extracted(&stmts);
             throw std::runtime_error("Failed to prepare statement: " + init_statement);
         }
 
-        if (duckdb_execute_prepared(prepared_stmt, &result) == DuckDBError) 
-        {
-            std::string error_message = duckdb_result_error(&result);
-            duckdb_destroy_extracted(&stmts);
-            duckdb_destroy_result(&result);
-            duckdb_disconnect(&conn);
-        throw std::runtime_error("Failed to execute init statement " + init_statement + "\n Error: " + error_message);
-        }
-
+        executor.executePrepared(prepared_stmt);
         duckdb_destroy_prepare(&prepared_stmt);
-        duckdb_destroy_result(&result);
     }
 
     CROW_LOG_DEBUG << n_statements << " init statements executed successfully: \n" << init_statement;
-
     duckdb_destroy_extracted(&stmts);
-    duckdb_disconnect(&conn);
 }
 
 duckdb_connection DatabaseManager::getConnection() {
@@ -249,13 +274,8 @@ std::string DatabaseManager::processCacheTemplate(const EndpointConfig& endpoint
     return sql_processor->loadAndProcessTemplate(endpoint, cacheConfig, params);
 }
 
-QueryResult DatabaseManager::executeQuery(const std::string& query, const std::map<std::string, std::string>& params, bool with_pagination)
-{
-    duckdb_connection conn;
-    if (duckdb_connect(db, &conn) == DuckDBError) {
-        throw std::runtime_error("Failed to create database connection");
-    }
-
+QueryResult DatabaseManager::executeQuery(const std::string& query, const std::map<std::string, std::string>& params, bool with_pagination) {
+    auto executor = createQueryExecutor();
     std::string paginatedQuery = query;
     std::string countQuery = "SELECT COUNT(*) FROM (" + query + ") AS subquery";
 
@@ -271,78 +291,26 @@ QueryResult DatabaseManager::executeQuery(const std::string& query, const std::m
                        +"LIMIT " + std::to_string(limit) + " OFFSET " + std::to_string(offset);
     }
 
-    duckdb_result result;
-    if (duckdb_query(conn, paginatedQuery.c_str(), &result) == DuckDBError) {
-        std::string error_message = duckdb_result_error(&result);
-        duckdb_destroy_result(&result);
-        duckdb_disconnect(&conn);
-        std::string pagination_message = with_pagination ? "(with pagination)" : "";
-        error_message = "Query execution failed " + pagination_message + ": " + error_message;
-        throw std::runtime_error(error_message);
-    }
+    executor.execute(paginatedQuery);
 
     crow::json::wvalue json_result;
     std::vector<crow::json::wvalue> rows;
 
-    idx_t row_count = duckdb_row_count(&result);
-    idx_t column_count = duckdb_column_count(&result);
-
-    for (idx_t row = 0; row < row_count; row++) {
-        crow::json::wvalue json_row;
-        for (idx_t col = 0; col < column_count; col++) {
-            std::string column_name = duckdb_column_name(&result, col);
-            duckdb_type type = duckdb_column_type(&result, col);
-
-            switch (type) {
-                case DUCKDB_TYPE_VARCHAR: {
-                    const char* str_val = duckdb_value_varchar(&result, col, row);
-                    json_row[column_name] = str_val ? str_val : "";
-                    duckdb_free((void*)str_val);
-                    break;
-                }
-                case DUCKDB_TYPE_INTEGER: {
-                    int32_t int_val = duckdb_value_int32(&result, col, row);
-                    json_row[column_name] = int_val;
-                    break;
-                }
-                case DUCKDB_TYPE_BIGINT: {
-                    int64_t bigint_val = duckdb_value_int64(&result, col, row);
-                    json_row[column_name] = bigint_val;
-                    break;
-                }
-                case DUCKDB_TYPE_DOUBLE: {
-                    double double_val = duckdb_value_double(&result, col, row);
-                    json_row[column_name] = double_val;
-                    break;
-                }
-                case DUCKDB_TYPE_BOOLEAN: {
-                    bool bool_val = duckdb_value_boolean(&result, col, row);
-                    json_row[column_name] = bool_val;
-                    break;
-                }
-                // Add more types as needed
-                default: {
-                    const char* str_val = duckdb_value_varchar(&result, col, row);
-                    json_row[column_name] = str_val ? str_val : "";
-                    duckdb_free((void*)str_val);
-                    break;
-                }
-            }
-        }
+    for (idx_t row = 0; row < executor.rowCount(); row++) {
+        auto json_row = duckRowToJson(executor.result, row);
         rows.push_back(std::move(json_row));
     }
 
     json_result = std::move(rows);
 
-    duckdb_destroy_result(&result);
-
-    // Execute count query
+    // Execute count query if pagination is enabled
     int64_t total_count = 0;
-    if (with_pagination && duckdb_query(conn, countQuery.c_str(), &result) == DuckDBSuccess) {
-        total_count = duckdb_value_int64(&result, 0, 0);
+    if (with_pagination) {
+        executor.execute(countQuery);
+        if (executor.rowCount() > 0) {
+            total_count = duckdb_value_int64(&executor.result, 0, 0);
+        }
     }
-    duckdb_destroy_result(&result);
-    duckdb_disconnect(&conn);
 
     std::string next = "";
     if (hasPagination && offset + limit < total_count) {
@@ -357,36 +325,70 @@ QueryResult DatabaseManager::executeQuery(const std::string& query, const std::m
     return QueryResult{std::move(json_result), next, total_count};
 }
 
-YAML::Node DatabaseManager::describeSelectQuery(const EndpointConfig& endpoint)
-{
+crow::json::wvalue DatabaseManager::duckRowToJson(duckdb_result& result, idx_t row) {
+    crow::json::wvalue json_row;
+    idx_t column_count = duckdb_column_count(&result);
+
+    for (idx_t col = 0; col < column_count; col++) {
+        std::string column_name = duckdb_column_name(&result, col);
+        duckdb_type type = duckdb_column_type(&result, col);
+
+        switch (type) {
+            case DUCKDB_TYPE_VARCHAR: {
+                const char* str_val = duckdb_value_varchar(&result, col, row);
+                json_row[column_name] = str_val ? str_val : "";
+                duckdb_free((void*)str_val);
+                break;
+            }
+            case DUCKDB_TYPE_INTEGER: {
+                int32_t int_val = duckdb_value_int32(&result, col, row);
+                json_row[column_name] = int_val;
+                break;
+            }
+            case DUCKDB_TYPE_BIGINT: {
+                int64_t bigint_val = duckdb_value_int64(&result, col, row);
+                json_row[column_name] = bigint_val;
+                break;
+            }
+            case DUCKDB_TYPE_DOUBLE: {
+                double double_val = duckdb_value_double(&result, col, row);
+                json_row[column_name] = double_val;
+                break;
+            }
+            case DUCKDB_TYPE_BOOLEAN: {
+                bool bool_val = duckdb_value_boolean(&result, col, row);
+                json_row[column_name] = bool_val;
+                break;
+            }
+            // Add more types as needed
+            default: {
+                const char* str_val = duckdb_value_varchar(&result, col, row);
+                json_row[column_name] = str_val ? str_val : "";
+                duckdb_free((void*)str_val);
+                break;
+            }
+        }
+    }
+
+    return json_row;
+}
+
+YAML::Node DatabaseManager::describeSelectQuery(const EndpointConfig& endpoint) {
     YAML::Node properties;
     
     try {
-        // Process the SQL template
         std::map<std::string, std::string> params;
         cache_manager->addQueryCacheParamsIfNecessary(config_manager, endpoint, params);
         std::string processedQuery = processTemplate(endpoint, params);
         
-        // Construct the DESCRIBE query
         std::string describeQuery = "DESCRIBE SELECT * FROM (" + processedQuery + ") AS subquery";
         
-        duckdb_connection conn;
-        if (duckdb_connect(db, &conn) == DuckDBError) {
-            throw std::runtime_error("Failed to create database connection");
-        }
-
-        duckdb_result result;
-        if (duckdb_query(conn, describeQuery.c_str(), &result) == DuckDBError) {
-            std::string error_message = duckdb_result_error(&result);
-            duckdb_destroy_result(&result);
-            duckdb_disconnect(&conn);
-            throw std::runtime_error("Query execution failed: " + error_message);
-        }
+        auto executor = createQueryExecutor();
+        executor.execute(describeQuery);
         
-        idx_t row_count = duckdb_row_count(&result);
-        for (idx_t i = 0; i < row_count; i++) {
-            std::string column_name = duckdb_value_varchar(&result, 0, i);
-            std::string column_type = duckdb_value_varchar(&result, 1, i);
+        for (idx_t i = 0; i < executor.rowCount(); i++) {
+            std::string column_name = duckdb_value_varchar(&executor.result, 0, i);
+            std::string column_type = duckdb_value_varchar(&executor.result, 1, i);
             
             YAML::Node property;
             if (column_type == "INTEGER" || column_type == "BIGINT") {
@@ -406,15 +408,106 @@ YAML::Node DatabaseManager::describeSelectQuery(const EndpointConfig& endpoint)
             
             properties[column_name] = property;
         }
-        
-        duckdb_destroy_result(&result);
-        duckdb_disconnect(&conn);
     }
     catch (const std::exception& e) {
         CROW_LOG_ERROR << "Error in describeSelectQuery: " << e.what();
     }
     
     return properties;
+}
+
+void DatabaseManager::refreshSecretsTable(const std::string& secret_table, const std::string& secret_json) {
+    auto executor = createQueryExecutor();
+
+    auto create_table_stmt = "CREATE OR REPLACE TABLE " + secret_table + "(j JSON)";
+    auto insert_stmt = "INSERT INTO " + secret_table + " VALUES ('" + secret_json + "')";
+
+    try {
+        executor.execute(create_table_stmt, "create table");
+        executor.execute(insert_stmt, "insert data");
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Failed to refresh JSON table '" + secret_table + "': " + e.what());
+    }
+}
+
+std::optional<std::tuple<std::string, std::vector<std::string>>> DatabaseManager::findUserInSecretsTable(const std::string& secret_table, 
+                                                                                                         const std::string& username) 
+{
+    std::stringstream query;
+
+    query << "SELECT y->>'username' AS username, y->>'password' AS password, CAST(json_extract_string(y, '$.roles[*]') AS varchar[]) AS roles "
+          << "FROM (SELECT unnest(cast(j.auth as JSON[])) AS y FROM " << secret_table << ") AS x "
+          << "WHERE y->>'username' = '" << username << "' "
+          << "LIMIT 1";
+
+    auto executor = createQueryExecutor();
+    executor.execute(query.str());
+
+    while(true) 
+    {
+        auto chunk = duckdb_fetch_chunk(executor.result);
+        if (chunk == nullptr) {
+            break;
+        }
+
+        idx_t row_count = duckdb_data_chunk_get_size(chunk);
+        if (row_count != 1) {
+            duckdb_destroy_data_chunk(&chunk);
+            return std::nullopt;
+        }
+
+        // get the username column
+        auto username_col = duckdb_data_chunk_get_vector(chunk, 0);
+        auto password_col = duckdb_data_chunk_get_vector(chunk, 1);
+        auto roles_col = duckdb_data_chunk_get_vector(chunk, 2);
+
+        duckdb_string_t *username_data = (duckdb_string_t *) duckdb_vector_get_data(username_col);
+        std::string username;
+        if (duckdb_string_is_inlined(username_data[0])) {
+            username = std::string(username_data[0].value.inlined.inlined, username_data[0].value.inlined.length);
+		} else {
+            username = std::string(username_data[0].value.pointer.ptr, username_data[0].value.pointer.length);
+        }
+
+        duckdb_string_t *password_data = (duckdb_string_t *) duckdb_vector_get_data(password_col);
+        std::string password;
+        if (duckdb_string_is_inlined(password_data[0])) {
+            password = std::string(password_data[0].value.inlined.inlined, password_data[0].value.inlined.length);
+		} else {
+            password = std::string(password_data[0].value.pointer.ptr, password_data[0].value.pointer.length);
+        }
+
+        duckdb_list_entry *list_data = (duckdb_list_entry *) duckdb_vector_get_data(roles_col);
+        duckdb_vector list_child = duckdb_list_vector_get_child(roles_col);
+        duckdb_string_t *child_data = (duckdb_string_t *) duckdb_vector_get_data(list_child);
+        duckdb_list_entry roles_list = list_data[0];
+
+        std::vector<std::string> roles;
+        for (idx_t child_idx = roles_list.offset; child_idx < roles_list.offset + roles_list.length; child_idx++) 
+        {
+            std::string role;
+            if (duckdb_string_is_inlined(child_data[child_idx])) {
+                role = std::string(child_data[child_idx].value.inlined.inlined, child_data[child_idx].value.inlined.length);
+            } else {
+                role = std::string(child_data[child_idx].value.pointer.ptr, child_data[child_idx].value.pointer.length);
+            }
+            roles.push_back(role);
+        }
+        
+        duckdb_destroy_data_chunk(&chunk);
+        return std::make_tuple(password, roles);
+    }
+
+    return std::nullopt;
+}
+
+std::tuple<duckdb::SecretManager&, duckdb::CatalogTransaction> DatabaseManager::getSecretManagerAndTransaction() 
+{
+    auto wrapper = reinterpret_cast<duckdb::DatabaseData *>(db);
+    auto db_instance = wrapper->database->instance;
+    auto &secret_manager = duckdb::SecretManager::Get(*db_instance);
+    auto transaction = duckdb::CatalogTransaction::GetSystemTransaction(*db_instance);
+    return std::tuple<duckdb::SecretManager&, duckdb::CatalogTransaction>(secret_manager, transaction);
 }
 
 } // namespace flapi

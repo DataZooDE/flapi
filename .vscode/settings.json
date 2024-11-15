@@ -104,7 +104,7 @@
     },
     "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
     "cmake.configureOnOpen": true,
-    "cmake.buildDirectory": "${workspaceFolder}/build/${buildType}",
+    "cmake.buildDirectory": "${workspaceRoot}/build/${variant:buildType}",
     "cmake.testEnvironment": {
         "ASAN_OPTIONS": "detect_leaks=0"
     },
@@ -115,7 +115,7 @@
     ],
     "testMate.cpp.test.advancedExecutables": [
         {
-            "pattern": "${workspaceFolder}/build/${buildType}/test/flapi_tests",
+            "pattern": "${workspaceFolder}/build/${variant:buildType}/test/flapi_tests",
             "cwd": "${workspaceFolder}/test",
             "env": {
                 "ASAN_OPTIONS": "detect_leaks=0"

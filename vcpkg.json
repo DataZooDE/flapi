@@ -7,6 +7,10 @@
     "yaml-cpp",
     "jwt-cpp",
     "openssl",
-    "catch2"
+    "catch2",
+    {
+      "name": "aws-sdk-cpp",
+      "features": [ "sso", "sts", "secretsmanager" ]
+    }
   ]
 }

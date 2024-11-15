@@ -4,6 +4,7 @@
 #include <chrono>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <regex>
 #include <sstream>
 #include <stdexcept>
@@ -44,10 +45,21 @@ struct AuthUser {
     std::vector<std::string> roles;
 };
 
+struct AuthFromSecretManagerConfig {
+    std::string secret_name;
+    std::string region;
+    std::string secret_table;
+    std::string init;
+
+    const std::string& getInit() const { return init; }
+    void setInit(const std::string& initSql) { init = initSql; }
+};
+
 struct AuthConfig {
     bool enabled;
     std::string type;
     std::vector<AuthUser> users;
+    std::optional<AuthFromSecretManagerConfig> from_aws_secretmanager;
     std::string jwt_secret;
     std::string jwt_issuer;
 };
@@ -160,6 +172,8 @@ public:
     const GlobalHeartbeatConfig& getGlobalHeartbeatConfig() const { return global_heartbeat_config; }
 
     void refreshConfig();
+    void addEndpoint(const EndpointConfig& endpoint);
+    
     std::unordered_map<std::string, std::string> getPropertiesForTemplates(const std::string& connectionName) const;
 
     crow::json::wvalue getFlapiConfig() const;

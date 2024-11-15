@@ -156,7 +156,7 @@ cache:
         const auto& endpoint = endpoints[0];
 
         REQUIRE(endpoint.urlPath == "/test");
-        REQUIRE(endpoint.templateSource == "test.sql");
+        REQUIRE(endpoint.templateSource == "/tmp/test.sql");
         REQUIRE(endpoint.connection == std::vector<std::string>{"default"});
 
         REQUIRE(endpoint.requestFields.size() == 1);
@@ -184,7 +184,7 @@ cache:
         REQUIRE(endpoint.auth.users[0].roles == std::vector<std::string>{"user"});
 
         REQUIRE(endpoint.cache.cacheTableName == "test_cache");
-        REQUIRE(endpoint.cache.cacheSource == "test_source");
+        REQUIRE(endpoint.cache.cacheSource == "/tmp/test_source");
         REQUIRE(endpoint.cache.refreshTime == "1h");
         REQUIRE(endpoint.cache.refreshEndpoint == true);
     }

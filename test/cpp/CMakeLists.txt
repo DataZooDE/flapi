@@ -4,7 +4,9 @@ add_executable(flapi_tests
     main_test.cpp
     config_manager_test.cpp
     request_validator_test.cpp
-    sql_template_processor_test.cpp  # Add this line
+    sql_template_processor_test.cpp
+    auth_middleware_test.cpp
+    database_manager_test.cpp
 )
 
 target_include_directories(flapi_tests PRIVATE 
@@ -15,7 +17,12 @@ target_link_libraries(flapi_tests PRIVATE
     flapi-lib
     Catch2::Catch2WithMain
     yaml-cpp::yaml-cpp
+    jwt-cpp::jwt-cpp
+    OpenSSL::Crypto
+    OpenSSL::SSL
+    ${AWSSDK_LIBRARIES}
 )
+target_link_options(flapi_tests PRIVATE -fsanitize=undefined)
 
 include(CTest)
 include(Catch)

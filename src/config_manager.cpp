@@ -263,18 +263,43 @@ void ConfigManager::parseEndpointRateLimit(const YAML::Node& endpoint_config, En
 }
 
 void ConfigManager::parseEndpointAuth(const YAML::Node& endpoint_config, EndpointConfig& endpoint) {
+    CROW_LOG_DEBUG << "\tParsing endpoint auth configuration";
     if (endpoint_config["auth"]) {
         auto auth_node = endpoint_config["auth"];
         endpoint.auth.enabled = safeGet<bool>(auth_node, "enabled", "auth.enabled", false);
         endpoint.auth.type = safeGet<std::string>(auth_node, "type", "auth.type", "");
         
-        if (auth_node["users"]) {
+        // Parse AWS Secrets Manager configuration if present
+        if (auth_node["from-aws-secretmanager"]) {
+            CROW_LOG_DEBUG << "\t\tParsing AWS Secrets Manager configuration";
+            auto aws_node = auth_node["from-aws-secretmanager"];
+            
+            AuthFromSecretManagerConfig aws_config;
+            aws_config.secret_name = safeGet<std::string>(aws_node, "secret_name", "auth.from-aws-secretmanager.secret_name");
+            aws_config.region = safeGet<std::string>(aws_node, "region", "auth.from-aws-secretmanager.region");
+            aws_config.secret_table = safeGet<std::string>(aws_node, "secret_table", "auth.from-aws-secretmanager.secret_table", "");
+            
+            if (aws_node["init"]) {
+                aws_config.init = safeGet<std::string>(aws_node, "init", "auth.from-aws-secretmanager.init");
+            }
+            
+            endpoint.auth.from_aws_secretmanager = aws_config;
+            
+            CROW_LOG_DEBUG << "\t\tAWS Secrets Manager configuration:"
+                          << "\n\t\t\tSecret Name: " << aws_config.secret_name
+                          << "\n\t\t\tRegion: " << aws_config.region
+                          << "\n\t\t\tSecret Table: " << aws_config.secret_table;
+        }
+        // Parse inline users if present
+        else if (auth_node["users"]) {
+            CROW_LOG_DEBUG << "\t\tParsing inline users configuration";
             for (const auto& user : auth_node["users"]) {
                 AuthUser auth_user;
                 auth_user.username = safeGet<std::string>(user, "username", "auth.users.username");
                 auth_user.password = safeGet<std::string>(user, "password", "auth.users.password");
                 auth_user.roles = safeGet<std::vector<std::string>>(user, "roles", "auth.users.roles", std::vector<std::string>());
                 endpoint.auth.users.push_back(auth_user);
+                CROW_LOG_DEBUG << "\t\t\tAdded user: " << auth_user.username << " with " << auth_user.roles.size() << " roles";
             }
         }
     }
@@ -614,6 +639,10 @@ crow::json::wvalue ConfigManager::getEndpointsConfig() const {
 // Other methods
 void ConfigManager::refreshConfig() {
     throw std::runtime_error("Not implemented");
+}
+
+void ConfigManager::addEndpoint(const EndpointConfig& endpoint) {
+    endpoints.push_back(endpoint);
 }
 
 const EndpointConfig* ConfigManager::getEndpointForPath(const std::string& path) const {

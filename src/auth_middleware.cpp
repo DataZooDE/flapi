@@ -1,35 +1,151 @@
-#include "auth_middleware.hpp"
+#include <aws/core/Aws.h>
+#include <aws/core/auth/AWSCredentialsProvider.h>
+#include <aws/secretsmanager/SecretsManagerClient.h>
+#include <aws/secretsmanager/model/GetSecretValueRequest.h>
+#include <aws/secretsmanager/model/GetSecretValueResult.h>
 #include <crow/http_request.h>
 #include <crow/http_response.h>
 #include <crow/utility.h>
 #include <algorithm>
 #include <cstring>
 #include <jwt-cpp/jwt.h>
+#include <openssl/evp.h>
+#include <sstream>
+#include <iomanip>
 
-namespace flapi {
+#include "duckdb/main/secret/secret_manager.hpp"
 
-void AuthMiddleware::setConfig(std::shared_ptr<ConfigManager> config_manager) {
+#include "auth_middleware.hpp"
+#include "database_manager.hpp"
+#include "duckdb.hpp"
+#include "duckdb/common/types/blob.hpp"
+
+namespace flapi 
+{
+
+AwsHelper::AwsHelper(std::shared_ptr<DatabaseManager> db_manager) 
+    : db_manager(db_manager)
+{ }
+
+void AwsHelper::refreshSecretJson(const std::string& secret_name, const std::string& secret_table) {
+    auto secret_json = getSecretJson(secret_name);
+    persistSecretJson(secret_table, secret_json);
+}
+
+std::string AwsHelper::getSecretJson(const std::string& secret_name) 
+{
+    CROW_LOG_DEBUG << "Retrieving secret '" + secret_name + "' from AWS Secrets Manager";
+
+    auto aws_auth_params = tryGetS3AuthParams(secret_name);
+    if (!aws_auth_params) {
+        throw std::runtime_error("No AWS auth params found for secret '" + secret_name + "', " +
+                                 "please use create a duckdb secret with the same name and type 'S3'");
+    }
+
+    Aws::SDKOptions options;
+    Aws::InitAPI(options);
+    
+    Aws::Auth::AWSCredentials credentials(aws_auth_params->access_key, 
+                                          aws_auth_params->secret_key, 
+                                          aws_auth_params->session_token);
+    
+    Aws::Client::ClientConfiguration clientConfig;
+    clientConfig.region = aws_auth_params->region;
+    
+    Aws::SecretsManager::SecretsManagerClient secretsClient(credentials, nullptr, clientConfig);
+    Aws::SecretsManager::Model::GetSecretValueRequest request;
+    request.SetSecretId(secret_name);
+
+    auto response = secretsClient.GetSecretValue(request);
+    if (!response.IsSuccess()) {
+        throw std::runtime_error("Error retrieving secret '" + secret_name + "': " + response.GetError().GetMessage());
+        Aws::ShutdownAPI(options);
+    }
+
+    auto secret_json = response.GetResult().GetSecretString();
+    CROW_LOG_DEBUG << "Successfully retrieved secret '" + secret_name + "': *****[" + std::to_string(secret_json.size()) + "]";
+
+    Aws::ShutdownAPI(options);
+    return secret_json;
+}
+
+void AwsHelper::persistSecretJson(const std::string& secret_table, const std::string& secret_json) {
+    db_manager->refreshSecretsTable(secret_table, secret_json);
+}
+
+std::optional<AwsAuthParams> AwsHelper::tryGetS3AuthParams(const std::string& secret_name) 
+{
+    auto [secret_manager, transaction] = db_manager->getSecretManagerAndTransaction();
+    auto secret_entry = secret_manager.GetSecretByName(transaction, secret_name);
+    if (!secret_entry) {
+        return std::nullopt;
+    }
+
+    auto kv_secret = dynamic_cast<const duckdb::KeyValueSecret *>(secret_entry->secret.get());
+    if (!kv_secret) {
+        return std::nullopt;
+    }
+
+    AwsAuthParams auth_params;
+    auth_params.access_key = kv_secret->TryGetValue("key_id", false).ToString();
+    auth_params.secret_key = kv_secret->TryGetValue("secret", false).ToString();
+    auth_params.session_token = kv_secret->TryGetValue("session_token", false).ToString();
+    auth_params.region = kv_secret->TryGetValue("region", false).ToString();
+
+    return auth_params;
+}
+
+// ------------------------------------------------------------------------------------------------
+
+void AuthMiddleware::initialize(std::shared_ptr<ConfigManager> config_manager) {
     this->config_manager = config_manager;
+    this->db_manager = DatabaseManager::getInstance();
+    this->aws_helper = std::make_shared<AwsHelper>(db_manager);
+
+    initializeAwsSecretsManager();
+}
+
+void AuthMiddleware::initializeAwsSecretsManager() {
+    for (const auto& endpoint : config_manager->getEndpoints()) {
+        if (!endpoint.auth.from_aws_secretmanager) {
+            continue;
+        }
+
+        CROW_LOG_DEBUG << "Initializing AWS Secrets Manager for endpoint: " << endpoint.urlPath;
+
+        auto aws_secretmanager_config = *endpoint.auth.from_aws_secretmanager;
+
+        auto secret_name = aws_secretmanager_config.secret_name;
+        if (secret_name.empty()) {
+            throw std::runtime_error("AWS Secrets Manager secret name in endpoint " + endpoint.urlPath + " is not set");
+        }
+
+        auto secret_table = aws_secretmanager_config.secret_table;
+        if (secret_table.empty()) {
+            throw std::runtime_error("AWS Secrets Manager table in endpoint " + endpoint.urlPath + " is not set");
+        }
+
+        auto init_sql = aws_secretmanager_config.init;
+        if (!init_sql.empty()) {
+            CROW_LOG_DEBUG << "Executing init statement for AWS Secrets Manager for endpoint: " << endpoint.urlPath;
+            db_manager->executeInitStatement(init_sql);
+        }
+
+        aws_helper->refreshSecretJson(secret_name, secret_table);
+    }
 }
 
 void AuthMiddleware::before_handle(crow::request& req, crow::response& res, context& ctx) {
     if (!config_manager) return;
 
     const auto* endpoint = config_manager->getEndpointForPath(req.url);
-    if (!endpoint) {
-        CROW_LOG_DEBUG << "No endpoint found for path: " << req.url;
-        return;
-    }
-
-    if (!endpoint->auth.enabled) {
-        CROW_LOG_DEBUG << "Auth not enabled for endpoint: " << req.url;
+    if (!endpoint || !endpoint->auth.enabled) {
         return;
     }
 
     CROW_LOG_DEBUG << "Auth enabled for endpoint: " << req.url;
 
     auto auth_header = req.get_header_value("Authorization");
-    
     if (auth_header.empty()) {
         CROW_LOG_DEBUG << "No Authorization header found";
         res.code = 401;
@@ -42,8 +158,6 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
         ctx.authenticated = authenticateBasic(auth_header, *endpoint, ctx);
     } else if (endpoint->auth.type == "bearer") {
         ctx.authenticated = authenticateBearer(auth_header, *endpoint, ctx);
-    } else {
-        // Implement other authentication methods here
     }
 
     if (!ctx.authenticated) {
@@ -55,11 +169,11 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
     }
 }
 
-void AuthMiddleware::after_handle(crow::request& req, crow::response& res, context& ctx) {
-    // No action needed after handling the request
-}
-
 bool AuthMiddleware::authenticateBasic(const std::string& auth_header, const EndpointConfig& endpoint, context& ctx) {
+    if (auth_header.substr(0, 6) != "Basic ") {
+        return false;
+    }
+
     std::string decoded = crow::utility::base64decode(auth_header.substr(6));
     size_t colon_pos = decoded.find(':');
     
@@ -70,15 +184,114 @@ bool AuthMiddleware::authenticateBasic(const std::string& auth_header, const End
     std::string username = decoded.substr(0, colon_pos);
     std::string password = decoded.substr(colon_pos + 1);
 
+    // Try inline users first
+    if (!endpoint.auth.users.empty()) {
+        return authenticateInlineUsers(username, password, endpoint, ctx);
+    }
+    
+    // Try AWS Secrets Manager if configured
+    if (endpoint.auth.from_aws_secretmanager) {
+        return authenticateAwsSecrets(username, password, endpoint, ctx);
+    }
+
+    return false;
+}
+
+bool AuthMiddleware::authenticateInlineUsers(const std::string& username, const std::string& password,
+                                          const EndpointConfig& endpoint, context& ctx) {
     for (const auto& user : endpoint.auth.users) {
-        if (user.username == username && user.password == password) {
+        if (user.username == username && verifyPassword(password, user.password)) {
             ctx.username = username;
             ctx.roles = user.roles;
             return true;
         }
     }
+    return false;
+}
+
+bool AuthMiddleware::authenticateAwsSecrets(const std::string& username, const std::string& password,
+                                         const EndpointConfig& endpoint, context& ctx) {
+    if (!endpoint.auth.from_aws_secretmanager || !db_manager) {
+        return false;
+    }
+
+    try {
+        const auto& aws_config = *endpoint.auth.from_aws_secretmanager;
+        auto result = db_manager->findUserInSecretsTable(aws_config.secret_table, username);
+        if (!result) {
+            return false;
+        }
+
+        auto [stored_password, roles] = result.value();
+        if (verifyPassword(password, stored_password)) 
+        {
+            ctx.username = username;
+            for (const auto& role : roles) {
+                ctx.roles.push_back(role);
+            }
+            
+            return true;
+        }
+    } catch (const std::exception& e) {
+        CROW_LOG_ERROR << "Error authenticating against AWS Secrets: " << e.what();
+    }
 
     return false;
+}
+
+std::string AuthMiddleware::md5Hash(const std::string& input) {
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int digest_len = 0;
+
+    // Create a message digest context
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    if (!ctx) {
+        throw std::runtime_error("Failed to create MD5 context");
+    }
+
+    try {
+        // Initialize the digest
+        if (!EVP_DigestInit_ex(ctx, EVP_md5(), nullptr)) {
+            EVP_MD_CTX_free(ctx);
+            throw std::runtime_error("Failed to initialize MD5 digest");
+        }
+
+        // Add data to be hashed
+        if (!EVP_DigestUpdate(ctx, input.c_str(), input.length())) {
+            EVP_MD_CTX_free(ctx);
+            throw std::runtime_error("Failed to update MD5 digest");
+        }
+
+        // Finalize the digest
+        if (!EVP_DigestFinal_ex(ctx, digest, &digest_len)) {
+            EVP_MD_CTX_free(ctx);
+            throw std::runtime_error("Failed to finalize MD5 digest");
+        }
+
+        // Clean up
+        EVP_MD_CTX_free(ctx);
+
+        // Convert to hex string
+        std::stringstream ss;
+        for (unsigned int i = 0; i < digest_len; i++) {
+            ss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(digest[i]);
+        }
+        return ss.str();
+    }
+    catch (...) {
+        EVP_MD_CTX_free(ctx);
+        throw;
+    }
+}
+
+bool AuthMiddleware::verifyPassword(const std::string& provided_password, const std::string& stored_password) {
+    // Check if the stored password is an MD5 hash
+    if (stored_password.length() == 32 && std::all_of(stored_password.begin(), stored_password.end(),
+            [](char c) { return std::isxdigit(c); })) {
+        return md5Hash(provided_password) == stored_password;
+    }
+    
+    return provided_password == stored_password;
 }
 
 bool AuthMiddleware::authenticateBearer(const std::string& auth_header, const EndpointConfig& endpoint, context& ctx) {
@@ -111,24 +324,8 @@ bool AuthMiddleware::authenticateBearer(const std::string& auth_header, const En
     }
 }
 
-void AuthMiddleware::loadHtpasswdFile(const std::string& file_path) {
-    std::ifstream file(file_path);
-    std::string line;
-
-    while (std::getline(file, line)) {
-        size_t colon_pos = line.find(':');
-        if (colon_pos != std::string::npos) {
-            std::string username = line.substr(0, colon_pos);
-            std::string password = line.substr(colon_pos + 1);
-            users[username] = password;
-        }
-    }
+void AuthMiddleware::after_handle(crow::request& /*req*/, crow::response& /*res*/, context& /*ctx*/) {
+    // No action needed after handling the request
 }
-
-// Implement other authentication methods here
-// bool AuthMiddleware::authenticate_oauth2(const std::string& auth_header, context& ctx) { ... }
-// bool AuthMiddleware::authenticate_saml(const std::string& auth_header, context& ctx) { ... }
-// bool AuthMiddleware::authenticate_jwt(const std::string& auth_header, context& ctx) { ... }
-// bool AuthMiddleware::authenticate_custom(const std::string& auth_header, context& ctx) { ... }
 
 } // namespace flapi

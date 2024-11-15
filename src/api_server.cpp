@@ -29,7 +29,7 @@ void APIServer::createApp()
 {
     // Configure middlewares
     app.get_middleware<RateLimitMiddleware>().setConfig(configManager);
-    app.get_middleware<AuthMiddleware>().setConfig(configManager);
+    app.get_middleware<AuthMiddleware>().initialize(configManager);
 }
 
 void APIServer::setupRoutes() {

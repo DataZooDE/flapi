@@ -3,3 +3,11 @@ request:
 template-source: taxi.sql
 connection: 
   - taxi-parquet
+
+auth:
+  enabled: true
+  type: basic
+  from-aws-secretmanager:
+    secret_name: taxi-auth-secret
+    region: us-east-1
+    secret_table: taxi_auth

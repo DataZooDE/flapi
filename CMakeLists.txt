@@ -30,8 +30,11 @@ endif()
 find_package(Catch2 CONFIG REQUIRED)
 find_package(Crow CONFIG REQUIRED)
 find_package(yaml-cpp CONFIG REQUIRED)
+find_package(jwt-cpp CONFIG REQUIRED)
 find_package(argparse CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
+
+find_package(AWSSDK CONFIG COMPONENTS core secretsmanager REQUIRED)
 
 # Add DuckDB as a subdirectory
 add_subdirectory(duckdb EXCLUDE_FROM_ALL)
@@ -43,6 +46,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/duckdb/src/include
     ${CROW_INCLUDE_DIRS}
     ${JWT_CPP_INCLUDE_DIRS}
+    ${AWSSDK_INCLUDE_DIRS}
 )
 
 # Create flapi-lib
@@ -66,9 +70,11 @@ target_link_libraries(flapi-lib PRIVATE
     duckdb_static
     Crow::Crow
     yaml-cpp::yaml-cpp
+    jwt-cpp::jwt-cpp
     argparse::argparse
     OpenSSL::Crypto
     OpenSSL::SSL
+    ${AWSSDK_LIBRARIES}
 )
 
 # Update the flapi executable

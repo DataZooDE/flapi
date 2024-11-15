@@ -3,7 +3,7 @@ dry-run: null
 hookfiles: null
 language: nodejs
 require: null
-server: ../../build/Debug/flapi --config ./api_configuration/flapi.yaml
+server: ../../build/debug/flapi --config ./api_configuration/flapi.yaml
 server-wait: 3
 init: false
 custom: {}

@@ -10,8 +10,8 @@ CMAKE_GENERATOR := $(if $(NINJA),-G Ninja,)
 
 # Build directories
 BUILD_DIR := build
-DEBUG_DIR := $(BUILD_DIR)/Debug
-RELEASE_DIR := $(BUILD_DIR)/Release
+DEBUG_DIR := $(BUILD_DIR)/debug
+RELEASE_DIR := $(BUILD_DIR)/release
 
 # Docker image name
 DOCKER_FILE := docker/development/Dockerfile

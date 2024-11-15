@@ -5,7 +5,7 @@
             "name": "Debug flAPI",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/build/Debug/flapi",
+            "program": "${workspaceFolder}/build/debug/flapi",
             "args": [
                 "--config",
                 "${workspaceFolder}/examples/flapi.yaml",
@@ -32,7 +32,7 @@
             "name": "Debug Tests",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/build/Debug/test/flapi_tests",
+            "program": "${workspaceFolder}/build/debug/test/cpp/flapi_tests",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
