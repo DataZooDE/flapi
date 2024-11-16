@@ -14,24 +14,33 @@ flAPI is a powerful service that automatically generates read-only APIs for data
 - **Easy deployment**: Deploy flAPI with a single binary file
 
 ## 🛠 Quick Start
-The easiest way to get started with flAPI is to use the pre-built binary for your operating system.
+The easiest way to get started with flAPI is to use the pre-built docker image.
 
-#### 1. Download the binary for your operating system from the [Releases](https://github.com/datazoode/flapi/releases) page.
+#### 1. Pull the docker image from the Github Container Registry:
 
-We currently support the following operating systems:
+```bash
+> docker pull ghcr.io/datazoode/flapi:latest
+```
 
-- Linux
 
-and have that statically linked against [DuckDB v1.1.2](https://github.com/duckdb/duckdb/releases/tag/v1.1.2).
+The image is pretty small and mainly contains the flAPI binary which is statically linked against [DuckDB v1.1.3](https://github.com/duckdb/duckdb/releases/tag/v1.1.3). Details about the docker image can be found in the [Dockerfile](./docker/development/Dockerfile).
 
 #### 2. Run flAPI:
 Once you have downloaded the binary, you can run flAPI by executing the following command:
 
 ```
-> ./flapi --config ../examples/flapi.yaml
+> docker run -it --rm -p 8080:8080 -v $(pwd)/examples/:/config ghcr.io/datazoode/flapi -c /config/flapi.yaml
 ```
 
-#### 3. Test the API server:
+The different arguments in this docker command are:
+- `-it --rm`: Run the container in interactive mode and remove it after the process has finished
+- `-p 8080:8080`: Exposes port 8080 of the container to the host, this makes flAPI available at `http://localhost:8080`
+- `-v $(pwd)/examples/:/config`: This mounts the local `examples` directory to the `/config` directory in the container, this is where the flAPI configuration file 
+is expected to be found.
+- `ghcr.io/datazoode/flapi`: The docker image to use
+- `-c /config/flapi.yaml`: This is an argument to the flAPI application which tells it to use the `flapi.yaml` file in the `/config` directory as the configuration file.
+
+#### 3.1 Test the API server:
 If everything is set up correctly, you should be able to access the API at the URL specified in the configuration file.
 
 ```bash
@@ -46,6 +55,17 @@ If everything is set up correctly, you should be able to access the API at the U
     Fast and Flexible API Framework
     powered by DuckDB
 ```
+
+#### 3.2 Get an overview of the available endpoints:
+The flAPI server creates embedded Swagger UI at which provides an overview of the available endpoints and allows you to test them. It can be found at
+
+[`> http://localhost:8080/doc`](http://localhost:8080/doc)
+
+You should see the familiar Swagger UI page:
+
+![flAPI Swagger UI](https://i.imgur.com/HqjHMlA.png)
+
+The raw yaml [Swagger 2.0](https://swagger.io/specification/) is also available at [`http://localhost:8080/doc.yaml`](http://localhost:8080/doc.yaml)
 
 ## 🎓 Example
 
