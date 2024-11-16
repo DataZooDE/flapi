@@ -47,7 +47,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: flAPI-build
-        path: ${{github.workspace}}/build/Release/flapi
+        path: ${{github.workspace}}/build/release/flapi
         if-no-files-found: error
 
     - name: Set up Docker Buildx
