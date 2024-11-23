@@ -279,19 +279,37 @@ void ConfigManager::parseEndpointAuth(const YAML::Node& endpoint_config, Endpoin
             if (aws_node["region"]) {
                 aws_config.region = safeGet<std::string>(aws_node, "region", "auth.from-aws-secretmanager.region");
             }
-            aws_config.secret_table = safeGet<std::string>(aws_node, "secret_table", "auth.from-aws-secretmanager.secret_table", "");
-            
-            if (aws_node["init"]) {
-                aws_config.init = safeGet<std::string>(aws_node, "init", "auth.from-aws-secretmanager.init");
+
+            if (aws_node["secret_id"]) {
+                aws_config.secret_id = safeGet<std::string>(aws_node, "secret_id", "auth.from-aws-secretmanager.secret_id");
             }
+
+            if (aws_node["secret_key"]) {
+                aws_config.secret_key = safeGet<std::string>(aws_node, "secret_key", "auth.from-aws-secretmanager.secret_key");
+            }
+
+            aws_config.secret_table = safeGet<std::string>(aws_node, "secret_table", 
+                                                           "auth.from-aws-secretmanager.secret_table", 
+                                                           secretNameToTableName(aws_config.secret_name));
             
+            aws_config.init = safeGet<std::string>(aws_node, "init", 
+                                                  "auth.from-aws-secretmanager.init", 
+                                                  createDefaultAuthInit(aws_config.secret_name, 
+                                                                        aws_config.region, 
+                                                                        aws_config.secret_id, 
+                                                                        aws_config.secret_key));
+
             endpoint.auth.from_aws_secretmanager = aws_config;
             
             CROW_LOG_DEBUG << "\t\tAWS Secrets Manager configuration:";
             CROW_LOG_DEBUG << "\n\t\t\tSecret Name: " << aws_config.secret_name;
             CROW_LOG_DEBUG << "\n\t\t\tRegion: " << aws_config.region;
             CROW_LOG_DEBUG << "\n\t\t\tSecret Table: " << aws_config.secret_table;
+            CROW_LOG_DEBUG << "\n\t\t\tInit: " << aws_config.init;
+            CROW_LOG_DEBUG << "\n\t\t\tSecret ID: *****[" << aws_config.secret_id.length() << "]";
+            CROW_LOG_DEBUG << "\n\t\t\tSecret Key: *****[" << aws_config.secret_key.length() << "]";
         }
+
         // Parse inline users if present
         else if (auth_node["users"]) {
             CROW_LOG_DEBUG << "\t\tParsing inline users configuration";
@@ -305,6 +323,46 @@ void ConfigManager::parseEndpointAuth(const YAML::Node& endpoint_config, Endpoin
             }
         }
     }
+}
+
+std::string ConfigManager::secretNameToTableName(const std::string& secret_name) 
+{   
+    // Sanitize the secret name, such that it can be a SQL table
+    std::string sanitized_name = secret_name;
+    std::replace(sanitized_name.begin(), sanitized_name.end(), '/', '_');
+    return "auth_" + sanitized_name;
+}
+
+std::string ConfigManager::secretNameToSecretId(const std::string& secret_name) 
+{
+    // Sanitize the secret name, such that it can be duckdb secret identifier
+    std::string sanitized_name = secret_name;
+    std::replace(sanitized_name.begin(), sanitized_name.end(), '/', '_');
+    return sanitized_name;
+}
+
+std::string ConfigManager::createDefaultAuthInit(const std::string& secret_name, 
+                                                 const std::string& region, 
+                                                 const std::string& secret_id, 
+                                                 const std::string& secret_key) 
+{
+    std::stringstream init;
+    init << "CREATE OR REPLACE SECRET " << secretNameToSecretId(secret_name) << " ";
+    init << "(TYPE S3";
+
+    if (!secret_id.empty() && !secret_key.empty()) {
+        init << ", KEY_ID '" << secret_id << "', SECRET '" << secret_key << "'";
+    } else {
+        init << ", PROVIDER CREDENTIAL_CHAIN";
+    }
+
+    if (!region.empty()) {
+        init << ", REGION '" << region << "'";
+    }
+
+    init << ");";
+
+    return init.str();
 }
 
 void ConfigManager::parseEndpointCache(const YAML::Node& endpoint_config, const std::filesystem::path& endpoint_dir, EndpointConfig& endpoint) {

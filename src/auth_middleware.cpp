@@ -34,12 +34,13 @@ void AwsHelper::refreshSecretJson(const std::string& secret_name, const std::str
 
 std::string AwsHelper::getSecretJson(const std::string& secret_name) 
 {
-    CROW_LOG_DEBUG << "Retrieving secret '" + secret_name + "' from AWS Secrets Manager";
+    std::string duck_secret_id = ConfigManager::secretNameToSecretId(secret_name);
+    CROW_LOG_DEBUG << "Retrieving secret '" + secret_name + "' -> '" + duck_secret_id + "' from AWS Secrets Manager";
 
-    auto aws_auth_params = tryGetS3AuthParams(secret_name);
+    auto aws_auth_params = tryGetS3AuthParams(duck_secret_id);
     if (!aws_auth_params) {
         throw std::runtime_error("No AWS auth params found for secret '" + secret_name + "', " +
-                                 "please use create a duckdb secret with the same name and type 'S3'");
+                                 "please use create a duckdb secret with the same name '" + duck_secret_id + "' and type 'S3'");
     }
 
     Aws::SDKOptions options;
@@ -58,8 +59,8 @@ std::string AwsHelper::getSecretJson(const std::string& secret_name)
 
     auto response = secretsClient.GetSecretValue(request);
     if (!response.IsSuccess()) {
-        throw std::runtime_error("Error retrieving secret '" + secret_name + "': " + response.GetError().GetMessage());
         Aws::ShutdownAPI(options);
+        throw std::runtime_error("Error retrieving secret '" + secret_name + "': " + response.GetError().GetMessage());
     }
 
     auto secret_json = response.GetResult().GetSecretString();

@@ -51,7 +51,10 @@ public:
         endpoint.auth.type = "basic";
         
         AuthFromSecretManagerConfig aws_config;
-        aws_config.secret_name = "flapi_endpoint_users";
+        aws_config.secret_name = "prod/flapi/test";
+        aws_config.secret_table = ConfigManager::secretNameToTableName(aws_config.secret_name);
+        aws_config.init = ConfigManager::createDefaultAuthInit(aws_config.secret_name, "", "", "");
+        /*
         aws_config.secret_table = "auth_users";
         aws_config.init = R"(
             INSTALL aws;
@@ -63,7 +66,8 @@ public:
                 REGION 'eu-west-1'
             );
         )";
-        
+        */
+
         endpoint.auth.from_aws_secretmanager = aws_config;
         return endpoint;
     }

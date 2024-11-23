@@ -48,6 +48,8 @@ struct AuthUser {
 struct AuthFromSecretManagerConfig {
     std::string secret_name;
     std::string region;
+    std::string secret_id;
+    std::string secret_key;
     std::string secret_table;
     std::string init;
 
@@ -218,6 +220,8 @@ protected:
     void parseEndpointConnection(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
     void parseEndpointRateLimit(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
     void parseEndpointAuth(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
+    
+
     void parseEndpointCache(const YAML::Node& endpoint_config, const std::filesystem::path& endpoint_dir, EndpointConfig& endpoint);
     void parseGlobalHeartbeatConfig();
     void parseEndpointHeartbeat(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
@@ -234,6 +238,14 @@ protected:
 
     template<typename T>
     T safeGet(const YAML::Node& node, const std::string& key, const std::string& path) const;
+
+public:
+    static std::string secretNameToTableName(const std::string& secret_name);
+    static std::string secretNameToSecretId(const std::string& secret_name);
+    static std::string createDefaultAuthInit(const std::string& secret_name, 
+                                             const std::string& region, 
+                                             const std::string& secret_id, 
+                                             const std::string& secret_key);
 
 };
 
