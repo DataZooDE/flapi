@@ -21,7 +21,11 @@ private:
     void handleDeleteRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams);
     void handleGetRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams);
 
-    std::map<std::string, std::string> combineParameters(const crow::request& req, const std::map<std::string, std::string>& defaultParams, const std::map<std::string, std::string>& pathParams);
+    std::map<std::string, std::string> combineParameters(
+        const crow::request& req, 
+        const std::map<std::string, std::string>& defaultParams, 
+        const std::map<std::string, std::string>& pathParams,
+        const EndpointConfig& endpoint);
     QueryResult executeQuery(const EndpointConfig& endpoint, const std::map<std::string, std::string>& params);
     bool validateRequestParameters(const std::vector<RequestFieldConfig>& requestFields, const std::map<std::string, std::string>& params);
     void parsePaginationParams(std::map<std::string, std::string>& params);

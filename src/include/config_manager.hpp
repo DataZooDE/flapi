@@ -84,6 +84,7 @@ struct RequestFieldConfig {
     std::string fieldIn;
     std::string description;
     bool required = false;
+    std::string defaultValue;
     std::vector<ValidatorConfig> validators;
 };
 

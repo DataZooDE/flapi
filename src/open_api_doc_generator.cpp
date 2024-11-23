@@ -91,7 +91,17 @@ YAML::Node OpenAPIDocGenerator::generateParameters(const std::vector<RequestFiel
         parameter["in"] = field.fieldIn;
         parameter["required"] = field.required;
         parameter["description"] = field.description;
-        parameter["schema"]["type"] = "string"; // You might want to infer the type based on validators
+        
+        // Create schema node
+        YAML::Node schema;
+        schema["type"] = "string"; // Default type, could be improved by inferring from validators
+        
+        // Add default value if present
+        if (!field.defaultValue.empty()) {
+            schema["default"] = field.defaultValue;
+        }
+        
+        parameter["schema"] = schema;
         parameters.push_back(parameter);
     }
     

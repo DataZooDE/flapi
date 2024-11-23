@@ -213,6 +213,14 @@ void ConfigManager::parseEndpointRequestFields(const YAML::Node& endpoint_config
             field.description = safeGet<std::string>(req, "description", "request.description", "");
             field.required = safeGet<bool>(req, "required", "request.required", false);
             
+            if (req["default"]) {
+                if (req["default"].IsScalar()) {
+                    field.defaultValue = req["default"].as<std::string>();
+                } else {
+                    CROW_LOG_WARNING << "Default value for field " << field.fieldName << " must be a scalar value";
+                }
+            }
+            
             parseEndpointValidators(req, field);
             
             endpoint.requestFields.push_back(field);
@@ -302,12 +310,12 @@ void ConfigManager::parseEndpointAuth(const YAML::Node& endpoint_config, Endpoin
             endpoint.auth.from_aws_secretmanager = aws_config;
             
             CROW_LOG_DEBUG << "\t\tAWS Secrets Manager configuration:";
-            CROW_LOG_DEBUG << "\n\t\t\tSecret Name: " << aws_config.secret_name;
-            CROW_LOG_DEBUG << "\n\t\t\tRegion: " << aws_config.region;
-            CROW_LOG_DEBUG << "\n\t\t\tSecret Table: " << aws_config.secret_table;
-            CROW_LOG_DEBUG << "\n\t\t\tInit: " << aws_config.init;
-            CROW_LOG_DEBUG << "\n\t\t\tSecret ID: *****[" << aws_config.secret_id.length() << "]";
-            CROW_LOG_DEBUG << "\n\t\t\tSecret Key: *****[" << aws_config.secret_key.length() << "]";
+            CROW_LOG_DEBUG << "\t\t\tSecret Name: " << aws_config.secret_name;
+            CROW_LOG_DEBUG << "\t\t\tRegion: " << aws_config.region;
+            CROW_LOG_DEBUG << "\t\t\tSecret Table: " << aws_config.secret_table;
+            CROW_LOG_DEBUG << "\t\t\tInit: " << aws_config.init;
+            CROW_LOG_DEBUG << "\t\t\tSecret ID: *****[" << aws_config.secret_id.length() << "]";
+            CROW_LOG_DEBUG << "\t\t\tSecret Key: *****[" << aws_config.secret_key.length() << "]";
         }
 
         // Parse inline users if present

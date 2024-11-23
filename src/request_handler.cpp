@@ -57,7 +57,7 @@ void RequestHandler::handleDeleteRequest(const crow::request& req, crow::respons
 
 void RequestHandler::handleGetRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams) {
     try {
-        auto params = combineParameters(req, defaultParams, pathParams);
+        auto params = combineParameters(req, defaultParams, pathParams, endpoint);
         auto validationErrors = validator->validateRequestParameters(endpoint.requestFields, params);
         
         if (!validationErrors.empty()) {
@@ -153,11 +153,17 @@ std::string RequestHandler::createNextUrl(const crow::request& req, const QueryR
     return baseUrl + queryResult.next;
 }
 
-std::map<std::string, std::string> RequestHandler::combineParameters(const crow::request& req, const std::map<std::string, std::string>& defaultParams, const std::map<std::string, std::string>& pathParams) {
+std::map<std::string, std::string> RequestHandler::combineParameters(const crow::request& req, const std::map<std::string, std::string>& defaultParams, const std::map<std::string, std::string>& pathParams, const EndpointConfig& endpoint) {
     std::map<std::string, std::string> params = defaultParams;
 
     for (const auto& key : pathParams) {
         params[key.first] = key.second;
+    }
+
+    for (const auto& field : endpoint.requestFields) {
+        if (!field.defaultValue.empty() && params.find(field.fieldName) == params.end()) {
+            params[field.fieldName] = field.defaultValue;
+        }
     }
 
     for (const auto& key : req.url_params.keys()) {
