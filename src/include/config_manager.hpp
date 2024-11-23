@@ -188,7 +188,7 @@ protected:
     YAML::Node config;
     std::string project_name;
     std::string project_description;
-    std::string cache_schema = "flapi_cache";
+    std::string cache_schema = "flapi";
     std::string server_name;
     int http_port = 8080; 
     std::unordered_map<std::string, ConnectionConfig> connections;

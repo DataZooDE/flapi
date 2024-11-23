@@ -80,7 +80,8 @@ void CacheManager::refreshCache(std::shared_ptr<ConfigManager> config_manager, c
     }
     
     CROW_LOG_INFO << "Starting to refresh cache: " << cacheSchema << "." << currentWatermark.tableName;
-
+    
+    db_manager->createSchemaIfNecessary(cacheSchema);
     db_manager->executeCacheQuery(endpoint, cacheConfig, params);
     
     CROW_LOG_INFO << "Cache refreshed: " << config_manager->getCacheSchema() << "." << currentWatermark.tableName;

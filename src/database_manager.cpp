@@ -235,6 +235,11 @@ void DatabaseManager::executeInitStatement(const std::string& init_statement) {
     duckdb_destroy_extracted(&stmts);
 }
 
+void DatabaseManager::createSchemaIfNecessary(const std::string& schema) {
+    auto executor = createQueryExecutor();
+    executor.execute("CREATE SCHEMA IF NOT EXISTS '" + schema + "'");
+}
+
 duckdb_connection DatabaseManager::getConnection() {
     std::lock_guard<std::mutex> lock(db_mutex); // Lock for thread safety
     duckdb_connection conn;

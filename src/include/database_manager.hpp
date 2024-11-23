@@ -49,6 +49,7 @@ public:
     void initializeDBManagerFromConfig(std::shared_ptr<ConfigManager> config_manager);
     void initializeConnections(std::shared_ptr<ConfigManager> config_manager);
     void executeInitStatement(const std::string& init_statement);
+    void createSchemaIfNecessary(const std::string& schema);
     duckdb_connection getConnection(); 
     
     bool isCacheEnabled(const EndpointConfig& endpoint);
@@ -73,6 +74,7 @@ private:
     void logDuckDBVersion();
     
     void createAndInitializeDuckDBConfig(std::shared_ptr<ConfigManager> config_manager, duckdb_config& config);
+   
 
     std::string processTemplate(const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
     std::string processCacheTemplate(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params);
