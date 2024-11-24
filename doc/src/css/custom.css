@@ -240,4 +240,160 @@ body {
     padding: 12px 24px;
   }
 }
+
+/* Sidebar styling */
+.sidebar-category-top > div[class^='collapsibleContent'] {
+  margin-left: 0.5rem;
+}
+
+/* Category headers (top level items) always yellow */
+.menu__list-item .menu__link--sublist {
+  background-color: var(--flappy-yellow) !important;
+  color: var(--flappy-dark) !important;
+  font-weight: 600;
+  padding-top: 0.35rem;
+  padding-bottom: 0.35rem;
+  margin-bottom: 0.25rem;
+}
+
+/* Keep yellow background even when active/selected */
+.menu__list-item .menu__link--sublist[aria-expanded='true'],
+.menu__link--sublist.menu__link--active {
+  background-color: var(--flappy-yellow) !important;
+  color: var(--flappy-dark) !important;
+}
+
+/* Regular menu items */
+.menu__link {
+  padding-top: 0.25rem !important;
+  padding-bottom: 0.25rem !important;
+}
+
+/* Active state for regular menu items */
+.menu__link--active:not(.menu__link--sublist) {
+  background-color: var(--flappy-green) !important;
+  color: var(--flappy-white) !important;
+  font-weight: 600 !important;
+}
+
+/* Hover state for regular menu items */
+.menu__link:not(.menu__link--sublist):hover {
+  background-color: var(--flappy-hover) !important;
+  color: var(--flappy-dark) !important;
+}
+
+/* Keep other necessary styles */
+.menu__list-item {
+  margin: 0 !important;
+}
+
+.menu__list-item:not(:first-child) {
+  margin-top: 0 !important;
+}
+
+.menu__list .menu__list {
+  margin-left: 0.25rem !important;
+  padding-left: 0.25rem !important;
+}
+
+.menu__list {
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+/* Make subcategories less prominent but still readable */
+.menu__list-item .menu__list .menu__link {
+  font-size: 0.9rem;
+  font-weight: normal;
+}
+
+/* Landing page specific styles */
+.homepage {
+  --ifm-container-width: 100% !important;
+  --ifm-spacing-horizontal: 0 !important;
+}
+
+/* Make landing page sections full width */
+.homepage .container {
+  max-width: 100% !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  width: 100% !important;
+}
+
+/* Keep documentation pages at their normal width */
+.docs-wrapper .container {
+  max-width: var(--ifm-container-width);
+  padding: 0 var(--ifm-spacing-horizontal);
+  margin: 0 auto;
+}
+
+/* Feature section full width */
+.features {
+  width: 100vw;
+  padding: 4rem 0;
+  background: var(--flappy-sky);
+  position: relative;
+}
+
+/* Easy as flying section full width */
+.easy-flying {
+  width: 100vw;
+  background: var(--flappy-sky);
+  padding: 4rem 0;
+  position: relative;
+}
+
+/* Keep the content centered within full-width sections */
+.features .container,
+.easy-flying .container {
+  max-width: var(--ifm-container-width);
+  margin: 0 auto;
+  padding: 0 var(--ifm-spacing-horizontal);
+}
+
+/* Documentation page styles */
+.markdown h1 {
+  font-family: 'Press Start 2P', system-ui, -apple-system, sans-serif;
+  font-size: 2rem;
+  margin-bottom: 2rem;
+  color: var(--flappy-dark);
+}
+
+/* All other headings in normal font */
+.markdown h2,
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  font-family: system-ui, -apple-system, sans-serif;
+  color: var(--flappy-dark);
+  margin-top: 2rem;
+}
+
+/* Specific sizes for different heading levels */
+.markdown h2 {
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+.markdown h3 {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.markdown h4 {
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+/* Add a subtle underline to the main heading */
+.markdown h1::after {
+  content: '';
+  display: block;
+  width: 100%;
+  height: 4px;
+  background-color: var(--flappy-sky);
+  margin-top: 1rem;
+}
   

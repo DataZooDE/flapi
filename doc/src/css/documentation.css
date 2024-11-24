@@ -89,9 +89,8 @@
 /* Documentation content area */
 .main-wrapper main {
   background: white;
-  max-width: 1400px;
   width: 100%;
-  padding: 2rem;
+  padding: 0;
 }
 
 /* Documentation headers */
@@ -105,14 +104,12 @@
 }
 
 .theme-doc-markdown h2 {
-  font-family: 'Press Start 2P', system-ui, -apple-system, sans-serif;
   font-size: 1.5rem;
   color: var(--flappy-dark);
   margin: 2rem 0 1rem;
 }
 
 .theme-doc-markdown h3 {
-  font-family: 'Press Start 2P', system-ui, -apple-system, sans-serif;
   font-size: 1.1rem;
   color: var(--flappy-dark);
   margin: 1.5rem 0 1rem;
