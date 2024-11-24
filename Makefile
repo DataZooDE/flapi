@@ -81,7 +81,7 @@ docs-install:
 # Start documentation development server with hot reload
 docs-dev: docs-install
 	@echo "Starting documentation development server with hot reload..."
-	@cd $(DOC_DIR) && BROWSER=none $(NPM) run start
+	@cd $(DOC_DIR) && BROWSER=none $(NPM) run start -- --host 0.0.0.0 --port 3000 --no-open
 
 # Build documentation for production
 docs-build: docs-install
