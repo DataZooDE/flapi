@@ -1,0 +1,263 @@
+/**
+ * CSS files with the .module.css suffix will be treated as CSS modules
+ * and scoped locally.
+ */
+
+.heroBanner {
+  padding: 2rem 0;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+  min-height: 60vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Add ground pattern to hero section */
+.heroBanner::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 32px;
+  background-color: #8BC34A;
+  border-top: 4px solid #74BF2E;
+  background-image: 
+    linear-gradient(to right, transparent 0%, transparent 50%, rgba(0,0,0,0.1) 50%, rgba(0,0,0,0.1) 100%),
+    linear-gradient(to right, #74BF2E 2px, transparent 2px);
+  background-size: 24px 100%, 12px 100%;
+  image-rendering: pixelated;
+  z-index: 1;
+}
+
+/* Add city skyline to hero */
+.heroBanner::before {
+  content: '';
+  position: absolute;
+  bottom: 32px;
+  left: 0;
+  right: 0;
+  height: 64px;
+  background-image: 
+    linear-gradient(to right, 
+      rgba(200, 255, 200, 0.2) 0px,
+      rgba(200, 255, 200, 0.2) 48px,
+      transparent 48px,
+      transparent 64px
+    ),
+    linear-gradient(to right, 
+      rgba(200, 255, 200, 0.15) 32px,
+      rgba(200, 255, 200, 0.15) 96px,
+      transparent 96px,
+      transparent 128px
+    );
+  background-size: 96px 100%, 192px 100%;
+  background-repeat: repeat-x;
+  opacity: 0.5;
+  z-index: 1;
+}
+
+@media screen and (max-width: 996px) {
+  .heroBanner {
+    padding: 2rem;
+    min-height: 50vh;
+  }
+}
+
+.buttons {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  position: relative;
+  z-index: 1;
+}
+
+.overview {
+  padding: 3rem 0;
+  background: var(--flappy-white);
+  position: relative;
+  margin-top: -32px;  /* Pull up to overlap with hero ground pattern */
+}
+
+/* Add ground pattern to overview section */
+.overview::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 32px;
+  background-color: #8BC34A;
+  border-top: 4px solid #74BF2E;
+  background-image: 
+    linear-gradient(to right, transparent 0%, transparent 50%, rgba(0,0,0,0.1) 50%, rgba(0,0,0,0.1) 100%),
+    linear-gradient(to right, #74BF2E 2px, transparent 2px);
+  background-size: 24px 100%, 12px 100%;
+  image-rendering: pixelated;
+}
+
+/* Add city skyline */
+.overview::before {
+  content: '';
+  position: absolute;
+  bottom: 32px;
+  left: 0;
+  right: 0;
+  height: 64px;
+  background-image: 
+    linear-gradient(to right, 
+      rgba(200, 255, 200, 0.2) 0px,
+      rgba(200, 255, 200, 0.2) 48px,
+      transparent 48px,
+      transparent 64px
+    ),
+    linear-gradient(to right, 
+      rgba(200, 255, 200, 0.15) 32px,
+      rgba(200, 255, 200, 0.15) 96px,
+      transparent 96px,
+      transparent 128px
+    );
+  background-size: 96px 100%, 192px 100%;
+  background-repeat: repeat-x;
+  opacity: 0.5;
+}
+
+.overviewContent {
+  text-align: center;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 2rem;
+}
+
+.overviewTitle {
+  font-family: 'Press Start 2P', system-ui, -apple-system, sans-serif;
+  color: var(--flappy-dark);
+  margin-bottom: 1.5rem;
+}
+
+.overviewImage {
+  width: 75%;
+  height: auto;
+  border-radius: 8px;
+  box-shadow: 0 4px 8px var(--flappy-shadow);
+  border: 3px solid var(--flappy-dark);
+  margin: 1.5rem auto;
+  display: block;
+}
+
+/* Make hero content appear above the game background */
+.hero > .container {
+  position: relative;
+  z-index: 1;
+  padding: 2rem 0;
+}
+
+.features {
+  display: flex;
+  align-items: center;
+  padding: 2rem 0;
+  width: 100%;
+}
+
+.featureImage {
+  height: 200px;
+  width: 200px;
+}
+
+.overviewText {
+  width: 75%;
+  margin: 1.5rem auto 0;
+  text-align: left;
+  padding: 1.5rem;
+  background: var(--flappy-white);
+  border-radius: 8px;
+  box-shadow: 0 4px 0 var(--flappy-dark);
+  border: 3px solid var(--flappy-dark);
+}
+
+.overviewText p {
+  font-size: 1.1rem;
+  margin-bottom: 1rem;
+  color: var(--flappy-dark);
+}
+
+.overviewText ol {
+  list-style: none;
+  padding: 0;
+}
+
+.overviewText ol p {
+  padding: 1rem;
+  margin: 0.5rem 0;
+  background: var(--flappy-sky);
+  border-radius: 8px;
+  transition: all 0.3s ease;
+}
+
+.overviewText ol p:hover {
+  transform: translateX(10px);
+}
+
+.overviewText strong {
+  font-family: 'Press Start 2P', system-ui, -apple-system, sans-serif;
+  font-size: 0.9rem;
+  color: var(--flappy-dark);
+}
+
+/* Mobile responsive adjustments */
+@media screen and (max-width: 996px) {
+  .overviewContent {
+    padding: 0 1rem;
+  }
+
+  .overviewImage {
+    width: 95%;  /* Increased from 75% to 95% */
+    margin: 1.5rem auto;
+  }
+
+  .overviewText {
+    width: 95%;  /* Increased from 75% to 95% */
+    padding: 1.5rem;
+  }
+  
+  .overviewText p {
+    font-size: 1rem;
+  }
+  
+  .overviewText strong {
+    font-size: 0.8rem;
+  }
+
+  .overviewText ol p {
+    padding: 1rem;
+    margin: 0.5rem 0;
+  }
+}
+
+/* Extra small devices */
+@media screen and (max-width: 480px) {
+  .overviewImage {
+    width: 100%;  /* Full width on very small screens */
+    margin: 1rem auto;
+    border-width: 2px;  /* Slightly thinner border */
+  }
+
+  .overviewText {
+    width: 100%;  /* Full width on very small screens */
+    padding: 1rem;
+    border-width: 2px;
+  }
+
+  .overviewTitle {
+    font-size: 1.2rem;  /* Smaller title on mobile */
+    margin-bottom: 1rem;
+  }
+
+  .overviewText ol p {
+    padding: 0.75rem;
+    margin: 0.25rem 0;
+  }
+} 

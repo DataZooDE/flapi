@@ -1,0 +1,217 @@
+/* Documentation specific styles */
+
+/* Main documentation container */
+.main-wrapper {
+  background-color: white;
+}
+
+/* Sidebar styling */
+.theme-doc-sidebar-container {
+  border-right: 1px solid #E5E5E5;
+  background: #F8F9FA;
+  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.05);
+}
+
+/* Sidebar category headers */
+.theme-doc-sidebar-item-category {
+  padding: 0.5rem 0;
+  margin-bottom: 0.5rem;
+}
+
+.theme-doc-sidebar-item-category-level-1 {
+  margin-top: 1rem;
+  border-bottom: 2px solid #E5E5E5;
+}
+
+/* Category title */
+.theme-doc-sidebar-item-category > .menu__list-item-collapsible {
+  font-family: 'Press Start 2P', system-ui, -apple-system, sans-serif;
+  font-size: 0.8rem;
+  color: #1a1a1a;
+  padding: 0.75rem 1rem;
+  transition: all 0.2s;
+  border-radius: 8px;
+}
+
+.theme-doc-sidebar-item-category > .menu__list-item-collapsible:hover {
+  background: #E9ECEF;
+  transform: translateX(4px);
+}
+
+/* Sidebar links */
+.menu__link {
+  font-size: 0.9rem;
+  color: #666;
+  padding: 0.5rem 1rem;
+  transition: all 0.2s;
+  border-radius: 6px;
+  margin: 2px 0;
+}
+
+.menu__link:hover {
+  background-color: #E9ECEF;
+  color: #1a1a1a;
+  transform: translateX(4px);
+}
+
+.menu__link--active {
+  background-color: var(--flappy-sky) !important;
+  color: white !important;
+  font-weight: 600;
+}
+
+/* Nested items */
+.menu__list-item-collapsible:hover {
+  background: none;
+}
+
+.menu__list .menu__list {
+  padding-left: 1rem;
+  border-left: 2px solid var(--flappy-sky);
+  margin-left: 1rem;
+}
+
+/* Expand/collapse arrows */
+.menu__caret {
+  padding: 0.4rem;
+  transition: all 0.2s;
+}
+
+.menu__caret:before {
+  background: var(--ifm-menu-link-sublist-icon) 50% / 1.25rem 1.25rem;
+  transform: rotate(90deg);
+}
+
+.menu__list-item--collapsed .menu__caret:before {
+  transform: rotate(0deg);
+}
+
+/* Documentation content area */
+.main-wrapper main {
+  background: white;
+  max-width: 1400px;
+  width: 100%;
+  padding: 2rem;
+}
+
+/* Documentation headers */
+.theme-doc-markdown h1 {
+  font-family: 'Press Start 2P', system-ui, -apple-system, sans-serif;
+  font-size: 2rem;
+  color: var(--flappy-dark);
+  margin-bottom: 2rem;
+  padding-bottom: 1rem;
+  border-bottom: 4px solid var(--flappy-sky);
+}
+
+.theme-doc-markdown h2 {
+  font-family: 'Press Start 2P', system-ui, -apple-system, sans-serif;
+  font-size: 1.5rem;
+  color: var(--flappy-dark);
+  margin: 2rem 0 1rem;
+}
+
+.theme-doc-markdown h3 {
+  font-family: 'Press Start 2P', system-ui, -apple-system, sans-serif;
+  font-size: 1.1rem;
+  color: var(--flappy-dark);
+  margin: 1.5rem 0 1rem;
+}
+
+/* Code blocks */
+.theme-doc-markdown pre {
+  background: #1E1E1E;
+  border-radius: 8px;
+  margin: 1.5rem 0;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+  border: 1px solid #333;
+}
+
+/* Inline code */
+.theme-doc-markdown code {
+  background: #F1F3F5;
+  color: var(--flappy-dark);
+  padding: 0.2rem 0.4rem;
+  border-radius: 4px;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Lists */
+.theme-doc-markdown ul, 
+.theme-doc-markdown ol {
+  padding-left: 1.5rem;
+}
+
+.theme-doc-markdown li {
+  margin: 0.5rem 0;
+}
+
+/* Admonitions (note, warning, etc.) */
+.alert {
+  border-radius: 8px;
+  border-left-width: 6px;
+  margin: 2rem 0;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+/* Table of contents */
+.table-of-contents {
+  background: #F8F9FA;
+  padding: 1.5rem;
+  border-radius: 8px;
+  border: 1px solid #E5E5E5;
+}
+
+.table-of-contents__link {
+  color: #666;
+  transition: all 0.2s;
+  display: block;
+  padding: 0.3rem 0;
+}
+
+.table-of-contents__link:hover {
+  color: var(--flappy-sky);
+  transform: translateX(4px);
+}
+
+.table-of-contents__link--active {
+  color: var(--flappy-sky);
+  font-weight: 600;
+}
+
+/* Pagination */
+.pagination-nav {
+  margin-top: 3rem;
+}
+
+.pagination-nav__link {
+  border: 2px solid #E5E5E5;
+  border-radius: 8px;
+  transition: all 0.2s;
+}
+
+.pagination-nav__link:hover {
+  border-color: var(--flappy-sky);
+  background: var(--flappy-sky);
+  color: white;
+  transform: translateY(-2px);
+}
+
+/* Mobile adjustments */
+@media screen and (max-width: 996px) {
+  .main-wrapper main {
+    padding: 1rem;
+  }
+
+  .theme-doc-markdown h1 {
+    font-size: 1.5rem;
+  }
+
+  .theme-doc-markdown h2 {
+    font-size: 1.2rem;
+  }
+
+  .theme-doc-markdown h3 {
+    font-size: 1rem;
+  }
+} 
