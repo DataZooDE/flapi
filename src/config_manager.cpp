@@ -337,7 +337,8 @@ std::string ConfigManager::secretNameToTableName(const std::string& secret_name)
 {   
     // Sanitize the secret name, such that it can be a SQL table
     std::string sanitized_name = secret_name;
-    std::replace(sanitized_name.begin(), sanitized_name.end(), '/', '_');
+     std::replace_if(sanitized_name.begin(), sanitized_name.end(), 
+                    [](char c) { return !std::isalnum(c); }, '_');
     return "auth_" + sanitized_name;
 }
 
@@ -345,7 +346,8 @@ std::string ConfigManager::secretNameToSecretId(const std::string& secret_name)
 {
     // Sanitize the secret name, such that it can be duckdb secret identifier
     std::string sanitized_name = secret_name;
-    std::replace(sanitized_name.begin(), sanitized_name.end(), '/', '_');
+    std::replace_if(sanitized_name.begin(), sanitized_name.end(), 
+                    [](char c) { return !std::isalnum(c); }, '_');
     return sanitized_name;
 }
 
