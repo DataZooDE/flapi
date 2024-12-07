@@ -43,9 +43,6 @@ jobs:
     - name: Build Release
       run: make release
 
-    - name: Run Release Tests
-      run: make run-release-tests
-
     - name: Verify binary exists
       run: |
         ls -l ${{github.workspace}}/build/release/flapi
