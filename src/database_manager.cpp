@@ -21,6 +21,7 @@ QueryExecutor::QueryExecutor(duckdb_database db) : has_result(false) {
 QueryExecutor::~QueryExecutor() {
     if (has_result) {
         duckdb_destroy_result(&result);
+        has_result = false;
     }
     duckdb_disconnect(&conn);
 }
@@ -34,6 +35,7 @@ void QueryExecutor::execute(const std::string& query, const std::string& context
     if (duckdb_query(conn, query.c_str(), &result) == DuckDBError) {
         std::string error_message = duckdb_result_error(&result);
         std::string context_msg = context.empty() ? "" : " during " + context;
+        duckdb_destroy_result(&result);
         throw std::runtime_error("Query execution failed" + context_msg + ": " + error_message);
     }
     has_result = true;
@@ -48,6 +50,7 @@ void QueryExecutor::executePrepared(duckdb_prepared_statement stmt, const std::s
     if (duckdb_execute_prepared(stmt, &result) == DuckDBError) {
         std::string error_message = duckdb_result_error(&result);
         std::string context_msg = context.empty() ? "" : " during " + context;
+        duckdb_destroy_result(&result);
         throw std::runtime_error("Prepared statement execution failed" + context_msg + ": " + error_message);
     }
     has_result = true;
