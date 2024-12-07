@@ -43,12 +43,21 @@ jobs:
     - name: Build Release
       run: make release
 
+    - name: Run Release Tests
+      run: make run-release-tests
+
+    - name: Verify binary exists
+      run: |
+        ls -l ${{github.workspace}}/build/release/flapi
+        file ${{github.workspace}}/build/release/flapi
+
     - name: Upload build artifact
       uses: actions/upload-artifact@v4
       with:
-        name: flAPI-build
-        path: ${{github.workspace}}/build/release/flapi
+        name: flapi-${{ runner.os }}-${{ github.sha }}
+        path: build/release/flapi
         if-no-files-found: error
+        retention-days: 90
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v2
@@ -69,9 +78,9 @@ jobs:
       with:
         context: .
         file: ./docker/development/Dockerfile
-        push: true
+        push: ${{ github.event_name == 'push' }}
         tags: |
           ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && format('ghcr.io/{0}/flapi:latest', env.REPOSITORY_OWNER) || '' }}
-          ${{ github.event_name == 'push' && format('ghcr.io/{0}/flapi:branch-{1}', env.REPOSITORY_OWNER, github.ref_name) || '' }}
-          ${{ github.event_name == 'pull_request' && format('ghcr.io/{0}/flapi:pr-{1}', env.REPOSITORY_OWNER, github.event.number) || '' }}
           ghcr.io/${{ env.REPOSITORY_OWNER }}/flapi:${{ github.sha }}
+        build-args: |
+          GITHUB_SHA=${{ github.sha }}
