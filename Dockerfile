@@ -3,6 +3,7 @@ FROM ubuntu:oracular-20241009
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libc6 \
     libstdc++6 \
+    libubsan1 \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
