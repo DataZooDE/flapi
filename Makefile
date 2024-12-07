@@ -50,11 +50,22 @@ run-debug: debug
 	@echo "Running debug version..."
 	@$(DEBUG_DIR)/flapi --config examples/flapi.yaml --log-level debug
 
+# Run debug tests
+run-debug-tests: debug
+	@echo "Running debug tests..."
+	@$(DEBUG_DIR)/test/cpp/flapi_tests
+
 # Run release version
 run-release: release
 	@echo "Running release version..."
 	@$(RELEASE_DIR)/flapi --config examples/flapi.yaml --log-level info
 
+# Run release tests
+run-release-tests: release
+	@echo "Running release tests..."
+	@$(RELEASE_DIR)/test/cpp/flapi_tests
+
+# Run integration tests
 run-integration-tests: debug
 	@echo "Running integration tests..."
 	@$(CMAKE) --build $(DEBUG_DIR) --target integration_tests

@@ -43,6 +43,10 @@ std::string SQLTemplateProcessor::loadTemplateContent(const std::string& templat
 }
 
 std::string SQLTemplateProcessor::getFullTemplatePath(const std::string& templateSource) const {
+    // If templateSource is an absolute path, return it directly
+    if (std::filesystem::path(templateSource).is_absolute()) {
+        return templateSource;
+    }
     std::filesystem::path basePath = config_manager->getTemplatePath();
     std::filesystem::path fullPath = basePath / templateSource;
     return fullPath.string();

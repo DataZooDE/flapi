@@ -395,8 +395,17 @@ YAML::Node DatabaseManager::describeSelectQuery(const EndpointConfig& endpoint) 
         executor.execute(describeQuery);
         
         for (idx_t i = 0; i < executor.rowCount(); i++) {
-            std::string column_name = duckdb_value_varchar(&executor.result, 0, i);
-            std::string column_type = duckdb_value_varchar(&executor.result, 1, i);
+            // Get column name and type, storing pointers so we can free them
+            const char* column_name_ptr = duckdb_value_varchar(&executor.result, 0, i);
+            const char* column_type_ptr = duckdb_value_varchar(&executor.result, 1, i);
+            
+            // Create strings from the pointers before we free them
+            std::string column_name(column_name_ptr);
+            std::string column_type(column_type_ptr);
+            
+            // Free the memory allocated by duckdb_value_varchar
+            duckdb_free((void*)column_name_ptr);
+            duckdb_free((void*)column_type_ptr);
             
             YAML::Node property;
             if (column_type == "INTEGER" || column_type == "BIGINT") {

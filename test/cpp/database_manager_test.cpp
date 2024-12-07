@@ -117,14 +117,14 @@ TEST_CASE_METHOD(TestFixture, "DatabaseManager can check table existence", "[dat
 
 TEST_CASE_METHOD(TestFixture, "DatabaseManager can get table names", "[database_manager]") {
     // Create test tables
-    db_manager->executeQuery("CREATE TABLE test_table1 (id INTEGER)", {}, false);
-    db_manager->executeQuery("CREATE TABLE test_table2 (id INTEGER)", {}, false);
+    db_manager->executeQuery("CREATE TABLE test_table_name_table1 (id INTEGER)", {}, false);
+    db_manager->executeQuery("CREATE TABLE test_table_name_table2 (id INTEGER)", {}, false);
     
-    auto tables = db_manager->getTableNames("main", "test_", true);
+    auto tables = db_manager->getTableNames("main", "test_table_name_", true);
     
     REQUIRE(tables.size() == 2);
-    REQUIRE(std::find(tables.begin(), tables.end(), "test_table1") != tables.end());
-    REQUIRE(std::find(tables.begin(), tables.end(), "test_table2") != tables.end());
+    REQUIRE(std::find(tables.begin(), tables.end(), "test_table_name_table1") != tables.end());
+    REQUIRE(std::find(tables.begin(), tables.end(), "test_table_name_table2") != tables.end());
 }
 
 TEST_CASE_METHOD(TestFixture, "DatabaseManager can handle JSON data", "[database_manager]") {
@@ -152,12 +152,21 @@ TEST_CASE_METHOD(TestFixture, "DatabaseManager can describe query structure", "[
     template_file << "SELECT 42 as number, 'text' as string_col, TRUE as bool_col";
     template_file.close();
     
-    // Create a test endpoint that references the template file
+    // Create a test endpoint with complete configuration
     EndpointConfig endpoint;
-    endpoint.templateSource = "describe_test.sql";
+    endpoint.templateSource = sql_template.string();
+    endpoint.method = "GET";
+    endpoint.urlPath = "/test";
+    
+    // Add this line to debug the SQL processor state
+    std::cout << "Template directory: " << templates_dir << std::endl;
+    std::cout << "Template source: " << endpoint.templateSource << std::endl;
     
     auto description = db_manager->describeSelectQuery(endpoint);
     
+    // Add this line to debug the output
+    std::cout << "Description output: " << YAML::Dump(description) << std::endl;
+
     REQUIRE(description["number"]["type"].as<std::string>() == "integer");
     REQUIRE(description["string_col"]["type"].as<std::string>() == "string");
     REQUIRE(description["bool_col"]["type"].as<std::string>() == "boolean");
