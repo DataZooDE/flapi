@@ -14,7 +14,7 @@ DEBUG_DIR := $(BUILD_DIR)/debug
 RELEASE_DIR := $(BUILD_DIR)/release
 
 # Docker image name
-DOCKER_FILE := docker/development/Dockerfile
+DOCKER_FILE := Dockerfile
 DOCKER_IMAGE_NAME := ghcr.io/datazoode/flapi
 
 # Default target

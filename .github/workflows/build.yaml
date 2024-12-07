@@ -77,7 +77,7 @@ jobs:
       uses: docker/build-push-action@v4
       with:
         context: .
-        file: ./docker/development/Dockerfile
+        file: Dockerfile
         push: ${{ github.event_name == 'push' }}
         tags: |
           ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && format('ghcr.io/{0}/flapi:latest', env.REPOSITORY_OWNER) || '' }}
