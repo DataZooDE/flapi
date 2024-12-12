@@ -18,7 +18,7 @@ DOCKER_FILE := Dockerfile
 DOCKER_IMAGE_NAME := ghcr.io/datazoode/flapi
 
 # Default target
-all: debug release docs-build
+all: debug release
 
 # Debug build
 ifeq ($(shell uname),Darwin)

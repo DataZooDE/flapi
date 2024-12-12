@@ -60,7 +60,7 @@ jobs:
         ./vcpkg/vcpkg integrate install
 
     - name: Build Release
-      run: make
+      run: make release
 
     - name: Verify binary exists
       run: |
