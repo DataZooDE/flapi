@@ -10,23 +10,22 @@ add_executable(flapi_tests
 )
 
 target_include_directories(flapi_tests PRIVATE 
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/include
+    ${CMAKE_SOURCE_DIR}/src/include
 )
 
 target_link_libraries(flapi_tests PRIVATE 
     flapi-lib
     Catch2::Catch2WithMain
-    yaml-cpp::yaml-cpp
-    jwt-cpp::jwt-cpp
-    OpenSSL::Crypto
-    OpenSSL::SSL
-    ${AWSSDK_LIBRARIES}
 )
-target_link_options(flapi_tests PRIVATE -fsanitize=undefined)
 
 include(CTest)
 include(Catch)
-catch_discover_tests(flapi_tests)
+catch_discover_tests(flapi_tests 
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    PROPERTIES 
+        ENVIRONMENT "DYLD_LIBRARY_PATH=${CMAKE_BINARY_DIR}"
+        SKIP_RETURN_CODE 4
+)
 
 # Add the test to CTest
 add_test(NAME flapi_tests COMMAND flapi_tests)

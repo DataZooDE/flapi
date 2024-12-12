@@ -537,18 +537,47 @@ std::string ConfigManager::makePathRelativeToBasePathIfNecessary(const std::stri
 }
 
 std::unordered_map<std::string, std::string> ConfigManager::getPropertiesForTemplates(const std::string& connectionName) const {
-    if (connections.find(connectionName) == connections.end()) {
+    // Add validation for empty connection name
+    if (connectionName.empty()) {
+        CROW_LOG_WARNING << "getPropertiesForTemplates called with empty connection name";
         return {};
     }
 
-    auto props = connections.at(connectionName).properties;
-    std::unordered_map<std::string, std::string> propsForTemplates;
-
-    for (const auto& [key, value] : props) {
-        propsForTemplates[key] = makePathRelativeToBasePathIfNecessary(value); // Use the new method
+    // Add validation for connections map
+    if (connections.empty()) {
+        CROW_LOG_WARNING << "getPropertiesForTemplates called with empty connections map";
+        return {};
     }
 
-    return propsForTemplates;
+    // Use find() instead of at() to avoid potential exceptions
+    auto connIt = connections.find(connectionName);
+    if (connIt == connections.end()) {
+        CROW_LOG_WARNING << "No connection found for name: " << connectionName;
+        return {};
+    }
+
+    try {
+        const auto& props = connIt->second.properties;
+        std::unordered_map<std::string, std::string> propsForTemplates;
+
+        for (const auto& [key, value] : props) {
+            if (key.empty()) {
+                CROW_LOG_WARNING << "Empty key found in properties for connection: " << connectionName;
+                continue;
+            }
+            try {
+                propsForTemplates[key] = makePathRelativeToBasePathIfNecessary(value);
+            } catch (const std::exception& e) {
+                CROW_LOG_ERROR << "Error processing property " << key << ": " << e.what();
+                continue;
+            }
+        }
+
+        return propsForTemplates;
+    } catch (const std::exception& e) {
+        CROW_LOG_ERROR << "Exception in getPropertiesForTemplates: " << e.what();
+        return {};
+    }
 }
 
 std::string ConfigManager::getFullCacheSourcePath(const EndpointConfig& endpoint) const {

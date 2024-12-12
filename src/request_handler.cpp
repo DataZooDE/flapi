@@ -114,6 +114,8 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
         }
 
         res.add_header("X-Total-Count", std::to_string(queryResult.total_count));
+        res.add_header("X-Offset", std::to_string(offset));
+        res.add_header("X-Limit", std::to_string(limit));
         res.add_header("X-Next", createNextUrl(req, queryResult));
         res.end();
         return;

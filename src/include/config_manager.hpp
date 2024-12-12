@@ -146,7 +146,11 @@ struct GlobalHeartbeatConfig {
 
 class ConfigManager {
 public:
-    ConfigManager(const std::filesystem::path& config_file);
+    explicit ConfigManager(const std::filesystem::path& config_file);
+    
+    // Add virtual destructor
+    virtual ~ConfigManager() = default;
+    
     void loadConfig();
     void loadEndpointConfigsRecursively(const std::filesystem::path& dir);
     void loadEndpointConfig(const std::string& config_file);

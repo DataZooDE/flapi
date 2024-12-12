@@ -8,7 +8,20 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+            runner: ubuntu-latest
+          - os: ubuntu-latest
+            arch: arm64
+            runner: ubuntu-latest-arm64
+          - os: macos-latest
+            arch: universal
+            runner: macos-latest
+
+    runs-on: ${{ matrix.runner }}
 
     steps:
     - uses: actions/checkout@v3
@@ -22,10 +35,16 @@ jobs:
         path: duckdb
         ref: v1.1.2
         
-    - name: Install dependencies
+    - name: Install dependencies (Linux)
+      if: runner.os == 'Linux'
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential cmake ninja-build
+
+    - name: Install dependencies (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        brew install ninja cmake
 
     - name: Cache vcpkg
       uses: actions/cache@v3
@@ -33,7 +52,7 @@ jobs:
         path: |
           ~/.cache/vcpkg
           ./vcpkg/installed
-        key: ${{ runner.os }}-vcpkg-${{ hashFiles('vcpkg.json') }}
+        key: ${{ runner.os }}-${{ matrix.arch }}-vcpkg-${{ hashFiles('vcpkg.json') }}
 
     - name: Configure vcpkg
       run: |
@@ -41,20 +60,44 @@ jobs:
         ./vcpkg/vcpkg integrate install
 
     - name: Build Release
-      run: make release
+      run: make
 
     - name: Verify binary exists
       run: |
-        ls -l ${{github.workspace}}/build/release/flapi
-        file ${{github.workspace}}/build/release/flapi
+        if [ "${{ runner.os }}" = "macOS" ]; then
+          ls -l ${{github.workspace}}/build/universal/flapi
+          file ${{github.workspace}}/build/universal/flapi
+        else
+          ls -l ${{github.workspace}}/build/release/flapi
+          file ${{github.workspace}}/build/release/flapi
+        fi
 
     - name: Upload build artifact
       uses: actions/upload-artifact@v4
       with:
-        name: flapi-${{ runner.os }}-${{ github.sha }}
-        path: build/release/flapi
+        name: flapi-${{ matrix.os }}-${{ matrix.arch }}-${{ github.sha }}
+        path: |
+          ${{ runner.os == 'macOS' && 'build/universal/flapi' || 'build/release/flapi' }}
         if-no-files-found: error
         retention-days: 90
+
+  # Docker build only for x86_64 Linux
+  docker:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Download x86_64 Linux artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: flapi-ubuntu-latest-x86_64-${{ github.sha }}
+        path: build/release
+
+    - name: Set file permissions
+      run: chmod +x build/release/flapi
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v2

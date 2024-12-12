@@ -10,8 +10,7 @@
 namespace flapi {
 
 APIServer::APIServer(std::shared_ptr<ConfigManager> cm, std::shared_ptr<DatabaseManager> db_manager)
-    : configManager(cm), dbManager(db_manager), requestHandler(dbManager, cm),
-      openAPIDocGenerator(std::make_shared<OpenAPIDocGenerator>(cm, db_manager))
+    : configManager(cm), dbManager(db_manager), openAPIDocGenerator(std::make_shared<OpenAPIDocGenerator>(cm, db_manager)), requestHandler(dbManager, cm)
 {
     createApp();
     setupRoutes();
