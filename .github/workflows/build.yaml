@@ -14,9 +14,6 @@ jobs:
           - os: ubuntu-latest
             arch: x86_64
             runner: ubuntu-latest
-          - os: ubuntu-latest
-            arch: arm64
-            runner: ubuntu-latest-arm64
           - os: macos-latest
             arch: universal
             runner: macos-latest
@@ -44,7 +41,7 @@ jobs:
     - name: Install dependencies (macOS)
       if: runner.os == 'macOS'
       run: |
-        brew install ninja cmake
+        brew install ninja
 
     - name: Cache vcpkg
       uses: actions/cache@v3
