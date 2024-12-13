@@ -14,6 +14,9 @@ jobs:
           - os: ubuntu-latest
             arch: x86_64
             runner: ubuntu-latest
+          - os: ubuntu-latest
+            arch: arm64
+            runner: ubuntu-latest-arm64
           - os: macos-latest
             arch: universal
             runner: macos-latest
@@ -78,26 +81,31 @@ jobs:
         if-no-files-found: error
         retention-days: 90
 
-  # Docker build only for x86_64 Linux
+  # Docker build for multi-arch
   docker:
     needs: build
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-latest-arm64
+    runs-on: ${{ matrix.runner }}
     if: github.event_name == 'push'
 
     steps:
     - uses: actions/checkout@v3
 
-    - name: Download x86_64 Linux artifact
+    - name: Download artifact
       uses: actions/download-artifact@v4
       with:
-        name: flapi-ubuntu-latest-x86_64-${{ github.sha }}
+        name: flapi-ubuntu-latest-${{ matrix.arch == 'amd64' && 'x86_64' || 'arm64' }}-${{ github.sha }}
         path: build/release
 
     - name: Set file permissions
       run: chmod +x build/release/flapi
-
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2
 
     - name: Login to GitHub Container Registry
       uses: docker/login-action@v2
@@ -115,9 +123,32 @@ jobs:
       with:
         context: .
         file: Dockerfile
-        push: ${{ github.event_name == 'push' }}
+        platforms: linux/${{ matrix.arch }}
+        push: true
         tags: |
-          ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && format('ghcr.io/{0}/flapi:latest', env.REPOSITORY_OWNER) || '' }}
-          ghcr.io/${{ env.REPOSITORY_OWNER }}/flapi:${{ github.sha }}
-        build-args: |
-          GITHUB_SHA=${{ github.sha }}
+          ghcr.io/${{ env.REPOSITORY_OWNER }}/flapi:${{ github.sha }}-${{ matrix.arch }}
+
+  # Merge and push multi-arch manifest
+  docker-manifest:
+    needs: docker
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    
+    steps:
+    - name: Login to GitHub Container Registry
+      uses: docker/login-action@v2
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Lowercase github.repository_owner
+      run: |
+        echo "REPOSITORY_OWNER=`echo ${{github.repository_owner}} | tr '[:upper:]' '[:lower:]'`" >>${GITHUB_ENV}
+
+    - name: Create and push manifest
+      run: |
+        docker manifest create ghcr.io/${{ env.REPOSITORY_OWNER }}/flapi:latest \
+          ghcr.io/${{ env.REPOSITORY_OWNER }}/flapi:${{ github.sha }}-amd64 \
+          ghcr.io/${{ env.REPOSITORY_OWNER }}/flapi:${{ github.sha }}-arm64
+        docker manifest push ghcr.io/${{ env.REPOSITORY_OWNER }}/flapi:latest
