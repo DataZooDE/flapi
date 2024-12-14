@@ -51,8 +51,6 @@ jobs:
       if: runner.os == 'Linux'
       run: |
         mkdir -p build/release
-        echo "Listing build directory contents:"
-        ls -R build/
         if [ "${{ matrix.arch }}" = "amd64" ]; then
           cp build/flapi build/release/
         else
