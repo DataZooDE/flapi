@@ -47,12 +47,24 @@ jobs:
         target: builder
         push: false
 
+    - name: Prepare Linux artifacts
+      if: runner.os == 'Linux'
+      run: |
+        mkdir -p build/release
+        if [ "${{ matrix.arch }}" = "amd64" ]; then
+          cp build/linux_amd64/flapi build/release/
+        else
+          cp build/linux_arm64/flapi build/release/
+        fi
+        chmod +x build/release/flapi
+
     - name: Build Release (macOS)
       if: runner.os == 'macOS'
       run: |
         make release
         mkdir -p build/release
         cp build/universal/flapi build/release/
+        chmod +x build/release/flapi
 
     - name: Upload build artifact
       uses: actions/upload-artifact@v4
@@ -92,7 +104,7 @@ jobs:
       run: |
         mkdir -p build/release
         cp artifacts/flapi-ubuntu-latest-amd64/flapi build/release/flapi.amd64
-        cp artifacts/flapi-ubuntu-arm64-arm64/flapi build/release/flapi.arm64
+        cp artifacts/flapi-ubuntu-latest-arm64/flapi build/release/flapi.arm64
         chmod +x build/release/flapi.*
 
     - name: Build and push multi-platform Docker image
