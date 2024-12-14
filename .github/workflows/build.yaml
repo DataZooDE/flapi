@@ -52,9 +52,9 @@ jobs:
       run: |
         mkdir -p build/release
         if [ "${{ matrix.arch }}" = "amd64" ]; then
-          cp build/flapi build/release/
+          find build -name flapi -type f -exec cp {} build/release/ \;
         else
-          cp build/flapi build/release/
+          find build -name flapi -type f -exec cp {} build/release/ \;
         fi
         chmod +x build/release/flapi
 
