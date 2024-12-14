@@ -14,9 +14,12 @@ RUN apt-get update && apt-get install -y \
     tar \
     pkg-config \
     perl \
-    libssl-dev \
-    gcc-multilib \
-    g++-multilib
+    libssl-dev
+
+# Install multilib packages only for amd64 architecture
+RUN if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+        apt-get install -y gcc-multilib g++-multilib; \
+    fi
 
 # Set compiler environment variables
 ENV CC=/usr/bin/gcc
