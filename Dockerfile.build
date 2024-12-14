@@ -14,7 +14,8 @@ RUN apt-get update && apt-get install -y \
     tar \
     pkg-config \
     perl \
-    libssl-dev
+    libssl-dev \
+    linux-libc-dev
 
 # Install multilib packages only for amd64 architecture
 RUN if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
