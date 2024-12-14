@@ -1,0 +1,19 @@
+FROM --platform=$TARGETPLATFORM ubuntu:22.04 as builder
+
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    ninja-build \
+    git \
+    curl \
+    zip \
+    unzip \
+    tar \
+    pkg-config
+
+WORKDIR /src
+COPY . .
+RUN make release
+
+FROM scratch as export
+COPY --from=builder /src/build/release/flapi /build/release/flapi 

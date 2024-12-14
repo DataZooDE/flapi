@@ -14,9 +14,11 @@ jobs:
           - os: ubuntu-latest
             arch: x86_64
             runner: ubuntu-latest
+            platform: linux/amd64
           - os: ubuntu-latest
             arch: arm64
             runner: ubuntu-latest
+            platform: linux/arm64
           - os: macos-latest
             arch: universal
             runner: macos-latest
@@ -28,49 +30,24 @@ jobs:
       with:
         submodules: recursive
 
-    - name: Checkout submodule
-      uses: actions/checkout@v3
-      with:
-        repository: duckdb/duckdb
-        path: duckdb
-        ref: v1.1.3
-        
-    - name: Install dependencies (Linux)
+    - name: Set up QEMU
+      if: runner.os == 'Linux' && matrix.arch == 'arm64'
+      uses: docker/setup-qemu-action@v3
+
+    - name: Build in Docker
       if: runner.os == 'Linux'
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential cmake ninja-build
-
-    - name: Install dependencies (macOS)
-      if: runner.os == 'macOS'
-      run: |
-        brew install ninja
-
-    - name: Cache vcpkg
-      uses: actions/cache@v3
+      uses: docker/build-push-action@v4
       with:
-        path: |
-          ~/.cache/vcpkg
-          ./vcpkg/installed
-        key: ${{ runner.os }}-${{ matrix.arch }}-vcpkg-${{ hashFiles('vcpkg.json') }}
+        context: .
+        file: Dockerfile.build
+        platforms: ${{ matrix.platform }}
+        outputs: type=local,dest=build
+        target: builder
+        push: false
 
-    - name: Configure vcpkg
-      run: |
-        ./vcpkg/bootstrap-vcpkg.sh
-        ./vcpkg/vcpkg integrate install
-
-    - name: Build Release
+    - name: Build Release (macOS)
+      if: runner.os == 'macOS'
       run: make release
-
-    - name: Verify binary exists
-      run: |
-        if [ "${{ runner.os }}" = "macOS" ]; then
-          ls -l ${{github.workspace}}/build/universal/flapi
-          file ${{github.workspace}}/build/universal/flapi
-        else
-          ls -l ${{github.workspace}}/build/release/flapi
-          file ${{github.workspace}}/build/release/flapi
-        fi
 
     - name: Upload build artifact
       uses: actions/upload-artifact@v4
@@ -84,28 +61,17 @@ jobs:
   # Docker build for multi-arch
   docker:
     needs: build
-    strategy:
-      matrix:
-        arch: [amd64, arm64]
-        include:
-          - arch: amd64
-            runner: ubuntu-latest
-          - arch: arm64
-            runner: ubuntu-latest
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     if: github.event_name == 'push'
 
     steps:
     - uses: actions/checkout@v3
 
-    - name: Download artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: flapi-ubuntu-latest-${{ matrix.arch == 'amd64' && 'x86_64' || 'arm64' }}-${{ github.sha }}
-        path: build/release
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
 
-    - name: Set file permissions
-      run: chmod +x build/release/flapi
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
 
     - name: Login to GitHub Container Registry
       uses: docker/login-action@v2
@@ -123,10 +89,11 @@ jobs:
       with:
         context: .
         file: Dockerfile
-        platforms: linux/${{ matrix.arch }}
+        platforms: linux/amd64,linux/arm64
         push: true
         tags: |
-          ghcr.io/${{ env.REPOSITORY_OWNER }}/flapi:${{ github.sha }}-${{ matrix.arch }}
+          ghcr.io/${{ env.REPOSITORY_OWNER }}/flapi:latest
+          ghcr.io/${{ env.REPOSITORY_OWNER }}/flapi:${{ github.sha }}
 
   # Merge and push multi-arch manifest
   docker-manifest:
