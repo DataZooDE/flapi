@@ -2,6 +2,7 @@ FROM --platform=$TARGETPLATFORM ubuntu:22.04 AS builder
 ARG VCPKG_FORCE_SYSTEM_BINARIES
 ENV VCPKG_FORCE_SYSTEM_BINARIES=${VCPKG_FORCE_SYSTEM_BINARIES}
 
+# Install required packages
 RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
@@ -11,18 +12,32 @@ RUN apt-get update && apt-get install -y \
     zip \
     unzip \
     tar \
-    pkg-config
+    pkg-config \
+    perl \
+    libssl-dev \
+    gcc-multilib \
+    g++-multilib
+
+# Set compiler environment variables
+ENV CC=/usr/bin/gcc
+ENV CXX=/usr/bin/g++
 
 WORKDIR /src
 COPY . .
 
-# Initialize vcpkg
+# Initialize vcpkg with specific configuration for ARM64
 RUN git submodule update --init --recursive && \
     ./vcpkg/bootstrap-vcpkg.sh && \
     ./vcpkg/vcpkg integrate install
 
-# Build
-RUN make release
+# Build with explicit compiler and build tool settings
+RUN cmake -B build/release \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_MAKE_PROGRAM=/usr/bin/ninja \
+    -DCMAKE_C_COMPILER=/usr/bin/gcc \
+    -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
+    -G Ninja && \
+    cmake --build build/release
 
 FROM scratch AS export
 COPY --from=builder /src/build/release/flapi /build/release/flapi
