@@ -16,7 +16,7 @@ jobs:
             runner: ubuntu-latest
           - os: ubuntu-latest
             arch: arm64
-            runner: ubuntu-latest-arm64
+            runner: ubuntu-latest
           - os: macos-latest
             arch: universal
             runner: macos-latest
@@ -33,7 +33,7 @@ jobs:
       with:
         repository: duckdb/duckdb
         path: duckdb
-        ref: v1.1.2
+        ref: v1.1.3
         
     - name: Install dependencies (Linux)
       if: runner.os == 'Linux'
@@ -91,7 +91,7 @@ jobs:
           - arch: amd64
             runner: ubuntu-latest
           - arch: arm64
-            runner: ubuntu-latest-arm64
+            runner: ubuntu-latest
     runs-on: ${{ matrix.runner }}
     if: github.event_name == 'push'
 
