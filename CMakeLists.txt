@@ -23,9 +23,24 @@ if(APPLE)
     message(STATUS "Using vcpkg triplet: ${VCPKG_TARGET_TRIPLET}")
 endif()
 
+if(UNIX AND NOT APPLE)
+    if (NOT CMAKE_LINUX_ARCHITECTURES)
+        execute_process(COMMAND uname -m OUTPUT_VARIABLE HOST_ARCH OUTPUT_STRIP_TRAILING_WHITESPACE)
+        set(CMAKE_LINUX_ARCHITECTURES ${HOST_ARCH})
+    endif()
+
+    # Set vcpkg triplet based on architecture
+    if(CMAKE_LINUX_ARCHITECTURES MATCHES "arm64")
+        set(VCPKG_TARGET_TRIPLET "arm64-linux")
+    else()
+        set(VCPKG_TARGET_TRIPLET "x64-linux")
+    endif()
+endif()
+
 set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg/scripts/buildsystems/vcpkg.cmake" 
     CACHE STRING "Vcpkg toolchain file")
 
+# Set project name and version
 project(flAPI VERSION 0.1.0 LANGUAGES CXX)
 
 # Basic settings
