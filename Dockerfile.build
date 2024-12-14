@@ -1,4 +1,6 @@
 FROM --platform=$TARGETPLATFORM ubuntu:22.04 AS builder
+ARG VCPKG_FORCE_SYSTEM_BINARIES
+ENV VCPKG_FORCE_SYSTEM_BINARIES=${VCPKG_FORCE_SYSTEM_BINARIES}
 
 RUN apt-get update && apt-get install -y \
     build-essential \

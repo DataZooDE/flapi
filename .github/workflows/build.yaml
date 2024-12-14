@@ -46,6 +46,8 @@ jobs:
         outputs: type=local,dest=build
         target: builder
         push: false
+        build-args: |
+          VCPKG_FORCE_SYSTEM_BINARIES=${{ matrix.arch == 'arm64' && '1' || '' }}
 
     - name: Prepare Linux artifacts
       if: runner.os == 'Linux'
