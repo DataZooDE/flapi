@@ -17,6 +17,17 @@ RELEASE_DIR := $(BUILD_DIR)/release
 DOCKER_FILE := Dockerfile
 DOCKER_IMAGE_NAME := ghcr.io/datazoode/flapi
 
+# Cross compilation settings
+CROSS_COMPILE ?= 
+ifeq ($(CROSS_COMPILE),aarch64)
+    CMAKE_TOOLCHAIN_FILE := cmake/aarch64-linux-gnu.cmake
+    VCPKG_TARGET_TRIPLET := arm64-linux
+    CMAKE_EXTRA_FLAGS := \
+        -DCMAKE_TOOLCHAIN_FILE=$(CMAKE_TOOLCHAIN_FILE) \
+        -DVCPKG_TARGET_TRIPLET=$(VCPKG_TARGET_TRIPLET) \
+        -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=$(CMAKE_TOOLCHAIN_FILE)
+endif
+
 # Default target
 all: debug release
 
@@ -45,7 +56,7 @@ endif
 
 $(DEBUG_DIR)/build.ninja:
 	@mkdir -p $(DEBUG_DIR)
-	@cd $(DEBUG_DIR) && $(CMAKE) -DCMAKE_BUILD_TYPE=Debug $(CMAKE_GENERATOR) ../..
+	@cd $(DEBUG_DIR) && $(CMAKE) -DCMAKE_BUILD_TYPE=Debug $(CMAKE_GENERATOR) $(CMAKE_EXTRA_FLAGS) ../..
 
 # macOS specific variables
 ifeq ($(shell uname),Darwin)
@@ -89,15 +100,38 @@ ifeq ($(shell uname),Darwin)
     # Override the default release target on macOS
     release: release-universal
 else
-    # Original release target for non-macOS platforms
+    # Linux release builds with cross-compilation support
     release: $(RELEASE_DIR)/build.ninja
-	@echo "Building release version..."
+	@echo "Building release version $(if $(CROSS_COMPILE),for $(CROSS_COMPILE),native)..."
 	@$(CMAKE) --build $(RELEASE_DIR) --config Release
+
+    # Setup cross-compilation environment
+    setup-cross-compile:
+	@if [ "$(CROSS_COMPILE)" = "aarch64" ]; then \
+		mkdir -p cmake; \
+		echo "set(CMAKE_SYSTEM_NAME Linux)" > cmake/aarch64-linux-gnu.cmake; \
+		echo "set(CMAKE_SYSTEM_PROCESSOR aarch64)" >> cmake/aarch64-linux-gnu.cmake; \
+		echo "set(CMAKE_C_COMPILER aarch64-linux-gnu-gcc)" >> cmake/aarch64-linux-gnu.cmake; \
+		echo "set(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++)" >> cmake/aarch64-linux-gnu.cmake; \
+		echo "set(CMAKE_FIND_ROOT_PATH /usr/aarch64-linux-gnu)" >> cmake/aarch64-linux-gnu.cmake; \
+		echo "set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)" >> cmake/aarch64-linux-gnu.cmake; \
+		echo "set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)" >> cmake/aarch64-linux-gnu.cmake; \
+		echo "set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)" >> cmake/aarch64-linux-gnu.cmake; \
+		echo "set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)" >> cmake/aarch64-linux-gnu.cmake; \
+		if [ ! -f vcpkg/triplets/community/arm64-linux.cmake ]; then \
+			mkdir -p vcpkg/triplets/community; \
+			echo "set(VCPKG_TARGET_ARCHITECTURE arm64)" > vcpkg/triplets/community/arm64-linux.cmake; \
+			echo "set(VCPKG_CRT_LINKAGE dynamic)" >> vcpkg/triplets/community/arm64-linux.cmake; \
+			echo "set(VCPKG_LIBRARY_LINKAGE static)" >> vcpkg/triplets/community/arm64-linux.cmake; \
+			echo "set(VCPKG_CMAKE_SYSTEM_NAME Linux)" >> vcpkg/triplets/community/arm64-linux.cmake; \
+			echo "set(VCPKG_CHAINLOAD_TOOLCHAIN_FILE \$${CMAKE_CURRENT_LIST_DIR}/../../cmake/aarch64-linux-gnu.cmake)" >> vcpkg/triplets/community/arm64-linux.cmake; \
+		fi; \
+	fi
 endif
 
-$(RELEASE_DIR)/build.ninja:
+$(RELEASE_DIR)/build.ninja: setup-cross-compile
 	@mkdir -p $(RELEASE_DIR)
-	@cd $(RELEASE_DIR) && $(CMAKE) -DCMAKE_BUILD_TYPE=Release $(CMAKE_GENERATOR) ../..
+	@cd $(RELEASE_DIR) && $(CMAKE) -DCMAKE_BUILD_TYPE=Release $(CMAKE_GENERATOR) $(CMAKE_EXTRA_FLAGS) ../..
 
 # Clean build directories
 clean:
@@ -142,4 +176,4 @@ test: release
 	ctest --output-on-failure
 
 # Phony targets
-.PHONY: all debug release clean run-debug run-release run-integration-tests docker-build
+.PHONY: all debug release clean run-debug run-release run-integration-tests docker-build setup-cross-compile
