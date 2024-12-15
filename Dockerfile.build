@@ -2,19 +2,14 @@ FROM --platform=$TARGETPLATFORM ubuntu:22.04 AS builder
 ARG VCPKG_FORCE_SYSTEM_BINARIES
 ENV VCPKG_FORCE_SYSTEM_BINARIES=${VCPKG_FORCE_SYSTEM_BINARIES}
 
-
 # Update and install build tools and libraries
 RUN apt-get update && apt-get install -y \
     wget git make cmake build-essential \
     libjsoncpp-dev uuid-dev openssl lcov doxygen \
     libssl-dev zlib1g-dev curl gcc g++ libc-dev \
-    zip unzip tar python3 python3-pip python3-venv python3-jinja2 \
+    zip unzip tar python3 python3-pip  \
     bison libdbus-1-dev libxi-dev libxtst-dev ninja-build \
-    linux-libc-dev libx11-dev libxft-dev libxext-dev \
-    libgl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev \
-    libtool libudev-dev libx11-xcb-dev libxcursor-dev \
-    libxdamage-dev libxinerama-dev libxrandr-dev nasm pkg-config \
-    linux-libc-dev # Ensure Linux kernel headers are installed \
+    linux-libc-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install multilib packages only for amd64 architecture
