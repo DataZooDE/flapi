@@ -17,7 +17,7 @@ jobs:
     - name: Install Linux Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y ninja-build make gcc-multilib g++-multilib libssl-dev wget zip unixodbc-dev libc6-dev-i386 lib32readline6-dev libssl-dev libcurl4-gnutls-dev libexpat1-dev gettext unzip build-essential checkinstall libffi-dev curl libz-dev openssh-client pkg-config
+        sudo apt-get install -y ninja-build linux-libc-dev cmake make gcc-multilib g++-multilib libssl-dev wget zip unixodbc-dev libc6-dev-i386 lib32readline6-dev libssl-dev libcurl4-gnutls-dev libexpat1-dev gettext unzip build-essential checkinstall libffi-dev curl libz-dev openssh-client pkg-config
 
     - name: Build
       run: |
@@ -41,21 +41,53 @@ jobs:
       with:
         submodules: recursive
 
-    - name: Install Linux Dependencies
+    - name: Install Dependencies
       run: |
+        sudo dpkg --add-architecture arm64
         sudo apt-get update
-        sudo apt-get install -y ninja-build make gcc-multilib g++-multilib libssl-dev wget zip unixodbc-dev libc6-dev-i386 lib32readline6-dev libssl-dev libcurl4-gnutls-dev libexpat1-dev gettext unzip build-essential checkinstall libffi-dev curl libz-dev openssh-client pkg-config
+        sudo apt-get install -y \
+          ninja-build cmake make \
+          crossbuild-essential-arm64 \
+          gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+          libssl-dev:arm64 \
+          zlib1g-dev:arm64 \
+          pkg-config
+
+    - name: Configure vcpkg for cross-compilation
+      run: |
+        echo "set(VCPKG_TARGET_ARCHITECTURE arm64)" >> $GITHUB_WORKSPACE/vcpkg/triplets/community/arm64-linux.cmake
+        echo "set(VCPKG_CRT_LINKAGE dynamic)" >> $GITHUB_WORKSPACE/vcpkg/triplets/community/arm64-linux.cmake
+        echo "set(VCPKG_LIBRARY_LINKAGE static)" >> $GITHUB_WORKSPACE/vcpkg/triplets/community/arm64-linux.cmake
+        echo "set(VCPKG_CMAKE_SYSTEM_NAME Linux)" >> $GITHUB_WORKSPACE/vcpkg/triplets/community/arm64-linux.cmake
+        echo "set(VCPKG_CHAINLOAD_TOOLCHAIN_FILE ${GITHUB_WORKSPACE}/cmake/aarch64-linux-gnu.cmake)" >> $GITHUB_WORKSPACE/vcpkg/triplets/community/arm64-linux.cmake
+
+    - name: Create Toolchain File
+      run: |
+        mkdir -p cmake
+        cat << EOF > cmake/aarch64-linux-gnu.cmake
+        set(CMAKE_SYSTEM_NAME Linux)
+        set(CMAKE_SYSTEM_PROCESSOR aarch64)
+        
+        set(CMAKE_C_COMPILER aarch64-linux-gnu-gcc)
+        set(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++)
+        
+        set(CMAKE_FIND_ROOT_PATH /usr/aarch64-linux-gnu)
+        set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+        set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+        set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+        set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+        EOF
 
     - name: Build
       run: |
-        sudo apt-get update
-        sudo apt-get install -y crossbuild-essential-arm64 gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-
-    - name: Build
-      run: |
-        CC=aarch64-linux-gnu-gcc CXX=aarch64-linux-gnu-g++ make release
+        cmake -B build/release \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64-linux-gnu.cmake \
+          -DVCPKG_TARGET_TRIPLET=arm64-linux \
+          -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${GITHUB_WORKSPACE}/cmake/aarch64-linux-gnu.cmake \
+          -G Ninja
+        cmake --build build/release
         mkdir -p build/release
-        cp build/release/flapi build/release/
         chmod +x build/release/flapi
 
     - name: Upload artifact
