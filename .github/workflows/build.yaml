@@ -6,7 +6,14 @@ on:
   pull_request:
     branches: [ main ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # -------------------------------------------------------------------------------------------------
+  # Linux AMD64
+  # -------------------------------------------------------------------------------------------------
   linux-amd64:
     runs-on: ubuntu-latest
     steps:
@@ -25,6 +32,15 @@ jobs:
           libcurl4-gnutls-dev libexpat1-dev gettext unzip build-essential checkinstall \
           libffi-dev curl libz-dev openssh-client pkg-config
 
+    - name: Setup Ccache
+      uses: hendrikmuhs/ccache-action@main
+      with:
+        key: ${{ github.job }}
+        save: ${{ github.ref == 'refs/heads/main' || github.repository != 'datazoode/flapi' }}  
+
+    - name: Setup vcpkg
+      uses: lukka/run-vcpkg@v11.1
+
     - name: Build
       run: make release
 
@@ -36,6 +52,9 @@ jobs:
         if-no-files-found: error
         retention-days: 90
 
+  # -------------------------------------------------------------------------------------------------
+  # Linux ARM64
+  # -------------------------------------------------------------------------------------------------
   linux-aarch64:
     runs-on: ubuntu-latest
     steps:
@@ -55,6 +74,15 @@ jobs:
           libffi-dev curl libz-dev openssh-client pkg-config
         sudo apt-get install -y -qq gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
+    - name: Setup Ccache
+      uses: hendrikmuhs/ccache-action@main
+      with:
+        key: ${{ github.job }}
+        save: ${{ github.ref == 'refs/heads/main' || github.repository != 'datazoode/flapi' }}  
+
+    - name: Setup vcpkg
+      uses: lukka/run-vcpkg@v11.1
+     
     - name: Build
       run: make release CROSS_COMPILE=aarch64
 
@@ -66,12 +94,25 @@ jobs:
         if-no-files-found: error
         retention-days: 90
 
+  # -------------------------------------------------------------------------------------------------
+  # macOS Universal
+  # -------------------------------------------------------------------------------------------------
   osx-universal:
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v4
       with:
         submodules: recursive
+
+    - name: Setup Ccache
+      uses: hendrikmuhs/ccache-action@main
+      with:
+        key: ${{ github.job }}
+        save: ${{ github.ref == 'refs/heads/main' || github.repository != 'datazoode/flapi' }}  
+
+    - name: Install ninja
+      shell: bash
+      run: brew install ninja
 
     - name: Build
       run: make release
@@ -84,6 +125,9 @@ jobs:
         if-no-files-found: error
         retention-days: 90
 
+  # -------------------------------------------------------------------------------------------------
+  # Docker
+  # -------------------------------------------------------------------------------------------------
   docker:
     needs: [linux-amd64, linux-aarch64]
     runs-on: ubuntu-latest
