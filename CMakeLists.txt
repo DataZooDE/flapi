@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
+set(CMAKE_WARN_DEPRECATED OFF CACHE BOOL "" FORCE)
 
 # Set vcpkg toolchain before project()
 if(APPLE)
@@ -24,24 +25,60 @@ if(APPLE)
 endif()
 
 if(UNIX AND NOT APPLE)
-    if (NOT CMAKE_LINUX_ARCHITECTURES)
-        execute_process(COMMAND uname -m OUTPUT_VARIABLE HOST_ARCH OUTPUT_STRIP_TRAILING_WHITESPACE)
-        set(CMAKE_LINUX_ARCHITECTURES ${HOST_ARCH})
-    endif()
+    message(STATUS "Cross compile env variable: $ENV{FLAPI_CROSS_COMPILE}")
 
-    # Set vcpkg triplet based on architecture
-    if(CMAKE_LINUX_ARCHITECTURES MATCHES "arm64")
+    # Check for cross-compilation before project() is called
+    if(DEFINED ENV{FLAPI_CROSS_COMPILE} AND "$ENV{FLAPI_CROSS_COMPILE}" STREQUAL "arm64")
+        set(CMAKE_SYSTEM_NAME Linux)
+        set(CMAKE_SYSTEM_PROCESSOR arm64)
+        set(CMAKE_C_COMPILER aarch64-linux-gnu-gcc)
+        set(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++)
+        set(CMAKE_FIND_ROOT_PATH aarch64-linux-gnu)
+        set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+        set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+        set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+        set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+
+        # Set vcpkg triplets for cross-compilation
         set(VCPKG_TARGET_TRIPLET "arm64-linux")
+        set(VCPKG_HOST_TRIPLET "x64-linux")
+        
+        # Set up search paths for cross-compiled packages
+        set(CMAKE_PREFIX_PATH
+            "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg/installed/${VCPKG_TARGET_TRIPLET}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg/installed/${VCPKG_TARGET_TRIPLET}/share"
+            "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg/installed/${VCPKG_TARGET_TRIPLET}/lib/cmake"
+        )
+        set(CMAKE_FIND_ROOT_PATH
+            ${CMAKE_FIND_ROOT_PATH}
+            "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg/installed/${VCPKG_TARGET_TRIPLET}"
+        )
+        
+        # Set pkg-config path for cross-compilation
+        set(ENV{PKG_CONFIG_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg/installed/${VCPKG_TARGET_TRIPLET}/lib/pkgconfig")
+        set(ENV{PKG_CONFIG_LIBDIR} "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg/installed/${VCPKG_TARGET_TRIPLET}/lib")
+        
+        message(STATUS "Cross-compiling for arm64")
     else()
         set(VCPKG_TARGET_TRIPLET "x64-linux")
+        message(STATUS "Building for native architecture: x86_64")
     endif()
+
+    message(STATUS "Target triplet: ${VCPKG_TARGET_TRIPLET}")
+    message(STATUS "Host triplet: ${VCPKG_HOST_TRIPLET}")
+    message(STATUS "VCPKG root: $ENV{VCPKG_ROOT}")
+    message(STATUS "Toolchain file: $ENV{VCPKG_TOOLCHAIN_PATH}")
 endif()
 
-set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg/scripts/buildsystems/vcpkg.cmake" 
-    CACHE STRING "Vcpkg toolchain file")
+# Set vcpkg toolchain file
+if (DEFINED ENV{VCPKG_TOOLCHAIN_PATH})
+    set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_TOOLCHAIN_PATH}" CACHE STRING "Vcpkg toolchain file")
+else()
+    set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg/scripts/buildsystems/vcpkg.cmake" CACHE STRING "Vcpkg toolchain file")
+endif()
 
 # Set project name and version
-project(flAPI VERSION 0.1.0 LANGUAGES CXX)
+project(flAPI VERSION 0.3.0 LANGUAGES CXX)
 
 # Basic settings
 set(CMAKE_CXX_STANDARD 17)
@@ -83,13 +120,14 @@ option(ENABLE_THREAD_SANITIZER "Enable thread sanitizer." FALSE)
 option(ENABLE_UBSAN "Enable undefined behavior sanitizer." TRUE)
 
 # Find dependencies
+find_package(OpenSSL REQUIRED CONFIG)
 find_package(Threads REQUIRED)
 find_package(Catch2 CONFIG REQUIRED)
 find_package(Crow CONFIG REQUIRED)
 find_package(yaml-cpp CONFIG REQUIRED)
 find_package(jwt-cpp CONFIG REQUIRED)
 find_package(argparse CONFIG REQUIRED)
-find_package(OpenSSL REQUIRED)
+
 find_package(AWSSDK CONFIG COMPONENTS core secretsmanager REQUIRED)
 
 # Add DuckDB

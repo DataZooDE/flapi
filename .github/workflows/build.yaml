@@ -16,83 +16,74 @@ jobs:
   # -------------------------------------------------------------------------------------------------
   linux-amd64:
     runs-on: ubuntu-latest
+    env:
+      BUILD_ARCH: amd64
+      BUILD_IMAGE: flapi_build_amd64
     steps:
     - uses: actions/checkout@v4
       with:
         submodules: recursive
+        fetch-depth: 0
 
-    - name: Install Dependencies
+    - name: Build Docker image
+      shell: bash
       run: |
-        sudo apt-get update -y -qq
-        sudo apt-get install -y -qq software-properties-common
-        sudo add-apt-repository ppa:git-core/ppa
-        sudo apt-get update -y -qq
-        sudo apt-get install -y ninja-build linux-libc-dev cmake make gcc-multilib g++-multilib \
-          libssl-dev wget zip unixodbc-dev libc6-dev-i386 lib32readline6-dev libssl-dev \
-          libcurl4-gnutls-dev libexpat1-dev gettext unzip build-essential checkinstall \
-          libffi-dev curl libz-dev openssh-client pkg-config
+        docker build \
+          -t ${BUILD_IMAGE} \
+          -f /`pwd`/.github/docker/linux_${BUILD_ARCH}/Dockerfile .
 
-    - name: Setup Ccache
-      uses: hendrikmuhs/ccache-action@main
+    - name: Run build in docker
+      shell: bash
+      run: |
+        docker run \
+          -it --rm \
+          -v `pwd`:/build_dir \
+          ${BUILD_IMAGE} \
+          bash -c 'make clean && make release'
+
+    - uses: actions/upload-artifact@v4
       with:
-        key: ${{ github.job }}
-        save: ${{ github.ref == 'refs/heads/main' || github.repository != 'datazoode/flapi' }}  
-
-    - name: Setup vcpkg
-      uses: lukka/run-vcpkg@v11.1
-
-    - name: Build
-      run: make release
-
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: flapi-linux-amd64
+        name: flapi-linux-${{ env.BUILD_ARCH }}
         path: build/release/flapi
         if-no-files-found: error
-        retention-days: 90
 
   # -------------------------------------------------------------------------------------------------
   # Linux ARM64
   # -------------------------------------------------------------------------------------------------
   linux-aarch64:
     runs-on: ubuntu-latest
+    env:
+      FLAPI_CROSS_COMPILE: arm64
+      BUILD_ARCH: arm64
+      BUILD_IMAGE: flapi_build_arm64
     steps:
     - uses: actions/checkout@v4
       with:
         submodules: recursive
+        fetch-depth: 0
 
-    - name: Install Dependencies
+    - name: Build Docker image
+      shell: bash
       run: |
-        sudo apt-get update -y -qq
-        sudo apt-get install -y -qq software-properties-common
-        sudo add-apt-repository ppa:git-core/ppa
-        sudo apt-get update -y -qq
-        sudo apt-get install -y ninja-build linux-libc-dev cmake make gcc-multilib g++-multilib \
-          libssl-dev wget zip unixodbc-dev libc6-dev-i386 lib32readline6-dev libssl-dev \
-          libcurl4-gnutls-dev libexpat1-dev gettext unzip build-essential checkinstall \
-          libffi-dev curl libz-dev openssh-client pkg-config
-        sudo apt-get install -y -qq gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+        docker build \
+          -t ${BUILD_IMAGE} \
+          -f /`pwd`/.github/docker/linux_${BUILD_ARCH}/Dockerfile .
 
-    - name: Setup Ccache
-      uses: hendrikmuhs/ccache-action@main
+    - name: Run build in docker
+      shell: bash
+      run: |
+        docker run \
+          -it --rm \
+          -e FLAPI_CROSS_COMPILE="${BUILD_ARCH}" \
+          -v `pwd`:/build_dir \
+          ${BUILD_IMAGE} \
+          bash -c 'make clean && make release'
+
+    - uses: actions/upload-artifact@v4
       with:
-        key: ${{ github.job }}
-        save: ${{ github.ref == 'refs/heads/main' || github.repository != 'datazoode/flapi' }}  
-
-    - name: Setup vcpkg
-      uses: lukka/run-vcpkg@v11.1
-     
-    - name: Build
-      run: make release CROSS_COMPILE=aarch64
-
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: flapi-linux-arm64
+        name: flapi-linux-${{ env.BUILD_ARCH }}
         path: build/release/flapi
         if-no-files-found: error
-        retention-days: 90
 
   # -------------------------------------------------------------------------------------------------
   # macOS Universal
@@ -154,8 +145,8 @@ jobs:
     - name: Prepare build context
       run: |
         mkdir -p build/release
-        cp artifacts/flapi-linux-amd64/flapi build/release/flapi.amd64
-        cp artifacts/flapi-linux-arm64/flapi build/release/flapi.arm64
+        cp flapi-linux-amd64/flapi build/release/flapi.amd64
+        cp flapi-linux-arm64/flapi build/release/flapi.arm64
         chmod +x build/release/flapi.*
 
     - name: Build and push multi-platform Docker image

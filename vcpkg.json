@@ -1,16 +1,39 @@
 {
   "name": "flapi",
-  "version-string": "0.1.0",
+  "version": "0.1.0",
   "dependencies": [
-    "argparse",
-    "crow",
-    "yaml-cpp",
-    "jwt-cpp",
-    "openssl",
-    "catch2",
+    {
+      "name": "catch2",
+      "version>=": "3.4.0"
+    },
+    {
+      "name": "crow",
+      "version>=": "1.2.0"
+    },
+    {
+      "name": "yaml-cpp",
+      "version>=": "0.8.0"
+    },
+    {
+      "name": "jwt-cpp",
+      "version>=": "0.6.0"
+    },
+    {
+      "name": "argparse",
+      "version>=": "2.9"
+    },
     {
       "name": "aws-sdk-cpp",
-      "features": [ "sso", "sts", "secretsmanager" ]
+      "features": ["sso", "sts", "secretsmanager"]
+    },
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
     }
-  ]
+  ],
+  "builtin-baseline": "b2cb0da531c2f1f740045bfe7c4dac59f0b2b69c"
 }
