@@ -134,7 +134,30 @@ run-integration-tests: debug
 # Build Docker image
 docker: release
 	@echo "Building Docker image..."
+	@mkdir -p build/release
+	@if [ "$(shell uname)" = "Darwin" ]; then \
+		if [ "$(shell uname -m)" = "x86_64" ]; then \
+			cp $(RELEASE_DIR)-x86_64/flapi build/release/flapi; \
+		elif [ "$(shell uname -m)" = "arm64" ]; then \
+			cp $(RELEASE_DIR)-arm64/flapi build/release/flapi; \
+		fi \
+	elif [ ! -f build/release/flapi ]; then \
+		cp $(RELEASE_DIR)/flapi build/release/flapi; \
+	fi
+	@if [ ! -f build/release/flapi ]; then \
+		echo "Error: Could not find flapi binary"; \
+		exit 1; \
+	fi
 	docker build -t $(DOCKER_IMAGE_NAME):latest -f $(DOCKER_FILE) .
+
+# Add docker-multiarch target for local multi-arch builds
+docker-multiarch: release
+	@echo "Building multi-architecture Docker image..."
+	docker buildx create --use --name multiarch-builder || true
+	docker buildx build --platform linux/amd64,linux/arm64 \
+		-t $(DOCKER_IMAGE_NAME):latest \
+		--push \
+		-f $(DOCKER_FILE) .
 
 # Add a test target
 test: release

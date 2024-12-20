@@ -140,13 +140,6 @@ jobs:
       with:
         path: artifacts
 
-    - name: Prepare build context
-      run: |
-        mkdir -p build/release
-        cp artifacts/flapi-linux-amd64/flapi build/release/flapi.amd64
-        cp artifacts/flapi-linux-arm64/flapi build/release/flapi.arm64
-        chmod +x build/release/flapi.*
-
     - name: Set repository owner lowercase
       run: |
         echo "REPO_OWNER=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
@@ -161,3 +154,7 @@ jobs:
         tags: |
           ghcr.io/${{ env.REPO_OWNER }}/flapi:latest
           ghcr.io/${{ env.REPO_OWNER }}/flapi:${{ github.sha }}
+        provenance: false
+        build-contexts: |
+          linux/amd64=./artifacts/flapi-linux-amd64
+          linux/arm64=./artifacts/flapi-linux-arm64
