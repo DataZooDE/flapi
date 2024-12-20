@@ -36,7 +36,6 @@ jobs:
       shell: bash
       run: |
         docker run \
-          -it --rm \
           -v `pwd`:/build_dir \
           ${BUILD_IMAGE} \
           bash -c 'make clean && make release'
@@ -73,7 +72,6 @@ jobs:
       shell: bash
       run: |
         docker run \
-          -it --rm \
           -e FLAPI_CROSS_COMPILE="${BUILD_ARCH}" \
           -v `pwd`:/build_dir \
           ${BUILD_IMAGE} \
