@@ -143,8 +143,8 @@ jobs:
     - name: Prepare build context
       run: |
         mkdir -p build/release
-        cp flapi-linux-amd64/flapi build/release/flapi.amd64
-        cp flapi-linux-arm64/flapi build/release/flapi.arm64
+        cp artifacts/flapi-linux-amd64/flapi build/release/flapi.amd64
+        cp artifacts/flapi-linux-arm64/flapi build/release/flapi.arm64
         chmod +x build/release/flapi.*
 
     - name: Build and push multi-platform Docker image
