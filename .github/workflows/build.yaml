@@ -103,7 +103,7 @@ jobs:
 
     - name: Install ninja
       shell: bash
-      run: brew install ninja
+      run: brew install ninja autoconf make libtool pkg-config automake autoconf-archive
 
     - name: Build
       run: make release
