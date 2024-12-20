@@ -147,9 +147,11 @@ jobs:
         cp artifacts/flapi-linux-arm64/flapi build/release/flapi.arm64
         chmod +x build/release/flapi.*
 
+    - name: Set repository owner lowercase
+      run: |
+        echo "REPO_OWNER=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
     - name: Build and push multi-platform Docker image
-      env:
-        REPO_OWNER: ${{ toLowerCase(github.repository_owner) }}
       uses: docker/build-push-action@v5
       with:
         context: .
