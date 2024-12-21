@@ -155,6 +155,8 @@ jobs:
           ghcr.io/${{ env.REPO_OWNER }}/flapi:latest
           ghcr.io/${{ env.REPO_OWNER }}/flapi:${{ github.sha }}
         provenance: false
+        build-args: |
+          TARGETARCH=${{ matrix.arch }}
         build-contexts: |
-          linux/amd64=./artifacts/flapi-linux-amd64
-          linux/arm64=./artifacts/flapi-linux-arm64
+          linux/amd64=artifacts/flapi-linux-amd64
+          linux/arm64=artifacts/flapi-linux-arm64
