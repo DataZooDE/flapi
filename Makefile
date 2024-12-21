@@ -1,5 +1,8 @@
 # Makefile for flAPI project
 
+# Phony targets
+.PHONY: all debug release clean run-debug run-release run-integration-tests docker-build web
+
 # Compiler and flags
 CXX := g++
 CMAKE := cmake
@@ -165,5 +168,11 @@ test: release
 	@cd $(RELEASE_DIR)-$(shell uname -m | sed 's/x86_64/x86_64/' | sed 's/arm64/arm64/') && \
 	ctest --output-on-failure
 
-# Phony targets
-.PHONY: all debug release clean run-debug run-release run-integration-tests docker-build setup-cross-compile
+web:
+	cd web && npm install && npm run build
+
+web-clean:
+	rm -rf web/package-lock.json
+	rm -rf web/.svelte-kit
+	rm -rf web/build/
+	rm -rf web/node_modules/

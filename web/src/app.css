@@ -1,0 +1,59 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-primary-50 text-gray-900;
+  }
+
+  h1 {
+    @apply text-2xl font-bold text-gray-900;
+  }
+
+  h2 {
+    @apply text-xl font-semibold text-gray-900;
+  }
+
+  h3 {
+    @apply text-lg font-semibold text-gray-900;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply px-4 py-2 rounded-lg font-medium transition-colors;
+  }
+
+  .btn-primary {
+    @apply bg-primary-500 text-white hover:bg-primary-600;
+  }
+
+  .btn-secondary {
+    @apply bg-secondary-100 text-secondary-900 hover:bg-secondary-200;
+  }
+
+  .btn-error {
+    @apply bg-red-100 text-red-900 hover:bg-red-200;
+  }
+
+  .input {
+    @apply px-3 py-2 rounded-lg border border-gray-300 focus:border-primary-500 focus:ring-1 focus:ring-primary-500;
+  }
+
+  .select {
+    @apply px-3 py-2 rounded-lg border border-gray-300 focus:border-primary-500 focus:ring-1 focus:ring-primary-500;
+  }
+
+  .checkbox {
+    @apply rounded border-gray-300 text-primary-500 focus:ring-primary-500;
+  }
+
+  .card {
+    @apply bg-white rounded-lg shadow-sm border border-gray-100;
+  }
+
+  .label {
+    @apply block text-sm font-medium text-gray-700;
+  }
+} 
