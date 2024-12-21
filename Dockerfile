@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY flapi /app/flapi
+COPY --from=build flapi /app/flapi
 RUN chmod +x /app/flapi
 
 ENTRYPOINT ["/app/flapi"]
