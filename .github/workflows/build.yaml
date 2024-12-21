@@ -25,6 +25,12 @@ jobs:
         submodules: recursive
         fetch-depth: 0
 
+    - name: Setup Ccache
+      uses: hendrikmuhs/ccache-action@main
+      with:
+        key: ${{ github.job }}
+        save: ${{ github.ref == 'refs/heads/main' || github.repository != 'datazoode/flapi' }}
+
     - name: Build Docker image
       shell: bash
       run: |
@@ -37,6 +43,7 @@ jobs:
       run: |
         docker run \
           -v `pwd`:/build_dir \
+          -v ~/.ccache:/ccache_dir \
           ${BUILD_IMAGE} \
           bash -c 'make clean && make release'
 
@@ -61,6 +68,12 @@ jobs:
         submodules: recursive
         fetch-depth: 0
 
+    - name: Setup Ccache
+      uses: hendrikmuhs/ccache-action@main
+      with:
+        key: ${{ github.job }}
+        save: ${{ github.ref == 'refs/heads/main' || github.repository != 'datazoode/flapi' }}
+
     - name: Build Docker image
       shell: bash
       run: |
@@ -74,6 +87,7 @@ jobs:
         docker run \
           -e FLAPI_CROSS_COMPILE="${BUILD_ARCH}" \
           -v `pwd`:/build_dir \
+          -v ~/.ccache:/ccache_dir \
           ${BUILD_IMAGE} \
           bash -c 'make clean && make release'
 
