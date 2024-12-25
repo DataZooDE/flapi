@@ -16,12 +16,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-env:
-  CCACHE_COMPRESS: "true"
-  CCACHE_COMPRESSLEVEL: "6"
-  CCACHE_MAXSIZE: "400M"
-  CCACHE_DIR: ${{ github.workspace }}/.ccache
-
 jobs:
   # -------------------------------------------------------------------------------------------------
   # Linux AMD64
@@ -38,11 +32,10 @@ jobs:
         fetch-depth: 0
 
     - name: Setup Ccache
-      uses: hendrikmuhs/ccache-action@v1.2
+      uses: hendrikmuhs/ccache-action@main
       with:
-        key: ${{ runner.os }}-${{ env.BUILD_ARCH }}
+        key: ${{ github.job }}
         save: ${{ github.ref == 'refs/heads/main' || github.repository != 'datazoode/flapi' }}
-        max-size: 400M
 
     - name: Build Docker image
       shell: bash
@@ -56,13 +49,9 @@ jobs:
       run: |
         docker run \
           -v `pwd`:/build_dir \
-          -v ${{ env.CCACHE_DIR }}:/ccache_dir \
-          -e CCACHE_DIR=/ccache_dir \
-          -e CCACHE_COMPRESS=TRUE \
-          -e CCACHE_COMPRESSLEVEL=6 \
-          -e CCACHE_MAXSIZE=400M \
+          -v ~/.ccache:/ccache_dir \
           ${BUILD_IMAGE} \
-          bash -c 'ccache -z && make clean && make release && ccache -s'
+          bash -c 'make clean && make release'
 
     - uses: actions/upload-artifact@v4
       with:
@@ -86,11 +75,10 @@ jobs:
         fetch-depth: 0
 
     - name: Setup Ccache
-      uses: hendrikmuhs/ccache-action@v1.2
+      uses: hendrikmuhs/ccache-action@main
       with:
-        key: ${{ runner.os }}-${{ env.BUILD_ARCH }}
+        key: ${{ github.job }}
         save: ${{ github.ref == 'refs/heads/main' || github.repository != 'datazoode/flapi' }}
-        max-size: 400M
 
     - name: Build Docker image
       shell: bash
@@ -105,13 +93,9 @@ jobs:
         docker run \
           -e FLAPI_CROSS_COMPILE="${BUILD_ARCH}" \
           -v `pwd`:/build_dir \
-          -v ${{ env.CCACHE_DIR }}:/ccache_dir \
-          -e CCACHE_DIR=/ccache_dir \
-          -e CCACHE_COMPRESS=TRUE \
-          -e CCACHE_COMPRESSLEVEL=6 \
-          -e CCACHE_MAXSIZE=400M \
+          -v ~/.ccache:/ccache_dir \
           ${BUILD_IMAGE} \
-          bash -c 'ccache -z && make clean && make release && ccache -s'
+          bash -c 'make clean && make release'
 
     - uses: actions/upload-artifact@v4
       with:
@@ -237,6 +221,7 @@ jobs:
         run: |
           docker buildx imagetools inspect ghcr.io/${{ env.REPO_OWNER }}/flapi:${{ steps.meta.outputs.version }}
 
+
   # -------------------------------------------------------------------------------------------------
   # macOS Universal
   # -------------------------------------------------------------------------------------------------
@@ -248,26 +233,17 @@ jobs:
         submodules: recursive
 
     - name: Setup Ccache
-      uses: hendrikmuhs/ccache-action@v1.2
+      uses: hendrikmuhs/ccache-action@main
       with:
-        key: ${{ runner.os }}-universal
-        save: ${{ github.ref == 'refs/heads/main' || github.repository != 'datazoode/flapi' }}
-        max-size: 400M
+        key: ${{ github.job }}
+        save: ${{ github.ref == 'refs/heads/main' || github.repository != 'datazoode/flapi' }}  
 
-    - name: Install dependencies
+    - name: Install ninja
       shell: bash
-      run: brew install ninja autoconf make libtool pkg-config automake autoconf-archive ccache
+      run: brew install ninja autoconf make libtool pkg-config automake autoconf-archive
 
     - name: Build
-      run: |
-        ccache -z
-        make release
-        ccache -s
-      env:
-        CCACHE_DIR: ${{ env.CCACHE_DIR }}
-        CCACHE_COMPRESS: "true"
-        CCACHE_COMPRESSLEVEL: "6"
-        CCACHE_MAXSIZE: "400M"
+      run: make release
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
