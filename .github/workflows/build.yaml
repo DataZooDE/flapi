@@ -255,5 +255,3 @@ jobs:
         path: build/universal/flapi
         if-no-files-found: error
         retention-days: 90
-
-  
