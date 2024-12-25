@@ -7,14 +7,11 @@ export async function load() {
     if (!config) {
       throw new Error('Configuration data is null or undefined');
     }
-    if (!config.flapi) {
-      throw new Error('FLAPI configuration is missing');
-    }
-    if (!config.flapi.connections) {
-      throw new Error('Connections data is missing from configuration');
+    if (!config.endpoints) {
+      throw new Error('Endpoints data is missing from configuration');
     }
     return {
-      connections: config.flapi.connections
+      endpoints: config.endpoints
     };
   } catch (e) {
     // Create a detailed error message for logging
@@ -22,18 +19,18 @@ export async function load() {
       errorMessage: e instanceof Error ? e.message : 'An unknown error occurred',
       timestamp: new Date().toISOString(),
       stack: e instanceof Error ? e.stack : undefined,
-      context: 'Connections page data loader'
+      context: 'Endpoints page data loader'
     };
     
     // Log detailed error for debugging
-    console.error('Failed to load connections:', {
+    console.error('Failed to load endpoints:', {
       ...errorDetails,
       error: e
     });
 
     // Create an Error instance with detailed message
     const errorMessage = [
-      'Failed to load connections configuration.',
+      'Failed to load endpoints configuration.',
       `Error: ${errorDetails.errorMessage}`,
       `Context: ${errorDetails.context}`,
       `Time: ${errorDetails.timestamp}`,
@@ -43,4 +40,4 @@ export async function load() {
     // Throw a user-friendly error
     throw error(500, errorMessage);
   }
-}; 
+};

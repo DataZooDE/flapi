@@ -1,118 +1,90 @@
 <script lang="ts">
-  import type { ConnectionConfig } from '$lib/types';
-  import { PlusIcon, PencilIcon, TrashIcon, PlayIcon } from 'lucide-svelte';
   import { goto } from '$app/navigation';
-  import { deleteConnection, testConnection } from '$lib/api';
+  import { Network } from 'lucide-svelte';
+  import Plus from 'lucide-svelte/icons/plus';
+  import type { ConnectionConfig } from '$lib/types';
+  import { onMount } from 'svelte';
 
-  export let data;
+  export let data: { connections: Record<string, ConnectionConfig> };
+  let connections: [string, ConnectionConfig][] = [];
+  let error: string | null = null;
 
-  let connections: (ConnectionConfig & { name: string })[] = data.connections;
-  let searchQuery = '';
-
-  $: filteredConnections = connections.filter(connection => 
-    connection.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
-
-  async function handleDelete(connection: ConnectionConfig & { name: string }) {
-    if (confirm(`Are you sure you want to delete the connection ${connection.name}?`)) {
-      await deleteConnection(connection.name);
-      connections = connections.filter(c => c.name !== connection.name);
-    }
-  }
-
-  async function handleTest(connection: ConnectionConfig & { name: string }) {
+  onMount(() => {
     try {
-      await testConnection(connection.name);
-      alert('Connection test successful!');
-    } catch (error) {
-      alert('Connection test failed: ' + error.message);
+      if (!data?.connections) {
+        throw new Error('No connections data available');
+      }
+      connections = Object.entries(data.connections);
+    } catch (e) {
+      console.error('Failed to load connections:', e);
+      error = e instanceof Error ? e.message : 'An unknown error occurred';
     }
+  });
+
+  function handleRowClick(name: string) {
+    goto(`/connections/${encodeURIComponent(name)}`);
   }
 </script>
 
-<div class="space-y-4">
+<div class="container mx-auto py-6 space-y-6">
   <div class="flex justify-between items-center">
-    <h1 class="text-2xl font-bold">Database Connections</h1>
-    <button
-      class="btn variant-filled-primary flex items-center space-x-2"
-      on:click={() => goto('/connections/new')}
-    >
-      <PlusIcon class="w-4 h-4" />
+    <h1 class="text-2xl font-bold">Connections</h1>
+    <a href="/connections/new" class="btn btn-primary flex items-center">
+      <Plus class="h-4 w-4 mr-2" />
       <span>New Connection</span>
-    </button>
+    </a>
   </div>
 
-  <div class="flex items-center space-x-4">
-    <input
-      type="text"
-      placeholder="Search connections..."
-      bind:value={searchQuery}
-      class="input"
-    />
-  </div>
-
-  <div class="card p-4">
-    <table class="table table-hover">
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Properties</th>
-          <th>Logging</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each filteredConnections as connection}
+  <div class="card">
+    {#if error}
+      <div class="p-4 text-red-800 bg-red-100 rounded">
+        {error}
+      </div>
+    {:else}
+      <table class="min-w-full">
+        <thead>
           <tr>
-            <td>{connection.name}</td>
-            <td>
-              <div class="space-y-1">
-                {#each Object.entries(connection.properties) as [key, value]}
-                  <div class="text-sm">
-                    <span class="font-semibold">{key}:</span> {value}
-                  </div>
-                {/each}
-              </div>
-            </td>
-            <td>
-              <div class="space-y-1">
-                <div class="flex items-center space-x-2">
-                  <span class="badge variant-filled-{connection.log_queries ? 'success' : 'error'}">
-                    Query Logging
-                  </span>
-                </div>
-                <div class="flex items-center space-x-2">
-                  <span class="badge variant-filled-{connection.log_parameters ? 'success' : 'error'}">
-                    Parameter Logging
-                  </span>
-                </div>
-              </div>
-            </td>
-            <td>
-              <div class="flex items-center space-x-2">
-                <button
-                  class="btn btn-sm variant-soft"
-                  on:click={() => goto(`/connections/${encodeURIComponent(connection.name)}`)}
-                >
-                  <PencilIcon class="w-4 h-4" />
-                </button>
-                <button
-                  class="btn btn-sm variant-soft-success"
-                  on:click={() => handleTest(connection)}
-                >
-                  <PlayIcon class="w-4 h-4" />
-                </button>
-                <button
-                  class="btn btn-sm variant-soft-error"
-                  on:click={() => handleDelete(connection)}
-                >
-                  <TrashIcon class="w-4 h-4" />
-                </button>
-              </div>
-            </td>
+            <th class="text-left p-4">Name</th>
+            <th class="text-left p-4">Init</th>
+            <th class="text-left p-4">Logging</th>
+            <th class="text-left p-4">Allow</th>
           </tr>
-        {/each}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {#each connections as [name, connection]}
+            <tr 
+              class="border-t hover:bg-gray-50 cursor-pointer"
+              on:click={() => handleRowClick(name)}
+            >
+              <td class="p-4">{name}</td>
+              <td class="p-4">
+                <span class="px-2 py-1 rounded text-sm bg-gray-100">
+                  {connection.init}
+                </span>
+              </td>
+              <td class="p-4">
+                <div class="space-x-2">
+                  {#if connection.log_queries}
+                    <span class="px-2 py-1 rounded text-sm bg-green-100 text-green-800">
+                      Queries
+                    </span>
+                  {/if}
+                  {#if connection.log_parameters}
+                    <span class="px-2 py-1 rounded text-sm bg-green-100 text-green-800">
+                      Parameters
+                    </span>
+                  {/if}
+                </div>
+              </td>
+              <td class="p-4">
+                <span class="px-2 py-1 rounded text-sm bg-gray-100">
+                  {connection.allow}
+                </span>
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    {/if}
   </div>
 </div> 

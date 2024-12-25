@@ -1,13 +1,17 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
+  import { EditorState } from "@codemirror/state";
   import { EditorView, keymap } from '@codemirror/view';
   import { sql } from '@codemirror/lang-sql';
   import { oneDark } from '@codemirror/theme-one-dark';
   import { defaultKeymap } from '@codemirror/commands';
   import { syntaxHighlighting } from '@codemirror/language';
   import type { ConnectionConfig } from '$lib/types';
-  import { saveConnection, validateSql } from '$lib/api';
+  import { saveConnection, validateSql, deleteConnection } from '$lib/api';
+  import X from 'lucide-svelte/icons/x';
+  import Save from 'lucide-svelte/icons/save';
+  import Trash2 from 'lucide-svelte/icons/trash-2';
 
   export let data: { connection?: ConnectionConfig & { name: string }; isNew: boolean };
 
@@ -22,30 +26,61 @@
       }
     : { ...data.connection! };
 
-  let editor: EditorView;
+  let editor: any = null;
   let editorContainer: HTMLElement;
   let newPropertyKey = '';
   let newPropertyValue = '';
 
   onMount(() => {
     if (editorContainer) {
-      editor = new EditorView({
-        doc: connection.init,
-        extensions: [
-          keymap.of(defaultKeymap),
-          sql(),
-          oneDark,
-          syntaxHighlighting
-        ],
-        parent: editorContainer
-      });
+      try {
+        const state = EditorState.create({
+          doc: connection.init,
+          extensions: [
+            keymap.of(defaultKeymap),
+            sql(),
+            oneDark,
+            EditorView.theme({
+              "&": { height: "100%" },
+              ".cm-scroller": { overflow: "auto" },
+              ".cm-content": { padding: "4px 0" },
+              ".cm-line": { padding: "0 8px" }
+            }),
+            EditorView.updateListener.of((update: { docChanged: boolean; state: { doc: { toString(): string } } }) => {
+              if (update.docChanged && editor) {
+                connection.init = update.state.doc.toString();
+              }
+            })
+          ]
+        });
+
+        editor = new EditorView({
+          state,
+          parent: editorContainer
+        });
+      } catch (e) {
+        console.error('Failed to initialize editor:', e);
+      }
+    }
+  });
+
+  onDestroy(() => {
+    if (editor) {
+      try {
+        editor.destroy();
+      } catch (e) {
+        console.error('Failed to destroy editor:', e);
+      }
+      editor = null;
     }
   });
 
   async function handleSubmit() {
     try {
       // Update init SQL from editor
-      connection.init = editor.state.doc.toString();
+      if (editor) {
+        connection.init = editor.state.doc.toString();
+      }
 
       // Validate init SQL
       const sqlValidation = await validateSql(connection.init);
@@ -77,19 +112,59 @@
     const { [key]: _, ...rest } = connection.properties;
     connection.properties = rest;
   }
+
+  async function handleDelete() {
+    if (!confirm('Are you sure you want to delete this connection?')) return;
+    try {
+      await deleteConnection(connection.name);
+      goto('/connections');
+    } catch (error) {
+      alert('Failed to delete connection: ' + (error instanceof Error ? error.message : String(error)));
+    }
+  }
 </script>
 
-<div class="space-y-8">
+<div class="container mx-auto py-6 space-y-6">
   <div class="flex justify-between items-center">
-    <h1 class="text-2xl font-bold">
-      {data.isNew ? 'New Connection' : 'Edit Connection'}
-    </h1>
+    <h1 class="text-2xl font-bold">{data.isNew ? 'New Connection' : 'Edit Connection'}</h1>
+    <div class="flex space-x-2">
+      <button 
+        type="button"
+        class="btn btn-ghost flex items-center" 
+        on:click={() => goto('/connections')}
+      >
+        <X class="h-4 w-4 mr-2" />
+        <span>Cancel</span>
+      </button>
+      {#if !data.isNew}
+        <button 
+          type="button"
+          class="btn btn-error flex items-center" 
+          on:click={handleDelete}
+        >
+          <Trash2 class="h-4 w-4 mr-2" />
+          <span>Delete</span>
+        </button>
+      {/if}
+      <button 
+        type="submit"
+        form="connection-form"
+        class="btn btn-primary flex items-center"
+      >
+        <Save class="h-4 w-4 mr-2" />
+        <span>Save Changes</span>
+      </button>
+    </div>
   </div>
 
-  <form on:submit|preventDefault={handleSubmit} class="space-y-6">
+  <form 
+    id="connection-form"
+    on:submit|preventDefault={handleSubmit} 
+    class="space-y-6"
+  >
     <!-- Basic Information -->
-    <div class="card p-4 space-y-4">
-      <h2 class="text-xl font-semibold">Basic Information</h2>
+    <div class="card p-4">
+      <h2 class="text-lg font-semibold mb-4">Basic Information</h2>
       
       <div class="space-y-4">
         <div class="space-y-2">
@@ -201,18 +276,17 @@
       <h2 class="text-xl font-semibold">Initialization SQL</h2>
       <div bind:this={editorContainer} class="h-64 border rounded" />
     </div>
-
-    <div class="flex justify-end space-x-4">
-      <button
-        type="button"
-        class="btn variant-soft"
-        on:click={() => goto('/connections')}
-      >
-        Cancel
-      </button>
-      <button type="submit" class="btn variant-filled-primary">
-        {data.isNew ? 'Create Connection' : 'Save Changes'}
-      </button>
-    </div>
   </form>
-</div> 
+</div>
+
+<style>
+  :global(.cm-editor) {
+    height: 100%;
+  }
+
+  :global(.cm-editor .cm-scroller) {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+</style> 

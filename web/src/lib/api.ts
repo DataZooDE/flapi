@@ -1,4 +1,4 @@
-import type { EndpointConfig, ConnectionConfig, FlapiConfig } from './types';
+import type { EndpointConfig, ConnectionConfig, FlapiConfig, ProjectConfig } from './types';
 
 const API_BASE = '/api';
 
@@ -128,4 +128,19 @@ export async function validateSql(sql: string): Promise<{ valid: boolean; error?
     return { valid: false, error: 'SQL must be a SELECT or CREATE statement' };
   }
   return { valid: true };
+}
+
+export async function saveProjectConfig(config: ProjectConfig): Promise<void> {
+  const response = await fetch('/api/project', {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(config),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(error);
+  }
 } 

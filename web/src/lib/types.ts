@@ -54,11 +54,18 @@ export interface EndpointConfig {
   method: 'GET' | 'POST' | 'PUT' | 'DELETE';
   requestFields: RequestField[];
   templateSource: string;
+  template?: string;
   connection: string[];
   rate_limit: RateLimit;
   auth: Auth;
   cache: Cache;
   heartbeat: Heartbeat;
+}
+
+export interface SecurityConfig {
+  cors: {
+    allowed_origins: string[];
+  };
 }
 
 export interface FlapiConfig {
@@ -68,4 +75,30 @@ export interface FlapiConfig {
     path: string;
   };
   connections: Record<string, ConnectionConfig>;
+  security?: SecurityConfig;
+}
+
+export interface ProjectConfig {
+  project_name: string;
+  project_description: string;
+  template: {
+    path: string;
+    'environment-whitelist': string[];
+  };
+  duckdb: {
+    db_path?: string;
+    access_mode: 'READ_WRITE' | 'READ_ONLY';
+    threads: number;
+    max_memory: string;
+    default_order: 'ASC' | 'DESC';
+  };
+  'enforce-https': {
+    enabled: boolean;
+    'ssl-cert-file'?: string;
+    'ssl-key-file'?: string;
+  };
+  heartbeat: {
+    enabled: boolean;
+    'worker-interval': number;
+  };
 } 

@@ -56,4 +56,81 @@
   .label {
     @apply block text-sm font-medium text-gray-700;
   }
+
+  /* File Tree Styles */
+  .file-tree-item {
+    @apply flex items-center px-3 py-2 text-sm rounded-md hover:bg-primary-50 text-gray-700 transition-colors;
+  }
+
+  .file-tree-item.active {
+    @apply bg-primary-50 text-primary-700;
+  }
+
+  .file-tree-item-icon {
+    @apply h-5 w-5 mr-3 text-gray-500;
+  }
+
+  .file-tree-item-text {
+    @apply flex-1 truncate;
+  }
+
+  /* Editor Styles */
+  .editor-container {
+    @apply bg-white rounded-lg shadow-sm border border-gray-100 p-4 h-full;
+  }
+
+  .editor-header {
+    @apply flex items-center justify-between mb-4 pb-4 border-b border-gray-100;
+  }
+
+  .editor-content {
+    @apply min-h-[400px] flex flex-col gap-4;
+  }
+
+  .editor-footer {
+    @apply flex items-center justify-between mt-4 pt-4 border-t border-gray-100;
+  }
+
+  /* Split View */
+  .split-view {
+    @apply flex gap-4 h-full;
+  }
+
+  .split-view-left {
+    @apply flex-1;
+  }
+
+  .split-view-right {
+    @apply flex-1;
+  }
+
+  /* Preview Section */
+  .preview-section {
+    @apply bg-white rounded-lg shadow-sm border border-gray-100 p-4;
+  }
+
+  .preview-header {
+    @apply flex items-center justify-between mb-4 pb-4 border-b border-gray-100;
+  }
+
+  .preview-content {
+    @apply min-h-[200px] bg-gray-50 rounded-lg p-4 font-mono text-sm;
+  }
+
+  /* Config Button */
+  .config-button {
+    @apply flex items-center w-full px-3 py-2 text-gray-700 rounded-md hover:bg-primary-50 transition-colors;
+  }
+
+  .config-button.active {
+    @apply bg-primary-50 text-primary-700;
+  }
+
+  .config-button-icon {
+    @apply h-5 w-5 mr-3 text-gray-500;
+  }
+
+  .config-button-text {
+    @apply text-sm font-medium;
+  }
 } 
