@@ -137,29 +137,29 @@ run-integration-tests: debug
 # Build Docker image
 docker: release
 	@echo "Building Docker image..."
-	@mkdir -p build/release
+	@mkdir -p binaries/amd64 binaries/arm64
 	@if [ "$(shell uname)" = "Darwin" ]; then \
 		if [ "$(shell uname -m)" = "x86_64" ]; then \
-			cp $(RELEASE_DIR)-x86_64/flapi build/release/flapi; \
-		elif [ "$(shell uname -m)" = "arm64" ]; then \
-			cp $(RELEASE_DIR)-arm64/flapi build/release/flapi; \
-		fi \
-	elif [ ! -f build/release/flapi ]; then \
-		cp $(RELEASE_DIR)/flapi build/release/flapi; \
+			cp $(RELEASE_DIR)-x86_64/flapi binaries/amd64/flapi; \
+		else \
+			cp $(RELEASE_DIR)-arm64/flapi binaries/arm64/flapi; \
+		fi; \
+	else \
+		cp $(RELEASE_DIR)/flapi binaries/$(shell uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/')/flapi; \
 	fi
-	@if [ ! -f build/release/flapi ]; then \
+	@if [ ! -f binaries/amd64/flapi ] && [ ! -f binaries/arm64/flapi ]; then \
 		echo "Error: Could not find flapi binary"; \
 		exit 1; \
 	fi
-	docker build -t $(DOCKER_IMAGE_NAME):latest -f $(DOCKER_FILE) .
-
-# Add docker-multiarch target for local multi-arch builds
-docker-multiarch: release
-	@echo "Building multi-architecture Docker image..."
-	docker buildx create --use --name multiarch-builder || true
-	docker buildx build --platform linux/amd64,linux/arm64 \
+	@ARCH=$$(if [ "$$(uname -m)" = "x86_64" ]; then echo "amd64"; elif [ "$$(uname -m)" = "aarch64" ]; then echo "arm64"; else echo "unknown"; fi); \
+	if [ "$$ARCH" = "unknown" ]; then \
+		echo "Unsupported architecture: $$(uname -m)"; \
+		exit 1; \
+	fi; \
+	DOCKER_BUILDKIT=1 docker build \
+		--platform=linux/$$ARCH \
+		--build-context build=binaries/$$ARCH \
 		-t $(DOCKER_IMAGE_NAME):latest \
-		--push \
 		-f $(DOCKER_FILE) .
 
 # Add a test target

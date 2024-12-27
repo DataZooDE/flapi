@@ -10,14 +10,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# build context is set in the github `build-push-action`
+# Copy the appropriate binary based on architecture
 COPY --from=build flapi /app/flapi
 
 # Ensure executable permissions
 RUN chmod +x /app/flapi && \
-    # Verify binary
-    file /app/flapi && \
-    # Test execution
     /app/flapi --version
 
 ENTRYPOINT ["/app/flapi"]

@@ -1,4 +1,5 @@
 build
+binaries
 cmake
 .idea
 cmake-build-debug
