@@ -18,13 +18,17 @@ concurrency:
 
 jobs:
   # -------------------------------------------------------------------------------------------------
-  # Linux AMD64
+  # Linux Matrix Build (AMD64 + ARM64)
   # -------------------------------------------------------------------------------------------------
-  linux-amd64:
-    runs-on: ubuntu-latest
+  linux-build:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
     env:
-      BUILD_ARCH: amd64
-      BUILD_IMAGE: flapi_build_amd64
+      BUILD_ARCH: ${{ matrix.arch }}
+      BUILD_IMAGE: flapi_build_${{ matrix.arch }}
+      FLAPI_CROSS_COMPILE: ${{ matrix.arch == 'arm64' && 'arm64' || '' }}
     steps:
     - uses: actions/checkout@v4
       with:
@@ -34,7 +38,7 @@ jobs:
     - name: Setup Ccache
       uses: hendrikmuhs/ccache-action@main
       with:
-        key: ${{ github.job }}
+        key: ${{ github.job }}-${{ matrix.arch }}
 
     - name: Build Docker image
       shell: bash
@@ -47,6 +51,7 @@ jobs:
       shell: bash
       run: |
         docker run \
+          ${{ matrix.arch == 'arm64' && format('-e FLAPI_CROSS_COMPILE="{0}"', matrix.arch) || '' }} \
           -v `pwd`:/build_dir \
           -v ~/.ccache:/ccache_dir \
           ${BUILD_IMAGE} \
@@ -54,50 +59,7 @@ jobs:
 
     - uses: actions/upload-artifact@v4
       with:
-        name: flapi-linux-${{ env.BUILD_ARCH }}
-        path: build/release/flapi
-        if-no-files-found: error
-
-  # -------------------------------------------------------------------------------------------------
-  # Linux ARM64
-  # -------------------------------------------------------------------------------------------------
-  linux-aarch64:
-    runs-on: ubuntu-latest
-    env:
-      FLAPI_CROSS_COMPILE: arm64
-      BUILD_ARCH: arm64
-      BUILD_IMAGE: flapi_build_arm64
-    steps:
-    - uses: actions/checkout@v4
-      with:
-        submodules: recursive
-        fetch-depth: 0
-
-    - name: Setup Ccache
-      uses: hendrikmuhs/ccache-action@main
-      with:
-        key: ${{ github.job }}
-
-    - name: Build Docker image
-      shell: bash
-      run: |
-        docker build \
-          -t ${BUILD_IMAGE} \
-          -f .github/docker/linux_${BUILD_ARCH}/Dockerfile .
-
-    - name: Run build in docker
-      shell: bash
-      run: |
-        docker run \
-          -e FLAPI_CROSS_COMPILE="${BUILD_ARCH}" \
-          -v `pwd`:/build_dir \
-          -v ~/.ccache:/ccache_dir \
-          ${BUILD_IMAGE} \
-          bash -c 'make clean && make release'
-
-    - uses: actions/upload-artifact@v4
-      with:
-        name: flapi-linux-${{ env.BUILD_ARCH }}
+        name: flapi-linux-${{ matrix.arch }}
         path: build/release/flapi
         if-no-files-found: error
 
@@ -105,8 +67,8 @@ jobs:
   # Docker Build and Push Multi-Arch
   # -------------------------------------------------------------------------------------------------
   docker-build:
-      needs: [linux-amd64, linux-aarch64]
-      runs-on: ubuntu-latest
+      needs: [linux-build]
+      runs-on: ubuntu-24.04
       steps:
       - uses: actions/checkout@v4
 
@@ -140,6 +102,16 @@ jobs:
         with:
           path: artifacts
 
+      - name: Prepare artifacts
+        run: |
+          mkdir -p binaries/amd64 binaries/arm64
+          cp artifacts/flapi-linux-amd64/flapi binaries/amd64/
+          cp artifacts/flapi-linux-arm64/flapi binaries/arm64/
+          # Verify binaries
+          file binaries/amd64/flapi
+          file binaries/arm64/flapi
+          chmod +x binaries/amd64/flapi binaries/arm64/flapi
+
       - name: Build and push multi-arch image
         uses: docker/build-push-action@v6
         with:
@@ -149,10 +121,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: TARGETARCH=${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
           build-contexts: |
-            amd64=./artifacts/flapi-linux-amd64
-            arm64=./artifacts/flapi-linux-arm64
+            amd64=./binaries/amd64
+            arm64=./binaries/arm64
 
   # -------------------------------------------------------------------------------------------------
   # macOS Universal

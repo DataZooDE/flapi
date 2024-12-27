@@ -1,4 +1,4 @@
-FROM ubuntu:24.04 AS base
+FROM ubuntu:24.04
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -10,14 +10,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Default target architecture
-ARG TARGETARCH=amd64
-
-# Copy prebuilt artifact based on architecture
-COPY ./artifacts/flapi-linux-${TARGETARCH}/flapi /app/flapi
+# Copy prebuilt artifact - no need for TARGETARCH as we use build contexts
+COPY flapi /app/flapi
 
 # Ensure executable permissions
-RUN chmod +x /app/flapi
+RUN chmod +x /app/flapi && \
+    # Verify binary
+    file /app/flapi && \
+    # Test execution
+    /app/flapi --version
 
-# Set entrypoint
 ENTRYPOINT ["/app/flapi"]
