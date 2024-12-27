@@ -10,8 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy prebuilt artifact - no need for TARGETARCH as we use build contexts
-COPY flapi /app/flapi
+# build context is set in the github `build-push-action`
+COPY --from=build flapi /app/flapi
 
 # Ensure executable permissions
 RUN chmod +x /app/flapi && \

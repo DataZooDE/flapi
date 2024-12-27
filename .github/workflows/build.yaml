@@ -122,8 +122,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-contexts: |
-            amd64=./binaries/amd64
-            arm64=./binaries/arm64
+            build= ${{ matrix.platform == 'linux/amd64' && 'binaries/amd64' || 'binaries/arm64' }}
 
   # -------------------------------------------------------------------------------------------------
   # macOS Universal
