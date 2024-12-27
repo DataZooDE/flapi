@@ -149,6 +149,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: TARGETARCH=${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
           build-contexts: |
             amd64=./artifacts/flapi-linux-amd64
             arm64=./artifacts/flapi-linux-arm64
