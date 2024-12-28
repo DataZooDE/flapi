@@ -14,7 +14,6 @@ WORKDIR /app
 COPY --from=build flapi /app/flapi
 
 # Ensure executable permissions
-RUN chmod +x /app/flapi && \
-    /app/flapi --version
+RUN chmod +x /app/flapi
 
 ENTRYPOINT ["/app/flapi"]
