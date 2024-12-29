@@ -158,7 +158,8 @@ docker: release
 	fi; \
 	DOCKER_BUILDKIT=1 docker build \
 		--platform=linux/$$ARCH \
-		--build-context build=binaries/$$ARCH \
+		--build-context build=binaries \
+		--progress=plain \
 		-t $(DOCKER_IMAGE_NAME):latest \
 		-f $(DOCKER_FILE) .
 

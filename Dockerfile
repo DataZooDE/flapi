@@ -10,8 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy the appropriate binary based on architecture
-COPY --from=build flapi /app/flapi
+ARG TARGETARCH
+COPY --from=build /${TARGETARCH}/flapi /app/flapi
 
 # Ensure executable permissions
 RUN chmod +x /app/flapi
