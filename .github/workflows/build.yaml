@@ -150,3 +150,34 @@ jobs:
         path: build/universal/flapi
         if-no-files-found: error
         retention-days: 90
+
+  publish-binaries:
+    needs: [linux-build, osx-universal]
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Download Linux Artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: flapi-linux-amd64
+        path: ./artifacts/linux/amd64
+
+    - name: Download Linux ARM64 Artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: flapi-linux-arm64
+        path: ./artifacts/linux/arm64
+
+    - name: Download macOS Artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: flapi-macos-universal
+        path: ./artifacts/macos
+
+    - name: Publish to GitHub Packages
+      run: |
+        gh release create ${{ github.sha }} \
+          ./artifacts/linux/amd64/flapi#flapi-linux-amd64 \
+          ./artifacts/linux/arm64/flapi#flapi-linux-arm64 \
+          ./artifacts/macos/flapi#flapi-macos-universal \
+          --title "flAPI Release ${{ github.sha }}" \
+          --notes "Automated release of flAPI binaries."
