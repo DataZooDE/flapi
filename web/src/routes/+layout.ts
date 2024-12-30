@@ -1,26 +1,17 @@
 import type { LayoutLoad } from './$types';
-import { fetchConfig } from '$lib/api';
+import { getProjectConfig } from '$lib/api';
 import { error } from '@sveltejs/kit';
 
-export const load = (async () => {
+export const load: LayoutLoad = async ({ fetch }) => {
   try {
-    const config = await fetchConfig();
-    if (!config) {
-      throw new Error('Configuration data is null or undefined');
-    }
-
+    const config = await getProjectConfig(fetch);
     return {
-      endpoints: config.endpoints || {},
-      connections: config.flapi?.connections || {}
+      config
     };
   } catch (e) {
-    console.error('Failed to load configuration:', {
-      error: e,
-      message: e instanceof Error ? e.message : 'Unknown error',
-      stack: e instanceof Error ? e.stack : undefined,
-      timestamp: new Date().toISOString()
+    console.error('Failed to load configuration:', e);
+    throw error(500, {
+      message: 'Failed to load application configuration'
     });
-
-    throw error(500, 'Failed to load application configuration');
   }
-}) satisfies LayoutLoad;
+};

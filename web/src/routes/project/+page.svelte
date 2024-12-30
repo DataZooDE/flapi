@@ -7,8 +7,85 @@
 
   export let data: { config: ProjectConfig };
   let config = { ...data.config };
+  let errors: Record<string, string> = {};
+
+  function validateConfig(): boolean {
+    errors = {};
+    
+    // Project name validation
+    if (!config.project_name?.trim()) {
+      errors.project_name = 'Project name is required';
+    }
+
+    // Template validation
+    if (!config.template?.path?.trim()) {
+      errors.template_path = 'Template path is required';
+    }
+
+    // Environment whitelist validation
+    if (config.template['environment-whitelist']) {
+      config.template['environment-whitelist'].forEach((pattern, index) => {
+        if (!pattern.trim()) {
+          errors[`env_pattern_${index}`] = 'Pattern cannot be empty';
+          return;
+        }
+        if (!/^[A-Z_][A-Z0-9_]*$/.test(pattern)) {
+          errors[`env_pattern_${index}`] = 'Pattern must match ^[A-Z_][A-Z0-9_]*$';
+        }
+      });
+    }
+
+    // DuckDB validation
+    if (config.duckdb) {
+      if (config.duckdb.threads !== undefined && config.duckdb.threads < 1) {
+        errors.duckdb_threads = 'Threads must be at least 1';
+      }
+      if (config.duckdb.max_memory && !/^[0-9]+[KMGT]B$/.test(config.duckdb.max_memory)) {
+        errors.duckdb_memory = 'Invalid memory format (e.g., 8GB)';
+      }
+      if (config.duckdb.access_mode && !['READ_WRITE', 'READ_ONLY'].includes(config.duckdb.access_mode)) {
+        errors.duckdb_access_mode = 'Invalid access mode';
+      }
+      if (config.duckdb.default_order && !['ASC', 'DESC'].includes(config.duckdb.default_order)) {
+        errors.duckdb_default_order = 'Invalid default order';
+      }
+    }
+
+    // Connections validation
+    if (config.connections) {
+      Object.entries(config.connections).forEach(([name, conn]) => {
+        if (!conn.allow?.trim()) {
+          errors[`connection_${name}_allow`] = 'Access control must be specified';
+        }
+      });
+    }
+
+    // HTTPS validation
+    if (config['enforce-https']?.enabled) {
+      if (!config['enforce-https']['ssl-cert-file']?.trim()) {
+        errors.ssl_cert = 'SSL certificate file is required when HTTPS is enabled';
+      }
+      if (!config['enforce-https']['ssl-key-file']?.trim()) {
+        errors.ssl_key = 'SSL key file is required when HTTPS is enabled';
+      }
+    }
+
+    // Heartbeat validation
+    if (config.heartbeat?.enabled) {
+      if (!config.heartbeat['worker-interval'] || config.heartbeat['worker-interval'] < 1) {
+        errors.heartbeat_interval = 'Worker interval must be at least 1 second';
+      }
+    }
+
+    return Object.keys(errors).length === 0;
+  }
 
   async function handleSubmit() {
+    if (!validateConfig()) {
+      alert('Please fix the validation errors before saving');
+      return;
+    }
+
     try {
       await saveProjectConfig(config);
       goto('/');
@@ -56,9 +133,12 @@
             id="project_name"
             type="text"
             bind:value={config.project_name}
-            class="input"
+            class="input {errors.project_name ? 'border-red-500' : ''}"
             required
           />
+          {#if errors.project_name}
+            <p class="text-red-500 text-sm">{errors.project_name}</p>
+          {/if}
         </div>
 
         <div class="space-y-2">
@@ -66,9 +146,12 @@
           <textarea
             id="project_description"
             bind:value={config.project_description}
-            class="textarea"
+            class="textarea {errors.project_description ? 'border-red-500' : ''}"
             rows="3"
           />
+          {#if errors.project_description}
+            <p class="text-red-500 text-sm">{errors.project_description}</p>
+          {/if}
         </div>
       </div>
     </div>
@@ -83,9 +166,12 @@
             id="template_path"
             type="text"
             bind:value={config.template.path}
-            class="input"
+            class="input {errors.template_path ? 'border-red-500' : ''}"
             placeholder="./sqls"
           />
+          {#if errors.template_path}
+            <p class="text-red-500 text-sm">{errors.template_path}</p>
+          {/if}
         </div>
 
         <div class="space-y-2">
@@ -96,9 +182,12 @@
                 <input
                   type="text"
                   bind:value={config.template['environment-whitelist'][i]}
-                  class="input flex-1"
+                  class="input flex-1 {errors[`env_pattern_${i}`] ? 'border-red-500' : ''}"
                   placeholder="^FLAPI_.*"
                 />
+                {#if errors[`env_pattern_${i}`]}
+                  <p class="text-red-500 text-sm">{errors[`env_pattern_${i}`]}</p>
+                {/if}
                 <button
                   type="button"
                   class="btn btn-ghost text-red-600"
@@ -188,6 +277,138 @@
             </select>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- Connections Configuration -->
+    <div class="card p-4">
+      <h2 class="text-lg font-semibold mb-4">Connections</h2>
+      <div class="space-y-4">
+        {#each Object.entries(config.connections || {}) as [name, connection]}
+          <div class="border p-4 rounded-lg">
+            <div class="flex justify-between items-center mb-4">
+              <h3 class="font-medium">{name}</h3>
+              <button 
+                type="button" 
+                class="btn btn-ghost text-red-600"
+                on:click={() => {
+                  delete config.connections[name];
+                  config.connections = {...config.connections};
+                }}
+              >
+                Remove
+              </button>
+            </div>
+
+            <div class="space-y-4">
+              <div class="space-y-2">
+                <label class="label">Initialization SQL</label>
+                <textarea
+                  bind:value={connection.init}
+                  class="textarea"
+                  rows="3"
+                  placeholder="INSTALL 'extension';"
+                />
+              </div>
+
+              <div class="space-y-2">
+                <label class="label">Properties</label>
+                {#each Object.entries(connection.properties || {}) as [key, value]}
+                  <div class="flex space-x-2">
+                    <input
+                      type="text"
+                      bind:value={key}
+                      class="input flex-1"
+                      placeholder="Key"
+                    />
+                    <input
+                      type="text"
+                      bind:value={value}
+                      class="input flex-1"
+                      placeholder="Value"
+                    />
+                    <button
+                      type="button"
+                      class="btn btn-ghost text-red-600"
+                      on:click={() => {
+                        delete connection.properties[key];
+                        connection.properties = {...connection.properties};
+                      }}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                {/each}
+                <button
+                  type="button"
+                  class="btn btn-secondary"
+                  on:click={() => {
+                    connection.properties = {
+                      ...connection.properties,
+                      '': ''
+                    };
+                  }}
+                >
+                  Add Property
+                </button>
+              </div>
+
+              <!-- Add missing fields -->
+              <div class="space-y-2">
+                <label class="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    bind:checked={connection.log_queries}
+                    class="checkbox"
+                  />
+                  <span>Log Queries</span>
+                </label>
+              </div>
+
+              <div class="space-y-2">
+                <label class="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    bind:checked={connection.log_parameters}
+                    class="checkbox"
+                  />
+                  <span>Log Parameters</span>
+                </label>
+              </div>
+
+              <div class="space-y-2">
+                <label class="label">Access Control</label>
+                <input
+                  type="text"
+                  bind:value={connection.allow}
+                  class="input"
+                  placeholder="* for all users, or specific roles"
+                />
+              </div>
+            </div>
+          </div>
+        {/each}
+        <button
+          type="button"
+          class="btn btn-primary"
+          on:click={() => {
+            const name = prompt('Enter connection name:');
+            if (name) {
+              config.connections = {
+                ...config.connections,
+                [name]: {
+                  init: '',
+                  properties: {},
+                  log_queries: false,
+                  log_parameters: false,
+                  allow: '*'
+                }
+              };
+            }
+          }}
+        >
+          Add Connection
+        </button>
       </div>
     </div>
 

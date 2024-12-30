@@ -1,146 +1,175 @@
-import type { EndpointConfig, ConnectionConfig, FlapiConfig, ProjectConfig } from './types';
+import { API_BASE_URL } from './config';
+import type { FlapiConfig, EndpointConfig } from './types';
 
-const API_BASE = '/api';
+const API_BASE = `${API_BASE_URL}/api/v1/_config`;
 
-// Mock data
-const mockConfig: FlapiConfig = {
-  project_name: 'Customer API',
-  project_description: 'API for managing customer data',
-  template: {
-    path: './sqls'
-  },
-  connections: {
-    'duckdb': {
-      name: 'duckdb',
-      init: 'CREATE TABLE IF NOT EXISTS users (id INTEGER, name TEXT, email TEXT);',
-      properties: {
-        'db_file': './data/db.duckdb'
-      },
-      log_queries: true,
-      log_parameters: false,
-      allow: '*.parquet'
-    },
-    'sqlite': {
-      name: 'sqlite',
-      init: 'PRAGMA foreign_keys = ON;',
-      properties: {
-        'db_file': './data/app.db'
-      },
-      log_queries: false,
-      log_parameters: false,
-      allow: '*.db'
-    }
+const fetchOptions: RequestInit = {
+  credentials: 'include',
+  headers: {
+    'Content-Type': 'application/json',
   }
 };
 
-const mockEndpoints: Record<string, EndpointConfig> = {
-  'users': {
-    urlPath: '/users',
-    method: 'GET',
-    requestFields: [
-      {
-        fieldName: 'id',
-        fieldIn: 'query',
-        description: 'User ID',
-        required: false,
-        validators: [
-          { type: 'int', min: 1, preventSqlInjection: true }
-        ]
-      }
-    ],
-    templateSource: 'SELECT * FROM users WHERE {% if id %}id = :id{% else %}1=1{% endif %}',
-    connection: ['duckdb'],
-    rate_limit: { enabled: true, max: 100, interval: 60 },
-    auth: { enabled: false, type: 'basic', users: [] },
-    cache: {
-      cacheTableName: '',
-      cacheSource: '',
-      refreshTime: '',
-      refreshEndpoint: false,
-      maxPreviousTables: 5
-    },
-    heartbeat: { enabled: false, params: {} }
-  }
-};
-
-export async function fetchConfig(): Promise<{ flapi: FlapiConfig; endpoints: Record<string, EndpointConfig> }> {
-  // Simulate API delay
-  await new Promise(resolve => setTimeout(resolve, 100));
-  return {
-    flapi: mockConfig,
-    endpoints: mockEndpoints
-  };
-}
-
-export async function refreshConfig(): Promise<void> {
-  const response = await fetch(`${API_BASE}/config`, { method: 'DELETE' });
-  if (!response.ok) {
-    throw new Error('Failed to refresh configuration');
-  }
-}
-
-export async function testEndpoint(endpoint: EndpointConfig, params: Record<string, string>): Promise<any> {
-  const queryString = new URLSearchParams(params).toString();
-  const response = await fetch(`${API_BASE}${endpoint.urlPath}?${queryString}`);
-  if (!response.ok) {
-    throw new Error('Failed to test endpoint');
-  }
+export async function getProjectConfig(customFetch: typeof fetch = fetch): Promise<FlapiConfig> {
+  const response = await customFetch(`${API_BASE}/project`, fetchOptions);
+  if (!response.ok) throw new Error('Failed to fetch project config');
   return response.json();
 }
 
-export async function testConnection(connectionName: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/connections/${connectionName}/test`);
-  if (!response.ok) {
-    throw new Error('Failed to test connection');
-  }
-}
-
-export async function saveEndpoint(endpoint: EndpointConfig): Promise<void> {
-  // Simulate API delay
-  await new Promise(resolve => setTimeout(resolve, 100));
-  mockEndpoints[endpoint.urlPath] = endpoint;
-}
-
-export async function deleteEndpoint(urlPath: string): Promise<void> {
-  // Simulate API delay
-  await new Promise(resolve => setTimeout(resolve, 100));
-  delete mockEndpoints[urlPath];
-}
-
-export async function saveConnection(name: string, config: ConnectionConfig): Promise<void> {
-  // Simulate API delay
-  await new Promise(resolve => setTimeout(resolve, 100));
-  mockConfig.connections[name] = config;
-}
-
-export async function deleteConnection(name: string): Promise<void> {
-  // Simulate API delay
-  await new Promise(resolve => setTimeout(resolve, 100));
-  delete mockConfig.connections[name];
-}
-
-export async function validateSql(sql: string): Promise<{ valid: boolean; error?: string }> {
-  // Simple mock validation
-  if (!sql.trim()) {
-    return { valid: false, error: 'SQL cannot be empty' };
-  }
-  if (!sql.toLowerCase().includes('select') && !sql.toLowerCase().includes('create')) {
-    return { valid: false, error: 'SQL must be a SELECT or CREATE statement' };
-  }
-  return { valid: true };
-}
-
-export async function saveProjectConfig(config: ProjectConfig): Promise<void> {
-  const response = await fetch('/api/project', {
+export async function saveProjectConfig(config: FlapiConfig, customFetch: typeof fetch = fetch): Promise<void> {
+  const response = await customFetch(`${API_BASE}/project`, {
+    ...fetchOptions,
     method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(config),
+    body: JSON.stringify(config)
   });
+  if (!response.ok) throw new Error('Failed to save project config');
+}
 
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(error);
-  }
+export async function getEndpoints(customFetch: typeof fetch = fetch): Promise<Record<string, EndpointConfig>> {
+  const response = await customFetch(`${API_BASE}/endpoints`, fetchOptions);
+  if (!response.ok) throw new Error('Failed to fetch endpoints');
+  return response.json();
+}
+
+export async function getEndpoint(path: string, customFetch: typeof fetch = fetch): Promise<EndpointConfig> {
+  const response = await customFetch(`${API_BASE}/endpoints/${encodeURIComponent(path)}`, fetchOptions);
+  if (!response.ok) throw new Error('Failed to fetch endpoint');
+  return response.json();
+}
+
+export async function createEndpoint(config: EndpointConfig, customFetch: typeof fetch = fetch): Promise<void> {
+  const response = await customFetch(`${API_BASE}/endpoints`, {
+    ...fetchOptions,
+    method: 'POST',
+    body: JSON.stringify(config)
+  });
+  if (!response.ok) throw new Error('Failed to create endpoint');
+}
+
+export async function updateEndpoint(path: string, config: EndpointConfig, customFetch: typeof fetch = fetch): Promise<void> {
+  const response = await customFetch(`${API_BASE}/endpoints/${encodeURIComponent(path)}`, {
+    ...fetchOptions,
+    method: 'PUT',
+    body: JSON.stringify(config)
+  });
+  if (!response.ok) throw new Error('Failed to update endpoint');
+}
+
+export async function deleteEndpoint(path: string, customFetch: typeof fetch = fetch): Promise<void> {
+  const response = await customFetch(`${API_BASE}/endpoints/${encodeURIComponent(path)}`, {
+    ...fetchOptions,
+    method: 'DELETE'
+  });
+  if (!response.ok) throw new Error('Failed to delete endpoint');
+}
+
+// Template-related endpoints
+export async function getEndpointTemplate(path: string, customFetch: typeof fetch = fetch): Promise<string> {
+  const response = await customFetch(`${API_BASE}/endpoints/${encodeURIComponent(path)}/template`, fetchOptions);
+  if (!response.ok) throw new Error('Failed to fetch endpoint template');
+  return response.text();
+}
+
+export async function updateEndpointTemplate(path: string, template: string, customFetch: typeof fetch = fetch): Promise<void> {
+  const response = await customFetch(`${API_BASE}/endpoints/${encodeURIComponent(path)}/template`, {
+    ...fetchOptions,
+    method: 'PUT',
+    body: template
+  });
+  if (!response.ok) throw new Error('Failed to update endpoint template');
+}
+
+export async function expandTemplate(path: string, params: Record<string, any>, customFetch: typeof fetch = fetch): Promise<string> {
+  const response = await customFetch(`${API_BASE}/endpoints/${encodeURIComponent(path)}/template/expand`, {
+    ...fetchOptions,
+    method: 'POST',
+    body: JSON.stringify(params)
+  });
+  if (!response.ok) throw new Error('Failed to expand template');
+  return response.text();
+}
+
+export async function testTemplate(path: string, params: Record<string, any>, customFetch: typeof fetch = fetch): Promise<any> {
+  const response = await customFetch(`${API_BASE}/endpoints/${encodeURIComponent(path)}/template/test`, {
+    ...fetchOptions,
+    method: 'POST',
+    body: JSON.stringify(params)
+  });
+  if (!response.ok) throw new Error('Failed to test template');
+  return response.json();
+}
+
+// Cache-related endpoints
+export async function getCacheConfig(path: string, customFetch: typeof fetch = fetch): Promise<any> {
+  const response = await customFetch(`${API_BASE}/endpoints/${encodeURIComponent(path)}/cache`, fetchOptions);
+  if (!response.ok) throw new Error('Failed to fetch cache config');
+  return response.json();
+}
+
+export async function updateCacheConfig(path: string, config: any, customFetch: typeof fetch = fetch): Promise<void> {
+  const response = await customFetch(`${API_BASE}/endpoints/${encodeURIComponent(path)}/cache`, {
+    ...fetchOptions,
+    method: 'PUT',
+    body: JSON.stringify(config)
+  });
+  if (!response.ok) throw new Error('Failed to update cache config');
+}
+
+export async function getCacheTemplate(path: string, customFetch: typeof fetch = fetch): Promise<string> {
+  const response = await customFetch(`${API_BASE}/endpoints/${encodeURIComponent(path)}/cache/template`, fetchOptions);
+  if (!response.ok) throw new Error('Failed to fetch cache template');
+  return response.text();
+}
+
+export async function updateCacheTemplate(path: string, template: string, customFetch: typeof fetch = fetch): Promise<void> {
+  const response = await customFetch(`${API_BASE}/endpoints/${encodeURIComponent(path)}/cache/template`, {
+    ...fetchOptions,
+    method: 'PUT',
+    body: template
+  });
+  if (!response.ok) throw new Error('Failed to update cache template');
+}
+
+export async function refreshCache(path: string, customFetch: typeof fetch = fetch): Promise<void> {
+  const response = await customFetch(`${API_BASE}/endpoints/${encodeURIComponent(path)}/cache/refresh`, {
+    ...fetchOptions,
+    method: 'POST'
+  });
+  if (!response.ok) throw new Error('Failed to refresh cache');
+}
+
+// Schema-related endpoints
+export async function getSchema(customFetch: typeof fetch = fetch): Promise<any> {
+  const response = await customFetch(`${API_BASE}/schema`, fetchOptions);
+  if (!response.ok) throw new Error('Failed to fetch schema');
+  return response.json();
+}
+
+export async function refreshSchema(customFetch: typeof fetch = fetch): Promise<void> {
+  const response = await customFetch(`${API_BASE}/schema/refresh`, {
+    ...fetchOptions,
+    method: 'POST'
+  });
+  if (!response.ok) throw new Error('Failed to refresh schema');
+}
+
+// Connection management
+export async function saveConnection(name: string, config: ConnectionConfig, customFetch: typeof fetch = fetch): Promise<void> {
+  // TODO: Implement connection save endpoint in backend
+  throw new Error('Not implemented: saveConnection');
+}
+
+export async function deleteConnection(name: string, customFetch: typeof fetch = fetch): Promise<void> {
+  // TODO: Implement connection delete endpoint in backend
+  throw new Error('Not implemented: deleteConnection');
+}
+
+// SQL validation
+export async function validateSql(sql: string, customFetch: typeof fetch = fetch): Promise<{ valid: boolean; error?: string }> {
+  // TODO: Implement SQL validation endpoint in backend
+  // For now, return valid if SQL is not empty
+  return {
+    valid: sql.trim().length > 0,
+    error: sql.trim().length === 0 ? 'SQL cannot be empty' : undefined
+  };
 } 

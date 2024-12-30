@@ -12,13 +12,11 @@ namespace flapi {
 
 class ConfigService {
 public:
-    ConfigService(std::shared_ptr<ConfigManager> config_manager, 
-                 std::shared_ptr<RequestHandler> request_handler);
+    ConfigService(std::shared_ptr<ConfigManager> config_manager);
 
     void registerRoutes(FlapiApp& app);
 
     std::shared_ptr<ConfigManager> config_manager;
-    std::shared_ptr<RequestHandler> request_handler;
 
     // Route handlers
     crow::response getProjectConfig(const crow::request& req);

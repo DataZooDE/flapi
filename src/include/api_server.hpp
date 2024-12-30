@@ -16,6 +16,7 @@ namespace flapi {
 
 using FlapiApp = crow::App<crow::CORSHandler, RateLimitMiddleware, AuthMiddleware>;
 
+class ConfigService;   // forward declaration
 class HeartbeatWorker; // forward declaration
 
 class APIServer 
@@ -41,6 +42,7 @@ private:
     
     FlapiApp app;
     std::shared_ptr<ConfigManager> configManager;
+    std::shared_ptr<ConfigService> configService;
     std::shared_ptr<DatabaseManager> dbManager;
     std::shared_ptr<OpenAPIDocGenerator> openAPIDocGenerator;
     std::shared_ptr<HeartbeatWorker> heartbeatWorker;

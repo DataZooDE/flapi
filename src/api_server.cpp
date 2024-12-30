@@ -3,6 +3,7 @@
 #include "api_server.hpp"
 #include "auth_middleware.hpp"
 #include "database_manager.hpp"
+#include "config_service.hpp"
 #include "open_api_doc_generator.hpp"
 #include "open_api_page.hpp"
 #include "rate_limit_middleware.hpp"
@@ -47,6 +48,9 @@ void APIServer::setupRoutes() {
     )";
         return crow::response(200, "text/plain", logo);
     });
+
+    configService = std::make_shared<ConfigService>(configManager);
+    configService->registerRoutes(app);
 
     CROW_ROUTE(app, "/config")
         .methods("GET"_method)

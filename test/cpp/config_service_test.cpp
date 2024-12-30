@@ -76,7 +76,7 @@ enforce-https:
         db_manager->initializeDBManagerFromConfig(config_manager);
         
         request_handler = std::make_shared<RequestHandler>(db_manager, config_manager);
-        config_service = std::make_shared<ConfigService>(config_manager, request_handler);
+        config_service = std::make_shared<ConfigService>(config_manager);
     }
 
     void TearDown() {

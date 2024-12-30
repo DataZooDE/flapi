@@ -6,9 +6,8 @@
 
 namespace flapi {
 
-ConfigService::ConfigService(std::shared_ptr<ConfigManager> config_manager,
-                             std::shared_ptr<RequestHandler> request_handler)
-    : config_manager(config_manager), request_handler(request_handler) {}
+ConfigService::ConfigService(std::shared_ptr<ConfigManager> config_manager)
+    : config_manager(config_manager) {}
 
 void ConfigService::registerRoutes(FlapiApp& app) {
     CROW_LOG_INFO << "Registering config routes";

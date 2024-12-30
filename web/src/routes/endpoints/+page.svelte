@@ -1,38 +1,17 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import Terminal from 'lucide-svelte/icons/terminal';
+  import { Network } from 'lucide-svelte';
   import Plus from 'lucide-svelte/icons/plus';
   import type { EndpointConfig } from '$lib/types';
-  import { onMount } from 'svelte';
 
   export let data: { endpoints: Record<string, EndpointConfig> };
-  let endpoints: [string, EndpointConfig][] = [];
+  let loading = true;
   let error: string | null = null;
 
-  onMount(() => {
-    try {
-      if (!data?.endpoints) {
-        throw new Error('No endpoints data available');
-      }
-      endpoints = Object.entries(data.endpoints);
-    } catch (e) {
-      console.error('Failed to load endpoints:', e);
-      error = e instanceof Error ? e.message : 'An unknown error occurred';
+  $: {
+    if (data) {
+      loading = false;
     }
-  });
-
-  function handleRowClick(path: string) {
-    goto(`/endpoints/${encodeURIComponent(path)}`);
-  }
-
-  function formatRateLimit(rateLimit: { enabled: boolean; max: number; interval: number }) {
-    if (!rateLimit?.enabled) return 'disabled';
-    return `${rateLimit.max}/${rateLimit.interval}s`;
-  }
-
-  function formatCache(cache: { refreshEndpoint: boolean; refreshTime: string }) {
-    if (!cache?.refreshEndpoint) return 'disabled';
-    return cache.refreshTime || '1h';
   }
 </script>
 
@@ -46,9 +25,20 @@
   </div>
 
   <div class="card">
-    {#if error}
+    {#if loading}
+      <div class="p-4 text-center">
+        <div class="loading loading-spinner loading-lg"></div>
+      </div>
+    {:else if error}
       <div class="p-4 text-red-800 bg-red-100 rounded">
-        {error}
+        <p class="font-medium">Error loading endpoints</p>
+        <p class="text-sm">{error}</p>
+        <button 
+          class="btn btn-sm mt-2"
+          on:click={() => window.location.reload()}
+        >
+          Retry
+        </button>
       </div>
     {:else}
       <table class="min-w-full">
@@ -63,7 +53,7 @@
           </tr>
         </thead>
         <tbody>
-          {#each endpoints as [path, endpoint]}
+          {#each data.endpoints as [path, endpoint]}
             <tr 
               class="border-t hover:bg-gray-50 cursor-pointer"
               on:click={() => handleRowClick(path)}
