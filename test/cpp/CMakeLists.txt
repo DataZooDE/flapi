@@ -7,6 +7,7 @@ add_executable(flapi_tests
     sql_template_processor_test.cpp
     auth_middleware_test.cpp
     database_manager_test.cpp
+    config_service_test.cpp
 )
 
 target_include_directories(flapi_tests PRIVATE 

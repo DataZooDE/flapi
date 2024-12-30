@@ -157,6 +157,21 @@ TEST_CASE_METHOD(TestFixture, "DatabaseManager can describe query structure", "[
     endpoint.templateSource = sql_template.string();
     endpoint.method = "GET";
     endpoint.urlPath = "/test";
+    endpoint.connection.push_back("default");
+
+    // Add a default connection to the config
+    std::ofstream config_file(config_path, std::ios::app);
+    config_file << R"(
+connections:
+  default:
+    init: "SELECT 1;"
+    properties:
+      db_file: ./data/test.db
+)";
+    config_file.close();
+
+    // Reload the configuration
+    config_manager->loadConfig();
     
     // Add this line to debug the SQL processor state
     std::cout << "Template directory: " << templates_dir << std::endl;

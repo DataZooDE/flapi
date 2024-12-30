@@ -26,7 +26,7 @@ std::chrono::seconds CacheConfig::getRefreshTimeInSeconds() const
     std::istringstream iss(refreshTime);
     iss >> value >> unit;
 
-    if (iss.fail() || value < 0) {
+    if (iss.fail()) {
         throw std::runtime_error("Invalid refresh time format: " + refreshTime);
     }
 

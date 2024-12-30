@@ -155,11 +155,6 @@ run-release: release
 	@echo "Running release version..."
 	@$(RELEASE_DIR)/flapi --config examples/flapi.yaml --log-level info
 
-# Run release tests
-run-release-tests: release
-	@echo "Running release tests..."
-	@$(RELEASE_DIR)/test/cpp/flapi_tests
-
 # Run integration tests
 run-integration-tests: debug
 	@echo "Running integration tests..."

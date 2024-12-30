@@ -163,6 +163,7 @@ add_library(flapi-lib STATIC
     src/auth_middleware.cpp
     src/cache_manager.cpp
     src/config_manager.cpp
+    src/config_service.cpp
     src/database_manager.cpp
     src/heartbeat_worker.cpp
     src/open_api_doc_generator.cpp

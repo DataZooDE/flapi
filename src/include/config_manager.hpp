@@ -189,7 +189,6 @@ public:
     void printConfig() const;
     static void printYamlNode(const YAML::Node& node, int indent = 0);
 
-
 protected:
     std::filesystem::path config_file;
     YAML::Node config;

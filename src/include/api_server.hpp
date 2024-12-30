@@ -14,6 +14,8 @@
 
 namespace flapi {
 
+using FlapiApp = crow::App<crow::CORSHandler, RateLimitMiddleware, AuthMiddleware>;
+
 class HeartbeatWorker; // forward declaration
 
 class APIServer 
@@ -37,7 +39,7 @@ private:
     void handleDynamicRequest(const crow::request& req, crow::response& res);
     crow::response generateOpenAPIDoc();
     
-    crow::App<crow::CORSHandler, RateLimitMiddleware, AuthMiddleware> app;
+    FlapiApp app;
     std::shared_ptr<ConfigManager> configManager;
     std::shared_ptr<DatabaseManager> dbManager;
     std::shared_ptr<OpenAPIDocGenerator> openAPIDocGenerator;
