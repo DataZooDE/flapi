@@ -52,7 +52,7 @@ ConfigManager::ConfigManager(const std::filesystem::path& config_file)
 void ConfigManager::loadConfig() {
     try {
         CROW_LOG_INFO << "Loading configuration file: " << config_file;
-        config = YAML::LoadFile(config_file);
+        config = YAML::LoadFile(config_file.string());
         parseMainConfig();
         
         std::filesystem::path template_path = getTemplateConfig().path;

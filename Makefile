@@ -4,12 +4,31 @@
 .PHONY: all debug release clean run-debug run-release run-integration-tests docker-build web
 
 # Compiler and flags
-CXX := g++
-CMAKE := cmake
+ifeq ($(OS),Windows_NT)
+    CXX := cl.exe
+    CMAKE := cmake
+    # Use forward slashes and MINGW-compatible commands
+    RM := rm -f
+    MKDIR := mkdir -p
+    RMDIR := rm -rf
+    # Use forward slashes in paths
+    BUILD_DIR := build
+    DEBUG_DIR := $(BUILD_DIR)/debug
+    RELEASE_DIR := $(BUILD_DIR)/release
+else
+    CXX := g++
+    CMAKE := cmake
+    RM := rm -f
+    MKDIR := mkdir -p
+    RMDIR := rm -rf
+endif
 
 # Check if Ninja is available
 NINJA := $(shell which ninja)
 CMAKE_GENERATOR := $(if $(NINJA),-G Ninja,)
+ifeq ($(OS),Windows_NT)
+    CMAKE_GENERATOR := -G "Visual Studio 17 2022" -A x64
+endif
 
 # Build directories
 BUILD_DIR := build
@@ -23,8 +42,16 @@ DOCKER_IMAGE_NAME := ghcr.io/datazoode/flapi
 # Default target
 all: debug release
 
-# Debug build
-ifeq ($(shell uname),Darwin)
+# Debug build for Windows (MINGW compatible)
+ifeq ($(OS),Windows_NT)
+debug:
+	@echo "Building debug version for Windows..."
+	@$(MKDIR) $(DEBUG_DIR)
+	@cd $(DEBUG_DIR) && $(CMAKE) \
+		-DCMAKE_BUILD_TYPE=Debug \
+		$(CMAKE_GENERATOR) ../..
+	@$(CMAKE) --build $(DEBUG_DIR) --config Debug
+else ifeq ($(shell uname),Darwin)
     # Detect host architecture
     HOST_ARCH := $(shell uname -m)
     
@@ -103,11 +130,15 @@ $(RELEASE_DIR)/build.ninja:
 	@cd $(RELEASE_DIR) && $(CMAKE) -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
 		$(CMAKE_GENERATOR) $(CMAKE_EXTRA_FLAGS) ../..
 
-# Clean build directories
+# Clean build directories - Windows (MINGW compatible)
+ifeq ($(OS),Windows_NT)
 clean:
 	@echo "Cleaning build directories..."
-	cd duckdb && make clean
-	@rm -rf $(BUILD_DIR)
+	@if [ -d "$(BUILD_DIR)" ]; then $(RMDIR) $(BUILD_DIR); fi
+	@cd duckdb && $(MAKE) clean
+else
+    # ... existing clean code ...
+endif
 
 # Run debug version
 run-debug: debug
@@ -177,3 +208,17 @@ web-clean:
 	rm -rf web/.svelte-kit
 	rm -rf web/build/
 	rm -rf web/node_modules/
+
+# Release build for Windows (MINGW compatible)
+ifeq ($(OS),Windows_NT)
+release:
+	@echo "Building release version for Windows..."
+	@$(MKDIR) $(RELEASE_DIR)
+	@cd $(RELEASE_DIR) && $(CMAKE) \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DBUILD_TESTING=OFF \
+		$(CMAKE_GENERATOR) ../..
+	@$(CMAKE) --build $(RELEASE_DIR) --config Release
+else
+    # ... existing release code ...
+endif

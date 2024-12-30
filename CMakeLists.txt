@@ -1,6 +1,20 @@
 cmake_minimum_required(VERSION 3.15)
 set(CMAKE_WARN_DEPRECATED OFF CACHE BOOL "" FORCE)
 
+# Windows-specific settings
+if(WIN32)
+    # Use static runtime libraries for Windows builds
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    add_definitions(-D_WIN32_WINNT=0x0601)  # Target Windows 7 or later
+    add_definitions(-DNOMINMAX)  # Disable min/max macros from Windows.h
+    add_definitions(-D_CRT_SECURE_NO_WARNINGS)
+    
+    # Set vcpkg triplet for Windows
+    if(NOT DEFINED VCPKG_TARGET_TRIPLET)
+        set(VCPKG_TARGET_TRIPLET "x64-windows-static" CACHE STRING "")
+    endif()
+endif()
+
 # Set vcpkg toolchain before project()
 if(APPLE)
     # On macOS, automatically detect and use native architecture if not specified
@@ -183,6 +197,13 @@ add_executable(flapi src/main.cpp)
 target_link_libraries(flapi PRIVATE flapi-lib)
 set_target_properties(flapi PROPERTIES ENABLE_EXPORTS TRUE)
 
+# Set output directories
+set_target_properties(flapi PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR}
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}
+)
+
 # Tests
 include(CTest)
 include(Catch)
@@ -205,3 +226,14 @@ add_custom_target(integration_tests
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/test/integration
     DEPENDS flapi
 )
+
+# Windows-specific linker flags
+if(WIN32)
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /SUBSYSTEM:CONSOLE")
+    if(MSVC)
+        add_compile_options(/W4 /MP)
+        # Enable parallel compilation
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /MP")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP")
+    endif()
+endif()
