@@ -129,6 +129,10 @@ void DatabaseManager::logDuckDBVersion() {
     duckdb_free(version);
 }
 
+std::vector<std::string> DatabaseManager::getTableNames(const std::string& schema) {
+    return getTableNames(schema, "", false);
+}
+
 std::vector<std::string> DatabaseManager::getTableNames(const std::string& schema, const std::string& table, bool prefixSearch) {
     std::string query = "SELECT table_name FROM information_schema.tables WHERE table_schema = '" + schema + "'";
     if (prefixSearch) {
@@ -150,7 +154,7 @@ std::vector<std::string> DatabaseManager::getTableNames(const std::string& schem
 
     return table_names;
 }
-    
+        
 bool DatabaseManager::tableExists(const std::string& schema, const std::string& table) {
     std::vector<std::string> tableNames = getTableNames(schema, table, true);
     return !tableNames.empty();
@@ -525,6 +529,40 @@ std::tuple<duckdb::SecretManager&, duckdb::CatalogTransaction> DatabaseManager::
     auto &secret_manager = duckdb::SecretManager::Get(*db_instance);
     auto transaction = duckdb::CatalogTransaction::GetSystemTransaction(*db_instance);
     return std::tuple<duckdb::SecretManager&, duckdb::CatalogTransaction>(secret_manager, transaction);
+}
+
+std::vector<ColumnInfo> DatabaseManager::getTableColumns(const std::string& schema, const std::string& table) {
+    std::vector<ColumnInfo> columns;
+    
+    try {
+        auto query = "SELECT column_name, data_type, is_nullable "
+                    "FROM information_schema.columns "
+                    "WHERE table_schema = ? AND table_name = ? "
+                    "ORDER BY ordinal_position";
+        
+        // Create parameter map with numbered placeholders
+        std::map<std::string, std::string> params;
+        params["1"] = schema;
+        params["2"] = table;
+        
+        auto result = executeQuery(query, params, false);
+        
+        if (result.data.t() == crow::json::type::Null || result.data.size() == 0) {
+            return columns;
+        }
+
+        for (std::size_t i = 0; i < result.data.size(); ++i) {
+            ColumnInfo col;
+            col.name = result.data[i]["column_name"].dump();
+            col.type = result.data[i]["data_type"].dump();
+            col.nullable = result.data[i]["is_nullable"].dump() == "YES";
+            columns.push_back(std::move(col));
+        }
+    } catch (const std::exception& e) {
+        CROW_LOG_ERROR << "Error getting columns for table " << schema << "." << table << ": " << e.what();
+    }
+    
+    return columns;
 }
 
 } // namespace flapi

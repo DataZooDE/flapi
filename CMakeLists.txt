@@ -157,6 +157,11 @@ include_directories(
     ${AWSSDK_INCLUDE_DIRS}
 )
 
+# Add web UI before creating flapi-lib
+message(STATUS "Adding web UI subdirectory...")
+add_subdirectory(web)
+message(STATUS "Web UI subdirectory added")
+
 # Create flapi-lib
 add_library(flapi-lib STATIC
     src/api_server.cpp
@@ -173,6 +178,14 @@ add_library(flapi-lib STATIC
     src/route_translator.cpp
     src/sql_template_processor.cpp   
 )
+
+# Ensure web_ui is built before flapi-lib
+message(STATUS "Setting up web UI dependencies...")
+add_dependencies(flapi-lib web_ui)
+
+# Link against web_ui to get its include directories
+target_link_libraries(flapi-lib PRIVATE web_ui)
+message(STATUS "Web UI dependencies configured")
 
 # Link libraries to flapi-lib
 target_link_libraries(flapi-lib PUBLIC 

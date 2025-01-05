@@ -108,7 +108,7 @@ TEST_CASE_METHOD(TestFixture, "DatabaseManager handles pagination", "[database_m
 
 TEST_CASE_METHOD(TestFixture, "DatabaseManager can check table existence", "[database_manager]") {
     // First execute the CREATE TABLE statement directly
-    db_manager->executeQuery("CREATE TABLE test_exists (id INTEGER)", {}, false);
+    db_manager->executeInitStatement("CREATE TABLE test_exists (id INTEGER)");
     
     // Now check if the table exists
     REQUIRE(db_manager->tableExists("main", "test_exists"));

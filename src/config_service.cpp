@@ -3,14 +3,64 @@
 #include <sstream>
 
 #include "config_service.hpp"
+#include "embedded_ui.hpp"
 
 namespace flapi {
+
+namespace {
+    bool ends_with(const std::string& str, const std::string& suffix) {
+        if (str.length() < suffix.length()) return false;
+        return str.compare(str.length() - suffix.length(), suffix.length(), suffix) == 0;
+    }
+
+    std::string get_content_type(const std::string& path) {
+        if (ends_with(path, ".js")) return "application/javascript";
+        if (ends_with(path, ".css")) return "text/css";
+        if (ends_with(path, ".png")) return "image/png";
+        if (ends_with(path, ".svg")) return "image/svg+xml";
+        return "text/plain";
+    }
+}
 
 ConfigService::ConfigService(std::shared_ptr<ConfigManager> config_manager)
     : config_manager(config_manager) {}
 
 void ConfigService::registerRoutes(FlapiApp& app) {
     CROW_LOG_INFO << "Registering config routes";
+
+    // Serve the UI static files
+    CROW_ROUTE(app, "/ui/<path>")
+    ([](const crow::request& req, std::string path) -> crow::response {
+        // First try to find the exact file
+        auto it = embedded_ui::static_files.find("/ui/" + path);
+        if (it != embedded_ui::static_files.end()) {
+            std::string content_type = get_content_type(path);
+            auto response = crow::response(200, it->second);
+            response.set_header("Content-Type", content_type);
+            return response;
+        }
+
+        // If file not found, serve index.html for client-side routing
+        // but only if it's not a static file request
+        if (!ends_with(path, ".js") && !ends_with(path, ".css") && 
+            !ends_with(path, ".png") && !ends_with(path, ".svg")) {
+            CROW_LOG_DEBUG << "Serving index.html for client-side route: " << path;
+            auto response = crow::response(200, embedded_ui::index_html);
+            response.set_header("Content-Type", "text/html");
+            return response;
+        }
+
+        CROW_LOG_WARNING << "Embedded file not found: /ui/" << path;
+        return crow::response(404);
+    });
+
+    // Serve the main UI at /ui
+    CROW_ROUTE(app, "/ui")
+    ([](const crow::request& req) -> crow::response {
+        auto response = crow::response(200, embedded_ui::index_html);
+        response.set_header("Content-Type", "text/html");
+        return response;
+    });
 
     // Project configuration routes
     CROW_ROUTE(app, "/api/v1/_config/project")
@@ -212,55 +262,462 @@ EndpointConfig ConfigService::jsonToEndpointConfig(const crow::json::rvalue& jso
 
 // Implement remaining endpoint handlers...
 crow::response ConfigService::updateEndpointConfig(const crow::request& req, const std::string& path) {
-    return crow::response(501, "Not implemented");
+    try {
+        auto json = crow::json::load(req.body);
+        if (!json) {
+            return crow::response(400, "Invalid JSON");
+        }
+
+        // Find the endpoint
+        auto* endpoint = config_manager->getEndpointForPath(path);
+        if (!endpoint) {
+            return crow::response(404, "Endpoint not found");
+        }
+
+        // Convert JSON to EndpointConfig
+        auto updated_config = jsonToEndpointConfig(json);
+        
+        // Validate that the path matches
+        if (updated_config.urlPath != path) {
+            return crow::response(400, "URL path in config does not match endpoint path");
+        }
+
+        // Update the endpoint in config_manager
+        // First remove the old endpoint
+        auto& endpoints = const_cast<std::vector<EndpointConfig>&>(config_manager->getEndpoints());
+        endpoints.erase(
+            std::remove_if(endpoints.begin(), endpoints.end(),
+                [&path](const EndpointConfig& e) { return e.urlPath == path; }),
+            endpoints.end()
+        );
+
+        // Then add the updated endpoint
+        config_manager->addEndpoint(updated_config);
+
+        return crow::response(200);
+    } catch (const std::exception& e) {
+        return crow::response(500, std::string("Internal server error: ") + e.what());
+    }
 }
 
 crow::response ConfigService::deleteEndpoint(const crow::request& req, const std::string& path) {
-    return crow::response(501, "Not implemented");
+    try {
+        // Find the endpoint
+        auto* endpoint = config_manager->getEndpointForPath(path);
+        if (!endpoint) {
+            return crow::response(404, "Endpoint not found");
+        }
+
+        // Remove the endpoint from config_manager
+        auto& endpoints = const_cast<std::vector<EndpointConfig>&>(config_manager->getEndpoints());
+        endpoints.erase(
+            std::remove_if(endpoints.begin(), endpoints.end(),
+                [&path](const EndpointConfig& e) { return e.urlPath == path; }),
+            endpoints.end()
+        );
+
+        return crow::response(200);
+    } catch (const std::exception& e) {
+        return crow::response(500, std::string("Internal server error: ") + e.what());
+    }
 }
 
 crow::response ConfigService::getEndpointTemplate(const crow::request& req, const std::string& path) {
-    return crow::response(501, "Not implemented");
+    try {
+        // Find the endpoint
+        auto* endpoint = config_manager->getEndpointForPath(path);
+        if (!endpoint) {
+            return crow::response(404, "Endpoint not found");
+        }
+
+        // Read the template file
+        std::ifstream file(endpoint->templateSource);
+        if (!file.is_open()) {
+            return crow::response(500, "Could not open template file: " + endpoint->templateSource);
+        }
+
+        std::stringstream buffer;
+        buffer << file.rdbuf();
+        
+        crow::json::wvalue response;
+        response["template"] = buffer.str();
+        return crow::response(200, response);
+    } catch (const std::exception& e) {
+        return crow::response(500, std::string("Internal server error: ") + e.what());
+    }
 }
 
 crow::response ConfigService::updateEndpointTemplate(const crow::request& req, const std::string& path) {
-    return crow::response(501, "Not implemented");
+    try {
+        auto json = crow::json::load(req.body);
+        if (!json || !json.has("template")) {
+            return crow::response(400, "Invalid JSON: missing 'template' field");
+        }
+
+        // Find the endpoint
+        auto* endpoint = config_manager->getEndpointForPath(path);
+        if (!endpoint) {
+            return crow::response(404, "Endpoint not found");
+        }
+
+        // Write the template to file
+        std::ofstream file(endpoint->templateSource);
+        if (!file.is_open()) {
+            return crow::response(500, "Could not open template file for writing: " + endpoint->templateSource);
+        }
+
+        file << json["template"].s();
+        if (!file.good()) {
+            return crow::response(500, "Error writing template to file");
+        }
+
+        return crow::response(200);
+    } catch (const std::exception& e) {
+        return crow::response(500, std::string("Internal server error: ") + e.what());
+    }
 }
 
 crow::response ConfigService::expandTemplate(const crow::request& req, const std::string& path) {
-    return crow::response(501, "Not implemented");
+    try {
+        auto json = crow::json::load(req.body);
+        if (!json || !json.has("parameters")) {
+            return crow::response(400, "Invalid JSON: missing 'parameters' field");
+        }
+
+        // Find the endpoint
+        auto* endpoint = config_manager->getEndpointForPath(path);
+        if (!endpoint) {
+            return crow::response(404, "Endpoint not found");
+        }
+
+        // Convert parameters to map
+        std::map<std::string, std::string> params;
+        for (const auto& param : json["parameters"]) {
+            params[param.key()] = param.s();
+        }
+
+        // Use SQLTemplateProcessor to expand the template
+        auto sql_processor = std::make_shared<SQLTemplateProcessor>(config_manager);
+        std::string expanded = sql_processor->loadAndProcessTemplate(*endpoint, params);
+
+        crow::json::wvalue response;
+        response["expanded"] = expanded;
+        return crow::response(200, response);
+    } catch (const std::exception& e) {
+        return crow::response(500, std::string("Internal server error: ") + e.what());
+    }
 }
 
 crow::response ConfigService::testTemplate(const crow::request& req, const std::string& path) {
-    return crow::response(501, "Not implemented");
+    try {
+        auto json = crow::json::load(req.body);
+        if (!json || !json.has("parameters")) {
+            return crow::response(400, "Invalid JSON: missing 'parameters' field");
+        }
+
+        // Find the endpoint
+        auto* endpoint = config_manager->getEndpointForPath(path);
+        if (!endpoint) {
+            return crow::response(404, "Endpoint not found");
+        }
+
+        if (endpoint->connection.empty()) {
+            return crow::response(400, "Endpoint has no database connection configured");
+        }
+
+        // Convert parameters to map
+        std::map<std::string, std::string> params;
+        for (const auto& param : json["parameters"]) {
+            params[param.key()] = param.s();
+        }
+
+        // Get database manager instance
+        auto db_manager = DatabaseManager::getInstance();
+
+        // Execute the query with a limit for safety
+        params["limit"] = "10";  // Force a limit for test queries
+        params["offset"] = "0";
+        
+        try {
+            auto result = db_manager->executeQuery(*endpoint, params);
+            
+            // Create base response
+            crow::json::wvalue response;
+            response["success"] = true;
+            
+            // Handle empty result case
+            if (result.data.t() == crow::json::type::Null || result.data.size() == 0) {
+                response["columns"] = std::vector<std::string>();
+                response["rows"] = std::vector<crow::json::wvalue>();
+                return crow::response(200, response);
+            }
+
+            response["rows"] = std::move(result.data);
+            response["columns"] = response["rows"][0].keys();
+            
+            return crow::response(200, response);
+
+        } catch (const std::exception& e) {
+            return crow::response(400, std::string("SQL execution error: ") + e.what());
+        }
+    } catch (const std::exception& e) {
+        return crow::response(500, std::string("Internal server error: ") + e.what());
+    }
 }
 
 crow::response ConfigService::getCacheConfig(const crow::request& req, const std::string& path) {
-    return crow::response(501, "Not implemented");
+    try {
+        // Find the endpoint
+        auto* endpoint = config_manager->getEndpointForPath(path);
+        if (!endpoint) {
+            return crow::response(404, "Endpoint not found");
+        }
+
+        // Convert cache config to JSON
+        crow::json::wvalue response;
+        if (endpoint->cache.enabled) {
+            response["enabled"] = true;
+            response["refresh-time"] = endpoint->cache.refreshTime;
+            response["cache-source"] = endpoint->cache.cacheSource;
+            response["cache-schema"] = config_manager->getCacheSchema();
+            response["cache-table"] = endpoint->cache.cacheTableName;
+        } else {
+            response["enabled"] = false;
+        }
+
+        return crow::response(200, response);
+    } catch (const std::exception& e) {
+        return crow::response(500, std::string("Internal server error: ") + e.what());
+    }
 }
 
 crow::response ConfigService::updateCacheConfig(const crow::request& req, const std::string& path) {
-    return crow::response(501, "Not implemented");
+    try {
+        auto json = crow::json::load(req.body);
+        if (!json) {
+            return crow::response(400, "Invalid JSON");
+        }
+
+        // Find the endpoint
+        auto* endpoint = config_manager->getEndpointForPath(path);
+        if (!endpoint) {
+            return crow::response(404, "Endpoint not found");
+        }
+
+        // Cast endpoint to non-const
+        auto& endpoint_non_const = const_cast<EndpointConfig&>(*endpoint);
+
+        // Update cache configuration
+        bool enabled = json["enabled"].b();
+        if (enabled) {
+            // Validate refresh time format first
+            if (!json.has("refresh-time")) {
+                return crow::response(400, "Missing required field 'refresh-time' when cache is enabled");
+            }
+
+            auto refresh_time = json["refresh-time"].s();
+            if (!flapi::TimeInterval::parseInterval(refresh_time)) {
+                return crow::response(400, "Invalid refresh time format. Expected format: <number>[s|m|h|d] (e.g., 30s, 5m, 2h, 1d)");
+            }
+
+            endpoint_non_const.cache.enabled = true;
+            endpoint_non_const.cache.refreshTime = refresh_time;
+            endpoint_non_const.cache.cacheSource = json["cache-source"].s();
+            endpoint_non_const.cache.cacheTableName = json["cache-table"].s();
+        } else {
+            endpoint_non_const.cache.enabled = false;
+        }
+
+        return crow::response(200);
+    } catch (const std::exception& e) {
+        return crow::response(500, std::string("Internal server error: ") + e.what());
+    }
 }
 
 crow::response ConfigService::getCacheTemplate(const crow::request& req, const std::string& path) {
-    return crow::response(501, "Not implemented");
+    try {
+        // Find the endpoint
+        auto* endpoint = config_manager->getEndpointForPath(path);
+        if (!endpoint) {
+            return crow::response(404, "Endpoint not found");
+        }
+
+        if (!endpoint->cache.enabled) {
+            return crow::response(400, "Cache is not enabled for this endpoint");
+        }
+
+        // Read the cache template file
+        std::ifstream file(endpoint->cache.cacheSource);
+        if (!file.is_open()) {
+            return crow::response(500, "Could not open cache template file: " + endpoint->cache.cacheSource);
+        }
+
+        std::stringstream buffer;
+        buffer << file.rdbuf();
+        
+        crow::json::wvalue response;
+        response["template"] = buffer.str();
+        return crow::response(200, response);
+    } catch (const std::exception& e) {
+        return crow::response(500, std::string("Internal server error: ") + e.what());
+    }
 }
 
 crow::response ConfigService::updateCacheTemplate(const crow::request& req, const std::string& path) {
-    return crow::response(501, "Not implemented");
+    try {
+        auto json = crow::json::load(req.body);
+        if (!json || !json.has("template")) {
+            return crow::response(400, "Invalid JSON: missing 'template' field");
+        }
+
+        // Find the endpoint
+        auto* endpoint = config_manager->getEndpointForPath(path);
+        if (!endpoint) {
+            return crow::response(404, "Endpoint not found");
+        }
+
+        if (!endpoint->cache.enabled) {
+            return crow::response(400, "Cache is not enabled for this endpoint");
+        }
+
+        // Write the template to file
+        std::ofstream file(endpoint->cache.cacheSource);
+        if (!file.is_open()) {
+            return crow::response(500, "Could not open cache template file for writing: " + endpoint->cache.cacheSource);
+        }
+
+        file << json["template"].s();
+        if (!file.good()) {
+            return crow::response(500, "Error writing template to file");
+        }
+
+        return crow::response(200);
+    } catch (const std::exception& e) {
+        return crow::response(500, std::string("Internal server error: ") + e.what());
+    }
 }
 
 crow::response ConfigService::refreshCache(const crow::request& req, const std::string& path) {
-    return crow::response(501, "Not implemented");
+    try {
+        // Find the endpoint
+        auto* endpoint = config_manager->getEndpointForPath(path);
+        if (!endpoint) {
+            return crow::response(404, "Endpoint not found");
+        }
+
+        if (!endpoint->cache.enabled) {
+            return crow::response(400, "Cache is not enabled for this endpoint");
+        }
+
+        // Get database manager instance
+        auto db_manager = DatabaseManager::getInstance();
+        auto cache_manager = std::make_shared<CacheManager>(db_manager);
+
+        // Prepare empty parameters map for cache refresh
+        std::map<std::string, std::string> params;
+
+        try {
+            // Trigger cache refresh
+            cache_manager->refreshCache(config_manager, *endpoint, params);
+            return crow::response(200);
+        } catch (const std::exception& e) {
+            return crow::response(400, std::string("Cache refresh failed: ") + e.what());
+        }
+    } catch (const std::exception& e) {
+        return crow::response(500, std::string("Internal server error: ") + e.what());
+    }
 }
 
 crow::response ConfigService::getSchema(const crow::request& req) {
-    return crow::response(501, "Not implemented");
+    try {
+        // Get database manager instance
+        auto db_manager = DatabaseManager::getInstance();
+
+        // Use a single SQL query to get all schema information
+        const std::string query = R"SQL(
+            WITH schema_tables AS (
+                SELECT 
+                    s.schema_name,
+                    t.table_name,
+                    CASE WHEN t.table_type = 'BASE TABLE' THEN false ELSE true END as is_view,
+                    c.column_name,
+                    c.data_type,
+                    c.is_nullable = 'YES' as is_nullable
+                FROM information_schema.schemata s
+                LEFT JOIN information_schema.tables t 
+                    ON s.schema_name = t.table_schema
+                LEFT JOIN information_schema.columns c 
+                    ON t.table_schema = c.table_schema 
+                    AND t.table_name = c.table_name
+                WHERE s.schema_name NOT IN ('information_schema', 'pg_catalog')
+                ORDER BY s.schema_name, t.table_name, c.ordinal_position
+            )
+            SELECT DISTINCT * FROM schema_tables
+        )SQL";
+
+        auto result = db_manager->executeQuery(query, {}, false);
+    
+        // Process results into the desired JSON structure
+        crow::json::wvalue response;
+        if (result.data.t() == crow::json::type::Null) {
+            return crow::response(200, response);
+        }
+
+        // Build the tree structure from flat results
+        for (size_t i = 0; i < result.data.size(); ++i) {
+            const auto& row = crow::json::load(result.data[i].dump());
+            const auto& schema_name = row["schema_name"].s();
+            const auto& table_name = row["table_name"].s();
+            const auto& column_name = row["column_name"].s();
+            const auto& data_type = row["data_type"].s();
+            const bool is_nullable = row["is_nullable"].b();
+            const bool is_view = row["is_view"].b();
+
+            // Initialize schema if not exists
+            auto schema_names = response.keys();
+            if (std::find(schema_names.begin(), schema_names.end(), schema_name) == schema_names.end()) {
+                response[schema_name]["tables"] = crow::json::wvalue();
+            }
+
+            if (table_name.size() == 0) {
+                continue;
+            }
+
+            // Initialize table if not exists
+            auto table_names = response[schema_name]["tables"].keys();
+            if (std::find(table_names.begin(), table_names.end(), table_name) == table_names.end()) {
+                response[schema_name]["tables"][table_name]["is_view"] = is_view;
+                response[schema_name]["tables"][table_name]["columns"] = crow::json::wvalue();
+            }
+
+            if (column_name.size() == 0) {
+                continue;
+            }
+
+            // Add column info
+            auto& columns = response[schema_name]["tables"][table_name]["columns"];
+            columns[column_name]["type"] = data_type;
+            columns[column_name]["nullable"] = is_nullable;
+        }
+
+        return crow::response(200, response);
+    } catch (const std::exception& e) {
+        return crow::response(500, std::string("Internal server error: ") + e.what());
+    }
 }
 
 crow::response ConfigService::refreshSchema(const crow::request& req) {
-    return crow::response(501, "Not implemented");
+    try {
+        // Get database manager instance
+        auto db_manager = DatabaseManager::getInstance();
+
+        // Re-initialize database connections from config
+        db_manager->initializeDBManagerFromConfig(config_manager);
+
+        return crow::response(200);
+    } catch (const std::exception& e) {
+        return crow::response(500, std::string("Internal server error: ") + e.what());
+    }
 }
 
 } // namespace flapi

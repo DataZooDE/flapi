@@ -17,6 +17,10 @@
 
 namespace flapi {
 
+struct TimeInterval {
+    static std::optional<std::chrono::seconds> parseInterval(const std::string& interval);
+};
+
 struct ConnectionConfig {
     std::string init;
     std::unordered_map<std::string, std::string> properties;
@@ -89,6 +93,7 @@ struct RequestFieldConfig {
 };
 
 struct CacheConfig {
+    bool enabled = false;
     std::string cacheTableName;
     std::string cacheSource;
     std::string refreshTime;

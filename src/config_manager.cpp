@@ -15,33 +15,13 @@ namespace flapi {
  * Available units are "s" for seconds, "m" for minutes, "h" for hours, "d" for days.   
  * @return The refresh time in seconds
  */
-std::chrono::seconds CacheConfig::getRefreshTimeInSeconds() const 
-{
-    if (refreshTime.empty()) {
-        return std::chrono::seconds(0);
+std::chrono::seconds CacheConfig::getRefreshTimeInSeconds() const {
+    auto interval = TimeInterval::parseInterval(refreshTime);
+    if (!interval) {
+        throw std::runtime_error("Invalid refresh time format: " + refreshTime + 
+                               ". Expected format: <number>[s|m|h|d] (e.g., 30s, 5m, 2h, 1d)");
     }
-
-    size_t value = 0;
-    char unit = '\0';
-    std::istringstream iss(refreshTime);
-    iss >> value >> unit;
-
-    if (iss.fail()) {
-        throw std::runtime_error("Invalid refresh time format: " + refreshTime);
-    }
-
-    switch (std::tolower(unit)) {
-        case 's':
-            return std::chrono::seconds(value);
-        case 'm':
-            return std::chrono::minutes(value);
-        case 'h':
-            return std::chrono::hours(value);
-        case 'd':
-            return std::chrono::hours(value * 24);
-        default:
-            throw std::runtime_error("Invalid time unit in refresh time: " + refreshTime);
-    }
+    return *interval;
 }
 
 ConfigManager::ConfigManager(const std::filesystem::path& config_file) 

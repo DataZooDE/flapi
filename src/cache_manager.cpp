@@ -2,6 +2,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <crow.h>
+#include <regex>
 
 #include "cache_manager.hpp"
 #include "database_manager.hpp"
@@ -153,6 +154,34 @@ void CacheManager::performGarbageCollection(std::shared_ptr<ConfigManager> confi
         } catch (const std::exception& e) {
             CROW_LOG_ERROR << "Error during garbage collection: " << e.what();
         }
+    }
+}
+
+std::optional<std::chrono::seconds> TimeInterval::parseInterval(const std::string& interval) {
+    if (interval.empty()) {
+        return std::nullopt;
+    }
+
+    try {
+        std::regex pattern("^(\\d+)([smhd])$");
+        std::smatch matches;
+        
+        if (!std::regex_match(interval, matches, pattern)) {
+            return std::nullopt;
+        }
+
+        int value = std::stoi(matches[1].str());
+        char unit = matches[2].str()[0];
+        
+        switch (unit) {
+            case 's': return std::chrono::seconds(value);
+            case 'm': return std::chrono::seconds(value * 60);
+            case 'h': return std::chrono::seconds(value * 3600);
+            case 'd': return std::chrono::seconds(value * 86400);
+            default: return std::nullopt;
+        }
+    } catch (const std::exception&) {
+        return std::nullopt;
     }
 }
 

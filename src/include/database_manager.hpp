@@ -36,6 +36,12 @@ struct QueryResult {
     int64_t total_count;
 };
 
+struct ColumnInfo {
+    std::string name;
+    std::string type;
+    bool nullable;
+};
+
 class DatabaseManager : public std::enable_shared_from_this<DatabaseManager> {
 public:
 
@@ -63,6 +69,8 @@ public:
 
     bool tableExists(const std::string& schema, const std::string& table);
     std::vector<std::string> getTableNames(const std::string& schema, const std::string& table, bool prefixSearch = false);
+    std::vector<std::string> getTableNames(const std::string& schema);
+    std::vector<ColumnInfo> getTableColumns(const std::string& schema, const std::string& table);
 
     void refreshSecretsTable(const std::string& secret_table, const std::string& secret_json);
     std::optional<std::tuple<std::string, std::vector<std::string>>> findUserInSecretsTable(const std::string& secret_table, const std::string& username);
