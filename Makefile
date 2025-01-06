@@ -119,25 +119,27 @@ ifeq ($(shell uname),Darwin)
     # Override the default release target on macOS
     release: release-universal
 else
-    # Linux release builds with cross-compilation support
-    release: $(RELEASE_DIR)/build.ninja
+    # Linux/Windows release builds with cross-compilation support
+    release:
 	@echo "Building release version $(if $(CROSS_COMPILE),for $(CROSS_COMPILE),native)..."
+	@mkdir -p $(RELEASE_DIR)
+	@$(MAKE) web
+	@cd $(RELEASE_DIR) && $(CMAKE) -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+		$(CMAKE_GENERATOR) $(CMAKE_EXTRA_FLAGS) ../..
 	@$(CMAKE) --build $(RELEASE_DIR) --config Release
 endif
 
-$(RELEASE_DIR)/build.ninja:
-	@mkdir -p $(RELEASE_DIR)
-	@cd $(RELEASE_DIR) && $(CMAKE) -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
-		$(CMAKE_GENERATOR) $(CMAKE_EXTRA_FLAGS) ../..
-
 # Clean build directories - Windows (MINGW compatible)
 ifeq ($(OS),Windows_NT)
-clean:
+clean: web-clean
 	@echo "Cleaning build directories..."
 	@if [ -d "$(BUILD_DIR)" ]; then $(RMDIR) $(BUILD_DIR); fi
 	@cd duckdb && $(MAKE) clean
 else
-    # ... existing clean code ...
+clean: web-clean
+	@echo "Cleaning build directories..."
+	@rm -rf $(BUILD_DIR)
+	@cd duckdb && $(MAKE) clean
 endif
 
 # Run debug version
@@ -195,25 +197,22 @@ test: release
 	@cd $(RELEASE_DIR)-$(shell uname -m | sed 's/x86_64/x86_64/' | sed 's/arm64/arm64/') && \
 	ctest --output-on-failure
 
-web:
-	cd web && npm install && npm run build
-
 web-clean:
-	rm -rf web/package-lock.json
-	rm -rf web/.svelte-kit
-	rm -rf web/build/
-	rm -rf web/node_modules/
+	@echo "Cleaning web build artifacts..."
+	@rm -rf web/package-lock.json
+	@rm -rf web/.svelte-kit
+	@rm -rf web/dist/
+	@rm -rf web/node_modules/
+	@rm -rf src/include/embedded/
+	@echo "Web clean completed"
 
-# Release build for Windows (MINGW compatible)
-ifeq ($(OS),Windows_NT)
-release:
-	@echo "Building release version for Windows..."
-	@$(MKDIR) $(RELEASE_DIR)
-	@cd $(RELEASE_DIR) && $(CMAKE) \
-		-DCMAKE_BUILD_TYPE=Release \
-		-DBUILD_TESTING=OFF \
-		$(CMAKE_GENERATOR) ../..
-	@$(CMAKE) --build $(RELEASE_DIR) --config Release
-else
-    # ... existing release code ...
-endif
+web:
+	@echo "Building web application..."
+	@$(MAKE) web-clean
+	@cd web && npm install
+	@cd web && npm run build
+	@if [ ! -f "web/dist/index.html" ]; then \
+		echo "Error: Build failed - index.html not found"; \
+		exit 1; \
+	fi
+	@echo "Web build completed successfully"

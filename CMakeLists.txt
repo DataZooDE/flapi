@@ -157,7 +157,7 @@ include_directories(
     ${AWSSDK_INCLUDE_DIRS}
 )
 
-# Add web UI before creating flapi-lib
+# Add web UI
 message(STATUS "Adding web UI subdirectory...")
 add_subdirectory(web)
 message(STATUS "Web UI subdirectory added")
@@ -170,6 +170,7 @@ add_library(flapi-lib STATIC
     src/config_manager.cpp
     src/config_service.cpp
     src/database_manager.cpp
+    src/embedded_ui.cpp
     src/heartbeat_worker.cpp
     src/open_api_doc_generator.cpp
     src/request_handler.cpp
@@ -184,7 +185,7 @@ message(STATUS "Setting up web UI dependencies...")
 add_dependencies(flapi-lib web_ui)
 
 # Link against web_ui to get its include directories
-target_link_libraries(flapi-lib PRIVATE web_ui)
+target_link_libraries(flapi-lib PUBLIC web_ui_lib)
 message(STATUS "Web UI dependencies configured")
 
 # Link libraries to flapi-lib
@@ -251,3 +252,9 @@ if(WIN32)
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP")
     endif()
 endif()
+
+# Add dependency on web UI
+add_dependencies(flapi-lib web_ui)
+
+# Include embedded UI headers
+target_include_directories(flapi-lib PRIVATE ${CMAKE_SOURCE_DIR}/src/include)
