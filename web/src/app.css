@@ -1,136 +1,78 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
+ 
 @layer base {
-  body {
-    @apply bg-primary-50 text-gray-900;
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 224 71.4% 4.1%;
+ 
+    --muted: 220 14.3% 95.9%;
+    --muted-foreground: 220 8.9% 46.1%;
+ 
+    --popover: 0 0% 100%;
+    --popover-foreground: 224 71.4% 4.1%;
+ 
+    --card: 0 0% 100%;
+    --card-foreground: 224 71.4% 4.1%;
+ 
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+ 
+    --primary: 220.9 39.3% 11%;
+    --primary-foreground: 210 20% 98%;
+ 
+    --secondary: 220 14.3% 95.9%;
+    --secondary-foreground: 220.9 39.3% 11%;
+ 
+    --accent: 220 14.3% 95.9%;
+    --accent-foreground: 220.9 39.3% 11%;
+ 
+    --destructive: 0 72.2% 50.6%;
+    --destructive-foreground: 210 20% 98%;
+ 
+    --ring: 224 71.4% 4.1%;
+ 
+    --radius: 0.5rem;
   }
-
-  h1 {
-    @apply text-2xl font-bold text-gray-900;
-  }
-
-  h2 {
-    @apply text-xl font-semibold text-gray-900;
-  }
-
-  h3 {
-    @apply text-lg font-semibold text-gray-900;
+ 
+  .dark {
+    --background: 224 71.4% 4.1%;
+    --foreground: 210 20% 98%;
+ 
+    --muted: 215 27.9% 16.9%;
+    --muted-foreground: 217.9 10.6% 64.9%;
+ 
+    --popover: 224 71.4% 4.1%;
+    --popover-foreground: 210 20% 98%;
+ 
+    --card: 224 71.4% 4.1%;
+    --card-foreground: 210 20% 98%;
+ 
+    --border: 215 27.9% 16.9%;
+    --input: 215 27.9% 16.9%;
+ 
+    --primary: 210 20% 98%;
+    --primary-foreground: 220.9 39.3% 11%;
+ 
+    --secondary: 215 27.9% 16.9%;
+    --secondary-foreground: 210 20% 98%;
+ 
+    --accent: 215 27.9% 16.9%;
+    --accent-foreground: 210 20% 98%;
+ 
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 20% 98%;
+ 
+    --ring: 216 12.2% 83.9%;
   }
 }
-
-@layer components {
-  .btn {
-    @apply px-4 py-2 rounded-lg font-medium transition-colors;
+ 
+@layer base {
+  * {
+    @apply border-border;
   }
-
-  .btn-primary {
-    @apply bg-primary-500 text-white hover:bg-primary-600;
+  body {
+    @apply bg-background text-foreground;
   }
-
-  .btn-secondary {
-    @apply bg-secondary-100 text-secondary-900 hover:bg-secondary-200;
-  }
-
-  .btn-error {
-    @apply bg-red-100 text-red-900 hover:bg-red-200;
-  }
-
-  .input {
-    @apply px-3 py-2 rounded-lg border border-gray-300 focus:border-primary-500 focus:ring-1 focus:ring-primary-500;
-  }
-
-  .select {
-    @apply px-3 py-2 rounded-lg border border-gray-300 focus:border-primary-500 focus:ring-1 focus:ring-primary-500;
-  }
-
-  .checkbox {
-    @apply rounded border-gray-300 text-primary-500 focus:ring-primary-500;
-  }
-
-  .card {
-    @apply bg-white rounded-lg shadow-sm border border-gray-100;
-  }
-
-  .label {
-    @apply block text-sm font-medium text-gray-700;
-  }
-
-  /* File Tree Styles */
-  .file-tree-item {
-    @apply flex items-center px-3 py-2 text-sm rounded-md hover:bg-primary-50 text-gray-700 transition-colors;
-  }
-
-  .file-tree-item.active {
-    @apply bg-primary-50 text-primary-700;
-  }
-
-  .file-tree-item-icon {
-    @apply h-5 w-5 mr-3 text-gray-500;
-  }
-
-  .file-tree-item-text {
-    @apply flex-1 truncate;
-  }
-
-  /* Editor Styles */
-  .editor-container {
-    @apply bg-white rounded-lg shadow-sm border border-gray-100 p-4 h-full;
-  }
-
-  .editor-header {
-    @apply flex items-center justify-between mb-4 pb-4 border-b border-gray-100;
-  }
-
-  .editor-content {
-    @apply min-h-[400px] flex flex-col gap-4;
-  }
-
-  .editor-footer {
-    @apply flex items-center justify-between mt-4 pt-4 border-t border-gray-100;
-  }
-
-  /* Split View */
-  .split-view {
-    @apply flex gap-4 h-full;
-  }
-
-  .split-view-left {
-    @apply flex-1;
-  }
-
-  .split-view-right {
-    @apply flex-1;
-  }
-
-  /* Preview Section */
-  .preview-section {
-    @apply bg-white rounded-lg shadow-sm border border-gray-100 p-4;
-  }
-
-  .preview-header {
-    @apply flex items-center justify-between mb-4 pb-4 border-b border-gray-100;
-  }
-
-  .preview-content {
-    @apply min-h-[200px] bg-gray-50 rounded-lg p-4 font-mono text-sm;
-  }
-
-  /* Config Button */
-  .config-button {
-    @apply flex items-center w-full px-3 py-2 text-gray-700 rounded-md hover:bg-primary-50 transition-colors;
-  }
-
-  .config-button.active {
-    @apply bg-primary-50 text-primary-700;
-  }
-
-  .config-button-icon {
-    @apply h-5 w-5 mr-3 text-gray-500;
-  }
-
-  .config-button-text {
-    @apply text-sm font-medium;
-  }
-} 
+}

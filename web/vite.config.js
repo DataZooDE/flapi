@@ -1,14 +1,31 @@
-import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
+import { svelte } from '@sveltejs/vite-plugin-svelte';
+import { viteSingleFile } from 'vite-plugin-singlefile';
+import path from 'path';
 
 export default defineConfig({
-  plugins: [sveltekit()],
-  server: {
-    proxy: {
-      '/api': {
-        target: 'http://localhost:8080',
-        changeOrigin: true
+  plugins: [
+    svelte({
+      compilerOptions: {
+        dev: true
+      }
+    }), 
+    viteSingleFile()
+  ],
+  resolve: {
+    alias: {
+      $lib: path.resolve('./src/lib')
+    }
+  },
+  build: {
+    target: 'esnext',
+    assetsInlineLimit: 100000000,
+    chunkSizeWarningLimit: 100000000,
+    cssCodeSplit: false,
+    rollupOptions: {
+      output: {
+        inlineDynamicImports: true
       }
     }
   }
-}); 
+})

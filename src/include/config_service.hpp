@@ -3,6 +3,8 @@
 #include <crow.h>
 #include "crow/middlewares/cors.h"
 #include <memory>
+#include <string>
+#include <unordered_map>
 
 #include "api_server.hpp"
 #include "config_manager.hpp"
@@ -49,6 +51,10 @@ public:
     // Helper methods
     crow::json::wvalue endpointConfigToJson(const EndpointConfig& config);
     EndpointConfig jsonToEndpointConfig(const crow::json::rvalue& json);
+
+private:
+    static const std::unordered_map<std::string, std::string> content_types;
+    std::string get_content_type(const std::string& path);
 };
 
 } // namespace flapi

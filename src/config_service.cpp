@@ -7,59 +7,77 @@
 
 namespace flapi {
 
-namespace {
-    bool ends_with(const std::string& str, const std::string& suffix) {
-        if (str.length() < suffix.length()) return false;
-        return str.compare(str.length() - suffix.length(), suffix.length(), suffix) == 0;
-    }
-
-    std::string get_content_type(const std::string& path) {
-        if (ends_with(path, ".js")) return "application/javascript";
-        if (ends_with(path, ".css")) return "text/css";
-        if (ends_with(path, ".png")) return "image/png";
-        if (ends_with(path, ".svg")) return "image/svg+xml";
-        return "text/plain";
-    }
-}
+// Define content types for static files
+const std::unordered_map<std::string, std::string> ConfigService::content_types = {
+    {".html", "text/html"},
+    {".js", "application/javascript"},
+    {".css", "text/css"},
+    {".json", "application/json"},
+    {".png", "image/png"},
+    {".jpg", "image/jpeg"},
+    {".gif", "image/gif"},
+    {".svg", "image/svg+xml"},
+    {".ico", "image/x-icon"}
+};
 
 ConfigService::ConfigService(std::shared_ptr<ConfigManager> config_manager)
     : config_manager(config_manager) {}
+
+std::string ConfigService::get_content_type(const std::string& path) {
+    std::string ext = std::filesystem::path(path).extension().string();
+    auto it = content_types.find(ext);
+    return it != content_types.end() ? it->second : "application/octet-stream";
+}
 
 void ConfigService::registerRoutes(FlapiApp& app) {
     CROW_LOG_INFO << "Registering config routes";
 
     // Serve the UI static files
     CROW_ROUTE(app, "/ui/<path>")
-    ([](const crow::request& req, std::string path) -> crow::response {
-        // First try to find the exact file
-        auto it = embedded_ui::static_files.find("/ui/" + path);
-        if (it != embedded_ui::static_files.end()) {
-            std::string content_type = get_content_type(path);
-            auto response = crow::response(200, it->second);
-            response.set_header("Content-Type", content_type);
-            return response;
+    ([this](const crow::request& req, std::string path) {
+        auto content = embedded_ui::get_file_content("/index.html");
+        if (content.empty()) {
+            return crow::response(404);
         }
-
-        // If file not found, serve index.html for client-side routing
-        // but only if it's not a static file request
-        if (!ends_with(path, ".js") && !ends_with(path, ".css") && 
-            !ends_with(path, ".png") && !ends_with(path, ".svg")) {
-            CROW_LOG_DEBUG << "Serving index.html for client-side route: " << path;
-            auto response = crow::response(200, embedded_ui::index_html);
-            response.set_header("Content-Type", "text/html");
-            return response;
+        
+        // Find the end of the HTML content (</html>)
+        size_t html_end = content.find("</html>");
+        if (html_end == std::string::npos) {
+            return crow::response(500, "Invalid HTML content");
         }
-
-        CROW_LOG_WARNING << "Embedded file not found: /ui/" << path;
-        return crow::response(404);
+        html_end += 7; // Length of "</html>"
+        
+        // Only return the HTML content, not any trailing data
+        auto html_content = content.substr(0, html_end);
+        
+        auto resp = crow::response(200, std::string(html_content));
+        resp.set_header("Content-Type", "text/html; charset=UTF-8");
+        resp.set_header("Cache-Control", "no-cache");
+        return resp;
     });
 
-    // Serve the main UI at /ui
+    // Serve root as index.html
     CROW_ROUTE(app, "/ui")
-    ([](const crow::request& req) -> crow::response {
-        auto response = crow::response(200, embedded_ui::index_html);
-        response.set_header("Content-Type", "text/html");
-        return response;
+    ([this](const crow::request& req) {
+        auto content = embedded_ui::get_file_content("/index.html");
+        if (content.empty()) {
+            return crow::response(404);
+        }
+        
+        // Find the end of the HTML content (</html>)
+        size_t html_end = content.find("</html>");
+        if (html_end == std::string::npos) {
+            return crow::response(500, "Invalid HTML content");
+        }
+        html_end += 7; // Length of "</html>"
+        
+        // Only return the HTML content, not any trailing data
+        auto html_content = content.substr(0, html_end);
+        
+        auto resp = crow::response(200, std::string(html_content));
+        resp.set_header("Content-Type", "text/html; charset=UTF-8");
+        resp.set_header("Cache-Control", "no-cache");
+        return resp;
     });
 
     // Project configuration routes

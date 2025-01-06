@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>flAPI Configuration</title>
+    <base href="/ui/" />
+    <style>
+      /* Fallback styles */
+      body { background: #f0f0f0; }
+      #app:empty::before {
+        content: 'Loading...';
+        display: block;
+        padding: 2rem;
+        color: #666;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script>
+      window.onerror = function(msg, url, line, col, error) {
+        console.error('Global error:', { msg, url, line, col, error })
+        return false
+      }
+    </script>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
