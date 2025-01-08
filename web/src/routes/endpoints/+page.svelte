@@ -1,13 +1,16 @@
 <script lang="ts">
+  import { Card, CardContent, CardHeader, CardTitle } from "$lib/components/ui/card";
 </script>
 
 <div class="p-6">
-  <h1 class="scroll-m-20 text-4xl font-extrabold tracking-tight lg:text-5xl mb-4">
-    Endpoints
-  </h1>
-  <div class="space-y-4">
-    <p class="leading-7">
-      Endpoint management coming soon...
-    </p>
-  </div>
+  <Card>
+    <CardHeader>
+      <CardTitle>Endpoints</CardTitle>
+    </CardHeader>
+    <CardContent>
+      <p class="leading-7">
+        Endpoint management coming soon...
+      </p>
+    </CardContent>
+  </Card>
 </div> 

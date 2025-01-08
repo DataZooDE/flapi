@@ -1,0 +1,25 @@
+### 4. UI Component Implementation
+- [ ] Set up shadcn-svelte components
+  - [x] Install shadcn-svelte CLI
+  - [x] Initialize shadcn-svelte
+  - [x] Add button component
+  - [x] Add sidebar component
+  - [x] Set up theme configuration
+    - [x] Create theme types and config
+    - [x] Add theme store
+    - [x] Add system theme detection
+- [x] Update layout components to use shadcn components
+  - [x] Create navigation menu component
+  - [x] Update App.svelte with shadcn components
+  - [x] Update route pages with shadcn typography
+  - [x] Add card components for content areas
+  - [x] Add theme toggle component
+    - [x] Create theme toggle dropdown
+    - [x] Add theme icons
+    - [x] Implement theme switching
+    - [x] Add system theme detection
+    - [x] Fix dropdown menu animations
+    - [x] Add theme provider with system theme detection
+    - [x] Fix theme flashing during navigation
+    - [x] Fix theme selector functionality
+  - [ ] Add loading states

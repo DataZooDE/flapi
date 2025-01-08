@@ -1,25 +1,20 @@
 {
-  "extends": "@tsconfig/svelte/tsconfig.json",
+  "extends": "./.svelte-kit/tsconfig.json",
   "compilerOptions": {
-    "target": "ESNext",
-    "useDefineForClassFields": true,
-    "module": "ESNext",
-    "resolveJsonModule": true,
     "allowJs": true,
     "checkJs": true,
-    "isolatedModules": true,
-    "moduleResolution": "node",
-    "verbatimModuleSyntax": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
     "skipLibCheck": true,
     "sourceMap": true,
-    "esModuleInterop": true,
-    "baseUrl": ".",
+    "strict": true,
+    "moduleResolution": "bundler",
     "paths": {
-      "$lib": ["src/lib"],
-      "$lib/*": ["src/lib/*"]
+      "$lib": ["./src/lib"],
+      "$lib/*": ["./src/lib/*"]
     },
-    "types": ["vite/client", "svelte"]
+    "types": ["vitest/globals", "node", "@testing-library/jest-dom"]
   },
-  "include": ["src/**/*.d.ts", "src/**/*.ts", "src/**/*.svelte"],
-  "references": [{ "path": "./tsconfig.node.json" }]
+  "include": ["src/**/*.d.ts", "src/**/*.ts", "src/**/*.js", "src/**/*.svelte"]
 } 

@@ -5,14 +5,23 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>flAPI Configuration</title>
     <base href="/ui/" />
+    <script>
+      // Initialize theme before page load
+      let theme = localStorage.getItem('theme') || 'system';
+      if (theme === 'system') {
+        theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      }
+      document.documentElement.classList.toggle('dark', theme === 'dark');
+    </script>
     <style>
       /* Fallback styles */
-      body { background: #f0f0f0; }
+      body { background: var(--background, #fff); color: var(--foreground, #000); }
+      .dark body { background: #09090b; color: #fff; }
       #app:empty::before {
         content: 'Loading...';
         display: block;
         padding: 2rem;
-        color: #666;
+        color: currentColor;
       }
     </style>
   </head>
