@@ -285,7 +285,7 @@
               class="w-full min-h-[100px] p-2 rounded-md border"
               bind:value={awsSecrets.init_sql}
               placeholder="SELECT username, password FROM auth_users"
-            />
+            ></textarea>
           </div>
 
           <div class="flex justify-end">

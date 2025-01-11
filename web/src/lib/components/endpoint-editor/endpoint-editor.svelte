@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { TabGroup, TabList, Tab, TabPanel } from "$lib/components/ui/tabs";
+  import * as Tabs from "$lib/components/ui/tabs";
   import GeneralEndpointConfig from "./general-endpoint-config.svelte";
   import ParametersConfig from "./parameters-config.svelte";
   import QueryConfig from "./query-config.svelte";
@@ -8,7 +8,7 @@
   export let config: EndpointConfig;
   export let onUpdate: (config: EndpointConfig) => void;
 
-  let activeTab = 0;
+  let activeTab = "general";
 
   function handleGeneralUpdate(generalConfig: Partial<EndpointConfig>) {
     config = { ...config, ...generalConfig };
@@ -26,33 +26,33 @@
   }
 </script>
 
-<TabGroup bind:selected={activeTab}>
-  <TabList>
-    <Tab value={0}>General</Tab>
-    <Tab value={1}>Parameters</Tab>
-    <Tab value={2}>Query</Tab>
-  </TabList>
+<Tabs.Root value={activeTab}>
+  <Tabs.List>
+    <Tabs.Trigger value="general">General</Tabs.Trigger>
+    <Tabs.Trigger value="parameters">Parameters</Tabs.Trigger>
+    <Tabs.Trigger value="query">Query</Tabs.Trigger>
+  </Tabs.List>
 
-  <TabPanel value={0}>
+  <Tabs.Content value="general">
     <GeneralEndpointConfig
       path={config.path}
       method={config.method}
       description={config.description}
       onUpdate={handleGeneralUpdate}
     />
-  </TabPanel>
+  </Tabs.Content>
 
-  <TabPanel value={1}>
+  <Tabs.Content value="parameters">
     <ParametersConfig
       parameters={config.parameters}
       onUpdate={handleParametersUpdate}
     />
-  </TabPanel>
+  </Tabs.Content>
 
-  <TabPanel value={2}>
+  <Tabs.Content value="query">
     <QueryConfig
       query={config.query}
       onUpdate={handleQueryUpdate}
     />
-  </TabPanel>
-</TabGroup> 
+  </Tabs.Content>
+</Tabs.Root> 

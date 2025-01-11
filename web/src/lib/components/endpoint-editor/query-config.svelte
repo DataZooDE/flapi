@@ -95,7 +95,7 @@
         on:change={handleChange}
         class="w-full h-32 px-3 py-2 border rounded-md font-mono"
         placeholder="SELECT * FROM users WHERE id = $&#123;userId&#125;"
-      />
+      ></textarea>
     </div>
 
     <div class="space-y-4">

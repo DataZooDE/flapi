@@ -1,4 +1,18 @@
-export { default as TabGroup } from './tab-group.svelte';
-export { default as TabList } from './tab-list.svelte';
-export { default as Tab } from './tab.svelte';
-export { default as TabPanel } from './tab-panel.svelte'; 
+import { Tabs as TabsPrimitive } from "bits-ui";
+import Content from "./tabs-content.svelte";
+import List from "./tabs-list.svelte";
+import Trigger from "./tabs-trigger.svelte";
+
+const Root = TabsPrimitive.Root;
+
+export {
+	Root,
+	Content,
+	List,
+	Trigger,
+	//
+	Root as Tabs,
+	Content as TabsContent,
+	List as TabsList,
+	Trigger as TabsTrigger,
+};

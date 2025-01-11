@@ -6,68 +6,45 @@ interface GlobalState {
     globalError: Error | null;
 }
 
-function createAppStateStore() {
-    const { subscribe, update, set } = writable<GlobalState>({
-        activeRequests: 0,
-        globalError: null
-    });
-
-    return {
-        subscribe,
-        
-        /**
-         * Increment active request counter
-         */
-        startLoading: () => {
-            update(state => ({
-                ...state,
-                activeRequests: state.activeRequests + 1
-            }));
-        },
-
-        /**
-         * Decrement active request counter
-         */
-        stopLoading: () => {
-            update(state => ({
-                ...state,
-                activeRequests: Math.max(0, state.activeRequests - 1)
-            }));
-        },
-
-        /**
-         * Set global error state
-         */
-        setError: (error: Error | null) => {
-            update(state => ({
-                ...state,
-                globalError: error
-            }));
-        },
-
-        /**
-         * Clear global error state
-         */
-        clearError: () => {
-            update(state => ({
-                ...state,
-                globalError: null
-            }));
-        }
-    };
-}
-
 // Create the base store
-export const appState = createAppStateStore();
+const store = writable<GlobalState>({
+    activeRequests: 0,
+    globalError: null
+});
 
-// Derived store for loading state
-export const isLoading = derived(
-    appState,
-    $state => $state.activeRequests > 0
-);
+// Create derived stores for loading and error states
+export const isLoading = derived(store, $state => $state.activeRequests > 0);
+export const globalError = derived(store, $state => $state.globalError);
 
-// Derived store for error state
-export const globalError = derived(
-    appState,
-    $state => $state.globalError
-); 
+// Create and export the app state store
+export const appState = {
+    subscribe: store.subscribe,
+    
+    startLoading: () => {
+        store.update(state => ({
+            ...state,
+            activeRequests: state.activeRequests + 1
+        }));
+    },
+
+    stopLoading: () => {
+        store.update(state => ({
+            ...state,
+            activeRequests: Math.max(0, state.activeRequests - 1)
+        }));
+    },
+
+    setError: (error: Error | null) => {
+        store.update(state => ({
+            ...state,
+            globalError: error
+        }));
+    },
+
+    clearError: () => {
+        store.update(state => ({
+            ...state,
+            globalError: null
+        }));
+    }
+}; 

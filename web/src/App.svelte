@@ -1,27 +1,18 @@
 <script lang="ts">
   import "./app.css";
-  import { Sidebar } from "./lib/components/ui/sidebar";
-  import NavMenu from "./lib/components/navigation/nav-menu.svelte";
-  import ThemeToggle from "./lib/components/theme/theme-toggle.svelte";
-  import ThemeProvider from "./lib/components/theme/theme-provider.svelte";
+  import { NavigationMenu } from "$lib/components/navigation";
+  import { ThemeProvider } from "$lib/components/theme";
+  import { Router } from "$lib/router";
 </script>
 
 <ThemeProvider>
-  <div class="h-screen w-screen flex overflow-hidden bg-background text-foreground">
-    <Sidebar class="w-64">
-      <div class="p-4 border-b">
-        <h1 class="text-lg font-semibold">flAPI Configuration</h1>
-        <div class="absolute right-4 top-4">
-          <ThemeToggle />
-        </div>
-      </div>
-      <div class="p-2">
-        <NavMenu />
-      </div>
-    </Sidebar>
+  <div class="min-h-screen bg-background text-foreground flex">
+    <!-- Primary Left Sidebar Panel -->
+    <NavigationMenu />
 
-    <main class="flex-1 overflow-y-auto">
-      <slot />
+    <!-- Secondary Right Editor Area -->
+    <main class="flex-1 pl-[220px] p-6">
+      <Router />
     </main>
   </div>
 </ThemeProvider>

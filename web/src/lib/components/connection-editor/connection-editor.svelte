@@ -102,7 +102,7 @@
           on:change={handleChange}
           class="w-full h-32 px-3 py-2 border rounded-md font-mono"
           placeholder="-- SQL to run when connection is established"
-        />
+        ></textarea>
       </div>
     </div>
 
