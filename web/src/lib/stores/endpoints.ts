@@ -1,76 +1,25 @@
-import { api } from '../api';
-import { createLoadableStore, handleStoreError } from './store-factory';
-import type { EndpointConfig } from '../types';
-import { get } from 'svelte/store';
+import { writable } from 'svelte/store';
+import type { EndpointConfig } from '$lib/types/config';
 
-const store = createLoadableStore<Record<string, EndpointConfig>>();
+function createEndpointsStore() {
+  const { subscribe, set, update } = writable<Record<string, EndpointConfig>>({});
 
-/**
- * Store for managing endpoint configurations
- */
-export const endpointsStore = {
-    ...store,
-    
-    /**
-     * Loads endpoint configuration from the API
-     * @param path The endpoint path
-     */
-    async load(path: string) {
-        store.setLoading(true);
-        try {
-            const data = await api.getEndpointConfig(path);
-            store.setData({ [path]: data });
-        } catch (error) {
-            store.setError(handleStoreError(error));
-        }
+  return {
+    subscribe,
+    update: (config: EndpointConfig) => {
+      update(endpoints => ({
+        ...endpoints,
+        [config.path]: config
+      }));
     },
-
-    /**
-     * Saves endpoint configuration to the API
-     * @param path The endpoint path
-     * @param config The endpoint configuration
-     */
-    async save(path: string, config: EndpointConfig) {
-        store.setLoading(true);
-        try {
-            await api.updateEndpointConfig(path, config);
-            store.setData({ [path]: config });
-        } catch (error) {
-            store.setError(handleStoreError(error));
-            throw error;
-        }
+    remove: (path: string) => {
+      update(endpoints => {
+        const { [path]: _, ...rest } = endpoints;
+        return rest;
+      });
     },
+    reset: () => set({})
+  };
+}
 
-    /**
-     * Updates endpoint template
-     * @param path The endpoint path
-     * @param template The SQL template
-     */
-    async updateTemplate(path: string, template: string) {
-        store.setLoading(true);
-        try {
-            await api.updateEndpointTemplate(path, template);
-            const currentState = get(store);
-            
-            if (currentState.data && currentState.data[path]) {
-                const updatedConfig = {
-                    ...currentState.data[path],
-                    'template-source': template
-                };
-                const newData = {
-                    ...currentState.data,
-                    [path]: updatedConfig
-                };
-                // Set loading to false before updating data
-                store.setLoading(false);
-                store.setData(newData);
-            } else {
-                // Set loading to false if no update was possible
-                store.setLoading(false);
-            }
-        } catch (error) {
-            store.setError(handleStoreError(error));
-            throw error;
-        }
-    }
-}; 
+export const endpoints = createEndpointsStore(); 

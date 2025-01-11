@@ -1,7 +1,7 @@
 <script lang="ts">
   import { schemaStore } from '$lib/stores/schema';
   import type { SchemaInfo, SchemaState, SchemaTable } from '$lib/types';
-  import { onMount } from 'svelte';
+  import { onMount } from "svelte";
 
   // Props
   export let onTableClick: (tableName: string, schemaName: string) => void;

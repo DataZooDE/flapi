@@ -1,87 +1,32 @@
 import { writable } from 'svelte/store';
-import { api } from '../api';
-import type { ConnectionConfig } from '$lib/types';
 
-export interface ConnectionsState {
-  data: Record<string, ConnectionConfig> | null;
-  loading: boolean;
-  error: string | null;
+interface ConnectionConfig {
+  init?: string;
+  properties: Record<string, any>;
+  "log-queries"?: boolean;
+  "log-parameters"?: boolean;
+  allow?: string;
 }
 
-const initialState: ConnectionsState = {
-  data: null,
-  loading: false,
-  error: null
-};
-
 function createConnectionsStore() {
-  const { subscribe, set, update } = writable<ConnectionsState>(initialState);
+  const { subscribe, set, update } = writable<Record<string, ConnectionConfig>>({});
 
   return {
     subscribe,
-    async load(name: string) {
-      update(state => ({ ...state, loading: true, error: null }));
-      try {
-        const connection = await api.getConnection(name);
-        update(state => ({
-          ...state,
-          data: { 
-            ...(state.data || {}), 
-            [name]: connection 
-          },
-          loading: false
-        }));
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to load connection';
-        update(state => ({
-          ...state,
-          error: message,
-          loading: false
-        }));
-        throw error;
-      }
+    update: (name: string, config: ConnectionConfig) => {
+      update(connections => ({
+        ...connections,
+        [name]: config
+      }));
     },
-    async save(name: string, config: ConnectionConfig) {
-      update(state => ({ ...state, loading: true, error: null }));
-      try {
-        await api.updateConnection(name, config);
-        update(state => ({
-          ...state,
-          data: { 
-            ...(state.data || {}), 
-            [name]: config 
-          },
-          loading: false
-        }));
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to save connection';
-        update(state => ({
-          ...state,
-          error: message,
-          loading: false
-        }));
-        throw error;
-      }
+    remove: (name: string) => {
+      update(connections => {
+        const { [name]: _, ...rest } = connections;
+        return rest;
+      });
     },
-    async testConnection(name: string) {
-      update(state => ({ ...state, loading: true, error: null }));
-      try {
-        await api.testConnection(name);
-        update(state => ({ ...state, loading: false }));
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to test connection';
-        update(state => ({
-          ...state,
-          error: message,
-          loading: false
-        }));
-        throw error;
-      }
-    },
-    reset() {
-      set(initialState);
-    }
+    reset: () => set({})
   };
 }
 
-export const connectionsStore = createConnectionsStore(); 
+export const connections = createConnectionsStore(); 

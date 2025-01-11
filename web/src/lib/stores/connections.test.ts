@@ -43,9 +43,13 @@ describe('connectionsStore', () => {
     const error = new Error('Failed to load');
     api.getConnection.mockRejectedValue(error);
 
-    await connectionsStore.load('test');
-    const state = get(connectionsStore);
+    try {
+      await connectionsStore.load('test');
+    } catch (e) {
+      // Expected error
+    }
 
+    const state = get(connectionsStore);
     expect(state.loading).toBe(false);
     expect(state.error).toBe('Failed to load');
     expect(state.data).toBeNull();

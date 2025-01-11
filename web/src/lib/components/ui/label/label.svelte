@@ -1,21 +1,19 @@
 <script lang="ts">
-	import { Label as LabelPrimitive } from "bits-ui";
-	import { cn } from "$lib/utils.js";
+	import { cn } from "$lib/utils";
 
-	type $$Props = LabelPrimitive.Props;
-	type $$Events = LabelPrimitive.Events;
-
-	let className: $$Props["class"] = undefined;
+	let className: string | undefined = undefined;
 	export { className as class };
+	export let for_id: string | undefined = undefined;
 </script>
 
-<LabelPrimitive.Root
+<label
 	class={cn(
 		"text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70",
 		className
 	)}
+	for={for_id}
 	{...$$restProps}
 	on:mousedown
 >
 	<slot />
-</LabelPrimitive.Root>
+</label>
