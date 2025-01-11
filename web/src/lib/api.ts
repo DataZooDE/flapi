@@ -40,267 +40,249 @@ export class APIError extends Error {
 // Re-export types for convenience
 export type { EndpointConfig, CacheConfig, SchemaInfo, AuthConfig };
 
-// Add new interfaces
-interface PreviewTemplateRequest {
-    template: string;
-    parameters: Record<string, string>;
-}
-
-interface PreviewTemplateResponse {
-    sql: string;
-}
+// Default API base URL
+const API_BASE_URL = '/api/v1/_config';
 
 // API Client class
-export class APIClient {
-    private baseUrl: string;
+class APIClient {
     private requestInterceptors: RequestInterceptor[] = [];
     private responseInterceptors: ResponseInterceptor[] = [];
     private authState: AuthState = { type: 'none' };
 
-    constructor(baseUrl = '/api') {
-        this.baseUrl = baseUrl;
-        // Add authentication interceptor by default
-        this.addRequestInterceptor(this.authInterceptor.bind(this));
-    }
-
-    // Authentication methods
-    setBasicAuth(username: string, password: string) {
-        this.authState = {
-            type: 'basic',
-            credentials: { username, password }
-        };
-    }
-
-    setBearerAuth(token: string) {
-        this.authState = {
-            type: 'bearer',
-            credentials: { token }
-        };
-    }
-
-    clearAuth() {
-        this.authState = { type: 'none' };
-    }
-
-    private authInterceptor(config: RequestInit): RequestInit {
-        const headers = { ...(config.headers as Record<string, string> || {}) };
-
-        switch (this.authState.type) {
-            case 'basic': {
-                const { username = '', password = '' } = this.authState.credentials || {};
-                const base64Credentials = btoa(`${username}:${password}`);
-                headers['Authorization'] = `Basic ${base64Credentials}`;
-                break;
-            }
-            case 'bearer': {
-                const { token = '' } = this.authState.credentials || {};
-                headers['Authorization'] = `Bearer ${token}`;
-                break;
-            }
+    constructor() {
+        // Load auth state from local storage
+        const storedAuth = localStorage.getItem('authState');
+        if (storedAuth) {
+            this.authState = JSON.parse(storedAuth);
         }
-
-        return {
-            ...config,
-            headers
-        };
     }
 
-    // Interceptor management
+    // Add request interceptor
     addRequestInterceptor(interceptor: RequestInterceptor) {
         this.requestInterceptors.push(interceptor);
-        return () => {
-            const index = this.requestInterceptors.indexOf(interceptor);
-            if (index >= 0) {
-                this.requestInterceptors.splice(index, 1);
-            }
-        };
     }
 
+    // Add response interceptor
     addResponseInterceptor(interceptor: ResponseInterceptor) {
         this.responseInterceptors.push(interceptor);
-        return () => {
-            const index = this.responseInterceptors.indexOf(interceptor);
-            if (index >= 0) {
-                this.responseInterceptors.splice(index, 1);
-            }
-        };
     }
 
+    // Set authentication state
+    setAuthState(state: AuthState) {
+        this.authState = state;
+        localStorage.setItem('authState', JSON.stringify(state));
+    }
+
+    // Clear authentication state
+    clearAuthState() {
+        this.authState = { type: 'none' };
+        localStorage.removeItem('authState');
+    }
+
+    // Generic request method
     private async request<T>(
-        endpoint: string,
+        url: string,
         options: RequestInit = {}
     ): Promise<T> {
-        // Initialize headers as a plain object
-        const initialHeaders: Record<string, string> = {
-            'Content-Type': 'application/json',
-            ...(options.headers as Record<string, string> || {})
-        };
+        let requestOptions = { ...options };
 
         // Apply request interceptors
-        let finalOptions: RequestInit = {
-            ...options,
-            headers: initialHeaders
-        };
-
         for (const interceptor of this.requestInterceptors) {
-            finalOptions = await interceptor(finalOptions);
-            // Ensure headers remain a plain object
-            if (finalOptions.headers instanceof Headers) {
-                const headers: Record<string, string> = {};
-                finalOptions.headers.forEach((value, key) => {
-                    headers[key] = value;
-                });
-                finalOptions.headers = headers;
-            }
+            requestOptions = await interceptor(requestOptions);
         }
 
-        let response = await fetch(`${this.baseUrl}${endpoint}`, finalOptions);
+        // Add authentication headers
+        if (this.authState.type === 'basic' && this.authState.credentials?.username && this.authState.credentials?.password) {
+            const encodedCredentials = btoa(`${this.authState.credentials.username}:${this.authState.credentials.password}`);
+            requestOptions.headers = {
+                ...requestOptions.headers,
+                'Authorization': `Basic ${encodedCredentials}`
+            };
+        } else if (this.authState.type === 'bearer' && this.authState.credentials?.token) {
+            requestOptions.headers = {
+                ...requestOptions.headers,
+                'Authorization': `Bearer ${this.authState.credentials.token}`
+            };
+        }
+
+        const response = await fetch(API_BASE_URL + url, requestOptions);
 
         // Apply response interceptors
+        let interceptedResponse = response;
         for (const interceptor of this.responseInterceptors) {
-            response = await interceptor(response);
+            interceptedResponse = await interceptor(interceptedResponse);
         }
 
-        if (!response.ok) {
+        if (!interceptedResponse.ok) {
             let errorDetails;
             try {
-                errorDetails = await response.json();
-            } catch {
-                errorDetails = await response.text();
+                errorDetails = await interceptedResponse.json();
+            } catch (e) {
+                errorDetails = await interceptedResponse.text();
             }
             throw new APIError(
-                `API request failed: ${response.statusText}`,
-                response.status,
+                `API request failed: ${interceptedResponse.status} ${interceptedResponse.statusText}`,
+                interceptedResponse.status,
                 errorDetails
             );
         }
 
-        return response.json() as Promise<T>;
+        if (interceptedResponse.status === 204) {
+            return {} as T;
+        }
+
+        return await interceptedResponse.json() as T;
     }
 
-    // Endpoint Configuration Methods
+    // Project config methods
+    async getProjectConfig(): Promise<ProjectConfig> {
+        return this.request<ProjectConfig>('/project');
+    }
+
+    async updateProjectConfig(config: ProjectConfig): Promise<void> {
+        await this.request('/project', {
+            method: 'PUT',
+            body: JSON.stringify(config),
+        });
+    }
+
+    // Endpoint config methods
     async getEndpointConfig(path: string): Promise<EndpointConfig> {
-        return this.request<EndpointConfig>(`/config/endpoints/${path}`);
+        return this.request<EndpointConfig>(`/endpoints/${path}`);
     }
 
-    async updateEndpointConfig(
-        path: string,
-        config: EndpointConfig
-    ): Promise<void> {
-        await this.request(`/config/endpoints/${path}`, {
+    async updateEndpointConfig(path: string, config: EndpointConfig): Promise<void> {
+        await this.request(`/endpoints/${path}`, {
             method: 'PUT',
             body: JSON.stringify(config),
         });
     }
 
-    // Template Management Methods
-    async getEndpointTemplate(path: string): Promise<{ template: string }> {
-        return this.request<{ template: string }>(
-            `/config/endpoints/${path}/template`
-        );
-    }
-
-    async updateEndpointTemplate(
-        path: string,
-        template: string
-    ): Promise<void> {
-        await this.request(`/config/endpoints/${path}/template`, {
-            method: 'PUT',
-            body: JSON.stringify({ template }),
-        });
-    }
-
-    // Cache Management Methods
-    async getEndpointCache(path: string): Promise<CacheConfig> {
-        return this.request<CacheConfig>(`/config/endpoints/${path}/cache`);
-    }
-
-    async updateEndpointCache(
-        path: string,
-        config: CacheConfig
-    ): Promise<void> {
-        await this.request(`/config/endpoints/${path}/cache`, {
-            method: 'PUT',
-            body: JSON.stringify(config),
-        });
-    }
-
-    // Schema Management Methods
-    async getSchema(): Promise<SchemaInfo> {
-        return this.request<SchemaInfo>('/config/schema');
-    }
-
-    // Authentication configuration methods
-    async getAuthConfig(path: string): Promise<AuthConfig> {
-        return this.request<AuthConfig>(`/config/endpoints/${path}/auth`);
-    }
-
-    async updateAuthConfig(
-        path: string,
-        config: AuthConfig
-    ): Promise<void> {
-        await this.request(`/config/endpoints/${path}/auth`, {
-            method: 'PUT',
-            body: JSON.stringify(config),
-        });
-    }
-
-    // AWS Secrets Manager specific methods
-    async testAwsSecretsManagerConnection(
-        config: AwsSecretsManagerConfig
-    ): Promise<void> {
-        await this.request('/config/test/aws-secrets-manager', {
+    async createEndpoint(config: EndpointConfig): Promise<void> {
+        await this.request(`/endpoints`, {
             method: 'POST',
             body: JSON.stringify(config),
         });
     }
 
-    // Project Configuration Methods
-    async getProjectConfig(): Promise<ProjectConfig> {
-        return this.request<ProjectConfig>('/config/project');
+    async deleteEndpoint(path: string): Promise<void> {
+        await this.request(`/endpoints/${path}`, {
+            method: 'DELETE'
+        });
     }
 
-    async updateProjectConfig(config: ProjectConfig): Promise<void> {
-        await this.request('/config/project', {
+    async listEndpoints(): Promise<Record<string, EndpointConfig>> {
+        return this.request<Record<string, EndpointConfig>>('/endpoints');
+    }
+
+    // Template methods
+    async getEndpointTemplate(path: string): Promise<{ template: string }> {
+        return this.request<{ template: string }>(`/endpoints/${path}/template`);
+    }
+
+    async updateEndpointTemplate(path: string, template: string): Promise<void> {
+        await this.request(`/endpoints/${path}/template`, {
+            method: 'PUT',
+            body: JSON.stringify({ template }),
+        });
+    }
+
+    async expandEndpointTemplate(
+        path: string,
+        request: PreviewTemplateRequest
+    ): Promise<PreviewTemplateResponse> {
+        return this.request<PreviewTemplateResponse>(
+            `/endpoints/${path}/template/expand`,
+            {
+                method: 'POST',
+                body: JSON.stringify(request),
+            }
+        );
+    }
+
+    // Cache methods
+    async getCacheConfig(path: string): Promise<CacheConfig> {
+        return this.request<CacheConfig>(`/endpoints/${path}/cache`);
+    }
+
+    async updateCacheConfig(path: string, config: CacheConfig): Promise<void> {
+        await this.request(`/endpoints/${path}/cache`, {
             method: 'PUT',
             body: JSON.stringify(config),
         });
     }
 
-    // Server Configuration Methods
-    async getServerConfig(): Promise<ServerConfig> {
-        return this.request<ServerConfig>('/config/server');
+    async getCacheTemplate(path: string): Promise<{ template: string }> {
+        return this.request<{ template: string }>(`/endpoints/${path}/cache/template`);
     }
 
-    async updateServerConfig(config: ServerConfig): Promise<void> {
-        await this.request('/config/server', {
+    async updateCacheTemplate(path: string, template: string): Promise<void> {
+        await this.request(`/endpoints/${path}/cache/template`, {
+            method: 'PUT',
+            body: JSON.stringify({ template }),
+        });
+    }
+
+    async refreshCache(path: string): Promise<void> {
+        await this.request(`/endpoints/${path}/cache/refresh`, {
+            method: 'POST'
+        });
+    }
+
+    // Schema methods
+    async getSchema(): Promise<SchemaInfo> {
+        return this.request<SchemaInfo>('/schema');
+    }
+
+    async refreshSchema(): Promise<void> {
+        await this.request('/schema/refresh', {
+            method: 'POST'
+        });
+    }
+
+    // Auth methods
+    async getAuthConfig(): Promise<AuthConfig> {
+        return this.request<AuthConfig>('/auth');
+    }
+
+    async updateAuthConfig(config: AuthConfig): Promise<void> {
+        await this.request('/auth', {
             method: 'PUT',
             body: JSON.stringify(config),
         });
     }
 
-    // DuckDB Settings Methods
+    // DuckDB settings methods
     async getDuckDBSettings(): Promise<DuckDBSettings> {
-        return this.request<DuckDBSettings>('/config/duckdb');
+        return this.request<DuckDBSettings>('/duckdb');
     }
 
     async updateDuckDBSettings(settings: DuckDBSettings): Promise<void> {
-        await this.request('/config/duckdb', {
+        await this.request('/duckdb', {
             method: 'PUT',
             body: JSON.stringify(settings),
         });
     }
 
-    // Connection Methods with logging config
-    async getConnection(name: string): Promise<ConnectionConfig> {
-        return this.request<ConnectionConfig>(`/config/connections/${name}`);
+    // Server config methods
+    async getServerConfig(): Promise<ServerConfig> {
+        return this.request<ServerConfig>('/server');
     }
 
-    async updateConnection(
-        name: string, 
-        config: ConnectionConfig
-    ): Promise<void> {
-        await this.request(`/config/connections/${name}`, {
+    async updateServerConfig(config: ServerConfig): Promise<void> {
+        await this.request('/server', {
+            method: 'PUT',
+            body: JSON.stringify(config),
+        });
+    }
+
+    // Connection methods
+    async getConnection(name: string): Promise<ConnectionConfig> {
+        return this.request<ConnectionConfig>(`/connections/${name}`);
+    }
+
+    async updateConnection(name: string, config: ConnectionConfig): Promise<void> {
+        await this.request(`/connections/${name}`, {
             method: 'PUT',
             body: JSON.stringify(config),
         });
@@ -312,7 +294,7 @@ export class APIClient {
         request: PreviewTemplateRequest
     ): Promise<PreviewTemplateResponse> {
         return this.request<PreviewTemplateResponse>(
-            `/config/endpoints/${path}/preview`,
+            `/endpoints/${path}/preview`,
             {
                 method: 'POST',
                 body: JSON.stringify(request),
@@ -322,11 +304,11 @@ export class APIClient {
 
     // Add these methods to the APIClient class
     async getAwsSecretsConfig(): Promise<AwsSecretsConfig> {
-        return this.request<AwsSecretsConfig>('/config/aws-secrets');
+        return this.request<AwsSecretsConfig>('/aws-secrets');
     }
 
     async updateAwsSecretsConfig(config: AwsSecretsConfig): Promise<void> {
-        await this.request('/config/aws-secrets', {
+        await this.request('/aws-secrets', {
             method: 'PUT',
             body: JSON.stringify(config),
         });
@@ -334,11 +316,27 @@ export class APIClient {
 
     // Add to APIClient class
     async testConnection(name: string): Promise<void> {
-        await this.request(`/config/connections/${name}/test`, {
+        await this.request(`/connections/${name}/test`, {
             method: 'POST'
+        });
+    }
+
+    async testAwsSecretsManagerConnection(config: AwsSecretsConfig): Promise<void> {
+        await this.request('/aws-secrets/test', {
+            method: 'POST',
+            body: JSON.stringify(config)
         });
     }
 }
 
 // Create and export default instance
-export const api = new APIClient(); 
+export const api = new APIClient();
+
+// Define types for preview requests and responses
+export interface PreviewTemplateRequest {
+    parameters: Record<string, string>;
+}
+
+export interface PreviewTemplateResponse {
+    result: string;
+} 

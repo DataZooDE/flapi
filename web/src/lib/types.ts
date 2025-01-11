@@ -38,9 +38,13 @@ export interface ServerConfig {
 
 export interface ProjectConfig {
   project_name: string;
-  version: string;
+  project_description: string;
+  connections: Record<string, ConnectionConfig>;
   server: ServerConfig;
-  duckdb_settings: Record<string, any>;
+  duckdb: DuckDBSettings;
+  auth: AuthConfig;
+  template_path: string;
+  name: string;
 } 
 
 export interface AwsCredentials {

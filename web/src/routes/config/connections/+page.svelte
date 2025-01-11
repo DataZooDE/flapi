@@ -1,12 +1,20 @@
 <script lang="ts">
   import { Button } from "$lib/components/ui/button";
   import { ConnectionEditor } from "$lib/components/connection-editor";
-  import { connections } from "$lib/stores/connections";
+  import { connectionsStore } from "$lib/stores/connections";
+  import type { ConnectionConfig } from "$lib/types";
+  import { get } from 'svelte/store';
 
   let selectedConnection: string | null = null;
+  let connections: Record<string, ConnectionConfig> | null = null;
 
-  function handleConnectionUpdate(name: string, config: any) {
-    connections.update(name, config);
+  // Load connections on mount
+  connectionsStore.subscribe(value => {
+    connections = value;
+  });
+
+  function handleConnectionUpdate(name: string, config: ConnectionConfig) {
+    connectionsStore.save(name, config);
   }
 </script>
 
@@ -21,7 +29,7 @@
   {#if selectedConnection}
     <ConnectionEditor
       name={selectedConnection === 'new' ? '' : selectedConnection}
-      config={selectedConnection === 'new' ? undefined : $connections[selectedConnection]}
+      config={selectedConnection === 'new' ? undefined : connections?.[selectedConnection]}
       onUpdate={handleConnectionUpdate}
     />
   {/if}

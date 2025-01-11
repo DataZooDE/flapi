@@ -2,9 +2,25 @@
   import { Button } from "$lib/components/ui/button";
   import { Card, CardContent, CardHeader, CardTitle } from "$lib/components/ui/card";
   import GeneralConfigEditor from "$lib/components/editors/general-config-editor.svelte";
+  import { projectConfigStore } from "$lib/stores/project-config";
+  import { onMount } from 'svelte';
+
+  let loading = true;
+
+  onMount(async () => {
+    try {
+      await projectConfigStore.load();
+    } finally {
+      loading = false;
+    }
+  });
 </script>
 
 <div class="container mx-auto p-6">
   <h1 class="text-2xl font-bold mb-6">General Configuration</h1>
-  <GeneralConfigEditor />
+  {#if !loading}
+    <GeneralConfigEditor />
+  {:else}
+    <p>Loading...</p>
+  {/if}
 </div> 

@@ -8,18 +8,25 @@
   import TreeItem from "$lib/components/ui/tree/tree-item.svelte";
   import { Button } from "$lib/components/ui/button";
   import { navigate } from "$lib/router";
-  import { endpoints } from "$lib/stores/endpoints";
-  import { connections } from "$lib/stores/connections";
+  import { endpointsStore } from "$lib/stores/endpoints";
+  import { connectionsStore } from "$lib/stores/connections";
+  import type { EndpointConfig, ConnectionConfig } from '$lib/types';
 
   export let selectedEndpoint: string | null = null;
   export let selectedConnection: string | null = null;
 
   let endpointsExpanded = true;
   let connectionsExpanded = true;
+  let endpoints: Record<string, EndpointConfig> | null = null;
+  let connections: Record<string, ConnectionConfig> | null = null;
 
-  // Initialize empty stores if they don't exist
-  $: endpointsList = $endpoints || {};
-  $: connectionsList = $connections || {};
+  // Load endpoints and connections on mount
+  endpointsStore.subscribe(value => {
+    endpoints = value;
+  });
+  connectionsStore.subscribe(value => {
+    connections = value;
+  });
 
   function handleEndpointSelect(path: string) {
     selectedEndpoint = path;
@@ -50,8 +57,8 @@
     hasChildren={true}
     bind:expanded={endpointsExpanded}
   >
-    {#if Object.keys(endpointsList).length > 0}
-      {#each Object.entries(endpointsList) as [path, config]}
+    {#if endpoints && Object.keys(endpoints).length > 0}
+      {#each Object.entries(endpoints) as [path, config]}
         <TreeItem
           label={path}
           icon={Network}
@@ -81,8 +88,8 @@
     hasChildren={true}
     bind:expanded={connectionsExpanded}
   >
-    {#if Object.keys(connectionsList).length > 0}
-      {#each Object.entries(connectionsList) as [name, config]}
+    {#if connections && Object.keys(connections).length > 0}
+      {#each Object.entries(connections) as [name, config]}
         <TreeItem
           label={name}
           icon={Database}

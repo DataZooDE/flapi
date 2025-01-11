@@ -2,35 +2,34 @@
 
 ## API Response Formats
 
+### Project Configuration
+
+#### GET /api/v1/_config/project
+Returns the project configuration.
+
+#### PUT /api/v1/_config/project
+Updates the project configuration.
+
 ### Endpoint Configuration
 
-#### GET /api/config/endpoints/{path}
+#### GET /api/v1/_config/endpoints
+Lists all endpoints.
+
+#### POST /api/v1/_config/endpoints
+Creates a new endpoint.
+
+#### GET /api/v1/_config/endpoints/{path}
 Returns the configuration for a specific endpoint.
 
-Response format:
-```json
-{
-  "url-path": "/example",
-  "template-source": "path/to/template.sql",
-  "request": [
-    {
-      "field-name": "param1",
-      "field-in": "query",
-      "description": "Parameter description",
-      "required": true
-    }
-  ]
-}
-```
-
-#### PUT /api/config/endpoints/{path}
+#### PUT /api/v1/_config/endpoints/{path}
 Updates an endpoint's configuration.
 
-Request format: Same as GET response format.
+#### DELETE /api/v1/_config/endpoints/{path}
+Deletes an endpoint.
 
 ### Template Management
 
-#### GET /api/config/endpoints/{path}/template
+#### GET /api/v1/_config/endpoints/{path}/template
 Returns the SQL template for an endpoint.
 
 Response format:
@@ -40,14 +39,17 @@ Response format:
 }
 ```
 
-#### PUT /api/config/endpoints/{path}/template
+#### PUT /api/v1/_config/endpoints/{path}/template
 Updates an endpoint's SQL template.
 
 Request format: Same as GET response format.
 
+#### POST /api/v1/_config/endpoints/{path}/template/expand
+Tests template expansion with provided parameters.
+
 ### Cache Management
 
-#### GET /api/config/endpoints/{path}/cache
+#### GET /api/v1/_config/endpoints/{path}/cache
 Returns the cache configuration for an endpoint.
 
 Response format:
@@ -55,19 +57,28 @@ Response format:
 {
   "enabled": true,
   "refresh-time": "1h",
-  "cache-table-name": "cache_table",
+  "cache-table": "cache_table",
   "cache-source": "path/to/cache.sql"
 }
 ```
 
-#### PUT /api/config/endpoints/{path}/cache
+#### PUT /api/v1/_config/endpoints/{path}/cache
 Updates an endpoint's cache configuration.
 
 Request format: Same as GET response format.
 
+#### GET /api/v1/_config/endpoints/{path}/cache/template
+Returns the cache SQL template.
+
+#### PUT /api/v1/_config/endpoints/{path}/cache/template
+Updates the cache SQL template.
+
+#### POST /api/v1/_config/endpoints/{path}/cache/refresh
+Manually triggers a cache refresh for the endpoint.
+
 ### Schema Management
 
-#### GET /api/config/schema
+#### GET /api/v1/_config/schema
 Returns the database schema information.
 
 Response format:
@@ -89,6 +100,9 @@ Response format:
 }
 ```
 
+#### POST /api/v1/_config/schema/refresh
+Refreshes the schema information.
+
 ## Error Codes and Meanings
 
 | Code | Meaning | Example Scenarios |
@@ -96,6 +110,7 @@ Response format:
 | 200 | Success | Operation completed successfully |
 | 400 | Bad Request | Invalid JSON, missing required fields |
 | 404 | Not Found | Endpoint or template not found |
+| 405 | Method Not Allowed | Invalid HTTP method for route |
 | 500 | Internal Server Error | Database error, file system error |
 
 Common error response format:

@@ -1,10 +1,12 @@
 <script lang="ts">
   import { Button } from "$lib/components/ui/button";
   import { EndpointEditor } from "$lib/components/endpoint-editor";
-  import { endpoints } from "$lib/stores/endpoints";
+  import { endpointsStore } from "$lib/stores/endpoints";
   import type { EndpointConfig } from "$lib/types/config";
+  import { get } from 'svelte/store';
 
   let selectedEndpoint: string | null = null;
+  let endpoints: Record<string, EndpointConfig> | null = null;
 
   const defaultConfig: EndpointConfig = {
     path: '',
@@ -18,9 +20,14 @@
     }
   };
 
+  // Load endpoints on mount
+  endpointsStore.subscribe(value => {
+    endpoints = value;
+  });
+
   function handleEndpointUpdate(config: EndpointConfig) {
     if (selectedEndpoint) {
-      endpoints.update(config);
+      endpointsStore.save(selectedEndpoint, config);
     }
   }
 </script>
@@ -35,7 +42,7 @@
 
   {#if selectedEndpoint}
     <EndpointEditor 
-      config={selectedEndpoint === 'new' ? defaultConfig : $endpoints[selectedEndpoint]}
+      config={selectedEndpoint === 'new' ? defaultConfig : endpoints?.[selectedEndpoint]}
       onUpdate={handleEndpointUpdate}
     />
   {/if}
