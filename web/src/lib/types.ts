@@ -31,19 +31,41 @@ export interface SchemaState {
 } 
 
 export interface ServerConfig {
-  name: string;
+  hostname: string;
   http_port: number;
-  cache_schema: string;
+}
+
+export interface DuckDBSettings {
+    settings: Record<string, string>;
+    cache_schema: string;
+    db_path: string;
+}
+
+export interface AuthConfig {
+    enabled: boolean;
+    type: 'basic' | 'none';
+    users?: { username: string; password: string }[];
+}
+
+export interface HeartbeatConfig {
+    enabled: boolean;
+    worker_interval: number;
+}
+
+export interface EnforceHTTPSConfig {
+    enabled: boolean;
+    ssl_cert_file: string;
+    ssl_key_file: string;
 }
 
 export interface ProjectConfig {
-  project_name: string;
-  project_description: string;
   connections: Record<string, ConnectionConfig>;
   server: ServerConfig;
   duckdb: DuckDBSettings;
-  auth: AuthConfig;
+  heartbeat: HeartbeatConfig;
+  enforce_https: EnforceHTTPSConfig;
   template_path: string;
+  description: string;
   name: string;
 } 
 
