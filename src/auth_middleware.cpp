@@ -97,7 +97,6 @@ std::optional<AwsAuthParams> AwsHelper::tryGetS3AuthParams(const std::string& se
 }
 
 // ------------------------------------------------------------------------------------------------
-
 void AuthMiddleware::initialize(std::shared_ptr<ConfigManager> config_manager) {
     this->config_manager = config_manager;
     this->db_manager = DatabaseManager::getInstance();
@@ -108,7 +107,7 @@ void AuthMiddleware::initialize(std::shared_ptr<ConfigManager> config_manager) {
 
 void AuthMiddleware::initializeAwsSecretsManager() {
     for (const auto& endpoint : config_manager->getEndpoints()) {
-        if (!endpoint.auth.from_aws_secretmanager) {
+        if (!endpoint.auth.from_aws_secretmanager || !endpoint.auth.enabled) {
             continue;
         }
 

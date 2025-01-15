@@ -12,3 +12,4 @@ vcpkg_installed/
 *.db
 *.db.wal
 service-account.json
+diagnosis/

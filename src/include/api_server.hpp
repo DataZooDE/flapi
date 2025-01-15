@@ -22,7 +22,7 @@ class HeartbeatWorker; // forward declaration
 class APIServer 
 {
 public:
-    explicit APIServer(std::shared_ptr<ConfigManager> config_manager, std::shared_ptr<DatabaseManager> db_manager);
+    explicit APIServer(std::shared_ptr<ConfigManager> config_manager, std::shared_ptr<DatabaseManager> db_manager, bool enable_config_ui);
     ~APIServer();
 
     crow::response getConfig();

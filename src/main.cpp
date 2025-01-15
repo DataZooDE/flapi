@@ -59,6 +59,10 @@ int main(int argc, char* argv[])
         .help("Set the log level (debug, info, warning, error)")
         .default_value(std::string("info"));
 
+    program.add_argument("--enable-config-ui")
+        .help("Enable the configuration UI")
+        .default_value(false);
+
     try {
         program.parse_args(argc, argv);
     } catch (const std::runtime_error& err) {
@@ -81,7 +85,8 @@ int main(int argc, char* argv[])
 
     initializeDatabase(config_manager);
 
-    APIServer server(config_manager, DatabaseManager::getInstance());
+    bool enable_config_ui = program.get<bool>("--enable-config-ui");
+    APIServer server(config_manager, DatabaseManager::getInstance(), enable_config_ui);
     server.run(config_manager->getHttpPort());
 
     return 0;

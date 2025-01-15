@@ -158,9 +158,9 @@ include_directories(
 )
 
 # Add web UI
-message(STATUS "Adding web UI subdirectory...")
-add_subdirectory(web)
-message(STATUS "Web UI subdirectory added")
+# message(STATUS "Adding web UI subdirectory...")
+# add_subdirectory(web)
+# message(STATUS "Web UI subdirectory added")
 
 # Create flapi-lib
 add_library(flapi-lib STATIC
@@ -181,12 +181,12 @@ add_library(flapi-lib STATIC
 )
 
 # Ensure web_ui is built before flapi-lib
-message(STATUS "Setting up web UI dependencies...")
-add_dependencies(flapi-lib web_ui)
+#message(STATUS "Setting up web UI dependencies...")
+#add_dependencies(flapi-lib web_ui)
 
 # Link against web_ui to get its include directories
-target_link_libraries(flapi-lib PUBLIC web_ui_lib)
-message(STATUS "Web UI dependencies configured")
+#target_link_libraries(flapi-lib PUBLIC web_ui_lib)
+#message(STATUS "Web UI dependencies configured")
 
 # Link libraries to flapi-lib
 target_link_libraries(flapi-lib PUBLIC 
@@ -254,7 +254,7 @@ if(WIN32)
 endif()
 
 # Add dependency on web UI
-add_dependencies(flapi-lib web_ui)
+#add_dependencies(flapi-lib web_ui)
 
 # Include embedded UI headers
 target_include_directories(flapi-lib PRIVATE ${CMAKE_SOURCE_DIR}/src/include)

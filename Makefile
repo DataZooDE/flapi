@@ -123,7 +123,7 @@ else
     release:
 	@echo "Building release version $(if $(CROSS_COMPILE),for $(CROSS_COMPILE),native)..."
 	@mkdir -p $(RELEASE_DIR)
-	@$(MAKE) web
+	# @$(MAKE) web
 	@cd $(RELEASE_DIR) && $(CMAKE) -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
 		$(CMAKE_GENERATOR) $(CMAKE_EXTRA_FLAGS) ../..
 	@$(CMAKE) --build $(RELEASE_DIR) --config Release
