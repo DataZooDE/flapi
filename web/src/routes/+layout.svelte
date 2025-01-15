@@ -5,13 +5,9 @@
 </script>
 
 <ThemeProvider>
-  <div class="min-h-screen bg-background text-foreground flex">
-    <!-- Primary Left Sidebar Panel -->
-    <NavigationMenu />
-
-    <!-- Secondary Right Editor Area -->
-    <main class="flex-1 pl-[220px] p-6">
+  <div class="min-h-screen">
+    <NavigationMenu>
       <slot />
-    </main>
+    </NavigationMenu>
   </div>
 </ThemeProvider> 

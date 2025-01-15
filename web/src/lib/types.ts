@@ -31,14 +31,14 @@ export interface SchemaState {
 } 
 
 export interface ServerConfig {
-  hostname: string;
-  http_port: number;
+  name: string;
+  port: number;
+  host: string;
 }
 
 export interface DuckDBSettings {
-    settings: Record<string, string>;
-    cache_schema: string;
-    db_path: string;
+  database: string;
+  options: Record<string, any>;
 }
 
 export interface AuthConfig {
@@ -59,14 +59,14 @@ export interface EnforceHTTPSConfig {
 }
 
 export interface ProjectConfig {
-  connections: Record<string, ConnectionConfig>;
-  server: ServerConfig;
-  duckdb: DuckDBSettings;
-  heartbeat: HeartbeatConfig;
-  enforce_https: EnforceHTTPSConfig;
-  template_path: string;
-  description: string;
-  name: string;
+  project_name: string;
+  version: string;
+  server: {
+    name: string;
+    http_port: number;
+    cache_schema: string;
+  };
+  duckdb_settings: Record<string, any>;
 } 
 
 export interface AwsCredentials {
@@ -75,17 +75,38 @@ export interface AwsCredentials {
 }
 
 export interface AwsSecretsConfig {
-  secret_name: string;
   region: string;
-  credentials: AwsCredentials;
-  init_sql: string;
-  secret_table: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken?: string;
 } 
 
 export interface ConnectionConfig {
   type: string;
-  init_sql: string;
-  properties: Record<string, string>;
-  log_queries: boolean;
-  log_parameters: boolean;
+  init_sql?: string;
+  properties: Record<string, any>;
+  log_queries?: boolean;
+  log_parameters?: boolean;
+} 
+
+export interface EndpointConfig {
+  path: string;
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
+  version: 'v1';
+  description?: string;
+  parameters: Array<{
+    name: string;
+    type: 'string' | 'number' | 'boolean';
+    in: 'path' | 'query' | 'header';
+    required: boolean;
+    description?: string;
+  }>;
+  query: {
+    sql: string;
+    parameters: Array<{
+      name: string;
+      type: 'string' | 'number' | 'boolean';
+      required: boolean;
+    }>;
+  };
 } 

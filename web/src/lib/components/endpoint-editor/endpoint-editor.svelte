@@ -3,30 +3,29 @@
   import GeneralEndpointConfig from "./general-endpoint-config.svelte";
   import ParametersConfig from "./parameters-config.svelte";
   import QueryConfig from "./query-config.svelte";
-  import type { EndpointConfig } from "$lib/types/config";
+  import type { EndpointConfig } from "$lib/types";
 
-  export let config: EndpointConfig;
-  export let onUpdate: (config: EndpointConfig) => void;
+  const { config, onUpdate } = $props<{
+    config: EndpointConfig;
+    onUpdate: (config: EndpointConfig) => void;
+  }>();
 
-  let activeTab = "general";
+  let activeTab = $state('general');
 
-  function handleGeneralUpdate(generalConfig: Partial<EndpointConfig>) {
-    config = { ...config, ...generalConfig };
-    onUpdate(config);
+  function handleGeneralUpdate(values: Partial<EndpointConfig>) {
+    onUpdate({ ...config, ...values });
   }
 
-  function handleParametersUpdate(parameters: EndpointConfig["parameters"]) {
-    config.parameters = parameters;
-    onUpdate(config);
+  function handleParametersUpdate(parameters: EndpointConfig['parameters']) {
+    onUpdate({ ...config, parameters });
   }
 
-  function handleQueryUpdate(query: EndpointConfig["query"]) {
-    config.query = query;
-    onUpdate(config);
+  function handleQueryUpdate(query: EndpointConfig['query']) {
+    onUpdate({ ...config, query });
   }
 </script>
 
-<Tabs.Root value={activeTab}>
+<Tabs.Root value={activeTab} onValueChange={(value) => activeTab = value}>
   <Tabs.List>
     <Tabs.Trigger value="general">General</Tabs.Trigger>
     <Tabs.Trigger value="parameters">Parameters</Tabs.Trigger>
@@ -37,6 +36,7 @@
     <GeneralEndpointConfig
       path={config.path}
       method={config.method}
+      version={config.version}
       description={config.description}
       onUpdate={handleGeneralUpdate}
     />

@@ -1,23 +1,23 @@
 <script lang="ts">
-  import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
   import { Label } from "$lib/components/ui/label";
+  import { Button } from "$lib/components/ui/button";
   import { Card, CardContent, CardHeader, CardTitle } from "$lib/components/ui/card";
   import { Separator } from "$lib/components/ui/separator";
   import { Switch } from "$lib/components/ui/switch";
-  import { connectionsStore } from "$lib/stores/connections";
+  import { connections } from '$lib/state';
+  import { Plus, Trash } from "lucide-svelte";
   import type { ConnectionConfig } from "$lib/types";
-  import { onMount } from "svelte";
-  
-  export let connectionName: string;
 
-  let loading = false;
-  let error: string | null = null;
-  let testingConnection = false;
-  let newPropertyKey = '';
-  let newPropertyValue = '';
+  export let name: string;
 
-  $: connection = $connectionsStore.data?.[connectionName] || {
+  let loading = $state(false);
+  let error = $state<string | null>(null);
+  let testingConnection = $state(false);
+  let newPropertyKey = $state('');
+  let newPropertyValue = $state('');
+
+  $: connection = connections[name] || {
     type: '',
     init_sql: '',
     properties: {},
@@ -25,34 +25,16 @@
     log_parameters: false
   };
 
-  onMount(async () => {
-    if (connectionName) {
-      await connectionsStore.load(connectionName);
-    }
-  });
-
   async function handleSave() {
     loading = true;
     error = null;
     try {
-      await connectionsStore.save(connectionName, connection);
+      // Save logic here
+      connections[name] = connection;
+      loading = false;
     } catch (err) {
       error = err instanceof Error ? err.message : 'An unknown error occurred';
-    } finally {
       loading = false;
-    }
-  }
-
-  async function testConnection() {
-    testingConnection = true;
-    error = null;
-    try {
-      await connectionsStore.testConnection(connectionName);
-      // Show success message
-    } catch (err) {
-      error = err instanceof Error ? err.message : 'Failed to test connection';
-    } finally {
-      testingConnection = false;
     }
   }
 
@@ -71,154 +53,114 @@
     const { [key]: _, ...rest } = connection.properties;
     connection.properties = rest;
   }
-
-  // Add type for event handlers
-  type SwitchEvent = Event & { currentTarget: HTMLInputElement };
-
-  function handleSwitchChange(field: 'log_queries' | 'log_parameters') {
-    return (e: SwitchEvent) => {
-      connection[field] = e.currentTarget.checked;
-    };
-  }
 </script>
 
-<div class="container mx-auto p-4 space-y-4">
-  <!-- Basic Connection Settings -->
+<div class="space-y-4">
   <Card>
     <CardHeader>
-      <CardTitle>Connection Settings</CardTitle>
+      <CardTitle>Connection: {name}</CardTitle>
     </CardHeader>
-    <CardContent>
-      <form class="space-y-4">
-        <div class="grid gap-4">
-          <div class="space-y-2">
-            <Label for="connection-type">Connection Type</Label>
-            <Input 
-              id="connection-type" 
-              bind:value={connection.type} 
-              placeholder="duckdb"
-            />
-          </div>
+    <CardContent class="space-y-4">
+      <!-- Connection Type -->
+      <div class="space-y-2">
+        <Label for="type">Type</Label>
+        <Input 
+          id="type"
+          bind:value={connection.type}
+          placeholder="postgres"
+        />
+      </div>
 
-          <div class="space-y-2">
-            <Label for="init-sql">Initialization SQL</Label>
-            <textarea
-              id="init-sql"
-              class="w-full min-h-[100px] p-2 rounded-md border"
-              bind:value={connection.init_sql}
-              placeholder="-- SQL to run when connection is established"
-            />
-          </div>
+      <!-- Init SQL -->
+      <div class="space-y-2">
+        <Label for="init-sql">Init SQL</Label>
+        <textarea
+          id="init-sql"
+          class="w-full min-h-[100px] p-2 rounded-md border"
+          bind:value={connection.init_sql}
+          placeholder="SELECT 1"
+        ></textarea>
+      </div>
+
+      <!-- Properties -->
+      <div class="space-y-2">
+        <Label>Properties</Label>
+        <div class="flex space-x-2">
+          <Input
+            placeholder="Key"
+            bind:value={newPropertyKey}
+          />
+          <Input
+            placeholder="Value"
+            bind:value={newPropertyValue}
+          />
+          <Button size="icon" onclick={addProperty}>
+            <Plus />
+          </Button>
         </div>
-      </form>
-    </CardContent>
-  </Card>
 
-  <!-- Connection Properties -->
-  <Card>
-    <CardHeader>
-      <CardTitle>Connection Properties</CardTitle>
-    </CardHeader>
-    <CardContent>
-      <div class="space-y-4">
-        <!-- Existing properties -->
-        <div class="space-y-2">
-          {#if Object.keys(connection.properties).length > 0}
+        {#if Object.keys(connection.properties).length > 0}
+          <div class="mt-2 space-y-2">
             {#each Object.entries(connection.properties) as [key, value]}
-              <div class="flex items-center gap-2">
-                <Input readonly value={key} class="flex-1" />
-                <Input readonly value={value} class="flex-1" />
+              <div class="flex items-center justify-between">
+                <span class="text-sm">{key}: {value}</span>
                 <Button 
-                  variant="destructive" 
                   size="icon"
-                  on:click={() => removeProperty(key)}
+                  variant="ghost"
+                  onclick={() => removeProperty(key)}
                 >
-                  ×
+                  <Trash />
                 </Button>
               </div>
             {/each}
-          {:else}
-            <p class="text-sm text-muted-foreground">No properties configured</p>
-          {/if}
-        </div>
-
-        <!-- Add new property -->
-        <div class="flex items-end gap-2">
-          <div class="flex-1">
-            <Label for="property-key">Key</Label>
-            <Input 
-              id="property-key" 
-              bind:value={newPropertyKey} 
-              placeholder="e.g., database"
-            />
           </div>
-          <div class="flex-1">
-            <Label for="property-value">Value</Label>
-            <Input 
-              id="property-value" 
-              bind:value={newPropertyValue} 
-              placeholder="e.g., mydb"
-            />
-          </div>
-          <Button 
-            type="button"
-            on:click={addProperty}
-            disabled={!newPropertyKey || !newPropertyValue}
-          >
-            Add
-          </Button>
-        </div>
+        {/if}
       </div>
-    </CardContent>
-  </Card>
 
-  <!-- Logging Configuration -->
-  <Card>
-    <CardHeader>
-      <CardTitle>Logging Configuration</CardTitle>
-    </CardHeader>
-    <CardContent>
+      <Separator />
+
+      <!-- Logging Options -->
       <div class="space-y-4">
         <div class="flex items-center justify-between">
-          <Label for="log-queries">Log SQL Queries</Label>
-          <Switch 
+          <Label for="log-queries">Log Queries</Label>
+          <Switch
             id="log-queries"
             checked={connection.log_queries}
-            on:change={handleSwitchChange('log_queries')}
+            onchange={(e) => connection.log_queries = e.detail}
           />
         </div>
 
         <div class="flex items-center justify-between">
-          <Label for="log-parameters">Log Query Parameters</Label>
-          <Switch 
+          <Label for="log-parameters">Log Parameters</Label>
+          <Switch
             id="log-parameters"
             checked={connection.log_parameters}
-            on:change={handleSwitchChange('log_parameters')}
+            onchange={(e) => connection.log_parameters = e.detail}
           />
         </div>
       </div>
+
+      <!-- Actions -->
+      <div class="flex justify-end space-x-2">
+        <Button
+          variant="outline"
+          onclick={() => testingConnection = true}
+          disabled={loading || testingConnection}
+        >
+          {testingConnection ? 'Testing...' : 'Test Connection'}
+        </Button>
+
+        <Button
+          onclick={handleSave}
+          disabled={loading || testingConnection}
+        >
+          {loading ? 'Saving...' : 'Save Changes'}
+        </Button>
+      </div>
+
+      {#if error}
+        <p class="text-destructive text-sm">{error}</p>
+      {/if}
     </CardContent>
   </Card>
-
-  <!-- Action Buttons -->
-  <div class="flex justify-end gap-2">
-    <Button 
-      variant="outline"
-      on:click={testConnection}
-      disabled={testingConnection || loading}
-    >
-      {testingConnection ? 'Testing...' : 'Test Connection'}
-    </Button>
-
-    <Button 
-      on:click={handleSave} 
-      disabled={loading || testingConnection}
-    >
-      {loading ? 'Saving...' : 'Save Changes'}
-    </Button>
-  </div>
-
-  {#if error}
-    <p class="text-red-500 text-sm mt-2">{error}</p>
-  {/if}
 </div> 

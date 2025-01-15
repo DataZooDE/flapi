@@ -1,4 +1,5 @@
 {
+  "extends": "./.svelte-kit/tsconfig.json",
   "compilerOptions": {
     "allowJs": true,
     "checkJs": true,
@@ -9,10 +10,6 @@
     "sourceMap": true,
     "strict": true,
     "moduleResolution": "bundler",
-    "paths": {
-      "$lib": ["./src/lib"],
-      "$lib/*": ["./src/lib/*"]
-    },
     "types": ["vitest/globals", "node", "@testing-library/jest-dom"]
   },
   "include": ["src/**/*.d.ts", "src/**/*.ts", "src/**/*.js", "src/**/*.svelte"]

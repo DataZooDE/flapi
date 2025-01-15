@@ -32,19 +32,17 @@
 </script>
 
 <div class={cn("space-y-6", className)}>
-  <div class="grid grid-cols-[1fr_200px] gap-4">
-    <div class="space-y-2">
-      <Label for_id="path">Endpoint Path</Label>
-      <Input 
-        id="path"
-        bind:value={path}
-        on:change={handleChange}
-        placeholder="/api/users/123"
-        pattern="^/.*"
-        title="Path must start with /"
-      />
-    </div>
-    
+  <div class="space-y-2">
+    <Label for_id="path">Path</Label>
+    <Input
+      id="path"
+      bind:value={path}
+      on:change={handleChange}
+      placeholder="/api/users"
+    />
+  </div>
+
+  <div class="flex space-x-4">
     <div class="space-y-2">
       <Label for_id="method">HTTP Method</Label>
       <select

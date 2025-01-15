@@ -1,5 +1,7 @@
 <script lang="ts">
-  import ServerConfigEditor from '$lib/components/editors/server-config-editor.svelte';
+  import { ServerConfigEditor } from "$lib/components/editors";
 </script>
 
-<ServerConfigEditor /> 
+<div class="container mx-auto p-6">
+  <ServerConfigEditor />
+</div> 

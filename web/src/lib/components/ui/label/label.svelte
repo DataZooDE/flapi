@@ -13,7 +13,6 @@
 	)}
 	for={for_id}
 	{...$$restProps}
-	on:mousedown
 >
 	<slot />
 </label>

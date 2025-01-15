@@ -1,111 +1,90 @@
 <script lang="ts">
-  import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
   import { Label } from "$lib/components/ui/label";
+  import { Button } from "$lib/components/ui/button";
   import { Card, CardContent, CardHeader, CardTitle } from "$lib/components/ui/card";
-  import { serverStore } from "$lib/stores/server";
-  import { onMount } from "svelte";
-  
-  let loading = false;
-  let error: string | null = null;
+  import { serverConfig } from '$lib/state';
 
-  $: config = $serverStore.data || {
-    name: '',
-    http_port: 8080,
-    cache_schema: 'cache'
-  };
+  let loading = $state(false);
+  let error = $state<string | null>(null);
 
-  onMount(async () => {
-    await serverStore.load();
-  });
+  function validatePort(event: Event) {
+    const input = event.target as HTMLInputElement;
+    const value = input.value;
+    if (value && !/^\d+$/.test(value)) {
+      input.value = value.replace(/\D/g, '');
+    }
+  }
 
   async function handleSave() {
     loading = true;
     error = null;
     try {
-      await serverStore.save(config);
+      // Save logic here using API
+      loading = false;
     } catch (err) {
       error = err instanceof Error ? err.message : 'An unknown error occurred';
-    } finally {
       loading = false;
-    }
-  }
-
-  function validatePort(event: Event) {
-    const input = event.target as HTMLInputElement;
-    const value = parseInt(input.value);
-    if (isNaN(value) || value < 1 || value > 65535) {
-      input.setCustomValidity('Port must be between 1 and 65535');
-    } else {
-      input.setCustomValidity('');
     }
   }
 </script>
 
-<div class="container mx-auto p-4 space-y-4">
+<div class="space-y-4">
   <Card>
     <CardHeader>
       <CardTitle>Server Configuration</CardTitle>
     </CardHeader>
-    <CardContent>
-      <form class="space-y-6">
-        <div class="grid gap-4">
-          <div class="space-y-2">
-            <Label for="server-name">Server Name</Label>
-            <Input 
-              id="server-name" 
-              bind:value={config.name} 
-              placeholder="flapi-server"
-            />
-            <p class="text-sm text-muted-foreground">
-              A unique name for this server instance
-            </p>
-          </div>
+    <CardContent class="space-y-4">
+      <div class="space-y-2">
+        <Label for="name">Server Name</Label>
+        <Input 
+          id="name"
+          bind:value={serverConfig.name}
+          placeholder="My API Server"
+        />
+        <p class="text-sm text-muted-foreground">
+          A friendly name for this server instance
+        </p>
+      </div>
 
-          <div class="space-y-2">
-            <Label for="http-port">HTTP Port</Label>
-            <Input 
-              id="http-port" 
-              type="number"
-              min="1"
-              max="65535"
-              bind:value={config.http_port} 
-              placeholder="8080"
-              on:input={validatePort}
-            />
-            <p class="text-sm text-muted-foreground">
-              The port number to listen on (1-65535)
-            </p>
-          </div>
+      <div class="space-y-2">
+        <Label for="host">Host</Label>
+        <Input 
+          id="host"
+          bind:value={serverConfig.host}
+          placeholder="localhost"
+        />
+        <p class="text-sm text-muted-foreground">
+          The host address to bind to
+        </p>
+      </div>
 
-          <div class="space-y-2">
-            <Label for="cache-schema">Cache Schema</Label>
-            <Input 
-              id="cache-schema" 
-              bind:value={config.cache_schema} 
-              placeholder="cache"
-            />
-            <p class="text-sm text-muted-foreground">
-              Schema name for storing cached query results
-            </p>
-          </div>
-        </div>
+      <div class="space-y-2">
+        <Label for="port">Port</Label>
+        <Input 
+          id="port"
+          type="number"
+          bind:value={serverConfig.port}
+          on:input={validatePort}
+          placeholder="8080"
+        />
+        <p class="text-sm text-muted-foreground">
+          The port number to listen on
+        </p>
+      </div>
 
-        <!-- Save Button -->
-        <div class="flex justify-end">
-          <Button 
-            type="button"
-            on:click={handleSave}
-            disabled={loading}
-          >
-            {loading ? 'Saving...' : 'Save Changes'}
-          </Button>
-        </div>
+      <div class="flex justify-end">
+        <Button 
+          onclick={handleSave}
+          disabled={loading}
+        >
+          {loading ? 'Saving...' : 'Save Changes'}
+        </Button>
+      </div>
 
-        {#if error}
-          <p class="text-red-500 text-sm mt-2">{error}</p>
-        {/if}
-      </form>
+      {#if error}
+        <p class="text-destructive text-sm">{error}</p>
+      {/if}
     </CardContent>
   </Card>
 </div> 
