@@ -1,5 +1,11 @@
 #include <argparse/argparse.hpp>
+#include <exception>
 #include <iostream>
+#include <cstdlib>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #include "api_server.hpp"
 #include "auth_middleware.hpp"
@@ -42,8 +48,38 @@ void initializeDatabase(std::shared_ptr<ConfigManager> config_manager) {
     }
 }
 
+void terminateHandler() {
+    CROW_LOG_ERROR << "Unhandled exception caught! flapi is giving up :-(";
+
+    auto ex = std::current_exception();
+    try {
+        std::rethrow_exception (ex);
+    } catch (const std::exception& e) {
+        CROW_LOG_ERROR << "exception caught: " << e.what();
+    }
+    std::abort();
+}
+
+#ifdef _WIN32
+
+LONG WINAPI windowsExceptionHandler(EXCEPTION_POINTERS* exceptionInfo) {
+    CROW_LOG_ERROR << "Unhandled Windows exception caught!";
+    CROW_LOG_ERROR << "Exception code: " << std::hex << exceptionInfo->ExceptionRecord->ExceptionCode;
+    CROW_LOG_ERROR << "Address: " << exceptionInfo->ExceptionRecord->ExceptionAddress;
+
+    // Return control to Windows
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+#endif
+
 int main(int argc, char* argv[]) 
 {
+    std::set_terminate(terminateHandler);
+#ifdef _WIN32
+    SetUnhandledExceptionFilter(windowsExceptionHandler);
+#endif
+
     static argparse::ArgumentParser program("flapi");
 
     program.add_argument("-c", "--config")
