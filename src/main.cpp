@@ -1,10 +1,13 @@
 #include <argparse/argparse.hpp>
 #include <exception>
+#include <fstream>
 #include <iostream>
 #include <cstdlib>
 
 #ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <dbghelp.h>
 #endif
 
 #include "api_server.hpp"
@@ -62,12 +65,40 @@ void terminateHandler() {
 
 #ifdef _WIN32
 
+void writeMiniDump(EXCEPTION_POINTERS* exceptionInfo, const std::string& filename) {
+    HANDLE hFile = CreateFile(filename.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (!hFile || hFile == INVALID_HANDLE_VALUE) {
+        CROW_LOG_ERROR << "Failed to create dump file " << filename;
+        return;
+    }
+
+    MINIDUMP_EXCEPTION_INFORMATION mdei;
+    mdei.ThreadId = GetCurrentThreadId();
+    mdei.ExceptionPointers = exceptionInfo;
+    mdei.ClientPointers = FALSE;
+
+    MiniDumpWriteDump(
+        GetCurrentProcess(),
+        GetCurrentProcessId(),
+        hFile,
+        MiniDumpNormal,
+        &mdei,
+        NULL,
+        NULL
+    );
+    CloseHandle(hFile);
+}
+
 LONG WINAPI windowsExceptionHandler(EXCEPTION_POINTERS* exceptionInfo) {
     CROW_LOG_ERROR << "Unhandled Windows exception caught!";
     CROW_LOG_ERROR << "Exception code: " << std::hex << exceptionInfo->ExceptionRecord->ExceptionCode;
     CROW_LOG_ERROR << "Address: " << exceptionInfo->ExceptionRecord->ExceptionAddress;
 
-    // Return control to Windows
+    std::string filename = "crash_dump_" + std::to_string(GetCurrentProcessId()) + ".dmp";
+    CROW_LOG_ERROR << "Writing crash dump to " << filename;
+    
+    writeMiniDump(exceptionInfo, filename);
+
     return EXCEPTION_EXECUTE_HANDLER;
 }
 

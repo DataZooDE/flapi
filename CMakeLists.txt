@@ -212,6 +212,12 @@ add_executable(flapi src/main.cpp)
 target_link_libraries(flapi PRIVATE flapi-lib)
 set_target_properties(flapi PROPERTIES ENABLE_EXPORTS TRUE)
 
+# Add Windows-specific libraries
+if(WIN32)
+    target_link_libraries(flapi PRIVATE Dbghelp.lib)
+endif()
+
+
 # Set output directories
 set_target_properties(flapi PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
@@ -258,3 +264,4 @@ endif()
 
 # Include embedded UI headers
 target_include_directories(flapi-lib PRIVATE ${CMAKE_SOURCE_DIR}/src/include)
+
