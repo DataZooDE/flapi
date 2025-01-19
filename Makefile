@@ -3,6 +3,10 @@
 # Phony targets
 .PHONY: all debug release clean run-debug run-release run-integration-tests docker-build web
 
+# Check if Ninja is available
+NINJA := $(shell which ninja)
+CMAKE_GENERATOR := $(if $(NINJA),-G Ninja,)
+
 # Compiler and flags
 ifeq ($(OS),Windows_NT)
     CXX := cl.exe
@@ -11,23 +15,13 @@ ifeq ($(OS),Windows_NT)
     RM := rm -f
     MKDIR := mkdir -p
     RMDIR := rm -rf
-    # Use forward slashes in paths
-    BUILD_DIR := build
-    DEBUG_DIR := $(BUILD_DIR)/debug
-    RELEASE_DIR := $(BUILD_DIR)/release
+    CMAKE_GENERATOR := -G "Visual Studio 17 2022" -A x64
 else
     CXX := g++
     CMAKE := cmake
     RM := rm -f
     MKDIR := mkdir -p
     RMDIR := rm -rf
-endif
-
-# Check if Ninja is available
-NINJA := $(shell which ninja)
-CMAKE_GENERATOR := $(if $(NINJA),-G Ninja,)
-ifeq ($(OS),Windows_NT)
-    CMAKE_GENERATOR := -G "Visual Studio 17 2022" -A x64
 endif
 
 # Build directories
@@ -42,7 +36,7 @@ DOCKER_IMAGE_NAME := ghcr.io/datazoode/flapi
 # Default target
 all: debug release
 
-# Debug build for Windows (MINGW compatible)
+# Debug build for Windows (Visual Studio compatible)
 ifeq ($(OS),Windows_NT)
 debug:
 	@echo "Building debug version for Windows..."

@@ -7,6 +7,15 @@
 #include "sql_template_processor.hpp"
 #include "config_manager.hpp"
 
+#ifdef _WIN32
+#include <cstdlib>
+#define setenv(name, value, overwrite) _putenv_s(name, value)
+#define unsetenv(name) _putenv((std::string(name) + "=").c_str())
+#else
+#include <stdlib.h>
+#endif
+
+
 using namespace flapi;
 
 class MockConfigManager : public ConfigManager {

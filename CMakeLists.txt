@@ -3,15 +3,14 @@ set(CMAKE_WARN_DEPRECATED OFF CACHE BOOL "" FORCE)
 
 # Windows-specific settings
 if(WIN32)
-    # Use static runtime libraries for Windows builds
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    # Use dynamic runtime libraries for Windows builds
     add_definitions(-D_WIN32_WINNT=0x0601)  # Target Windows 7 or later
-    add_definitions(-DNOMINMAX)  # Disable min/max macros from Windows.h
-    add_definitions(-D_CRT_SECURE_NO_WARNINGS)
+    #add_definitions(-DNOMINMAX)  # Disable min/max macros from Windows.h
+    #add_definitions(-D_CRT_SECURE_NO_WARNINGS)
     
     # Set vcpkg triplet for Windows
     if(NOT DEFINED VCPKG_TARGET_TRIPLET)
-        set(VCPKG_TARGET_TRIPLET "x64-windows-static" CACHE STRING "")
+        set(VCPKG_TARGET_TRIPLET "x64-windows-static-md" CACHE STRING "")
     endif()
 endif()
 
