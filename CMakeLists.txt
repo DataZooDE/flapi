@@ -14,7 +14,6 @@ if(WIN32)
     endif()
 endif()
 
-# Set vcpkg toolchain before project()
 if(APPLE)
     # On macOS, automatically detect and use native architecture if not specified
     if(NOT CMAKE_OSX_ARCHITECTURES)
@@ -144,6 +143,13 @@ find_package(argparse CONFIG REQUIRED)
 find_package(AWSSDK CONFIG COMPONENTS core secretsmanager REQUIRED)
 
 # Add DuckDB
+set(DUCKDB_EXPLICIT_VERSION 1.1.3)
+set(ENABLE_EXTENSION_AUTOLOADING true)
+set(ENABLE_EXTENSION_AUTOINSTALL true)
+if (WIN32)
+    set(DUCKDB_EXPLICIT_PLATFORM "windows_amd64")
+endif()
+
 add_subdirectory(duckdb EXCLUDE_FROM_ALL)
 
 # Include directories
@@ -252,9 +258,9 @@ if(WIN32)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /SUBSYSTEM:CONSOLE")
     if(MSVC)
         add_compile_options(/W4 /MP)
-        # Enable parallel compilation
-        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /MP")
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP")
+        # Enable parallel compilation 
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /MP /Gy")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP /Gy")
     endif()
 endif()
 
