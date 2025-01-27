@@ -170,9 +170,9 @@ void APIServer::run(int port) {
     app.port(configManager->getHttpPort())
        .server_name("flAPI")
        .multithreaded()
+       .use_compression(crow::compression::GZIP)
        .run();
 }
-
 
 void APIServer::requestForEndpoint(const EndpointConfig& endpoint, const std::unordered_map<std::string, std::string>& pathParams) 
 {
