@@ -2,7 +2,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug flAPI",
+            "name": "Debug flAPI (Linux)",
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/debug/flapi",
@@ -29,7 +29,33 @@
             "preLaunchTask": "build-debug"
         },
         {
-            "name": "Debug Tests",
+            "name": "Debug flAPI (macOS)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/debug/flapi",
+            "args": [
+                "--config",
+                "${workspaceFolder}/examples/flapi.yaml",
+                "--log-level",
+                "debug"
+            ],
+            "cwd": "${workspaceFolder}",
+            "environment": [
+                { "name": "FLAPI_TEST_VAR", "value": "test" }
+            ],
+            "externalConsole": false,
+            "MIMode": "lldb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for lldb",
+                    "text": "settings set target.pretty-printing true",
+                    "ignoreFailures": true
+                }
+            ],
+            "preLaunchTask": "build-debug"
+        },
+        {
+            "name": "Debug Tests (Linux)",
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/debug/test/cpp/flapi_tests",
@@ -43,6 +69,26 @@
                 {
                     "description": "Enable pretty-printing for gdb",
                     "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ],
+            "preLaunchTask": "build-debug"
+        },
+        {
+            "name": "Debug Tests (macOS)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/debug/test/cpp/flapi_tests",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "lldb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for lldb",
+                    "text": "settings set target.pretty-printing true",
                     "ignoreFailures": true
                 }
             ],

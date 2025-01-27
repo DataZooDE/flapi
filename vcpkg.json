@@ -4,6 +4,7 @@
   "dependencies": [
     "catch2",
     "crow",
+    "fmt",
     "yaml-cpp",
     "jwt-cpp",
     "argparse",

@@ -12,29 +12,9 @@
 #include "config_manager.hpp"
 #include "cache_manager.hpp"
 #include "sql_template_processor.hpp"
+#include "query_executor.hpp"
 
 namespace flapi {
-
-struct QueryExecutor {
-    duckdb_connection conn;
-    mutable duckdb_result result;
-    bool has_result;
-    
-    QueryExecutor(duckdb_database db);
-    ~QueryExecutor();
-    
-    void execute(const std::string& query, const std::string& context = "");
-    void executePrepared(duckdb_prepared_statement stmt, const std::string& context = "");
-    
-    idx_t rowCount() const { return has_result ? duckdb_row_count(&result) : 0; }
-    idx_t columnCount() const { return has_result ? duckdb_column_count(&result) : 0; }
-};
-
-struct QueryResult {
-    crow::json::wvalue data;
-    std::string next;
-    int64_t total_count;
-};
 
 struct ColumnInfo {
     std::string name;

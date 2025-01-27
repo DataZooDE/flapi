@@ -12,52 +12,6 @@
 namespace flapi {
 
 
-QueryExecutor::QueryExecutor(duckdb_database db) : has_result(false) {
-    if (duckdb_connect(db, &conn) == DuckDBError) {
-        throw std::runtime_error("Failed to create database connection");
-    }
-}
-
-QueryExecutor::~QueryExecutor() {
-    if (has_result) {
-        duckdb_destroy_result(&result);
-        has_result = false;
-    }
-    duckdb_disconnect(&conn);
-}
-
-void QueryExecutor::execute(const std::string& query, const std::string& context) {
-    if (has_result) {
-        duckdb_destroy_result(&result);
-        has_result = false;
-    }
-    
-    if (duckdb_query(conn, query.c_str(), &result) == DuckDBError) {
-        std::string error_message = duckdb_result_error(&result);
-        std::string context_msg = context.empty() ? "" : " during " + context;
-        duckdb_destroy_result(&result);
-        throw std::runtime_error("Query execution failed" + context_msg + ": " + error_message);
-    }
-    has_result = true;
-}
-
-void QueryExecutor::executePrepared(duckdb_prepared_statement stmt, const std::string& context) {
-    if (has_result) {
-        duckdb_destroy_result(&result);
-        has_result = false;
-    }
-    
-    if (duckdb_execute_prepared(stmt, &result) == DuckDBError) {
-        std::string error_message = duckdb_result_error(&result);
-        std::string context_msg = context.empty() ? "" : " during " + context;
-        duckdb_destroy_result(&result);
-        throw std::runtime_error("Prepared statement execution failed" + context_msg + ": " + error_message);
-    }
-    has_result = true;
-}
-
-// ------------------------------------------------------------------------------------------------
-
 std::shared_ptr<DatabaseManager> DatabaseManager::getInstance() {
     static std::shared_ptr<DatabaseManager> instance = std::make_shared<DatabaseManager>();
     return instance;
@@ -286,55 +240,57 @@ std::string DatabaseManager::processCacheTemplate(const EndpointConfig& endpoint
     return sql_processor->loadAndProcessTemplate(endpoint, cacheConfig, params);
 }
 
-QueryResult DatabaseManager::executeQuery(const std::string& query, const std::map<std::string, std::string>& params, bool with_pagination) {
+QueryResult DatabaseManager::executeQuery(const std::string& query, 
+                                          const std::map<std::string, std::string>& params,
+                                          bool with_pagination) {
     auto executor = createQueryExecutor();
     std::string paginatedQuery = query;
     std::string countQuery = "SELECT COUNT(*) FROM (" + query + ") AS subquery";
-
+    
     auto limit = 0;
     auto offset = 0;
     auto hasPagination = false;
-
+    
+    // Handle pagination parameters
     if (with_pagination && (params.find("limit") != params.end() || params.find("offset") != params.end())) {
         hasPagination = true;
         limit = std::stoll(params.find("limit")->second);
         offset = std::stoll(params.find("offset")->second);
         paginatedQuery = "SELECT * FROM (" + paginatedQuery + ") AS subquery " 
-                       +"LIMIT " + std::to_string(limit) + " OFFSET " + std::to_string(offset);
+                        "LIMIT " + std::to_string(limit) + 
+                        " OFFSET " + std::to_string(offset);
     }
-
+    
+    // Execute main query
     executor.execute(paginatedQuery);
-
-    crow::json::wvalue json_result;
-    std::vector<crow::json::wvalue> rows;
-
-    for (idx_t row = 0; row < executor.rowCount(); row++) {
-        auto json_row = duckRowToJson(executor.result, row);
-        rows.push_back(std::move(json_row));
-    }
-
-    json_result = std::move(rows);
-
-    // Execute count query if pagination is enabled
-    int64_t total_count = 0;
+    
+    // Convert result to JSON using QueryResult
+    QueryResult result;
+    result.data = executor.toJson();
+    
+    // Handle pagination metadata
     if (with_pagination) {
-        executor.execute(countQuery);
-        if (executor.rowCount() > 0) {
-            total_count = duckdb_value_int64(&executor.result, 0, 0);
+        // Get total count
+        auto countExecutor = createQueryExecutor();
+        countExecutor.execute(countQuery);
+        if (countExecutor.rowCount() > 0) {
+            result.total_count = duckdb_value_int64(&countExecutor.result, 0, 0);
         }
-    }
-
-    std::string next = "";
-    if (hasPagination && offset + limit < total_count) {
-        next = "?offset=" + std::to_string(offset + limit);
-        for (const auto& [key, value] : params) {
-            if (key != "offset") {
-                next += "&" + key + "=" + value;
+        
+        // Generate next link if needed
+        if (hasPagination && offset + limit < result.total_count) {
+            std::stringstream next_ss;
+            next_ss << "?offset=" << (offset + limit);
+            for (const auto& [key, value] : params) {
+                if (key != "offset") {
+                    next_ss << "&" << key << "=" << value;
+                }
             }
+            result.next = next_ss.str();
         }
     }
-
-    return QueryResult{std::move(json_result), next, total_count};
+    
+    return result;
 }
 
 crow::json::wvalue DatabaseManager::duckRowToJson(duckdb_result& result, idx_t row) {

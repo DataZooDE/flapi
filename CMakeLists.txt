@@ -139,6 +139,7 @@ find_package(Crow CONFIG REQUIRED)
 find_package(yaml-cpp CONFIG REQUIRED)
 find_package(jwt-cpp CONFIG REQUIRED)
 find_package(argparse CONFIG REQUIRED)
+find_package(fmt CONFIG REQUIRED)
 
 find_package(AWSSDK CONFIG COMPONENTS core secretsmanager REQUIRED)
 
@@ -178,6 +179,7 @@ add_library(flapi-lib STATIC
     src/embedded_ui.cpp
     src/heartbeat_worker.cpp
     src/open_api_doc_generator.cpp
+    src/query_executor.cpp
     src/request_handler.cpp
     src/request_validator.cpp
     src/rate_limit_middleware.cpp
@@ -203,6 +205,7 @@ target_link_libraries(flapi-lib PUBLIC
     OpenSSL::Crypto
     OpenSSL::SSL
     ${AWSSDK_LIBRARIES}
+    fmt::fmt
 )
 
 # Add RPATH settings for macOS
