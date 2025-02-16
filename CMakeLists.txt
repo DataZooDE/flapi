@@ -5,8 +5,6 @@ set(CMAKE_WARN_DEPRECATED OFF CACHE BOOL "" FORCE)
 if(WIN32)
     # Use dynamic runtime libraries for Windows builds
     add_definitions(-D_WIN32_WINNT=0x0601)  # Target Windows 7 or later
-    #add_definitions(-DNOMINMAX)  # Disable min/max macros from Windows.h
-    #add_definitions(-D_CRT_SECURE_NO_WARNINGS)
     
     # Set vcpkg triplet for Windows
     if(NOT DEFINED VCPKG_TARGET_TRIPLET)
@@ -102,7 +100,7 @@ set(CROW_ENABLE_COMPRESSION ON)
 # Compiler flags
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     # Disable unused parameter warnings but keep other warnings
-    set(COMMON_FLAGS "-Wall -Wextra -Wno-unused-parameter")
+    set(COMMON_FLAGS "-Wall -Wextra -Wno-unused-parameter -Wno-redundant-move -Wno-maybe-uninitialized")
     
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         set(SANITIZER_FLAGS "-fsanitize=address,undefined -fno-omit-frame-pointer")
@@ -145,7 +143,7 @@ find_package(fmt CONFIG REQUIRED)
 find_package(AWSSDK CONFIG COMPONENTS core secretsmanager REQUIRED)
 
 # Add DuckDB
-set(DUCKDB_EXPLICIT_VERSION 1.1.3)
+set(DUCKDB_EXPLICIT_VERSION 1.2.0)
 set(ENABLE_EXTENSION_AUTOLOADING true)
 set(ENABLE_EXTENSION_AUTOINSTALL true)
 if (WIN32)

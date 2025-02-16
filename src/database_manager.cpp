@@ -480,7 +480,7 @@ std::optional<std::tuple<std::string, std::vector<std::string>>> DatabaseManager
 
 std::tuple<duckdb::SecretManager&, duckdb::CatalogTransaction> DatabaseManager::getSecretManagerAndTransaction() 
 {
-    auto wrapper = reinterpret_cast<duckdb::DatabaseData *>(db);
+    auto wrapper = reinterpret_cast<duckdb::DatabaseWrapper *>(db);
     auto db_instance = wrapper->database->instance;
     auto &secret_manager = duckdb::SecretManager::Get(*db_instance);
     auto transaction = duckdb::CatalogTransaction::GetSystemTransaction(*db_instance);
