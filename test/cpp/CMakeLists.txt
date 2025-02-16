@@ -1,7 +1,7 @@
 find_package(Catch2 3 REQUIRED)
 
 add_executable(flapi_tests
-    main_test.cpp
+    main.cpp
     config_manager_test.cpp
     sql_template_processor_test.cpp
     auth_middleware_test.cpp
@@ -28,7 +28,5 @@ catch_discover_tests(flapi_tests
     PROPERTIES 
         ENVIRONMENT "DYLD_LIBRARY_PATH=${CMAKE_BINARY_DIR}"
         SKIP_RETURN_CODE 4
+    TEST_SUFFIX "_test"
 )
-
-# Add the test to CTest
-add_test(NAME flapi_tests COMMAND flapi_tests)

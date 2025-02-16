@@ -93,7 +93,7 @@ ifeq ($(shell uname),Darwin)
 		-DCMAKE_BUILD_TYPE=Release \
 		-DCMAKE_OSX_ARCHITECTURES=x86_64 \
 		-DVCPKG_TARGET_TRIPLET=x64-osx \
-		-DBUILD_TESTING=OFF \
+		-DBUILD_TESTING=ON \
 		$(CMAKE_GENERATOR) ../..
 	@$(CMAKE) --build $(RELEASE_DIR)-x86_64 --config Release
 
@@ -106,7 +106,7 @@ ifeq ($(shell uname),Darwin)
 		-DCMAKE_BUILD_TYPE=Release \
 		-DCMAKE_OSX_ARCHITECTURES=arm64 \
 		-DVCPKG_TARGET_TRIPLET=arm64-osx \
-		-DBUILD_TESTING=OFF \
+		-DBUILD_TESTING=ON \
 		$(CMAKE_GENERATOR) ../..
 	@$(CMAKE) --build $(RELEASE_DIR)-arm64 --config Release
 
@@ -118,7 +118,7 @@ else
 	@echo "Building release version $(if $(CROSS_COMPILE),for $(CROSS_COMPILE),native)..."
 	@mkdir -p $(RELEASE_DIR)
 	# @$(MAKE) web
-	@cd $(RELEASE_DIR) && $(CMAKE) -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+	@cd $(RELEASE_DIR) && $(CMAKE) -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
 		$(CMAKE_GENERATOR) $(CMAKE_EXTRA_FLAGS) ../..
 	@$(CMAKE) --build $(RELEASE_DIR) --config Release
 endif
@@ -188,8 +188,13 @@ docker: release
 # Add a test target
 test: release
 	@echo "Running tests..."
-	@cd $(RELEASE_DIR)-$(shell uname -m | sed 's/x86_64/x86_64/' | sed 's/arm64/arm64/') && \
-	ctest --output-on-failure
+	@if [ "$(shell uname)" = "Darwin" ]; then \
+		cd $(RELEASE_DIR)-$(shell uname -m | sed 's/x86_64/x86_64/' | sed 's/arm64/arm64/') && \
+		ctest --output-on-failure; \
+	else \
+		cd $(RELEASE_DIR) && \
+		ctest --output-on-failure; \
+	fi
 
 web-clean:
 	@echo "Cleaning web build artifacts..."
