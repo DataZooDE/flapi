@@ -41,7 +41,7 @@ public:
     bool isCacheEnabled(const EndpointConfig& endpoint);
     bool invalidateCache(const EndpointConfig& endpoint);
     
-    QueryResult executeQuery(const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
+    QueryResult executeQuery(const EndpointConfig& endpoint, std::map<std::string, std::string>& params, bool with_pagination = true);
     QueryResult executeCacheQuery(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params);
     QueryResult executeQuery(const std::string& query, const std::map<std::string, std::string>& params = {}, bool with_pagination = true);
     
@@ -66,8 +66,6 @@ private:
 
     std::string processTemplate(const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
     std::string processCacheTemplate(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params);
-
-    crow::json::wvalue duckRowToJson(duckdb_result& result, idx_t row);
 
     duckdb_database db; // Database handle
     std::mutex db_mutex; // Mutex for thread safety

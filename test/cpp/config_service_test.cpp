@@ -179,7 +179,7 @@ TEST_CASE_METHOD(TestFixture, "ConfigService: JSON conversion", "[config_service
     field.fieldIn = "query";
     field.description = "Test ID";
     field.required = true;
-    endpoint.requestFields.push_back(field);
+    endpoint.request_fields.push_back(field);
 
     auto json = w2r(config_service->endpointConfigToJson(endpoint));
     

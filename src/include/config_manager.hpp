@@ -106,9 +106,10 @@ struct CacheConfig {
 struct EndpointConfig {
     std::string urlPath;
     std::string method;
-    std::vector<RequestFieldConfig> requestFields;
+    std::vector<RequestFieldConfig> request_fields;
     std::string templateSource;
     std::vector<std::string> connection;
+    bool with_pagination = true;
     RateLimitConfig rate_limit;
     AuthConfig auth;
     CacheConfig cache;

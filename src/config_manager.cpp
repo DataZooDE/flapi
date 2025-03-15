@@ -167,10 +167,11 @@ void ConfigManager::loadEndpointConfig(const std::string& config_file) {
         endpoint.urlPath = safeGet<std::string>(endpoint_config, "url-path", "url-path");
         endpoint.method = safeGet<std::string>(endpoint_config, "method", "method", "GET");
         endpoint.templateSource = (endpoint_dir / safeGet<std::string>(endpoint_config, "template-source", "template-source")).string();
+        endpoint.with_pagination = safeGet<bool>(endpoint_config, "with-pagination", "with-pagination", true);
         
         CROW_LOG_DEBUG << "\t\tEndpoint: " << endpoint.method << " " << endpoint.urlPath;
         CROW_LOG_DEBUG << "\t\tTemplate Source: " << endpoint.templateSource;
-        
+        CROW_LOG_DEBUG << "\t\tWith Pagination: " << (endpoint.with_pagination ? "true" : "false");
         parseEndpointRequestFields(endpoint_config, endpoint);
         parseEndpointConnection(endpoint_config, endpoint);
         parseEndpointRateLimit(endpoint_config, endpoint);
@@ -203,7 +204,7 @@ void ConfigManager::parseEndpointRequestFields(const YAML::Node& endpoint_config
             
             parseEndpointValidators(req, field);
             
-            endpoint.requestFields.push_back(field);
+            endpoint.request_fields.push_back(field);
         }
     }
 }
@@ -686,7 +687,7 @@ crow::json::wvalue ConfigManager::getEndpointsConfig() const {
         endpointJson["connection"] = endpoint.connection;
 
         std::vector<crow::json::wvalue> requestJson;
-        for (const auto& req : endpoint.requestFields) {
+        for (const auto& req : endpoint.request_fields) {
             crow::json::wvalue fieldJson;
             fieldJson["fieldName"] = req.fieldName;
             fieldJson["fieldIn"] = req.fieldIn;

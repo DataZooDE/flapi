@@ -245,7 +245,7 @@ crow::json::wvalue ConfigService::endpointConfigToJson(const EndpointConfig& con
     
     // Add request fields
     std::vector<crow::json::wvalue> requestFields;
-    for (const auto& field : config.requestFields) {
+    for (const auto& field : config.request_fields) {
         crow::json::wvalue fieldJson;
         fieldJson["field-name"] = field.fieldName;
         fieldJson["field-in"] = field.fieldIn;
@@ -271,7 +271,7 @@ EndpointConfig ConfigService::jsonToEndpointConfig(const crow::json::rvalue& jso
             fieldConfig.fieldIn = field["field-in"].s();
             fieldConfig.description = field["description"].s();
             fieldConfig.required = field["required"].b();
-            config.requestFields.push_back(fieldConfig);
+            config.request_fields.push_back(fieldConfig);
         }
     }
     

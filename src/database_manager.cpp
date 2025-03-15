@@ -215,7 +215,7 @@ duckdb_connection DatabaseManager::getConnection() {
     return conn; // Return the connection handle
 }
 
-QueryResult DatabaseManager::executeQuery(const EndpointConfig& endpoint, std::map<std::string, std::string>& params) 
+QueryResult DatabaseManager::executeQuery(const EndpointConfig& endpoint, std::map<std::string, std::string>& params, bool with_pagination) 
 {   
     if (cache_manager->shouldRefreshCache(config_manager, endpoint)) {
         cache_manager->refreshCache(config_manager, endpoint, params);
@@ -223,7 +223,7 @@ QueryResult DatabaseManager::executeQuery(const EndpointConfig& endpoint, std::m
 
     cache_manager->addQueryCacheParamsIfNecessary(config_manager, endpoint, params);
     std::string processedQuery = processTemplate(endpoint, params);
-    return executeQuery(processedQuery, params, true);
+    return executeQuery(processedQuery, params, with_pagination);
 }
 
 QueryResult DatabaseManager::executeCacheQuery(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params) 
@@ -291,54 +291,6 @@ QueryResult DatabaseManager::executeQuery(const std::string& query,
     }
     
     return result;
-}
-
-crow::json::wvalue DatabaseManager::duckRowToJson(duckdb_result& result, idx_t row) {
-    crow::json::wvalue json_row;
-    idx_t column_count = duckdb_column_count(&result);
-
-    for (idx_t col = 0; col < column_count; col++) {
-        std::string column_name = duckdb_column_name(&result, col);
-        duckdb_type type = duckdb_column_type(&result, col);
-
-        switch (type) {
-            case DUCKDB_TYPE_VARCHAR: {
-                const char* str_val = duckdb_value_varchar(&result, col, row);
-                json_row[column_name] = str_val ? str_val : "";
-                duckdb_free((void*)str_val);
-                break;
-            }
-            case DUCKDB_TYPE_INTEGER: {
-                int32_t int_val = duckdb_value_int32(&result, col, row);
-                json_row[column_name] = int_val;
-                break;
-            }
-            case DUCKDB_TYPE_BIGINT: {
-                int64_t bigint_val = duckdb_value_int64(&result, col, row);
-                json_row[column_name] = bigint_val;
-                break;
-            }
-            case DUCKDB_TYPE_DOUBLE: {
-                double double_val = duckdb_value_double(&result, col, row);
-                json_row[column_name] = double_val;
-                break;
-            }
-            case DUCKDB_TYPE_BOOLEAN: {
-                bool bool_val = duckdb_value_boolean(&result, col, row);
-                json_row[column_name] = bool_val;
-                break;
-            }
-            // Add more types as needed
-            default: {
-                const char* str_val = duckdb_value_varchar(&result, col, row);
-                json_row[column_name] = str_val ? str_val : "";
-                duckdb_free((void*)str_val);
-                break;
-            }
-        }
-    }
-
-    return json_row;
 }
 
 YAML::Node DatabaseManager::describeSelectQuery(const EndpointConfig& endpoint) {

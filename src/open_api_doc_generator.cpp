@@ -56,7 +56,7 @@ YAML::Node OpenAPIDocGenerator::generatePathItem(const EndpointConfig& endpoint)
     operation["summary"] = "Endpoint for " + endpoint.urlPath;
     operation["description"] = "Description not available";
     
-    operation["parameters"] = generateParameters(endpoint.requestFields);
+    operation["parameters"] = generateParameters(endpoint.request_fields);
     
     operation["responses"]["200"]["description"] = "Successful response";
     operation["responses"]["200"]["content"]["application/json"]["schema"] = generateResponseSchema(endpoint);
@@ -114,13 +114,19 @@ YAML::Node OpenAPIDocGenerator::generateResponseSchema(const EndpointConfig& end
     
     YAML::Node properties = dbManager->describeSelectQuery(endpoint);
     
-    schema["type"] = "object";
-    schema["properties"]["data"]["type"] = "array";
-    schema["properties"]["data"]["items"]["type"] = "object";
-    schema["properties"]["data"]["items"]["properties"] = properties;
-    
-    schema["properties"]["next"]["type"] = "string";
-    schema["properties"]["total_count"]["type"] = "integer";
+    if (endpoint.with_pagination) {
+        schema["type"] = "object";
+        schema["properties"]["data"]["type"] = "array";
+        schema["properties"]["data"]["items"]["type"] = "object";
+        schema["properties"]["data"]["items"]["properties"] = properties;
+        
+        schema["properties"]["next"]["type"] = "string";
+        schema["properties"]["total_count"]["type"] = "integer";
+    } else {
+        schema["type"] = "array";
+        schema["items"]["type"] = "object";
+        schema["items"]["properties"] = properties;
+    }
     
     return schema;
 }

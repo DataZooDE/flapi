@@ -58,7 +58,8 @@ void RequestHandler::handleDeleteRequest(const crow::request& req, crow::respons
 void RequestHandler::handleGetRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams) {
     try {
         auto params = combineParameters(req, defaultParams, pathParams, endpoint);
-        auto validationErrors = validator->validateRequestParameters(endpoint.requestFields, params);
+        auto validationErrors = validator->validateRequestParameters(endpoint.request_fields, params);
+        auto withPagination = endpoint.with_pagination;
         
         if (!validationErrors.empty()) {
             crow::json::wvalue errorResponse;
@@ -91,7 +92,7 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
             return;
         }
 
-        QueryResult queryResult = db_manager->executeQuery(endpoint, params);
+        QueryResult queryResult = db_manager->executeQuery(endpoint, params, withPagination);
 
         // Determine the response format
         std::string acceptHeader = req.get_header_value("Accept");
@@ -104,13 +105,18 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
             res.write(csvData);
         } else {
             // Prepare the JSON response
-            crow::json::wvalue response;
-            response["data"] = std::move(queryResult.data);
-            response["next"] = createNextUrl(req, queryResult);
-            response["total_count"] = queryResult.total_count;
-
             res.set_header("Content-Type", "application/json");
-            res.write(response.dump());
+
+            if (withPagination) {
+                crow::json::wvalue response;
+                response["data"] = std::move(queryResult.data);
+                response["next"] = createNextUrl(req, queryResult);
+                response["total_count"] = queryResult.total_count;
+
+                res.write(response.dump());
+            } else {
+                res.write(queryResult.data.dump());
+            }
         }
 
         res.add_header("X-Total-Count", std::to_string(queryResult.total_count));
@@ -162,7 +168,7 @@ std::map<std::string, std::string> RequestHandler::combineParameters(const crow:
         params[key.first] = key.second;
     }
 
-    for (const auto& field : endpoint.requestFields) {
+    for (const auto& field : endpoint.request_fields) {
         if (!field.defaultValue.empty() && params.find(field.fieldName) == params.end()) {
             params[field.fieldName] = field.defaultValue;
         }

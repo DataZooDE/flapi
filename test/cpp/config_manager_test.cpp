@@ -159,8 +159,8 @@ cache:
         REQUIRE(endpoint.templateSource == "/tmp/test.sql");
         REQUIRE(endpoint.connection == std::vector<std::string>{"default"});
 
-        REQUIRE(endpoint.requestFields.size() == 1);
-        const auto& field = endpoint.requestFields[0];
+        REQUIRE(endpoint.request_fields.size() == 1);
+        const auto& field = endpoint.request_fields[0];
         REQUIRE(field.fieldName == "id");
         REQUIRE(field.fieldIn == "query");
         REQUIRE(field.description == "User ID");
