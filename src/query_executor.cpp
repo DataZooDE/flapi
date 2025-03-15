@@ -162,7 +162,6 @@ crow::json::wvalue QueryResult::convertVectorDecimalToJson(const duckdb_vector &
     auto validity = duckdb_vector_get_validity(vector);
 
     if (!duckdb_validity_row_is_valid(validity, row_idx)) {
-        CROW_LOG_WARNING << "Row with decimal value " << row_idx << " is not valid.";
         return crow::json::wvalue(nullptr);
     }
 
