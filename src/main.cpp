@@ -3,6 +3,8 @@
 #include <fstream>
 #include <iostream>
 #include <cstdlib>
+#include <csignal>
+#include <atomic>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -17,6 +19,10 @@
 #include "rate_limit_middleware.hpp"
 
 using namespace flapi;
+
+// Add global variable for signal handling
+std::atomic<bool> should_exit(false);
+std::shared_ptr<APIServer> api_server;
 
 void set_log_level(const std::string& log_level) {
     if (log_level == "debug") {
@@ -104,11 +110,29 @@ LONG WINAPI windowsExceptionHandler(EXCEPTION_POINTERS* exceptionInfo) {
 
 #endif
 
+
+void signal_handler(int signal) {
+    if (signal == SIGINT) {
+        CROW_LOG_INFO << "Received SIGINT, shutting down...";
+        should_exit = true;
+        if (api_server) {
+            api_server->stop();
+        }
+    }
+}
+
 int main(int argc, char* argv[]) 
 {
     std::set_terminate(terminateHandler);
 #ifdef _WIN32
     SetUnhandledExceptionFilter(windowsExceptionHandler);
+    signal(SIGINT, signal_handler);
+#else
+    struct sigaction sa;
+    sa.sa_handler = signal_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, nullptr);
 #endif
 
     static argparse::ArgumentParser program("flapi");
@@ -153,8 +177,10 @@ int main(int argc, char* argv[])
     initializeDatabase(config_manager);
 
     bool enable_config_ui = program.get<bool>("--enable-config-ui");
-    APIServer server(config_manager, DatabaseManager::getInstance(), enable_config_ui);
-    server.run(config_manager->getHttpPort());
+
+    // Create server and store in global pointer
+    api_server = std::make_shared<APIServer>(config_manager, DatabaseManager::getInstance(), enable_config_ui);
+    api_server->run(config_manager->getHttpPort());
 
     return 0;
 }

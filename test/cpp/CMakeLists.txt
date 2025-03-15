@@ -2,13 +2,13 @@ find_package(Catch2 3 REQUIRED)
 
 add_executable(flapi_tests
     main.cpp
-    config_manager_test.cpp
-    sql_template_processor_test.cpp
     auth_middleware_test.cpp
-    request_validator_test.cpp
-    database_manager_test.cpp
+    config_manager_test.cpp
     config_service_test.cpp
+    database_manager_test.cpp
     query_executor_test.cpp
+    request_validator_test.cpp
+    sql_template_processor_test.cpp
 )
 
 target_include_directories(flapi_tests PRIVATE 

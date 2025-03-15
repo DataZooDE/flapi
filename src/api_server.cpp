@@ -190,4 +190,9 @@ void APIServer::requestForEndpoint(const EndpointConfig& endpoint, const std::un
     app.handle_full(req, res);
 }
 
+void APIServer::stop() {
+    heartbeatWorker->stop();
+    app.stop();
+}
+
 } // namespace flapi

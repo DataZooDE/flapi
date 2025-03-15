@@ -17,6 +17,7 @@ void HeartbeatWorker::start() {
 
 void HeartbeatWorker::stop() {
     if (running.exchange(false)) {
+        cv.notify_one(); // Wake up the worker thread
         if (worker_thread.joinable()) {
             worker_thread.join();
         }
@@ -24,19 +25,22 @@ void HeartbeatWorker::stop() {
 }
 
 void HeartbeatWorker::workerLoop() {
-
     while (running) {
         if (config_manager->getGlobalHeartbeatConfig().enabled) 
         {    
             for (const auto& endpoint : config_manager->getEndpoints()) {
+                if (!running) break; // Check if we should exit
                 if (endpoint.heartbeat.enabled) {
                     performHeartbeat(endpoint);
                 }
             }
-
         }
 
-        std::this_thread::sleep_for(config_manager->getGlobalHeartbeatConfig().workerInterval);
+        // Use condition variable to wait with timeout
+        std::unique_lock<std::mutex> lock(mutex);
+        cv.wait_for(lock, 
+                   config_manager->getGlobalHeartbeatConfig().workerInterval,
+                   [this] { return !running; });
     }
 }
 

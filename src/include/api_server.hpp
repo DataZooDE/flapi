@@ -31,6 +31,7 @@ public:
     crow::response refreshConfig();
     
     void run(int port = 8080);
+    void stop();
 
     void requestForEndpoint(const EndpointConfig& endpoint, const std::unordered_map<std::string, std::string>& pathParams = {});
 
