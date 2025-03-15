@@ -47,17 +47,14 @@ YAML::Node OpenAPIDocGenerator::generatePathItem(const EndpointConfig& endpoint)
 {
     YAML::Node pathItem;
     
-    // Convert method to lowercase
+    // Generate GET endpoint documentation
     std::string method = endpoint.method.empty() ? "get" : endpoint.method;
     std::transform(method.begin(), method.end(), method.begin(), ::tolower);
     
     YAML::Node operation;
-    
     operation["summary"] = "Endpoint for " + endpoint.urlPath;
     operation["description"] = "Description not available";
-    
     operation["parameters"] = generateParameters(endpoint.request_fields);
-    
     operation["responses"]["200"]["description"] = "Successful response";
     operation["responses"]["200"]["content"]["application/json"]["schema"] = generateResponseSchema(endpoint);
     
@@ -72,12 +69,35 @@ YAML::Node OpenAPIDocGenerator::generatePathItem(const EndpointConfig& endpoint)
         if (endpoint.auth.type == "basic") {
             operation["security"][0]["basicAuth"] = YAML::Node(YAML::NodeType::Sequence);
         } else {
-            // Default to bearer auth for other cases
             operation["security"][0]["bearerAuth"] = YAML::Node(YAML::NodeType::Sequence);
         }
     }
     
     pathItem[method] = operation;
+
+    // Add DELETE endpoint documentation if cache is enabled
+    if (dbManager->isCacheEnabled(endpoint)) {
+        YAML::Node deleteOperation;
+        deleteOperation["summary"] = "Invalidate cache for " + endpoint.urlPath;
+        deleteOperation["description"] = "Invalidates the cached data for this endpoint";
+        
+        // Define responses for DELETE
+        deleteOperation["responses"]["200"]["description"] = "Cache successfully invalidated";
+        deleteOperation["responses"]["500"]["description"] = "Internal server error while invalidating cache";
+        
+        // Add the same security requirements as the GET endpoint
+        if (endpoint.auth.enabled) {
+            deleteOperation["security"].push_back(YAML::Node());
+            if (endpoint.auth.type == "basic") {
+                deleteOperation["security"][0]["basicAuth"] = YAML::Node(YAML::NodeType::Sequence);
+            } else {
+                deleteOperation["security"][0]["bearerAuth"] = YAML::Node(YAML::NodeType::Sequence);
+            }
+        }
+
+        pathItem["delete"] = deleteOperation;
+    }
+
     return pathItem;
 }
 
