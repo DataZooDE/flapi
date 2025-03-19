@@ -150,6 +150,11 @@ crow::json::wvalue QueryResult::convertVectorEntryToJson(const duckdb_vector &ve
 }
 
 crow::json::wvalue QueryResult::convertVectorVarcharToJson(const duckdb_vector &vector, const idx_t row_idx) {
+    auto validity = duckdb_vector_get_validity(vector);
+    if (!duckdb_validity_row_is_valid(validity, row_idx)) {
+        return crow::json::wvalue(nullptr);
+    }
+    
     auto data = (duckdb_string_t *)duckdb_vector_get_data(vector);
     auto str = duckdb_string_is_inlined(data[row_idx])
              ? std::string(data[row_idx].value.inlined.inlined, data[row_idx].value.inlined.length)
