@@ -19,6 +19,9 @@ public:
     std::vector<ValidationError> validateRequestParameters(const std::vector<RequestFieldConfig>& requestFields, 
                                                            const std::map<std::string, std::string>& params);
 
+    std::vector<ValidationError> validateRequestFields(const std::vector<RequestFieldConfig>& requestFields,
+                                                       const std::map<std::string, std::string>& params);
+
 private:
     std::vector<ValidationError> validateField(const RequestFieldConfig& field, const std::map<std::string, std::string>& params);
     std::vector<ValidationError> validateString(const std::string& fieldName, const std::string& value, const ValidatorConfig& validator);

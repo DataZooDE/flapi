@@ -4,6 +4,7 @@
 #include <iomanip>
 #include <sstream>
 #include <algorithm>
+#include <unordered_set>
 
 namespace flapi {
 
@@ -206,6 +207,35 @@ std::vector<ValidationError> RequestValidator::validateSqlInjection(const std::s
         }
     }
 
+    return errors;
+}
+
+std::vector<ValidationError> RequestValidator::validateRequestFields(
+    const std::vector<RequestFieldConfig>& requestFields,
+    const std::map<std::string, std::string>& params) {
+    
+    std::vector<ValidationError> errors;
+    
+    // Create a set of known field names for O(1) lookup
+    std::unordered_set<std::string> knownFields;
+    for (const auto& field : requestFields) {
+        knownFields.insert(field.fieldName);
+    }
+    
+    // Add pagination parameters as they are always allowed
+    knownFields.insert("offset");
+    knownFields.insert("limit");
+    
+    // Check each parameter against known fields
+    for (const auto& param : params) {
+        if (knownFields.find(param.first) == knownFields.end()) {
+            errors.push_back({
+                param.first,
+                "Unknown parameter not defined in endpoint configuration"
+            });
+        }
+    }
+    
     return errors;
 }
 

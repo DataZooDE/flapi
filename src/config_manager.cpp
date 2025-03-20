@@ -168,6 +168,7 @@ void ConfigManager::loadEndpointConfig(const std::string& config_file) {
         endpoint.method = safeGet<std::string>(endpoint_config, "method", "method", "GET");
         endpoint.templateSource = (endpoint_dir / safeGet<std::string>(endpoint_config, "template-source", "template-source")).string();
         endpoint.with_pagination = safeGet<bool>(endpoint_config, "with-pagination", "with-pagination", true);
+        endpoint.request_fields_validation = safeGet<bool>(endpoint_config, "request-fields-validation", "request-fields-validation", false);
         
         CROW_LOG_DEBUG << "\t\tEndpoint: " << endpoint.method << " " << endpoint.urlPath;
         CROW_LOG_DEBUG << "\t\tTemplate Source: " << endpoint.templateSource;

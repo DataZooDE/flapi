@@ -105,7 +105,8 @@ struct CacheConfig {
 
 struct EndpointConfig {
     std::string urlPath;
-    std::string method;
+    std::string method; 
+    bool request_fields_validation = false;
     std::vector<RequestFieldConfig> request_fields;
     std::string templateSource;
     std::vector<std::string> connection;

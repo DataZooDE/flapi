@@ -58,9 +58,19 @@ void RequestHandler::handleDeleteRequest(const crow::request& req, crow::respons
 void RequestHandler::handleGetRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams) {
     try {
         auto params = combineParameters(req, defaultParams, pathParams, endpoint);
-        auto validationErrors = validator->validateRequestParameters(endpoint.request_fields, params);
-        auto withPagination = endpoint.with_pagination;
         
+        // First validate the known parameters
+        auto validationErrors = validator->validateRequestParameters(endpoint.request_fields, params);
+        
+        // If strict parameter checking is enabled, validate for unknown parameters
+        if (endpoint.request_fields_validation) {
+            auto unknownParamErrors = validator->validateRequestFields(endpoint.request_fields, params);
+            validationErrors.insert(validationErrors.end(), 
+                                    unknownParamErrors.begin(), 
+                                    unknownParamErrors.end());
+        }
+        
+        // If there are validation errors, return a 400 Bad Request response
         if (!validationErrors.empty()) {
             crow::json::wvalue errorResponse;
             std::vector<crow::json::wvalue> errorMessages;
@@ -92,7 +102,7 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
             return;
         }
 
-        QueryResult queryResult = db_manager->executeQuery(endpoint, params, withPagination);
+        QueryResult queryResult = db_manager->executeQuery(endpoint, params, endpoint.with_pagination);
 
         // Determine the response format
         std::string acceptHeader = req.get_header_value("Accept");
@@ -107,7 +117,7 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
             // Prepare the JSON response
             res.set_header("Content-Type", "application/json");
 
-            if (withPagination) {
+            if (endpoint.with_pagination) {
                 crow::json::wvalue response;
                 response["data"] = std::move(queryResult.data);
                 response["next"] = createNextUrl(req, queryResult);

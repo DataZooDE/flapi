@@ -361,3 +361,102 @@ TEST_CASE("RequestValidator: validateSQLInjection", "[request_validator]") {
         REQUIRE(errors[0].errorMessage == "Potential SQL injection detected");
     }
 }
+
+TEST_CASE("RequestValidator: validateRequestFields", "[request_validator]") {
+    RequestValidator validator;
+    
+    // Create some basic request fields for testing
+    RequestFieldConfig nameField = {};
+    nameField.fieldName = "name";
+    nameField.fieldIn = "query";
+    
+    RequestFieldConfig ageField = {};
+    ageField.fieldName = "age";
+    ageField.fieldIn = "query";
+    
+    std::vector<RequestFieldConfig> requestFields = {nameField, ageField};
+
+    SECTION("Valid parameters with only known fields") {
+        std::map<std::string, std::string> params = {
+            {"name", "John"},
+            {"age", "30"},
+            {"offset", "0"},  // Pagination params should be allowed
+            {"limit", "100"}
+        };
+        auto errors = validator.validateRequestFields(requestFields, params);
+        REQUIRE(errors.empty());
+    }
+
+    SECTION("Invalid parameters with unknown fields") {
+        std::map<std::string, std::string> params = {
+            {"name", "John"},
+            {"age", "30"},
+            {"unknown_param", "value"},
+            {"another_unknown", "value2"}
+        };
+        auto errors = validator.validateRequestFields(requestFields, params);
+        REQUIRE(errors.size() == 2);
+        
+        // Check that both expected error fields are present
+        bool hasUnknownParam = false;
+        bool hasAnotherUnknown = false;
+        
+        for (const auto& error : errors) {
+            if (error.fieldName == "unknown_param") {
+                hasUnknownParam = true;
+                REQUIRE(error.errorMessage == "Unknown parameter not defined in endpoint configuration");
+            }
+            if (error.fieldName == "another_unknown") {
+                hasAnotherUnknown = true;
+                REQUIRE(error.errorMessage == "Unknown parameter not defined in endpoint configuration");
+            }
+        }
+        
+        REQUIRE(hasUnknownParam);
+        REQUIRE(hasAnotherUnknown);
+    }
+
+    SECTION("Empty parameters should be valid") {
+        std::map<std::string, std::string> params = {};
+        auto errors = validator.validateRequestFields(requestFields, params);
+        REQUIRE(errors.empty());
+    }
+
+    SECTION("Only pagination parameters should be valid") {
+        std::map<std::string, std::string> params = {
+            {"offset", "0"},
+            {"limit", "100"}
+        };
+        auto errors = validator.validateRequestFields(requestFields, params);
+        REQUIRE(errors.empty());
+    }
+
+    SECTION("Mixed valid and invalid parameters") {
+        std::map<std::string, std::string> params = {
+            {"name", "John"},          // valid
+            {"unknown_param", "123"},   // invalid
+            {"offset", "0"},           // valid (pagination)
+            {"invalid_field", "xyz"}    // invalid
+        };
+        auto errors = validator.validateRequestFields(requestFields, params);
+        REQUIRE(errors.size() == 2);
+        
+        // Check that both expected error fields are present
+        bool hasUnknownParam = false;
+        bool hasInvalidField = false;
+        
+        for (const auto& error : errors) {
+            if (error.fieldName == "unknown_param") {
+                hasUnknownParam = true;
+                REQUIRE(error.errorMessage == "Unknown parameter not defined in endpoint configuration");
+            }
+            if (error.fieldName == "invalid_field") {
+                hasInvalidField = true;
+                REQUIRE(error.errorMessage == "Unknown parameter not defined in endpoint configuration");
+            }
+        }
+        
+        REQUIRE(hasUnknownParam);
+        REQUIRE(hasInvalidField);
+    }
+}
