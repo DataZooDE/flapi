@@ -1,0 +1,40 @@
+test_name: Test request field validation
+
+stages:
+  - name: Test missing required id parameter
+    request:
+      url: http://localhost:8080/customers_with_request_fields_validation/
+      method: GET
+    response:
+      status_code: 400
+      json:
+        errors:
+          - field: "id"
+            message: "Required field is missing"
+
+  - name: Test invalid id parameter (below min)
+    request:
+      url: http://localhost:8080/customers_with_request_fields_validation/
+      method: GET
+      params:
+        id: "0"
+    response:
+      status_code: 400
+      json:
+        errors:
+          - field: "id"
+            message: "Integer is less than the minimum allowed value"
+
+  - name: Test undefined parameter in query
+    request:
+      url: http://localhost:8080/customers_with_request_fields_validation/
+      method: GET
+      params:
+        id: "1"
+        name: "John"  # This parameter is not defined in the schema, and should lead to an error
+    response:
+      status_code: 400
+      json:
+        errors:
+          - field: "name"
+            message: "Unknown parameter not defined in endpoint configuration"
