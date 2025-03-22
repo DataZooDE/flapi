@@ -9,14 +9,36 @@ from datetime import datetime
 import uuid
 import json
 
+def get_flapi_binary():
+    """Get the path to the flapi binary based on build type"""
+    current_dir = pathlib.Path(__file__).parent
+    build_type = os.getenv("FLAPI_BUILD_TYPE", "release").lower()
+    
+    # Map build types to directory names
+    build_dirs = {
+        "debug": "debug",
+        "release": "release"
+    }
+    
+    build_dir = build_dirs.get(build_type, "release")  # Default to release if unknown
+    binary_path = current_dir.parent.parent / "build" / build_dir / "flapi"
+    
+    if not binary_path.exists():
+        raise FileNotFoundError(f"FLAPI binary not found at {binary_path}. "
+                              f"Make sure to build FLAPI in {build_type} mode first.")
+    
+    return binary_path
+
 @pytest.fixture(scope="session")
 def flapi_server():
     # Get the current directory where conftest.py is located
     current_dir = pathlib.Path(__file__).parent
     config_path = current_dir / "api_configuration" / "flapi.yaml"
     
-    # Assuming flapi binary is two directories up in build/release
-    flapi_binary = current_dir.parent.parent / "build" / "release" / "flapi"
+    # Get the appropriate flapi binary
+    flapi_binary = get_flapi_binary()
+    
+    print(f"Starting FLAPI binary from: {flapi_binary}")
     
     # Start flapi binary with configuration
     process = subprocess.Popen(
@@ -38,14 +60,6 @@ def flapi_server():
     # Cleanup: Kill the server
     os.killpg(os.getpgid(process.pid), signal.SIGTERM)
     process.wait()
-
-@pytest.fixture
-def auth_headers():
-    # You'll need to provide the actual credentials
-    username = "test_user"
-    password = "test_pass"
-    credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
-    return {"Authorization": f"Basic {credentials}"}
 
 @pytest.fixture(scope="session", autouse=True)
 def wait_for_api(flapi_server):
