@@ -224,14 +224,6 @@ if(WIN32)
     target_link_libraries(flapi PRIVATE Dbghelp.lib)
 endif()
 
-
-# Set output directories
-set_target_properties(flapi PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/$<CONFIG>
-    RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR}/debug
-    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/release
-)
-
 # Tests
 include(CTest)
 include(Catch)
