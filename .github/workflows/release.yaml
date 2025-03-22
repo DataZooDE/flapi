@@ -6,38 +6,75 @@ on:
       - 'v*'
 
 jobs:
-  publish-binaries:
+  create-release:
     runs-on: ubuntu-24.04
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    permissions:
+      contents: write
+      packages: write
+    
     steps:
     - uses: actions/checkout@v4
       with:
-          submodules: recursive
-
-    - name: Download Linux Artifacts
+        fetch-depth: 0  # Important for getting tag information
+        
+    - name: Get tag version
+      id: get_version
+      run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        
+    - name: Download Windows Artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: flapi-windows-amd64
+        path: ./artifacts/windows/amd64
+        
+    - name: Download Linux AMD64 Artifacts
       uses: actions/download-artifact@v4
       with:
         name: flapi-linux-amd64
         path: ./artifacts/linux/amd64
-
+        
     - name: Download Linux ARM64 Artifacts
       uses: actions/download-artifact@v4
       with:
         name: flapi-linux-arm64
         path: ./artifacts/linux/arm64
-
+        
     - name: Download macOS Artifacts
       uses: actions/download-artifact@v4
       with:
         name: flapi-macos-universal
         path: ./artifacts/macos
-
-    - name: Publish to GitHub Packages
+        
+    - name: Prepare Release Assets
       run: |
-        gh release create ${{ github.sha }} \
-          ./artifacts/linux/amd64/flapi#flapi-linux-amd64 \
-          ./artifacts/linux/arm64/flapi#flapi-linux-arm64 \
-          ./artifacts/macos/flapi#flapi-macos-universal \
-          --title "flAPI Release ${{ github.sha }}" \
-          --notes "Automated release of flAPI binaries."
+        # Make binaries executable
+        chmod +x ./artifacts/linux/amd64/flapi
+        chmod +x ./artifacts/linux/arm64/flapi
+        chmod +x ./artifacts/macos/flapi
+        
+        # Create release archives
+        cd artifacts/windows/amd64 && zip ../../flapi-windows-amd64.zip flapi.exe && cd ../../..
+        cd artifacts/linux/amd64 && tar czf ../../flapi-linux-amd64.tar.gz flapi && cd ../../..
+        cd artifacts/linux/arm64 && tar czf ../../flapi-linux-arm64.tar.gz flapi && cd ../../..
+        cd artifacts/macos && tar czf ../flapi-macos-universal.tar.gz flapi && cd ../..
+
+    - name: Create Release
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # Get the commit message for the tag
+        TAG_MSG=$(git tag -l --format='%(contents)' ${{ steps.get_version.outputs.VERSION }})
+        if [ -z "$TAG_MSG" ]; then
+          TAG_MSG="Release ${{ steps.get_version.outputs.VERSION }}"
+        fi
+        
+        # Create the release
+        gh release create ${{ steps.get_version.outputs.VERSION }} \
+          ./flapi-windows-amd64.zip \
+          ./flapi-linux-amd64.tar.gz \
+          ./flapi-linux-arm64.tar.gz \
+          ./flapi-macos-universal.tar.gz \
+          --title "${{ steps.get_version.outputs.VERSION }}" \
+          --notes "$TAG_MSG" \
+          --draft=false \
+          --prerelease=false
