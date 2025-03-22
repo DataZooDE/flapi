@@ -61,7 +61,7 @@ jobs:
     - uses: actions/upload-artifact@v4
       with:
         name: flapi-windows-amd64
-        path: build/release/flapi.exe
+        path: build/release/Release/flapi.exe
         if-no-files-found: error
 
   # -------------------------------------------------------------------------------------------------
