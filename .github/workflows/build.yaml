@@ -102,7 +102,7 @@ jobs:
           -v `pwd`:/build_dir \
           -v ~/.ccache:/ccache_dir \
           ${BUILD_IMAGE} \
-          bash -c 'cd /build_dir && make clean && make release'
+          bash -c 'cd /build_dir && make clean && make release && make test'
 
     - uses: actions/upload-artifact@v4
       with:
@@ -188,7 +188,7 @@ jobs:
       run: brew install ninja autoconf make libtool pkg-config automake autoconf-archive
 
     - name: Build
-      run: make release
+      run: make release && make test
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
