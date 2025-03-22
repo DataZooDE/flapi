@@ -36,6 +36,13 @@ connections:
     log-parameters: false
     allow: '*'
 
+  data-types-parquet:
+    properties:
+      path: './data/data_types.parquet'
+    log-queries: false
+    log-parameters: false
+    allow: '*'
+
 # HTTPS enforcement configuration
 enforce-https:
   # Whether to force HTTPS for all connections

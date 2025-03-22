@@ -249,8 +249,8 @@ endif()
 
 # Integration tests
 add_custom_target(integration_tests
-    COMMAND npm install
-    COMMAND npm test
+    COMMAND uv sync
+    COMMAND uv run python -m pytest *.tavern.yaml -v
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/test/integration
     DEPENDS flapi
 )

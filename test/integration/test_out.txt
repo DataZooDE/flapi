@@ -1,0 +1,97 @@
+============================= test session starts ==============================
+platform linux -- Python 3.10.16, pytest-7.2.2, pluggy-1.5.0 -- /home/jr/Projects/datazoo/flapi/test/integration/.venv/bin/python3
+cachedir: .pytest_cache
+rootdir: /home/jr/Projects/datazoo/flapi/test/integration, configfile: pyproject.toml
+plugins: tavern-2.14.0
+collecting ... collected 0 items / 1 error
+
+==================================== ERRORS ====================================
+_________________ ERROR collecting test_data_types.tavern.yaml _________________
+.venv/lib/python3.10/site-packages/tavern/_core/pytest/file.py:359: in collect
+    all_tests: Iterable[dict] = list(
+.venv/lib/python3.10/site-packages/yaml/__init__.py:93: in load_all
+    yield loader.get_data()
+.venv/lib/python3.10/site-packages/yaml/constructor.py:45: in get_data
+    return self.construct_document(self.get_node())
+.venv/lib/python3.10/site-packages/yaml/constructor.py:55: in construct_document
+    data = self.construct_object(node)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:100: in construct_object
+    data = constructor(self, node)
+.venv/lib/python3.10/site-packages/tavern/_core/loader.py:78: in construct_yaml_map
+    (obj,) = SafeConstructor.construct_yaml_map(self, node)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:413: in construct_yaml_map
+    value = self.construct_mapping(node)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:218: in construct_mapping
+    return super().construct_mapping(node, deep=deep)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:143: in construct_mapping
+    value = self.construct_object(value_node, deep=deep)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:100: in construct_object
+    data = constructor(self, node)
+.venv/lib/python3.10/site-packages/tavern/_core/loader.py:82: in construct_yaml_seq
+    (obj,) = SafeConstructor.construct_yaml_seq(self, node)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:408: in construct_yaml_seq
+    data.extend(self.construct_sequence(node))
+.venv/lib/python3.10/site-packages/yaml/constructor.py:129: in construct_sequence
+    return [self.construct_object(child, deep=deep)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:129: in <listcomp>
+    return [self.construct_object(child, deep=deep)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:100: in construct_object
+    data = constructor(self, node)
+.venv/lib/python3.10/site-packages/tavern/_core/loader.py:78: in construct_yaml_map
+    (obj,) = SafeConstructor.construct_yaml_map(self, node)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:413: in construct_yaml_map
+    value = self.construct_mapping(node)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:218: in construct_mapping
+    return super().construct_mapping(node, deep=deep)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:143: in construct_mapping
+    value = self.construct_object(value_node, deep=deep)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:100: in construct_object
+    data = constructor(self, node)
+.venv/lib/python3.10/site-packages/tavern/_core/loader.py:78: in construct_yaml_map
+    (obj,) = SafeConstructor.construct_yaml_map(self, node)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:413: in construct_yaml_map
+    value = self.construct_mapping(node)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:218: in construct_mapping
+    return super().construct_mapping(node, deep=deep)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:143: in construct_mapping
+    value = self.construct_object(value_node, deep=deep)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:100: in construct_object
+    data = constructor(self, node)
+.venv/lib/python3.10/site-packages/tavern/_core/loader.py:78: in construct_yaml_map
+    (obj,) = SafeConstructor.construct_yaml_map(self, node)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:413: in construct_yaml_map
+    value = self.construct_mapping(node)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:218: in construct_mapping
+    return super().construct_mapping(node, deep=deep)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:143: in construct_mapping
+    value = self.construct_object(value_node, deep=deep)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:100: in construct_object
+    data = constructor(self, node)
+.venv/lib/python3.10/site-packages/tavern/_core/loader.py:78: in construct_yaml_map
+    (obj,) = SafeConstructor.construct_yaml_map(self, node)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:413: in construct_yaml_map
+    value = self.construct_mapping(node)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:218: in construct_mapping
+    return super().construct_mapping(node, deep=deep)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:143: in construct_mapping
+    value = self.construct_object(value_node, deep=deep)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:100: in construct_object
+    data = constructor(self, node)
+.venv/lib/python3.10/site-packages/tavern/_core/loader.py:78: in construct_yaml_map
+    (obj,) = SafeConstructor.construct_yaml_map(self, node)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:413: in construct_yaml_map
+    value = self.construct_mapping(node)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:218: in construct_mapping
+    return super().construct_mapping(node, deep=deep)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:143: in construct_mapping
+    value = self.construct_object(value_node, deep=deep)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:100: in construct_object
+    data = constructor(self, node)
+.venv/lib/python3.10/site-packages/yaml/constructor.py:427: in construct_undefined
+    raise ConstructorError(None, None,
+E   yaml.constructor.ConstructorError: could not determine a constructor for the tag '!integer'
+E     in "/home/jr/Projects/datazoo/flapi/test/integration/test_data_types.tavern.yaml", line 24, column 22
+=========================== short test summary info ============================
+ERROR test_data_types.tavern.yaml - yaml.constructor.ConstructorError: could ...
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+=============================== 1 error in 0.23s ===============================

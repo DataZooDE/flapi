@@ -1,0 +1,46 @@
+test_name: Test data types endpoint
+
+stages:
+  - name: Get data types (basic endpoint test)
+    request:
+      url: http://localhost:8080/data_types/
+      method: GET
+      auth:
+        - admin
+        - secret
+    response:
+      status_code: 200
+      headers:
+        content-type: application/json
+      json:
+        data: !anylist
+        next: !anystr
+        total_count: !anyint
+
+marks:
+  - usefixtures:
+      - setup_data_types_table
+
+---
+# Add a second test to verify pagination
+test_name: Test data types pagination
+
+stages:
+  - name: Get data types with pagination
+    request:
+      url: http://localhost:8080/data_types/
+      method: GET
+      params:
+        limit: "5"
+        offset: "0"
+      auth:
+        - admin
+        - secret
+    response:
+      status_code: 200
+      headers:
+        content-type: application/json
+      json:
+        data: !anylist
+        next: !anystr
+        total_count: !anyint

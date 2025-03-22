@@ -78,12 +78,3 @@ auth:
     - username: user
       password: password
       roles: [read]
-
-endpoints:
-  - path: /customers2
-    method: GET
-    auth:
-      enabled: true
-      type: bearer
-      jwt_secret: your_secret_key_here
-      jwt_issuer: your_issuer_name

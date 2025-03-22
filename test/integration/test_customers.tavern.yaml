@@ -1,0 +1,244 @@
+# Basic structure for flapi integration tests
+test_name: Test customers endpoint
+
+stages:
+  - name: Get all customers (no filters)
+    request:
+      url: http://localhost:8080/customers/
+      method: GET
+      auth:
+        - admin
+        - secret
+    response:
+      status_code: 200
+      headers:
+        content-type: application/json
+
+  - name: Test valid parameters
+    request:
+      url: http://localhost:8080/customers/
+      method: GET
+      params:
+        id: "1"
+        segment: "retail"
+        email: "test@example.com"
+        registration_date: "2023-01-01"
+        last_login_time: "14:30:00"
+        name: "John Smith"
+        uuid: "550e8400-e29b-41d4-a716-446655440000"
+      auth:
+        - admin
+        - secret
+    response:
+      status_code: 200
+      headers:
+        content-type: application/json
+
+  - name: Test invalid ID (below min)
+    request:
+      url: http://localhost:8080/customers/
+      method: GET
+      params:
+        id: "0"
+      auth:
+        - admin
+        - secret
+    response:
+      status_code: 400
+      json:
+        errors:
+          - field: "id"
+            message: "Integer is less than the minimum allowed value"
+
+  - name: Test invalid segment
+    request:
+      url: http://localhost:8080/customers/
+      method: GET
+      params:
+        segment: "invalid_segment"
+      auth:
+        - admin
+        - secret
+    response:
+      status_code: 400
+      json:
+        errors:
+          - field: "segment"
+            message: "Invalid enum value"
+
+  - name: Test invalid email format
+    request:
+      url: http://localhost:8080/customers/
+      method: GET
+      params:
+        email: "invalid-email"
+      auth:
+        - admin
+        - secret
+    response:
+      status_code: 400
+      json:
+        errors:
+          - field: "email"
+            message: "Invalid email format"
+
+  - name: Test invalid registration date
+    request:
+      url: http://localhost:8080/customers/
+      method: GET
+      params:
+        registration_date: "2024-13-01"
+      auth:
+        - admin
+        - secret
+    response:
+      status_code: 400
+      json:
+        errors:
+          - field: "registration_date"
+            message: "Invalid date format"
+
+  - name: Test future registration date
+    request:
+      url: http://localhost:8080/customers/
+      method: GET
+      params:
+        registration_date: "2024-01-01"
+      auth:
+        - admin
+        - secret
+    response:
+      status_code: 400
+      json:
+        errors:
+          - field: "registration_date"
+            message: "Date is after the maximum allowed date"
+
+  - name: Test invalid login time
+    request:
+      url: http://localhost:8080/customers/
+      method: GET
+      params:
+        last_login_time: "25:00:00"
+      auth:
+        - admin
+        - secret
+    response:
+      status_code: 400
+      json:
+        errors:
+          - field: "last_login_time"
+            message: "Invalid time format"
+
+  - name: Test invalid name format
+    request:
+      url: http://localhost:8080/customers/
+      method: GET
+      params:
+        name: "John123"
+      auth:
+        - admin
+        - secret
+    response:
+      status_code: 400
+      json:
+        errors:
+          - field: "name"
+            message: "Invalid string format"
+
+  - name: Test invalid UUID
+    request:
+      url: http://localhost:8080/customers/
+      method: GET
+      params:
+        uuid: "invalid-uuid"
+      auth:
+        - admin
+        - secret
+    response:
+      status_code: 400
+      json:
+        errors:
+          - field: "uuid"
+            message: "Invalid UUID format"
+
+  - name: Test SQL injection attempt
+    request:
+      url: http://localhost:8080/customers/
+      method: GET
+      params:
+        name: "'; DROP TABLE customers; --"
+      auth:
+        - admin
+        - secret
+    response:
+      status_code: 400
+      json:
+        errors:
+          - field: "name"
+            message: "Invalid string format"
+          - field: "name"
+            message: "Potential SQL injection detected"
+
+  - name: Test pagination
+    request:
+      url: http://localhost:8080/customers/
+      method: GET
+      params:
+        limit: "10"
+        offset: "0"
+      auth:
+        - admin
+        - secret
+    response:
+      status_code: 200
+      headers:
+        content-type: application/json
+      json:
+        data: !anything
+        next: !anything
+        total_count: !anything
+
+  - name: Test unauthorized access
+    request:
+      url: http://localhost:8080/customers/
+      method: GET
+      auth:
+        - user
+        - wrong_password
+    response:
+      status_code: 401
+
+  - name: Expect 401 for unauthenticated request
+    request:
+      url: http://localhost:8080/customers/
+      method: GET
+    response:
+      status_code: 401
+
+  - name: Get the exact data for a specific customer
+    request:
+      url: http://localhost:8080/customers/?id=1
+      method: GET
+      auth:
+        - admin
+        - secret
+    response:
+      status_code: 200
+      headers:
+        content-type: application/json
+      json:
+        data:
+          - c_acctbal: 711.56
+            c_address: "IVhzIApeRb ot,c,E"
+            c_comment: "to the even, regular platelets. regular, ironic epitaphs nag e"
+            c_custkey: 1
+            c_mktsegment: "BUILDING"
+            c_name: "Customer#000000001"
+            c_nationkey: 15 
+            c_phone: "25-989-741-2988"
+        next: ""
+        total_count: 1
+
+
+
