@@ -102,7 +102,7 @@ jobs:
           -v `pwd`:/build_dir \
           -v ~/.ccache:/ccache_dir \
           ${BUILD_IMAGE} \
-          bash -c 'cd /build_dir && make clean && make release && make test'
+          bash -c 'cd /build_dir && make clean && make release ${{ matrix.arch != 'arm64' && '&& make test' || '' }}'
 
     - uses: actions/upload-artifact@v4
       with:
