@@ -1,0 +1,32 @@
+# Basic structure for flapi integration tests
+test_name: Test customers cached endpoint
+
+stages:
+  - name: Get the exact data for a specific customer
+    request:
+      url: http://localhost:8080/customers_cached/
+      params:
+        id: 1
+      method: GET
+      auth:
+        - admin
+        - secret
+    response:
+      status_code: 200
+      headers:
+        content-type: application/json
+      json:
+        data:
+          - c_acctbal: 711.56
+            c_address: "IVhzIApeRb ot,c,E"
+            c_comment: "to the even, regular platelets. regular, ironic epitaphs nag e"
+            c_custkey: 1
+            c_mktsegment: "BUILDING"
+            c_name: "Customer#000000001"
+            c_nationkey: 15 
+            c_phone: "25-989-741-2988"
+        next: ""
+        total_count: 1
+
+
+
