@@ -227,9 +227,9 @@ endif()
 
 # Set output directories
 set_target_properties(flapi PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
-    RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR}
-    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/$<CONFIG>
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR}/debug
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/release
 )
 
 # Tests
@@ -249,8 +249,10 @@ endif()
 
 # Integration tests
 add_custom_target(integration_tests
-    COMMAND uv sync
-    COMMAND uv run python -m pytest *.tavern.yaml -v
+    COMMAND ${CMAKE_COMMAND} -E env
+        "FLAPI_BUILD_TYPE=$<CONFIG>"
+        uv sync
+        && uv run python -m pytest *.tavern.yaml -v
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/test/integration
     DEPENDS flapi
 )
