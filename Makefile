@@ -93,7 +93,7 @@ ifeq ($(shell uname),Darwin)
 		-DCMAKE_BUILD_TYPE=Release \
 		-DCMAKE_OSX_ARCHITECTURES=x86_64 \
 		-DVCPKG_TARGET_TRIPLET=x64-osx \
-		-DBUILD_TESTING=OFF \
+		-DBUILD_TESTING=ON \
 		$(CMAKE_GENERATOR) ../..
 	@$(CMAKE) --build $(RELEASE_DIR)-x86_64 --config Release
 
@@ -106,7 +106,7 @@ ifeq ($(shell uname),Darwin)
 		-DCMAKE_BUILD_TYPE=Release \
 		-DCMAKE_OSX_ARCHITECTURES=arm64 \
 		-DVCPKG_TARGET_TRIPLET=arm64-osx \
-		-DBUILD_TESTING=OFF \
+		-DBUILD_TESTING=ON \
 		$(CMAKE_GENERATOR) ../..
 	@$(CMAKE) --build $(RELEASE_DIR)-arm64 --config Release
 
