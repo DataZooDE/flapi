@@ -233,6 +233,9 @@ if(BUILD_TESTING)
         if(CMAKE_BUILD_TYPE STREQUAL "Debug")
             add_subdirectory(test/cpp)
         endif()
+    elseif(CMAKE_CROSSCOMPILING)
+        # Skip running tests when cross-compiling
+        message(STATUS "Skipping tests during cross-compilation")
     else()
         # On other platforms (Linux), build tests for all configurations
         add_subdirectory(test/cpp)
