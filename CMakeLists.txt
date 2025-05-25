@@ -135,15 +135,24 @@ find_package(OpenSSL REQUIRED CONFIG)
 find_package(Threads REQUIRED)
 find_package(Catch2 CONFIG REQUIRED)
 find_package(Crow CONFIG REQUIRED)
-find_package(yaml-cpp CONFIG REQUIRED)
 find_package(jwt-cpp CONFIG REQUIRED)
 find_package(argparse CONFIG REQUIRED)
 find_package(fmt CONFIG REQUIRED)
+#find_package(yaml-cpp CONFIG REQUIRED)
+
+include(FetchContent)
+
+FetchContent_Declare(
+  yaml-cpp
+  GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
+  GIT_TAG 2f86d13
+)
+FetchContent_MakeAvailable(yaml-cpp)
 
 find_package(AWSSDK CONFIG COMPONENTS core secretsmanager REQUIRED)
 
 # Add DuckDB
-set(DUCKDB_EXPLICIT_VERSION 1.2.1)
+set(DUCKDB_EXPLICIT_VERSION 1.3.0)
 set(ENABLE_EXTENSION_AUTOLOADING true)
 set(ENABLE_EXTENSION_AUTOINSTALL true)
 if (WIN32)
