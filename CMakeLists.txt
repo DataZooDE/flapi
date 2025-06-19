@@ -152,7 +152,7 @@ FetchContent_MakeAvailable(yaml-cpp)
 find_package(AWSSDK CONFIG COMPONENTS core secretsmanager REQUIRED)
 
 # Add DuckDB
-set(DUCKDB_EXPLICIT_VERSION 1.3.0)
+set(DUCKDB_EXPLICIT_VERSION 1.3.1)
 set(ENABLE_EXTENSION_AUTOLOADING true)
 set(ENABLE_EXTENSION_AUTOINSTALL true)
 if (WIN32)
