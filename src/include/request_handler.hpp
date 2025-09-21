@@ -21,11 +21,12 @@ private:
     void handleDeleteRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams);
     void handleGetRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams);
 
-    std::map<std::string, std::string> combineParameters(
-        const crow::request& req, 
-        const std::map<std::string, std::string>& defaultParams, 
-        const std::map<std::string, std::string>& pathParams,
-        const EndpointConfig& endpoint);
+    bool isCacheDetailsRequest(const crow::request& req, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams);
+
+    std::map<std::string, std::string> combineParameters(const crow::request& req, 
+                                                         const std::map<std::string, std::string>& defaultParams, 
+                                                         const std::map<std::string, std::string>& pathParams,
+                                                         const EndpointConfig& endpoint);
     QueryResult executeQuery(const EndpointConfig& endpoint, const std::map<std::string, std::string>& params);
     bool validateRequestParameters(const std::vector<RequestFieldConfig>& requestFields, const std::map<std::string, std::string>& params);
     void parsePaginationParams(std::map<std::string, std::string>& params);
@@ -34,6 +35,8 @@ private:
     void serializeObjectToCsvLine(const crow::json::wvalue& obj, std::ostringstream& csv);
     std::string escapeCSV(const std::string& str);
     std::string createNextUrl(const crow::request& req, const QueryResult& queryResult);
+
+    
 
     std::shared_ptr<DatabaseManager> db_manager;
     std::shared_ptr<ConfigManager> config_manager;

@@ -1,0 +1,25 @@
+mcp-prompt:
+  name: sql_query_helper
+  description: Help generate SQL queries for customer data analysis
+  template: |
+    I need help writing a SQL query to analyze customer data.
+
+    Database: {{database_type}}
+    Table: {{table_name}}
+    Analysis Goal: {{goal}}
+
+    Please provide a SQL query that:
+    1. Connects to the {{database_type}} database
+    2. Queries the {{table_name}} table
+    3. {{goal}}
+
+    Include comments explaining the query logic and suggest optimizations.
+  arguments:
+    - database_type
+    - table_name
+    - goal
+
+# SQL Query Helper Prompt:
+# This prompt helps users generate SQL queries by providing
+# structured templates with parameter substitution.
+# Useful for: Data analysts, developers, business users

@@ -1,0 +1,11 @@
+mcp-resource:
+  name: customer_data_summary
+  description: Summary statistics about customer data
+  mime_type: text/plain
+
+template-source: customer_summary.sql
+connection:
+  - customers-parquet
+
+# This resource provides a text summary of customer data
+# Useful for getting quick insights without full data access

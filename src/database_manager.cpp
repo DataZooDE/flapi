@@ -48,6 +48,7 @@ void DatabaseManager::initializeDBManagerFromConfig(std::shared_ptr<ConfigManage
         duckdb_destroy_config(&config);
 
         logDuckDBVersion();
+        loadDefaultExtensions(config_manager);
         initializeConnections(config_manager);
 
         // Initialize the sql processor, done before cache manager.
@@ -158,6 +159,38 @@ void DatabaseManager::createAndInitializeDuckDBConfig(std::shared_ptr<ConfigMana
             throw std::runtime_error("Failed to set DuckDB configuration: " + key);
         }
     }
+}
+
+void DatabaseManager::loadDefaultExtensions(std::shared_ptr<ConfigManager> config_manager) {
+    auto extensions = config_manager->getDuckDBConfig().default_extensions;
+
+    // Install the extensions (try individually to handle failures gracefully)
+    CROW_LOG_INFO << "Installing default " << extensions.size() << " extensions";
+    for (const auto& extension : extensions) {
+        std::string install_stmt = "INSTALL " + extension + ";";
+        try {
+            executeInitStatement(install_stmt);
+            CROW_LOG_DEBUG << "Successfully installed extension: " << extension;
+        } catch (const std::exception& e) {
+            CROW_LOG_WARNING << "Failed to install extension '" << extension << "': " << e.what() << ". Skipping.";
+        }
+    }
+    CROW_LOG_INFO << "Finished installing default extensions";
+
+    // Load the extensions (try individually to handle failures gracefully)
+    CROW_LOG_INFO << "Loading default " << extensions.size() << " extensions";
+    int loaded_count = 0;
+    for (const auto& extension : extensions) {
+        std::string load_stmt = "LOAD " + extension + ";";
+        try {
+            executeInitStatement(load_stmt);
+            CROW_LOG_DEBUG << "Successfully loaded extension: " << extension;
+            loaded_count++;
+        } catch (const std::exception& e) {
+            CROW_LOG_WARNING << "Failed to load extension '" << extension << "': " << e.what() << ". Skipping.";
+        }
+    }
+    CROW_LOG_INFO << "Successfully loaded " << loaded_count << " out of " << extensions.size() << " extensions";
 }
 
 void DatabaseManager::initializeConnections(std::shared_ptr<ConfigManager> config_manager) {

@@ -2,6 +2,7 @@ build
 binaries
 cmake
 .idea
+.cache
 cmake-build-debug
 duckdb_unittest_tempdir/
 .DS_Store

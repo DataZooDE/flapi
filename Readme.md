@@ -7,6 +7,7 @@ flAPI is a powerful service that automatically generates read-only APIs for data
 ## ⚡ Features
 
 - **Automatic API Generation**: Create APIs for your datasets without coding
+- **MCP (Model Context Protocol) Support**: Declarative creation of AI tools alongside REST endpoints
 - **Multiple Data Sources**: Connect to [BigQuery](https://github.com/hafenkran/duckdb-bigquery), SAP ERP & BW (via [ERPL](https://github.com/datazoode/erpl)), Parquet, [Iceberg](https://github.com/duckdb/duckdb_iceberg), [Postgres](https://github.com/duckdb/postgres_scanner), [MySQL](https://github.com/duckdb/duckdb_mysql), and more
 - **SQL Templates**: Use Mustache-like syntax for dynamic queries
 - **Caching**: Improve performance and reduce database costs with built-in caching mechanisms
@@ -29,16 +30,33 @@ The image is pretty small and mainly contains the flAPI binary which is statical
 Once you have downloaded the binary, you can run flAPI by executing the following command:
 
 ```
-> docker run -it --rm -p 8080:8080 -v $(pwd)/examples/:/config ghcr.io/datazoode/flapi -c /config/flapi.yaml
+> docker run -it --rm -p 8080:8080 -p 8081:8081 -v $(pwd)/examples/:/config ghcr.io/datazoode/flapi -c /config/flapi.yaml
 ```
 
 The different arguments in this docker command are:
 - `-it --rm`: Run the container in interactive mode and remove it after the process has finished
-- `-p 8080:8080`: Exposes port 8080 of the container to the host, this makes flAPI available at `http://localhost:8080`
-- `-v $(pwd)/examples/:/config`: This mounts the local `examples` directory to the `/config` directory in the container, this is where the flAPI configuration file 
+- `-p 8080:8080`: Exposes port 8080 of the container to the host, this makes the REST API available at `http://localhost:8080`
+- `-p 8081:8081`: Exposes port 8081 for the MCP server (when enabled)
+- `-v $(pwd)/examples/:/config`: This mounts the local `examples` directory to the `/config` directory in the container, this is where the flAPI configuration file
 is expected to be found.
 - `ghcr.io/datazoode/flapi`: The docker image to use
 - `-c /config/flapi.yaml`: This is an argument to the flAPI application which tells it to use the `flapi.yaml` file in the `/config` directory as the configuration file.
+
+#### 2.1 Enable MCP Support:
+To enable MCP support, you can either:
+
+**Option A: Use the command line flag**
+```
+> docker run -it --rm -p 8080:8080 -p 8081:8081 -v $(pwd)/examples/:/config ghcr.io/datazoode/flapi -c /config/flapi.yaml --enable-mcp
+```
+
+**Option B: Configure in flapi.yaml**
+```yaml
+mcp:
+  enabled: true
+  port: 8081
+  # ... other MCP configuration
+```
 
 #### 3.1 Test the API server:
 If everything is set up correctly, you should be able to access the API at the URL specified in the configuration file.
@@ -66,6 +84,126 @@ You should see the familiar Swagger UI page:
 ![flAPI Swagger UI](https://i.imgur.com/HqjHMlA.png)
 
 The raw yaml [Swagger 2.0](https://swagger.io/specification/) is also available at [`http://localhost:8080/doc.yaml`](http://localhost:8080/doc.yaml)
+
+#### 3.3 Test the MCP server:
+If MCP is enabled, you can test the MCP server as well:
+
+```bash
+# Check MCP server health
+> curl 'http://localhost:8081/mcp/health'
+
+{"status":"healthy","server":"flapi-mcp-server","version":"0.3.0","protocol_version":"2024-11-05","tools_count":0}
+
+# Initialize MCP connection
+> curl -X POST http://localhost:8081/mcp/jsonrpc \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 1, "method": "initialize"}'
+
+# List available tools
+> curl -X POST http://localhost:8081/mcp/jsonrpc \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 2, "method": "tools/list"}'
+```
+
+## 🤖 MCP (Model Context Protocol) Support
+
+flAPI now supports the **Model Context Protocol (MCP)** in a **unified configuration approach**. Every flAPI instance automatically runs both a REST API server and an MCP server concurrently, allowing you to create AI tools alongside your REST endpoints using the same configuration files and SQL templates.
+
+### Key Features
+
+- **Unified Configuration**: Single YAML files can define REST endpoints, MCP tools, and MCP resources
+- **Automatic Detection**: Configuration type is determined by presence of `url-path` (REST), `mcp-tool` (MCP tool), or `mcp-resource` (MCP resource)
+- **Shared Components**: MCP tools and resources use the same SQL templates, parameter validation, authentication, and caching as REST endpoints
+- **Concurrent Servers**: REST API (port 8080) and MCP server (port 8081) run simultaneously
+- **Declarative Definition**: Define everything using YAML configuration with SQL templatestocol
+- **Tool Discovery**: Automatic tool discovery and schema generation
+- **Security Integration**: Reuse existing authentication, rate limiting, and caching features
+
+### MCP Endpoints
+
+- `POST /mcp/jsonrpc` - Main JSON-RPC endpoint for tool calls
+- `GET /mcp/health` - Health check endpoint
+
+### Unified Configuration
+
+**MCP is now automatically enabled** - no separate configuration needed! Every flAPI instance runs both REST API and MCP servers concurrently.
+
+Configuration files can define multiple entity types:
+
+#### REST Endpoint + MCP Tool (Unified)
+
+```yaml
+# Single configuration file serves as BOTH REST endpoint AND MCP tool
+url-path: /customers/                    # Makes this a REST endpoint
+mcp-tool:                                # Also makes this an MCP tool
+  name: get_customers
+  description: Retrieve customer information by ID
+  result_mime_type: application/json
+
+request:
+  - field-name: id
+    field-in: query
+    description: Customer ID
+    required: false
+    validators:
+      - type: int
+        min: 1
+        max: 1000000
+        preventSqlInjection: true
+
+template-source: customers.sql
+connection: [customers-parquet]
+
+rate-limit:
+  enabled: true
+  max: 100
+  interval: 60
+
+auth:
+  enabled: true
+  type: basic
+  users:
+    - username: admin
+      password: secret
+      roles: [admin]
+```
+
+#### MCP Resource Only
+
+```yaml
+# MCP Resource example
+mcp-resource:
+  name: customer_schema
+  description: Customer database schema definition
+  mime_type: application/json
+
+template-source: customer-schema.sql
+connection: [customers-parquet]
+```
+
+### Using MCP Tools
+
+Once MCP is enabled, you can interact with tools using JSON-RPC 2.0:
+
+```bash
+# Check MCP server health
+curl 'http://localhost:8081/mcp/health'
+
+# Initialize MCP connection
+curl -X POST http://localhost:8081/mcp/jsonrpc \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 1, "method": "initialize"}'
+
+# List available tools (discovered from unified configuration)
+curl -X POST http://localhost:8081/mcp/jsonrpc \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 2, "method": "tools/list"}'
+
+# Call a tool (same SQL template used for both REST and MCP)
+curl -X POST http://localhost:8081/mcp/jsonrpc \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "get_customers", "arguments": {"id": "123"}}}'
+```
 
 ## 🎓 Example
 
@@ -279,11 +417,13 @@ In essecence a few prerequisites need to be met:
 The build process will download and build DuckDB v1.1.2 and install the vcpkg package manager. We depend on the following vcpkg ports:
 
 - [`argparse`](https://github.com/p-ranav/argparse) - Command line argument parser
-- [`crow`](https://github.com/CrowCpp/Crow) - Our REST-Web framework
+- [`crow`](https://github.com/CrowCpp/Crow) - Our REST-Web framework and JSON handling
 - [`yaml-cpp`](https://github.com/jbeder/yaml-cpp) - YAML parser
 - [`jwt-cpp`](https://github.com/Thalhammer/jwt-cpp) - JSON Web Token library
 - [`openssl`](https://github.com/openssl/openssl) - Crypto library
 - [`catch2`](https://github.com/catchorg/Catch2) - Testing framework
+
+**Note**: MCP support is built-in and doesn't require additional dependencies beyond what's already included.
 
 ## 📚 Documentation
 

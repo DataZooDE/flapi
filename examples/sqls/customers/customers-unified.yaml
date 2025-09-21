@@ -1,0 +1,69 @@
+# ====================================================================================
+# UNIFIED CONFIGURATION EXAMPLE
+# ====================================================================================
+# This file demonstrates the new unified configuration approach where a single
+# configuration can define both REST endpoints and MCP tools/resources.
+#
+# Configuration Type Detection:
+# - If 'url-path' is present → treated as REST endpoint
+# - If 'mcp-tool' is present → treated as MCP tool
+# - If 'mcp-resource' is present → treated as MCP resource
+# - Can have multiple types (e.g., both REST endpoint AND MCP tool)
+
+# This configuration defines BOTH a REST endpoint AND an MCP tool
+url-path: /customers/                    # Makes this a REST endpoint
+mcp-tool:                                # Also makes this an MCP tool
+  name: get_customers
+  description: Retrieve customer information by ID
+  result_mime_type: application/json
+
+# Request parameters (shared between REST and MCP)
+request:
+  - field-name: id
+    field-in: query
+    description: Customer ID
+    required: false
+    validators:
+      - type: int
+        min: 1
+        max: 1000000
+        preventSqlInjection: true
+
+  - field-name: segment
+    field-in: query
+    description: Customer segment (optional)
+    required: false
+    validators:
+      - type: enum
+        allowedValues: [retail, corporate, vip]
+
+  - field-name: email
+    field-in: query
+    description: Customer email address
+    required: false
+    validators:
+      - type: email
+
+# SQL template and connection (shared)
+template-source: customers.sql
+connection: [customers-parquet]
+
+# Security and performance (shared)
+rate-limit:
+  enabled: true
+  max: 100
+  interval: 60
+
+auth:
+  enabled: true
+  type: basic
+  users:
+    - username: admin
+      password: secret
+      roles: [admin]
+    - username: user
+      password: password
+      roles: [read]
+
+heartbeat:
+  enabled: false

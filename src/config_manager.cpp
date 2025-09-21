@@ -111,6 +111,9 @@ const TemplateConfig& ConfigManager::getTemplateConfig() const {
 // DuckDB configuration methods
 void ConfigManager::parseDuckDBConfig() {
     CROW_LOG_INFO << "Parsing DuckDB configuration";
+
+    duckdb_config.default_extensions = { "httpfs", "ducklake", "fts", "json", "postgres", "sqlite", "parquet" };
+    
     if (config["duckdb"]) {
         auto duckdb_node = config["duckdb"];
         for (const auto& setting : duckdb_node) {
@@ -161,18 +164,89 @@ void ConfigManager::loadEndpointConfig(const std::string& config_file) {
         CROW_LOG_DEBUG << "\tLoading endpoint config from file: " << config_file;
         YAML::Node endpoint_config = YAML::LoadFile(config_file);
         EndpointConfig endpoint;
-        
+
         auto endpoint_dir = std::filesystem::path(config_file).parent_path();
 
-        endpoint.urlPath = safeGet<std::string>(endpoint_config, "url-path", "url-path");
-        endpoint.method = safeGet<std::string>(endpoint_config, "method", "method", "GET");
-        endpoint.templateSource = (endpoint_dir / safeGet<std::string>(endpoint_config, "template-source", "template-source")).string();
-        endpoint.with_pagination = safeGet<bool>(endpoint_config, "with-pagination", "with-pagination", true);
-        endpoint.request_fields_validation = safeGet<bool>(endpoint_config, "request-fields-validation", "request-fields-validation", false);
-        
-        CROW_LOG_DEBUG << "\t\tEndpoint: " << endpoint.method << " " << endpoint.urlPath;
-        CROW_LOG_DEBUG << "\t\tTemplate Source: " << endpoint.templateSource;
-        CROW_LOG_DEBUG << "\t\tWith Pagination: " << (endpoint.with_pagination ? "true" : "false");
+        // Detect configuration type and parse accordingly
+        bool is_rest_endpoint = endpoint_config["url-path"].IsDefined();
+        bool is_mcp_tool = endpoint_config["mcp-tool"].IsDefined();
+        bool is_mcp_resource = endpoint_config["mcp-resource"].IsDefined();
+        bool is_mcp_prompt = endpoint_config["mcp-prompt"].IsDefined();
+
+        if (!is_rest_endpoint && !is_mcp_tool && !is_mcp_resource && !is_mcp_prompt) {
+            throw std::runtime_error("Configuration must have either 'url-path' (for REST endpoints) or 'mcp-tool'/'mcp-resource'/'mcp-prompt' (for MCP entities)");
+        }
+
+        // Parse REST endpoint specific fields (optional)
+        if (is_rest_endpoint) {
+            endpoint.urlPath = safeGet<std::string>(endpoint_config, "url-path", "url-path");
+            endpoint.method = safeGet<std::string>(endpoint_config, "method", "method", "GET");
+            endpoint.with_pagination = safeGet<bool>(endpoint_config, "with-pagination", "with-pagination", true);
+            endpoint.request_fields_validation = safeGet<bool>(endpoint_config, "request-fields-validation", "request-fields-validation", false);
+
+            CROW_LOG_DEBUG << "\t\tREST Endpoint: " << endpoint.method << " " << endpoint.urlPath;
+        }
+
+        // Parse MCP tool specific fields (optional)
+        if (is_mcp_tool) {
+            auto mcp_tool_node = endpoint_config["mcp-tool"];
+            EndpointConfig::MCPToolInfo tool_info;
+            tool_info.name = safeGet<std::string>(mcp_tool_node, "name", "mcp-tool.name");
+            tool_info.description = safeGet<std::string>(mcp_tool_node, "description", "mcp-tool.description");
+            tool_info.result_mime_type = safeGet<std::string>(mcp_tool_node, "result_mime_type", "mcp-tool.result_mime_type", "application/json");
+            endpoint.mcp_tool = tool_info;
+
+            CROW_LOG_DEBUG << "\t\tMCP Tool: " << tool_info.name;
+        }
+
+        // Parse MCP resource specific fields (optional)
+        if (is_mcp_resource) {
+            auto mcp_resource_node = endpoint_config["mcp-resource"];
+            EndpointConfig::MCPResourceInfo resource_info;
+            resource_info.name = safeGet<std::string>(mcp_resource_node, "name", "mcp-resource.name");
+            resource_info.description = safeGet<std::string>(mcp_resource_node, "description", "mcp-resource.description");
+            resource_info.mime_type = safeGet<std::string>(mcp_resource_node, "mime_type", "mcp-resource.mime_type", "application/json");
+            endpoint.mcp_resource = resource_info;
+
+            CROW_LOG_DEBUG << "\t\tMCP Resource: " << resource_info.name;
+        }
+
+        // Parse MCP prompt specific fields (optional)
+        if (is_mcp_prompt) {
+            auto mcp_prompt_node = endpoint_config["mcp-prompt"];
+            EndpointConfig::MCPPromptInfo prompt_info;
+            prompt_info.name = safeGet<std::string>(mcp_prompt_node, "name", "mcp-prompt.name");
+            prompt_info.description = safeGet<std::string>(mcp_prompt_node, "description", "mcp-prompt.description");
+
+            // Parse template content
+            if (mcp_prompt_node["template"]) {
+                prompt_info.template_content = mcp_prompt_node["template"].as<std::string>();
+            } else {
+                throw std::runtime_error("MCP prompt must have a 'template' field");
+            }
+
+            // Parse arguments (optional)
+            if (mcp_prompt_node["arguments"]) {
+                for (const auto& arg : mcp_prompt_node["arguments"]) {
+                    prompt_info.arguments.push_back(arg.as<std::string>());
+                }
+            }
+
+            endpoint.mcp_prompt = prompt_info;
+
+            CROW_LOG_DEBUG << "\t\tMCP Prompt: " << prompt_info.name;
+        }
+
+        // Parse common fields
+        // For MCP prompts, template content is embedded in the config, not in a separate file
+        if (!is_mcp_prompt) {
+            endpoint.templateSource = (endpoint_dir / safeGet<std::string>(endpoint_config, "template-source", "template-source")).string();
+            CROW_LOG_DEBUG << "\t\tTemplate Source: " << endpoint.templateSource;
+        } else {
+            // For MCP prompts, template content is already parsed above
+            CROW_LOG_DEBUG << "\t\tTemplate Content: embedded in config";
+        }
+
         parseEndpointRequestFields(endpoint_config, endpoint);
         parseEndpointConnection(endpoint_config, endpoint);
         parseEndpointRateLimit(endpoint_config, endpoint);
@@ -181,6 +255,14 @@ void ConfigManager::loadEndpointConfig(const std::string& config_file) {
         parseEndpointHeartbeat(endpoint_config, endpoint);
 
         endpoints.push_back(endpoint);
+
+        // Log configuration summary
+        std::string config_summary = "\t\tConfiguration loaded: ";
+        if (endpoint.isRESTEndpoint()) config_summary += "REST(" + endpoint.urlPath + ") ";
+        if (endpoint.isMCPTool()) config_summary += "MCP-Tool(" + endpoint.mcp_tool->name + ") ";
+        if (endpoint.isMCPResource()) config_summary += "MCP-Resource(" + endpoint.mcp_resource->name + ") ";
+        if (endpoint.isMCPPrompt()) config_summary += "MCP-Prompt(" + endpoint.mcp_prompt->name + ") ";
+        CROW_LOG_DEBUG << config_summary;
     } catch (const std::exception& e) {
         throw std::runtime_error("Error loading endpoint config from file: " + config_file + ", Error: " + std::string(e.what()));
     }
@@ -717,6 +799,8 @@ crow::json::wvalue ConfigManager::getEndpointsConfig() const {
     return endpointsJson;
 }
 
+// MCP configuration methods
+
 // Other methods
 void ConfigManager::refreshConfig() {
     throw std::runtime_error("Not implemented");
@@ -739,5 +823,23 @@ const EndpointConfig* ConfigManager::getEndpointForPath(const std::string& path)
 }
 
 
+
+// Template method implementations
+template<typename T>
+T ConfigManager::getValueOrThrow(const YAML::Node& node, const std::string& key, const std::string& yamlPath) const {
+    if (!node[key]) {
+        throw std::runtime_error("Missing required configuration: " + yamlPath + "." + key);
+    }
+    try {
+        return node[key].as<T>();
+    } catch (const YAML::Exception& e) {
+        throw std::runtime_error("Invalid configuration value at " + yamlPath + "." + key + ": " + e.what());
+    }
+}
+
+// Explicit template instantiations
+template std::string ConfigManager::getValueOrThrow<std::string>(const YAML::Node& node, const std::string& key, const std::string& yamlPath) const;
+template bool ConfigManager::getValueOrThrow<bool>(const YAML::Node& node, const std::string& key, const std::string& yamlPath) const;
+template int ConfigManager::getValueOrThrow<int>(const YAML::Node& node, const std::string& key, const std::string& yamlPath) const;
 
 } // namespace flapi

@@ -27,6 +27,7 @@ private:
 
     std::string loadTemplateContent(const std::string& templatePath);
     std::string getFullTemplatePath(const std::string& templateSource) const;
+public:
     crow::mustache::context createTemplateContext(const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
     std::string processTemplate(const std::string& templateContent, const crow::mustache::context& ctx);
     

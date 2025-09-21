@@ -6,6 +6,7 @@ add_executable(flapi_tests
     config_manager_test.cpp
     config_service_test.cpp
     database_manager_test.cpp
+    extended_yaml_parser_test.cpp
     query_executor_test.cpp
     request_validator_test.cpp
     sql_template_processor_test.cpp

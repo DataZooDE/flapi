@@ -105,7 +105,7 @@ struct CacheConfig {
 
 struct EndpointConfig {
     std::string urlPath;
-    std::string method; 
+    std::string method;
     bool request_fields_validation = false;
     std::vector<RequestFieldConfig> request_fields;
     std::string templateSource;
@@ -115,11 +115,80 @@ struct EndpointConfig {
     AuthConfig auth;
     CacheConfig cache;
     HeartbeatConfig heartbeat;
+
+    // MCP-specific metadata (optional)
+    struct MCPToolInfo {
+        std::string name;
+        std::string description;
+        std::string result_mime_type = "application/json";
+    };
+
+    struct MCPResourceInfo {
+        std::string name;
+        std::string description;
+        std::string mime_type = "application/json";
+    };
+
+    struct MCPPromptInfo {
+        std::string name;
+        std::string description;
+        std::string template_content;
+        std::vector<std::string> arguments;
+    };
+
+    std::optional<MCPToolInfo> mcp_tool;
+    std::optional<MCPResourceInfo> mcp_resource;
+    std::optional<MCPPromptInfo> mcp_prompt;
+
+    // Helper methods to check if this is an MCP entity
+    bool isMCPEntity() const { return mcp_tool.has_value() || mcp_resource.has_value() || mcp_prompt.has_value(); }
+    bool isRESTEndpoint() const { return !urlPath.empty(); }
+    bool isMCPTool() const { return mcp_tool.has_value(); }
+    bool isMCPResource() const { return mcp_resource.has_value(); }
+    bool isMCPPrompt() const { return mcp_prompt.has_value(); }
+};
+
+struct MCPToolParameter {
+    std::string name;
+    std::string description;
+    std::string type = "string"; // string, number, boolean, array, object
+    bool required = false;
+    std::string default_value;
+    std::vector<std::string> allowed_values; // for enum-like parameters
+    std::unordered_map<std::string, std::string> constraints; // min, max, pattern, etc.
+};
+
+struct MCPToolConfig {
+    std::string tool_name;
+    std::string description;
+    std::string input_schema_path; // JSON schema for tool parameters
+    std::vector<MCPToolParameter> parameters;
+    std::string template_source;
+    std::vector<std::string> connection;
+    std::string result_format = "json"; // json, csv, table
+    bool cache_enabled = false;
+    std::string cache_key_template;
+    RateLimitConfig rate_limit;
+    AuthConfig auth;
+    CacheConfig cache;
+    HeartbeatConfig heartbeat;
+};
+
+struct MCPServerConfig {
+    bool enabled = false;
+    std::string server_name = "flapi-mcp-server";
+    std::string server_version = "0.1.0";
+    std::string protocol_version = "2024-11-05";
+    std::vector<std::string> capabilities = {"tools", "resources", "prompts", "sampling"};
+    bool stdio_transport = false; // Use HTTP transport by default
+    int mcp_port = 8081; // Different port from REST API
+    std::string mcp_base_path = "/mcp";
 };
 
 struct DuckDBConfig {
     std::unordered_map<std::string, std::string> settings;
     std::string db_path;  // New field for database path
+    std::vector<std::string> default_extensions;
 };
 
 struct TemplateConfig {
@@ -185,6 +254,7 @@ public:
 
     const GlobalHeartbeatConfig& getGlobalHeartbeatConfig() const { return global_heartbeat_config; }
 
+
     void refreshConfig();
     void addEndpoint(const EndpointConfig& endpoint);
     
@@ -237,6 +307,7 @@ protected:
     void parseGlobalHeartbeatConfig();
     void parseEndpointHeartbeat(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
 
+
     std::string makePathRelativeToBasePathIfNecessary(const std::string& value) const;
 
     void validateConfig();
@@ -253,9 +324,9 @@ protected:
 public:
     static std::string secretNameToTableName(const std::string& secret_name);
     static std::string secretNameToSecretId(const std::string& secret_name);
-    static std::string createDefaultAuthInit(const std::string& secret_name, 
-                                             const std::string& region, 
-                                             const std::string& secret_id, 
+    static std::string createDefaultAuthInit(const std::string& secret_name,
+                                             const std::string& region,
+                                             const std::string& secret_id,
                                              const std::string& secret_key);
 
 };

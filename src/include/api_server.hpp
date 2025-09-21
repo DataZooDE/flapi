@@ -13,6 +13,9 @@
 #include "rate_limit_middleware.hpp"
 #include "request_handler.hpp"
 #include "route_translator.hpp"
+#include "mcp_route_handlers.hpp"
+#include "mcp_session_manager.hpp"
+#include "mcp_client_capabilities.hpp"
 
 namespace flapi {
 
@@ -49,6 +52,9 @@ private:
     std::shared_ptr<DatabaseManager> dbManager;
     std::shared_ptr<OpenAPIDocGenerator> openAPIDocGenerator;
     std::shared_ptr<HeartbeatWorker> heartbeatWorker;
+    std::unique_ptr<MCPRouteHandlers> mcpRouteHandlers;
+    std::shared_ptr<MCPSessionManager> mcpSessionManager;
+    std::shared_ptr<MCPClientCapabilitiesDetector> mcpCapabilitiesDetector;
     RequestHandler requestHandler;
 };
 

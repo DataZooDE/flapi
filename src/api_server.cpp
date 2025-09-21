@@ -7,18 +7,39 @@
 #include "open_api_doc_generator.hpp"
 #include "open_api_page.hpp"
 #include "rate_limit_middleware.hpp"
+#include "mcp_session_manager.hpp"
+#include "mcp_client_capabilities.hpp"
 
 namespace flapi {
 
 APIServer::APIServer(std::shared_ptr<ConfigManager> cm, std::shared_ptr<DatabaseManager> db_manager, bool enable_config_ui)
     : configManager(cm), dbManager(db_manager), openAPIDocGenerator(std::make_shared<OpenAPIDocGenerator>(cm, db_manager)), requestHandler(dbManager, cm)
 {
+    // Initialize MCP session manager
+    mcpSessionManager = std::make_shared<MCPSessionManager>();
+
+    // Initialize MCP client capabilities detector
+    mcpCapabilitiesDetector = std::make_shared<MCPClientCapabilitiesDetector>();
+
+    // Initialize MCP route handlers (always enabled in unified configuration)
+    // Port will be passed when registering routes
+    CROW_LOG_INFO << "Initializing MCP Route Handlers...";
+    try {
+        mcpRouteHandlers = std::make_unique<MCPRouteHandlers>(cm, db_manager, mcpSessionManager, mcpCapabilitiesDetector);
+        CROW_LOG_DEBUG << "MCP Route Handlers initialized successfully";
+    } catch (const std::exception& e) {
+        CROW_LOG_ERROR << "Failed to initialize MCP Route Handlers: " << e.what();
+        mcpRouteHandlers = nullptr;
+    }
+
+    CROW_LOG_INFO << "APIServer MCP Route Handlers status: " << (mcpRouteHandlers ? "initialized" : "failed to initialize");
+
     createApp();
     setupRoutes();
     setupCORS();
     setupHeartbeat();
-    
-    CROW_LOG_INFO << "APIServer initialized";
+
+    CROW_LOG_INFO << "APIServer initialized with MCP support";
 }
 
 APIServer::~APIServer() {
@@ -34,6 +55,7 @@ void APIServer::createApp()
 
 void APIServer::setupRoutes() {
     CROW_LOG_INFO << "Setting up routes...";
+    CROW_LOG_INFO << "APIServer setupRoutes called - MCP Route Handlers available: " << (mcpRouteHandlers ? "yes" : "no");
 
     CROW_ROUTE(app, "/")([](){
         CROW_LOG_INFO << "Root route accessed";
@@ -86,6 +108,15 @@ void APIServer::setupRoutes() {
             handleDynamicRequest(req, res);
             res.end();
         });
+
+    // Register MCP routes (always enabled in unified configuration)
+    if (mcpRouteHandlers) {
+        mcpRouteHandlers->registerRoutes(app, configManager->getHttpPort());
+    } else {
+        CROW_LOG_WARNING << "MCP Route Handlers not initialized, skipping MCP route registration";
+    }
+
+    // MCP Health endpoint moved back to MCPRouteHandlers
 
     CROW_LOG_INFO << "Routes set up completed";
 }

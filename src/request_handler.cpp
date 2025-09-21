@@ -144,6 +144,10 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
     }
 }
 
+bool RequestHandler::isCacheDetailsRequest(const crow::request& req, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams) {
+    return req.url.find("/cache") != std::string::npos;
+}
+
 void RequestHandler::parsePaginationParams(std::map<std::string, std::string>& params) {
     int64_t offset = 0;
     int64_t limit = 100;

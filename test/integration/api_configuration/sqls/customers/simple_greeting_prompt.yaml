@@ -1,0 +1,20 @@
+mcp-prompt:
+  name: simple_greeting
+  description: A simple greeting prompt for testing
+  template: |
+    Hello! Welcome to FLAPI's MCP prompt system.
+
+    This is a simple prompt that demonstrates the basic functionality
+    of MCP prompts in FLAPI. You can use this prompt to test that
+    the prompt system is working correctly.
+
+    Current time: {{current_time}}
+    Server: FLAPI MCP Server
+  arguments:
+    - current_time
+
+# This is a simple prompt that demonstrates:
+# - Template processing with parameters
+# - Basic text generation
+# - Parameter substitution
+# - MCP protocol compliance

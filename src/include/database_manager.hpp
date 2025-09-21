@@ -33,6 +33,7 @@ public:
     static std::shared_ptr<DatabaseManager> getInstance(); // Singleton access method
     
     void initializeDBManagerFromConfig(std::shared_ptr<ConfigManager> config_manager);
+    void loadDefaultExtensions(std::shared_ptr<ConfigManager> config_manager);
     void initializeConnections(std::shared_ptr<ConfigManager> config_manager);
     void executeInitStatement(const std::string& init_statement);
     void createSchemaIfNecessary(const std::string& schema);

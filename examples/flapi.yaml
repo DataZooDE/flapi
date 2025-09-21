@@ -51,3 +51,26 @@ duckdb:
   threads: 8
   max_memory: 8GB
   default_order: DESC
+
+# ====================================================================================
+# MCP (Model Context Protocol) Support
+# ====================================================================================
+# flAPI now automatically enables MCP server - no separate configuration needed!
+# Any configuration file in the sqls/ directory can define:
+# - REST endpoints (if 'url-path' is present)
+# - MCP tools (if 'mcp-tool' section is present)
+# - MCP resources (if 'mcp-resource' section is present)
+# - Or any combination of the above!
+#
+# Example unified configuration in sqls/customers-unified.yaml:
+# url-path: /customers/                    # Makes this a REST endpoint
+# mcp-tool:                                # Also makes this an MCP tool
+#   name: get_customers
+#   description: Retrieve customer information by ID
+# request:
+#   - field-name: id
+#     # ... rest of parameter definitions
+# template-source: customers.sql
+# connection: [customers-parquet]
+# # ... other common sections work for both REST and MCP
+

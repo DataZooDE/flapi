@@ -1,0 +1,41 @@
+mcp-prompt:
+  name: data_insights_summary
+  description: Generate a comprehensive summary of available data insights and analysis options
+  template: |
+    Based on the available customer data in FLAPI, here are the key insights and analysis options:
+
+    📊 **Available Data Sources:**
+    - Customer database with demographic and behavioral data
+    - Transaction records and purchase history
+    - Customer segmentation and profiling data
+    - Geographic and temporal analysis options
+
+    🔍 **Analysis Capabilities:**
+    - Customer behavior pattern analysis
+    - Segmentation and targeting insights
+    - Trend analysis and forecasting
+    - Geographic distribution analysis
+    - Performance metrics and KPIs
+
+    📈 **Common Analysis Patterns:**
+    - Customer lifetime value analysis
+    - Purchase frequency and recency analysis
+    - Geographic market analysis
+    - Customer satisfaction and retention metrics
+    - Product performance and preferences
+
+    💡 **Recommendations:**
+    - Start with customer segmentation analysis to understand your customer base
+    - Analyze purchase patterns to identify trends and opportunities
+    - Use geographic data to optimize market targeting
+    - Monitor customer satisfaction metrics for continuous improvement
+
+    This comprehensive data platform enables deep customer insights and data-driven decision making.
+  arguments: []
+
+# Data Insights Summary Prompt:
+# This prompt provides a static overview of available data insights
+# without requiring any parameters. It's useful for:
+# - New user onboarding
+# - System capability overview
+# - Analysis planning and guidance

@@ -1,8 +1,7 @@
-url-path: /customers/
-mcp-tool:
-  name: get_customers
-  description: Retrieve customer information by ID
-  result_mime_type: application/json
+mcp-tool: 
+    name: customers
+    description: Retrieve customer information by ID
+    result_mime_type: application/json
 
 request:
   - field-name: id
@@ -65,14 +64,14 @@ request:
       - type: uuid
 
 template-source: customers.sql
-connection:
+connection: 
   - customers-parquet
 
 rate-limit:
   enabled: true
   max: 100
   interval: 60  # in seconds
-
+  
 auth:
   enabled: true
   type: basic
@@ -83,3 +82,8 @@ auth:
     - username: user
       password: password
       roles: [read]
+
+heartbeat:
+  enabled: false
+  params:
+    id: 123

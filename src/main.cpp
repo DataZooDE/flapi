@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <csignal>
 #include <atomic>
+#include <thread>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -154,6 +155,7 @@ int main(int argc, char* argv[])
         .help("Enable the configuration UI")
         .default_value(false);
 
+
     try {
         program.parse_args(argc, argv);
     } catch (const std::runtime_error& err) {
@@ -178,9 +180,18 @@ int main(int argc, char* argv[])
 
     bool enable_config_ui = program.get<bool>("--enable-config-ui");
 
-    // Create server and store in global pointer
+    // Create unified API server with MCP support (always enabled in unified configuration)
     api_server = std::make_shared<APIServer>(config_manager, DatabaseManager::getInstance(), enable_config_ui);
-    api_server->run(config_manager->getHttpPort());
+
+    // Start unified server
+    std::thread unified_server_thread([config_manager, server = api_server]() {
+        server->run(config_manager->getHttpPort());
+    });
+
+    CROW_LOG_INFO << "flAPI unified server started - REST API and MCP on port " << config_manager->getHttpPort();
+
+    // Wait for server to finish
+    unified_server_thread.join();
 
     return 0;
 }

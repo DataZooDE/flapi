@@ -57,3 +57,14 @@ duckdb:
   threads: 8
   max_memory: 8GB
   default_order: DESC
+
+# MCP Resources Configuration
+# MCP resources are automatically discovered from the sqls directory
+# Resources are defined using 'mcp-resource' key in YAML files
+# Example: api_configuration/sqls/customers/customer_schema.yaml
+#
+# Available MCP Resources:
+# - customer_schema: Customer database schema information
+#   URI: flapi://customer_schema
+#   Content-Type: application/json
+#   Access: Requires authentication

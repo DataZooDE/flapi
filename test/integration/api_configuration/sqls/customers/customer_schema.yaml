@@ -1,0 +1,41 @@
+mcp-resource:
+  name: customer_schema
+  description: Customer database schema information
+  mime_type: application/json
+
+template-source: customer_schema.sql
+connection:
+  - customers-parquet
+
+auth:
+  enabled: true
+  type: basic
+  users:
+    - username: admin
+      password: secret
+      roles: [admin]
+    - username: user
+      password: password
+      roles: [read]
+
+# MCP Resource Configuration:
+# - name: Unique identifier for the resource
+# - description: Human-readable description
+# - mime_type: Content type (application/json, text/plain, etc.)
+# - template-source: SQL file to execute for resource content
+# - connection: Database connections to use
+# - auth: Authentication configuration
+#
+# MCP Protocol Usage:
+# 1. List resources: POST /mcp/jsonrpc {"method": "resources/list"}
+# 2. Read resource: POST /mcp/jsonrpc {"method": "resources/read", "params": {"uri": "flapi://customer_schema"}}
+#
+# The resource will be accessible via URI: flapi://customer_schema
+# When read, it executes customer_schema.sql and returns the result as JSON
+#
+# Example MCP Client Usage:
+# response = client._make_request("resources/list")
+# # Returns: [{"name": "customer_schema", "description": "...", "uri": "flapi://customer_schema", "mimeType": "application/json"}]
+#
+# response = client._make_request("resources/read", {"uri": "flapi://customer_schema"})
+# # Returns: {"contents": [{"uri": "flapi://customer_schema", "mimeType": "application/json", "text": "..."}]}

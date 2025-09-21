@@ -1,6 +1,5 @@
-url-path: /customers/
 mcp-tool:
-  name: get_customers
+  name: customers
   description: Retrieve customer information by ID
   result_mime_type: application/json
 
@@ -15,13 +14,21 @@ request:
         max: 1000000
         preventSqlInjection: true
 
-  - field-name: segment
+  - field-name: name
     field-in: query
-    description: Customer segment (optional)
+    description: Customer name
     required: false
     validators:
-      - type: enum
-        allowedValues: [retail, corporate, vip]
+      - type: string
+        regex: "^[A-Za-z ]{2,50}$"
+        preventSqlInjection: true
+
+  - field-name: uuid
+    field-in: query
+    description: Customer UUID
+    required: false
+    validators:
+      - type: uuid
 
   - field-name: email
     field-in: query
@@ -29,6 +36,14 @@ request:
     required: false
     validators:
       - type: email
+
+  - field-name: segment
+    field-in: query
+    description: Customer segment (optional)
+    required: false
+    validators:
+      - type: enum
+        allowedValues: [retail, corporate, vip]
 
   - field-name: registration_date
     field-in: query
@@ -47,22 +62,6 @@ request:
       - type: time
         min: "00:00:00"
         max: "23:59:59"
-
-  - field-name: name
-    field-in: query
-    description: Customer name
-    required: false
-    validators:
-      - type: string
-        regex: "^[A-Za-z ]{2,50}$"
-        preventSqlInjection: true
-
-  - field-name: uuid
-    field-in: query
-    description: Customer UUID
-    required: false
-    validators:
-      - type: uuid
 
 template-source: customers.sql
 connection:
