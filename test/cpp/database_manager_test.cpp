@@ -91,15 +91,16 @@ TEST_CASE_METHOD(TestFixture, "DatabaseManager can execute simple query", "[data
 }
 
 TEST_CASE_METHOD(TestFixture, "DatabaseManager handles pagination", "[database_manager]") {
-    // Create test data
-    db_manager->executeQuery("CREATE TABLE test_table AS SELECT * FROM (VALUES (1), (2), (3), (4), (5)) t(id)", {}, false);
+    // Use unique table name for this test
+    std::string table_name = "pagination_test_table";
+    db_manager->executeQuery("CREATE TABLE " + table_name + " AS SELECT * FROM (VALUES (1), (2), (3), (4), (5)) t(id)", {}, false);
     
     std::map<std::string, std::string> params = {
         {"limit", "2"},
         {"offset", "0"}
     };
     
-    auto result = db_manager->executeQuery("SELECT * FROM test_table ORDER BY id", params);
+    auto result = db_manager->executeQuery("SELECT * FROM " + table_name + " ORDER BY id", params);
     
     REQUIRE(result.data.size() == 2);
     REQUIRE(result.total_count == 5);
@@ -107,28 +108,33 @@ TEST_CASE_METHOD(TestFixture, "DatabaseManager handles pagination", "[database_m
 }
 
 TEST_CASE_METHOD(TestFixture, "DatabaseManager can check table existence", "[database_manager]") {
-    // First execute the CREATE TABLE statement directly
-    db_manager->executeInitStatement("CREATE TABLE test_exists (id INTEGER)");
+    // Use unique table name for this test
+    std::string table_name = "table_existence_test";
+    db_manager->executeInitStatement("CREATE TABLE " + table_name + " (id INTEGER)");
     
     // Now check if the table exists
-    REQUIRE(db_manager->tableExists("main", "test_exists"));
+    REQUIRE(db_manager->tableExists("main", table_name));
     REQUIRE_FALSE(db_manager->tableExists("main", "nonexistent_table"));
 }
 
 TEST_CASE_METHOD(TestFixture, "DatabaseManager can get table names", "[database_manager]") {
-    // Create test tables
-    db_manager->executeQuery("CREATE TABLE test_table_name_table1 (id INTEGER)", {}, false);
-    db_manager->executeQuery("CREATE TABLE test_table_name_table2 (id INTEGER)", {}, false);
+    // Use unique table names for this test
+    std::string table_prefix = "get_table_names_test_";
+    std::string table1 = table_prefix + "table1";
+    std::string table2 = table_prefix + "table2";
     
-    auto tables = db_manager->getTableNames("main", "test_table_name_", true);
+    db_manager->executeQuery("CREATE TABLE " + table1 + " (id INTEGER)", {}, false);
+    db_manager->executeQuery("CREATE TABLE " + table2 + " (id INTEGER)", {}, false);
+    
+    auto tables = db_manager->getTableNames("main", table_prefix, true);
     
     REQUIRE(tables.size() == 2);
-    REQUIRE(std::find(tables.begin(), tables.end(), "test_table_name_table1") != tables.end());
-    REQUIRE(std::find(tables.begin(), tables.end(), "test_table_name_table2") != tables.end());
+    REQUIRE(std::find(tables.begin(), tables.end(), table1) != tables.end());
+    REQUIRE(std::find(tables.begin(), tables.end(), table2) != tables.end());
 }
 
 TEST_CASE_METHOD(TestFixture, "DatabaseManager can handle JSON data", "[database_manager][json]") {
-    std::string table_name = "test_json";
+    std::string table_name = "json_data_test_table";
     std::string json_data = R"({"key": "value"})";
 
     // Skip test if JSON extension is not available

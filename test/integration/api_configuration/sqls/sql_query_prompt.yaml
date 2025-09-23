@@ -18,8 +18,3 @@ mcp-prompt:
     - database_type
     - table_name
     - goal
-
-# SQL Query Helper Prompt:
-# This prompt helps users generate SQL queries by providing
-# structured templates with parameter substitution.
-# Useful for: Data analysts, developers, business users

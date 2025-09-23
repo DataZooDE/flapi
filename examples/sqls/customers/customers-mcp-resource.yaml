@@ -1,0 +1,30 @@
+# ====================================================================================
+# MCP RESOURCE EXAMPLE
+# ====================================================================================
+# MCP resource providing schema information about customer data
+# Resources typically provide static or semi-static information
+
+# MCP resource definition
+mcp-resource:
+  name: customer_schema
+  description: Customer database schema definition and field descriptions
+  mime_type: application/json
+
+# Resources typically don't need request parameters, but can have them for dynamic content
+# For this example, we'll make it static (no request parameters)
+
+# Use dedicated SQL template for schema generation
+template-source: customer-mcp-resource-schema.sql
+
+# Include shared connection
+{{include:connection from customer-common.yaml}}
+
+# Resources typically don't need authentication, rate limiting, or caching
+# But they can be added if the resource contains sensitive information
+# {{include:auth from customer-common.yaml if env.SECURE_RESOURCES}}
+
+# Optional: Light rate limiting to prevent abuse
+rate-limit:
+  enabled: true
+  max: 10
+  interval: 60  # Schema doesn't change often, so lower limits are fine

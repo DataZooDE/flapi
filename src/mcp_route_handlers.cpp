@@ -308,7 +308,7 @@ std::vector<crow::json::wvalue> MCPRouteHandlers::getResourceDefinitionsFromConf
 }
 
 void MCPRouteHandlers::discoverMCPEntities() {
-    CROW_LOG_DEBUG << "Starting MCP entity discovery...";
+    CROW_LOG_INFO << "Starting MCP entity discovery...";
     std::lock_guard<std::mutex> lock(state_mutex_);
 
     tool_definitions_.clear();
@@ -318,21 +318,21 @@ void MCPRouteHandlers::discoverMCPEntities() {
     CROW_LOG_DEBUG << "Found " << endpoints.size() << " total endpoints";
 
     for (const auto& endpoint : endpoints) {
-        CROW_LOG_DEBUG << "Checking endpoint: REST=" << endpoint.isRESTEndpoint()
-                       << ", MCPTool=" << endpoint.isMCPTool()
-                       << ", MCPResource=" << endpoint.isMCPResource();
+        //CROW_LOG_DEBUG << "Checking endpoint: REST=" << endpoint.isRESTEndpoint()
+        //               << ", MCPTool=" << endpoint.isMCPTool()
+        //               << ", MCPResource=" << endpoint.isMCPResource();
 
         if (endpoint.isMCPTool()) {
-            CROW_LOG_INFO << "Adding MCP tool: " << (endpoint.mcp_tool ? endpoint.mcp_tool->name : "null");
+            CROW_LOG_DEBUG << "Adding MCP tool: " << (endpoint.mcp_tool ? endpoint.mcp_tool->name : "null");
             tool_definitions_.push_back(endpointToMCPToolDefinition(endpoint));
         }
         if (endpoint.isMCPResource()) {
-            CROW_LOG_INFO << "Adding MCP resource: " << (endpoint.mcp_resource ? endpoint.mcp_resource->name : "null");
+            CROW_LOG_DEBUG << "Adding MCP resource: " << (endpoint.mcp_resource ? endpoint.mcp_resource->name : "null");
             resource_definitions_.push_back(endpointToMCPResourceDefinition(endpoint));
         }
     }
 
-    CROW_LOG_DEBUG << "Discovered " << tool_definitions_.size() << " MCP tools and "
+    CROW_LOG_INFO << "Discovered " << tool_definitions_.size() << " MCP tools and "
                    << resource_definitions_.size() << " MCP resources";
 }
 
@@ -929,14 +929,11 @@ MCPResponse MCPRouteHandlers::handlePingRequest(const MCPRequest& request) const
     try {
         CROW_LOG_DEBUG << "Ping request received";
 
-        // Create a simple ping response
-        crow::json::wvalue result;
-        result["message"] = "pong";
-        result["timestamp"] = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
-        result["server"] = server_info_.name;
-        result["version"] = server_info_.version;
-
+        // MCP ping response should be an empty object per specification
+        // This complies with standard JSON-RPC ping implementations
+        crow::json::wvalue result = crow::json::wvalue::object();
+        // Empty object - no additional fields needed for ping
+        
         response.result = result.dump();
     } catch (const std::exception& e) {
         response.error = "{\"code\":-32603,\"message\":\"Ping error: " + std::string(e.what()) + "\"}";

@@ -16,7 +16,7 @@ connections:
   bigquery-lakehouse: 
     # SQL commands to initialize the connection (e.g., loading extensions)
     init: |
-      FORCE INSTALL 'bigquery' FROM 'http://storage.googleapis.com/hafenkran';
+      INSTALL 'bigquery' FROM community;
       LOAD 'bigquery';
     # Connection-specific properties (accessible in templates via {{ context.conn.property_name }})
     properties:

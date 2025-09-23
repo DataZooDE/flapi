@@ -1,0 +1,27 @@
+# ====================================================================================
+# MCP TOOL EXAMPLE
+# ====================================================================================
+# Pure MCP tool using shared configuration components
+# Demonstrates how MCP tools can reuse REST endpoint configurations
+
+# MCP tool definition
+mcp-tool:
+  name: customer_lookup
+  description: Retrieve customer information by ID, segment, or other criteria
+  result_mime_type: application/json
+
+# Include shared request parameters (same as REST endpoint)
+{{include:request from customer-common.yaml}}
+
+# Include shared authentication (AI users can access this tool)
+{{include:auth from customer-common.yaml}}
+
+# Include shared rate limiting (may want different limits for AI tools)
+{{include:rate-limit from customer-common.yaml}}
+
+# Include shared connection and template
+{{include:connection from customer-common.yaml}}
+{{include:template-source from customer-common.yaml}}
+
+# MCP-specific configuration
+# Note: MCP tools typically don't need pagination as they're used programmatically

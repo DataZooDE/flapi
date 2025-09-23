@@ -12,9 +12,3 @@ mcp-prompt:
     Server: FLAPI MCP Server
   arguments:
     - current_time
-
-# This is a simple prompt that demonstrates:
-# - Template processing with parameters
-# - Basic text generation
-# - Parameter substitution
-# - MCP protocol compliance

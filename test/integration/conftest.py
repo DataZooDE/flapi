@@ -73,17 +73,61 @@ def flapi_server():
         preexec_fn=os.setsid,
         cwd=temp_dir  # Run in temp directory to use unique db file
     )
-    
+
+    # Check immediately if the process failed to start
+    if process.poll() is not None:
+        stdout, stderr = process.communicate()
+        print(f"Server process failed to start with code {process.returncode}")
+        print(f"STDOUT: {stdout.decode()}")
+        print(f"STDERR: {stderr.decode()}")
+        print(f"Command was: {process.args}")
+        print(f"Working directory: {temp_dir}")
+        raise Exception(f"Server process failed to start with code {process.returncode}")
+
+    # Check if process is still running immediately after starting
+    time.sleep(1)  # Short wait to see if process exits immediately
+
+    # Check immediately if the process failed
+    if process.poll() is not None:
+        stdout, stderr = process.communicate()
+        print(f"Server process exited immediately with code {process.returncode}")
+        print(f"STDOUT: {stdout.decode()}")
+        print(f"STDERR: {stderr.decode()}")
+        print(f"Command was: {process.args}")
+        print(f"Working directory: {temp_dir}")
+        raise Exception(f"Server process exited immediately with code {process.returncode}")
+
     # Wait for server to start
     time.sleep(5)  # Increased wait time for server startup
-    
+
     # Check if process is still running
     if process.poll() is not None:
         stdout, stderr = process.communicate()
         print(f"Server process exited with code {process.returncode}")
         print(f"STDOUT: {stdout.decode()}")
         print(f"STDERR: {stderr.decode()}")
+        print(f"Command was: {process.args}")
+        print(f"Working directory: {temp_dir}")
         raise Exception(f"Server process exited unexpectedly with code {process.returncode}")
+
+    # If process is still running, try to read some output without blocking
+    try:
+        # Read a small amount of output without blocking
+        import select
+        if process.poll() is None:  # Process is still running
+            # Check if there's data to read
+            ready, _, _ = select.select([process.stdout, process.stderr], [], [], 0.1)
+            for stream in ready:
+                if stream == process.stdout:
+                    data = os.read(process.stdout.fileno(), 500)
+                    if data:
+                        print(f"Server STDOUT: {data.decode()[:500]}")
+                elif stream == process.stderr:
+                    data = os.read(process.stderr.fileno(), 500)
+                    if data:
+                        print(f"Server STDERR: {data.decode()[:500]}")
+    except Exception as e:
+        print(f"Could not read server output: {e}")
     
     # Store the port and temp dir in the process object for other fixtures to access
     process.port = port

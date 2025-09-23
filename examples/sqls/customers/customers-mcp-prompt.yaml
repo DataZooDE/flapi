@@ -1,0 +1,56 @@
+# ====================================================================================
+# MCP PROMPT EXAMPLE
+# ====================================================================================
+# MCP prompt for customer data analysis
+# Demonstrates how to create AI prompts that leverage customer data
+
+# MCP prompt definition
+mcp-prompt:
+  name: customer_data_analysis
+  description: Generate comprehensive customer analysis and insights
+  template: |
+    You are a customer data analyst. Please analyze the customer data and provide insights.
+
+    ## Analysis Request
+    {{#customer_id}}
+    **Customer ID**: {{customer_id}}
+    {{/customer_id}}
+    {{#segment}}
+    **Customer Segment**: {{segment}}
+    {{/segment}}
+    {{#analysis_type}}
+    **Analysis Type**: {{analysis_type}}
+    {{/analysis_type}}
+    {{#time_period}}
+    **Time Period**: {{time_period}}
+    {{/time_period}}
+
+    ## Available Data Sources
+    Use the `customer_lookup` MCP tool to retrieve customer information. The customer database contains:
+    - Customer demographics (name, email, registration date)
+    - Customer segmentation (retail, corporate, vip)
+    - Customer identifiers and contact information
+
+    ## Analysis Guidelines
+    1. **Customer Profile**: Analyze the customer's basic information and segment
+    2. **Behavioral Patterns**: Look for patterns in the customer data
+    3. **Segment Analysis**: Compare this customer to others in their segment
+    4. **Recommendations**: Provide actionable insights and recommendations
+
+    {{#include_schema}}
+    ## Database Schema
+    Use the `customer_schema` MCP resource to understand the available fields and their meanings.
+    {{/include_schema}}
+
+    Please provide a comprehensive analysis based on the available customer data.
+
+  # Arguments that can be passed to this prompt
+  arguments:
+    - customer_id
+    - segment  
+    - analysis_type
+    - time_period
+    - include_schema
+
+# Prompts typically don't need connections, auth, or rate limiting
+# But they can be added if the prompt needs to access data directly

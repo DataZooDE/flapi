@@ -1,0 +1,193 @@
+# ====================================================================================
+# CONSOLIDATED CUSTOMER CONFIGURATION
+# ====================================================================================
+# This file contains all shared configuration components for customer endpoints.
+# Use section includes to access specific parts: {{include:section_name from common/customer-common.yaml}}
+
+# ====================================================================================
+# REQUEST FIELDS - Common request parameters
+# ====================================================================================
+request:
+  - field-name: id
+    field-in: query
+    description: Customer ID
+    required: false
+    validators:
+      - type: int
+        min: 1
+        max: 1000000
+        preventSqlInjection: true
+
+  - field-name: segment
+    field-in: query
+    description: Customer segment (optional)
+    required: false
+    validators:
+      - type: enum
+        allowedValues: [retail, corporate, vip]
+
+  - field-name: email
+    field-in: query
+    description: Customer email address
+    required: false
+    validators:
+      - type: email
+
+  - field-name: registration_date
+    field-in: query
+    description: Customer registration date
+    required: false
+    validators:
+      - type: date
+        min: "2000-01-01"
+        max: "2025-12-31"
+
+  - field-name: name
+    field-in: query
+    description: Customer name
+    required: false
+    validators:
+      - type: string
+        regex: "^[A-Za-z ]{2,50}$"
+        preventSqlInjection: true
+
+  - field-name: uuid
+    field-in: query
+    description: Customer UUID
+    required: false
+    validators:
+      - type: uuid
+
+# ====================================================================================
+# AUTHENTICATION CONFIGURATIONS
+# ====================================================================================
+
+# Default/Basic Authentication
+auth:
+  enabled: true
+  type: basic
+  users:
+    - username: admin
+      password: secret
+      roles: [admin, read, write]
+    - username: '{{env.CUSTOMER_API_READ_USER}}'
+      password: '{{env.CUSTOMER_API_READ_PASSWORD}}'
+      roles: [read]
+    - username: '{{env.CUSTOMER_API_AI_USER}}'
+      password: '{{env.CUSTOMER_API_AI_PASSWORD}}'
+      roles: [ai_tools, read]
+
+# Development Authentication (disabled)
+auth-dev:
+  enabled: false  # Disable auth in development for easier testing
+
+# Production Authentication (JWT)
+auth-prod:
+  enabled: true
+  type: jwt
+  jwt_secret: '{{env.CUSTOMER_API_JWT_SECRET}}'
+  jwt_issuer: '{{env.CUSTOMER_API_JWT_ISSUER}}'
+
+# Staging Authentication (Basic with different users)
+auth-staging:
+  enabled: true
+  type: basic
+  users:
+    - username: '{{env.STAGING_API_USER}}'
+      password: '{{env.STAGING_API_PASSWORD}}'
+      roles: [read, write]
+
+# ====================================================================================
+# RATE LIMITING CONFIGURATIONS
+# ====================================================================================
+
+# Standard Rate Limiting
+rate-limit:
+  enabled: true
+  max: 100
+  interval: 60  # 1 minute window
+
+# High-Traffic Rate Limiting
+rate-limit-high:
+  enabled: true
+  max: 1000
+  interval: 60  # 1 minute window
+
+# Development Rate Limiting (more permissive)
+rate-limit-dev:
+  enabled: true
+  max: 1000
+  interval: 10  # 10 second window, high limits for testing
+
+# AI Tools Rate Limiting (lower limits)
+rate-limit-ai:
+  enabled: true
+  max: 50
+  interval: 60  # AI tools typically need fewer requests
+
+# ====================================================================================
+# CONNECTION AND TEMPLATE CONFIGURATIONS
+# ====================================================================================
+
+# Standard Connection
+connection:
+  - customers-parquet
+
+# Template Source
+template-source: customers.sql
+
+# Development Connection (might use different data)
+connection-dev:
+  - customers-dev-parquet
+
+# Production Connection (might use multiple sources)
+connection-prod:
+  - customers-prod-parquet
+  - customers-backup-parquet
+
+# ====================================================================================
+# CACHING CONFIGURATIONS
+# ====================================================================================
+
+# Standard Caching
+cache:
+  enabled: true
+  cache-table-name: customers_cache
+  refresh-time: 5m
+  refresh-endpoint: false
+
+# High-Performance Caching
+cache-performance:
+  enabled: true
+  cache-table-name: customers_perf_cache
+  refresh-time: 1m
+  refresh-endpoint: true
+  max-previous-tables: 10
+
+# Development Caching (disabled for testing)
+cache-dev:
+  enabled: false
+
+# ====================================================================================
+# HEARTBEAT CONFIGURATIONS
+# ====================================================================================
+
+# Standard Heartbeat
+heartbeat:
+  enabled: true
+  params:
+    service: customer-api
+    environment: '{{env.ENVIRONMENT}}'
+
+# Disabled Heartbeat
+heartbeat-disabled:
+  enabled: false
+
+# Enhanced Heartbeat (with more monitoring)
+heartbeat-enhanced:
+  enabled: true
+  params:
+    service: customer-api
+    environment: '{{env.ENVIRONMENT}}'
+    version: '{{env.API_VERSION}}'
+    instance_id: '{{env.INSTANCE_ID}}'

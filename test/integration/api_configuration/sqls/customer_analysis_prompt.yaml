@@ -1,0 +1,18 @@
+mcp-prompt:
+  name: customer_analysis
+  description: Analyze customer data and provide insights
+  template: |
+    Please analyze the customer data and provide insights about:
+
+    Customer segment: {{segment}}
+    Analysis type: {{analysis_type}}
+
+    Focus on:
+    1. Customer behavior patterns in the {{segment}} segment
+    2. Key metrics and trends
+    3. Recommendations for {{analysis_type}}
+
+    Use the available customer data to generate a comprehensive analysis.
+  arguments:
+    - segment
+    - analysis_type

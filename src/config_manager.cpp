@@ -24,17 +24,24 @@ std::chrono::seconds CacheConfig::getRefreshTimeInSeconds() const {
     return *interval;
 }
 
-ConfigManager::ConfigManager(const std::filesystem::path& config_file) 
-    : config_file(config_file), auth_enabled(false) 
+ConfigManager::ConfigManager(const std::filesystem::path& config_file)
+    : config_file(config_file), auth_enabled(false), yaml_parser()
 {}
 
 // Main configuration loading and parsing methods
 void ConfigManager::loadConfig() {
     try {
         CROW_LOG_INFO << "Loading configuration file: " << config_file;
-        config = YAML::LoadFile(config_file.string());
+
+        // Use ExtendedYamlParser to load the main config file
+        auto result = yaml_parser.parseFile(config_file);
+        if (!result.success) {
+            throw std::runtime_error("Failed to parse config file: " + result.error_message);
+        }
+        config = result.node;
+
         parseMainConfig();
-        
+
         std::filesystem::path template_path = getTemplateConfig().path;
         loadEndpointConfigsRecursively(template_path);
         CROW_LOG_INFO << "Configuration loaded successfully";
@@ -143,12 +150,20 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
     CROW_LOG_INFO << "Loading endpoint configs recursively from: " << template_path;
     endpoints.clear();
 
+    size_t total_yaml_files = 0;
+    size_t loaded_endpoints = 0;
+
     if (std::filesystem::exists(template_path) && std::filesystem::is_directory(template_path)) {
         for (const auto& entry : std::filesystem::recursive_directory_iterator(template_path)) {
             if (entry.is_regular_file()) {
                 auto extension = entry.path().extension();
                 if (extension == ".yaml" || extension == ".yml") {
+                    total_yaml_files++;
+                    size_t endpoints_before = endpoints.size();
                     loadEndpointConfig(entry.path().string());
+                    if (endpoints.size() > endpoints_before) {
+                        loaded_endpoints++;
+                    }
                 }
             }
         }
@@ -156,13 +171,25 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
         CROW_LOG_ERROR << "Template path does not exist or is not a directory: " << template_path;
         throw std::runtime_error("Template path does not exist or is not a directory: " + template_path.string());
     }
-    CROW_LOG_INFO << "Loaded " << endpoints.size() << " endpoint configurations";
+    
+    size_t skipped_files = total_yaml_files - loaded_endpoints;
+    CROW_LOG_INFO << "Loaded " << loaded_endpoints << " endpoint configurations";
+    if (skipped_files > 0) {
+        CROW_LOG_INFO << "Skipped " << skipped_files << " non-endpoint YAML files (shared configs, templates, etc.)";
+    }
 }
 
 void ConfigManager::loadEndpointConfig(const std::string& config_file) {
     try {
         CROW_LOG_DEBUG << "\tLoading endpoint config from file: " << config_file;
-        YAML::Node endpoint_config = YAML::LoadFile(config_file);
+
+        // Use ExtendedYamlParser to load the endpoint config file
+        auto result = yaml_parser.parseFile(config_file);
+        if (!result.success) {
+            throw std::runtime_error("Failed to parse endpoint config file: " + result.error_message);
+        }
+        YAML::Node endpoint_config = result.node;
+
         EndpointConfig endpoint;
 
         auto endpoint_dir = std::filesystem::path(config_file).parent_path();
@@ -174,7 +201,8 @@ void ConfigManager::loadEndpointConfig(const std::string& config_file) {
         bool is_mcp_prompt = endpoint_config["mcp-prompt"].IsDefined();
 
         if (!is_rest_endpoint && !is_mcp_tool && !is_mcp_resource && !is_mcp_prompt) {
-            throw std::runtime_error("Configuration must have either 'url-path' (for REST endpoints) or 'mcp-tool'/'mcp-resource'/'mcp-prompt' (for MCP entities)");
+            CROW_LOG_DEBUG << "\t\tSkipping non-endpoint configuration file: " << config_file;
+            return; // Skip this file - it's likely a shared config or template
         }
 
         // Parse REST endpoint specific fields (optional)

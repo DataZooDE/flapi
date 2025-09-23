@@ -9,6 +9,7 @@
 #include <optional>
 #include <regex>
 #include <memory>
+#include <crow/logging.h>
 
 namespace flapi {
 
@@ -82,17 +83,29 @@ public:
     ParseResult parseString(const std::string& content,
                            const std::filesystem::path& base_path = "");
 
-    /**
-     * @brief Preprocess includes in a YAML node
-     *
-     * @param node YAML node to process
-     * @param base_path Base path for resolving relative includes
-     * @param included_files Set of already included files (for circular detection)
-     * @return true if successful, false otherwise
-     */
-    bool preprocessIncludes(YAML::Node& node,
-                           const std::filesystem::path& base_path,
-                           std::unordered_set<std::string>& included_files);
+        /**
+         * @brief Preprocess content to handle include directives before YAML parsing
+         *
+         * @param content YAML content as string
+         * @param base_path Base path for resolving relative includes
+         * @param included_files Set of already included files (for circular detection)
+         * @return Processed content with includes replaced
+         */
+        std::string preprocessContent(const std::string& content,
+                                     const std::filesystem::path& base_path,
+                                     std::unordered_set<std::string>& included_files);
+
+        /**
+         * @brief Preprocess includes in a YAML node
+         *
+         * @param node YAML node to process
+         * @param base_path Base path for resolving relative includes
+         * @param included_files Set of already included files (for circular detection)
+         * @return true if successful, false otherwise
+         */
+        bool preprocessIncludes(YAML::Node& node,
+                               const std::filesystem::path& base_path,
+                               std::unordered_set<std::string>& included_files);
 
     /**
      * @brief Resolve include directives
@@ -113,7 +126,7 @@ public:
             : section_name(section), file_path(path), is_section_include(section_include) {}
     };
 
-    static std::optional<IncludeInfo> parseIncludeDirective(const std::string& directive);
+    std::optional<IncludeInfo> parseIncludeDirective(const std::string& directive) const;
     static bool resolveIncludePath(const std::filesystem::path& include_path,
                                   const std::filesystem::path& base_path,
                                   std::filesystem::path& resolved_path,

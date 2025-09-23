@@ -1,0 +1,19 @@
+mcp-tool:
+  name: get_customers
+  description: Get customers by segment
+  result_mime_type: application/json
+
+request:
+  - field-name: segment
+    field-in: query
+    description: Customer segment
+    required: false
+    validators:
+      - type: string
+
+template-source: customers.sql
+connection:
+  - data-types-parquet
+
+auth:
+  enabled: false

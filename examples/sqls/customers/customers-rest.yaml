@@ -1,0 +1,33 @@
+# ====================================================================================
+# REST ENDPOINT EXAMPLE
+# ====================================================================================
+# Pure REST endpoint using shared configuration components
+# Demonstrates YAML includes to eliminate duplication
+
+# REST endpoint definition
+url-path: /customers/
+
+# Include shared request parameters
+{{include:request from customer-common.yaml}}
+
+# Include shared authentication
+{{include:auth from customer-common.yaml}}
+
+# Include shared rate limiting
+{{include:rate-limit from customer-common.yaml}}
+
+# Include shared connection and template
+{{include:connection from customer-common.yaml}}
+{{include:template-source from customer-common.yaml}}
+
+# REST-specific configuration
+with-pagination: true
+
+# Optional: REST-specific caching
+cache:
+  enabled: false
+  cache-source: customers.sql
+  refresh-time: 5m
+
+heartbeat:
+  enabled: false

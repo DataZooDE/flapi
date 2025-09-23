@@ -560,17 +560,11 @@ class TestMCPPing:
         """Test basic ping functionality."""
         mcp_client.initialize()
 
-        # Test ping without parameters
+        # Test ping without parameters - should return empty object per MCP spec
         result = mcp_client.ping()
-        assert "message" in result
-        assert result["message"] == "pong"
-        assert "timestamp" in result
-        assert "server" in result
-        assert "version" in result
-
-        # Verify timestamp is a number
-        assert isinstance(result["timestamp"], int)
-        assert result["timestamp"] > 0
+        # MCP ping response should be an empty object
+        assert isinstance(result, dict)
+        assert len(result) == 0  # Empty object
 
     def test_ping_response_structure(self, mcp_client):
         """Test ping response structure and content."""
@@ -578,19 +572,9 @@ class TestMCPPing:
 
         result = mcp_client.ping()
 
-        # Check all required fields are present
-        required_fields = ["message", "timestamp", "server", "version"]
-        for field in required_fields:
-            assert field in result, f"Missing required field: {field}"
-
-        # Check field types
-        assert isinstance(result["message"], str)
-        assert result["message"] == "pong"
-        assert isinstance(result["timestamp"], int)
-        assert isinstance(result["server"], str)
-        assert isinstance(result["version"], str)
-        assert len(result["server"]) > 0
-        assert len(result["version"]) > 0
+        # MCP ping response should be an empty object per specification
+        assert isinstance(result, dict)
+        assert len(result) == 0  # Empty object - no fields expected
 
     def test_ping_multiple_calls(self, mcp_client):
         """Test multiple ping calls work correctly."""
@@ -601,16 +585,11 @@ class TestMCPPing:
         for i in range(3):
             result = mcp_client.ping()
             results.append(result)
-            assert result["message"] == "pong"
 
-        # Verify timestamps are different (or at least not decreasing)
-        timestamps = [r["timestamp"] for r in results]
-        assert len(set(timestamps)) >= 1, "Should have at least one unique timestamp"
-
-        # All responses should have same server and version
-        for result in results:
-            assert result["server"] == results[0]["server"]
-            assert result["version"] == results[0]["version"]
+        # All results should be empty objects per MCP specification
+        for i, result in enumerate(results):
+            assert isinstance(result, dict), f"Ping {i+1} should return dict"
+            assert len(result) == 0, f"Ping {i+1} should return empty object"
 
 
 class TestMCPComprehensive:

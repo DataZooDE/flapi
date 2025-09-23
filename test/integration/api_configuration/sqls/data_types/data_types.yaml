@@ -1,4 +1,0 @@
-url-path: /data_types/
-template-source: data_types.sql
-connection: 
-  - data-types-parquet

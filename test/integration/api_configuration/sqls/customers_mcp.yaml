@@ -1,0 +1,19 @@
+mcp-tool:
+  name: customers
+  description: Retrieve customer information by ID
+  result_mime_type: application/json
+
+request:
+  - field-name: id
+    field-in: query
+    description: Customer ID
+    required: false
+    validators:
+      - type: string
+
+template-source: customers.sql
+connection:
+  - data-types-parquet
+
+auth:
+  enabled: false

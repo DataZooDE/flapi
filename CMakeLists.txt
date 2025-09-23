@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.15)
 set(CMAKE_WARN_DEPRECATED OFF CACHE BOOL "" FORCE)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # Windows-specific settings
 if(WIN32)
     # Use dynamic runtime libraries for Windows builds
@@ -84,7 +86,7 @@ endif()
 if (DEFINED ENV{VCPKG_TOOLCHAIN_PATH})
     set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_TOOLCHAIN_PATH}" CACHE STRING "Vcpkg toolchain file")
 else()
-    set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg/scripts/buildsystems/vcpkg.cmake" CACHE STRING "Vcpkg toolchain file")
+    set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "Vcpkg toolchain file")
 endif()
 
 # Set project name and version
@@ -100,7 +102,7 @@ set(CROW_ENABLE_COMPRESSION ON)
 # Compiler flags
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     # Disable unused parameter warnings but keep other warnings
-    set(COMMON_FLAGS "-Wall -Wextra -Wno-unused-parameter -Wno-redundant-move -Wno-maybe-uninitialized")
+    set(COMMON_FLAGS "-Wall -Wextra -Wno-unused-parameter -Wno-redundant-move -Wno-maybe-uninitialized -Wno-cpp -Wno-type-limits")
     
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         set(SANITIZER_FLAGS "-fsanitize=address,undefined -fno-omit-frame-pointer")
@@ -124,6 +126,17 @@ endif()
 if(UNIX AND NOT APPLE)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--as-needed -Wl,--no-undefined")
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--as-needed -Wl,--no-undefined")
+
+    # Check if mold linker is available
+    find_program(MOLD_LINKER mold)
+
+    if(MOLD_LINKER)
+        message(STATUS "mold linker found: ${MOLD_LINKER}")
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fuse-ld=mold")
+        set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -fuse-ld=mold")
+    else()
+        message(STATUS "mold linker NOT found, using default linker.")
+    endif()
 endif()
 
 option(ENABLE_SANITIZER "Enable address sanitizer." TRUE)
@@ -138,10 +151,8 @@ find_package(Crow CONFIG REQUIRED)
 find_package(jwt-cpp CONFIG REQUIRED)
 find_package(argparse CONFIG REQUIRED)
 find_package(fmt CONFIG REQUIRED)
-#find_package(yaml-cpp CONFIG REQUIRED)
 
 include(FetchContent)
-
 FetchContent_Declare(
   yaml-cpp
   GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
@@ -152,7 +163,7 @@ FetchContent_MakeAvailable(yaml-cpp)
 find_package(AWSSDK CONFIG COMPONENTS core secretsmanager REQUIRED)
 
 # Add DuckDB
-set(DUCKDB_EXPLICIT_VERSION 1.3.1)
+set(DUCKDB_EXPLICIT_VERSION 1.4.0)
 set(ENABLE_EXTENSION_AUTOLOADING true)
 set(ENABLE_EXTENSION_AUTOINSTALL true)
 if (WIN32)
@@ -185,6 +196,7 @@ add_library(flapi-lib STATIC
     src/config_service.cpp
     src/database_manager.cpp
     src/embedded_ui.cpp
+    src/extended_yaml_parser.cpp
     src/heartbeat_worker.cpp
     src/open_api_doc_generator.cpp
     src/query_executor.cpp
@@ -192,7 +204,14 @@ add_library(flapi-lib STATIC
     src/request_validator.cpp
     src/rate_limit_middleware.cpp
     src/route_translator.cpp
-    src/sql_template_processor.cpp   
+    src/sql_template_processor.cpp
+    src/mcp_server.cpp
+    src/mcp_tool_handler.cpp
+    src/mcp_route_handlers.cpp
+    src/mcp_session_manager.cpp
+    src/mcp_error_builder.cpp
+    src/mcp_request_validator.cpp
+    src/mcp_client_capabilities.cpp
 )
 
 # Ensure web_ui is built before flapi-lib
@@ -204,7 +223,7 @@ add_library(flapi-lib STATIC
 #message(STATUS "Web UI dependencies configured")
 
 # Link libraries to flapi-lib
-target_link_libraries(flapi-lib PUBLIC 
+target_link_libraries(flapi-lib PUBLIC
     duckdb_static
     Crow::Crow
     yaml-cpp::yaml-cpp

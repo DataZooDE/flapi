@@ -1,0 +1,16 @@
+mcp-prompt:
+  name: data_insights_summary
+  description: Generate a comprehensive summary of available data insights
+  template: |
+    Based on the available customer data in FLAPI, here are the key insights and analysis options:
+
+    📊 **Available Data Sources:**
+    - Customer database with demographic and behavioral data
+    - Transaction records and purchase history
+
+    🔍 **Analysis Capabilities:**
+    - Customer behavior pattern analysis
+    - Segmentation and targeting insights
+
+    This comprehensive data platform enables deep customer insights and data-driven decision making.
+  arguments: []

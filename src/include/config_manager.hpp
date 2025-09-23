@@ -14,6 +14,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "route_translator.hpp"
+#include "extended_yaml_parser.hpp"
 
 namespace flapi {
 
@@ -273,7 +274,7 @@ protected:
     std::string project_description;
     std::string cache_schema = "flapi";
     std::string server_name;
-    int http_port = 8080; 
+    int http_port = 8080;
     std::unordered_map<std::string, ConnectionConfig> connections;
     RateLimitConfig rate_limit_config;
     bool auth_enabled;
@@ -283,6 +284,7 @@ protected:
     TemplateConfig template_config;
     HttpsConfig https_config;
     GlobalHeartbeatConfig global_heartbeat_config;
+    ExtendedYamlParser yaml_parser;
 
     void parseConfig();
 

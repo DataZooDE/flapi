@@ -1,70 +1,28 @@
-# Project name and description
-project_name: example-flapi-project
-project_description: An example flAPI project demonstrating various configuration options
+# Minimal test configuration
+project_name: test-flapi-project
+project_description: Minimal test configuration
 
-# Template configuration
+# Template configuration - empty
 template:
-  # The path where SQL templates and API endpoint configurations are stored
   path: './sqls'
-  # Optional: List of regular expressions for whitelisting environment variables
-  environment-whitelist:
-    - '^FLAPI_.*'
 
 # Database connection configurations
 connections:
-  # A BigQuery connection named 'bigquery-lakehouse'
-  bigquery-lakehouse: 
-    # SQL commands to initialize the connection (e.g., loading extensions)
-    init: |
-      INSTALL 'bigquery' FROM 'http://storage.googleapis.com/hafenkran';
-      LOAD 'bigquery';
-    # Connection-specific properties (accessible in templates via {{ context.conn.property_name }})
-    properties:
-      project_id: 'd-kaercher-lakehouse'
-    # Whether to log executed queries
-    log-queries: true
-    # Whether to log request parameters (headers, URL params, etc.)
-    log-parameters: true
-    # Access control for this connection ('*' allows all users)
-    allow: '*'
-
-  # A local Parquet file connection
-  customers-parquet:
+  # A basic connection for testing
+  data-types-parquet:
     properties:
       path: './data/customers.parquet'
     log-queries: false
     log-parameters: false
     allow: '*'
 
-  data-types-parquet:
-    properties:
-      path: './data/data_types.parquet'
-    log-queries: false
-    log-parameters: false
-    allow: '*'
-
-# HTTPS enforcement configuration
-enforce-https:
-  # Whether to force HTTPS for all connections
-  enabled: false
-  # ssl-cert-file: './ssl/cert.pem'
-  # ssl-key-file: './ssl/key.pem'
-
-# DuckDB configuration
+# DuckDB configuration - use in-memory database
 duckdb:
-  db_path: ./flapi_cache.db  # Optional: remove or comment out for in-memory database
   access_mode: READ_WRITE
-  threads: 8
-  max_memory: 8GB
-  default_order: DESC
+  threads: 1
+  max_memory: 256MB
 
-# MCP Resources Configuration
-# MCP resources are automatically discovered from the sqls directory
-# Resources are defined using 'mcp-resource' key in YAML files
-# Example: api_configuration/sqls/customers/customer_schema.yaml
-#
-# Available MCP Resources:
-# - customer_schema: Customer database schema information
-#   URI: flapi://customer_schema
-#   Content-Type: application/json
-#   Access: Requires authentication
+# Disable MCP for now to test basic server functionality
+mcp:
+  enabled: false
+
