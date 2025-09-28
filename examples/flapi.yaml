@@ -46,7 +46,7 @@ enforce-https:
 
 # DuckDB configuration
 duckdb:
-  db_path: ./flapi_cache.db  # Optional: remove or comment out for in-memory database
+  # db_path: ./flapi_cache.db  # Optional: remove or comment out for in-memory database
   access_mode: READ_WRITE
   threads: 8
   max_memory: 8GB

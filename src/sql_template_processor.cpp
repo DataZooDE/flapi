@@ -56,8 +56,10 @@ crow::mustache::context SQLTemplateProcessor::createTemplateContext(const Endpoi
     crow::mustache::context ctx;
 
     // Add connection properties
-    for (const auto& [key, value] : config_manager->getPropertiesForTemplates(endpoint.connection[0])) {
-        ctx["conn"][key] = value;
+    if (!endpoint.connection.empty()) {
+        for (const auto& [key, value] : config_manager->getPropertiesForTemplates(endpoint.connection[0])) {
+            ctx["conn"][key] = value;
+        }
     }
 
     // Add filtered environment variables

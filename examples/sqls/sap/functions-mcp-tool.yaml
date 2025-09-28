@@ -1,0 +1,17 @@
+mcp-tool:
+  name: available_sap_rfc_functions
+  description: Get all available SAP RFC functions from the SAP system
+  result_mime_type: application/json
+
+template-source: functions.sql
+connection: [sap-abap-trial]
+
+request:
+  - field-name: function_group_name
+    field-in: query
+    description: Function group name
+    required: false
+    validators:
+      - type: string
+        min: 1
+        max: 100

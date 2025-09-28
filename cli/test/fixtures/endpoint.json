@@ -1,0 +1,8 @@
+{
+  "url-path": "/integration-test",
+  "method": "GET",
+  "connection": [
+    "customers-parquet"
+  ],
+  "template-source": "customers/customers.sql"
+}

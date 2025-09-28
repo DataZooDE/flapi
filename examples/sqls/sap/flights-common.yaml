@@ -1,0 +1,8 @@
+request:
+  - field-name: carrier_id
+    field-in: query
+    description: Carrier ID
+    required: false
+    validators:
+      - type: string
+        preventSqlInjection: true

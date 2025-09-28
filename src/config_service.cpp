@@ -4,6 +4,7 @@
 
 #include "config_service.hpp"
 #include "embedded_ui.hpp"
+#include "path_utils.hpp"
 
 namespace flapi {
 
@@ -102,7 +103,8 @@ void ConfigService::registerRoutes(FlapiApp& app) {
 
     CROW_ROUTE(app, "/api/v1/_config/endpoints/<string>")
         .methods("GET"_method, "PUT"_method, "DELETE"_method)
-        ([this](const crow::request& req, const std::string& path) {
+        ([this](const crow::request& req, const std::string& slug) {
+            const std::string path = PathUtils::slugToPath(slug);
             switch (req.method) {
                 case crow::HTTPMethod::Get:
                     return getEndpointConfig(req, path);
@@ -118,7 +120,8 @@ void ConfigService::registerRoutes(FlapiApp& app) {
     // Template routes
     CROW_ROUTE(app, "/api/v1/_config/endpoints/<string>/template")
         .methods("GET"_method, "PUT"_method)
-        ([this](const crow::request& req, const std::string& path) {
+        ([this](const crow::request& req, const std::string& slug) {
+            const std::string path = PathUtils::slugToPath(slug);
             if (req.method == crow::HTTPMethod::Get)
                 return getEndpointTemplate(req, path);
             else
@@ -127,20 +130,23 @@ void ConfigService::registerRoutes(FlapiApp& app) {
 
     CROW_ROUTE(app, "/api/v1/_config/endpoints/<string>/template/expand")
         .methods("POST"_method)
-        ([this](const crow::request& req, const std::string& path) {
+        ([this](const crow::request& req, const std::string& slug) {
+            const std::string path = PathUtils::slugToPath(slug);
             return expandTemplate(req, path);
         });
 
     CROW_ROUTE(app, "/api/v1/_config/endpoints/<string>/template/test")
         .methods("POST"_method)
-        ([this](const crow::request& req, const std::string& path) {
+        ([this](const crow::request& req, const std::string& slug) {
+            const std::string path = PathUtils::slugToPath(slug);
             return testTemplate(req, path);
         });
 
     // Cache routes
     CROW_ROUTE(app, "/api/v1/_config/endpoints/<string>/cache")
         .methods("GET"_method, "PUT"_method)
-        ([this](const crow::request& req, const std::string& path) {
+        ([this](const crow::request& req, const std::string& slug) {
+            const std::string path = PathUtils::slugToPath(slug);
             if (req.method == crow::HTTPMethod::Get)
                 return getCacheConfig(req, path);
             else
@@ -149,7 +155,8 @@ void ConfigService::registerRoutes(FlapiApp& app) {
 
     CROW_ROUTE(app, "/api/v1/_config/endpoints/<string>/cache/template")
         .methods("GET"_method, "PUT"_method)
-        ([this](const crow::request& req, const std::string& path) {
+        ([this](const crow::request& req, const std::string& slug) {
+            const std::string path = PathUtils::slugToPath(slug);
             if (req.method == crow::HTTPMethod::Get)
                 return getCacheTemplate(req, path);
             else
@@ -158,7 +165,8 @@ void ConfigService::registerRoutes(FlapiApp& app) {
 
     CROW_ROUTE(app, "/api/v1/_config/endpoints/<string>/cache/refresh")
         .methods("POST"_method)
-        ([this](const crow::request& req, const std::string& path) {
+        ([this](const crow::request& req, const std::string& slug) {
+            const std::string path = PathUtils::slugToPath(slug);
             return refreshCache(req, path);
         });
 
@@ -239,43 +247,11 @@ crow::response ConfigService::getEndpointConfig(const crow::request& req, const 
 
 // Helper methods for converting between JSON and EndpointConfig
 crow::json::wvalue ConfigService::endpointConfigToJson(const EndpointConfig& config) {
-    crow::json::wvalue json;
-    json["url-path"] = config.urlPath;
-    json["template-source"] = config.templateSource;
-    
-    // Add request fields
-    std::vector<crow::json::wvalue> requestFields;
-    for (const auto& field : config.request_fields) {
-        crow::json::wvalue fieldJson;
-        fieldJson["field-name"] = field.fieldName;
-        fieldJson["field-in"] = field.fieldIn;
-        fieldJson["description"] = field.description;
-        fieldJson["required"] = field.required;
-        requestFields.push_back(std::move(fieldJson));
-    }
-    json["request"] = std::move(requestFields);
-    
-    return json;
+    return config_manager->serializeEndpointConfig(config, EndpointJsonStyle::HyphenCase);
 }
 
 EndpointConfig ConfigService::jsonToEndpointConfig(const crow::json::rvalue& json) {
-    EndpointConfig config;
-    config.urlPath = json["url-path"].s();
-    config.templateSource = json["template-source"].s();
-    
-    // Parse request fields
-    if (json.has("request")) {
-        for (const auto& field : json["request"]) {
-            RequestFieldConfig fieldConfig;
-            fieldConfig.fieldName = field["field-name"].s();
-            fieldConfig.fieldIn = field["field-in"].s();
-            fieldConfig.description = field["description"].s();
-            fieldConfig.required = field["required"].b();
-            config.request_fields.push_back(fieldConfig);
-        }
-    }
-    
-    return config;
+    return config_manager->deserializeEndpointConfig(json);
 }
 
 // Implement remaining endpoint handlers...
@@ -286,31 +262,15 @@ crow::response ConfigService::updateEndpointConfig(const crow::request& req, con
             return crow::response(400, "Invalid JSON");
         }
 
-        // Find the endpoint
-        auto* endpoint = config_manager->getEndpointForPath(path);
-        if (!endpoint) {
-            return crow::response(404, "Endpoint not found");
-        }
-
-        // Convert JSON to EndpointConfig
         auto updated_config = jsonToEndpointConfig(json);
-        
-        // Validate that the path matches
+
         if (updated_config.urlPath != path) {
             return crow::response(400, "URL path in config does not match endpoint path");
         }
 
-        // Update the endpoint in config_manager
-        // First remove the old endpoint
-        auto& endpoints = const_cast<std::vector<EndpointConfig>&>(config_manager->getEndpoints());
-        endpoints.erase(
-            std::remove_if(endpoints.begin(), endpoints.end(),
-                [&path](const EndpointConfig& e) { return e.urlPath == path; }),
-            endpoints.end()
-        );
-
-        // Then add the updated endpoint
-        config_manager->addEndpoint(updated_config);
+        if (!config_manager->replaceEndpoint(updated_config)) {
+            return crow::response(404, "Endpoint not found");
+        }
 
         return crow::response(200);
     } catch (const std::exception& e) {
@@ -320,19 +280,9 @@ crow::response ConfigService::updateEndpointConfig(const crow::request& req, con
 
 crow::response ConfigService::deleteEndpoint(const crow::request& req, const std::string& path) {
     try {
-        // Find the endpoint
-        auto* endpoint = config_manager->getEndpointForPath(path);
-        if (!endpoint) {
+        if (!config_manager->removeEndpointByPath(path)) {
             return crow::response(404, "Endpoint not found");
         }
-
-        // Remove the endpoint from config_manager
-        auto& endpoints = const_cast<std::vector<EndpointConfig>&>(config_manager->getEndpoints());
-        endpoints.erase(
-            std::remove_if(endpoints.begin(), endpoints.end(),
-                [&path](const EndpointConfig& e) { return e.urlPath == path; }),
-            endpoints.end()
-        );
 
         return crow::response(200);
     } catch (const std::exception& e) {
@@ -349,9 +299,10 @@ crow::response ConfigService::getEndpointTemplate(const crow::request& req, cons
         }
 
         // Read the template file
-        std::ifstream file(endpoint->templateSource);
+        auto template_path = resolveTemplatePath(endpoint->templateSource);
+        std::ifstream file(template_path);
         if (!file.is_open()) {
-            return crow::response(500, "Could not open template file: " + endpoint->templateSource);
+            return crow::response(500, "Could not open template file: " + template_path.string());
         }
 
         std::stringstream buffer;
@@ -379,9 +330,10 @@ crow::response ConfigService::updateEndpointTemplate(const crow::request& req, c
         }
 
         // Write the template to file
-        std::ofstream file(endpoint->templateSource);
+        auto template_path = resolveTemplatePath(endpoint->templateSource);
+        std::ofstream file(template_path);
         if (!file.is_open()) {
-            return crow::response(500, "Could not open template file for writing: " + endpoint->templateSource);
+            return crow::response(500, "Could not open template file for writing: " + template_path.string());
         }
 
         file << json["template"].s();
@@ -411,7 +363,28 @@ crow::response ConfigService::expandTemplate(const crow::request& req, const std
         // Convert parameters to map
         std::map<std::string, std::string> params;
         for (const auto& param : json["parameters"]) {
-            params[param.key()] = param.s();
+            // Convert all parameter values to strings
+            std::string value;
+            if (param.t() == crow::json::type::String) {
+                value = param.s();
+            } else if (param.t() == crow::json::type::Number) {
+                // Try integer first, then double
+                try {
+                    value = std::to_string(param.i());
+                } catch (...) {
+                    value = std::to_string(param.d());
+                }
+            } else if (param.t() == crow::json::type::True) {
+                value = "true";
+            } else if (param.t() == crow::json::type::False) {
+                value = "false";
+            } else if (param.t() == crow::json::type::Null) {
+                value = "";
+            } else {
+                // For objects and arrays, just use empty string for now
+                value = "";
+            }
+            params[param.key()] = value;
         }
 
         // Use SQLTemplateProcessor to expand the template
@@ -446,7 +419,28 @@ crow::response ConfigService::testTemplate(const crow::request& req, const std::
         // Convert parameters to map
         std::map<std::string, std::string> params;
         for (const auto& param : json["parameters"]) {
-            params[param.key()] = param.s();
+            // Convert all parameter values to strings
+            std::string value;
+            if (param.t() == crow::json::type::String) {
+                value = param.s();
+            } else if (param.t() == crow::json::type::Number) {
+                // Try integer first, then double
+                try {
+                    value = std::to_string(param.i());
+                } catch (...) {
+                    value = std::to_string(param.d());
+                }
+            } else if (param.t() == crow::json::type::True) {
+                value = "true";
+            } else if (param.t() == crow::json::type::False) {
+                value = "false";
+            } else if (param.t() == crow::json::type::Null) {
+                value = "";
+            } else {
+                // For objects and arrays, just use empty string for now
+                value = "";
+            }
+            params[param.key()] = value;
         }
 
         // Get database manager instance
@@ -565,9 +559,10 @@ crow::response ConfigService::getCacheTemplate(const crow::request& req, const s
         }
 
         // Read the cache template file
-        std::ifstream file(endpoint->cache.cacheSource);
+        auto cache_path = resolveTemplatePath(endpoint->cache.cacheSource);
+        std::ifstream file(cache_path);
         if (!file.is_open()) {
-            return crow::response(500, "Could not open cache template file: " + endpoint->cache.cacheSource);
+            return crow::response(500, "Could not open cache template file: " + cache_path.string());
         }
 
         std::stringstream buffer;
@@ -599,9 +594,10 @@ crow::response ConfigService::updateCacheTemplate(const crow::request& req, cons
         }
 
         // Write the template to file
-        std::ofstream file(endpoint->cache.cacheSource);
+        auto cache_path = resolveTemplatePath(endpoint->cache.cacheSource);
+        std::ofstream file(cache_path);
         if (!file.is_open()) {
-            return crow::response(500, "Could not open cache template file for writing: " + endpoint->cache.cacheSource);
+            return crow::response(500, "Could not open cache template file for writing: " + cache_path.string());
         }
 
         file << json["template"].s();
@@ -646,10 +642,47 @@ crow::response ConfigService::refreshCache(const crow::request& req, const std::
     }
 }
 
+std::filesystem::path ConfigService::resolveTemplatePath(const std::string& source) const {
+    std::filesystem::path template_path(source);
+    if (template_path.is_absolute()) {
+        return template_path;
+    }
+
+    if (!config_manager) {
+        return template_path;
+    }
+
+    std::filesystem::path base_path(config_manager->getTemplatePath());
+    return (base_path / template_path).lexically_normal();
+}
+
 crow::response ConfigService::getSchema(const crow::request& req) {
     try {
+        // Parse query parameters
+        auto url_params = req.url_params;
+        bool tables_only = url_params.get("tables") != nullptr;
+        bool connections_only = url_params.get("connections") != nullptr;
+        std::string specific_connection = url_params.get("connection") ? url_params.get("connection") : "";
+        
         // Get database manager instance
         auto db_manager = DatabaseManager::getInstance();
+
+        // For now, return a simple response based on what's requested
+        crow::json::wvalue response;
+        
+        if (connections_only) {
+            // Return connection information
+            response["connections"] = crow::json::wvalue::list();
+            // TODO: Implement actual connection listing
+            return crow::response(200, response);
+        }
+        
+        if (tables_only) {
+            // Return table information in the format expected by CLI
+            response["tables"] = crow::json::wvalue::list();
+            // TODO: Implement actual table listing
+            return crow::response(200, response);
+        }
 
         // Use a single SQL query to get all schema information
         const std::string query = R"SQL(
@@ -676,7 +709,6 @@ crow::response ConfigService::getSchema(const crow::request& req) {
         auto result = db_manager->executeQuery(query, {}, false);
     
         // Process results into the desired JSON structure
-        crow::json::wvalue response;
         if (result.data.t() == crow::json::type::Null) {
             return crow::response(200, response);
         }
@@ -684,12 +716,31 @@ crow::response ConfigService::getSchema(const crow::request& req) {
         // Build the tree structure from flat results
         for (size_t i = 0; i < result.data.size(); ++i) {
             const auto& row = crow::json::load(result.data[i].dump());
-            const auto& schema_name = row["schema_name"].s();
-            const auto& table_name = row["table_name"].s();
-            const auto& column_name = row["column_name"].s();
-            const auto& data_type = row["data_type"].s();
-            const bool is_nullable = row["is_nullable"].b();
-            const bool is_view = row["is_view"].b();
+            
+            // Safely extract string values, handling NULL
+            auto safe_string = [](const crow::json::rvalue& val) -> std::string {
+                if (val.t() == crow::json::type::String) {
+                    return val.s();
+                }
+                return "";
+            };
+            
+            // Safely extract boolean values, handling NULL
+            auto safe_bool = [](const crow::json::rvalue& val) -> bool {
+                if (val.t() == crow::json::type::True) {
+                    return true;
+                } else if (val.t() == crow::json::type::False) {
+                    return false;
+                }
+                return false;
+            };
+            
+            const std::string schema_name = safe_string(row["schema_name"]);
+            const std::string table_name = safe_string(row["table_name"]);
+            const std::string column_name = safe_string(row["column_name"]);
+            const std::string data_type = safe_string(row["data_type"]);
+            const bool is_nullable = safe_bool(row["is_nullable"]);
+            const bool is_view = safe_bool(row["is_view"]);
 
             // Initialize schema if not exists
             auto schema_names = response.keys();

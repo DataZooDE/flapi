@@ -199,6 +199,7 @@ add_library(flapi-lib STATIC
     src/extended_yaml_parser.cpp
     src/heartbeat_worker.cpp
     src/open_api_doc_generator.cpp
+    src/path_utils.cpp
     src/query_executor.cpp
     src/request_handler.cpp
     src/request_validator.cpp

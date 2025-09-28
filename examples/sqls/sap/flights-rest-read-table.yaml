@@ -1,0 +1,12 @@
+url-path: /sap/flights
+
+with-pagination: true
+
+# Standard Connection
+connection:
+  - sap-abap-trial
+
+template-source: flights.sql
+connection: [sap-abap-trial]
+
+{{include:request from flights-common.yaml}}

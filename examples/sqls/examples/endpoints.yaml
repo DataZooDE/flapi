@@ -1,0 +1,11 @@
+url-path: /example
+method: GET
+with-pagination: false
+request:
+  - field-name: id
+    field-in: query
+    description: Example identifier
+    required: false
+connection:
+  - default
+template-source: example.sql

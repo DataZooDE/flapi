@@ -1,0 +1,76 @@
+# Project name and description
+project_name: example-flapi-project
+project_description: An example flAPI project demonstrating various configuration options
+
+# Template configuration
+template:
+  # The path where SQL templates and API endpoint configurations are stored
+  path: '/home/jr/Projects/datazoo/flapi/examples/sqls'
+  # Optional: List of regular expressions for whitelisting environment variables
+  environment-whitelist:
+    - '^FLAPI_.*'
+
+# Database connection configurations
+connections:
+  # A BigQuery connection named 'bigquery-lakehouse'
+  bigquery-lakehouse: 
+    # SQL commands to initialize the connection (e.g., loading extensions)
+    init: |
+      INSTALL 'bigquery' FROM community;
+      LOAD 'bigquery';
+    # Connection-specific properties (accessible in templates via {{ context.conn.property_name }})
+    properties:
+      project_id: 'd-kaercher-lakehouse'
+
+  # A local Parquet file connection
+  customers-parquet:
+    properties:
+      path: './data/customers.parquet'
+
+  taxi-parquet:
+    properties:
+      path: '~/Downloads/taxi'
+
+      
+# Heartbeat configuration
+heartbeat:
+  enabled: true # Whether to enable the heartbeat worker, off by default
+  worker-interval: 10
+
+# HTTPS enforcement configuration
+enforce-https:
+  # Whether to force HTTPS for all connections
+  enabled: false
+  # ssl-cert-file: './ssl/cert.pem'
+  # ssl-key-file: './ssl/key.pem'
+
+# DuckDB configuration
+duckdb:
+  # db_path: ./flapi_cache.db  # in-memory for tests  # Optional: remove or comment out for in-memory database
+  access_mode: READ_WRITE
+  threads: 8
+  max_memory: 8GB
+  default_order: DESC
+
+# ====================================================================================
+# MCP (Model Context Protocol) Support
+# ====================================================================================
+# flAPI now automatically enables MCP server - no separate configuration needed!
+# Any configuration file in the sqls/ directory can define:
+# - REST endpoints (if 'url-path' is present)
+# - MCP tools (if 'mcp-tool' section is present)
+# - MCP resources (if 'mcp-resource' section is present)
+# - Or any combination of the above!
+#
+# Example unified configuration in sqls/customers-unified.yaml:
+# url-path: /customers/                    # Makes this a REST endpoint
+# mcp-tool:                                # Also makes this an MCP tool
+#   name: get_customers
+#   description: Retrieve customer information by ID
+# request:
+#   - field-name: id
+#     # ... rest of parameter definitions
+# template-source: customers.sql
+# connection: [customers-parquet]
+# # ... other common sections work for both REST and MCP
+

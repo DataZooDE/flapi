@@ -108,7 +108,23 @@ TEST_CASE_METHOD(TestFixture, "ConfigService: List endpoints", "[config_service]
     // Add a test endpoint
     EndpointConfig endpoint;
     endpoint.urlPath = "/test";
-    endpoint.templateSource = "test.sql";
+    endpoint.templateSource = (temp_dir / "test.sql").string();
+    endpoint.method = "GET";
+    
+    // Initialize all boolean fields to prevent uninitialized values
+    endpoint.auth.enabled = false;
+    endpoint.auth.type = "";
+    endpoint.cache.enabled = false;
+    endpoint.cache.cacheSource = "";
+    endpoint.cache.cacheTableName = "";
+    endpoint.cache.refreshTime = "";
+    endpoint.rate_limit.enabled = false;
+    endpoint.rate_limit.max = 0;
+    endpoint.rate_limit.interval = 0;
+    endpoint.heartbeat.enabled = false;
+    endpoint.request_fields_validation = false;
+    endpoint.with_pagination = false;
+    
     config_manager->addEndpoint(endpoint);
 
     auto req = createMockRequest("GET");
@@ -137,11 +153,55 @@ TEST_CASE_METHOD(TestFixture, "ConfigService: Create endpoint", "[config_service
     REQUIRE(endpoint->urlPath == "/new-endpoint");
 }
 
+TEST_CASE_METHOD(TestFixture, "ConfigService: Create endpoint accepts snake_case", "[config_service]") {
+    crow::json::wvalue endpoint_json;
+    endpoint_json["url_path"] = "/snake-endpoint";
+    endpoint_json["template_source"] = "snake_template.sql";
+
+    auto req = createMockRequest("POST", endpoint_json.dump());
+    auto response = config_service->createEndpoint(req);
+
+    REQUIRE(response.code == 201);
+    const auto* endpoint = config_manager->getEndpointForPath("/snake-endpoint");
+    REQUIRE(endpoint != nullptr);
+    REQUIRE(endpoint->templateSource == "snake_template.sql");
+}
+
+TEST_CASE_METHOD(TestFixture, "ConfigService: Create endpoint accepts camelCase", "[config_service]") {
+    crow::json::wvalue endpoint_json;
+    endpoint_json["urlPath"] = "/camel-endpoint";
+    endpoint_json["templateSource"] = "camel_template.sql";
+
+    auto req = createMockRequest("POST", endpoint_json.dump());
+    auto response = config_service->createEndpoint(req);
+
+    REQUIRE(response.code == 201);
+    const auto* endpoint = config_manager->getEndpointForPath("/camel-endpoint");
+    REQUIRE(endpoint != nullptr);
+    REQUIRE(endpoint->templateSource == "camel_template.sql");
+}
+
 TEST_CASE_METHOD(TestFixture, "ConfigService: Get endpoint configuration", "[config_service]") {
     // Add a test endpoint
     EndpointConfig endpoint;
     endpoint.urlPath = "/test";
-    endpoint.templateSource = "test.sql";
+    endpoint.templateSource = (temp_dir / "test.sql").string();
+    endpoint.method = "GET";
+    
+    // Initialize all boolean fields to prevent uninitialized values
+    endpoint.auth.enabled = false;
+    endpoint.auth.type = "";
+    endpoint.cache.enabled = false;
+    endpoint.cache.cacheSource = "";
+    endpoint.cache.cacheTableName = "";
+    endpoint.cache.refreshTime = "";
+    endpoint.rate_limit.enabled = false;
+    endpoint.rate_limit.max = 0;
+    endpoint.rate_limit.interval = 0;
+    endpoint.heartbeat.enabled = false;
+    endpoint.request_fields_validation = false;
+    endpoint.with_pagination = false;
+    
     config_manager->addEndpoint(endpoint);
 
     auto req = createMockRequest("GET");
@@ -152,7 +212,7 @@ TEST_CASE_METHOD(TestFixture, "ConfigService: Get endpoint configuration", "[con
     auto json = crow::json::load(response.body);
     REQUIRE(json);
     REQUIRE(json["url-path"].s() == "/test");
-    REQUIRE(json["template-source"].s() == "test.sql");
+    REQUIRE(json["template-source"].s() == (temp_dir / "test.sql").string());
 }
 
 TEST_CASE_METHOD(TestFixture, "ConfigService: Get non-existent endpoint", "[config_service]") {
@@ -173,6 +233,21 @@ TEST_CASE_METHOD(TestFixture, "ConfigService: JSON conversion", "[config_service
     EndpointConfig endpoint;
     endpoint.urlPath = "/test";
     endpoint.templateSource = "test.sql";
+    endpoint.method = "GET";
+    
+    // Initialize all boolean fields to prevent uninitialized values
+    endpoint.auth.enabled = false;
+    endpoint.auth.type = "";
+    endpoint.cache.enabled = false;
+    endpoint.cache.cacheSource = "";
+    endpoint.cache.cacheTableName = "";
+    endpoint.cache.refreshTime = "";
+    endpoint.rate_limit.enabled = false;
+    endpoint.rate_limit.max = 0;
+    endpoint.rate_limit.interval = 0;
+    endpoint.heartbeat.enabled = false;
+    endpoint.request_fields_validation = false;
+    endpoint.with_pagination = false;
     
     RequestFieldConfig field;
     field.fieldName = "id";
@@ -206,7 +281,7 @@ TEST_CASE_METHOD(TestFixture, "ConfigService: Update endpoint configuration", "[
     // Prepare update JSON
     crow::json::wvalue update_json;
     update_json["url-path"] = "/test";
-    update_json["template-source"] = "updated_test.sql";
+    update_json["template-source"] = (temp_dir / "updated_test.sql").string();
     
     auto req = createMockRequest("PUT", update_json.dump());
     auto response = config_service->updateEndpointConfig(req, "/test");
@@ -216,7 +291,7 @@ TEST_CASE_METHOD(TestFixture, "ConfigService: Update endpoint configuration", "[
     // Verify endpoint was updated
     const auto* updated = config_manager->getEndpointForPath("/test");
     REQUIRE(updated != nullptr);
-    REQUIRE(updated->templateSource == "updated_test.sql");
+    REQUIRE(updated->templateSource == (temp_dir / "updated_test.sql").string());
 }
 
 TEST_CASE_METHOD(TestFixture, "ConfigService: Delete endpoint", "[config_service]") {
@@ -947,6 +1022,62 @@ TEST_CASE_METHOD(TestFixture, "ConfigService: File sync - Template updates", "[c
     auto perms = std::filesystem::status(template_path).permissions();
     REQUIRE((perms & std::filesystem::perms::owner_read) != std::filesystem::perms::none);
     REQUIRE((perms & std::filesystem::perms::owner_write) != std::filesystem::perms::none);
+}
+
+TEST_CASE_METHOD(TestFixture, "ConfigService: Update endpoint template resolves relative path", "[config_service]") {
+    // Create a template file in the templates directory
+    std::filesystem::path template_path = templates_dir / "relative_template.sql";
+    {
+        std::ofstream file(template_path);
+        file << "initial content";
+    }
+
+    // Create an endpoint using a relative template path
+    EndpointConfig endpoint;
+    endpoint.urlPath = "/relative";
+    endpoint.templateSource = "relative_template.sql";
+    config_manager->addEndpoint(endpoint);
+
+    // Update the template
+    const std::string new_content = "SELECT 1";
+    crow::json::wvalue update_json;
+    update_json["template"] = new_content;
+
+    auto req = createMockRequest("PUT", update_json.dump());
+    auto response = config_service->updateEndpointTemplate(req, "/relative");
+
+    REQUIRE(response.code == 200);
+
+    std::ifstream file(template_path);
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    REQUIRE(buffer.str() == new_content);
+}
+
+TEST_CASE_METHOD(TestFixture, "ConfigService: Expand template without connection", "[config_service]") {
+    // Create a test template file
+    std::filesystem::path template_path = temp_dir / "test_template.sql";
+    {
+        std::ofstream file(template_path);
+        file << "SELECT * FROM {{params.table}}";
+    }
+
+    // Create an endpoint without connection configuration
+    EndpointConfig endpoint;
+    endpoint.urlPath = "/test-no-conn";
+    endpoint.templateSource = template_path.string();
+    config_manager->addEndpoint(endpoint);
+
+    crow::json::wvalue params_json;
+    params_json["parameters"]["table"] = "users";
+
+    auto req = createMockRequest("POST", params_json.dump());
+    auto response = config_service->expandTemplate(req, "/test-no-conn");
+
+    REQUIRE(response.code == 200);
+    auto json = crow::json::load(response.body);
+    REQUIRE(json);
+    REQUIRE(json["expanded"].s() == "SELECT * FROM users");
 }
 
 } // namespace test

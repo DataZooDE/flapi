@@ -149,6 +149,11 @@ struct EndpointConfig {
     bool isMCPPrompt() const { return mcp_prompt.has_value(); }
 };
 
+enum class EndpointJsonStyle {
+    HyphenCase,
+    CamelCase
+};
+
 struct MCPToolParameter {
     std::string name;
     std::string description;
@@ -258,11 +263,15 @@ public:
 
     void refreshConfig();
     void addEndpoint(const EndpointConfig& endpoint);
+    bool removeEndpointByPath(const std::string& path);
+    bool replaceEndpoint(const EndpointConfig& endpoint);
     
     std::unordered_map<std::string, std::string> getPropertiesForTemplates(const std::string& connectionName) const;
 
     crow::json::wvalue getFlapiConfig() const;
     crow::json::wvalue getEndpointsConfig() const;
+    crow::json::wvalue serializeEndpointConfig(const EndpointConfig& config, EndpointJsonStyle style) const;
+    EndpointConfig deserializeEndpointConfig(const crow::json::rvalue& json) const;
 
     void printConfig() const;
     static void printYamlNode(const YAML::Node& node, int indent = 0);

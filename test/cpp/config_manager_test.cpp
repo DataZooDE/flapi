@@ -30,6 +30,10 @@ bool ends_with(const std::string& str, const std::string& suffix) {
            str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
+crow::json::rvalue wvalueToRValue(const crow::json::wvalue& wval) {
+    return crow::json::load(wval.dump());
+}
+
 TEST_CASE("ConfigManager basic functionality", "[config_manager]") {
     
     std::string temp_template_dir = createTempDir();
@@ -320,4 +324,104 @@ connections:
     }
 
     std::filesystem::remove_all(temp_template_dir);
+}
+
+TEST_CASE("ConfigManager replace and remove endpoints", "[config_manager]") {
+    ConfigManager mgr{std::filesystem::path("/tmp/flapi_config.yaml")};
+
+    EndpointConfig restEndpoint;
+    restEndpoint.urlPath = "/rest";
+    restEndpoint.method = "GET";
+    restEndpoint.templateSource = "rest.sql";
+    restEndpoint.connection = {"default"};
+    restEndpoint.request_fields_validation = true;
+    restEndpoint.with_pagination = true;
+
+    RequestFieldConfig field;
+    field.fieldName = "id";
+    field.fieldIn = "query";
+    field.description = "Identifier";
+    field.required = true;
+    restEndpoint.request_fields.push_back(field);
+
+    // Initialize auth config
+    restEndpoint.auth.enabled = false;
+    restEndpoint.auth.type = "";
+
+    // Initialize cache config
+    restEndpoint.cache.enabled = true;
+    restEndpoint.cache.cacheSource = "cache.sql";
+    restEndpoint.cache.cacheTableName = "cache_table";
+    restEndpoint.cache.refreshTime = "1h";
+
+    // Initialize rate limit config
+    restEndpoint.rate_limit.enabled = false;
+    restEndpoint.rate_limit.max = 0;
+    restEndpoint.rate_limit.interval = 0;
+
+    // Initialize heartbeat config
+    restEndpoint.heartbeat.enabled = false;
+
+    mgr.addEndpoint(restEndpoint);
+
+    SECTION("replace existing rest endpoint") {
+        EndpointConfig replacement = restEndpoint;
+        replacement.templateSource = "updated.sql";
+
+        REQUIRE(mgr.replaceEndpoint(replacement));
+        const auto* found = mgr.getEndpointForPath("/rest");
+        REQUIRE(found != nullptr);
+        REQUIRE(found->templateSource == "updated.sql");
+    }
+
+    SECTION("replace fails when endpoint missing") {
+        EndpointConfig missing = restEndpoint;
+        missing.urlPath = "/missing";
+        REQUIRE_FALSE(mgr.replaceEndpoint(missing));
+    }
+
+    SECTION("remove by path succeeds") {
+        REQUIRE(mgr.removeEndpointByPath("/rest"));
+        REQUIRE(mgr.getEndpointForPath("/rest") == nullptr);
+    }
+
+    SECTION("remove is idempotent") {
+        REQUIRE(mgr.removeEndpointByPath("/rest"));
+        REQUIRE_FALSE(mgr.removeEndpointByPath("/rest"));
+    }
+
+    SECTION("serialize hyphen case") {
+        auto json = mgr.serializeEndpointConfig(restEndpoint, EndpointJsonStyle::HyphenCase);
+        auto rjson = wvalueToRValue(json);
+        REQUIRE(rjson["url-path"].s() == "/rest");
+        REQUIRE(rjson["template-source"].s() == "rest.sql");
+        REQUIRE(rjson["cache"]["cache-source"].s() == "cache.sql");
+    }
+
+    SECTION("serialize camel case") {
+        auto json = mgr.serializeEndpointConfig(restEndpoint, EndpointJsonStyle::CamelCase);
+        auto rjson = wvalueToRValue(json);
+        REQUIRE(rjson["urlPath"].s() == "/rest");
+        REQUIRE(rjson["templateSource"].s() == "rest.sql");
+        REQUIRE(rjson["cache"]["cacheSource"].s() == "cache.sql");
+    }
+
+    SECTION("deserialize accepts aliases") {
+        crow::json::wvalue payload;
+        payload["url_path"] = "/alias";
+        payload["template-source"] = "alias.sql";
+        payload["connection"] = std::vector<std::string>{"default"};
+        payload["request-fields-validation"] = true;
+        payload["request"][0]["fieldName"] = "name";
+        payload["request"][0]["fieldIn"] = "query";
+        payload["request"][0]["description"] = "Name";
+        payload["request"][0]["required"] = true;
+
+        auto config = mgr.deserializeEndpointConfig(wvalueToRValue(payload));
+        REQUIRE(config.urlPath == "/alias");
+        REQUIRE(config.templateSource == "alias.sql");
+        REQUIRE(config.request_fields_validation);
+        REQUIRE(config.request_fields.size() == 1);
+        REQUIRE(config.request_fields[0].fieldName == "name");
+    }
 }

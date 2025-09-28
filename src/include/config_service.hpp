@@ -2,6 +2,7 @@
 
 #include <crow.h>
 #include "crow/middlewares/cors.h"
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -55,6 +56,8 @@ public:
 private:
     static const std::unordered_map<std::string, std::string> content_types;
     std::string get_content_type(const std::string& path);
+
+    std::filesystem::path resolveTemplatePath(const std::string& source) const;
 };
 
 } // namespace flapi

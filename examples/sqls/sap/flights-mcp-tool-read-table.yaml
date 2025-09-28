@@ -1,0 +1,9 @@
+mcp-tool:
+  name: flight_list
+  description: Get flights from the SAP systems
+  result_mime_type: application/json
+
+template-source: flights.sql
+connection: [sap-abap-trial]
+
+{{include:request from flights-common.yaml}}

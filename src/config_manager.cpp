@@ -471,12 +471,17 @@ void ConfigManager::parseEndpointCache(const YAML::Node& endpoint_config, const 
     CROW_LOG_DEBUG << "\tParsing endpoint cache configuration";
     if (endpoint_config["cache"]) {
         auto cache_node = endpoint_config["cache"];
+        
+        // Parse enabled field - if not explicitly set, enable cache if any cache configuration is present
+        endpoint.cache.enabled = safeGet<bool>(cache_node, "enabled", "cache.enabled", true);
+        
         endpoint.cache.cacheTableName = safeGet<std::string>(cache_node, "cache-table-name", "cache.cache-table-name", "");
         endpoint.cache.cacheSource = (endpoint_dir / safeGet<std::string>(cache_node, "cache-source", "cache.cache-source")).string();
         endpoint.cache.refreshTime = safeGet<std::string>(cache_node, "refresh-time", "cache.refresh-time", "");
         endpoint.cache.refreshEndpoint = safeGet<bool>(cache_node, "refresh-endpoint", "cache.refresh-endpoint", false);
         endpoint.cache.maxPreviousTables = safeGet<std::size_t>(cache_node, "max-previous-tables", "cache.max-previous-tables", 5);
 
+        CROW_LOG_DEBUG << "\t\tCache Enabled: " << (endpoint.cache.enabled ? "true" : "false");
         CROW_LOG_DEBUG << "\t\tCache Table Name: " << endpoint.cache.cacheTableName;
         CROW_LOG_DEBUG << "\t\tCache Source: " << endpoint.cache.cacheSource;
         CROW_LOG_DEBUG << "\t\tRefresh Time: " << endpoint.cache.refreshTime;
@@ -792,39 +797,240 @@ crow::json::wvalue ConfigManager::getFlapiConfig() const {
 crow::json::wvalue ConfigManager::getEndpointsConfig() const {
     crow::json::wvalue endpointsJson;
     for (const auto& endpoint : endpoints) {
-        crow::json::wvalue endpointJson;
-        endpointJson["urlPath"] = endpoint.urlPath;
-        endpointJson["templateSource"] = endpoint.templateSource;
-        endpointJson["connection"] = endpoint.connection;
+        endpointsJson[endpoint.urlPath] = serializeEndpointConfig(endpoint, EndpointJsonStyle::CamelCase);
+    }
+    return endpointsJson;
+}
 
-        std::vector<crow::json::wvalue> requestJson;
-        for (const auto& req : endpoint.request_fields) {
+crow::json::wvalue ConfigManager::serializeEndpointConfig(const EndpointConfig& config, EndpointJsonStyle style) const {
+    crow::json::wvalue json = crow::json::wvalue::object();
+
+    auto set = [&](const std::string& hyphen_key, const std::string& camel_key, const auto& value) {
+        if (style == EndpointJsonStyle::HyphenCase) {
+            json[hyphen_key] = value;
+        } else {
+            json[camel_key] = value;
+        }
+    };
+
+    if (config.isRESTEndpoint()) {
+        set("url-path", "urlPath", config.urlPath);
+        set("method", "method", config.method);
+        set("template-source", "templateSource", config.templateSource);
+
+        if (!config.connection.empty()) {
+            auto connection_list = crow::json::wvalue::list();
+            for (const auto& conn : config.connection) {
+                connection_list.push_back(conn);
+            }
+            json["connection"] = std::move(connection_list);
+        }
+
+        set("with-pagination", "withPagination", config.with_pagination);
+        set("request-fields-validation", "requestFieldsValidation", config.request_fields_validation);
+    }
+
+    std::vector<crow::json::wvalue> requestFields;
+    for (const auto& field : config.request_fields) {
             crow::json::wvalue fieldJson;
-            fieldJson["fieldName"] = req.fieldName;
-            fieldJson["fieldIn"] = req.fieldIn;
-            fieldJson["description"] = req.description;
+        if (style == EndpointJsonStyle::HyphenCase) {
+            fieldJson["field-name"] = field.fieldName;
+            fieldJson["field-in"] = field.fieldIn;
+        } else {
+            fieldJson["fieldName"] = field.fieldName;
+            fieldJson["fieldIn"] = field.fieldIn;
+        }
+        fieldJson[(style == EndpointJsonStyle::HyphenCase) ? "description" : "description"] = field.description;
+        fieldJson[(style == EndpointJsonStyle::HyphenCase) ? "required" : "required"] = field.required;
+        if (!field.defaultValue.empty()) {
+            fieldJson[(style == EndpointJsonStyle::HyphenCase) ? "default" : "defaultValue"] = field.defaultValue;
+        }
 
             std::vector<crow::json::wvalue> validatorsJson;
-            for (const auto& validator : req.validators) {
+        for (const auto& validator : field.validators) {
                 crow::json::wvalue validatorJson;
-                validatorJson["type"] = validator.type;
+            validatorJson[(style == EndpointJsonStyle::HyphenCase) ? "type" : "type"] = validator.type;
                 if (validator.type == "string") {
-                    validatorJson["regex"] = validator.regex;
+                validatorJson[(style == EndpointJsonStyle::HyphenCase) ? "regex" : "regex"] = validator.regex;
                 } else if (validator.type == "int") {
-                    validatorJson["min"] = validator.min;
-                    validatorJson["max"] = validator.max;   
+                validatorJson[(style == EndpointJsonStyle::HyphenCase) ? "min" : "min"] = validator.min;
+                validatorJson[(style == EndpointJsonStyle::HyphenCase) ? "max" : "max"] = validator.max;
                 }
                 validatorsJson.push_back(std::move(validatorJson));
             }
-            fieldJson["validators"] = std::move(validatorsJson);
-            
-            requestJson.push_back(std::move(fieldJson));
-        }
-        endpointJson["request"] = std::move(requestJson);
-
-        endpointsJson[endpoint.urlPath] = std::move(endpointJson);
+        fieldJson[(style == EndpointJsonStyle::HyphenCase) ? "validators" : "validators"] = std::move(validatorsJson);
+        requestFields.push_back(std::move(fieldJson));
     }
-    return endpointsJson;
+
+    auto request_list = crow::json::wvalue::list();
+    for (auto& field_json : requestFields) {
+        request_list.push_back(std::move(field_json));
+    }
+    if (!request_list.empty()) {
+        json["request"] = std::move(request_list);
+    }
+
+    // Always include auth section
+    crow::json::wvalue authJson;
+    authJson["enabled"] = config.auth.enabled;
+    authJson["type"] = config.auth.type;
+    if (config.auth.from_aws_secretmanager) {
+        crow::json::wvalue awsJson;
+        awsJson[(style == EndpointJsonStyle::HyphenCase) ? "secret_name" : "secretName"] = config.auth.from_aws_secretmanager->secret_name;
+        awsJson[(style == EndpointJsonStyle::HyphenCase) ? "region" : "region"] = config.auth.from_aws_secretmanager->region;
+        authJson[(style == EndpointJsonStyle::HyphenCase) ? "from-aws-secretmanager" : "fromAwsSecretmanager"] = std::move(awsJson);
+    }
+    json["auth"] = std::move(authJson);
+
+    // Always include cache section
+    crow::json::wvalue cacheJson;
+    cacheJson["enabled"] = config.cache.enabled;
+    cacheJson[(style == EndpointJsonStyle::HyphenCase) ? "cache-source" : "cacheSource"] = config.cache.cacheSource;
+    cacheJson[(style == EndpointJsonStyle::HyphenCase) ? "cache-table" : "cacheTable"] = config.cache.cacheTableName;
+    cacheJson[(style == EndpointJsonStyle::HyphenCase) ? "refresh-time" : "refreshTime"] = config.cache.refreshTime;
+    json[(style == EndpointJsonStyle::HyphenCase) ? "cache" : "cache"] = std::move(cacheJson);
+
+    if (config.isMCPTool()) {
+        crow::json::wvalue toolJson;
+        toolJson[(style == EndpointJsonStyle::HyphenCase) ? "name" : "name"] = config.mcp_tool->name;
+        toolJson[(style == EndpointJsonStyle::HyphenCase) ? "description" : "description"] = config.mcp_tool->description;
+        json[(style == EndpointJsonStyle::HyphenCase) ? "mcp-tool" : "mcpTool"] = std::move(toolJson);
+    }
+    if (config.isMCPResource()) {
+        crow::json::wvalue resourceJson;
+        resourceJson[(style == EndpointJsonStyle::HyphenCase) ? "name" : "name"] = config.mcp_resource->name;
+        resourceJson[(style == EndpointJsonStyle::HyphenCase) ? "description" : "description"] = config.mcp_resource->description;
+        json[(style == EndpointJsonStyle::HyphenCase) ? "mcp-resource" : "mcpResource"] = std::move(resourceJson);
+    }
+    if (config.isMCPPrompt()) {
+        crow::json::wvalue promptJson;
+        promptJson[(style == EndpointJsonStyle::HyphenCase) ? "name" : "name"] = config.mcp_prompt->name;
+        promptJson[(style == EndpointJsonStyle::HyphenCase) ? "description" : "description"] = config.mcp_prompt->description;
+        promptJson[(style == EndpointJsonStyle::HyphenCase) ? "template" : "template"] = config.mcp_prompt->template_content;
+        json[(style == EndpointJsonStyle::HyphenCase) ? "mcp-prompt" : "mcpPrompt"] = std::move(promptJson);
+    }
+
+    // Always include rate-limit section
+    crow::json::wvalue rateJson;
+    rateJson["enabled"] = config.rate_limit.enabled;
+    rateJson[(style == EndpointJsonStyle::HyphenCase) ? "max" : "max"] = config.rate_limit.max;
+    rateJson[(style == EndpointJsonStyle::HyphenCase) ? "interval" : "interval"] = config.rate_limit.interval;
+    json[(style == EndpointJsonStyle::HyphenCase) ? "rate-limit" : "rateLimit"] = std::move(rateJson);
+
+    // Always include heartbeat section
+    crow::json::wvalue heartbeatJson;
+    heartbeatJson["enabled"] = config.heartbeat.enabled;
+    json["heartbeat"] = std::move(heartbeatJson);
+
+    return json;
+}
+
+namespace {
+std::string firstExistingKey(const crow::json::rvalue& json, std::initializer_list<std::string> keys) {
+    for (const auto& key : keys) {
+        if (json.has(key)) {
+            return key;
+        }
+    }
+    return {};
+}
+
+std::string requireStringField(const crow::json::rvalue& json, std::initializer_list<std::string> keys) {
+    auto key = firstExistingKey(json, keys);
+    if (key.empty()) {
+        throw std::runtime_error("Missing required field in endpoint config");
+    }
+    return key;
+}
+}
+
+EndpointConfig ConfigManager::deserializeEndpointConfig(const crow::json::rvalue& json) const {
+    EndpointConfig config;
+
+    auto getString = [&](std::initializer_list<std::string> keys) -> std::string {
+        auto key = firstExistingKey(json, keys);
+        if (!key.empty()) {
+            return json[key].s();
+        }
+        return {};
+    };
+
+    auto getBool = [&](std::initializer_list<std::string> keys, bool defaultValue) -> bool {
+        auto key = firstExistingKey(json, keys);
+        if (!key.empty()) {
+            return json[key].b();
+        }
+        return defaultValue;
+    };
+
+    auto getList = [&](std::initializer_list<std::string> keys) -> std::vector<std::string> {
+        std::vector<std::string> result;
+        auto key = firstExistingKey(json, keys);
+        if (!key.empty()) {
+            for (const auto& item : json[key]) {
+                result.push_back(item.s());
+            }
+        }
+        return result;
+    };
+
+    auto urlKey = requireStringField(json, {"url-path", "urlPath", "url_path"});
+    config.urlPath = json[urlKey].s();
+    auto methodKey = firstExistingKey(json, {"method", "Method"});
+    std::string method = methodKey.empty() ? std::string("GET") : std::string(json[methodKey].s());
+    config.method = std::move(method);
+    auto templateKey = requireStringField(json, {"template-source", "templateSource", "template_source"});
+    config.templateSource = json[templateKey].s();
+    config.connection = getList({"connection", "connections"});
+    config.with_pagination = getBool({"with-pagination", "withPagination", "with_pagination"}, true);
+    config.request_fields_validation = getBool({"request-fields-validation", "requestFieldsValidation"}, false);
+
+    if (json.has("request")) {
+        for (const auto& field : json["request"]) {
+            RequestFieldConfig fieldConfig;
+            auto fieldNameKey = requireStringField(field, {"field-name", "fieldName"});
+            auto fieldInKey = requireStringField(field, {"field-in", "fieldIn"});
+            fieldConfig.fieldName = field[fieldNameKey].s();
+            fieldConfig.fieldIn = field[fieldInKey].s();
+            auto descKey = firstExistingKey(field, {"description"});
+            if (!descKey.empty()) {
+                fieldConfig.description = field[descKey].s();
+            }
+            auto requiredKey = firstExistingKey(field, {"required"});
+            fieldConfig.required = !requiredKey.empty() ? field[requiredKey].b() : false;
+            config.request_fields.push_back(fieldConfig);
+        }
+    }
+
+    if (json.has("cache") || json.has("cache-config") || json.has("cacheConfig")) {
+        auto key = firstExistingKey(json, {"cache", "cache-config", "cacheConfig"});
+        const auto& cacheJson = json[key];
+        if (cacheJson.has("enabled")) {
+            config.cache.enabled = cacheJson["enabled"].b();
+        }
+        auto cacheSourceKey = firstExistingKey(cacheJson, {"cache-source", "cacheSource"});
+        if (!cacheSourceKey.empty()) {
+            config.cache.cacheSource = cacheJson[cacheSourceKey].s();
+        }
+        auto cacheTableKey = firstExistingKey(cacheJson, {"cache-table", "cacheTable"});
+        if (!cacheTableKey.empty()) {
+            config.cache.cacheTableName = cacheJson[cacheTableKey].s();
+        }
+        auto refreshKey = firstExistingKey(cacheJson, {"refresh-time", "refreshTime"});
+        if (!refreshKey.empty()) {
+            config.cache.refreshTime = cacheJson[refreshKey].s();
+        }
+    }
+
+    if (json.has("auth")) {
+        const auto& authJson = json["auth"];
+        config.auth.enabled = authJson.has("enabled") ? authJson["enabled"].b() : false;
+        if (authJson.has("type")) {
+            config.auth.type = authJson["type"].s();
+        }
+    }
+
+    return config;
 }
 
 // MCP configuration methods
@@ -836,6 +1042,56 @@ void ConfigManager::refreshConfig() {
 
 void ConfigManager::addEndpoint(const EndpointConfig& endpoint) {
     endpoints.push_back(endpoint);
+}
+
+bool ConfigManager::removeEndpointByPath(const std::string& path) {
+    auto before = endpoints.size();
+    endpoints.erase(
+        std::remove_if(endpoints.begin(), endpoints.end(), [&](const EndpointConfig& endpoint) {
+            if (endpoint.isRESTEndpoint()) {
+                std::vector<std::string> param_names;
+                std::map<std::string, std::string> path_params;
+                if (RouteTranslator::matchAndExtractParams(endpoint.urlPath, path, param_names, path_params)) {
+                    return true;
+                }
+            }
+
+            if (endpoint.isMCPTool() && endpoint.mcp_tool->name == path) {
+                return true;
+            }
+            if (endpoint.isMCPResource() && endpoint.mcp_resource->name == path) {
+                return true;
+            }
+            if (endpoint.isMCPPrompt() && endpoint.mcp_prompt->name == path) {
+                return true;
+            }
+
+            return false;
+        }),
+        endpoints.end());
+    return before != endpoints.size();
+}
+
+bool ConfigManager::replaceEndpoint(const EndpointConfig& endpoint) {
+    for (auto& candidate : endpoints) {
+        if (endpoint.isRESTEndpoint() && candidate.isRESTEndpoint() && candidate.urlPath == endpoint.urlPath) {
+            candidate = endpoint;
+            return true;
+        }
+        if (endpoint.isMCPTool() && candidate.isMCPTool() && candidate.mcp_tool->name == endpoint.mcp_tool->name) {
+            candidate = endpoint;
+            return true;
+        }
+        if (endpoint.isMCPResource() && candidate.isMCPResource() && candidate.mcp_resource->name == endpoint.mcp_resource->name) {
+            candidate = endpoint;
+            return true;
+        }
+        if (endpoint.isMCPPrompt() && candidate.isMCPPrompt() && candidate.mcp_prompt->name == endpoint.mcp_prompt->name) {
+            candidate = endpoint;
+            return true;
+        }
+    }
+    return false;
 }
 
 const EndpointConfig* ConfigManager::getEndpointForPath(const std::string& path) const {

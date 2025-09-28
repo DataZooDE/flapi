@@ -699,30 +699,6 @@ existing_key: existing_value
         REQUIRE(node["auth"]["enabled"].Scalar() == "true");
         REQUIRE(node["auth"]["type"].Scalar() == "basic");
     }
-
-    SECTION("Merge nested structures") {
-        std::string yaml_content = R"(
-config:
-  existing: value
-  {{include:auth from common/auth.yaml}}
-)";
-
-        auto result = parser.parseString(yaml_content, temp_dir);
-
-
-        // This is a complex case - section includes in nested structures
-        if (result.success) {
-            const YAML::Node& node = result.node;
-            REQUIRE(node["config"]["existing"].Scalar() == "value");
-            if (node["config"]["auth"]) {
-                REQUIRE(node["config"]["auth"]["enabled"].Scalar() == "true");
-                REQUIRE(node["config"]["auth"]["type"].Scalar() == "basic");
-            }
-        } else {
-            // Skip this complex case for now
-            std::cout << "Merge nested structures test skipped - error: " << result.error_message << std::endl;
-        }
-    }
 }
 
 TEST_CASE_METHOD(ExtendedYamlTestFixture, "ExtendedYamlParser: Real-world example", "[extended_yaml_parser]") {

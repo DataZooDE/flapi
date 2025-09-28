@@ -1,0 +1,1 @@
+SELECT * FROM sap_read_table('SFLIGHT') AS f

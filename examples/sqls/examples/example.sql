@@ -1,0 +1,1 @@
+SELECT 'example' AS name;

@@ -1,0 +1,68 @@
+{
+  "name": "flapi-vscode",
+  "displayName": "flapi Development Tools",
+  "description": "VSCode extension for flapi development with live configuration management",
+  "version": "0.1.0",
+  "publisher": "flapi",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": ["Other", "Snippets", "Linters"],
+  "activationEvents": [
+    "workspaceContains:**/flapi.yaml",
+    "onCommand:flapi.refreshEndpoints",
+    "onView:flapiEndpoints"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "flapi.refreshEndpoints", "title": "Refresh Endpoints", "category": "flapi" },
+      { "command": "flapi.testTemplate", "title": "Test Template", "category": "flapi" },
+      { "command": "flapi.expandTemplate", "title": "Expand Template", "category": "flapi" },
+      { "command": "flapi.validateConfig", "title": "Validate Configuration", "category": "flapi" }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "flapi",
+          "title": "flapi",
+          "icon": "resources/flapi.svg"
+        }
+      ]
+    },
+    "views": {
+      "flapi": [
+        {
+          "id": "flapiEndpoints",
+          "name": "Endpoints"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "flapi",
+      "properties": {
+        "flapi.serverUrl": {
+          "type": "string",
+          "default": "http://localhost:8080",
+          "description": "URL of the flapi server"
+        },
+        "flapi.configFile": {
+          "type": "string",
+          "default": "flapi.yaml",
+          "description": "Path to flapi configuration file"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "webpack --mode production",
+    "dev": "webpack --mode development --watch"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.74.0",
+    "ts-loader": "^9.5.1",
+    "typescript": "^5.5.4",
+    "webpack": "^5.94.0",
+    "webpack-cli": "^5.1.4"
+  }
+}
