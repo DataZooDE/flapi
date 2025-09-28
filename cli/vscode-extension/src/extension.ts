@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
-import { createApiClient } from '../shared/src/lib/http';
-import type { ApiClientConfig } from '../shared/src/lib/types';
+import { createApiClient } from '@flapi/shared';
+import type { ApiClientConfig } from '@flapi/shared';
 import { EndpointsProvider } from './providers/endpointsProvider';
 
 let endpointsProvider: EndpointsProvider | undefined;

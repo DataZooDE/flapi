@@ -9,7 +9,7 @@ type JsonStyle = 'camel' | 'hyphen';
 export function renderConfig(config: FlapiiConfig) {
   if (config.output === 'json') {
     const processed = applyJsonStyle(config, config.jsonStyle);
-    console.log(JSON.stringify(processed, null, 2));
+    Console.info(JSON.stringify(processed, null, 2));
     return;
   }
 
@@ -30,7 +30,7 @@ export function renderConfig(config: FlapiiConfig) {
     },
   });
 
-  const configDict = config as unknown as Record<string, unknown>;
+  const configDict = config as unknown as Record<string, unknown>; // shared version
   Object.entries(configDict).forEach(([key, value]) => {
     const source = getConfigSource(key, config);
     table.push([
@@ -45,7 +45,7 @@ export function renderConfig(config: FlapiiConfig) {
 
 export function renderJson(value: unknown, style: JsonStyle = 'camel') {
   const processed = applyJsonStyle(value, style);
-  console.log(JSON.stringify(processed, null, 2));
+  Console.info(JSON.stringify(processed, null, 2));
 }
 
 export function renderEndpointsTable(endpoints: Record<string, unknown>) {

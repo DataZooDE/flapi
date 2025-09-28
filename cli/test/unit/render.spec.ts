@@ -42,7 +42,23 @@ describe('render.ts', () => {
     };
 
     renderConfig(config);
-    expect(mockInfo).toHaveBeenCalledWith(JSON.stringify(config, null, 2));
+    expect(mockInfo).toHaveBeenCalledWith(
+      JSON.stringify(
+        {
+          baseUrl: 'http://localhost:8080',
+          timeout: 10,
+          retries: 2,
+          verifyTls: true,
+          output: 'json',
+          jsonStyle: 'camel',
+          debugHttp: false,
+          quiet: false,
+          yes: false,
+        },
+        null,
+        2,
+      ),
+    );
   });
 
   it('renders config as table when output is table', () => {
@@ -69,12 +85,32 @@ describe('render.ts', () => {
 
   it('applies camel style to JSON output', () => {
     renderJson({ 'foo-bar': { 'baz-qux': 1 } }, 'camel');
-    expect(mockInfo).toHaveBeenCalledWith(JSON.stringify({ fooBar: { bazQux: 1 } }, null, 2));
+    expect(mockInfo).toHaveBeenCalledWith(
+      JSON.stringify(
+        {
+          fooBar: {
+            bazQux: 1,
+          },
+        },
+        null,
+        2,
+      ),
+    );
   });
 
   it('applies hyphen style to JSON output', () => {
     renderJson({ fooBar: { bazQux: 1 } }, 'hyphen');
-    expect(mockInfo).toHaveBeenCalledWith(JSON.stringify({ 'foo-bar': { 'baz-qux': 1 } }, null, 2));
+    expect(mockInfo).toHaveBeenCalledWith(
+      JSON.stringify(
+        {
+          'foo-bar': {
+            'baz-qux': 1,
+          },
+        },
+        null,
+        2,
+      ),
+    );
   });
 
   it('renders endpoints table', () => {

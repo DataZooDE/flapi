@@ -1,7 +1,7 @@
 # Makefile for flAPI project
 
 # Phony targets
-.PHONY: all debug release clean run-debug run-release run-integration-tests docker-build web
+.PHONY: all debug release clean run-debug run-release run-integration-tests docker-build web cli-build cli-test vscode-build vscode-dev
 
 # Check if Ninja is available
 NINJA := $(shell which ninja)
@@ -215,3 +215,27 @@ web:
 		exit 1; \
 	fi
 	@echo "Web build completed successfully"
+
+cli-build:
+	@echo "Building Node.js CLI..."
+	@npm --prefix cli install --no-fund
+	@npm --prefix cli run build
+
+cli-test:
+	@echo "Running Node.js CLI tests..."
+	@npm --prefix cli install --no-fund
+	@npm --prefix cli run test
+
+vscode-build:
+	@echo "Building VSCode extension..."
+	@npm --prefix cli/shared install --no-fund
+	@npm --prefix cli/shared run build
+	@npm --prefix cli/vscode-extension install --no-fund
+	@npm --prefix cli/vscode-extension run build
+
+vscode-dev:
+	@echo "Starting VSCode extension development build..."
+	@npm --prefix cli/shared install --no-fund
+	@npm --prefix cli/shared run build -- --watch
+	@npm --prefix cli/vscode-extension install --no-fund
+	@npm --prefix cli/vscode-extension run dev

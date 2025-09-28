@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import type { AxiosInstance } from 'axios';
-import type { EndpointConfig } from '../../shared/src/lib/types';
+import type { EndpointConfig } from '@flapi/shared';
 
 export class EndpointsProvider implements vscode.TreeDataProvider<EndpointItem> {
   private _onDidChangeTreeData = new vscode.EventEmitter<EndpointItem | void>();

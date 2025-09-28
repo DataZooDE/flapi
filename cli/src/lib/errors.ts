@@ -1,5 +1,4 @@
-import { AxiosError } from 'axios';
-import chalk from 'chalk';
+import axios, { AxiosError } from 'axios';
 import { Console } from './console';
 
 export class ApiError extends Error {
@@ -25,26 +24,13 @@ export function handleError(error: unknown, opts: { quiet?: boolean } = {}): voi
   if (isAxiosError(error)) {
     const status = error.response?.status;
     const statusText = error.response?.statusText ?? 'HTTP Error';
-    const responseData = error.response?.data;
-    
-    // Show status and basic error
-    Console.error(`${status ? `[${status}] ` : ''}${statusText}`);
-    
-    // Show detailed server response
-    if (responseData) {
-      if (typeof responseData === 'string') {
-        // Server returned plain text error
-        Console.error(chalk.red(`Server Error: ${responseData}`));
-      } else if (typeof responseData === 'object') {
-        // Server returned JSON error
-        const detail = extractMessage(error);
-        Console.error(chalk.red(`Error: ${detail}`));
-        Console.error(chalk.gray('Full response:'));
-        Console.error(JSON.stringify(responseData, null, 2));
-      }
-    } else {
-      // Fallback to error message
-      Console.error(chalk.red(`Error: ${error.message}`));
+    const detail = extractMessage(error);
+
+    const prefix = status ? `[${status}] ${statusText}` : statusText;
+    Console.error(`${prefix}: ${detail}`);
+
+    if (error.response?.data && typeof error.response.data === 'object') {
+      Console.error(JSON.stringify(error.response.data, null, 2));
     }
     return;
   }
@@ -63,7 +49,7 @@ export function handleError(error: unknown, opts: { quiet?: boolean } = {}): voi
 }
 
 export function isAxiosError(error: unknown): error is AxiosError {
-  return !!error && typeof error === 'object' && 'isAxiosError' in error;
+  return axios.isAxiosError(error);
 }
 
 function extractMessage(error: AxiosError): string {

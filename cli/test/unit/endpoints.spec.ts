@@ -1,7 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { registerEndpointCommands } from '../../src/commands/endpoints';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Command } from 'commander';
-import type { CliContext, FlapiiConfig } from '../../src/lib/types';
+import { registerEndpointCommands } from '../../src/commands/endpoints';
+import { createApiClient } from '../../src/lib/http';
+import { buildEndpointUrl } from '../../src/lib/url';
+import type { FlapiiConfig } from '../../src/lib/types';
 
 const spinner = { succeed: vi.fn(), fail: vi.fn(), stop: vi.fn() };
 
@@ -36,7 +38,7 @@ describe('endpoints command', () => {
     yes: false,
   };
 
-  const ctx: CliContext = {
+  const ctx = {
     get config() {
       return config;
     },
@@ -69,7 +71,7 @@ describe('endpoints command', () => {
 
     await program.parseAsync(['node', 'test', 'endpoints', 'get', '/foo']);
 
-    expect(mockClient.get).toHaveBeenCalledWith('/api/v1/_config/endpoints/%2Ffoo');
+    expect(mockClient.get).toHaveBeenCalledWith(buildEndpointUrl('/foo'));
   });
 });
 

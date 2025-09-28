@@ -35,3 +35,17 @@ export interface CliContext {
   get client(): import('axios').AxiosInstance;
 }
 
+
+
+export interface EndpointConfig {
+  urlPath: string;
+  method: string;
+  templateSource: string;
+  connection: string[];
+  cache?: {
+    enabled?: boolean;
+    refreshTime?: string;
+    cacheTable?: string;
+    cacheSource?: string;
+  };
+}

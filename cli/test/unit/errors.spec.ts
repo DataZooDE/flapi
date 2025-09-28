@@ -25,7 +25,8 @@ describe('handleError', () => {
     } as any);
 
     handleError(error);
-    expect(mockError).toHaveBeenCalledWith('[409] Conflict: Endpoint already exists');
+    expect(mockError).toHaveBeenNthCalledWith(1, '[409] Conflict: Endpoint already exists');
+    expect(mockError).toHaveBeenNthCalledWith(2, JSON.stringify({ message: 'Endpoint already exists' }, null, 2));
   });
 
   it('logs generic error message', () => {

@@ -88,12 +88,13 @@ export function slugToPath(slug: string): string {
 
 export function buildEndpointUrl(path: string, suffix = ''): string {
   const slug = pathToSlug(path);
-  const base = `/api/v1/_config/endpoints/${slug}`;
+  const encoded = encodeURIComponent(slug);
+  const base = `/api/v1/_config/endpoints/${encoded}`;
 
   if (!suffix) {
     return base;
   }
 
-  const normalizedSuffix = suffix.replace(/^\/+/, '');
+  const normalizedSuffix = suffix.replace(/^\/+/g, '');
   return `${base}/${normalizedSuffix}`;
 }
