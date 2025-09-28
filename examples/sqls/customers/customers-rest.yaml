@@ -23,11 +23,19 @@ url-path: /customers/
 # REST-specific configuration
 with-pagination: true
 
-# Optional: REST-specific caching
+# Optional: REST-specific DuckLake caching
 cache:
-  enabled: false
-  cache-source: customers.sql
-  refresh-time: 5m
+  enabled: true
+  table: customers_rest_cache
+  schema: analytics
+  schedule: 5m
+  primary-key: [id]
+  cursor:
+    column: registration_date
+    type: date
+  retention:
+    keep_last_snapshots: 3
+    max_snapshot_age: 7d
 
 heartbeat:
   enabled: false

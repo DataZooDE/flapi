@@ -45,6 +45,8 @@ public:
     QueryResult executeQuery(const EndpointConfig& endpoint, std::map<std::string, std::string>& params, bool with_pagination = true);
     QueryResult executeCacheQuery(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params);
     QueryResult executeQuery(const std::string& query, const std::map<std::string, std::string>& params = {}, bool with_pagination = true);
+    QueryResult executeDuckLakeQuery(const std::string& query, const std::map<std::string, std::string>& params = {});
+    std::string renderCacheTemplate(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params);
     
     YAML::Node describeSelectQuery(const EndpointConfig& endpoint);
 
@@ -56,6 +58,8 @@ public:
     void refreshSecretsTable(const std::string& secret_table, const std::string& secret_json);
     std::optional<std::tuple<std::string, std::vector<std::string>>> findUserInSecretsTable(const std::string& secret_table, const std::string& username);
     std::tuple<duckdb::SecretManager&, duckdb::CatalogTransaction> getSecretManagerAndTransaction();
+    
+    std::shared_ptr<CacheManager> getCacheManager() const { return cache_manager; }
 
 private:
     QueryExecutor createQueryExecutor();

@@ -146,23 +146,40 @@ connection-prod:
   - customers-backup-parquet
 
 # ====================================================================================
-# CACHING CONFIGURATIONS
+# CACHING CONFIGURATIONS (DuckLake-based)
 # ====================================================================================
 
-# Standard Caching
+# Standard DuckLake Caching
 cache:
   enabled: true
-  cache-table-name: customers_cache
-  refresh-time: 5m
-  refresh-endpoint: false
+  table: customers_cache
+  schema: analytics  # Optional: defaults to 'main'
+  schedule: 5m
+  primary-key: [id]  # Primary key for incremental merge operations
+  cursor:
+    column: registration_date  # Cursor column for incremental append
+    type: date
+  rollback-window: 2d  # Allow rollback within 2 days
+  retention:
+    keep_last_snapshots: 5
+    max_snapshot_age: 14d
+  delete-handling: soft  # How to handle deleted records
 
-# High-Performance Caching
+# High-Performance DuckLake Caching
 cache-performance:
   enabled: true
-  cache-table-name: customers_perf_cache
-  refresh-time: 1m
-  refresh-endpoint: true
-  max-previous-tables: 10
+  table: customers_perf_cache
+  schema: analytics
+  schedule: 1m
+  primary-key: [id]
+  cursor:
+    column: registration_date
+    type: date
+  retention:
+    keep_last_snapshots: 10
+    max_snapshot_age: 7d
+  delete-handling: hard
+  template_file: customers_cache.sql  # Optional: custom cache template
 
 # Development Caching (disabled for testing)
 cache-dev:

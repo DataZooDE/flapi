@@ -170,6 +170,27 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             return refreshCache(req, path);
         });
 
+    CROW_ROUTE(app, "/api/v1/_config/endpoints/<string>/cache/gc")
+        .methods("POST"_method)
+        ([this](const crow::request& req, const std::string& slug) {
+            const std::string path = PathUtils::slugToPath(slug);
+            return performGarbageCollection(req, path);
+        });
+
+    // DuckLake audit routes
+    CROW_ROUTE(app, "/api/v1/_config/endpoints/<string>/cache/audit")
+        .methods("GET"_method)
+        ([this](const crow::request& req, const std::string& slug) {
+            const std::string path = PathUtils::slugToPath(slug);
+            return getCacheAuditLog(req, path);
+        });
+
+    CROW_ROUTE(app, "/api/v1/_config/cache/audit")
+        .methods("GET"_method)
+        ([this](const crow::request& req) {
+            return getAllCacheAuditLogs(req);
+        });
+
     // Schema routes
     CROW_ROUTE(app, "/api/v1/_config/schema")
         .methods("GET"_method)
@@ -479,22 +500,49 @@ crow::response ConfigService::testTemplate(const crow::request& req, const std::
 
 crow::response ConfigService::getCacheConfig(const crow::request& req, const std::string& path) {
     try {
-        // Find the endpoint
         auto* endpoint = config_manager->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
 
-        // Convert cache config to JSON
         crow::json::wvalue response;
-        if (endpoint->cache.enabled) {
-            response["enabled"] = true;
-            response["refresh-time"] = endpoint->cache.refreshTime;
-            response["cache-source"] = endpoint->cache.cacheSource;
-            response["cache-schema"] = config_manager->getCacheSchema();
-            response["cache-table"] = endpoint->cache.cacheTableName;
-        } else {
-            response["enabled"] = false;
+        response["enabled"] = endpoint->cache.enabled;
+        response["table"] = endpoint->cache.table;
+        response["schema"] = endpoint->cache.schema;
+        if (endpoint->cache.schedule) {
+            response["schedule"] = endpoint->cache.schedule.value();
+        }
+        if (!endpoint->cache.primary_keys.empty()) {
+            auto pk_list = crow::json::wvalue::list();
+            for (const auto& pk : endpoint->cache.primary_keys) {
+                pk_list.push_back(pk);
+            }
+            response["primary-key"] = std::move(pk_list);
+        }
+        if (endpoint->cache.cursor) {
+            crow::json::wvalue cursor;
+            cursor["column"] = endpoint->cache.cursor->column;
+            cursor["type"] = endpoint->cache.cursor->type;
+            response["cursor"] = std::move(cursor);
+        }
+        if (endpoint->cache.rollback_window) {
+            response["rollback-window"] = endpoint->cache.rollback_window.value();
+        }
+        if (endpoint->cache.retention.keep_last_snapshots || endpoint->cache.retention.max_snapshot_age) {
+            crow::json::wvalue retention;
+            if (endpoint->cache.retention.keep_last_snapshots) {
+                retention["keep_last_snapshots"] = static_cast<int64_t>(endpoint->cache.retention.keep_last_snapshots.value());
+            }
+            if (endpoint->cache.retention.max_snapshot_age) {
+                retention["max_snapshot_age"] = endpoint->cache.retention.max_snapshot_age.value();
+            }
+            response["retention"] = std::move(retention);
+        }
+        if (endpoint->cache.delete_handling) {
+            response["delete-handling"] = endpoint->cache.delete_handling.value();
+        }
+        if (endpoint->cache.template_file) {
+            response["template-file"] = endpoint->cache.template_file.value();
         }
 
         return crow::response(200, response);
@@ -510,34 +558,54 @@ crow::response ConfigService::updateCacheConfig(const crow::request& req, const 
             return crow::response(400, "Invalid JSON");
         }
 
-        // Find the endpoint
         auto* endpoint = config_manager->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
 
-        // Cast endpoint to non-const
-        auto& endpoint_non_const = const_cast<EndpointConfig&>(*endpoint);
-
-        // Update cache configuration
+        auto& cache = const_cast<CacheConfig&>(endpoint->cache);
         bool enabled = json["enabled"].b();
         if (enabled) {
-            // Validate refresh time format first
-            if (!json.has("refresh-time")) {
-                return crow::response(400, "Missing required field 'refresh-time' when cache is enabled");
-            }
-
-            auto refresh_time = json["refresh-time"].s();
-            if (!flapi::TimeInterval::parseInterval(refresh_time)) {
-                return crow::response(400, "Invalid refresh time format. Expected format: <number>[s|m|h|d] (e.g., 30s, 5m, 2h, 1d)");
-            }
-
-            endpoint_non_const.cache.enabled = true;
-            endpoint_non_const.cache.refreshTime = refresh_time;
-            endpoint_non_const.cache.cacheSource = json["cache-source"].s();
-            endpoint_non_const.cache.cacheTableName = json["cache-table"].s();
+            auto table_key = json.has("table") ? json["table"].s() : endpoint->cache.table;
+            auto schema_key = json.has("schema") ? json["schema"].s() : endpoint->cache.schema;
+            cache.enabled = true;
+            cache.table = table_key;
+            cache.schema = schema_key;
         } else {
-            endpoint_non_const.cache.enabled = false;
+            cache.enabled = false;
+        }
+        if (json.has("schedule")) {
+            cache.schedule = json["schedule"].s();
+        }
+        if (json.has("primary-key")) {
+            cache.primary_keys.clear();
+            for (const auto& pk : json["primary-key"]) {
+                cache.primary_keys.push_back(pk.s());
+            }
+        }
+        if (json.has("cursor")) {
+            CacheConfig::CursorConfig cursor;
+            cursor.column = json["cursor"]["column"].s();
+            cursor.type = json["cursor"]["type"].s();
+            cache.cursor = cursor;
+        }
+        if (json.has("rollback-window")) {
+            cache.rollback_window = json["rollback-window"].s();
+        }
+        if (json.has("retention")) {
+            const auto& retention = json["retention"];
+            if (retention.has("keep_last_snapshots")) {
+                cache.retention.keep_last_snapshots = static_cast<std::size_t>(retention["keep_last_snapshots"].i());
+            }
+            if (retention.has("max_snapshot_age")) {
+                cache.retention.max_snapshot_age = retention["max_snapshot_age"].s();
+            }
+        }
+        if (json.has("delete-handling")) {
+            cache.delete_handling = json["delete-handling"].s();
+        }
+        if (json.has("template-file")) {
+            cache.template_file = json["template-file"].s();
         }
 
         return crow::response(200);
@@ -548,18 +616,15 @@ crow::response ConfigService::updateCacheConfig(const crow::request& req, const 
 
 crow::response ConfigService::getCacheTemplate(const crow::request& req, const std::string& path) {
     try {
-        // Find the endpoint
         auto* endpoint = config_manager->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
-
-        if (!endpoint->cache.enabled) {
-            return crow::response(400, "Cache is not enabled for this endpoint");
+        if (!endpoint->cache.enabled || !endpoint->cache.template_file) {
+            return crow::response(400, "Cache template not configured for this endpoint");
         }
 
-        // Read the cache template file
-        auto cache_path = resolveTemplatePath(endpoint->cache.cacheSource);
+        auto cache_path = resolveTemplatePath(endpoint->cache.template_file.value());
         std::ifstream file(cache_path);
         if (!file.is_open()) {
             return crow::response(500, "Could not open cache template file: " + cache_path.string());
@@ -567,7 +632,7 @@ crow::response ConfigService::getCacheTemplate(const crow::request& req, const s
 
         std::stringstream buffer;
         buffer << file.rdbuf();
-        
+
         crow::json::wvalue response;
         response["template"] = buffer.str();
         return crow::response(200, response);
@@ -583,18 +648,15 @@ crow::response ConfigService::updateCacheTemplate(const crow::request& req, cons
             return crow::response(400, "Invalid JSON: missing 'template' field");
         }
 
-        // Find the endpoint
         auto* endpoint = config_manager->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
-
-        if (!endpoint->cache.enabled) {
-            return crow::response(400, "Cache is not enabled for this endpoint");
+        if (!endpoint->cache.enabled || !endpoint->cache.template_file) {
+            return crow::response(400, "Cache template not configured for this endpoint");
         }
 
-        // Write the template to file
-        auto cache_path = resolveTemplatePath(endpoint->cache.cacheSource);
+        auto cache_path = resolveTemplatePath(endpoint->cache.template_file.value());
         std::ofstream file(cache_path);
         if (!file.is_open()) {
             return crow::response(500, "Could not open cache template file for writing: " + cache_path.string());
@@ -636,6 +698,34 @@ crow::response ConfigService::refreshCache(const crow::request& req, const std::
             return crow::response(200);
         } catch (const std::exception& e) {
             return crow::response(400, std::string("Cache refresh failed: ") + e.what());
+        }
+    } catch (const std::exception& e) {
+        return crow::response(500, std::string("Internal server error: ") + e.what());
+    }
+}
+
+crow::response ConfigService::performGarbageCollection(const crow::request& req, const std::string& path) {
+    try {
+        // Find the endpoint
+        auto* endpoint = config_manager->getEndpointForPath(path);
+        if (!endpoint) {
+            return crow::response(404, "Endpoint not found");
+        }
+
+        if (!endpoint->cache.enabled) {
+            return crow::response(400, "Cache is not enabled for this endpoint");
+        }
+
+        // Get database manager instance
+        auto db_manager = DatabaseManager::getInstance();
+        auto cache_manager = std::make_shared<CacheManager>(db_manager);
+
+        try {
+            // Trigger garbage collection
+            cache_manager->performGarbageCollection(config_manager, *endpoint, {});
+            return crow::response(200, "Garbage collection completed");
+        } catch (const std::exception& e) {
+            return crow::response(400, std::string("Garbage collection failed: ") + e.what());
         }
     } catch (const std::exception& e) {
         return crow::response(500, std::string("Internal server error: ") + e.what());
@@ -784,6 +874,70 @@ crow::response ConfigService::refreshSchema(const crow::request& req) {
         db_manager->initializeDBManagerFromConfig(config_manager);
 
         return crow::response(200);
+    } catch (const std::exception& e) {
+        return crow::response(500, std::string("Internal server error: ") + e.what());
+    }
+}
+
+crow::response ConfigService::getCacheAuditLog(const crow::request& req, const std::string& path) {
+    try {
+        const auto* endpoint = config_manager->getEndpointForPath(path);
+        if (!endpoint) {
+            return crow::response(404, "Endpoint not found");
+        }
+
+        if (!endpoint->cache.enabled) {
+            return crow::response(400, "Cache not enabled for this endpoint");
+        }
+
+        const auto& ducklakeConfig = config_manager->getDuckLakeConfig();
+        if (!ducklakeConfig.enabled) {
+            return crow::response(400, "DuckLake not enabled");
+        }
+
+        auto db_manager = DatabaseManager::getInstance();
+        const std::string catalog = ducklakeConfig.alias;
+        
+        std::string auditQuery = R"(
+            SELECT event_id, endpoint_path, cache_table, cache_schema, sync_type, status, message,
+                   snapshot_id, rows_affected, sync_started_at, sync_completed_at, duration_ms
+            FROM )" + catalog + R"(.audit.sync_events 
+            WHERE endpoint_path = ')" + path + R"('
+            ORDER BY sync_started_at DESC
+            LIMIT 100
+        )";
+
+        std::map<std::string, std::string> params;
+        auto result = db_manager->executeDuckLakeQuery(auditQuery, params);
+        
+        return crow::response(200, result.data.dump());
+    } catch (const std::exception& e) {
+        return crow::response(500, std::string("Internal server error: ") + e.what());
+    }
+}
+
+crow::response ConfigService::getAllCacheAuditLogs(const crow::request& req) {
+    try {
+        const auto& ducklakeConfig = config_manager->getDuckLakeConfig();
+        if (!ducklakeConfig.enabled) {
+            return crow::response(400, "DuckLake not enabled");
+        }
+
+        auto db_manager = DatabaseManager::getInstance();
+        const std::string catalog = ducklakeConfig.alias;
+        
+        std::string auditQuery = R"(
+            SELECT event_id, endpoint_path, cache_table, cache_schema, sync_type, status, message,
+                   snapshot_id, rows_affected, sync_started_at, sync_completed_at, duration_ms
+            FROM )" + catalog + R"(.audit.sync_events 
+            ORDER BY sync_started_at DESC
+            LIMIT 500
+        )";
+
+        std::map<std::string, std::string> params;
+        auto result = db_manager->executeDuckLakeQuery(auditQuery, params);
+        
+        return crow::response(200, result.data.dump());
     } catch (const std::exception& e) {
         return crow::response(500, std::string("Internal server error: ") + e.what());
     }

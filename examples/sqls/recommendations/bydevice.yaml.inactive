@@ -13,6 +13,13 @@ template-source: bydevice.sql
 connection:
   - bigquery-lakehouse
 cache:
-  cache-table-name: recommendations_bydevice_cache
-  cache-source: bydevice_cache.sql
-  refresh-time: 10m
+  enabled: true
+  table: recommendations_bydevice_cache
+  schema: analytics
+  schedule: 10m
+  primary-key: [material_number, country_code]  # Composite primary key
+  # Full refresh mode for recommendations (no cursor)
+  retention:
+    keep_last_snapshots: 3
+    max_snapshot_age: 7d
+  template_file: bydevice_cache.sql

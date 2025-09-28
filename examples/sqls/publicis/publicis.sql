@@ -4,7 +4,7 @@ SELECT
     p.campaign_type,
     p.channel,
     p.clicks as clicks
-FROM {{{cache.table}}} AS p
+FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS p
 WHERE 1=1
 {{#params.country}}
  AND p.country LIKE '{{{ params.country }}}'

@@ -12,6 +12,12 @@ template-source: publicis.sql
 connection:
   - bigquery-lakehouse
 cache:
-  cache-table-name: 'publicis_cache'
-  cache-source: publicis_cache.sql
-  refresh-time: 5m 
+  enabled: true
+  table: publicis_cache
+  schema: analytics
+  schedule: 5m
+  # Full refresh mode (no primary-key or cursor specified)
+  retention:
+    keep_last_snapshots: 5
+    max_snapshot_age: 14d
+  template_file: publicis/publicis_cache.sql 

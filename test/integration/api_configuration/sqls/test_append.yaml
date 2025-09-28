@@ -1,0 +1,18 @@
+# Test endpoint for incremental append cache mode (cursor only)
+endpoint:
+  urlPath: "/test/append/"
+  method: "GET"
+  description: "Test endpoint for incremental append cache mode"
+  templateSource: "test_cache.sql"
+  cache:
+    enabled: true
+    table: test_append_cache
+    schema: test_schema
+    schedule: "30s"
+    cursor:
+      column: id
+      type: integer
+    retention:
+      keep_last_snapshots: 3
+      max_snapshot_age: "2h"
+    template_file: "test_cache.sql"

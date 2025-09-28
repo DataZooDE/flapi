@@ -1,0 +1,19 @@
+url-path: /test/cached/
+template-source: customers.sql
+connection:
+  - data-types-parquet
+
+# Test DuckLake cache configuration
+cache:
+  enabled: true
+  table: test_cache
+  schema: test_schema
+  schedule: 1m
+  # Simple full refresh mode (no primary-key or cursor)
+  retention:
+    keep_last_snapshots: 2
+    max_snapshot_age: 1h
+  template_file: test_cache.sql
+
+auth:
+  enabled: false

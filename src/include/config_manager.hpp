@@ -95,12 +95,26 @@ struct RequestFieldConfig {
 
 struct CacheConfig {
     bool enabled = false;
-    std::string cacheTableName;
-    std::string cacheSource;
-    std::string refreshTime;
-    bool refreshEndpoint = false;
-    std::size_t maxPreviousTables = 5;
+    std::string table;
+    std::string schema = "cache";
+    std::optional<std::string> schedule;
+    std::vector<std::string> primary_keys;
+    struct CursorConfig {
+        std::string column;
+        std::string type;
+    };
+    std::optional<CursorConfig> cursor;
+    std::optional<std::string> rollback_window;
+    struct RetentionConfig {
+        std::optional<std::size_t> keep_last_snapshots;
+        std::optional<std::string> max_snapshot_age;
+    } retention;
+    std::optional<std::string> delete_handling;
+    std::optional<std::string> template_file;
 
+    bool hasCursor() const { return cursor.has_value(); }
+    bool hasPrimaryKey() const { return !primary_keys.empty(); }
+    bool hasTemplate() const { return template_file.has_value(); }
     std::chrono::seconds getRefreshTimeInSeconds() const;
 };
 
@@ -226,6 +240,31 @@ struct GlobalHeartbeatConfig {
     std::chrono::seconds workerInterval = std::chrono::seconds(60);
 };
 
+struct DuckLakeRetentionConfig {
+    std::optional<std::size_t> keep_last_snapshots;
+    std::optional<std::string> max_snapshot_age;
+};
+
+struct DuckLakeCompactionConfig {
+    bool enabled = false;
+    std::optional<std::string> schedule;
+};
+
+struct DuckLakeSchedulerConfig {
+    bool enabled = false;
+    std::optional<std::string> scan_interval;
+};
+
+struct DuckLakeConfig {
+    bool enabled = false;
+    std::string alias = "cache";
+    std::string metadata_path;
+    std::string data_path;
+    DuckLakeRetentionConfig retention;
+    DuckLakeCompactionConfig compaction;
+    DuckLakeSchedulerConfig scheduler;
+};
+
 class ConfigManager {
 public:
     explicit ConfigManager(const std::filesystem::path& config_file);
@@ -259,6 +298,7 @@ public:
     std::filesystem::path getFullTemplatePath() const;
 
     const GlobalHeartbeatConfig& getGlobalHeartbeatConfig() const { return global_heartbeat_config; }
+    const DuckLakeConfig& getDuckLakeConfig() const { return ducklake_config; }
 
 
     void refreshConfig();
@@ -293,6 +333,7 @@ protected:
     TemplateConfig template_config;
     HttpsConfig https_config;
     GlobalHeartbeatConfig global_heartbeat_config;
+    DuckLakeConfig ducklake_config;
     ExtendedYamlParser yaml_parser;
 
     void parseConfig();
@@ -306,6 +347,7 @@ protected:
     void parseDuckDBConfig();
     void parseHttpsConfig();
     void parseTemplateConfig();
+    void parseDuckLakeConfig();
     void parseEndpointConfig(const std::filesystem::path& config_file);
     void parseEndpointRequestFields(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
     void parseEndpointValidators(const YAML::Node& req, RequestFieldConfig& field);

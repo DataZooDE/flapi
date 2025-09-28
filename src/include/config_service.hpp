@@ -45,9 +45,14 @@ public:
     crow::response updateCacheTemplate(const crow::request& req, const std::string& path);
     
     crow::response refreshCache(const crow::request& req, const std::string& path);
+    crow::response performGarbageCollection(const crow::request& req, const std::string& path);
     
     crow::response getSchema(const crow::request& req);
     crow::response refreshSchema(const crow::request& req);
+    
+    // DuckLake audit APIs
+    crow::response getCacheAuditLog(const crow::request& req, const std::string& path);
+    crow::response getAllCacheAuditLogs(const crow::request& req);
 
     // Helper methods
     crow::json::wvalue endpointConfigToJson(const EndpointConfig& config);

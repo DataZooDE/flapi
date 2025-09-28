@@ -199,7 +199,7 @@ TEST_CASE("SQLTemplateProcessor: Template with cache parameters", "[sql_template
     SQLTemplateProcessor processor(config_manager);
 
     SECTION("Template with cache parameters") {
-        std::string template_content = "CREATE TABLE {{cache.schema}}.{{cache.table}} AS SELECT * FROM source_table WHERE updated_at > '{{cache.currentWatermark}}'";
+        std::string template_content = "CREATE TABLE {{cache.schema}}.{{cache.table}} AS SELECT * FROM source_table WHERE updated_at > '{{cache.snapshotTimestamp}}'";
         std::ofstream template_file(temp_dir.getPath() / "cache_template.sql");
         template_file << template_content;
         template_file.close();
@@ -209,9 +209,10 @@ TEST_CASE("SQLTemplateProcessor: Template with cache parameters", "[sql_template
         endpoint.connection = {"default"};
 
         std::map<std::string, std::string> params = {
+            {"cacheCatalog", "cache"},
             {"cacheSchema", "cache_schema"},
-            {"cacheTableName", "cache_table"},
-            {"currentWatermark", "2023-05-01 00:00:00"}
+            {"cacheTable", "cache_table"},
+            {"cacheSnapshotTimestamp", "2023-05-01 00:00:00"}
         };
 
         std::string result = processor.loadAndProcessTemplate(endpoint, params);
@@ -272,22 +273,29 @@ TEST_CASE("SQLTemplateProcessor: Cache template processing", "[sql_template_proc
     SQLTemplateProcessor processor(config_manager);
 
     SECTION("Cache template") {
-        std::string template_content = "CREATE TABLE {{cache.schema}}.{{cache.table}} AS SELECT * FROM source_table WHERE updated_at > '{{cache.currentWatermark}}'";
+        std::string template_content = "CREATE TABLE {{cache.schema}}.{{cache.table}} AS SELECT * FROM source_table WHERE updated_at > '{{cache.snapshotTimestamp}}'";
         std::ofstream template_file(temp_dir.getPath() / "cache_template.sql");
         template_file << template_content;
         template_file.close();
 
         EndpointConfig endpoint;
         endpoint.connection = {"default"};
+        endpoint.cache.enabled = true;
+        endpoint.cache.table = "cache_table";
+        endpoint.cache.schema = "cache_schema";
+        endpoint.cache.template_file = "cache_template.sql";
 
         CacheConfig cache_config;
-        cache_config.cacheTableName = "cache_table";
-        cache_config.cacheSource = "cache_template.sql";
+        cache_config.enabled = true;
+        cache_config.table = "cache_table";
+        cache_config.schema = "cache_schema";
+        cache_config.template_file = "cache_template.sql";
 
         std::map<std::string, std::string> params = {
+            {"cacheCatalog", "cache"},
             {"cacheSchema", "cache_schema"},
-            {"cacheTableName", "cache_table"},
-            {"currentWatermark", "2023-05-01 00:00:00"}
+            {"cacheTable", "cache_table"},
+            {"cacheSnapshotTimestamp", "2023-05-01 00:00:00"}
         };
 
         std::string result = processor.loadAndProcessTemplate(endpoint, cache_config, params);
@@ -315,7 +323,7 @@ TEST_CASE("SQLTemplateProcessor: Complex template with multiple features", "[sql
         std::string template_content = R"(
             WITH cache_data AS (
                 SELECT * FROM {{cache.schema}}.{{cache.table}}
-                WHERE updated_at > '{{cache.currentWatermark}}'
+                WHERE updated_at > '{{cache.snapshotTimestamp}}'
             )
             SELECT cd.*, u.email
             FROM cache_data cd
@@ -333,9 +341,10 @@ TEST_CASE("SQLTemplateProcessor: Complex template with multiple features", "[sql
         endpoint.connection = {"default"};
 
         std::map<std::string, std::string> params = {
+            {"cacheCatalog", "cache"},
             {"cacheSchema", "cache_schema"},
-            {"cacheTableName", "cache_table"},
-            {"currentWatermark", "2023-05-01 00:00:00"},
+            {"cacheTable", "cache_table"},
+            {"cacheSnapshotTimestamp", "2023-05-01 00:00:00"},
             {"status", "active"},
             {"limit", "100"}
         };

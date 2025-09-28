@@ -3,6 +3,8 @@
 #include <stdexcept>
 #include <crow.h>
 #include <regex>
+#include <ctime>
+#include <cstdlib>
 
 #include "cache_manager.hpp"
 #include "database_manager.hpp"
@@ -13,13 +15,17 @@ CacheManager::CacheManager(std::shared_ptr<DatabaseManager> db_manager) : db_man
 
 void CacheManager::warmUpCaches(std::shared_ptr<ConfigManager> config_manager) {
     CROW_LOG_INFO << "Warming up endpoint caches, this might take some time...";
+    
+    // Initialize audit tables first
+    initializeAuditTables(config_manager);
+    
     const auto& cache_schema = config_manager->getCacheSchema();
 
     std::map<std::string, std::string> params;
     for (auto &endpoint : config_manager->getEndpoints()) 
     {
-        if (shouldRefreshCache(config_manager, endpoint)) 
-        {
+        // Warmup: refresh caches only for endpoints with cache enabled and a table defined
+        if (endpoint.cache.enabled && !endpoint.cache.table.empty()) {
             refreshCache(config_manager, endpoint, params);
         }
     }
@@ -27,133 +33,298 @@ void CacheManager::warmUpCaches(std::shared_ptr<ConfigManager> config_manager) {
 }
 
 bool CacheManager::shouldRefreshCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint) {
-    if ((!endpoint.cache.cacheTableName.empty()) && (!endpoint.cache.cacheSource.empty())) {
-        CROW_LOG_INFO << "Checking if cache should be refreshed for endpoint: " << endpoint.urlPath;
-        return shouldRefreshCache(config_manager, endpoint.cache);
-    }
+    // Do not refresh cache on regular request execution path.
+    // Refreshes happen during warmup, scheduled tasks, or explicit manual triggers.
     return false;
 }
 
 bool CacheManager::shouldRefreshCache(std::shared_ptr<ConfigManager> config_manager, const CacheConfig& cacheConfig) {
-    std::string cacheTableName = cacheConfig.cacheTableName;
-    
-    std::vector<std::string> tableNames = db_manager->getTableNames(config_manager->getCacheSchema(), cacheTableName, true);
-    if (tableNames.empty()) {
-        CROW_LOG_INFO << "Cache table not found: '" << cacheTableName << "%', need to refresh";
-        return true;
-    }
-
-    if (cacheConfig.refreshTime.empty()) {
+        // Cache should only be refreshed during:
+        // 1. Initial warmup (handled separately)
+        // 2. Scheduled refreshes (handled by HeartbeatWorker)
+        // 3. Manual refresh requests (handled by ConfigService)
+        //
+        // Regular endpoint requests should NOT trigger cache refresh
         return false;
     }
 
-    auto newestCacheTable = tableNames.front();
-
-    auto watermark = CacheWatermark<int64_t>::parseFromTableName(newestCacheTable);
-    auto creationTime = std::chrono::system_clock::time_point(std::chrono::seconds(watermark.watermark));
-    auto now = std::chrono::system_clock::now();
-    auto tableAge = std::chrono::duration_cast<std::chrono::seconds>(now - creationTime);
-
-    auto refreshSeconds = cacheConfig.getRefreshTimeInSeconds();
-    auto newestTooOld = tableAge > refreshSeconds;
-    if (newestTooOld) {
-        CROW_LOG_INFO << "Cache too old: " << newestCacheTable << ": (table age) " << tableAge.count() << "s > " << refreshSeconds.count() << "s (refreshTime from config), need to refresh";
-    }
-    else {
-        CROW_LOG_INFO << "Cache is fresh: " << newestCacheTable << ": (table age) " << tableAge.count() << "s <= " << refreshSeconds.count() << "s (refreshTime from config)";
-    }
-    return newestTooOld;
+void CacheManager::refreshCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
+    refreshDuckLakeCache(config_manager, endpoint, params);
 }
 
-void CacheManager::refreshCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
-    auto &cacheConfig = endpoint.cache;
-    auto currentWatermark = CacheWatermark<int64_t>::now(cacheConfig.cacheTableName);
-    auto cacheSchema = config_manager->getCacheSchema();
+void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string> params) {
+    const auto& cacheConfig = endpoint.cache;
+    const auto& ducklakeConfig = config_manager->getDuckLakeConfig();
+    const std::string catalog = ducklakeConfig.alias;
+    const std::string schema = cacheConfig.schema.empty() ? "main" : cacheConfig.schema;
+    const std::string table = cacheConfig.table;
 
-    params.emplace("cacheSchema", cacheSchema);
-    params.emplace("cacheTableName", currentWatermark.tableName);
-    params.emplace("cacheRefreshTime", cacheConfig.refreshTime);
-    params.emplace("currentWatermark", std::to_string(currentWatermark.watermark));
+    // Ensure cache schema exists before processing cache template
+    ensureCacheSchemaExists(catalog, schema);
 
-    std::vector<std::string> previousCacheTables = db_manager->getTableNames(cacheSchema, cacheConfig.cacheTableName, true);
-    if (! previousCacheTables.empty()) {
-        addPreviousCacheTableParamsIfNecessary(previousCacheTables.front(), params);
+    SnapshotInfo snapshot = fetchSnapshotInfo(catalog, schema, table);
+
+    params.clear();
+    params["cacheCatalog"] = catalog;
+    params["cacheSchema"] = schema;
+    params["cacheTable"] = table;
+
+    params["cacheMode"] = determineCacheMode(cacheConfig);
+
+    if (snapshot.current_snapshot_id) {
+        params["cacheSnapshotId"] = *snapshot.current_snapshot_id;
     }
-    
-    CROW_LOG_INFO << "Starting to refresh cache: " << cacheSchema << "." << currentWatermark.tableName;
-    
-    db_manager->createSchemaIfNecessary(cacheSchema);
-    db_manager->executeCacheQuery(endpoint, cacheConfig, params);
-    
-    CROW_LOG_INFO << "Cache refreshed: " << config_manager->getCacheSchema() << "." << currentWatermark.tableName;
+    if (snapshot.current_snapshot_committed_at) {
+        params["cacheSnapshotTimestamp"] = *snapshot.current_snapshot_committed_at;
+    }
+    if (snapshot.previous_snapshot_id) {
+        params["previousSnapshotId"] = *snapshot.previous_snapshot_id;
+    }
+    if (snapshot.previous_snapshot_committed_at) {
+        params["previousSnapshotTimestamp"] = *snapshot.previous_snapshot_committed_at;
+    }
+    if (cacheConfig.schedule) {
+        params["cacheSchedule"] = cacheConfig.schedule.value();
+    }
+    if (cacheConfig.hasCursor()) {
+        params["cursorColumn"] = cacheConfig.cursor->column;
+        params["cursorType"] = cacheConfig.cursor->type;
+    }
+    if (cacheConfig.hasPrimaryKey()) {
+        params["primaryKeys"] = joinStrings(cacheConfig.primary_keys, ",");
+    }
 
-    performGarbageCollection(config_manager, endpoint, previousCacheTables);
+    const std::string rendered = db_manager->renderCacheTemplate(endpoint, cacheConfig, params);
+    
+    try {
+        db_manager->executeDuckLakeQuery(rendered, params);
+        recordSyncEvent(config_manager, endpoint, determineCacheMode(cacheConfig), "success", "Cache refreshed successfully");
+    } catch (const std::exception& ex) {
+        recordSyncEvent(config_manager, endpoint, determineCacheMode(cacheConfig), "error", ex.what());
+        throw;
+    }
+
+    // trigger retention expiry if requested
+    if (cacheConfig.retention.keep_last_snapshots || cacheConfig.retention.max_snapshot_age) {
+        std::string expireSql;
+        if (cacheConfig.retention.max_snapshot_age) {
+            // Convert time interval to proper timestamp format
+            std::string timeInterval = cacheConfig.retention.max_snapshot_age.value();
+            std::string timestampExpr = "CAST(CURRENT_TIMESTAMP AS TIMESTAMP) - INTERVAL '" + timeInterval + "'";
+            expireSql = "CALL ducklake_expire_snapshots('" + catalog + "', older_than => " + timestampExpr + ")";
+        } else {
+            // Use versions parameter for count-based expiry
+            expireSql = "CALL ducklake_expire_snapshots('" + catalog + "', versions => ARRAY[0:" + std::to_string(cacheConfig.retention.keep_last_snapshots.value()) + "])";
+        }
+        try {
+            db_manager->executeDuckLakeQuery(expireSql, params);
+        } catch (const std::exception& ex) {
+            CROW_LOG_WARNING << "Failed to expire DuckLake snapshots for " << schema << "." << table << ": " << ex.what();
+        }
+    }
+}
+
+std::string CacheManager::determineCacheMode(const CacheConfig& cacheConfig) {
+    if (!cacheConfig.hasCursor()) {
+        return "full";
+    }
+    return cacheConfig.hasPrimaryKey() ? "merge" : "append";
+}
+
+std::string CacheManager::joinStrings(const std::vector<std::string>& values, const std::string& delimiter) {
+    if (values.empty()) {
+        return {};
+    }
+    std::ostringstream joined;
+    for (std::size_t idx = 0; idx < values.size(); ++idx) {
+        if (idx > 0) {
+            joined << delimiter;
+        }
+        joined << values[idx];
+    }
+    return joined.str();
+}
+
+CacheManager::SnapshotInfo CacheManager::fetchSnapshotInfo(const std::string& catalog, const std::string& schema, const std::string& table) {
+    SnapshotInfo info;
+
+    try {
+        std::map<std::string, std::string> params;
+        params["catalog"] = catalog;
+        params["schema"] = schema;
+        params["table"] = table;
+
+        // Get all snapshots and derive current/previous from the highest versions
+        try {
+            std::string snapshotsQuery = "SELECT snapshot_id, snapshot_time FROM ducklake_snapshots('" + catalog + "') ORDER BY snapshot_id DESC LIMIT 2";
+            auto snapshots = db_manager->executeDuckLakeQuery(snapshotsQuery);
+            auto snapshotsJson = crow::json::load(snapshots.data.dump());
+            
+            if (snapshotsJson && snapshotsJson.t() == crow::json::type::List && snapshotsJson.size() > 0) {
+                // Current snapshot is the highest version (first row)
+                const auto& currentRow = snapshotsJson[0];
+                if (currentRow.has("snapshot_id") && currentRow["snapshot_id"].t() == crow::json::type::Number) {
+                    info.current_snapshot_id = std::to_string(static_cast<int64_t>(currentRow["snapshot_id"].d()));
+                }
+                if (currentRow.has("snapshot_time") && currentRow["snapshot_time"].t() == crow::json::type::String) {
+                    info.current_snapshot_committed_at = currentRow["snapshot_time"].s();
+                }
+                
+                // Previous snapshot is the second highest version (if available)
+                if (snapshotsJson.size() > 1) {
+                    const auto& previousRow = snapshotsJson[1];
+                    if (previousRow.has("snapshot_id") && previousRow["snapshot_id"].t() == crow::json::type::Number) {
+                        info.previous_snapshot_id = std::to_string(static_cast<int64_t>(previousRow["snapshot_id"].d()));
+                    }
+                    if (previousRow.has("snapshot_time") && previousRow["snapshot_time"].t() == crow::json::type::String) {
+                        info.previous_snapshot_committed_at = previousRow["snapshot_time"].s();
+                    }
+                }
+            }
+        } catch (const std::exception& ex) {
+            CROW_LOG_DEBUG << "DuckLake snapshots function not available, using fallback: " << ex.what();
+            // Use current timestamp as fallback
+            info.current_snapshot_id = "snapshot_" + std::to_string(std::time(nullptr));
+            info.current_snapshot_committed_at = "now";
+        }
+
+    } catch (const std::exception& ex) {
+        CROW_LOG_WARNING << "Failed to fetch snapshot info for " << schema << "." << table << ": " << ex.what();
+    }
+
+    return info;
 }
 
 void CacheManager::addQueryCacheParamsIfNecessary(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
     auto &cacheConfig = endpoint.cache;
-    if (cacheConfig.cacheTableName.empty() || cacheConfig.cacheSource.empty()) {
+    if (!cacheConfig.enabled || cacheConfig.table.empty()) {
         return;
     }
 
-    auto cacheTableName = cacheConfig.cacheTableName;
-    std::vector<std::string> tableNames = db_manager->getTableNames(config_manager->getCacheSchema(), cacheTableName, true);
-
-    if (tableNames.empty()) {
-        throw std::runtime_error("Cache table not found: '" + cacheTableName + "', this should not happen, cache should be created or refreshed before query.");
-    }
-
-    auto currentWatermark = CacheWatermark<int64_t>::parseFromTableName(tableNames.front());
-
-    params.emplace("cacheSchema", config_manager->getCacheSchema());
-    params.emplace("cacheTableName", tableNames.front());
-    params.emplace("cacheRefreshTime", cacheConfig.refreshTime);
-    params.emplace("currentWatermark", std::to_string(currentWatermark.watermark));
-
-    if (tableNames.size() > 1) {
-        addPreviousCacheTableParamsIfNecessary(tableNames[1], params);
-    }
-}
-
-void CacheManager::addPreviousCacheTableParamsIfNecessary(const std::string& cacheTableName, std::map<std::string, std::string>& params) {
-    params.emplace("previousCacheTableName", cacheTableName);
-    auto previousWatermark = CacheWatermark<int64_t>::parseFromTableName(cacheTableName);
-    params.emplace("previousWatermark", std::to_string(previousWatermark.watermark));
+    std::string schema = cacheConfig.schema.empty() ? config_manager->getCacheSchema() : cacheConfig.schema;
+    params.emplace("cacheCatalog", config_manager->getDuckLakeConfig().alias);
+    params.emplace("cacheSchema", schema);
+    params.emplace("cacheTable", cacheConfig.table);
 }
 
 void CacheManager::performGarbageCollection(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::vector<std::string> previousTableNames) {
     const auto& cacheConfig = endpoint.cache;
-    const auto& cacheSchema = config_manager->getCacheSchema();
-    
-    if (cacheConfig.maxPreviousTables == 0) {
+    if (!cacheConfig.retention.keep_last_snapshots && !cacheConfig.retention.max_snapshot_age) {
         return;
     }
 
-    if (previousTableNames.size() <= cacheConfig.maxPreviousTables) {
-        return;  // No need for garbage collection
+    std::map<std::string, std::string> params;
+    params["catalog"] = config_manager->getDuckLakeConfig().alias;
+    params["schema"] = cacheConfig.schema.empty() ? "main" : cacheConfig.schema;
+    params["table"] = cacheConfig.table;
+
+    // Use a simple time-based expiry for garbage collection
+    std::string expireSql = "CALL ducklake_expire_snapshots('" + params["catalog"] + "', older_than => CAST(CURRENT_TIMESTAMP AS TIMESTAMP) - INTERVAL '1 day')";
+    try {
+        db_manager->executeDuckLakeQuery(expireSql, params);
+        recordSyncEvent(config_manager, endpoint, "garbage_collection", "success", "Expired old snapshots");
+    } catch (const std::exception& ex) {
+        CROW_LOG_WARNING << "Failed to expire snapshots for " << params["schema"] << "." << params["table"] << ": " << ex.what();
+        recordSyncEvent(config_manager, endpoint, "garbage_collection", "error", ex.what());
+    }
+}
+
+void CacheManager::initializeAuditTables(std::shared_ptr<ConfigManager> config_manager) {
+    const auto& ducklakeConfig = config_manager->getDuckLakeConfig();
+    if (!ducklakeConfig.enabled) {
+        return;
     }
 
-    CROW_LOG_INFO << "Performing garbage collection for cache: " << cacheConfig.cacheTableName;
+    const std::string catalog = ducklakeConfig.alias;
+    const std::string auditSchema = "audit";
+    
+    // Create audit schema if it doesn't exist
+    std::string createSchemaSQL = "CREATE SCHEMA IF NOT EXISTS " + catalog + "." + auditSchema;
+    
+    // Create sync_events audit table (DuckLake doesn't support PRIMARY KEY constraints)
+    std::string createAuditTableSQL = R"(
+        CREATE TABLE IF NOT EXISTS )" + catalog + "." + auditSchema + R"(.sync_events (
+            event_id VARCHAR,
+            endpoint_path VARCHAR NOT NULL,
+            cache_table VARCHAR NOT NULL,
+            cache_schema VARCHAR NOT NULL,
+            sync_type VARCHAR NOT NULL,  -- 'full', 'append', 'merge', 'garbage_collection'
+            status VARCHAR NOT NULL,     -- 'success', 'error', 'warning'
+            message TEXT,
+            snapshot_id VARCHAR,
+            rows_affected BIGINT,
+            sync_started_at TIMESTAMP,
+            sync_completed_at TIMESTAMP,
+            duration_ms BIGINT
+        )
+    )";
 
-    // Keep the newest maxPreviousTables tables, drop the rest
-    std::vector<std::string> tablesToDrop(previousTableNames.begin() + cacheConfig.maxPreviousTables, previousTableNames.end());
+    try {
+        std::map<std::string, std::string> params;
+        db_manager->executeDuckLakeQuery(createSchemaSQL, params);
+        db_manager->executeDuckLakeQuery(createAuditTableSQL, params);
+        CROW_LOG_INFO << "Initialized DuckLake audit tables in " << catalog << "." << auditSchema;
+    } catch (const std::exception& ex) {
+        CROW_LOG_ERROR << "Failed to initialize audit tables: " << ex.what();
+    }
+}
 
-    if (!tablesToDrop.empty()) {
-        // Construct the DROP TABLE statements
-        std::stringstream dropQuery;
-        dropQuery << "BEGIN TRANSACTION;";
-        for (const auto& tableName : tablesToDrop) {
-            dropQuery << "DROP TABLE IF EXISTS " << cacheSchema << "." << tableName << ";";
-        }
-        dropQuery << "COMMIT;";
+void CacheManager::ensureCacheSchemaExists(const std::string& catalog, const std::string& schema) {
+    // Skip if schema is "main" (default schema always exists)
+    if (schema == "main") {
+        return;
+    }
+    
+    std::string createSchemaSQL = "CREATE SCHEMA IF NOT EXISTS " + catalog + "." + schema;
+    
+    try {
+        std::map<std::string, std::string> params;
+        db_manager->executeDuckLakeQuery(createSchemaSQL, params);
+        CROW_LOG_DEBUG << "Ensured cache schema exists: " << catalog << "." << schema;
+    } catch (const std::exception& ex) {
+        CROW_LOG_WARNING << "Failed to create cache schema " << catalog << "." << schema << ": " << ex.what();
+        // Don't throw - schema might already exist or be created by another process
+    }
+}
 
-        // Execute the DROP TABLE statements in a single transaction
-        try {
-            db_manager->executeQuery(dropQuery.str(), {}, false);
-            CROW_LOG_INFO << "Dropped " << tablesToDrop.size() << " old cache tables for " << cacheConfig.cacheTableName;
-        } catch (const std::exception& e) {
-            CROW_LOG_ERROR << "Error during garbage collection: " << e.what();
-        }
+void CacheManager::recordSyncEvent(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::string& sync_type, const std::string& status, const std::string& message) {
+    const auto& ducklakeConfig = config_manager->getDuckLakeConfig();
+    if (!ducklakeConfig.enabled) {
+        return;
+    }
+
+    const std::string catalog = ducklakeConfig.alias;
+    const std::string auditSchema = "audit";
+    const auto& cacheConfig = endpoint.cache;
+    
+    std::string insertSQL = R"(
+        INSERT INTO )" + catalog + "." + auditSchema + R"(.sync_events 
+        (endpoint_path, cache_table, cache_schema, sync_type, status, message)
+        VALUES (?, ?, ?, ?, ?, ?)
+    )";
+
+    try {
+        // For now, use a simple query approach - in production, prepared statements would be better
+        std::string escapedMessage = message;
+        std::replace(escapedMessage.begin(), escapedMessage.end(), '\'', '"');
+        
+        std::string eventId = "evt_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(rand());
+        std::string insertQuery = "INSERT INTO " + catalog + "." + auditSchema + ".sync_events " +
+            "(event_id, endpoint_path, cache_table, cache_schema, sync_type, status, message, sync_started_at, sync_completed_at) VALUES (" +
+            "'" + eventId + "', " +
+            "'" + endpoint.urlPath + "', " +
+            "'" + cacheConfig.table + "', " +
+            "'" + (cacheConfig.schema.empty() ? "main" : cacheConfig.schema) + "', " +
+            "'" + sync_type + "', " +
+            "'" + status + "', " +
+            "'" + escapedMessage + "', " +
+            "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)";
+
+        std::map<std::string, std::string> params;
+        db_manager->executeDuckLakeQuery(insertQuery, params);
+        
+    } catch (const std::exception& ex) {
+        CROW_LOG_WARNING << "Failed to record sync event: " << ex.what();
     }
 }
 

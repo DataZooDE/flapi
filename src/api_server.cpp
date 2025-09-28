@@ -226,4 +226,12 @@ void APIServer::stop() {
     app.stop();
 }
 
+std::shared_ptr<CacheManager> APIServer::getCacheManager() const {
+    return dbManager->getCacheManager();
+}
+
+std::shared_ptr<DatabaseManager> APIServer::getDatabaseManager() const {
+    return dbManager;
+}
+
 } // namespace flapi

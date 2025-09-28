@@ -17,7 +17,14 @@ std::string SQLTemplateProcessor::loadAndProcessTemplate(const EndpointConfig& e
 }
 
 std::string SQLTemplateProcessor::loadAndProcessTemplate(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params) {
-    std::string templatePath = getFullTemplatePath(cacheConfig.cacheSource);
+    std::string templatePath;
+    if (cacheConfig.template_file) {
+        templatePath = getFullTemplatePath(cacheConfig.template_file.value());
+        CROW_LOG_DEBUG << "Using cache template file: " << templatePath;
+    } else {
+        templatePath = getFullTemplatePath(endpoint.templateSource);
+        CROW_LOG_DEBUG << "Using endpoint template file: " << templatePath;
+    }
     std::string templateContent = loadTemplateContent(templatePath);
     crow::mustache::context ctx = createTemplateContext(endpoint, params);
     return processTemplate(templateContent, ctx);
@@ -71,34 +78,59 @@ crow::mustache::context SQLTemplateProcessor::createTemplateContext(const Endpoi
     }
 
     // Add cache-related parameters
+    if (params.find("cacheCatalog") != params.end()) {
+        ctx["cache"]["catalog"] = params["cacheCatalog"];
+        params.erase("cacheCatalog");
+    }
+
     if (params.find("cacheSchema") != params.end()) {
         ctx["cache"]["schema"] = params["cacheSchema"];
         params.erase("cacheSchema");
     }
 
-    if (params.find("cacheTableName") != params.end()) {
-        ctx["cache"]["table"] = params["cacheTableName"];
-        params.erase("cacheTableName");
-    }
-        
-    if (params.find("cacheRefreshTime") != params.end()) {
-        ctx["cache"]["refreshTime"] = params["cacheRefreshTime"];
-        params.erase("cacheRefreshTime");
+    if (params.find("cacheTable") != params.end()) {
+        ctx["cache"]["table"] = params["cacheTable"];
+        params.erase("cacheTable");
     }
 
-    if (params.find("currentWatermark") != params.end()) {
-        ctx["cache"]["currentWatermark"] = params["currentWatermark"];
-        params.erase("currentWatermark");
+    if (params.find("cacheSchedule") != params.end()) {
+        ctx["cache"]["schedule"] = params["cacheSchedule"];
+        params.erase("cacheSchedule");
     }
 
-    if (params.find("previousCacheTableName") != params.end()) {
-        ctx["cache"]["previousTable"] = params["previousCacheTableName"];
-        params.erase("previousCacheTableName");
+    if (params.find("cacheSnapshotId") != params.end()) {
+        ctx["cache"]["snapshotId"] = params["cacheSnapshotId"];
+        params.erase("cacheSnapshotId");
     }
 
-    if (params.find("previousWatermark") != params.end()) {
-        ctx["cache"]["previousWatermark"] = params["previousWatermark"];
-        params.erase("previousWatermark");
+    if (params.find("cacheSnapshotTimestamp") != params.end()) {
+        ctx["cache"]["snapshotTimestamp"] = params["cacheSnapshotTimestamp"];
+        params.erase("cacheSnapshotTimestamp");
+    }
+
+    if (params.find("previousSnapshotId") != params.end()) {
+        ctx["cache"]["previousSnapshotId"] = params["previousSnapshotId"];
+        params.erase("previousSnapshotId");
+    }
+
+    if (params.find("previousSnapshotTimestamp") != params.end()) {
+        ctx["cache"]["previousSnapshotTimestamp"] = params["previousSnapshotTimestamp"];
+        params.erase("previousSnapshotTimestamp");
+    }
+
+    if (params.find("cursorColumn") != params.end()) {
+        ctx["cache"]["cursorColumn"] = params["cursorColumn"];
+        params.erase("cursorColumn");
+    }
+
+    if (params.find("cursorType") != params.end()) {
+        ctx["cache"]["cursorType"] = params["cursorType"];
+        params.erase("cursorType");
+    }
+
+    if (params.find("primaryKeys") != params.end()) {
+        ctx["cache"]["primaryKeys"] = params["primaryKeys"];
+        params.erase("primaryKeys");
     }
 
     // Add request parameters

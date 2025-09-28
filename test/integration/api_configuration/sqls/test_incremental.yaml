@@ -1,0 +1,23 @@
+url-path: /test/incremental/
+template-source: customers.sql
+connection:
+  - data-types-parquet
+
+# Test DuckLake incremental cache configuration
+cache:
+  enabled: true
+  table: test_incremental_cache
+  schema: test_schema
+  schedule: 30s
+  primary-key: [id]  # For merge operations
+  cursor:
+    column: id  # Simple cursor for testing
+    type: integer
+  retention:
+    keep_last_snapshots: 3
+    max_snapshot_age: 2h
+  delete-handling: soft
+  template_file: test_cache.sql
+
+auth:
+  enabled: false

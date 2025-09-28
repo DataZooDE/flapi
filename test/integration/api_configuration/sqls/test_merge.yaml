@@ -1,0 +1,20 @@
+# Test endpoint for incremental merge cache mode (cursor + primary key)
+endpoint:
+  urlPath: "/test/merge/"
+  method: "GET"
+  description: "Test endpoint for incremental merge cache mode"
+  templateSource: "test_cache.sql"
+  cache:
+    enabled: true
+    table: test_merge_cache
+    schema: test_schema
+    schedule: "15s"
+    primary-key:
+      - id
+    cursor:
+      column: updated_at
+      type: timestamp
+    retention:
+      keep_last_snapshots: 5
+      max_snapshot_age: "4h"
+    template_file: "test_cache.sql"

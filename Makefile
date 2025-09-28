@@ -1,7 +1,7 @@
 # Makefile for flAPI project
 
 # Phony targets
-.PHONY: all debug release clean run-debug run-release run-integration-tests docker-build web cli-build cli-test vscode-build vscode-dev
+.PHONY: all debug release clean run-debug run-release run-integration-tests docker-build web cli-build cli-test vscode-build vscode-dev integration-test integration-test-rest integration-test-mcp integration-test-ducklake integration-test-setup integration-test-ci test-all help
 
 # Check if Ninja is available
 NINJA := $(shell which ninja)
@@ -35,6 +35,47 @@ DOCKER_IMAGE_NAME := ghcr.io/datazoode/flapi
 
 # Default target
 all: debug release
+
+# Help target
+help:
+	@echo "Available targets:"
+	@echo "  Build targets:"
+	@echo "    all                    - Build both debug and release versions"
+	@echo "    debug                  - Build debug version"
+	@echo "    release                - Build release version"
+	@echo "    clean                  - Clean all build artifacts"
+	@echo ""
+	@echo "  Run targets:"
+	@echo "    run-debug              - Run debug version with example config"
+	@echo "    run-release            - Run release version with example config"
+	@echo ""
+	@echo "  Test targets:"
+	@echo "    test                   - Run unit tests only"
+	@echo "    test-all               - Run all tests (unit + integration)"
+	@echo "    integration-test       - Run all integration tests"
+	@echo "    integration-test-rest  - Run REST API integration tests (Tavern)"
+	@echo "    integration-test-mcp   - Run MCP integration tests"
+	@echo "    integration-test-ducklake - Run DuckLake integration tests"
+	@echo "    integration-test-ci    - Run integration tests with server management (CI/CD)"
+	@echo "    integration-test-setup - Setup Python environment for integration tests"
+	@echo ""
+	@echo "  Web targets:"
+	@echo "    web                    - Build web application"
+	@echo "    web-clean              - Clean web build artifacts"
+	@echo ""
+	@echo "  CLI targets:"
+	@echo "    cli-build              - Build Node.js CLI"
+	@echo "    cli-test               - Run Node.js CLI tests"
+	@echo ""
+	@echo "  VSCode targets:"
+	@echo "    vscode-build           - Build VSCode extension"
+	@echo "    vscode-dev             - Start VSCode extension development"
+	@echo ""
+	@echo "  Docker targets:"
+	@echo "    docker                 - Build Docker image"
+	@echo ""
+	@echo "  Legacy targets:"
+	@echo "    run-integration-tests  - Legacy integration test target"
 
 # Debug build for Windows (Visual Studio compatible)
 ifeq ($(OS),Windows_NT)
@@ -151,10 +192,86 @@ run-release: release
 	@echo "Running release version..."
 	@$(RELEASE_DIR)/flapi --config examples/flapi.yaml --log-level info
 
-# Run integration tests
+# Legacy integration tests target (kept for compatibility)
 run-integration-tests: debug
 	@echo "Running integration tests..."
 	@$(CMAKE) --build $(DEBUG_DIR) --target integration_tests
+
+# Integration test setup - install Python dependencies
+integration-test-setup:
+	@echo "Setting up integration test environment..."
+	@cd test/integration && \
+	if command -v uv >/dev/null 2>&1; then \
+		echo "Using uv for dependency management..."; \
+		uv sync; \
+	elif command -v pip >/dev/null 2>&1; then \
+		echo "Using pip for dependency management..."; \
+		pip install tavern pytest pytest-asyncio pytest-timeout requests pandas pyarrow mcp anthropic python-dotenv; \
+	else \
+		echo "Error: Neither uv nor pip found. Please install Python package manager."; \
+		exit 1; \
+	fi
+	@echo "Integration test setup completed"
+
+# Run all integration tests
+integration-test: release integration-test-setup
+	@echo "Running all integration tests..."
+	@$(MAKE) integration-test-rest
+	@$(MAKE) integration-test-mcp
+	@$(MAKE) integration-test-ducklake
+	@echo "All integration tests completed"
+
+# Run REST API integration tests (Tavern-based)
+integration-test-rest: release integration-test-setup
+	@echo "Running REST API integration tests..."
+	@cd test/integration && \
+	if command -v uv >/dev/null 2>&1; then \
+		uv run pytest test_customers.tavern.yaml test_customers_cached.tavern.yaml test_data_types.tavern.yaml test_request_validation.tavern.yaml -v; \
+	else \
+		pytest test_customers.tavern.yaml test_customers_cached.tavern.yaml test_data_types.tavern.yaml test_request_validation.tavern.yaml -v; \
+	fi
+
+# Run DuckLake integration tests
+integration-test-ducklake: release integration-test-setup
+	@echo "Running DuckLake integration tests..."
+	@cd test/integration && \
+	if command -v uv >/dev/null 2>&1; then \
+		uv run pytest test_ducklake_cache.tavern.yaml test_ducklake_scheduler.py -v; \
+	else \
+		pytest test_ducklake_cache.tavern.yaml test_ducklake_scheduler.py -v; \
+	fi
+
+# Run MCP integration tests
+integration-test-mcp: release integration-test-setup
+	@echo "Running MCP integration tests..."
+	@cd test/integration && \
+	if command -v uv >/dev/null 2>&1; then \
+		uv run pytest test_mcp_integration.py -v; \
+	else \
+		pytest test_mcp_integration.py -v; \
+	fi
+
+# Run integration tests with server startup (for CI/CD)
+integration-test-ci: release integration-test-setup
+	@echo "Running integration tests with server management..."
+	@echo "Starting flapi server in background..."
+	@$(RELEASE_DIR)/flapi --config examples/flapi.yaml --log-level info & \
+	SERVER_PID=$$!; \
+	echo "Server started with PID: $$SERVER_PID"; \
+	sleep 5; \
+	echo "Running integration tests..."; \
+	cd test/integration && \
+	if command -v uv >/dev/null 2>&1; then \
+		uv run pytest -v --timeout=300; \
+	else \
+		pytest -v --timeout=300; \
+	fi; \
+	TEST_RESULT=$$?; \
+	echo "Stopping server..."; \
+	kill $$SERVER_PID 2>/dev/null || true; \
+	wait $$SERVER_PID 2>/dev/null || true; \
+	echo "Integration tests completed with exit code: $$TEST_RESULT"; \
+	exit $$TEST_RESULT
 
 # Build Docker image
 docker: release
@@ -185,9 +302,9 @@ docker: release
 		-t $(DOCKER_IMAGE_NAME):latest \
 		-f $(DOCKER_FILE) .
 
-# Add a test target
+# Add a test target (unit tests only)
 test: release
-	@echo "Running tests..."
+	@echo "Running unit tests..."
 	@if [ "$(shell uname)" = "Darwin" ]; then \
 		cd $(RELEASE_DIR)-$(shell uname -m | sed 's/x86_64/x86_64/' | sed 's/arm64/arm64/') && \
 		ctest --output-on-failure; \
@@ -195,6 +312,10 @@ test: release
 		cd $(RELEASE_DIR) && \
 		ctest --output-on-failure; \
 	fi
+
+# Run all tests (unit + integration)
+test-all: test integration-test
+	@echo "All tests completed successfully"
 
 web-clean:
 	@echo "Cleaning web build artifacts..."

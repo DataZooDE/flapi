@@ -52,6 +52,22 @@ duckdb:
   max_memory: 8GB
   default_order: DESC
 
+# DuckLake configuration (for advanced caching with snapshots and time-travel)
+ducklake:
+  enabled: true
+  alias: cache  # Catalog alias for DuckLake tables
+  metadata_path: ./data/cache.ducklake  # Path to DuckLake metadata
+  data_path: ./data/cache  # Path to DuckLake data files
+  retention:
+    keep_last_snapshots: 10  # Keep last 10 snapshots for each table
+    max_snapshot_age: 30d    # Delete snapshots older than 30 days
+  compaction:
+    enabled: true
+    schedule: '@daily'  # Run compaction daily
+  scheduler:
+    enabled: true
+    scan_interval: 5m  # Check for scheduled cache refreshes every 5 minutes
+
 # ====================================================================================
 # MCP (Model Context Protocol) Support
 # ====================================================================================

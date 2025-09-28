@@ -51,11 +51,21 @@ void DatabaseManager::initializeDBManagerFromConfig(std::shared_ptr<ConfigManage
         loadDefaultExtensions(config_manager);
         initializeConnections(config_manager);
 
-        // Initialize the sql processor, done before cache manager.
         this->config_manager = config_manager;
+
+        const auto& ducklake_config = config_manager->getDuckLakeConfig();
+        if (ducklake_config.enabled) {
+            CROW_LOG_INFO << "Attaching DuckLake catalog at alias '" << ducklake_config.alias << "'";
+            std::string attach_stmt = "ATTACH 'ducklake:" + ducklake_config.metadata_path + "' AS " + ducklake_config.alias + " (DATA_PATH '" + ducklake_config.data_path + "');";
+            try {
+                executeInitStatement(attach_stmt);
+            } catch (const std::exception& e) {
+                throw std::runtime_error(std::string("Failed to attach DuckLake catalog: ") + e.what());
+            }
+        }
+
         sql_processor = std::make_shared<SQLTemplateProcessor>(config_manager);
 
-        // Initialize the cache manager
         cache_manager = std::make_unique<CacheManager>(shared_from_this());
         cache_manager->warmUpCaches(config_manager);
     }
@@ -116,7 +126,7 @@ bool DatabaseManager::tableExists(const std::string& schema, const std::string& 
 }
 
 bool DatabaseManager::isCacheEnabled(const EndpointConfig& endpoint) {
-    return !endpoint.cache.cacheTableName.empty();
+    return endpoint.cache.enabled && !endpoint.cache.table.empty();
 }
 
 bool DatabaseManager::invalidateCache(const EndpointConfig& endpoint) {
@@ -250,10 +260,6 @@ duckdb_connection DatabaseManager::getConnection() {
 
 QueryResult DatabaseManager::executeQuery(const EndpointConfig& endpoint, std::map<std::string, std::string>& params, bool with_pagination) 
 {   
-    if (cache_manager->shouldRefreshCache(config_manager, endpoint)) {
-        cache_manager->refreshCache(config_manager, endpoint, params);
-    }
-
     cache_manager->addQueryCacheParamsIfNecessary(config_manager, endpoint, params);
     std::string processedQuery = processTemplate(endpoint, params);
     return executeQuery(processedQuery, params, with_pagination);
@@ -265,12 +271,20 @@ QueryResult DatabaseManager::executeCacheQuery(const EndpointConfig& endpoint, c
     return executeQuery(processedQuery, params, false);
 }
 
+QueryResult DatabaseManager::executeDuckLakeQuery(const std::string& query, const std::map<std::string, std::string>& params) {
+    return executeQuery(query, params, false);
+}
+
 std::string DatabaseManager::processTemplate(const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
     return sql_processor->loadAndProcessTemplate(endpoint, params);
 }
 
 std::string DatabaseManager::processCacheTemplate(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params) {
     return sql_processor->loadAndProcessTemplate(endpoint, cacheConfig, params);
+}
+
+std::string DatabaseManager::renderCacheTemplate(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params) {
+    return processCacheTemplate(endpoint, cacheConfig, params);
 }
 
 QueryResult DatabaseManager::executeQuery(const std::string& query, 

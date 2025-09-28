@@ -10,16 +10,14 @@
 
 namespace flapi {
 
-/**
- * @brief Get the refresh time in seconds, the refresh time is a string in the format of "1h" for 1 hour. 
- * Available units are "s" for seconds, "m" for minutes, "h" for hours, "d" for days.   
- * @return The refresh time in seconds
- */
 std::chrono::seconds CacheConfig::getRefreshTimeInSeconds() const {
-    auto interval = TimeInterval::parseInterval(refreshTime);
+    if (!schedule || schedule->empty()) {
+        return std::chrono::seconds::zero();
+    }
+
+    auto interval = TimeInterval::parseInterval(*schedule);
     if (!interval) {
-        throw std::runtime_error("Invalid refresh time format: " + refreshTime + 
-                               ". Expected format: <number>[s|m|h|d] (e.g., 30s, 5m, 2h, 1d)");
+        throw std::runtime_error("Invalid cache schedule format: " + *schedule + ". Expected <number>[s|m|h|d]");
     }
     return *interval;
 }
@@ -74,6 +72,7 @@ void ConfigManager::parseMainConfig() {
         parseRateLimitConfig();
         parseAuthConfig();
         parseDuckDBConfig();
+        parseDuckLakeConfig();
         parseTemplateConfig();
         parseGlobalHeartbeatConfig();
 
@@ -143,6 +142,54 @@ const DuckDBConfig& ConfigManager::getDuckDBConfig() const {
 
 std::string ConfigManager::getDuckDBPath() const {
     return duckdb_config.db_path.empty() ? ":memory:" : duckdb_config.db_path;
+}
+
+// DuckLake configuration methods
+void ConfigManager::parseDuckLakeConfig() {
+    ducklake_config = DuckLakeConfig{};
+
+    if (!config["ducklake"]) {
+        return;
+    }
+
+    auto node = config["ducklake"];
+    ducklake_config.enabled = safeGet<bool>(node, "enabled", "ducklake.enabled", false);
+    ducklake_config.alias = safeGet<std::string>(node, "alias", "ducklake.alias", std::string("cache"));
+
+    if (ducklake_config.enabled) {
+        ducklake_config.metadata_path = safeGet<std::string>(node, "metadata_path", "ducklake.metadata_path");
+        ducklake_config.data_path = safeGet<std::string>(node, "data_path", "ducklake.data_path");
+
+        if (node["retention"]) {
+            auto retention = node["retention"];
+            if (retention["keep_last_snapshots"]) {
+                ducklake_config.retention.keep_last_snapshots = safeGet<std::size_t>(retention, "keep_last_snapshots", "ducklake.retention.keep_last_snapshots");
+            }
+            if (retention["max_snapshot_age"]) {
+                ducklake_config.retention.max_snapshot_age = safeGet<std::string>(retention, "max_snapshot_age", "ducklake.retention.max_snapshot_age");
+            }
+        }
+
+        if (node["compaction"]) {
+            auto compaction = node["compaction"];
+            ducklake_config.compaction.enabled = safeGet<bool>(compaction, "enabled", "ducklake.compaction.enabled", false);
+            if (compaction["schedule"]) {
+                ducklake_config.compaction.schedule = safeGet<std::string>(compaction, "schedule", "ducklake.compaction.schedule");
+            }
+        }
+
+        if (node["scheduler"]) {
+            auto scheduler = node["scheduler"];
+            ducklake_config.scheduler.enabled = safeGet<bool>(scheduler, "enabled", "ducklake.scheduler.enabled", false);
+            if (scheduler["scan_interval"]) {
+                ducklake_config.scheduler.scan_interval = safeGet<std::string>(scheduler, "scan_interval", "ducklake.scheduler.scan_interval");
+            }
+        }
+
+        // Resolve relative paths against base path
+        ducklake_config.metadata_path = makePathRelativeToBasePathIfNecessary(ducklake_config.metadata_path);
+        ducklake_config.data_path = makePathRelativeToBasePathIfNecessary(ducklake_config.data_path);
+    }
 }
 
 // Endpoint configuration methods
@@ -469,24 +516,82 @@ std::string ConfigManager::createDefaultAuthInit(const std::string& secret_name,
 
 void ConfigManager::parseEndpointCache(const YAML::Node& endpoint_config, const std::filesystem::path& endpoint_dir, EndpointConfig& endpoint) {
     CROW_LOG_DEBUG << "\tParsing endpoint cache configuration";
-    if (endpoint_config["cache"]) {
-        auto cache_node = endpoint_config["cache"];
-        
-        // Parse enabled field - if not explicitly set, enable cache if any cache configuration is present
-        endpoint.cache.enabled = safeGet<bool>(cache_node, "enabled", "cache.enabled", true);
-        
-        endpoint.cache.cacheTableName = safeGet<std::string>(cache_node, "cache-table-name", "cache.cache-table-name", "");
-        endpoint.cache.cacheSource = (endpoint_dir / safeGet<std::string>(cache_node, "cache-source", "cache.cache-source")).string();
-        endpoint.cache.refreshTime = safeGet<std::string>(cache_node, "refresh-time", "cache.refresh-time", "");
-        endpoint.cache.refreshEndpoint = safeGet<bool>(cache_node, "refresh-endpoint", "cache.refresh-endpoint", false);
-        endpoint.cache.maxPreviousTables = safeGet<std::size_t>(cache_node, "max-previous-tables", "cache.max-previous-tables", 5);
+    if (!endpoint_config["cache"]) {
+        endpoint.cache.enabled = false;
+        return;
+    }
 
-        CROW_LOG_DEBUG << "\t\tCache Enabled: " << (endpoint.cache.enabled ? "true" : "false");
-        CROW_LOG_DEBUG << "\t\tCache Table Name: " << endpoint.cache.cacheTableName;
-        CROW_LOG_DEBUG << "\t\tCache Source: " << endpoint.cache.cacheSource;
-        CROW_LOG_DEBUG << "\t\tRefresh Time: " << endpoint.cache.refreshTime;
-        CROW_LOG_DEBUG << "\t\tRefresh Endpoint: " << (endpoint.cache.refreshEndpoint ? "true" : "false");
-        CROW_LOG_DEBUG << "\t\tMax Previous Tables: " << endpoint.cache.maxPreviousTables;
+        auto cache_node = endpoint_config["cache"];
+
+    endpoint.cache.enabled = safeGet<bool>(cache_node, "enabled", "cache.enabled", true);
+    endpoint.cache.table = safeGet<std::string>(cache_node, "table", "cache.table");
+    endpoint.cache.schema = safeGet<std::string>(cache_node, "schema", "cache.schema", std::string("cache"));
+
+    if (cache_node["schedule"]) {
+        endpoint.cache.schedule = safeGet<std::string>(cache_node, "schedule", "cache.schedule");
+    }
+
+    if (cache_node["primary-key"]) {
+        endpoint.cache.primary_keys = safeGet<std::vector<std::string>>(cache_node, "primary-key", "cache.primary-key");
+    } else if (cache_node["primaryKey"]) {
+        endpoint.cache.primary_keys = safeGet<std::vector<std::string>>(cache_node, "primaryKey", "cache.primaryKey");
+    }
+
+    if (cache_node["cursor"]) {
+        auto cursor_node = cache_node["cursor"];
+        CacheConfig::CursorConfig cursor;
+        cursor.column = safeGet<std::string>(cursor_node, "column", "cache.cursor.column");
+        cursor.type = safeGet<std::string>(cursor_node, "type", "cache.cursor.type");
+        endpoint.cache.cursor = cursor;
+    }
+
+    if (cache_node["rollback-window"]) {
+        endpoint.cache.rollback_window = safeGet<std::string>(cache_node, "rollback-window", "cache.rollback-window");
+    } else if (cache_node["rollbackWindow"]) {
+        endpoint.cache.rollback_window = safeGet<std::string>(cache_node, "rollbackWindow", "cache.rollbackWindow");
+    }
+
+    if (cache_node["retention"]) {
+        auto retention_node = cache_node["retention"];
+        if (retention_node["keep_last_snapshots"]) {
+            endpoint.cache.retention.keep_last_snapshots = safeGet<std::size_t>(retention_node, "keep_last_snapshots", "cache.retention.keep_last_snapshots");
+        }
+        if (retention_node["max_snapshot_age"]) {
+            endpoint.cache.retention.max_snapshot_age = safeGet<std::string>(retention_node, "max_snapshot_age", "cache.retention.max_snapshot_age");
+        }
+    }
+
+    if (cache_node["delete-handling"]) {
+        endpoint.cache.delete_handling = safeGet<std::string>(cache_node, "delete-handling", "cache.delete-handling");
+    } else if (cache_node["deleteHandling"]) {
+        endpoint.cache.delete_handling = safeGet<std::string>(cache_node, "deleteHandling", "cache.deleteHandling");
+    }
+
+    if (cache_node["template_file"]) {
+        endpoint.cache.template_file = safeGet<std::string>(cache_node, "template_file", "cache.template_file");
+    } else if (cache_node["template-file"]) {
+        endpoint.cache.template_file = safeGet<std::string>(cache_node, "template-file", "cache.template-file");
+    } else if (cache_node["templateFile"]) {
+        endpoint.cache.template_file = safeGet<std::string>(cache_node, "templateFile", "cache.templateFile");
+    }
+
+    CROW_LOG_DEBUG << "\t\tCache Enabled: " << (endpoint.cache.enabled ? "true" : "false");
+    CROW_LOG_DEBUG << "\t\tCache Table: " << endpoint.cache.table;
+    CROW_LOG_DEBUG << "\t\tCache Schema: " << endpoint.cache.schema;
+    if (endpoint.cache.schedule) {
+        CROW_LOG_DEBUG << "\t\tSchedule: " << endpoint.cache.schedule.value();
+    }
+    if (endpoint.cache.cursor) {
+        CROW_LOG_DEBUG << "\t\tCursor Column: " << endpoint.cache.cursor->column << " Type: " << endpoint.cache.cursor->type;
+    }
+    if (endpoint.cache.rollback_window) {
+        CROW_LOG_DEBUG << "\t\tRollback Window: " << endpoint.cache.rollback_window.value();
+    }
+    if (!endpoint.cache.primary_keys.empty()) {
+        CROW_LOG_DEBUG << "\t\tPrimary Keys: " << endpoint.cache.primary_keys.size();
+    }
+    if (endpoint.cache.template_file) {
+        CROW_LOG_DEBUG << "\t\tTemplate File: " << endpoint.cache.template_file.value();
     }
 }
 
@@ -678,10 +783,11 @@ std::unordered_map<std::string, std::string> ConfigManager::getPropertiesForTemp
 }
 
 std::string ConfigManager::getFullCacheSourcePath(const EndpointConfig& endpoint) const {
-    if (endpoint.cache.cacheSource.empty()) {
+    if (!endpoint.cache.enabled || endpoint.cache.table.empty()) {
         return "";
     }
-    return (base_path / endpoint.cache.cacheSource).string();
+    // Cache templates now resolved via YAML; this helper is deprecated in DuckLake flow
+    return "";
 }
 
 void ConfigManager::printConfig() const {
@@ -885,9 +991,43 @@ crow::json::wvalue ConfigManager::serializeEndpointConfig(const EndpointConfig& 
     // Always include cache section
     crow::json::wvalue cacheJson;
     cacheJson["enabled"] = config.cache.enabled;
-    cacheJson[(style == EndpointJsonStyle::HyphenCase) ? "cache-source" : "cacheSource"] = config.cache.cacheSource;
-    cacheJson[(style == EndpointJsonStyle::HyphenCase) ? "cache-table" : "cacheTable"] = config.cache.cacheTableName;
-    cacheJson[(style == EndpointJsonStyle::HyphenCase) ? "refresh-time" : "refreshTime"] = config.cache.refreshTime;
+    cacheJson[(style == EndpointJsonStyle::HyphenCase) ? "table" : "table"] = config.cache.table;
+    cacheJson[(style == EndpointJsonStyle::HyphenCase) ? "schema" : "schema"] = config.cache.schema;
+    if (config.cache.schedule) {
+        cacheJson[(style == EndpointJsonStyle::HyphenCase) ? "schedule" : "schedule"] = config.cache.schedule.value();
+    }
+    if (!config.cache.primary_keys.empty()) {
+        auto pk_list = crow::json::wvalue::list();
+        for (const auto& pk : config.cache.primary_keys) {
+            pk_list.push_back(pk);
+        }
+        cacheJson[(style == EndpointJsonStyle::HyphenCase) ? "primary-key" : "primaryKey"] = std::move(pk_list);
+    }
+    if (config.cache.cursor) {
+        crow::json::wvalue cursorJson;
+        cursorJson[(style == EndpointJsonStyle::HyphenCase) ? "column" : "column"] = config.cache.cursor->column;
+        cursorJson[(style == EndpointJsonStyle::HyphenCase) ? "type" : "type"] = config.cache.cursor->type;
+        cacheJson[(style == EndpointJsonStyle::HyphenCase) ? "cursor" : "cursor"] = std::move(cursorJson);
+    }
+    if (config.cache.rollback_window) {
+        cacheJson[(style == EndpointJsonStyle::HyphenCase) ? "rollback-window" : "rollbackWindow"] = config.cache.rollback_window.value();
+    }
+    if (config.cache.retention.keep_last_snapshots || config.cache.retention.max_snapshot_age) {
+        crow::json::wvalue retentionJson;
+        if (config.cache.retention.keep_last_snapshots) {
+            retentionJson[(style == EndpointJsonStyle::HyphenCase) ? "keep_last_snapshots" : "keep_last_snapshots"] = static_cast<int64_t>(config.cache.retention.keep_last_snapshots.value());
+        }
+        if (config.cache.retention.max_snapshot_age) {
+            retentionJson[(style == EndpointJsonStyle::HyphenCase) ? "max_snapshot_age" : "max_snapshot_age"] = config.cache.retention.max_snapshot_age.value();
+        }
+        cacheJson[(style == EndpointJsonStyle::HyphenCase) ? "retention" : "retention"] = std::move(retentionJson);
+    }
+    if (config.cache.delete_handling) {
+        cacheJson[(style == EndpointJsonStyle::HyphenCase) ? "delete-handling" : "deleteHandling"] = config.cache.delete_handling.value();
+    }
+    if (config.cache.template_file) {
+        cacheJson[(style == EndpointJsonStyle::HyphenCase) ? "template-file" : "templateFile"] = config.cache.template_file.value();
+    }
     json[(style == EndpointJsonStyle::HyphenCase) ? "cache" : "cache"] = std::move(cacheJson);
 
     if (config.isMCPTool()) {
@@ -947,14 +1087,6 @@ std::string requireStringField(const crow::json::rvalue& json, std::initializer_
 EndpointConfig ConfigManager::deserializeEndpointConfig(const crow::json::rvalue& json) const {
     EndpointConfig config;
 
-    auto getString = [&](std::initializer_list<std::string> keys) -> std::string {
-        auto key = firstExistingKey(json, keys);
-        if (!key.empty()) {
-            return json[key].s();
-        }
-        return {};
-    };
-
     auto getBool = [&](std::initializer_list<std::string> keys, bool defaultValue) -> bool {
         auto key = firstExistingKey(json, keys);
         if (!key.empty()) {
@@ -1005,20 +1137,54 @@ EndpointConfig ConfigManager::deserializeEndpointConfig(const crow::json::rvalue
     if (json.has("cache") || json.has("cache-config") || json.has("cacheConfig")) {
         auto key = firstExistingKey(json, {"cache", "cache-config", "cacheConfig"});
         const auto& cacheJson = json[key];
-        if (cacheJson.has("enabled")) {
-            config.cache.enabled = cacheJson["enabled"].b();
+        config.cache.enabled = getBool({"enabled"}, true);
+
+        auto tableKey = firstExistingKey(cacheJson, {"table"});
+        if (!tableKey.empty()) {
+            config.cache.table = cacheJson[tableKey].s();
         }
-        auto cacheSourceKey = firstExistingKey(cacheJson, {"cache-source", "cacheSource"});
-        if (!cacheSourceKey.empty()) {
-            config.cache.cacheSource = cacheJson[cacheSourceKey].s();
+        auto schemaKey = firstExistingKey(cacheJson, {"schema"});
+        if (!schemaKey.empty()) {
+            config.cache.schema = cacheJson[schemaKey].s();
         }
-        auto cacheTableKey = firstExistingKey(cacheJson, {"cache-table", "cacheTable"});
-        if (!cacheTableKey.empty()) {
-            config.cache.cacheTableName = cacheJson[cacheTableKey].s();
+        auto scheduleKey = firstExistingKey(cacheJson, {"schedule"});
+        if (!scheduleKey.empty()) {
+            config.cache.schedule = cacheJson[scheduleKey].s();
         }
-        auto refreshKey = firstExistingKey(cacheJson, {"refresh-time", "refreshTime"});
-        if (!refreshKey.empty()) {
-            config.cache.refreshTime = cacheJson[refreshKey].s();
+        auto pkKey = firstExistingKey(cacheJson, {"primary-key", "primaryKey"});
+        if (!pkKey.empty()) {
+            std::vector<std::string> pks;
+            for (const auto& item : cacheJson[pkKey]) {
+                pks.push_back(item.s());
+            }
+            config.cache.primary_keys = std::move(pks);
+        }
+        auto cursorKey = firstExistingKey(cacheJson, {"cursor"});
+        if (!cursorKey.empty()) {
+            CacheConfig::CursorConfig cursor;
+            const auto& cursorJson = cacheJson[cursorKey];
+            cursor.column = cursorJson[requireStringField(cursorJson, {"column"})].s();
+            cursor.type = cursorJson[requireStringField(cursorJson, {"type"})].s();
+            config.cache.cursor = std::move(cursor);
+        }
+        auto rollbackKey = firstExistingKey(cacheJson, {"rollback-window", "rollbackWindow"});
+        if (!rollbackKey.empty()) {
+            config.cache.rollback_window = cacheJson[rollbackKey].s();
+        }
+        if (cacheJson.has("retention")) {
+            const auto& retentionJson = cacheJson["retention"];
+            auto keepKey = firstExistingKey(retentionJson, {"keep_last_snapshots"});
+            if (!keepKey.empty()) {
+                config.cache.retention.keep_last_snapshots = static_cast<std::size_t>(retentionJson[keepKey].i());
+            }
+            auto ageKey = firstExistingKey(retentionJson, {"max_snapshot_age"});
+            if (!ageKey.empty()) {
+                config.cache.retention.max_snapshot_age = retentionJson[ageKey].s();
+            }
+        }
+        auto deleteKey = firstExistingKey(cacheJson, {"delete-handling", "deleteHandling"});
+        if (!deleteKey.empty()) {
+            config.cache.delete_handling = cacheJson[deleteKey].s();
         }
     }
 

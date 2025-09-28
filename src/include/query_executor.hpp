@@ -18,6 +18,7 @@ public:
     crow::json::wvalue data;
     std::string next = "";
     int64_t total_count = -1;
+    std::vector<std::map<std::string, std::string>> rows;
 
     static crow::json::wvalue convertResultToJson(const duckdb_result& result);
     

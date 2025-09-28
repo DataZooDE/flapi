@@ -37,6 +37,10 @@ public:
     void stop();
 
     void requestForEndpoint(const EndpointConfig& endpoint, const std::unordered_map<std::string, std::string>& pathParams = {});
+    
+    // Getters for heartbeat worker
+    std::shared_ptr<CacheManager> getCacheManager() const;
+    std::shared_ptr<DatabaseManager> getDatabaseManager() const;
 
 private:
     void createApp();

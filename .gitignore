@@ -3,6 +3,9 @@ binaries
 cmake
 .idea
 .cache
+examples/data/cache.ducklake*
+examples/data/cache/**
+data/cache/**
 cmake-build-debug
 duckdb_unittest_tempdir/
 .DS_Store

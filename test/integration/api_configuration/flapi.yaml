@@ -22,6 +22,20 @@ duckdb:
   threads: 1
   max_memory: 256MB
 
+# DuckLake configuration for testing
+ducklake:
+  enabled: true
+  alias: cache
+  metadata_path: ./test_cache.ducklake
+  data_path: ./test_cache
+  retention:
+    keep_last_snapshots: 3
+    max_snapshot_age: 1d
+  compaction:
+    enabled: false  # Disable for tests
+  scheduler:
+    enabled: false  # Disable for tests
+
 # Disable MCP for now to test basic server functionality
 mcp:
   enabled: false

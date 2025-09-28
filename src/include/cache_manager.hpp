@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <optional>
 #include <chrono>
 #include "config_manager.hpp"
 #include <duckdb.h>
@@ -8,36 +9,6 @@
 namespace flapi {
 
 class DatabaseManager; // Forward declaration
-
-template<typename TWatermark>
-struct CacheWatermark {
-    std::string tableName;
-    TWatermark watermark;
-
-    std::string toTotalTableName() const {
-        return tableName + "_" + std::to_string(watermark);
-    }
-
-    static CacheWatermark<int64_t> now(const std::string& baseName) {
-        auto now = std::chrono::system_clock::now();
-        auto epoch = now.time_since_epoch();
-        auto seconds = std::chrono::duration_cast<std::chrono::seconds>(epoch);
-        int64_t timestamp = seconds.count();
-        std::string tableName = baseName + "_" + std::to_string(timestamp);
-        return {tableName, timestamp};
-    } 
-
-    static CacheWatermark<int64_t> parseFromTableName(const std::string& tableName) 
-    {
-        size_t pos = tableName.rfind('_');
-        if (pos == std::string::npos) {
-            throw std::runtime_error("Invalid cache table name format: " + tableName);
-        }
-        std::string baseName = tableName.substr(0, pos);
-        int64_t timestamp = std::stoll(tableName.substr(pos + 1));
-        return CacheWatermark<int64_t>{baseName, timestamp};
-    }
-};
 
 class CacheManager {
 public:
@@ -48,11 +19,26 @@ public:
     bool shouldRefreshCache(std::shared_ptr<ConfigManager> config_manager, const CacheConfig& cacheConfig);
 
     void refreshCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
+    void refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string> params);
+    static std::string joinStrings(const std::vector<std::string>& values, const std::string& delimiter);
     void addQueryCacheParamsIfNecessary(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
     void performGarbageCollection(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::vector<std::string> previousTableNames);
 
+    // Audit functionality
+    void initializeAuditTables(std::shared_ptr<ConfigManager> config_manager);
+    void ensureCacheSchemaExists(const std::string& catalog, const std::string& schema);
+    void recordSyncEvent(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::string& sync_type, const std::string& status, const std::string& message = "");
+
 private:
-    void addPreviousCacheTableParamsIfNecessary(const std::string& cacheTableName, std::map<std::string, std::string>& params);
+    struct SnapshotInfo {
+        std::optional<std::string> current_snapshot_id;
+        std::optional<std::string> current_snapshot_committed_at;
+        std::optional<std::string> previous_snapshot_id;
+        std::optional<std::string> previous_snapshot_committed_at;
+    };
+
+    SnapshotInfo fetchSnapshotInfo(const std::string& catalog, const std::string& schema, const std::string& table);
+    static std::string determineCacheMode(const CacheConfig& cacheConfig);
 
     std::shared_ptr<DatabaseManager> db_manager;
 };

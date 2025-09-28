@@ -60,6 +60,20 @@ duckdb:
   db_path: ":memory:"
   max_memory: "2GB"
   threads: "4"
+ducklake:
+  enabled: true
+  alias: cache
+  metadata_path: ./data/cache.ducklake
+  data_path: ./data/cache
+  retention:
+    keep_last_snapshots: 10
+    max_snapshot_age: 30d
+  compaction:
+    enabled: true
+    schedule: '@daily'
+  scheduler:
+    enabled: true
+    scan_interval: 5m
 )";
 
         std::string config_file = createTempYamlFile(yaml_content);
@@ -70,6 +84,18 @@ duckdb:
         REQUIRE(mgr.getProjectDescription() == "Test Description");
         REQUIRE(mgr.isHttpsEnforced() == true);
         REQUIRE(mgr.isAuthEnabled() == false);
+
+        const auto& ducklake_config = mgr.getDuckLakeConfig();
+        REQUIRE(ducklake_config.enabled);
+        REQUIRE(ducklake_config.alias == "cache");
+        REQUIRE(ends_with(ducklake_config.metadata_path, "data/cache.ducklake"));
+        REQUIRE(ends_with(ducklake_config.data_path, "data/cache"));
+        REQUIRE(ducklake_config.retention.keep_last_snapshots == 10);
+        REQUIRE(ducklake_config.retention.max_snapshot_age.value() == "30d");
+        REQUIRE(ducklake_config.compaction.enabled);
+        REQUIRE(ducklake_config.compaction.schedule.value() == "@daily");
+        REQUIRE(ducklake_config.scheduler.enabled);
+        REQUIRE(ducklake_config.scheduler.scan_interval.value() == "5m");
 
         const auto& connections = mgr.getConnections();
         REQUIRE(connections.size() == 1);
@@ -145,10 +171,19 @@ auth:
       roles:
         - user
 cache:
-  cache-table-name: test_cache
-  cache-source: test_source
-  refresh-time: 1h
-  refresh-endpoint: true
+  enabled: true
+  table: test_cache
+  schema: analytics
+  schedule: 10m
+  primary-key: [id]
+  cursor:
+    column: updated_at
+    type: timestamp
+  rollback-window: 2d
+  retention:
+    keep_last_snapshots: 5
+    max_snapshot_age: 14d
+  delete-handling: soft
 
 )";
 
@@ -187,10 +222,18 @@ cache:
         REQUIRE(endpoint.auth.users[0].password == "testpass");
         REQUIRE(endpoint.auth.users[0].roles == std::vector<std::string>{"user"});
 
-        REQUIRE(endpoint.cache.cacheTableName == "test_cache");
-        REQUIRE(endpoint.cache.cacheSource == "/tmp/test_source");
-        REQUIRE(endpoint.cache.refreshTime == "1h");
-        REQUIRE(endpoint.cache.refreshEndpoint == true);
+        REQUIRE(endpoint.cache.enabled == true);
+        REQUIRE(endpoint.cache.table == "test_cache");
+        REQUIRE(endpoint.cache.schema == "analytics");
+        REQUIRE(endpoint.cache.schedule.value() == "10m");
+        REQUIRE(endpoint.cache.primary_keys == std::vector<std::string>{"id"});
+        REQUIRE(endpoint.cache.cursor.has_value());
+        REQUIRE(endpoint.cache.cursor->column == "updated_at");
+        REQUIRE(endpoint.cache.cursor->type == "timestamp");
+        REQUIRE(endpoint.cache.rollback_window.value() == "2d");
+        REQUIRE(endpoint.cache.retention.keep_last_snapshots.value() == 5);
+        REQUIRE(endpoint.cache.retention.max_snapshot_age.value() == "14d");
+        REQUIRE(endpoint.cache.delete_handling.value() == "soft");
     }
 
     std::filesystem::remove_all(temp_template_dir);
@@ -350,9 +393,10 @@ TEST_CASE("ConfigManager replace and remove endpoints", "[config_manager]") {
 
     // Initialize cache config
     restEndpoint.cache.enabled = true;
-    restEndpoint.cache.cacheSource = "cache.sql";
-    restEndpoint.cache.cacheTableName = "cache_table";
-    restEndpoint.cache.refreshTime = "1h";
+    restEndpoint.cache.table = "cache_table";
+    restEndpoint.cache.schema = "cache";
+    restEndpoint.cache.schedule = "1h";
+    restEndpoint.cache.template_file = "cache.sql";
 
     // Initialize rate limit config
     restEndpoint.rate_limit.enabled = false;
@@ -395,7 +439,7 @@ TEST_CASE("ConfigManager replace and remove endpoints", "[config_manager]") {
         auto rjson = wvalueToRValue(json);
         REQUIRE(rjson["url-path"].s() == "/rest");
         REQUIRE(rjson["template-source"].s() == "rest.sql");
-        REQUIRE(rjson["cache"]["cache-source"].s() == "cache.sql");
+        REQUIRE(rjson["cache"]["template-file"].s() == "cache.sql");
     }
 
     SECTION("serialize camel case") {
@@ -403,7 +447,7 @@ TEST_CASE("ConfigManager replace and remove endpoints", "[config_manager]") {
         auto rjson = wvalueToRValue(json);
         REQUIRE(rjson["urlPath"].s() == "/rest");
         REQUIRE(rjson["templateSource"].s() == "rest.sql");
-        REQUIRE(rjson["cache"]["cacheSource"].s() == "cache.sql");
+        REQUIRE(rjson["cache"]["templateFile"].s() == "cache.sql");
     }
 
     SECTION("deserialize accepts aliases") {

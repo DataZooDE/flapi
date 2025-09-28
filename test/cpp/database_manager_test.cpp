@@ -37,20 +37,20 @@ project_name: flapi_test
 project_description: Test configuration for FLAPI
 server_name: test_server
 
-database:
-  path: )" << db_path.string() << R"(
-  settings:
-    memory_limit: 2GB
-    threads: 4
-
 template:
   path: )" << templates_dir.string() << R"(
 
-endpoints:
-  test_endpoint:
-    method: GET
-    path: /test
-    templateSource: SELECT 1 as value
+duckdb:
+  db_path: )" << db_path.string() << R"(
+
+ducklake:
+  enabled: false
+
+connections:
+  default:
+    init: "SELECT 1;"
+    properties:
+      db_file: ./data/test.db
 )";
         config_file.close();
 
