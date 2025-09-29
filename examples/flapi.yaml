@@ -31,6 +31,22 @@ connections:
     properties:
       path: '~/Downloads/taxi'
 
+  sap-abap-trial:
+    init: |
+      INSTALL 'erpl' FROM 'http://get.erpl.io';
+      LOAD 'erpl';
+
+      CREATE OR REPLACE PERSISTENT SECRET abap_trial (
+        TYPE sap_rfc, 
+        ASHOST 'localhost', 
+        SYSNR '00', 
+        CLIENT '001', 
+        USER 'DEVELOPER', 
+        PASSWD 'ABAPtr2023#00',
+        LANG 'EN'
+      );
+    
+
       
 # Heartbeat configuration
 heartbeat:
