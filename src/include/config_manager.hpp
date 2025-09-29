@@ -263,6 +263,7 @@ struct DuckLakeConfig {
     DuckLakeRetentionConfig retention;
     DuckLakeCompactionConfig compaction;
     DuckLakeSchedulerConfig scheduler;
+    std::optional<std::size_t> data_inlining_row_limit;
 };
 
 class ConfigManager {

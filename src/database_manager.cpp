@@ -56,7 +56,16 @@ void DatabaseManager::initializeDBManagerFromConfig(std::shared_ptr<ConfigManage
         const auto& ducklake_config = config_manager->getDuckLakeConfig();
         if (ducklake_config.enabled) {
             CROW_LOG_INFO << "Attaching DuckLake catalog at alias '" << ducklake_config.alias << "'";
-            std::string attach_stmt = "ATTACH 'ducklake:" + ducklake_config.metadata_path + "' AS " + ducklake_config.alias + " (DATA_PATH '" + ducklake_config.data_path + "');";
+            std::string attach_stmt = "ATTACH 'ducklake:" + ducklake_config.metadata_path + "' AS " + ducklake_config.alias + " (DATA_PATH '" + ducklake_config.data_path + "'";
+
+            // Add data inlining configuration if specified
+            if (ducklake_config.data_inlining_row_limit) {
+                attach_stmt += ", DATA_INLINING_ROW_LIMIT " + std::to_string(ducklake_config.data_inlining_row_limit.value());
+                CROW_LOG_INFO << "DuckLake data inlining enabled with row limit: " << ducklake_config.data_inlining_row_limit.value();
+            }
+
+            attach_stmt += ");";
+
             try {
                 executeInitStatement(attach_stmt);
             } catch (const std::exception& e) {

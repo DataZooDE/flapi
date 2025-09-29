@@ -1,6 +1,8 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <regex>
+#include <algorithm>
 
 #include "config_service.hpp"
 #include "embedded_ui.hpp"
@@ -375,6 +377,11 @@ crow::response ConfigService::expandTemplate(const crow::request& req, const std
             return crow::response(400, "Invalid JSON: missing 'parameters' field");
         }
 
+        // Check query parameters
+        auto url_params = req.url_params;
+        bool include_variables = url_params.get("include_variables") != nullptr;
+        bool validate_only = url_params.get("validate_only") != nullptr;
+
         // Find the endpoint
         auto* endpoint = config_manager->getEndpointForPath(path);
         if (!endpoint) {
@@ -410,10 +417,182 @@ crow::response ConfigService::expandTemplate(const crow::request& req, const std
 
         // Use SQLTemplateProcessor to expand the template
         auto sql_processor = std::make_shared<SQLTemplateProcessor>(config_manager);
+        
+        // If validation only is requested, perform validation checks
+        if (validate_only) {
+            crow::json::wvalue validation_response;
+            crow::json::wvalue errors = crow::json::wvalue::list();
+            crow::json::wvalue warnings = crow::json::wvalue::list();
+            bool is_valid = true;
+            
+            try {
+                // 1. Validate Mustache template syntax by attempting to load it
+                std::string template_content;
+                try {
+                    template_content = sql_processor->loadTemplate(*endpoint);
+                } catch (const std::exception& e) {
+                    crow::json::wvalue error;
+                    error["type"] = "template_load";
+                    error["message"] = std::string("Failed to load template: ") + e.what();
+                    errors[errors.size()] = std::move(error);
+                    is_valid = false;
+                }
+                
+                // 2. Validate variable references by creating template context
+                if (is_valid) {
+                    try {
+                        std::map<std::string, std::string> context_params = params;
+                        crow::mustache::context ctx = sql_processor->createTemplateContext(*endpoint, context_params);
+                        
+                        // Check if all variables in template are available in context
+                        // This is a simple check - we could enhance this with proper Mustache parsing
+                        std::regex var_regex(R"(\{\{([^}]+)\}\})");
+                        std::sregex_iterator iter(template_content.begin(), template_content.end(), var_regex);
+                        std::sregex_iterator end;
+                        
+                        for (; iter != end; ++iter) {
+                            std::string var_name = (*iter)[1].str();
+                            // Remove whitespace
+                            var_name.erase(std::remove_if(var_name.begin(), var_name.end(), ::isspace), var_name.end());
+                            
+                            // Check if variable exists in context (simplified check)
+                            std::string context_dump = ctx.dump();
+                            if (context_dump.find("\"" + var_name + "\"") == std::string::npos) {
+                                crow::json::wvalue warning;
+                                warning["type"] = "undefined_variable";
+                                warning["message"] = "Variable '" + var_name + "' may not be defined in context";
+                                warning["variable"] = var_name;
+                                warnings[warnings.size()] = std::move(warning);
+                            }
+                        }
+                    } catch (const std::exception& e) {
+                        crow::json::wvalue error;
+                        error["type"] = "context_creation";
+                        error["message"] = std::string("Failed to create template context: ") + e.what();
+                        errors[errors.size()] = std::move(error);
+                        is_valid = false;
+                    }
+                }
+                
+                // 3. Validate SQL by expanding and checking with DuckDB
+                if (is_valid) {
+                    try {
+                        std::string expanded_sql = sql_processor->loadAndProcessTemplate(*endpoint, params);
+                        
+                        // Use DuckDB to validate the SQL syntax
+                        auto db_manager = DatabaseManager::getInstance();
+                        try {
+                            // Use EXPLAIN to validate SQL without executing it
+                            std::string explain_query = "EXPLAIN " + expanded_sql;
+                            auto result = db_manager->executeQuery(explain_query, {}, false);
+                            // If we get here, the SQL is valid
+                        } catch (const std::exception& sql_error) {
+                            crow::json::wvalue error;
+                            error["type"] = "sql_syntax";
+                            error["message"] = std::string("SQL validation failed: ") + sql_error.what();
+                            errors[errors.size()] = std::move(error);
+                            is_valid = false;
+                        }
+                    } catch (const std::exception& e) {
+                        crow::json::wvalue error;
+                        error["type"] = "template_expansion";
+                        error["message"] = std::string("Failed to expand template: ") + e.what();
+                        errors[errors.size()] = std::move(error);
+                        is_valid = false;
+                    }
+                }
+                
+            } catch (const std::exception& e) {
+                crow::json::wvalue error;
+                error["type"] = "validation";
+                error["message"] = std::string("Validation error: ") + e.what();
+                errors[errors.size()] = std::move(error);
+                is_valid = false;
+            }
+            
+            validation_response["valid"] = is_valid;
+            validation_response["errors"] = std::move(errors);
+            validation_response["warnings"] = std::move(warnings);
+            
+            return crow::response(200, validation_response);
+        }
+        
+        // Normal template expansion
         std::string expanded = sql_processor->loadAndProcessTemplate(*endpoint, params);
 
         crow::json::wvalue response;
         response["expanded"] = expanded;
+
+        // Include variable metadata if requested
+        if (include_variables) {
+            // Create a copy of params for context creation (since it might be modified)
+            std::map<std::string, std::string> context_params = params;
+            crow::mustache::context ctx = sql_processor->createTemplateContext(*endpoint, context_params);
+            
+            // Convert context to JSON for variables metadata
+            crow::json::wvalue variables;
+            
+            // Extract variables from the context
+            std::string context_dump = ctx.dump();
+            auto context_json = crow::json::load(context_dump);
+            
+            if (context_json) {
+                // Add request parameters (from params namespace)
+                if (context_json.has("params")) {
+                    crow::json::wvalue request_vars;
+                    for (const auto& key : context_json["params"].keys()) {
+                        crow::json::wvalue var_info;
+                        var_info["type"] = "string";
+                        var_info["value"] = context_json["params"][key].s();
+                        var_info["source"] = "request";
+                        request_vars[key] = std::move(var_info);
+                    }
+                    variables["params"] = std::move(request_vars);
+                }
+                
+                // Add connection variables
+                if (context_json.has("conn")) {
+                    crow::json::wvalue conn_vars;
+                    for (const auto& key : context_json["conn"].keys()) {
+                        crow::json::wvalue var_info;
+                        var_info["type"] = "string";
+                        var_info["value"] = context_json["conn"][key].s();
+                        var_info["source"] = "connection";
+                        conn_vars[key] = std::move(var_info);
+                    }
+                    variables["conn"] = std::move(conn_vars);
+                }
+                
+                // Add environment variables
+                if (context_json.has("env")) {
+                    crow::json::wvalue env_vars;
+                    for (const auto& key : context_json["env"].keys()) {
+                        crow::json::wvalue var_info;
+                        var_info["type"] = "string";
+                        var_info["value"] = context_json["env"][key].s();
+                        var_info["source"] = "environment";
+                        env_vars[key] = std::move(var_info);
+                    }
+                    variables["env"] = std::move(env_vars);
+                }
+                
+                // Add cache variables
+                if (context_json.has("cache")) {
+                    crow::json::wvalue cache_vars;
+                    for (const auto& key : context_json["cache"].keys()) {
+                        crow::json::wvalue var_info;
+                        var_info["type"] = "string";
+                        var_info["value"] = context_json["cache"][key].s();
+                        var_info["source"] = "cache";
+                        cache_vars[key] = std::move(var_info);
+                    }
+                    variables["cache"] = std::move(cache_vars);
+                }
+            }
+            
+            response["variables"] = std::move(variables);
+        }
+
         return crow::response(200, response);
     } catch (const std::exception& e) {
         return crow::response(500, std::string("Internal server error: ") + e.what());
@@ -752,6 +931,7 @@ crow::response ConfigService::getSchema(const crow::request& req) {
         auto url_params = req.url_params;
         bool tables_only = url_params.get("tables") != nullptr;
         bool connections_only = url_params.get("connections") != nullptr;
+        bool completion_format = url_params.get("format") && std::string(url_params.get("format")) == "completion";
         std::string specific_connection = url_params.get("connection") ? url_params.get("connection") : "";
         
         // Get database manager instance
@@ -859,6 +1039,78 @@ crow::response ConfigService::getSchema(const crow::request& req) {
             columns[column_name]["nullable"] = is_nullable;
         }
 
+        // If completion format is requested, transform the response
+        if (completion_format) {
+            crow::json::wvalue completion_response;
+            crow::json::wvalue tables_list = crow::json::wvalue::list();
+            crow::json::wvalue columns_list = crow::json::wvalue::list();
+            
+            // Flatten tables and columns for completion
+            for (const auto& schema_name : response.keys()) {
+                const auto& schema_obj = response[schema_name];
+                auto schema_keys = schema_obj.keys();
+                if (std::find(schema_keys.begin(), schema_keys.end(), "tables") != schema_keys.end()) {
+                    for (const auto& table_name : schema_obj["tables"].keys()) {
+                        const auto& table_obj = schema_obj["tables"][table_name];
+                        
+                        // Add table entry
+                        crow::json::wvalue table_entry;
+                        table_entry["name"] = table_name;
+                        table_entry["schema"] = schema_name;
+                        
+                        // Check if it's a view
+                        auto table_keys = table_obj.keys();
+                        bool is_view = false;
+                        if (std::find(table_keys.begin(), table_keys.end(), "is_view") != table_keys.end()) {
+                            // Convert to rvalue to access boolean value
+                            auto table_json_str = table_obj.dump();
+                            auto table_rvalue = crow::json::load(table_json_str);
+                            if (table_rvalue && table_rvalue.has("is_view")) {
+                                is_view = table_rvalue["is_view"].b();
+                            }
+                        }
+                        table_entry["type"] = is_view ? "view" : "table";
+                        table_entry["qualified_name"] = schema_name + "." + table_name;
+                        tables_list[tables_list.size()] = std::move(table_entry);
+                        
+                        // Add column entries
+                        if (std::find(table_keys.begin(), table_keys.end(), "columns") != table_keys.end()) {
+                            for (const auto& column_name : table_obj["columns"].keys()) {
+                                const auto& column_obj = table_obj["columns"][column_name];
+                                
+                                crow::json::wvalue column_entry;
+                                column_entry["name"] = column_name;
+                                column_entry["table"] = table_name;
+                                column_entry["schema"] = schema_name;
+                                
+                                // Extract column type and nullable info
+                                auto column_json_str = column_obj.dump();
+                                auto column_rvalue = crow::json::load(column_json_str);
+                                std::string column_type = "UNKNOWN";
+                                bool nullable = true;
+                                
+                                if (column_rvalue && column_rvalue.has("type")) {
+                                    column_type = column_rvalue["type"].s();
+                                }
+                                if (column_rvalue && column_rvalue.has("nullable")) {
+                                    nullable = column_rvalue["nullable"].b();
+                                }
+                                
+                                column_entry["type"] = column_type;
+                                column_entry["nullable"] = nullable;
+                                column_entry["qualified_name"] = schema_name + "." + table_name + "." + column_name;
+                                columns_list[columns_list.size()] = std::move(column_entry);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            completion_response["tables"] = std::move(tables_list);
+            completion_response["columns"] = std::move(columns_list);
+            return crow::response(200, completion_response);
+        }
+
         return crow::response(200, response);
     } catch (const std::exception& e) {
         return crow::response(500, std::string("Internal server error: ") + e.what());
@@ -910,7 +1162,8 @@ crow::response ConfigService::getCacheAuditLog(const crow::request& req, const s
         std::map<std::string, std::string> params;
         auto result = db_manager->executeDuckLakeQuery(auditQuery, params);
         
-        return crow::response(200, result.data.dump());
+        // Return JSON directly so Crow sets Content-Type: application/json
+        return crow::response(200, result.data);
     } catch (const std::exception& e) {
         return crow::response(500, std::string("Internal server error: ") + e.what());
     }
@@ -937,7 +1190,8 @@ crow::response ConfigService::getAllCacheAuditLogs(const crow::request& req) {
         std::map<std::string, std::string> params;
         auto result = db_manager->executeDuckLakeQuery(auditQuery, params);
         
-        return crow::response(200, result.data.dump());
+        // Return JSON directly so Crow sets Content-Type: application/json
+        return crow::response(200, result.data);
     } catch (const std::exception& e) {
         return crow::response(500, std::string("Internal server error: ") + e.what());
     }

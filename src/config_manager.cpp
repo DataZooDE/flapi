@@ -186,6 +186,11 @@ void ConfigManager::parseDuckLakeConfig() {
             }
         }
 
+        // Parse data inlining configuration
+        if (node["data_inlining_row_limit"]) {
+            ducklake_config.data_inlining_row_limit = safeGet<std::size_t>(node, "data_inlining_row_limit", "ducklake.data_inlining_row_limit");
+        }
+
         // Resolve relative paths against base path
         ducklake_config.metadata_path = makePathRelativeToBasePathIfNecessary(ducklake_config.metadata_path);
         ducklake_config.data_path = makePathRelativeToBasePathIfNecessary(ducklake_config.data_path);
@@ -870,12 +875,12 @@ std::string ConfigManager::getBasePath() const { return base_path.string(); }
 // JSON configuration methods
 crow::json::wvalue ConfigManager::getFlapiConfig() const {
     crow::json::wvalue result;
-    
+
     // Manually construct the JSON object from the YAML data
     result["name"] = project_name;
     result["description"] = project_description;
     result["template-path"] = template_config.path;
-    
+
     // Add connections
     crow::json::wvalue connectionsJson;
     for (const auto& [name, conn] : connections) {
@@ -893,10 +898,56 @@ crow::json::wvalue ConfigManager::getFlapiConfig() const {
         connectionsJson[name] = std::move(connJson);
     }
     result["connections"] = std::move(connectionsJson);
-    
+
+    // Add DuckLake configuration
+    crow::json::wvalue ducklakeJson;
+    ducklakeJson["enabled"] = ducklake_config.enabled;
+    ducklakeJson["alias"] = ducklake_config.alias;
+    ducklakeJson["metadata_path"] = ducklake_config.metadata_path;
+    ducklakeJson["data_path"] = ducklake_config.data_path;
+
+    // Add data inlining configuration
+    if (ducklake_config.data_inlining_row_limit) {
+        ducklakeJson["data_inlining_row_limit"] = static_cast<int64_t>(ducklake_config.data_inlining_row_limit.value());
+    }
+
+    // Add retention configuration
+    if (ducklake_config.retention.keep_last_snapshots || ducklake_config.retention.max_snapshot_age) {
+        crow::json::wvalue retentionJson;
+        if (ducklake_config.retention.keep_last_snapshots) {
+            retentionJson["keep_last_snapshots"] = static_cast<int64_t>(ducklake_config.retention.keep_last_snapshots.value());
+        }
+        if (ducklake_config.retention.max_snapshot_age) {
+            retentionJson["max_snapshot_age"] = ducklake_config.retention.max_snapshot_age.value();
+        }
+        ducklakeJson["retention"] = std::move(retentionJson);
+    }
+
+    // Add compaction configuration
+    if (ducklake_config.compaction.enabled || ducklake_config.compaction.schedule) {
+        crow::json::wvalue compactionJson;
+        compactionJson["enabled"] = ducklake_config.compaction.enabled;
+        if (ducklake_config.compaction.schedule) {
+            compactionJson["schedule"] = ducklake_config.compaction.schedule.value();
+        }
+        ducklakeJson["compaction"] = std::move(compactionJson);
+    }
+
+    // Add scheduler configuration
+    if (ducklake_config.scheduler.enabled || ducklake_config.scheduler.scan_interval) {
+        crow::json::wvalue schedulerJson;
+        schedulerJson["enabled"] = ducklake_config.scheduler.enabled;
+        if (ducklake_config.scheduler.scan_interval) {
+            schedulerJson["scan_interval"] = ducklake_config.scheduler.scan_interval.value();
+        }
+        ducklakeJson["scheduler"] = std::move(schedulerJson);
+    }
+
+    result["ducklake"] = std::move(ducklakeJson);
+
     // Add other configurations
     result["auth"]["enabled"] = auth_enabled;
-    
+
     return result;
 }
 

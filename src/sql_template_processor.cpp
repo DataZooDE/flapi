@@ -157,4 +157,9 @@ std::map<std::string, std::string> SQLTemplateProcessor::getEnvironmentVariables
     return envMap;
 }
 
+std::string SQLTemplateProcessor::loadTemplate(const EndpointConfig& endpoint) {
+    std::string templatePath = getFullTemplatePath(endpoint.templateSource);
+    return loadTemplateContent(templatePath);
+}
+
 } // namespace flapi

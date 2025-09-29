@@ -140,6 +140,40 @@ crow::json::wvalue QueryResult::convertVectorEntryToJson(const duckdb_vector &ve
             return convertVectorListToJson(vector, row_idx);
         case DUCKDB_TYPE_STRUCT:
             return convertVectorStructToJson(vector, row_idx);
+        case DUCKDB_TYPE_TIMESTAMP_TZ:
+            return convertVectorTimestampToJson(vector, row_idx);  // Treat as regular timestamp
+        case DUCKDB_TYPE_TIMESTAMP_S:
+            return convertVectorTimestampToJson(vector, row_idx);  // Treat as regular timestamp
+        case DUCKDB_TYPE_TIMESTAMP_MS:
+            return convertVectorTimestampToJson(vector, row_idx);  // Treat as regular timestamp
+        case DUCKDB_TYPE_TIMESTAMP_NS:
+            return convertVectorTimestampToJson(vector, row_idx);  // Treat as regular timestamp
+        case DUCKDB_TYPE_TIME_TZ:
+            return convertVectorTimeToJson(vector, row_idx);  // Treat as regular time
+        case DUCKDB_TYPE_TIME_NS:
+            return convertVectorTimeToJson(vector, row_idx);  // Treat as regular time
+        case DUCKDB_TYPE_UTINYINT:
+            return convertVectorEntryToJson<std::uint8_t>(vector, row_idx);
+        case DUCKDB_TYPE_USMALLINT:
+            return convertVectorEntryToJson<std::uint16_t>(vector, row_idx);
+        case DUCKDB_TYPE_UINTEGER:
+            return convertVectorEntryToJson<std::uint32_t>(vector, row_idx);
+        case DUCKDB_TYPE_UBIGINT:
+            return convertVectorEntryToJson<std::uint64_t>(vector, row_idx);
+        case DUCKDB_TYPE_UHUGEINT:
+            return convertVectorEntryToJson<std::uint64_t>(vector, row_idx);  // Treat as uint64
+        case DUCKDB_TYPE_BLOB:
+            return convertVectorVarcharToJson(vector, row_idx);  // Treat as string for JSON
+        case DUCKDB_TYPE_UUID:
+            return convertVectorVarcharToJson(vector, row_idx);  // Treat as string for JSON
+        case DUCKDB_TYPE_BIT:
+            return convertVectorVarcharToJson(vector, row_idx);  // Treat as string for JSON
+        case DUCKDB_TYPE_MAP:
+            return convertVectorStructToJson(vector, row_idx);  // Treat as struct for JSON
+        case DUCKDB_TYPE_ARRAY:
+            return convertVectorListToJson(vector, row_idx);  // Treat as list for JSON
+        case DUCKDB_TYPE_UNION:
+            return convertVectorStructToJson(vector, row_idx);  // Treat as struct for JSON
         default:
             CROW_LOG_WARNING << "Unknown type: " << type_id;
             return crow::json::wvalue(nullptr);
