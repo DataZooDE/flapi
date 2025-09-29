@@ -1,0 +1,336 @@
+:root {
+  color-scheme: light dark;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  line-height: 1.5;
+}
+
+body {
+  margin: 0;
+  background: var(--vscode-editor-background);
+  color: var(--vscode-editor-foreground);
+}
+
+.flapi-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+button {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border: none;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font: inherit;
+}
+
+button:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.flapi-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-sideBar-background);
+}
+
+.flapi-header__left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.flapi-badge {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  font-size: 0.75rem;
+}
+
+.flapi-tabbar {
+  display: flex;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-tab-activeBackground);
+}
+
+.flapi-tabbar button {
+  border-radius: 0;
+  border-right: 1px solid var(--vscode-panel-border);
+  background: transparent;
+  padding: 8px 14px;
+}
+
+.flapi-tabbar button.active {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+.flapi-panels {
+  flex: 1;
+  overflow: hidden;
+}
+
+.flapi-panel {
+  display: none;
+  height: 100%;
+}
+
+.flapi-panel.active {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.flapi-section-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editor-background);
+}
+
+.flapi-toolbar-group {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.flapi-toggle {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  font-size: 0.85rem;
+  color: var(--vscode-descriptionForeground);
+}
+
+.flapi-editor-grid {
+  flex: 1;
+  display: flex;
+  gap: 0;
+  padding: 12px;
+  overflow: hidden;
+}
+
+.flapi-editor-main-container {
+  flex: 1;
+  min-width: 200px;
+  display: flex;
+  flex-direction: column;
+}
+
+.flapi-resize-handle-vertical {
+  width: 4px;
+  background: transparent;
+  cursor: col-resize;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.flapi-resize-handle-vertical:hover,
+.flapi-resize-handle-vertical.dragging {
+  background: var(--vscode-focusBorder);
+}
+
+.flapi-resize-handle-vertical::before {
+  content: '';
+  position: absolute;
+  left: -2px;
+  right: -2px;
+  top: 0;
+  bottom: 0;
+}
+
+.flapi-editor-side-container {
+  width: 260px;
+  min-width: 150px;
+  max-width: 50%;
+  display: flex;
+  flex-direction: column;
+}
+
+.flapi-editor-main,
+.flapi-json-container,
+.flapi-editor-single {
+  background: var(--vscode-editor-background);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  position: relative;
+  min-height: 200px;
+}
+
+.flapi-editor-main {
+  height: 100%;
+}
+
+.flapi-editor-side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+}
+
+.flapi-json-editor header,
+.flapi-variables header {
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.flapi-json-editor header button {
+  padding: 2px 6px;
+  font-size: 0.75rem;
+}
+
+.flapi-variables ul {
+  list-style: none;
+  padding: 0;
+  margin: 4px 0 0;
+}
+
+.flapi-variables li {
+  margin-bottom: 4px;
+  font-size: 0.8rem;
+}
+
+.flapi-variables code {
+  background: var(--vscode-editor-inactiveSelectionBackground);
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+
+.flapi-var-value {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.75rem;
+  margin-left: 8px;
+  font-style: italic;
+}
+
+.flapi-preview-container {
+  display: flex;
+  flex-direction: column;
+  margin: 0 12px 12px;
+  min-height: 100px;
+  height: 200px;
+}
+
+.flapi-resize-handle-horizontal {
+  height: 4px;
+  background: transparent;
+  cursor: row-resize;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.flapi-resize-handle-horizontal:hover,
+.flapi-resize-handle-horizontal.dragging {
+  background: var(--vscode-focusBorder);
+}
+
+.flapi-resize-handle-horizontal::before {
+  content: '';
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  left: 0;
+  right: 0;
+}
+
+.flapi-preview {
+  border-top: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editor-background);
+  display: flex;
+  flex-direction: column;
+  border-radius: 4px;
+  flex: 1;
+  min-height: 80px;
+}
+
+.flapi-preview-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.flapi-preview-tabs button {
+  border-radius: 0;
+  background: transparent;
+  border-right: 1px solid var(--vscode-panel-border);
+  padding: 6px 12px;
+}
+
+.flapi-preview-tabs button.active {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+.flapi-preview-panels {
+  flex: 1;
+  display: flex;
+  position: relative;
+  min-height: 160px;
+}
+
+.flapi-preview-panel {
+  flex: 1;
+  display: none;
+  padding: 12px;
+  overflow: auto;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 13px;
+  white-space: pre;
+}
+
+.flapi-preview-panel.active {
+  display: block;
+}
+
+.flapi-result-meta {
+  font-size: 0.8rem;
+  color: var(--vscode-descriptionForeground);
+  margin-bottom: 4px;
+}
+
+.flapi-table-wrap {
+  overflow: auto;
+}
+
+.flapi-table-wrap table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.flapi-table-wrap th,
+.flapi-table-wrap td {
+  border: 1px solid var(--vscode-panel-border);
+  padding: 4px 6px;
+  text-align: left;
+  font-size: 0.85rem;
+}
+
+.flapi-editor-single {
+  flex: 1;
+  margin: 12px;
+}
+
+#flapi-status {
+  border-top: 1px solid var(--vscode-panel-border);
+  padding: 6px 12px;
+  min-height: 24px;
+  font-size: 0.85rem;
+}
+
+#flapi-status[data-kind="error"] {
+  color: var(--vscode-errorForeground);
+}
+
+.flapi-hint {
+  font-size: 0.8rem;
+  color: var(--vscode-descriptionForeground);
+}

@@ -1,0 +1,112 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Flapi SQL Mustache",
+  "scopeName": "flapi.sql.mustache",
+  "injectionSelector": "L:source.sql",
+  "patterns": [
+    { "include": "#triple" },
+    { "include": "#section" },
+    { "include": "#inverted" },
+    { "include": "#comment" },
+    { "include": "#partial" },
+    { "include": "#variable" }
+  ],
+  "repository": {
+    "mustacheBase": {
+      "captures": {
+        "1": { "name": "punctuation.definition.template.begin.mustache" },
+        "2": { "name": "entity.name.tag.mustache" },
+        "3": { "name": "punctuation.definition.template.end.mustache" }
+      }
+    },
+    "triple": {
+      "patterns": [
+        {
+          "name": "meta.embedded.block.mustache",
+          "begin": "\\{\\{\\{",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.template.begin.mustache" }
+          },
+          "end": "\\}\\}\\}",
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.template.end.mustache" }
+          },
+          "patterns": [
+            {
+              "name": "variable.other.readwrite.mustache",
+              "match": "[^}]+"
+            }
+          ]
+        }
+      ]
+    },
+    "section": {
+      "begin": "(\\{\\{)([#^])\\s*([a-zA-Z0-9_.]+)\\s*(\\}\\\})",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.template.begin.mustache" },
+        "2": { "name": "entity.name.tag.mustache" },
+        "3": { "name": "variable.other.readwrite.mustache" },
+        "4": { "name": "punctuation.definition.template.end.mustache" }
+      },
+      "end": "(\\{\\{)(\\/)(\\s*[a-zA-Z0-9_.]+\\s*)(\\}\\})",
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.template.begin.mustache" },
+        "2": { "name": "entity.name.tag.mustache" },
+        "3": { "name": "variable.other.readwrite.mustache" },
+        "4": { "name": "punctuation.definition.template.end.mustache" }
+      },
+      "patterns": [
+        { "include": "#triple" },
+        { "include": "#section" },
+        { "include": "#inverted" },
+        { "include": "#comment" },
+        { "include": "#partial" },
+        { "include": "#variable" }
+      ]
+    },
+    "inverted": {
+      "begin": "(\\{\\{)(\\^)(\\s*[a-zA-Z0-9_.]+\\s*)(\\}\\})",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.template.begin.mustache" },
+        "2": { "name": "entity.name.tag.mustache" },
+        "3": { "name": "variable.other.readwrite.mustache" },
+        "4": { "name": "punctuation.definition.template.end.mustache" }
+      },
+      "end": "(\\{\\{)(\\/)(\\s*[a-zA-Z0-9_.]+\\s*)(\\}\\})",
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.template.begin.mustache" },
+        "2": { "name": "entity.name.tag.mustache" },
+        "3": { "name": "variable.other.readwrite.mustache" },
+        "4": { "name": "punctuation.definition.template.end.mustache" }
+      },
+      "patterns": [
+        { "include": "#triple" },
+        { "include": "#section" },
+        { "include": "#variable" }
+      ]
+    },
+    "comment": {
+      "name": "comment.block.mustache",
+      "begin": "\\{\\{!",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.comment.begin.mustache" }
+      },
+      "end": "\\}\\}",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.comment.end.mustache" }
+      }
+    },
+    "partial": {
+      "name": "entity.name.function.mustache",
+      "match": "\\{\\{>\\s*[a-zA-Z0-9_.\\/]+\\s*\\}\\}"
+    },
+    "variable": {
+      "name": "variable.other.readwrite.mustache",
+      "match": "\\{\\{\\s*[&=]?\\s*[a-zA-Z0-9_.]+\\s*\\}\\}",
+      "captures": {
+        "0": { "name": "variable.other.readwrite.mustache" }
+      }
+    }
+  }
+}
+

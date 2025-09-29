@@ -6,8 +6,15 @@ flapii is a modern Node.js CLI (TypeScript + Commander) to manage flAPI configur
 - Build the flAPI server first (C++):
   - `make release` (server is expected at `build/release/flapi`)
 - Node.js 20+
+- VS Code (for the extension)
 
-### Install & Build
+### Install & Build (CLI)
+```bash
+# from repo root
+make cli-build   # installs deps and builds the CLI
+```
+
+Or manually:
 ```bash
 cd cli
 npm ci
@@ -234,14 +241,78 @@ node dist/index.js schema tables --connection bigquery-lakehouse \
 - Config not found: pass `--config` or set `FLAPI_CONFIG`
 - JSON parsing in scripts: always add `--output json`
 
-### Tests (optional)
+### Tests (CLI)
 ```bash
-# Unit tests
+# From repo root
+make cli-test
+
+# Or manually
 cd cli
 npm test
 
 # Integration tests (start a real server automatically)
 npm run test:integration
 ```
+
+---
+
+## VS Code Extension – flapi Development Tools
+
+A VS Code extension that lets you browse endpoints, validate configs, and interact with a running flapi instance using the files in your workspace.
+
+### Build the Extension
+```bash
+# From repo root
+make vscode-build
+```
+This builds the shared library and the VS Code extension bundle.
+
+### Run the Extension (fastest path)
+```bash
+# 1) Ensure your flapi server is running
+./build/release/flapi --config examples/flapi.yaml --port 8080
+
+# 2) Launch VS Code with the extension loaded from the workspace
+code --extensionDevelopmentPath ./cli/vscode-extension
+```
+This opens a new VS Code window with the flapi extension loaded from `cli/vscode-extension`.
+
+### Configure the Extension
+In VS Code:
+- Open Settings and search for "flapi"
+  - `flapi.serverUrl` → default `http://localhost:8080`
+  - `flapi.configFile` → default `flapi.yaml`
+- Alternatively, in settings.json:
+```json
+{
+  "flapi.serverUrl": "http://localhost:8080",
+  "flapi.configFile": "flapi.yaml"
+}
+```
+
+### What You’ll See
+- A "flapi" icon in the Activity Bar
+- "Endpoints" tree view listing all configured endpoints
+- Context commands (via the command palette or right-click):
+  - `flapi: Refresh Endpoints`
+  - `flapi: Test Template`
+  - `flapi: Expand Template`
+  - `flapi: Validate Configuration`
+
+### Live Development (watch build)
+For active development with auto-rebuilds:
+```bash
+# Terminal 1 – watch shared + extension builds
+make vscode-dev
+
+# Terminal 2 – start VS Code with the dev extension
+code --extensionDevelopmentPath ./cli/vscode-extension
+```
+When you edit code under `cli/vscode-extension/src` or `cli/shared/src`, rebuilds occur automatically. Reload the Extension Host window to pick up changes.
+
+### Tips
+- The extension activates automatically if your workspace contains a `flapi.yaml`.
+- Keep the server running locally while you edit and test templates or endpoints.
+- You can still use the CLI and the extension side-by-side — both talk to the same server and reuse the same client code under `cli/shared`.
 
 

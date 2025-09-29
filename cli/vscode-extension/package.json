@@ -14,20 +14,76 @@
   ],
   "activationEvents": [
     "workspaceContains:**/flapi.yaml",
-    "onCommand:flapi.refreshEndpoints",
-    "onView:flapiEndpoints"
+    "onCommand:flapi.explorer.refresh",
+    "onView:flapiExplorer",
+    "onCommand:flapi.openEndpoint",
+    "onCommand:flapi.openEndpointFromTree",
+    "onCommand:flapi.openTemplate",
+    "onCommand:flapi.openCache",
+    "onCommand:flapi.openEndpointDetails",
+    "onCommand:flapi.openParameters"
   ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "flapi.refreshEndpoints",
-        "title": "Refresh Endpoints",
+        "command": "flapi.explorer.refresh",
+        "title": "Refresh",
         "category": "flapi"
       },
       {
-        "command": "flapi.testTemplate",
-        "title": "Test Template",
+        "command": "flapi.openProject",
+        "title": "Open Project",
+        "category": "flapi"
+      },
+      {
+        "command": "flapi.openEndpoint",
+        "title": "Open Endpoint",
+        "category": "flapi"
+      },
+      {
+        "command": "flapi.openEndpointFromTree",
+        "title": "Open Endpoint from Tree",
+        "category": "flapi"
+      },
+      {
+        "command": "flapi.openParameters",
+        "title": "Open Parameters",
+        "category": "flapi"
+      },
+      {
+        "command": "flapi.template.expand",
+        "title": "Flapi: Expand Template",
+        "category": "flapi"
+      },
+      {
+        "command": "flapi.template.test",
+        "title": "Flapi: Test Template",
+        "category": "flapi"
+      },
+      {
+        "command": "flapi.variables.toggle",
+        "title": "Flapi: Toggle Variables View",
+        "category": "flapi"
+      },
+      {
+        "command": "flapi.variables.insert",
+        "title": "Flapi: Insert Variable",
+        "category": "flapi"
+      },
+      {
+        "command": "flapi.cli.copyCommand",
+        "title": "Flapi: Copy flapii CLI Command",
+        "category": "flapi"
+      },
+      {
+        "command": "flapi.openTemplate",
+        "title": "Open Template",
+        "category": "flapi"
+      },
+      {
+        "command": "flapi.saveTemplate",
+        "title": "Save Template",
         "category": "flapi"
       },
       {
@@ -36,8 +92,43 @@
         "category": "flapi"
       },
       {
-        "command": "flapi.validateConfig",
-        "title": "Validate Configuration",
+        "command": "flapi.testTemplate",
+        "title": "Test Template",
+        "category": "flapi"
+      },
+      {
+        "command": "flapi.openCache",
+        "title": "Open Cache",
+        "category": "flapi"
+      },
+      {
+        "command": "flapi.saveCache",
+        "title": "Save Cache",
+        "category": "flapi"
+      },
+      {
+        "command": "flapi.openMcpItem",
+        "title": "Open MCP Item",
+        "category": "flapi"
+      },
+      {
+        "command": "flapi.validateTemplate",
+        "title": "Validate Template",
+        "category": "flapi"
+      },
+      {
+        "command": "flapi.saveEndpoint",
+        "title": "Save Endpoint Configuration",
+        "category": "flapi"
+      },
+      {
+        "command": "flapi.saveCacheConfig",
+        "title": "Save Cache Configuration",
+        "category": "flapi"
+      },
+      {
+        "command": "flapi.updateParameters",
+        "title": "Update Parameters",
         "category": "flapi"
       }
     ],
@@ -53,8 +144,12 @@
     "views": {
       "flapi": [
         {
-          "id": "flapiEndpoints",
-          "name": "Endpoints"
+          "id": "flapiExplorer",
+          "name": "flapi Explorer"
+        },
+        {
+          "id": "flapiVariables",
+          "name": "flapi Variables"
         }
       ]
     },
@@ -72,20 +167,84 @@
           "description": "Path to flapi configuration file"
         }
       }
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "flapi.explorer.refresh",
+          "when": "view == flapiExplorer",
+          "group": "navigation"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "flapi.template.expand",
+          "when": "resourceExtname == .sql",
+          "group": "navigation@1"
+        },
+        {
+          "command": "flapi.template.test",
+          "when": "resourceExtname == .sql",
+          "group": "navigation@2"
+        },
+        {
+          "command": "flapi.cli.copyCommand",
+          "when": "resourceExtname == .sql",
+          "group": "navigation@9"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "flapi.openEndpointFromTree",
+          "when": "viewItem == flapi:endpoint",
+          "group": "inline"
+        },
+        {
+          "command": "flapi.openTemplate",
+          "when": "viewItem == flapi:endpoint",
+          "group": "inline"
+        },
+        {
+          "command": "flapi.openCache",
+          "when": "viewItem == flapi:endpoint",
+          "group": "inline"
+        },
+        {
+          "command": "flapi.expandTemplate",
+          "when": "viewItem == flapi:template",
+          "group": "inline"
+        },
+        {
+          "command": "flapi.testTemplate",
+          "when": "viewItem == flapi:template",
+          "group": "inline"
+        },
+        {
+          "command": "flapi.openMcpItem",
+          "when": "viewItem == flapi:mcp-item",
+          "group": "inline"
+        }
+      ]
     }
   },
   "scripts": {
-    "build": "webpack --mode production",
-    "dev": "webpack --mode development --watch"
+    "build": "webpack --mode production && npm run build:webview",
+    "dev": "webpack --mode development --watch",
+    "build:webview": "webpack --config webview/webpack.config.js --mode production",
+    "dev:webview": "webpack --config webview/webpack.config.js --mode development --watch"
   },
   "devDependencies": {
     "@types/vscode": "^1.74.0",
     "ts-loader": "^9.5.1",
     "typescript": "^5.5.4",
     "webpack": "^5.94.0",
-    "webpack-cli": "^5.1.4"
+    "webpack-cli": "^5.1.4",
+    "monaco-editor-webpack-plugin": "^7.1.0",
+    "style-loader": "^3.3.4",
+    "css-loader": "^6.9.1"
   },
   "dependencies": {
-    "@flapi/shared": "file:../shared"
+    "@flapi/shared": "file:../shared",
+    "monaco-editor": "^0.52.0"
   }
 }
