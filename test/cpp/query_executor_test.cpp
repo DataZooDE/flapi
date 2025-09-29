@@ -93,6 +93,7 @@ TEST_CASE("QueryExecutor type coverage", "[query_executor]") {
             '2023-01-01'::DATE as date,
             '12:34:56'::TIME as time,
             '2023-01-01 12:34:56'::TIMESTAMP as timestamp,
+            '2023-01-01 12:34:56'::TIMESTAMPTZ as timestamp_tz,
             {'key': 'value'} as struct,
             [1,2,3] as list,
             TRUE as boolean,
@@ -115,6 +116,7 @@ TEST_CASE("QueryExecutor type coverage", "[query_executor]") {
     REQUIRE(doc["date"].s() == "2023-01-01");
     REQUIRE(doc["time"].s() == "12:34:56.000");
     REQUIRE(std::string(doc["timestamp"].s()).find("2023-01-01T12:34:56") != std::string::npos);
+    REQUIRE(std::string(doc["timestamp_tz"].s()).find("2023-01-01T12:34:56") != std::string::npos);
     REQUIRE(doc["struct"]["key"].s() == "value");
     REQUIRE(doc["list"].size() == 3);
     REQUIRE(doc["boolean"].b() == true);

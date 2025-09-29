@@ -10,7 +10,7 @@ flAPI is a powerful service that automatically generates read-only APIs for data
 - **MCP (Model Context Protocol) Support**: Declarative creation of AI tools alongside REST endpoints
 - **Multiple Data Sources**: Connect to [BigQuery](https://github.com/hafenkran/duckdb-bigquery), SAP ERP & BW (via [ERPL](https://github.com/datazoode/erpl)), Parquet, [Iceberg](https://github.com/duckdb/duckdb_iceberg), [Postgres](https://github.com/duckdb/postgres_scanner), [MySQL](https://github.com/duckdb/duckdb_mysql), and more
 - **SQL Templates**: Use Mustache-like syntax for dynamic queries
-- **Caching**: Improve performance and reduce database costs with built-in caching mechanisms
+- **Caching**: DuckLake-backed cache with full refresh and incremental sync
 - **Security**: Implement row-level and column-level security with ease
 - **Easy deployment**: Deploy flAPI with a single binary file
 
@@ -338,71 +338,308 @@ To test the endpoint and see if everything worked, we can use curl. We should al
 
 ```
 
-## ⁉️ How caching works?
-flAPI implements a powerful and flexible caching mechanism to optimize query performance and reduce load on data sources. Here's how it works:
+## ⁉️ DuckLake-backed caching (current implementation)
+flAPI uses the DuckDB DuckLake extension to provide modern, snapshot-based caching. You write the SQL to define the cached table, and flAPI manages schemas, snapshots, retention, scheduling, and audit logs.
 
-1. Cache Configuration:
-   In the endpoint YAML file (e.g., `products.yaml`), you can define caching parameters:
-   ```yaml
-   cache:
-     cache-table-name: 'products_cache'
-     cache-source: products_cache.sql
-     refresh-time: 15m 
-   ```
-   - `cache-table-name`: The name of the cache table.
-   - `cache-source`: SQL file to create and populate the cache.
-   - `refresh-time`: How often the cache should be refreshed.
+### Quick start: Full refresh cache
+1) Configure DuckLake globally (alias is `cache` by default):
+```yaml
+ducklake:
+  enabled: true
+  alias: cache
+  metadata_path: ./examples/data/cache.ducklake
+  data_path: ./examples/data/cache.ducklake
+  data_inlining_row_limit: 10  # Enable data inlining for small changes (optional)
+  retention:
+    max_snapshot_age: 14d
+  compaction:
+    enabled: false
+  scheduler:
+    enabled: true
+```
 
-2. Cache Creation:
-   The `cache-source` SQL file (e.g., `products_cache.sql`) defines how to create and populate the cache:
-   ```sql
-   CREATE TABLE {{cache.schema}}.{{cache.table}} AS
-   SELECT 
-       p.category,
-       p.brand,
-       p.price_range,
-       p.region,
-       sum(p.sales) as total_sales
-   FROM bigquery_scan('my-data-warehouse.sales.product_transactions') AS p
-   GROUP BY 1, 2, 3, 4
-   ```
-   This query aggregates data from the source, potentially reducing the data volume and precomputing expensive operations.
+2) Add cache block to your endpoint (no `primary-key`/`cursor` → full refresh):
+```yaml
+url-path: /publicis
+template-source: publicis.sql
+connection: [bigquery-lakehouse]
 
-3. Cache Usage:
-   The main query (e.g., `products.sql`) then uses the cache:
-   ```sql
-   SELECT 
-       p.category,
-       p.brand,
-       p.price_range,
-       p.region,
-       p.total_sales
-   FROM {{{cache.table}}} AS p
-   WHERE 1=1
-   {{#params.category}}
-    AND p.category LIKE '{{{ params.category }}}'
-   {{/params.category}}
-   {{#params.region}}
-    AND p.region LIKE '{{{ params.region }}}'
-   {{/params.region}}
-   ```
-   This query runs against the cache table instead of the original data source.
+cache:
+  enabled: true
+  table: publicis_cache
+  schema: analytics
+  schedule: 5m
+  retention:
+    max_snapshot_age: 14d
+  template_file: publicis/publicis_cache.sql
+```
 
-4. Cache Management:
-   flAPI handles cache creation, refreshing, and cleanup:
-   - It checks if caches need refreshing based on the `refresh-time`.
-   - Creates new cache tables with timestamps in their names.
-   - Keeps a configurable number of previous cache versions.
-   - Performs garbage collection to remove old cache tables.
-   - When a `HTTP DELETE` request the cache table is also invalidated.
+3) Write the cache SQL template (CTAS):
+```sql
+-- publicis/publicis_cache.sql
+CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS
+SELECT
+  p.country,
+  p.product_category,
+  p.campaign_type,
+  p.channel,
+  sum(p.clicks) AS clicks
+FROM bigquery_scan('{{{conn.project_id}}}.landing__publicis.kaercher_union_all') AS p
+GROUP BY 1, 2, 3, 4;
+```
 
-5. Benefits:
-   - Improved query performance by querying pre-aggregated data.
-   - Reduced load (and thereby costs) on the original data source.
-   - Always fresh data with periodic cache refreshes.
-   - Ability to fall back to previous cache versions if needed.
+4) Query from the cache in your main SQL:
+```sql
+-- publicis.sql
+SELECT
+  p.country,
+  p.product_category,
+  p.campaign_type,
+  p.channel,
+  p.clicks
+FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS p
+WHERE 1=1
+```
 
-This caching mechanism provides a balance between data freshness and query performance, making it ideal for scenarios where real-time data is not critical but fast query responses are important. For example, in our products scenario, it allows for quick analysis of sales data across different categories, brands, price ranges, and regions without repeatedly querying the entire transaction history.
+Notes:
+- The cache schema (`cache.analytics`) is created automatically if missing.
+- Regular GET requests never refresh the cache. Refreshes happen on warmup, on schedule, or via the manual API.
+- **Data Inlining**: When `data_inlining_row_limit` is configured, small cache changes (≤ specified row limit) are written directly to DuckLake metadata instead of creating separate Parquet files. This improves performance for small incremental updates.
+
+#### Data inlining (optional, for small changes)
+
+DuckLake supports writing very small inserts directly into the metadata catalog instead of creating a Parquet file for every micro-batch. This is called "Data Inlining" and can significantly speed up small, frequent updates.
+
+- **Enable globally**: configure once under the top-level `ducklake` block:
+
+  ```yaml
+  ducklake:
+    enabled: true
+    alias: cache
+    metadata_path: ./examples/data/cache.ducklake
+    data_path: ./examples/data/cache.ducklake
+    data_inlining_row_limit: 10  # inline inserts up to 10 rows
+  ```
+
+- **Behavior**:
+  - Inserts with rows ≤ `data_inlining_row_limit` are inlined into the catalog metadata.
+  - Larger inserts automatically fall back to normal Parquet file writes.
+  - Inlining applies to all caches (global setting), no per-endpoint toggle.
+
+- **Manual flush (optional)**: you can flush inlined data to Parquet files at any time using DuckLake’s function. Assuming your DuckLake alias is `cache`:
+
+  ```sql
+  -- Flush all inlined data in the catalog
+  CALL ducklake_flush_inlined_data('cache');
+
+  -- Flush only a specific schema
+  CALL ducklake_flush_inlined_data('cache', schema_name => 'analytics');
+
+  -- Flush only a specific table (default schema "main")
+  CALL ducklake_flush_inlined_data('cache', table_name => 'events_cache');
+
+  -- Flush a specific table in a specific schema
+  CALL ducklake_flush_inlined_data('cache', schema_name => 'analytics', table_name => 'events_cache');
+  ```
+
+- **Notes**:
+  - This feature is provided by DuckLake and is currently marked experimental upstream. See the DuckLake docs for details: [Data Inlining](https://ducklake.select/docs/stable/duckdb/advanced_features/data_inlining.html).
+  - If you don’t set `data_inlining_row_limit`, flAPI won’t enable inlining and DuckLake will use regular Parquet writes.
+
+### Advanced: Incremental append and merge
+The engine infers sync mode from your YAML:
+- No `primary-key`, no `cursor` → full refresh (CTAS)
+- With `cursor` only → incremental append
+- With `primary-key` + `cursor` → incremental merge (upsert)
+
+Example YAMLs:
+```yaml
+# Incremental append
+cache:
+  enabled: true
+  table: events_cache
+  schema: analytics
+  schedule: 10m
+  cursor:
+    column: created_at
+    type: timestamp
+  template_file: events/events_cache.sql
+
+# Incremental merge (upsert)
+cache:
+  enabled: true
+  table: customers_cache
+  schema: analytics
+  schedule: 15m
+  primary-key: [id]
+  cursor:
+    column: updated_at
+    type: timestamp
+  template_file: customers/customers_cache.sql
+```
+
+Cache template variables available to your SQL:
+- `{{cache.catalog}}`, `{{cache.schema}}`, `{{cache.table}}`, `{{cache.schedule}}`
+- `{{cache.snapshotId}}`, `{{cache.snapshotTimestamp}}` (current)
+- `{{cache.previousSnapshotId}}`, `{{cache.previousSnapshotTimestamp}}` (previous)
+- `{{cache.cursorColumn}}`, `{{cache.cursorType}}`
+- `{{cache.primaryKeys}}`
+- `{{params.cacheMode}}` is available with values `full`, `append`, or `merge`
+
+Incremental append example:
+```sql
+-- events/events_cache.sql
+INSERT INTO {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
+SELECT *
+FROM source_events
+WHERE {{#cache.previousSnapshotTimestamp}} event_time > TIMESTAMP '{{cache.previousSnapshotTimestamp}}' {{/cache.previousSnapshotTimestamp}}
+```
+
+Incremental merge example:
+```sql
+-- customers/customers_cache.sql
+MERGE INTO {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS t
+USING (
+  SELECT * FROM source_customers
+  WHERE {{#cache.previousSnapshotTimestamp}} updated_at > TIMESTAMP '{{cache.previousSnapshotTimestamp}}' {{/cache.previousSnapshotTimestamp}}
+) AS s
+ON t.id = s.id
+WHEN MATCHED THEN UPDATE SET
+  name = s.name,
+  email = s.email,
+  updated_at = s.updated_at
+WHEN NOT MATCHED THEN INSERT (*) VALUES (s.*);
+```
+
+### When does the cache refresh?
+- Startup warmup: flAPI refreshes caches for endpoints with cache enabled.
+- Scheduled refresh: controlled by `cache.schedule` on each endpoint (e.g., `5m`).
+- Manual refresh: call the refresh API (see below).
+- Regular GET requests do not refresh the cache.
+
+### Audit, retention, compaction, and control APIs
+flAPI maintains an audit table inside DuckLake at `cache.audit.sync_events` and provides control endpoints:
+
+- Manual refresh:
+```bash
+curl -X POST "http://localhost:8080/api/v1/_config/endpoints/publicis/cache/refresh"
+```
+
+- Audit logs (endpoint-specific and global):
+```bash
+curl "http://localhost:8080/api/v1/_config/endpoints/publicis/cache/audit"
+curl "http://localhost:8080/api/v1/_config/cache/audit"
+```
+
+- Garbage collection (retention):
+Retention can be configured per endpoint under `cache.retention`:
+```yaml
+cache:
+  retention:
+    max_snapshot_age: 7d     # time-based retention
+    # keep_last_snapshots: 3 # version-based retention (subject to DuckLake support)
+```
+The system applies retention after each refresh and you can also trigger GC manually:
+```bash
+curl -X POST "http://localhost:8080/api/v1/_config/endpoints/publicis/cache/gc"
+```
+
+- Compaction:
+If enabled in global `ducklake.scheduler`, periodic file merging is performed via DuckLake `ducklake_merge_adjacent_files`.
+
+### Template authoring guide (reference)
+Use these variables inside your cache templates and main queries:
+
+- Identification
+  - `{{cache.catalog}}` → usually `cache`
+  - `{{cache.schema}}` → e.g., `analytics` (auto-created if missing)
+  - `{{cache.table}}` → your cache table name
+
+- Mode and scheduling
+  - `{{params.cacheMode}}` → `full` | `append` | `merge`
+  - `{{cache.schedule}}` → if set in YAML
+
+- Snapshots
+  - `{{cache.snapshotId}}`, `{{cache.snapshotTimestamp}}`
+  - `{{cache.previousSnapshotId}}`, `{{cache.previousSnapshotTimestamp}}`
+
+- Incremental hints
+  - `{{cache.cursorColumn}}`, `{{cache.cursorType}}`
+  - `{{cache.primaryKeys}}` → comma-separated list, e.g., `id,tenant_id`
+
+Authoring tips:
+- Full refresh: use `CREATE OR REPLACE TABLE ... AS SELECT ...`.
+- Append: `INSERT INTO cache.table SELECT ... WHERE event_time > previousSnapshotTimestamp`.
+- Merge: `MERGE INTO cache.table USING (SELECT ...) ON pk ...`.
+- Do not create schemas in templates; flAPI does that automatically.
+
+### Troubleshooting
+- Cache refresh happens on every request: by design this is disabled. Ensure you’re not calling the manual refresh endpoint from a client and that your logs show scheduled or warmup refreshes only.
+- Schema not found: verify `cache.schema` is set; flAPI will auto-create it.
+- Retention errors: use time-based `max_snapshot_age` first. Version-based retention depends on DuckLake support.
+
+## 🧩 YAML includes and environment variables
+flAPI extends plain YAML with lightweight include and environment-variable features so you can keep configurations modular and environment-aware.
+
+### Environment variables
+- Write environment variables as `{{env.VAR_NAME}}` anywhere in your YAML.
+- Only variables that match the whitelist in your root config are substituted:
+  ```yaml
+  template:
+    path: './sqls'
+    environment-whitelist:
+      - '^FLAPI_.*'     # allow all variables starting with FLAPI_
+      - '^PROJECT_.*'   # optional additional prefixes
+  ```
+- If the whitelist is empty or omitted, all environment variables are allowed.
+
+Examples:
+```yaml
+# Substitute inside strings
+project_name: "${{env.PROJECT_NAME}}"
+
+# Build include paths dynamically
+template:
+  path: "{{env.CONFIG_DIR}}/sqls"
+```
+
+### Include syntax
+You can splice content from another YAML file directly into the current document.
+
+- Basic include: `{{include from path/to/file.yaml}}`
+- Section include: `{{include:top_level_key from path/to/file.yaml}}` includes only that key
+- Conditional include: append `if <condition>` to either form
+
+Conditions supported:
+- `true` or `false`
+- `env.VAR_NAME` (include if the variable exists and is non-empty)
+- `!env.VAR_NAME` (include if the variable is missing or empty)
+
+Examples:
+```yaml
+# Include another YAML file relative to this file
+{{include from common/settings.yaml}}
+
+# Include only a section (top-level key) from a file
+{{include:connections from shared/connections.yaml}}
+
+# Conditional include based on an environment variable
+{{include from overrides/dev.yaml if env.FLAPI_ENV}}
+
+# Use env var in the include path
+{{include from {{env.CONFIG_DIR}}/secrets.yaml}}
+```
+
+Resolution rules and behavior:
+- Paths are resolved relative to the current file first; absolute paths are supported.
+- Includes inside YAML comments are ignored (e.g., lines starting with `#`).
+- Includes are expanded before the YAML is parsed.
+- Includes do not recurse: include directives within included files are not processed further.
+- Circular includes are guarded against within a single expansion pass; avoid cycles.
+
+Tips:
+- Prefer section includes (`{{include:...}}`) to avoid unintentionally overwriting unrelated keys.
+- Keep shared blocks in small files (e.g., `connections.yaml`, `auth.yaml`) and include them where needed.
 
 
 
