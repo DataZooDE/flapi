@@ -47,10 +47,13 @@ export function loadConfig(options: CliOptions): FlapiiConfig {
     !options.insecure,
   );
 
+  // Prefer config-service-token over generic auth-token for config service commands
+  const authToken = options.configServiceToken ?? options.authToken ?? env.FLAPI_CONFIG_SERVICE_TOKEN ?? env.FLAPI_TOKEN;
+
   return {
     configPath: yamlConfig?.configPath,
     baseUrl,
-    authToken: options.authToken ?? env.FLAPI_TOKEN,
+    authToken,
     timeout,
     retries,
     verifyTls,

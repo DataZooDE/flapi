@@ -18,6 +18,10 @@ export class EndpointWorkspace {
     this.outputChannel = vscode.window.createOutputChannel('Flapi Results');
   }
 
+  public updateClient(client: ReturnType<typeof createApiClient>): void {
+    this.client = client;
+  }
+
   private resolveFsPath(sourcePath: string): vscode.Uri {
     if (sourcePath.startsWith('/') || /^[a-zA-Z]:\\/.test(sourcePath)) {
       return vscode.Uri.file(sourcePath);

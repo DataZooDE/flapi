@@ -49,3 +49,14 @@ export interface EndpointConfig {
     cacheSource?: string;
   };
 }
+
+export interface ValidationResult {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+}
+
+export interface ReloadResult {
+  success: boolean;
+  message: string;
+}

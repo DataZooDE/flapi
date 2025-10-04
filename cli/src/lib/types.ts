@@ -2,6 +2,7 @@ export interface CliOptions {
   config?: string;
   baseUrl?: string;
   authToken?: string;
+  configServiceToken?: string;
   timeout?: string;
   retries?: string;
   insecure?: boolean;

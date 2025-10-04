@@ -9,6 +9,10 @@ export class LanguageSupport {
 
   constructor(private client: ReturnType<typeof createApiClient>) {}
 
+  public updateClient(client: ReturnType<typeof createApiClient>): void {
+    this.client = client;
+  }
+
   public register(context: vscode.ExtensionContext): void {
     // Register completion providers for SQL+Mustache templates (DuckDB dialect)
     const sqlCompletionProvider = vscode.languages.registerCompletionItemProvider(

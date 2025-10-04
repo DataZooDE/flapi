@@ -6,7 +6,9 @@ import { renderJson, renderEndpointsTable, renderEndpointTable } from '../../lib
 import { buildEndpointUrl } from '../../lib/url';
 import { applyOutputOverride } from '../../lib/options';
 import { resolvePayload, withPayloadOptions } from '../payload';
+import { validateEndpointConfig, reloadEndpointConfig } from '../../lib/validation';
 import chalk from 'chalk';
+import * as fs from 'node:fs/promises';
 
 export function registerEndpointCommands(program: Command, ctx: CliContext) {
   const endpoints = program
@@ -115,6 +117,79 @@ export function registerEndpointCommands(program: Command, ctx: CliContext) {
         spinner.succeed(chalk.green(`✓ Endpoint ${path} deleted successfully`));
       } catch (error) {
         spinner.fail(chalk.red(`✗ Failed to delete endpoint ${path}`));
+        handleError(error, ctx.config);
+        process.exitCode = 1;
+      }
+    });
+
+  endpoints
+    .command('validate <path>')
+    .description('Validate endpoint configuration YAML file')
+    .option('-f, --file <file>', 'Path to YAML file to validate')
+    .option('--output <format>', 'Output format: json or table')
+    .action(async (path: string, options: { file?: string; output?: 'json' | 'table' }) => {
+      const spinner = Console.spinner(`Validating endpoint ${path}...`);
+      try {
+        let yamlContent: string;
+        
+        if (options.file) {
+          // Read YAML content from file
+          yamlContent = await fs.readFile(options.file, 'utf-8');
+        } else {
+          // Read from stdin
+          yamlContent = await new Promise((resolve) => {
+            const chunks: Buffer[] = [];
+            process.stdin.on('data', (chunk) => chunks.push(chunk));
+            process.stdin.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+          });
+        }
+
+        const result = await validateEndpointConfig(ctx.client, path, yamlContent);
+        
+        if (result.valid) {
+          spinner.succeed(chalk.green(`✓ Endpoint ${path} is valid`));
+          if (result.warnings.length > 0) {
+            Console.warn('Warnings:');
+            result.warnings.forEach(w => Console.warn(`  - ${w}`));
+          }
+        } else {
+          spinner.fail(chalk.red(`✗ Endpoint ${path} is invalid`));
+          Console.error('Errors:');
+          result.errors.forEach(e => Console.error(`  - ${e}`));
+          if (result.warnings.length > 0) {
+            Console.warn('Warnings:');
+            result.warnings.forEach(w => Console.warn(`  - ${w}`));
+          }
+          process.exitCode = 1;
+        }
+
+        const resolved = applyOutputOverride(ctx.config, options.output);
+        if (resolved.output === 'json') {
+          renderJson(result, resolved.jsonStyle);
+        }
+      } catch (error) {
+        spinner.fail(chalk.red(`✗ Failed to validate endpoint ${path}`));
+        handleError(error, ctx.config);
+        process.exitCode = 1;
+      }
+    });
+
+  endpoints
+    .command('reload <path>')
+    .description('Reload endpoint configuration from disk')
+    .action(async (path: string) => {
+      const spinner = Console.spinner(`Reloading endpoint ${path}...`);
+      try {
+        const result = await reloadEndpointConfig(ctx.client, path);
+        
+        if (result.success) {
+          spinner.succeed(chalk.green(`✓ ${result.message}`));
+        } else {
+          spinner.fail(chalk.red(`✗ ${result.message}`));
+          process.exitCode = 1;
+        }
+      } catch (error) {
+        spinner.fail(chalk.red(`✗ Failed to reload endpoint ${path}`));
         handleError(error, ctx.config);
         process.exitCode = 1;
       }

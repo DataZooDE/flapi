@@ -56,6 +56,7 @@ Common env vars:
 - `FLAPI_BASE_URL` (default: `http://localhost:8080`)
 - `FLAPI_CONFIG` (path to `flapi.yaml`)
 - `FLAPI_TOKEN` (bearer token if your server requires auth)
+- `FLAPI_CONFIG_SERVICE_TOKEN` (config service authentication token)
 
 Global options (partial):
 ```
@@ -82,7 +83,41 @@ node dist/index.js ping --base-url http://localhost:8080
 
 Show effective CLI configuration:
 ```bash
-node dist/index.js config --base-url http://localhost:8080 --output table
+node dist/index.js config show --base-url http://localhost:8080 --output table
+```
+
+### Config Commands
+
+#### Log Level Management
+Control the backend's runtime log level without restarting the server:
+
+```bash
+# List valid log levels
+node dist/index.js config log-level list
+
+# Get current log level
+node dist/index.js config log-level get \
+  --base-url http://localhost:8080 \
+  --config-service-token YOUR_TOKEN
+
+# Set log level (debug, info, warning, error)
+node dist/index.js config log-level set debug \
+  --base-url http://localhost:8080 \
+  --config-service-token YOUR_TOKEN
+
+# Using environment variables
+export FLAPI_BASE_URL=http://localhost:8080
+export FLAPI_CONFIG_SERVICE_TOKEN=YOUR_TOKEN
+node dist/index.js config log-level set info
+```
+
+**Note:** Log level changes take effect immediately but reset on server restart.
+
+#### Validate Configuration
+```bash
+node dist/index.js config validate \
+  --base-url http://localhost:8080 \
+  --config examples/flapi.yaml
 ```
 
 ### Project

@@ -19,6 +19,7 @@
     "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
+    "@flapi/shared": "file:./shared",
     "axios": "^1.7.7",
     "axios-retry": "^4.4.2",
     "boxen": "^5.1.2",

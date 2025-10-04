@@ -1,26 +1,21 @@
 import * as vscode from 'vscode';
 import type { AxiosInstance } from 'axios';
-import type { EndpointConfig } from '@flapi/shared';
 import { pathToSlug } from '@flapi/shared';
 
 export type FlapiNode = FlapiNodeMetadata;
 
 interface FlapiNodeMetadata {
   kind:
-    | 'root:project'
-    | 'root:endpoints'
-    | 'root:schema'
-    | 'root:mcp'
-    | 'project'
-    | 'endpoint'
-    | 'endpoint:details'
-    | 'endpoint:template'
-    | 'endpoint:cache'
-    | 'schema:connection'
-    | 'schema:table'
-    | 'schema:column'
-    | 'mcp:group'
-    | 'mcp:item';
+    | 'file:flapi-yaml'
+    | 'directory'
+    | 'file:yaml:endpoint'
+    | 'file:yaml:mcp-tool'
+    | 'file:yaml:mcp-resource'
+    | 'file:yaml:mcp-prompt'
+    | 'file:yaml:shared'
+    | 'file:sql:template'
+    | 'file:sql:cache'
+    | 'file:other';
   id: string;
   label: string;
   description?: string;
@@ -28,127 +23,180 @@ interface FlapiNodeMetadata {
   extra?: Record<string, unknown>;
 }
 
+interface FilesystemNode {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+  extension?: string;
+  yaml_type?: 'endpoint' | 'mcp-tool' | 'mcp-resource' | 'mcp-prompt' | 'shared';
+  url_path?: string;
+  mcp_name?: string;
+  template_source?: string;
+  cache_template_source?: string;
+  file_type?: string;
+  children?: FilesystemNode[];
+}
+
+interface FilesystemResponse {
+  base_path: string;
+  template_path: string;
+  config_file?: string;
+  config_file_exists?: boolean;
+  tree: FilesystemNode[];
+}
+
 export class FlapiExplorerProvider implements vscode.TreeDataProvider<FlapiNodeMetadata> {
   private readonly _onDidChangeTreeData = new vscode.EventEmitter<FlapiNodeMetadata | undefined>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+  
+  private filesystemCache?: FilesystemResponse;
+  private client: AxiosInstance;
 
-  constructor(private readonly client: AxiosInstance) {}
+  constructor(client: AxiosInstance) {
+    this.client = client;
+  }
 
-  refresh(node?: FlapiNodeMetadata) {
+  updateClient(client: AxiosInstance): void {
+    console.log('[Flapi] FlapiExplorerProvider.updateClient called');
+    console.log('[Flapi] Client headers:', JSON.stringify(client.defaults.headers, null, 2));
+    this.client = client;
+    console.log('[Flapi] FlapiExplorerProvider calling refresh()');
+    this.refresh(); // Refresh with new client
+  }
+
+  refresh(node?: FlapiNodeMetadata): void {
+    this.filesystemCache = undefined; // Clear cache
     this._onDidChangeTreeData.fire(node);
   }
 
   getTreeItem(element: FlapiNodeMetadata): vscode.TreeItem {
     switch (element.kind) {
-      case 'root:project':
-      case 'root:endpoints':
-      case 'root:schema':
-      case 'root:mcp':
+      case 'file:flapi-yaml':
+        return {
+          label: element.label,
+          description: 'Project Config',
+          collapsibleState: vscode.TreeItemCollapsibleState.None,
+          contextValue: 'flapi:config-file',
+          iconPath: new vscode.ThemeIcon('settings-gear'),
+          command: {
+            command: 'flapi.openProjectConfig',
+            title: 'Open Project Config',
+            arguments: [element],
+          },
+        };
+      
+      case 'directory':
         return {
           label: element.label,
           collapsibleState: vscode.TreeItemCollapsibleState.Collapsed,
-          contextValue: element.kind,
+          contextValue: 'flapi:directory',
+          iconPath: new vscode.ThemeIcon('folder'),
         };
-      case 'project':
+      
+      case 'file:yaml:endpoint':
+        const urlPath = element.extra?.url_path as string ?? '';
+        const hasTemplateOrCache = element.extra?.template_source || element.extra?.cache_template_source;
         return {
           label: element.label,
-          collapsibleState: vscode.TreeItemCollapsibleState.None,
-          contextValue: 'flapi:project',
+          description: `📡 ${urlPath}`,
+          collapsibleState: hasTemplateOrCache 
+            ? vscode.TreeItemCollapsibleState.Collapsed 
+            : vscode.TreeItemCollapsibleState.None,
+          contextValue: 'flapi:yaml-endpoint',
+          iconPath: new vscode.ThemeIcon('file-code'),
           command: {
-            command: 'flapi.openProject',
-            title: 'Open Project',
+            command: 'flapi.openYamlFile',
+            title: 'Open YAML',
             arguments: [element],
           },
         };
-      case 'endpoint':
+      
+      case 'file:yaml:mcp-tool':
+        const toolName = element.extra?.mcp_name as string ?? '';
+        const hasMcpToolTemplate = element.extra?.template_source;
         return {
           label: element.label,
-          description: element.description,
-          collapsibleState: vscode.TreeItemCollapsibleState.Collapsed,
-          contextValue: 'flapi:endpoint',
+          description: `🔧 ${toolName}`,
+          collapsibleState: hasMcpToolTemplate 
+            ? vscode.TreeItemCollapsibleState.Collapsed 
+            : vscode.TreeItemCollapsibleState.None,
+          contextValue: 'flapi:yaml-mcp-tool',
+          iconPath: new vscode.ThemeIcon('tools'),
           command: {
-            command: 'flapi.openEndpointFromTree',
-            title: 'Open Endpoint',
+            command: 'flapi.openYamlFile',
+            title: 'Open MCP Tool',
             arguments: [element],
           },
         };
-      case 'endpoint:details':
+      
+      case 'file:yaml:mcp-resource':
+        const resourceName = element.extra?.mcp_name as string ?? '';
         return {
           label: element.label,
+          description: `📦 ${resourceName}`,
           collapsibleState: vscode.TreeItemCollapsibleState.None,
-          contextValue: 'flapi:endpoint-details',
+          contextValue: 'flapi:yaml-mcp-resource',
+          iconPath: new vscode.ThemeIcon('package'),
           command: {
-            command: 'flapi.openEndpointFromTree',
-            title: 'Open Endpoint',
+            command: 'flapi.openYamlFile',
+            title: 'Open MCP Resource',
             arguments: [element],
           },
         };
-      case 'endpoint:template':
+      
+      case 'file:yaml:mcp-prompt':
+        const promptName = element.extra?.mcp_name as string ?? '';
         return {
           label: element.label,
+          description: `💬 ${promptName}`,
           collapsibleState: vscode.TreeItemCollapsibleState.None,
-          contextValue: 'flapi:template',
+          contextValue: 'flapi:yaml-mcp-prompt',
+          iconPath: new vscode.ThemeIcon('comment'),
           command: {
-            command: 'flapi.openTemplate',
-            title: 'Open Template',
+            command: 'flapi.openYamlFile',
+            title: 'Open MCP Prompt',
             arguments: [element],
           },
         };
-      case 'endpoint:cache':
+      
+      case 'file:yaml:shared':
         return {
           label: element.label,
+          description: '🔗 shared',
           collapsibleState: vscode.TreeItemCollapsibleState.None,
-          contextValue: 'flapi:cache',
+          contextValue: 'flapi:yaml-shared',
+          iconPath: new vscode.ThemeIcon('file-code'),
           command: {
-            command: 'flapi.openCache',
-            title: 'Open Cache',
+            command: 'flapi.openYamlFile',
+            title: 'Open Shared Config',
             arguments: [element],
           },
         };
-      case 'schema:connection':
-        const isEmptyCatalog = element.extra?.isEmpty === true;
+      
+      case 'file:sql:template':
+      case 'file:sql:cache':
+        const isCacheSql = element.kind === 'file:sql:cache';
         return {
           label: element.label,
-          description: element.description,
-          collapsibleState: isEmptyCatalog ? vscode.TreeItemCollapsibleState.None : vscode.TreeItemCollapsibleState.Collapsed,
-          contextValue: isEmptyCatalog ? 'flapi:schema-connection-empty' : 'flapi:schema-connection',
-        };
-      case 'schema:table':
-        const isEmptyTable = element.extra?.isEmpty === true;
-        return {
-          label: element.label,
-          description: element.description,
-          collapsibleState: isEmptyTable ? vscode.TreeItemCollapsibleState.None : vscode.TreeItemCollapsibleState.Collapsed,
-          contextValue: isEmptyTable ? 'flapi:schema-table-empty' : 'flapi:schema-table',
-        };
-      case 'schema:column':
-        const isEmptyColumn = element.extra?.isEmpty === true;
-        return {
-          label: element.label,
-          description: element.description,
+          description: isCacheSql ? '(cache)' : '(template)',
           collapsibleState: vscode.TreeItemCollapsibleState.None,
-          contextValue: isEmptyColumn ? 'flapi:schema-column-empty' : 'flapi:schema-column',
-        };
-      case 'mcp:group':
-        return {
-          label: element.label,
-          collapsibleState: vscode.TreeItemCollapsibleState.Collapsed,
-          contextValue: 'flapi:mcp-group',
-        };
-      case 'mcp:item':
-        const isEmpty = element.extra?.isEmpty === true;
-        const hasError = element.extra?.hasError === true;
-        return {
-          label: element.label,
-          description: element.description,
-          collapsibleState: vscode.TreeItemCollapsibleState.None,
-          contextValue: isEmpty || hasError ? 'flapi:mcp-item-empty' : 'flapi:mcp-item',
-          command: isEmpty || hasError ? undefined : {
-            command: 'flapi.openMcpItem',
-            title: 'Open MCP Item',
+          contextValue: isCacheSql ? 'flapi:sql-cache' : 'flapi:sql-template',
+          iconPath: new vscode.ThemeIcon('database'),
+          command: {
+            command: 'flapi.openSqlFile',
+            title: 'Open SQL',
             arguments: [element],
           },
         };
+      
+      case 'file:other':
+        return {
+          label: element.label,
+          collapsibleState: vscode.TreeItemCollapsibleState.None,
+          contextValue: 'flapi:file-other',
+          iconPath: new vscode.ThemeIcon('file'),
+        };
+      
       default:
         return {
           label: element.label,
@@ -159,259 +207,239 @@ export class FlapiExplorerProvider implements vscode.TreeDataProvider<FlapiNodeM
 
   async getChildren(element?: FlapiNodeMetadata): Promise<FlapiNodeMetadata[]> {
     if (!element) {
-      return [
-        { kind: 'root:project', id: 'project-root', label: 'project' },
-        { kind: 'root:endpoints', id: 'endpoints-root', label: 'endpoints' },
-        { kind: 'root:schema', id: 'schema-root', label: 'schema' },
-        { kind: 'root:mcp', id: 'mcp-root', label: 'mcp' },
-      ];
+      // Root level: show flapi.yaml + filesystem tree
+      return this.loadRootNodes();
     }
 
-    switch (element.kind) {
-      case 'root:project':
-        return [
-          {
-            kind: 'project',
-            id: 'project-config',
-            label: 'Project Configuration',
+    // For directories, load their children from the cached filesystem
+    if (element.kind === 'directory') {
+      return this.loadDirectoryChildren(element);
+    }
+
+    // For YAML files with templates, show their referenced SQL files
+    if (element.kind === 'file:yaml:endpoint' || element.kind === 'file:yaml:mcp-tool' || 
+        element.kind === 'file:yaml:mcp-resource' || element.kind === 'file:yaml:mcp-prompt') {
+      return this.loadYamlChildren(element);
+    }
+
+    return [];
+  }
+
+  private async loadRootNodes(): Promise<FlapiNodeMetadata[]> {
+    try {
+      const response = await this.client.get<FilesystemResponse>('/api/v1/_config/filesystem');
+      this.filesystemCache = response.data;
+      
+      const nodes: FlapiNodeMetadata[] = [];
+      
+      // Add flapi.yaml at the top
+      if (this.filesystemCache.config_file_exists) {
+        nodes.push({
+          kind: 'file:flapi-yaml',
+          id: 'flapi.yaml',
+          label: this.filesystemCache.config_file ?? 'flapi.yaml',
+          extra: {
+            base_path: this.filesystemCache.base_path,
           },
-        ];
-
-      case 'root:endpoints':
-        return this.loadEndpoints();
-
-      case 'endpoint':
-        return this.loadEndpointChildren(element);
-
-      case 'root:schema':
-        return this.loadSchemaConnections();
-
-      case 'schema:connection':
-        return this.loadSchemaTables(element.id);
-
-      case 'schema:table':
-        return this.loadSchemaColumns(element.parentId ?? '', element.id);
-
-      case 'root:mcp':
-        return this.loadMcpGroups();
-
-      case 'mcp:group':
-        return this.loadMcpItems(element.id);
-
-      default:
-        return [];
-    }
-  }
-
-  private async loadEndpoints(): Promise<FlapiNodeMetadata[]> {
-    try {
-      const response = await this.client.get<Record<string, EndpointConfig>>('/api/v1/_config/endpoints');
-      const endpoints = response.data ?? {};
-      return Object.entries(endpoints)
-        .filter(([path]) => !!path)
-        .map(([path, config]) => ({
-          kind: 'endpoint',
-          id: path,
-          label: path,
-          description: (config as EndpointConfig).method ?? 'GET',
-          extra: { path, slug: pathToSlug(path), config },
-        }));
-    } catch (error) {
-      void vscode.window.showErrorMessage(`Failed to load endpoints: ${String(error)}`);
-      return [];
-    }
-  }
-
-  private loadEndpointChildren(endpoint: FlapiNodeMetadata): FlapiNodeMetadata[] {
-    const path = endpoint.extra?.path as string | undefined ?? endpoint.id;
-    return [
-      {
-        kind: 'endpoint:details',
-        id: `${path}:details`,
-        parentId: path,
-        label: 'Details',
-        extra: { path, slug: pathToSlug(path) },
-      },
-      {
-        kind: 'endpoint:template',
-        id: `${path}:template`,
-        parentId: path,
-        label: 'Template',
-        extra: { path, slug: pathToSlug(path) },
-      },
-      {
-        kind: 'endpoint:cache',
-        id: `${path}:cache`,
-        parentId: path,
-        label: 'Cache',
-        extra: { path, slug: pathToSlug(path) },
-      },
-    ];
-  }
-
-  private async loadSchemaConnections(): Promise<FlapiNodeMetadata[]> {
-    try {
-      const response = await this.client.get('/api/v1/_config/schema');
-      const data = response.data;
-      
-      // The schema is organized by catalogs (main, analytics, audit, etc.)
-      const catalogs = Object.keys(data || {});
-      
-      if (catalogs.length === 0) {
-        return [{
-          kind: 'schema:connection',
-          id: 'no-catalogs',
-          label: 'No database catalogs available',
-          extra: { isEmpty: true },
-        }];
+        });
       }
       
-      return catalogs.map((catalog) => ({
-        kind: 'schema:connection',
-        id: catalog,
-        label: catalog,
-        description: `${Object.keys(data[catalog]?.tables || {}).length} tables`,
-        extra: { catalog, connection: data[catalog] },
-      }));
-    } catch (error) {
-      void vscode.window.showErrorMessage(`Failed to load schema connections: ${String(error)}`);
-      return [];
-    }
-  }
-
-  private async loadSchemaTables(connectionId: string): Promise<FlapiNodeMetadata[]> {
-    try {
-      const response = await this.client.get('/api/v1/_config/schema');
-      const data = response.data;
-      const catalog = data?.[connectionId];
-      
-      if (!catalog?.tables) {
-        return [{
-          kind: 'schema:table',
-          id: 'no-tables',
-          parentId: connectionId,
-          label: 'No tables available',
-          extra: { isEmpty: true },
-        }];
-      }
-      
-      const tables = Object.entries(catalog.tables);
-      return tables.map(([tableName, tableInfo]: [string, any]) => ({
-        kind: 'schema:table',
-        id: tableName,
-        parentId: connectionId,
-        label: tableName,
-        description: tableInfo.is_view ? 'VIEW' : 'TABLE',
-        extra: { table: tableInfo, tableName, connectionId },
-      }));
-    } catch (error) {
-      void vscode.window.showErrorMessage(`Failed to load tables for ${connectionId}: ${String(error)}`);
-      return [];
-    }
-  }
-
-  private async loadSchemaColumns(connectionId: string, tableId: string): Promise<FlapiNodeMetadata[]> {
-    try {
-      const response = await this.client.get('/api/v1/_config/schema');
-      const data = response.data;
-      const catalog = data?.[connectionId];
-      const table = catalog?.tables?.[tableId];
-      
-      if (!table?.columns) {
-        return [{
-          kind: 'schema:column',
-          id: 'no-columns',
-          parentId: tableId,
-          label: 'No columns available',
-          extra: { isEmpty: true },
-        }];
-      }
-      
-      const columns = Object.entries(table.columns);
-      return columns.map(([columnName, columnInfo]: [string, any]) => ({
-        kind: 'schema:column',
-        id: `${connectionId}:${tableId}:${columnName}`,
-        parentId: tableId,
-        label: columnName,
-        description: `${columnInfo.type || 'unknown'}${columnInfo.nullable ? ' (nullable)' : ' (not null)'}`,
-        extra: { column: columnInfo, columnName, tableId, connectionId },
-      }));
-    } catch (error) {
-      void vscode.window.showErrorMessage(`Failed to load columns for ${tableId}: ${String(error)}`);
-      return [];
-    }
-  }
-
-  private async loadMcpGroups(): Promise<FlapiNodeMetadata[]> {
-    return [
-      { kind: 'mcp:group', id: 'mcp-tools', label: 'Tools', description: 'MCP tools from YAML files', extra: { subtype: 'tools' } },
-      { kind: 'mcp:group', id: 'mcp-resources', label: 'Resources', description: 'MCP resources from YAML files', extra: { subtype: 'resources' } },
-      { kind: 'mcp:group', id: 'mcp-prompts', label: 'Prompts', description: 'MCP prompts from YAML files', extra: { subtype: 'prompts' } },
-    ];
-  }
-
-  private async loadMcpItems(groupId: string): Promise<FlapiNodeMetadata[]> {
-    const subtype = groupId.replace('mcp-', '');
-    
-    // First try to get MCP items from endpoints
-    try {
-      const response = await this.client.get<Record<string, EndpointConfig>>('/api/v1/_config/endpoints');
-      const endpoints = response.data ?? {};
-      
-      const mcpItems: FlapiNodeMetadata[] = [];
-      
-      for (const [path, config] of Object.entries(endpoints)) {
-        const mcpKey = `mcp-${subtype}`;
-        const mcpConfig = (config as any)?.[mcpKey];
-        
-        if (mcpConfig) {
-          if (Array.isArray(mcpConfig)) {
-            // Multiple items
-            mcpConfig.forEach((item: any, index: number) => {
-              mcpItems.push({
-                kind: 'mcp:item',
-                id: `${subtype}:${path}:${index}`,
-                label: item.name ?? item.id ?? `${subtype} from ${path}`,
-                description: item.description ?? `From endpoint ${path}`,
-                extra: { subtype, item, path },
-              });
-            });
-          } else if (typeof mcpConfig === 'object' && mcpConfig !== null) {
-            // Single item
-            mcpItems.push({
-              kind: 'mcp:item',
-              id: `${subtype}:${path}`,
-              label: mcpConfig.name ?? mcpConfig.id ?? `${subtype} from ${path}`,
-              description: mcpConfig.description ?? `From endpoint ${path}`,
-              extra: { subtype, item: mcpConfig, path },
-            });
-          }
+      // Add filesystem tree nodes
+      if (this.filesystemCache.tree) {
+        for (const node of this.filesystemCache.tree) {
+          nodes.push(this.convertFilesystemNode(node));
         }
       }
       
-      if (mcpItems.length > 0) {
-        return mcpItems;
+      return nodes;
+    } catch (error: any) {
+      // Handle specific error cases
+      if (error?.response?.status === 404) {
+        // Config service is not enabled
+        const action = await vscode.window.showWarningMessage(
+          'Config Service is not enabled on the server. Start the server with --config-service flag.',
+          'OK'
+        );
+        return [];
+      } else if (error?.response?.status === 401) {
+        // Config service is enabled but no token provided
+        const action = await vscode.window.showWarningMessage(
+          'Config Service requires authentication. Please set your config service token.',
+          'Set Token'
+        );
+        if (action === 'Set Token') {
+          await vscode.commands.executeCommand('flapi.setConfigToken');
+        }
+        return [];
+      } else {
+        // Other errors
+        void vscode.window.showErrorMessage(`Failed to load filesystem: ${error?.message || String(error)}`);
+        return [];
       }
-      
-      // If no MCP items found in endpoints, show a placeholder
-      return [{
-        kind: 'mcp:item',
-        id: `${subtype}:no-items`,
-        label: `No ${subtype} available`,
-        description: 'MCP items are defined in separate YAML files but not loaded as endpoints. Check examples/sqls/ for MCP files.',
-        extra: { subtype, isEmpty: true },
-      }];
-      
-    } catch (error) {
-      // Don't show error message for MCP discovery failures
-      console.warn(`Failed to load MCP ${subtype}:`, error);
-      return [{
-        kind: 'mcp:item',
-        id: `${subtype}:error`,
-        label: `Error loading ${subtype}`,
-        description: 'Failed to load MCP items',
-        extra: { subtype, hasError: true },
-      }];
     }
+  }
+
+  private async loadDirectoryChildren(element: FlapiNodeMetadata): Promise<FlapiNodeMetadata[]> {
+    // Use cached filesystem data to find children
+    if (!this.filesystemCache) {
+      return [];
+    }
+    
+    const nodePath = element.extra?.path as string;
+    const node = this.findNodeByPath(this.filesystemCache.tree, nodePath);
+    
+    if (!node || !node.children) {
+      return [];
+    }
+    
+    // Build a set of SQL files that are referenced by YAMLs
+    const referencedSqlFiles = new Set<string>();
+    for (const child of node.children) {
+      if ((child.extension === '.yaml' || child.extension === '.yml') && child.yaml_type) {
+        if (child.template_source) {
+          referencedSqlFiles.add(child.template_source);
+        }
+        if (child.cache_template_source) {
+          // Handle both relative and absolute paths
+          const cacheFile = child.cache_template_source.split('/').pop() ?? '';
+          referencedSqlFiles.add(cacheFile);
+        }
+      }
+    }
+    
+    // Filter out SQL files that are referenced by YAMLs
+    // They will be shown as children of the YAML files instead
+    const filteredChildren = node.children.filter(child => {
+      if (child.extension === '.sql') {
+        return !referencedSqlFiles.has(child.name);
+      }
+      return true;
+    });
+    
+    return filteredChildren.map(child => this.convertFilesystemNode(child, nodePath));
+  }
+
+  private async loadYamlChildren(element: FlapiNodeMetadata): Promise<FlapiNodeMetadata[]> {
+    const children: FlapiNodeMetadata[] = [];
+    const parentPath = element.extra?.path as string;
+    if (!parentPath) {
+      return [];
+    }
+    
+    const parentDir = parentPath.substring(0, parentPath.lastIndexOf('/'));
+    
+    // Add template SQL file if referenced
+    const templateSource = element.extra?.template_source as string | undefined;
+    if (templateSource) {
+      const templatePath = parentDir ? `${parentDir}/${templateSource}` : templateSource;
+      children.push({
+        kind: 'file:sql:template',
+        id: `${element.id}:template`,
+        label: templateSource,
+        description: '(template)',
+        parentId: element.id,
+        extra: {
+          path: templatePath,
+          extension: '.sql',
+        },
+      });
+    }
+    
+    // Add cache SQL file if referenced
+    const cacheTemplateSource = element.extra?.cache_template_source as string | undefined;
+    if (cacheTemplateSource) {
+      // Handle both relative and path-based cache sources
+      const cacheFile = cacheTemplateSource.split('/').pop() ?? cacheTemplateSource;
+      const cachePath = parentDir ? `${parentDir}/${cacheFile}` : cacheFile;
+      children.push({
+        kind: 'file:sql:cache',
+        id: `${element.id}:cache`,
+        label: cacheFile,
+        description: '(cache)',
+        parentId: element.id,
+        extra: {
+          path: cachePath,
+          extension: '.sql',
+        },
+      });
+    }
+    
+    return children;
+  }
+
+  private findNodeByPath(nodes: FilesystemNode[], targetPath: string): FilesystemNode | undefined {
+    for (const node of nodes) {
+      if (node.path === targetPath) {
+        return node;
+      }
+      if (node.children) {
+        const found = this.findNodeByPath(node.children, targetPath);
+        if (found) {
+          return found;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  private convertFilesystemNode(node: FilesystemNode, parentPath?: string): FlapiNodeMetadata {
+    if (node.type === 'directory') {
+      return {
+        kind: 'directory',
+        id: node.path,
+        label: node.name,
+        parentId: parentPath,
+        extra: {
+          path: node.path,
+        },
+      };
+    }
+    
+    // File node
+    const ext = node.extension;
+    let kind: FlapiNodeMetadata['kind'] = 'file:other';
+    const extra: Record<string, unknown> = {
+      path: node.path,
+      extension: ext,
+    };
+    
+    if (ext === '.yaml' || ext === '.yml') {
+      // Determine YAML type
+      if (node.yaml_type === 'endpoint') {
+        kind = 'file:yaml:endpoint';
+        extra.url_path = node.url_path;
+        extra.template_source = node.template_source;
+        extra.cache_template_source = node.cache_template_source;
+      } else if (node.yaml_type === 'mcp-tool') {
+        kind = 'file:yaml:mcp-tool';
+        extra.mcp_name = node.mcp_name;
+        extra.template_source = node.template_source;
+      } else if (node.yaml_type === 'mcp-resource') {
+        kind = 'file:yaml:mcp-resource';
+        extra.mcp_name = node.mcp_name;
+        extra.template_source = node.template_source;
+      } else if (node.yaml_type === 'mcp-prompt') {
+        kind = 'file:yaml:mcp-prompt';
+        extra.mcp_name = node.mcp_name;
+        extra.template_source = node.template_source;
+      } else if (node.yaml_type === 'shared') {
+        kind = 'file:yaml:shared';
+      }
+    } else if (ext === '.sql') {
+      // Check if it's a cache SQL (heuristic: name contains _cache or -cache)
+      if (node.name.includes('_cache') || node.name.includes('-cache')) {
+        kind = 'file:sql:cache';
+      } else {
+        kind = 'file:sql:template';
+      }
+    }
+    
+    return {
+      kind,
+      id: node.path,
+      label: node.name,
+      parentId: parentPath,
+      extra,
+    };
   }
 }

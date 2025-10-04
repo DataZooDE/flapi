@@ -21,7 +21,8 @@
     "onCommand:flapi.openTemplate",
     "onCommand:flapi.openCache",
     "onCommand:flapi.openEndpointDetails",
-    "onCommand:flapi.openParameters"
+    "onCommand:flapi.openParameters",
+    "onCommand:flapi.testEndpoint"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -32,8 +33,53 @@
         "category": "flapi"
       },
       {
+        "command": "flapi.schema.refresh",
+        "title": "Refresh Schema",
+        "category": "flapi"
+      },
+      {
+        "command": "flapi.schema.copyTableName",
+        "title": "Copy Table Name",
+        "category": "flapi"
+      },
+      {
+        "command": "flapi.schema.copyColumnName",
+        "title": "Copy Column Name",
+        "category": "flapi"
+      },
+      {
         "command": "flapi.openProject",
         "title": "Open Project",
+        "category": "flapi"
+      },
+      {
+        "command": "flapi.openProjectConfig",
+        "title": "Open Project Config (flapi.yaml)",
+        "category": "flapi"
+      },
+      {
+        "command": "flapi.openYamlFile",
+        "title": "Open YAML File",
+        "category": "flapi"
+      },
+      {
+        "command": "flapi.openSqlFile",
+        "title": "Open SQL File",
+        "category": "flapi"
+      },
+      {
+        "command": "flapi.deleteFile",
+        "title": "Delete File",
+        "category": "flapi"
+      },
+      {
+        "command": "flapi.renameFile",
+        "title": "Rename File",
+        "category": "flapi"
+      },
+      {
+        "command": "flapi.newEndpoint",
+        "title": "New Endpoint",
         "category": "flapi"
       },
       {
@@ -52,16 +98,6 @@
         "category": "flapi"
       },
       {
-        "command": "flapi.template.expand",
-        "title": "Flapi: Expand Template",
-        "category": "flapi"
-      },
-      {
-        "command": "flapi.template.test",
-        "title": "Flapi: Test Template",
-        "category": "flapi"
-      },
-      {
         "command": "flapi.variables.toggle",
         "title": "Flapi: Toggle Variables View",
         "category": "flapi"
@@ -69,11 +105,6 @@
       {
         "command": "flapi.variables.insert",
         "title": "Flapi: Insert Variable",
-        "category": "flapi"
-      },
-      {
-        "command": "flapi.cli.copyCommand",
-        "title": "Flapi: Copy flapii CLI Command",
         "category": "flapi"
       },
       {
@@ -130,6 +161,59 @@
         "command": "flapi.updateParameters",
         "title": "Update Parameters",
         "category": "flapi"
+      },
+      {
+        "command": "flapi.validateYaml",
+        "title": "Validate Endpoint YAML",
+        "category": "flapi",
+        "icon": "$(check)"
+      },
+      {
+        "command": "flapi.reloadEndpoint",
+        "title": "Reload Endpoint Configuration",
+        "category": "flapi",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "flapi.testEndpoint",
+        "title": "Test Endpoint",
+        "category": "flapi",
+        "icon": "$(debug-start)"
+      },
+      {
+        "command": "flapi.navigateToInclude",
+        "title": "Navigate to Include",
+        "category": "flapi"
+      },
+      {
+        "command": "flapi.setConfigToken",
+        "title": "Set Config Service Token",
+        "category": "flapi",
+        "icon": "$(key)"
+      },
+      {
+        "command": "flapi.clearConfigToken",
+        "title": "Clear Config Service Token",
+        "category": "flapi",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "flapi.validateSqlTemplate",
+        "title": "Validate SQL Template",
+        "category": "flapi",
+        "icon": "$(check)"
+      },
+      {
+        "command": "flapi.reloadSqlTemplate",
+        "title": "Reload SQL Template",
+        "category": "flapi",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "flapi.testSqlTemplate",
+        "title": "Test SQL Template",
+        "category": "flapi",
+        "icon": "$(play)"
       }
     ],
     "viewsContainers": {
@@ -148,8 +232,8 @@
           "name": "flapi Explorer"
         },
         {
-          "id": "flapiVariables",
-          "name": "flapi Variables"
+          "id": "flapiSchema",
+          "name": "flapi Schema"
         }
       ]
     },
@@ -174,23 +258,43 @@
           "command": "flapi.explorer.refresh",
           "when": "view == flapiExplorer",
           "group": "navigation"
+        },
+        {
+          "command": "flapi.schema.refresh",
+          "when": "view == flapiSchema",
+          "group": "navigation"
         }
       ],
       "editor/title": [
         {
-          "command": "flapi.template.expand",
+          "command": "flapi.validateSqlTemplate",
           "when": "resourceExtname == .sql",
           "group": "navigation@1"
         },
         {
-          "command": "flapi.template.test",
+          "command": "flapi.reloadSqlTemplate",
           "when": "resourceExtname == .sql",
           "group": "navigation@2"
         },
         {
-          "command": "flapi.cli.copyCommand",
+          "command": "flapi.testSqlTemplate",
           "when": "resourceExtname == .sql",
-          "group": "navigation@9"
+          "group": "navigation@3"
+        },
+        {
+          "command": "flapi.validateYaml",
+          "when": "resourceExtname == .yaml || resourceExtname == .yml",
+          "group": "navigation@1"
+        },
+        {
+          "command": "flapi.reloadEndpoint",
+          "when": "resourceExtname == .yaml || resourceExtname == .yml",
+          "group": "navigation@2"
+        },
+        {
+          "command": "flapi.testEndpoint",
+          "when": "resourceExtname == .yaml || resourceExtname == .yml",
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
@@ -223,6 +327,41 @@
           "command": "flapi.openMcpItem",
           "when": "viewItem == flapi:mcp-item",
           "group": "inline"
+        },
+        {
+          "command": "flapi.schema.copyTableName",
+          "when": "viewItem == flapi:schema-table",
+          "group": "inline"
+        },
+        {
+          "command": "flapi.schema.copyColumnName",
+          "when": "viewItem == flapi:schema-column",
+          "group": "inline"
+        },
+        {
+          "command": "flapi.openYamlFile",
+          "when": "viewItem == flapi:yaml-endpoint || viewItem == flapi:yaml-mcp-tool || viewItem == flapi:yaml-mcp-resource || viewItem == flapi:yaml-mcp-prompt || viewItem == flapi:yaml-shared",
+          "group": "navigation"
+        },
+        {
+          "command": "flapi.testEndpoint",
+          "when": "viewItem == flapi:yaml-endpoint",
+          "group": "inline"
+        },
+        {
+          "command": "flapi.deleteFile",
+          "when": "viewItem == flapi:yaml-endpoint || viewItem == flapi:yaml-mcp-tool || viewItem == flapi:yaml-mcp-resource || viewItem == flapi:yaml-mcp-prompt || viewItem == flapi:yaml-shared || viewItem == flapi:sql-template || viewItem == flapi:sql-cache",
+          "group": "7_modification"
+        },
+        {
+          "command": "flapi.renameFile",
+          "when": "viewItem == flapi:yaml-endpoint || viewItem == flapi:yaml-mcp-tool || viewItem == flapi:yaml-mcp-resource || viewItem == flapi:yaml-mcp-prompt || viewItem == flapi:yaml-shared || viewItem == flapi:sql-template || viewItem == flapi:sql-cache",
+          "group": "7_modification"
+        },
+        {
+          "command": "flapi.newEndpoint",
+          "when": "viewItem == flapi:directory",
+          "group": "navigation"
         }
       ]
     }
@@ -235,16 +374,17 @@
   },
   "devDependencies": {
     "@types/vscode": "^1.74.0",
+    "css-loader": "^6.9.1",
+    "monaco-editor-webpack-plugin": "^7.1.0",
+    "style-loader": "^3.3.4",
     "ts-loader": "^9.5.1",
     "typescript": "^5.5.4",
     "webpack": "^5.94.0",
-    "webpack-cli": "^5.1.4",
-    "monaco-editor-webpack-plugin": "^7.1.0",
-    "style-loader": "^3.3.4",
-    "css-loader": "^6.9.1"
+    "webpack-cli": "^5.1.4"
   },
   "dependencies": {
     "@flapi/shared": "file:../shared",
-    "monaco-editor": "^0.52.0"
+    "monaco-editor": "^0.52.0",
+    "yaml": "^2.8.1"
   }
 }

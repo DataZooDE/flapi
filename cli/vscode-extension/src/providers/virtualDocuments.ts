@@ -211,6 +211,15 @@ export class VirtualDocumentManager {
     return this.resultsProvider;
   }
 
+  public updateClient(client: ReturnType<typeof createApiClient>): void {
+    // Update all providers with new client
+    this.endpointConfigProvider = new EndpointConfigProvider(client);
+    this.templateProvider = new TemplateProvider(client);
+    this.cacheConfigProvider = new CacheConfigProvider(client);
+    this.parametersProvider = new ParametersProvider(client);
+    this.resultsProvider = new ResultsProvider(client);
+  }
+
   public refreshAll(slug: string) {
     const uris = [
       vscode.Uri.parse(`flapi://endpoint/${slug}/config.json`),
