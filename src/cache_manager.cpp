@@ -155,30 +155,32 @@ CacheManager::SnapshotInfo CacheManager::fetchSnapshotInfo(const std::string& ca
         params["table"] = table;
 
         // Get all snapshots and derive current/previous from the highest versions
+        std::string snapshotsQuery = "SELECT snapshot_id, snapshot_time FROM ducklake_snapshots('" + catalog + "') ORDER BY snapshot_id DESC LIMIT 2";
         try {
-            std::string snapshotsQuery = "SELECT snapshot_id, snapshot_time FROM ducklake_snapshots('" + catalog + "') ORDER BY snapshot_id DESC LIMIT 2";
             auto snapshots = db_manager->executeDuckLakeQuery(snapshotsQuery);
             auto snapshotsJson = crow::json::load(snapshots.data.dump());
-            
-            if (snapshotsJson && snapshotsJson.t() == crow::json::type::List && snapshotsJson.size() > 0) {
-                // Current snapshot is the highest version (first row)
-                const auto& currentRow = snapshotsJson[0];
-                if (currentRow.has("snapshot_id") && currentRow["snapshot_id"].t() == crow::json::type::Number) {
-                    info.current_snapshot_id = std::to_string(static_cast<int64_t>(currentRow["snapshot_id"].d()));
+
+            if (!(snapshotsJson && snapshotsJson.t() == crow::json::type::List && snapshotsJson.size() > 0)) {
+                return info;
+            }
+
+            // Current snapshot is the highest version (first row)
+            const auto& currentRow = snapshotsJson[0];
+            if (currentRow.has("snapshot_id") && currentRow["snapshot_id"].t() == crow::json::type::Number) {
+                info.current_snapshot_id = std::to_string(static_cast<int64_t>(currentRow["snapshot_id"].d()));
+            }
+            if (currentRow.has("snapshot_time") && currentRow["snapshot_time"].t() == crow::json::type::String) {
+                info.current_snapshot_committed_at = currentRow["snapshot_time"].s();
+            }
+
+            // Previous snapshot is the second highest version (if available)
+            if (snapshotsJson.size() > 1) {
+                const auto& previousRow = snapshotsJson[1];
+                if (previousRow.has("snapshot_id") && previousRow["snapshot_id"].t() == crow::json::type::Number) {
+                    info.previous_snapshot_id = std::to_string(static_cast<int64_t>(previousRow["snapshot_id"].d()));
                 }
-                if (currentRow.has("snapshot_time") && currentRow["snapshot_time"].t() == crow::json::type::String) {
-                    info.current_snapshot_committed_at = currentRow["snapshot_time"].s();
-                }
-                
-                // Previous snapshot is the second highest version (if available)
-                if (snapshotsJson.size() > 1) {
-                    const auto& previousRow = snapshotsJson[1];
-                    if (previousRow.has("snapshot_id") && previousRow["snapshot_id"].t() == crow::json::type::Number) {
-                        info.previous_snapshot_id = std::to_string(static_cast<int64_t>(previousRow["snapshot_id"].d()));
-                    }
-                    if (previousRow.has("snapshot_time") && previousRow["snapshot_time"].t() == crow::json::type::String) {
-                        info.previous_snapshot_committed_at = previousRow["snapshot_time"].s();
-                    }
+                if (previousRow.has("snapshot_time") && previousRow["snapshot_time"].t() == crow::json::type::String) {
+                    info.previous_snapshot_committed_at = previousRow["snapshot_time"].s();
                 }
             }
         } catch (const std::exception& ex) {

@@ -1,5 +1,5 @@
 
-SELECT 
+SELECT
   c_custkey as key,
   c_name as name,
   c_acctbal as balance,

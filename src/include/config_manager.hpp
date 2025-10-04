@@ -15,6 +15,7 @@
 
 #include "route_translator.hpp"
 #include "extended_yaml_parser.hpp"
+#include "path_utils.hpp"
 
 namespace flapi {
 
@@ -130,6 +131,9 @@ struct EndpointConfig {
     AuthConfig auth;
     CacheConfig cache;
     HeartbeatConfig heartbeat;
+    
+    // Path to the YAML configuration file for this endpoint (for reloading)
+    std::string config_file_path;
 
     // MCP-specific metadata (optional)
     struct MCPToolInfo {
@@ -155,12 +159,144 @@ struct EndpointConfig {
     std::optional<MCPResourceInfo> mcp_resource;
     std::optional<MCPPromptInfo> mcp_prompt;
 
+    // Endpoint type enumeration
+    enum class Type {
+        REST,
+        MCP_Tool,
+        MCP_Resource,
+        MCP_Prompt,
+        Unknown
+    };
+
     // Helper methods to check if this is an MCP entity
     bool isMCPEntity() const { return mcp_tool.has_value() || mcp_resource.has_value() || mcp_prompt.has_value(); }
     bool isRESTEndpoint() const { return !urlPath.empty(); }
     bool isMCPTool() const { return mcp_tool.has_value(); }
     bool isMCPResource() const { return mcp_resource.has_value(); }
     bool isMCPPrompt() const { return mcp_prompt.has_value(); }
+    
+    // Get the type of this endpoint
+    Type getType() const {
+        if (!urlPath.empty()) return Type::REST;
+        if (mcp_tool.has_value()) return Type::MCP_Tool;
+        if (mcp_resource.has_value()) return Type::MCP_Resource;
+        if (mcp_prompt.has_value()) return Type::MCP_Prompt;
+        return Type::Unknown;
+    }
+    
+    // Get the unique name/path of this endpoint (abstracted across REST and MCP)
+    std::string getName() const {
+        if (!urlPath.empty()) {
+            return urlPath;
+        } else if (mcp_tool.has_value()) {
+            return mcp_tool->name;
+        } else if (mcp_resource.has_value()) {
+            return mcp_resource->name;
+        } else if (mcp_prompt.has_value()) {
+            return mcp_prompt->name;
+        }
+        return "";
+    }
+    
+    // Get the URL slug for this endpoint (centralized slugging logic)
+    // REST endpoints: convert path to slug (e.g., /customers/ → customers-slash)
+    // MCP entities: use name as-is (e.g., customer_lookup → customer_lookup)
+    std::string getSlug() const {
+        if (!urlPath.empty()) {
+            return PathUtils::pathToSlug(urlPath);
+        } else {
+            // MCP names are already URL-safe, use as-is
+            return getName();
+        }
+    }
+    
+    // Get a human-readable identifier for this endpoint (for logging/debugging)
+    std::string getIdentifier() const {
+        if (!urlPath.empty()) {
+            return "REST endpoint: " + urlPath;
+        } else if (mcp_tool.has_value()) {
+            return "MCP tool: " + mcp_tool->name;
+        } else if (mcp_resource.has_value()) {
+            return "MCP resource: " + mcp_resource->name;
+        } else if (mcp_prompt.has_value()) {
+            return "MCP prompt: " + mcp_prompt->name;
+        } else {
+            return "unknown endpoint";
+        }
+    }
+    
+    // Get a short description for logging (more compact than getIdentifier)
+    std::string getShortDescription() const {
+        switch (getType()) {
+            case Type::REST:
+                return method + " " + urlPath;
+            case Type::MCP_Tool:
+                return "MCP Tool: " + mcp_tool->name;
+            case Type::MCP_Resource:
+                return "MCP Resource: " + mcp_resource->name;
+            case Type::MCP_Prompt:
+                return "MCP Prompt: " + mcp_prompt->name;
+            default:
+                return "unknown";
+        }
+    }
+    
+    // Check if a given path/name matches this endpoint
+    bool matchesPath(const std::string& path) const;
+    
+    // Check if this endpoint refers to the same logical endpoint as another
+    bool isSameEndpoint(const EndpointConfig& other) const {
+        if (getType() != other.getType()) return false;
+        
+        switch (getType()) {
+            case Type::REST:
+                return urlPath == other.urlPath;
+            case Type::MCP_Tool:
+                return mcp_tool->name == other.mcp_tool->name;
+            case Type::MCP_Resource:
+                return mcp_resource->name == other.mcp_resource->name;
+            case Type::MCP_Prompt:
+                return mcp_prompt->name == other.mcp_prompt->name;
+            default:
+                return false;
+        }
+    }
+    
+    // Validate this endpoint configuration and return errors
+    std::vector<std::string> validateSelf() const {
+        std::vector<std::string> errors;
+        
+        switch (getType()) {
+            case Type::REST:
+                if (urlPath.empty()) {
+                    errors.push_back("url-path cannot be empty");
+                }
+                if (!urlPath.empty() && urlPath[0] != '/') {
+                    errors.push_back("url-path must start with /");
+                }
+                break;
+            case Type::MCP_Tool:
+                if (mcp_tool->name.empty()) {
+                    errors.push_back("mcp-tool.name cannot be empty");
+                }
+                break;
+            case Type::MCP_Resource:
+                if (mcp_resource->name.empty()) {
+                    errors.push_back("mcp-resource.name cannot be empty");
+                }
+                break;
+            case Type::MCP_Prompt:
+                if (mcp_prompt->name.empty()) {
+                    errors.push_back("mcp-prompt.name cannot be empty");
+                }
+                break;
+            case Type::Unknown:
+                errors.push_back("Endpoint must define url-path, mcp-tool, mcp-resource, or mcp-prompt");
+                break;
+        }
+        
+        return errors;
+    }
 };
 
 enum class EndpointJsonStyle {
@@ -266,7 +402,13 @@ struct DuckLakeConfig {
     std::optional<std::size_t> data_inlining_row_limit;
 };
 
+// Forward declaration
+class EndpointConfigParser;
+
 class ConfigManager {
+    // Allow EndpointConfigParser to access protected parsing methods
+    friend class EndpointConfigParser;
+    
 public:
     explicit ConfigManager(const std::filesystem::path& config_file);
     
@@ -296,6 +438,7 @@ public:
     const TemplateConfig& getTemplateConfig() const;
     std::string getBasePath() const;
     std::string getDuckDBPath() const;
+    ExtendedYamlParser& getYamlParser() { return yaml_parser; }
     std::filesystem::path getFullTemplatePath() const;
 
     const GlobalHeartbeatConfig& getGlobalHeartbeatConfig() const { return global_heartbeat_config; }
@@ -313,6 +456,26 @@ public:
     crow::json::wvalue getEndpointsConfig() const;
     crow::json::wvalue serializeEndpointConfig(const EndpointConfig& config, EndpointJsonStyle style) const;
     EndpointConfig deserializeEndpointConfig(const crow::json::rvalue& json) const;
+    
+    // YAML serialization/deserialization (for export, debugging)
+    std::string serializeEndpointConfigToYaml(const EndpointConfig& config) const;
+    EndpointConfig deserializeEndpointConfigFromYaml(const std::string& yaml_content) const;
+    
+    // Validation (does not modify files - preserves comments, formatting)
+    struct ValidationResult {
+        bool valid;
+        std::vector<std::string> errors;
+        std::vector<std::string> warnings;
+    };
+    ValidationResult validateEndpointConfig(const EndpointConfig& config) const;
+    ValidationResult validateEndpointConfigFromYaml(const std::string& yaml_content) const;
+    ValidationResult validateEndpointConfigFile(const std::filesystem::path& file_path) const;
+    
+    // File persistence (only for programmatic creation/export - destroys formatting)
+    void persistEndpointConfigToFile(const EndpointConfig& config, const std::filesystem::path& file_path) const;
+    
+    // Reload endpoint from disk (after external edit)
+    bool reloadEndpointConfig(const std::string& slug_or_path);
 
     void printConfig() const;
     static void printYamlNode(const YAML::Node& node, int indent = 0);

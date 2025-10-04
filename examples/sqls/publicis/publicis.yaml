@@ -15,9 +15,10 @@ cache:
   enabled: true
   table: publicis_cache
   schema: analytics
-  schedule: 5m
+  schedule: 60m
   # Full refresh mode (no primary-key or cursor specified)
   retention:
     keep_last_snapshots: 5
     max_snapshot_age: 14d
-  template_file: publicis/publicis_cache.sql 
+  template_file: publicis_cache.sql 
+

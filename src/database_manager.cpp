@@ -395,7 +395,7 @@ YAML::Node DatabaseManager::describeSelectQuery(const EndpointConfig& endpoint) 
         }
     }
     catch (const std::exception& e) {
-        CROW_LOG_ERROR << "Error in describeSelectQuery: " << e.what();
+        CROW_LOG_ERROR << "Error in describeSelectQuery for " << endpoint.getIdentifier() << ": " << e.what();
     }
     
     return properties;

@@ -12,7 +12,10 @@
 
 namespace flapi {
 
-APIServer::APIServer(std::shared_ptr<ConfigManager> cm, std::shared_ptr<DatabaseManager> db_manager, bool enable_config_ui)
+APIServer::APIServer(std::shared_ptr<ConfigManager> cm, 
+                     std::shared_ptr<DatabaseManager> db_manager, 
+                     bool config_service_enabled,
+                     const std::string& config_service_token)
     : configManager(cm), dbManager(db_manager), openAPIDocGenerator(std::make_shared<OpenAPIDocGenerator>(cm, db_manager)), requestHandler(dbManager, cm)
 {
     // Initialize MCP session manager
@@ -34,6 +37,9 @@ APIServer::APIServer(std::shared_ptr<ConfigManager> cm, std::shared_ptr<Database
 
     CROW_LOG_INFO << "APIServer MCP Route Handlers status: " << (mcpRouteHandlers ? "initialized" : "failed to initialize");
 
+    // Initialize ConfigService with token authentication
+    configService = std::make_shared<ConfigService>(configManager, config_service_enabled, config_service_token);
+    
     createApp();
     setupRoutes();
     setupCORS();
@@ -71,7 +77,7 @@ void APIServer::setupRoutes() {
         return crow::response(200, "text/plain", logo);
     });
 
-    configService = std::make_shared<ConfigService>(configManager);
+    configService->setDocGenerator(openAPIDocGenerator);
     configService->registerRoutes(app);
 
     CROW_ROUTE(app, "/config")

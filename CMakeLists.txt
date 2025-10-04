@@ -195,7 +195,7 @@ add_library(flapi-lib STATIC
     src/config_manager.cpp
     src/config_service.cpp
     src/database_manager.cpp
-    src/embedded_ui.cpp
+    src/endpoint_config_parser.cpp
     src/extended_yaml_parser.cpp
     src/heartbeat_worker.cpp
     src/open_api_doc_generator.cpp
@@ -213,6 +213,7 @@ add_library(flapi-lib STATIC
     src/mcp_error_builder.cpp
     src/mcp_request_validator.cpp
     src/mcp_client_capabilities.cpp
+    src/config_token_utils.cpp
 )
 
 # Ensure web_ui is built before flapi-lib

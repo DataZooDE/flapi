@@ -18,6 +18,7 @@
 #include "config_manager.hpp"
 #include "database_manager.hpp"
 #include "rate_limit_middleware.hpp"
+#include "config_token_utils.hpp"
 
 using namespace flapi;
 
@@ -48,6 +49,81 @@ std::shared_ptr<ConfigManager> initializeConfig(const std::string& config_file) 
         throw std::runtime_error("Error while loading configuration, Details: " + std::string(e.what()));
     }
     return config_manager;
+}
+
+std::string getEndpointName(const EndpointConfig& endpoint) {
+    if (!endpoint.urlPath.empty()) {
+        return endpoint.urlPath;
+    }
+    if (endpoint.mcp_tool) {
+        return endpoint.mcp_tool->name;
+    }
+    if (endpoint.mcp_resource) {
+        return endpoint.mcp_resource->name;
+    }
+    if (endpoint.mcp_prompt) {
+        return endpoint.mcp_prompt->name;
+    }
+    return "unknown";
+}
+
+void printValidationErrors(const std::string& endpoint_name, const std::vector<std::string>& errors, int& errors_count) {
+    std::cerr << "\n✗ Endpoint: " << endpoint_name << std::endl;
+    for (const auto& error : errors) {
+        std::cerr << "  ERROR: " << error << std::endl;
+        errors_count++;
+    }
+}
+
+void printValidationWarnings(const std::string& endpoint_name, const std::vector<std::string>& warnings, int& warnings_count) {
+    std::cout << "\n⚠ Endpoint: " << endpoint_name << std::endl;
+    for (const auto& warning : warnings) {
+        std::cout << "  WARNING: " << warning << std::endl;
+        warnings_count++;
+    }
+}
+
+void printValidationSummary(bool all_valid, int errors_count, int warnings_count) {
+    std::cout << "\n" << std::string(60, '=') << std::endl;
+    if (all_valid) {
+        std::cout << "✓ Validation PASSED" << std::endl;
+        if (warnings_count > 0) {
+            std::cout << "  " << warnings_count << " warning(s)" << std::endl;
+        }
+    } else {
+        std::cerr << "✗ Validation FAILED" << std::endl;
+        std::cerr << "  " << errors_count << " error(s)" << std::endl;
+        if (warnings_count > 0) {
+            std::cerr << "  " << warnings_count << " warning(s)" << std::endl;
+        }
+    }
+}
+
+int validateConfiguration(std::shared_ptr<ConfigManager> config_manager, const std::string& config_file) {
+    std::cout << "Validating configuration file: " << config_file << std::endl;
+    std::cout << "✓ Configuration file loaded successfully" << std::endl;
+    std::cout << "✓ Parsed " << config_manager->getEndpoints().size() << " endpoint(s)" << std::endl;
+    
+    bool all_valid = true;
+    int warnings_count = 0;
+    int errors_count = 0;
+    
+    for (const auto& endpoint : config_manager->getEndpoints()) {
+        auto result = config_manager->validateEndpointConfig(endpoint);
+        std::string endpoint_name = getEndpointName(endpoint);
+        
+        if (!result.valid) {
+            all_valid = false;
+            printValidationErrors(endpoint_name, result.errors, errors_count);
+        }
+        
+        if (!result.warnings.empty()) {
+            printValidationWarnings(endpoint_name, result.warnings, warnings_count);
+        }
+    }
+    
+    printValidationSummary(all_valid, errors_count, warnings_count);
+    return all_valid ? 0 : 1;
 }
 
 void initializeDatabase(std::shared_ptr<ConfigManager> config_manager) {
@@ -151,10 +227,19 @@ int main(int argc, char* argv[])
         .help("Set the log level (debug, info, warning, error)")
         .default_value(std::string("info"));
 
-    program.add_argument("--enable-config-ui")
-        .help("Enable the configuration UI")
-        .default_value(false);
+    program.add_argument("--validate-config")
+        .help("Validate the configuration file and exit")
+        .default_value(false)
+        .implicit_value(true);
 
+    program.add_argument("--config-service")
+        .help("Enable the configuration service API")
+        .default_value(false)
+        .implicit_value(true);
+
+    program.add_argument("--config-service-token")
+        .help("Authentication token for configuration service API")
+        .default_value(std::string(""));
 
     try {
         program.parse_args(argc, argv);
@@ -167,10 +252,32 @@ int main(int argc, char* argv[])
     std::string config_file = program.get<std::string>("--config");
     int cmd_port = program.get<int>("--port");
     std::string log_level = program.get<std::string>("--log-level");
+    bool validate_config = program.get<bool>("--validate-config");
+    bool config_service_enabled = program.get<bool>("--config-service");
+    std::string config_service_token = program.get<std::string>("--config-service-token");
+
+    // Check environment variable for config service token if not provided via CLI
+    if (config_service_token.empty()) {
+        const char* env_token = std::getenv("FLAPI_CONFIG_SERVICE_TOKEN");
+        if (env_token != nullptr) {
+            config_service_token = env_token;
+        }
+    }
+
+    // If config service is enabled but no token provided, generate one
+    if (config_service_enabled && config_service_token.empty()) {
+        config_service_token = ConfigTokenUtils::generateSecureToken();
+        CROW_LOG_INFO << "Generated config service token (no token was provided)";
+    }
 
     set_log_level(log_level);
 
     auto config_manager = initializeConfig(config_file);
+
+    // If validate-config flag is set, validate and exit
+    if (validate_config) {
+        return validateConfiguration(config_manager, config_file);
+    }
 
     if (cmd_port != -1) {
         config_manager->setHttpPort(cmd_port);
@@ -178,10 +285,13 @@ int main(int argc, char* argv[])
 
     initializeDatabase(config_manager);
 
-    bool enable_config_ui = program.get<bool>("--enable-config-ui");
-
     // Create unified API server with MCP support (always enabled in unified configuration)
-    api_server = std::make_shared<APIServer>(config_manager, DatabaseManager::getInstance(), enable_config_ui);
+    api_server = std::make_shared<APIServer>(
+        config_manager, 
+        DatabaseManager::getInstance(), 
+        config_service_enabled,
+        config_service_token
+    );
 
     // Start unified server
     std::thread unified_server_thread([config_manager, server = api_server]() {
@@ -189,6 +299,22 @@ int main(int argc, char* argv[])
     });
 
     CROW_LOG_INFO << "flAPI unified server started - REST API and MCP on port " << config_manager->getHttpPort();
+    
+    // Print config service token prominently if enabled
+    if (config_service_enabled) {
+        std::cout << "\n";
+        std::cout << "============================================================\n";
+        std::cout << "    CONFIG SERVICE ENABLED\n";
+        std::cout << "============================================================\n";
+        std::cout << "    Token: " << config_service_token << "\n";
+        std::cout << "============================================================\n";
+        std::cout << "\n";
+        std::cout << "Use this token to authenticate configuration API requests:\n";
+        std::cout << "  Authorization: Bearer " << config_service_token << "\n";
+        std::cout << "or\n";
+        std::cout << "  X-Config-Token: " << config_service_token << "\n";
+        std::cout << "\n";
+    }
 
     // Wait for server to finish
     unified_server_thread.join();

@@ -1,4 +1,5 @@
 #include "config_manager.hpp"
+#include "endpoint_config_parser.hpp"
 #include <stdexcept>
 #include <filesystem>
 #include <yaml-cpp/yaml.h>
@@ -20,6 +21,18 @@ std::chrono::seconds CacheConfig::getRefreshTimeInSeconds() const {
         throw std::runtime_error("Invalid cache schedule format: " + *schedule + ". Expected <number>[s|m|h|d]");
     }
     return *interval;
+}
+
+// EndpointConfig method implementations
+bool EndpointConfig::matchesPath(const std::string& path) const {
+    if (isRESTEndpoint()) {
+        std::vector<std::string> param_names;
+        std::map<std::string, std::string> path_params;
+        return RouteTranslator::matchAndExtractParams(urlPath, path, param_names, path_params);
+    }
+    
+    // For MCP endpoints, do simple name comparison
+    return getName() == path;
 }
 
 ConfigManager::ConfigManager(const std::filesystem::path& config_file)
@@ -235,116 +248,46 @@ void ConfigManager::loadEndpointConfig(const std::string& config_file) {
     try {
         CROW_LOG_DEBUG << "\tLoading endpoint config from file: " << config_file;
 
-        // Use ExtendedYamlParser to load the endpoint config file
-        auto result = yaml_parser.parseFile(config_file);
-        if (!result.success) {
-            throw std::runtime_error("Failed to parse endpoint config file: " + result.error_message);
-        }
-        YAML::Node endpoint_config = result.node;
-
-        EndpointConfig endpoint;
-
-        auto endpoint_dir = std::filesystem::path(config_file).parent_path();
-
-        // Detect configuration type and parse accordingly
-        bool is_rest_endpoint = endpoint_config["url-path"].IsDefined();
-        bool is_mcp_tool = endpoint_config["mcp-tool"].IsDefined();
-        bool is_mcp_resource = endpoint_config["mcp-resource"].IsDefined();
-        bool is_mcp_prompt = endpoint_config["mcp-prompt"].IsDefined();
-
-        if (!is_rest_endpoint && !is_mcp_tool && !is_mcp_resource && !is_mcp_prompt) {
+        // Use EndpointConfigParser for consistent path resolution
+        EndpointConfigParser parser(yaml_parser, this);
+        auto parse_result = parser.parseFromFile(config_file);
+        
+        if (!parse_result.success) {
+            // Check if it's just not an endpoint file (vs a real error)
+            if (parse_result.error_message.find("Not a valid endpoint configuration") != std::string::npos) {
             CROW_LOG_DEBUG << "\t\tSkipping non-endpoint configuration file: " << config_file;
             return; // Skip this file - it's likely a shared config or template
         }
-
-        // Parse REST endpoint specific fields (optional)
-        if (is_rest_endpoint) {
-            endpoint.urlPath = safeGet<std::string>(endpoint_config, "url-path", "url-path");
-            endpoint.method = safeGet<std::string>(endpoint_config, "method", "method", "GET");
-            endpoint.with_pagination = safeGet<bool>(endpoint_config, "with-pagination", "with-pagination", true);
-            endpoint.request_fields_validation = safeGet<bool>(endpoint_config, "request-fields-validation", "request-fields-validation", false);
-
-            CROW_LOG_DEBUG << "\t\tREST Endpoint: " << endpoint.method << " " << endpoint.urlPath;
-        }
-
-        // Parse MCP tool specific fields (optional)
-        if (is_mcp_tool) {
-            auto mcp_tool_node = endpoint_config["mcp-tool"];
-            EndpointConfig::MCPToolInfo tool_info;
-            tool_info.name = safeGet<std::string>(mcp_tool_node, "name", "mcp-tool.name");
-            tool_info.description = safeGet<std::string>(mcp_tool_node, "description", "mcp-tool.description");
-            tool_info.result_mime_type = safeGet<std::string>(mcp_tool_node, "result_mime_type", "mcp-tool.result_mime_type", "application/json");
-            endpoint.mcp_tool = tool_info;
-
-            CROW_LOG_DEBUG << "\t\tMCP Tool: " << tool_info.name;
-        }
-
-        // Parse MCP resource specific fields (optional)
-        if (is_mcp_resource) {
-            auto mcp_resource_node = endpoint_config["mcp-resource"];
-            EndpointConfig::MCPResourceInfo resource_info;
-            resource_info.name = safeGet<std::string>(mcp_resource_node, "name", "mcp-resource.name");
-            resource_info.description = safeGet<std::string>(mcp_resource_node, "description", "mcp-resource.description");
-            resource_info.mime_type = safeGet<std::string>(mcp_resource_node, "mime_type", "mcp-resource.mime_type", "application/json");
-            endpoint.mcp_resource = resource_info;
-
-            CROW_LOG_DEBUG << "\t\tMCP Resource: " << resource_info.name;
-        }
-
-        // Parse MCP prompt specific fields (optional)
-        if (is_mcp_prompt) {
-            auto mcp_prompt_node = endpoint_config["mcp-prompt"];
-            EndpointConfig::MCPPromptInfo prompt_info;
-            prompt_info.name = safeGet<std::string>(mcp_prompt_node, "name", "mcp-prompt.name");
-            prompt_info.description = safeGet<std::string>(mcp_prompt_node, "description", "mcp-prompt.description");
-
-            // Parse template content
-            if (mcp_prompt_node["template"]) {
-                prompt_info.template_content = mcp_prompt_node["template"].as<std::string>();
-            } else {
-                throw std::runtime_error("MCP prompt must have a 'template' field");
+            std::string error_msg = "Parsing failed (no error message provided)";
+            if (!parse_result.error_message.empty()) {
+                error_msg = parse_result.error_message;
             }
-
-            // Parse arguments (optional)
-            if (mcp_prompt_node["arguments"]) {
-                for (const auto& arg : mcp_prompt_node["arguments"]) {
-                    prompt_info.arguments.push_back(arg.as<std::string>());
-                }
-            }
-
-            endpoint.mcp_prompt = prompt_info;
-
-            CROW_LOG_DEBUG << "\t\tMCP Prompt: " << prompt_info.name;
+            throw std::runtime_error(error_msg);
         }
-
-        // Parse common fields
-        // For MCP prompts, template content is embedded in the config, not in a separate file
-        if (!is_mcp_prompt) {
-            endpoint.templateSource = (endpoint_dir / safeGet<std::string>(endpoint_config, "template-source", "template-source")).string();
-            CROW_LOG_DEBUG << "\t\tTemplate Source: " << endpoint.templateSource;
-        } else {
-            // For MCP prompts, template content is already parsed above
+        
+        const auto& endpoint = parse_result.config;
+        
+        // Log parsed endpoint details
+        CROW_LOG_DEBUG << "\t\t" << endpoint.getShortDescription();
+        
+        if (endpoint.isMCPPrompt()) {
             CROW_LOG_DEBUG << "\t\tTemplate Content: embedded in config";
+            } else {
+            CROW_LOG_DEBUG << "\t\tTemplate Source: " << endpoint.templateSource;
         }
-
-        parseEndpointRequestFields(endpoint_config, endpoint);
-        parseEndpointConnection(endpoint_config, endpoint);
-        parseEndpointRateLimit(endpoint_config, endpoint);
-        parseEndpointAuth(endpoint_config, endpoint);
-        parseEndpointCache(endpoint_config, endpoint_dir, endpoint);
-        parseEndpointHeartbeat(endpoint_config, endpoint);
-
+        
+        // Add to endpoints list
         endpoints.push_back(endpoint);
 
         // Log configuration summary
-        std::string config_summary = "\t\tConfiguration loaded: ";
-        if (endpoint.isRESTEndpoint()) config_summary += "REST(" + endpoint.urlPath + ") ";
-        if (endpoint.isMCPTool()) config_summary += "MCP-Tool(" + endpoint.mcp_tool->name + ") ";
-        if (endpoint.isMCPResource()) config_summary += "MCP-Resource(" + endpoint.mcp_resource->name + ") ";
-        if (endpoint.isMCPPrompt()) config_summary += "MCP-Prompt(" + endpoint.mcp_prompt->name + ") ";
-        CROW_LOG_DEBUG << config_summary;
+        CROW_LOG_DEBUG << "\t\tConfiguration loaded: " << endpoint.getShortDescription();
+        
     } catch (const std::exception& e) {
-        throw std::runtime_error("Error loading endpoint config from file: " + config_file + ", Error: " + std::string(e.what()));
+        std::string what_msg = e.what();
+        if (what_msg.empty()) {
+            what_msg = "(empty exception message)";
+        }
+        throw std::runtime_error("Error loading endpoint config from file: " + config_file + ", Error: " + what_msg);
     }
 }
 
@@ -573,11 +516,35 @@ void ConfigManager::parseEndpointCache(const YAML::Node& endpoint_config, const 
     }
 
     if (cache_node["template_file"]) {
-        endpoint.cache.template_file = safeGet<std::string>(cache_node, "template_file", "cache.template_file");
+        std::string template_file_value = safeGet<std::string>(cache_node, "template_file", "cache.template_file");
+        std::filesystem::path template_file_path(template_file_value);
+        
+        // If absolute path, keep as-is; otherwise resolve relative to endpoint_dir
+        if (template_file_path.is_absolute()) {
+            endpoint.cache.template_file = template_file_value;
+        } else {
+            endpoint.cache.template_file = (endpoint_dir / template_file_path).string();
+        }
     } else if (cache_node["template-file"]) {
-        endpoint.cache.template_file = safeGet<std::string>(cache_node, "template-file", "cache.template-file");
+        std::string template_file_value = safeGet<std::string>(cache_node, "template-file", "cache.template-file");
+        std::filesystem::path template_file_path(template_file_value);
+        
+        // If absolute path, keep as-is; otherwise resolve relative to endpoint_dir
+        if (template_file_path.is_absolute()) {
+            endpoint.cache.template_file = template_file_value;
+        } else {
+            endpoint.cache.template_file = (endpoint_dir / template_file_path).string();
+        }
     } else if (cache_node["templateFile"]) {
-        endpoint.cache.template_file = safeGet<std::string>(cache_node, "templateFile", "cache.templateFile");
+        std::string template_file_value = safeGet<std::string>(cache_node, "templateFile", "cache.templateFile");
+        std::filesystem::path template_file_path(template_file_value);
+        
+        // If absolute path, keep as-is; otherwise resolve relative to endpoint_dir
+        if (template_file_path.is_absolute()) {
+            endpoint.cache.template_file = template_file_value;
+        } else {
+            endpoint.cache.template_file = (endpoint_dir / template_file_path).string();
+        }
     }
 
     CROW_LOG_DEBUG << "\t\tCache Enabled: " << (endpoint.cache.enabled ? "true" : "false");
@@ -864,6 +831,7 @@ std::string ConfigManager::getServerName() const { return server_name; }
 int ConfigManager::getHttpPort() const { return http_port; }
 void ConfigManager::setHttpPort(int port) { http_port = port; }
 std::string ConfigManager::getTemplatePath() const { return template_config.path; }
+std::filesystem::path ConfigManager::getFullTemplatePath() const { return std::filesystem::path(base_path) / template_config.path; }
 std::string ConfigManager::getCacheSchema() const { return cache_schema; }
 const std::unordered_map<std::string, ConnectionConfig>& ConfigManager::getConnections() const { return connections; }
 const RateLimitConfig& ConfigManager::getRateLimitConfig() const { return rate_limit_config; }
@@ -875,12 +843,12 @@ std::string ConfigManager::getBasePath() const { return base_path.string(); }
 // JSON configuration methods
 crow::json::wvalue ConfigManager::getFlapiConfig() const {
     crow::json::wvalue result;
-
+    
     // Manually construct the JSON object from the YAML data
     result["name"] = project_name;
     result["description"] = project_description;
     result["template-path"] = template_config.path;
-
+    
     // Add connections
     crow::json::wvalue connectionsJson;
     for (const auto& [name, conn] : connections) {
@@ -944,10 +912,10 @@ crow::json::wvalue ConfigManager::getFlapiConfig() const {
     }
 
     result["ducklake"] = std::move(ducklakeJson);
-
+    
     // Add other configurations
     result["auth"]["enabled"] = auth_enabled;
-
+    
     return result;
 }
 
@@ -1265,25 +1233,7 @@ bool ConfigManager::removeEndpointByPath(const std::string& path) {
     auto before = endpoints.size();
     endpoints.erase(
         std::remove_if(endpoints.begin(), endpoints.end(), [&](const EndpointConfig& endpoint) {
-            if (endpoint.isRESTEndpoint()) {
-                std::vector<std::string> param_names;
-                std::map<std::string, std::string> path_params;
-                if (RouteTranslator::matchAndExtractParams(endpoint.urlPath, path, param_names, path_params)) {
-                    return true;
-                }
-            }
-
-            if (endpoint.isMCPTool() && endpoint.mcp_tool->name == path) {
-                return true;
-            }
-            if (endpoint.isMCPResource() && endpoint.mcp_resource->name == path) {
-                return true;
-            }
-            if (endpoint.isMCPPrompt() && endpoint.mcp_prompt->name == path) {
-                return true;
-            }
-
-            return false;
+            return endpoint.matchesPath(path);
         }),
         endpoints.end());
     return before != endpoints.size();
@@ -1291,19 +1241,7 @@ bool ConfigManager::removeEndpointByPath(const std::string& path) {
 
 bool ConfigManager::replaceEndpoint(const EndpointConfig& endpoint) {
     for (auto& candidate : endpoints) {
-        if (endpoint.isRESTEndpoint() && candidate.isRESTEndpoint() && candidate.urlPath == endpoint.urlPath) {
-            candidate = endpoint;
-            return true;
-        }
-        if (endpoint.isMCPTool() && candidate.isMCPTool() && candidate.mcp_tool->name == endpoint.mcp_tool->name) {
-            candidate = endpoint;
-            return true;
-        }
-        if (endpoint.isMCPResource() && candidate.isMCPResource() && candidate.mcp_resource->name == endpoint.mcp_resource->name) {
-            candidate = endpoint;
-            return true;
-        }
-        if (endpoint.isMCPPrompt() && candidate.isMCPPrompt() && candidate.mcp_prompt->name == endpoint.mcp_prompt->name) {
+        if (endpoint.isSameEndpoint(candidate)) {
             candidate = endpoint;
             return true;
         }
@@ -1313,10 +1251,7 @@ bool ConfigManager::replaceEndpoint(const EndpointConfig& endpoint) {
 
 const EndpointConfig* ConfigManager::getEndpointForPath(const std::string& path) const {
     for (const auto& endpoint : endpoints) {
-        std::vector<std::string> paramNames;
-        std::map<std::string, std::string> pathParams;
-        
-        if (RouteTranslator::matchAndExtractParams(endpoint.urlPath, path, paramNames, pathParams)) {
+        if (endpoint.matchesPath(path)) {
             return &endpoint;
         }
     }
@@ -1324,6 +1259,392 @@ const EndpointConfig* ConfigManager::getEndpointForPath(const std::string& path)
 }
 
 
+
+// YAML Serialization
+std::string ConfigManager::serializeEndpointConfigToYaml(const EndpointConfig& config) const {
+    YAML::Emitter out;
+    out << YAML::BeginMap;
+    
+    // REST endpoint fields
+    if (config.isRESTEndpoint()) {
+        out << YAML::Key << "url-path" << YAML::Value << config.urlPath;
+        out << YAML::Key << "method" << YAML::Value << config.method;
+    }
+    
+    // MCP Tool fields
+    if (config.isMCPTool()) {
+        out << YAML::Key << "mcp-tool" << YAML::Value << YAML::BeginMap;
+        out << YAML::Key << "name" << YAML::Value << config.mcp_tool->name;
+        if (!config.mcp_tool->description.empty()) {
+            out << YAML::Key << "description" << YAML::Value << config.mcp_tool->description;
+        }
+        if (!config.mcp_tool->result_mime_type.empty()) {
+            out << YAML::Key << "result-mime-type" << YAML::Value << config.mcp_tool->result_mime_type;
+        }
+        out << YAML::EndMap;
+    }
+    
+    // MCP Resource fields
+    if (config.isMCPResource()) {
+        out << YAML::Key << "mcp-resource" << YAML::Value << YAML::BeginMap;
+        out << YAML::Key << "name" << YAML::Value << config.mcp_resource->name;
+        if (!config.mcp_resource->description.empty()) {
+            out << YAML::Key << "description" << YAML::Value << config.mcp_resource->description;
+        }
+        if (!config.mcp_resource->mime_type.empty()) {
+            out << YAML::Key << "mime-type" << YAML::Value << config.mcp_resource->mime_type;
+        }
+        out << YAML::EndMap;
+    }
+    
+    // MCP Prompt fields
+    if (config.isMCPPrompt()) {
+        out << YAML::Key << "mcp-prompt" << YAML::Value << YAML::BeginMap;
+        out << YAML::Key << "name" << YAML::Value << config.mcp_prompt->name;
+        if (!config.mcp_prompt->description.empty()) {
+            out << YAML::Key << "description" << YAML::Value << config.mcp_prompt->description;
+        }
+        out << YAML::EndMap;
+    }
+    
+    // Common fields
+    out << YAML::Key << "template-source" << YAML::Value << config.templateSource;
+    
+    if (!config.connection.empty()) {
+        out << YAML::Key << "connection" << YAML::Value << YAML::BeginSeq;
+        for (const auto& conn : config.connection) {
+            out << conn;
+        }
+        out << YAML::EndSeq;
+    }
+    
+    // Request fields
+    if (!config.request_fields.empty()) {
+        out << YAML::Key << "request" << YAML::Value << YAML::BeginSeq;
+        for (const auto& field : config.request_fields) {
+            out << YAML::BeginMap;
+            out << YAML::Key << "field-name" << YAML::Value << field.fieldName;
+            out << YAML::Key << "field-in" << YAML::Value << field.fieldIn;
+            if (!field.description.empty()) {
+                out << YAML::Key << "description" << YAML::Value << field.description;
+            }
+            out << YAML::Key << "required" << YAML::Value << field.required;
+            out << YAML::EndMap;
+        }
+        out << YAML::EndSeq;
+    }
+    
+    // Auth configuration
+    if (config.auth.enabled) {
+        out << YAML::Key << "auth" << YAML::Value << YAML::BeginMap;
+        out << YAML::Key << "enabled" << YAML::Value << true;
+        out << YAML::Key << "type" << YAML::Value << config.auth.type;
+        out << YAML::EndMap;
+    }
+    
+    // Cache configuration
+    if (config.cache.enabled) {
+        out << YAML::Key << "cache" << YAML::Value << YAML::BeginMap;
+        out << YAML::Key << "enabled" << YAML::Value << true;
+        out << YAML::Key << "table" << YAML::Value << config.cache.table;
+        out << YAML::Key << "schema" << YAML::Value << config.cache.schema;
+        if (config.cache.template_file) {
+            out << YAML::Key << "template_file" << YAML::Value << config.cache.template_file.value();
+        }
+        out << YAML::EndMap;
+    }
+    
+    out << YAML::EndMap;
+    return out.c_str();
+}
+
+// YAML Deserialization
+EndpointConfig ConfigManager::deserializeEndpointConfigFromYaml(const std::string& yaml_content) const {
+    YAML::Node node = YAML::Load(yaml_content);
+    
+    EndpointConfig config;
+    
+    // Parse using existing loadEndpointConfig logic
+    // Reuse the parsing code from loadEndpointConfig
+    bool is_rest_endpoint = node["url-path"].IsDefined();
+    bool is_mcp_tool = node["mcp-tool"].IsDefined();
+    bool is_mcp_resource = node["mcp-resource"].IsDefined();
+    bool is_mcp_prompt = node["mcp-prompt"].IsDefined();
+    
+    if (!is_rest_endpoint && !is_mcp_tool && !is_mcp_resource && !is_mcp_prompt) {
+        throw std::runtime_error("Invalid endpoint configuration: must define url-path, mcp-tool, mcp-resource, or mcp-prompt");
+    }
+    
+    // Parse REST endpoint
+    if (is_rest_endpoint) {
+        config.urlPath = node["url-path"].as<std::string>();
+        config.method = node["method"] ? node["method"].as<std::string>() : "GET";
+    }
+    
+    // Parse MCP Tool
+    if (is_mcp_tool) {
+        EndpointConfig::MCPToolInfo tool;
+        tool.name = node["mcp-tool"]["name"].as<std::string>();
+        tool.description = node["mcp-tool"]["description"] ? node["mcp-tool"]["description"].as<std::string>() : "";
+        tool.result_mime_type = node["mcp-tool"]["result-mime-type"] ? node["mcp-tool"]["result-mime-type"].as<std::string>() : "application/json";
+        config.mcp_tool = tool;
+    }
+    
+    // Parse MCP Resource
+    if (is_mcp_resource) {
+        EndpointConfig::MCPResourceInfo resource;
+        resource.name = node["mcp-resource"]["name"].as<std::string>();
+        resource.description = node["mcp-resource"]["description"] ? node["mcp-resource"]["description"].as<std::string>() : "";
+        resource.mime_type = node["mcp-resource"]["mime-type"] ? node["mcp-resource"]["mime-type"].as<std::string>() : "text/plain";
+        config.mcp_resource = resource;
+    }
+    
+    // Parse MCP Prompt
+    if (is_mcp_prompt) {
+        EndpointConfig::MCPPromptInfo mcp_prompt_config;
+        mcp_prompt_config.name = node["mcp-prompt"]["name"].as<std::string>();
+        mcp_prompt_config.description = node["mcp-prompt"]["description"] ? node["mcp-prompt"]["description"].as<std::string>() : "";
+        config.mcp_prompt = mcp_prompt_config;
+    }
+    
+    // Common fields
+    config.templateSource = node["template-source"].as<std::string>();
+    
+    if (node["connection"]) {
+        for (const auto& conn : node["connection"]) {
+            config.connection.push_back(conn.as<std::string>());
+        }
+    }
+    
+    // Parse cache config
+    if (node["cache"] && node["cache"]["enabled"].as<bool>(false)) {
+        config.cache.enabled = true;
+        config.cache.table = node["cache"]["table"].as<std::string>();
+        config.cache.schema = node["cache"]["schema"].as<std::string>("cache");
+        if (node["cache"]["template_file"]) {
+            config.cache.template_file = node["cache"]["template_file"].as<std::string>();
+        }
+    }
+    
+    return config;
+}
+
+// Validation
+ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const EndpointConfig& config) const {
+    ValidationResult result;
+    result.valid = true;
+    
+    // Use endpoint's self-validation for type-specific checks
+    auto self_errors = config.validateSelf();
+    if (!self_errors.empty()) {
+        result.valid = false;
+        result.errors.insert(result.errors.end(), self_errors.begin(), self_errors.end());
+    }
+    
+    // Validate template source
+    if (config.templateSource.empty()) {
+        result.valid = false;
+        result.errors.emplace_back("template-source cannot be empty");
+    } else {
+        // Check if template file exists
+        // Note: config.templateSource is already resolved relative to YAML file directory during parsing
+        std::filesystem::path template_path(config.templateSource);
+        
+        // If path is not absolute, prepend template_config.path
+        if (!template_path.is_absolute()) {
+            template_path = std::filesystem::path(template_config.path) / template_path;
+        }
+        
+        if (!std::filesystem::exists(template_path)) {
+            result.warnings.emplace_back("Template file does not exist: " + template_path.string());
+        }
+    }
+    
+    // Validate connections
+    if (config.connection.empty()) {
+        result.warnings.emplace_back("No database connection specified");
+    } else {
+        for (const auto& conn_name : config.connection) {
+            if (connections.find(conn_name) == connections.end()) {
+                result.valid = false;
+                result.errors.emplace_back("Connection '" + conn_name + "' not found in configuration");
+            }
+        }
+    }
+    
+    // Validate cache template if specified
+    if (config.cache.enabled && config.cache.template_file) {
+        // Note: config.cache.template_file is already resolved relative to YAML file directory during parsing
+        std::filesystem::path cache_template_path(config.cache.template_file.value());
+        
+        // If path is not absolute, prepend template_config.path
+        if (!cache_template_path.is_absolute()) {
+            cache_template_path = std::filesystem::path(template_config.path) / cache_template_path;
+        }
+        
+        if (!std::filesystem::exists(cache_template_path)) {
+            result.warnings.emplace_back("Cache template file does not exist: " + cache_template_path.string());
+        }
+    }
+    
+    return result;
+}
+
+// Persistence
+void ConfigManager::persistEndpointConfigToFile(const EndpointConfig& config, const std::filesystem::path& file_path) const {
+    std::string yaml_content = serializeEndpointConfigToYaml(config);
+    
+    // Ensure parent directory exists
+    if (file_path.has_parent_path()) {
+        std::filesystem::create_directories(file_path.parent_path());
+    }
+    
+    // Write to file
+    std::ofstream file(file_path);
+    if (!file.is_open()) {
+        throw std::runtime_error("Failed to open file for writing: " + file_path.string());
+    }
+    
+    file << yaml_content;
+    if (!file.good()) {
+        throw std::runtime_error("Failed to write to file: " + file_path.string());
+    }
+    
+    CROW_LOG_INFO << "Persisted endpoint configuration to: " << file_path;
+}
+
+// Validate from YAML string (does not modify files)
+ConfigManager::ValidationResult ConfigManager::validateEndpointConfigFromYaml(const std::string& yaml_content) const {
+    try {
+        EndpointConfig config = deserializeEndpointConfigFromYaml(yaml_content);
+        return validateEndpointConfig(config);
+    } catch (const std::exception& e) {
+        ValidationResult result;
+        result.valid = false;
+        result.errors.emplace_back(std::string("YAML parsing error: ") + e.what());
+        return result;
+    }
+}
+
+// Validate from file (reads but does not modify)
+ConfigManager::ValidationResult ConfigManager::validateEndpointConfigFile(const std::filesystem::path& file_path) const {
+    ValidationResult result;
+    
+    // Check if file exists
+    if (!std::filesystem::exists(file_path)) {
+        result.valid = false;
+        result.errors.emplace_back("File does not exist: " + file_path.string());
+        return result;
+    }
+    
+    try {
+        // Use EndpointConfigParser for consistent path resolution
+        // Note: We const_cast here because parsing doesn't logically modify ConfigManager state
+        auto* mutable_this = const_cast<ConfigManager*>(this);
+        EndpointConfigParser parser(mutable_this->yaml_parser, mutable_this);
+        auto parse_result = parser.parseFromFile(file_path);
+        
+        if (!parse_result.success) {
+            result.valid = false;
+            result.errors.emplace_back(parse_result.error_message);
+            return result;
+        }
+        
+        // Now validate the properly resolved configuration
+        return validateEndpointConfig(parse_result.config);
+        
+    } catch (const std::exception& e) {
+        result.valid = false;
+        result.errors.emplace_back(std::string("Validation error: ") + e.what());
+        return result;
+    }
+}
+
+// Reload endpoint from disk (after external edit)
+// Note: This method modifies the endpoints vector. Ensure proper synchronization if called from multiple threads.
+bool ConfigManager::reloadEndpointConfig(const std::string& slug_or_path) {
+    // Try to find existing endpoint by URL path or MCP name
+    auto it = std::find_if(endpoints.begin(), endpoints.end(), [&](const EndpointConfig& ep) {
+        return ep.getName() == slug_or_path || ep.matchesPath(slug_or_path);
+    });
+    
+    if (it == endpoints.end()) {
+        CROW_LOG_WARNING << "Endpoint not found for reload: " << slug_or_path;
+        return false;
+    }
+    
+    // Get the YAML configuration file path
+    std::filesystem::path yaml_file;
+    if (!it->config_file_path.empty()) {
+        // Use the stored config file path (set during initial load by EndpointConfigParser)
+        yaml_file = it->config_file_path;
+    } else {
+        // Fallback for endpoints loaded before the refactoring (derive from templateSource)
+        yaml_file = std::filesystem::path(template_config.path) / it->templateSource;
+        
+        // If templateSource is a .sql file, look for the corresponding .yaml file
+        if (yaml_file.extension() == ".sql") {
+            auto yaml_candidate = yaml_file;
+            yaml_candidate.replace_extension(".yaml");
+            if (std::filesystem::exists(yaml_candidate)) {
+                yaml_file = yaml_candidate;
+            } else {
+                yaml_candidate = yaml_file;
+                yaml_candidate.replace_extension(".yml");
+                if (std::filesystem::exists(yaml_candidate)) {
+                    yaml_file = yaml_candidate;
+                } else {
+                    // Neither .yaml nor .yml exists, default to .yaml
+                    yaml_file.replace_extension(".yaml");
+                }
+            }
+        }
+    }
+    
+    if (!std::filesystem::exists(yaml_file)) {
+        CROW_LOG_ERROR << "YAML file not found for reload: " << yaml_file;
+        return false;
+    }
+    
+    // Validate the file first
+    ValidationResult validation = validateEndpointConfigFile(yaml_file);
+    if (!validation.valid) {
+        CROW_LOG_ERROR << "Validation failed for " << yaml_file << ":";
+        for (const auto& error : validation.errors) {
+            CROW_LOG_ERROR << "  - " << error;
+        }
+        return false;
+    }
+    
+    try {
+        // Use EndpointConfigParser for consistent path resolution
+        EndpointConfigParser parser(yaml_parser, this);
+        auto parse_result = parser.parseFromFile(yaml_file);
+        
+        if (!parse_result.success) {
+            CROW_LOG_ERROR << "Failed to parse endpoint config: " << parse_result.error_message;
+            return false;
+        }
+        
+        // Replace the existing endpoint with the reloaded configuration
+        *it = parse_result.config;
+        
+        CROW_LOG_INFO << "Reloaded endpoint configuration from: " << yaml_file;
+        
+        // Log warnings if any (from both validation and parsing)
+        for (const auto& warning : validation.warnings) {
+            CROW_LOG_WARNING << "  - " << warning;
+        }
+        for (const auto& warning : parse_result.warnings) {
+            CROW_LOG_WARNING << "  - " << warning;
+        }
+        
+        return true;
+    } catch (const std::exception& e) {
+        CROW_LOG_ERROR << "Failed to reload endpoint: " << e.what();
+        return false;
+    }
+}
 
 // Template method implementations
 template<typename T>
@@ -1342,5 +1663,10 @@ T ConfigManager::getValueOrThrow(const YAML::Node& node, const std::string& key,
 template std::string ConfigManager::getValueOrThrow<std::string>(const YAML::Node& node, const std::string& key, const std::string& yamlPath) const;
 template bool ConfigManager::getValueOrThrow<bool>(const YAML::Node& node, const std::string& key, const std::string& yamlPath) const;
 template int ConfigManager::getValueOrThrow<int>(const YAML::Node& node, const std::string& key, const std::string& yamlPath) const;
+
+// Explicit template instantiations for safeGet (required by EndpointConfigParser)
+template std::string ConfigManager::safeGet<std::string>(const YAML::Node& node, const std::string& key, const std::string& path) const;
+template std::string ConfigManager::safeGet<std::string>(const YAML::Node& node, const std::string& key, const std::string& path, const std::string& defaultValue) const;
+template bool ConfigManager::safeGet<bool>(const YAML::Node& node, const std::string& key, const std::string& path, const bool& defaultValue) const;
 
 } // namespace flapi

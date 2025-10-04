@@ -4,8 +4,15 @@ add_executable(flapi_tests
     main.cpp
     auth_middleware_test.cpp
     config_manager_test.cpp
+    config_manager_yaml_validation_test.cpp
+    config_manager_path_resolution_test.cpp
     config_service_test.cpp
+    config_service_filesystem_test.cpp
+    config_service_parameters_test.cpp
+    config_service_slug_test.cpp
+    config_service_template_lookup_test.cpp
     database_manager_test.cpp
+    endpoint_config_parser_test.cpp
     extended_yaml_parser_test.cpp
     query_executor_test.cpp
     request_validator_test.cpp
