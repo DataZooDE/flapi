@@ -24,7 +24,7 @@ The easiest way to get started with flAPI is to use the pre-built docker image.
 ```
 
 
-The image is pretty small and mainly contains the flAPI binary which is statically linked against [DuckDB v1.1.3](https://github.com/duckdb/duckdb/releases/tag/v1.1.3). Details about the docker image can be found in the [Dockerfile](./docker/development/Dockerfile).
+The image is pretty small and mainly contains the flAPI binary which is statically linked against [DuckDB v1.4.1](https://github.com/duckdb/duckdb/releases/tag/v1.4.1). Details about the docker image can be found in the [Dockerfile](./docker/development/Dockerfile).
 
 #### 2. Run flAPI:
 Once you have downloaded the binary, you can run flAPI by executing the following command:
