@@ -45,6 +45,13 @@ jobs:
           mingw-w64-x86_64-make
           mingw-w64-x86_64-ninja
 
+    - name: Install vcpkg
+      shell: powershell
+      run: |
+        git clone https://github.com/Microsoft/vcpkg.git
+        cd vcpkg
+        .\bootstrap-vcpkg.bat -disableMetrics
+
     - name: Setup Ccache
       uses: hendrikmuhs/ccache-action@main
       with:
@@ -173,6 +180,8 @@ jobs:
   # -------------------------------------------------------------------------------------------------
   osx-universal-build:
     runs-on: macos-latest
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
     steps:
     - uses: actions/checkout@v4
       with:
@@ -187,13 +196,20 @@ jobs:
       shell: bash
       run: brew install ninja autoconf make libtool pkg-config automake autoconf-archive
 
+    - name: Install vcpkg
+      shell: bash
+      run: |
+        git clone https://github.com/Microsoft/vcpkg.git
+        cd vcpkg
+        ./bootstrap-vcpkg.sh -disableMetrics
+
     - name: Build
-      run: make release && make test
+      run: make release-arm64 && make test
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: flapi-macos-universal
-        path: build/universal/flapi
+        name: flapi-macos-arm64
+        path: build/release-arm64/flapi
         if-no-files-found: error
         retention-days: 90
