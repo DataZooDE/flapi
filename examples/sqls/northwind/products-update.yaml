@@ -1,0 +1,104 @@
+# Northwind Products Update Endpoint (PUT)
+# Updates an existing product in the Northwind database
+
+url-path: /northwind/products/:product_id
+method: PUT
+
+# Operation configuration
+operation:
+  type: write
+  returns-data: true          # Return the updated record
+  transaction: true
+  validate-before-write: true
+
+# Request parameters
+request:
+  - field-name: product_id
+    field-in: path
+    description: Product ID to update
+    required: true
+    validators:
+      - type: int
+        min: 1
+        preventSqlInjection: true
+
+  - field-name: product_name
+    field-in: body
+    description: Product name
+    required: false
+    validators:
+      - type: string
+        min: 1
+        max: 100
+        preventSqlInjection: true
+
+  - field-name: supplier_id
+    field-in: body
+    description: Supplier ID
+    required: false
+    validators:
+      - type: int
+        min: 1
+
+  - field-name: category_id
+    field-in: body
+    description: Category ID
+    required: false
+    validators:
+      - type: int
+        min: 1
+
+  - field-name: quantity_per_unit
+    field-in: body
+    description: Quantity per unit (e.g., "24 - 12 oz bottles")
+    required: false
+    validators:
+      - type: string
+        max: 50
+        preventSqlInjection: true
+
+  - field-name: unit_price
+    field-in: body
+    description: Unit price
+    required: false
+    validators:
+      - type: string
+        regex: '^\d+(\.\d{1,2})?$'
+
+  - field-name: units_in_stock
+    field-in: body
+    description: Units in stock
+    required: false
+    validators:
+      - type: int
+        min: 0
+
+  - field-name: units_on_order
+    field-in: body
+    description: Units on order
+    required: false
+    validators:
+      - type: int
+        min: 0
+
+  - field-name: reorder_level
+    field-in: body
+    description: Reorder level
+    required: false
+    validators:
+      - type: int
+        min: 0
+
+  - field-name: discontinued
+    field-in: body
+    description: Discontinued status (0 = active, 1 = discontinued)
+    required: false
+    validators:
+      - type: int
+        min: 0
+        max: 1
+
+template-source: products-update.sql
+connection:
+  - northwind-sqlite
+

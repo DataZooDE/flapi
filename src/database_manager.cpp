@@ -1,5 +1,7 @@
 #include <stdexcept>
 #include <cstdio>
+#include <sstream>
+#include <algorithm>
 #include "crow/json.h"
 #include <yaml-cpp/yaml.h>
 
@@ -310,8 +312,12 @@ QueryResult DatabaseManager::executeQuery(const std::string& query,
     // Handle pagination parameters
     if (with_pagination && (params.find("limit") != params.end() || params.find("offset") != params.end())) {
         hasPagination = true;
-        limit = std::stoll(params.find("limit")->second);
-        offset = std::stoll(params.find("offset")->second);
+        if (params.find("limit") != params.end()) {
+            limit = std::stoll(params.find("limit")->second);
+        }
+        if (params.find("offset") != params.end()) {
+            offset = std::stoll(params.find("offset")->second);
+        }
         paginatedQuery = "SELECT * FROM (" + paginatedQuery + ") AS subquery " 
                         "LIMIT " + std::to_string(limit) + 
                         " OFFSET " + std::to_string(offset);
@@ -344,6 +350,140 @@ QueryResult DatabaseManager::executeQuery(const std::string& query,
             }
             result.next = next_ss.str();
         }
+    }
+    
+    return result;
+}
+
+WriteResult DatabaseManager::executeWrite(const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
+    auto executor = createQueryExecutor();
+    return executeWrite(executor, endpoint, params);
+}
+
+WriteResult DatabaseManager::executeWrite(QueryExecutor& executor, const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
+    WriteResult result;
+    
+    // Process SQL template (reuse existing template processor)
+    std::string processedQuery = processTemplate(endpoint, params);
+    
+    // Helper function to trim whitespace
+    auto trim = [](const std::string& str) -> std::string {
+        size_t first = str.find_first_not_of(" \t\n\r");
+        if (first == std::string::npos) return "";
+        size_t last = str.find_last_not_of(" \t\n\r");
+        return str.substr(first, (last - first + 1));
+    };
+    
+    // Helper function to check if a string starts with another (case-insensitive)
+    auto startsWith = [](const std::string& str, const std::string& prefix) -> bool {
+        if (str.length() < prefix.length()) return false;
+        std::string strLower = str;
+        std::string prefixLower = prefix;
+        std::transform(strLower.begin(), strLower.end(), strLower.begin(), ::tolower);
+        std::transform(prefixLower.begin(), prefixLower.end(), prefixLower.begin(), ::tolower);
+        return strLower.compare(0, prefixLower.length(), prefixLower) == 0;
+    };
+    
+    // Split query by semicolons to support multiple statements
+    std::vector<std::string> statements;
+    std::istringstream queryStream(processedQuery);
+    std::string statement;
+    
+    while (std::getline(queryStream, statement, ';')) {
+        std::string trimmed = trim(statement);
+        if (!trimmed.empty()) {
+            statements.push_back(trimmed);
+        }
+    }
+    
+    // If no statements found (shouldn't happen), treat entire query as single statement
+    if (statements.empty()) {
+        statements.push_back(trim(processedQuery));
+    }
+    
+    bool hasReturningData = false;
+    
+    // Execute all statements except potentially the last one
+    // The last statement might be a SELECT if returns-data is true and no RETURNING clause worked
+    size_t statementsToExecute = statements.size();
+    bool lastStatementIsSelect = false;
+    
+    if (statements.size() > 1 && endpoint.operation.returns_data) {
+        // Check if last statement is a SELECT
+        std::string lastStatement = trim(statements.back());
+        lastStatementIsSelect = startsWith(lastStatement, "SELECT");
+        
+        if (lastStatementIsSelect) {
+            // Execute all but the last statement first
+            statementsToExecute = statements.size() - 1;
+        }
+    }
+    
+    // Execute statements
+    for (size_t i = 0; i < statementsToExecute; ++i) {
+        executor.execute(statements[i], "write operation statement " + std::to_string(i + 1));
+        
+        // Track rows affected from the last write statement (INSERT/UPDATE/DELETE)
+        // For multi-statement queries, we want the total rows affected
+        int64_t currentRows = executor.rowCount();
+        if (currentRows > 0) {
+            result.rows_affected = currentRows;
+        }
+        
+        // Check if there's a RETURNING clause - if so, capture the returned data
+        // We detect RETURNING by:
+        // 1. Checking if the statement contains "RETURNING" (case-insensitive)
+        // 2. AND checking if there are columns AND rows in the result
+        std::string currentStatement = trim(statements[i]);
+        std::string upperStatement = currentStatement;
+        std::transform(upperStatement.begin(), upperStatement.end(), upperStatement.begin(), ::toupper);
+        bool hasReturningClause = upperStatement.find("RETURNING") != std::string::npos;
+        
+        if (hasReturningClause && executor.columnCount() > 0 && executor.rowCount() > 0) {
+            // There's a RETURNING clause with data
+            result.returned_data = executor.toJson();
+            hasReturningData = true;
+        }
+    }
+    
+    // If we need to return data but didn't get it from RETURNING clause,
+    // and the last statement is a SELECT, execute it and capture the result
+    if (endpoint.operation.returns_data && !hasReturningData && lastStatementIsSelect && statements.size() > 1) {
+        std::string selectStatement = trim(statements.back());
+        executor.execute(selectStatement, "select returning data");
+        
+        if (executor.columnCount() > 0 && executor.rowCount() > 0) {
+            result.returned_data = executor.toJson();
+        }
+    }
+    
+    return result;
+}
+
+WriteResult DatabaseManager::executeWriteInTransaction(const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
+    WriteResult result;
+    
+    auto executor = createQueryExecutor();
+    
+    try {
+        // Begin transaction
+        executor.execute("BEGIN TRANSACTION", "begin transaction");
+        
+        // Execute the write operation using the same executor (same connection)
+        result = executeWrite(executor, endpoint, params);
+        
+        // Commit transaction
+        executor.execute("COMMIT", "commit transaction");
+        
+    } catch (const std::exception& e) {
+        // Rollback on error
+        try {
+            executor.execute("ROLLBACK", "rollback transaction");
+        } catch (const std::exception& rollback_error) {
+            CROW_LOG_ERROR << "Failed to rollback transaction: " << rollback_error.what();
+        }
+        // Re-throw the original error
+        throw;
     }
     
     return result;

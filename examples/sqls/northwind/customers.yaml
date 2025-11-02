@@ -1,0 +1,55 @@
+# Northwind Customers Endpoint (Read-Only)
+# Provides read access to customer information from the Northwind database
+
+url-path: /northwind/customers/
+method: GET
+
+# Request parameters
+request:
+  - field-name: customer_id
+    field-in: query
+    description: Customer ID (e.g., "ALFKI")
+    required: false
+    validators:
+      - type: string
+        min: 1
+        max: 10
+        preventSqlInjection: true
+
+  - field-name: company_name
+    field-in: query
+    description: Filter by company name (partial match)
+    required: false
+    validators:
+      - type: string
+        min: 1
+        max: 100
+        preventSqlInjection: true
+
+  - field-name: country
+    field-in: query
+    description: Filter by country
+    required: false
+    validators:
+      - type: string
+        min: 1
+        max: 50
+        preventSqlInjection: true
+
+  - field-name: city
+    field-in: query
+    description: Filter by city
+    required: false
+    validators:
+      - type: string
+        min: 1
+        max: 50
+        preventSqlInjection: true
+
+template-source: customers.sql
+connection:
+  - northwind-sqlite
+
+# Pagination enabled
+with-pagination: true
+

@@ -16,9 +16,30 @@ beforeAll(async () => {
   // Generate a test config in the CLI integration folder
   const originalConfig = fs.readFileSync(path.resolve(projectRoot, 'examples', 'flapi.yaml'), 'utf-8');
   const testConfigPath = path.resolve(__dirname, 'test-flapi.yaml');
-  const testConfig = originalConfig
+  let testConfig = originalConfig
     .replace('db_path: ./flapi_cache.db', '# db_path: ./flapi_cache.db  # in-memory for tests')
     .replace("path: './sqls'", `path: '${path.resolve(projectRoot, 'examples', 'sqls')}'`);
+  
+  // Disable DuckLake for integration tests to avoid file path issues
+  // Replace ducklake enabled: true with enabled: false (must be directly under ducklake:)
+  testConfig = testConfig.replace(
+    /^(ducklake:\s*\n)\s+enabled:\s*true(\s*$|\s*#)/m,
+    '$1  enabled: false  # Disabled for integration tests$2'
+  );
+  
+  // Fix parquet file paths to be absolute (relative to project root)
+  const examplesDataDir = path.resolve(projectRoot, 'examples', 'data');
+  testConfig = testConfig.replace(
+    /path:\s*['"]\.\/data\/([^'"]+)['"]/g,
+    `path: '${examplesDataDir}/$1'`
+  );
+  
+  // Fix northwind.sqlite path
+  testConfig = testConfig.replace(
+    /ATTACH IF NOT EXISTS ['"]\.\/examples\/data\/(northwind\.(?:sqlite|db))['"]/g,
+    `ATTACH IF NOT EXISTS '${examplesDataDir}/$1'`
+  );
+  
   fs.writeFileSync(testConfigPath, testConfig);
 
   const port = await findFreePort();

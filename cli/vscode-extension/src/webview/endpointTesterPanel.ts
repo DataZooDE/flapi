@@ -210,6 +210,51 @@ export class EndpointTesterPanel {
     }, 100);
   }
 
+  private _getOperationInfoHtml(): string {
+    const operation = this._endpointConfig.operation || this._endpointConfig['operation'];
+    const method = this._endpointConfig.method || 'GET';
+    
+    // Determine operation type
+    let opType = 'Read';
+    let opDetails: string[] = [];
+    let showWarning = false;
+    
+    if (operation && typeof operation === 'object') {
+      const op = operation as Record<string, unknown>;
+      opType = op.type === 'write' ? 'Write' : 'Read';
+      
+      if (op.validate_before_write === true) {
+        opDetails.push('validate-before-write');
+        showWarning = true;
+      }
+      if (op.returns_data === true) {
+        opDetails.push('returns-data');
+      }
+      if (op.transaction === true) {
+        opDetails.push('transaction');
+      }
+    } else {
+      // Infer from HTTP method
+      if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method.toUpperCase())) {
+        opType = 'Write';
+      }
+    }
+    
+    let html = `<div>Operation: <code>${opType}</code>`;
+    if (opDetails.length > 0) {
+      html += ` <span style="color: var(--vscode-descriptionForeground); font-size: 0.9em;">(${opDetails.join(', ')})</span>`;
+    }
+    html += '</div>';
+    
+    if (showWarning) {
+      html += `<div style="margin-top: 4px; padding: 4px 8px; background: var(--vscode-inputValidation-warningBackground); border-radius: 3px; font-size: 0.85em; color: var(--vscode-warningForeground);">
+        ⚠️ Validation enabled: Unknown parameters will be rejected
+      </div>`;
+    }
+    
+    return html;
+  }
+
   private _getHtmlForWebview(webview: vscode.Webview): string {
     // Get the request fields from the config
     const requestFields: RequestFieldDefinition[] = this._getRequestFields();
@@ -235,6 +280,7 @@ export class EndpointTesterPanel {
             <div class="header-info">
                 <div>Endpoint: <code>${urlPath}</code></div>
                 <div>Method: <code>${method}</code></div>
+                ${this._getOperationInfoHtml()}
             </div>
         </div>
 
@@ -1698,8 +1744,39 @@ export class EndpointTesterPanel {
             }
           });
 
-          // Get body
-          const body = document.getElementById('requestBody').value;
+          // Get body and validate JSON
+          const bodyElement = document.getElementById('requestBody');
+          const body = bodyElement.value.trim();
+          let bodyJson = null;
+          
+          // Validate JSON body for write operations
+          if (body && ['POST', 'PUT', 'PATCH'].includes(method)) {
+            try {
+              bodyJson = JSON.parse(body);
+              // Clear any previous validation error
+              const bodyError = document.getElementById('bodyError');
+              if (bodyError) {
+                bodyError.style.display = 'none';
+                bodyError.textContent = '';
+              }
+            } catch (e) {
+              // Show JSON syntax error
+              const bodyError = document.getElementById('bodyError');
+              if (!bodyError) {
+                const errorDiv = document.createElement('div');
+                errorDiv.id = 'bodyError';
+                errorDiv.style.cssText = 'margin-top: 8px; padding: 8px; background: var(--vscode-inputValidation-errorBackground); color: var(--vscode-errorForeground); border-radius: 4px; font-size: 0.9em;';
+                bodyElement.parentElement.appendChild(errorDiv);
+              } else {
+                bodyError.style.display = 'block';
+              }
+              const errorMsg = e instanceof Error ? e.message : String(e);
+              document.getElementById('bodyError').textContent = '⚠️ Invalid JSON: ' + errorMsg;
+              
+              // Don't send request if JSON is invalid
+              return;
+            }
+          }
 
           // Get auth config
           const authConfig = getAuthConfig();
@@ -1752,13 +1829,21 @@ export class EndpointTesterPanel {
             // Not JSON
           }
 
-          // Update body with content-type aware rendering
-          renderResponseBody(response, parsedData);
+          // Detect write operation response (has rows_affected)
+          const isWriteOp = parsedData && ('rows_affected' in parsedData || 'returned_data' in parsedData || 'last_insert_id' in parsedData);
+          
+          if (isWriteOp) {
+            // Handle write operation response
+            renderWriteOperationResponse(response, parsedData);
+          } else {
+            // Handle read operation response (standard)
+            renderResponseBody(response, parsedData);
 
-          // Update table view if data is paginated
-          if (parsedData && parsedData.data && Array.isArray(parsedData.data)) {
-            renderTableView(parsedData.data);
-            updatePagination(parsedData);
+            // Update table view if data is paginated
+            if (parsedData && parsedData.data && Array.isArray(parsedData.data)) {
+              renderTableView(parsedData.data);
+              updatePagination(parsedData);
+            }
           }
 
           // Update headers tab
@@ -1843,6 +1928,62 @@ export class EndpointTesterPanel {
 
         let currentJsonData = null;
 
+        function renderWriteOperationResponse(response, parsedData) {
+          const jsonRenderer = document.getElementById('jsonRenderer');
+          
+          // Store for copy/expand/collapse
+          currentJsonData = parsedData;
+          
+          // Create write operation summary
+          const summaryDiv = document.createElement('div');
+          summaryDiv.className = 'write-operation-summary';
+          summaryDiv.style.cssText = 'background: var(--vscode-editor-inactiveSelectionBackground); padding: 12px; margin-bottom: 12px; border-radius: 4px; border-left: 3px solid var(--vscode-activityBarBadge-background);';
+          
+          let summaryHTML = '<div style="font-weight: bold; margin-bottom: 8px; color: var(--vscode-activityBarBadge-background);">📝 Write Operation Result</div>';
+          
+          if (parsedData.rows_affected !== undefined) {
+            summaryHTML += `<div style="margin: 4px 0;"><strong>Rows Affected:</strong> <span style="color: var(--vscode-textLink-foreground);">${parsedData.rows_affected}</span></div>`;
+          }
+          
+          if (parsedData.last_insert_id !== undefined) {
+            summaryHTML += `<div style="margin: 4px 0;"><strong>Last Insert ID:</strong> <span style="color: var(--vscode-textLink-foreground);">${parsedData.last_insert_id}</span></div>`;
+          }
+          
+          if (parsedData.returned_data && Array.isArray(parsedData.returned_data) && parsedData.returned_data.length > 0) {
+            summaryHTML += `<div style="margin: 4px 0;"><strong>Returned Data:</strong> ${parsedData.returned_data.length} record(s)</div>`;
+          }
+          
+          if (parsedData.errors && Array.isArray(parsedData.errors) && parsedData.errors.length > 0) {
+            summaryHTML += `<div style="margin: 8px 0; padding: 8px; background: var(--vscode-inputValidation-errorBackground); border-radius: 4px;">`;
+            summaryHTML += '<div style="font-weight: bold; color: var(--vscode-errorForeground); margin-bottom: 4px;">⚠️ Validation Errors:</div>';
+            parsedData.errors.forEach(error => {
+              summaryHTML += `<div style="margin: 2px 0; color: var(--vscode-errorForeground);">• ${error.field || 'Unknown'}: ${error.message || 'Error'}</div>`;
+            });
+            summaryHTML += '</div>';
+          } else if (parsedData.error) {
+            summaryHTML += `<div style="margin: 8px 0; padding: 8px; background: var(--vscode-inputValidation-errorBackground); border-radius: 4px;">`;
+            summaryHTML += `<div style="color: var(--vscode-errorForeground);">⚠️ Error: ${parsedData.error.field || 'Unknown'}: ${parsedData.error.message || 'Error'}</div>`;
+            summaryHTML += '</div>';
+          }
+          
+          summaryDiv.innerHTML = summaryHTML;
+          
+          // Render the full JSON with syntax highlighting
+          jsonRenderer.innerHTML = '';
+          jsonRenderer.appendChild(summaryDiv);
+          
+          const jsonElement = renderJsonWithFolding(currentJsonData, 0);
+          jsonRenderer.appendChild(jsonElement);
+          
+          // Show table view if returned_data exists
+          if (parsedData.returned_data && Array.isArray(parsedData.returned_data) && parsedData.returned_data.length > 0) {
+            renderTableView(parsedData.returned_data);
+          } else if (parsedData.data && Array.isArray(parsedData.data) && parsedData.data.length > 0) {
+            // Some write operations might return data in the 'data' field
+            renderTableView(parsedData.data);
+          }
+        }
+        
         function renderResponseBody(response, parsedData) {
           const responseBody = document.getElementById('responseBody');
           const jsonRenderer = document.getElementById('jsonRenderer');

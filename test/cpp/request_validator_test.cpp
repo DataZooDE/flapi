@@ -360,6 +360,50 @@ TEST_CASE("RequestValidator: validateSQLInjection", "[request_validator]") {
         REQUIRE(errors[0].fieldName == "query");
         REQUIRE(errors[0].errorMessage == "Potential SQL injection detected");
     }
+    
+    SECTION("SQL injection false positive: 'UPDATED' should not match 'UPDATE'") {
+        // "UPDATED" contains "UPDATE" as substring, but should NOT trigger validation
+        // with whole-word matching
+        std::map<std::string, std::string> params = {{"query", "Alice Mutton Updated"}};
+        auto errors = validator.validateRequestParameters({field}, params);
+        REQUIRE(errors.empty());  // Should NOT trigger SQL injection error
+    }
+    
+    SECTION("SQL injection detection: 'UPDATE test' should match as whole word") {
+        // "UPDATE test" contains "UPDATE" as a whole word, should trigger validation
+        std::map<std::string, std::string> params = {{"query", "UPDATE test"}};
+        auto errors = validator.validateRequestParameters({field}, params);
+        REQUIRE(errors.size() == 1);
+        REQUIRE(errors[0].fieldName == "query");
+        REQUIRE(errors[0].errorMessage == "Potential SQL injection detected");
+    }
+    
+    SECTION("SQL injection detection: dangerous patterns like '1=1'") {
+        std::map<std::string, std::string> params = {{"query", "test OR 1=1"}};
+        auto errors = validator.validateRequestParameters({field}, params);
+        REQUIRE(errors.size() == 1);
+        REQUIRE(errors[0].fieldName == "query");
+        REQUIRE(errors[0].errorMessage == "Potential SQL injection detected");
+    }
+    
+    SECTION("SQL injection prevention disabled via flag") {
+        // Create a field with preventSqlInjection = false
+        RequestFieldConfig fieldWithDisabledValidation = {};
+        fieldWithDisabledValidation.fieldName = "query";
+        fieldWithDisabledValidation.fieldIn = "query";
+        fieldWithDisabledValidation.description = "Query";
+        fieldWithDisabledValidation.required = false;
+        
+        ValidatorConfig validatorConfigDisabled = {};
+        validatorConfigDisabled.type = "string";
+        validatorConfigDisabled.preventSqlInjection = false;  // Disable SQL injection validation
+        fieldWithDisabledValidation.validators.push_back(validatorConfigDisabled);
+        
+        // Should NOT trigger SQL injection error even with dangerous content
+        std::map<std::string, std::string> params = {{"query", "SELECT * FROM users"}};
+        auto errors = validator.validateRequestParameters({fieldWithDisabledValidation}, params);
+        REQUIRE(errors.empty());  // Should pass because validation is disabled
+    }
 }
 
 TEST_CASE("RequestValidator: validateRequestFields", "[request_validator]") {
@@ -414,6 +458,61 @@ TEST_CASE("RequestValidator: validateRequestFields", "[request_validator]") {
         
         REQUIRE(hasUnknownParam);
         REQUIRE(hasAnotherUnknown);
+    }
+
+    SECTION("Write operation validation: required fields enforced") {
+        RequestFieldConfig requiredField;
+        requiredField.fieldName = "name";
+        requiredField.fieldIn = "body";
+        requiredField.required = true;
+        
+        std::vector<RequestFieldConfig> writeFields = {requiredField};
+        
+        // Missing required field should generate error
+        std::map<std::string, std::string> params = {};
+        auto errors = validator.validateRequestParameters(writeFields, params);
+        REQUIRE(errors.size() >= 1);
+        bool hasRequiredError = false;
+        for (const auto& error : errors) {
+            if (error.fieldName == "name") {
+                // Error message should be "Required field is missing"
+                hasRequiredError = (error.errorMessage == "Required field is missing" || 
+                                    error.errorMessage.find("Required") != std::string::npos ||
+                                    error.errorMessage.find("required") != std::string::npos);
+                if (hasRequiredError) break;
+            }
+        }
+        REQUIRE(hasRequiredError);
+        
+        // With required field present, should pass
+        params["name"] = "John Doe";
+        errors = validator.validateRequestParameters(writeFields, params);
+        REQUIRE(errors.empty());
+    }
+    
+    SECTION("Write operation validation: unknown parameters rejected") {
+        RequestFieldConfig knownField;
+        knownField.fieldName = "name";
+        knownField.fieldIn = "body";
+        
+        std::vector<RequestFieldConfig> writeFields = {knownField};
+        
+        // Unknown parameter should generate error when strict validation is enabled
+        std::map<std::string, std::string> params = {
+            {"name", "John"},
+            {"unknown_field", "value"}
+        };
+        auto errors = validator.validateRequestFields(writeFields, params);
+        REQUIRE(errors.size() >= 1);
+        bool hasUnknownError = false;
+        for (const auto& error : errors) {
+            if (error.fieldName == "unknown_field") {
+                hasUnknownError = true;
+                REQUIRE(error.errorMessage.find("Unknown") != std::string::npos);
+                break;
+            }
+        }
+        REQUIRE(hasUnknownError);
     }
 
     SECTION("Empty parameters should be valid") {

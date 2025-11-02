@@ -1,0 +1,101 @@
+# Customers Cached Endpoint (Read)
+# Same as /customers/ but with DuckLake cache enabled
+
+url-path: /customers_cached/
+method: GET
+
+# Request parameters - same as customers endpoint
+request:
+  - field-name: id
+    field-in: query
+    description: Customer ID
+    required: false
+    validators:
+      - type: int
+        min: 1
+        preventSqlInjection: true
+
+  - field-name: name
+    field-in: query
+    description: Filter by customer name (partial match)
+    required: false
+    validators:
+      - type: string
+        min: 1
+        max: 100
+        regex: "^[a-zA-Z0-9\\s#\\-]+$"
+        preventSqlInjection: true
+
+  - field-name: segment
+    field-in: query
+    description: Filter by customer segment
+    required: false
+    validators:
+      - type: enum
+        allowedValues: ["BUILDING", "AUTOMOBILE", "MACHINERY", "HOUSEHOLD", "FURNITURE"]
+        preventSqlInjection: true
+
+  - field-name: email
+    field-in: query
+    description: Filter by email address
+    required: false
+    validators:
+      - type: email
+        preventSqlInjection: true
+
+  - field-name: registration_date
+    field-in: query
+    description: Filter by registration date (YYYY-MM-DD)
+    required: false
+    validators:
+      - type: date
+        max: "2023-12-31"
+        preventSqlInjection: true
+
+  - field-name: last_login_time
+    field-in: query
+    description: Filter by last login time (HH:MM:SS)
+    required: false
+    validators:
+      - type: time
+        max: "23:59:59"
+        preventSqlInjection: true
+
+  - field-name: uuid
+    field-in: query
+    description: Filter by UUID
+    required: false
+    validators:
+      - type: uuid
+        preventSqlInjection: true
+
+template-source: customers-get.sql
+connection:
+  - data-types-parquet
+
+# Pagination enabled
+with-pagination: true
+
+# DuckLake cache configuration
+cache:
+  enabled: true
+  table: customers_cache
+  schema: test_schema
+  schedule: 1m
+  retention:
+    keep_last_snapshots: 3
+    max_snapshot_age: 1h
+  template_file: customers-get.sql
+
+# Authentication required
+auth:
+  enabled: true
+  type: basic
+  users:
+    - username: admin
+      password: secret
+      roles: [admin, read, write]
+    - username: user
+      password: password
+      roles: [read]
+

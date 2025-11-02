@@ -30,6 +30,11 @@ export interface ResponseInfo {
   body: string;
   contentType?: string;
   cookies?: Array<{ name: string; value: string; attributes?: string }>;
+  // Write operation specific fields
+  rows_affected?: number;
+  returned_data?: any[];
+  last_insert_id?: number;
+  isWriteOperation?: boolean;
 }
 
 export interface RequestFieldDefinition {
@@ -41,11 +46,19 @@ export interface RequestFieldDefinition {
   type?: string;
 }
 
+export interface OperationConfig {
+  type?: 'read' | 'write';
+  validate_before_write?: boolean;
+  returns_data?: boolean;
+  transaction?: boolean;
+}
+
 export interface EndpointConfig {
   urlPath: string;
   method: string;
   requestFields: RequestFieldDefinition[];
   withPagination: boolean;
+  operation?: OperationConfig;
   auth?: {
     enabled: boolean;
     type: string;

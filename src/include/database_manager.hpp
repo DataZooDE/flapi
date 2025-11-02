@@ -13,6 +13,7 @@
 #include "cache_manager.hpp"
 #include "sql_template_processor.hpp"
 #include "query_executor.hpp"
+#include <optional>
 
 namespace flapi {
 
@@ -20,6 +21,12 @@ struct ColumnInfo {
     std::string name;
     std::string type;
     bool nullable;
+};
+
+struct WriteResult {
+    int64_t rows_affected = 0;
+    std::optional<crow::json::wvalue> returned_data;  // For RETURNING clauses in INSERT/UPDATE/DELETE
+    std::string last_insert_id;  // For cases where we need to track the last inserted ID
 };
 
 class DatabaseManager : public std::enable_shared_from_this<DatabaseManager> {
@@ -48,6 +55,10 @@ public:
     QueryResult executeDuckLakeQuery(const std::string& query, const std::map<std::string, std::string>& params = {});
     std::string renderCacheTemplate(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params);
     
+    // Write operation methods
+    WriteResult executeWrite(const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
+    WriteResult executeWriteInTransaction(const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
+    
     YAML::Node describeSelectQuery(const EndpointConfig& endpoint);
 
     bool tableExists(const std::string& schema, const std::string& table);
@@ -71,6 +82,9 @@ private:
 
     std::string processTemplate(const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
     std::string processCacheTemplate(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params);
+    
+    // Internal helper for write operations (used by executeWriteInTransaction)
+    WriteResult executeWrite(QueryExecutor& executor, const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
 
     duckdb_database db; // Database handle
     std::mutex db_mutex; // Mutex for thread safety

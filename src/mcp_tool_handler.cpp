@@ -28,15 +28,50 @@ MCPToolExecutionResult MCPToolHandler::executeTool(const MCPToolCallRequest& req
         // Prepare parameters for SQL template
         std::map<std::string, std::string> params = prepareParameters(*endpoint_config, request.arguments);
 
-        // Execute the query
+        // Check if this is a write operation
+        if (endpoint_config->operation.type == OperationConfig::Write) {
+            // Execute write operation
+            WriteResult write_result;
+            if (endpoint_config->operation.transaction) {
+                write_result = db_manager->executeWriteInTransaction(*endpoint_config, params);
+            } else {
+                write_result = db_manager->executeWrite(*endpoint_config, params);
+            }
+
+            // Handle cache operations after successful write
+            if (endpoint_config->cache.enabled) {
+                if (endpoint_config->cache.invalidate_on_write) {
+                    db_manager->invalidateCache(*endpoint_config);
+                }
+                // Note: refresh_on_write is handled by RequestHandler in REST context
+                // For MCP, we just invalidate if configured
+            }
+
+            // Format write result
+            crow::json::wvalue write_response;
+            write_response["rows_affected"] = static_cast<int64_t>(write_result.rows_affected);
+            
+            if (write_result.returned_data.has_value() && endpoint_config->operation.returns_data) {
+                write_response["data"] = std::move(*write_result.returned_data);
+            } else if (write_result.returned_data.has_value()) {
+                // Include returned data even if not explicitly configured
+                write_response["data"] = std::move(*write_result.returned_data);
+            }
+
+            // Create metadata
+            std::unordered_map<std::string, std::string> metadata;
+            metadata["tool_name"] = request.tool_name;
+            metadata["operation_type"] = "write";
+            metadata["rows_affected"] = std::to_string(write_result.rows_affected);
+            metadata["execution_time_ms"] = "0"; // Simplified
+
+            return createSuccessResult(write_response.dump(), metadata);
+        } else {
+            // Execute read query
         QueryResult query_result = executeQueryWithEndpoint(*endpoint_config, params);
 
-        // QueryResult doesn't have success/error_message fields, assume success
-        if (query_result.data.size() == 0) {
-            return createErrorResult("Query returned no data");
-        }
-
-        // Format the result
+        // Empty result sets are valid - they just mean no rows matched the criteria
+        // Format the result (will be an empty array if no data)
         std::string result_format = endpoint_config->mcp_tool ? endpoint_config->mcp_tool->result_mime_type : "application/json";
         std::string formatted_result = formatResult(query_result, result_format);
 
@@ -47,6 +82,7 @@ MCPToolExecutionResult MCPToolHandler::executeTool(const MCPToolCallRequest& req
         metadata["execution_time_ms"] = "0"; // Simplified
 
         return createSuccessResult(formatted_result, metadata);
+        }
     } catch (const std::exception& e) {
         return createErrorResult("Tool execution error: " + std::string(e.what()));
     }
@@ -73,8 +109,13 @@ bool MCPToolHandler::validateToolArguments(const std::string& tool_name, const c
     // Convert JSON arguments to parameter map for validation
     std::map<std::string, std::string> params = convertJsonToParams(arguments);
 
-    // Use RequestValidator to validate parameters
+    // Use RequestValidator to validate known parameters
     std::vector<ValidationError> errors = validator->validateRequestParameters(endpoint_config->request_fields, params);
+
+    // For MCP tools, always reject unknown parameters for security and correctness
+    // This ensures that typos and invalid parameters are caught early
+    auto unknownParamErrors = validator->validateRequestFields(endpoint_config->request_fields, params);
+    errors.insert(errors.end(), unknownParamErrors.begin(), unknownParamErrors.end());
 
     if (!errors.empty()) {
         CROW_LOG_WARNING << "Tool argument validation failed for " << tool_name << ":";

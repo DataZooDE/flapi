@@ -112,11 +112,21 @@ struct CacheConfig {
     } retention;
     std::optional<std::string> delete_handling;
     std::optional<std::string> template_file;
+    bool invalidate_on_write = false;  // Invalidate cache after write operations
+    bool refresh_on_write = false;      // Refresh cache immediately after write operations
 
     bool hasCursor() const { return cursor.has_value(); }
     bool hasPrimaryKey() const { return !primary_keys.empty(); }
     bool hasTemplate() const { return template_file.has_value(); }
     std::chrono::seconds getRefreshTimeInSeconds() const;
+};
+
+struct OperationConfig {
+    enum Type { Read, Write };
+    Type type = Type::Read;  // Default to read for backward compatibility
+    bool returns_data = false;  // For RETURNING clauses in INSERT/UPDATE
+    bool transaction = true;  // Wrap writes in transactions (default: safe)
+    bool validate_before_write = true;  // Stricter validation for writes (default: safe)
 };
 
 struct EndpointConfig {
@@ -131,6 +141,7 @@ struct EndpointConfig {
     AuthConfig auth;
     CacheConfig cache;
     HeartbeatConfig heartbeat;
+    OperationConfig operation;  // Operation configuration (read/write, transaction, etc.)
     
     // Path to the YAML configuration file for this endpoint (for reloading)
     std::string config_file_path;
@@ -434,6 +445,7 @@ public:
     bool isHttpsEnforced() const;
     bool isAuthEnabled() const;
     const EndpointConfig* getEndpointForPath(const std::string& path) const;
+    const EndpointConfig* getEndpointForPathAndMethod(const std::string& path, const std::string& httpMethod) const;
     const std::vector<EndpointConfig>& getEndpoints() const;
     const TemplateConfig& getTemplateConfig() const;
     std::string getBasePath() const;

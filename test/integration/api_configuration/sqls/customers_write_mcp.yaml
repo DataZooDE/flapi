@@ -1,0 +1,54 @@
+# MCP Tool: Create Customer
+# Creates a new customer via MCP
+
+mcp-tool:
+  name: create_customer
+  description: Create a new customer with comprehensive validation
+  result_mime_type: application/json
+
+# Operation configuration
+operation:
+  type: Write
+  returns-data: true
+  transaction: true
+  validate-before-write: true
+
+request:
+  - field-name: name
+    field-in: query
+    description: Customer name
+    required: true
+    validators:
+      - type: string
+        min: 1
+        max: 100
+        regex: "^[a-zA-Z0-9\\s#\\-]+$"
+        preventSqlInjection: true
+
+  - field-name: segment
+    field-in: query
+    description: Customer segment
+    required: true
+    validators:
+      - type: enum
+        allowedValues: ["BUILDING", "AUTOMOBILE", "MACHINERY", "HOUSEHOLD", "FURNITURE"]
+        preventSqlInjection: true
+
+  - field-name: email
+    field-in: query
+    description: Customer email
+    required: false
+    validators:
+      - type: email
+        preventSqlInjection: true
+
+template-source: customers-create.sql
+connection:
+  - data-types-parquet
+
+auth:
+  enabled: true
+  type: bearer
+  jwt_secret: "test-jwt-secret-key-for-integration-tests"
+  jwt_issuer: "flapi-test"
+

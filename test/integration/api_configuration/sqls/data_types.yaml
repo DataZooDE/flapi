@@ -1,0 +1,38 @@
+# Data Types Endpoint (Read)
+# Returns data from data_types.parquet to test various SQL/DuckDB data types
+
+url-path: /data_types/
+method: GET
+
+# Request parameters - minimal for testing
+request:
+  - field-name: limit
+    field-in: query
+    description: Number of records to return
+    required: false
+    validators:
+      - type: int
+        min: 1
+        max: 1000
+        preventSqlInjection: true
+
+  - field-name: offset
+    field-in: query
+    description: Number of records to skip
+    required: false
+    validators:
+      - type: int
+        min: 0
+        preventSqlInjection: true
+
+template-source: data_types.sql
+connection:
+  - data-types-parquet
+
+# Pagination enabled
+with-pagination: true
+
+# No authentication for testing
+auth:
+  enabled: false
+

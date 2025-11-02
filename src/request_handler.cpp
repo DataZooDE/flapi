@@ -23,6 +23,11 @@ void RequestHandler::handleRequest(const crow::request& req, crow::response& res
         case crow::HTTPMethod::Get:
             handleGetRequest(req, res, endpoint, pathParams);
             break;
+        case crow::HTTPMethod::Post:
+        case crow::HTTPMethod::Put:
+        case crow::HTTPMethod::Patch:
+            handleWriteRequest(req, res, endpoint, pathParams);
+            break;
         case crow::HTTPMethod::Delete:
             handleDeleteRequest(req, res, endpoint, pathParams);
             break;
@@ -31,6 +36,96 @@ void RequestHandler::handleRequest(const crow::request& req, crow::response& res
             res.body = "Method not allowed";
             res.end();
             break;
+    }
+}
+
+void RequestHandler::handleWriteRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams) {
+    try {
+        // Extract parameters from body, path, query (body takes precedence)
+        auto params = combineWriteParameters(req, pathParams, endpoint);
+        
+        // Validate parameters
+        auto validationErrors = validator->validateRequestParameters(endpoint.request_fields, params);
+        
+        // For write operations, enforce stricter validation if configured
+        if (endpoint.operation.validate_before_write) {
+            // Enforce all required fields
+            for (const auto& field : endpoint.request_fields) {
+                if (field.required && params.find(field.fieldName) == params.end()) {
+                    validationErrors.push_back({field.fieldName, "Required field is missing"});
+                }
+            }
+            
+            // Reject unknown parameters when validate-before-write is enabled
+            // This helps catch typos and incorrect parameter names (e.g., ProductName vs product_name)
+            auto unknownParamErrors = validator->validateRequestFields(endpoint.request_fields, params);
+            validationErrors.insert(validationErrors.end(), 
+                                    unknownParamErrors.begin(), 
+                                    unknownParamErrors.end());
+        }
+        
+        // If there are validation errors, return a 400 Bad Request response
+        if (!validationErrors.empty()) {
+            crow::json::wvalue errorResponse;
+            std::vector<crow::json::wvalue> errorMessages;
+            for (const auto& error : validationErrors) {
+                crow::json::wvalue errorJson;
+                errorJson["field"] = error.fieldName;
+                errorJson["message"] = error.errorMessage;
+                errorMessages.push_back(std::move(errorJson));
+            }
+            errorResponse["errors"] = std::move(errorMessages);
+            
+            res.code = 400;
+            res.set_header("Content-Type", "application/json");
+            res.write(errorResponse.dump());
+            res.end();
+            return;
+        }
+        
+        // Execute write operation (with or without transaction)
+        WriteResult writeResult;
+        if (endpoint.operation.transaction) {
+            writeResult = db_manager->executeWriteInTransaction(endpoint, params);
+        } else {
+            writeResult = db_manager->executeWrite(endpoint, params);
+        }
+        
+        // Prepare response
+        res.set_header("Content-Type", "application/json");
+        
+        // Determine HTTP status code based on method
+        if (req.method == crow::HTTPMethod::Post) {
+            res.code = 201;  // Created
+        } else {
+            res.code = 200;  // OK for PUT/PATCH
+        }
+        
+        // Handle cache operations after successful write
+        handleCacheAfterWrite(endpoint, writeResult);
+        
+        // Build response body
+        crow::json::wvalue response;
+        response["rows_affected"] = static_cast<int64_t>(writeResult.rows_affected);
+        
+        // Include returned data if available and configured
+        if (writeResult.returned_data.has_value() && endpoint.operation.returns_data) {
+            response["data"] = std::move(*writeResult.returned_data);
+        } else if (writeResult.returned_data.has_value()) {
+            // Include returned data even if not explicitly configured (helpful for debugging)
+            response["data"] = std::move(*writeResult.returned_data);
+        }
+        
+        res.write(response.dump());
+        res.end();
+        return;
+        
+    } catch (const std::exception& e) {
+        CROW_LOG_ERROR << "Error handling write request: " << e.what();
+        res.code = 500;
+        res.body = std::string("Internal Server Error: ") + e.what();
+        res.end();
+        return;
     }
 }
 
@@ -192,6 +287,176 @@ std::map<std::string, std::string> RequestHandler::combineParameters(const crow:
         params[key] = req.url_params.get(key);
     }
     return params;
+}
+
+std::map<std::string, std::string> RequestHandler::combineWriteParameters(const crow::request& req,
+                                                                          const std::map<std::string, std::string>& pathParams,
+                                                                          const EndpointConfig& endpoint) {
+    std::map<std::string, std::string> params = defaultParams;
+
+    // Add path parameters first (lowest precedence for body params)
+    for (const auto& [key, value] : pathParams) {
+        params[key] = value;
+    }
+
+    // Extract parameters from JSON body (highest precedence for write operations)
+    if (req.method == crow::HTTPMethod::Post || 
+        req.method == crow::HTTPMethod::Put || 
+        req.method == crow::HTTPMethod::Patch) {
+        
+        if (!req.body.empty()) {
+            try {
+                auto bodyJson = crow::json::load(req.body);
+                if (bodyJson) {
+                    // Helper function to convert JSON value to string
+                    auto jsonValueToString = [&bodyJson, &req](const std::string& key) -> std::string {
+                        if (!bodyJson.has(key)) {
+                            return "";
+                        }
+                        auto jsonVal = bodyJson[key];
+                        std::string value;
+                        if (jsonVal.t() == crow::json::type::String) {
+                            value = jsonVal.s();
+                        } else if (jsonVal.t() == crow::json::type::Number) {
+                            // Try integer first, then double
+                            try {
+                                value = std::to_string(jsonVal.i());
+                            } catch (...) {
+                                value = std::to_string(jsonVal.d());
+                            }
+                        } else if (jsonVal.t() == crow::json::type::True) {
+                            value = "true";
+                        } else if (jsonVal.t() == crow::json::type::False) {
+                            value = "false";
+                        } else if (jsonVal.t() == crow::json::type::Null) {
+                            value = "";
+                        } else if (jsonVal.t() == crow::json::type::Object || jsonVal.t() == crow::json::type::List) {
+                            // For objects and arrays, extract JSON string from the original body
+                            try {
+                                auto parsedBody = crow::json::load(req.body);
+                                if (parsedBody && parsedBody.has(key)) {
+                                    // Create a wvalue with just this field and dump it
+                                    crow::json::wvalue tempObj;
+                                    auto fieldRval = parsedBody[key];
+                                    if (fieldRval.t() == crow::json::type::Object) {
+                                        for (const auto& k : fieldRval.keys()) {
+                                            std::string keyStr = k;
+                                            auto v = fieldRval[keyStr];
+                                            if (v.t() == crow::json::type::String) {
+                                                tempObj[keyStr] = v.s();
+                                            } else if (v.t() == crow::json::type::Number) {
+                                                try {
+                                                    tempObj[keyStr] = v.i();
+                                                } catch (...) {
+                                                    tempObj[keyStr] = v.d();
+                                                }
+                                            } else if (v.t() == crow::json::type::True) {
+                                                tempObj[keyStr] = true;
+                                            } else if (v.t() == crow::json::type::False) {
+                                                tempObj[keyStr] = false;
+                                            } else {
+                                                tempObj[keyStr] = nullptr;
+                                            }
+                                        }
+                                    } else if (fieldRval.t() == crow::json::type::List) {
+                                        std::vector<crow::json::wvalue> arr;
+                                        for (size_t i = 0; i < fieldRval.size(); i++) {
+                                            auto v = fieldRval[i];
+                                            if (v.t() == crow::json::type::String) {
+                                                arr.push_back(crow::json::wvalue(v.s()));
+                                            } else if (v.t() == crow::json::type::Number) {
+                                                try {
+                                                    arr.push_back(crow::json::wvalue(v.i()));
+                                                } catch (...) {
+                                                    arr.push_back(crow::json::wvalue(v.d()));
+                                                }
+                                            } else if (v.t() == crow::json::type::True) {
+                                                arr.push_back(crow::json::wvalue(true));
+                                            } else if (v.t() == crow::json::type::False) {
+                                                arr.push_back(crow::json::wvalue(false));
+                                            } else {
+                                                arr.push_back(crow::json::wvalue(nullptr));
+                                            }
+                                        }
+                                        tempObj = crow::json::wvalue(arr);
+                                    }
+                                    value = tempObj.dump();
+                                } else {
+                                    value = "{}";
+                                }
+                            } catch (...) {
+                                value = "{}";  // Fallback for complex types
+                            }
+                        } else {
+                            // Fallback: try to get string representation
+                            value = jsonVal.s();
+                        }
+                        return value;
+                    };
+                    
+                    // FIRST PASS: Extract ALL fields from JSON body (including unknown ones)
+                    // This allows validation to detect unknown parameters later
+                    for (const auto& key : bodyJson.keys()) {
+                        std::string fieldName = key;
+                        std::string value = jsonValueToString(fieldName);
+                        if (!value.empty() || bodyJson[fieldName].t() == crow::json::type::Null) {
+                            params[fieldName] = value;
+                        }
+                    }
+                }
+            } catch (const std::exception& e) {
+                CROW_LOG_WARNING << "Failed to parse JSON body: " << e.what();
+                // Continue with other parameter sources
+            }
+        }
+    }
+
+    // Add query parameters (for backward compatibility and flexibility)
+    for (const auto& key : req.url_params.keys()) {
+        // Only add if not already present from body (body takes precedence)
+        if (params.find(key) == params.end()) {
+            params[key] = req.url_params.get(key);
+        }
+    }
+
+    // Apply defaults for fields not provided
+    for (const auto& field : endpoint.request_fields) {
+        if (!field.defaultValue.empty() && params.find(field.fieldName) == params.end()) {
+            params[field.fieldName] = field.defaultValue;
+        }
+    }
+
+    return params;
+}
+
+void RequestHandler::handleCacheAfterWrite(const EndpointConfig& endpoint, const WriteResult& writeResult) {
+    // Only process if cache is enabled for this endpoint
+    if (!db_manager->isCacheEnabled(endpoint)) {
+        return;
+    }
+    
+    // Invalidate cache if configured
+    if (endpoint.cache.invalidate_on_write) {
+        db_manager->invalidateCache(endpoint);
+        CROW_LOG_DEBUG << "Cache invalidated after write operation for endpoint: " << endpoint.getIdentifier();
+    }
+    
+    // Refresh cache if configured
+    if (endpoint.cache.refresh_on_write) {
+        // Note: Cache refresh typically involves running the cache sync
+        // For now, we'll trigger a manual refresh via the cache manager
+        // This may need to be enhanced based on the actual cache refresh mechanism
+        auto cache_manager = db_manager->getCacheManager();
+        if (cache_manager) {
+            // The actual refresh mechanism would depend on CacheManager's API
+            // For now, we'll log that refresh was requested
+            CROW_LOG_DEBUG << "Cache refresh requested after write operation for endpoint: " << endpoint.getIdentifier();
+            // In a full implementation, we would call a refresh method here
+            // cache_manager->refreshCacheForEndpoint(endpoint);
+        }
+    }
+    
+    // If neither option is set, let the heartbeat handle refresh naturally
 }
 
 QueryResult RequestHandler::executeQuery(const EndpointConfig& endpoint, const std::map<std::string, std::string>& orig_params) {

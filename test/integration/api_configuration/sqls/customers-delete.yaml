@@ -1,0 +1,37 @@
+# Delete Customer (DELETE)
+# Deletes a customer by ID
+
+url-path: /customers/:customer_id
+method: DELETE
+
+# Operation configuration
+operation:
+  type: Write
+  returns-data: false
+  transaction: true
+  validate-before-write: false
+
+# Request parameters
+request:
+  - field-name: customer_id
+    field-in: path
+    description: Customer ID
+    required: true
+    validators:
+      - type: int
+        min: 1
+        preventSqlInjection: true
+
+template-source: customers-delete.sql
+
+# Use main connection
+connection:
+  - data-types-parquet
+
+# Authentication required - bearer token for writes
+auth:
+  enabled: true
+  type: bearer
+  jwt_secret: "test-jwt-secret-key-for-integration-tests"
+  jwt_issuer: "flapi-test"
+

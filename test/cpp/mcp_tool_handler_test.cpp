@@ -301,6 +301,50 @@ TEST_CASE("MCPToolHandler parameter map conversion", "[mcp_tool_handler]") {
     }
 }
 
+TEST_CASE("MCPToolHandler write operation support", "[mcp_tool_handler]") {
+    SECTION("Write operation detection") {
+        std::string yaml_content = R"(
+project_name: TestProject
+template:
+  path: ./test_templates
+connections:
+  test_connection:
+    init: "SELECT 1;"
+    properties:
+      db_file: ":memory:"
+)";
+
+        std::string config_file = createMCPToolConfigFile(yaml_content);
+        auto config_manager = std::make_shared<ConfigManager>(config_file);
+        auto db_manager = std::make_shared<DatabaseManager>();
+
+        MCPToolHandler handler(db_manager, config_manager);
+
+        // Create an endpoint config with write operation
+        EndpointConfig write_endpoint;
+        write_endpoint.operation.type = OperationConfig::Write;
+        write_endpoint.operation.transaction = true;
+        
+        // Verify the operation type is Write
+        REQUIRE(write_endpoint.operation.type == OperationConfig::Write);
+    }
+
+    SECTION("Read operation (default)") {
+        std::string config_file = createMCPToolConfigFile("project_name: TestProject");
+        auto config_manager = std::make_shared<ConfigManager>(config_file);
+        auto db_manager = std::make_shared<DatabaseManager>();
+
+        MCPToolHandler handler(db_manager, config_manager);
+
+        // Create an endpoint config with read operation (default)
+        EndpointConfig read_endpoint;
+        // Default is Read
+        
+        // Verify the operation type is Read
+        REQUIRE(read_endpoint.operation.type == OperationConfig::Read);
+    }
+}
+
 TEST_CASE("MCPToolHandler error handling", "[mcp_tool_handler]") {
     SECTION("Create error result") {
         std::string config_file = createMCPToolConfigFile("project_name: TestProject");

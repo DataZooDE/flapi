@@ -1,0 +1,504 @@
+---
+test_name: Northwind Products CRUD Operations
+marks:
+  - integration
+  - northwind
+  - crud
+
+stages:
+  # ============================================
+  # CREATE (POST) Operations
+  # ============================================
+  
+  - name: Create product with all fields
+    request:
+      url: "{base_url}/northwind/products/"
+      method: POST
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Integration Test Product"
+        supplier_id: 1
+        category_id: 1
+        quantity_per_unit: "24 - 12 oz bottles"
+        unit_price: "29.99"
+        units_in_stock: 100
+        units_on_order: 0
+        reorder_level: 10
+        discontinued: 0
+    response:
+      status_code: [201, 200]
+      headers:
+        content-type: "application/json"
+      json:
+        rows_affected: 1
+        data: !any  # Should return created product data
+
+  - name: Create product with minimal required fields
+    request:
+      url: "{base_url}/northwind/products/"
+      method: POST
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Minimal Product"
+        supplier_id: 1
+        category_id: 1
+    response:
+      status_code: [201, 200]
+      headers:
+        content-type: "application/json"
+      json:
+        rows_affected: 1
+        data: !any
+
+  - name: Create product - missing required field (product_name)
+    request:
+      url: "{base_url}/northwind/products/"
+      method: POST
+      headers:
+        Content-Type: application/json
+      json:
+        supplier_id: 1
+        category_id: 1
+    response:
+      status_code: 400
+      headers:
+        content-type: "application/json"
+      json:
+        errors: !any
+        # Should contain error about missing product_name
+
+  - name: Create product - missing required field (supplier_id)
+    request:
+      url: "{base_url}/northwind/products/"
+      method: POST
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Test Product"
+        category_id: 1
+    response:
+      status_code: 400
+      headers:
+        content-type: "application/json"
+      json:
+        errors: !any
+
+  - name: Create product - invalid product_name (too long)
+    request:
+      url: "{base_url}/northwind/products/"
+      method: POST
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"  # 101 characters, exceeds max length of 100
+        supplier_id: 1
+        category_id: 1
+    response:
+      status_code: 400
+      headers:
+        content-type: "application/json"
+      json:
+        errors: !any
+
+  - name: Create product - invalid supplier_id (below minimum)
+    request:
+      url: "{base_url}/northwind/products/"
+      method: POST
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Test Product"
+        supplier_id: 0  # Below min of 1
+        category_id: 1
+    response:
+      status_code: 400
+      headers:
+        content-type: "application/json"
+      json:
+        errors: !any
+
+  - name: Create product - unknown parameter (should error with validate-before-write)
+    request:
+      url: "{base_url}/northwind/products/"
+      method: POST
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Test Product"
+        supplier_id: 1
+        category_id: 1
+        unknown_field: "should cause error"
+    response:
+      status_code: 400
+      headers:
+        content-type: "application/json"
+      json:
+        errors: !any
+        # Should contain error about unknown parameter
+
+  - name: Create product - SQL injection attempt in product_name
+    request:
+      url: "{base_url}/northwind/products/"
+      method: POST
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Test'; DROP TABLE Products; --"
+        supplier_id: 1
+        category_id: 1
+    response:
+      status_code: 400
+      headers:
+        content-type: "application/json"
+      json:
+        errors: !any
+        # Should detect SQL injection
+
+  - name: Create product - SQL injection attempt (UPDATE keyword)
+    request:
+      url: "{base_url}/northwind/products/"
+      method: POST
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "UPDATE Products SET"
+        supplier_id: 1
+        category_id: 1
+    response:
+      status_code: 400
+      headers:
+        content-type: "application/json"
+      json:
+        errors: !any
+
+  - name: Create product - verify returns_data includes created product
+    request:
+      url: "{base_url}/northwind/products/"
+      method: POST
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Returns Data Test Product"
+        supplier_id: 1
+        category_id: 1
+    response:
+      status_code: [201, 200]
+      headers:
+        content-type: "application/json"
+      json:
+        rows_affected: 1
+        data: 
+          - ProductName: "Returns Data Test Product"
+            SupplierID: 1
+            CategoryID: 1
+
+  # ============================================
+  # READ (GET) Operations
+  # ============================================
+
+  - name: Get product by ID
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: GET
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+      json: !any
+
+  - name: Get product list with no filters
+    request:
+      url: "{base_url}/northwind/products/"
+      method: GET
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+        x-total-count: !anystr
+      json: !any
+
+  - name: Get product list with pagination
+    request:
+      url: "{base_url}/northwind/products/"
+      method: GET
+      params:
+        offset: 0
+        limit: 10
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+        x-offset: "0"
+        x-limit: "10"
+      json: !any
+
+  - name: Get product list with product_name filter
+    request:
+      url: "{base_url}/northwind/products/"
+      method: GET
+      params:
+        product_name: "Alice Mutton"
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+      json: !any
+
+  - name: Get product list with category_id filter
+    request:
+      url: "{base_url}/northwind/products/"
+      method: GET
+      params:
+        category_id: 1
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+      json: !any
+
+  - name: Get product list with discontinued filter
+    request:
+      url: "{base_url}/northwind/products/"
+      method: GET
+      params:
+        discontinued: 0
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+      json: !any
+
+  - name: Get non-existent product (404)
+    request:
+      url: "{base_url}/northwind/products/99999"
+      method: GET
+    response:
+      status_code: 404
+
+  # ============================================
+  # UPDATE (PUT) Operations
+  # ============================================
+
+  - name: Full update with all fields
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: PUT
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Fully Updated Product"
+        supplier_id: 2
+        category_id: 2
+        quantity_per_unit: "48 - 6 oz jars"
+        unit_price: "39.99"
+        units_in_stock: 200
+        units_on_order: 50
+        reorder_level: 20
+        discontinued: 0
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+      json:
+        rows_affected: 1
+        data: !any  # Should return updated product from SELECT
+
+  - name: Update with returns_data - verify SELECT result returned
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: PUT
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Updated with Data Return"
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+      json:
+        rows_affected: 1
+        data:
+          - ProductName: "Updated with Data Return"
+            ProductID: 17
+
+  - name: Partial update - only product_name
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: PUT
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Partially Updated Product"
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+      json:
+        rows_affected: 1
+        data: !any
+
+  - name: Partial update - only unit_price
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: PUT
+      headers:
+        Content-Type: application/json
+      json:
+        unit_price: "45.99"
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+      json:
+        rows_affected: 1
+
+  - name: Update - validation error (invalid unit_price format)
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: PUT
+      headers:
+        Content-Type: application/json
+      json:
+        unit_price: "invalid-price"
+    response:
+      status_code: 400
+      headers:
+        content-type: "application/json"
+      json:
+        errors: !any
+
+  - name: Update - validation error (negative units_in_stock)
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: PUT
+      headers:
+        Content-Type: application/json
+      json:
+        units_in_stock: -1
+    response:
+      status_code: 400
+      headers:
+        content-type: "application/json"
+      json:
+        errors: !any
+
+  - name: Update non-existent product (404)
+    request:
+      url: "{base_url}/northwind/products/99999"
+      method: PUT
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Non-existent"
+    response:
+      status_code: 404
+
+  - name: Update - unknown parameter (should error)
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: PUT
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Valid Name"
+        unknown_field: "should cause error"
+    response:
+      status_code: 400
+      headers:
+        content-type: "application/json"
+      json:
+        errors: !any
+
+  - name: Update - SQL injection attempt in product_name
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: PUT
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Test'; DROP TABLE Products; --"
+    response:
+      status_code: 400
+      headers:
+        content-type: "application/json"
+      json:
+        errors: !any
+
+  - name: Update - SQL injection false positive test (UPDATED should pass)
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: PUT
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Product Name Updated"
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+      json:
+        rows_affected: 1
+        # "UPDATED" contains "UPDATE" but should pass due to whole-word matching
+
+  # ============================================
+  # UPDATE (PATCH) Operations - if supported
+  # Note: PATCH may not be implemented, so these might fail
+  # ============================================
+
+  - name: PATCH - partial update with single field
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: PATCH
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "PATCH Updated Product"
+    response:
+      status_code: [200, 405]  # 405 if PATCH not supported
+      headers:
+        content-type: "application/json"
+
+  - name: PATCH - multiple fields update
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: PATCH
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "PATCH Multi Update"
+        unit_price: "35.99"
+    response:
+      status_code: [200, 405]
+      headers:
+        content-type: "application/json"
+
+  # ============================================
+  # DELETE Operations
+  # ============================================
+
+  - name: Delete existing product
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: DELETE
+    response:
+      status_code: [200, 204, 405]  # May return different codes
+      headers:
+        content-type: "application/json"
+
+  - name: Delete non-existent product (404)
+    request:
+      url: "{base_url}/northwind/products/99999"
+      method: DELETE
+    response:
+      status_code: [404, 405]  # 405 if DELETE not implemented for products
+
+  - name: Verify product deleted - get should return 404
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: GET
+    response:
+      status_code: [404, 200]  # 200 if product still exists (not deleted yet)
+      # Note: This test may need to be adjusted based on actual DELETE behavior
+

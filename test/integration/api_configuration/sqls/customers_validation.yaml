@@ -1,0 +1,54 @@
+# Customers with Request Fields Validation Endpoint (Read)
+# Strict validation enabled - rejects unknown parameters
+
+url-path: /customers_with_request_fields_validation/
+method: GET
+
+# Request parameters - strict validation
+request:
+  - field-name: id
+    field-in: query
+    description: Customer ID (required for this endpoint)
+    required: true
+    validators:
+      - type: int
+        min: 1
+        max: 10000
+        preventSqlInjection: true
+
+  - field-name: name
+    field-in: query
+    description: Filter by customer name
+    required: false
+    validators:
+      - type: string
+        min: 1
+        max: 100
+        regex: "^[a-zA-Z0-9\\s#\\-]+$"
+        preventSqlInjection: true
+
+  - field-name: segment
+    field-in: query
+    description: Filter by customer segment
+    required: false
+    validators:
+      - type: enum
+        allowedValues: ["BUILDING", "AUTOMOBILE", "MACHINERY", "HOUSEHOLD", "FURNITURE"]
+        preventSqlInjection: true
+
+template-source: customers-validation.sql
+connection:
+  - data-types-parquet
+
+# Pagination enabled
+with-pagination: true
+
+# Authentication not required for validation testing
+auth:
+  enabled: false
+
+# Operation config - enable strict validation
+operation:
+  type: Read
+  validate-before-write: true  # Enable unknown parameter detection
+

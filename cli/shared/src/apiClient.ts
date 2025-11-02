@@ -84,14 +84,21 @@ export class FlapiApiClient {
   constructor(options: FlapiApiClientOptions) {
     this.debug = options.debug ?? false;
     
+    const headers: Record<string, string> = {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    };
+    
+    // For config service endpoints, send both X-Config-Token and Authorization headers
+    if (options.token) {
+      headers['X-Config-Token'] = options.token;
+      headers['Authorization'] = `Bearer ${options.token}`;
+    }
+    
     this.client = axios.create({
       baseURL: options.baseURL,
       timeout: options.timeout ?? 30000,
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        ...(options.token && { 'Authorization': `Bearer ${options.token}` })
-      }
+      headers
     });
 
     this.setupInterceptors();

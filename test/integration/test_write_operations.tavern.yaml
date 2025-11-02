@@ -1,0 +1,79 @@
+---
+test_name: Write Operations Integration Tests
+marks:
+  - integration
+
+stages:
+  - name: Test POST endpoint creates record
+    request:
+      url: "{base_url}/test-write"
+      method: POST
+      headers:
+        Content-Type: application/json
+      json:
+        name: "Test User"
+        email: "test@example.com"
+    response:
+      status_code: [201, 200]
+      headers:
+        content-type: "application/json"
+      json:
+        rows_affected: 1
+
+  - name: Test PUT endpoint updates record
+    request:
+      url: "{base_url}/test-write/1"
+      method: PUT
+      headers:
+        Content-Type: application/json
+      json:
+        name: "Updated Name"
+        email: "updated@example.com"
+    response:
+      status_code: [200, 404]  # 404 if record doesn't exist
+      headers:
+        content-type: "application/json"
+
+  - name: Test PATCH endpoint partial update
+    request:
+      url: "{base_url}/test-write/1"
+      method: PATCH
+      headers:
+        Content-Type: application/json
+      json:
+        email: "patched@example.com"
+    response:
+      status_code: [200, 404]
+      headers:
+        content-type: "application/json"
+
+  - name: Test write endpoint validation error
+    request:
+      url: "{base_url}/test-write"
+      method: POST
+      headers:
+        Content-Type: application/json
+      json:
+        email: "test@example.com"
+        # Missing required 'name' field
+    response:
+      status_code: [400]  # Bad Request for validation errors
+      headers:
+        content-type: "application/json"
+      json:
+        errors: !any
+
+  - name: Test CORS preflight for write operations
+    request:
+      url: "{base_url}/test-write"
+      method: OPTIONS
+      headers:
+        Origin: "http://localhost:3000"
+        Access-Control-Request-Method: "POST"
+        Access-Control-Request-Headers: "Content-Type"
+    response:
+      status_code: [200, 204]
+      headers:
+        access-control-allow-methods: !anystr  # Should include POST, PUT, PATCH
+        access-control-allow-origin: "*"
+

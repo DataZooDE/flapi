@@ -11,6 +11,7 @@ add_executable(flapi_tests
     config_service_parameters_test.cpp
     config_service_slug_test.cpp
     config_service_template_lookup_test.cpp
+    config_service_schema_test.cpp
     database_manager_test.cpp
     endpoint_config_parser_test.cpp
     extended_yaml_parser_test.cpp

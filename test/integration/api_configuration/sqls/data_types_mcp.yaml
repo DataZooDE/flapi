@@ -1,0 +1,26 @@
+# MCP Tool: Data Types
+# Returns data from data_types.parquet to test various data types
+
+mcp-tool:
+  name: data_types
+  description: Get data types test data from parquet file
+  result_mime_type: application/json
+
+request:
+  - field-name: limit
+    field-in: query
+    description: Number of records to return
+    required: false
+    validators:
+      - type: int
+        min: 1
+        max: 1000
+        preventSqlInjection: true
+
+template-source: data_types.sql
+connection:
+  - data-types-parquet
+
+auth:
+  enabled: false
+

@@ -4,14 +4,24 @@ import axiosRetry from 'axios-retry';
 import type { ApiClientConfig } from './types';
 
 export function createApiClient(config: ApiClientConfig) {
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    ...config.headers,
+  };
+  
+  // For config service endpoints, prefer X-Config-Token header
+  // But also support Authorization: Bearer for backward compatibility
+  if (config.authToken) {
+    // Check if this is a config service endpoint request
+    // Config service accepts both headers, but X-Config-Token is preferred
+    headers['X-Config-Token'] = config.authToken;
+    headers['Authorization'] = `Bearer ${config.authToken}`;
+  }
+  
   const instance = axios.create({
     baseURL: config.baseUrl.replace(/\/$/, ''),
     timeout: config.timeout * 1000,
-    headers: {
-      Accept: 'application/json',
-      ...config.headers,
-      ...(config.authToken ? { Authorization: `Bearer ${config.authToken}` } : {}),
-    },
+    headers,
     validateStatus: () => true,
     httpsAgent: config.verifyTls ? undefined : new https.Agent({ rejectUnauthorized: false }),
   });

@@ -565,6 +565,26 @@ void ConfigManager::parseEndpointCache(const YAML::Node& endpoint_config, const 
     if (endpoint.cache.template_file) {
         CROW_LOG_DEBUG << "\t\tTemplate File: " << endpoint.cache.template_file.value();
     }
+    
+    // Parse write operation cache options
+    if (cache_node["invalidate-on-write"]) {
+        endpoint.cache.invalidate_on_write = safeGet<bool>(cache_node, "invalidate-on-write", "cache.invalidate-on-write", false);
+    } else if (cache_node["invalidateOnWrite"]) {
+        endpoint.cache.invalidate_on_write = safeGet<bool>(cache_node, "invalidateOnWrite", "cache.invalidateOnWrite", false);
+    }
+    
+    if (cache_node["refresh-on-write"]) {
+        endpoint.cache.refresh_on_write = safeGet<bool>(cache_node, "refresh-on-write", "cache.refresh-on-write", false);
+    } else if (cache_node["refreshOnWrite"]) {
+        endpoint.cache.refresh_on_write = safeGet<bool>(cache_node, "refreshOnWrite", "cache.refreshOnWrite", false);
+    }
+    
+    if (endpoint.cache.invalidate_on_write) {
+        CROW_LOG_DEBUG << "\t\tInvalidate on Write: true";
+    }
+    if (endpoint.cache.refresh_on_write) {
+        CROW_LOG_DEBUG << "\t\tRefresh on Write: true";
+    }
 }
 
 void ConfigManager::parseEndpointHeartbeat(const YAML::Node& endpoint_config, EndpointConfig& endpoint) {
@@ -1250,8 +1270,29 @@ bool ConfigManager::replaceEndpoint(const EndpointConfig& endpoint) {
 }
 
 const EndpointConfig* ConfigManager::getEndpointForPath(const std::string& path) const {
+    // First try to find exact match (no method filtering)
     for (const auto& endpoint : endpoints) {
         if (endpoint.matchesPath(path)) {
+            return &endpoint;
+        }
+    }
+    return nullptr;
+}
+
+const EndpointConfig* ConfigManager::getEndpointForPathAndMethod(const std::string& path, const std::string& httpMethod) const {
+    std::string methodUpper = httpMethod;
+    std::transform(methodUpper.begin(), methodUpper.end(), methodUpper.begin(), ::toupper);
+    
+    for (const auto& endpoint : endpoints) {
+        if (!endpoint.matchesPath(path)) {
+            continue;
+        }
+        
+        // Match HTTP method
+        std::string endpointMethod = endpoint.method.empty() ? "GET" : endpoint.method;
+        std::transform(endpointMethod.begin(), endpointMethod.end(), endpointMethod.begin(), ::toupper);
+        
+        if (endpointMethod == methodUpper) {
             return &endpoint;
         }
     }

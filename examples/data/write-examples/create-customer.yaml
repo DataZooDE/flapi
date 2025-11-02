@@ -1,0 +1,63 @@
+# Example: Create Customer Endpoint (POST)
+# This endpoint demonstrates a write operation for creating new customer records
+
+url-path: /customers
+method: POST
+
+# Operation configuration
+operation:
+  type: write
+  returns-data: true          # Return the created record
+  transaction: true           # Wrap in transaction (default)
+  validate-before-write: true  # Enforce stricter validation (default)
+
+# Request parameters (extracted from JSON body)
+request:
+  - field-name: name
+    field-in: body
+    description: Customer full name
+    required: true
+    validators:
+      - type: string
+        min: 1
+        max: 255
+        preventSqlInjection: true
+
+  - field-name: email
+    field-in: body
+    description: Customer email address
+    required: true
+    validators:
+      - type: email
+
+  - field-name: phone
+    field-in: body
+    description: Customer phone number (optional)
+    required: false
+    validators:
+      - type: string
+        regex: '^\+?[1-9]\d{1,14}$'
+
+# SQL template for the write operation
+template-source: create-customer.sql
+
+# Database connection
+connection:
+  - customer-db
+
+# Cache configuration
+cache:
+  enabled: true
+  table: customers_cache
+  invalidate-on-write: true   # Invalidate cache after insert
+  refresh-on-write: false     # Don't refresh immediately (can be expensive)
+
+# Authentication
+auth:
+  enabled: true
+  type: basic
+  users:
+    - username: api_user
+      password: '{{env.API_PASSWORD}}'
+      roles: [write]
+

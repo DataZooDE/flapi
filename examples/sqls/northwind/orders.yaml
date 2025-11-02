@@ -1,0 +1,48 @@
+# Northwind Orders Endpoint with Order Details (Read-Only)
+# Returns order information with associated order details joined
+
+url-path: /northwind/orders/
+method: GET
+
+# Request parameters
+request:
+  - field-name: order_id
+    field-in: query
+    description: Order ID
+    required: false
+    validators:
+      - type: int
+        min: 1
+        preventSqlInjection: true
+
+  - field-name: customer_id
+    field-in: query
+    description: Customer ID (e.g., "ALFKI")
+    required: false
+    validators:
+      - type: string
+        min: 1
+        max: 10
+        preventSqlInjection: true
+
+  - field-name: order_date
+    field-in: query
+    description: Filter by order date (YYYY-MM-DD format)
+    required: false
+    validators:
+      - type: date
+
+  - field-name: shipped_date
+    field-in: query
+    description: Filter by shipped date (YYYY-MM-DD format)
+    required: false
+    validators:
+      - type: date
+
+template-source: orders.sql
+connection:
+  - northwind-sqlite
+
+# Pagination enabled
+with-pagination: true
+

@@ -1,5 +1,7 @@
 #include "endpoint_config_parser.hpp"
 #include <crow/logging.h>
+#include <algorithm>
+#include <cctype>
 
 namespace flapi {
 
@@ -141,6 +143,14 @@ void EndpointConfigParser::parseRestEndpointFields(
     config.method = config_manager_->safeGet<std::string>(yaml_node, "method", "method", "GET");
     config.with_pagination = config_manager_->safeGet<bool>(yaml_node, "with-pagination", "with-pagination", true);
     config.request_fields_validation = config_manager_->safeGet<bool>(yaml_node, "request-fields-validation", "request-fields-validation", false);
+    
+    // Auto-detect write operation based on HTTP method (for backward compatibility)
+    // This can be overridden by explicit operation.type in YAML
+    std::string method_upper = config.method;
+    std::transform(method_upper.begin(), method_upper.end(), method_upper.begin(), ::toupper);
+    if (method_upper == "POST" || method_upper == "PUT" || method_upper == "PATCH") {
+        config.operation.type = OperationConfig::Write;
+    }
 }
 
 void EndpointConfigParser::parseMcpToolFields(
@@ -297,6 +307,52 @@ void EndpointConfigParser::parseCommonFields(
         config_manager_->parseEndpointHeartbeat(yaml_node, config);
     } catch (const std::exception& e) {
         throw std::runtime_error(std::string("parseEndpointHeartbeat failed: ") + e.what());
+    }
+    
+    // Parse operation configuration (can override method-based defaults)
+    parseOperationConfig(yaml_node, config);
+}
+
+void EndpointConfigParser::parseOperationConfig(
+    const YAML::Node& yaml_node,
+    EndpointConfig& config
+) {
+    if (!yaml_node["operation"]) {
+        // No operation config specified, keep defaults (set by method or default to Read)
+        return;
+    }
+    
+    auto operation_node = yaml_node["operation"];
+    
+    // Parse operation type if specified
+    if (operation_node["type"]) {
+        std::string type_str = operation_node["type"].as<std::string>();
+        std::transform(type_str.begin(), type_str.end(), type_str.begin(), ::tolower);
+        if (type_str == "write") {
+            config.operation.type = OperationConfig::Write;
+        } else if (type_str == "read") {
+            config.operation.type = OperationConfig::Read;
+        }
+        // Otherwise keep existing value (from method-based detection)
+    }
+    
+    // Parse returns_data
+    if (operation_node["returns-data"]) {
+        config.operation.returns_data = operation_node["returns-data"].as<bool>();
+    } else if (operation_node["returnsData"]) {
+        config.operation.returns_data = operation_node["returnsData"].as<bool>();
+    }
+    
+    // Parse transaction
+    if (operation_node["transaction"]) {
+        config.operation.transaction = operation_node["transaction"].as<bool>();
+    }
+    
+    // Parse validate_before_write
+    if (operation_node["validate-before-write"]) {
+        config.operation.validate_before_write = operation_node["validate-before-write"].as<bool>();
+    } else if (operation_node["validateBeforeWrite"]) {
+        config.operation.validate_before_write = operation_node["validateBeforeWrite"].as<bool>();
     }
 }
 

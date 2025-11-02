@@ -1,6 +1,6 @@
 mcp-tool:
   name: get_customers
-  description: Get customers by segment
+  description: Get customers by segment with enum validation
   result_mime_type: application/json
 
 request:
@@ -9,11 +9,28 @@ request:
     description: Customer segment
     required: false
     validators:
-      - type: string
+      - type: enum
+        allowedValues: ["BUILDING", "AUTOMOBILE", "MACHINERY", "HOUSEHOLD", "FURNITURE"]
+        preventSqlInjection: true
 
-template-source: customers.sql
+  - field-name: limit
+    field-in: query
+    description: Maximum number of records to return
+    required: false
+    validators:
+      - type: int
+        min: 1
+        max: 1000
+        preventSqlInjection: true
+
+template-source: customers-get.sql
 connection:
   - data-types-parquet
 
 auth:
-  enabled: false
+  enabled: true
+  type: basic
+  users:
+    - username: admin
+      password: secret
+      roles: [admin, read, write]

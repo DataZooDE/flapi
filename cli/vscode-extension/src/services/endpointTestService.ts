@@ -109,6 +109,25 @@ export class EndpointTestService {
       // Parse cookies from Set-Cookie header
       const cookies = this.parseCookies(response.headers['set-cookie'] || response.headers['Set-Cookie']);
 
+      // Detect write operation response
+      let parsedBody: any = null;
+      let isWriteOperation = false;
+      let rowsAffected: number | undefined;
+      let returnedData: any[] | undefined;
+      let lastInsertId: number | undefined;
+      
+      try {
+        parsedBody = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
+        if (parsedBody && typeof parsedBody === 'object') {
+          isWriteOperation = 'rows_affected' in parsedBody || 'returned_data' in parsedBody || 'last_insert_id' in parsedBody;
+          rowsAffected = parsedBody.rows_affected;
+          returnedData = Array.isArray(parsedBody.returned_data) ? parsedBody.returned_data : undefined;
+          lastInsertId = parsedBody.last_insert_id;
+        }
+      } catch (e) {
+        // Not JSON or parse error
+      }
+
       const responseInfo: ResponseInfo = {
         status: response.status,
         statusText: response.statusText,
@@ -117,7 +136,11 @@ export class EndpointTestService {
         headers: response.headers as Record<string, string>,
         body: responseBody,
         contentType,
-        cookies
+        cookies,
+        isWriteOperation,
+        rows_affected: rowsAffected,
+        returned_data: returnedData,
+        last_insert_id: lastInsertId
       };
 
       this.outputChannel.appendLine(`Response: ${response.status} ${response.statusText} (${time}ms, ${size} bytes)`);

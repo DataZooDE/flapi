@@ -1,6 +1,6 @@
 mcp-tool:
   name: customers
-  description: Retrieve customer information by ID
+  description: Retrieve customer information by ID with comprehensive validation
   result_mime_type: application/json
 
 request:
@@ -9,11 +9,21 @@ request:
     description: Customer ID
     required: false
     validators:
-      - type: string
+      - type: int
+        min: 1
+        preventSqlInjection: true
 
-template-source: customers.sql
+template-source: customers-get.sql
 connection:
   - data-types-parquet
 
 auth:
-  enabled: false
+  enabled: true
+  type: basic
+  users:
+    - username: admin
+      password: secret
+      roles: [admin, read, write]
+    - username: user
+      password: password
+      roles: [read]

@@ -1,0 +1,28 @@
+# Northwind Products Delete Endpoint (DELETE)
+# Deletes a product from the Northwind database
+
+url-path: /northwind/products/:product_id
+method: DELETE
+
+# Operation configuration
+operation:
+  type: write
+  returns-data: false
+  transaction: true
+  validate-before-write: true
+
+# Request parameters
+request:
+  - field-name: product_id
+    field-in: path
+    description: Product ID to delete
+    required: true
+    validators:
+      - type: int
+        min: 1
+        preventSqlInjection: true
+
+template-source: products-delete.sql
+connection:
+  - northwind-sqlite
+

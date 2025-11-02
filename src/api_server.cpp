@@ -107,22 +107,22 @@ void APIServer::setupRoutes() {
             return generateOpenAPIDoc();
         });
 
-    // Endpoint route
-    CROW_ROUTE(app, "/<path>")
-        .methods("GET"_method, "DELETE"_method)
-        ([this](const crow::request& req, crow::response& res, std::string path) {
-            handleDynamicRequest(req, res);
-            res.end();
-        });
-
-    // Register MCP routes (always enabled in unified configuration)
+    // Register MCP routes BEFORE the catch-all route
+    // This ensures /mcp/jsonrpc matches before the catch-all /<path> route
     if (mcpRouteHandlers) {
         mcpRouteHandlers->registerRoutes(app, configManager->getHttpPort());
     } else {
         CROW_LOG_WARNING << "MCP Route Handlers not initialized, skipping MCP route registration";
     }
 
-    // MCP Health endpoint moved back to MCPRouteHandlers
+    // Endpoint route (supports GET, POST, PUT, PATCH, DELETE)
+    // Must be registered LAST so specific routes (like /mcp/jsonrpc) match first
+    CROW_ROUTE(app, "/<path>")
+        .methods("GET"_method, "POST"_method, "PUT"_method, "PATCH"_method, "DELETE"_method)
+        ([this](const crow::request& req, crow::response& res, std::string path) {
+            handleDynamicRequest(req, res);
+            res.end();
+        });
 
     CROW_LOG_INFO << "Routes set up completed";
 }
@@ -131,7 +131,7 @@ void APIServer::setupCORS() {
     auto& cors = app.get_middleware<crow::CORSHandler>();
     cors.global()
         .headers("*")
-        .methods("GET"_method, "DELETE"_method);
+        .methods("GET"_method, "POST"_method, "PUT"_method, "PATCH"_method, "DELETE"_method);
 }
 
 void APIServer::setupHeartbeat() {
@@ -142,7 +142,9 @@ void APIServer::setupHeartbeat() {
 void APIServer::handleDynamicRequest(const crow::request& req, crow::response& res) 
 {
     std::string path = req.url;
-    const auto& endpoint = configManager->getEndpointForPath(path);
+    // Match endpoint by both path and HTTP method
+    std::string method = crow::method_name(req.method);
+    const auto& endpoint = configManager->getEndpointForPathAndMethod(path, method);
 
     if (!endpoint) {
         res.code = 404;

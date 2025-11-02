@@ -61,12 +61,15 @@ def flapi_server():
     print(f"Using temporary database: {db_path}")
     
     # Start flapi binary with configuration and port
+    # Enable config service for integration tests with a test token
     process = subprocess.Popen(
         [
             str(flapi_binary),
             "-c", str(config_path),
             "-p", str(port),
-            "--log-level", "debug"
+            "--log-level", "debug",
+            "--config-service",
+            "--config-service-token", "test-token"
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -177,6 +180,11 @@ def wait_for_api(flapi_server):
 @pytest.fixture
 def flapi_base_url(flapi_server):
     """Provide the base URL for the FLAPI server."""
+    return f"http://localhost:{flapi_server.port}"
+
+@pytest.fixture
+def base_url(flapi_server):
+    """Provide base_url for Tavern tests (uses flapi_server.port)."""
     return f"http://localhost:{flapi_server.port}"
 
 def verify_data_types(response, expected_types):

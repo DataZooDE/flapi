@@ -213,3 +213,190 @@ this is: not
     fs::remove(config_file);
 }
 
+TEST_CASE("EndpointConfigParser: Parse operation config defaults", "[endpoint_parser]") {
+    std::string yaml_content = R"(
+url-path: /test
+method: GET
+template-source: test.sql
+connection:
+  - test_db
+)";
+    
+    std::string yaml_file = createTempYamlFile(yaml_content, "endpoint_defaults_test.yaml");
+    std::string config_file = createMinimalFlapiConfig();
+    
+    ConfigManager manager{fs::path(config_file)};
+    EndpointConfigParser parser(manager.getYamlParser(), &manager);
+    auto result = parser.parseFromFile(yaml_file);
+    
+    REQUIRE(result.success == true);
+    // Default should be Read operation
+    REQUIRE(result.config.operation.type == OperationConfig::Read);
+    REQUIRE(result.config.operation.transaction == true);
+    REQUIRE(result.config.operation.returns_data == false);
+    REQUIRE(result.config.operation.validate_before_write == true);
+    
+    fs::remove(yaml_file);
+    fs::remove(config_file);
+}
+
+TEST_CASE("EndpointConfigParser: Auto-detect write operation from POST method", "[endpoint_parser]") {
+    std::string yaml_content = R"(
+url-path: /test
+method: POST
+template-source: test.sql
+connection:
+  - test_db
+)";
+    
+    std::string yaml_file = createTempYamlFile(yaml_content, "endpoint_post_test.yaml");
+    std::string config_file = createMinimalFlapiConfig();
+    
+    ConfigManager manager{fs::path(config_file)};
+    EndpointConfigParser parser(manager.getYamlParser(), &manager);
+    auto result = parser.parseFromFile(yaml_file);
+    
+    REQUIRE(result.success == true);
+    REQUIRE(result.config.method == "POST");
+    REQUIRE(result.config.operation.type == OperationConfig::Write);
+    
+    fs::remove(yaml_file);
+    fs::remove(config_file);
+}
+
+TEST_CASE("EndpointConfigParser: Auto-detect write operation from PUT method", "[endpoint_parser]") {
+    std::string yaml_content = R"(
+url-path: /test
+method: PUT
+template-source: test.sql
+connection:
+  - test_db
+)";
+    
+    std::string yaml_file = createTempYamlFile(yaml_content, "endpoint_put_test.yaml");
+    std::string config_file = createMinimalFlapiConfig();
+    
+    ConfigManager manager{fs::path(config_file)};
+    EndpointConfigParser parser(manager.getYamlParser(), &manager);
+    auto result = parser.parseFromFile(yaml_file);
+    
+    REQUIRE(result.success == true);
+    REQUIRE(result.config.method == "PUT");
+    REQUIRE(result.config.operation.type == OperationConfig::Write);
+    
+    fs::remove(yaml_file);
+    fs::remove(config_file);
+}
+
+TEST_CASE("EndpointConfigParser: Auto-detect write operation from PATCH method", "[endpoint_parser]") {
+    std::string yaml_content = R"(
+url-path: /test
+method: PATCH
+template-source: test.sql
+connection:
+  - test_db
+)";
+    
+    std::string yaml_file = createTempYamlFile(yaml_content, "endpoint_patch_test.yaml");
+    std::string config_file = createMinimalFlapiConfig();
+    
+    ConfigManager manager{fs::path(config_file)};
+    EndpointConfigParser parser(manager.getYamlParser(), &manager);
+    auto result = parser.parseFromFile(yaml_file);
+    
+    REQUIRE(result.success == true);
+    REQUIRE(result.config.method == "PATCH");
+    REQUIRE(result.config.operation.type == OperationConfig::Write);
+    
+    fs::remove(yaml_file);
+    fs::remove(config_file);
+}
+
+TEST_CASE("EndpointConfigParser: Parse explicit operation config", "[endpoint_parser]") {
+    std::string yaml_content = R"(
+url-path: /test
+method: POST
+template-source: test.sql
+connection:
+  - test_db
+operation:
+  type: write
+  returns-data: true
+  transaction: false
+  validate-before-write: false
+)";
+    
+    std::string yaml_file = createTempYamlFile(yaml_content, "endpoint_operation_test.yaml");
+    std::string config_file = createMinimalFlapiConfig();
+    
+    ConfigManager manager{fs::path(config_file)};
+    EndpointConfigParser parser(manager.getYamlParser(), &manager);
+    auto result = parser.parseFromFile(yaml_file);
+    
+    REQUIRE(result.success == true);
+    REQUIRE(result.config.operation.type == OperationConfig::Write);
+    REQUIRE(result.config.operation.returns_data == true);
+    REQUIRE(result.config.operation.transaction == false);
+    REQUIRE(result.config.operation.validate_before_write == false);
+    
+    fs::remove(yaml_file);
+    fs::remove(config_file);
+}
+
+TEST_CASE("EndpointConfigParser: Override method-based operation detection", "[endpoint_parser]") {
+    std::string yaml_content = R"(
+url-path: /test
+method: POST
+template-source: test.sql
+connection:
+  - test_db
+operation:
+  type: read
+)";
+    
+    std::string yaml_file = createTempYamlFile(yaml_content, "endpoint_override_test.yaml");
+    std::string config_file = createMinimalFlapiConfig();
+    
+    ConfigManager manager{fs::path(config_file)};
+    EndpointConfigParser parser(manager.getYamlParser(), &manager);
+    auto result = parser.parseFromFile(yaml_file);
+    
+    REQUIRE(result.success == true);
+    REQUIRE(result.config.method == "POST");
+    // Explicit operation.type should override method-based detection
+    REQUIRE(result.config.operation.type == OperationConfig::Read);
+    
+    fs::remove(yaml_file);
+    fs::remove(config_file);
+}
+
+TEST_CASE("EndpointConfigParser: Parse cache write options", "[endpoint_parser]") {
+    std::string yaml_content = R"(
+url-path: /test
+method: POST
+template-source: test.sql
+connection:
+  - test_db
+cache:
+  enabled: true
+  table: test_cache
+  invalidate-on-write: true
+  refresh-on-write: true
+)";
+    
+    std::string yaml_file = createTempYamlFile(yaml_content, "endpoint_cache_write_test.yaml");
+    std::string config_file = createMinimalFlapiConfig();
+    
+    ConfigManager manager{fs::path(config_file)};
+    EndpointConfigParser parser(manager.getYamlParser(), &manager);
+    auto result = parser.parseFromFile(yaml_file);
+    
+    REQUIRE(result.success == true);
+    REQUIRE(result.config.cache.enabled == true);
+    REQUIRE(result.config.cache.invalidate_on_write == true);
+    REQUIRE(result.config.cache.refresh_on_write == true);
+    
+    fs::remove(yaml_file);
+    fs::remove(config_file);
+}
+

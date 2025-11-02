@@ -226,3 +226,176 @@ TEST_CASE_METHOD(TestFixture, "DatabaseManager handles concurrent connections", 
     
     REQUIRE(successful_queries == num_threads);
 } 
+
+TEST_CASE_METHOD(TestFixture, "DatabaseManager executeWrite INSERT operation", "[database_manager]") {
+    // Create a test table with auto-incrementing primary key
+    db_manager->executeQuery("CREATE TABLE test_write (id INTEGER PRIMARY KEY, name VARCHAR, email VARCHAR)", {}, false);
+    
+    // Create endpoint config for write operation
+    EndpointConfig endpoint;
+    endpoint.templateSource = (templates_dir / "insert_test.sql").string();
+    endpoint.operation.type = OperationConfig::Write;
+    endpoint.operation.transaction = true;
+    endpoint.connection.push_back("default");
+    
+    // Create INSERT SQL template with explicit ID to avoid NOT NULL constraint
+    std::ofstream template_file(templates_dir / "insert_test.sql");
+    template_file << "INSERT INTO test_write (id, name, email) VALUES ({{params.id}}, '{{params.name}}', '{{params.email}}') RETURNING id, name, email";
+    template_file.close();
+    
+    // Prepare parameters
+    std::map<std::string, std::string> params;
+    params["id"] = "1";
+    params["name"] = "Test User";
+    params["email"] = "test@example.com";
+    
+    // Execute write operation
+    auto result = db_manager->executeWrite(endpoint, params);
+    
+    REQUIRE(result.rows_affected == 1);
+    REQUIRE(result.returned_data.has_value());
+    REQUIRE(result.returned_data.value().size() == 1);
+    REQUIRE(result.returned_data.value()[0]["name"].dump() == "\"Test User\"");
+    REQUIRE(result.returned_data.value()[0]["email"].dump() == "\"test@example.com\"");
+}
+
+TEST_CASE_METHOD(TestFixture, "DatabaseManager executeWrite UPDATE operation", "[database_manager]") {
+    // Create and populate test table
+    db_manager->executeQuery("CREATE TABLE test_update (id INTEGER PRIMARY KEY, name VARCHAR, email VARCHAR)", {}, false);
+    db_manager->executeQuery("INSERT INTO test_update (id, name, email) VALUES (1, 'Old Name', 'old@example.com')", {}, false);
+    
+    // Create UPDATE SQL template
+    EndpointConfig endpoint;
+    endpoint.templateSource = (templates_dir / "update_test.sql").string();
+    endpoint.operation.type = OperationConfig::Write;
+    endpoint.operation.transaction = true;
+    endpoint.connection.push_back("default");
+    
+    std::ofstream template_file(templates_dir / "update_test.sql");
+    template_file << "UPDATE test_update SET name = '{{params.name}}', email = '{{params.email}}' WHERE id = {{params.id}} RETURNING id, name, email";
+    template_file.close();
+    
+    std::map<std::string, std::string> params;
+    params["id"] = "1";
+    params["name"] = "New Name";
+    params["email"] = "new@example.com";
+    
+    auto result = db_manager->executeWrite(endpoint, params);
+    
+    REQUIRE(result.rows_affected == 1);
+    REQUIRE(result.returned_data.has_value());
+    REQUIRE(result.returned_data.value()[0]["name"].dump() == "\"New Name\"");
+    
+    // Verify the update actually happened
+    auto verify_result = db_manager->executeQuery("SELECT name, email FROM test_update WHERE id = 1", {}, false);
+    REQUIRE(verify_result.data[0]["name"].dump() == "\"New Name\"");
+}
+
+TEST_CASE_METHOD(TestFixture, "DatabaseManager executeWrite DELETE operation", "[database_manager]") {
+    // Create and populate test table
+    db_manager->executeQuery("CREATE TABLE test_delete (id INTEGER PRIMARY KEY, name VARCHAR)", {}, false);
+    db_manager->executeQuery("INSERT INTO test_delete (id, name) VALUES (1, 'Test'), (2, 'Keep'), (3, 'Delete')", {}, false);
+    
+    EndpointConfig endpoint;
+    endpoint.templateSource = (templates_dir / "delete_test.sql").string();
+    endpoint.operation.type = OperationConfig::Write;
+    endpoint.operation.transaction = true;
+    endpoint.connection.push_back("default");
+    
+    std::ofstream template_file(templates_dir / "delete_test.sql");
+    template_file << "DELETE FROM test_delete WHERE id = {{params.id}}";
+    template_file.close();
+    
+    std::map<std::string, std::string> params;
+    params["id"] = "3";
+    
+    auto result = db_manager->executeWrite(endpoint, params);
+    
+    REQUIRE(result.rows_affected == 1);
+    
+    // Verify the delete actually happened
+    auto verify_result = db_manager->executeQuery("SELECT COUNT(*) as count FROM test_delete", {}, false);
+    REQUIRE(verify_result.data[0]["count"].dump() == "2");
+}
+
+TEST_CASE_METHOD(TestFixture, "DatabaseManager executeWriteInTransaction rollback on error", "[database_manager]") {
+    // Create test table
+    db_manager->executeQuery("CREATE TABLE test_transaction (id INTEGER PRIMARY KEY, name VARCHAR UNIQUE)", {}, false);
+    db_manager->executeQuery("INSERT INTO test_transaction (id, name) VALUES (1, 'Existing')", {}, false);
+    
+    EndpointConfig endpoint;
+    endpoint.templateSource = (templates_dir / "transaction_test.sql").string();
+    endpoint.operation.type = OperationConfig::Write;
+    endpoint.operation.transaction = true;
+    endpoint.connection.push_back("default");
+    
+    std::ofstream template_file(templates_dir / "transaction_test.sql");
+    template_file << "INSERT INTO test_transaction (id, name) VALUES ({{params.id}}, '{{params.name}}')";
+    template_file.close();
+    
+    std::map<std::string, std::string> params;
+    params["id"] = "2";
+    params["name"] = "Existing";  // This will cause a UNIQUE constraint violation
+    
+    // Should throw an exception and rollback
+    REQUIRE_THROWS_AS(db_manager->executeWriteInTransaction(endpoint, params), std::exception);
+    
+    // Verify no rows were inserted (transaction rolled back)
+    auto verify_result = db_manager->executeQuery("SELECT COUNT(*) as count FROM test_transaction", {}, false);
+    REQUIRE(verify_result.data[0]["count"].dump() == "1");  // Only the original row
+}
+
+TEST_CASE_METHOD(TestFixture, "DatabaseManager executeWrite without RETURNING clause", "[database_manager]") {
+    db_manager->executeQuery("CREATE TABLE test_no_returning (id INTEGER PRIMARY KEY, name VARCHAR)", {}, false);
+    
+    EndpointConfig endpoint;
+    endpoint.templateSource = (templates_dir / "insert_no_returning.sql").string();
+    endpoint.operation.type = OperationConfig::Write;
+    endpoint.operation.transaction = false;  // Test without transaction
+    endpoint.connection.push_back("default");
+    
+    std::ofstream template_file(templates_dir / "insert_no_returning.sql");
+    template_file << "INSERT INTO test_no_returning (id, name) VALUES ({{params.id}}, '{{params.name}}')";
+    template_file.close();
+    
+    std::map<std::string, std::string> params;
+    params["id"] = "1";
+    params["name"] = "Test";
+    
+    auto result = db_manager->executeWrite(endpoint, params);
+    
+    REQUIRE(result.rows_affected == 1);
+    // Note: Without RETURNING clause, DuckDB may still return an empty result structure
+    // The key assertion is that rows_affected is correct, indicating the INSERT succeeded
+    // If returned_data exists (even as an empty array), that's acceptable
+    // The important distinction is that there's no actual data to return (empty array vs populated array)
+}
+
+TEST_CASE_METHOD(TestFixture, "DatabaseManager cache invalidation after write", "[database_manager]") {
+    // Create a cached endpoint
+    EndpointConfig endpoint;
+    endpoint.urlPath = "/test";
+    endpoint.cache.enabled = true;
+    endpoint.cache.table = "test_cache";
+    endpoint.cache.invalidate_on_write = true;
+    
+    // Verify isCacheEnabled works
+    REQUIRE(db_manager->isCacheEnabled(endpoint) == true);
+    
+    // Verify invalidateCache can be called (implementation may vary)
+    // The actual cache invalidation depends on CacheManager implementation
+    // Result may be true or false depending on cache state, but should not throw
+    REQUIRE_NOTHROW(db_manager->invalidateCache(endpoint));
+}
+
+TEST_CASE_METHOD(TestFixture, "DatabaseManager cache behavior: no action when disabled", "[database_manager]") {
+    EndpointConfig endpoint;
+    endpoint.urlPath = "/test";
+    endpoint.cache.enabled = false;
+    endpoint.cache.invalidate_on_write = true;  // Even if configured, should not invalidate if cache disabled
+    
+    REQUIRE(db_manager->isCacheEnabled(endpoint) == false);
+    
+    // Should not throw when trying to invalidate disabled cache
+    REQUIRE_NOTHROW(db_manager->invalidateCache(endpoint));
+} 

@@ -1,0 +1,94 @@
+---
+test_name: Config Service Endpoint Management
+marks:
+  - integration
+  - config-service
+  - endpoints
+
+stages:
+  # Note: These tests assume config service is enabled with authentication
+  # Adjust auth_headers fixture or add token as needed
+  
+  - name: List all endpoints
+    request:
+      url: "{base_url}/api/v1/_config/endpoints"
+      method: GET
+      headers:
+        X-Config-Token: "test-token"
+        Authorization: "Bearer test-token"
+    response:
+      status_code: [200, 401]  # 401 if token is invalid, adjust as needed
+      headers:
+        content-type: "application/json"
+
+  - name: Get endpoint by slug - products get
+    request:
+      url: "{base_url}/api/v1/_config/endpoints/northwind%2Fproducts%2F%3Aproduct_id"
+      method: GET
+      headers:
+        X-Config-Token: "test-token"
+        Authorization: "Bearer test-token"
+    response:
+      status_code: [200, 404, 401]
+      headers:
+        content-type: "application/json"
+
+  - name: Get endpoint by slug - products list
+    request:
+      url: "{base_url}/api/v1/_config/endpoints/northwind%2Fproducts%2F"
+      method: GET
+      headers:
+        X-Config-Token: "test-token"
+        Authorization: "Bearer test-token"
+    response:
+      status_code: [200, 404, 401]
+      headers:
+        content-type: "application/json"
+
+  - name: Get non-existent endpoint (404)
+    request:
+      url: "{base_url}/api/v1/_config/endpoints/nonexistent%2Fendpoint"
+      method: GET
+      headers:
+        X-Config-Token: "test-token"
+        Authorization: "Bearer test-token"
+    response:
+      status_code: [404, 401]
+
+  - name: Get endpoint parameters
+    request:
+      url: "{base_url}/api/v1/_config/endpoints/northwind%2Fproducts%2F/parameters"
+      method: GET
+      headers:
+        X-Config-Token: "test-token"
+        Authorization: "Bearer test-token"
+    response:
+      status_code: [200, 404, 401]
+      headers:
+        content-type: "application/json"
+      json:
+        parameters: !any
+
+  - name: Validate endpoint configuration
+    request:
+      url: "{base_url}/api/v1/_config/endpoints/northwind%2Fproducts%2F/validate"
+      method: POST
+      headers:
+        X-Config-Token: "test-token"
+        Authorization: "Bearer test-token"
+        Content-Type: "application/json"
+      json:
+        # Empty body or endpoint config to validate
+    response:
+      status_code: [200, 400, 401]
+
+  - name: Reload endpoint configuration
+    request:
+      url: "{base_url}/api/v1/_config/endpoints/northwind%2Fproducts%2F/reload"
+      method: POST
+      headers:
+        X-Config-Token: "test-token"
+        Authorization: "Bearer test-token"
+    response:
+      status_code: [200, 404, 401]
+

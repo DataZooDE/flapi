@@ -1,5 +1,7 @@
 #include "open_api_doc_generator.hpp"
 #include <sstream>
+#include <map>
+#include <vector>
 
 namespace flapi {
 
@@ -36,8 +38,130 @@ YAML::Node OpenAPIDocGenerator::generateDoc(crow::App<crow::CORSHandler, RateLim
     doc["components"]["securitySchemes"]["basicAuth"]["description"] = "Basic HTTP Authentication";
 
     // Paths
+    // Group endpoints by URL path to merge multiple HTTP methods for the same path
+    std::map<std::string, std::vector<EndpointConfig>> endpointsByPath;
     for (const auto& endpoint : configManager->getEndpoints()) {
-        doc["paths"][endpoint.urlPath] = generatePathItem(endpoint);
+        endpointsByPath[endpoint.urlPath].push_back(endpoint);
+    }
+    
+    // Generate path items, merging multiple methods for the same path
+    for (const auto& [path, endpoints] : endpointsByPath) {
+        YAML::Node pathItem;
+        
+        // Generate operations for all endpoints with this path
+        for (const auto& endpoint : endpoints) {
+            std::string method = endpoint.method.empty() ? "get" : endpoint.method;
+            std::transform(method.begin(), method.end(), method.begin(), ::tolower);
+            
+            YAML::Node operation;
+            operation["summary"] = "Endpoint for " + endpoint.urlPath;
+            operation["description"] = "Description not available";
+            operation["parameters"] = generateParameters(endpoint.request_fields);
+            operation["responses"]["200"]["description"] = "Successful response";
+            operation["responses"]["200"]["content"]["application/json"]["schema"] = generateResponseSchema(endpoint);
+            
+            if (endpoint.rate_limit.enabled) {
+                operation["x-rate-limit"]["max"] = endpoint.rate_limit.max;
+                operation["x-rate-limit"]["interval"] = endpoint.rate_limit.interval;
+            }
+            
+            // Add security requirement based on auth type
+            if (endpoint.auth.enabled) {
+                operation["security"].push_back(YAML::Node());
+                if (endpoint.auth.type == "basic") {
+                    operation["security"][0]["basicAuth"] = YAML::Node(YAML::NodeType::Sequence);
+                } else {
+                    operation["security"][0]["bearerAuth"] = YAML::Node(YAML::NodeType::Sequence);
+                }
+            }
+            
+            // For write operations, add request body documentation
+            if (endpoint.operation.type == OperationConfig::Write && 
+                (method == "post" || method == "put" || method == "patch")) {
+                YAML::Node requestBody;
+                requestBody["description"] = "Request body with parameters for " + method + " operation";
+                requestBody["required"] = true;
+                YAML::Node content;
+                YAML::Node schema;
+                schema["type"] = "object";
+                YAML::Node properties;
+                for (const auto& field : endpoint.request_fields) {
+                    if (field.fieldIn == "body") {
+                        YAML::Node prop;
+                        prop["type"] = "string"; // Default, could be improved
+                        prop["description"] = field.description;
+                        properties[field.fieldName] = prop;
+                        
+                        if (field.required) {
+                            if (!schema["required"]) {
+                                schema["required"] = YAML::Node(YAML::NodeType::Sequence);
+                            }
+                            schema["required"].push_back(field.fieldName);
+                        }
+                    }
+                }
+                schema["properties"] = properties;
+                content["application/json"]["schema"] = schema;
+                requestBody["content"] = content;
+                operation["requestBody"] = requestBody;
+                
+                // Update response codes for write operations
+                if (method == "post") {
+                    // Create 201 response from 200
+                    YAML::Node createdResponse = operation["responses"]["200"];
+                    createdResponse["description"] = "Created successfully";
+                    operation["responses"]["201"] = createdResponse;
+                    // Remove 200 response
+                    operation["responses"].remove("200");
+                } else if (method == "put" || method == "patch") {
+                    operation["responses"]["200"]["description"] = "Updated successfully";
+                }
+            }
+            
+            pathItem[method] = operation;
+        }
+        
+        // Add DELETE endpoint documentation for cache invalidation if any endpoint has cache enabled
+        bool hasCacheEnabled = false;
+        for (const auto& endpoint : endpoints) {
+            if (dbManager->isCacheEnabled(endpoint)) {
+                hasCacheEnabled = true;
+                break;
+            }
+        }
+        
+        if (hasCacheEnabled && pathItem["delete"].IsNull()) {
+            YAML::Node deleteOperation;
+            deleteOperation["summary"] = "Invalidate cache for " + path;
+            deleteOperation["description"] = "Invalidates the cached data for this endpoint";
+            
+            deleteOperation["responses"]["200"]["description"] = "Cache successfully invalidated";
+            deleteOperation["responses"]["500"]["description"] = "Internal server error while invalidating cache";
+            
+            // Add security if any endpoint requires auth
+            bool requiresAuth = false;
+            std::string authType = "basic";
+            for (const auto& endpoint : endpoints) {
+                if (endpoint.auth.enabled) {
+                    requiresAuth = true;
+                    authType = endpoint.auth.type;
+                    break;
+                }
+            }
+            
+            if (requiresAuth) {
+                deleteOperation["security"].push_back(YAML::Node());
+                if (authType == "basic") {
+                    deleteOperation["security"][0]["basicAuth"] = YAML::Node(YAML::NodeType::Sequence);
+                } else {
+                    deleteOperation["security"][0]["bearerAuth"] = YAML::Node(YAML::NodeType::Sequence);
+                }
+            }
+            
+            pathItem["delete"] = deleteOperation;
+        }
+        
+        doc["paths"][path] = pathItem;
     }
 
     return doc;

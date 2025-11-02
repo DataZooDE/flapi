@@ -1,0 +1,86 @@
+# MCP Tool: Validation Test
+# Comprehensive validation testing via MCP
+
+mcp-tool:
+  name: validation_test
+  description: Test all validation types (string, int, email, uuid, date, time, enum)
+  result_mime_type: application/json
+
+# Operation configuration - strict validation
+operation:
+  type: Read
+  validate-before-write: true
+
+request:
+  - field-name: string_field
+    field-in: query
+    description: String field with regex validation
+    required: false
+    validators:
+      - type: string
+        min: 1
+        max: 100
+        regex: "^[a-zA-Z0-9\\s]+$"
+        preventSqlInjection: true
+
+  - field-name: int_field
+    field-in: query
+    description: Integer field with min/max
+    required: false
+    validators:
+      - type: int
+        min: 1
+        max: 10000
+        preventSqlInjection: true
+
+  - field-name: email_field
+    field-in: query
+    description: Email field validation
+    required: false
+    validators:
+      - type: email
+        preventSqlInjection: true
+
+  - field-name: uuid_field
+    field-in: query
+    description: UUID field validation
+    required: false
+    validators:
+      - type: uuid
+        preventSqlInjection: true
+
+  - field-name: date_field
+    field-in: query
+    description: Date field with min/max
+    required: false
+    validators:
+      - type: date
+        min: "2000-01-01"
+        max: "2023-12-31"
+        preventSqlInjection: true
+
+  - field-name: time_field
+    field-in: query
+    description: Time field with max
+    required: false
+    validators:
+      - type: time
+        max: "23:59:59"
+        preventSqlInjection: true
+
+  - field-name: enum_field
+    field-in: query
+    description: Enum field with allowed values
+    required: false
+    validators:
+      - type: enum
+        allowedValues: ["OPTION1", "OPTION2", "OPTION3"]
+        preventSqlInjection: true
+
+template-source: customers-get.sql
+connection:
+  - data-types-parquet
+
+auth:
+  enabled: false
+

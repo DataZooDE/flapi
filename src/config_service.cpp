@@ -1664,6 +1664,8 @@ std::filesystem::path TemplateHandler::resolveTemplatePath(const std::string& so
 
 crow::response SchemaHandler::getSchema(const crow::request& req) {
     try {
+        CROW_LOG_DEBUG << "SchemaHandler::getSchema called";
+        
         // Parse query parameters
         auto url_params = req.url_params;
         bool tables_only = url_params.get("tables") != nullptr;
@@ -1671,8 +1673,17 @@ crow::response SchemaHandler::getSchema(const crow::request& req) {
         bool completion_format = url_params.get("format") && std::string(url_params.get("format")) == "completion";
         std::string specific_connection = url_params.get("connection") ? url_params.get("connection") : "";
         
+        CROW_LOG_DEBUG << "Schema query params - tables_only: " << tables_only 
+                      << ", connections_only: " << connections_only 
+                      << ", completion_format: " << completion_format
+                      << ", connection: " << specific_connection;
+        
         // Get database manager instance
         auto db_manager = DatabaseManager::getInstance();
+        if (!db_manager) {
+            CROW_LOG_ERROR << "DatabaseManager instance is null";
+            return crow::response(500, "Internal server error: Database manager not initialized");
+        }
 
         // For now, return a simple response based on what's requested
         crow::json::wvalue response;
@@ -1686,34 +1697,91 @@ crow::response SchemaHandler::getSchema(const crow::request& req) {
         
         if (tables_only) {
             // Return table information in the format expected by CLI
+            // Use DuckDB's SHOW TABLES command instead of information_schema to avoid parser issues
+            const std::string tables_query = R"SQL(
+                SELECT 
+                    COALESCE(database, 'main') as schema_name,
+                    name as table_name,
+                    'table' as table_type
+                FROM duckdb_tables()
+                WHERE database NOT IN ('system', 'temp')
+                ORDER BY database, name
+            )SQL";
+            
+            try {
+                CROW_LOG_DEBUG << "Executing tables query for schema introspection";
+                auto tables_result = db_manager->executeQuery(tables_query, {}, false);
             response["tables"] = crow::json::wvalue::list();
-            // TODO: Implement actual table listing
+                
+                if (tables_result.data.t() != crow::json::type::Null) {
+                    CROW_LOG_DEBUG << "Tables query returned " << tables_result.data.size() << " rows";
+                    size_t idx = 0;
+                    for (size_t i = 0; i < tables_result.data.size(); ++i) {
+                        const auto& row = crow::json::load(tables_result.data[i].dump());
+                        
+                        crow::json::wvalue table_entry;
+                        table_entry["name"] = row["table_name"].s();
+                        table_entry["schema"] = row["schema_name"].s();
+                        table_entry["type"] = row["table_type"].s();
+                        std::string qualified_name = std::string(row["schema_name"].s()) + "." + std::string(row["table_name"].s());
+                        table_entry["qualified_name"] = qualified_name;
+                        
+                        response["tables"][idx++] = std::move(table_entry);
+                    }
+                } else {
+                    CROW_LOG_DEBUG << "Tables query returned null result";
+                }
+            } catch (const std::exception& e) {
+                CROW_LOG_ERROR << "Failed to query tables for schema introspection";
+                CROW_LOG_ERROR << "Tables query error: " << e.what();
+                CROW_LOG_ERROR << "Tables query SQL: " << tables_query;
+                // Return empty list on error rather than failing
+                response["tables"] = crow::json::wvalue::list();
+                response["error"] = std::string("Failed to query tables: ") + e.what();
+            }
+            
             return crow::response(200, response);
         }
 
-        // Use a single SQL query to get all schema information
+        // Use DuckDB system functions instead of information_schema to avoid parser issues
+        // Query tables and columns using duckdb_tables() and duckdb_columns()
         const std::string query = R"SQL(
-            WITH schema_tables AS (
                 SELECT 
-                    s.schema_name,
+                COALESCE(t.database_name, 'main') as schema_name,
                     t.table_name,
-                    CASE WHEN t.table_type = 'BASE TABLE' THEN false ELSE true END as is_view,
+                0 as is_view,
                     c.column_name,
                     c.data_type,
-                    c.is_nullable = 'YES' as is_nullable
-                FROM information_schema.schemata s
-                LEFT JOIN information_schema.tables t 
-                    ON s.schema_name = t.table_schema
-                LEFT JOIN information_schema.columns c 
-                    ON t.table_schema = c.table_schema 
+                CASE WHEN c.is_nullable THEN 1 ELSE 0 END as is_nullable
+            FROM duckdb_tables() t
+            LEFT JOIN duckdb_columns() c 
+                ON t.database_name = c.database_name
+                AND t.schema_name = c.schema_name
                     AND t.table_name = c.table_name
-                WHERE s.schema_name NOT IN ('information_schema', 'pg_catalog')
-                ORDER BY s.schema_name, t.table_name, c.ordinal_position
-            )
-            SELECT DISTINCT * FROM schema_tables
+            WHERE COALESCE(t.database_name, 'main') NOT IN ('system', 'temp')
+            ORDER BY t.database_name, t.table_name, c.column_index
         )SQL";
 
-        auto result = db_manager->executeQuery(query, {}, false);
+        QueryResult result;
+        try {
+            CROW_LOG_DEBUG << "Executing full schema introspection query";
+            result = db_manager->executeQuery(query, {}, false);
+            CROW_LOG_DEBUG << "Schema query executed successfully, processing " << result.data.size() << " rows";
+        } catch (const std::exception& e) {
+            CROW_LOG_ERROR << "========================================";
+            CROW_LOG_ERROR << "SCHEMA INTROSPECTION FAILED";
+            CROW_LOG_ERROR << "========================================";
+            CROW_LOG_ERROR << "Error type: " << typeid(e).name();
+            CROW_LOG_ERROR << "Error message: " << e.what();
+            CROW_LOG_ERROR << "Query attempted:";
+            CROW_LOG_ERROR << query;
+            CROW_LOG_ERROR << "========================================";
+            // Return empty response with error message for debugging
+            response["error"] = std::string("Failed to query schema: ") + e.what();
+            response["message"] = "Schema introspection failed. This may be due to DuckDB information_schema limitations or database connection issues.";
+            response["query"] = query;
+            return crow::response(200, response);
+        }
     
         // Process results into the desired JSON structure
         if (result.data.t() == crow::json::type::Null) {
@@ -1732,12 +1800,14 @@ crow::response SchemaHandler::getSchema(const crow::request& req) {
                 return "";
             };
             
-            // Safely extract boolean values, handling NULL
+            // Safely extract boolean values, handling NULL and integers (0/1)
             auto safe_bool = [](const crow::json::rvalue& val) -> bool {
                 if (val.t() == crow::json::type::True) {
                     return true;
                 } else if (val.t() == crow::json::type::False) {
                     return false;
+                } else if (val.t() == crow::json::type::Number) {
+                    return val.i() != 0;
                 }
                 return false;
             };
@@ -1799,11 +1869,16 @@ crow::response SchemaHandler::getSchema(const crow::request& req) {
                         auto table_keys = table_obj.keys();
                         bool is_view = false;
                         if (std::find(table_keys.begin(), table_keys.end(), "is_view") != table_keys.end()) {
-                            // Convert to rvalue to access boolean value
+                            // Convert to rvalue to access boolean value (or integer 0/1)
                             auto table_json_str = table_obj.dump();
                             auto table_rvalue = crow::json::load(table_json_str);
                             if (table_rvalue && table_rvalue.has("is_view")) {
-                                is_view = table_rvalue["is_view"].b();
+                                auto& val = table_rvalue["is_view"];
+                                if (val.t() == crow::json::type::True) {
+                                    is_view = true;
+                                } else if (val.t() == crow::json::type::Number) {
+                                    is_view = (val.i() != 0);
+                                }
                             }
                         }
                         table_entry["type"] = is_view ? "view" : "table";
@@ -1830,7 +1905,14 @@ crow::response SchemaHandler::getSchema(const crow::request& req) {
                                     column_type = column_rvalue["type"].s();
                                 }
                                 if (column_rvalue && column_rvalue.has("nullable")) {
-                                    nullable = column_rvalue["nullable"].b();
+                                    auto& val = column_rvalue["nullable"];
+                                    if (val.t() == crow::json::type::True) {
+                                        nullable = true;
+                                    } else if (val.t() == crow::json::type::False) {
+                                        nullable = false;
+                                    } else if (val.t() == crow::json::type::Number) {
+                                        nullable = (val.i() != 0);
+                                    }
                                 }
                                 
                                 column_entry["type"] = column_type;
@@ -1850,21 +1932,57 @@ crow::response SchemaHandler::getSchema(const crow::request& req) {
 
         return crow::response(200, response);
     } catch (const std::exception& e) {
+        CROW_LOG_ERROR << "========================================";
+        CROW_LOG_ERROR << "SCHEMA HANDLER EXCEPTION";
+        CROW_LOG_ERROR << "========================================";
+        CROW_LOG_ERROR << "Error type: " << typeid(e).name();
+        CROW_LOG_ERROR << "Error message: " << e.what();
+        CROW_LOG_ERROR << "Exception caught in SchemaHandler::getSchema";
+        CROW_LOG_ERROR << "========================================";
         return crow::response(500, std::string("Internal server error: ") + e.what());
+    } catch (...) {
+        CROW_LOG_ERROR << "========================================";
+        CROW_LOG_ERROR << "SCHEMA HANDLER UNKNOWN EXCEPTION";
+        CROW_LOG_ERROR << "========================================";
+        CROW_LOG_ERROR << "Unknown exception type caught in SchemaHandler::getSchema";
+        CROW_LOG_ERROR << "========================================";
+        return crow::response(500, "Internal server error: Unknown exception in schema handler");
     }
 }
 
 crow::response SchemaHandler::refreshSchema(const crow::request& req) {
     try {
+        CROW_LOG_INFO << "Schema refresh requested";
+        
         // Get database manager instance
         auto db_manager = DatabaseManager::getInstance();
+        if (!db_manager) {
+            CROW_LOG_ERROR << "DatabaseManager instance is null during schema refresh";
+            return crow::response(500, "Internal server error: Database manager not initialized");
+        }
 
         // Re-initialize database connections from config
+        CROW_LOG_INFO << "Re-initializing database connections for schema refresh";
         db_manager->initializeDBManagerFromConfig(config_manager_);
+        CROW_LOG_INFO << "Schema refresh completed successfully";
 
         return crow::response(200);
     } catch (const std::exception& e) {
+        CROW_LOG_ERROR << "========================================";
+        CROW_LOG_ERROR << "SCHEMA REFRESH FAILED";
+        CROW_LOG_ERROR << "========================================";
+        CROW_LOG_ERROR << "Error type: " << typeid(e).name();
+        CROW_LOG_ERROR << "Error message: " << e.what();
+        CROW_LOG_ERROR << "Exception caught in SchemaHandler::refreshSchema";
+        CROW_LOG_ERROR << "========================================";
         return crow::response(500, std::string("Internal server error: ") + e.what());
+    } catch (...) {
+        CROW_LOG_ERROR << "========================================";
+        CROW_LOG_ERROR << "SCHEMA REFRESH UNKNOWN EXCEPTION";
+        CROW_LOG_ERROR << "========================================";
+        CROW_LOG_ERROR << "Unknown exception type caught in SchemaHandler::refreshSchema";
+        CROW_LOG_ERROR << "========================================";
+        return crow::response(500, "Internal server error: Unknown exception in schema refresh");
     }
 }
 

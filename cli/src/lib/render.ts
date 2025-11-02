@@ -57,10 +57,11 @@ export function renderEndpointsTable(endpoints: Record<string, unknown>) {
       chalk.bold.cyan('Path'),
       chalk.bold.green('Method'),
       chalk.bold.yellow('Type'),
+      chalk.bold.magenta('Operation'),
       chalk.bold.blue('Connection'),
       chalk.bold.red('Cache')
     ],
-    colWidths: [25, 8, 10, 15, 8],
+    colWidths: [25, 8, 10, 12, 15, 8],
     style: {
       head: [],
       border: [],
@@ -73,6 +74,7 @@ export function renderEndpointsTable(endpoints: Record<string, unknown>) {
     const endpoint = config as Record<string, unknown>;
     const method = endpoint.method ?? 'GET';
     const type = determineEndpointType(endpoint);
+    const operation = determineOperationType(endpoint, method);
     const connection = Array.isArray(endpoint.connection)
       ? endpoint.connection.join(', ')
       : String(endpoint.connection || 'N/A');
@@ -84,6 +86,7 @@ export function renderEndpointsTable(endpoints: Record<string, unknown>) {
       chalk.cyan(path),
       chalk.green(String(method).toUpperCase()),
       chalk.yellow(type),
+      chalk.magenta(operation),
       chalk.blue(connection),
       chalk.red(cacheEnabled)
     ]);
@@ -119,7 +122,36 @@ export function renderEndpointTable(endpoint: Record<string, unknown>) {
     return String(value || 'N/A');
   };
 
+  // Show operation configuration prominently if present
+  if (endpoint.operation && typeof endpoint.operation === 'object') {
+    const op = endpoint.operation as Record<string, unknown>;
+    const opType = op.type || (isWriteMethod(endpoint.method as string) ? 'write' : 'read');
+    const opDetails: string[] = [];
+    if (op.validate_before_write === true) opDetails.push('validate');
+    if (op.returns_data === true) opDetails.push('returns-data');
+    if (op.transaction === true) opDetails.push('transaction');
+    
+    const opDisplay = opDetails.length > 0 
+      ? `${opType} (${opDetails.join(', ')})`
+      : opType;
+    
+    table.push([
+      chalk.bold.magenta('Operation'),
+      chalk.magenta(opDisplay)
+    ]);
+  } else {
+    // Infer operation type from method
+    const inferredOp = isWriteMethod(endpoint.method as string) ? 'write' : 'read';
+    table.push([
+      chalk.bold.magenta('Operation'),
+      chalk.gray(inferredOp + ' (inferred)')
+    ]);
+  }
+
   for (const [key, value] of Object.entries(endpoint)) {
+    // Skip operation field as we already displayed it
+    if (key === 'operation') continue;
+    
     const displayKey = key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
     table.push([
       chalk.cyan(displayKey),
@@ -138,9 +170,10 @@ export function renderMcpToolsTable(entries: { path: string; config: Record<stri
     head: [
       chalk.bold.cyan('Path'),
       chalk.bold.green('Name'),
+      chalk.bold.magenta('Operation'),
       chalk.bold.yellow('Description')
     ],
-    colWidths: [25, 20, 35],
+    colWidths: [25, 20, 12, 25],
     style: {
       head: [],
       border: [],
@@ -150,9 +183,12 @@ export function renderMcpToolsTable(entries: { path: string; config: Record<stri
 
   for (const { path, config } of entries) {
     const tool = (config['mcp-tool'] ?? config['mcpTool']) as Record<string, unknown>;
+    const method = config.method as string || 'GET';
+    const operation = determineOperationType(config, method);
     table.push([
       chalk.cyan(path),
       chalk.green(String(tool?.name ?? 'n/a')),
+      chalk.magenta(operation),
       chalk.yellow(String(tool?.description ?? ''))
     ]);
   }
@@ -325,10 +361,29 @@ function formatValue(value: unknown): string {
 }
 
 function determineEndpointType(config: Record<string, unknown>): string {
-  if ('mcp-tool' in config) return 'MCP Tool';
-  if ('mcp-resource' in config) return 'MCP Resource';
-  if ('mcp-prompt' in config) return 'MCP Prompt';
+  if ('mcp-tool' in config || 'mcpTool' in config) return 'MCP Tool';
+  if ('mcp-resource' in config || 'mcpResource' in config) return 'MCP Resource';
+  if ('mcp-prompt' in config || 'mcpPrompt' in config) return 'MCP Prompt';
   return 'REST';
+}
+
+function determineOperationType(config: Record<string, unknown>, method: string): string {
+  // Check explicit operation configuration
+  if (config.operation && typeof config.operation === 'object') {
+    const op = config.operation as Record<string, unknown>;
+    const opType = op.type;
+    if (opType === 'write') return 'Write';
+    if (opType === 'read') return 'Read';
+  }
+  
+  // Infer from HTTP method
+  if (isWriteMethod(method)) return 'Write';
+  return 'Read';
+}
+
+function isWriteMethod(method: string): boolean {
+  const upperMethod = String(method).toUpperCase();
+  return ['POST', 'PUT', 'PATCH', 'DELETE'].includes(upperMethod);
 }
 
 function getConfigSource(key: string, config: FlapiiConfig): string {

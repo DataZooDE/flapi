@@ -1,0 +1,134 @@
+---
+test_name: Northwind Customers Read Operations
+marks:
+  - integration
+  - northwind
+  - read-only
+
+stages:
+  - name: Get all customers (no filters)
+    request:
+      url: "{base_url}/northwind/customers/"
+      method: GET
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+        x-total-count: !anystr
+      json: !any
+
+  - name: Get customers with pagination
+    request:
+      url: "{base_url}/northwind/customers/"
+      method: GET
+      params:
+        offset: 0
+        limit: 10
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+        x-offset: "0"
+        x-limit: "10"
+      json: !any
+
+  - name: Get customer by customer_id filter
+    request:
+      url: "{base_url}/northwind/customers/"
+      method: GET
+      params:
+        customer_id: "ALFKI"
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+      json: !any
+
+  - name: Get customers by company_name filter
+    request:
+      url: "{base_url}/northwind/customers/"
+      method: GET
+      params:
+        company_name: "Alfreds Futterkiste"
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+      json: !any
+
+  - name: Get customers by country filter
+    request:
+      url: "{base_url}/northwind/customers/"
+      method: GET
+      params:
+        country: "Germany"
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+      json: !any
+
+  - name: Get customers by city filter
+    request:
+      url: "{base_url}/northwind/customers/"
+      method: GET
+      params:
+        city: "Berlin"
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+      json: !any
+
+  - name: Get customers with multiple filters
+    request:
+      url: "{base_url}/northwind/customers/"
+      method: GET
+      params:
+        country: "Germany"
+        city: "Berlin"
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+      json: !any
+
+  - name: Get customers - invalid customer_id (too long)
+    request:
+      url: "{base_url}/northwind/customers/"
+      method: GET
+      params:
+        customer_id: "TOOLONGCUSTOMERID"
+    response:
+      status_code: 400
+      headers:
+        content-type: "application/json"
+      json:
+        errors: !any
+
+  - name: Get customers - SQL injection attempt in company_name
+    request:
+      url: "{base_url}/northwind/customers/"
+      method: GET
+      params:
+        company_name: "'; DROP TABLE Customers; --"
+    response:
+      status_code: 400
+      headers:
+        content-type: "application/json"
+      json:
+        errors: !any
+
+  - name: Get customers - SQL injection false positive test (UPDATED should pass)
+    request:
+      url: "{base_url}/northwind/customers/"
+      method: GET
+      params:
+        company_name: "Updated Company Name"
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+      json: !any
+      # "UPDATED" contains "UPDATE" but should pass due to whole-word matching
+

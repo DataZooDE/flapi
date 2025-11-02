@@ -1,0 +1,90 @@
+# Customers List Endpoint (Read)
+# Returns a list of customers with optional filtering
+
+url-path: /customers/
+method: GET
+
+# Request parameters
+request:
+  - field-name: id
+    field-in: query
+    description: Customer ID
+    required: false
+    validators:
+      - type: int
+        min: 1
+        preventSqlInjection: true
+
+  - field-name: name
+    field-in: query
+    description: Filter by customer name (partial match)
+    required: false
+    validators:
+      - type: string
+        min: 1
+        max: 100
+        regex: "^[a-zA-Z0-9\\s#\\-]+$"
+        preventSqlInjection: true
+
+  - field-name: segment
+    field-in: query
+    description: Filter by customer segment
+    required: false
+    validators:
+      - type: enum
+        allowedValues: ["BUILDING", "AUTOMOBILE", "MACHINERY", "HOUSEHOLD", "FURNITURE"]
+        preventSqlInjection: true
+
+  - field-name: email
+    field-in: query
+    description: Filter by email address
+    required: false
+    validators:
+      - type: email
+        preventSqlInjection: true
+
+  - field-name: registration_date
+    field-in: query
+    description: Filter by registration date (YYYY-MM-DD)
+    required: false
+    validators:
+      - type: date
+        max: "2023-12-31"
+        preventSqlInjection: true
+
+  - field-name: last_login_time
+    field-in: query
+    description: Filter by last login time (HH:MM:SS)
+    required: false
+    validators:
+      - type: time
+        max: "23:59:59"
+        preventSqlInjection: true
+
+  - field-name: uuid
+    field-in: query
+    description: Filter by UUID
+    required: false
+    validators:
+      - type: uuid
+        preventSqlInjection: true
+
+template-source: customers-get.sql
+connection:
+  - data-types-parquet
+
+# Pagination enabled
+with-pagination: true
+
+# Authentication required
+auth:
+  enabled: true
+  type: basic
+  users:
+    - username: admin
+      password: secret
+      roles: [admin, read, write]
+    - username: user
+      password: password
+      roles: [read]
+

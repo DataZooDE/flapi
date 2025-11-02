@@ -165,6 +165,14 @@ private:
         const std::filesystem::path& endpoint_dir,
         EndpointConfig& config
     );
+
+    /**
+     * @brief Parse operation configuration (read/write, transaction, etc.)
+     */
+    void parseOperationConfig(
+        const YAML::Node& yaml_node,
+        EndpointConfig& config
+    );
 };
 
 } // namespace flapi

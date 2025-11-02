@@ -1,0 +1,250 @@
+---
+test_name: Comprehensive Write Operations Tests
+marks:
+  - integration
+  - write-operations
+  - comprehensive
+
+stages:
+  # ============================================
+  # Multi-Statement Execution Tests
+  # ============================================
+  
+  - name: UPDATE + SELECT pattern - verify SELECT result returned
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: PUT
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Multi-Statement Test Product"
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+      json:
+        rows_affected: 1
+        data: !any
+        # Should contain product data from SELECT statement
+
+  - name: Verify UPDATE + SELECT returns correct product structure
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: PUT
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Structure Test Product"
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+      json:
+        rows_affected: 1
+        data:
+          - ProductID: 17
+            ProductName: "Structure Test Product"
+            # Should have other product fields
+
+  # ============================================
+  # RETURNING clause vs SELECT fallback
+  # ============================================
+  
+  - name: Create product with returns_data - verify data structure
+    request:
+      url: "{base_url}/northwind/products/"
+      method: POST
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Returns Data Test"
+        supplier_id: 1
+        category_id: 1
+    response:
+      status_code: [201, 200]
+      headers:
+        content-type: "application/json"
+      json:
+        rows_affected: 1
+        data: !any
+        # Should return created product data
+
+  # ============================================
+  # Parameter Extraction Tests
+  # ============================================
+  
+  - name: Verify all JSON body fields extracted (including unknown)
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: PUT
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Valid Name"
+        unknown_field: "should be detected"
+        another_unknown: "also should be detected"
+    response:
+      status_code: 400
+      headers:
+        content-type: "application/json"
+      json:
+        errors: !any
+        # Should detect both unknown parameters
+
+  - name: Parameter precedence - body overrides query
+    request:
+      url: "{base_url}/northwind/products/17?product_name=QueryName"
+      method: PUT
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "BodyName"
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+      json:
+        rows_affected: 1
+        data:
+          - ProductName: "BodyName"  # Body should take precedence
+            ProductID: 17
+
+  # ============================================
+  # SQL Injection Comprehensive Tests
+  # ============================================
+  
+  - name: SQL injection - OR 1=1 pattern
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: PUT
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Test OR 1=1"
+    response:
+      status_code: 400
+      headers:
+        content-type: "application/json"
+      json:
+        errors: !any
+
+  - name: SQL injection - comment pattern (--)
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: PUT
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Test -- comment"
+    response:
+      status_code: 400
+      headers:
+        content-type: "application/json"
+      json:
+        errors: !any
+
+  - name: SQL injection - single quote pattern
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: PUT
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Test' OR '1'='1"
+    response:
+      status_code: 400
+      headers:
+        content-type: "application/json"
+      json:
+        errors: !any
+
+  - name: SQL injection - false positive should pass (word boundary)
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: PUT
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Product Name Updated Successfully"
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+      json:
+        rows_affected: 1
+        # "UPDATED" contains "UPDATE" but should pass
+
+  # ============================================
+  # Unknown Parameter Detection
+  # ============================================
+  
+  - name: Unknown parameter with validate-before-write enabled
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: PUT
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Valid Name"
+        typo_field: "should error"
+    response:
+      status_code: 400
+      headers:
+        content-type: "application/json"
+      json:
+        errors: !any
+        # Should detect unknown parameter
+
+  - name: Parameter name case sensitivity test
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: PUT
+      headers:
+        Content-Type: application/json
+      json:
+        ProductName: "CamelCase Name"  # Wrong case, should be product_name
+    response:
+      status_code: 400
+      headers:
+        content-type: "application/json"
+      json:
+        errors: !any
+        # Should detect unknown parameter (case-sensitive)
+
+  # ============================================
+  # Validation Edge Cases
+  # ============================================
+  
+  - name: Empty string vs null vs missing parameter
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: PUT
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: ""  # Empty string
+    response:
+      status_code: 400
+      headers:
+        content-type: "application/json"
+      json:
+        errors: !any
+        # Empty string should fail validation (min: 1)
+
+  - name: Very long parameter value
+    request:
+      url: "{base_url}/northwind/products/"
+      method: POST
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"  # 101 chars
+        supplier_id: 1
+        category_id: 1
+    response:
+      status_code: 400
+      headers:
+        content-type: "application/json"
+      json:
+        errors: !any
+

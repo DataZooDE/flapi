@@ -1,0 +1,101 @@
+# Create Customer (POST)
+# Creates a new customer in test table
+
+url-path: /customers/
+method: POST
+
+# Operation configuration
+operation:
+  type: Write
+  returns-data: true
+  transaction: true
+  validate-before-write: true
+
+# Request parameters
+request:
+  - field-name: name
+    field-in: body
+    description: Customer name
+    required: true
+    validators:
+      - type: string
+        min: 1
+        max: 100
+        regex: "^[a-zA-Z0-9\\s#\\-]+$"
+        preventSqlInjection: true
+
+  - field-name: segment
+    field-in: body
+    description: Customer segment
+    required: true
+    validators:
+      - type: enum
+        allowedValues: ["BUILDING", "AUTOMOBILE", "MACHINERY", "HOUSEHOLD", "FURNITURE"]
+        preventSqlInjection: true
+
+  - field-name: balance
+    field-in: body
+    description: Customer balance
+    required: false
+    validators:
+      - type: string
+        regex: '^-?\d+(\.\d{1,2})?$'
+        preventSqlInjection: true
+    defaultValue: "0.0"
+
+  - field-name: comment
+    field-in: body
+    description: Customer comment
+    required: false
+    validators:
+      - type: string
+        max: 500
+        preventSqlInjection: true
+
+  - field-name: email
+    field-in: body
+    description: Customer email
+    required: false
+    validators:
+      - type: email
+        preventSqlInjection: true
+
+  - field-name: registration_date
+    field-in: body
+    description: Registration date (YYYY-MM-DD)
+    required: false
+    validators:
+      - type: date
+        min: "2000-01-01"
+        max: "2023-12-31"
+        preventSqlInjection: true
+
+  - field-name: last_login_time
+    field-in: body
+    description: Last login time (HH:MM:SS)
+    required: false
+    validators:
+      - type: time
+        preventSqlInjection: true
+
+  - field-name: uuid
+    field-in: body
+    description: UUID
+    required: false
+    validators:
+      - type: uuid
+        preventSqlInjection: true
+
+template-source: customers-create.sql
+
+# Use main connection (in-memory DuckDB)
+connection:
+  - data-types-parquet
+
+# Authentication required - bearer token for writes
+auth:
+  enabled: true
+  type: bearer
+  jwt_secret: "test-jwt-secret-key-for-integration-tests"
+  jwt_issuer: "flapi-test"
+

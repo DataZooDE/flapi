@@ -1,0 +1,50 @@
+# Northwind Products List Endpoint (Read)
+# Returns a list of products with optional filtering
+
+url-path: /northwind/products/
+method: GET
+
+# Request parameters
+request:
+  - field-name: product_name
+    field-in: query
+    description: Filter by product name (partial match)
+    required: false
+    validators:
+      - type: string
+        min: 1
+        max: 100
+        preventSqlInjection: true
+
+  - field-name: category_id
+    field-in: query
+    description: Filter by category ID
+    required: false
+    validators:
+      - type: int
+        min: 1
+
+  - field-name: supplier_id
+    field-in: query
+    description: Filter by supplier ID
+    required: false
+    validators:
+      - type: int
+        min: 1
+
+  - field-name: discontinued
+    field-in: query
+    description: Filter by discontinued status (0 or 1)
+    required: false
+    validators:
+      - type: int
+        min: 0
+        max: 1
+
+template-source: products.sql
+connection:
+  - northwind-sqlite
+
+# Pagination enabled
+with-pagination: true
+

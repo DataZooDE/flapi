@@ -1,0 +1,46 @@
+# Example: Partial Update Customer Endpoint (PATCH)
+# This endpoint demonstrates a write operation for partial updates
+
+url-path: /customers/:customer_id
+method: PATCH
+
+operation:
+  type: write
+  returns-data: true
+  transaction: true
+  validate-before-write: true
+
+request:
+  - field-name: customer_id
+    field-in: path
+    description: Customer ID to update
+    required: true
+    validators:
+      - type: int
+        min: 1
+
+  - field-name: email
+    field-in: body
+    description: Updated email address (only field allowed for PATCH)
+    required: false
+    validators:
+      - type: email
+
+template-source: patch-customer.sql
+connection:
+  - customer-db
+
+cache:
+  enabled: true
+  table: customers_cache
+  invalidate-on-write: true
+  refresh-on-write: false
+
+auth:
+  enabled: true
+  type: basic
+  users:
+    - username: api_user
+      password: '{{env.API_PASSWORD}}'
+      roles: [write]
+

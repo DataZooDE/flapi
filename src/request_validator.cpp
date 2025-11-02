@@ -30,6 +30,22 @@ std::vector<ValidationError> RequestValidator::validateField(const RequestFieldC
 
     const std::string& value = it->second;
 
+    // Track if SQL injection validation should be performed
+    // Default is true (ValidatorConfig defaults preventSqlInjection to true)
+    // Only skip if ALL validators explicitly disable it (preventSqlInjection = false)
+    bool shouldValidateSqlInjection = true;
+    if (!field.validators.empty()) {
+        // Check if ALL validators have preventSqlInjection = false
+        bool allDisable = true;
+        for (const auto& validator : field.validators) {
+            if (validator.preventSqlInjection) {
+                allDisable = false;
+                break;
+            }
+        }
+        shouldValidateSqlInjection = !allDisable;
+    }
+    
     for (const auto& validator : field.validators) {
         if (validator.type == "string") {
             auto stringErrors = validateString(field.fieldName, value, validator);
@@ -55,8 +71,11 @@ std::vector<ValidationError> RequestValidator::validateField(const RequestFieldC
         }
     }
 
-    auto sqlInjectionErrors = validateSqlInjection(field.fieldName, value);
-    errors.insert(errors.end(), sqlInjectionErrors.begin(), sqlInjectionErrors.end());
+    // Perform SQL injection validation if enabled
+    if (shouldValidateSqlInjection) {
+        auto sqlInjectionErrors = validateSqlInjection(field.fieldName, value);
+        errors.insert(errors.end(), sqlInjectionErrors.begin(), sqlInjectionErrors.end());
+    }
 
     return errors;
 }
@@ -183,27 +202,87 @@ std::vector<ValidationError> RequestValidator::validateEnum(const std::string& f
 std::vector<ValidationError> RequestValidator::validateSqlInjection(const std::string& fieldName, const std::string& value) {
     std::vector<ValidationError> errors;
     
-    // List of SQL keywords and characters to check for
+    // List of SQL keywords to check for (using whole-word matching)
     const std::vector<std::string> sqlKeywords = {
-        "SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "TRUNCATE", "ALTER", "CREATE", "TABLE"
+        "SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "TRUNCATE", "ALTER", "CREATE", "TABLE",
+        "UNION", "EXEC", "EXECUTE", "SCRIPT", "DECLARE", "CAST", "CONVERT"
     };
 
-    std::string upperValue = value;
-    std::transform(upperValue.begin(), upperValue.end(), upperValue.begin(), ::toupper);
-
+    // Use whole-word matching with regex to avoid false positives
+    // e.g., "UPDATED" should not match "UPDATE", but "UPDATE test" should match
     for (const auto& keyword : sqlKeywords) {
-        if (upperValue.find(keyword) != std::string::npos) {
+        // Use word boundary regex to match whole words only
+        std::string pattern = "\\b" + keyword + "\\b";
+        std::regex keywordRegex(pattern, std::regex::icase);
+        if (std::regex_search(value, keywordRegex)) {
             errors.push_back({fieldName, "Potential SQL injection detected"});
             return errors; // Return immediately if any keyword is found
         }
     }
 
-    // Check for suspicious characters
-    const std::string suspiciousChars = "\'\"=()";
+    // Check for dangerous SQL injection patterns (more specific than just characters)
+    // Patterns that are commonly used in SQL injection attacks
+    const std::vector<std::string> dangerousPatterns = {
+        "';",          // SQL injection termination
+        "--",          // SQL comment
+        "/*",          // SQL comment start
+        "*/",          // SQL comment end
+        "xp_",         // SQL Server extended procedure
+        "sp_",         // SQL Server stored procedure
+        " OR 1=1",     // SQL injection pattern (with leading space for whole phrase)
+        " OR '1'='1",  // SQL injection pattern with quotes
+        "AND 1=1",     // SQL injection pattern
+        "1=1",         // Always true condition (as substring)
+        "1=2"          // Always false condition (as substring)
+    };
+    
+    std::string upperValue = value;
+    std::transform(upperValue.begin(), upperValue.end(), upperValue.begin(), ::toupper);
+    
+    for (const auto& pattern : dangerousPatterns) {
+        std::string upperPattern = pattern;
+        std::transform(upperPattern.begin(), upperPattern.end(), upperPattern.begin(), ::toupper);
+        if (upperValue.find(upperPattern) != std::string::npos) {
+            errors.push_back({fieldName, "Potential SQL injection detected"});
+            return errors; // Return immediately if any dangerous pattern is found
+        }
+    }
+
+    // Check for suspicious characters that are commonly used in SQL injection
+    // Single quotes are a key indicator of SQL injection attempts
+    const std::string suspiciousChars = "\'";
     for (char c : suspiciousChars) {
         if (value.find(c) != std::string::npos) {
-            errors.push_back({fieldName, "Potential SQL injection detected"});
-            return errors; // Return immediately if any suspicious character is found
+            // Check if it's part of a dangerous pattern (already checked above)
+            // Only flag if it appears in a context that suggests injection
+            // Look for patterns like ' OR ' or '; or similar
+            bool isPartOfPattern = false;
+            size_t pos = value.find(c);
+            while (pos != std::string::npos) {
+                // Check context around the quote
+                std::string context = "";
+                if (pos > 0 && pos < value.length() - 1) {
+                    context = value.substr(std::max(0, (int)pos - 2), std::min(5, (int)(value.length() - pos + 2)));
+                } else if (pos == 0 && value.length() > 1) {
+                    context = value.substr(0, 3);
+                } else if (pos == value.length() - 1 && value.length() > 1) {
+                    context = value.substr(std::max(0, (int)pos - 2), 3);
+                }
+                std::transform(context.begin(), context.end(), context.begin(), ::toupper);
+                // If quote appears with OR, AND, or ; nearby, it's likely injection
+                if (context.find("OR") != std::string::npos || 
+                    context.find("AND") != std::string::npos || 
+                    context.find(";") != std::string::npos ||
+                    context.find("=") != std::string::npos) {
+                    isPartOfPattern = true;
+                    break;
+                }
+                pos = value.find(c, pos + 1);
+            }
+            if (isPartOfPattern) {
+                errors.push_back({fieldName, "Potential SQL injection detected"});
+                return errors;
+            }
         }
     }
 

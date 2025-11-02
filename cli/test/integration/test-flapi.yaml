@@ -25,11 +25,30 @@ connections:
   # A local Parquet file connection
   customers-parquet:
     properties:
-      path: './data/customers.parquet'
+      path: '/home/jr/Projects/datazoo/flapi/examples/data/customers.parquet'
 
-  taxi-parquet:
-    properties:
-      path: '~/Downloads/taxi'
+  northwind-sqlite:
+    init: |
+      INSTALL sqlite;
+      LOAD sqlite;
+
+      ATTACH IF NOT EXISTS '/home/jr/Projects/datazoo/flapi/examples/data/northwind.sqlite' AS nw (TYPE sqlite);
+
+  sap-abap-trial:
+    init: |
+      INSTALL 'erpl' FROM 'http://get.erpl.io';
+      LOAD 'erpl';
+
+      CREATE OR REPLACE PERSISTENT SECRET abap_trial (
+        TYPE sap_rfc, 
+        ASHOST 'localhost', 
+        SYSNR '00', 
+        CLIENT '001', 
+        USER 'DEVELOPER', 
+        PASSWD 'ABAPtr2023#00',
+        LANG 'EN'
+      );
+    
 
       
 # Heartbeat configuration
@@ -46,11 +65,27 @@ enforce-https:
 
 # DuckDB configuration
 duckdb:
-  # db_path: ./flapi_cache.db  # in-memory for tests  # Optional: remove or comment out for in-memory database
+  # # db_path: ./flapi_cache.db  # in-memory for tests  # Optional: remove or comment out for in-memory database
   access_mode: READ_WRITE
   threads: 8
   max_memory: 8GB
   default_order: DESC
+
+# DuckLake configuration (for advanced caching with snapshots and time-travel)
+ducklake:
+  enabled: false  # Disabled for integration tests
+  alias: cache  # Catalog alias for DuckLake tables
+  metadata_path: ./data/cache.ducklake  # Path to DuckLake metadata
+  data_path: ./data/cache  # Path to DuckLake data files
+  retention:
+    keep_last_snapshots: 10  # Keep last 10 snapshots for each table
+    max_snapshot_age: 30d    # Delete snapshots older than 30 days
+  compaction:
+    enabled: true
+    schedule: '@daily'  # Run compaction daily
+  scheduler:
+    enabled: true
+    scan_interval: 5m  # Check for scheduled cache refreshes every 5 minutes
 
 # ====================================================================================
 # MCP (Model Context Protocol) Support

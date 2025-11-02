@@ -1,0 +1,23 @@
+# Northwind Products Get by ID Endpoint (Read)
+# Returns a specific product by ProductID
+
+url-path: /northwind/products/:product_id
+method: GET
+
+# Request parameters
+request:
+  - field-name: product_id
+    field-in: path
+    description: Product ID
+    required: true
+    validators:
+      - type: int
+        min: 1
+        preventSqlInjection: true
+
+template-source: products.sql
+connection:
+  - northwind-sqlite
+
+# No pagination for single record
+with-pagination: false

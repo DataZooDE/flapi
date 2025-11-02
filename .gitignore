@@ -11,6 +11,7 @@ duckdb_unittest_tempdir/
 .DS_Store
 testext
 test/python/__pycache__/
+test/integration/test_cache/**
 .Rhistory
 vcpkg_installed/
 *.db

@@ -36,7 +36,7 @@ ducklake:
   scheduler:
     enabled: false  # Disable for tests
 
-# Disable MCP for now to test basic server functionality
+# Enable MCP for comprehensive testing
 mcp:
-  enabled: false
+  enabled: true
 

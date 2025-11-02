@@ -1,0 +1,87 @@
+---
+test_name: Multi-Statement Execution Tests
+marks:
+  - integration
+  - multi-statement
+  - write-operations
+
+stages:
+  - name: UPDATE + SELECT pattern - verify SELECT result returned
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: PUT
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Multi-Statement Test"
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+      json:
+        rows_affected: 1
+        data: !any
+        # Should contain product data from SELECT statement after UPDATE
+
+  - name: Verify UPDATE + SELECT returns correct structure
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: PUT
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Structure Verification Test"
+        unit_price: "29.99"
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+      json:
+        rows_affected: 1
+        data:
+          - ProductID: 17
+            ProductName: "Structure Verification Test"
+            # Should have all product fields from SELECT
+
+  - name: Verify SELECT result contains updated values
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: PUT
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Updated Value Test"
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+      json:
+        rows_affected: 1
+        data:
+          - ProductName: "Updated Value Test"
+            # Verify the SELECT returns the updated value, not the old one
+
+  - name: Multi-statement with multiple fields updated
+    request:
+      url: "{base_url}/northwind/products/17"
+      method: PUT
+      headers:
+        Content-Type: application/json
+      json:
+        product_name: "Multi Field Update"
+        unit_price: "35.99"
+        units_in_stock: 150
+    response:
+      status_code: 200
+      headers:
+        content-type: "application/json"
+      json:
+        rows_affected: 1
+        data:
+          - ProductName: "Multi Field Update"
+            UnitPrice: "35.99"
+            UnitsInStock: 150
+
+  # Note: Error handling tests would require SQL that intentionally fails
+  # This would need to be tested with custom SQL templates
+

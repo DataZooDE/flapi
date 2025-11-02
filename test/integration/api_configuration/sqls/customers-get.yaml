@@ -1,0 +1,36 @@
+# Get Customer by ID (Read)
+# Returns a specific customer by ID
+
+url-path: /customers/:customer_id
+method: GET
+
+# Request parameters
+request:
+  - field-name: customer_id
+    field-in: path
+    description: Customer ID
+    required: true
+    validators:
+      - type: int
+        min: 1
+        preventSqlInjection: true
+
+template-source: customers-get-id.sql
+connection:
+  - data-types-parquet
+
+# No pagination for single record
+with-pagination: false
+
+# Authentication required
+auth:
+  enabled: true
+  type: basic
+  users:
+    - username: admin
+      password: secret
+      roles: [admin, read, write]
+    - username: user
+      password: password
+      roles: [read]
+

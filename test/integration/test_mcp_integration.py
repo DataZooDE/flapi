@@ -333,8 +333,8 @@ class TestMCPTools:
         """Test calling the get_customers tool."""
         mcp_client.initialize()
         
-        # Call the tool
-        result = mcp_client.call_tool("get_customers", {"id": "1", "segment": "retail"})
+        # Call the tool with valid parameters (segment and limit only)
+        result = mcp_client.call_tool("get_customers", {"segment": "BUILDING", "limit": "10"})
         
         # Check result structure
         assert "content" in result
@@ -630,10 +630,10 @@ class TestMCPComprehensive:
         tool_names = [tool.get('name', 'unknown') for tool in tools]
         
         if "get_customers" in tool_names:
+            # Use only valid parameters: segment and limit
             result = mcp_tester.call_tool("get_customers", {
-                "id": "1",
-                "segment": "retail",
-                "email": "test@example.com"
+                "segment": "AUTOMOBILE",
+                "limit": "5"
             })
             
             assert result is not None
@@ -645,14 +645,13 @@ class TestMCPComprehensive:
 
     def test_tool_execution_minimal_parameters(self, mcp_tester):
         """Test tool execution with minimal parameters."""
-        # Test with just required parameters if tools exist
+        # Test with just optional parameters if tools exist
         tools = mcp_tester.list_tools()
         tool_names = [tool.get('name', 'unknown') for tool in tools]
         
         if "get_customers" in tool_names:
-            result = mcp_tester.call_tool("get_customers", {
-                "id": "1"
-            })
+            # Test with empty parameters (all fields are optional)
+            result = mcp_tester.call_tool("get_customers", {})
             
             assert result is not None
             # The result might be a simple response format
@@ -681,9 +680,11 @@ class TestMCPComprehensive:
         tool_names = [tool.get('name', 'unknown') for tool in tools]
         
         if "get_customers" in tool_names:
-            for i in range(3):
+            segments = ["BUILDING", "AUTOMOBILE", "MACHINERY"]
+            for segment in segments:
                 result = mcp_tester.call_tool("get_customers", {
-                    "id": str(i + 1)
+                    "segment": segment,
+                    "limit": "5"
                 })
                 assert result is not None
 
@@ -694,7 +695,8 @@ class TestMCPComprehensive:
         
         if "get_customers" in tool_names:
             result = mcp_tester.call_tool("get_customers", {
-                "id": "1"
+                "segment": "HOUSEHOLD",
+                "limit": "3"
             })
             
             assert result is not None
@@ -725,7 +727,7 @@ class TestMCPPerformance:
         
         if "get_customers" in tool_names:
             start_time = time.time()
-            result = mcp_tester.call_tool("get_customers", {"id": "1"})
+            result = mcp_tester.call_tool("get_customers", {"segment": "FURNITURE", "limit": "10"})
             end_time = time.time()
             
             response_time = end_time - start_time
@@ -875,7 +877,7 @@ if __name__ == "__main__":
         print(f"  - {tool['name']}: {tool['description']}")
     
     print("\nTesting tool call...")
-    result = client.call_tool("get_customers", {"id": "1"})
+    result = client.call_tool("get_customers", {"segment": "BUILDING", "limit": "5"})
     print(f"Tool call result: {result}")
     
     print("\nAll tests passed!")

@@ -1,0 +1,40 @@
+# Example: Delete Order Endpoint (DELETE)
+# This endpoint demonstrates a write operation for deleting records
+# Note: DELETE is handled separately but uses similar write operation concepts
+
+url-path: /orders/:order_id
+method: DELETE
+
+operation:
+  type: write
+  returns-data: false         # Delete operations typically don't return data
+  transaction: true
+  validate-before-write: true
+
+request:
+  - field-name: order_id
+    field-in: path
+    description: Order ID to delete
+    required: true
+    validators:
+      - type: int
+        min: 1
+
+template-source: delete-order.sql
+connection:
+  - order-db
+
+cache:
+  enabled: true
+  table: orders_cache
+  invalidate-on-write: true   # Invalidate cache after deletion
+  refresh-on-write: false
+
+auth:
+  enabled: true
+  type: basic
+  users:
+    - username: api_user
+      password: '{{env.API_PASSWORD}}'
+      roles: [write, delete]
+

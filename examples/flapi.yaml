@@ -27,9 +27,12 @@ connections:
     properties:
       path: './data/customers.parquet'
 
-  taxi-parquet:
-    properties:
-      path: '~/Downloads/taxi'
+  northwind-sqlite:
+    init: |
+      INSTALL sqlite;
+      LOAD sqlite;
+
+      ATTACH IF NOT EXISTS './examples/data/northwind.sqlite' AS nw (TYPE sqlite);
 
   sap-abap-trial:
     init: |
