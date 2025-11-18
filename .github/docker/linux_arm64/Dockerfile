@@ -62,7 +62,7 @@ RUN mkdir /vcpkg && \
     cd /vcpkg && \
     git init && \
     git remote add origin $vcpkg_url && \
-    git fetch origin $vcpkg_tag && \
+    git fetch origin tag $vcpkg_tag && \
     git checkout $vcpkg_tag && \
     ./bootstrap-vcpkg.sh
 ENV VCPKG_ROOT=/vcpkg
