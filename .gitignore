@@ -13,6 +13,7 @@ testext
 test/python/__pycache__/
 test/integration/api_configuration/test_cache/**
 .Rhistory
+vcpkg/
 vcpkg_installed/
 *.db
 *.db.wal

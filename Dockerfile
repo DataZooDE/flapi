@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 ARG TARGETARCH
-COPY --from=build /${TARGETARCH}/flapi /app/flapi
+COPY --from=build ${TARGETARCH}/flapi /app/flapi
 
 # Ensure executable permissions
 RUN chmod +x /app/flapi
