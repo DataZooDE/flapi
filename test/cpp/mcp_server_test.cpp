@@ -56,7 +56,7 @@ auth:
 TEST_CASE("MCPServer initialization", "[mcp_server]") {
     SECTION("Valid unified MCP server configuration") {
         std::string yaml_content = R"(
-project_name: TestProject
+project-name: TestProject
 template:
   path: ./test_templates
 connections:
@@ -91,7 +91,7 @@ connections:
 TEST_CASE("MCPServer JSON-RPC protocol handling", "[mcp_server]") {
     SECTION("Initialize request handling") {
         std::string yaml_content = R"(
-project_name: TestProject
+project-name: TestProject
 template:
   path: ./test_templates
 connections:
@@ -135,7 +135,7 @@ connections:
 
     SECTION("Tools list request handling") {
         std::string yaml_content = R"(
-project_name: TestProject
+project-name: TestProject
 template:
   path: ./test_templates
 mcp:
@@ -166,7 +166,7 @@ mcp:
 TEST_CASE("MCPServer tool execution", "[mcp_server]") {
     SECTION("Valid tool call") {
         std::string yaml_content = R"(
-project_name: TestProject
+project-name: TestProject
 template:
   path: ./test_templates
 connections:
@@ -207,7 +207,7 @@ mcp:
 
 TEST_CASE("MCPServer error handling", "[mcp_server]") {
     SECTION("Method not found") {
-        std::string config_file = createMCPConfigFile("project_name: TestProject");
+        std::string config_file = createMCPConfigFile("project-name: TestProject");
         auto config_manager = std::make_shared<ConfigManager>(config_file);
         auto db_manager = std::make_shared<DatabaseManager>();
 
@@ -226,7 +226,7 @@ TEST_CASE("MCPServer error handling", "[mcp_server]") {
     }
 
     SECTION("Invalid request parameters") {
-        std::string config_file = createMCPConfigFile("project_name: TestProject");
+        std::string config_file = createMCPConfigFile("project-name: TestProject");
         auto config_manager = std::make_shared<ConfigManager>(config_file);
         auto db_manager = std::make_shared<DatabaseManager>();
 
@@ -249,7 +249,7 @@ TEST_CASE("MCPServer tool discovery", "[mcp_server]") {
     SECTION("Tool definitions generation") {
         // Create a unified configuration with MCP tool
         std::string yaml_content = R"(
-project_name: TestProject
+project-name: TestProject
 template:
   path: ./test_templates
 connections:
@@ -275,7 +275,7 @@ connections:
 
 TEST_CASE("MCP server lifecycle", "[mcp_server]") {
     SECTION("Start and stop server") {
-        std::string config_file = createMCPConfigFile("project_name: TestProject");
+        std::string config_file = createMCPConfigFile("project-name: TestProject");
         auto config_manager = std::make_shared<ConfigManager>(config_file);
         auto db_manager = std::make_shared<DatabaseManager>();
 

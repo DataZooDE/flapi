@@ -17,7 +17,7 @@ std::pair<std::filesystem::path, std::filesystem::path> createTestConfig(bool wi
 
     auto config_path = temp_dir / "config.yaml";
     std::ofstream config_file(config_path);
-    config_file << "project_name: test\nproject_description: desc\ntemplate:\n  path: " << temp_dir << "\n";
+    config_file << "project-name: test\nproject-description: desc\ntemplate:\n  path: " << temp_dir << "\n";
     config_file.close();
 
     auto endpoint_path = temp_dir / "endpoint.yaml";

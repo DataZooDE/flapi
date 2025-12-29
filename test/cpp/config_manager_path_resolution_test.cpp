@@ -44,9 +44,9 @@ public:
 
     void createMainConfig() {
         std::ofstream config(config_file);
-        config << "project_name: test_project\n";
-        config << "project_description: Test project for path resolution\n";
-        config << "http_port: 8080\n";
+        config << "project-name: test_project\n";
+        config << "project-description: Test project for path resolution\n";
+        config << "http-port: 8080\n";
         config << "template:\n";
         config << "  path: " << (test_dir / "endpoints").string() << "\n";
         config << "connections:\n";
@@ -81,7 +81,7 @@ public:
             yaml << "  enabled: true\n";
             yaml << "  table: test_cache\n";
             yaml << "  schema: public\n";
-            yaml << "  template_file: " << cache_template_source << "\n";
+            yaml << "  template-file: " << cache_template_source << "\n";
         }
         
         yaml.close();
@@ -171,7 +171,7 @@ TEST_CASE("Path Resolution: Reload with relative paths", "[config_manager][path_
     yaml << "  enabled: true\n";
     yaml << "  table: test_cache\n";
     yaml << "  schema: public\n";
-    yaml << "  template_file: cache_query.sql\n";  // Still relative
+    yaml << "  template-file: cache_query.sql\n";  // Still relative
     yaml.close();
     
     // Reload the endpoint

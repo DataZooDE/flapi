@@ -71,10 +71,10 @@ void ConfigManager::parseMainConfig() {
         CROW_LOG_INFO << "Parsing main configuration";
         base_path = config_file.parent_path();
 
-        project_name = safeGet<std::string>(config, "project_name", "project_name");
-        project_description = safeGet<std::string>(config, "project_description", "project_description");
-        server_name = safeGet<std::string>(config, "server_name", "server_name", "localhost");
-        http_port = safeGet<int>(config, "http_port", "http_port", 8080);
+        project_name = safeGet<std::string>(config, "project-name", "project-name");
+        project_description = safeGet<std::string>(config, "project-description", "project-description");
+        server_name = safeGet<std::string>(config, "server-name", "server-name", "localhost");
+        http_port = safeGet<int>(config, "http-port", "http-port", 8080);
 
         CROW_LOG_DEBUG << "Project Name: " << project_name;
         CROW_LOG_DEBUG << "Server Name: " << server_name;
@@ -89,8 +89,8 @@ void ConfigManager::parseMainConfig() {
         parseTemplateConfig();
         parseGlobalHeartbeatConfig();
 
-        if (config["cache_schema"]) {
-            cache_schema = safeGet<std::string>(config, "cache_schema", "cache_schema");
+        if (config["cache-schema"]) {
+            cache_schema = safeGet<std::string>(config, "cache-schema", "cache-schema");
             CROW_LOG_DEBUG << "Cache Schema: " << cache_schema;
         }
     } catch (const std::exception& e) {
@@ -170,16 +170,16 @@ void ConfigManager::parseDuckLakeConfig() {
     ducklake_config.alias = safeGet<std::string>(node, "alias", "ducklake.alias", std::string("cache"));
 
     if (ducklake_config.enabled) {
-        ducklake_config.metadata_path = safeGet<std::string>(node, "metadata_path", "ducklake.metadata_path");
-        ducklake_config.data_path = safeGet<std::string>(node, "data_path", "ducklake.data_path");
+        ducklake_config.metadata_path = safeGet<std::string>(node, "metadata-path", "ducklake.metadata-path");
+        ducklake_config.data_path = safeGet<std::string>(node, "data-path", "ducklake.data-path");
 
         if (node["retention"]) {
             auto retention = node["retention"];
-            if (retention["keep_last_snapshots"]) {
-                ducklake_config.retention.keep_last_snapshots = safeGet<std::size_t>(retention, "keep_last_snapshots", "ducklake.retention.keep_last_snapshots");
+            if (retention["keep-last-snapshots"]) {
+                ducklake_config.retention.keep_last_snapshots = safeGet<std::size_t>(retention, "keep-last-snapshots", "ducklake.retention.keep-last-snapshots");
             }
-            if (retention["max_snapshot_age"]) {
-                ducklake_config.retention.max_snapshot_age = safeGet<std::string>(retention, "max_snapshot_age", "ducklake.retention.max_snapshot_age");
+            if (retention["max-snapshot-age"]) {
+                ducklake_config.retention.max_snapshot_age = safeGet<std::string>(retention, "max-snapshot-age", "ducklake.retention.max-snapshot-age");
             }
         }
 
@@ -194,14 +194,14 @@ void ConfigManager::parseDuckLakeConfig() {
         if (node["scheduler"]) {
             auto scheduler = node["scheduler"];
             ducklake_config.scheduler.enabled = safeGet<bool>(scheduler, "enabled", "ducklake.scheduler.enabled", false);
-            if (scheduler["scan_interval"]) {
-                ducklake_config.scheduler.scan_interval = safeGet<std::string>(scheduler, "scan_interval", "ducklake.scheduler.scan_interval");
+            if (scheduler["scan-interval"]) {
+                ducklake_config.scheduler.scan_interval = safeGet<std::string>(scheduler, "scan-interval", "ducklake.scheduler.scan-interval");
             }
         }
 
         // Parse data inlining configuration
-        if (node["data_inlining_row_limit"]) {
-            ducklake_config.data_inlining_row_limit = safeGet<std::size_t>(node, "data_inlining_row_limit", "ducklake.data_inlining_row_limit");
+        if (node["data-inlining-row-limit"]) {
+            ducklake_config.data_inlining_row_limit = safeGet<std::size_t>(node, "data-inlining-row-limit", "ducklake.data-inlining-row-limit");
         }
 
         // Resolve relative paths against base path
@@ -370,21 +370,21 @@ void ConfigManager::parseEndpointAuth(const YAML::Node& endpoint_config, Endpoin
             auto aws_node = auth_node["from-aws-secretmanager"];
             
             AuthFromSecretManagerConfig aws_config;
-            aws_config.secret_name = safeGet<std::string>(aws_node, "secret_name", "auth.from-aws-secretmanager.secret_name");
+            aws_config.secret_name = safeGet<std::string>(aws_node, "secret-name", "auth.from-aws-secretmanager.secret-name");
             if (aws_node["region"]) {
                 aws_config.region = safeGet<std::string>(aws_node, "region", "auth.from-aws-secretmanager.region");
             }
 
-            if (aws_node["secret_id"]) {
-                aws_config.secret_id = safeGet<std::string>(aws_node, "secret_id", "auth.from-aws-secretmanager.secret_id");
+            if (aws_node["secret-id"]) {
+                aws_config.secret_id = safeGet<std::string>(aws_node, "secret-id", "auth.from-aws-secretmanager.secret-id");
             }
 
-            if (aws_node["secret_key"]) {
-                aws_config.secret_key = safeGet<std::string>(aws_node, "secret_key", "auth.from-aws-secretmanager.secret_key");
+            if (aws_node["secret-key"]) {
+                aws_config.secret_key = safeGet<std::string>(aws_node, "secret-key", "auth.from-aws-secretmanager.secret-key");
             }
 
-            aws_config.secret_table = safeGet<std::string>(aws_node, "secret_table", 
-                                                           "auth.from-aws-secretmanager.secret_table", 
+            aws_config.secret_table = safeGet<std::string>(aws_node, "secret-table", 
+                                                           "auth.from-aws-secretmanager.secret-table", 
                                                            secretNameToTableName(aws_config.secret_name));
             
             aws_config.init = safeGet<std::string>(aws_node, "init", 
@@ -501,11 +501,11 @@ void ConfigManager::parseEndpointCache(const YAML::Node& endpoint_config, const 
 
     if (cache_node["retention"]) {
         auto retention_node = cache_node["retention"];
-        if (retention_node["keep_last_snapshots"]) {
-            endpoint.cache.retention.keep_last_snapshots = safeGet<std::size_t>(retention_node, "keep_last_snapshots", "cache.retention.keep_last_snapshots");
+        if (retention_node["keep-last-snapshots"]) {
+            endpoint.cache.retention.keep_last_snapshots = safeGet<std::size_t>(retention_node, "keep-last-snapshots", "cache.retention.keep-last-snapshots");
         }
-        if (retention_node["max_snapshot_age"]) {
-            endpoint.cache.retention.max_snapshot_age = safeGet<std::string>(retention_node, "max_snapshot_age", "cache.retention.max_snapshot_age");
+        if (retention_node["max-snapshot-age"]) {
+            endpoint.cache.retention.max_snapshot_age = safeGet<std::string>(retention_node, "max-snapshot-age", "cache.retention.max-snapshot-age");
         }
     }
 
@@ -515,28 +515,8 @@ void ConfigManager::parseEndpointCache(const YAML::Node& endpoint_config, const 
         endpoint.cache.delete_handling = safeGet<std::string>(cache_node, "deleteHandling", "cache.deleteHandling");
     }
 
-    if (cache_node["template_file"]) {
-        std::string template_file_value = safeGet<std::string>(cache_node, "template_file", "cache.template_file");
-        std::filesystem::path template_file_path(template_file_value);
-        
-        // If absolute path, keep as-is; otherwise resolve relative to endpoint_dir
-        if (template_file_path.is_absolute()) {
-            endpoint.cache.template_file = template_file_value;
-        } else {
-            endpoint.cache.template_file = (endpoint_dir / template_file_path).string();
-        }
-    } else if (cache_node["template-file"]) {
+    if (cache_node["template-file"]) {
         std::string template_file_value = safeGet<std::string>(cache_node, "template-file", "cache.template-file");
-        std::filesystem::path template_file_path(template_file_value);
-        
-        // If absolute path, keep as-is; otherwise resolve relative to endpoint_dir
-        if (template_file_path.is_absolute()) {
-            endpoint.cache.template_file = template_file_value;
-        } else {
-            endpoint.cache.template_file = (endpoint_dir / template_file_path).string();
-        }
-    } else if (cache_node["templateFile"]) {
-        std::string template_file_value = safeGet<std::string>(cache_node, "templateFile", "cache.templateFile");
         std::filesystem::path template_file_path(template_file_value);
         
         // If absolute path, keep as-is; otherwise resolve relative to endpoint_dir
@@ -569,14 +549,10 @@ void ConfigManager::parseEndpointCache(const YAML::Node& endpoint_config, const 
     // Parse write operation cache options
     if (cache_node["invalidate-on-write"]) {
         endpoint.cache.invalidate_on_write = safeGet<bool>(cache_node, "invalidate-on-write", "cache.invalidate-on-write", false);
-    } else if (cache_node["invalidateOnWrite"]) {
-        endpoint.cache.invalidate_on_write = safeGet<bool>(cache_node, "invalidateOnWrite", "cache.invalidateOnWrite", false);
     }
     
     if (cache_node["refresh-on-write"]) {
         endpoint.cache.refresh_on_write = safeGet<bool>(cache_node, "refresh-on-write", "cache.refresh-on-write", false);
-    } else if (cache_node["refreshOnWrite"]) {
-        endpoint.cache.refresh_on_write = safeGet<bool>(cache_node, "refreshOnWrite", "cache.refreshOnWrite", false);
     }
     
     if (endpoint.cache.invalidate_on_write) {
@@ -658,8 +634,8 @@ void ConfigManager::parseAuthConfig() {
         if (auth_enabled) {
             AuthConfig auth_config;
             auth_config.type = auth_node["type"].as<std::string>();
-            auth_config.jwt_secret = auth_node["jwt_secret"].as<std::string>();
-            auth_config.jwt_issuer = auth_node["jwt_issuer"].as<std::string>();
+            auth_config.jwt_secret = auth_node["jwt-secret"].as<std::string>();
+            auth_config.jwt_issuer = auth_node["jwt-issuer"].as<std::string>();
             CROW_LOG_DEBUG << "Auth type: " << auth_config.type;
             CROW_LOG_DEBUG << "JWT issuer: " << auth_config.jwt_issuer;
 
@@ -891,22 +867,22 @@ crow::json::wvalue ConfigManager::getFlapiConfig() const {
     crow::json::wvalue ducklakeJson;
     ducklakeJson["enabled"] = ducklake_config.enabled;
     ducklakeJson["alias"] = ducklake_config.alias;
-    ducklakeJson["metadata_path"] = ducklake_config.metadata_path;
-    ducklakeJson["data_path"] = ducklake_config.data_path;
+    ducklakeJson["metadata-path"] = ducklake_config.metadata_path;
+    ducklakeJson["data-path"] = ducklake_config.data_path;
 
     // Add data inlining configuration
     if (ducklake_config.data_inlining_row_limit) {
-        ducklakeJson["data_inlining_row_limit"] = static_cast<int64_t>(ducklake_config.data_inlining_row_limit.value());
+        ducklakeJson["data-inlining-row-limit"] = static_cast<int64_t>(ducklake_config.data_inlining_row_limit.value());
     }
 
     // Add retention configuration
     if (ducklake_config.retention.keep_last_snapshots || ducklake_config.retention.max_snapshot_age) {
         crow::json::wvalue retentionJson;
         if (ducklake_config.retention.keep_last_snapshots) {
-            retentionJson["keep_last_snapshots"] = static_cast<int64_t>(ducklake_config.retention.keep_last_snapshots.value());
+            retentionJson["keep-last-snapshots"] = static_cast<int64_t>(ducklake_config.retention.keep_last_snapshots.value());
         }
         if (ducklake_config.retention.max_snapshot_age) {
-            retentionJson["max_snapshot_age"] = ducklake_config.retention.max_snapshot_age.value();
+            retentionJson["max-snapshot-age"] = ducklake_config.retention.max_snapshot_age.value();
         }
         ducklakeJson["retention"] = std::move(retentionJson);
     }
@@ -926,7 +902,7 @@ crow::json::wvalue ConfigManager::getFlapiConfig() const {
         crow::json::wvalue schedulerJson;
         schedulerJson["enabled"] = ducklake_config.scheduler.enabled;
         if (ducklake_config.scheduler.scan_interval) {
-            schedulerJson["scan_interval"] = ducklake_config.scheduler.scan_interval.value();
+            schedulerJson["scan-interval"] = ducklake_config.scheduler.scan_interval.value();
         }
         ducklakeJson["scheduler"] = std::move(schedulerJson);
     }
@@ -1021,7 +997,7 @@ crow::json::wvalue ConfigManager::serializeEndpointConfig(const EndpointConfig& 
     authJson["type"] = config.auth.type;
     if (config.auth.from_aws_secretmanager) {
         crow::json::wvalue awsJson;
-        awsJson[(style == EndpointJsonStyle::HyphenCase) ? "secret_name" : "secretName"] = config.auth.from_aws_secretmanager->secret_name;
+        awsJson[(style == EndpointJsonStyle::HyphenCase) ? "secret-name" : "secretName"] = config.auth.from_aws_secretmanager->secret_name;
         awsJson[(style == EndpointJsonStyle::HyphenCase) ? "region" : "region"] = config.auth.from_aws_secretmanager->region;
         authJson[(style == EndpointJsonStyle::HyphenCase) ? "from-aws-secretmanager" : "fromAwsSecretmanager"] = std::move(awsJson);
     }
@@ -1054,10 +1030,10 @@ crow::json::wvalue ConfigManager::serializeEndpointConfig(const EndpointConfig& 
     if (config.cache.retention.keep_last_snapshots || config.cache.retention.max_snapshot_age) {
         crow::json::wvalue retentionJson;
         if (config.cache.retention.keep_last_snapshots) {
-            retentionJson[(style == EndpointJsonStyle::HyphenCase) ? "keep_last_snapshots" : "keep_last_snapshots"] = static_cast<int64_t>(config.cache.retention.keep_last_snapshots.value());
+            retentionJson[(style == EndpointJsonStyle::HyphenCase) ? "keep-last-snapshots" : "keepLastSnapshots"] = static_cast<int64_t>(config.cache.retention.keep_last_snapshots.value());
         }
         if (config.cache.retention.max_snapshot_age) {
-            retentionJson[(style == EndpointJsonStyle::HyphenCase) ? "max_snapshot_age" : "max_snapshot_age"] = config.cache.retention.max_snapshot_age.value();
+            retentionJson[(style == EndpointJsonStyle::HyphenCase) ? "max-snapshot-age" : "maxSnapshotAge"] = config.cache.retention.max_snapshot_age.value();
         }
         cacheJson[(style == EndpointJsonStyle::HyphenCase) ? "retention" : "retention"] = std::move(retentionJson);
     }
@@ -1212,11 +1188,11 @@ EndpointConfig ConfigManager::deserializeEndpointConfig(const crow::json::rvalue
         }
         if (cacheJson.has("retention")) {
             const auto& retentionJson = cacheJson["retention"];
-            auto keepKey = firstExistingKey(retentionJson, {"keep_last_snapshots"});
+            auto keepKey = firstExistingKey(retentionJson, {"keep-last-snapshots", "keepLastSnapshots"});
             if (!keepKey.empty()) {
                 config.cache.retention.keep_last_snapshots = static_cast<std::size_t>(retentionJson[keepKey].i());
             }
-            auto ageKey = firstExistingKey(retentionJson, {"max_snapshot_age"});
+            auto ageKey = firstExistingKey(retentionJson, {"max-snapshot-age", "maxSnapshotAge"});
             if (!ageKey.empty()) {
                 config.cache.retention.max_snapshot_age = retentionJson[ageKey].s();
             }
@@ -1390,7 +1366,7 @@ std::string ConfigManager::serializeEndpointConfigToYaml(const EndpointConfig& c
         out << YAML::Key << "table" << YAML::Value << config.cache.table;
         out << YAML::Key << "schema" << YAML::Value << config.cache.schema;
         if (config.cache.template_file) {
-            out << YAML::Key << "template_file" << YAML::Value << config.cache.template_file.value();
+            out << YAML::Key << "template-file" << YAML::Value << config.cache.template_file.value();
         }
         out << YAML::EndMap;
     }
@@ -1462,8 +1438,8 @@ EndpointConfig ConfigManager::deserializeEndpointConfigFromYaml(const std::strin
         config.cache.enabled = true;
         config.cache.table = node["cache"]["table"].as<std::string>();
         config.cache.schema = node["cache"]["schema"].as<std::string>("cache");
-        if (node["cache"]["template_file"]) {
-            config.cache.template_file = node["cache"]["template_file"].as<std::string>();
+        if (node["cache"]["template-file"]) {
+            config.cache.template_file = node["cache"]["template-file"].as<std::string>();
         }
     }
     

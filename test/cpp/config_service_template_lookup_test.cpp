@@ -35,10 +35,10 @@ public:
     std::string createMainConfig() {
         auto config_path = test_dir / "flapi.yaml";
         std::ofstream config(config_path);
-        config << "project_name: template-lookup-test\n";
-        config << "project_description: Test project for template lookup\n";
-        config << "server_name: flapi-test-server\n";
-        config << "http_port: 8080\n";
+        config << "project-name: template-lookup-test\n";
+        config << "project-description: Test project for template lookup\n";
+        config << "server-name: flapi-test-server\n";
+        config << "http-port: 8080\n";
         config << "connections:\n";
         config << "  test_db:\n";
         config << "    type: duckdb\n";

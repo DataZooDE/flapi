@@ -14,9 +14,9 @@ std::shared_ptr<ConfigManager> createTestConfigManager() {
     std::filesystem::path temp_file = std::filesystem::temp_directory_path() / "test_flapi_config.yaml";
     std::ofstream file(temp_file);
     file << R"(
-project_name: test_project
-project_description: Test Description
-http_port: 8080
+project-name: test_project
+project-description: Test Description
+http-port: 8080
 template:
   path: /tmp
 connections:

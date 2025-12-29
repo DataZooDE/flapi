@@ -26,9 +26,9 @@ TEST_CASE("DatabaseManager attaches DuckLake catalog when enabled", "[database_m
     {
         std::ofstream config_file(config_path);
         config_file << R"(
-project_name: ducklake_test
-project_description: DuckLake attach test
-server_name: test_server
+project-name: ducklake_test
+project-description: DuckLake attach test
+server-name: test_server
 
 template:
   path: )" << templates_dir.string() << R"(

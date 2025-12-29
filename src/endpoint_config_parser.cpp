@@ -161,7 +161,7 @@ void EndpointConfigParser::parseMcpToolFields(
     EndpointConfig::MCPToolInfo tool_info;
     tool_info.name = config_manager_->safeGet<std::string>(mcp_tool_node, "name", "mcp-tool.name");
     tool_info.description = config_manager_->safeGet<std::string>(mcp_tool_node, "description", "mcp-tool.description");
-    tool_info.result_mime_type = config_manager_->safeGet<std::string>(mcp_tool_node, "result_mime_type", "mcp-tool.result_mime_type", "application/json");
+    tool_info.result_mime_type = config_manager_->safeGet<std::string>(mcp_tool_node, "result-mime-type", "mcp-tool.result-mime-type", "application/json");
     config.mcp_tool = tool_info;
 }
 
@@ -173,7 +173,7 @@ void EndpointConfigParser::parseMcpResourceFields(
     EndpointConfig::MCPResourceInfo resource_info;
     resource_info.name = config_manager_->safeGet<std::string>(mcp_resource_node, "name", "mcp-resource.name");
     resource_info.description = config_manager_->safeGet<std::string>(mcp_resource_node, "description", "mcp-resource.description");
-    resource_info.mime_type = config_manager_->safeGet<std::string>(mcp_resource_node, "mime_type", "mcp-resource.mime_type", "application/json");
+    resource_info.mime_type = config_manager_->safeGet<std::string>(mcp_resource_node, "mime-type", "mcp-resource.mime-type", "application/json");
     config.mcp_resource = resource_info;
 }
 

@@ -38,9 +38,9 @@ protected:
         // Create a minimal config file with all required fields
         std::ofstream config_file(config_path);
         config_file << R"(
-project_name: flapi_schema_test
-project_description: Test configuration for schema handler
-server_name: test_server
+project-name: flapi_schema_test
+project-description: Test configuration for schema handler
+server-name: test_server
 
 template:
   path: )" << templates_dir.string() << R"(

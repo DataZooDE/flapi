@@ -142,8 +142,8 @@ crow::json::wvalue FilesystemHandler::buildFileNode(const std::filesystem::path&
                 // Check for cache configuration
                 if (yaml_content["cache"] && yaml_content["cache"]["enabled"] && 
                     yaml_content["cache"]["enabled"].as<bool>()) {
-                    if (yaml_content["cache"]["template_file"]) {
-                        node["cache_template_source"] = yaml_content["cache"]["template_file"].as<std::string>();
+                    if (yaml_content["cache"]["template-file"]) {
+                        node["cache_template_source"] = yaml_content["cache"]["template-file"].as<std::string>();
                     }
                 }
             } else if (yaml_content["mcp-tool"]) {
@@ -1447,10 +1447,10 @@ crow::response CacheConfigHandler::getCacheConfig(const crow::request& req, cons
         if (endpoint->cache.retention.keep_last_snapshots || endpoint->cache.retention.max_snapshot_age) {
             crow::json::wvalue retention;
             if (endpoint->cache.retention.keep_last_snapshots) {
-                retention["keep_last_snapshots"] = static_cast<int64_t>(endpoint->cache.retention.keep_last_snapshots.value());
+                retention["keep-last-snapshots"] = static_cast<int64_t>(endpoint->cache.retention.keep_last_snapshots.value());
             }
             if (endpoint->cache.retention.max_snapshot_age) {
-                retention["max_snapshot_age"] = endpoint->cache.retention.max_snapshot_age.value();
+                retention["max-snapshot-age"] = endpoint->cache.retention.max_snapshot_age.value();
             }
             response["retention"] = std::move(retention);
         }
@@ -1510,11 +1510,11 @@ crow::response CacheConfigHandler::updateCacheConfig(const crow::request& req, c
         }
         if (json.has("retention")) {
             const auto& retention = json["retention"];
-            if (retention.has("keep_last_snapshots")) {
-                cache.retention.keep_last_snapshots = static_cast<std::size_t>(retention["keep_last_snapshots"].i());
+            if (retention.has("keep-last-snapshots")) {
+                cache.retention.keep_last_snapshots = static_cast<std::size_t>(retention["keep-last-snapshots"].i());
             }
-            if (retention.has("max_snapshot_age")) {
-                cache.retention.max_snapshot_age = retention["max_snapshot_age"].s();
+            if (retention.has("max-snapshot-age")) {
+                cache.retention.max_snapshot_age = retention["max-snapshot-age"].s();
             }
         }
         if (json.has("delete-handling")) {

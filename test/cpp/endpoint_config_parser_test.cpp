@@ -20,9 +20,9 @@ std::string createTempYamlFile(const std::string& content, const std::string& fi
 // Helper to create a minimal flapi config for ConfigManager
 std::string createMinimalFlapiConfig() {
     std::string content = R"(
-project_name: test_project
-project_description: Test Description
-http_port: 8080
+project-name: test_project
+project-description: Test Description
+http-port: 8080
 template:
   path: /tmp
 connections:

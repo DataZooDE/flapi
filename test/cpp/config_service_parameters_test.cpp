@@ -19,8 +19,8 @@ std::pair<std::filesystem::path, std::filesystem::path> createTestConfigWithPara
     // Create main flapi.yaml
     auto config_path = temp_dir / "flapi.yaml";
     std::ofstream config_file(config_path);
-    config_file << "project_name: test_params\n";
-    config_file << "project_description: Test for parameters endpoint\n";
+    config_file << "project-name: test_params\n";
+    config_file << "project-description: Test for parameters endpoint\n";
     config_file << "template:\n";
     config_file << "  path: " << temp_dir << "\n";
     config_file << "  environment-whitelist:\n";
@@ -165,8 +165,8 @@ TEST_CASE("ConfigService: Get parameters for endpoint without request fields", "
     // Create main config
     auto config_path = temp_dir / "flapi.yaml";
     std::ofstream config_file(config_path);
-    config_file << "project_name: test_no_params\n";
-    config_file << "project_description: Test without parameters\n";
+    config_file << "project-name: test_no_params\n";
+    config_file << "project-description: Test without parameters\n";
     config_file << "template:\n  path: " << temp_dir << "\n";
     config_file.close();
 
@@ -209,8 +209,8 @@ TEST_CASE("ConfigService: Get environment variables", "[config_service][environm
     // Create main flapi.yaml
     auto config_path = temp_dir / "flapi.yaml";
     std::ofstream config_file(config_path);
-    config_file << "project_name: test_env_vars\n";
-    config_file << "project_description: Test for environment variables\n";
+    config_file << "project-name: test_env_vars\n";
+    config_file << "project-description: Test for environment variables\n";
     config_file << "template:\n";
     config_file << "  path: " << temp_dir << "\n";
     config_file << "  environment-whitelist:\n";
@@ -281,8 +281,8 @@ TEST_CASE("ConfigService: Get environment variables with empty whitelist", "[con
     // Create config without environment whitelist
     auto config_path = temp_dir / "flapi.yaml";
     std::ofstream config_file(config_path);
-    config_file << "project_name: test_no_env\n";
-    config_file << "project_description: Test without env vars\n";
+    config_file << "project-name: test_no_env\n";
+    config_file << "project-description: Test without env vars\n";
     config_file << "template:\n  path: " << temp_dir << "\n";
     config_file.close();
 
@@ -308,8 +308,8 @@ TEST_CASE("ConfigService: Parameters endpoint handles MCP tools gracefully", "[c
     // Create main config
     auto config_path = temp_dir / "flapi.yaml";
     std::ofstream config_file(config_path);
-    config_file << "project_name: test_mcp_params\n";
-    config_file << "project_description: Test MCP tool params\n";
+    config_file << "project-name: test_mcp_params\n";
+    config_file << "project-description: Test MCP tool params\n";
     config_file << "template:\n  path: " << temp_dir << "\n";
     config_file.close();
 

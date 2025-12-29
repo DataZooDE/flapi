@@ -36,8 +36,8 @@ public:
     std::string createMainConfig() {
         auto config_path = temp_dir_ / "flapi.yaml";
         std::ofstream config_file(config_path);
-        config_file << "project_name: slug-test\n";
-        config_file << "project_description: Test slug conversion\n";
+        config_file << "project-name: slug-test\n";
+        config_file << "project-description: Test slug conversion\n";
         config_file << "template:\n";
         config_file << "  path: " << temp_dir_.string() << "\n";
         config_file << "connections:\n";

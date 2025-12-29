@@ -34,9 +34,9 @@ namespace {
         std::filesystem::create_directories(template_dir);
         
         std::ofstream file(temp_path);
-        file << "project_name: test\n";  // Use underscore not hyphen
-        file << "project_description: Test project\n";  // Required field
-        file << "http_port: 8080\n";      // Use underscore not hyphen
+        file << "project-name: test\n";
+        file << "project-description: Test project\n";  // Required field
+        file << "http-port: 8080\n";
         file << "connections:\n";
         file << "  default:\n";
         file << "    init: \"SELECT 1\"\n";

@@ -40,8 +40,8 @@ TEST_CASE("ConfigManager basic functionality", "[config_manager]") {
 
     SECTION("Load valid configuration") {
         std::string yaml_content = R"(
-project_name: TestProject
-project_description: Test Description
+project-name: TestProject
+project-description: Test Description
 template:
   path: )" + temp_template_dir + R"(
 connections:
@@ -63,17 +63,17 @@ duckdb:
 ducklake:
   enabled: true
   alias: cache
-  metadata_path: ./data/cache.ducklake
-  data_path: ./data/cache
+  metadata-path: ./data/cache.ducklake
+  data-path: ./data/cache
   retention:
-    keep_last_snapshots: 10
-    max_snapshot_age: 30d
+    keep-last-snapshots: 10
+    max-snapshot-age: 30d
   compaction:
     enabled: true
     schedule: '@daily'
   scheduler:
     enabled: true
-    scan_interval: 5m
+    scan-interval: 5m
 )";
 
         std::string config_file = createTempYamlFile(yaml_content);
@@ -129,8 +129,8 @@ TEST_CASE("ConfigManager endpoint configuration", "[config_manager]") {
 
     SECTION("Load valid endpoint configuration") {
         std::string yaml_content = R"(
-project_name: TestProject
-project_description: Test Description
+project-name: TestProject
+project-description: Test Description
 template:
   path: )" + temp_template_dir + R"(
 connections:
@@ -181,8 +181,8 @@ cache:
     type: timestamp
   rollback-window: 2d
   retention:
-    keep_last_snapshots: 5
-    max_snapshot_age: 14d
+    keep-last-snapshots: 5
+    max-snapshot-age: 14d
   delete-handling: soft
 
 )";
@@ -243,8 +243,8 @@ TEST_CASE("ConfigManager getEndpointForPath", "[config_manager]") {
     std::string temp_template_dir = createTempDir();
 
     std::string yaml_content = R"(
-project_name: TestProject
-project_description: Test Description
+project-name: TestProject
+project-description: Test Description
 template:
   path: )" + temp_template_dir + R"(
 connections:
@@ -298,8 +298,8 @@ TEST_CASE("ConfigManager template configuration", "[config_manager]") {
     std::string temp_template_dir = createTempDir();
 
     std::string yaml_content = R"(
-project_name: TestProject
-project_description: Test Description
+project-name: TestProject
+project-description: Test Description
 template:
   path: )" + temp_template_dir + R"(
   environment-whitelist:
@@ -336,8 +336,8 @@ TEST_CASE("ConfigManager getPropertiesForTemplates", "[config_manager]") {
     std::string temp_template_dir = createTempDir();
 
     std::string yaml_content = R"(
-project_name: TestProject
-project_description: Test Description
+project-name: TestProject
+project-description: Test Description
 template:
   path: )" + temp_template_dir + R"(
 connections:

@@ -21,7 +21,7 @@ std::string createMCPToolConfigFile(const std::string& content) {
 TEST_CASE("MCPToolHandler initialization", "[mcp_tool_handler]") {
     SECTION("Valid initialization") {
         std::string yaml_content = R"(
-project_name: TestProject
+project-name: TestProject
 template:
   path: ./test_templates
 connections:
@@ -44,7 +44,7 @@ connections:
 TEST_CASE("MCPToolHandler tool validation", "[mcp_tool_handler]") {
     SECTION("Valid tool arguments") {
         std::string yaml_content = R"(
-project_name: TestProject
+project-name: TestProject
 template:
   path: ./test_templates
 connections:
@@ -69,7 +69,7 @@ connections:
 
     SECTION("Invalid tool arguments - missing required parameter") {
         std::string yaml_content = R"(
-project_name: TestProject
+project-name: TestProject
 template:
   path: ./test_templates
 connections:
@@ -93,7 +93,7 @@ connections:
 
     SECTION("Invalid tool arguments - wrong type") {
         std::string yaml_content = R"(
-project_name: TestProject
+project-name: TestProject
 template:
   path: ./test_templates
 connections:
@@ -117,7 +117,7 @@ connections:
 
     SECTION("Invalid tool arguments - constraint violation") {
         std::string yaml_content = R"(
-project_name: TestProject
+project-name: TestProject
 template:
   path: ./test_templates
 connections:
@@ -140,7 +140,7 @@ connections:
     }
 
     SECTION("Unknown tool") {
-        std::string config_file = createMCPToolConfigFile("project_name: TestProject");
+        std::string config_file = createMCPToolConfigFile("project-name: TestProject");
         auto config_manager = std::make_shared<ConfigManager>(config_file);
         auto db_manager = std::make_shared<DatabaseManager>();
 
@@ -156,7 +156,7 @@ connections:
 TEST_CASE("MCPToolHandler tool discovery", "[mcp_tool_handler]") {
     SECTION("Available tools list") {
         std::string yaml_content = R"(
-project_name: TestProject
+project-name: TestProject
 template:
   path: ./test_templates
 connections:
@@ -181,7 +181,7 @@ connections:
 
     SECTION("Tool definition retrieval") {
         std::string yaml_content = R"(
-project_name: TestProject
+project-name: TestProject
 template:
   path: ./test_templates
 connections:
@@ -204,7 +204,7 @@ connections:
     }
 
     SECTION("Unknown tool definition") {
-        std::string config_file = createMCPToolConfigFile("project_name: TestProject");
+        std::string config_file = createMCPToolConfigFile("project-name: TestProject");
         auto config_manager = std::make_shared<ConfigManager>(config_file);
         auto db_manager = std::make_shared<DatabaseManager>();
 
@@ -219,7 +219,7 @@ connections:
 TEST_CASE("MCPToolHandler parameter preparation", "[mcp_tool_handler]") {
     SECTION("Parameter conversion from JSON") {
         std::string yaml_content = R"(
-project_name: TestProject
+project-name: TestProject
 template:
   path: ./test_templates
 connections:
@@ -246,7 +246,7 @@ connections:
 
 TEST_CASE("MCPToolHandler JSON value conversion", "[mcp_tool_handler]") {
     SECTION("String conversion") {
-        std::string config_file = createMCPToolConfigFile("project_name: TestProject");
+        std::string config_file = createMCPToolConfigFile("project-name: TestProject");
         auto config_manager = std::make_shared<ConfigManager>(config_file);
         auto db_manager = std::make_shared<DatabaseManager>();
 
@@ -277,7 +277,7 @@ TEST_CASE("MCPToolHandler JSON value conversion", "[mcp_tool_handler]") {
 
 TEST_CASE("MCPToolHandler parameter map conversion", "[mcp_tool_handler]") {
     SECTION("JSON object to parameter map") {
-        std::string config_file = createMCPToolConfigFile("project_name: TestProject");
+        std::string config_file = createMCPToolConfigFile("project-name: TestProject");
         auto config_manager = std::make_shared<ConfigManager>(config_file);
         auto db_manager = std::make_shared<DatabaseManager>();
 
@@ -304,7 +304,7 @@ TEST_CASE("MCPToolHandler parameter map conversion", "[mcp_tool_handler]") {
 TEST_CASE("MCPToolHandler write operation support", "[mcp_tool_handler]") {
     SECTION("Write operation detection") {
         std::string yaml_content = R"(
-project_name: TestProject
+project-name: TestProject
 template:
   path: ./test_templates
 connections:
@@ -330,7 +330,7 @@ connections:
     }
 
     SECTION("Read operation (default)") {
-        std::string config_file = createMCPToolConfigFile("project_name: TestProject");
+        std::string config_file = createMCPToolConfigFile("project-name: TestProject");
         auto config_manager = std::make_shared<ConfigManager>(config_file);
         auto db_manager = std::make_shared<DatabaseManager>();
 
@@ -347,7 +347,7 @@ connections:
 
 TEST_CASE("MCPToolHandler error handling", "[mcp_tool_handler]") {
     SECTION("Create error result") {
-        std::string config_file = createMCPToolConfigFile("project_name: TestProject");
+        std::string config_file = createMCPToolConfigFile("project-name: TestProject");
         auto config_manager = std::make_shared<ConfigManager>(config_file);
         auto db_manager = std::make_shared<DatabaseManager>();
 
@@ -362,7 +362,7 @@ TEST_CASE("MCPToolHandler error handling", "[mcp_tool_handler]") {
     }
 
     SECTION("Create success result") {
-        std::string config_file = createMCPToolConfigFile("project_name: TestProject");
+        std::string config_file = createMCPToolConfigFile("project-name: TestProject");
         auto config_manager = std::make_shared<ConfigManager>(config_file);
         auto db_manager = std::make_shared<DatabaseManager>();
 

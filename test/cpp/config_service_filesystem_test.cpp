@@ -27,7 +27,7 @@ public:
         // Create flapi.yaml at the base
         config_path = temp_dir / "flapi.yaml";
         std::ofstream config_file(config_path);
-        config_file << "project_name: test\nproject_description: Test Filesystem\ntemplate:\n  path: " 
+        config_file << "project-name: test\nproject-description: Test Filesystem\ntemplate:\n  path: " 
                     << templates_dir.string() << "\n";
         config_file.close();
     }
@@ -49,7 +49,7 @@ public:
         yaml_file << "connection:\n  - default\n";
         if (with_cache) {
             yaml_file << "cache:\n  enabled: true\n  table: " << name << "_cache\n";
-            yaml_file << "  schema: cache\n  template_file: " << name << "_cache.sql\n";
+            yaml_file << "  schema: cache\n  template-file: " << name << "_cache.sql\n";
         }
         yaml_file.close();
         
