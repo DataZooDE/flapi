@@ -648,7 +648,26 @@ std::string ExtendedYamlParser::substituteEnvironmentVariables(const std::string
     auto matches_begin = std::sregex_iterator(result.begin(), result.end(), env_regex);
     auto matches_end = std::sregex_iterator();
 
-    CROW_LOG_DEBUG << "Environment variable substitution: found " << std::distance(matches_begin, matches_end) << " matches in input";
+    int match_count = std::distance(matches_begin, matches_end);
+    CROW_LOG_DEBUG << "Environment variable substitution: found " << match_count << " matches in input";
+
+    if (match_count == 0) {
+        return result;
+    }
+
+    // ✅ FIX STEP 1: Collect all match information FIRST (no string modification)
+    struct EnvVarMatch {
+        size_t position;
+        size_t length;
+        std::string var_name;
+        std::string replacement;
+    };
+
+    std::vector<EnvVarMatch> matches;
+    matches.reserve(match_count);
+
+    // Recreate iterator (previous one was consumed by std::distance)
+    matches_begin = std::sregex_iterator(result.begin(), result.end(), env_regex);
 
     for (auto it = matches_begin; it != matches_end; ++it) {
         std::string var_name = it->str(1);
@@ -663,8 +682,25 @@ std::string ExtendedYamlParser::substituteEnvironmentVariables(const std::string
         std::string replacement = env_value ? env_value : "";
         CROW_LOG_DEBUG << "Environment variable " << var_name << " = '" << replacement << "'";
 
+        // Store for logging (preserve existing behavior)
         resolved_variables_[var_name] = replacement;
-        result = std::regex_replace(result, std::regex("\\{\\{env\\." + var_name + "\\}\\}"), replacement);
+
+        // Collect match info (no string modification yet)
+        matches.push_back({
+            static_cast<size_t>(it->position()),
+            static_cast<size_t>(it->length()),
+            var_name,
+            replacement
+        });
+    }
+
+    // ✅ FIX STEP 2: Process replacements in REVERSE order
+    // (This preserves positions of earlier matches)
+    std::reverse(matches.begin(), matches.end());
+
+    // ✅ FIX STEP 3: Perform replacements using collected positions
+    for (const auto& match : matches) {
+        result.replace(match.position, match.length, match.replacement);
         CROW_LOG_DEBUG << "Replaced environment variable in result";
     }
 
