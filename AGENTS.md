@@ -591,8 +591,8 @@ cache:
 
 ```yaml
 # Project metadata
-project_name: my-project
-project_description: Description
+project-name: my-project
+project-description: Description
 version: 1.0.0
 
 # SQL templates location

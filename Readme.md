@@ -138,7 +138,7 @@ url-path: /customers/                    # Makes this a REST endpoint
 mcp-tool:                                # Also makes this an MCP tool
   name: get_customers
   description: Retrieve customer information by ID
-  result_mime_type: application/json
+  result-mime-type: application/json
 
 request:
   - field-name: id
@@ -175,7 +175,7 @@ auth:
 mcp-resource:
   name: customer_schema
   description: Customer database schema definition
-  mime_type: application/json
+  mime-type: application/json
 
 template-source: customer-schema.sql
 connection: [customers-parquet]
@@ -347,11 +347,11 @@ flAPI uses the DuckDB DuckLake extension to provide modern, snapshot-based cachi
 ducklake:
   enabled: true
   alias: cache
-  metadata_path: ./examples/data/cache.ducklake
-  data_path: ./examples/data/cache.ducklake
-  data_inlining_row_limit: 10  # Enable data inlining for small changes (optional)
+  metadata-path: ./examples/data/cache.ducklake
+  data-path: ./examples/data/cache.ducklake
+  data-inlining-row-limit: 10  # Enable data inlining for small changes (optional)
   retention:
-    max_snapshot_age: 14d
+    max-snapshot-age: 14d
   compaction:
     enabled: false
   scheduler:
@@ -404,7 +404,7 @@ WHERE 1=1
 Notes:
 - The cache schema (`cache.analytics`) is created automatically if missing.
 - Regular GET requests never refresh the cache. Refreshes happen on warmup, on schedule, or via the manual API.
-- **Data Inlining**: When `data_inlining_row_limit` is configured, small cache changes (≤ specified row limit) are written directly to DuckLake metadata instead of creating separate Parquet files. This improves performance for small incremental updates.
+- **Data Inlining**: When `data-inlining-row-limit` is configured, small cache changes (≤ specified row limit) are written directly to DuckLake metadata instead of creating separate Parquet files. This improves performance for small incremental updates.
 
 #### Data inlining (optional, for small changes)
 
@@ -422,7 +422,7 @@ DuckLake supports writing very small inserts directly into the metadata catalog 
   ```
 
 - **Behavior**:
-  - Inserts with rows ≤ `data_inlining_row_limit` are inlined into the catalog metadata.
+  - Inserts with rows ≤ `data-inlining-row-limit` are inlined into the catalog metadata.
   - Larger inserts automatically fall back to normal Parquet file writes.
   - Inlining applies to all caches (global setting), no per-endpoint toggle.
 
@@ -463,7 +463,7 @@ cache:
   cursor:
     column: created_at
     type: timestamp
-  template_file: events/events_cache.sql
+  template-file: events/events_cache.sql
 
 # Incremental merge (upsert)
 cache:
@@ -536,8 +536,8 @@ Retention can be configured per endpoint under `cache.retention`:
 ```yaml
 cache:
   retention:
-    max_snapshot_age: 7d     # time-based retention
-    # keep_last_snapshots: 3 # version-based retention (subject to DuckLake support)
+    max-snapshot-age: 7d     # time-based retention
+    # keep-last-snapshots: 3 # version-based retention (subject to DuckLake support)
 ```
 The system applies retention after each refresh and you can also trigger GC manually:
 ```bash
@@ -576,7 +576,7 @@ Authoring tips:
 ### Troubleshooting
 - Cache refresh happens on every request: by design this is disabled. Ensure you’re not calling the manual refresh endpoint from a client and that your logs show scheduled or warmup refreshes only.
 - Schema not found: verify `cache.schema` is set; flAPI will auto-create it.
-- Retention errors: use time-based `max_snapshot_age` first. Version-based retention depends on DuckLake support.
+- Retention errors: use time-based `max-snapshot-age` first. Version-based retention depends on DuckLake support.
 
 ## 🧩 YAML includes and environment variables
 flAPI extends plain YAML with lightweight include and environment-variable features so you can keep configurations modular and environment-aware.
@@ -596,7 +596,7 @@ flAPI extends plain YAML with lightweight include and environment-variable featu
 Examples:
 ```yaml
 # Substitute inside strings
-project_name: "${{env.PROJECT_NAME}}"
+project-name: "${{env.PROJECT_NAME}}"
 
 # Build include paths dynamically
 template:
