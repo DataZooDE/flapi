@@ -23,8 +23,8 @@ The simplest FLAPI configuration consists of two parts:
 ### 1. Main Configuration (`flapi.yaml`)
 ```yaml
 # Basic project setup
-project_name: my-api-project
-project_description: My first FLAPI project
+project-name: my-api-project
+project-description: My first FLAPI project
 
 # SQL templates directory
 template:
@@ -111,9 +111,9 @@ The main `flapi.yaml` file contains global settings and server configuration.
 
 ```yaml
 # Project Information
-project_name: enterprise-api
-project_description: Enterprise data API with multiple sources
-server_name: production-server
+project-name: enterprise-api
+project-description: Enterprise data API with multiple sources
+server-name: production-server
 
 # Template Configuration
 template:
@@ -183,9 +183,9 @@ heartbeat:
 ### Key Sections Explained
 
 #### Project Information
-- `project_name`: Identifies your API project
-- `project_description`: Human-readable description
-- `server_name`: Server identifier (optional)
+- `project-name`: Identifies your API project
+- `project-description`: Human-readable description
+- `server-name`: Server identifier (optional)
 
 #### Template Configuration
 - `path`: Directory containing SQL templates and endpoint configurations
@@ -298,7 +298,7 @@ auth:
 mcp-resource:
   name: customer_schema
   description: Customer database schema and metadata
-  mime_type: application/json
+  mime-type: application/json
 
 # Can use SQL template for dynamic resources
 template-source: customer_schema.sql
@@ -574,9 +574,9 @@ auth:
   enabled: true
   type: basic
   from_aws_secretmanager:
-    secret_name: flapi-users
+    secret-name: flapi-users
     region: us-east-1
-    secret_table: user_auth
+    secret-table: user_auth
     init: |
       CREATE TABLE user_auth AS 
       SELECT * FROM read_json_auto('{{ secret_json }}')
@@ -1211,14 +1211,14 @@ This section provides a complete reference for all configuration options availab
 
 #### Project Settings
 ```yaml
-project_name: string              # Required. Project identifier
-project_description: string       # Optional. Human-readable description  
-server_name: string              # Optional. Server identifier (default: "flapi-server")
+project-name: string              # Required. Project identifier
+project-description: string       # Optional. Human-readable description  
+server-name: string              # Optional. Server identifier (default: "flapi-server")
 ```
 
 #### HTTP Server Settings
 ```yaml
-http_port: integer               # Optional. HTTP port (default: 8080)
+http-port: integer               # Optional. HTTP port (default: 8080)
 enforce-https:
   enabled: boolean               # Optional. Force HTTPS (default: false)
   ssl-cert-file: string         # Required if HTTPS enabled. SSL certificate path
@@ -1270,6 +1270,74 @@ heartbeat:
   worker-interval: integer      # Required if enabled. Check interval in seconds
 ```
 
+#### MCP Server Instructions
+
+The `instructions` field allows you to provide usage guidance to LLM clients. This markdown-formatted text appears in the MCP server's initialize response and helps LLMs understand how to effectively use your flapi server.
+
+```yaml
+mcp:
+  enabled: boolean              # Optional. Enable MCP server (default: true)
+  port: integer                 # Optional. MCP server port (default: 8081)
+  host: string                  # Optional. MCP server host (default: "localhost")
+
+  # Option 1: Load instructions from external markdown file
+  instructions-file: string     # Optional. Path to markdown file with instructions
+                                # Relative paths are resolved from the config file directory
+
+  # Option 2: Inline instructions (alternative to file)
+  instructions: string          # Optional. Markdown-formatted instructions
+                                # Useful for simple, short instructions
+```
+
+**Best Practices for Server Instructions:**
+
+- **Do:**
+  - Document cross-tool workflows and patterns
+  - Specify constraints (rate limits, data size limits)
+  - Provide performance tips (pagination, caching)
+  - Keep instructions concise and factual
+  - Use markdown formatting for clarity
+
+- **Don't:**
+  - Duplicate tool/resource descriptions (those appear separately)
+  - Include marketing claims or unrelated content
+  - Make instructions too long (aim for 1-3 paragraphs + bullet points)
+
+**Example with File:**
+```yaml
+mcp:
+  enabled: true
+  port: 8081
+  instructions-file: ./mcp_instructions.md
+```
+
+**Example with Inline Instructions:**
+```yaml
+mcp:
+  enabled: true
+  port: 8081
+  instructions: |
+    # Customer Data API
+
+    ## Workflow Patterns
+
+    1. **Search First**: Use `search_customers` tool to find records by filters
+    2. **Paginate Large Results**: Always use `limit` parameter for result sets > 100 rows
+    3. **Cache-Aware**: Tools marked "cached" return faster (see tool descriptions)
+
+    ## Constraints
+
+    - Maximum 10,000 rows per query
+    - 30-second timeout per request
+    - 100 requests/minute rate limit
+```
+
+**File Path Resolution:**
+- Absolute paths: Used as-is
+- Relative paths: Resolved relative to the directory containing `flapi.yaml`
+
+Example: If `flapi.yaml` is in `/app/config/` and `instructions-file: ./docs/instructions.md`, the actual path is `/app/config/docs/instructions.md`
+
 ### Endpoint Configuration Files
 
 #### Endpoint Types
@@ -1301,7 +1369,7 @@ mcp-tool:
 mcp-resource:
   name: string                  # Required. Resource name for MCP protocol
   description: string           # Required. Human-readable resource description
-  mime_type: string             # Optional. Resource MIME type (default: "application/json")
+  mime-type: string             # Optional. Resource MIME type (default: "application/json")
 ```
 
 #### MCP Prompt Configuration
@@ -1348,8 +1416,8 @@ auth:
         - string                # Role name
   
   # JWT Authentication  
-  jwt_secret: string            # Required for JWT. Secret key for token verification
-  jwt_issuer: string            # Optional for JWT. Expected token issuer
+  jwt-secret: string            # Required for JWT. Secret key for token verification
+  jwt-issuer: string            # Optional for JWT. Expected token issuer
   
   # AWS Secrets Manager Authentication
   from_aws_secretmanager:       # Optional. Load users from AWS Secrets Manager
@@ -1367,16 +1435,99 @@ rate-limit:
   interval: integer             # Required if enabled. Time window in seconds
 ```
 
-#### Caching
+#### Operation Configuration (Write Operations)
+```yaml
+operation:
+  type: string                  # Optional. "read" or "write" (default: auto-detected from method)
+  returns-data: boolean         # Optional. Return data from RETURNING clause (default: false)
+  transaction: boolean          # Optional. Wrap in transaction (default: true)
+  validate-before-write: boolean # Optional. Stricter validation for writes (default: true)
+
+# Write operations are automatically detected when method is POST, PUT, or PATCH
+method: POST                    # Automatically sets operation.type to "write"
+# OR explicitly override:
+operation:
+  type: write
+```
+
+**Write Operation Details:**
+- **Auto-detection**: Endpoints with `method: POST`, `PUT`, or `PATCH` are automatically configured as write operations
+- **Transactions**: Write operations are wrapped in database transactions by default for atomicity
+- **Validation**: Write operations use stricter validation (required fields are enforced)
+- **Parameter Source**: For write operations, parameters are extracted from JSON request body (POST/PUT/PATCH)
+- **Response**: Write operations return `rows_affected` and optionally `data` from RETURNING clauses
+
+**Example Write Endpoint:**
+```yaml
+url-path: /customers
+method: POST
+
+operation:
+  type: write
+  returns-data: true           # Include data from RETURNING clause in response
+  transaction: true             # Wrap in transaction (default)
+  validate-before-write: true   # Stricter validation (default)
+
+request:
+  - field-name: name
+    field-in: body              # Body parameters for write operations
+    description: Customer name
+    required: true
+    validators:
+      - type: string
+        min: 1
+        max: 255
+  - field-name: email
+    field-in: body
+    description: Customer email
+    required: true
+    validators:
+      - type: email
+
+template-source: insert-customer.sql
+connection: [customer-db]
+```
+
+**SQL Template for Write Operations:**
+```sql
+-- insert-customer.sql
+INSERT INTO customers (name, email, created_at)
+VALUES ('{{params.name}}', '{{params.email}}', CURRENT_TIMESTAMP)
+RETURNING customer_id, name, email, created_at
+```
+
+**Response Format:**
+```json
+{
+  "rows_affected": 1,
+  "data": [
+    {
+      "customer_id": 123,
+      "name": "John Doe",
+      "email": "john@example.com",
+      "created_at": "2024-01-15T10:30:00Z"
+    }
+  ]
+}
+```
+
+#### Caching with Write Operations
 ```yaml
 cache:
   enabled: boolean              # Required. Enable caching
   cache-table-name: string      # Required if enabled. Name for cache table
   cache-source: string          # Optional. SQL file for cache population
   refresh-time: string          # Required if enabled. Refresh interval (e.g., "1h", "30m", "300s")
+  invalidate-on-write: boolean  # Optional. Invalidate cache after write operations (default: false)
+  refresh-on-write: boolean     # Optional. Refresh cache immediately after write operations (default: false)
   refresh-endpoint: boolean     # Optional. Enable cache refresh endpoint (default: false)
   max-previous-tables: integer  # Optional. Keep N previous cache versions (default: 5)
 ```
+
+**Cache Write Integration:**
+- `invalidate-on-write`: Cache is invalidated after successful write operations
+- `refresh-on-write`: Cache is immediately refreshed after successful write operations
+- Both options can be used together for immediate cache updates
 
 #### Heartbeat (Per-Endpoint)
 ```yaml
@@ -1529,7 +1680,7 @@ Includes the entire content of another YAML file.
 **Example:**
 ```yaml
 # main.yaml
-project_name: my-project
+project-name: my-project
 {{include from common/database-config.yaml}}
 {{include from common/auth-config.yaml}}
 
