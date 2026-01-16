@@ -15,7 +15,8 @@ public:
     ~MCPSessionManager() = default;
 
     // Session management
-    std::string createSession(const std::string& client_version = "");
+    std::string createSession(const std::string& client_version = "",
+                             const std::optional<MCPSession::AuthContext>& auth_context = std::nullopt);
     std::optional<MCPSession> getSession(const std::string& session_id);
     void updateSessionActivity(const std::string& session_id);
     void removeSession(const std::string& session_id);
@@ -28,6 +29,10 @@ public:
     // Session utilities
     bool isSessionValid(const std::string& session_id) const;
     size_t getActiveSessionCount() const;
+
+    // Authentication utilities
+    bool isSessionAuthenticated(const std::string& session_id) const;
+    std::optional<MCPSession::AuthContext> getAuthContext(const std::string& session_id) const;
 
 private:
     std::unordered_map<std::string, MCPSession> sessions_;

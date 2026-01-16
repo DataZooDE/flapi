@@ -1,9 +1,70 @@
 #include "mcp_route_handlers.hpp"
+#include "json_utils.hpp"
 #include <iostream>
 #include <sstream>
 #include <optional>
 
 namespace flapi {
+
+// ========== Helper function implementations ==========
+
+std::string MCPRouteHandlers::formatJsonRpcError(int code, const std::string& message) {
+    // Escape quotes in message for JSON safety
+    std::string escaped_message;
+    escaped_message.reserve(message.size());
+    for (char c : message) {
+        if (c == '"') {
+            escaped_message += "\\\"";
+        } else if (c == '\\') {
+            escaped_message += "\\\\";
+        } else if (c == '\n') {
+            escaped_message += "\\n";
+        } else if (c == '\r') {
+            escaped_message += "\\r";
+        } else if (c == '\t') {
+            escaped_message += "\\t";
+        } else {
+            escaped_message += c;
+        }
+    }
+    return "{\"code\":" + std::to_string(code) + ",\"message\":\"" + escaped_message + "\"}";
+}
+
+MCPResponse MCPRouteHandlers::initResponse(const MCPRequest& request) {
+    MCPResponse response;
+    response.id = request.id;
+    return response;
+}
+
+bool MCPRouteHandlers::extractRequiredStringParam(const crow::json::wvalue& params,
+                                                   const std::string& param_name,
+                                                   std::string& out_value,
+                                                   MCPResponse& response) const {
+    // Check if parameter exists
+    if (params.count(param_name) == 0) {
+        response.error = formatJsonRpcError(-32602, "Invalid params: missing " + param_name);
+        return false;
+    }
+
+    auto param_value = params[param_name];
+
+    // Check for null
+    if (JsonUtils::isNull(param_value)) {
+        response.error = formatJsonRpcError(-32602, "Invalid params: " + param_name + " cannot be null");
+        return false;
+    }
+
+    // Extract string value
+    if (JsonUtils::isString(param_value)) {
+        out_value = JsonUtils::extractString(param_value);
+    } else {
+        out_value = param_value.dump();
+    }
+
+    return true;
+}
+
+// ========== End helper functions ==========
 
 MCPRouteHandlers::MCPRouteHandlers(std::shared_ptr<ConfigManager> config_manager,
                                  std::shared_ptr<DatabaseManager> db_manager,
@@ -24,10 +85,19 @@ MCPRouteHandlers::MCPRouteHandlers(std::shared_ptr<ConfigManager> config_manager
         tool_handler_ = nullptr;
     }
 
+    // Initialize MCP auth handler
+    try {
+        auth_handler_ = std::make_unique<MCPAuthHandler>(config_manager);
+        CROW_LOG_DEBUG << "MCPAuthHandler initialized successfully";
+    } catch (const std::exception& e) {
+        CROW_LOG_ERROR << "Failed to initialize MCPAuthHandler: " << e.what();
+        auth_handler_ = nullptr;
+    }
+
     // Initialize server info with default values (no separate MCP config needed)
     server_info_.name = "flapi-mcp-server";
     server_info_.version = "0.3.0";
-    server_info_.protocol_version = "2024-11-05";
+    server_info_.protocol_version = "2025-11-25";
 
     // Initialize server capabilities with all available capabilities
     capabilities_.tools = {"tools", "resources"};
@@ -62,23 +132,78 @@ void MCPRouteHandlers::registerRoutes(crow::App<crow::CORSHandler, RateLimitMidd
             try {
                 CROW_LOG_DEBUG << "MCP JSON-RPC route handler called";
 
-                // Parse and validate the request
+                // Extract session ID from request (if present)
+                auto session_id = extractSessionIdFromRequest(req);
+
+                // Parse and validate the request EARLY to determine if it's initialize
                 auto mcp_request = parseMCPRequest(req);
                 if (!mcp_request) {
                     CROW_LOG_ERROR << "Failed to parse MCP request";
-                    return createJsonRpcErrorResponse("", -32700, "Parse error: Invalid JSON");
+                    return createJsonRpcErrorResponse("", -32700, "Parse error: Invalid JSON", session_id);
                 }
 
                 CROW_LOG_DEBUG << "MCP request: method=" << mcp_request->method << ", id=" << mcp_request->id;
 
-                // Dispatch the request to appropriate handler
-                MCPResponse mcp_response = dispatchMCPRequest(*mcp_request);
+                // For initialize requests, perform Layer 1 (protocol) auth BEFORE creating session
+                std::optional<MCPSession::AuthContext> auth_context;
+                if (mcp_request->method == "initialize") {
+                    if (auth_handler_ && auth_handler_->methodRequiresAuth("initialize")) {
+                        auth_context = auth_handler_->authenticate(req);
+                        if (!auth_context) {
+                            CROW_LOG_WARNING << "MCP initialize: authentication required but failed";
+                            MCPResponse mcp_response;
+                            mcp_response.id = mcp_request->id;
+                            mcp_response.error = "{\"code\":-32001,\"message\":\"Authentication required for initialize\"}";
+                            return createJsonRpcResponse(*mcp_request, mcp_response, std::nullopt);
+                        }
+                    }
+                }
 
-                // Create and return JSON-RPC response
-                return createJsonRpcResponse(*mcp_request, mcp_response);
+                // Create or reuse session
+                if (!session_id && session_manager_) {
+                    // New session: create with auth context (if authenticated)
+                    session_id = session_manager_->createSession("", auth_context);
+                    CROW_LOG_INFO << "Created new session: " << session_id.value();
+                } else if (session_id) {
+                    CROW_LOG_DEBUG << "Session ID extracted from request: " << session_id.value();
+                    // Update activity timestamp for existing session
+                    if (session_manager_) {
+                        session_manager_->updateSessionActivity(session_id.value());
+                    }
+
+                    // For non-initialize methods on existing session: check session auth
+                    if (mcp_request->method != "initialize") {
+                        auto session = session_manager_->getSession(session_id.value());
+                        if (session) {
+                            auth_context = session->auth_context;
+                        }
+
+                        // Check method authorization (Layer 1: Protocol auth)
+                        if (auth_handler_ && !auth_handler_->authorizeMethod(mcp_request->method, auth_context)) {
+                            CROW_LOG_WARNING << "MCP method " << mcp_request->method << " requires authentication";
+                            MCPResponse mcp_response;
+                            mcp_response.id = mcp_request->id;
+                            mcp_response.error = "{\"code\":-32001,\"message\":\"Authentication required for method: " +
+                                               mcp_request->method + "\"}";
+                            return createJsonRpcResponse(*mcp_request, mcp_response, session_id);
+                        }
+                    }
+                } else {
+                    // New session without auth (should not happen for non-initialize, but handle gracefully)
+                    if (session_manager_) {
+                        session_id = session_manager_->createSession("", auth_context);
+                        CROW_LOG_INFO << "Created new session: " << session_id.value();
+                    }
+                }
+
+                // Dispatch the request to appropriate handler (passing HTTP request for auth access)
+                MCPResponse mcp_response = dispatchMCPRequest(*mcp_request, req);
+
+                // Create and return JSON-RPC response with session header
+                return createJsonRpcResponse(*mcp_request, mcp_response, session_id);
             } catch (const std::exception& e) {
                 CROW_LOG_ERROR << "Error handling MCP request: " << e.what();
-                return createJsonRpcErrorResponse("", -32603, "Internal JSON-RPC error: " + std::string(e.what()));
+                return createJsonRpcErrorResponse("", -32603, "Internal JSON-RPC error: " + std::string(e.what()), std::nullopt);
             }
         });
 
@@ -99,6 +224,55 @@ void MCPRouteHandlers::registerRoutes(crow::App<crow::CORSHandler, RateLimitMidd
             health["tools_count"] = static_cast<int>(tool_defs.size());
             health["resources_count"] = static_cast<int>(resource_defs.size());
             return crow::response(200, health);
+        });
+
+    // MCP session cleanup endpoint (DELETE request to close session)
+    CROW_ROUTE(app, "/mcp/jsonrpc")
+        .methods("DELETE"_method)
+        ([this](const crow::request& req) -> crow::response {
+            try {
+                CROW_LOG_DEBUG << "MCP session cleanup endpoint called";
+
+                // Extract session ID from request
+                auto session_id = extractSessionIdFromRequest(req);
+                if (!session_id) {
+                    CROW_LOG_WARNING << "DELETE /mcp/jsonrpc called without session ID header";
+                    crow::json::wvalue error_response;
+                    error_response["jsonrpc"] = "2.0";
+                    error_response["id"] = nullptr;
+                    error_response["error"]["code"] = -32000;
+                    error_response["error"]["message"] = "Missing Mcp-Session-Id header for session cleanup";
+                    return crow::response(400, error_response.dump());
+                }
+
+                CROW_LOG_INFO << "Cleaning up session: " << session_id.value();
+
+                // Notify session manager to cleanup the session
+                if (session_manager_) {
+                    session_manager_->removeSession(session_id.value());
+                    CROW_LOG_DEBUG << "Session removed by session manager: " << session_id.value();
+                }
+
+                // Return success response
+                crow::json::wvalue success_response;
+                success_response["jsonrpc"] = "2.0";
+                success_response["id"] = nullptr;
+                success_response["result"]["session_id"] = session_id.value();
+                success_response["result"]["status"] = "closed";
+
+                auto response = crow::response(200, success_response.dump());
+                response.set_header("Content-Type", "application/json");
+                addSessionHeaderToResponse(response, session_id);
+                return response;
+            } catch (const std::exception& e) {
+                CROW_LOG_ERROR << "Error handling MCP session cleanup: " << e.what();
+                crow::json::wvalue error_response;
+                error_response["jsonrpc"] = "2.0";
+                error_response["id"] = nullptr;
+                error_response["error"]["code"] = -32603;
+                error_response["error"]["message"] = std::string("Internal error during session cleanup: ") + e.what();
+                return crow::response(500, error_response.dump());
+            }
         });
 
     // Try to refresh MCP entities now that configuration should be loaded
@@ -151,15 +325,9 @@ MCPRequest MCPRouteHandlers::extractRequestFields(const crow::json::wvalue& json
 
     // Handle jsonrpc field which should be "2.0"
     auto jsonrpc_value = json_request["jsonrpc"];
-    if (jsonrpc_value.t() == crow::json::type::String) {
-        std::string jsonrpc_str = jsonrpc_value.dump();
-        // Remove quotes if present
-        if (jsonrpc_str.length() >= 2 && jsonrpc_str.front() == '"' && jsonrpc_str.back() == '"') {
-            mcp_req.jsonrpc = jsonrpc_str.substr(1, jsonrpc_str.length() - 2);
-        } else {
-            mcp_req.jsonrpc = jsonrpc_str;
-        }
-    } else if (jsonrpc_value.t() == crow::json::type::Null) {
+    if (JsonUtils::isString(jsonrpc_value)) {
+        mcp_req.jsonrpc = JsonUtils::extractString(jsonrpc_value);
+    } else if (JsonUtils::isNull(jsonrpc_value)) {
         mcp_req.jsonrpc = "2.0";  // Default to 2.0 for null
     } else {
         // Convert to string using dump()
@@ -168,15 +336,9 @@ MCPRequest MCPRouteHandlers::extractRequestFields(const crow::json::wvalue& json
 
     // Handle method field which should be a string
     auto method_value = json_request["method"];
-    if (method_value.t() == crow::json::type::String) {
-        std::string method_str = method_value.dump();
-        // Remove quotes if present
-        if (method_str.length() >= 2 && method_str.front() == '"' && method_str.back() == '"') {
-            mcp_req.method = method_str.substr(1, method_str.length() - 2);
-        } else {
-            mcp_req.method = method_str;
-        }
-    } else if (method_value.t() == crow::json::type::Null) {
+    if (JsonUtils::isString(method_value)) {
+        mcp_req.method = JsonUtils::extractString(method_value);
+    } else if (JsonUtils::isNull(method_value)) {
         mcp_req.method = "";  // Will be caught by validation
     } else {
         // Convert to string using dump()
@@ -185,18 +347,13 @@ MCPRequest MCPRouteHandlers::extractRequestFields(const crow::json::wvalue& json
 
     // Handle id field which can be string, number, or null
     auto id_value = json_request["id"];
-    if (id_value.t() == crow::json::type::String) {
+    if (JsonUtils::isString(id_value)) {
         // Extract string value without quotes
-        std::string id_str = id_value.dump();
-        if (id_str.length() >= 2 && id_str.front() == '"' && id_str.back() == '"') {
-            mcp_req.id = id_str.substr(1, id_str.length() - 2);
-        } else {
-            mcp_req.id = id_str;
-        }
-    } else if (id_value.t() == crow::json::type::Number) {
+        mcp_req.id = JsonUtils::extractString(id_value);
+    } else if (JsonUtils::isNumber(id_value)) {
         // Convert number to string using dump()
         mcp_req.id = id_value.dump();
-    } else if (id_value.t() == crow::json::type::Null) {
+    } else if (JsonUtils::isNull(id_value)) {
         // Use empty string for null id
         mcp_req.id = "";
     } else {
@@ -223,11 +380,29 @@ bool MCPRouteHandlers::validateMCPRequest(const MCPRequest& request) const {
     return true;
 }
 
-MCPResponse MCPRouteHandlers::dispatchMCPRequest(const MCPRequest& request) const {
-    return handleMessage(request);
+MCPResponse MCPRouteHandlers::dispatchMCPRequest(const MCPRequest& request, const crow::request& http_req) const {
+    return handleMessage(request, http_req);
 }
 
-crow::response MCPRouteHandlers::createJsonRpcResponse(const MCPRequest& request, const MCPResponse& mcp_response) const {
+std::optional<std::string> MCPRouteHandlers::extractSessionIdFromRequest(const crow::request& req) const {
+    // Try to get session ID from Mcp-Session-Id header
+    auto session_header = req.get_header_value(flapi::mcp::constants::MCP_SESSION_HEADER);
+    if (!session_header.empty()) {
+        return session_header;
+    }
+    return std::nullopt;
+}
+
+void MCPRouteHandlers::addSessionHeaderToResponse(crow::response& resp,
+                                                   const std::optional<std::string>& session_id) const {
+    if (session_id) {
+        resp.set_header(flapi::mcp::constants::MCP_SESSION_HEADER, session_id.value());
+        CROW_LOG_DEBUG << "Added session header to response: " << session_id.value();
+    }
+}
+
+crow::response MCPRouteHandlers::createJsonRpcResponse(const MCPRequest& request, const MCPResponse& mcp_response,
+                                                       const std::optional<std::string>& session_id) const {
     crow::json::wvalue response_json;
     response_json["jsonrpc"] = "2.0";
 
@@ -258,10 +433,12 @@ crow::response MCPRouteHandlers::createJsonRpcResponse(const MCPRequest& request
 
     auto response = crow::response(200, response_json.dump());
     response.set_header("Content-Type", "application/json");
+    addSessionHeaderToResponse(response, session_id);
     return response;
 }
 
-crow::response MCPRouteHandlers::createJsonRpcErrorResponse(const std::string& id, int code, const std::string& message) const {
+crow::response MCPRouteHandlers::createJsonRpcErrorResponse(const std::string& id, int code, const std::string& message,
+                                                             const std::optional<std::string>& session_id) const {
     crow::json::wvalue error_json;
     error_json["code"] = code;
     error_json["message"] = message;
@@ -289,6 +466,7 @@ crow::response MCPRouteHandlers::createJsonRpcErrorResponse(const std::string& i
 
     auto response = crow::response(400, response_json.dump());
     response.set_header("Content-Type", "application/json");
+    addSessionHeaderToResponse(response, session_id);
     return response;
 }
 
@@ -435,7 +613,7 @@ crow::json::wvalue MCPRouteHandlers::endpointToMCPResourceDefinition(const Endpo
 }
 
 // JSON-RPC message handling methods
-MCPResponse MCPRouteHandlers::handleMessage(const MCPRequest& request) const {
+MCPResponse MCPRouteHandlers::handleMessage(const MCPRequest& request, const crow::request& http_req) const {
     MCPResponse response;
     response.id = request.id;
 
@@ -443,21 +621,25 @@ MCPResponse MCPRouteHandlers::handleMessage(const MCPRequest& request) const {
 
     try {
         if (request.method == "initialize") {
-            response = handleInitializeRequest(request);
+            response = handleInitializeRequest(request, http_req);
         } else if (request.method == "tools/list") {
-            response = handleToolsListRequest(request);
+            response = handleToolsListRequest(request, http_req);
         } else if (request.method == "tools/call") {
-            response = handleToolsCallRequest(request);
+            response = handleToolsCallRequest(request, http_req);
         } else if (request.method == "resources/list") {
-            response = handleResourcesListRequest(request);
+            response = handleResourcesListRequest(request, http_req);
         } else if (request.method == "resources/read") {
-            response = handleResourcesReadRequest(request);
+            response = handleResourcesReadRequest(request, http_req);
         } else if (request.method == "prompts/list") {
-            response = handlePromptsListRequest(request);
+            response = handlePromptsListRequest(request, http_req);
         } else if (request.method == "prompts/get") {
-            response = handlePromptsGetRequest(request);
+            response = handlePromptsGetRequest(request, http_req);
+        } else if (request.method == "logging/setLevel") {
+            response = handleLoggingSetLevelRequest(request, http_req);
+        } else if (request.method == "completion/complete") {
+            response = handleCompletionCompleteRequest(request, http_req);
         } else if (request.method == "ping") {
-            response = handlePingRequest(request);
+            response = handlePingRequest(request, http_req);
         } else {
             response.error = "{\"code\":-32601,\"message\":\"Method not found\"}";
         }
@@ -469,13 +651,67 @@ MCPResponse MCPRouteHandlers::handleMessage(const MCPRequest& request) const {
     return response;
 }
 
-MCPResponse MCPRouteHandlers::handleInitializeRequest(const MCPRequest& request) const {
+MCPResponse MCPRouteHandlers::handleInitializeRequest(const MCPRequest& request, const crow::request& http_req) const {
     MCPResponse response;
     response.id = request.id;
 
+    // Layer 1: Protocol-level authentication (mcp.auth)
+    std::optional<MCPSession::AuthContext> auth_context;
+    if (auth_handler_ && auth_handler_->methodRequiresAuth("initialize")) {
+        auth_context = auth_handler_->authenticate(http_req);
+        if (!auth_context) {
+            CROW_LOG_WARNING << "MCP initialize: authentication required but failed";
+            response.error = "{\"code\":-32001,\"message\":\"Authentication required for initialize\"}";
+            return response;
+        }
+        CROW_LOG_INFO << "MCP initialize: authenticated as " << auth_context->username;
+    }
+
     try {
+        // Extract client protocol version from request params
+        std::string client_version = "2024-11-05";  // Default to oldest supported for compatibility
+        if (request.params.count("protocolVersion") > 0) {
+            auto version_value = request.params["protocolVersion"];
+            if (version_value.t() == crow::json::type::String) {
+                std::string version_str = version_value.dump();
+                // Remove quotes if present
+                if (version_str.length() >= 2 && version_str.front() == '"' && version_str.back() == '"') {
+                    client_version = version_str.substr(1, version_str.length() - 2);
+                } else {
+                    client_version = version_str;
+                }
+            }
+        }
+
+        // Negotiate protocol version - select highest mutually supported version
+        // Supported versions: 2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25
+        std::string negotiated_version = "2024-11-05";  // Minimum supported
+
+        if (client_version == "2025-11-25" || client_version == "2025-06-18" ||
+            client_version == "2025-03-26" || client_version == "2024-11-05") {
+            // Client requested a supported version - use the minimum of client and server
+            if (client_version == "2025-11-25") {
+                negotiated_version = "2025-11-25";
+            } else if (client_version == "2025-06-18") {
+                negotiated_version = "2025-06-18";
+            } else if (client_version == "2025-03-26") {
+                negotiated_version = "2025-03-26";
+            } else {
+                negotiated_version = "2024-11-05";
+            }
+        } else {
+            // Unknown version - try to handle gracefully by using latest server supports
+            CROW_LOG_WARNING << "Client requested unknown protocol version: " << client_version
+                           << ", using server default: " << server_info_.protocol_version;
+            negotiated_version = server_info_.protocol_version;
+        }
+
+        CROW_LOG_DEBUG << "Protocol version negotiated - Client: " << client_version
+                      << ", Server: " << server_info_.protocol_version
+                      << ", Negotiated: " << negotiated_version;
+
         crow::json::wvalue result;
-        result["protocolVersion"] = server_info_.protocol_version;
+        result["protocolVersion"] = negotiated_version;
         result["capabilities"] = crow::json::wvalue();
         result["capabilities"]["tools"] = crow::json::wvalue();
         result["capabilities"]["tools"]["listChanged"] = true;
@@ -484,20 +720,30 @@ MCPResponse MCPRouteHandlers::handleInitializeRequest(const MCPRequest& request)
         result["capabilities"]["resources"]["listChanged"] = true;
         result["capabilities"]["prompts"] = crow::json::wvalue();
         result["capabilities"]["prompts"]["listChanged"] = true;
+        result["capabilities"]["logging"] = crow::json::wvalue();  // NEW in 2025-11-25
         result["serverInfo"]["name"] = server_info_.name;
         result["serverInfo"]["version"] = server_info_.version;
 
+        // Add instructions if configured
+        std::string instructions = config_manager_->loadMCPInstructions();
+        if (!instructions.empty()) {
+            result["instructions"] = instructions;
+            CROW_LOG_DEBUG << "Included MCP instructions in initialize response ("
+                           << instructions.length() << " characters)";
+        }
+
         response.result = result.dump();
     } catch (const std::exception& e) {
+        CROW_LOG_ERROR << "Initialize error: " << e.what();
         response.error = "{\"code\":-32603,\"message\":\"Initialize error: " + std::string(e.what()) + "\"}";
     }
 
     return response;
 }
 
-MCPResponse MCPRouteHandlers::handleToolsListRequest(const MCPRequest& request) const {
-    MCPResponse response;
-    response.id = request.id;
+MCPResponse MCPRouteHandlers::handleToolsListRequest(const MCPRequest& request, const crow::request& http_req) const {
+    auto response = initResponse(request);
+    // NOTE: http_req is available here for authentication when needed
 
     try {
         auto tool_definitions = getToolDefinitionsFromConfig();
@@ -516,44 +762,21 @@ MCPResponse MCPRouteHandlers::handleToolsListRequest(const MCPRequest& request) 
         CROW_LOG_DEBUG << "Tools list response: " << response.result;
     } catch (const std::exception& e) {
         CROW_LOG_ERROR << "Tools list error: " << e.what();
-        response.error = "{\"code\":-32603,\"message\":\"Tools list error: " + std::string(e.what()) + "\"}";
+        response.error = formatJsonRpcError(-32603, "Tools list error: " + std::string(e.what()));
     }
 
     return response;
 }
 
-MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request) const {
-    MCPResponse response;
-    response.id = request.id;
+MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, const crow::request& http_req) const {
+    auto response = initResponse(request);
+    // NOTE: http_req is available here for authentication when needed
 
     try {
         // Extract tool name from params
-        if (request.params.count("name") == 0) {
-            response.error = "{\"code\":-32602,\"message\":\"Invalid params: missing tool name\"}";
-            return response;
-        }
-
-        // Handle name field which should be a string
-        auto name_value = request.params["name"];
         std::string tool_name;
-
-        if (name_value.t() == crow::json::type::Null) {
-            response.error = "{\"code\":-32602,\"message\":\"Invalid params: tool name cannot be null\"}";
+        if (!extractRequiredStringParam(request.params, "name", tool_name, response)) {
             return response;
-        } else {
-            // Extract string value properly
-            if (name_value.t() == crow::json::type::String) {
-                std::string name_str = name_value.dump();
-                // Remove quotes if present
-                if (name_str.length() >= 2 && name_str.front() == '"' && name_str.back() == '"') {
-                    tool_name = name_str.substr(1, name_str.length() - 2);
-                } else {
-                    tool_name = name_str;
-                }
-            } else {
-                // Convert other types using dump()
-                tool_name = name_value.dump();
-            }
         }
 
         // Extract arguments from params
@@ -575,36 +798,28 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request) 
             auto result = tool_handler_->executeTool(tool_request);
 
             if (result.success) {
-                // Convert result to MCP format
-                crow::json::wvalue mcp_result;
-                crow::json::wvalue content_array = crow::json::wvalue::list();
-
-                // Add the result content as text
-                crow::json::wvalue content_item;
-                content_item["type"] = "text";
-                content_item["text"] = result.result;
-                content_array[0] = crow::json::wvalue(content_item);
-
-                mcp_result["content"] = std::move(content_array);
-
+                // Convert result to MCP format using ContentResponse
+                mcp::ContentResponse content_response;
+                content_response.addText(result.result);
+                crow::json::wvalue mcp_result = content_response.toJson();
                 response.result = mcp_result.dump();
             } else {
-                response.error = "{\"code\":-32603,\"message\":\"Tool execution failed: " + result.error_message + "\"}";
+                response.error = formatJsonRpcError(-32603, "Tool execution failed: " + result.error_message);
             }
         } else {
-            response.error = "{\"code\":-32601,\"message\":\"Tool handler not available\"}";
+            response.error = formatJsonRpcError(-32601, "Tool handler not available");
         }
     } catch (const std::exception& e) {
         CROW_LOG_ERROR << "Tool call error: " << e.what();
-        response.error = "{\"code\":-32603,\"message\":\"Tool call error: " + std::string(e.what()) + "\"}";
+        response.error = formatJsonRpcError(-32603, "Tool call error: " + std::string(e.what()));
     }
 
     return response;
 }
 
-MCPResponse MCPRouteHandlers::handleResourcesListRequest(const MCPRequest& request) const {
-    MCPResponse response;
-    response.id = request.id;
+MCPResponse MCPRouteHandlers::handleResourcesListRequest(const MCPRequest& request, const crow::request& http_req) const {
+    auto response = initResponse(request);
+    // NOTE: http_req is available here for authentication when needed
 
     try {
         auto resource_definitions = getResourceDefinitionsFromConfig();
@@ -620,51 +835,28 @@ MCPResponse MCPRouteHandlers::handleResourcesListRequest(const MCPRequest& reque
 
         response.result = result.dump();
     } catch (const std::exception& e) {
-        response.error = "{\"code\":-32603,\"message\":\"Resources list error: " + std::string(e.what()) + "\"}";
+        response.error = formatJsonRpcError(-32603, "Resources list error: " + std::string(e.what()));
     }
 
     return response;
 }
 
-MCPResponse MCPRouteHandlers::handleResourcesReadRequest(const MCPRequest& request) const {
-    MCPResponse response;
-    response.id = request.id;
+MCPResponse MCPRouteHandlers::handleResourcesReadRequest(const MCPRequest& request, const crow::request& http_req) const {
+    auto response = initResponse(request);
+    // NOTE: http_req is available here for authentication when needed
 
     try {
         // Extract resource URI from params
-        if (request.params.count("uri") == 0) {
-            response.error = "{\"code\":-32602,\"message\":\"Invalid params: missing resource URI\"}";
-            return response;
-        }
-
-        // Handle uri field which should be a string
-        auto uri_value = request.params["uri"];
         std::string resource_uri;
-
-        if (uri_value.t() == crow::json::type::Null) {
-            response.error = "{\"code\":-32602,\"message\":\"Invalid params: resource URI cannot be null\"}";
+        if (!extractRequiredStringParam(request.params, "uri", resource_uri, response)) {
             return response;
-        } else {
-            // Extract string value properly
-            if (uri_value.t() == crow::json::type::String) {
-                std::string uri_str = uri_value.dump();
-                // Remove quotes if present
-                if (uri_str.length() >= 2 && uri_str.front() == '"' && uri_str.back() == '"') {
-                    resource_uri = uri_str.substr(1, uri_str.length() - 2);
-                } else {
-                    resource_uri = uri_str;
-                }
-            } else {
-                // Convert other types using dump()
-                resource_uri = uri_value.dump();
-            }
         }
         CROW_LOG_DEBUG << "Resource read request: " << resource_uri;
 
         // Find the resource configuration by URI
         auto resource_config = findResourceByURI(resource_uri);
         if (!resource_config) {
-            response.error = "{\"code\":-32602,\"message\":\"Resource not found: " + resource_uri + "\"}";
+            response.error = formatJsonRpcError(-32602, "Resource not found: " + resource_uri);
             return response;
         }
 
@@ -675,10 +867,10 @@ MCPResponse MCPRouteHandlers::handleResourcesReadRequest(const MCPRequest& reque
             crow::json::wvalue result = readResourceContent(*resource_config);
             response.result = result.dump();
         } catch (const std::exception& e) {
-            response.error = "{\"code\":-32603,\"message\":\"Resource read error: " + std::string(e.what()) + "\"}";
+            response.error = formatJsonRpcError(-32603, "Resource read error: " + std::string(e.what()));
         }
     } catch (const std::exception& e) {
-        response.error = "{\"code\":-32603,\"message\":\"Resource read error: " + std::string(e.what()) + "\"}";
+        response.error = formatJsonRpcError(-32603, "Resource read error: " + std::string(e.what()));
     }
 
     return response;
@@ -764,9 +956,9 @@ crow::json::wvalue MCPRouteHandlers::readResourceContent(const EndpointConfig& r
 }
 
 // Prompt functionality implementation
-MCPResponse MCPRouteHandlers::handlePromptsListRequest(const MCPRequest& request) const {
-    MCPResponse response;
-    response.id = request.id;
+MCPResponse MCPRouteHandlers::handlePromptsListRequest(const MCPRequest& request, const crow::request& http_req) const {
+    auto response = initResponse(request);
+    // NOTE: http_req is available here for authentication when needed
 
     try {
         crow::json::wvalue result;
@@ -786,33 +978,21 @@ MCPResponse MCPRouteHandlers::handlePromptsListRequest(const MCPRequest& request
         result["prompts"] = std::move(prompts_array);
         response.result = result.dump();
     } catch (const std::exception& e) {
-        response.error = "{\"code\":-32603,\"message\":\"Prompts list error: " + std::string(e.what()) + "\"}";
+        response.error = formatJsonRpcError(-32603, "Prompts list error: " + std::string(e.what()));
     }
 
     return response;
 }
 
-MCPResponse MCPRouteHandlers::handlePromptsGetRequest(const MCPRequest& request) const {
-    MCPResponse response;
-    response.id = request.id;
+MCPResponse MCPRouteHandlers::handlePromptsGetRequest(const MCPRequest& request, const crow::request& http_req) const {
+    auto response = initResponse(request);
+    // NOTE: http_req is available here for authentication when needed
 
     try {
         // Extract prompt name from parameters
-        if (!request.params.count("name") || request.params["name"].t() == crow::json::type::Null) {
-            response.error = "{\"code\":-32602,\"message\":\"Invalid params: prompt name is required\"}";
-            return response;
-        }
-
         std::string prompt_name;
-        if (request.params["name"].t() == crow::json::type::String) {
-            std::string name_str = request.params["name"].dump();
-            if (name_str.length() >= 2 && name_str.front() == '"' && name_str.back() == '"') {
-                prompt_name = name_str.substr(1, name_str.length() - 2);
-            } else {
-                prompt_name = name_str;
-            }
-        } else {
-            prompt_name = request.params["name"].dump();
+        if (!extractRequiredStringParam(request.params, "name", prompt_name, response)) {
+            return response;
         }
 
         CROW_LOG_DEBUG << "Prompt get request: " << prompt_name;
@@ -820,7 +1000,7 @@ MCPResponse MCPRouteHandlers::handlePromptsGetRequest(const MCPRequest& request)
         // Find the prompt configuration by name
         auto prompt_config = findPromptByName(prompt_name);
         if (!prompt_config) {
-            response.error = "{\"code\":-32602,\"message\":\"Prompt not found: " + prompt_name + "\"}";
+            response.error = formatJsonRpcError(-32602, "Prompt not found: " + prompt_name);
             return response;
         }
 
@@ -834,7 +1014,7 @@ MCPResponse MCPRouteHandlers::handlePromptsGetRequest(const MCPRequest& request)
         crow::json::wvalue result = processPromptTemplate(*prompt_config, arguments_ptr);
         response.result = result.dump();
     } catch (const std::exception& e) {
-        response.error = "{\"code\":-32603,\"message\":\"Prompt get error: " + std::string(e.what()) + "\"}";
+        response.error = formatJsonRpcError(-32603, "Prompt get error: " + std::string(e.what()));
     }
 
     return response;
@@ -922,8 +1102,9 @@ crow::json::wvalue MCPRouteHandlers::endpointToMCPPromptDefinition(const Endpoin
 }
 
 // Ping functionality implementation
-MCPResponse MCPRouteHandlers::handlePingRequest(const MCPRequest& request) const {
+MCPResponse MCPRouteHandlers::handlePingRequest(const MCPRequest& request, const crow::request& http_req) const {
     MCPResponse response;
+    // NOTE: http_req is available here for authentication when needed
     response.id = request.id;
 
     try {
@@ -933,10 +1114,187 @@ MCPResponse MCPRouteHandlers::handlePingRequest(const MCPRequest& request) const
         // This complies with standard JSON-RPC ping implementations
         crow::json::wvalue result = crow::json::wvalue::object();
         // Empty object - no additional fields needed for ping
-        
+
         response.result = result.dump();
     } catch (const std::exception& e) {
         response.error = "{\"code\":-32603,\"message\":\"Ping error: " + std::string(e.what()) + "\"}";
+    }
+
+    return response;
+}
+
+MCPResponse MCPRouteHandlers::handleLoggingSetLevelRequest(const MCPRequest& request, const crow::request& http_req) const {
+    MCPResponse response;
+    // NOTE: http_req is available here for authentication when needed
+    response.id = request.id;
+
+    try {
+        // Extract log level from params
+        if (request.params.count("level") == 0) {
+            response.error = "{\"code\":-32602,\"message\":\"Invalid params: missing 'level' field\"}";
+            return response;
+        }
+
+        auto level_value = request.params["level"];
+        std::string log_level;
+
+        if (JsonUtils::isString(level_value)) {
+            log_level = JsonUtils::extractString(level_value);
+        } else {
+            response.error = "{\"code\":-32602,\"message\":\"Invalid params: 'level' must be a string\"}";
+            return response;
+        }
+
+        // Map MCP log levels to Crow log levels
+        // MCP levels: debug, info, notice, warning, error, critical, alert, emergency
+        // Crow levels: DEBUG, INFO, WARNING, ERROR
+        crow::LogLevel crow_level = crow::LogLevel::INFO;
+
+        if (log_level == "debug") {
+            crow_level = crow::LogLevel::DEBUG;
+        } else if (log_level == "info" || log_level == "notice") {
+            crow_level = crow::LogLevel::INFO;
+        } else if (log_level == "warning") {
+            crow_level = crow::LogLevel::WARNING;
+        } else if (log_level == "error" || log_level == "critical" || log_level == "alert" || log_level == "emergency") {
+            crow_level = crow::LogLevel::ERROR;
+        } else {
+            response.error = "{\"code\":-32602,\"message\":\"Invalid log level: " + log_level + "\"}";
+            return response;
+        }
+
+        // Set the log level globally
+        CROW_LOG_INFO << "Setting log level to: " << log_level;
+        crow::logger::setLogLevel(crow_level);
+
+        // Return success response (empty object)
+        crow::json::wvalue result = crow::json::wvalue::object();
+        response.result = result.dump();
+
+    } catch (const std::exception& e) {
+        CROW_LOG_ERROR << "logging/setLevel error: " << e.what();
+        response.error = "{\"code\":-32603,\"message\":\"Internal error: " + std::string(e.what()) + "\"}";
+    }
+
+    return response;
+}
+
+MCPResponse MCPRouteHandlers::handleCompletionCompleteRequest(const MCPRequest& request, const crow::request& http_req) const {
+    MCPResponse response;
+    // NOTE: http_req is available here for authentication when needed
+    response.id = request.id;
+
+    try {
+        // Extract parameters from request
+        // ref: reference to tool/prompt/resource (e.g., "customer_lookup" or "prompt_name")
+        // argument: argument name to complete
+        // value: partial value prefix
+
+        if (request.params.count("ref") == 0 || request.params.count("argument") == 0) {
+            response.error = "{\"code\":-32602,\"message\":\"Invalid params: missing 'ref' or 'argument' field\"}";
+            return response;
+        }
+
+        // Extract ref (reference to tool/prompt)
+        auto ref_value = request.params["ref"];
+        std::string ref_str;
+        if (JsonUtils::isString(ref_value)) {
+            ref_str = JsonUtils::extractString(ref_value);
+        } else {
+            response.error = "{\"code\":-32602,\"message\":\"Invalid params: 'ref' must be a string\"}";
+            return response;
+        }
+
+        // Extract argument name
+        auto arg_value = request.params["argument"];
+        std::string argument_name;
+        if (JsonUtils::isString(arg_value)) {
+            argument_name = JsonUtils::extractString(arg_value);
+        } else {
+            response.error = "{\"code\":-32602,\"message\":\"Invalid params: 'argument' must be a string\"}";
+            return response;
+        }
+
+        // Extract optional value (prefix) for filtering
+        std::string value_prefix;
+        if (request.params.count("value") > 0) {
+            auto value_val = request.params["value"];
+            if (JsonUtils::isString(value_val)) {
+                value_prefix = JsonUtils::extractString(value_val);
+            }
+        }
+
+        CROW_LOG_DEBUG << "Completion request: ref=" << ref_str << ", argument=" << argument_name
+                      << ", prefix=" << value_prefix;
+
+        // Find the tool/prompt by reference name
+        std::optional<EndpointConfig> endpoint;
+        auto endpoints = config_manager_->getEndpoints();
+        for (const auto& ep : endpoints) {
+            if ((ep.isMCPTool() && ep.mcp_tool && ep.mcp_tool->name == ref_str) ||
+                (ep.isMCPPrompt() && ep.mcp_prompt && ep.mcp_prompt->name == ref_str)) {
+                endpoint = ep;
+                break;
+            }
+        }
+
+        if (!endpoint) {
+            response.error = "{\"code\":-32602,\"message\":\"Reference not found: " + ref_str + "\"}";
+            return response;
+        }
+
+        // Find the argument field by name
+        const RequestFieldConfig* matching_field = nullptr;
+        for (const auto& field : endpoint->request_fields) {
+            if (field.fieldName == argument_name) {
+                matching_field = &field;
+                break;
+            }
+        }
+
+        if (!matching_field) {
+            response.error = "{\"code\":-32602,\"message\":\"Argument not found: " + argument_name + "\"}";
+            return response;
+        }
+
+        // Build completion suggestions based on validators
+        crow::json::wvalue completion;
+        crow::json::wvalue values = crow::json::wvalue::list();
+        int total_count = 0;
+        bool has_more = false;
+
+        // Check for enum validator to provide enum values
+        for (const auto& validator : matching_field->validators) {
+            if (validator.type == "enum" && validator.allowedValues.size() > 0) {
+                // Filter enum values based on prefix
+                int added_count = 0;
+                for (const auto& enum_val : validator.allowedValues) {
+                    if (value_prefix.empty() || enum_val.find(value_prefix) == 0) {
+                        if (added_count < 50) {  // Limit results to 50
+                            values[added_count] = enum_val;
+                            added_count++;
+                        } else {
+                            has_more = true;
+                            break;
+                        }
+                    }
+                    total_count++;
+                }
+                break;
+            }
+        }
+
+        // If no enum validator, return empty completion (client can use its own methods)
+        completion["values"] = std::move(values);
+        completion["total"] = total_count;
+        completion["hasMore"] = has_more;
+
+        response.result = completion.dump();
+        CROW_LOG_DEBUG << "Completion result: " << response.result;
+
+    } catch (const std::exception& e) {
+        CROW_LOG_ERROR << "completion/complete error: " << e.what();
+        response.error = "{\"code\":-32603,\"message\":\"Internal error: " + std::string(e.what()) + "\"}";
     }
 
     return response;

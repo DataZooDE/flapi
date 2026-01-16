@@ -11,7 +11,7 @@ MCPServer::MCPServer(std::shared_ptr<ConfigManager> config_manager,
     // Initialize server info with default values (no separate MCP config needed)
     server_info.name = "flapi-mcp-server";
     server_info.version = "0.3.0";
-    server_info.protocol_version = "2024-11-05";
+    server_info.protocol_version = "2025-11-25";
 
     // Initialize server capabilities with all available capabilities
     server_capabilities.tools = {"tools", "resources"};

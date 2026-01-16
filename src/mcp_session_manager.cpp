@@ -11,7 +11,9 @@ MCPSessionManager::MCPSessionManager()
     : session_timeout_(flapi::mcp::constants::DEFAULT_SESSION_TIMEOUT_MINUTES) {
 }
 
-std::string MCPSessionManager::createSession(const std::string& client_version) {
+std::string MCPSessionManager::createSession(
+    const std::string& client_version,
+    const std::optional<MCPSession::AuthContext>& auth_context) {
     std::lock_guard<std::mutex> lock(sessions_mutex_);
 
     std::string session_id = generateSessionId();
@@ -19,6 +21,7 @@ std::string MCPSessionManager::createSession(const std::string& client_version) 
     MCPSession session;
     session.session_id = session_id;
     session.client_version = client_version;
+    session.auth_context = auth_context;
 
     sessions_[session_id] = session;
     return session_id;
@@ -122,6 +125,37 @@ bool MCPSessionManager::isSessionExpired(const MCPSession& session) const {
     auto now = std::chrono::steady_clock::now();
     auto timeout_duration = std::chrono::minutes(session_timeout_);
     return (now - session.last_activity) > timeout_duration;
+}
+
+bool MCPSessionManager::isSessionAuthenticated(const std::string& session_id) const {
+    std::lock_guard<std::mutex> lock(sessions_mutex_);
+
+    auto it = sessions_.find(session_id);
+    if (it == sessions_.end()) {
+        return false;
+    }
+
+    if (isSessionExpired(it->second)) {
+        return false;
+    }
+
+    return it->second.isAuthenticated();
+}
+
+std::optional<MCPSession::AuthContext> MCPSessionManager::getAuthContext(
+    const std::string& session_id) const {
+    std::lock_guard<std::mutex> lock(sessions_mutex_);
+
+    auto it = sessions_.find(session_id);
+    if (it == sessions_.end()) {
+        return std::nullopt;
+    }
+
+    if (isSessionExpired(it->second)) {
+        return std::nullopt;
+    }
+
+    return it->second.auth_context;
 }
 
 } // namespace flapi

@@ -12,8 +12,11 @@
 #include "database_manager.hpp"
 #include "mcp_tool_handler.hpp"
 #include "mcp_types.hpp"
+#include "mcp_constants.hpp"
 #include "mcp_session_manager.hpp"
 #include "mcp_client_capabilities.hpp"
+#include "mcp_content_types.hpp"
+#include "mcp_auth_handler.hpp"
 #include "rate_limit_middleware.hpp"
 #include "auth_middleware.hpp"
 
@@ -66,12 +69,12 @@ private:
     crow::response handleHealth(const crow::request& req);
 
     // JSON-RPC message handling
-    MCPResponse handleMessage(const MCPRequest& request) const;
-    MCPResponse handleInitializeRequest(const MCPRequest& request) const;
-    MCPResponse handleToolsListRequest(const MCPRequest& request) const;
-    MCPResponse handleToolsCallRequest(const MCPRequest& request) const;
-    MCPResponse handleResourcesListRequest(const MCPRequest& request) const;
-    MCPResponse handleResourcesReadRequest(const MCPRequest& request) const;
+    MCPResponse handleMessage(const MCPRequest& request, const crow::request& http_req) const;
+    MCPResponse handleInitializeRequest(const MCPRequest& request, const crow::request& http_req) const;
+    MCPResponse handleToolsListRequest(const MCPRequest& request, const crow::request& http_req) const;
+    MCPResponse handleToolsCallRequest(const MCPRequest& request, const crow::request& http_req) const;
+    MCPResponse handleResourcesListRequest(const MCPRequest& request, const crow::request& http_req) const;
+    MCPResponse handleResourcesReadRequest(const MCPRequest& request, const crow::request& http_req) const;
 
     // Request parsing and validation
     std::optional<MCPRequest> parseMCPRequest(const crow::request& req) const;
@@ -79,11 +82,17 @@ private:
     bool validateMCPRequest(const MCPRequest& request) const;
 
     // Response creation
-    crow::response createJsonRpcResponse(const MCPRequest& request, const MCPResponse& mcp_response) const;
-    crow::response createJsonRpcErrorResponse(const std::string& id, int code, const std::string& message) const;
+    crow::response createJsonRpcResponse(const MCPRequest& request, const MCPResponse& mcp_response,
+                                         const std::optional<std::string>& session_id = std::nullopt) const;
+    crow::response createJsonRpcErrorResponse(const std::string& id, int code, const std::string& message,
+                                              const std::optional<std::string>& session_id = std::nullopt) const;
+
+    // Session management
+    std::optional<std::string> extractSessionIdFromRequest(const crow::request& req) const;
+    void addSessionHeaderToResponse(crow::response& resp, const std::optional<std::string>& session_id) const;
 
     // Request dispatching
-    MCPResponse dispatchMCPRequest(const MCPRequest& request) const;
+    MCPResponse dispatchMCPRequest(const MCPRequest& request, const crow::request& http_req) const;
 
 
     // Tool and resource discovery from unified configuration
@@ -111,13 +120,34 @@ private:
     crow::json::wvalue readResourceContent(const EndpointConfig& resource_config) const;
 
     // Prompt functionality
-    MCPResponse handlePromptsListRequest(const MCPRequest& request) const;
-    MCPResponse handlePromptsGetRequest(const MCPRequest& request) const;
+    MCPResponse handlePromptsListRequest(const MCPRequest& request, const crow::request& http_req) const;
+    MCPResponse handlePromptsGetRequest(const MCPRequest& request, const crow::request& http_req) const;
     std::optional<EndpointConfig> findPromptByName(const std::string& name) const;
     crow::json::wvalue processPromptTemplate(const EndpointConfig& prompt_config, const crow::json::wvalue* arguments) const;
 
+    // Logging functionality (2025-11-25)
+    MCPResponse handleLoggingSetLevelRequest(const MCPRequest& request, const crow::request& http_req) const;
+
+    // Completion functionality (2025-11-25)
+    MCPResponse handleCompletionCompleteRequest(const MCPRequest& request, const crow::request& http_req) const;
+
     // Ping functionality
-    MCPResponse handlePingRequest(const MCPRequest& request) const;
+    MCPResponse handlePingRequest(const MCPRequest& request, const crow::request& http_req) const;
+
+    // ========== Helper functions for reducing code duplication ==========
+
+    // Creates a JSON-RPC error string: {"code":<code>,"message":"<message>"}
+    static std::string formatJsonRpcError(int code, const std::string& message);
+
+    // Initialize an MCPResponse with the request's ID
+    static MCPResponse initResponse(const MCPRequest& request);
+
+    // Validate a required string parameter exists and extract it
+    // Returns true if valid, false if error (sets response.error)
+    bool extractRequiredStringParam(const crow::json::wvalue& params,
+                                    const std::string& param_name,
+                                    std::string& out_value,
+                                    MCPResponse& response) const;
 
     // Server state
     MCPServerInfo server_info_;
@@ -132,6 +162,7 @@ private:
     std::shared_ptr<MCPSessionManager> session_manager_;
     std::shared_ptr<MCPClientCapabilitiesDetector> capabilities_detector_;
     std::unique_ptr<MCPToolHandler> tool_handler_;
+    std::unique_ptr<MCPAuthHandler> auth_handler_;
     int port_ = 8080;
 };
 
