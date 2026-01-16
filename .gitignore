@@ -19,4 +19,4 @@ vcpkg_installed/
 *.db.wal
 service-account.json
 diagnosis/
-dev_rfc.log
+dev_rfc.log.ai/
