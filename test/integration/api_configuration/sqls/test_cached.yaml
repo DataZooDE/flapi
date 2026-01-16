@@ -11,9 +11,9 @@ cache:
   schedule: 1m
   # Simple full refresh mode (no primary-key or cursor)
   retention:
-    keep_last_snapshots: 2
-    max_snapshot_age: 1h
-  template_file: test_cache.sql
+    keep-last-snapshots: 2
+    max-snapshot-age: 1h
+  template-file: test_cache.sql
 
 auth:
   enabled: false

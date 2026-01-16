@@ -32,7 +32,7 @@ stages:
         content-type: "application/json"
       json:
         rows_affected: 1
-        data: !any  # Should return created product data
+        data: !anything  # Should return created product data
 
   - name: Create product with minimal required fields
     request:
@@ -50,7 +50,7 @@ stages:
         content-type: "application/json"
       json:
         rows_affected: 1
-        data: !any
+        data: !anything
 
   - name: Create product - missing required field (product_name)
     request:
@@ -66,7 +66,7 @@ stages:
       headers:
         content-type: "application/json"
       json:
-        errors: !any
+        errors: !anything
         # Should contain error about missing product_name
 
   - name: Create product - missing required field (supplier_id)
@@ -83,7 +83,7 @@ stages:
       headers:
         content-type: "application/json"
       json:
-        errors: !any
+        errors: !anything
 
   - name: Create product - invalid product_name (too long)
     request:
@@ -100,7 +100,7 @@ stages:
       headers:
         content-type: "application/json"
       json:
-        errors: !any
+        errors: !anything
 
   - name: Create product - invalid supplier_id (below minimum)
     request:
@@ -117,7 +117,7 @@ stages:
       headers:
         content-type: "application/json"
       json:
-        errors: !any
+        errors: !anything
 
   - name: Create product - unknown parameter (should error with validate-before-write)
     request:
@@ -135,7 +135,7 @@ stages:
       headers:
         content-type: "application/json"
       json:
-        errors: !any
+        errors: !anything
         # Should contain error about unknown parameter
 
   - name: Create product - SQL injection attempt in product_name
@@ -153,7 +153,7 @@ stages:
       headers:
         content-type: "application/json"
       json:
-        errors: !any
+        errors: !anything
         # Should detect SQL injection
 
   - name: Create product - SQL injection attempt (UPDATE keyword)
@@ -171,7 +171,7 @@ stages:
       headers:
         content-type: "application/json"
       json:
-        errors: !any
+        errors: !anything
 
   - name: Create product - verify returns_data includes created product
     request:
@@ -206,7 +206,7 @@ stages:
       status_code: 200
       headers:
         content-type: "application/json"
-      json: !any
+      json: !anything
 
   - name: Get product list with no filters
     request:
@@ -217,7 +217,7 @@ stages:
       headers:
         content-type: "application/json"
         x-total-count: !anystr
-      json: !any
+      json: !anything
 
   - name: Get product list with pagination
     request:
@@ -232,7 +232,7 @@ stages:
         content-type: "application/json"
         x-offset: "0"
         x-limit: "10"
-      json: !any
+      json: !anything
 
   - name: Get product list with product_name filter
     request:
@@ -244,7 +244,7 @@ stages:
       status_code: 200
       headers:
         content-type: "application/json"
-      json: !any
+      json: !anything
 
   - name: Get product list with category_id filter
     request:
@@ -256,7 +256,7 @@ stages:
       status_code: 200
       headers:
         content-type: "application/json"
-      json: !any
+      json: !anything
 
   - name: Get product list with discontinued filter
     request:
@@ -268,7 +268,7 @@ stages:
       status_code: 200
       headers:
         content-type: "application/json"
-      json: !any
+      json: !anything
 
   - name: Get non-existent product (404)
     request:
@@ -303,7 +303,7 @@ stages:
         content-type: "application/json"
       json:
         rows_affected: 1
-        data: !any  # Should return updated product from SELECT
+        data: !anything  # Should return updated product from SELECT
 
   - name: Update with returns_data - verify SELECT result returned
     request:
@@ -337,7 +337,7 @@ stages:
         content-type: "application/json"
       json:
         rows_affected: 1
-        data: !any
+        data: !anything
 
   - name: Partial update - only unit_price
     request:
@@ -367,7 +367,7 @@ stages:
       headers:
         content-type: "application/json"
       json:
-        errors: !any
+        errors: !anything
 
   - name: Update - validation error (negative units_in_stock)
     request:
@@ -382,7 +382,7 @@ stages:
       headers:
         content-type: "application/json"
       json:
-        errors: !any
+        errors: !anything
 
   - name: Update non-existent product (404)
     request:
@@ -409,7 +409,7 @@ stages:
       headers:
         content-type: "application/json"
       json:
-        errors: !any
+        errors: !anything
 
   - name: Update - SQL injection attempt in product_name
     request:
@@ -424,7 +424,7 @@ stages:
       headers:
         content-type: "application/json"
       json:
-        errors: !any
+        errors: !anything
 
   - name: Update - SQL injection false positive test (UPDATED should pass)
     request:

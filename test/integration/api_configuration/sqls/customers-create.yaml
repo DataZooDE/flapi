@@ -1,7 +1,7 @@
 # Create Customer (POST)
 # Creates a new customer in test table
 
-url-path: /customers/
+url-path: /customers/create
 method: POST
 
 # Operation configuration
@@ -96,6 +96,6 @@ connection:
 auth:
   enabled: true
   type: bearer
-  jwt_secret: "test-jwt-secret-key-for-integration-tests"
-  jwt_issuer: "flapi-test"
+  jwt-secret: "test-jwt-secret-key-for-integration-tests"
+  jwt-issuer: "flapi-test"
 

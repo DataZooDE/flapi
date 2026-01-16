@@ -7,11 +7,13 @@
 #include "auth_middleware.hpp"
 #include "config_manager.hpp"
 #include "database_manager.hpp"
+#include "test_utils.hpp"
 
 namespace flapi {
 namespace test {
 
-class TestHelper {
+// Auth-specific test helpers (not duplicated elsewhere)
+class AuthTestHelper {
 public:
     static std::string createBasicAuthHeader(const std::string& username, const std::string& password) {
         std::string auth_string = username + ":" + password;
@@ -49,24 +51,11 @@ public:
         endpoint.urlPath = "/test";
         endpoint.auth.enabled = true;
         endpoint.auth.type = "basic";
-        
+
         AuthFromSecretManagerConfig aws_config;
         aws_config.secret_name = "prod/flapi/test";
         aws_config.secret_table = ConfigManager::secretNameToTableName(aws_config.secret_name);
         aws_config.init = ConfigManager::createDefaultAuthInit(aws_config.secret_name, "", "", "");
-        /*
-        aws_config.secret_table = "auth_users";
-        aws_config.init = R"(
-            INSTALL aws;
-            LOAD aws;
-
-            CREATE OR REPLACE SECRET flapi_endpoint_users (
-                TYPE S3,
-                PROVIDER CREDENTIAL_CHAIN,
-                REGION 'eu-west-1'
-            );
-        )";
-        */
 
         endpoint.auth.from_aws_secretmanager = aws_config;
         return endpoint;
@@ -74,16 +63,17 @@ public:
 };
 
 TEST_CASE("AuthMiddleware basic functionality", "[auth]") {
-    crow::logger::setLogLevel(crow::LogLevel::Debug);
+    TempTestConfig temp("test_auth");
+    auto config_manager = temp.createConfigManager();
 
-    auto config_manager = std::make_shared<ConfigManager>("test_config.yaml");
+    crow::logger::setLogLevel(crow::LogLevel::Debug);
     auto auth_middleware = std::make_unique<AuthMiddleware>();
     auth_middleware->initialize(config_manager);
 
     SECTION("Request without authentication header") {
-        auto endpoint = TestHelper::createEndpointWithInlineUsers();
+        auto endpoint = AuthTestHelper::createEndpointWithInlineUsers();
         config_manager->addEndpoint(endpoint);
-        
+
         crow::request req;
         crow::response res;
         AuthMiddleware::context ctx;
@@ -99,14 +89,14 @@ TEST_CASE("AuthMiddleware basic functionality", "[auth]") {
     }
 
     SECTION("Valid basic authentication") {
-        auto endpoint = TestHelper::createEndpointWithInlineUsers();
+        auto endpoint = AuthTestHelper::createEndpointWithInlineUsers();
         config_manager->addEndpoint(endpoint);
 
         crow::request req;
         crow::response res;
         AuthMiddleware::context ctx;
         req.url = "/test";
-        req.add_header("Authorization", TestHelper::createBasicAuthHeader("test_user", "test_password"));
+        req.add_header("Authorization", AuthTestHelper::createBasicAuthHeader("test_user", "test_password"));
 
         auth_middleware->before_handle(req, res, ctx);
 
@@ -118,10 +108,10 @@ TEST_CASE("AuthMiddleware basic functionality", "[auth]") {
     }
 
     SECTION("MD5 hashed password authentication") {
-        auto endpoint = TestHelper::createEndpointWithInlineUsers();
+        auto endpoint = AuthTestHelper::createEndpointWithInlineUsers();
         config_manager->addEndpoint(endpoint);
 
-        auto auth_header = TestHelper::createBasicAuthHeader("md5_user", "md5_password");
+        auto auth_header = AuthTestHelper::createBasicAuthHeader("md5_user", "md5_password");
 
         crow::request req;
         crow::response res;
@@ -138,34 +128,35 @@ TEST_CASE("AuthMiddleware basic functionality", "[auth]") {
     }
 
     SECTION("Invalid password") {
-        auto endpoint = TestHelper::createEndpointWithInlineUsers();
+        auto endpoint = AuthTestHelper::createEndpointWithInlineUsers();
         config_manager->addEndpoint(endpoint);
 
         crow::request req;
         crow::response res;
         AuthMiddleware::context ctx;
         req.url = "/test";
-        req.add_header("Authorization", TestHelper::createBasicAuthHeader("test_user", "wrong_password"));
+        req.add_header("Authorization", AuthTestHelper::createBasicAuthHeader("test_user", "wrong_password"));
 
         auth_middleware->before_handle(req, res, ctx);
 
         REQUIRE_FALSE(ctx.authenticated);
         REQUIRE(res.code == 401);
     }
+    // TempTestConfig automatically cleans up on destruction
 }
-
-
 
 TEST_CASE("AuthMiddleware AWS Secrets Manager authentication", "[auth]") {
     SKIP();
-    
+
+    TempTestConfig temp("test_auth_aws");
+    auto config_manager = temp.createConfigManager();
+
     crow::logger::setLogLevel(crow::LogLevel::Debug);
-    auto config_manager = std::make_shared<ConfigManager>("test_config.yaml");
     auto db_manager = DatabaseManager::getInstance();
     db_manager->initializeDBManagerFromConfig(config_manager);
-    
+
     SECTION("Valid AWS Secrets Manager credentials") {
-        auto endpoint = TestHelper::createEndpointWithAwsSecrets();
+        auto endpoint = AuthTestHelper::createEndpointWithAwsSecrets();
         config_manager->addEndpoint(endpoint);
 
         auto auth_middleware = std::make_unique<AuthMiddleware>();
@@ -175,7 +166,7 @@ TEST_CASE("AuthMiddleware AWS Secrets Manager authentication", "[auth]") {
         crow::response res;
         AuthMiddleware::context ctx;
         req.url = "/test";
-        req.add_header("Authorization", TestHelper::createBasicAuthHeader("admin", "admin_secret"));
+        req.add_header("Authorization", AuthTestHelper::createBasicAuthHeader("admin", "admin_secret"));
 
         auth_middleware->before_handle(req, res, ctx);
 
@@ -186,7 +177,7 @@ TEST_CASE("AuthMiddleware AWS Secrets Manager authentication", "[auth]") {
     }
 
     SECTION("AWS Secrets Manager with MD5 password") {
-        auto endpoint = TestHelper::createEndpointWithAwsSecrets();
+        auto endpoint = AuthTestHelper::createEndpointWithAwsSecrets();
         config_manager->addEndpoint(endpoint);
 
         auto auth_middleware = std::make_unique<AuthMiddleware>();
@@ -197,7 +188,7 @@ TEST_CASE("AuthMiddleware AWS Secrets Manager authentication", "[auth]") {
         AuthMiddleware::context ctx;
 
         req.url = "/test";
-        req.add_header("Authorization", TestHelper::createBasicAuthHeader("md5_user", "md5_password"));
+        req.add_header("Authorization", AuthTestHelper::createBasicAuthHeader("md5_user", "md5_password"));
 
         auth_middleware->before_handle(req, res, ctx);
 
@@ -206,12 +197,14 @@ TEST_CASE("AuthMiddleware AWS Secrets Manager authentication", "[auth]") {
         REQUIRE(ctx.roles.size() == 1);
         REQUIRE(ctx.roles[0] == "developer");
     }
+    // TempTestConfig automatically cleans up on destruction
 }
 
 TEST_CASE("AuthMiddleware JWT bearer authentication", "[auth]") {
-    crow::logger::setLogLevel(crow::LogLevel::Debug);
+    TempTestConfig temp("test_auth_jwt");
+    auto config_manager = temp.createConfigManager();
 
-    auto config_manager = std::make_shared<ConfigManager>("test_config.yaml");
+    crow::logger::setLogLevel(crow::LogLevel::Debug);
     auto auth_middleware = std::make_unique<AuthMiddleware>();
     auth_middleware->initialize(config_manager);
 
@@ -220,7 +213,7 @@ TEST_CASE("AuthMiddleware JWT bearer authentication", "[auth]") {
         crow::response res;
         AuthMiddleware::context ctx;
 
-        auto endpoint = TestHelper::createEndpointWithInlineUsers();
+        auto endpoint = AuthTestHelper::createEndpointWithInlineUsers();
         endpoint.auth.type = "bearer";
         endpoint.auth.jwt_secret = "your-256-bit-secret";
         endpoint.auth.jwt_issuer = "test-issuer";
@@ -233,7 +226,7 @@ TEST_CASE("AuthMiddleware JWT bearer authentication", "[auth]") {
             .sign(jwt::algorithm::hs256{"your-256-bit-secret"});
 
         req.url = "/test";
-        req.add_header("Authorization", TestHelper::createBearerAuthHeader(token));
+        req.add_header("Authorization", AuthTestHelper::createBearerAuthHeader(token));
 
         auth_middleware->before_handle(req, res, ctx);
 
@@ -241,6 +234,7 @@ TEST_CASE("AuthMiddleware JWT bearer authentication", "[auth]") {
         REQUIRE(ctx.username == "test_user");
         REQUIRE(ctx.roles.size() == 2);
     }
+    // TempTestConfig automatically cleans up on destruction
 }
 
 TEST_CASE("AuthMiddleware md5 hash", "[auth]") {

@@ -1,10 +1,11 @@
-# Basic structure for flapi integration tests
-test_name: Test customers endpoint
+# Test customers endpoint - Part 1: Basic requests and validation
+---
+test_name: Test customers endpoint basic
 
 stages:
   - name: Get all customers (no filters)
     request:
-      url: http://localhost:8080/customers/
+      url: "{base_url}/customers/"
       method: GET
       auth:
         - admin
@@ -16,11 +17,11 @@ stages:
 
   - name: Test valid parameters
     request:
-      url: http://localhost:8080/customers/
+      url: "{base_url}/customers/"
       method: GET
       params:
         id: "1"
-        segment: "retail"
+        segment: "BUILDING"
         email: "test@example.com"
         registration_date: "2023-01-01"
         last_login_time: "14:30:00"
@@ -36,7 +37,7 @@ stages:
 
   - name: Test invalid ID (below min)
     request:
-      url: http://localhost:8080/customers/
+      url: "{base_url}/customers/"
       method: GET
       params:
         id: "0"
@@ -44,13 +45,13 @@ stages:
         - admin
         - secret
     response:
-      status_code: [200, 400]  # Accept either if validation is not configured (200) or if it is (400)
+      status_code: [200, 400]
       headers:
         content-type: application/json
 
   - name: Test invalid segment
     request:
-      url: http://localhost:8080/customers/
+      url: "{base_url}/customers/"
       method: GET
       params:
         segment: "invalid_segment"
@@ -58,13 +59,13 @@ stages:
         - admin
         - secret
     response:
-      status_code: [200, 400]  # Accept either if validation is not configured (200) or if it is (400)
+      status_code: [200, 400]
       headers:
         content-type: application/json
 
   - name: Test invalid email format
     request:
-      url: http://localhost:8080/customers/
+      url: "{base_url}/customers/"
       method: GET
       params:
         email: "invalid-email"
@@ -72,13 +73,13 @@ stages:
         - admin
         - secret
     response:
-      status_code: [200, 400]  # Accept either if validation is not configured (200) or if it is (400)
+      status_code: [200, 400]
       headers:
         content-type: application/json
 
   - name: Test invalid registration date
     request:
-      url: http://localhost:8080/customers/
+      url: "{base_url}/customers/"
       method: GET
       params:
         registration_date: "2024-13-01"
@@ -92,9 +93,14 @@ stages:
           - field: "registration_date"
             message: "Invalid date format"
 
+---
+# Test customers endpoint - Part 2: More validation and auth
+test_name: Test customers endpoint validation
+
+stages:
   - name: Test future registration date
     request:
-      url: http://localhost:8080/customers/
+      url: "{base_url}/customers/"
       method: GET
       params:
         registration_date: "2024-01-01"
@@ -102,13 +108,13 @@ stages:
         - admin
         - secret
     response:
-      status_code: [200, 400]  # Accept either if validation is not configured (200) or if it is (400)
+      status_code: [200, 400]
       headers:
         content-type: application/json
 
   - name: Test invalid login time
     request:
-      url: http://localhost:8080/customers/
+      url: "{base_url}/customers/"
       method: GET
       params:
         last_login_time: "25:00:00"
@@ -116,13 +122,13 @@ stages:
         - admin
         - secret
     response:
-      status_code: [200, 400]  # Accept either if validation is not configured (200) or if it is (400)
+      status_code: [200, 400]
       headers:
         content-type: application/json
 
   - name: Test invalid name format
     request:
-      url: http://localhost:8080/customers/
+      url: "{base_url}/customers/"
       method: GET
       params:
         name: "John123"
@@ -130,13 +136,13 @@ stages:
         - admin
         - secret
     response:
-      status_code: [200, 400]  # Accept either if validation is not configured (200) or if it is (400)
+      status_code: [200, 400]
       headers:
         content-type: application/json
 
   - name: Test invalid UUID
     request:
-      url: http://localhost:8080/customers/
+      url: "{base_url}/customers/"
       method: GET
       params:
         uuid: "invalid-uuid"
@@ -144,13 +150,13 @@ stages:
         - admin
         - secret
     response:
-      status_code: [200, 400]  # Accept either if validation is not configured (200) or if it is (400)
+      status_code: [200, 400]
       headers:
         content-type: application/json
 
   - name: Test SQL injection attempt
     request:
-      url: http://localhost:8080/customers/
+      url: "{base_url}/customers/"
       method: GET
       params:
         name: "'; DROP TABLE customers; --"
@@ -158,13 +164,13 @@ stages:
         - admin
         - secret
     response:
-      status_code: [200, 400]  # Accept either if validation is not configured (200) or if it is (400)
+      status_code: [200, 400]
       headers:
         content-type: application/json
 
   - name: Test pagination
     request:
-      url: http://localhost:8080/customers/
+      url: "{base_url}/customers/"
       method: GET
       params:
         limit: "10"
@@ -181,9 +187,14 @@ stages:
         next: !anything
         total_count: !anything
 
+---
+# Test customers endpoint - Part 3: Authentication
+test_name: Test customers endpoint auth
+
+stages:
   - name: Test unauthorized access
     request:
-      url: http://localhost:8080/customers/
+      url: "{base_url}/customers/"
       method: GET
       auth:
         - user
@@ -193,14 +204,14 @@ stages:
 
   - name: Expect 401 for unauthenticated request
     request:
-      url: http://localhost:8080/customers/
+      url: "{base_url}/customers/"
       method: GET
     response:
       status_code: 401
 
   - name: Get the exact data for a specific customer
     request:
-      url: http://localhost:8080/customers/?id=1
+      url: "{base_url}/customers/?id=1"
       method: GET
       auth:
         - admin
@@ -213,6 +224,3 @@ stages:
         data: !anything
         next: !anything
         total_count: !anything
-
-
-

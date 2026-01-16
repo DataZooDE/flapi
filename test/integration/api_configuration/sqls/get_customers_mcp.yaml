@@ -1,7 +1,7 @@
 mcp-tool:
   name: get_customers
   description: Get customers by segment with enum validation
-  result_mime_type: application/json
+  result-mime-type: application/json
 
 request:
   - field-name: segment

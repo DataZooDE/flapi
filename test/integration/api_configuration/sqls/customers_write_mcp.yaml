@@ -4,7 +4,7 @@
 mcp-tool:
   name: create_customer
   description: Create a new customer with comprehensive validation
-  result_mime_type: application/json
+  result-mime-type: application/json
 
 # Operation configuration
 operation:
@@ -49,6 +49,6 @@ connection:
 auth:
   enabled: true
   type: bearer
-  jwt_secret: "test-jwt-secret-key-for-integration-tests"
-  jwt_issuer: "flapi-test"
+  jwt-secret: "test-jwt-secret-key-for-integration-tests"
+  jwt-issuer: "flapi-test"
 

@@ -24,7 +24,7 @@ stages:
         content-type: "application/json"
       json:
         rows_affected: 1
-        data: !any
+        data: !anything
         # Should contain product data from SELECT statement
 
   - name: Verify UPDATE + SELECT returns correct product structure
@@ -66,7 +66,7 @@ stages:
         content-type: "application/json"
       json:
         rows_affected: 1
-        data: !any
+        data: !anything
         # Should return created product data
 
   # ============================================
@@ -88,7 +88,7 @@ stages:
       headers:
         content-type: "application/json"
       json:
-        errors: !any
+        errors: !anything
         # Should detect both unknown parameters
 
   - name: Parameter precedence - body overrides query
@@ -126,7 +126,7 @@ stages:
       headers:
         content-type: "application/json"
       json:
-        errors: !any
+        errors: !anything
 
   - name: SQL injection - comment pattern (--)
     request:
@@ -141,7 +141,7 @@ stages:
       headers:
         content-type: "application/json"
       json:
-        errors: !any
+        errors: !anything
 
   - name: SQL injection - single quote pattern
     request:
@@ -156,7 +156,7 @@ stages:
       headers:
         content-type: "application/json"
       json:
-        errors: !any
+        errors: !anything
 
   - name: SQL injection - false positive should pass (word boundary)
     request:
@@ -192,7 +192,7 @@ stages:
       headers:
         content-type: "application/json"
       json:
-        errors: !any
+        errors: !anything
         # Should detect unknown parameter
 
   - name: Parameter name case sensitivity test
@@ -208,7 +208,7 @@ stages:
       headers:
         content-type: "application/json"
       json:
-        errors: !any
+        errors: !anything
         # Should detect unknown parameter (case-sensitive)
 
   # ============================================
@@ -228,7 +228,7 @@ stages:
       headers:
         content-type: "application/json"
       json:
-        errors: !any
+        errors: !anything
         # Empty string should fail validation (min: 1)
 
   - name: Very long parameter value
@@ -246,5 +246,5 @@ stages:
       headers:
         content-type: "application/json"
       json:
-        errors: !any
+        errors: !anything
 

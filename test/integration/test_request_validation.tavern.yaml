@@ -5,14 +5,14 @@ test_name: Test request field validation
 stages:
   - name: Test missing required id parameter
     request:
-      url: http://localhost:8080/customers_with_request_fields_validation/
+      url: "{base_url}/customers_with_request_fields_validation/"
       method: GET
     response:
       status_code: [400, 404]  # Accept 404 if endpoint not configured, 400 if validation exists
 
   - name: Test invalid id parameter (below min)
     request:
-      url: http://localhost:8080/customers_with_request_fields_validation/
+      url: "{base_url}/customers_with_request_fields_validation/"
       method: GET
       params:
         id: "0"
@@ -21,7 +21,7 @@ stages:
 
   - name: Test undefined parameter in query
     request:
-      url: http://localhost:8080/customers_with_request_fields_validation/
+      url: "{base_url}/customers_with_request_fields_validation/"
       method: GET
       params:
         id: "1"

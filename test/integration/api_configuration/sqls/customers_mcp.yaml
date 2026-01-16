@@ -1,7 +1,7 @@
 mcp-tool:
   name: customers
   description: Retrieve customer information by ID with comprehensive validation
-  result_mime_type: application/json
+  result-mime-type: application/json
 
 request:
   - field-name: id

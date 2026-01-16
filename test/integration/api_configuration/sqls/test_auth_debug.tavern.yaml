@@ -1,0 +1,12 @@
+test_name: Debug auth - with customers-create disabled
+
+stages:
+  - name: Test GET customers with basic auth
+    request:
+      url: "{base_url}/customers/"
+      method: GET
+      auth:
+        - admin
+        - secret
+    response:
+      status_code: 200

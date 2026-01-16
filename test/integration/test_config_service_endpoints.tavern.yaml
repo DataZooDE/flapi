@@ -67,7 +67,7 @@ stages:
       headers:
         content-type: "application/json"
       json:
-        parameters: !any
+        parameters: !anything
 
   - name: Validate endpoint configuration
     request:
@@ -77,8 +77,7 @@ stages:
         X-Config-Token: "test-token"
         Authorization: "Bearer test-token"
         Content-Type: "application/json"
-      json:
-        # Empty body or endpoint config to validate
+      json: {}
     response:
       status_code: [200, 400, 401]
 

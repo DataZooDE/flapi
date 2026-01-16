@@ -104,6 +104,6 @@ connection:
 auth:
   enabled: true
   type: bearer
-  jwt_secret: "test-jwt-secret-key-for-integration-tests"
-  jwt_issuer: "flapi-test"
+  jwt-secret: "test-jwt-secret-key-for-integration-tests"
+  jwt-issuer: "flapi-test"
 

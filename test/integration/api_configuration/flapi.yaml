@@ -1,6 +1,6 @@
 # Minimal test configuration
-project_name: test-flapi-project
-project_description: Minimal test configuration
+project-name: test-flapi-project
+project-description: Minimal test configuration
 
 # Template configuration - empty
 template:
@@ -23,18 +23,24 @@ duckdb:
   max_memory: 256MB
 
 # DuckLake configuration for testing
+# Paths use environment variables for test isolation (set by conftest.py)
 ducklake:
   enabled: true
   alias: cache
-  metadata_path: ./test_cache.ducklake
-  data_path: ./test_cache
+  metadata-path: {{env.FLAPI_TEST_DUCKLAKE_METADATA}}
+  data-path: {{env.FLAPI_TEST_DUCKLAKE_DATA}}
   retention:
-    keep_last_snapshots: 3
-    max_snapshot_age: 1d
+    keep-last-snapshots: 3
+    max-snapshot-age: 1d
   compaction:
     enabled: false  # Disable for tests
   scheduler:
     enabled: false  # Disable for tests
+
+# Whitelist environment variables for substitution in templates
+environment-whitelist:
+  - FLAPI_TEST_DUCKLAKE_METADATA
+  - FLAPI_TEST_DUCKLAKE_DATA
 
 # Enable MCP for comprehensive testing
 mcp:

@@ -83,9 +83,9 @@ cache:
   schema: test_schema
   schedule: 1m
   retention:
-    keep_last_snapshots: 3
-    max_snapshot_age: 1h
-  template_file: customers-get.sql
+    keep-last-snapshots: 3
+    max-snapshot-age: 1h
+  template-file: customers-get.sql
 
 # Authentication required
 auth:

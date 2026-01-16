@@ -15,7 +15,7 @@ stages:
       headers:
         content-type: "application/json"
         x-total-count: !anystr
-      json: !any
+      json: !anything
 
   - name: Get customers with pagination
     request:
@@ -30,7 +30,7 @@ stages:
         content-type: "application/json"
         x-offset: "0"
         x-limit: "10"
-      json: !any
+      json: !anything
 
   - name: Get customer by customer_id filter
     request:
@@ -42,7 +42,7 @@ stages:
       status_code: 200
       headers:
         content-type: "application/json"
-      json: !any
+      json: !anything
 
   - name: Get customers by company_name filter
     request:
@@ -54,7 +54,7 @@ stages:
       status_code: 200
       headers:
         content-type: "application/json"
-      json: !any
+      json: !anything
 
   - name: Get customers by country filter
     request:
@@ -66,7 +66,7 @@ stages:
       status_code: 200
       headers:
         content-type: "application/json"
-      json: !any
+      json: !anything
 
   - name: Get customers by city filter
     request:
@@ -78,7 +78,7 @@ stages:
       status_code: 200
       headers:
         content-type: "application/json"
-      json: !any
+      json: !anything
 
   - name: Get customers with multiple filters
     request:
@@ -91,7 +91,7 @@ stages:
       status_code: 200
       headers:
         content-type: "application/json"
-      json: !any
+      json: !anything
 
   - name: Get customers - invalid customer_id (too long)
     request:
@@ -104,7 +104,7 @@ stages:
       headers:
         content-type: "application/json"
       json:
-        errors: !any
+        errors: !anything
 
   - name: Get customers - SQL injection attempt in company_name
     request:
@@ -117,7 +117,7 @@ stages:
       headers:
         content-type: "application/json"
       json:
-        errors: !any
+        errors: !anything
 
   - name: Get customers - SQL injection false positive test (UPDATED should pass)
     request:
@@ -129,6 +129,6 @@ stages:
       status_code: 200
       headers:
         content-type: "application/json"
-      json: !any
+      json: !anything
       # "UPDATED" contains "UPDATE" but should pass due to whole-word matching
 

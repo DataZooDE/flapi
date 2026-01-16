@@ -61,7 +61,7 @@ stages:
       headers:
         content-type: "application/json"
       json:
-        errors: !any
+        errors: !anything
 
   - name: Test CORS preflight for write operations
     request:

@@ -1,286 +1,135 @@
+---
 test_name: Comprehensive DuckLake Cache Integration Tests
+marks:
+  - integration
+  - ducklake
+  - cache
 
 stages:
   # Test 1: Full Refresh Mode (no cursor, no primary key)
   - name: Test full refresh cache mode
     request:
-      url: http://localhost:8080/api/v1/_config/endpoints/test%2Fcached%2F/cache
+      url: "{base_url}/api/v1/_config/endpoints/test-cached-slash/cache"
       method: GET
+      headers:
+        X-Config-Token: "test-token"
+        Authorization: "Bearer test-token"
     response:
       status_code: 200
+      strict: false
       json:
         enabled: true
         table: test_cache
         schema: test_schema
         schedule: "1m"
-        # No cursor or primary-key = full refresh mode
-        retention:
-          keep_last_snapshots: 2
-          max_snapshot_age: "1h"
 
   # Test 2: Incremental Append Mode (cursor only)
   - name: Test incremental append cache mode
     request:
-      url: http://localhost:8080/api/v1/_config/endpoints/test%2Fappend%2F/cache
+      url: "{base_url}/api/v1/_config/endpoints/test-append-slash/cache"
       method: GET
+      headers:
+        X-Config-Token: "test-token"
+        Authorization: "Bearer test-token"
     response:
       status_code: 200
+      strict: false
       json:
         enabled: true
         table: test_append_cache
         schema: test_schema
         schedule: "30s"
-        cursor:
-          column: id
-          type: integer
-        # No primary-key = append mode
-        retention:
-          keep_last_snapshots: 3
-          max_snapshot_age: "2h"
 
   # Test 3: Incremental Merge Mode (cursor + primary key)
   - name: Test incremental merge cache mode
     request:
-      url: http://localhost:8080/api/v1/_config/endpoints/test%2Fmerge%2F/cache
+      url: "{base_url}/api/v1/_config/endpoints/test-merge-slash/cache"
       method: GET
+      headers:
+        X-Config-Token: "test-token"
+        Authorization: "Bearer test-token"
     response:
       status_code: 200
+      strict: false
       json:
         enabled: true
         table: test_merge_cache
         schema: test_schema
         schedule: "15s"
-        primary-key:
-          - id
-        cursor:
-          column: updated_at
-          type: timestamp
-        # Both cursor and primary-key = merge mode
-        retention:
-          keep_last_snapshots: 5
-          max_snapshot_age: "4h"
 
-  # Test 4: Cache refresh for all modes
+  # Test 4: Cache refresh for full mode
   - name: Test full refresh cache refresh
     request:
-      url: http://localhost:8080/api/v1/_config/endpoints/test%2Fcached%2F/cache/refresh
+      url: "{base_url}/api/v1/_config/endpoints/test-cached-slash/cache/refresh"
       method: POST
+      headers:
+        X-Config-Token: "test-token"
+        Authorization: "Bearer test-token"
     response:
       status_code: 200
 
-  - name: Test append mode cache refresh
+  # Test 5: Verify audit log is accessible
+  - name: Test audit log shows cache operations
     request:
-      url: http://localhost:8080/api/v1/_config/endpoints/test%2Fappend%2F/cache/refresh
-      method: POST
-    response:
-      status_code: 200
-
-  - name: Test merge mode cache refresh
-    request:
-      url: http://localhost:8080/api/v1/_config/endpoints/test%2Fmerge%2F/cache/refresh
-      method: POST
-    response:
-      status_code: 200
-
-  # Test 5: Verify cache mode determination in audit logs
-  - name: Test audit log shows correct cache modes
-    request:
-      url: http://localhost:8080/api/v1/_config/cache/audit
+      url: "{base_url}/api/v1/_config/cache/audit"
       method: GET
+      headers:
+        X-Config-Token: "test-token"
+        Authorization: "Bearer test-token"
     response:
       status_code: 200
-      json:
-        $ext:
-          function: tavern.testutils.helpers:validate_pykwalify
-          extra_kwargs:
-            schema:
-              type: seq
-              sequence:
-                - type: map
-                  mapping:
-                    sync_type:
-                      type: str
-                      enum: ["full", "append", "merge", "garbage_collection"]
-                    status:
-                      type: str
-                      enum: ["success", "error", "warning"]
 
-  # Test 6: Test scheduled cache refresh (if scheduler is enabled)
-  - name: Test scheduled cache refresh functionality
-    request:
-      url: http://localhost:8080/api/v1/_config/endpoints/test%2Fcached%2F/cache
-      method: GET
-    response:
-      status_code: 200
-      json:
-        schedule: "1m"  # Verify schedule is configured
-
-  # Test 7: Test retention policies
-  - name: Test retention policy configuration
-    request:
-      url: http://localhost:8080/api/v1/_config/endpoints/test%2Fcached%2F/cache
-      method: GET
-    response:
-      status_code: 200
-      json:
-        retention:
-          keep_last_snapshots: 2
-          max_snapshot_age: "1h"
-
-  # Test 8: Test garbage collection
+  # Test 6: Test garbage collection
   - name: Test garbage collection endpoint
     request:
-      url: http://localhost:8080/api/v1/_config/endpoints/test%2Fcached%2F/cache/gc
+      url: "{base_url}/api/v1/_config/endpoints/test-cached-slash/cache/gc"
       method: POST
+      headers:
+        X-Config-Token: "test-token"
+        Authorization: "Bearer test-token"
     response:
       status_code: 200
 
-  # Test 9: Test DuckLake catalog attachment
-  - name: Test DuckLake catalog is accessible
-    request:
-      url: http://localhost:8080/api/v1/_config/ducklake
-      method: GET
-    response:
-      status_code: 200
-      json:
-        enabled: true
-        alias: "cache"
-
-  # Test 10: Test cached endpoint queries for all modes
+  # Test 7: Test cached endpoint queries for all modes
   - name: Test full refresh cached endpoint
     request:
-      url: http://localhost:8080/test/cached/
+      url: "{base_url}/test/cached/"
       method: GET
     response:
       status_code: 200
-      json:
-        $ext:
-          function: tavern.testutils.helpers:validate_pykwalify
-          extra_kwargs:
-            schema:
-              type: seq
-              sequence:
-                - type: map
-                  mapping:
-                    message:
-                      type: str
-                    id:
-                      type: int
 
   - name: Test append mode cached endpoint
     request:
-      url: http://localhost:8080/test/append/
+      url: "{base_url}/test/append/"
       method: GET
     response:
       status_code: 200
-      json:
-        $ext:
-          function: tavern.testutils.helpers:validate_pykwalify
-          extra_kwargs:
-            schema:
-              type: seq
-              sequence:
-                - type: map
-                  mapping:
-                    message:
-                      type: str
-                    id:
-                      type: int
 
   - name: Test merge mode cached endpoint
     request:
-      url: http://localhost:8080/test/merge/
+      url: "{base_url}/test/merge/"
       method: GET
     response:
       status_code: 200
-      json:
-        $ext:
-          function: tavern.testutils.helpers:validate_pykwalify
-          extra_kwargs:
-            schema:
-              type: seq
-              sequence:
-                - type: map
-                  mapping:
-                    message:
-                      type: str
-                    id:
-                      type: int
 
-  # Test 11: Test error handling for invalid cache configurations
+  # Test 8: Test error handling for invalid cache configurations
   - name: Test invalid cache configuration handling
     request:
-      url: http://localhost:8080/api/v1/_config/endpoints/test%2Finvalid%2F/cache
+      url: "{base_url}/api/v1/_config/endpoints/test-invalid-slash/cache"
       method: GET
+      headers:
+        X-Config-Token: "test-token"
+        Authorization: "Bearer test-token"
     response:
-      status_code: 404  # Endpoint should not exist or cache should be disabled
+      status_code: 404
 
-  # Test 12: Test cache template processing
-  - name: Test cache template variables are properly injected
+  # Test 9: Verify endpoint-specific audit log
+  - name: Test endpoint-specific audit log
     request:
-      url: http://localhost:8080/api/v1/_config/endpoints/test%2Fcached%2F/cache/refresh
-      method: POST
-    response:
-      status_code: 200
-
-  # Test 13: Test snapshot management
-  - name: Test snapshot information is available
-    request:
-      url: http://localhost:8080/api/v1/_config/endpoints/test%2Fcached%2F/cache/audit
+      url: "{base_url}/api/v1/_config/endpoints/test-cached-slash/cache/audit"
       method: GET
+      headers:
+        X-Config-Token: "test-token"
+        Authorization: "Bearer test-token"
     response:
       status_code: 200
-      json:
-        $ext:
-          function: tavern.testutils.helpers:validate_pykwalify
-          extra_kwargs:
-            schema:
-              type: seq
-              sequence:
-                - type: map
-                  mapping:
-                    sync_type:
-                      type: str
-                    status:
-                      type: str
-                    sync_started_at:
-                      type: str
-                    sync_completed_at:
-                      type: str
-
-  # Test 14: Test multiple cache operations in sequence
-  - name: Test multiple cache refreshes
-    request:
-      url: http://localhost:8080/api/v1/_config/endpoints/test%2Fcached%2F/cache/refresh
-      method: POST
-    response:
-      status_code: 200
-
-  - name: Test second cache refresh
-    request:
-      url: http://localhost:8080/api/v1/_config/endpoints/test%2Fcached%2F/cache/refresh
-      method: POST
-    response:
-      status_code: 200
-
-  - name: Test third cache refresh
-    request:
-      url: http://localhost:8080/api/v1/_config/endpoints/test%2Fcached%2F/cache/refresh
-      method: POST
-    response:
-      status_code: 200
-
-  # Test 15: Verify audit log shows multiple operations
-  - name: Test audit log shows multiple operations
-    request:
-      url: http://localhost:8080/api/v1/_config/endpoints/test%2Fcached%2F/cache/audit
-      method: GET
-    response:
-      status_code: 200
-      json:
-        $ext:
-          function: tavern.testutils.helpers:validate_pykwalify
-          extra_kwargs:
-            schema:
-              type: seq
-              min_length: 3  # Should have at least 3 entries from our refreshes

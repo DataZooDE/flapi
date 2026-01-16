@@ -6,7 +6,7 @@ test_name: Test customers cached endpoint
 stages:
   - name: Get the exact data for a specific customer
     request:
-      url: http://localhost:8080/customers_cached/
+      url: "{base_url}/customers_cached/"
       params:
         id: 1
       method: GET

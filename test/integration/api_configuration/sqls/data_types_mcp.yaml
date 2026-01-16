@@ -4,7 +4,7 @@
 mcp-tool:
   name: data_types
   description: Get data types test data from parquet file
-  result_mime_type: application/json
+  result-mime-type: application/json
 
 request:
   - field-name: limit

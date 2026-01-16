@@ -14,10 +14,10 @@ cache:
     column: id  # Simple cursor for testing
     type: integer
   retention:
-    keep_last_snapshots: 3
-    max_snapshot_age: 2h
+    keep-last-snapshots: 3
+    max-snapshot-age: 2h
   delete-handling: soft
-  template_file: test_cache.sql
+  template-file: test_cache.sql
 
 auth:
   enabled: false

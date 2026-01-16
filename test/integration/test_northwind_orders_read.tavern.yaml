@@ -15,7 +15,7 @@ stages:
       headers:
         content-type: "application/json"
         x-total-count: !anystr
-      json: !any
+      json: !anything
 
   - name: Get orders with pagination
     request:
@@ -30,7 +30,7 @@ stages:
         content-type: "application/json"
         x-offset: "0"
         x-limit: "10"
-      json: !any
+      json: !anything
 
   - name: Get order by order_id filter
     request:
@@ -42,7 +42,7 @@ stages:
       status_code: 200
       headers:
         content-type: "application/json"
-      json: !any
+      json: !anything
 
   - name: Get orders by customer_id filter
     request:
@@ -54,7 +54,7 @@ stages:
       status_code: 200
       headers:
         content-type: "application/json"
-      json: !any
+      json: !anything
 
   - name: Get orders by order_date filter
     request:
@@ -66,7 +66,7 @@ stages:
       status_code: 200
       headers:
         content-type: "application/json"
-      json: !any
+      json: !anything
 
   - name: Get orders by shipped_date filter
     request:
@@ -78,7 +78,7 @@ stages:
       status_code: 200
       headers:
         content-type: "application/json"
-      json: !any
+      json: !anything
 
   - name: Get orders with date range (multiple filters)
     request:
@@ -91,7 +91,7 @@ stages:
       status_code: 200
       headers:
         content-type: "application/json"
-      json: !any
+      json: !anything
 
   - name: Get orders - invalid order_id (below minimum)
     request:
@@ -104,7 +104,7 @@ stages:
       headers:
         content-type: "application/json"
       json:
-        errors: !any
+        errors: !anything
 
   - name: Get orders - invalid order_date format
     request:
@@ -117,7 +117,7 @@ stages:
       headers:
         content-type: "application/json"
       json:
-        errors: !any
+        errors: !anything
 
   - name: Get orders - SQL injection attempt in customer_id
     request:
@@ -130,7 +130,7 @@ stages:
       headers:
         content-type: "application/json"
       json:
-        errors: !any
+        errors: !anything
 
   - name: Get orders - verify Order Details are joined
     request:
@@ -142,6 +142,6 @@ stages:
       status_code: 200
       headers:
         content-type: "application/json"
-      json: !any
+      json: !anything
       # Should contain order details in the response (structure depends on SQL query)
 

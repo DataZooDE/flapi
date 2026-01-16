@@ -4,7 +4,7 @@
 mcp-tool:
   name: validation_test
   description: Test all validation types (string, int, email, uuid, date, time, enum)
-  result_mime_type: application/json
+  result-mime-type: application/json
 
 # Operation configuration - strict validation
 operation:

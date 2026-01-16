@@ -20,7 +20,7 @@ stages:
         content-type: "application/json"
       json:
         rows_affected: 1
-        data: !any
+        data: !anything
         # Should contain product data from SELECT statement after UPDATE
 
   - name: Verify UPDATE + SELECT returns correct structure
