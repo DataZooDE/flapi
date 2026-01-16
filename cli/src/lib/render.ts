@@ -394,3 +394,46 @@ function getConfigSource(key: string, config: FlapiiConfig): string {
   return 'default';
 }
 
+export function renderTable(data: Record<string, unknown>[]): void {
+  if (data.length === 0) {
+    Console.info(chalk.dim('No data to display'));
+    return;
+  }
+
+  // Get all keys from first object
+  const keys = Object.keys(data[0]);
+  const headers = keys.map((key) =>
+    chalk.bold.cyan(key.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase()))
+  );
+
+  // Calculate column widths
+  const colWidths = keys.map((key) => {
+    const maxLength = Math.max(
+      key.length,
+      ...data.map((row) => String(row[key] || '').length)
+    );
+    return Math.min(maxLength + 2, 30);
+  });
+
+  const table = new cliTable3({
+    head: headers,
+    colWidths,
+    style: {
+      head: [],
+      border: [],
+      compact: true,
+    },
+  });
+
+  for (const row of data) {
+    const values = keys.map((key) => {
+      const value = row[key];
+      const formatted = formatValue(value);
+      return formatted.length > 30 ? formatted.slice(0, 27) + '...' : formatted;
+    });
+    table.push(values);
+  }
+
+  Console.info(table.toString());
+}
+

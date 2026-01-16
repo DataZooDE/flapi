@@ -1,6 +1,6 @@
 # Project name and description
-project_name: example-flapi-project
-project_description: An example flAPI project demonstrating various configuration options
+project-name: example-flapi-project
+project-description: An example flAPI project demonstrating various configuration options
 
 # Template configuration
 template:
@@ -75,17 +75,17 @@ duckdb:
 ducklake:
   enabled: false  # Disabled for integration tests
   alias: cache  # Catalog alias for DuckLake tables
-  metadata_path: ./data/cache.ducklake  # Path to DuckLake metadata
-  data_path: ./data/cache  # Path to DuckLake data files
+  metadata-path: ./data/cache.ducklake  # Path to DuckLake metadata
+  data-path: ./data/cache  # Path to DuckLake data files
   retention:
-    keep_last_snapshots: 10  # Keep last 10 snapshots for each table
-    max_snapshot_age: 30d    # Delete snapshots older than 30 days
+    keep-last-snapshots: 10  # Keep last 10 snapshots for each table
+    max-snapshot-age: 30d    # Delete snapshots older than 30 days
   compaction:
     enabled: true
     schedule: '@daily'  # Run compaction daily
   scheduler:
     enabled: true
-    scan_interval: 5m  # Check for scheduled cache refreshes every 5 minutes
+    scan-interval: 5m  # Check for scheduled cache refreshes every 5 minutes
 
 # ====================================================================================
 # MCP (Model Context Protocol) Support

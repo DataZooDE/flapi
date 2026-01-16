@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@flapi/shared": "file:./shared",
+    "@google/generative-ai": "^0.21.0",
     "axios": "^1.7.7",
     "axios-retry": "^4.4.2",
     "boxen": "^5.1.2",
@@ -30,7 +31,9 @@
     "commander": "^12.1.0",
     "enquirer": "^2.4.1",
     "figures": "^6.1.0",
+    "google-auth-library": "^9.14.1",
     "js-yaml": "^4.1.0",
+    "keytar": "^7.9.0",
     "lodash.kebabcase": "^4.1.1",
     "log-symbols": "^6.0.0",
     "ora": "^8.0.1"

@@ -17,7 +17,7 @@ describe('cli project command (integration)', () => {
 
     expect(result.exitCode).toBe(0);
     const payload = JSON.parse(result.stdout.trim());
-    expect((payload.name ?? payload.project_name)).toBe('example-flapi-project');
+    expect((payload.name ?? payload['project-name'])).toBe('example-flapi-project');
   });
 });
 

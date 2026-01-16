@@ -7,6 +7,7 @@ import { buildEndpointUrl } from '../../lib/url';
 import { applyOutputOverride } from '../../lib/options';
 import { resolvePayload, withPayloadOptions } from '../payload';
 import { validateEndpointConfig, reloadEndpointConfig } from '../../lib/validation';
+import { registerWizardCommand } from './wizard';
 import chalk from 'chalk';
 import * as fs from 'node:fs/promises';
 
@@ -181,7 +182,7 @@ export function registerEndpointCommands(program: Command, ctx: CliContext) {
       const spinner = Console.spinner(`Reloading endpoint ${path}...`);
       try {
         const result = await reloadEndpointConfig(ctx.client, path);
-        
+
         if (result.success) {
           spinner.succeed(chalk.green(`✓ ${result.message}`));
         } else {
@@ -194,6 +195,9 @@ export function registerEndpointCommands(program: Command, ctx: CliContext) {
         process.exitCode = 1;
       }
     });
+
+  // Register wizard command
+  registerWizardCommand(endpoints, ctx);
 }
 
 function ensurePayloadOptions() {
