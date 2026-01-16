@@ -151,6 +151,7 @@ find_package(Crow CONFIG REQUIRED)
 find_package(jwt-cpp CONFIG REQUIRED)
 find_package(argparse CONFIG REQUIRED)
 find_package(fmt CONFIG REQUIRED)
+find_package(CURL REQUIRED)
 
 include(FetchContent)
 FetchContent_Declare(
@@ -192,6 +193,10 @@ add_library(flapi-lib STATIC
     src/api_server.cpp
     src/auth_middleware.cpp
     src/cache_manager.cpp
+    src/config_loader.cpp
+    src/endpoint_repository.cpp
+    src/config_validator.cpp
+    src/config_serializer.cpp
     src/config_manager.cpp
     src/config_service.cpp
     src/database_manager.cpp
@@ -213,7 +218,16 @@ add_library(flapi-lib STATIC
     src/mcp_error_builder.cpp
     src/mcp_request_validator.cpp
     src/mcp_client_capabilities.cpp
+    src/mcp_content_types.cpp
+    src/mcp_auth_handler.cpp
+    src/oidc_discovery_client.cpp
+    src/oidc_jwks_manager.cpp
+    src/oidc_auth_handler.cpp
+    src/oidc_provider_presets.cpp
+    src/http_client.cpp
     src/config_token_utils.cpp
+    src/error.cpp
+    src/type_converter.cpp
 )
 
 # Ensure web_ui is built before flapi-lib
@@ -235,6 +249,7 @@ target_link_libraries(flapi-lib PUBLIC
     OpenSSL::SSL
     ${AWSSDK_LIBRARIES}
     fmt::fmt
+    CURL::libcurl
 )
 
 # Add RPATH settings for macOS

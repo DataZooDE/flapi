@@ -15,9 +15,20 @@ add_executable(flapi_tests
     database_manager_test.cpp
     endpoint_config_parser_test.cpp
     extended_yaml_parser_test.cpp
+    https_config_test.cpp
+    mcp_prompt_handler_test.cpp
     query_executor_test.cpp
+    rate_limit_middleware_test.cpp
     request_validator_test.cpp
     sql_template_processor_test.cpp
+    test_duckdb_raii.cpp
+    test_json_utils.cpp
+    test_config_loader.cpp
+    test_endpoint_repository.cpp
+    test_config_validator.cpp
+    test_config_serializer.cpp
+    test_error.cpp
+    test_type_converter.cpp
 )
 
 target_include_directories(flapi_tests PRIVATE 

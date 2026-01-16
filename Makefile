@@ -1,7 +1,7 @@
 # Makefile for flAPI project
 
 # Phony targets
-.PHONY: all debug release clean run-debug run-release run-integration-tests docker-build web cli-build cli-test vscode-build vscode-dev integration-test integration-test-rest integration-test-mcp integration-test-ducklake integration-test-setup integration-test-ci test-all help
+.PHONY: all debug release clean run-debug run-release run-integration-tests docker-build web cli-build cli-test vscode-build vscode-dev integration-test integration-test-rest integration-test-mcp integration-test-ducklake integration-test-examples integration-test-setup integration-test-ci test-all help
 
 # Check if Ninja is available
 NINJA := $(shell which ninja)
@@ -56,6 +56,7 @@ help:
 	@echo "    integration-test-rest  - Run REST API integration tests (Tavern)"
 	@echo "    integration-test-mcp   - Run MCP integration tests"
 	@echo "    integration-test-ducklake - Run DuckLake integration tests"
+	@echo "    integration-test-examples - Run examples integration tests"
 	@echo "    integration-test-ci    - Run integration tests with server management (CI/CD)"
 	@echo "    integration-test-setup - Setup Python environment for integration tests"
 	@echo ""
@@ -219,6 +220,7 @@ integration-test: release integration-test-setup
 	@$(MAKE) integration-test-rest
 	@$(MAKE) integration-test-mcp
 	@$(MAKE) integration-test-ducklake
+	@$(MAKE) integration-test-examples
 	@echo "All integration tests completed"
 
 # Run REST API integration tests (Tavern-based)
@@ -236,9 +238,9 @@ integration-test-ducklake: release integration-test-setup
 	@echo "Running DuckLake integration tests..."
 	@cd test/integration && \
 	if command -v uv >/dev/null 2>&1; then \
-		uv run pytest test_ducklake_cache.tavern.yaml test_ducklake_scheduler.py -v; \
+		uv run pytest test_ducklake_comprehensive.tavern.yaml test_ducklake_advanced.py test_ducklake_scheduler.py -v; \
 	else \
-		pytest test_ducklake_cache.tavern.yaml test_ducklake_scheduler.py -v; \
+		pytest test_ducklake_comprehensive.tavern.yaml test_ducklake_advanced.py test_ducklake_scheduler.py -v; \
 	fi
 
 # Run MCP integration tests
@@ -249,6 +251,16 @@ integration-test-mcp: release integration-test-setup
 		uv run pytest test_mcp_integration.py -v; \
 	else \
 		pytest test_mcp_integration.py -v; \
+	fi
+
+# Run examples integration tests
+integration-test-examples: release integration-test-setup
+	@echo "Running examples integration tests..."
+	@cd test/integration && \
+	if command -v uv >/dev/null 2>&1; then \
+		uv run pytest test_examples_northwind.py test_examples_customers.py test_examples_mcp.py -v; \
+	else \
+		pytest test_examples_northwind.py test_examples_customers.py test_examples_mcp.py -v; \
 	fi
 
 # Run integration tests with server startup (for CI/CD)
