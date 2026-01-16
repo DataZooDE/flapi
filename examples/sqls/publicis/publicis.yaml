@@ -18,7 +18,7 @@ cache:
   schedule: 60m
   # Full refresh mode (no primary-key or cursor specified)
   retention:
-    keep_last_snapshots: 5
-    max_snapshot_age: 14d
-  template_file: publicis_cache.sql 
+    keep-last-snapshots: 5
+    max-snapshot-age: 14d
+  template-file: publicis_cache.sql 
 

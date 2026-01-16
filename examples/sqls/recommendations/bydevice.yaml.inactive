@@ -20,6 +20,6 @@ cache:
   primary-key: [material_number, country_code]  # Composite primary key
   # Full refresh mode for recommendations (no cursor)
   retention:
-    keep_last_snapshots: 3
-    max_snapshot_age: 7d
-  template_file: bydevice_cache.sql
+    keep-last-snapshots: 3
+    max-snapshot-age: 7d
+  template-file: bydevice_cache.sql

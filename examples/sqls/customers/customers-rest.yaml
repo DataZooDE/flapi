@@ -34,8 +34,8 @@ cache:
     column: registration_date
     type: date
   retention:
-    keep_last_snapshots: 3
-    max_snapshot_age: 7d
+    keep-last-snapshots: 3
+    max-snapshot-age: 7d
 
 heartbeat:
   enabled: false

@@ -1,6 +1,6 @@
 # Project name and description
-project_name: example-flapi-project
-project_description: An example flAPI project demonstrating various configuration options
+project-name: example-flapi-project
+project-description: An example flAPI project demonstrating various configuration options
 
 # Template configuration
 template:
@@ -40,17 +40,20 @@ connections:
       LOAD 'erpl';
 
       CREATE OR REPLACE PERSISTENT SECRET abap_trial (
-        TYPE sap_rfc, 
-        ASHOST 'localhost', 
-        SYSNR '00', 
-        CLIENT '001', 
-        USER 'DEVELOPER', 
+        TYPE sap_rfc,
+        ASHOST 'localhost',
+        SYSNR '00',
+        CLIENT '001',
+        USER 'DEVELOPER',
         PASSWD 'ABAPtr2023#00',
         LANG 'EN'
       );
-    
 
-      
+  # Taxi data connection (for AWS Secrets Manager auth demo)
+  taxi-parquet:
+    properties:
+      path: './data/taxi'  # Placeholder - requires taxi parquet files
+
 # Heartbeat configuration
 heartbeat:
   enabled: true # Whether to enable the heartbeat worker, off by default
@@ -75,17 +78,17 @@ duckdb:
 ducklake:
   enabled: true
   alias: cache  # Catalog alias for DuckLake tables
-  metadata_path: ./data/cache.ducklake  # Path to DuckLake metadata
-  data_path: ./data/cache  # Path to DuckLake data files
+  metadata-path: ./data/cache.ducklake  # Path to DuckLake metadata
+  data-path: ./data/cache  # Path to DuckLake data files
   retention:
-    keep_last_snapshots: 10  # Keep last 10 snapshots for each table
-    max_snapshot_age: 30d    # Delete snapshots older than 30 days
+    keep-last-snapshots: 10  # Keep last 10 snapshots for each table
+    max-snapshot-age: 30d    # Delete snapshots older than 30 days
   compaction:
     enabled: true
     schedule: '@daily'  # Run compaction daily
   scheduler:
     enabled: true
-    scan_interval: 5m  # Check for scheduled cache refreshes every 5 minutes
+    scan-interval: 5m  # Check for scheduled cache refreshes every 5 minutes
 
 # ====================================================================================
 # MCP (Model Context Protocol) Support
@@ -108,4 +111,29 @@ ducklake:
 # template-source: customers.sql
 # connection: [customers-parquet]
 # # ... other common sections work for both REST and MCP
+
+# ====================================================================================
+# MCP Server Configuration
+# ====================================================================================
+mcp:
+  enabled: true
+  port: 8081
+  host: localhost
+  allow-list-changed-notifications: true
+
+  # Option 1: Load instructions from external markdown file
+  # This file contains usage guidance for LLM clients
+  instructions-file: ./mcp_instructions.md
+
+  # Option 2: Inline instructions (alternative to file)
+  # Uncomment the following to use inline instructions instead
+  # instructions: |
+  #   # flapi MCP Server
+  #
+  #   SQL-based data access through MCP tools.
+  #
+  #   ## Usage
+  #   - Use search tools for filtering
+  #   - Apply pagination with limit parameter
+  #   - Check tool descriptions for cache status
 

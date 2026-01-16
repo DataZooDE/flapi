@@ -8,7 +8,7 @@
 mcp-tool:
   name: customer_lookup
   description: Retrieve customer information by ID, segment, or other criteria
-  result_mime_type: application/json
+  result-mime-type: application/json
 
 # Include shared request parameters (same as REST endpoint)
 {{include:request from customer-common.yaml}}

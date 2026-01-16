@@ -8,8 +8,8 @@ auth:
   enabled: true
   type: basic
   from-aws-secretmanager:
-    secret_name: flapi_endpoint_users
-    secret_table: taxi_auth
+    secret-name: flapi_endpoint_users
+    secret-table: taxi_auth
     init: |
       CREATE OR REPLACE SECRET flapi_endpoint_users (
         TYPE S3,

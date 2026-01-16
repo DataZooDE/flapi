@@ -2,14 +2,15 @@
 -- This SQL generates a JSON description of the customer table schema
 SELECT json_object(
   'table_name', 'customers',
-  'description', 'Customer information table',
+  'description', 'Customer information from TPC-H dataset',
   'columns', json_array(
-    json_object('name', 'customer_id', 'type', 'INTEGER', 'description', 'Unique customer identifier'),
-    json_object('name', 'name', 'type', 'VARCHAR', 'description', 'Customer full name'),
-    json_object('name', 'email', 'type', 'VARCHAR', 'description', 'Customer email address'),
-    json_object('name', 'segment', 'type', 'VARCHAR', 'description', 'Customer segment (retail, corporate, vip)'),
-    json_object('name', 'registration_date', 'type', 'DATE', 'description', 'Customer registration date'),
-    json_object('name', 'total_orders', 'type', 'INTEGER', 'description', 'Total number of orders'),
-    json_object('name', 'lifetime_value', 'type', 'DECIMAL', 'description', 'Customer lifetime value')
+    json_object('name', 'c_custkey', 'type', 'INTEGER', 'description', 'Unique customer key'),
+    json_object('name', 'c_name', 'type', 'VARCHAR', 'description', 'Customer name'),
+    json_object('name', 'c_address', 'type', 'VARCHAR', 'description', 'Customer address'),
+    json_object('name', 'c_nationkey', 'type', 'INTEGER', 'description', 'Nation key reference'),
+    json_object('name', 'c_phone', 'type', 'VARCHAR', 'description', 'Customer phone number'),
+    json_object('name', 'c_acctbal', 'type', 'DOUBLE', 'description', 'Account balance'),
+    json_object('name', 'c_mktsegment', 'type', 'VARCHAR', 'description', 'Market segment (AUTOMOBILE, BUILDING, FURNITURE, HOUSEHOLD, MACHINERY)'),
+    json_object('name', 'c_comment', 'type', 'VARCHAR', 'description', 'Customer comment')
   )
 ) as schema_definition;

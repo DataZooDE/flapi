@@ -27,9 +27,9 @@ mcp-prompt:
 
     ## Available Data Sources
     Use the `customer_lookup` MCP tool to retrieve customer information. The customer database contains:
-    - Customer demographics (name, email, registration date)
-    - Customer segmentation (retail, corporate, vip)
-    - Customer identifiers and contact information
+    - Customer demographics (name, address, phone)
+    - Customer market segment (AUTOMOBILE, BUILDING, FURNITURE, HOUSEHOLD, MACHINERY)
+    - Customer identifiers and account balance
 
     ## Analysis Guidelines
     1. **Customer Profile**: Analyze the customer's basic information and segment
