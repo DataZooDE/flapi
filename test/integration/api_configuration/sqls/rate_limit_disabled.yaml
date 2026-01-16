@@ -1,0 +1,16 @@
+# Rate Limit Disabled Test Endpoint
+# Endpoint without rate limiting to verify no headers are added
+
+url-path: /rate-limit-disabled
+method: GET
+
+# No request parameters needed
+request: []
+
+template-source: rate_limit_test.sql
+connection:
+  - data-types-parquet
+
+# Rate limiting explicitly disabled
+rate-limit:
+  enabled: false

@@ -1,0 +1,18 @@
+# Rate Limiting Test Endpoint
+# Endpoint with very low rate limit for testing rate limiting behavior
+
+url-path: /rate-limit-test
+method: GET
+
+# No request parameters needed for rate limit testing
+request: []
+
+template-source: rate_limit_test.sql
+connection:
+  - data-types-parquet
+
+# Rate limiting with very low limit for testing
+rate-limit:
+  enabled: true
+  max: 3
+  interval: 60  # 60 second window

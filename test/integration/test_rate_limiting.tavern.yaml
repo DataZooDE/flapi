@@ -1,0 +1,88 @@
+# Rate Limiting Integration Tests
+# Tests rate limiting behavior with a low-limit test endpoint (max: 3, interval: 60s)
+
+---
+test_name: Rate limit headers present on first request
+
+stages:
+  - name: First request should succeed with rate limit headers
+    request:
+      url: "{base_url}/rate-limit-test"
+      method: GET
+    response:
+      status_code: 200
+      headers:
+        content-type: application/json
+        X-RateLimit-Limit: "3"
+        X-RateLimit-Remaining: !anything
+        X-RateLimit-Reset: !anything
+
+---
+test_name: Rate limit exhaustion returns 429
+
+stages:
+  - name: Request 1 of 3 - should succeed
+    request:
+      url: "{base_url}/rate-limit-test"
+      method: GET
+    response:
+      status_code: 200
+      headers:
+        X-RateLimit-Limit: "3"
+
+  - name: Request 2 of 3 - should succeed
+    request:
+      url: "{base_url}/rate-limit-test"
+      method: GET
+    response:
+      status_code: 200
+      headers:
+        X-RateLimit-Limit: "3"
+
+  - name: Request 3 of 3 - should succeed (at limit)
+    request:
+      url: "{base_url}/rate-limit-test"
+      method: GET
+    response:
+      status_code: 200
+      headers:
+        X-RateLimit-Limit: "3"
+        X-RateLimit-Remaining: "0"
+
+  - name: Request 4 - should be rate limited (429)
+    request:
+      url: "{base_url}/rate-limit-test"
+      method: GET
+    response:
+      status_code: 429
+
+---
+test_name: Rate limit remaining decrements correctly
+
+stages:
+  - name: First request - remaining should be 2
+    request:
+      url: "{base_url}/rate-limit-test"
+      method: GET
+    response:
+      status_code: 200
+      headers:
+        X-RateLimit-Remaining: "2"
+
+  - name: Second request - remaining should be 1
+    request:
+      url: "{base_url}/rate-limit-test"
+      method: GET
+    response:
+      status_code: 200
+      headers:
+        X-RateLimit-Remaining: "1"
+
+  - name: Third request - remaining should be 0
+    request:
+      url: "{base_url}/rate-limit-test"
+      method: GET
+    response:
+      status_code: 200
+      headers:
+        X-RateLimit-Remaining: "0"
