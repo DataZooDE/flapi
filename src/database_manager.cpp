@@ -10,6 +10,7 @@
 
 #include "sql_template_processor.hpp"
 #include "database_manager.hpp"
+#include "duckdb_raii.hpp"
 
 namespace flapi {
 
@@ -25,8 +26,42 @@ DatabaseManager::DatabaseManager() {
 }
 
 DatabaseManager::~DatabaseManager() {
+    try {
+        // Graceful shutdown: Detach DuckLake and flush WAL before closing
+        if (db && config_manager) {
+            try {
+                const auto& ducklake_config = config_manager->getDuckLakeConfig();
+                if (ducklake_config.enabled) {
+                    try {
+                        // Detach DuckLake catalog to release locks
+                        std::string detach_stmt = "DETACH " + ducklake_config.alias + ";";
+                        executeInitStatement(detach_stmt);
+                        CROW_LOG_INFO << "Detached DuckLake catalog: " << ducklake_config.alias;
+                    } catch (const std::exception& e) {
+                        CROW_LOG_WARNING << "Failed to detach DuckLake catalog: " << e.what();
+                    }
+                }
+
+                // Checkpoint to flush WAL before closing
+                try {
+                    executeInitStatement("CHECKPOINT;");
+                    CROW_LOG_DEBUG << "Checkpointed database WAL";
+                } catch (const std::exception& e) {
+                    CROW_LOG_WARNING << "Failed to checkpoint WAL: " << e.what();
+                }
+            } catch (const std::exception& e) {
+                CROW_LOG_WARNING << "Error during database graceful shutdown: " << e.what();
+            }
+        }
+    } catch (const std::exception& e) {
+        // Catch-all to prevent exceptions from propagating in destructor
+        CROW_LOG_ERROR << "Unexpected error during database cleanup: " << e.what();
+    }
+
+    // Close the database connection
     if (db) {
         duckdb_close(&db);
+        CROW_LOG_DEBUG << "Closed DuckDB connection";
     }
 }
 
@@ -40,8 +75,11 @@ void DatabaseManager::initializeDBManagerFromConfig(std::shared_ptr<ConfigManage
         // Open the database using the configuration
         char* error = nullptr;
         if (duckdb_open_ext(db_path.c_str(), &db, config, &error) == DuckDBError) {
-            std::string error_message = error ? error : "Unknown error";
-            duckdb_free(error);
+            DuckDBString error_wrapper(error);
+            std::string error_message = error_wrapper.to_string();
+            if (error_message.empty()) {
+                error_message = "Unknown error";
+            }
             duckdb_destroy_config(&config);
             throw std::runtime_error("Failed to open database: " + error_message);
         }
@@ -100,9 +138,8 @@ void DatabaseManager::logDuckDBVersion() {
         throw std::runtime_error("Unexpected result format for DuckDB version");
     }
 
-    auto version = duckdb_value_varchar(&executor.result, 0, 0);
-    CROW_LOG_DEBUG << "DuckDB DB Version: " << version;
-    duckdb_free(version);
+    DuckDBString version_wrapper(duckdb_value_varchar(&executor.result, 0, 0));
+    CROW_LOG_DEBUG << "DuckDB DB Version: " << version_wrapper.to_string();
 }
 
 std::vector<std::string> DatabaseManager::getTableNames(const std::string& schema) {
@@ -121,11 +158,10 @@ std::vector<std::string> DatabaseManager::getTableNames(const std::string& schem
 
     std::vector<std::string> table_names;
     for (idx_t row = 0; row < executor.rowCount(); row++) {
-        const char* table_name = duckdb_value_varchar(&executor.result, 0, row);
-        if (table_name) {
-            table_names.push_back(table_name);
+        DuckDBString table_name_wrapper(duckdb_value_varchar(&executor.result, 0, row));
+        if (!table_name_wrapper.is_null()) {
+            table_names.push_back(table_name_wrapper.to_string());
         }
-        duckdb_free((void*)table_name);
     }
 
     return table_names;
@@ -503,17 +539,13 @@ YAML::Node DatabaseManager::describeSelectQuery(const EndpointConfig& endpoint) 
         executor.execute(describeQuery);
         
         for (idx_t i = 0; i < executor.rowCount(); i++) {
-            // Get column name and type, storing pointers so we can free them
-            const char* column_name_ptr = duckdb_value_varchar(&executor.result, 0, i);
-            const char* column_type_ptr = duckdb_value_varchar(&executor.result, 1, i);
-            
-            // Create strings from the pointers before we free them
-            std::string column_name(column_name_ptr);
-            std::string column_type(column_type_ptr);
-            
-            // Free the memory allocated by duckdb_value_varchar
-            duckdb_free((void*)column_name_ptr);
-            duckdb_free((void*)column_type_ptr);
+            // Get column name and type using RAII wrappers
+            DuckDBString column_name_wrapper(duckdb_value_varchar(&executor.result, 0, i));
+            DuckDBString column_type_wrapper(duckdb_value_varchar(&executor.result, 1, i));
+
+            // Create strings from the wrappers (memory freed automatically on scope exit)
+            std::string column_name = column_name_wrapper.to_string();
+            std::string column_type = column_type_wrapper.to_string();
             
             YAML::Node property;
             if (column_type == "INTEGER" || column_type == "BIGINT") {

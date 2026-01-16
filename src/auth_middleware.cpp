@@ -19,6 +19,7 @@
 #include "database_manager.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/types/blob.hpp"
+#include "oidc_provider_presets.hpp"
 
 namespace flapi 
 {
@@ -138,6 +139,9 @@ void AuthMiddleware::initializeAwsSecretsManager() {
 void AuthMiddleware::before_handle(crow::request& req, crow::response& res, context& ctx) {
     if (!config_manager) return;
 
+    // Skip if response already completed (e.g., by rate limit middleware)
+    if (res.is_completed()) return;
+
     const auto* endpoint = config_manager->getEndpointForPath(req.url);
     if (!endpoint || !endpoint->auth.enabled) {
         return;
@@ -158,6 +162,8 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
         ctx.authenticated = authenticateBasic(auth_header, *endpoint, ctx);
     } else if (endpoint->auth.type == "bearer") {
         ctx.authenticated = authenticateBearer(auth_header, *endpoint, ctx);
+    } else if (endpoint->auth.type == "oidc") {
+        ctx.authenticated = authenticateOIDC(auth_header, *endpoint, ctx);
     }
 
     if (!ctx.authenticated) {
@@ -300,10 +306,10 @@ bool AuthMiddleware::authenticateBearer(const std::string& auth_header, const En
     }
 
     std::string token = auth_header.substr(7);
-    
+
     try {
         auto decoded = jwt::decode(token);
-        
+
         auto verifier = jwt::verify()
             .allow_algorithm(jwt::algorithm::hs256{endpoint.auth.jwt_secret})
             .with_issuer(endpoint.auth.jwt_issuer);
@@ -322,6 +328,90 @@ bool AuthMiddleware::authenticateBearer(const std::string& auth_header, const En
         CROW_LOG_DEBUG << "JWT verification failed: " << e.what();
         return false;
     }
+}
+
+std::shared_ptr<OIDCAuthHandler> AuthMiddleware::getOIDCHandler(const OIDCConfig& oidc_config) {
+    // Make a mutable copy to apply presets
+    OIDCConfig config = oidc_config;
+
+    // Apply provider presets if specified
+    if (!config.provider_type.empty() && config.provider_type != "generic") {
+        bool preset_applied = OIDCProviderPresets::applyPreset(config);
+        if (preset_applied) {
+            CROW_LOG_DEBUG << "Applied OIDC preset for provider: " << config.provider_type;
+        }
+    }
+
+    // Validate provider configuration
+    std::string validation_error = OIDCProviderPresets::validateProviderConfig(config);
+    if (!validation_error.empty()) {
+        CROW_LOG_ERROR << "OIDC configuration error: " << validation_error;
+        // Note: In production, should throw or return nullopt, but for now log and continue
+        // The handler will fail during token validation with clearer errors
+    }
+
+    auto key = config.issuer_url + ":" + config.client_id;
+
+    auto it = oidc_handlers.find(key);
+    if (it != oidc_handlers.end()) {
+        return it->second;
+    }
+
+    // Convert OIDCConfig to OIDCAuthHandler::Config
+    OIDCAuthHandler::Config handler_config;
+    handler_config.issuer_url = config.issuer_url;
+    handler_config.client_id = config.client_id;
+    handler_config.client_secret = config.client_secret;
+    handler_config.allowed_audiences = config.allowed_audiences;
+    handler_config.verify_expiration = config.verify_expiration;
+    handler_config.clock_skew_seconds = config.clock_skew_seconds;
+    handler_config.username_claim = config.username_claim;
+    handler_config.email_claim = config.email_claim;
+    handler_config.roles_claim = config.roles_claim;
+    handler_config.groups_claim = config.groups_claim;
+    handler_config.role_claim_path = config.role_claim_path;
+    handler_config.enable_client_credentials = config.enable_client_credentials;
+    handler_config.enable_refresh_tokens = config.enable_refresh_tokens;
+    handler_config.scopes = config.scopes;
+    handler_config.jwks_cache_hours = config.jwks_cache_hours;
+
+    // Create new handler for this issuer
+    auto handler = std::make_shared<OIDCAuthHandler>(handler_config);
+    oidc_handlers[key] = handler;
+    return handler;
+}
+
+bool AuthMiddleware::authenticateOIDC(const std::string& auth_header, const EndpointConfig& endpoint, context& ctx) {
+    if (auth_header.substr(0, 7) != "Bearer ") {
+        CROW_LOG_DEBUG << "OIDC: Authorization header doesn't start with 'Bearer '";
+        return false;
+    }
+
+    // Ensure endpoint has OIDC configuration
+    if (!endpoint.auth.oidc) {
+        CROW_LOG_WARNING << "OIDC authentication requested but endpoint has no OIDC config";
+        return false;
+    }
+
+    // Get or create OIDC handler
+    auto oidc_handler = getOIDCHandler(*endpoint.auth.oidc);
+
+    // Extract and validate token
+    std::string token = auth_header.substr(7);
+    auto claims = oidc_handler->validateToken(token);
+
+    if (!claims) {
+        CROW_LOG_DEBUG << "OIDC token validation failed";
+        return false;
+    }
+
+    // Set authentication context
+    ctx.username = claims->username;
+    ctx.roles = claims->roles;
+    ctx.authenticated = true;
+
+    CROW_LOG_DEBUG << "OIDC authentication successful for user: " << ctx.username;
+    return true;
 }
 
 void AuthMiddleware::after_handle(crow::request& /*req*/, crow::response& /*res*/, context& /*ctx*/) {

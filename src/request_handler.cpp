@@ -1,4 +1,5 @@
 #include "request_handler.hpp"
+#include "json_utils.hpp"
 
 #include <iostream>
 #include <map>
@@ -17,6 +18,12 @@ RequestHandler::RequestHandler(std::shared_ptr<DatabaseManager> db_manager, std:
 }
 
 void RequestHandler::handleRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams) {
+    // Skip if response already completed (e.g., by rate limit or auth middleware)
+    if (res.is_completed()) {
+        CROW_LOG_DEBUG << "Skipping request handler - response already completed";
+        return;
+    }
+
     CROW_LOG_DEBUG << "Handling request ["<< crow::method_name(req.method) << "]: " << endpoint.urlPath;
 
     switch (req.method) {

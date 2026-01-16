@@ -1,4 +1,5 @@
 #include "query_executor.hpp"
+#include "duckdb_raii.hpp"
 #include <crow.h>
 #include <fmt/core.h>
 #include <sstream>
@@ -276,9 +277,8 @@ crow::json::wvalue QueryResult::convertVectorEnumToJson(const duckdb_vector &vec
     auto type = duckdb_vector_get_column_type(vector);
 
     auto data = (idx_t *)duckdb_vector_get_data(vector);
-    auto value = duckdb_enum_dictionary_value(type, data[row_idx]);
-    std::string str_val = value ? std::string(value) : std::string();
-    duckdb_free(value);
+    DuckDBString value_wrapper(duckdb_enum_dictionary_value(type, data[row_idx]));
+    std::string str_val = value_wrapper.to_string();
 
     duckdb_destroy_logical_type(&type);
     return crow::json::wvalue(str_val);
@@ -303,9 +303,8 @@ crow::json::wvalue QueryResult::convertVectorStructToJson(const duckdb_vector &v
     crow::json::wvalue result;
 
     for (idx_t i = 0; i < child_size; i++) {
-        auto child_name = duckdb_struct_type_child_name(struct_type, i);
-        auto str_name = std::string(child_name);
-        duckdb_free(child_name);
+        DuckDBString child_name_wrapper(duckdb_struct_type_child_name(struct_type, i));
+        auto str_name = child_name_wrapper.to_string();
 
         auto child_vector = duckdb_struct_vector_get_child(vector, i);
         result[str_name] = convertVectorEntryToJson(child_vector, 0);

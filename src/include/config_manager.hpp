@@ -63,6 +63,38 @@ struct AuthFromSecretManagerConfig {
     void setInit(const std::string& initSql) { init = initSql; }
 };
 
+struct OIDCConfig {
+    // Basic OIDC settings
+    std::string issuer_url;                           // e.g., https://accounts.google.com
+    std::string client_id;                            // OAuth 2.0 client ID
+    std::string client_secret;                        // Client secret (from env if needed)
+
+    // Provider type for presets
+    std::string provider_type = "generic";            // "google", "microsoft", "keycloak", etc.
+
+    // Token validation
+    std::vector<std::string> allowed_audiences;       // Expected 'aud' claims
+    bool verify_expiration = true;
+    int clock_skew_seconds = 300;                     // 5 minute tolerance
+
+    // Claim mapping
+    std::string username_claim = "sub";               // Which claim contains username
+    std::string email_claim = "email";
+    std::string roles_claim = "roles";
+    std::string groups_claim = "groups";
+
+    // Nested claim paths (for realm_access.roles style)
+    std::string role_claim_path;                      // "realm_access.roles" for Keycloak
+
+    // OAuth flows
+    bool enable_client_credentials = false;
+    bool enable_refresh_tokens = false;
+    std::vector<std::string> scopes;
+
+    // JWKS caching
+    int jwks_cache_hours = 24;                        // How long to cache JWKS
+};
+
 struct AuthConfig {
     bool enabled;
     std::string type;
@@ -70,6 +102,7 @@ struct AuthConfig {
     std::optional<AuthFromSecretManagerConfig> from_aws_secretmanager;
     std::string jwt_secret;
     std::string jwt_issuer;
+    std::optional<OIDCConfig> oidc;                   // NEW: OIDC configuration
 };
 
 struct ValidatorConfig {
@@ -315,32 +348,6 @@ enum class EndpointJsonStyle {
     CamelCase
 };
 
-struct MCPToolParameter {
-    std::string name;
-    std::string description;
-    std::string type = "string"; // string, number, boolean, array, object
-    bool required = false;
-    std::string default_value;
-    std::vector<std::string> allowed_values; // for enum-like parameters
-    std::unordered_map<std::string, std::string> constraints; // min, max, pattern, etc.
-};
-
-struct MCPToolConfig {
-    std::string tool_name;
-    std::string description;
-    std::string input_schema_path; // JSON schema for tool parameters
-    std::vector<MCPToolParameter> parameters;
-    std::string template_source;
-    std::vector<std::string> connection;
-    std::string result_format = "json"; // json, csv, table
-    bool cache_enabled = false;
-    std::string cache_key_template;
-    RateLimitConfig rate_limit;
-    AuthConfig auth;
-    CacheConfig cache;
-    HeartbeatConfig heartbeat;
-};
-
 struct MCPServerConfig {
     bool enabled = false;
     std::string server_name = "flapi-mcp-server";
@@ -350,6 +357,28 @@ struct MCPServerConfig {
     bool stdio_transport = false; // Use HTTP transport by default
     int mcp_port = 8081; // Different port from REST API
     std::string mcp_base_path = "/mcp";
+};
+
+struct MCPMethodAuthConfig {
+    bool required = true;
+};
+
+struct MCPAuthConfig {
+    bool enabled = false;
+    std::string type = "bearer";  // "basic", "bearer", or "oidc"
+    std::vector<AuthUser> users;  // For Basic auth - inline user list
+    std::string jwt_secret;
+    std::string jwt_issuer = "flapi";
+    std::optional<OIDCConfig> oidc;  // NEW: OIDC configuration
+    std::unordered_map<std::string, MCPMethodAuthConfig> methods;
+};
+
+struct MCPConfig {
+    bool enabled = true;
+    int port = 8081;
+    MCPAuthConfig auth;
+    std::string instructions;           // Inline instructions content
+    std::string instructions_file;      // Path to markdown file (optional)
 };
 
 struct DuckDBConfig {
@@ -413,18 +442,30 @@ struct DuckLakeConfig {
     std::optional<std::size_t> data_inlining_row_limit;
 };
 
-// Forward declaration
+// Forward declarations
 class EndpointConfigParser;
+class ConfigLoader;
+class EndpointRepository;
+class ConfigValidator;
+class ConfigSerializer;
 
 class ConfigManager {
     // Allow EndpointConfigParser to access protected parsing methods
     friend class EndpointConfigParser;
-    
+
 public:
     explicit ConfigManager(const std::filesystem::path& config_file);
-    
-    // Add virtual destructor
-    virtual ~ConfigManager() = default;
+
+    // Virtual destructor (defined in implementation file to handle unique_ptr cleanup)
+    virtual ~ConfigManager();
+
+    // Delete copy constructor and copy assignment (unique_ptr members are non-copyable)
+    ConfigManager(const ConfigManager&) = delete;
+    ConfigManager& operator=(const ConfigManager&) = delete;
+
+    // Move semantics (defined in implementation file with complete types)
+    ConfigManager(ConfigManager&&) noexcept;
+    ConfigManager& operator=(ConfigManager&&) noexcept;
     
     void loadConfig();
     void loadEndpointConfigsRecursively(const std::filesystem::path& dir);
@@ -455,7 +496,10 @@ public:
 
     const GlobalHeartbeatConfig& getGlobalHeartbeatConfig() const { return global_heartbeat_config; }
     const DuckLakeConfig& getDuckLakeConfig() const { return ducklake_config; }
+    const MCPConfig& getMCPConfig() const { return mcp_config; }
 
+    // Load MCP server instructions (inline or from file)
+    std::string loadMCPInstructions() const;
 
     void refreshConfig();
     void addEndpoint(const EndpointConfig& endpoint);
@@ -510,7 +554,14 @@ protected:
     HttpsConfig https_config;
     GlobalHeartbeatConfig global_heartbeat_config;
     DuckLakeConfig ducklake_config;
+    MCPConfig mcp_config;
     ExtendedYamlParser yaml_parser;
+
+    // Extracted classes for delegation (Facade pattern)
+    std::unique_ptr<ConfigLoader> config_loader;
+    std::unique_ptr<EndpointRepository> endpoint_repository;
+    std::unique_ptr<ConfigValidator> config_validator;
+    std::unique_ptr<ConfigSerializer> config_serializer;
 
     void parseConfig();
 
@@ -524,12 +575,14 @@ protected:
     void parseHttpsConfig();
     void parseTemplateConfig();
     void parseDuckLakeConfig();
+    void parseMCPConfig();
     void parseEndpointConfig(const std::filesystem::path& config_file);
     void parseEndpointRequestFields(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
     void parseEndpointValidators(const YAML::Node& req, RequestFieldConfig& field);
     void parseEndpointConnection(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
     void parseEndpointRateLimit(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
     void parseEndpointAuth(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
+    OIDCConfig parseOIDCConfigNode(const YAML::Node& oidc_node, const std::string& log_prefix = "") const;
     
 
     void parseEndpointCache(const YAML::Node& endpoint_config, const std::filesystem::path& endpoint_dir, EndpointConfig& endpoint);

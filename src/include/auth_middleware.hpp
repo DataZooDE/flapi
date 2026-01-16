@@ -4,9 +4,11 @@
 #include <crow/http_response.h>
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 #include "config_manager.hpp"
 #include "database_manager.hpp"
+#include "oidc_auth_handler.hpp"
 
 
 namespace flapi {
@@ -50,13 +52,18 @@ private:
     std::shared_ptr<ConfigManager> config_manager;
     std::shared_ptr<DatabaseManager> db_manager;
     std::shared_ptr<AwsHelper> aws_helper;
+    std::unordered_map<std::string, std::shared_ptr<OIDCAuthHandler>> oidc_handlers;  // Cache per issuer
 
     // Initalize AWS secrets
     void initializeAwsSecretsManager();
 
+    // Get or create OIDC handler for given config
+    std::shared_ptr<OIDCAuthHandler> getOIDCHandler(const OIDCConfig& config);
+
     bool authenticateBasic(const std::string& auth_header, const EndpointConfig& endpoint, context& ctx);
     bool authenticateBearer(const std::string& auth_header, const EndpointConfig& endpoint, context& ctx);
-    
+    bool authenticateOIDC(const std::string& auth_header, const EndpointConfig& endpoint, context& ctx);
+
     // Authentication backend methods
     bool authenticateInlineUsers(const std::string& username, const std::string& password,
                                  const EndpointConfig& endpoint, context& ctx);

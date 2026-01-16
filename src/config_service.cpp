@@ -7,6 +7,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "config_service.hpp"
+#include "json_utils.hpp"
 #include "path_utils.hpp"
 #include "database_manager.hpp"
 #include "cache_manager.hpp"
@@ -1095,27 +1096,8 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
         // Convert parameters to map
         std::map<std::string, std::string> params;
         for (const auto& param : json["parameters"]) {
-            // Convert all parameter values to strings
-            std::string value;
-            if (param.t() == crow::json::type::String) {
-                value = param.s();
-            } else if (param.t() == crow::json::type::Number) {
-                // Try integer first, then double
-                try {
-                    value = std::to_string(param.i());
-                } catch (...) {
-                    value = std::to_string(param.d());
-                }
-            } else if (param.t() == crow::json::type::True) {
-                value = "true";
-            } else if (param.t() == crow::json::type::False) {
-                value = "false";
-            } else if (param.t() == crow::json::type::Null) {
-                value = "";
-            } else {
-                // For objects and arrays, just use empty string for now
-                value = "";
-            }
+            // Convert all parameter values to strings using JsonUtils
+            std::string value = JsonUtils::valueToString(param);
             params[param.key()] = value;
         }
 
@@ -1323,27 +1305,8 @@ crow::response TemplateHandler::testTemplate(const crow::request& req, const std
         // Convert parameters to map
         std::map<std::string, std::string> params;
         for (const auto& param : json["parameters"]) {
-            // Convert all parameter values to strings
-            std::string value;
-            if (param.t() == crow::json::type::String) {
-                value = param.s();
-            } else if (param.t() == crow::json::type::Number) {
-                // Try integer first, then double
-                try {
-                    value = std::to_string(param.i());
-                } catch (...) {
-                    value = std::to_string(param.d());
-                }
-            } else if (param.t() == crow::json::type::True) {
-                value = "true";
-            } else if (param.t() == crow::json::type::False) {
-                value = "false";
-            } else if (param.t() == crow::json::type::Null) {
-                value = "";
-            } else {
-                // For objects and arrays, just use empty string for now
-                value = "";
-            }
+            // Convert all parameter values to strings using JsonUtils
+            std::string value = JsonUtils::valueToString(param);
             params[param.key()] = value;
         }
 

@@ -351,8 +351,6 @@ void EndpointConfigParser::parseOperationConfig(
     // Parse validate_before_write
     if (operation_node["validate-before-write"]) {
         config.operation.validate_before_write = operation_node["validate-before-write"].as<bool>();
-    } else if (operation_node["validateBeforeWrite"]) {
-        config.operation.validate_before_write = operation_node["validateBeforeWrite"].as<bool>();
     }
 }
 

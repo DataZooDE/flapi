@@ -1,11 +1,16 @@
 #include "config_manager.hpp"
 #include "endpoint_config_parser.hpp"
+#include "config_loader.hpp"
+#include "endpoint_repository.hpp"
+#include "config_validator.hpp"
+#include "config_serializer.hpp"
 #include <stdexcept>
 #include <filesystem>
 #include <yaml-cpp/yaml.h>
 #include <fstream>
+#include <sstream>
 #include <iostream>
-#include <crow.h> // Add this line
+#include <crow.h>
 #include <iomanip>
 #include <crow/logging.h>
 
@@ -36,8 +41,23 @@ bool EndpointConfig::matchesPath(const std::string& path) const {
 }
 
 ConfigManager::ConfigManager(const std::filesystem::path& config_file)
-    : config_file(config_file), auth_enabled(false), yaml_parser()
+    : config_file(config_file),
+      auth_enabled(false),
+      yaml_parser(),
+      config_loader(std::make_unique<ConfigLoader>(config_file.string())),
+      endpoint_repository(std::make_unique<EndpointRepository>()),
+      config_validator(std::make_unique<ConfigValidator>()),
+      config_serializer(std::make_unique<ConfigSerializer>())
 {}
+
+// Destructor defined here to handle unique_ptr cleanup with complete types
+ConfigManager::~ConfigManager() = default;
+
+// Move constructor - defined here with complete types
+ConfigManager::ConfigManager(ConfigManager&&) noexcept = default;
+
+// Move assignment operator - defined here with complete types
+ConfigManager& ConfigManager::operator=(ConfigManager&&) noexcept = default;
 
 // Main configuration loading and parsing methods
 void ConfigManager::loadConfig() {
@@ -86,6 +106,7 @@ void ConfigManager::parseMainConfig() {
         parseAuthConfig();
         parseDuckDBConfig();
         parseDuckLakeConfig();
+        parseMCPConfig();
         parseTemplateConfig();
         parseGlobalHeartbeatConfig();
 
@@ -207,6 +228,104 @@ void ConfigManager::parseDuckLakeConfig() {
         // Resolve relative paths against base path
         ducklake_config.metadata_path = makePathRelativeToBasePathIfNecessary(ducklake_config.metadata_path);
         ducklake_config.data_path = makePathRelativeToBasePathIfNecessary(ducklake_config.data_path);
+    }
+}
+
+// MCP configuration methods
+void ConfigManager::parseMCPConfig() {
+    CROW_LOG_INFO << "Parsing MCP configuration";
+    mcp_config = MCPConfig{};  // Initialize with defaults
+
+    if (!config["mcp"]) {
+        CROW_LOG_DEBUG << "MCP configuration not found, using defaults (enabled=true, auth.enabled=false)";
+        return;
+    }
+
+    auto mcp = config["mcp"];
+    mcp_config.enabled = safeGet<bool>(mcp, "enabled", "mcp.enabled", true);
+    mcp_config.port = safeGet<int>(mcp, "port", "mcp.port", 8081);
+
+    CROW_LOG_DEBUG << "MCP Enabled: " << (mcp_config.enabled ? "true" : "false");
+    CROW_LOG_DEBUG << "MCP Port: " << mcp_config.port;
+
+    // Parse MCP authentication configuration
+    if (mcp["auth"]) {
+        auto auth = mcp["auth"];
+        mcp_config.auth.enabled = safeGet<bool>(auth, "enabled", "mcp.auth.enabled", false);
+        mcp_config.auth.type = safeGet<std::string>(auth, "type", "mcp.auth.type", "bearer");
+
+        CROW_LOG_DEBUG << "MCP Auth Enabled: " << (mcp_config.auth.enabled ? "true" : "false");
+        CROW_LOG_DEBUG << "MCP Auth Type: " << mcp_config.auth.type;
+
+        // Parse Basic auth users if configured
+        if (mcp_config.auth.type == "basic") {
+            if (auth["users"]) {
+                auto users = auth["users"];
+                for (const auto& user_entry : users) {
+                    AuthUser user;
+                    user.username = safeGet<std::string>(user_entry, "username", "mcp.auth.users[].username");
+                    user.password = safeGet<std::string>(user_entry, "password", "mcp.auth.users[].password");
+
+                    // Parse roles if present
+                    if (user_entry["roles"]) {
+                        for (const auto& role : user_entry["roles"]) {
+                            user.roles.push_back(role.as<std::string>());
+                        }
+                    }
+
+                    mcp_config.auth.users.push_back(user);
+                    CROW_LOG_DEBUG << "MCP Basic Auth User: " << user.username << " with " << user.roles.size() << " roles";
+                }
+            } else if (mcp_config.auth.enabled) {
+                CROW_LOG_WARNING << "MCP auth enabled with basic type but no users configured";
+            }
+        }
+
+        // Parse JWT-specific configuration if bearer type
+        if (mcp_config.auth.type == "bearer") {
+            if (auth["jwt-secret"]) {
+                mcp_config.auth.jwt_secret = safeGet<std::string>(auth, "jwt-secret", "mcp.auth.jwt-secret");
+                CROW_LOG_DEBUG << "MCP JWT Secret configured";
+            } else if (mcp_config.auth.enabled) {
+                CROW_LOG_WARNING << "MCP auth enabled with bearer type but jwt-secret not configured";
+            }
+
+            mcp_config.auth.jwt_issuer = safeGet<std::string>(auth, "jwt-issuer", "mcp.auth.jwt-issuer", "flapi");
+            CROW_LOG_DEBUG << "MCP JWT Issuer: " << mcp_config.auth.jwt_issuer;
+        }
+
+        // Parse OIDC configuration if present
+        if (auth["oidc"]) {
+            CROW_LOG_INFO << "Parsing MCP OIDC configuration";
+            mcp_config.auth.oidc = parseOIDCConfigNode(auth["oidc"], "MCP ");
+            CROW_LOG_INFO << "MCP OIDC configuration parsed successfully";
+        }
+
+        // Parse per-method authentication requirements
+        if (auth["methods"]) {
+            auto methods = auth["methods"];
+            for (const auto& kv : methods) {
+                std::string method_name = kv.first.as<std::string>();
+                bool required = safeGet<bool>(kv.second, "required", "mcp.auth.methods." + method_name + ".required", true);
+                mcp_config.auth.methods[method_name] = MCPMethodAuthConfig{required};
+                CROW_LOG_DEBUG << "MCP Method Auth: " << method_name << " required=" << (required ? "true" : "false");
+            }
+        }
+    } else if (mcp_config.enabled) {
+        CROW_LOG_DEBUG << "MCP authentication not configured, auth is disabled by default";
+    }
+
+    // Parse MCP server instructions (inline)
+    if (mcp["instructions"]) {
+        mcp_config.instructions = safeGet<std::string>(mcp, "instructions", "mcp.instructions");
+        CROW_LOG_DEBUG << "Loaded inline MCP instructions ("
+                       << mcp_config.instructions.length() << " characters)";
+    }
+
+    // Parse MCP instructions file path
+    if (mcp["instructions-file"]) {
+        mcp_config.instructions_file = safeGet<std::string>(mcp, "instructions-file", "mcp.instructions-file");
+        CROW_LOG_DEBUG << "MCP instructions file: " << mcp_config.instructions_file;
     }
 }
 
@@ -651,8 +770,96 @@ void ConfigManager::parseAuthConfig() {
                     CROW_LOG_DEBUG << "Added user: " << auth_user.username << " with " << auth_user.roles.size() << " roles";
                 }
             }
+
+            // Parse OIDC configuration if present
+            if (auth_node["oidc"]) {
+                CROW_LOG_INFO << "Parsing OIDC configuration";
+                auth_config.oidc = parseOIDCConfigNode(auth_node["oidc"]);
+                CROW_LOG_INFO << "OIDC configuration parsed successfully";
+            }
         }
     }
+}
+
+// Helper to parse OIDC configuration from a YAML node
+OIDCConfig ConfigManager::parseOIDCConfigNode(const YAML::Node& oidc_node, const std::string& log_prefix) const {
+    OIDCConfig oidc_config;
+
+    // Basic OIDC settings
+    if (oidc_node["issuer-url"]) {
+        oidc_config.issuer_url = oidc_node["issuer-url"].as<std::string>();
+        CROW_LOG_DEBUG << log_prefix << "OIDC issuer URL: " << oidc_config.issuer_url;
+    }
+
+    if (oidc_node["client-id"]) {
+        oidc_config.client_id = oidc_node["client-id"].as<std::string>();
+        CROW_LOG_DEBUG << log_prefix << "OIDC client ID: " << oidc_config.client_id;
+    }
+
+    if (oidc_node["client-secret"]) {
+        oidc_config.client_secret = oidc_node["client-secret"].as<std::string>();
+    }
+
+    // Provider type for presets
+    if (oidc_node["provider-type"]) {
+        oidc_config.provider_type = oidc_node["provider-type"].as<std::string>();
+        CROW_LOG_DEBUG << log_prefix << "OIDC provider type: " << oidc_config.provider_type;
+    }
+
+    // Token validation settings
+    if (oidc_node["allowed-audiences"]) {
+        oidc_config.allowed_audiences = oidc_node["allowed-audiences"].as<std::vector<std::string>>();
+    }
+
+    if (oidc_node["verify-expiration"]) {
+        oidc_config.verify_expiration = oidc_node["verify-expiration"].as<bool>();
+    }
+
+    if (oidc_node["clock-skew-seconds"]) {
+        oidc_config.clock_skew_seconds = oidc_node["clock-skew-seconds"].as<int>();
+    }
+
+    // Claim mapping
+    if (oidc_node["username-claim"]) {
+        oidc_config.username_claim = oidc_node["username-claim"].as<std::string>();
+    }
+
+    if (oidc_node["email-claim"]) {
+        oidc_config.email_claim = oidc_node["email-claim"].as<std::string>();
+    }
+
+    if (oidc_node["roles-claim"]) {
+        oidc_config.roles_claim = oidc_node["roles-claim"].as<std::string>();
+    }
+
+    if (oidc_node["groups-claim"]) {
+        oidc_config.groups_claim = oidc_node["groups-claim"].as<std::string>();
+    }
+
+    if (oidc_node["role-claim-path"]) {
+        oidc_config.role_claim_path = oidc_node["role-claim-path"].as<std::string>();
+        CROW_LOG_DEBUG << log_prefix << "OIDC role claim path: " << oidc_config.role_claim_path;
+    }
+
+    // OAuth flows
+    if (oidc_node["enable-client-credentials"]) {
+        oidc_config.enable_client_credentials = oidc_node["enable-client-credentials"].as<bool>();
+    }
+
+    if (oidc_node["enable-refresh-tokens"]) {
+        oidc_config.enable_refresh_tokens = oidc_node["enable-refresh-tokens"].as<bool>();
+    }
+
+    if (oidc_node["scopes"]) {
+        oidc_config.scopes = oidc_node["scopes"].as<std::vector<std::string>>();
+    }
+
+    // JWKS caching
+    if (oidc_node["jwks-cache-hours"]) {
+        oidc_config.jwks_cache_hours = oidc_node["jwks-cache-hours"].as<int>();
+    }
+
+    return oidc_config;
 }
 
 // HTTPS configuration methods
@@ -832,9 +1039,46 @@ std::string ConfigManager::getCacheSchema() const { return cache_schema; }
 const std::unordered_map<std::string, ConnectionConfig>& ConfigManager::getConnections() const { return connections; }
 const RateLimitConfig& ConfigManager::getRateLimitConfig() const { return rate_limit_config; }
 bool ConfigManager::isHttpsEnforced() const { return https_config.enabled; }
+const HttpsConfig& ConfigManager::getHttpsConfig() const { return https_config; }
 bool ConfigManager::isAuthEnabled() const { return auth_enabled; }
 const std::vector<EndpointConfig>& ConfigManager::getEndpoints() const { return endpoints; }
 std::string ConfigManager::getBasePath() const { return base_path.string(); }
+
+std::string ConfigManager::loadMCPInstructions() const {
+    // Priority 1: Inline instructions (if provided)
+    if (!mcp_config.instructions.empty()) {
+        return mcp_config.instructions;
+    }
+
+    // Priority 2: Load from file (if provided)
+    if (!mcp_config.instructions_file.empty()) {
+        std::string file_path = mcp_config.instructions_file;
+
+        // Make path absolute if relative
+        if (file_path[0] != '/') {
+            file_path = (std::filesystem::path(base_path) / file_path).string();
+        }
+
+        // Read file content
+        std::ifstream file(file_path);
+        if (!file.is_open()) {
+            CROW_LOG_WARNING << "Failed to open MCP instructions file: " << file_path;
+            return "";
+        }
+
+        std::stringstream buffer;
+        buffer << file.rdbuf();
+        std::string content = buffer.str();
+
+        CROW_LOG_DEBUG << "Loaded MCP instructions from file ("
+                       << content.length() << " characters): " << file_path;
+
+        return content;
+    }
+
+    // No instructions configured
+    return "";
+}
 
 // JSON configuration methods
 crow::json::wvalue ConfigManager::getFlapiConfig() const {
@@ -1223,6 +1467,10 @@ void ConfigManager::refreshConfig() {
 
 void ConfigManager::addEndpoint(const EndpointConfig& endpoint) {
     endpoints.push_back(endpoint);
+    // Also add to repository for unified access
+    if (endpoint_repository) {
+        endpoint_repository->addEndpoint(endpoint);
+    }
 }
 
 bool ConfigManager::removeEndpointByPath(const std::string& path) {
@@ -1232,6 +1480,22 @@ bool ConfigManager::removeEndpointByPath(const std::string& path) {
             return endpoint.matchesPath(path);
         }),
         endpoints.end());
+
+    // Also remove from repository
+    if (endpoint_repository && before != endpoints.size()) {
+        if (auto endpoint = getEndpointForPath(path)) {
+            if (endpoint->isRESTEndpoint()) {
+                endpoint_repository->removeRestEndpoint(endpoint->urlPath, endpoint->method);
+            } else if (endpoint->isMCPTool()) {
+                endpoint_repository->removeMCPEndpoint(endpoint->mcp_tool->name);
+            } else if (endpoint->isMCPResource()) {
+                endpoint_repository->removeMCPEndpoint(endpoint->mcp_resource->name);
+            } else if (endpoint->isMCPPrompt()) {
+                endpoint_repository->removeMCPEndpoint(endpoint->mcp_prompt->name);
+            }
+        }
+    }
+
     return before != endpoints.size();
 }
 
@@ -1239,6 +1503,24 @@ bool ConfigManager::replaceEndpoint(const EndpointConfig& endpoint) {
     for (auto& candidate : endpoints) {
         if (endpoint.isSameEndpoint(candidate)) {
             candidate = endpoint;
+
+            // Also update in repository
+            if (endpoint_repository) {
+                if (endpoint.isRESTEndpoint()) {
+                    endpoint_repository->removeRestEndpoint(endpoint.urlPath, endpoint.method);
+                    endpoint_repository->addEndpoint(endpoint);
+                } else if (endpoint.isMCPTool()) {
+                    endpoint_repository->removeMCPEndpoint(endpoint.mcp_tool->name);
+                    endpoint_repository->addEndpoint(endpoint);
+                } else if (endpoint.isMCPResource()) {
+                    endpoint_repository->removeMCPEndpoint(endpoint.mcp_resource->name);
+                    endpoint_repository->addEndpoint(endpoint);
+                } else if (endpoint.isMCPPrompt()) {
+                    endpoint_repository->removeMCPEndpoint(endpoint.mcp_prompt->name);
+                    endpoint_repository->addEndpoint(endpoint);
+                }
+            }
+
             return true;
         }
     }
