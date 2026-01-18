@@ -23,7 +23,7 @@ jobs:
   windows-build:
     runs-on: windows-latest
     env:
-      VCPKG_DEFAULT_TRIPLET: x64-windows-static
+      VCPKG_DEFAULT_TRIPLET: x64-mingw-dynamic
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
     steps:
     - uses: actions/checkout@v4
@@ -46,11 +46,11 @@ jobs:
           mingw-w64-x86_64-ninja
 
     - name: Install vcpkg
-      shell: powershell
+      shell: msys2 {0}
       run: |
         git clone https://github.com/Microsoft/vcpkg.git
         cd vcpkg
-        .\bootstrap-vcpkg.bat -disableMetrics
+        ./bootstrap-vcpkg.sh -disableMetrics
 
     - name: Setup Ccache
       uses: hendrikmuhs/ccache-action@main
@@ -58,17 +58,17 @@ jobs:
         key: ${{ github.job }}-windows
 
     - name: Build
-      shell: pwsh
+      shell: msys2 {0}
       run: |
-        New-Item -ItemType Directory -Force -Path build/release
+        mkdir -p build/release
         cd build/release
-        cmake -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF ../..
-        cmake --build . --config Release
+        cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic ../..
+        cmake --build .
 
     - uses: actions/upload-artifact@v4
       with:
         name: flapi-windows-amd64
-        path: build/release/Release/flapi.exe
+        path: build/release/flapi.exe
         if-no-files-found: error
 
   # -------------------------------------------------------------------------------------------------

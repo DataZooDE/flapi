@@ -7,10 +7,14 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(WIN32)
     # Use dynamic runtime libraries for Windows builds
     add_definitions(-D_WIN32_WINNT=0x0601)  # Target Windows 7 or later
-    
+
     # Set vcpkg triplet for Windows
     if(NOT DEFINED VCPKG_TARGET_TRIPLET)
-        set(VCPKG_TARGET_TRIPLET "x64-windows-static-md" CACHE STRING "")
+        if(MINGW)
+            set(VCPKG_TARGET_TRIPLET "x64-mingw-dynamic" CACHE STRING "")
+        else()
+            set(VCPKG_TARGET_TRIPLET "x64-windows-static-md" CACHE STRING "")
+        endif()
     endif()
 endif()
 
@@ -299,12 +303,14 @@ add_custom_target(integration_tests
 
 # Windows-specific linker flags
 if(WIN32)
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /SUBSYSTEM:CONSOLE")
     if(MSVC)
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /SUBSYSTEM:CONSOLE")
         add_compile_options(/W4 /MP)
-        # Enable parallel compilation 
+        # Enable parallel compilation
         set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /MP /Gy")
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP /Gy")
+    elseif(MINGW)
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--subsystem,console")
     endif()
 endif()
 
