@@ -4,6 +4,15 @@
 #include <sstream>
 #include <optional>
 
+// Windows headers define DEBUG, ERROR, INFO, WARNING as macros which conflict
+// with Crow's LogLevel enum values. Undefine them here.
+#ifdef _WIN32
+#undef DEBUG
+#undef INFO
+#undef WARNING
+#undef ERROR
+#endif
+
 namespace flapi {
 
 // ========== Helper function implementations ==========
