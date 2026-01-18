@@ -20,3 +20,4 @@ vcpkg_installed/
 service-account.json
 diagnosis/
 dev_rfc.log.ai/
+.codex-delegate
