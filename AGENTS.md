@@ -20,6 +20,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Declarative API philosophy: logic lives in YAML/SQL, not compiled code
 - Single binary deployment with built-in DuckDB 1.4.3
 
+## Architecture Documentation
+
+For detailed architecture and design documentation, see:
+
+- **[docs/spec/ARCHITECTURE.md](docs/spec/ARCHITECTURE.md)** - System architecture overview with component diagrams
+- **[docs/spec/DESIGN_DECISIONS.md](docs/spec/DESIGN_DECISIONS.md)** - Rationale for key design choices
+- **[docs/spec/REQUEST_LIFECYCLE.md](docs/spec/REQUEST_LIFECYCLE.md)** - End-to-end request flow with sequence diagrams
+- **[docs/spec/components/](docs/spec/components/)** - Component-level documentation:
+  - [config-system.md](docs/spec/components/config-system.md) - Configuration management
+  - [query-execution.md](docs/spec/components/query-execution.md) - SQL templates and DuckDB
+  - [caching.md](docs/spec/components/caching.md) - DuckLake caching system
+  - [mcp-protocol.md](docs/spec/components/mcp-protocol.md) - MCP server implementation
+  - [security.md](docs/spec/components/security.md) - Auth and validation
+
+Reference documentation (API/configuration):
+- [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md) - Configuration file format
+- [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md) - CLI commands
+- [docs/MCP_REFERENCE.md](docs/MCP_REFERENCE.md) - MCP protocol details
+- [docs/CONFIG_SERVICE_API_REFERENCE.md](docs/CONFIG_SERVICE_API_REFERENCE.md) - Runtime configuration API
+
 ## Building and Development
 
 ### Build Commands
@@ -1467,3 +1487,67 @@ flapii templates expand /endpoint --params '{"id":"123"}'
 # EXPLAIN SELECT ... (in generated SQL)
 ```
 
+
+## Documentation Maintenance
+
+### When to Update Documentation
+
+After making code changes, update the relevant documentation:
+
+| Change Type | Documents to Update |
+|-------------|---------------------|
+| New component or major refactor | `docs/spec/ARCHITECTURE.md`, relevant component doc |
+| API endpoint changes | `docs/CONFIG_SERVICE_API_REFERENCE.md` |
+| Configuration options | `docs/CONFIG_REFERENCE.md` |
+| MCP protocol changes | `docs/MCP_REFERENCE.md` |
+| CLI command changes | `docs/CLI_REFERENCE.md` |
+| Design pattern changes | `docs/spec/DESIGN_DECISIONS.md` |
+| Request flow changes | `docs/spec/REQUEST_LIFECYCLE.md` |
+| Config system changes | `docs/spec/components/config-system.md` |
+| Query/DuckDB changes | `docs/spec/components/query-execution.md` |
+| Cache system changes | `docs/spec/components/caching.md` |
+| MCP implementation changes | `docs/spec/components/mcp-protocol.md` |
+| Auth/security changes | `docs/spec/components/security.md` |
+
+### Documentation Checklist
+
+Before completing work that modifies code:
+
+- [ ] If architecture changed → update `docs/spec/ARCHITECTURE.md`
+- [ ] If new design decision → add to `docs/spec/DESIGN_DECISIONS.md`
+- [ ] If request flow changed → update `docs/spec/REQUEST_LIFECYCLE.md`
+- [ ] If component internals changed → update relevant `docs/spec/components/*.md`
+- [ ] If user-facing API changed → update relevant reference doc in `docs/`
+
+### Documentation Style
+
+- Use Mermaid diagrams for visual architecture
+- Include source file references (e.g., `src/config_manager.cpp:123`)
+- Keep explanations concise and code-focused
+- Update "Last updated" timestamps when making significant changes
+
+## Landing the Plane (Session Completion)
+
+**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+
+**MANDATORY WORKFLOW:**
+
+1. **File issues for remaining work** - Create issues for anything that needs follow-up
+2. **Run quality gates** (if code changed) - Tests, linters, builds
+3. **Update issue status** - Close finished work, update in-progress items
+4. **PUSH TO REMOTE** - This is MANDATORY:
+   ```bash
+   git pull --rebase
+   bd sync
+   git push
+   git status  # MUST show "up to date with origin"
+   ```
+5. **Clean up** - Clear stashes, prune remote branches
+6. **Verify** - All changes committed AND pushed
+7. **Hand off** - Provide context for next session
+
+**CRITICAL RULES:**
+- Work is NOT complete until `git push` succeeds
+- NEVER stop before pushing - that leaves work stranded locally
+- NEVER say "ready to push when you are" - YOU must push
+- If push fails, resolve and retry until it succeeds
