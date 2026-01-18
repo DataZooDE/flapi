@@ -58,9 +58,9 @@ jobs:
         key: ${{ github.job }}-windows
 
     - name: Build
-      shell: msys2 {0}
+      shell: pwsh
       run: |
-        mkdir -p build/release
+        New-Item -ItemType Directory -Force -Path build/release
         cd build/release
         cmake -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF ../..
         cmake --build . --config Release
