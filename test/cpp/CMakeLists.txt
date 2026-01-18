@@ -29,6 +29,8 @@ add_executable(flapi_tests
     test_config_serializer.cpp
     test_error.cpp
     test_type_converter.cpp
+    test_arrow_integration.cpp
+    test_content_negotiation.cpp
 )
 
 target_include_directories(flapi_tests PRIVATE 

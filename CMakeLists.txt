@@ -165,6 +165,18 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(yaml-cpp)
 
+# Add nanoarrow for Arrow IPC streaming support
+set(NANOARROW_IPC ON CACHE BOOL "Build nanoarrow IPC extension")
+set(NANOARROW_IPC_WITH_ZSTD ON CACHE BOOL "Build nanoarrow with ZSTD compression")
+set(NANOARROW_IPC_WITH_LZ4 ON CACHE BOOL "Build nanoarrow with LZ4 compression")
+set(NANOARROW_BUILD_TESTS OFF CACHE BOOL "Disable nanoarrow tests")
+FetchContent_Declare(
+  nanoarrow
+  GIT_REPOSITORY https://github.com/apache/arrow-nanoarrow.git
+  GIT_TAG apache-arrow-nanoarrow-0.7.0
+)
+FetchContent_MakeAvailable(nanoarrow)
+
 find_package(AWSSDK CONFIG COMPONENTS core secretsmanager REQUIRED)
 
 # Add DuckDB
@@ -254,6 +266,8 @@ target_link_libraries(flapi-lib PUBLIC
     ${AWSSDK_LIBRARIES}
     fmt::fmt
     CURL::libcurl
+    nanoarrow::nanoarrow
+    nanoarrow::nanoarrow_ipc
 )
 
 # Add RPATH settings for macOS
