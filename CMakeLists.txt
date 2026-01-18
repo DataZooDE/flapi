@@ -155,7 +155,7 @@ find_package(Crow CONFIG REQUIRED)
 find_package(jwt-cpp CONFIG REQUIRED)
 find_package(argparse CONFIG REQUIRED)
 find_package(fmt CONFIG REQUIRED)
-find_package(CURL REQUIRED)
+find_package(CURL CONFIG REQUIRED)
 
 include(FetchContent)
 FetchContent_Declare(
@@ -319,4 +319,3 @@ endif()
 
 # Include embedded UI headers
 target_include_directories(flapi-lib PRIVATE ${CMAKE_SOURCE_DIR}/src/include)
-

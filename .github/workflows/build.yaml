@@ -23,8 +23,8 @@ jobs:
   windows-build:
     runs-on: windows-latest
     env:
-      VCPKG_DEFAULT_TRIPLET: x64-mingw-dynamic
-      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+      VCPKG_DEFAULT_TRIPLET: x64-windows-static-md
+      VCPKG_ROOT: ${{ github.workspace }}\\vcpkg
     steps:
     - uses: actions/checkout@v4
       with:
@@ -34,42 +34,40 @@ jobs:
     - name: Setup MSVC
       uses: microsoft/setup-msbuild@v2
 
-    - name: Setup MSYS2
-      uses: msys2/setup-msys2@v2
-      with:
-        msystem: MINGW64
-        update: true
-        install: >-
-          git
-          mingw-w64-x86_64-gcc
-          mingw-w64-x86_64-cmake
-          mingw-w64-x86_64-make
-          mingw-w64-x86_64-ninja
-
     - name: Install vcpkg
-      shell: msys2 {0}
+      shell: pwsh
       run: |
         git clone https://github.com/Microsoft/vcpkg.git
         cd vcpkg
-        ./bootstrap-vcpkg.sh -disableMetrics
+        .\bootstrap-vcpkg.bat -disableMetrics
 
     - name: Setup Ccache
       uses: hendrikmuhs/ccache-action@main
       with:
         key: ${{ github.job }}-windows
 
-    - name: Build
-      shell: msys2 {0}
+    - name: Configure
+      shell: pwsh
       run: |
-        mkdir -p build/release
-        cd build/release
-        cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic ../..
-        cmake --build .
+        mkdir build\release
+        cd build\release
+        cmake -G "Visual Studio 17 2022" -A x64 `
+          -DCMAKE_BUILD_TYPE=Release `
+          -DBUILD_TESTING=OFF `
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static-md `
+          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
+          ../..
+
+    - name: Build
+      shell: pwsh
+      run: |
+        cd build\release
+        cmake --build . --config Release
 
     - uses: actions/upload-artifact@v4
       with:
         name: flapi-windows-amd64
-        path: build/release/flapi.exe
+        path: build/release/Release/flapi.exe
         if-no-files-found: error
 
   # -------------------------------------------------------------------------------------------------

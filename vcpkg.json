@@ -7,7 +7,7 @@
     "fmt",
     "jwt-cpp",
     "argparse",
-    "aws-sdk-cpp",
+    "curl",
     "vcpkg-cmake",
     "vcpkg-cmake-config",
     {
