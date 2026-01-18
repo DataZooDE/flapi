@@ -4,15 +4,6 @@
 #include <sstream>
 #include <optional>
 
-// Windows headers define DEBUG, ERROR, INFO, WARNING as macros which conflict
-// with Crow's LogLevel enum values. Undefine them here.
-#ifdef _WIN32
-#undef DEBUG
-#undef INFO
-#undef WARNING
-#undef ERROR
-#endif
-
 namespace flapi {
 
 // ========== Helper function implementations ==========
@@ -1156,17 +1147,17 @@ MCPResponse MCPRouteHandlers::handleLoggingSetLevelRequest(const MCPRequest& req
 
         // Map MCP log levels to Crow log levels
         // MCP levels: debug, info, notice, warning, error, critical, alert, emergency
-        // Crow levels: DEBUG, INFO, WARNING, ERROR
-        crow::LogLevel crow_level = crow::LogLevel::INFO;
+        // Crow levels: Debug, Info, Warning, Error (lowercase to avoid Windows macro conflicts)
+        crow::LogLevel crow_level = crow::LogLevel::Info;
 
         if (log_level == "debug") {
-            crow_level = crow::LogLevel::DEBUG;
+            crow_level = crow::LogLevel::Debug;
         } else if (log_level == "info" || log_level == "notice") {
-            crow_level = crow::LogLevel::INFO;
+            crow_level = crow::LogLevel::Info;
         } else if (log_level == "warning") {
-            crow_level = crow::LogLevel::WARNING;
+            crow_level = crow::LogLevel::Warning;
         } else if (log_level == "error" || log_level == "critical" || log_level == "alert" || log_level == "emergency") {
-            crow_level = crow::LogLevel::ERROR;
+            crow_level = crow::LogLevel::Error;
         } else {
             response.error = "{\"code\":-32602,\"message\":\"Invalid log level: " + log_level + "\"}";
             return response;
