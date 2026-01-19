@@ -1551,3 +1551,107 @@ Before completing work that modifies code:
 - NEVER stop before pushing - that leaves work stranded locally
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
+
+## Beads Issue Tracking
+
+Beads (`bd`) is a git-backed issue tracker used in this project. This section documents operational lessons learned, particularly for multi-repo configurations.
+
+### Quick Reference
+
+```bash
+# Common commands
+bd ready                    # Find issues ready to work (no blockers)
+bd list --status=open       # All open issues
+bd show <id>                # View issue details
+bd create --title="..." --type=task --priority=2  # Create issue
+bd update <id> --status=in_progress  # Start work
+bd close <id>               # Complete issue
+bd sync                     # Sync with git remote
+```
+
+### Multi-Repo Routing (Important)
+
+When a user has multiple beads workspaces (e.g., `~/.beads-planning` for personal planning alongside project repos), `bd create` may route issues to the **wrong repository**.
+
+**Symptom:**
+```
+bd create --title="Fix bug" --type=bug
+Error: database not initialized: issue_prefix config is missing
+```
+
+This happens even when the current project has beads properly configured.
+
+**Diagnosis - Use `--verbose`:**
+```bash
+bd --verbose create --title="Fix bug" --type=bug
+# Output shows: DEBUG: Routing to target repo: /Users/jr/.beads-planning
+# ^^^ Wrong repo! Should be current project
+```
+
+**Solution - Use `--repo` flag:**
+```bash
+# Explicitly specify the repository path
+bd create --repo=/Users/jr/Projects/datazoo/flapi --title="Fix bug" --type=bug --priority=1
+```
+
+### Read vs Write Command Behavior
+
+| Command Type | Behavior | Examples |
+|--------------|----------|----------|
+| **Read commands** | Respect current directory | `bd list`, `bd show`, `bd config get` |
+| **Write commands** | May use multi-repo routing | `bd create` - can route to wrong repo |
+
+Read commands work fine from the project directory. Write commands like `bd create` use multi-repo routing logic that may send issues to a different repository.
+
+### Config Precedence
+
+1. `issue-prefix` stored in database takes precedence
+2. Config file setting in `.beads/config.yaml` may not be picked up by daemon
+3. Use `bd config set issue-prefix <value>` to set in database
+
+**Check current prefix:**
+```bash
+bd config get issue-prefix
+```
+
+### Troubleshooting Checklist
+
+When `bd create` fails or routes incorrectly:
+
+1. **Check routing with verbose mode:**
+   ```bash
+   bd --verbose create --title="Test" --type=task
+   ```
+
+2. **Use explicit repo path:**
+   ```bash
+   bd create --repo=$(pwd) --title="Issue title" --type=task --priority=2
+   ```
+
+3. **Verify issue prefix is configured:**
+   ```bash
+   bd config get issue-prefix
+   # If missing, set it:
+   bd config set issue-prefix flapi
+   ```
+
+4. **Restart daemon if needed:**
+   ```bash
+   # Kill any running beads processes
+   pkill -f beads
+   # Retry command
+   bd create --title="..." --type=task
+   ```
+
+5. **Check .beads directory exists:**
+   ```bash
+   ls -la .beads/
+   # Should contain: config.yaml, issues.db, etc.
+   ```
+
+### Best Practices for Issue Creation
+
+1. **Always verify routing first** when working in multi-repo environments
+2. **Use `--repo` flag** if you have multiple beads workspaces
+3. **Check with `bd list`** after creating to confirm issue landed in correct repo
+4. **Run `bd sync`** at session end to push changes to remote
