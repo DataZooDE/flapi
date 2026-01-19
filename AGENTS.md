@@ -1552,6 +1552,70 @@ Before completing work that modifies code:
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
 
+## GitHub Issue Workflow
+
+When working on GitHub issues, use feature branches and pull requests to enable code review and maintain a clean main branch history.
+
+**Workflow Steps:**
+
+1. **Create feature branch from main:**
+   ```bash
+   git checkout main
+   git pull origin main
+   git checkout -b feature/gh-<issue-number>-<short-description>
+   # Example: git checkout -b feature/gh-9-arrow-streaming
+   ```
+
+2. **Create or link beads epic (optional but recommended):**
+   ```bash
+   bd create --title="<GitHub Issue Title>" --type=epic --priority=1
+   # Add external link to GitHub issue
+   bd update <beads-id> --notes="GitHub: https://github.com/DataZooDE/flapi/issues/<N>"
+   ```
+
+3. **Work and commit on feature branch:**
+   - Make changes, run tests
+   - Commit with descriptive messages
+   - Reference GitHub issue: `git commit -m "feat: Add Arrow streaming support (#9)"`
+
+4. **Create pull request:**
+   ```bash
+   git push -u origin feature/gh-<issue-number>-<short-description>
+   gh pr create --title "..." --body "Closes #<issue-number>..."
+   ```
+
+5. **After PR merge:**
+   ```bash
+   git checkout main
+   git pull origin main
+   git branch -d feature/gh-<issue-number>-<short-description>
+   bd close <beads-epic-id>
+   bd sync
+   ```
+
+**Branch Naming Convention:**
+- `feature/gh-<N>-<description>` - For GitHub issue work
+- `fix/gh-<N>-<description>` - For bug fixes
+- `chore/gh-<N>-<description>` - For maintenance tasks
+
+**PR Description Template:**
+```markdown
+## Summary
+<1-3 bullet points>
+
+## Test plan
+- [ ] Tests added/updated
+- [ ] Manual verification steps
+
+Closes #<issue-number>
+```
+
+**Integration with Beads:**
+- Beads tracks local work breakdown and dependencies
+- GitHub issues track public feature requests and bugs
+- Link them via notes field: `bd update <id> --notes="GitHub: #N"`
+- Close beads epic after PR merges
+
 ## Beads Issue Tracking
 
 Beads (`bd`) is a git-backed issue tracker used in this project. This section documents operational lessons learned, particularly for multi-repo configurations.
