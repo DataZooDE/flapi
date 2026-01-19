@@ -20,8 +20,16 @@ namespace flapi {
 /**
  * Configuration for Arrow serialization.
  */
+/**
+ * Configuration for Arrow serialization.
+ *
+ * Note: batchSize is currently advisory - actual batching is controlled
+ * by DuckDB's chunk fetching mechanism. Full batch size control requires
+ * either splitting large chunks or combining small ones, which is
+ * planned for a future enhancement.
+ */
 struct ArrowSerializerConfig {
-    size_t batchSize = 8192;          // Rows per batch
+    size_t batchSize = 8192;          // Advisory rows per batch
     std::string codec;                 // Compression: "", "lz4", "zstd"
     int compressionLevel = 0;          // Compression level (0 = default, 1-22 for zstd)
     size_t maxMemoryBytes = 256 * 1024 * 1024;  // 256 MB default
