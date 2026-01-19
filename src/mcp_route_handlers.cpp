@@ -1,5 +1,6 @@
 #include "mcp_route_handlers.hpp"
 #include "json_utils.hpp"
+#include "arrow_metrics.hpp"
 #include <iostream>
 #include <sstream>
 #include <optional>
@@ -223,6 +224,13 @@ void MCPRouteHandlers::registerRoutes(crow::App<crow::CORSHandler, RateLimitMidd
             health["resources_available"] = (resource_defs.size() > 0);
             health["tools_count"] = static_cast<int>(tool_defs.size());
             health["resources_count"] = static_cast<int>(resource_defs.size());
+
+            // Arrow IPC status
+            auto& arrowMetrics = ArrowMetrics::instance();
+            health["arrow_available"] = true;
+            health["arrow_active_streams"] = arrowMetrics.gauges.activeStreams.load();
+            health["arrow_total_requests"] = arrowMetrics.counters.totalRequests.load();
+
             return crow::response(200, health);
         });
 

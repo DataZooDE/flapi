@@ -12,6 +12,7 @@
 #include "database_manager.hpp"
 #include "cache_manager.hpp"
 #include "sql_template_processor.hpp"
+#include "arrow_metrics.hpp"
 
 namespace flapi {
 
@@ -541,6 +542,79 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             }
         });
     
+    // Health check endpoint (no authentication required)
+    CROW_ROUTE(app, "/api/v1/_config/health")
+        .methods("GET"_method)
+        ([this](const crow::request& /* req */) {
+            crow::json::wvalue health;
+
+            // Server status
+            health["status"] = "healthy";
+            health["server"]["name"] = "flapi";
+            health["server"]["version"] = "1.0.0";
+
+            // Database status
+            auto db_manager = DatabaseManager::getInstance();
+            health["database"]["status"] = db_manager ? "connected" : "disconnected";
+
+            // Endpoints count
+            if (config_manager) {
+                health["endpoints"]["count"] = static_cast<int>(config_manager->getEndpoints().size());
+            }
+
+            // Arrow IPC status
+            auto& arrowMetrics = ArrowMetrics::instance();
+            crow::json::wvalue arrow;
+            arrow["enabled"] = true;
+            arrow["codecs"] = crow::json::wvalue::list({"lz4", "zstd"});
+
+            // Arrow counters
+            crow::json::wvalue counters;
+            counters["total_requests"] = arrowMetrics.counters.totalRequests.load();
+            counters["successful_requests"] = arrowMetrics.counters.successfulRequests.load();
+            counters["failed_requests"] = arrowMetrics.counters.failedRequests.load();
+            counters["total_rows"] = arrowMetrics.counters.totalRows.load();
+            counters["total_batches"] = arrowMetrics.counters.totalBatches.load();
+            counters["total_bytes_written"] = arrowMetrics.counters.totalBytesWritten.load();
+            counters["total_bytes_compressed"] = arrowMetrics.counters.totalBytesCompressed.load();
+            counters["compression_requests"] = arrowMetrics.counters.compressionRequests.load();
+            arrow["counters"] = std::move(counters);
+
+            // Arrow gauges
+            crow::json::wvalue gauges;
+            gauges["active_streams"] = arrowMetrics.gauges.activeStreams.load();
+            gauges["peak_active_streams"] = arrowMetrics.gauges.peakActiveStreams.load();
+            gauges["current_memory_bytes"] = arrowMetrics.gauges.currentMemoryUsage.load();
+            gauges["peak_memory_bytes"] = arrowMetrics.gauges.peakMemoryUsage.load();
+            arrow["gauges"] = std::move(gauges);
+
+            // Arrow histograms (calculated values)
+            crow::json::wvalue stats;
+            stats["avg_duration_us"] = arrowMetrics.getAverageDurationUs();
+            stats["avg_compression_ratio"] = arrowMetrics.getAverageCompressionRatio();
+            uint64_t minDuration = arrowMetrics.histograms.minDurationUs.load();
+            uint64_t maxDuration = arrowMetrics.histograms.maxDurationUs.load();
+            if (minDuration != UINT64_MAX) {
+                stats["min_duration_us"] = minDuration;
+            }
+            if (maxDuration > 0) {
+                stats["max_duration_us"] = maxDuration;
+            }
+            uint64_t minBatch = arrowMetrics.histograms.minBatchRows.load();
+            uint64_t maxBatch = arrowMetrics.histograms.maxBatchRows.load();
+            if (minBatch != UINT64_MAX) {
+                stats["min_batch_rows"] = minBatch;
+            }
+            if (maxBatch > 0) {
+                stats["max_batch_rows"] = maxBatch;
+            }
+            arrow["stats"] = std::move(stats);
+
+            health["arrow"] = std::move(arrow);
+
+            return crow::response(200, health);
+        });
+
     // OpenAPI documentation route
     CROW_ROUTE(app, "/api/v1/doc.yaml")
         .methods("GET"_method)
