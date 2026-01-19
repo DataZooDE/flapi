@@ -260,12 +260,16 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
                 res.set_header("X-Arrow-Codec", arrowConfig.codec);
             }
 
-            // Explicitly remove any Transfer-Encoding header to ensure raw binary transfer
-            res.headers.erase("Transfer-Encoding");
-            res.headers.erase("transfer-encoding");
+            // Set Content-Length explicitly for binary Arrow data
+            // Required since we disabled compression - lets client know exact response size
+            // Note: We do NOT erase Transfer-Encoding; let Crow manage framing
+            res.set_header("Content-Length", std::to_string(arrowResult.data.size()));
 
-            // Set body directly with binary Arrow data
-            res.body.assign(reinterpret_cast<const char*>(arrowResult.data.data()), arrowResult.data.size());
+            // Set body directly - more efficient than write() as it avoids extra string copy
+            res.body.assign(
+                reinterpret_cast<const char*>(arrowResult.data.data()),
+                arrowResult.data.size()
+            );
             res.end();
             return;
         }
