@@ -334,6 +334,15 @@ std::string DatabaseManager::renderCacheTemplate(const EndpointConfig& endpoint,
     return processCacheTemplate(endpoint, cacheConfig, params);
 }
 
+std::unique_ptr<QueryExecutor> DatabaseManager::executeQueryRaw(const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
+    cache_manager->addQueryCacheParamsIfNecessary(config_manager, endpoint, params);
+    std::string processedQuery = processTemplate(endpoint, params);
+
+    auto executor = std::make_unique<QueryExecutor>(db);
+    executor->execute(processedQuery);
+    return executor;
+}
+
 QueryResult DatabaseManager::executeQuery(const std::string& query, 
                                           const std::map<std::string, std::string>& params,
                                           bool with_pagination) {

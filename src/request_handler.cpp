@@ -1,5 +1,7 @@
 #include "request_handler.hpp"
 #include "json_utils.hpp"
+#include "content_negotiation.hpp"
+#include "arrow_serializer.hpp"
 
 #include <iostream>
 #include <map>
@@ -204,19 +206,76 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
             return;
         }
 
+        // Content negotiation - determine response format
+        std::string acceptHeader = req.get_header_value("Accept");
+        // Get format from query parameter using Crow's url_params
+        // req.url only contains the path, query params are in url_params
+        std::string formatParam;
+        char* formatValue = req.url_params.get("format");
+        if (formatValue != nullptr) {
+            formatParam = formatValue;
+        }
+
+        // Configure endpoint format support
+        ResponseFormatConfig formatConfig;
+        formatConfig.formats = {"json", "csv"};  // Default formats
+        formatConfig.defaultFormat = "json";
+        formatConfig.arrowEnabled = true;  // Enable Arrow globally
+        if (formatConfig.arrowEnabled) {
+            formatConfig.formats.push_back("arrow");
+        }
+
+        auto negotiation = negotiateContentType(acceptHeader, formatParam, formatConfig);
+
+        // Handle Arrow format
+        if (negotiation.format == ResponseFormat::ARROW_STREAM) {
+            auto executor = db_manager->executeQueryRaw(endpoint, params);
+
+            ArrowSerializerConfig arrowConfig;
+            arrowConfig.codec = negotiation.codec;  // Use negotiated codec (lz4, zstd, or empty)
+
+            auto arrowResult = serializeToArrowIPC(executor->result, arrowConfig);
+
+            if (!arrowResult.success) {
+                res.code = 500;
+                res.set_header("Content-Type", "application/json");
+                crow::json::wvalue errorResponse;
+                errorResponse["error"] = "Arrow serialization failed";
+                errorResponse["message"] = arrowResult.errorMessage;
+                res.write(errorResponse.dump());
+                res.end();
+                return;
+            }
+
+            // Disable Crow's GZIP compression for Arrow responses
+            // Arrow has its own compression (LZ4/ZSTD) and GZIP compression
+            // would corrupt the IPC stream format
+            res.compressed = false;
+
+            res.set_header("Content-Type", "application/vnd.apache.arrow.stream");
+            res.set_header("X-Arrow-Rows", std::to_string(arrowResult.rowCount));
+            res.set_header("X-Arrow-Batches", std::to_string(arrowResult.batchCount));
+
+            // Explicitly remove any Transfer-Encoding header to ensure raw binary transfer
+            res.headers.erase("Transfer-Encoding");
+            res.headers.erase("transfer-encoding");
+
+            // Set body directly with binary Arrow data
+            res.body.assign(reinterpret_cast<const char*>(arrowResult.data.data()), arrowResult.data.size());
+            res.end();
+            return;
+        }
+
+        // Execute query for JSON/CSV (existing path)
         QueryResult queryResult = db_manager->executeQuery(endpoint, params, endpoint.with_pagination);
 
-        // Determine the response format
-        std::string acceptHeader = req.get_header_value("Accept");
-        bool returnCSV = (acceptHeader.find("text/csv") != std::string::npos) ||
-                      (req.url.find(".csv") != std::string::npos);
-
-        if (returnCSV) {
+        // Handle CSV format
+        if (negotiation.format == ResponseFormat::CSV) {
             std::string csvData = convertToCSV(queryResult);
             res.set_header("Content-Type", "text/csv");
             res.write(csvData);
         } else {
-            // Prepare the JSON response
+            // JSON format (default)
             res.set_header("Content-Type", "application/json");
 
             if (endpoint.with_pagination) {

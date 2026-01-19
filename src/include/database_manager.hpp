@@ -52,6 +52,10 @@ public:
     QueryResult executeQuery(const EndpointConfig& endpoint, std::map<std::string, std::string>& params, bool with_pagination = true);
     QueryResult executeCacheQuery(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params);
     QueryResult executeQuery(const std::string& query, const std::map<std::string, std::string>& params = {}, bool with_pagination = true);
+
+    // Execute query and return raw QueryExecutor for Arrow serialization
+    // The executor owns the duckdb_result and must remain alive while accessing it
+    std::unique_ptr<QueryExecutor> executeQueryRaw(const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
     QueryResult executeDuckLakeQuery(const std::string& query, const std::map<std::string, std::string>& params = {});
     std::string renderCacheTemplate(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params);
     

@@ -121,7 +121,7 @@ void APIServer::setupRoutes() {
         .methods("GET"_method, "POST"_method, "PUT"_method, "PATCH"_method, "DELETE"_method)
         ([this](const crow::request& req, crow::response& res, std::string path) {
             handleDynamicRequest(req, res);
-            res.end();
+            // Note: don't call res.end() here - handlers already call it
         });
 
     CROW_LOG_INFO << "Routes set up completed";
