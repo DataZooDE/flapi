@@ -3,10 +3,17 @@
 #include <duckdb.h>
 #include <nanoarrow/nanoarrow.h>
 #include <nanoarrow/nanoarrow_ipc.h>
+// Use DuckDB's bundled ZSTD (in duckdb_zstd namespace)
+// Include path has duckdb/third_party/zstd/include so we use <zstd.h>
+#include <zstd.h>
+// Use vcpkg's LZ4 (in global namespace)
+#include <lz4frame.h>
 #include <string>
 #include <vector>
 #include <cstring>
 #include <memory>
+#include <algorithm>
+#include <cctype>
 
 namespace flapi {
 
@@ -16,8 +23,92 @@ namespace flapi {
 struct ArrowSerializerConfig {
     size_t batchSize = 8192;          // Rows per batch
     std::string codec;                 // Compression: "", "lz4", "zstd"
+    int compressionLevel = 0;          // Compression level (0 = default, 1-22 for zstd)
     size_t maxMemoryBytes = 256 * 1024 * 1024;  // 256 MB default
 };
+
+/**
+ * Normalize codec name to lowercase.
+ */
+inline std::string normalizeCodecName(const std::string& codec) {
+    std::string normalized = codec;
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+        [](unsigned char c) { return std::tolower(c); });
+    return normalized;
+}
+
+/**
+ * Check if a codec name is valid.
+ */
+inline bool isValidCodec(const std::string& codec) {
+    std::string normalized = normalizeCodecName(codec);
+    return normalized.empty() || normalized == "zstd" || normalized == "lz4";
+}
+
+/**
+ * Compress data using ZSTD.
+ * Returns empty vector on failure.
+ */
+inline std::vector<uint8_t> compressZstd(const std::vector<uint8_t>& input, int level = 3) {
+    if (input.empty()) {
+        return {};
+    }
+
+    // Clamp level to valid range (1-22, default 3)
+    if (level <= 0) {
+        level = 3;
+    } else if (level > 22) {
+        level = 22;
+    }
+
+    size_t compressBound = duckdb_zstd::ZSTD_compressBound(input.size());
+    std::vector<uint8_t> output(compressBound);
+
+    size_t compressedSize = duckdb_zstd::ZSTD_compress(
+        output.data(), output.size(),
+        input.data(), input.size(),
+        level
+    );
+
+    if (duckdb_zstd::ZSTD_isError(compressedSize)) {
+        return {};
+    }
+
+    output.resize(compressedSize);
+    return output;
+}
+
+/**
+ * Compress data using LZ4 frame format.
+ * Returns empty vector on failure.
+ */
+inline std::vector<uint8_t> compressLz4(const std::vector<uint8_t>& input) {
+    if (input.empty()) {
+        return {};
+    }
+
+    // Create LZ4 frame preferences
+    LZ4F_preferences_t prefs;
+    std::memset(&prefs, 0, sizeof(prefs));
+    prefs.frameInfo.contentSize = input.size();
+    prefs.compressionLevel = 0;  // Default compression level
+
+    size_t compressBound = LZ4F_compressFrameBound(input.size(), &prefs);
+    std::vector<uint8_t> output(compressBound);
+
+    size_t compressedSize = LZ4F_compressFrame(
+        output.data(), output.size(),
+        input.data(), input.size(),
+        &prefs
+    );
+
+    if (LZ4F_isError(compressedSize)) {
+        return {};
+    }
+
+    output.resize(compressedSize);
+    return output;
+}
 
 /**
  * Result of Arrow serialization operation.
@@ -585,15 +676,51 @@ inline ArrowSerializationResult serializeToArrowIPC(
     ArrowIpcWriterReset(&writer);
     ArrowSchemaRelease(&schema);
 
-    // Copy output
+    // Copy uncompressed output to vector
+    std::vector<uint8_t> rawData(outputBuffer.size_bytes);
+    std::memcpy(rawData.data(), outputBuffer.data, outputBuffer.size_bytes);
+    ArrowBufferReset(&outputBuffer);
+
+    // Apply compression if codec specified
+    std::string codecNormalized = normalizeCodecName(config.codec);
+    if (!codecNormalized.empty()) {
+        std::vector<uint8_t> compressedData;
+
+        if (codecNormalized == "zstd") {
+            compressedData = compressZstd(rawData, config.compressionLevel);
+        } else if (codecNormalized == "lz4") {
+            compressedData = compressLz4(rawData);
+        } else {
+            // Invalid codec - return error or fallback to uncompressed
+            output.errorMessage = "Unsupported compression codec: " + config.codec;
+            return output;
+        }
+
+        if (compressedData.empty() && !rawData.empty()) {
+            // Compression failed - fallback to uncompressed
+            output.success = true;
+            output.rowCount = totalRows;
+            output.batchCount = batchCount;
+            output.bytesWritten = rawData.size();
+            output.data = std::move(rawData);
+            return output;
+        }
+
+        // Use compressed data
+        output.success = true;
+        output.rowCount = totalRows;
+        output.batchCount = batchCount;
+        output.bytesWritten = compressedData.size();
+        output.data = std::move(compressedData);
+        return output;
+    }
+
+    // No compression - use raw data
     output.success = true;
     output.rowCount = totalRows;
     output.batchCount = batchCount;
-    output.bytesWritten = outputBuffer.size_bytes;
-    output.data.resize(outputBuffer.size_bytes);
-    std::memcpy(output.data.data(), outputBuffer.data, outputBuffer.size_bytes);
-
-    ArrowBufferReset(&outputBuffer);
+    output.bytesWritten = rawData.size();
+    output.data = std::move(rawData);
     return output;
 }
 

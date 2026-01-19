@@ -179,6 +179,10 @@ FetchContent_MakeAvailable(nanoarrow)
 
 find_package(AWSSDK CONFIG COMPONENTS core secretsmanager REQUIRED)
 
+# Find compression libraries for Arrow IPC compression
+find_package(zstd CONFIG REQUIRED)
+find_package(lz4 CONFIG REQUIRED)
+
 # Add DuckDB
 set(DUCKDB_EXPLICIT_VERSION 1.4.3)
 set(ENABLE_EXTENSION_AUTOLOADING true)
@@ -268,6 +272,8 @@ target_link_libraries(flapi-lib PUBLIC
     CURL::libcurl
     nanoarrow::nanoarrow
     nanoarrow::nanoarrow_ipc
+    $<IF:$<TARGET_EXISTS:zstd::libzstd_shared>,zstd::libzstd_shared,zstd::libzstd_static>
+    $<IF:$<TARGET_EXISTS:lz4::lz4>,lz4::lz4,lz4::lz4_shared>
 )
 
 # Add RPATH settings for macOS

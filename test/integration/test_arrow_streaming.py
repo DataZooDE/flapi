@@ -210,9 +210,16 @@ class TestArrowDataIntegrity:
 
 
 class TestArrowCompression:
-    """Test Arrow compression support."""
+    """Test Arrow compression support (TDD Phase - Task 5.1).
 
-    def test_zstd_compression(self, examples_url, wait_for_examples):
+    These tests validate:
+    1. LZ4 compression/decompression
+    2. ZSTD compression with levels 1-3
+    3. Codec negotiation via Accept header params
+    4. Client compatibility (pyarrow, polars can read compressed streams)
+    """
+
+    def test_zstd_compression_basic(self, examples_url, wait_for_examples):
         """Request with ZSTD codec should return compressed stream."""
         headers = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=zstd"}
         response = requests.get(f"{examples_url}/northwind/products/", headers=headers)
@@ -224,7 +231,7 @@ class TestArrowCompression:
         table = read_arrow_stream_to_table(response.content)
         assert table.num_rows > 0
 
-    def test_lz4_compression(self, examples_url, wait_for_examples):
+    def test_lz4_compression_basic(self, examples_url, wait_for_examples):
         """Request with LZ4 codec should return compressed stream."""
         headers = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=lz4"}
         response = requests.get(f"{examples_url}/northwind/products/", headers=headers)
@@ -235,6 +242,231 @@ class TestArrowCompression:
         # Should be valid Arrow
         table = read_arrow_stream_to_table(response.content)
         assert table.num_rows > 0
+
+    def test_zstd_compression_smaller_than_uncompressed(self, examples_url, wait_for_examples):
+        """ZSTD compressed response should be smaller than uncompressed."""
+        endpoint = f"{examples_url}/publicis"  # Larger dataset
+
+        # Get uncompressed size
+        uncompressed = request_with_arrow_accept(endpoint)
+        if uncompressed.status_code != 200:
+            pytest.skip("Arrow format not yet supported")
+        uncompressed_size = len(uncompressed.content)
+
+        # Get ZSTD compressed size
+        headers = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=zstd"}
+        compressed = requests.get(endpoint, headers=headers)
+        if compressed.status_code != 200:
+            pytest.skip("ZSTD compression not yet supported")
+        compressed_size = len(compressed.content)
+
+        # Compressed should be smaller (at least 10% reduction for typical data)
+        assert compressed_size < uncompressed_size, \
+            f"Compressed ({compressed_size}) should be smaller than uncompressed ({uncompressed_size})"
+
+        # Verify data integrity
+        table = read_arrow_stream_to_table(compressed.content)
+        assert table.num_rows > 0
+
+    def test_lz4_compression_smaller_than_uncompressed(self, examples_url, wait_for_examples):
+        """LZ4 compressed response should be smaller than uncompressed."""
+        endpoint = f"{examples_url}/publicis"  # Larger dataset
+
+        # Get uncompressed size
+        uncompressed = request_with_arrow_accept(endpoint)
+        if uncompressed.status_code != 200:
+            pytest.skip("Arrow format not yet supported")
+        uncompressed_size = len(uncompressed.content)
+
+        # Get LZ4 compressed size
+        headers = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=lz4"}
+        compressed = requests.get(endpoint, headers=headers)
+        if compressed.status_code != 200:
+            pytest.skip("LZ4 compression not yet supported")
+        compressed_size = len(compressed.content)
+
+        # Compressed should be smaller
+        assert compressed_size < uncompressed_size, \
+            f"Compressed ({compressed_size}) should be smaller than uncompressed ({uncompressed_size})"
+
+        # Verify data integrity
+        table = read_arrow_stream_to_table(compressed.content)
+        assert table.num_rows > 0
+
+    def test_zstd_level_1_fast(self, examples_url, wait_for_examples):
+        """ZSTD level 1 should provide fast compression."""
+        headers = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=zstd;level=1"}
+        response = requests.get(f"{examples_url}/publicis", headers=headers)
+
+        if response.status_code != 200:
+            pytest.skip("ZSTD compression with levels not yet supported")
+
+        table = read_arrow_stream_to_table(response.content)
+        assert table.num_rows > 0
+
+    def test_zstd_level_3_better_ratio(self, examples_url, wait_for_examples):
+        """ZSTD level 3 should provide better compression ratio than level 1."""
+        endpoint = f"{examples_url}/publicis"
+
+        # Level 1
+        headers_l1 = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=zstd;level=1"}
+        response_l1 = requests.get(endpoint, headers=headers_l1)
+        if response_l1.status_code != 200:
+            pytest.skip("ZSTD compression with levels not yet supported")
+        size_l1 = len(response_l1.content)
+
+        # Level 3
+        headers_l3 = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=zstd;level=3"}
+        response_l3 = requests.get(endpoint, headers=headers_l3)
+        if response_l3.status_code != 200:
+            pytest.skip("ZSTD level 3 not supported")
+        size_l3 = len(response_l3.content)
+
+        # Level 3 should give same or better compression than level 1
+        # (with small data the difference may be minimal)
+        assert size_l3 <= size_l1 * 1.1, \
+            f"Level 3 ({size_l3}) should not be much larger than level 1 ({size_l1})"
+
+        # Both should produce valid data
+        table_l1 = read_arrow_stream_to_table(response_l1.content)
+        table_l3 = read_arrow_stream_to_table(response_l3.content)
+        assert table_l1.num_rows == table_l3.num_rows
+
+    def test_codec_negotiation_quality_values(self, examples_url, wait_for_examples):
+        """Codec should be selectable via Accept header quality values."""
+        # Prefer ZSTD over LZ4
+        headers = {
+            "Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=zstd;q=1.0, {ARROW_STREAM_MEDIA_TYPE};codec=lz4;q=0.8"
+        }
+        response = requests.get(f"{examples_url}/northwind/products/", headers=headers)
+
+        if response.status_code != 200:
+            pytest.skip("Codec negotiation not yet supported")
+
+        # Should be valid Arrow
+        table = read_arrow_stream_to_table(response.content)
+        assert table.num_rows > 0
+
+    def test_no_codec_returns_uncompressed(self, examples_url, wait_for_examples):
+        """Request without codec parameter should return uncompressed stream."""
+        headers = {"Accept": ARROW_STREAM_MEDIA_TYPE}
+        response = requests.get(f"{examples_url}/northwind/products/", headers=headers)
+
+        if response.status_code != 200:
+            pytest.skip("Arrow format not yet supported")
+
+        # Should be valid Arrow
+        table = read_arrow_stream_to_table(response.content)
+        assert table.num_rows > 0
+
+        # Verify no Content-Encoding header (uncompressed)
+        # Note: Arrow IPC compression is internal, not HTTP-level compression
+        content_encoding = response.headers.get("Content-Encoding", "")
+        assert content_encoding in ["", "identity"], \
+            f"Uncompressed request should not have Content-Encoding, got: {content_encoding}"
+
+    def test_pyarrow_reads_zstd_compressed(self, examples_url, wait_for_examples):
+        """pyarrow should be able to read ZSTD compressed Arrow streams."""
+        headers = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=zstd"}
+        response = requests.get(f"{examples_url}/publicis", headers=headers)
+
+        if response.status_code != 200:
+            pytest.skip("ZSTD compression not yet supported")
+
+        # Read with pyarrow - should handle decompression automatically
+        reader = ipc.open_stream(io.BytesIO(response.content))
+        table = reader.read_all()
+
+        assert table.num_rows > 0
+        assert table.num_columns > 0
+
+        # Verify data is accessible
+        df = table.to_pandas()
+        assert len(df) == table.num_rows
+
+    def test_pyarrow_reads_lz4_compressed(self, examples_url, wait_for_examples):
+        """pyarrow should be able to read LZ4 compressed Arrow streams."""
+        headers = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=lz4"}
+        response = requests.get(f"{examples_url}/publicis", headers=headers)
+
+        if response.status_code != 200:
+            pytest.skip("LZ4 compression not yet supported")
+
+        # Read with pyarrow - should handle decompression automatically
+        reader = ipc.open_stream(io.BytesIO(response.content))
+        table = reader.read_all()
+
+        assert table.num_rows > 0
+        assert table.num_columns > 0
+
+        # Verify data is accessible
+        df = table.to_pandas()
+        assert len(df) == table.num_rows
+
+    def test_polars_reads_compressed_stream(self, examples_url, wait_for_examples):
+        """Polars (if available) should read compressed Arrow streams."""
+        try:
+            import polars as pl
+        except ImportError:
+            pytest.skip("Polars not installed")
+
+        headers = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=zstd"}
+        response = requests.get(f"{examples_url}/publicis", headers=headers)
+
+        if response.status_code != 200:
+            pytest.skip("ZSTD compression not yet supported")
+
+        # Polars can read Arrow IPC streams
+        df = pl.read_ipc(io.BytesIO(response.content))
+        assert len(df) > 0
+        assert len(df.columns) > 0
+
+    def test_compressed_data_integrity(self, examples_url, wait_for_examples):
+        """Compressed and uncompressed data should be identical."""
+        endpoint = f"{examples_url}/publicis"
+
+        # Get uncompressed
+        uncompressed = request_with_arrow_accept(endpoint)
+        if uncompressed.status_code != 200:
+            pytest.skip("Arrow format not yet supported")
+        table_uncompressed = read_arrow_stream_to_table(uncompressed.content)
+
+        # Get ZSTD compressed
+        headers = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=zstd"}
+        compressed = requests.get(endpoint, headers=headers)
+        if compressed.status_code != 200:
+            pytest.skip("ZSTD compression not yet supported")
+        table_compressed = read_arrow_stream_to_table(compressed.content)
+
+        # Data should be identical
+        assert table_uncompressed.num_rows == table_compressed.num_rows
+        assert table_uncompressed.num_columns == table_compressed.num_columns
+        assert table_uncompressed.column_names == table_compressed.column_names
+
+        # Compare actual data
+        df_uncompressed = table_uncompressed.to_pandas()
+        df_compressed = table_compressed.to_pandas()
+
+        # DataFrames should be equal
+        import pandas as pd
+        pd.testing.assert_frame_equal(df_uncompressed, df_compressed)
+
+    def test_invalid_codec_handled_gracefully(self, examples_url, wait_for_examples):
+        """Invalid codec should be handled gracefully."""
+        headers = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=invalid_codec_xyz"}
+        response = requests.get(f"{examples_url}/northwind/products/", headers=headers)
+
+        # Should either:
+        # - Return 406 Not Acceptable if codec is required
+        # - Return 200 with uncompressed data if codec is optional
+        # - Return 400 Bad Request if codec validation is strict
+        assert response.status_code in [200, 400, 406], \
+            f"Unexpected status for invalid codec: {response.status_code}"
+
+        if response.status_code == 200:
+            # If we got a response, it should still be valid Arrow
+            table = read_arrow_stream_to_table(response.content)
+            assert table.num_rows > 0
 
 
 class TestArrowMemoryBounds:

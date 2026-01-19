@@ -10,6 +10,8 @@
     "curl",
     "vcpkg-cmake",
     "vcpkg-cmake-config",
+    "zstd",
+    "lz4",
     {
       "name": "aws-sdk-cpp",
       "features": ["sso", "sts", "secretsmanager"]
