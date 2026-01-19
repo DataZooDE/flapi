@@ -255,6 +255,10 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
             res.set_header("Content-Type", "application/vnd.apache.arrow.stream");
             res.set_header("X-Arrow-Rows", std::to_string(arrowResult.rowCount));
             res.set_header("X-Arrow-Batches", std::to_string(arrowResult.batchCount));
+            res.set_header("X-Arrow-Bytes", std::to_string(arrowResult.bytesWritten));
+            if (!arrowConfig.codec.empty()) {
+                res.set_header("X-Arrow-Codec", arrowConfig.codec);
+            }
 
             // Explicitly remove any Transfer-Encoding header to ensure raw binary transfer
             res.headers.erase("Transfer-Encoding");

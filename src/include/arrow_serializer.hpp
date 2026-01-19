@@ -8,12 +8,15 @@
 #include <zstd.h>
 // Use vcpkg's LZ4 (in global namespace)
 #include <lz4frame.h>
+#include <crow.h>
 #include <string>
 #include <vector>
 #include <cstring>
 #include <memory>
 #include <algorithm>
 #include <cctype>
+
+#include "arrow_metrics.hpp"
 
 namespace flapi {
 
@@ -565,10 +568,21 @@ inline ArrowSerializationResult serializeToArrowIPC(
     ArrowSerializationResult output;
     ArrowError error;
 
+    // Start metrics tracking
+    ArrowRequestScope requestScope;
+
+    CROW_LOG_DEBUG << "Arrow serialization started"
+                   << " batch_size=" << config.batchSize
+                   << " codec=" << (config.codec.empty() ? "none" : config.codec)
+                   << " compression_level=" << config.compressionLevel
+                   << " max_memory=" << config.maxMemoryBytes;
+
     // Extract schema
     ArrowSchema schema;
     if (extractSchemaFromDuckDB(result, &schema, &error) != NANOARROW_OK) {
         output.errorMessage = "Failed to extract schema: " + std::string(error.message);
+        CROW_LOG_ERROR << "Arrow schema extraction failed: " << error.message;
+        requestScope.recordFailure("schema");
         return output;
     }
 
@@ -581,6 +595,8 @@ inline ArrowSerializationResult serializeToArrowIPC(
     if (ArrowIpcOutputStreamInitBuffer(&stream, &outputBuffer) != NANOARROW_OK) {
         ArrowSchemaRelease(&schema);
         output.errorMessage = "Failed to initialize output stream";
+        CROW_LOG_ERROR << "Arrow output stream initialization failed";
+        requestScope.recordFailure("stream");
         return output;
     }
 
@@ -590,6 +606,8 @@ inline ArrowSerializationResult serializeToArrowIPC(
         ArrowSchemaRelease(&schema);
         ArrowBufferReset(&outputBuffer);
         output.errorMessage = "Failed to initialize IPC writer";
+        CROW_LOG_ERROR << "Arrow IPC writer initialization failed";
+        requestScope.recordFailure("writer");
         return output;
     }
 
@@ -599,6 +617,8 @@ inline ArrowSerializationResult serializeToArrowIPC(
         ArrowSchemaRelease(&schema);
         ArrowBufferReset(&outputBuffer);
         output.errorMessage = "Failed to write schema: " + std::string(error.message);
+        CROW_LOG_ERROR << "Arrow schema write failed: " << error.message;
+        requestScope.recordFailure("schema_write");
         return output;
     }
 
@@ -623,6 +643,10 @@ inline ArrowSerializationResult serializeToArrowIPC(
             ArrowSchemaRelease(&schema);
             ArrowBufferReset(&outputBuffer);
             output.errorMessage = "Exceeded memory limit";
+            CROW_LOG_WARNING << "Arrow serialization exceeded memory limit"
+                             << " used=" << memoryUsed
+                             << " limit=" << config.maxMemoryBytes;
+            requestScope.recordFailure("memory");
             return output;
         }
 
@@ -634,6 +658,8 @@ inline ArrowSerializationResult serializeToArrowIPC(
             ArrowSchemaRelease(&schema);
             ArrowBufferReset(&outputBuffer);
             output.errorMessage = "Failed to convert chunk: " + std::string(error.message);
+            CROW_LOG_ERROR << "Arrow chunk conversion failed: " << error.message;
+            requestScope.recordFailure("conversion");
             return output;
         }
 
@@ -646,6 +672,8 @@ inline ArrowSerializationResult serializeToArrowIPC(
             ArrowSchemaRelease(&schema);
             ArrowBufferReset(&outputBuffer);
             output.errorMessage = "Failed to create array view";
+            CROW_LOG_ERROR << "Arrow array view creation failed";
+            requestScope.recordFailure("array_view");
             return output;
         }
 
@@ -657,6 +685,8 @@ inline ArrowSerializationResult serializeToArrowIPC(
             ArrowSchemaRelease(&schema);
             ArrowBufferReset(&outputBuffer);
             output.errorMessage = "Failed to set array view";
+            CROW_LOG_ERROR << "Arrow array view set failed";
+            requestScope.recordFailure("array_view");
             return output;
         }
 
@@ -669,6 +699,8 @@ inline ArrowSerializationResult serializeToArrowIPC(
             ArrowSchemaRelease(&schema);
             ArrowBufferReset(&outputBuffer);
             output.errorMessage = "Failed to write batch: " + std::string(error.message);
+            CROW_LOG_ERROR << "Arrow batch write failed: " << error.message;
+            requestScope.recordFailure("batch_write");
             return output;
         }
 
@@ -678,6 +710,13 @@ inline ArrowSerializationResult serializeToArrowIPC(
 
         totalRows += chunk_size;
         batchCount++;
+
+        // Record batch statistics
+        ArrowMetrics::instance().recordBatchStats(chunk_size);
+
+        CROW_LOG_DEBUG << "Arrow batch written: rows=" << chunk_size
+                       << " batch_num=" << batchCount
+                       << " total_rows=" << totalRows;
     }
 
     // Finalize stream (write EOS marker)
@@ -691,7 +730,13 @@ inline ArrowSerializationResult serializeToArrowIPC(
 
     // Apply compression if codec specified
     std::string codecNormalized = normalizeCodecName(config.codec);
+    size_t uncompressedSize = rawData.size();
+
     if (!codecNormalized.empty()) {
+        CROW_LOG_DEBUG << "Applying " << codecNormalized << " compression to Arrow stream"
+                       << " size=" << uncompressedSize
+                       << " level=" << config.compressionLevel;
+
         std::vector<uint8_t> compressedData;
 
         if (codecNormalized == "zstd") {
@@ -701,34 +746,58 @@ inline ArrowSerializationResult serializeToArrowIPC(
         } else {
             // Invalid codec - return error or fallback to uncompressed
             output.errorMessage = "Unsupported compression codec: " + config.codec;
+            CROW_LOG_ERROR << "Unsupported compression codec: " << config.codec;
+            requestScope.recordFailure("compression");
             return output;
         }
 
         if (compressedData.empty() && !rawData.empty()) {
             // Compression failed - fallback to uncompressed
+            CROW_LOG_WARNING << "Compression failed, falling back to uncompressed Arrow stream";
             output.success = true;
             output.rowCount = totalRows;
             output.batchCount = batchCount;
             output.bytesWritten = rawData.size();
             output.data = std::move(rawData);
+            // Record success but note compression wasn't applied
+            requestScope.recordSuccess(totalRows, batchCount, uncompressedSize, uncompressedSize, false);
             return output;
         }
 
         // Use compressed data
+        double compressionRatio = uncompressedSize > 0
+            ? static_cast<double>(compressedData.size()) / uncompressedSize * 100.0
+            : 100.0;
+        CROW_LOG_INFO << "Arrow serialization complete"
+                      << " rows=" << totalRows
+                      << " batches=" << batchCount
+                      << " uncompressed=" << uncompressedSize
+                      << " compressed=" << compressedData.size()
+                      << " ratio=" << static_cast<int>(compressionRatio) << "%"
+                      << " codec=" << codecNormalized;
+
         output.success = true;
         output.rowCount = totalRows;
         output.batchCount = batchCount;
         output.bytesWritten = compressedData.size();
         output.data = std::move(compressedData);
+        requestScope.recordSuccess(totalRows, batchCount, uncompressedSize, output.bytesWritten, true);
         return output;
     }
 
     // No compression - use raw data
+    CROW_LOG_INFO << "Arrow serialization complete"
+                  << " rows=" << totalRows
+                  << " batches=" << batchCount
+                  << " bytes=" << rawData.size()
+                  << " codec=none";
+
     output.success = true;
     output.rowCount = totalRows;
     output.batchCount = batchCount;
     output.bytesWritten = rawData.size();
     output.data = std::move(rawData);
+    requestScope.recordSuccess(totalRows, batchCount, uncompressedSize, output.bytesWritten, false);
     return output;
 }
 

@@ -34,6 +34,7 @@ add_executable(flapi_tests
     test_arrow_serialization.cpp
     test_arrow_compression.cpp
     test_arrow_configuration.cpp
+    test_arrow_metrics.cpp
 )
 
 target_include_directories(flapi_tests PRIVATE 
