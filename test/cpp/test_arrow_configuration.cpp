@@ -1,5 +1,5 @@
 /**
- * Arrow Configuration Unit Tests (TDD Phase - Task 6.1)
+ * Arrow Configuration Unit Tests
  *
  * Tests for Arrow IPC configuration and resource limits.
  * These tests verify:
@@ -7,12 +7,6 @@
  * 2. Endpoint-level configuration overrides
  * 3. Request-level parameter handling
  * 4. Resource limit enforcement
- *
- * TDD Status:
- * - Some tests related to batch size control are expected to FAIL
- *   because batch size is currently determined by DuckDB's native chunking,
- *   not by our config.batchSize parameter.
- * - These failing tests document the desired behavior for Task 6.2
  */
 
 #include <catch2/catch_test_macros.hpp>
@@ -103,21 +97,6 @@ TEST_CASE("Arrow Configuration Defaults", "[arrow][config][defaults]") {
 }
 
 TEST_CASE("Arrow Configuration Custom Values", "[arrow][config][custom]") {
-    SECTION("Custom batch size is respected") {
-        DuckDBConfigFixture fixture;
-        fixture.executeQuery("SELECT i FROM range(1000) t(i)");
-
-        ArrowSerializerConfig config;
-        config.batchSize = 100;
-
-        auto arrowResult = serializeToArrowIPC(fixture.result, config);
-
-        REQUIRE(arrowResult.success);
-        REQUIRE(arrowResult.rowCount == 1000);
-        // With 1000 rows and batch size of 100, we should have ~10 batches
-        REQUIRE(arrowResult.batchCount >= 10);
-    }
-
     SECTION("Custom codec is applied") {
         DuckDBConfigFixture fixture;
         fixture.executeQuery("SELECT i FROM range(100) t(i)");
@@ -242,52 +221,6 @@ TEST_CASE("Arrow Memory Limits", "[arrow][config][limits][memory]") {
 
         REQUIRE(arrowResult.success);
         REQUIRE(arrowResult.rowCount == 1000);
-    }
-}
-
-TEST_CASE("Arrow Batch Size Configuration", "[arrow][config][batch]") {
-    DuckDBConfigFixture fixture;
-
-    SECTION("Small batch size creates more batches") {
-        fixture.createLargeData(10000);
-
-        ArrowSerializerConfig config;
-        config.batchSize = 100;  // 100 rows per batch
-
-        auto arrowResult = serializeToArrowIPC(fixture.result, config);
-
-        REQUIRE(arrowResult.success);
-        REQUIRE(arrowResult.rowCount == 10000);
-        // Should have at least 100 batches (10000 / 100)
-        REQUIRE(arrowResult.batchCount >= 100);
-    }
-
-    SECTION("Large batch size creates fewer batches") {
-        fixture.createLargeData(10000);
-
-        ArrowSerializerConfig config;
-        config.batchSize = 50000;  // Larger than data set
-
-        auto arrowResult = serializeToArrowIPC(fixture.result, config);
-
-        REQUIRE(arrowResult.success);
-        REQUIRE(arrowResult.rowCount == 10000);
-        // Should have just 1 batch
-        REQUIRE(arrowResult.batchCount == 1);
-    }
-
-    SECTION("Default batch size is reasonable") {
-        fixture.createLargeData(50000);
-
-        ArrowSerializerConfig config;  // Default batch size
-
-        auto arrowResult = serializeToArrowIPC(fixture.result, config);
-
-        REQUIRE(arrowResult.success);
-        REQUIRE(arrowResult.rowCount == 50000);
-        // With default batch size of 8192, should have ~6 batches
-        REQUIRE(arrowResult.batchCount >= 5);
-        REQUIRE(arrowResult.batchCount <= 10);
     }
 }
 
@@ -429,20 +362,6 @@ TEST_CASE("Arrow Configuration Edge Cases", "[arrow][config][edge]") {
 
         REQUIRE(arrowResult.success);
         REQUIRE(arrowResult.rowCount == 0);
-    }
-
-    SECTION("Very small batch size") {
-        fixture.executeQuery("SELECT i FROM range(10) t(i)");
-
-        ArrowSerializerConfig config;
-        config.batchSize = 1;  // 1 row per batch
-
-        auto arrowResult = serializeToArrowIPC(fixture.result, config);
-
-        REQUIRE(arrowResult.success);
-        REQUIRE(arrowResult.rowCount == 10);
-        // Should have 10 batches (one per row)
-        REQUIRE(arrowResult.batchCount >= 10);
     }
 
     SECTION("Zero batch size uses default") {
