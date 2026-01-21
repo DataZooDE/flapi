@@ -396,27 +396,76 @@ TEST_CASE("FileProviderFactory::CreateProvider", "[vfs][factory]") {
         REQUIRE(provider->GetProviderName() == "local");
     }
 
-    SECTION("Throws for S3 paths (not yet implemented)") {
-        REQUIRE_THROWS_AS(
-            FileProviderFactory::CreateProvider("s3://bucket/key"),
-            FileOperationError
-        );
-    }
-
-    SECTION("Throws for HTTPS paths (not yet implemented)") {
-        REQUIRE_THROWS_AS(
-            FileProviderFactory::CreateProvider("https://example.com/file"),
-            FileOperationError
-        );
-    }
-
-    SECTION("Error message mentions DuckDBVFSProvider") {
+    SECTION("Returns DuckDBVFSProvider for S3 paths (or throws if DB not initialized)") {
+        // DuckDBVFSProvider requires DatabaseManager to be initialized
+        // If DB is initialized (e.g., by earlier tests), it returns a provider
+        // If not, it throws FileOperationError
         try {
-            FileProviderFactory::CreateProvider("s3://bucket/key");
-            REQUIRE(false); // Should not reach here
+            auto provider = FileProviderFactory::CreateProvider("s3://bucket/key");
+            // If we get here, DatabaseManager was initialized by earlier tests
+            REQUIRE(provider != nullptr);
+            REQUIRE(provider->GetProviderName() == "duckdb-vfs");
+        } catch (const FileOperationError& e) {
+            // Expected when DatabaseManager not initialized
+            std::string msg(e.what());
+            bool mentions_init = msg.find("Database") != std::string::npos ||
+                                msg.find("database") != std::string::npos ||
+                                msg.find("initialized") != std::string::npos;
+            REQUIRE(mentions_init);
+        }
+    }
+
+    SECTION("Returns DuckDBVFSProvider for HTTPS paths (or throws if DB not initialized)") {
+        try {
+            auto provider = FileProviderFactory::CreateProvider("https://example.com/file");
+            REQUIRE(provider != nullptr);
+            REQUIRE(provider->GetProviderName() == "duckdb-vfs");
         } catch (const FileOperationError& e) {
             std::string msg(e.what());
-            REQUIRE(msg.find("DuckDBVFSProvider") != std::string::npos);
+            bool mentions_init = msg.find("Database") != std::string::npos ||
+                                msg.find("database") != std::string::npos ||
+                                msg.find("initialized") != std::string::npos;
+            REQUIRE(mentions_init);
+        }
+    }
+}
+
+// ============================================================================
+// DuckDBVFSProvider Tests
+// ============================================================================
+
+TEST_CASE("DuckDBVFSProvider construction", "[vfs][duckdb]") {
+    SECTION("Requires DatabaseManager (throws or succeeds based on state)") {
+        // If DatabaseManager is initialized (by earlier tests), this succeeds
+        // If not, it throws FileOperationError with a helpful message
+        try {
+            DuckDBVFSProvider provider;
+            // If we get here, DatabaseManager was initialized
+            REQUIRE(provider.GetProviderName() == "duckdb-vfs");
+        } catch (const FileOperationError& e) {
+            std::string msg(e.what());
+            // Should mention what's needed
+            bool helpful = msg.find("DatabaseManager") != std::string::npos ||
+                          msg.find("database") != std::string::npos ||
+                          msg.find("Database") != std::string::npos ||
+                          msg.find("initialized") != std::string::npos;
+            REQUIRE(helpful);
+        }
+    }
+}
+
+TEST_CASE("FileProviderFactory::CreateDuckDBProvider", "[vfs][factory]") {
+    SECTION("Creates DuckDBVFSProvider (or throws if DB not initialized)") {
+        try {
+            auto provider = FileProviderFactory::CreateDuckDBProvider();
+            REQUIRE(provider != nullptr);
+            REQUIRE(provider->GetProviderName() == "duckdb-vfs");
+        } catch (const FileOperationError& e) {
+            std::string msg(e.what());
+            bool mentions_init = msg.find("Database") != std::string::npos ||
+                                msg.find("database") != std::string::npos ||
+                                msg.find("initialized") != std::string::npos;
+            REQUIRE(mentions_init);
         }
     }
 }

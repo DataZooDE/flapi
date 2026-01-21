@@ -5,6 +5,15 @@
 #include <algorithm>
 #include <regex>
 
+// DuckDB includes for VFS access
+#include "duckdb.hpp"
+#include "duckdb/main/capi/capi_internal.hpp"
+#include "duckdb/common/file_system.hpp"
+#include "duckdb/common/file_open_flags.hpp"
+
+// Include DatabaseManager for singleton access
+#include "database_manager.hpp"
+
 namespace flapi {
 
 // ============================================================================
@@ -182,22 +191,171 @@ bool LocalFileProvider::IsRemotePath(const std::string& path) const {
 }
 
 // ============================================================================
+// DuckDBVFSProvider Implementation
+// ============================================================================
+
+DuckDBVFSProvider::DuckDBVFSProvider()
+    : _file_system(nullptr) {
+    try {
+        // Get DatabaseManager singleton
+        auto db_manager = DatabaseManager::getInstance();
+        if (!db_manager) {
+            throw FileOperationError(
+                "DuckDBVFSProvider requires DatabaseManager to be initialized. "
+                "Call DatabaseManager::initializeDBManagerFromConfig() first.");
+        }
+
+        // Get the DuckDB database handle from DatabaseManager
+        // We need to get a connection to access the database instance
+        auto conn = db_manager->getConnection();
+        if (!conn) {
+            throw FileOperationError(
+                "Failed to get DuckDB connection from DatabaseManager.");
+        }
+
+        // Get the database wrapper from the connection
+        // The connection's internal structure gives us access to the database
+        auto* conn_wrapper = reinterpret_cast<::duckdb::Connection*>(conn);
+        if (conn_wrapper && conn_wrapper->context) {
+            _file_system = &::duckdb::FileSystem::GetFileSystem(*conn_wrapper->context);
+        } else {
+            duckdb_disconnect(&conn);
+            throw FileOperationError(
+                "Failed to get FileSystem from DuckDB connection.");
+        }
+
+        // Release the connection since we only needed it to get the FileSystem
+        duckdb_disconnect(&conn);
+    } catch (const FileOperationError&) {
+        // Re-throw our own exceptions
+        throw;
+    } catch (const std::exception& e) {
+        // Wrap other exceptions (like from DatabaseManager) in FileOperationError
+        throw FileOperationError(
+            std::string("DuckDBVFSProvider initialization failed: ") + e.what());
+    }
+}
+
+DuckDBVFSProvider::DuckDBVFSProvider(::duckdb::FileSystem& fs)
+    : _file_system(&fs) {
+}
+
+std::string DuckDBVFSProvider::ReadFile(const std::string& path) {
+    if (!_file_system) {
+        throw FileOperationError("DuckDBVFSProvider not properly initialized.");
+    }
+
+    try {
+        // Open the file for reading
+        auto flags = ::duckdb::FileOpenFlags::FILE_FLAGS_READ;
+        auto handle = _file_system->OpenFile(path, flags);
+
+        if (!handle) {
+            throw FileOperationError("Failed to open file: " + path);
+        }
+
+        // Get file size
+        auto file_size = _file_system->GetFileSize(*handle);
+        if (file_size < 0) {
+            throw FileOperationError("Failed to get file size: " + path);
+        }
+
+        if (file_size == 0) {
+            return "";
+        }
+
+        // Read entire file content
+        std::string content;
+        content.resize(static_cast<size_t>(file_size));
+
+        auto bytes_read = handle->Read(content.data(), static_cast<::duckdb::idx_t>(file_size));
+        if (bytes_read != file_size) {
+            throw FileOperationError(
+                "Failed to read complete file: " + path +
+                " (read " + std::to_string(bytes_read) + " of " +
+                std::to_string(file_size) + " bytes)");
+        }
+
+        return content;
+    } catch (const ::duckdb::Exception& e) {
+        throw FileOperationError("DuckDB error reading file '" + path + "': " + e.what());
+    } catch (const std::exception& e) {
+        throw FileOperationError("Error reading file '" + path + "': " + e.what());
+    }
+}
+
+bool DuckDBVFSProvider::FileExists(const std::string& path) {
+    if (!_file_system) {
+        return false;
+    }
+
+    try {
+        return _file_system->FileExists(path);
+    } catch (const ::duckdb::Exception&) {
+        // DuckDB may throw on network errors - treat as "file doesn't exist"
+        return false;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+std::vector<std::string> DuckDBVFSProvider::ListFiles(const std::string& directory,
+                                                       const std::string& pattern) {
+    if (!_file_system) {
+        throw FileOperationError("DuckDBVFSProvider not properly initialized.");
+    }
+
+    std::vector<std::string> result;
+
+    try {
+        // Build glob pattern
+        std::string glob_path = directory;
+        if (!glob_path.empty() && glob_path.back() != '/') {
+            glob_path += '/';
+        }
+        glob_path += pattern;
+
+        // Use DuckDB's Glob function
+        auto files = _file_system->Glob(glob_path);
+
+        for (const auto& file_info : files) {
+            result.push_back(file_info.path);
+        }
+
+        // Sort for consistent ordering
+        std::sort(result.begin(), result.end());
+
+        return result;
+    } catch (const ::duckdb::Exception& e) {
+        throw FileOperationError(
+            "DuckDB error listing files in '" + directory + "': " + e.what());
+    } catch (const std::exception& e) {
+        throw FileOperationError(
+            "Error listing files in '" + directory + "': " + e.what());
+    }
+}
+
+bool DuckDBVFSProvider::IsRemotePath(const std::string& path) const {
+    return PathSchemeUtils::IsRemotePath(path);
+}
+
+// ============================================================================
 // FileProviderFactory Implementation
 // ============================================================================
 
 std::shared_ptr<IFileProvider> FileProviderFactory::CreateProvider(const std::string& path) {
     if (PathSchemeUtils::IsRemotePath(path)) {
-        // Future: Return DuckDBVFSProvider for remote paths
-        // For now, throw an error since remote paths aren't supported yet
-        throw FileOperationError(
-            "Remote paths are not yet supported: " + path +
-            ". DuckDBVFSProvider will be implemented in a future task.");
+        return CreateDuckDBProvider();
     }
     return CreateLocalProvider();
 }
 
 std::shared_ptr<IFileProvider> FileProviderFactory::CreateLocalProvider() {
     return std::make_shared<LocalFileProvider>();
+}
+
+std::shared_ptr<IFileProvider> FileProviderFactory::CreateDuckDBProvider() {
+    return std::make_shared<DuckDBVFSProvider>();
 }
 
 } // namespace flapi

@@ -155,6 +155,52 @@ public:
     std::string GetProviderName() const override { return "local"; }
 };
 
+} // namespace flapi
+
+// Forward declarations for DuckDB types (in global duckdb namespace)
+namespace duckdb {
+class FileSystem;
+class DatabaseInstance;
+}
+
+namespace flapi {
+
+/**
+ * File provider implementation using DuckDB's virtual file system.
+ * Supports remote storage via httpfs extension (S3, GCS, Azure, HTTP/HTTPS).
+ *
+ * This provider requires that:
+ * 1. DatabaseManager is initialized
+ * 2. httpfs extension is loaded (for HTTP/HTTPS support)
+ * 3. Appropriate credentials are configured for cloud storage (S3, GCS, Azure)
+ */
+class DuckDBVFSProvider : public IFileProvider {
+public:
+    /**
+     * Construct a DuckDBVFSProvider using the global DatabaseManager instance.
+     * Throws FileOperationError if DatabaseManager is not initialized.
+     */
+    DuckDBVFSProvider();
+
+    /**
+     * Construct a DuckDBVFSProvider with an explicit FileSystem reference.
+     * Useful for testing or when FileSystem is obtained from a different source.
+     */
+    explicit DuckDBVFSProvider(duckdb::FileSystem& fs);
+
+    ~DuckDBVFSProvider() override = default;
+
+    std::string ReadFile(const std::string& path) override;
+    bool FileExists(const std::string& path) override;
+    std::vector<std::string> ListFiles(const std::string& directory,
+                                        const std::string& pattern = "*") override;
+    bool IsRemotePath(const std::string& path) const override;
+    std::string GetProviderName() const override { return "duckdb-vfs"; }
+
+private:
+    duckdb::FileSystem* _file_system;
+};
+
 /**
  * Factory for creating file providers based on path scheme.
  */
@@ -162,11 +208,12 @@ class FileProviderFactory {
 public:
     /**
      * Create an appropriate file provider for the given path.
-     * Currently returns LocalFileProvider for all local paths.
-     * Future: Will return DuckDBVFSProvider for remote paths.
+     * Returns LocalFileProvider for local paths (no scheme or file://).
+     * Returns DuckDBVFSProvider for remote paths (s3://, gs://, az://, http://, https://).
      *
      * @param path Path to create provider for (used to detect scheme)
      * @return Shared pointer to appropriate file provider
+     * @throws FileOperationError if remote path requested but DatabaseManager not initialized
      */
     static std::shared_ptr<IFileProvider> CreateProvider(const std::string& path);
 
@@ -174,6 +221,14 @@ public:
      * Create a local file provider.
      */
     static std::shared_ptr<IFileProvider> CreateLocalProvider();
+
+    /**
+     * Create a DuckDB VFS provider for remote file access.
+     * Requires DatabaseManager to be initialized.
+     *
+     * @throws FileOperationError if DatabaseManager is not initialized
+     */
+    static std::shared_ptr<IFileProvider> CreateDuckDBProvider();
 };
 
 } // namespace flapi
