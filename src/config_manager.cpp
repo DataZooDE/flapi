@@ -1035,6 +1035,7 @@ int ConfigManager::getHttpPort() const { return http_port; }
 void ConfigManager::setHttpPort(int port) { http_port = port; }
 std::string ConfigManager::getTemplatePath() const { return template_config.path; }
 std::filesystem::path ConfigManager::getFullTemplatePath() const { return std::filesystem::path(base_path) / template_config.path; }
+std::shared_ptr<IFileProvider> ConfigManager::getFileProvider() const { return config_loader->getFileProvider(); }
 std::string ConfigManager::getCacheSchema() const { return cache_schema; }
 const std::unordered_map<std::string, ConnectionConfig>& ConfigManager::getConnections() const { return connections; }
 const RateLimitConfig& ConfigManager::getRateLimitConfig() const { return rate_limit_config; }

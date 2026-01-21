@@ -1,5 +1,5 @@
 #include "sql_template_processor.hpp"
-#include <fstream>
+#include "vfs_adapter.hpp"
 #include <stdexcept>
 #include <filesystem>
 
@@ -42,20 +42,37 @@ crow::mustache::template_t SQLTemplateProcessor::compileTemplate(const std::stri
 }
 
 std::string SQLTemplateProcessor::loadTemplateContent(const std::string& templatePath) {
-    std::ifstream templateFile(templatePath);
-    if (!templateFile) {
+    auto file_provider = config_manager->getFileProvider();
+    if (!file_provider->FileExists(templatePath)) {
         throw std::runtime_error("Template file not found: " + templatePath);
     }
-    return std::string((std::istreambuf_iterator<char>(templateFile)), std::istreambuf_iterator<char>());
+    return file_provider->ReadFile(templatePath);
 }
 
 std::string SQLTemplateProcessor::getFullTemplatePath(const std::string& templateSource) const {
-    // If templateSource is an absolute path, return it directly
+    // If templateSource is a remote path (s3://, gs://, https://, etc.), return it directly
+    if (PathSchemeUtils::IsRemotePath(templateSource)) {
+        return templateSource;
+    }
+
+    // If templateSource is an absolute local path, return it directly
     if (std::filesystem::path(templateSource).is_absolute()) {
         return templateSource;
     }
-    std::filesystem::path basePath = config_manager->getTemplatePath();
-    std::filesystem::path fullPath = basePath / templateSource;
+
+    // Get base template path - could be local or remote
+    std::string basePath = config_manager->getTemplatePath();
+
+    // If base path is remote, concatenate strings (can't use std::filesystem)
+    if (PathSchemeUtils::IsRemotePath(basePath)) {
+        if (!basePath.empty() && basePath.back() != '/') {
+            basePath += '/';
+        }
+        return basePath + templateSource;
+    }
+
+    // Local path resolution
+    std::filesystem::path fullPath = std::filesystem::path(basePath) / templateSource;
     return fullPath.string();
 }
 

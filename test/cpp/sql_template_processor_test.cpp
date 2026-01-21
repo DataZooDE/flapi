@@ -371,3 +371,147 @@ TEST_CASE("SQLTemplateProcessor: Complex template with multiple features", "[sql
         unsetenv("TEST_ENV_REGION");
     }
 }
+
+// ============================================================================
+// VFS Integration Tests for SQLTemplateProcessor
+// ============================================================================
+
+#include "vfs_adapter.hpp"
+
+// Extended MockConfigManager that supports remote template paths
+class VFSMockConfigManager : public ConfigManager {
+public:
+    VFSMockConfigManager() : ConfigManager(std::filesystem::path("path/to/mock_config.yaml")) {}
+
+    void setTemplatePath(const std::string& path) {
+        template_path = path;
+    }
+
+    std::string getTemplatePath() const override {
+        return template_path;
+    }
+
+    void addConnection(const std::string& name, const ConnectionConfig& config) {
+        connections[name] = config;
+    }
+
+private:
+    std::string template_path;
+};
+
+TEST_CASE("SQLTemplateProcessor: Path resolution with remote templates", "[sql_template_processor][vfs]") {
+    auto config_manager = std::make_shared<VFSMockConfigManager>();
+    SQLTemplateProcessor processor(config_manager);
+
+    SECTION("Remote S3 base path with relative template") {
+        config_manager->setTemplatePath("s3://bucket/templates/");
+
+        EndpointConfig endpoint;
+        endpoint.templateSource = "queries/customers.sql";
+        endpoint.connection = {"default"};
+
+        // Test path resolution by calling getFullTemplatePath indirectly
+        // via loadTemplate which will throw for non-existent remote file
+        // but the path in the error message should be correct
+        std::map<std::string, std::string> params;
+
+        try {
+            processor.loadAndProcessTemplate(endpoint, params);
+            FAIL("Expected exception for non-existent remote template");
+        } catch (const std::runtime_error& e) {
+            std::string error_msg = e.what();
+            // Verify the path resolution happened correctly
+            REQUIRE(error_msg.find("s3://bucket/templates/queries/customers.sql") != std::string::npos);
+        }
+    }
+
+    SECTION("Remote GCS base path with relative template") {
+        config_manager->setTemplatePath("gs://bucket/templates");
+
+        EndpointConfig endpoint;
+        endpoint.templateSource = "analytics.sql";
+        endpoint.connection = {"default"};
+
+        std::map<std::string, std::string> params;
+
+        try {
+            processor.loadAndProcessTemplate(endpoint, params);
+            FAIL("Expected exception for non-existent remote template");
+        } catch (const std::runtime_error& e) {
+            std::string error_msg = e.what();
+            // Verify slash is added between base and template
+            REQUIRE(error_msg.find("gs://bucket/templates/analytics.sql") != std::string::npos);
+        }
+    }
+
+    SECTION("Remote HTTPS base path with relative template") {
+        config_manager->setTemplatePath("https://example.com/api/templates/");
+
+        EndpointConfig endpoint;
+        endpoint.templateSource = "endpoint.sql";
+        endpoint.connection = {"default"};
+
+        std::map<std::string, std::string> params;
+
+        try {
+            processor.loadAndProcessTemplate(endpoint, params);
+            FAIL("Expected exception for non-existent remote template");
+        } catch (const std::runtime_error& e) {
+            std::string error_msg = e.what();
+            REQUIRE(error_msg.find("https://example.com/api/templates/endpoint.sql") != std::string::npos);
+        }
+    }
+
+    SECTION("Absolute remote template source is used directly") {
+        config_manager->setTemplatePath("/local/templates/");
+
+        EndpointConfig endpoint;
+        endpoint.templateSource = "s3://other-bucket/special.sql";
+        endpoint.connection = {"default"};
+
+        std::map<std::string, std::string> params;
+
+        try {
+            processor.loadAndProcessTemplate(endpoint, params);
+            FAIL("Expected exception for non-existent remote template");
+        } catch (const std::runtime_error& e) {
+            std::string error_msg = e.what();
+            // Remote template source should be used as-is, not combined with local base
+            REQUIRE(error_msg.find("s3://other-bucket/special.sql") != std::string::npos);
+        }
+    }
+
+    SECTION("Local absolute path is preserved") {
+        config_manager->setTemplatePath("s3://bucket/templates/");
+
+        EndpointConfig endpoint;
+        endpoint.templateSource = "/absolute/local/template.sql";
+        endpoint.connection = {"default"};
+
+        std::map<std::string, std::string> params;
+
+        try {
+            processor.loadAndProcessTemplate(endpoint, params);
+            FAIL("Expected exception for non-existent template");
+        } catch (const std::runtime_error& e) {
+            std::string error_msg = e.what();
+            // Absolute local path should be used as-is
+            REQUIRE(error_msg.find("/absolute/local/template.sql") != std::string::npos);
+        }
+    }
+}
+
+TEST_CASE("SQLTemplateProcessor: PathSchemeUtils integration", "[sql_template_processor][vfs]") {
+    SECTION("Verify remote path detection used by SQLTemplateProcessor") {
+        // These tests verify that PathSchemeUtils is correctly used
+        REQUIRE(PathSchemeUtils::IsRemotePath("s3://bucket/file.sql"));
+        REQUIRE(PathSchemeUtils::IsRemotePath("gs://bucket/file.sql"));
+        REQUIRE(PathSchemeUtils::IsRemotePath("https://example.com/file.sql"));
+        REQUIRE(PathSchemeUtils::IsRemotePath("http://example.com/file.sql"));
+        REQUIRE(PathSchemeUtils::IsRemotePath("az://container/file.sql"));
+
+        REQUIRE_FALSE(PathSchemeUtils::IsRemotePath("/local/path/file.sql"));
+        REQUIRE_FALSE(PathSchemeUtils::IsRemotePath("relative/path/file.sql"));
+        REQUIRE_FALSE(PathSchemeUtils::IsRemotePath("file:///local/file.sql"));
+    }
+}

@@ -448,6 +448,7 @@ class ConfigLoader;
 class EndpointRepository;
 class ConfigValidator;
 class ConfigSerializer;
+class IFileProvider;
 
 class ConfigManager {
     // Allow EndpointConfigParser to access protected parsing methods
@@ -493,6 +494,9 @@ public:
     std::string getDuckDBPath() const;
     ExtendedYamlParser& getYamlParser() { return yaml_parser; }
     std::filesystem::path getFullTemplatePath() const;
+
+    // Get the file provider for VFS operations (local or remote file access)
+    std::shared_ptr<IFileProvider> getFileProvider() const;
 
     const GlobalHeartbeatConfig& getGlobalHeartbeatConfig() const { return global_heartbeat_config; }
     const DuckLakeConfig& getDuckLakeConfig() const { return ducklake_config; }
