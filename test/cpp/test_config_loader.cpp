@@ -120,7 +120,8 @@ TEST_CASE("ConfigLoader path resolution", "[config][loader]") {
         std::ofstream(test_file) << "test";
 
         std::filesystem::path resolved = loader.resolvePath("test.yaml");
-        REQUIRE(resolved == test_file);
+        // Use canonical to handle macOS /var -> /private/var symlinks
+        REQUIRE(resolved == std::filesystem::canonical(test_file));
 
         std::filesystem::remove(test_file);
     }
@@ -136,7 +137,8 @@ TEST_CASE("ConfigLoader path resolution", "[config][loader]") {
         std::ofstream(test_file) << "test";
 
         std::filesystem::path resolved = loader.resolvePath("subdir/test.yaml");
-        REQUIRE(resolved == test_file);
+        // Use canonical to handle macOS /var -> /private/var symlinks
+        REQUIRE(resolved == std::filesystem::canonical(test_file));
 
         std::filesystem::remove(test_file);
         std::filesystem::remove(test_dir);
@@ -158,7 +160,8 @@ TEST_CASE("ConfigLoader path resolution", "[config][loader]") {
         std::ofstream(test_file) << "test";
 
         std::filesystem::path resolved = loader.resolvePath("./test.yaml");
-        REQUIRE(resolved == test_file);
+        // Use canonical to handle macOS /var -> /private/var symlinks
+        REQUIRE(resolved == std::filesystem::canonical(test_file));
 
         std::filesystem::remove(test_file);
     }
