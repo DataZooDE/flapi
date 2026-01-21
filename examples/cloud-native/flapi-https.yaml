@@ -1,0 +1,35 @@
+# flAPI Cloud-Native Configuration: HTTPS
+#
+# This example shows how to load templates from HTTPS URLs.
+# No authentication required for public URLs.
+#
+# Usage:
+#   flapi --config examples/cloud-native/flapi-https.yaml
+#
+# Or load config directly from HTTPS:
+#   flapi --config https://raw.githubusercontent.com/myorg/configs/main/flapi.yaml
+
+project-name: HTTPS Templates API
+project-description: API with templates loaded from HTTPS URLs
+
+# Templates loaded from HTTPS
+# Example uses GitHub raw URLs - replace with your own
+template:
+  path: https://raw.githubusercontent.com/DataZooDE/flapi/main/examples/sqls/
+  environment-whitelist:
+    - '^FLAPI_.*'
+
+# Local data connection
+connections:
+  local-parquet:
+    properties:
+      path: ./data/customers.parquet
+
+# DuckDB settings
+duckdb:
+  db_path: ':memory:'
+  access_mode: READ_ONLY
+
+# Server settings
+http-port: 8080
+server-name: localhost

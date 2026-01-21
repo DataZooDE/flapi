@@ -1,0 +1,51 @@
+# flAPI Cloud-Native Configuration: Amazon S3
+#
+# This example shows how to load configuration and templates from S3.
+#
+# Prerequisites:
+#   export AWS_ACCESS_KEY_ID=your-access-key
+#   export AWS_SECRET_ACCESS_KEY=your-secret-key
+#   export AWS_REGION=us-east-1
+#
+# Usage:
+#   flapi --config s3://my-bucket/configs/flapi.yaml
+#
+# Or run this local config that references S3 templates:
+#   flapi --config examples/cloud-native/flapi-s3.yaml
+
+project-name: S3 Cloud API
+project-description: API with templates loaded from Amazon S3
+
+# Templates loaded from S3
+# Note: Change this to your actual S3 bucket
+template:
+  path: s3://flapi-configs/templates/
+  environment-whitelist:
+    - '^AWS_.*'
+    - '^FLAPI_.*'
+
+# Connection that also uses S3 for data
+connections:
+  s3-parquet:
+    init: |
+      INSTALL httpfs;
+      LOAD httpfs;
+      SET s3_region='${AWS_REGION}';
+    properties:
+      # Data files in S3
+      bucket: flapi-data
+      path: s3://flapi-data/customers/
+
+  # Local data for hybrid setup
+  local-data:
+    properties:
+      path: ./data/customers.parquet
+
+# DuckDB settings for serverless (read-only, in-memory)
+duckdb:
+  db_path: ':memory:'
+  access_mode: READ_ONLY
+
+# Server settings
+http-port: 8080
+server-name: localhost

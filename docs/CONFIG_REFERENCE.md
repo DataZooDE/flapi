@@ -25,6 +25,7 @@ This document provides a complete reference for all configuration options in flA
    - [2.8 Rate Limiting (Global)](#28-rate-limiting-global)
    - [2.9 HTTPS Configuration](#29-https-configuration)
    - [2.10 Heartbeat Configuration](#210-heartbeat-configuration)
+   - [2.11 Storage Configuration (VFS)](#211-storage-configuration-vfs)
 3. [Endpoint Configuration](#3-endpoint-configuration)
    - [3.1 REST Endpoints](#31-rest-endpoints)
    - [3.2 MCP Tools](#32-mcp-tools)
@@ -441,6 +442,152 @@ heartbeat:
 ```
 
 > **Implementation:** `src/heartbeat_worker.cpp` | **Tests:** *None - see [TEST_TODO.md](./TEST_TODO.md)*
+
+### 2.11 Storage Configuration (VFS)
+
+flAPI supports loading configuration files and SQL templates from remote storage (S3, HTTPS, GCS, Azure) via DuckDB's Virtual File System (VFS) integration.
+
+#### Remote Configuration Loading
+
+Load the main configuration file from a remote URL:
+
+```bash
+# Load config from HTTPS
+flapi --config https://example.com/configs/flapi.yaml
+
+# Load config from S3 (requires AWS credentials)
+flapi --config s3://my-bucket/configs/flapi.yaml
+
+# Load config from GCS
+flapi --config gs://my-bucket/configs/flapi.yaml
+```
+
+#### Remote Template Paths
+
+SQL templates can be loaded from remote URLs by specifying a full URI in `template-source`:
+
+```yaml
+# Endpoint configuration with remote template
+url-path: /customers
+method: GET
+template-source: https://example.com/templates/customers.sql
+connection:
+  - local-data
+```
+
+Or configure the template base path as a remote URL:
+
+```yaml
+# flapi.yaml - templates from HTTPS
+template:
+  path: https://example.com/templates/
+```
+
+#### Supported URI Schemes
+
+| Scheme | Description | Credential Source |
+|--------|-------------|-------------------|
+| `https://` | HTTPS URLs | None required |
+| `http://` | HTTP URLs (not recommended) | None required |
+| `s3://` | Amazon S3 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` |
+| `s3a://`, `s3n://` | S3-compatible storage | Same as S3 |
+| `gs://` | Google Cloud Storage | `GOOGLE_APPLICATION_CREDENTIALS` |
+| `az://`, `abfs://` | Azure Blob Storage | `AZURE_STORAGE_ACCOUNT`, `AZURE_STORAGE_KEY` |
+| `file://` | Local filesystem | None required |
+
+#### Path Security
+
+flAPI includes security features to prevent path traversal attacks:
+
+- **Path traversal detection**: Blocks `..` sequences in paths
+- **URL-encoded traversal detection**: Detects `%2e%2e` and other encoded traversal attempts
+- **Scheme whitelisting**: Only configured schemes are allowed (default: `file`, `https`)
+
+**Default Allowed Schemes:**
+
+```yaml
+# Built-in defaults (no configuration needed)
+# Allowed: file://, https://
+# Blocked by default: http://, s3://, gs://, az://
+```
+
+To enable additional schemes, configure them in the connection's `init` block:
+
+```yaml
+connections:
+  s3-data:
+    init: |
+      INSTALL httpfs;
+      LOAD httpfs;
+      SET s3_region='us-east-1';
+    properties:
+      bucket: my-bucket
+      prefix: data/
+```
+
+#### Environment Variables for Cloud Storage
+
+**Amazon S3:**
+
+```bash
+export AWS_ACCESS_KEY_ID=your-access-key
+export AWS_SECRET_ACCESS_KEY=your-secret-key
+export AWS_REGION=us-east-1
+# Optional: for assumed roles
+export AWS_SESSION_TOKEN=your-session-token
+```
+
+**Google Cloud Storage:**
+
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+# Or use application default credentials
+gcloud auth application-default login
+```
+
+**Azure Blob Storage:**
+
+```bash
+export AZURE_STORAGE_ACCOUNT=your-storage-account
+export AZURE_STORAGE_KEY=your-storage-key
+# Or use connection string
+export AZURE_STORAGE_CONNECTION_STRING=your-connection-string
+```
+
+#### Example: Full Remote Configuration
+
+```yaml
+# flapi.yaml (can itself be hosted remotely)
+project-name: Cloud-Native API
+project-description: API with remote configuration
+
+template:
+  path: s3://my-bucket/templates/
+
+connections:
+  cloud-data:
+    init: |
+      INSTALL httpfs;
+      LOAD httpfs;
+      SET s3_region='us-east-1';
+    properties:
+      bucket: my-data-bucket
+      path: s3://my-data-bucket/data/
+
+duckdb:
+  access_mode: READ_ONLY
+```
+
+```yaml
+# s3://my-bucket/templates/customers.yaml
+url-path: /customers
+method: GET
+template-source: customers.sql  # Relative to template.path (s3://my-bucket/templates/)
+connection:
+  - cloud-data
+```
+
+> **Implementation:** `src/vfs_adapter.cpp`, `src/config_loader.cpp`, `src/path_validator.cpp` | **Tests:** `test/cpp/test_vfs_adapter.cpp`, `test/cpp/test_path_validator.cpp`, `test/integration/test_vfs_e2e.py`
 
 ---
 

@@ -1,0 +1,51 @@
+# flAPI Cloud-Native Configuration: Azure Blob Storage
+#
+# This example shows how to load configuration and templates from Azure.
+#
+# Prerequisites:
+#   export AZURE_STORAGE_ACCOUNT=mystorageaccount
+#   export AZURE_STORAGE_KEY=your-storage-key
+#
+# Or use connection string:
+#   export AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;..."
+#
+# Usage:
+#   flapi --config az://my-container/configs/flapi.yaml
+#
+# Or run this local config that references Azure templates:
+#   flapi --config examples/cloud-native/flapi-azure.yaml
+
+project-name: Azure Cloud API
+project-description: API with templates loaded from Azure Blob Storage
+
+# Templates loaded from Azure Blob Storage
+# Note: Change this to your actual Azure container
+template:
+  path: az://flapi-configs/templates/
+  environment-whitelist:
+    - '^AZURE_.*'
+    - '^FLAPI_.*'
+
+# Connection that also uses Azure for data
+connections:
+  azure-parquet:
+    init: |
+      INSTALL azure;
+      LOAD azure;
+    properties:
+      container: flapi-data
+      path: az://flapi-data/customers/
+
+  # Local data for hybrid setup
+  local-data:
+    properties:
+      path: ./data/customers.parquet
+
+# DuckDB settings for serverless (read-only, in-memory)
+duckdb:
+  db_path: ':memory:'
+  access_mode: READ_ONLY
+
+# Server settings
+http-port: 8080
+server-name: localhost
