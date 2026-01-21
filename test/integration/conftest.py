@@ -13,24 +13,45 @@ from contextlib import AsyncExitStack
 import socket
 
 def get_flapi_binary():
-    """Get the path to the flapi binary based on build type"""
+    """Get the path to the flapi binary based on build type.
+
+    Handles platform-specific build directories:
+    - macOS: prefers universal binary, then architecture-specific (release-arm64, release-x86_64)
+    - Linux/Windows: uses standard debug/release directories
+    """
+    import platform
+
     current_dir = pathlib.Path(__file__).parent
     build_type = os.getenv("FLAPI_BUILD_TYPE", "release").lower()
-    
-    # Map build types to directory names
-    build_dirs = {
-        "debug": "debug",
-        "release": "release"
-    }
-    
-    build_dir = build_dirs.get(build_type, "release")  # Default to release if unknown
-    binary_path = current_dir.parent.parent / "build" / build_dir / "flapi"
-    
-    if not binary_path.exists():
-        raise FileNotFoundError(f"FLAPI binary not found at {binary_path}. "
-                              f"Make sure to build FLAPI in {build_type} mode first.")
-    
-    return binary_path
+    build_base = current_dir.parent.parent / "build"
+
+    # On macOS, prefer universal binary, then architecture-specific builds
+    if platform.system() == "Darwin":
+        # Check for universal binary first (works on both Intel and Apple Silicon)
+        universal_path = build_base / "universal" / "flapi"
+        if universal_path.exists():
+            return universal_path
+
+        # Check for architecture-specific builds
+        arch = platform.machine()  # 'arm64' or 'x86_64'
+        if build_type == "release":
+            arch_path = build_base / f"release-{arch}" / "flapi"
+            if arch_path.exists():
+                return arch_path
+
+    # Fall back to standard paths (debug, or non-macOS release)
+    standard_path = build_base / build_type / "flapi"
+    if standard_path.exists():
+        return standard_path
+
+    # List available binaries for better error message
+    available = list(build_base.glob("*/flapi"))
+    raise FileNotFoundError(
+        f"FLAPI binary not found. Checked paths:\n"
+        f"  - {standard_path}\n"
+        f"Available binaries: {[str(p) for p in available]}\n"
+        f"Build FLAPI first with 'make {build_type}' or 'make release'"
+    )
 
 def find_free_port():
     """Find a free port on the local machine."""
