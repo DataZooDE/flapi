@@ -35,6 +35,8 @@ add_executable(flapi_tests
     test_arrow_compression.cpp
     test_arrow_configuration.cpp
     test_arrow_metrics.cpp
+    test_vfs_adapter.cpp
+    test_path_validator.cpp
 )
 
 target_include_directories(flapi_tests PRIVATE 

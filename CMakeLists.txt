@@ -248,6 +248,8 @@ add_library(flapi-lib STATIC
     src/config_token_utils.cpp
     src/error.cpp
     src/type_converter.cpp
+    src/vfs_adapter.cpp
+    src/path_validator.cpp
 )
 
 # Ensure web_ui is built before flapi-lib

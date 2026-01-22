@@ -1,8 +1,10 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_all.hpp>
 #include "config_loader.hpp"
+#include "vfs_adapter.hpp"
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <sstream>
 
 using namespace flapi;
@@ -118,7 +120,8 @@ TEST_CASE("ConfigLoader path resolution", "[config][loader]") {
         std::ofstream(test_file) << "test";
 
         std::filesystem::path resolved = loader.resolvePath("test.yaml");
-        REQUIRE(resolved == test_file);
+        // Use canonical to handle macOS /var -> /private/var symlinks
+        REQUIRE(resolved == std::filesystem::canonical(test_file));
 
         std::filesystem::remove(test_file);
     }
@@ -134,7 +137,8 @@ TEST_CASE("ConfigLoader path resolution", "[config][loader]") {
         std::ofstream(test_file) << "test";
 
         std::filesystem::path resolved = loader.resolvePath("subdir/test.yaml");
-        REQUIRE(resolved == test_file);
+        // Use canonical to handle macOS /var -> /private/var symlinks
+        REQUIRE(resolved == std::filesystem::canonical(test_file));
 
         std::filesystem::remove(test_file);
         std::filesystem::remove(test_dir);
@@ -156,7 +160,8 @@ TEST_CASE("ConfigLoader path resolution", "[config][loader]") {
         std::ofstream(test_file) << "test";
 
         std::filesystem::path resolved = loader.resolvePath("./test.yaml");
-        REQUIRE(resolved == test_file);
+        // Use canonical to handle macOS /var -> /private/var symlinks
+        REQUIRE(resolved == std::filesystem::canonical(test_file));
 
         std::filesystem::remove(test_file);
     }
@@ -321,5 +326,220 @@ TEST_CASE("ConfigLoader error messages", "[config][loader]") {
             bool has_yaml = error_msg.find("YAML") != std::string::npos;
             REQUIRE((has_parse || has_yaml));
         }
+    }
+}
+
+// ============================================================================
+// VFS Integration Tests
+// ============================================================================
+
+// Mock file provider for testing
+class MockFileProvider : public IFileProvider {
+public:
+    std::map<std::string, std::string> files;
+    mutable std::vector<std::string> read_calls;
+    mutable std::vector<std::string> exists_calls;
+
+    std::string ReadFile(const std::string& path) override {
+        read_calls.push_back(path);
+        auto it = files.find(path);
+        if (it == files.end()) {
+            throw FileOperationError("File not found: " + path);
+        }
+        return it->second;
+    }
+
+    bool FileExists(const std::string& path) override {
+        exists_calls.push_back(path);
+        return files.find(path) != files.end();
+    }
+
+    std::vector<std::string> ListFiles(const std::string& directory,
+                                        const std::string& pattern) override {
+        std::vector<std::string> result;
+        for (const auto& [path, _] : files) {
+            if (path.find(directory) == 0) {
+                result.push_back(path);
+            }
+        }
+        return result;
+    }
+
+    bool IsRemotePath(const std::string& path) const override {
+        return PathSchemeUtils::IsRemotePath(path);
+    }
+
+    std::string GetProviderName() const override {
+        return "mock-provider";
+    }
+};
+
+TEST_CASE("ConfigLoader with custom IFileProvider", "[config][loader][vfs]") {
+    SECTION("Use custom file provider for file operations") {
+        auto mock_provider = std::make_shared<MockFileProvider>();
+        mock_provider->files["/config/flapi.yaml"] = "project-name: test";
+        mock_provider->files["/config/endpoints/test.yaml"] = "url-path: /test";
+
+        ConfigLoader loader("/config/flapi.yaml", mock_provider);
+
+        REQUIRE(loader.getFileProvider() == mock_provider);
+        REQUIRE(loader.getConfigFilePathString() == "/config/flapi.yaml");
+    }
+
+    SECTION("Load YAML through custom provider") {
+        auto mock_provider = std::make_shared<MockFileProvider>();
+        std::string yaml_content = R"(
+project-name: MockProject
+version: "1.0"
+)";
+        mock_provider->files["/config/flapi.yaml"] = yaml_content;
+
+        ConfigLoader loader("/config/flapi.yaml", mock_provider);
+
+        YAML::Node node = loader.loadYamlFile("/config/flapi.yaml");
+
+        REQUIRE(node["project-name"].as<std::string>() == "MockProject");
+        REQUIRE(node["version"].as<std::string>() == "1.0");
+
+        // Verify provider was called
+        REQUIRE(mock_provider->read_calls.size() == 1);
+        REQUIRE(mock_provider->exists_calls.size() == 1);
+    }
+
+    SECTION("File existence check through custom provider") {
+        auto mock_provider = std::make_shared<MockFileProvider>();
+        mock_provider->files["/config/flapi.yaml"] = "test";
+        mock_provider->files["/config/test.yaml"] = "test";
+
+        ConfigLoader loader("/config/flapi.yaml", mock_provider);
+
+        REQUIRE(loader.fileExists("/config/test.yaml"));
+        REQUIRE_FALSE(loader.fileExists("/config/nonexistent.yaml"));
+    }
+
+    SECTION("readFile method uses custom provider") {
+        auto mock_provider = std::make_shared<MockFileProvider>();
+        mock_provider->files["/config/flapi.yaml"] = "test";
+        mock_provider->files["/config/template.sql"] = "SELECT * FROM users";
+
+        ConfigLoader loader("/config/flapi.yaml", mock_provider);
+
+        std::string content = loader.readFile("/config/template.sql");
+        REQUIRE(content == "SELECT * FROM users");
+    }
+}
+
+TEST_CASE("ConfigLoader remote path detection", "[config][loader][vfs]") {
+    SECTION("isRemoteConfig returns true for S3 paths") {
+        auto mock_provider = std::make_shared<MockFileProvider>();
+        mock_provider->files["s3://bucket/config/flapi.yaml"] = "test";
+
+        ConfigLoader loader("s3://bucket/config/flapi.yaml", mock_provider);
+
+        REQUIRE(loader.isRemoteConfig());
+        REQUIRE(loader.getConfigFilePathString() == "s3://bucket/config/flapi.yaml");
+    }
+
+    SECTION("isRemoteConfig returns true for GCS paths") {
+        auto mock_provider = std::make_shared<MockFileProvider>();
+        mock_provider->files["gs://bucket/config/flapi.yaml"] = "test";
+
+        ConfigLoader loader("gs://bucket/config/flapi.yaml", mock_provider);
+
+        REQUIRE(loader.isRemoteConfig());
+    }
+
+    SECTION("isRemoteConfig returns true for HTTPS paths") {
+        auto mock_provider = std::make_shared<MockFileProvider>();
+        mock_provider->files["https://example.com/config/flapi.yaml"] = "test";
+
+        ConfigLoader loader("https://example.com/config/flapi.yaml", mock_provider);
+
+        REQUIRE(loader.isRemoteConfig());
+    }
+
+    SECTION("isRemoteConfig returns false for local paths") {
+        TempFile config("test");
+        ConfigLoader loader(config.path());
+
+        REQUIRE_FALSE(loader.isRemoteConfig());
+    }
+
+    SECTION("isRemoteConfig returns false for file:// paths") {
+        auto mock_provider = std::make_shared<MockFileProvider>();
+        mock_provider->files["/tmp/flapi.yaml"] = "test";
+
+        ConfigLoader loader("file:///tmp/flapi.yaml", mock_provider);
+
+        REQUIRE_FALSE(loader.isRemoteConfig());
+    }
+}
+
+TEST_CASE("ConfigLoader remote path resolution", "[config][loader][vfs]") {
+    SECTION("Resolve relative path with remote base") {
+        auto mock_provider = std::make_shared<MockFileProvider>();
+        mock_provider->files["s3://bucket/config/flapi.yaml"] = "test";
+        mock_provider->files["s3://bucket/config/endpoints/test.yaml"] = "test";
+
+        ConfigLoader loader("s3://bucket/config/flapi.yaml", mock_provider);
+
+        auto resolved = loader.resolvePath("endpoints/test.yaml");
+        REQUIRE(resolved.string() == "s3://bucket/config/endpoints/test.yaml");
+    }
+
+    SECTION("Absolute remote paths remain unchanged") {
+        auto mock_provider = std::make_shared<MockFileProvider>();
+        mock_provider->files["s3://bucket/config/flapi.yaml"] = "test";
+
+        ConfigLoader loader("s3://bucket/config/flapi.yaml", mock_provider);
+
+        auto resolved = loader.resolvePath("s3://other-bucket/file.yaml");
+        REQUIRE(resolved.string() == "s3://other-bucket/file.yaml");
+    }
+
+    SECTION("Empty path returns base path") {
+        auto mock_provider = std::make_shared<MockFileProvider>();
+        mock_provider->files["s3://bucket/config/flapi.yaml"] = "test";
+
+        ConfigLoader loader("s3://bucket/config/flapi.yaml", mock_provider);
+
+        auto resolved = loader.resolvePath("");
+        REQUIRE(resolved.string() == "s3://bucket/config/");
+    }
+}
+
+TEST_CASE("ConfigLoader backward compatibility", "[config][loader][vfs]") {
+    SECTION("Default constructor creates LocalFileProvider") {
+        TempFile config("test");
+        ConfigLoader loader(config.path());
+
+        auto provider = loader.getFileProvider();
+        REQUIRE(provider != nullptr);
+        REQUIRE(provider->GetProviderName() == "local");
+    }
+
+    SECTION("Local file operations work with default constructor") {
+        std::string yaml_content = R"(
+project-name: LocalProject
+server:
+  port: 8080
+)";
+        TempFile config(yaml_content);
+        ConfigLoader loader(config.path());
+
+        REQUIRE(loader.fileExists(config.path()));
+
+        YAML::Node node = loader.loadYamlFile(config.path());
+        REQUIRE(node["project-name"].as<std::string>() == "LocalProject");
+        REQUIRE(node["server"]["port"].as<int>() == 8080);
+    }
+
+    SECTION("getConfigFilePath returns filesystem path for local configs") {
+        TempFile config("test");
+        ConfigLoader loader(config.path());
+
+        // For local configs, both path methods should work
+        REQUIRE(loader.getConfigFilePath() == config.path());
+        REQUIRE_FALSE(loader.getConfigFilePathString().empty());
     }
 }

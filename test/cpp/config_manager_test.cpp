@@ -195,7 +195,11 @@ cache:
         const auto& endpoint = endpoints[0];
 
         REQUIRE(endpoint.urlPath == "/test");
-        REQUIRE(endpoint.templateSource == "/tmp/test.sql");
+        // Template source is resolved relative to endpoint config file's directory
+        // Note: templateSource is not canonicalized, so we compare without canonical()
+        std::filesystem::path endpoint_dir = std::filesystem::path(endpoint_file).parent_path();
+        std::filesystem::path expected_template = endpoint_dir / "test.sql";
+        REQUIRE(endpoint.templateSource == expected_template.string());
         REQUIRE(endpoint.connection == std::vector<std::string>{"default"});
 
         REQUIRE(endpoint.request_fields.size() == 1);

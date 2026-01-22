@@ -267,7 +267,12 @@ integration-test-examples: release integration-test-setup
 integration-test-ci: release integration-test-setup
 	@echo "Running integration tests with server management..."
 	@echo "Starting flapi server in background..."
-	@$(RELEASE_DIR)/flapi --config examples/flapi.yaml --log-level info & \
+	@if [ "$(shell uname)" = "Darwin" ]; then \
+		FLAPI_BIN=$(BUILD_DIR)/universal/flapi; \
+	else \
+		FLAPI_BIN=$(RELEASE_DIR)/flapi; \
+	fi; \
+	$$FLAPI_BIN --config examples/flapi.yaml --log-level info & \
 	SERVER_PID=$$!; \
 	echo "Server started with PID: $$SERVER_PID"; \
 	sleep 5; \
