@@ -61,11 +61,11 @@ TEST_CASE("PathValidator: URL-encoded traversal detection", "[security][path_val
     }
 
     SECTION("Double-encoded traversal") {
-        // %252e%252e would decode to %2e%2e, then to ..
-        // First decode: %25 = %
+        // %252e%252e would decode to %2e%2e, then to .. after iterative decoding
+        // The UrlDecode function now iteratively decodes to catch multi-encoded attacks
         std::string decoded = PathValidator::UrlDecode("%252e%252e");
-        REQUIRE(decoded == "%2e%2e");
-        // Note: We only decode once, so this is still caught on second validation
+        REQUIRE(decoded == "..");  // Fully decoded through iterative passes
+        // This is caught by ContainsTraversal after full decode
     }
 }
 
@@ -385,9 +385,16 @@ TEST_CASE("PathValidator: OWASP path traversal patterns", "[security][path_valid
 
     SECTION("Double URL-encoding") {
         // %252e = %2e after first decode, which is . after second decode
-        // We only decode once, but the first decode should reveal suspicious patterns
-        std::string first_decode = PathValidator::UrlDecode("%252e%252e");
-        REQUIRE(first_decode == "%2e%2e");
+        // The UrlDecode function now iteratively decodes to fully reveal traversal attempts
+        std::string fully_decoded = PathValidator::UrlDecode("%252e%252e");
+        REQUIRE(fully_decoded == "..");  // Iteratively decoded to ".."
+
+        // Validate that double-encoded traversal is now caught
+        PathValidator::Config config;
+        config.allowed_prefixes = {"/safe"};
+        PathValidator validator(config);
+        auto result = validator.ValidatePath("%252e%252e%252f..%252fetc/passwd", "/safe");
+        REQUIRE_FALSE(result.valid);  // Now caught due to iterative decoding
     }
 
     SECTION("Null byte injection (legacy)") {

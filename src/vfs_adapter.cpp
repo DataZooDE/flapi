@@ -4,6 +4,9 @@
 #include <sstream>
 #include <algorithm>
 #include <regex>
+#include <cstring>
+#include <cctype>
+#include <crow/logging.h>
 
 // DuckDB includes for VFS access
 #include "duckdb.hpp"
@@ -20,48 +23,66 @@ namespace flapi {
 // PathSchemeUtils Implementation
 // ============================================================================
 
+namespace {
+    // Helper to check if path starts with scheme (case-insensitive)
+    bool StartsWithScheme(const std::string& path, const char* scheme) {
+        size_t scheme_len = std::strlen(scheme);
+        if (path.length() < scheme_len) {
+            return false;
+        }
+        for (size_t i = 0; i < scheme_len; ++i) {
+            if (std::tolower(static_cast<unsigned char>(path[i])) !=
+                std::tolower(static_cast<unsigned char>(scheme[i]))) {
+                return false;
+            }
+        }
+        return true;
+    }
+}
+
 bool PathSchemeUtils::IsRemotePath(const std::string& path) {
     return IsS3Path(path) || IsGCSPath(path) || IsAzurePath(path) || IsHttpPath(path);
 }
 
 bool PathSchemeUtils::IsS3Path(const std::string& path) {
-    return path.rfind(SCHEME_S3, 0) == 0;
+    return StartsWithScheme(path, SCHEME_S3);
 }
 
 bool PathSchemeUtils::IsGCSPath(const std::string& path) {
-    return path.rfind(SCHEME_GCS, 0) == 0;
+    return StartsWithScheme(path, SCHEME_GCS);
 }
 
 bool PathSchemeUtils::IsAzurePath(const std::string& path) {
-    return path.rfind(SCHEME_AZURE, 0) == 0 || path.rfind(SCHEME_AZURE_BLOB, 0) == 0;
+    return StartsWithScheme(path, SCHEME_AZURE) || StartsWithScheme(path, SCHEME_AZURE_BLOB);
 }
 
 bool PathSchemeUtils::IsHttpPath(const std::string& path) {
-    return path.rfind(SCHEME_HTTP, 0) == 0 || path.rfind(SCHEME_HTTPS, 0) == 0;
+    return StartsWithScheme(path, SCHEME_HTTP) || StartsWithScheme(path, SCHEME_HTTPS);
 }
 
 bool PathSchemeUtils::IsFilePath(const std::string& path) {
-    return path.rfind(SCHEME_FILE, 0) == 0;
+    return StartsWithScheme(path, SCHEME_FILE);
 }
 
 std::string PathSchemeUtils::GetScheme(const std::string& path) {
+    // Check in order of specificity (longer schemes first for overlapping prefixes)
+    if (StartsWithScheme(path, SCHEME_HTTPS)) {
+        return SCHEME_HTTPS;
+    }
+    if (StartsWithScheme(path, SCHEME_HTTP)) {
+        return SCHEME_HTTP;
+    }
     if (IsS3Path(path)) {
         return SCHEME_S3;
     }
     if (IsGCSPath(path)) {
         return SCHEME_GCS;
     }
-    if (path.rfind(SCHEME_AZURE_BLOB, 0) == 0) {
+    if (StartsWithScheme(path, SCHEME_AZURE_BLOB)) {
         return SCHEME_AZURE_BLOB;
     }
-    if (path.rfind(SCHEME_AZURE, 0) == 0) {
+    if (StartsWithScheme(path, SCHEME_AZURE)) {
         return SCHEME_AZURE;
-    }
-    if (path.rfind(SCHEME_HTTPS, 0) == 0) {
-        return SCHEME_HTTPS;
-    }
-    if (path.rfind(SCHEME_HTTP, 0) == 0) {
-        return SCHEME_HTTP;
     }
     if (IsFilePath(path)) {
         return SCHEME_FILE;
@@ -196,6 +217,16 @@ bool LocalFileProvider::IsRemotePath(const std::string& path) const {
 
 DuckDBVFSProvider::DuckDBVFSProvider()
     : _file_system(nullptr) {
+    // TODO(flapi-b33): This implementation uses DuckDB internal APIs (capi_internal.hpp)
+    // which are ABI-unstable and may break on DuckDB upgrades. Future refactoring should:
+    // 1. Expose FileSystem access through DatabaseManager via a stable public API, OR
+    // 2. Use stable DuckDB C API if/when it provides FileSystem access
+    //
+    // TODO(flapi-p9h): The _file_system pointer is obtained once and cached. If the
+    // DatabaseManager is reset or the underlying DB instance changes, this pointer
+    // can become dangling. For now, we assume DatabaseManager has stable lifetime.
+    // Future improvement: re-fetch FileSystem per operation or tie to DatabaseManager lifetime.
+
     try {
         // Get DatabaseManager singleton
         auto db_manager = DatabaseManager::getInstance();
@@ -215,6 +246,7 @@ DuckDBVFSProvider::DuckDBVFSProvider()
 
         // Get the database wrapper from the connection
         // The connection's internal structure gives us access to the database
+        // WARNING: This uses internal DuckDB APIs that are not ABI-stable
         auto* conn_wrapper = reinterpret_cast<::duckdb::Connection*>(conn);
         if (conn_wrapper && conn_wrapper->context) {
             _file_system = &::duckdb::FileSystem::GetFileSystem(*conn_wrapper->context);
@@ -245,6 +277,10 @@ std::string DuckDBVFSProvider::ReadFile(const std::string& path) {
         throw FileOperationError("DuckDBVFSProvider not properly initialized.");
     }
 
+    // Maximum file size to read (10 MB). Config/SQL files should be small.
+    // This prevents memory spikes from accidentally loading large files.
+    constexpr int64_t MAX_FILE_SIZE = 10LL * 1024LL * 1024LL;  // 10 MB
+
     try {
         // Open the file for reading
         auto flags = ::duckdb::FileOpenFlags::FILE_FLAGS_READ;
@@ -262,6 +298,13 @@ std::string DuckDBVFSProvider::ReadFile(const std::string& path) {
 
         if (file_size == 0) {
             return "";
+        }
+
+        // Check file size limit
+        if (file_size > MAX_FILE_SIZE) {
+            throw FileOperationError(
+                "File too large: " + path + " (" + std::to_string(file_size) +
+                " bytes exceeds " + std::to_string(MAX_FILE_SIZE) + " byte limit)");
         }
 
         // Read entire file content
@@ -286,15 +329,21 @@ std::string DuckDBVFSProvider::ReadFile(const std::string& path) {
 
 bool DuckDBVFSProvider::FileExists(const std::string& path) {
     if (!_file_system) {
+        CROW_LOG_WARNING << "DuckDBVFSProvider::FileExists called without initialized file system";
         return false;
     }
 
     try {
         return _file_system->FileExists(path);
-    } catch (const ::duckdb::Exception&) {
-        // DuckDB may throw on network errors - treat as "file doesn't exist"
+    } catch (const ::duckdb::Exception& e) {
+        // DuckDB may throw on network errors - log and treat as "file doesn't exist"
+        // This could indicate credential issues or network problems
+        CROW_LOG_WARNING << "DuckDBVFSProvider::FileExists failed for '" << path
+                         << "': " << e.what();
         return false;
-    } catch (const std::exception&) {
+    } catch (const std::exception& e) {
+        CROW_LOG_WARNING << "DuckDBVFSProvider::FileExists failed for '" << path
+                         << "': " << e.what();
         return false;
     }
 }

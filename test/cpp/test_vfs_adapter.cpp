@@ -102,7 +102,8 @@ TEST_CASE("PathSchemeUtils::IsRemotePath", "[vfs][scheme]") {
 TEST_CASE("PathSchemeUtils::IsS3Path", "[vfs][scheme]") {
     REQUIRE(PathSchemeUtils::IsS3Path("s3://bucket/key"));
     REQUIRE(PathSchemeUtils::IsS3Path("s3://"));
-    REQUIRE_FALSE(PathSchemeUtils::IsS3Path("S3://bucket/key")); // Case sensitive
+    REQUIRE(PathSchemeUtils::IsS3Path("S3://bucket/key")); // Case insensitive
+    REQUIRE(PathSchemeUtils::IsS3Path("S3://BUCKET/KEY")); // Mixed case
     REQUIRE_FALSE(PathSchemeUtils::IsS3Path("gs://bucket/key"));
     REQUIRE_FALSE(PathSchemeUtils::IsS3Path("/local/path"));
 }
@@ -110,7 +111,8 @@ TEST_CASE("PathSchemeUtils::IsS3Path", "[vfs][scheme]") {
 TEST_CASE("PathSchemeUtils::IsGCSPath", "[vfs][scheme]") {
     REQUIRE(PathSchemeUtils::IsGCSPath("gs://bucket/key"));
     REQUIRE(PathSchemeUtils::IsGCSPath("gs://"));
-    REQUIRE_FALSE(PathSchemeUtils::IsGCSPath("GS://bucket/key")); // Case sensitive
+    REQUIRE(PathSchemeUtils::IsGCSPath("GS://bucket/key")); // Case insensitive
+    REQUIRE(PathSchemeUtils::IsGCSPath("Gs://BUCKET/key")); // Mixed case
     REQUIRE_FALSE(PathSchemeUtils::IsGCSPath("s3://bucket/key"));
     REQUIRE_FALSE(PathSchemeUtils::IsGCSPath("/local/path"));
 }
@@ -118,7 +120,9 @@ TEST_CASE("PathSchemeUtils::IsGCSPath", "[vfs][scheme]") {
 TEST_CASE("PathSchemeUtils::IsAzurePath", "[vfs][scheme]") {
     REQUIRE(PathSchemeUtils::IsAzurePath("az://container/blob"));
     REQUIRE(PathSchemeUtils::IsAzurePath("azure://container/blob"));
-    REQUIRE_FALSE(PathSchemeUtils::IsAzurePath("AZ://container/blob")); // Case sensitive
+    REQUIRE(PathSchemeUtils::IsAzurePath("AZ://container/blob")); // Case insensitive
+    REQUIRE(PathSchemeUtils::IsAzurePath("AZURE://container/blob")); // Case insensitive
+    REQUIRE(PathSchemeUtils::IsAzurePath("Azure://Container/Blob")); // Mixed case
     REQUIRE_FALSE(PathSchemeUtils::IsAzurePath("s3://bucket/key"));
     REQUIRE_FALSE(PathSchemeUtils::IsAzurePath("/local/path"));
 }
@@ -126,7 +130,9 @@ TEST_CASE("PathSchemeUtils::IsAzurePath", "[vfs][scheme]") {
 TEST_CASE("PathSchemeUtils::IsHttpPath", "[vfs][scheme]") {
     REQUIRE(PathSchemeUtils::IsHttpPath("http://example.com/file"));
     REQUIRE(PathSchemeUtils::IsHttpPath("https://example.com/file"));
-    REQUIRE_FALSE(PathSchemeUtils::IsHttpPath("HTTP://example.com")); // Case sensitive
+    REQUIRE(PathSchemeUtils::IsHttpPath("HTTP://example.com")); // Case insensitive
+    REQUIRE(PathSchemeUtils::IsHttpPath("HTTPS://example.com")); // Case insensitive
+    REQUIRE(PathSchemeUtils::IsHttpPath("Http://Example.COM/file")); // Mixed case
     REQUIRE_FALSE(PathSchemeUtils::IsHttpPath("ftp://example.com/file"));
     REQUIRE_FALSE(PathSchemeUtils::IsHttpPath("/local/path"));
 }
@@ -134,7 +140,8 @@ TEST_CASE("PathSchemeUtils::IsHttpPath", "[vfs][scheme]") {
 TEST_CASE("PathSchemeUtils::IsFilePath", "[vfs][scheme]") {
     REQUIRE(PathSchemeUtils::IsFilePath("file:///local/path"));
     REQUIRE(PathSchemeUtils::IsFilePath("file://relative/path"));
-    REQUIRE_FALSE(PathSchemeUtils::IsFilePath("FILE:///local/path")); // Case sensitive
+    REQUIRE(PathSchemeUtils::IsFilePath("FILE:///local/path")); // Case insensitive
+    REQUIRE(PathSchemeUtils::IsFilePath("File:///local/path")); // Mixed case
     REQUIRE_FALSE(PathSchemeUtils::IsFilePath("/local/path"));
     REQUIRE_FALSE(PathSchemeUtils::IsFilePath("s3://bucket/key"));
 }

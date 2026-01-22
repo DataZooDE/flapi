@@ -34,6 +34,12 @@ public:
 
         // Whether to allow relative paths
         bool allow_relative_paths = true;
+
+        // Use filesystem-based canonicalization (resolves symlinks).
+        // When true, uses std::filesystem::canonical/weakly_canonical
+        // to resolve symlinks and verify the real path is within allowed prefixes.
+        // This provides stronger security but requires the path to exist.
+        bool resolve_symlinks = false;
     };
 
     /**
@@ -127,12 +133,21 @@ public:
     static bool ContainsTraversal(const std::string& path);
 
     /**
-     * URL-decode a string (handles %2e%2e for .. etc).
+     * URL-decode a string iteratively (handles %252e%252e for double-encoded .. etc).
+     * Decodes up to 3 times to catch multi-encoded traversal attempts.
      *
      * @param encoded The URL-encoded string
-     * @return Decoded string
+     * @return Fully decoded string
      */
     static std::string UrlDecode(const std::string& encoded);
+
+    /**
+     * URL-decode a string once (single pass).
+     *
+     * @param encoded The URL-encoded string
+     * @return Decoded string (one level)
+     */
+    static std::string UrlDecodeSingle(const std::string& encoded);
 
     /**
      * Extract scheme from a path/URI.

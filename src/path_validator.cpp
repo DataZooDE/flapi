@@ -1,6 +1,7 @@
 #include "path_validator.hpp"
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 #include <sstream>
 
 namespace flapi {
@@ -66,7 +67,25 @@ PathValidator::ValidationResult PathValidator::ValidateLocalPath(
         }
     }
 
-    // Check against allowed prefixes
+    // If resolve_symlinks is enabled, use filesystem-based canonicalization
+    // to resolve symlinks and get the real path. This prevents symlink escape attacks.
+    if (_config.resolve_symlinks) {
+        try {
+            std::filesystem::path fs_path(canonical);
+            // Use weakly_canonical so it works even if path doesn't fully exist
+            // (it resolves what exists and normalizes the rest)
+            std::filesystem::path real_path = std::filesystem::weakly_canonical(fs_path);
+            canonical = real_path.string();
+
+            // Re-normalize separators after filesystem operations
+            canonical = NormalizeSeparators(canonical);
+        } catch (const std::filesystem::filesystem_error& e) {
+            return ValidationResult::Failure(
+                std::string("Failed to resolve path: ") + e.what());
+        }
+    }
+
+    // Check against allowed prefixes (after symlink resolution if enabled)
     if (!IsPathAllowed(canonical)) {
         return ValidationResult::Failure("Path not within allowed directory");
     }
@@ -217,7 +236,7 @@ bool PathValidator::ContainsTraversal(const std::string& path) {
     return false;
 }
 
-std::string PathValidator::UrlDecode(const std::string& encoded) {
+std::string PathValidator::UrlDecodeSingle(const std::string& encoded) {
     std::string result;
     result.reserve(encoded.length());
 
@@ -246,6 +265,25 @@ std::string PathValidator::UrlDecode(const std::string& encoded) {
     }
 
     return result;
+}
+
+std::string PathValidator::UrlDecode(const std::string& encoded) {
+    // Iteratively decode to catch double/triple-encoded traversal attempts
+    // e.g., %252e%252e = %2e%2e = .. (after two decode passes)
+    // Limit iterations to prevent infinite loops on malformed input
+    constexpr int MAX_DECODE_ITERATIONS = 3;
+
+    std::string current = encoded;
+    for (int i = 0; i < MAX_DECODE_ITERATIONS; ++i) {
+        std::string decoded = UrlDecodeSingle(current);
+        if (decoded == current) {
+            // No more decoding needed
+            break;
+        }
+        current = decoded;
+    }
+
+    return current;
 }
 
 std::string PathValidator::ExtractScheme(const std::string& path) {
@@ -279,10 +317,11 @@ bool PathValidator::IsRemotePath(const std::string& path) {
     }
 
     // These schemes are considered "remote" (network-based)
+    // Note: ExtractScheme already lowercases, so we only need lowercase here
     static const std::set<std::string> remote_schemes = {
-        "s3", "gs", "az", "abfs", "abfss",  // Cloud storage
-        "http", "https",                      // HTTP
-        "ftp", "ftps", "sftp"                 // FTP
+        "s3", "gs", "az", "azure", "abfs", "abfss",  // Cloud storage
+        "http", "https",                              // HTTP
+        "ftp", "ftps", "sftp"                         // FTP
     };
 
     return remote_schemes.find(scheme) != remote_schemes.end();
