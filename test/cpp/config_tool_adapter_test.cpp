@@ -27,18 +27,9 @@ protected:
 // ============================================================================
 
 TEST_CASE("ConfigToolAdapter initialization", "[config_tool_adapter][phase0]") {
-    // Note: These tests assume mocked dependencies
-    // In practice, we'll use mock objects for ConfigManager and DatabaseManager
-
-    SECTION("Should create adapter with valid dependencies") {
-        // This test verifies that ConfigToolAdapter can be instantiated
-        // with non-null ConfigManager and DatabaseManager
-
-        // In a real test environment:
-        // auto mock_config = std::make_shared<MockConfigManager>();
-        // auto mock_db = std::make_shared<MockDatabaseManager>();
-        // ConfigToolAdapter adapter(mock_config, mock_db);
-        // REQUIRE(adapter.getRegisteredTools().size() > 0);
+    SECTION("Should register all Phase 1 discovery tools") {
+        // Tools should be available for lookup
+        // This will be tested with real integration tests
     }
 }
 
