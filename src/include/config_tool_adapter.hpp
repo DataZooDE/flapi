@@ -172,6 +172,18 @@ private:
      * @return Error message if path is invalid, empty string if valid
      */
     std::string isValidEndpointPath(const std::string& path);
+
+    /**
+     * Validate authentication token format and structure
+     * @param auth_token The token to validate
+     * @return Error message if token is invalid, empty string if valid
+     *
+     * Supports:
+     * - Bearer tokens: "Bearer <base64-encoded-token>"
+     * - Basic auth: "Basic <base64-encoded-credentials>"
+     * - API tokens: "Token <token-value>"
+     */
+    std::string validateAuthToken(const std::string& auth_token);
 };
 
 }  // namespace flapi

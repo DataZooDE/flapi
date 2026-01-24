@@ -335,8 +335,17 @@ ConfigToolResult ConfigToolAdapter::executeTool(const std::string& tool_name,
     }
 
     // Check authentication if required
-    if (tool_auth_required_.at(tool_name) && auth_token.empty()) {
-        return createErrorResult(-32001, "Authentication required for tool: " + tool_name);
+    if (tool_auth_required_.at(tool_name)) {
+        if (auth_token.empty()) {
+            return createErrorResult(-32001, "Authentication required for tool: " + tool_name);
+        }
+
+        // Validate token format and structure
+        std::string token_error = validateAuthToken(auth_token);
+        if (!token_error.empty()) {
+            CROW_LOG_WARNING << "Tool execution denied - auth validation failed for " << tool_name << ": " << token_error;
+            return createErrorResult(-32001, "Authentication validation failed: " + token_error);
+        }
     }
 
     // Validate arguments
@@ -1350,6 +1359,81 @@ std::string ConfigToolAdapter::isValidEndpointPath(const std::string& path) {
     }
 
     return "";  // Path is valid
+}
+
+std::string ConfigToolAdapter::validateAuthToken(const std::string& auth_token) {
+    // Check for empty token
+    if (auth_token.empty()) {
+        return "Authentication token is required";
+    }
+
+    // Minimum token length check
+    if (auth_token.length() < 8) {
+        return "Authentication token is too short (minimum 8 characters)";
+    }
+
+    // Maximum token length check (prevent DoS via huge tokens)
+    if (auth_token.length() > 4096) {
+        return "Authentication token is too long (maximum 4096 characters)";
+    }
+
+    // Parse token format
+    size_t space_pos = auth_token.find(' ');
+
+    if (space_pos == std::string::npos) {
+        // No space found - could be a raw token, check if it looks like a valid token
+        // Should contain only alphanumeric, dash, underscore, dot, or equals sign (for Base64)
+        for (char c : auth_token) {
+            if (!std::isalnum(c) && c != '-' && c != '_' && c != '.' && c != '=' && c != ':') {
+                return "Authentication token contains invalid characters";
+            }
+        }
+        // Raw token format is valid (API tokens, simple tokens)
+        CROW_LOG_DEBUG << "Token validation: raw token format accepted";
+        return "";
+    }
+
+    // Token has a scheme prefix (Bearer, Basic, Token, etc.)
+    std::string scheme = auth_token.substr(0, space_pos);
+    std::string token_value = auth_token.substr(space_pos + 1);
+
+    // Validate scheme
+    if (scheme != "Bearer" && scheme != "Basic" && scheme != "Token" && scheme != "API-Key") {
+        return "Unsupported authentication scheme: " + scheme +
+               " (supported: Bearer, Basic, Token, API-Key)";
+    }
+
+    // Validate token value is not empty
+    if (token_value.empty()) {
+        return scheme + " token cannot be empty";
+    }
+
+    // Bearer tokens should contain Base64 characters
+    if (scheme == "Bearer" || scheme == "Basic") {
+        for (char c : token_value) {
+            if (!std::isalnum(c) && c != '+' && c != '/' && c != '-' && c != '_' && c != '=') {
+                return scheme + " token contains invalid Base64 characters";
+            }
+        }
+    }
+
+    // Validate token value length (minimum and maximum)
+    if (token_value.length() < 4) {
+        return scheme + " token is too short (minimum 4 characters)";
+    }
+
+    if (token_value.length() > 2048) {
+        return scheme + " token is too long (maximum 2048 characters)";
+    }
+
+    // For Bearer tokens, ensure the Base64 length is valid
+    if (scheme == "Bearer" && token_value.length() % 4 != 0 && token_value.find('=') == std::string::npos) {
+        // Note: Base64 can have padding variations, so we're lenient here
+        CROW_LOG_DEBUG << "Bearer token Base64 length may need padding validation";
+    }
+
+    CROW_LOG_INFO << "Token validation successful: scheme=" << scheme << ", token_length=" << token_value.length();
+    return "";  // Token is valid
 }
 
 }  // namespace flapi
