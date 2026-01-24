@@ -342,16 +342,68 @@ bool ConfigToolAdapter::isAuthenticationRequired(const std::string& tool_name) c
 
 std::string ConfigToolAdapter::validateArguments(const std::string& tool_name,
                                                   const crow::json::wvalue& arguments) const {
-    // Phase 0: Basic validation only
-    // Full validation will be implemented in later phases
-
     auto tool_it = tools_.find(tool_name);
     if (tool_it == tools_.end()) {
         return "Tool not found: " + tool_name;
     }
 
-    // TODO: Implement comprehensive validation based on input schema
-    return "";  // Valid for now
+    // Define required parameters for each tool
+    // Format: tool_name -> vector of required parameter names
+    const std::unordered_map<std::string, std::vector<std::string>> required_params = {
+        // Phase 1: Discovery Tools (no required parameters)
+        {"flapi_get_project_config", {}},
+        {"flapi_get_environment", {}},
+        {"flapi_get_filesystem", {}},
+        {"flapi_get_schema", {}},
+        {"flapi_refresh_schema", {}},
+
+        // Phase 2: Template Tools
+        {"flapi_get_template", {"endpoint"}},
+        {"flapi_update_template", {"endpoint", "content"}},
+        {"flapi_expand_template", {"endpoint"}},
+        {"flapi_test_template", {"endpoint"}},
+
+        // Phase 3: Endpoint Tools
+        {"flapi_list_endpoints", {}},
+        {"flapi_get_endpoint", {"path"}},
+        {"flapi_create_endpoint", {"path"}},
+        {"flapi_update_endpoint", {"path"}},
+        {"flapi_delete_endpoint", {"path"}},
+        {"flapi_reload_endpoint", {"path"}},
+
+        // Phase 4: Cache Tools
+        {"flapi_get_cache_status", {"path"}},
+        {"flapi_refresh_cache", {"path"}},
+        {"flapi_get_cache_audit", {"path"}},
+        {"flapi_run_cache_gc", {}}  // path is optional
+    };
+
+    // Find required parameters for this tool
+    auto params_it = required_params.find(tool_name);
+    if (params_it == required_params.end()) {
+        // Tool exists but not in validation map - should not happen
+        return "";
+    }
+
+    // Validate that all required parameters are present
+    for (const auto& param : params_it->second) {
+        if (!arguments.count(param)) {
+            return "Missing required parameter: " + param;
+        }
+
+        // Basic type validation for string parameters
+        try {
+            // Try to extract as string - all our parameters are strings
+            auto val_str = arguments[param].dump();
+            if (val_str.empty()) {
+                return "Parameter '" + param + "' cannot be empty";
+            }
+        } catch (const std::exception& e) {
+            return "Invalid parameter value for '" + param + "': " + std::string(e.what());
+        }
+    }
+
+    return "";  // All validations passed
 }
 
 // ============================================================================
