@@ -11,6 +11,17 @@ namespace flapi {
 ConfigToolAdapter::ConfigToolAdapter(std::shared_ptr<ConfigManager> config_manager,
                                      std::shared_ptr<DatabaseManager> db_manager)
     : config_manager_(config_manager), db_manager_(db_manager) {
+    // Validate that required managers are provided
+    if (!config_manager_) {
+        CROW_LOG_ERROR << "ConfigToolAdapter: ConfigManager is null";
+        throw std::runtime_error("ConfigToolAdapter requires non-null ConfigManager");
+    }
+
+    if (!db_manager_) {
+        CROW_LOG_ERROR << "ConfigToolAdapter: DatabaseManager is null";
+        throw std::runtime_error("ConfigToolAdapter requires non-null DatabaseManager");
+    }
+
     registerConfigTools();
     CROW_LOG_INFO << "ConfigToolAdapter initialized with " << tools_.size() << " tools";
 }
@@ -427,6 +438,12 @@ std::string ConfigToolAdapter::validateArguments(const std::string& tool_name,
 
 ConfigToolResult ConfigToolAdapter::executeGetProjectConfig(const crow::json::wvalue& args) {
     try {
+        // Defensive check: ensure config manager is available
+        if (!config_manager_) {
+            CROW_LOG_ERROR << "flapi_get_project_config: ConfigManager is null";
+            return createErrorResult(-32603, "Configuration service unavailable");
+        }
+
         // Delegate to ProjectConfigHandler
         auto handler = std::make_unique<ProjectConfigHandler>(config_manager_);
 
@@ -450,6 +467,12 @@ ConfigToolResult ConfigToolAdapter::executeGetProjectConfig(const crow::json::wv
 
 ConfigToolResult ConfigToolAdapter::executeGetEnvironment(const crow::json::wvalue& args) {
     try {
+        // Defensive check: ensure config manager is available
+        if (!config_manager_) {
+            CROW_LOG_ERROR << "flapi_get_environment: ConfigManager is null";
+            return createErrorResult(-32603, "Configuration service unavailable");
+        }
+
         auto handler = std::make_unique<ProjectConfigHandler>(config_manager_);
 
         // Get environment variables from config manager
@@ -468,6 +491,12 @@ ConfigToolResult ConfigToolAdapter::executeGetEnvironment(const crow::json::wval
 
 ConfigToolResult ConfigToolAdapter::executeGetFilesystem(const crow::json::wvalue& args) {
     try {
+        // Defensive check: ensure config manager is available
+        if (!config_manager_) {
+            CROW_LOG_ERROR << "flapi_get_filesystem: ConfigManager is null";
+            return createErrorResult(-32603, "Configuration service unavailable");
+        }
+
         auto handler = std::make_unique<FilesystemHandler>(config_manager_);
 
         crow::json::wvalue filesystem;
@@ -489,6 +518,16 @@ ConfigToolResult ConfigToolAdapter::executeGetFilesystem(const crow::json::wvalu
 
 ConfigToolResult ConfigToolAdapter::executeGetSchema(const crow::json::wvalue& args) {
     try {
+        // Defensive checks: ensure both managers are available
+        if (!config_manager_) {
+            CROW_LOG_ERROR << "flapi_get_schema: ConfigManager is null";
+            return createErrorResult(-32603, "Configuration service unavailable");
+        }
+        if (!db_manager_) {
+            CROW_LOG_ERROR << "flapi_get_schema: DatabaseManager is null";
+            return createErrorResult(-32603, "Database service unavailable");
+        }
+
         auto handler = std::make_unique<SchemaHandler>(config_manager_);
 
         crow::json::wvalue schema;
@@ -506,6 +545,16 @@ ConfigToolResult ConfigToolAdapter::executeGetSchema(const crow::json::wvalue& a
 
 ConfigToolResult ConfigToolAdapter::executeRefreshSchema(const crow::json::wvalue& args) {
     try {
+        // Defensive checks: ensure both managers are available
+        if (!config_manager_) {
+            CROW_LOG_ERROR << "flapi_refresh_schema: ConfigManager is null";
+            return createErrorResult(-32603, "Configuration service unavailable");
+        }
+        if (!db_manager_) {
+            CROW_LOG_ERROR << "flapi_refresh_schema: DatabaseManager is null";
+            return createErrorResult(-32603, "Database service unavailable");
+        }
+
         auto handler = std::make_unique<SchemaHandler>(config_manager_);
 
         crow::json::wvalue result;
@@ -527,6 +576,12 @@ ConfigToolResult ConfigToolAdapter::executeRefreshSchema(const crow::json::wvalu
 
 ConfigToolResult ConfigToolAdapter::executeGetTemplate(const crow::json::wvalue& args) {
     try {
+        // Defensive check: ensure config manager is available
+        if (!config_manager_) {
+            CROW_LOG_ERROR << "flapi_get_template: ConfigManager is null";
+            return createErrorResult(-32603, "Configuration service unavailable");
+        }
+
         // Extract endpoint identifier from arguments
         std::string error_msg = "";
         std::string endpoint = extractStringParam(args, "endpoint", true, error_msg);
@@ -556,6 +611,12 @@ ConfigToolResult ConfigToolAdapter::executeGetTemplate(const crow::json::wvalue&
 
 ConfigToolResult ConfigToolAdapter::executeUpdateTemplate(const crow::json::wvalue& args) {
     try {
+        // Defensive check: ensure config manager is available
+        if (!config_manager_) {
+            CROW_LOG_ERROR << "flapi_update_template: ConfigManager is null";
+            return createErrorResult(-32603, "Configuration service unavailable");
+        }
+
         // Extract required parameters
         std::string error_msg = "";
         std::string endpoint = extractStringParam(args, "endpoint", true, error_msg);
@@ -590,6 +651,12 @@ ConfigToolResult ConfigToolAdapter::executeUpdateTemplate(const crow::json::wval
 
 ConfigToolResult ConfigToolAdapter::executeExpandTemplate(const crow::json::wvalue& args) {
     try {
+        // Defensive check: ensure config manager is available
+        if (!config_manager_) {
+            CROW_LOG_ERROR << "flapi_expand_template: ConfigManager is null";
+            return createErrorResult(-32603, "Configuration service unavailable");
+        }
+
         // Extract required parameters
         std::string error_msg = "";
         std::string endpoint = extractStringParam(args, "endpoint", true, error_msg);
@@ -619,6 +686,12 @@ ConfigToolResult ConfigToolAdapter::executeExpandTemplate(const crow::json::wval
 
 ConfigToolResult ConfigToolAdapter::executeTestTemplate(const crow::json::wvalue& args) {
     try {
+        // Defensive check: ensure config manager is available
+        if (!config_manager_) {
+            CROW_LOG_ERROR << "flapi_test_template: ConfigManager is null";
+            return createErrorResult(-32603, "Configuration service unavailable");
+        }
+
         // Extract required parameters
         std::string error_msg = "";
         std::string endpoint = extractStringParam(args, "endpoint", true, error_msg);
@@ -653,6 +726,12 @@ ConfigToolResult ConfigToolAdapter::executeTestTemplate(const crow::json::wvalue
 
 ConfigToolResult ConfigToolAdapter::executeListEndpoints(const crow::json::wvalue& args) {
     try {
+        // Defensive check: ensure config manager is available
+        if (!config_manager_) {
+            CROW_LOG_ERROR << "flapi_list_endpoints: ConfigManager is null";
+            return createErrorResult(-32603, "Configuration service unavailable");
+        }
+
         // Get all configured endpoints
         const auto& endpoints = config_manager_->getEndpoints();
 
@@ -681,6 +760,12 @@ ConfigToolResult ConfigToolAdapter::executeListEndpoints(const crow::json::wvalu
 
 ConfigToolResult ConfigToolAdapter::executeGetEndpoint(const crow::json::wvalue& args) {
     try {
+        // Defensive check: ensure config manager is available
+        if (!config_manager_) {
+            CROW_LOG_ERROR << "flapi_get_endpoint: ConfigManager is null";
+            return createErrorResult(-32603, "Configuration service unavailable");
+        }
+
         // Extract endpoint path parameter
         std::string error_msg = "";
         std::string endpoint_path = extractStringParam(args, "path", true, error_msg);
@@ -727,6 +812,12 @@ ConfigToolResult ConfigToolAdapter::executeGetEndpoint(const crow::json::wvalue&
 
 ConfigToolResult ConfigToolAdapter::executeCreateEndpoint(const crow::json::wvalue& args) {
     try {
+        // Defensive check: ensure config manager is available
+        if (!config_manager_) {
+            CROW_LOG_ERROR << "flapi_create_endpoint: ConfigManager is null";
+            return createErrorResult(-32603, "Configuration service unavailable");
+        }
+
         // Extract required parameters
         std::string error_msg = "";
         std::string path = extractStringParam(args, "path", true, error_msg);
@@ -777,6 +868,12 @@ ConfigToolResult ConfigToolAdapter::executeCreateEndpoint(const crow::json::wval
 
 ConfigToolResult ConfigToolAdapter::executeUpdateEndpoint(const crow::json::wvalue& args) {
     try {
+        // Defensive check: ensure config manager is available
+        if (!config_manager_) {
+            CROW_LOG_ERROR << "flapi_update_endpoint: ConfigManager is null";
+            return createErrorResult(-32603, "Configuration service unavailable");
+        }
+
         // Extract endpoint path (required)
         std::string error_msg = "";
         std::string path = extractStringParam(args, "path", true, error_msg);
@@ -832,6 +929,12 @@ ConfigToolResult ConfigToolAdapter::executeUpdateEndpoint(const crow::json::wval
 
 ConfigToolResult ConfigToolAdapter::executeDeleteEndpoint(const crow::json::wvalue& args) {
     try {
+        // Defensive check: ensure config manager is available
+        if (!config_manager_) {
+            CROW_LOG_ERROR << "flapi_delete_endpoint: ConfigManager is null";
+            return createErrorResult(-32603, "Configuration service unavailable");
+        }
+
         // Extract endpoint path parameter
         std::string error_msg = "";
         std::string path = extractStringParam(args, "path", true, error_msg);
@@ -872,6 +975,12 @@ ConfigToolResult ConfigToolAdapter::executeDeleteEndpoint(const crow::json::wval
 
 ConfigToolResult ConfigToolAdapter::executeReloadEndpoint(const crow::json::wvalue& args) {
     try {
+        // Defensive check: ensure config manager is available
+        if (!config_manager_) {
+            CROW_LOG_ERROR << "flapi_reload_endpoint: ConfigManager is null";
+            return createErrorResult(-32603, "Configuration service unavailable");
+        }
+
         // Extract endpoint path or slug parameter
         std::string error_msg = "";
         std::string path = extractStringParam(args, "path", true, error_msg);
@@ -917,6 +1026,12 @@ ConfigToolResult ConfigToolAdapter::executeReloadEndpoint(const crow::json::wval
 
 ConfigToolResult ConfigToolAdapter::executeGetCacheStatus(const crow::json::wvalue& args) {
     try {
+        // Defensive check: ensure config manager is available
+        if (!config_manager_) {
+            CROW_LOG_ERROR << "flapi_get_cache_status: ConfigManager is null";
+            return createErrorResult(-32603, "Configuration service unavailable");
+        }
+
         // Extract endpoint path parameter
         std::string error_msg = "";
         std::string endpoint_path = extractStringParam(args, "path", true, error_msg);
@@ -960,6 +1075,12 @@ ConfigToolResult ConfigToolAdapter::executeGetCacheStatus(const crow::json::wval
 
 ConfigToolResult ConfigToolAdapter::executeRefreshCache(const crow::json::wvalue& args) {
     try {
+        // Defensive check: ensure config manager is available
+        if (!config_manager_) {
+            CROW_LOG_ERROR << "flapi_refresh_cache: ConfigManager is null";
+            return createErrorResult(-32603, "Configuration service unavailable");
+        }
+
         // Extract endpoint path parameter
         std::string error_msg = "";
         std::string endpoint_path = extractStringParam(args, "path", true, error_msg);
@@ -1002,6 +1123,12 @@ ConfigToolResult ConfigToolAdapter::executeRefreshCache(const crow::json::wvalue
 
 ConfigToolResult ConfigToolAdapter::executeGetCacheAudit(const crow::json::wvalue& args) {
     try {
+        // Defensive check: ensure config manager is available
+        if (!config_manager_) {
+            CROW_LOG_ERROR << "flapi_get_cache_audit: ConfigManager is null";
+            return createErrorResult(-32603, "Configuration service unavailable");
+        }
+
         // Extract endpoint path parameter
         std::string error_msg = "";
         std::string endpoint_path = extractStringParam(args, "path", true, error_msg);
@@ -1053,6 +1180,12 @@ ConfigToolResult ConfigToolAdapter::executeGetCacheAudit(const crow::json::wvalu
 
 ConfigToolResult ConfigToolAdapter::executeRunCacheGC(const crow::json::wvalue& args) {
     try {
+        // Defensive check: ensure config manager is available
+        if (!config_manager_) {
+            CROW_LOG_ERROR << "flapi_run_cache_gc: ConfigManager is null";
+            return createErrorResult(-32603, "Configuration service unavailable");
+        }
+
         // Extract optional endpoint path parameter
         std::string error_msg = "";
         std::string endpoint_path = extractStringParam(args, "path", false, error_msg);
