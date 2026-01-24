@@ -744,7 +744,9 @@ ConfigToolResult ConfigToolAdapter::executeListEndpoints(const crow::json::wvalu
         // Get all configured endpoints
         const auto& endpoints = config_manager_->getEndpoints();
 
-        auto endpoints_list = crow::json::wvalue::list();
+        // Build endpoint list efficiently
+        std::vector<crow::json::wvalue> endpoint_items;
+        endpoint_items.reserve(endpoints.size());
 
         for (const auto& ep : endpoints) {
             crow::json::wvalue endpoint_info;
@@ -752,11 +754,15 @@ ConfigToolResult ConfigToolAdapter::executeListEndpoints(const crow::json::wvalu
             endpoint_info["path"] = ep.urlPath;
             endpoint_info["method"] = ep.method;
             endpoint_info["type"] = (ep.urlPath.empty() ? "mcp" : "rest");
-            endpoints_list.push_back(std::move(endpoint_info));
+            endpoint_items.emplace_back(std::move(endpoint_info));
         }
 
         crow::json::wvalue result;
         result["count"] = static_cast<int>(endpoints.size());
+        auto endpoints_list = crow::json::wvalue::list();
+        for (auto& item : endpoint_items) {
+            endpoints_list.emplace_back(std::move(item));
+        }
         result["endpoints"] = std::move(endpoints_list);
 
         CROW_LOG_INFO << "flapi_list_endpoints: returned " << endpoints.size() << " endpoints";
@@ -801,10 +807,10 @@ ConfigToolResult ConfigToolAdapter::executeGetEndpoint(const crow::json::wvalue&
         result["method"] = ep->method;
         result["template_source"] = ep->templateSource;
 
-        // Build connections list
+        // Build connections list efficiently
         auto conn_list = crow::json::wvalue::list();
         for (const auto& conn : ep->connection) {
-            conn_list.push_back(conn);
+            conn_list.emplace_back(conn);
         }
         result["connections"] = std::move(conn_list);
 
@@ -1255,7 +1261,7 @@ ConfigToolResult ConfigToolAdapter::executeGetCacheAudit(const crow::json::wvalu
         entry["timestamp"] = std::to_string(std::time(nullptr));
         entry["event"] = "cache_status_checked";
         entry["status"] = "success";
-        audit_log.push_back(std::move(entry));
+        audit_log.emplace_back(std::move(entry));
 
         result["audit_log"] = std::move(audit_log);
         result["message"] = "Cache audit log retrieved successfully";
