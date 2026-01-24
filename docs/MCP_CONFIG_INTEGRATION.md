@@ -38,6 +38,43 @@ DatabaseManager (DuckDB Access)
 
 ---
 
+## Activation and Enablement
+
+### When Config Tools are Available
+
+The ConfigToolAdapter and MCP configuration tools are **only initialized when the `--config-service` flag is enabled** at server startup.
+
+**Server With Config Service Enabled:**
+```bash
+./flapi --config-service
+```
+Result: ConfigToolAdapter is instantiated and 18 config tools are available via MCP (`tools/list` includes `flapi_*` tools)
+
+**Server With Config Service Disabled (Default):**
+```bash
+./flapi  # or ./flapi --config flapi.yaml
+```
+Result: ConfigToolAdapter is NOT created, config tools return "Tool not found", only endpoint-based MCP tools are available
+
+### Implementation Details
+
+In `src/api_server.cpp`, the initialization is conditional:
+```cpp
+if (config_service_enabled) {
+    config_tool_adapter = std::make_unique<ConfigToolAdapter>(cm, db_manager);
+    // Tools available via MCP
+} else {
+    config_tool_adapter = nullptr;
+    // Tools not available, requests will fail with "Tool not found"
+}
+```
+
+MCPRouteHandlers handles both cases gracefully:
+- If `config_tool_adapter_` is null, config tool calls return error: "Tool execution failed: Config tools not available"
+- Endpoint-based tools continue working unchanged
+
+---
+
 ## Request/Response Flow
 
 ### Complete Request Lifecycle

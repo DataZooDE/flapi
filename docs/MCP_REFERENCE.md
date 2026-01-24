@@ -167,6 +167,28 @@ mcp:
 | `instructions-file` | string | - | Path to instructions markdown file |
 | `instructions` | string | - | Inline instructions for LLM clients |
 
+#### Configuration Tools Availability
+
+The MCP server exposes two categories of tools:
+
+1. **Declarative Tools** (Always available when MCP enabled)
+   - Tools defined in YAML configuration files via `mcp-tool` sections
+   - Endpoint-based tools from REST API definitions
+
+2. **Configuration Management Tools** (Only when `--config-service` flag is used)
+   - `flapi_*` tools for runtime management of endpoints, templates, caches
+   - 18 tools organized in 4 categories: Discovery, Template, Endpoint, Cache
+   - See [MCP Configuration Tools API Reference](./MCP_CONFIG_TOOLS_API.md)
+
+**To enable configuration tools:**
+```bash
+./flapi --config-service
+# or with custom token
+./flapi --config-service --config-service-token "your-token"
+```
+
+**Note:** Without the `--config-service` flag, only declarative tools are available in `tools/list` responses.
+
 ### First Connection
 
 **MCP Endpoint:** `POST /mcp/jsonrpc`

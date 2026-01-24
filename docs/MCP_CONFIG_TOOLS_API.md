@@ -13,6 +13,21 @@ The Configuration Service exposes 20 MCP tools organized into 4 functional categ
 
 All tools use JSON-RPC 2.0 protocol with MCP error codes for standardized error handling.
 
+### Activation Requirement
+
+⚠️ **Important:** The MCP configuration tools (`flapi_*`) are **only available when the server is started with the `--config-service` flag**. Without this flag, only declarative MCP tools from YAML configurations are accessible.
+
+To enable config MCP tools:
+```bash
+./flapi --config-service
+./flapi --config-service --config-service-token "your-token"  # With authentication
+```
+
+When `--config-service` is NOT enabled:
+- Config tools (`flapi_get_*`, `flapi_create_*`, etc.) will return "Tool not found" errors
+- Only endpoint-based MCP tools from your YAML configurations are available
+- REST configuration API (`/api/v1/_config/*`) is also disabled
+
 **Error Codes:** See [MCP Reference § Appendix B](./MCP_REFERENCE.md#appendix-b-error-reference) for complete MCP error reference.
 
 **Authentication:** See [Configuration Reference § 7](./CONFIG_REFERENCE.md#7-authentication) for all authentication schemes and setup.

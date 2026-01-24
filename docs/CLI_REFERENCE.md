@@ -239,7 +239,9 @@ Enables the runtime configuration management API.
 
 **Description:**
 
-When enabled, exposes REST API endpoints for managing endpoints, templates, and cache at runtime without server restart:
+When enabled, exposes REST API endpoints and MCP tools for managing endpoints, templates, and cache at runtime without server restart:
+
+**REST API Endpoints:**
 
 | Endpoint | Description |
 |----------|-------------|
@@ -254,7 +256,19 @@ When enabled, exposes REST API endpoints for managing endpoints, templates, and 
 | `GET /api/v1/_schema` | Database schema introspection |
 | `POST /api/v1/_ping` | Health check |
 
-**Security:** All configuration service endpoints require authentication via bearer token.
+**MCP Tools (18 configuration management tools):**
+
+When config-service is enabled, 18 MCP configuration tools become available:
+- **Discovery Tools (5):** `flapi_get_project_config`, `flapi_get_environment`, `flapi_get_filesystem`, `flapi_get_schema`, `flapi_refresh_schema`
+- **Template Tools (4):** `flapi_get_template`, `flapi_update_template`, `flapi_expand_template`, `flapi_test_template`
+- **Endpoint Tools (6):** `flapi_list_endpoints`, `flapi_get_endpoint`, `flapi_create_endpoint`, `flapi_update_endpoint`, `flapi_delete_endpoint`, `flapi_reload_endpoint`
+- **Cache Tools (4):** `flapi_get_cache_status`, `flapi_refresh_cache`, `flapi_get_cache_audit`, `flapi_run_cache_gc`
+
+See [MCP Configuration Tools API Reference](./MCP_CONFIG_TOOLS_API.md) for complete tool documentation.
+
+**Important:** Without `--config-service`, these MCP tools will NOT be available. They do not appear in `tools/list` responses.
+
+**Security:** All configuration service endpoints and MCP tools require authentication via bearer token.
 
 **Example:**
 
