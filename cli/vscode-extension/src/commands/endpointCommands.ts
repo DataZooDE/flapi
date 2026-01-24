@@ -223,14 +223,16 @@ async function getActiveEndpointPath(): Promise<string | undefined> {
  * Extracts endpoint path from a flapi:// URI
  */
 async function getEndpointPathFromUri(uri: vscode.Uri): Promise<string | undefined> {
-  // URI format: flapi://endpoint/{slug}/{component}
-  const pathParts = uri.path.split('/');
-  if (pathParts.length < 3 || pathParts[1] !== 'endpoint') {
+  if (uri.scheme !== 'flapi' || uri.authority !== 'endpoint') {
     return undefined;
   }
-  
-  const slug = pathParts[2];
-  // Convert slug back to path (this should use slugToPath from shared lib)
+
+  const normalized = uri.path.replace(/^\/+/, '');
+  const [slug] = normalized.split('/');
+  if (!slug) {
+    return undefined;
+  }
+
   const { slugToPath } = await import('@flapi/shared');
   return slugToPath(slug);
 }

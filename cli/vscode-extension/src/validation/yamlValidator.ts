@@ -1,4 +1,7 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
+import YAML from 'yaml';
+import { pathToSlug } from '@flapi/shared';
 import { FlapiApiClient } from '../shared/apiClient';
 
 export interface ValidationError {
@@ -36,7 +39,7 @@ export class YamlValidator {
 
         try {
             const content = document.getText();
-            const slug = this.getSlugFromFilePath(document.uri.fsPath);
+            const slug = this.getSlugForDocument(document);
             
             if (!slug) {
                 this.outputChannel.appendLine(`Could not determine slug for ${document.uri.fsPath}`);
@@ -102,10 +105,10 @@ export class YamlValidator {
      * Reload endpoint configuration in backend after successful save
      */
     async reloadEndpointConfig(document: vscode.TextDocument): Promise<void> {
-        const slug = this.getSlugFromFilePath(document.uri.fsPath);
-        if (!slug) {
-            return;
-        }
+            const slug = this.getSlugForDocument(document);
+            if (!slug) {
+                return;
+            }
 
         try {
             this.outputChannel.appendLine(`Reloading endpoint configuration for ${slug}...`);
@@ -196,28 +199,43 @@ export class YamlValidator {
     /**
      * Extract slug from file path
      */
-    private getSlugFromFilePath(filePath: string): string | null {
-        // Get workspace folder
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        if (!workspaceFolder) {
-            return null;
+    private getSlugForDocument(document: vscode.TextDocument): string | null {
+        try {
+            const parsed = YAML.parse(document.getText());
+            if (parsed && typeof parsed === 'object') {
+                const urlPath = parsed['url-path'] || parsed['urlPath'];
+                if (typeof urlPath === 'string' && urlPath.length > 0) {
+                    return pathToSlug(urlPath);
+                }
+
+                const mcpToolName = parsed['mcp-tool']?.name || parsed['mcpTool']?.name;
+                if (typeof mcpToolName === 'string' && mcpToolName.length > 0) {
+                    return mcpToolName;
+                }
+
+                const mcpResourceName = parsed['mcp-resource']?.name || parsed['mcpResource']?.name;
+                if (typeof mcpResourceName === 'string' && mcpResourceName.length > 0) {
+                    return mcpResourceName;
+                }
+
+                const mcpPromptName = parsed['mcp-prompt']?.name || parsed['mcpPrompt']?.name;
+                if (typeof mcpPromptName === 'string' && mcpPromptName.length > 0) {
+                    return mcpPromptName;
+                }
+            }
+        } catch {
+            // ignore YAML parse errors
         }
 
-        // Get relative path from workspace
-        const relativePath = vscode.workspace.asRelativePath(filePath);
-        
-        // Extract the endpoint name from the file
-        // e.g., examples/sqls/users.yaml -> users
-        const match = relativePath.match(/([^/]+)\.(yaml|yml)$/);
-        if (!match) {
-            return null;
+        const relative = vscode.workspace.asRelativePath(document.uri);
+        const match = relative.match(/([^/]+)\.(yaml|yml)$/i);
+        if (match) {
+            const base = match[1];
+            return pathToSlug(`/${base}`);
         }
 
-        const endpointName = match[1];
-        
-        // For now, use the filename as the slug
-        // In the future, we might want to read the url-path or mcp-tool name from the file
-        return endpointName;
+        const basename = path.basename(document.uri.fsPath, path.extname(document.uri.fsPath));
+        return basename ? pathToSlug(`/${basename}`) : null;
     }
 
     /**
@@ -234,4 +252,3 @@ export class YamlValidator {
         this.diagnosticCollection.dispose();
     }
 }
-

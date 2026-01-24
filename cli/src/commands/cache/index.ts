@@ -71,9 +71,30 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
           if (typeof cacheConfig === 'object' && cacheConfig !== null) {
             const config = cacheConfig as Record<string, any>;
             Console.info(chalk.bold.blue('Enabled: ') + chalk.white(config.enabled ? 'Yes' : 'No'));
-            Console.info(chalk.bold.blue('TTL: ') + chalk.white(config.ttl || 'N/A'));
-            Console.info(chalk.bold.blue('Max Size: ') + chalk.white(config.max_size || 'N/A'));
-            Console.info(chalk.bold.blue('Strategy: ') + chalk.white(config.strategy || 'N/A'));
+            Console.info(chalk.bold.blue('Table: ') + chalk.white(config.table || 'N/A'));
+            Console.info(chalk.bold.blue('Schema: ') + chalk.white(config.schema || 'N/A'));
+            Console.info(chalk.bold.blue('Schedule: ') + chalk.white(config.schedule || 'N/A'));
+            if (Array.isArray(config['primary-key'])) {
+              Console.info(chalk.bold.blue('Primary Key: ') + chalk.white(config['primary-key'].join(', ')));
+            }
+            if (config.cursor) {
+              Console.info(
+                chalk.bold.blue('Cursor: ') +
+                  chalk.white(`${config.cursor.column || 'N/A'} (${config.cursor.type || 'unknown'})`)
+              );
+            }
+            if (config['rollback-window']) {
+              Console.info(chalk.bold.blue('Rollback Window: ') + chalk.white(config['rollback-window']));
+            }
+            if (config.retention) {
+              Console.info(chalk.bold.blue('Retention: ') + chalk.white(JSON.stringify(config.retention)));
+            }
+            if (config['delete-handling']) {
+              Console.info(chalk.bold.blue('Delete Handling: ') + chalk.white(config['delete-handling']));
+            }
+            if (config['template-file']) {
+              Console.info(chalk.bold.blue('Template File: ') + chalk.white(config['template-file']));
+            }
           } else {
             Console.info(chalk.gray('No cache configuration found'));
           }
@@ -89,16 +110,32 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
     .command('update <path>')
     .description('Update cache configuration')
     .option('-e, --enabled <enabled>', 'Enable/disable caching (true/false)')
-    .option('-t, --ttl <ttl>', 'Cache TTL in seconds')
-    .option('-s, --max-size <size>', 'Maximum cache size')
-    .option('--strategy <strategy>', 'Cache strategy (lru, ttl, etc.)')
+    .option('--table <table>', 'Cache table name')
+    .option('--schema <schema>', 'Cache schema name')
+    .option('--schedule <cron>', 'Cache refresh schedule or interval string')
+    .option('--primary-key <columns...>', 'Primary key columns (space separated)')
+    .option('--cursor-column <column>', 'Cursor column name')
+    .option('--cursor-type <type>', 'Cursor data type')
+    .option('--rollback-window <duration>', 'Rollback window (e.g. 6h)')
+    .option('--retention-keep <count>', 'Number of snapshots to keep')
+    .option('--retention-age <duration>', 'Max snapshot age (e.g. 7d)')
+    .option('--delete-handling <mode>', 'Delete handling strategy')
+    .option('--template-file <path>', 'Cache template SQL file')
     .option('-f, --file <file>', 'JSON file containing cache configuration')
     .option('--stdin', 'Read cache configuration from stdin')
     .action(async (path: string, options: {
       enabled?: string;
-      ttl?: string;
-      maxSize?: string;
-      strategy?: string;
+      table?: string;
+      schema?: string;
+      schedule?: string;
+      primaryKey?: string[];
+      cursorColumn?: string;
+      cursorType?: string;
+      rollbackWindow?: string;
+      retentionKeep?: string;
+      retentionAge?: string;
+      deleteHandling?: string;
+      templateFile?: string;
       file?: string;
       stdin?: boolean;
     }) => {
@@ -138,14 +175,46 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
         if (options.enabled !== undefined) {
           cacheConfig.enabled = options.enabled === 'true';
         }
-        if (options.ttl !== undefined) {
-          cacheConfig.ttl = parseInt(options.ttl);
+        if (options.table) {
+          cacheConfig.table = options.table;
         }
-        if (options.maxSize !== undefined) {
-          cacheConfig.max_size = parseInt(options.maxSize);
+        if (options.schema) {
+          cacheConfig.schema = options.schema;
         }
-        if (options.strategy !== undefined) {
-          cacheConfig.strategy = options.strategy;
+        if (options.schedule) {
+          cacheConfig.schedule = options.schedule;
+        }
+        if (options.primaryKey && options.primaryKey.length > 0) {
+          cacheConfig['primary-key'] = options.primaryKey;
+        }
+        if ((options.cursorColumn && !options.cursorType) || (!options.cursorColumn && options.cursorType)) {
+          Console.error('Both --cursor-column and --cursor-type must be provided together');
+          process.exitCode = 1;
+          return;
+        }
+        if (options.cursorColumn && options.cursorType) {
+          cacheConfig.cursor = {
+            column: options.cursorColumn,
+            type: options.cursorType,
+          };
+        }
+        if (options.rollbackWindow) {
+          cacheConfig['rollback-window'] = options.rollbackWindow;
+        }
+        if (options.retentionKeep || options.retentionAge) {
+          cacheConfig.retention = {};
+          if (options.retentionKeep) {
+            cacheConfig.retention['keep-last-snapshots'] = Number(options.retentionKeep);
+          }
+          if (options.retentionAge) {
+            cacheConfig.retention['max-snapshot-age'] = options.retentionAge;
+          }
+        }
+        if (options.deleteHandling) {
+          cacheConfig['delete-handling'] = options.deleteHandling;
+        }
+        if (options.templateFile) {
+          cacheConfig['template-file'] = options.templateFile;
         }
 
         if (Object.keys(cacheConfig).length === 0) {
@@ -176,14 +245,14 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
         const endpointUrl = buildEndpointUrl(path, 'cache/template');
         const response = await ctx.client.get(endpointUrl);
         spinner.succeed(chalk.green(`✓ Cache template for ${path} retrieved`));
-        const template = response.data;
+        const template = typeof response.data === 'string' ? response.data : response.data?.template;
 
         if (ctx.config.output === 'json') {
-          renderJson(template, ctx.config.jsonStyle);
+          renderJson({ template: template ?? '' }, ctx.config.jsonStyle);
         } else {
           Console.info(chalk.cyan(`\n📄 Cache Template: ${path}`));
           Console.info(chalk.gray('═'.repeat(60)));
-          Console.info(chalk.white(template));
+          Console.info(chalk.white(template ?? ''));
         }
       } catch (error) {
         spinner.fail(chalk.red(`✗ Failed to fetch cache template for ${path}`));
@@ -256,21 +325,63 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
         const result = response.data;
 
         if (ctx.config.output === 'json') {
-          renderJson(result, ctx.config.jsonStyle);
+          renderJson(result || { success: true }, ctx.config.jsonStyle);
         } else {
           Console.info(chalk.cyan(`\n🔄 Cache Refresh: ${path}`));
           Console.info(chalk.gray('═'.repeat(60)));
           Console.info(chalk.green('✓ Cache refreshed successfully'));
-
-          if (result.entries_cleared !== undefined) {
-            Console.info(chalk.blue(`Entries cleared: ${result.entries_cleared}`));
-          }
-          if (result.cache_size !== undefined) {
-            Console.info(chalk.blue(`New cache size: ${result.cache_size}`));
-          }
         }
       } catch (error) {
         spinner.fail(chalk.red(`✗ Failed to refresh cache for ${path}`));
+        handleError(error, ctx.config);
+        process.exitCode = 1;
+      }
+    });
+
+  cache
+    .command('gc <path>')
+    .description('Run DuckLake garbage collection for endpoint cache')
+    .action(async (path: string) => {
+      const spinner = Console.spinner(`Running cache GC for ${path}...`);
+      try {
+        const endpointUrl = buildEndpointUrl(path, 'cache/gc');
+        await ctx.client.post(endpointUrl);
+        spinner.succeed(chalk.green(`✓ Cache GC triggered for ${path}`));
+      } catch (error) {
+        spinner.fail(chalk.red(`✗ Failed to run cache GC for ${path}`));
+        handleError(error, ctx.config);
+        process.exitCode = 1;
+      }
+    });
+
+  cache
+    .command('audit <path>')
+    .description('Show DuckLake audit log entries for an endpoint')
+    .action(async (path: string) => {
+      const spinner = Console.spinner(`Fetching cache audit for ${path}...`);
+      try {
+        const endpointUrl = buildEndpointUrl(path, 'cache/audit');
+        const response = await ctx.client.get(endpointUrl);
+        spinner.succeed(chalk.green(`✓ Cache audit for ${path} retrieved`));
+        renderJson(response.data, ctx.config.jsonStyle);
+      } catch (error) {
+        spinner.fail(chalk.red(`✗ Failed to fetch cache audit for ${path}`));
+        handleError(error, ctx.config);
+        process.exitCode = 1;
+      }
+    });
+
+  cache
+    .command('audit-all')
+    .description('Show DuckLake audit log across all caches')
+    .action(async () => {
+      const spinner = Console.spinner('Fetching cache audit log...');
+      try {
+        const response = await ctx.client.get('/api/v1/_config/cache/audit');
+        spinner.succeed(chalk.green('✓ Cache audit log retrieved'));
+        renderJson(response.data, ctx.config.jsonStyle);
+      } catch (error) {
+        spinner.fail(chalk.red('✗ Failed to fetch cache audit log'));
         handleError(error, ctx.config);
         process.exitCode = 1;
       }

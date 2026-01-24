@@ -6,11 +6,14 @@ export default defineConfig({
     env: {
       NODE_ENV: 'test',
     },
+    setupFiles: ['test/setup/resetExitCode.ts'],
     coverage: {
       enabled: false,
     },
-    deps: {
-      inline: ['cli-table3'],
+    server: {
+      deps: {
+        inline: ['cli-table3'],
+      },
     },
   },
   resolve: {
@@ -19,4 +22,3 @@ export default defineConfig({
     },
   },
 });
-

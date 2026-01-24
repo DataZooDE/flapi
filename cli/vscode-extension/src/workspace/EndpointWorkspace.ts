@@ -105,7 +105,12 @@ export class EndpointWorkspace {
       try {
         const cfg = await this.client.get(buildEndpointUrl(path));
         templateSource = (cfg.data?.templateSource as string | undefined) ?? undefined;
-        cacheTemplateSource = (cfg.data?.cache?.templateSource as string | undefined) ?? undefined;
+        const cacheConfig = cfg.data?.cache ?? {};
+        cacheTemplateSource =
+          cacheConfig?.templateFile ||
+          cacheConfig?.['template-file'] ||
+          cacheConfig?.templateSource ||
+          undefined;
       } catch {
         // ignore; fall back to virtual docs
       }

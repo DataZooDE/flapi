@@ -1,9 +1,8 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Command } from 'commander';
 import { registerEndpointCommands } from '../../src/commands/endpoints';
-import { createApiClient } from '../../src/lib/http';
 import { buildEndpointUrl } from '../../src/lib/url';
-import type { FlapiiConfig } from '../../src/lib/types';
+import type { CliContext, FlapiiConfig } from '../../src/lib/types';
 
 const spinner = { succeed: vi.fn(), fail: vi.fn(), stop: vi.fn() };
 
@@ -11,6 +10,7 @@ vi.mock('../../src/lib/console', () => ({
   Console: {
     spinner: () => spinner,
     info: vi.fn(),
+    warn: vi.fn(),
     color: vi.fn((_, str) => str),
   },
 }));
@@ -24,6 +24,7 @@ vi.mock('../../src/lib/render', () => ({
 describe('endpoints command', () => {
   const mockClient = {
     get: vi.fn(),
+    post: vi.fn(),
   };
 
   const config: FlapiiConfig = {
@@ -38,7 +39,7 @@ describe('endpoints command', () => {
     yes: false,
   };
 
-  const ctx = {
+  const ctx: CliContext = {
     get config() {
       return config;
     },
@@ -49,14 +50,15 @@ describe('endpoints command', () => {
 
   beforeEach(() => {
     mockClient.get.mockReset();
+    mockClient.post.mockReset();
     spinner.succeed.mockReset();
     spinner.fail.mockReset();
     spinner.stop.mockReset();
   });
 
-  it('registers list command that fetches endpoints', async () => {
+  it('fetches endpoint list', async () => {
     mockClient.get.mockResolvedValue({ data: {} });
-    const program = new Command();
+    const program = new Command().exitOverride();
     registerEndpointCommands(program, ctx);
 
     await program.parseAsync(['node', 'test', 'endpoints', 'list']);
@@ -64,14 +66,23 @@ describe('endpoints command', () => {
     expect(mockClient.get).toHaveBeenCalledWith('/api/v1/_config/endpoints');
   });
 
-  it('registers get command that fetches a single endpoint', async () => {
+  it('fetches single endpoint', async () => {
     mockClient.get.mockResolvedValue({ data: { path: '/foo' } });
-    const program = new Command();
+    const program = new Command().exitOverride();
     registerEndpointCommands(program, ctx);
 
     await program.parseAsync(['node', 'test', 'endpoints', 'get', '/foo']);
 
     expect(mockClient.get).toHaveBeenCalledWith(buildEndpointUrl('/foo'));
   });
-});
 
+  it('fetches endpoint parameters', async () => {
+    mockClient.get.mockResolvedValue({ data: { parameters: [] } });
+    const program = new Command().exitOverride();
+    registerEndpointCommands(program, ctx);
+
+    await program.parseAsync(['node', 'test', 'endpoints', 'parameters', '/foo']);
+
+    expect(mockClient.get).toHaveBeenCalledWith('/api/v1/_config/endpoints/foo/parameters');
+  });
+});

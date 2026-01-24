@@ -348,13 +348,13 @@ export class FlapiExplorerProvider implements vscode.TreeDataProvider<FlapiNodeM
     // Add cache SQL file if referenced
     const cacheTemplateSource = element.extra?.cache_template_source as string | undefined;
     if (cacheTemplateSource) {
-      // Handle both relative and path-based cache sources
-      const cacheFile = cacheTemplateSource.split('/').pop() ?? cacheTemplateSource;
-      const cachePath = parentDir ? `${parentDir}/${cacheFile}` : cacheFile;
+      const cachePath = parentDir && !cacheTemplateSource.startsWith('/')
+        ? `${parentDir}/${cacheTemplateSource}`
+        : cacheTemplateSource;
       children.push({
         kind: 'file:sql:cache',
         id: `${element.id}:cache`,
-        label: cacheFile,
+        label: cacheTemplateSource,
         description: '(cache)',
         parentId: element.id,
         extra: {

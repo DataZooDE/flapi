@@ -296,11 +296,12 @@ export function renderCacheTable(caches: Record<string, any>) {
     head: [
       chalk.bold.cyan('Path'),
       chalk.bold.green('Enabled'),
-      chalk.bold.yellow('Refresh Time'),
-      chalk.bold.blue('Cache Table'),
-      chalk.bold.red('Cache Source')
+      chalk.bold.yellow('Schedule'),
+      chalk.bold.blue('Table'),
+      chalk.bold.magenta('Schema'),
+      chalk.bold.red('Template')
     ],
-    colWidths: [20, 10, 15, 20, 35],
+    colWidths: [20, 10, 15, 18, 18, 25],
     style: {
       head: [],
       border: [],
@@ -315,18 +316,20 @@ export function renderCacheTable(caches: Record<string, any>) {
     }
 
     const enabled = cache?.enabled === true ? '✓' : '✗';
-    const refreshTime = cache?.refreshTime || 'N/A';
-    const cacheTable = cache?.cacheTable || 'N/A';
-    const cacheSource = cache?.cacheSource ? 
-      (cache.cacheSource.length > 30 ? '...' + cache.cacheSource.slice(-27) : cache.cacheSource) : 
-      'N/A';
+    const schedule = cache?.schedule || 'N/A';
+    const cacheTable = cache?.table || cache?.cacheTable || 'N/A';
+    const schema = cache?.schema || 'N/A';
+    const templateFile = cache?.['template-file'] || cache?.templateFile || '';
+    const templateDisplay =
+      templateFile && templateFile.length > 24 ? `...${templateFile.slice(-21)}` : templateFile || 'N/A';
 
     table.push([
       chalk.cyan(path),
       cache?.enabled === true ? chalk.green(enabled) : chalk.red(enabled),
-      chalk.yellow(String(refreshTime)),
+      chalk.yellow(String(schedule)),
       chalk.blue(String(cacheTable)),
-      chalk.gray(String(cacheSource))
+      chalk.magenta(String(schema)),
+      chalk.gray(templateDisplay),
     ]);
   }
 
@@ -436,4 +439,3 @@ export function renderTable(data: Record<string, unknown>[]): void {
 
   Console.info(table.toString());
 }
-

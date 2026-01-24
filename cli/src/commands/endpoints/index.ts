@@ -196,6 +196,42 @@ export function registerEndpointCommands(program: Command, ctx: CliContext) {
       }
     });
 
+  endpoints
+    .command('parameters <path>')
+    .description('Show parameter definitions for an endpoint')
+    .action(async (path: string) => {
+      const spinner = Console.spinner(`Fetching parameters for ${path}...`);
+      try {
+        const endpointUrl = buildEndpointUrl(path, 'parameters');
+        const response = await ctx.client.get(endpointUrl);
+        spinner.succeed(chalk.green(`✓ Parameters for ${path} retrieved`));
+        if (ctx.config.output === 'json') {
+          renderJson(response.data, ctx.config.jsonStyle);
+        } else if (Array.isArray(response.data?.parameters)) {
+          Console.info(chalk.cyan(`\n📥 Parameters: ${path}`));
+          Console.info(chalk.gray('═'.repeat(60)));
+          response.data.parameters.forEach((param: any) => {
+            Console.info(
+              `${chalk.bold(param.name)} (${param.in || param.location || 'unknown'})` +
+                (param.required ? chalk.red(' *') : '')
+            );
+            if (param.description) {
+              Console.info(chalk.gray(`  ${param.description}`));
+            }
+            if (param.validators) {
+              Console.info(chalk.gray(`  Validators: ${JSON.stringify(param.validators)}`));
+            }
+          });
+        } else {
+          Console.info(chalk.gray('No parameter metadata available.'));
+        }
+      } catch (error) {
+        spinner.fail(chalk.red(`✗ Failed to fetch parameters for ${path}`));
+        handleError(error, ctx.config);
+        process.exitCode = 1;
+      }
+    });
+
   // Register wizard command
   registerWizardCommand(endpoints, ctx);
 }
@@ -203,4 +239,3 @@ export function registerEndpointCommands(program: Command, ctx: CliContext) {
 function ensurePayloadOptions() {
   // placeholder for shared payload validation hook if needed later
 }
-

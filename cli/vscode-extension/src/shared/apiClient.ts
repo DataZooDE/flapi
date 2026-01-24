@@ -109,8 +109,19 @@ export class FlapiApiClient {
             throw new Error(`Failed to fetch endpoints: ${response.statusText}`);
         }
 
-        const result = await response.json();
-        return result.endpoints ?? [];
+        const payload = await response.json();
+        if (Array.isArray(payload)) {
+            return payload;
+        }
+
+        if (payload && typeof payload === 'object') {
+            return Object.keys(payload).map((path) => ({
+                path,
+                ...(payload as any)[path],
+            }));
+        }
+
+        return [];
     }
 
     /**
@@ -205,4 +216,3 @@ export class FlapiApiClient {
         return await response.json();
     }
 }
-

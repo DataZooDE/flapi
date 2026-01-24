@@ -63,14 +63,14 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
         const endpointUrl = buildEndpointUrl(path, 'template');
         const response = await ctx.client.get(endpointUrl);
         spinner.succeed(chalk.green(`✓ Template ${path} retrieved`));
-        const template = response.data;
+        const template = typeof response.data === 'string' ? response.data : response.data?.template;
 
         if (ctx.config.output === 'json') {
-          renderJson(template, ctx.config.jsonStyle);
+          renderJson({ template: template ?? '' }, ctx.config.jsonStyle);
         } else {
           Console.info(chalk.cyan(`\n📄 Template: ${path}`));
           Console.info(chalk.gray('═'.repeat(60)));
-          Console.info(chalk.white(template));
+          Console.info(chalk.white(template ?? ''));
         }
       } catch (error) {
         spinner.fail(chalk.red(`✗ Failed to fetch template ${path}`));
@@ -115,7 +115,7 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
       try {
         const endpointUrl = buildEndpointUrl(path, 'template');
         await ctx.client.put(endpointUrl, {
-          template: templateContent
+          template: templateContent,
         });
         spinner.succeed(chalk.green(`✓ Template ${path} updated successfully`));
       } catch (error) {
@@ -157,7 +157,7 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
       try {
         const endpointUrl = buildEndpointUrl(path, 'template/expand');
         const response = await ctx.client.post(endpointUrl, {
-          parameters: params
+          parameters: params,
         });
         spinner.succeed(chalk.green(`✓ Template ${path} expanded successfully`));
         const result = response.data;
@@ -167,7 +167,12 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
         } else {
           Console.info(chalk.cyan(`\n📄 Expanded Template: ${path}`));
           Console.info(chalk.gray('═'.repeat(60)));
-          Console.info(chalk.white(result.expanded || result));
+          const expanded = result.expanded ?? result.expanded_sql ?? result.sql ?? '';
+          Console.info(chalk.white(expanded));
+          if (result.variables) {
+            Console.info(chalk.blue('\nVariables:'));
+            Console.info(chalk.white(JSON.stringify(result.variables, null, 2)));
+          }
         }
       } catch (error) {
         spinner.fail(chalk.red(`✗ Failed to expand template ${path}`));
@@ -208,7 +213,7 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
       try {
         const endpointUrl = buildEndpointUrl(path, 'template/test');
         const response = await ctx.client.post(endpointUrl, {
-          parameters: params
+          parameters: params,
         });
         spinner.succeed(chalk.green(`✓ Template ${path} test completed`));
         const result = response.data;
@@ -219,25 +224,60 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
           Console.info(chalk.cyan(`\n🔍 Template Test: ${path}`));
           Console.info(chalk.gray('═'.repeat(60)));
 
-          if (result.valid) {
-            Console.success('Template syntax is valid');
-            if (result.parameters) {
-              Console.info(chalk.blue('Required parameters:'));
-              Object.keys(result.parameters).forEach(param => {
-                Console.info(chalk.white(`  - ${param}`));
+          if (result.success) {
+            Console.success('Template executed successfully');
+            if (Array.isArray(result.rows)) {
+              Console.info(chalk.blue(`Rows returned: ${result.rows.length}`));
+              if (result.rows.length > 0) {
+                Console.info(chalk.white(JSON.stringify(result.rows, null, 2)));
+              }
+            }
+            if (Array.isArray(result.columns)) {
+              Console.info(chalk.blue('Columns:'));
+              result.columns.forEach((column: string) => {
+                Console.info(chalk.white(`  - ${column}`));
               });
             }
+          } else if (result.error) {
+            Console.error(`Template execution failed: ${result.error}`);
           } else {
-            Console.error('Template syntax is invalid');
-            if (result.errors) {
-              result.errors.forEach((error: string) => {
-                Console.error(chalk.red(`  - ${error}`));
-              });
-            }
+            Console.error('Template execution failed');
           }
         }
       } catch (error) {
         spinner.fail(chalk.red(`✗ Failed to test template ${path}`));
+        handleError(error, ctx.config);
+        process.exitCode = 1;
+      }
+    });
+  templates
+    .command('find')
+    .description('List endpoints using a specific template file')
+    .requiredOption('-t, --template <path>', 'Template file path (relative to templates dir)')
+    .action(async (options: { template: string }) => {
+      const spinner = Console.spinner('Searching endpoints by template...');
+      try {
+        const response = await ctx.client.post('/api/v1/_config/endpoints/by-template', {
+          template_path: options.template,
+        });
+        spinner.succeed(chalk.green('✓ Template usage retrieved'));
+        if (ctx.config.output === 'json') {
+          renderJson(response.data, ctx.config.jsonStyle);
+        } else if (Array.isArray(response.data?.endpoints)) {
+          Console.info(chalk.cyan(`\n🔎 Endpoints referencing ${options.template}`));
+          Console.info(chalk.gray('═'.repeat(60)));
+          response.data.endpoints.forEach((entry: any) => {
+            Console.info(`${chalk.bold(entry.url_path || entry.mcp_name || entry.config_file_path)} (${entry.type})`);
+            if (entry.config_file_path) {
+              Console.info(chalk.gray(`  Config: ${entry.config_file_path}`));
+            }
+          });
+          Console.info(chalk.gray(`\nTotal: ${response.data.endpoints.length}`));
+        } else {
+          Console.info(chalk.gray('No endpoints reference this template.'));
+        }
+      } catch (error) {
+        spinner.fail(chalk.red('✗ Failed to search endpoints by template'));
         handleError(error, ctx.config);
         process.exitCode = 1;
       }
