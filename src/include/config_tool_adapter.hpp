@@ -147,6 +147,19 @@ private:
     crow::json::wvalue buildInputSchema(const std::vector<std::string>& required_params,
                                        const std::unordered_map<std::string, std::string>& param_types);
     crow::json::wvalue buildOutputSchema();
+
+    /**
+     * Extract a string parameter from Crow JSON wvalue arguments
+     * @param args The arguments map from a tool call
+     * @param param_name The name of the parameter to extract
+     * @param required Whether the parameter is required
+     * @param error_out Output parameter to receive error message if extraction fails
+     * @return The extracted string value, or empty string if not found
+     */
+    std::string extractStringParam(const crow::json::wvalue& args,
+                                   const std::string& param_name,
+                                   bool required,
+                                   std::string& error_out);
 };
 
 }  // namespace flapi

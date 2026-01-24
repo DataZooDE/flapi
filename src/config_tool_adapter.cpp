@@ -461,17 +461,10 @@ ConfigToolResult ConfigToolAdapter::executeRefreshSchema(const crow::json::wvalu
 ConfigToolResult ConfigToolAdapter::executeGetTemplate(const crow::json::wvalue& args) {
     try {
         // Extract endpoint identifier from arguments
-        std::string endpoint = "";
-        if (args.count("endpoint")) {
-            auto val_str = args["endpoint"].dump();
-            // Remove quotes from JSON string
-            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
-                endpoint = val_str.substr(1, val_str.length() - 2);
-            } else {
-                endpoint = val_str;
-            }
-        } else {
-            return createErrorResult(-32602, "Missing required parameter: endpoint");
+        std::string error_msg = "";
+        std::string endpoint = extractStringParam(args, "endpoint", true, error_msg);
+        if (!error_msg.empty()) {
+            return createErrorResult(-32602, error_msg);
         }
 
         // Validate endpoint exists
@@ -497,24 +490,15 @@ ConfigToolResult ConfigToolAdapter::executeGetTemplate(const crow::json::wvalue&
 ConfigToolResult ConfigToolAdapter::executeUpdateTemplate(const crow::json::wvalue& args) {
     try {
         // Extract required parameters
-        std::string endpoint = "";
-        std::string content = "";
-
-        if (args.count("endpoint")) {
-            auto val_str = args["endpoint"].dump();
-            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
-                endpoint = val_str.substr(1, val_str.length() - 2);
-            } else {
-                endpoint = val_str;
-            }
-        } else {
-            return createErrorResult(-32602, "Missing required parameter: endpoint");
+        std::string error_msg = "";
+        std::string endpoint = extractStringParam(args, "endpoint", true, error_msg);
+        if (!error_msg.empty()) {
+            return createErrorResult(-32602, error_msg);
         }
 
-        if (args.count("content")) {
-            content = args["content"].dump();
-        } else {
-            return createErrorResult(-32602, "Missing required parameter: content");
+        std::string content = extractStringParam(args, "content", true, error_msg);
+        if (!error_msg.empty()) {
+            return createErrorResult(-32602, error_msg);
         }
 
         // Validate endpoint exists
@@ -540,17 +524,10 @@ ConfigToolResult ConfigToolAdapter::executeUpdateTemplate(const crow::json::wval
 ConfigToolResult ConfigToolAdapter::executeExpandTemplate(const crow::json::wvalue& args) {
     try {
         // Extract required parameters
-        std::string endpoint = "";
-
-        if (args.count("endpoint")) {
-            auto val_str = args["endpoint"].dump();
-            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
-                endpoint = val_str.substr(1, val_str.length() - 2);
-            } else {
-                endpoint = val_str;
-            }
-        } else {
-            return createErrorResult(-32602, "Missing required parameter: endpoint");
+        std::string error_msg = "";
+        std::string endpoint = extractStringParam(args, "endpoint", true, error_msg);
+        if (!error_msg.empty()) {
+            return createErrorResult(-32602, error_msg);
         }
 
         // Validate endpoint exists
@@ -576,17 +553,10 @@ ConfigToolResult ConfigToolAdapter::executeExpandTemplate(const crow::json::wval
 ConfigToolResult ConfigToolAdapter::executeTestTemplate(const crow::json::wvalue& args) {
     try {
         // Extract required parameters
-        std::string endpoint = "";
-
-        if (args.count("endpoint")) {
-            auto val_str = args["endpoint"].dump();
-            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
-                endpoint = val_str.substr(1, val_str.length() - 2);
-            } else {
-                endpoint = val_str;
-            }
-        } else {
-            return createErrorResult(-32602, "Missing required parameter: endpoint");
+        std::string error_msg = "";
+        std::string endpoint = extractStringParam(args, "endpoint", true, error_msg);
+        if (!error_msg.empty()) {
+            return createErrorResult(-32602, error_msg);
         }
 
         // Validate endpoint exists
@@ -645,16 +615,10 @@ ConfigToolResult ConfigToolAdapter::executeListEndpoints(const crow::json::wvalu
 ConfigToolResult ConfigToolAdapter::executeGetEndpoint(const crow::json::wvalue& args) {
     try {
         // Extract endpoint path parameter
-        std::string endpoint_path = "";
-        if (args.count("path")) {
-            auto val_str = args["path"].dump();
-            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
-                endpoint_path = val_str.substr(1, val_str.length() - 2);
-            } else {
-                endpoint_path = val_str;
-            }
-        } else {
-            return createErrorResult(-32602, "Missing required parameter: path");
+        std::string error_msg = "";
+        std::string endpoint_path = extractStringParam(args, "path", true, error_msg);
+        if (!error_msg.empty()) {
+            return createErrorResult(-32602, error_msg);
         }
 
         // Find the endpoint
@@ -691,38 +655,18 @@ ConfigToolResult ConfigToolAdapter::executeGetEndpoint(const crow::json::wvalue&
 ConfigToolResult ConfigToolAdapter::executeCreateEndpoint(const crow::json::wvalue& args) {
     try {
         // Extract required parameters
-        std::string path = "";
-        std::string method = "GET";
-        std::string template_source = "";
-
-        if (args.count("path")) {
-            auto val_str = args["path"].dump();
-            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
-                path = val_str.substr(1, val_str.length() - 2);
-            } else {
-                path = val_str;
-            }
-        } else {
-            return createErrorResult(-32602, "Missing required parameter: path");
+        std::string error_msg = "";
+        std::string path = extractStringParam(args, "path", true, error_msg);
+        if (!error_msg.empty()) {
+            return createErrorResult(-32602, error_msg);
         }
 
-        if (args.count("method")) {
-            auto val_str = args["method"].dump();
-            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
-                method = val_str.substr(1, val_str.length() - 2);
-            } else {
-                method = val_str;
-            }
+        std::string method = extractStringParam(args, "method", false, error_msg);
+        if (method.empty()) {
+            method = "GET";
         }
 
-        if (args.count("template_source")) {
-            auto val_str = args["template_source"].dump();
-            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
-                template_source = val_str.substr(1, val_str.length() - 2);
-            } else {
-                template_source = val_str;
-            }
-        }
+        std::string template_source = extractStringParam(args, "template_source", false, error_msg);
 
         // Check if endpoint already exists
         if (config_manager_->getEndpointForPath(path) != nullptr) {
@@ -755,16 +699,10 @@ ConfigToolResult ConfigToolAdapter::executeCreateEndpoint(const crow::json::wval
 ConfigToolResult ConfigToolAdapter::executeUpdateEndpoint(const crow::json::wvalue& args) {
     try {
         // Extract endpoint path (required)
-        std::string path = "";
-        if (args.count("path")) {
-            auto val_str = args["path"].dump();
-            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
-                path = val_str.substr(1, val_str.length() - 2);
-            } else {
-                path = val_str;
-            }
-        } else {
-            return createErrorResult(-32602, "Missing required parameter: path");
+        std::string error_msg = "";
+        std::string path = extractStringParam(args, "path", true, error_msg);
+        if (!error_msg.empty()) {
+            return createErrorResult(-32602, error_msg);
         }
 
         // Find existing endpoint
@@ -810,16 +748,10 @@ ConfigToolResult ConfigToolAdapter::executeUpdateEndpoint(const crow::json::wval
 ConfigToolResult ConfigToolAdapter::executeDeleteEndpoint(const crow::json::wvalue& args) {
     try {
         // Extract endpoint path parameter
-        std::string path = "";
-        if (args.count("path")) {
-            auto val_str = args["path"].dump();
-            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
-                path = val_str.substr(1, val_str.length() - 2);
-            } else {
-                path = val_str;
-            }
-        } else {
-            return createErrorResult(-32602, "Missing required parameter: path");
+        std::string error_msg = "";
+        std::string path = extractStringParam(args, "path", true, error_msg);
+        if (!error_msg.empty()) {
+            return createErrorResult(-32602, error_msg);
         }
 
         // Verify endpoint exists
@@ -850,16 +782,10 @@ ConfigToolResult ConfigToolAdapter::executeDeleteEndpoint(const crow::json::wval
 ConfigToolResult ConfigToolAdapter::executeReloadEndpoint(const crow::json::wvalue& args) {
     try {
         // Extract endpoint path or slug parameter
-        std::string path = "";
-        if (args.count("path")) {
-            auto val_str = args["path"].dump();
-            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
-                path = val_str.substr(1, val_str.length() - 2);
-            } else {
-                path = val_str;
-            }
-        } else {
-            return createErrorResult(-32602, "Missing required parameter: path");
+        std::string error_msg = "";
+        std::string path = extractStringParam(args, "path", true, error_msg);
+        if (!error_msg.empty()) {
+            return createErrorResult(-32602, error_msg);
         }
 
         // Verify endpoint exists
@@ -895,16 +821,10 @@ ConfigToolResult ConfigToolAdapter::executeReloadEndpoint(const crow::json::wval
 ConfigToolResult ConfigToolAdapter::executeGetCacheStatus(const crow::json::wvalue& args) {
     try {
         // Extract endpoint path parameter
-        std::string endpoint_path = "";
-        if (args.count("path")) {
-            auto val_str = args["path"].dump();
-            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
-                endpoint_path = val_str.substr(1, val_str.length() - 2);
-            } else {
-                endpoint_path = val_str;
-            }
-        } else {
-            return createErrorResult(-32602, "Missing required parameter: path");
+        std::string error_msg = "";
+        std::string endpoint_path = extractStringParam(args, "path", true, error_msg);
+        if (!error_msg.empty()) {
+            return createErrorResult(-32602, error_msg);
         }
 
         // Find the endpoint
@@ -938,16 +858,10 @@ ConfigToolResult ConfigToolAdapter::executeGetCacheStatus(const crow::json::wval
 ConfigToolResult ConfigToolAdapter::executeRefreshCache(const crow::json::wvalue& args) {
     try {
         // Extract endpoint path parameter
-        std::string endpoint_path = "";
-        if (args.count("path")) {
-            auto val_str = args["path"].dump();
-            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
-                endpoint_path = val_str.substr(1, val_str.length() - 2);
-            } else {
-                endpoint_path = val_str;
-            }
-        } else {
-            return createErrorResult(-32602, "Missing required parameter: path");
+        std::string error_msg = "";
+        std::string endpoint_path = extractStringParam(args, "path", true, error_msg);
+        if (!error_msg.empty()) {
+            return createErrorResult(-32602, error_msg);
         }
 
         // Find the endpoint
@@ -980,16 +894,10 @@ ConfigToolResult ConfigToolAdapter::executeRefreshCache(const crow::json::wvalue
 ConfigToolResult ConfigToolAdapter::executeGetCacheAudit(const crow::json::wvalue& args) {
     try {
         // Extract endpoint path parameter
-        std::string endpoint_path = "";
-        if (args.count("path")) {
-            auto val_str = args["path"].dump();
-            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
-                endpoint_path = val_str.substr(1, val_str.length() - 2);
-            } else {
-                endpoint_path = val_str;
-            }
-        } else {
-            return createErrorResult(-32602, "Missing required parameter: path");
+        std::string error_msg = "";
+        std::string endpoint_path = extractStringParam(args, "path", true, error_msg);
+        if (!error_msg.empty()) {
+            return createErrorResult(-32602, error_msg);
         }
 
         // Find the endpoint
@@ -1031,15 +939,10 @@ ConfigToolResult ConfigToolAdapter::executeGetCacheAudit(const crow::json::wvalu
 ConfigToolResult ConfigToolAdapter::executeRunCacheGC(const crow::json::wvalue& args) {
     try {
         // Extract optional endpoint path parameter
-        std::string endpoint_path = "";
-        if (args.count("path")) {
-            auto val_str = args["path"].dump();
-            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
-                endpoint_path = val_str.substr(1, val_str.length() - 2);
-            } else {
-                endpoint_path = val_str;
-            }
+        std::string error_msg = "";
+        std::string endpoint_path = extractStringParam(args, "path", false, error_msg);
 
+        if (!endpoint_path.empty()) {
             // Verify endpoint exists if specified
             auto ep = config_manager_->getEndpointForPath(endpoint_path);
             if (!ep) {
@@ -1095,6 +998,33 @@ ConfigToolResult ConfigToolAdapter::createSuccessResult(const std::string& data)
     result.error_message = "";
     result.result = data;
     return result;
+}
+
+std::string ConfigToolAdapter::extractStringParam(const crow::json::wvalue& args,
+                                                  const std::string& param_name,
+                                                  bool required,
+                                                  std::string& error_out) {
+    // Check if parameter exists
+    if (!args.count(param_name)) {
+        if (required) {
+            error_out = "Missing required parameter: " + param_name;
+        }
+        return "";
+    }
+
+    try {
+        // Get JSON string representation
+        auto val_str = args[param_name].dump();
+
+        // Remove surrounding quotes if present
+        if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length() - 1] == '"') {
+            return val_str.substr(1, val_str.length() - 2);
+        }
+        return val_str;
+    } catch (const std::exception& e) {
+        error_out = "Failed to extract parameter '" + param_name + "': " + std::string(e.what());
+        return "";
+    }
 }
 
 crow::json::wvalue ConfigToolAdapter::buildInputSchema(const std::vector<std::string>& required_params,
