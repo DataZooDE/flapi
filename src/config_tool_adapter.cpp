@@ -673,6 +673,12 @@ ConfigToolResult ConfigToolAdapter::executeGetEndpoint(const crow::json::wvalue&
             return createErrorResult(-32602, error_msg);
         }
 
+        // Validate path to prevent traversal attacks
+        error_msg = isValidEndpointPath(endpoint_path);
+        if (!error_msg.empty()) {
+            return createErrorResult(-32602, error_msg);
+        }
+
         // Find the endpoint
         auto ep = config_manager_->getEndpointForPath(endpoint_path);
         if (!ep) {
@@ -709,6 +715,12 @@ ConfigToolResult ConfigToolAdapter::executeCreateEndpoint(const crow::json::wval
         // Extract required parameters
         std::string error_msg = "";
         std::string path = extractStringParam(args, "path", true, error_msg);
+        if (!error_msg.empty()) {
+            return createErrorResult(-32602, error_msg);
+        }
+
+        // Validate path to prevent traversal attacks
+        error_msg = isValidEndpointPath(path);
         if (!error_msg.empty()) {
             return createErrorResult(-32602, error_msg);
         }
@@ -753,6 +765,12 @@ ConfigToolResult ConfigToolAdapter::executeUpdateEndpoint(const crow::json::wval
         // Extract endpoint path (required)
         std::string error_msg = "";
         std::string path = extractStringParam(args, "path", true, error_msg);
+        if (!error_msg.empty()) {
+            return createErrorResult(-32602, error_msg);
+        }
+
+        // Validate path to prevent traversal attacks
+        error_msg = isValidEndpointPath(path);
         if (!error_msg.empty()) {
             return createErrorResult(-32602, error_msg);
         }
@@ -806,6 +824,12 @@ ConfigToolResult ConfigToolAdapter::executeDeleteEndpoint(const crow::json::wval
             return createErrorResult(-32602, error_msg);
         }
 
+        // Validate path to prevent traversal attacks
+        error_msg = isValidEndpointPath(path);
+        if (!error_msg.empty()) {
+            return createErrorResult(-32602, error_msg);
+        }
+
         // Verify endpoint exists
         auto ep = config_manager_->getEndpointForPath(path);
         if (!ep) {
@@ -836,6 +860,12 @@ ConfigToolResult ConfigToolAdapter::executeReloadEndpoint(const crow::json::wval
         // Extract endpoint path or slug parameter
         std::string error_msg = "";
         std::string path = extractStringParam(args, "path", true, error_msg);
+        if (!error_msg.empty()) {
+            return createErrorResult(-32602, error_msg);
+        }
+
+        // Validate path to prevent traversal attacks
+        error_msg = isValidEndpointPath(path);
         if (!error_msg.empty()) {
             return createErrorResult(-32602, error_msg);
         }
@@ -879,6 +909,12 @@ ConfigToolResult ConfigToolAdapter::executeGetCacheStatus(const crow::json::wval
             return createErrorResult(-32602, error_msg);
         }
 
+        // Validate path to prevent traversal attacks
+        error_msg = isValidEndpointPath(endpoint_path);
+        if (!error_msg.empty()) {
+            return createErrorResult(-32602, error_msg);
+        }
+
         // Find the endpoint
         auto ep = config_manager_->getEndpointForPath(endpoint_path);
         if (!ep) {
@@ -916,6 +952,12 @@ ConfigToolResult ConfigToolAdapter::executeRefreshCache(const crow::json::wvalue
             return createErrorResult(-32602, error_msg);
         }
 
+        // Validate path to prevent traversal attacks
+        error_msg = isValidEndpointPath(endpoint_path);
+        if (!error_msg.empty()) {
+            return createErrorResult(-32602, error_msg);
+        }
+
         // Find the endpoint
         auto ep = config_manager_->getEndpointForPath(endpoint_path);
         if (!ep) {
@@ -948,6 +990,12 @@ ConfigToolResult ConfigToolAdapter::executeGetCacheAudit(const crow::json::wvalu
         // Extract endpoint path parameter
         std::string error_msg = "";
         std::string endpoint_path = extractStringParam(args, "path", true, error_msg);
+        if (!error_msg.empty()) {
+            return createErrorResult(-32602, error_msg);
+        }
+
+        // Validate path to prevent traversal attacks
+        error_msg = isValidEndpointPath(endpoint_path);
         if (!error_msg.empty()) {
             return createErrorResult(-32602, error_msg);
         }
@@ -995,6 +1043,12 @@ ConfigToolResult ConfigToolAdapter::executeRunCacheGC(const crow::json::wvalue& 
         std::string endpoint_path = extractStringParam(args, "path", false, error_msg);
 
         if (!endpoint_path.empty()) {
+            // Validate path to prevent traversal attacks
+            error_msg = isValidEndpointPath(endpoint_path);
+            if (!error_msg.empty()) {
+                return createErrorResult(-32602, error_msg);
+            }
+
             // Verify endpoint exists if specified
             auto ep = config_manager_->getEndpointForPath(endpoint_path);
             if (!ep) {
@@ -1092,6 +1146,62 @@ crow::json::wvalue ConfigToolAdapter::buildOutputSchema() {
     schema["type"] = "object";
     schema["properties"] = crow::json::wvalue();
     return schema;
+}
+
+std::string ConfigToolAdapter::isValidEndpointPath(const std::string& path) {
+    // Check for empty path
+    if (path.empty()) {
+        return "Endpoint path cannot be empty";
+    }
+
+    // Check for absolute paths (starting with /)
+    if (path[0] == '/') {
+        return "Endpoint path must be relative (cannot start with '/')";
+    }
+
+    // Check for parent directory traversal (..)
+    size_t pos = 0;
+    while ((pos = path.find("..", pos)) != std::string::npos) {
+        // Check if it's part of a traversal attempt
+        // Valid cases: ..ext, ...something, etc.
+        // Invalid: .. as path component or with slashes: /../ or /.. or ../
+        bool is_traversal = false;
+
+        // Check if preceded by / or at start (makes it a path component)
+        bool preceded_by_sep = (pos == 0) || (path[pos - 1] == '/') || (path[pos - 1] == '\\');
+
+        // Check if followed by / or at end (makes it a path component)
+        bool followed_by_sep = (pos + 2 >= path.length()) || (path[pos + 2] == '/') || (path[pos + 2] == '\\');
+
+        if (preceded_by_sep && followed_by_sep) {
+            is_traversal = true;
+        }
+
+        if (is_traversal) {
+            return "Path traversal attack detected: '..' sequence found";
+        }
+
+        pos += 2;
+    }
+
+    // Check for URL-encoded traversal attempts
+    if (path.find("%2e%2e") != std::string::npos ||  // %2e%2e = ..
+        path.find("%2E%2E") != std::string::npos ||  // Case variation
+        path.find("%252e%252e") != std::string::npos) {  // Double encoded
+        return "Path traversal attack detected: URL-encoded traversal sequence";
+    }
+
+    // Check for backslash sequences (Windows path traversal)
+    if (path.find("..\\") != std::string::npos || path.find("\\") != std::string::npos) {
+        return "Path traversal attack detected: backslash sequences not allowed";
+    }
+
+    // Check for null bytes
+    if (path.find('\0') != std::string::npos) {
+        return "Path contains invalid null byte";
+    }
+
+    return "";  // Path is valid
 }
 
 }  // namespace flapi

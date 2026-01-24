@@ -160,6 +160,13 @@ private:
                                    const std::string& param_name,
                                    bool required,
                                    std::string& error_out);
+
+    /**
+     * Validate endpoint path to prevent path traversal attacks
+     * @param path The endpoint path to validate
+     * @return Error message if path is invalid, empty string if valid
+     */
+    std::string isValidEndpointPath(const std::string& path);
 };
 
 }  // namespace flapi
