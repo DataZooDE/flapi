@@ -129,13 +129,69 @@ void ConfigToolAdapter::registerTemplateTools() {
 }
 
 void ConfigToolAdapter::registerEndpointTools() {
-    // Phase 3 implementation
-    // flapi_list_endpoints
-    // flapi_get_endpoint
-    // flapi_create_endpoint
-    // flapi_update_endpoint
-    // flapi_delete_endpoint
-    // flapi_reload_endpoint
+    // Phase 3: Endpoint Management Tools
+    // Tools for creating, reading, updating, and deleting endpoints
+
+    auto build_basic_schema = []() {
+        crow::json::wvalue schema;
+        schema["type"] = "object";
+        schema["properties"] = crow::json::wvalue();
+        return schema;
+    };
+
+    // flapi_list_endpoints - List all configured endpoints
+    tools_["flapi_list_endpoints"] = ConfigToolDef{
+        "flapi_list_endpoints",
+        "List all configured REST endpoints and MCP tools with their basic information",
+        build_basic_schema(),
+        build_basic_schema()
+    };
+    tool_auth_required_["flapi_list_endpoints"] = false;
+
+    // flapi_get_endpoint - Get detailed endpoint configuration
+    tools_["flapi_get_endpoint"] = ConfigToolDef{
+        "flapi_get_endpoint",
+        "Get the complete configuration for a specific endpoint including validators, cache settings, and auth requirements",
+        build_basic_schema(),
+        build_basic_schema()
+    };
+    tool_auth_required_["flapi_get_endpoint"] = false;
+
+    // flapi_create_endpoint - Create a new endpoint
+    tools_["flapi_create_endpoint"] = ConfigToolDef{
+        "flapi_create_endpoint",
+        "Create a new endpoint with the provided configuration. Returns the full endpoint configuration.",
+        build_basic_schema(),
+        build_basic_schema()
+    };
+    tool_auth_required_["flapi_create_endpoint"] = true;
+
+    // flapi_update_endpoint - Update endpoint configuration
+    tools_["flapi_update_endpoint"] = ConfigToolDef{
+        "flapi_update_endpoint",
+        "Update the configuration of an existing endpoint. Preserves any settings not explicitly changed.",
+        build_basic_schema(),
+        build_basic_schema()
+    };
+    tool_auth_required_["flapi_update_endpoint"] = true;
+
+    // flapi_delete_endpoint - Delete an endpoint
+    tools_["flapi_delete_endpoint"] = ConfigToolDef{
+        "flapi_delete_endpoint",
+        "Delete an endpoint by its path. The endpoint becomes unavailable for API calls immediately.",
+        build_basic_schema(),
+        build_basic_schema()
+    };
+    tool_auth_required_["flapi_delete_endpoint"] = true;
+
+    // flapi_reload_endpoint - Hot-reload an endpoint
+    tools_["flapi_reload_endpoint"] = ConfigToolDef{
+        "flapi_reload_endpoint",
+        "Reload an endpoint configuration from disk without restarting the server. Useful after manual YAML edits.",
+        build_basic_schema(),
+        build_basic_schema()
+    };
+    tool_auth_required_["flapi_reload_endpoint"] = true;
 }
 
 void ConfigToolAdapter::registerCacheTools() {
@@ -204,6 +260,20 @@ ConfigToolResult ConfigToolAdapter::executeTool(const std::string& tool_name,
             return executeExpandTemplate(arguments);
         } else if (tool_name == "flapi_test_template") {
             return executeTestTemplate(arguments);
+        }
+        // Phase 3: Endpoint Tools
+        else if (tool_name == "flapi_list_endpoints") {
+            return executeListEndpoints(arguments);
+        } else if (tool_name == "flapi_get_endpoint") {
+            return executeGetEndpoint(arguments);
+        } else if (tool_name == "flapi_create_endpoint") {
+            return executeCreateEndpoint(arguments);
+        } else if (tool_name == "flapi_update_endpoint") {
+            return executeUpdateEndpoint(arguments);
+        } else if (tool_name == "flapi_delete_endpoint") {
+            return executeDeleteEndpoint(arguments);
+        } else if (tool_name == "flapi_reload_endpoint") {
+            return executeReloadEndpoint(arguments);
         } else {
             return createErrorResult(-32601, "Tool implementation not found: " + tool_name);
         }
@@ -490,31 +560,281 @@ ConfigToolResult ConfigToolAdapter::executeTestTemplate(const crow::json::wvalue
 }
 
 // ============================================================================
-// Phase 3: Endpoint Tools (not implemented yet)
+// ============================================================================
+// Phase 3: Endpoint Tools
 // ============================================================================
 
 ConfigToolResult ConfigToolAdapter::executeListEndpoints(const crow::json::wvalue& args) {
-    return createErrorResult(-32601, "Not implemented in Phase 1");
+    try {
+        // Get all configured endpoints
+        const auto& endpoints = config_manager_->getEndpoints();
+
+        auto endpoints_list = crow::json::wvalue::list();
+
+        for (const auto& ep : endpoints) {
+            crow::json::wvalue endpoint_info;
+            endpoint_info["name"] = ep.getName();
+            endpoint_info["path"] = ep.urlPath;
+            endpoint_info["method"] = ep.method;
+            endpoint_info["type"] = (ep.urlPath.empty() ? "mcp" : "rest");
+            endpoints_list.push_back(std::move(endpoint_info));
+        }
+
+        crow::json::wvalue result;
+        result["count"] = static_cast<int>(endpoints.size());
+        result["endpoints"] = std::move(endpoints_list);
+
+        CROW_LOG_INFO << "flapi_list_endpoints: returned " << endpoints.size() << " endpoints";
+        return createSuccessResult(result.dump());
+    } catch (const std::exception& e) {
+        CROW_LOG_ERROR << "flapi_list_endpoints failed: " << e.what();
+        return createErrorResult(-32603, "Failed to list endpoints: " + std::string(e.what()));
+    }
 }
 
 ConfigToolResult ConfigToolAdapter::executeGetEndpoint(const crow::json::wvalue& args) {
-    return createErrorResult(-32601, "Not implemented in Phase 1");
+    try {
+        // Extract endpoint path parameter
+        std::string endpoint_path = "";
+        if (args.count("path")) {
+            auto val_str = args["path"].dump();
+            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
+                endpoint_path = val_str.substr(1, val_str.length() - 2);
+            } else {
+                endpoint_path = val_str;
+            }
+        } else {
+            return createErrorResult(-32602, "Missing required parameter: path");
+        }
+
+        // Find the endpoint
+        auto ep = config_manager_->getEndpointForPath(endpoint_path);
+        if (!ep) {
+            return createErrorResult(-32603, "Endpoint not found: " + endpoint_path);
+        }
+
+        // Return endpoint configuration
+        crow::json::wvalue result;
+        result["name"] = ep->getName();
+        result["path"] = ep->urlPath;
+        result["method"] = ep->method;
+        result["template_source"] = ep->templateSource;
+
+        // Build connections list
+        auto conn_list = crow::json::wvalue::list();
+        for (const auto& conn : ep->connection) {
+            conn_list.push_back(conn);
+        }
+        result["connections"] = std::move(conn_list);
+
+        result["auth_required"] = ep->auth.enabled;
+        result["cache_enabled"] = ep->cache.enabled;
+
+        CROW_LOG_INFO << "flapi_get_endpoint: returned config for " << endpoint_path;
+        return createSuccessResult(result.dump());
+    } catch (const std::exception& e) {
+        CROW_LOG_ERROR << "flapi_get_endpoint failed: " << e.what();
+        return createErrorResult(-32603, "Failed to get endpoint: " + std::string(e.what()));
+    }
 }
 
 ConfigToolResult ConfigToolAdapter::executeCreateEndpoint(const crow::json::wvalue& args) {
-    return createErrorResult(-32601, "Not implemented in Phase 1");
+    try {
+        // Extract required parameters
+        std::string path = "";
+        std::string method = "GET";
+        std::string template_source = "";
+
+        if (args.count("path")) {
+            auto val_str = args["path"].dump();
+            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
+                path = val_str.substr(1, val_str.length() - 2);
+            } else {
+                path = val_str;
+            }
+        } else {
+            return createErrorResult(-32602, "Missing required parameter: path");
+        }
+
+        if (args.count("method")) {
+            auto val_str = args["method"].dump();
+            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
+                method = val_str.substr(1, val_str.length() - 2);
+            } else {
+                method = val_str;
+            }
+        }
+
+        if (args.count("template_source")) {
+            auto val_str = args["template_source"].dump();
+            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
+                template_source = val_str.substr(1, val_str.length() - 2);
+            } else {
+                template_source = val_str;
+            }
+        }
+
+        // Check if endpoint already exists
+        if (config_manager_->getEndpointForPath(path) != nullptr) {
+            return createErrorResult(-32603, "Endpoint already exists: " + path);
+        }
+
+        // Create new endpoint configuration
+        EndpointConfig new_endpoint;
+        new_endpoint.urlPath = path;
+        new_endpoint.method = method;
+        new_endpoint.templateSource = template_source;
+
+        // Add endpoint to config manager
+        config_manager_->addEndpoint(new_endpoint);
+
+        crow::json::wvalue result;
+        result["status"] = "Endpoint created successfully";
+        result["path"] = path;
+        result["method"] = method;
+        result["message"] = "New endpoint has been created and is now available";
+
+        CROW_LOG_INFO << "flapi_create_endpoint: created endpoint " << path;
+        return createSuccessResult(result.dump());
+    } catch (const std::exception& e) {
+        CROW_LOG_ERROR << "flapi_create_endpoint failed: " << e.what();
+        return createErrorResult(-32603, "Failed to create endpoint: " + std::string(e.what()));
+    }
 }
 
 ConfigToolResult ConfigToolAdapter::executeUpdateEndpoint(const crow::json::wvalue& args) {
-    return createErrorResult(-32601, "Not implemented in Phase 1");
+    try {
+        // Extract endpoint path (required)
+        std::string path = "";
+        if (args.count("path")) {
+            auto val_str = args["path"].dump();
+            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
+                path = val_str.substr(1, val_str.length() - 2);
+            } else {
+                path = val_str;
+            }
+        } else {
+            return createErrorResult(-32602, "Missing required parameter: path");
+        }
+
+        // Find existing endpoint
+        auto ep = config_manager_->getEndpointForPath(path);
+        if (!ep) {
+            return createErrorResult(-32603, "Endpoint not found: " + path);
+        }
+
+        // Create updated copy
+        EndpointConfig updated = *ep;
+
+        // Update optional fields if provided
+        if (args.count("method")) {
+            auto val_str = args["method"].dump();
+            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
+                updated.method = val_str.substr(1, val_str.length() - 2);
+            }
+        }
+
+        if (args.count("template_source")) {
+            auto val_str = args["template_source"].dump();
+            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
+                updated.templateSource = val_str.substr(1, val_str.length() - 2);
+            }
+        }
+
+        // Replace the endpoint
+        config_manager_->replaceEndpoint(updated);
+
+        crow::json::wvalue result;
+        result["status"] = "Endpoint updated successfully";
+        result["path"] = path;
+        result["method"] = updated.method;
+
+        CROW_LOG_INFO << "flapi_update_endpoint: updated endpoint " << path;
+        return createSuccessResult(result.dump());
+    } catch (const std::exception& e) {
+        CROW_LOG_ERROR << "flapi_update_endpoint failed: " << e.what();
+        return createErrorResult(-32603, "Failed to update endpoint: " + std::string(e.what()));
+    }
 }
 
 ConfigToolResult ConfigToolAdapter::executeDeleteEndpoint(const crow::json::wvalue& args) {
-    return createErrorResult(-32601, "Not implemented in Phase 1");
+    try {
+        // Extract endpoint path parameter
+        std::string path = "";
+        if (args.count("path")) {
+            auto val_str = args["path"].dump();
+            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
+                path = val_str.substr(1, val_str.length() - 2);
+            } else {
+                path = val_str;
+            }
+        } else {
+            return createErrorResult(-32602, "Missing required parameter: path");
+        }
+
+        // Verify endpoint exists
+        auto ep = config_manager_->getEndpointForPath(path);
+        if (!ep) {
+            return createErrorResult(-32603, "Endpoint not found: " + path);
+        }
+
+        // Remove the endpoint
+        bool removed = config_manager_->removeEndpointByPath(path);
+        if (!removed) {
+            return createErrorResult(-32603, "Failed to delete endpoint: " + path);
+        }
+
+        crow::json::wvalue result;
+        result["status"] = "Endpoint deleted successfully";
+        result["path"] = path;
+        result["message"] = "Endpoint is no longer available for API calls";
+
+        CROW_LOG_INFO << "flapi_delete_endpoint: deleted endpoint " << path;
+        return createSuccessResult(result.dump());
+    } catch (const std::exception& e) {
+        CROW_LOG_ERROR << "flapi_delete_endpoint failed: " << e.what();
+        return createErrorResult(-32603, "Failed to delete endpoint: " + std::string(e.what()));
+    }
 }
 
 ConfigToolResult ConfigToolAdapter::executeReloadEndpoint(const crow::json::wvalue& args) {
-    return createErrorResult(-32601, "Not implemented in Phase 1");
+    try {
+        // Extract endpoint path or slug parameter
+        std::string path = "";
+        if (args.count("path")) {
+            auto val_str = args["path"].dump();
+            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
+                path = val_str.substr(1, val_str.length() - 2);
+            } else {
+                path = val_str;
+            }
+        } else {
+            return createErrorResult(-32602, "Missing required parameter: path");
+        }
+
+        // Verify endpoint exists
+        auto ep = config_manager_->getEndpointForPath(path);
+        if (!ep) {
+            return createErrorResult(-32603, "Endpoint not found: " + path);
+        }
+
+        // Reload the endpoint configuration from disk
+        bool reloaded = config_manager_->reloadEndpointConfig(path);
+        if (!reloaded) {
+            return createErrorResult(-32603, "Failed to reload endpoint: " + path);
+        }
+
+        crow::json::wvalue result;
+        result["status"] = "Endpoint reloaded successfully";
+        result["path"] = path;
+        result["message"] = "Endpoint configuration has been reloaded from disk";
+
+        CROW_LOG_INFO << "flapi_reload_endpoint: reloaded endpoint " << path;
+        return createSuccessResult(result.dump());
+    } catch (const std::exception& e) {
+        CROW_LOG_ERROR << "flapi_reload_endpoint failed: " << e.what();
+        return createErrorResult(-32603, "Failed to reload endpoint: " + std::string(e.what()));
+    }
 }
 
 // ============================================================================
