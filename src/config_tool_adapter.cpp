@@ -820,6 +820,8 @@ ConfigToolResult ConfigToolAdapter::executeGetEndpoint(const crow::json::wvalue&
 }
 
 ConfigToolResult ConfigToolAdapter::executeCreateEndpoint(const crow::json::wvalue& args) {
+    std::string path;  // Declare outside try block for catch access
+    std::string method;  // Declare outside try block for catch access
     try {
         // Defensive check: ensure config manager is available
         if (!config_manager_) {
@@ -829,7 +831,7 @@ ConfigToolResult ConfigToolAdapter::executeCreateEndpoint(const crow::json::wval
 
         // Extract required parameters
         std::string error_msg = "";
-        std::string path = extractStringParam(args, "path", true, error_msg);
+        path = extractStringParam(args, "path", true, error_msg);
         if (!error_msg.empty()) {
             return createErrorResult(-32602, error_msg);
         }
@@ -840,7 +842,7 @@ ConfigToolResult ConfigToolAdapter::executeCreateEndpoint(const crow::json::wval
             return createErrorResult(-32602, error_msg);
         }
 
-        std::string method = extractStringParam(args, "method", false, error_msg);
+        method = extractStringParam(args, "method", false, error_msg);
         if (method.empty()) {
             method = "GET";
         }
@@ -849,7 +851,11 @@ ConfigToolResult ConfigToolAdapter::executeCreateEndpoint(const crow::json::wval
 
         // Check if endpoint already exists
         if (config_manager_->getEndpointForPath(path) != nullptr) {
-            return createErrorResult(-32603, "Endpoint already exists: " + path);
+            crow::json::wvalue error_detail;
+            error_detail["error"] = "Endpoint already exists";
+            error_detail["path"] = path;
+            error_detail["hint"] = "Use flapi_update_endpoint to modify existing endpoint, or delete it first with flapi_delete_endpoint";
+            return createErrorResult(-32603, error_detail.dump());
         }
 
         // Create new endpoint configuration
@@ -862,20 +868,27 @@ ConfigToolResult ConfigToolAdapter::executeCreateEndpoint(const crow::json::wval
         config_manager_->addEndpoint(new_endpoint);
 
         crow::json::wvalue result;
-        result["status"] = "Endpoint created successfully";
+        result["status"] = "success";
         result["path"] = path;
         result["method"] = method;
-        result["message"] = "New endpoint has been created and is now available";
+        result["template_source"] = template_source;
+        result["message"] = "Endpoint created successfully";
 
-        CROW_LOG_INFO << "flapi_create_endpoint: created endpoint " << path;
+        CROW_LOG_INFO << "flapi_create_endpoint: created endpoint " << path << " with method " << method;
         return createSuccessResult(result.dump());
     } catch (const std::exception& e) {
-        CROW_LOG_ERROR << "flapi_create_endpoint failed: " << e.what();
-        return createErrorResult(-32603, "Failed to create endpoint: " + std::string(e.what()));
+        CROW_LOG_ERROR << "flapi_create_endpoint failed for path '" << path << "': " << e.what();
+        crow::json::wvalue error_detail;
+        error_detail["error"] = "Failed to create endpoint";
+        error_detail["path"] = path;
+        error_detail["method"] = method;
+        error_detail["reason"] = std::string(e.what());
+        return createErrorResult(-32603, error_detail.dump());
     }
 }
 
 ConfigToolResult ConfigToolAdapter::executeUpdateEndpoint(const crow::json::wvalue& args) {
+    std::string path;  // Declare outside try block for catch access
     try {
         // Defensive check: ensure config manager is available
         if (!config_manager_) {
@@ -885,7 +898,7 @@ ConfigToolResult ConfigToolAdapter::executeUpdateEndpoint(const crow::json::wval
 
         // Extract endpoint path (required)
         std::string error_msg = "";
-        std::string path = extractStringParam(args, "path", true, error_msg);
+        path = extractStringParam(args, "path", true, error_msg);
         if (!error_msg.empty()) {
             return createErrorResult(-32602, error_msg);
         }
@@ -899,11 +912,17 @@ ConfigToolResult ConfigToolAdapter::executeUpdateEndpoint(const crow::json::wval
         // Find existing endpoint
         auto ep = config_manager_->getEndpointForPath(path);
         if (!ep) {
-            return createErrorResult(-32603, "Endpoint not found: " + path);
+            crow::json::wvalue error_detail;
+            error_detail["error"] = "Endpoint not found";
+            error_detail["path"] = path;
+            error_detail["hint"] = "Use flapi_list_endpoints to see available endpoints or flapi_create_endpoint to create new one";
+            return createErrorResult(-32603, error_detail.dump());
         }
 
         // Create updated copy
         EndpointConfig updated = *ep;
+        std::string original_method = ep->method;
+        std::string original_template = ep->templateSource;
 
         // Update optional fields if provided
         if (args.count("method")) {
@@ -924,19 +943,31 @@ ConfigToolResult ConfigToolAdapter::executeUpdateEndpoint(const crow::json::wval
         config_manager_->replaceEndpoint(updated);
 
         crow::json::wvalue result;
-        result["status"] = "Endpoint updated successfully";
+        result["status"] = "success";
         result["path"] = path;
-        result["method"] = updated.method;
+        result["message"] = "Endpoint updated successfully";
+        result["previous_method"] = original_method;
+        result["new_method"] = updated.method;
+        if (original_template != updated.templateSource) {
+            result["previous_template"] = original_template;
+            result["new_template"] = updated.templateSource;
+        }
 
-        CROW_LOG_INFO << "flapi_update_endpoint: updated endpoint " << path;
+        CROW_LOG_INFO << "flapi_update_endpoint: updated endpoint " << path << " - method: " << original_method << " -> " << updated.method;
         return createSuccessResult(result.dump());
     } catch (const std::exception& e) {
-        CROW_LOG_ERROR << "flapi_update_endpoint failed: " << e.what();
-        return createErrorResult(-32603, "Failed to update endpoint: " + std::string(e.what()));
+        CROW_LOG_ERROR << "flapi_update_endpoint failed for path '" << path << "': " << e.what();
+        crow::json::wvalue error_detail;
+        error_detail["error"] = "Failed to update endpoint";
+        error_detail["path"] = path;
+        error_detail["reason"] = std::string(e.what());
+        error_detail["hint"] = "Ensure endpoint exists and is not in use by active requests";
+        return createErrorResult(-32603, error_detail.dump());
     }
 }
 
 ConfigToolResult ConfigToolAdapter::executeDeleteEndpoint(const crow::json::wvalue& args) {
+    std::string path;  // Declare outside try block for catch access
     try {
         // Defensive check: ensure config manager is available
         if (!config_manager_) {
@@ -946,7 +977,7 @@ ConfigToolResult ConfigToolAdapter::executeDeleteEndpoint(const crow::json::wval
 
         // Extract endpoint path parameter
         std::string error_msg = "";
-        std::string path = extractStringParam(args, "path", true, error_msg);
+        path = extractStringParam(args, "path", true, error_msg);
         if (!error_msg.empty()) {
             return createErrorResult(-32602, error_msg);
         }
@@ -960,29 +991,48 @@ ConfigToolResult ConfigToolAdapter::executeDeleteEndpoint(const crow::json::wval
         // Verify endpoint exists
         auto ep = config_manager_->getEndpointForPath(path);
         if (!ep) {
-            return createErrorResult(-32603, "Endpoint not found: " + path);
+            crow::json::wvalue error_detail;
+            error_detail["error"] = "Endpoint not found";
+            error_detail["path"] = path;
+            error_detail["hint"] = "Use flapi_list_endpoints to see available endpoints";
+            return createErrorResult(-32603, error_detail.dump());
         }
+
+        std::string deleted_method = ep->method;
+        std::string deleted_template = ep->templateSource;
 
         // Remove the endpoint
         bool removed = config_manager_->removeEndpointByPath(path);
         if (!removed) {
-            return createErrorResult(-32603, "Failed to delete endpoint: " + path);
+            crow::json::wvalue error_detail;
+            error_detail["error"] = "Failed to delete endpoint";
+            error_detail["path"] = path;
+            error_detail["method"] = deleted_method;
+            error_detail["hint"] = "Ensure no active requests are using this endpoint";
+            return createErrorResult(-32603, error_detail.dump());
         }
 
         crow::json::wvalue result;
-        result["status"] = "Endpoint deleted successfully";
+        result["status"] = "success";
         result["path"] = path;
-        result["message"] = "Endpoint is no longer available for API calls";
+        result["message"] = "Endpoint deleted successfully";
+        result["deleted_method"] = deleted_method;
+        result["deleted_template"] = deleted_template;
 
-        CROW_LOG_INFO << "flapi_delete_endpoint: deleted endpoint " << path;
+        CROW_LOG_INFO << "flapi_delete_endpoint: deleted endpoint " << path << " (method=" << deleted_method << ")";
         return createSuccessResult(result.dump());
     } catch (const std::exception& e) {
-        CROW_LOG_ERROR << "flapi_delete_endpoint failed: " << e.what();
-        return createErrorResult(-32603, "Failed to delete endpoint: " + std::string(e.what()));
+        CROW_LOG_ERROR << "flapi_delete_endpoint failed for path '" << path << "': " << e.what();
+        crow::json::wvalue error_detail;
+        error_detail["error"] = "Failed to delete endpoint";
+        error_detail["path"] = path;
+        error_detail["reason"] = std::string(e.what());
+        return createErrorResult(-32603, error_detail.dump());
     }
 }
 
 ConfigToolResult ConfigToolAdapter::executeReloadEndpoint(const crow::json::wvalue& args) {
+    std::string path;  // Declare outside try block for catch access
     try {
         // Defensive check: ensure config manager is available
         if (!config_manager_) {
@@ -992,7 +1042,7 @@ ConfigToolResult ConfigToolAdapter::executeReloadEndpoint(const crow::json::wval
 
         // Extract endpoint path or slug parameter
         std::string error_msg = "";
-        std::string path = extractStringParam(args, "path", true, error_msg);
+        path = extractStringParam(args, "path", true, error_msg);
         if (!error_msg.empty()) {
             return createErrorResult(-32602, error_msg);
         }
@@ -1006,25 +1056,43 @@ ConfigToolResult ConfigToolAdapter::executeReloadEndpoint(const crow::json::wval
         // Verify endpoint exists
         auto ep = config_manager_->getEndpointForPath(path);
         if (!ep) {
-            return createErrorResult(-32603, "Endpoint not found: " + path);
+            crow::json::wvalue error_detail;
+            error_detail["error"] = "Endpoint not found";
+            error_detail["path"] = path;
+            error_detail["hint"] = "Use flapi_list_endpoints to see available endpoints";
+            return createErrorResult(-32603, error_detail.dump());
         }
+
+        std::string original_method = ep->method;
+        std::string original_template = ep->templateSource;
 
         // Reload the endpoint configuration from disk
         bool reloaded = config_manager_->reloadEndpointConfig(path);
         if (!reloaded) {
-            return createErrorResult(-32603, "Failed to reload endpoint: " + path);
+            crow::json::wvalue error_detail;
+            error_detail["error"] = "Failed to reload endpoint configuration from disk";
+            error_detail["path"] = path;
+            error_detail["hint"] = "Verify that endpoint YAML file exists and is valid";
+            return createErrorResult(-32603, error_detail.dump());
         }
 
         crow::json::wvalue result;
-        result["status"] = "Endpoint reloaded successfully";
+        result["status"] = "success";
         result["path"] = path;
-        result["message"] = "Endpoint configuration has been reloaded from disk";
+        result["message"] = "Endpoint configuration reloaded from disk";
+        result["original_method"] = original_method;
+        result["original_template"] = original_template;
 
-        CROW_LOG_INFO << "flapi_reload_endpoint: reloaded endpoint " << path;
+        CROW_LOG_INFO << "flapi_reload_endpoint: reloaded endpoint " << path << " from disk";
         return createSuccessResult(result.dump());
     } catch (const std::exception& e) {
-        CROW_LOG_ERROR << "flapi_reload_endpoint failed: " << e.what();
-        return createErrorResult(-32603, "Failed to reload endpoint: " + std::string(e.what()));
+        CROW_LOG_ERROR << "flapi_reload_endpoint failed for path '" << path << "': " << e.what();
+        crow::json::wvalue error_detail;
+        error_detail["error"] = "Failed to reload endpoint";
+        error_detail["path"] = path;
+        error_detail["reason"] = std::string(e.what());
+        error_detail["hint"] = "Check server logs for more details";
+        return createErrorResult(-32603, error_detail.dump());
     }
 }
 
@@ -1034,6 +1102,7 @@ ConfigToolResult ConfigToolAdapter::executeReloadEndpoint(const crow::json::wval
 // ============================================================================
 
 ConfigToolResult ConfigToolAdapter::executeGetCacheStatus(const crow::json::wvalue& args) {
+    std::string endpoint_path;  // Declare outside try block for catch access
     try {
         // Defensive check: ensure config manager is available
         if (!config_manager_) {
@@ -1043,7 +1112,7 @@ ConfigToolResult ConfigToolAdapter::executeGetCacheStatus(const crow::json::wval
 
         // Extract endpoint path parameter
         std::string error_msg = "";
-        std::string endpoint_path = extractStringParam(args, "path", true, error_msg);
+        endpoint_path = extractStringParam(args, "path", true, error_msg);
         if (!error_msg.empty()) {
             return createErrorResult(-32602, error_msg);
         }
@@ -1057,28 +1126,40 @@ ConfigToolResult ConfigToolAdapter::executeGetCacheStatus(const crow::json::wval
         // Find the endpoint
         auto ep = config_manager_->getEndpointForPath(endpoint_path);
         if (!ep) {
-            return createErrorResult(-32603, "Endpoint not found: " + endpoint_path);
+            crow::json::wvalue error_detail;
+            error_detail["error"] = "Endpoint not found";
+            error_detail["path"] = endpoint_path;
+            error_detail["hint"] = "Use flapi_list_endpoints to see available endpoints";
+            return createErrorResult(-32603, error_detail.dump());
         }
 
         // Check if cache is enabled for this endpoint
         if (!ep->cache.enabled) {
-            return createErrorResult(-32603, "Cache is not enabled for endpoint: " + endpoint_path);
+            crow::json::wvalue error_detail;
+            error_detail["error"] = "Cache not enabled for this endpoint";
+            error_detail["path"] = endpoint_path;
+            error_detail["method"] = ep->method;
+            error_detail["hint"] = "Enable cache in endpoint YAML configuration and reload endpoint";
+            return createErrorResult(-32603, error_detail.dump());
         }
 
         // Return cache status
         crow::json::wvalue result;
+        result["status"] = "success";
         result["path"] = endpoint_path;
         result["cache_enabled"] = true;
         result["cache_table"] = ep->cache.table;
         result["cache_schema"] = ep->cache.schema;
-        result["status"] = "Cache is active";
-        result["message"] = "Cache status retrieved successfully";
 
-        CROW_LOG_INFO << "flapi_get_cache_status: retrieved cache status for " << endpoint_path;
+        CROW_LOG_INFO << "flapi_get_cache_status: retrieved status for " << endpoint_path << " (table=" << ep->cache.table << ")";
         return createSuccessResult(result.dump());
     } catch (const std::exception& e) {
-        CROW_LOG_ERROR << "flapi_get_cache_status failed: " << e.what();
-        return createErrorResult(-32603, "Failed to get cache status: " + std::string(e.what()));
+        CROW_LOG_ERROR << "flapi_get_cache_status failed for '" << endpoint_path << "': " << e.what();
+        crow::json::wvalue error_detail;
+        error_detail["error"] = "Failed to get cache status";
+        error_detail["path"] = endpoint_path;
+        error_detail["reason"] = std::string(e.what());
+        return createErrorResult(-32603, error_detail.dump());
     }
 }
 
