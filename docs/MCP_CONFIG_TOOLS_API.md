@@ -13,22 +13,13 @@ The Configuration Service exposes 20 MCP tools organized into 4 functional categ
 
 All tools use JSON-RPC 2.0 protocol with MCP error codes for standardized error handling.
 
----
+**Error Codes:** See [MCP Reference § Appendix B](./MCP_REFERENCE.md#appendix-b-error-reference) for complete MCP error reference.
 
-## Error Codes
-
-All tools use standard MCP error codes:
-
-| Code | Name | Meaning |
-|------|------|---------|
-| -32601 | Method Not Found | Tool or handler not found |
-| -32602 | Invalid Params | Missing or invalid parameters |
-| -32603 | Internal Error | Server error during execution |
-| -32001 | Authentication Required | Auth token missing or invalid |
+**Authentication:** See [Configuration Reference § 7](./CONFIG_REFERENCE.md#7-authentication) for all authentication schemes and setup.
 
 ---
 
-## Phase 1: Discovery Tools
+## Discovery Tools
 
 Read-only tools for introspecting project configuration and database schema.
 
@@ -168,7 +159,7 @@ Refresh database schema cache by querying all connections.
 
 ---
 
-## Phase 2: Template Tools
+## Template Tools
 
 Tools for managing and testing SQL templates with Mustache syntax.
 
@@ -281,7 +272,7 @@ Validate template syntax and Mustache syntax.
 
 ---
 
-## Phase 3: Endpoint Tools
+## Endpoint Tools
 
 CRUD operations for REST endpoint configuration (path, method, template, cache).
 
@@ -461,7 +452,7 @@ Hot-reload endpoint configuration from disk without restarting server (requires 
 
 ---
 
-## Phase 4: Cache Tools
+## Cache Tools
 
 Monitor and manage DuckLake cache for endpoints.
 
@@ -582,43 +573,6 @@ Trigger garbage collection to clean up old cache snapshots (requires authenticat
 
 ---
 
-## Authentication
-
-### Bearer Token Format
-
-Tools requiring authentication expect a Bearer token:
-
-```
-Authorization: Bearer <token>
-```
-
-### API Key Format
-
-Alternative authentication formats supported:
-
-```
-Authorization: Basic <base64-encoded-credentials>
-Authorization: Token <api-key>
-Authorization: API-Key <key>
-```
-
-### Token Validation
-
-Tokens are validated for:
-- Non-empty value (minimum 8 characters)
-- Valid Base64 characters (for Bearer/Basic schemes)
-- Scheme recognition (Bearer, Basic, Token, API-Key)
-- Length bounds (maximum 4096 characters)
-
-Invalid tokens return:
-```json
-{
-  "error": "Authentication validation failed: <specific reason>"
-}
-```
-
----
-
 ## Error Handling Guidelines
 
 ### Structured Error Responses
@@ -719,3 +673,13 @@ Configuration tools do not have built-in rate limiting but respect server-level 
 These tools implement MCP Configuration Service v1.0 for flAPI.
 
 For integration guidance, see [MCP Configuration Integration Guide](./MCP_CONFIG_INTEGRATION.md).
+
+---
+
+## Related Documentation
+
+- **[Configuration Reference](./CONFIG_REFERENCE.md)** - Complete configuration file format and options
+- **[MCP Reference](./MCP_REFERENCE.md)** - MCP protocol details and error codes
+- **[MCP Configuration Integration Guide](./MCP_CONFIG_INTEGRATION.md)** - Integration architecture and flows
+- **[Config Service API Reference](./CONFIG_SERVICE_API_REFERENCE.md)** - REST API and CLI client
+- **[Reference Documentation Map](./REFERENCE_MAP.md)** - Navigation guide for all reference docs

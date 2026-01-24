@@ -1691,6 +1691,9 @@ LIMIT {{#params.limit}}{{ params.limit }}{{/params.limit}}{{^params.limit}}25{{/
 
 ## Related Documentation
 
-- [Configuration Reference](./CONFIG_REFERENCE.md) - Comprehensive configuration file options
-- [CLI Reference](./CLI_REFERENCE.md) - Server executable CLI options
-- [Config Service API Reference](./CONFIG_SERVICE_API_REFERENCE.md) - Runtime configuration REST API
+- **[Reference Documentation Map](./REFERENCE_MAP.md)** - Navigation guide for all reference docs
+- **[Configuration Reference](./CONFIG_REFERENCE.md)** - Configuration file options (including MCP § 2.6)
+- **[CLI Reference](./CLI_REFERENCE.md)** - Server executable command-line options
+- **[Config Service API Reference](./CONFIG_SERVICE_API_REFERENCE.md)** - Runtime configuration REST API
+- **[MCP Configuration Tools API](./MCP_CONFIG_TOOLS_API.md)** - 20 MCP tools for runtime management
+- **[MCP Configuration Integration Guide](./MCP_CONFIG_INTEGRATION.md)** - Integration architecture and flows

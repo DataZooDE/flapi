@@ -662,7 +662,14 @@ Typical tool execution latency:
 
 ## Related Documentation
 
-- [MCP Config Tools API Reference](./MCP_CONFIG_TOOLS_API.md) - Complete tool documentation
-- [Configuration System](./spec/components/config-system.md) - ConfigManager internals
-- [MCP Protocol](./spec/components/mcp-protocol.md) - MCP server architecture
-- [Security](./spec/components/security.md) - Auth and validation details
+**Reference Docs:**
+- **[Reference Documentation Map](./REFERENCE_MAP.md)** - Navigation guide for all reference docs
+- **[MCP Configuration Tools API Reference](./MCP_CONFIG_TOOLS_API.md)** - Complete 20-tool reference
+- **[MCP Reference](./MCP_REFERENCE.md)** - MCP protocol specification and error codes
+- **[Configuration Reference](./CONFIG_REFERENCE.md)** - Configuration file options
+- **[Config Service API Reference](./CONFIG_SERVICE_API_REFERENCE.md)** - REST API and CLI client
+
+**Component Docs:**
+- **[Configuration System](./spec/components/config-system.md)** - ConfigManager internals
+- **[MCP Protocol](./spec/components/mcp-protocol.md)** - MCP server architecture
+- **[Security](./spec/components/security.md)** - Auth and validation details
