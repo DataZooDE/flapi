@@ -42,6 +42,9 @@ void ConfigToolAdapter::registerDiscoveryTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_get_project_config"] = false;
+    tool_handlers_["flapi_get_project_config"] = [this](const crow::json::wvalue& args) {
+        return this->executeGetProjectConfig(args);
+    };
 
     // flapi_get_environment
     tools_["flapi_get_environment"] = ConfigToolDef{
@@ -51,6 +54,9 @@ void ConfigToolAdapter::registerDiscoveryTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_get_environment"] = false;
+    tool_handlers_["flapi_get_environment"] = [this](const crow::json::wvalue& args) {
+        return this->executeGetEnvironment(args);
+    };
 
     // flapi_get_filesystem
     tools_["flapi_get_filesystem"] = ConfigToolDef{
@@ -60,6 +66,9 @@ void ConfigToolAdapter::registerDiscoveryTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_get_filesystem"] = false;
+    tool_handlers_["flapi_get_filesystem"] = [this](const crow::json::wvalue& args) {
+        return this->executeGetFilesystem(args);
+    };
 
     // flapi_get_schema
     tools_["flapi_get_schema"] = ConfigToolDef{
@@ -69,6 +78,9 @@ void ConfigToolAdapter::registerDiscoveryTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_get_schema"] = false;
+    tool_handlers_["flapi_get_schema"] = [this](const crow::json::wvalue& args) {
+        return this->executeGetSchema(args);
+    };
 
     // flapi_refresh_schema
     tools_["flapi_refresh_schema"] = ConfigToolDef{
@@ -78,6 +90,9 @@ void ConfigToolAdapter::registerDiscoveryTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_refresh_schema"] = false;
+    tool_handlers_["flapi_refresh_schema"] = [this](const crow::json::wvalue& args) {
+        return this->executeRefreshSchema(args);
+    };
 }
 
 void ConfigToolAdapter::registerTemplateTools() {
@@ -99,6 +114,9 @@ void ConfigToolAdapter::registerTemplateTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_get_template"] = false;  // Read-only
+    tool_handlers_["flapi_get_template"] = [this](const crow::json::wvalue& args) {
+        return this->executeGetTemplate(args);
+    };
 
     // flapi_update_template - Write or update SQL template content
     tools_["flapi_update_template"] = ConfigToolDef{
@@ -108,6 +126,9 @@ void ConfigToolAdapter::registerTemplateTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_update_template"] = true;  // Mutation - requires auth
+    tool_handlers_["flapi_update_template"] = [this](const crow::json::wvalue& args) {
+        return this->executeUpdateTemplate(args);
+    };
 
     // flapi_expand_template - Expand Mustache template with parameters
     tools_["flapi_expand_template"] = ConfigToolDef{
@@ -117,6 +138,9 @@ void ConfigToolAdapter::registerTemplateTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_expand_template"] = false;  // Read-only
+    tool_handlers_["flapi_expand_template"] = [this](const crow::json::wvalue& args) {
+        return this->executeExpandTemplate(args);
+    };
 
     // flapi_test_template - Execute template against database and return results
     tools_["flapi_test_template"] = ConfigToolDef{
@@ -126,6 +150,9 @@ void ConfigToolAdapter::registerTemplateTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_test_template"] = false;  // Read-only (query execution)
+    tool_handlers_["flapi_test_template"] = [this](const crow::json::wvalue& args) {
+        return this->executeTestTemplate(args);
+    };
 }
 
 void ConfigToolAdapter::registerEndpointTools() {
@@ -147,6 +174,9 @@ void ConfigToolAdapter::registerEndpointTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_list_endpoints"] = false;
+    tool_handlers_["flapi_list_endpoints"] = [this](const crow::json::wvalue& args) {
+        return this->executeListEndpoints(args);
+    };
 
     // flapi_get_endpoint - Get detailed endpoint configuration
     tools_["flapi_get_endpoint"] = ConfigToolDef{
@@ -156,6 +186,9 @@ void ConfigToolAdapter::registerEndpointTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_get_endpoint"] = false;
+    tool_handlers_["flapi_get_endpoint"] = [this](const crow::json::wvalue& args) {
+        return this->executeGetEndpoint(args);
+    };
 
     // flapi_create_endpoint - Create a new endpoint
     tools_["flapi_create_endpoint"] = ConfigToolDef{
@@ -165,6 +198,9 @@ void ConfigToolAdapter::registerEndpointTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_create_endpoint"] = true;
+    tool_handlers_["flapi_create_endpoint"] = [this](const crow::json::wvalue& args) {
+        return this->executeCreateEndpoint(args);
+    };
 
     // flapi_update_endpoint - Update endpoint configuration
     tools_["flapi_update_endpoint"] = ConfigToolDef{
@@ -174,6 +210,9 @@ void ConfigToolAdapter::registerEndpointTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_update_endpoint"] = true;
+    tool_handlers_["flapi_update_endpoint"] = [this](const crow::json::wvalue& args) {
+        return this->executeUpdateEndpoint(args);
+    };
 
     // flapi_delete_endpoint - Delete an endpoint
     tools_["flapi_delete_endpoint"] = ConfigToolDef{
@@ -183,6 +222,9 @@ void ConfigToolAdapter::registerEndpointTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_delete_endpoint"] = true;
+    tool_handlers_["flapi_delete_endpoint"] = [this](const crow::json::wvalue& args) {
+        return this->executeDeleteEndpoint(args);
+    };
 
     // flapi_reload_endpoint - Hot-reload an endpoint
     tools_["flapi_reload_endpoint"] = ConfigToolDef{
@@ -192,6 +234,9 @@ void ConfigToolAdapter::registerEndpointTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_reload_endpoint"] = true;
+    tool_handlers_["flapi_reload_endpoint"] = [this](const crow::json::wvalue& args) {
+        return this->executeReloadEndpoint(args);
+    };
 }
 
 void ConfigToolAdapter::registerCacheTools() {
@@ -213,6 +258,9 @@ void ConfigToolAdapter::registerCacheTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_get_cache_status"] = false;
+    tool_handlers_["flapi_get_cache_status"] = [this](const crow::json::wvalue& args) {
+        return this->executeGetCacheStatus(args);
+    };
 
     // flapi_refresh_cache - Manually trigger cache refresh
     tools_["flapi_refresh_cache"] = ConfigToolDef{
@@ -222,6 +270,9 @@ void ConfigToolAdapter::registerCacheTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_refresh_cache"] = true;
+    tool_handlers_["flapi_refresh_cache"] = [this](const crow::json::wvalue& args) {
+        return this->executeRefreshCache(args);
+    };
 
     // flapi_get_cache_audit - Get cache audit log
     tools_["flapi_get_cache_audit"] = ConfigToolDef{
@@ -231,6 +282,9 @@ void ConfigToolAdapter::registerCacheTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_get_cache_audit"] = false;
+    tool_handlers_["flapi_get_cache_audit"] = [this](const crow::json::wvalue& args) {
+        return this->executeGetCacheAudit(args);
+    };
 
     // flapi_run_cache_gc - Trigger garbage collection
     tools_["flapi_run_cache_gc"] = ConfigToolDef{
@@ -240,6 +294,9 @@ void ConfigToolAdapter::registerCacheTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_run_cache_gc"] = true;
+    tool_handlers_["flapi_run_cache_gc"] = [this](const crow::json::wvalue& args) {
+        return this->executeRunCacheGC(args);
+    };
 }
 
 std::vector<ConfigToolDef> ConfigToolAdapter::getRegisteredTools() const {
@@ -278,55 +335,13 @@ ConfigToolResult ConfigToolAdapter::executeTool(const std::string& tool_name,
     }
 
     try {
-        // Execute the tool based on name
-        // Phase 1: Discovery Tools
-        if (tool_name == "flapi_get_project_config") {
-            return executeGetProjectConfig(arguments);
-        } else if (tool_name == "flapi_get_environment") {
-            return executeGetEnvironment(arguments);
-        } else if (tool_name == "flapi_get_filesystem") {
-            return executeGetFilesystem(arguments);
-        } else if (tool_name == "flapi_get_schema") {
-            return executeGetSchema(arguments);
-        } else if (tool_name == "flapi_refresh_schema") {
-            return executeRefreshSchema(arguments);
+        // Look up and execute the tool handler
+        auto handler_it = tool_handlers_.find(tool_name);
+        if (handler_it == tool_handlers_.end()) {
+            return createErrorResult(-32601, "Tool handler not found: " + tool_name);
         }
-        // Phase 2: Template Tools
-        else if (tool_name == "flapi_get_template") {
-            return executeGetTemplate(arguments);
-        } else if (tool_name == "flapi_update_template") {
-            return executeUpdateTemplate(arguments);
-        } else if (tool_name == "flapi_expand_template") {
-            return executeExpandTemplate(arguments);
-        } else if (tool_name == "flapi_test_template") {
-            return executeTestTemplate(arguments);
-        }
-        // Phase 3: Endpoint Tools
-        else if (tool_name == "flapi_list_endpoints") {
-            return executeListEndpoints(arguments);
-        } else if (tool_name == "flapi_get_endpoint") {
-            return executeGetEndpoint(arguments);
-        } else if (tool_name == "flapi_create_endpoint") {
-            return executeCreateEndpoint(arguments);
-        } else if (tool_name == "flapi_update_endpoint") {
-            return executeUpdateEndpoint(arguments);
-        } else if (tool_name == "flapi_delete_endpoint") {
-            return executeDeleteEndpoint(arguments);
-        } else if (tool_name == "flapi_reload_endpoint") {
-            return executeReloadEndpoint(arguments);
-        }
-        // Phase 4: Cache Tools
-        else if (tool_name == "flapi_get_cache_status") {
-            return executeGetCacheStatus(arguments);
-        } else if (tool_name == "flapi_refresh_cache") {
-            return executeRefreshCache(arguments);
-        } else if (tool_name == "flapi_get_cache_audit") {
-            return executeGetCacheAudit(arguments);
-        } else if (tool_name == "flapi_run_cache_gc") {
-            return executeRunCacheGC(arguments);
-        } else {
-            return createErrorResult(-32601, "Tool implementation not found: " + tool_name);
-        }
+
+        return handler_it->second(arguments);
     } catch (const std::exception& e) {
         return createErrorResult(-32603, "Tool execution error: " + std::string(e.what()));
     }

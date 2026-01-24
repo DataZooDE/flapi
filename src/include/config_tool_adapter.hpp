@@ -6,6 +6,7 @@
 #include <vector>
 #include <unordered_map>
 #include <optional>
+#include <functional>
 
 #include "config_manager.hpp"
 #include "database_manager.hpp"
@@ -105,10 +106,14 @@ public:
                                   const crow::json::wvalue& arguments) const;
 
 private:
+    // Tool handler type: function that takes arguments and returns result
+    using ToolHandler = std::function<ConfigToolResult(const crow::json::wvalue&)>;
+
     std::shared_ptr<ConfigManager> config_manager_;
     std::shared_ptr<DatabaseManager> db_manager_;
     std::unordered_map<std::string, ConfigToolDef> tools_;
     std::unordered_map<std::string, bool> tool_auth_required_;
+    std::unordered_map<std::string, ToolHandler> tool_handlers_;
 
     // Tool registration
     void registerConfigTools();
