@@ -1,4 +1,17 @@
 #include <catch2/catch_test_macros.hpp>
+// Pre-include STL headers before the private-to-public hack
+// to prevent "redeclared with different access" GCC errors
+// when these headers are later included via crow/asio
+#include <sstream>
+#include <any>
+#include <string>
+#include <vector>
+#include <map>
+#include <chrono>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <optional>
 #define private public
 #include "../../src/include/cache_manager.hpp"
 #undef private
