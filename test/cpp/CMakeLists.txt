@@ -41,6 +41,12 @@ add_executable(flapi_tests
     test_arrow_metrics.cpp
     test_vfs_adapter.cpp
     test_path_validator.cpp
+    test_vfs_health.cpp
+    test_vfs_cache.cpp
+    test_credential_manager.cpp
+    test_vfs_s3.cpp
+    test_vfs_gcs.cpp
+    test_vfs_azure.cpp
 )
 
 target_include_directories(flapi_tests PRIVATE 

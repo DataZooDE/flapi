@@ -1,0 +1,80 @@
+# Example flAPI configuration with Azure Blob Storage
+#
+# Option 1 - Connection string (recommended):
+#   AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=https;AccountName=...
+#
+# Option 2 - Account name + key:
+#   AZURE_STORAGE_ACCOUNT=mystorageaccount
+#   AZURE_STORAGE_KEY=base64encodedkey==
+#
+# Option 3 - Managed Identity (Azure VM/Container Apps):
+#   AZURE_STORAGE_ACCOUNT=mystorageaccount
+#   AZURE_TENANT_ID=tenant-guid
+#   AZURE_CLIENT_ID=client-guid
+#
+# Usage:
+#   ./flapi -c az://my-container/config/flapi.yaml
+#   # OR use this file locally with Azure templates:
+#   ./flapi -c examples/flapi-azure.yaml
+
+project-name: flapi-azure-example
+project-description: Example API with Azure Blob Storage
+version: 1.0.0
+
+# SQL templates can be stored in Azure Blob Storage
+template:
+  path: az://my-container/api-templates/sqls
+
+# Storage configuration
+storage:
+  cache:
+    enabled: true
+    ttl: 300           # 5 minutes
+    max_size: 50MB
+  credentials:
+    azure:
+      type: environment
+      # account: mystorageaccount  # Optional explicit account
+
+# Data connections
+connections:
+  # Azure-hosted data files
+  azure-data:
+    properties:
+      path: az://my-container/data/
+
+  # Azure SQL Database connection
+  azure-sql:
+    properties:
+      host: my-server.database.windows.net
+      port: '1433'
+      database: mydb
+      user: ${AZURE_SQL_USER}
+      password: ${AZURE_SQL_PASSWORD}
+
+  # Local data (can coexist with cloud)
+  local-data:
+    properties:
+      path: ./data/
+
+# DuckDB configuration
+duckdb:
+  db_path: ./flapi_cache.db
+  threads: 4
+  max_memory: 2GB
+
+# Server settings
+server:
+  port: 8080
+  host: 0.0.0.0
+  log_level: info
+
+# Environment variable whitelist
+environment-whitelist:
+  - AZURE_STORAGE_CONNECTION_STRING
+  - AZURE_STORAGE_ACCOUNT
+  - AZURE_STORAGE_KEY
+  - AZURE_TENANT_ID
+  - AZURE_CLIENT_ID
+  - AZURE_SQL_USER
+  - AZURE_SQL_PASSWORD
