@@ -64,7 +64,7 @@ TEST_CASE("RequestHandler: combineWriteParameters merges sources with precedence
     crow::request req;
     req.method = crow::HTTPMethod::Post;
     req.body = R"({"name": "Body Name", "email": "body@example.com"})";
-    req.url_params = crow::query_string("email=query@example.com&limit=50");
+    req.url_params = std::string("?email=query@example.com&limit=50");
 
     std::map<std::string, std::string> pathParams = {{"name", "PathName"}, {"ignored", "value"}};
 
@@ -137,7 +137,7 @@ TEST_CASE("RequestHandler: combineWriteParameters incorporates query parameters 
     crow::request req;
     req.method = crow::HTTPMethod::Post;
     req.body = R"({"name": "Query Backfill"})";
-    req.url_params = crow::query_string("status=active&email=query@example.com");
+    req.url_params = std::string("?status=active&email=query@example.com");
 
     std::map<std::string, std::string> pathParams;
     auto params = handler.combineWriteParameters(req, pathParams, endpoint);

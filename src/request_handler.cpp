@@ -485,18 +485,19 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
         }
     }
 
-    // Add query parameters (for backward compatibility and flexibility)
-    for (const auto& key : req.url_params.keys()) {
-        // Only add if not already present from body (body takes precedence)
-        if (params.find(key) == params.end()) {
-            params[key] = req.url_params.get(key);
-        }
-    }
-
-    // Apply defaults for fields not provided
+    // Apply endpoint defaults for defined fields before query params
+    // This ensures configured defaults take precedence over query parameters
     for (const auto& field : endpoint.request_fields) {
         if (!field.defaultValue.empty() && params.find(field.fieldName) == params.end()) {
             params[field.fieldName] = field.defaultValue;
+        }
+    }
+
+    // Add query parameters (for backward compatibility and flexibility)
+    // Only adds parameters not already set by body or endpoint defaults
+    for (const auto& key : req.url_params.keys()) {
+        if (params.find(key) == params.end()) {
+            params[key] = req.url_params.get(key);
         }
     }
 
