@@ -12,13 +12,17 @@ add_executable(flapi_tests
     config_service_slug_test.cpp
     config_service_template_lookup_test.cpp
     config_service_schema_test.cpp
+    config_tool_adapter_test.cpp
     database_manager_test.cpp
     endpoint_config_parser_test.cpp
     extended_yaml_parser_test.cpp
     https_config_test.cpp
+    cache_manager_test.cpp
     mcp_prompt_handler_test.cpp
+    mcp_request_validator_test.cpp
     query_executor_test.cpp
     rate_limit_middleware_test.cpp
+    request_handler_test.cpp
     request_validator_test.cpp
     sql_template_processor_test.cpp
     test_duckdb_raii.cpp

@@ -1532,6 +1532,8 @@ Slugs identify endpoints in API paths. The format depends on endpoint type:
 
 ## Related Documentation
 
-- [Configuration Reference](./CONFIG_REFERENCE.md) - Configuration file options
-- [CLI Reference](./CLI_REFERENCE.md) - Server executable options
-- [MCP Reference](./MCP_REFERENCE.md) - Model Context Protocol implementation
+- **[Reference Documentation Map](./REFERENCE_MAP.md)** - Navigation guide for all reference docs
+- **[Configuration Reference](./CONFIG_REFERENCE.md)** - Configuration file options and format
+- **[CLI Reference](./CLI_REFERENCE.md)** - Server executable command-line options
+- **[MCP Reference](./MCP_REFERENCE.md)** - Model Context Protocol specification
+- **[MCP Configuration Integration Guide](./MCP_CONFIG_INTEGRATION.md)** - How config tools integrate with MCP protocol

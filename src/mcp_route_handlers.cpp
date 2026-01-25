@@ -71,9 +71,11 @@ MCPRouteHandlers::MCPRouteHandlers(std::shared_ptr<ConfigManager> config_manager
                                  std::shared_ptr<DatabaseManager> db_manager,
                                  std::shared_ptr<MCPSessionManager> session_manager,
                                  std::shared_ptr<MCPClientCapabilitiesDetector> capabilities_detector,
+                                 std::unique_ptr<ConfigToolAdapter> config_tool_adapter,
                                  int port)
     : config_manager_(config_manager), db_manager_(db_manager),
       session_manager_(session_manager), capabilities_detector_(capabilities_detector),
+      config_tool_adapter_(std::move(config_tool_adapter)),
       port_(port)
 {
     CROW_LOG_INFO << "MCPRouteHandlers constructor called - initializing MCP server components";
@@ -518,6 +520,35 @@ void MCPRouteHandlers::discoverMCPEntities() {
         }
     }
 
+    // Add config tools if ConfigToolAdapter is available
+    if (config_tool_adapter_) {
+        try {
+            auto config_tools = config_tool_adapter_->getRegisteredTools();
+            CROW_LOG_DEBUG << "Adding " << config_tools.size() << " config tools";
+            for (const auto& tool : config_tools) {
+                // Build JSON representation of the config tool
+                // We manually construct the JSON to avoid wvalue copy issues
+                std::string tool_json = "{\"name\":\"";
+                tool_json += tool.name + "\",\"description\":\"";
+                tool_json += tool.description + "\",";
+                tool_json += "\"inputSchema\":" + tool.input_schema.dump() + ",";
+                tool_json += "\"outputSchema\":" + tool.output_schema.dump() + "}";
+
+                // Parse the constructed JSON back to wvalue
+                auto tool_def = crow::json::load(tool_json);
+                if (tool_def) {
+                    tool_definitions_.push_back(std::move(tool_def));
+                    CROW_LOG_DEBUG << "Added config tool: " << tool.name;
+                } else {
+                    CROW_LOG_WARNING << "Failed to parse JSON for config tool: " << tool.name;
+                }
+            }
+            CROW_LOG_INFO << "Successfully loaded " << config_tools.size() << " config tools";
+        } catch (const std::exception& e) {
+            CROW_LOG_WARNING << "Failed to load config tools: " << e.what();
+        }
+    }
+
     CROW_LOG_INFO << "Discovered " << tool_definitions_.size() << " MCP tools and "
                    << resource_definitions_.size() << " MCP resources";
 }
@@ -797,25 +828,54 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
 
         CROW_LOG_DEBUG << "Tool call request: " << tool_name;
 
-        // Use MCPToolHandler if available
-        if (tool_handler_) {
-            MCPToolCallRequest tool_request;
-            tool_request.tool_name = tool_name;
-            tool_request.arguments = crow::json::wvalue(arguments);
+        // Check if this is a config tool (starts with "flapi_")
+        if (tool_name.find("flapi_") == 0) {
+            // Config tool - use ConfigToolAdapter
+            if (config_tool_adapter_) {
+                // Extract auth token from request if present
+                std::string auth_token;
+                if (http_req.headers.count("Authorization") > 0) {
+                    auto auth_header = http_req.get_header_value("Authorization");
+                    if (auth_header.find("Bearer ") == 0) {
+                        auth_token = auth_header.substr(7);
+                    }
+                }
 
-            auto result = tool_handler_->executeTool(tool_request);
+                auto config_result = config_tool_adapter_->executeTool(tool_name, arguments, auth_token);
 
-            if (result.success) {
-                // Convert result to MCP format using ContentResponse
-                mcp::ContentResponse content_response;
-                content_response.addText(result.result);
-                crow::json::wvalue mcp_result = content_response.toJson();
-                response.result = mcp_result.dump();
+                if (config_result.success) {
+                    // Convert result to MCP format using ContentResponse
+                    mcp::ContentResponse content_response;
+                    content_response.addText(config_result.result);
+                    crow::json::wvalue mcp_result = content_response.toJson();
+                    response.result = mcp_result.dump();
+                } else {
+                    response.error = formatJsonRpcError(-32603, "Tool execution failed: " + config_result.error_message);
+                }
             } else {
-                response.error = formatJsonRpcError(-32603, "Tool execution failed: " + result.error_message);
+                response.error = formatJsonRpcError(-32603, "Tool execution failed: Config tools not available");
             }
         } else {
-            response.error = formatJsonRpcError(-32601, "Tool handler not available");
+            // Endpoint tool - use MCPToolHandler
+            if (tool_handler_) {
+                MCPToolCallRequest tool_request;
+                tool_request.tool_name = tool_name;
+                tool_request.arguments = crow::json::wvalue(arguments);
+
+                auto result = tool_handler_->executeTool(tool_request);
+
+                if (result.success) {
+                    // Convert result to MCP format using ContentResponse
+                    mcp::ContentResponse content_response;
+                    content_response.addText(result.result);
+                    crow::json::wvalue mcp_result = content_response.toJson();
+                    response.result = mcp_result.dump();
+                } else {
+                    response.error = formatJsonRpcError(-32603, "Tool execution failed: " + result.error_message);
+                }
+            } else {
+                response.error = formatJsonRpcError(-32601, "Tool handler not available");
+            }
         }
     } catch (const std::exception& e) {
         CROW_LOG_ERROR << "Tool call error: " << e.what();

@@ -115,6 +115,10 @@ bool MCPRequestValidator::validateInitializeParams(const crow::json::wvalue& par
         auto version = params["protocolVersion"];
         if (version.t() == crow::json::type::String) {
             std::string version_str = version.dump();
+            // dump() returns JSON-formatted string with quotes, strip them
+            if (version_str.size() >= 2 && version_str.front() == '"' && version_str.back() == '"') {
+                version_str = version_str.substr(1, version_str.size() - 2);
+            }
             // Accept common protocol versions
             if (version_str != "2024-11-05" && version_str != "2024-01-01") {
                 validation_errors_.push_back("Unsupported protocol version: " + version_str);
