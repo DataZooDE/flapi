@@ -462,6 +462,49 @@ WHERE updated_at > TIMESTAMP '{{cache.previousSnapshotTimestamp}}'
 -- Only refresh rows changed since last snapshot
 ```
 
+## Commit Message Guidelines
+
+### Attribution Policy
+
+**Never include Claude Code attribution in commit messages.**
+
+Do NOT add lines like:
+```
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
+```
+
+Rationale: Work is owned and authored by the human developer, even when AI assistance is used. AI is a tool, not a co-author.
+
+### Commit Message Format
+
+Commit messages should follow this format:
+
+```
+feat|fix|chore|docs|test: Brief description (imperative mood)
+
+- Bullet point explaining what changed
+- Why it changed (if not obvious)
+- Any relevant issue references (#123)
+```
+
+**Examples:**
+```
+feat: Add VFS support for cloud storage configuration
+- Enable S3, GCS, Azure paths in config files
+- Implement PathSchemeUtils for scheme detection
+- Add LocalFileProvider and DuckDBVFSProvider
+
+chore: Update documentation for reference structure
+- Consolidate authentication references
+- Add cross-reference sections to all docs
+- Create REFERENCE_MAP.md for navigation
+
+fix: Correct template expansion in DuckDB queries
+- Use triple braces for string parameters
+- Fix null handling in optional fields
+- Closes #42
+```
+
 ## Code Style and Conventions
 
 ### C++ (Backend)

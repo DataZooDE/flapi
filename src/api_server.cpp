@@ -4,6 +4,7 @@
 #include "auth_middleware.hpp"
 #include "database_manager.hpp"
 #include "config_service.hpp"
+#include "config_tool_adapter.hpp"
 #include "open_api_doc_generator.hpp"
 #include "open_api_page.hpp"
 #include "rate_limit_middleware.hpp"
@@ -24,11 +25,29 @@ APIServer::APIServer(std::shared_ptr<ConfigManager> cm,
     // Initialize MCP client capabilities detector
     mcpCapabilitiesDetector = std::make_shared<MCPClientCapabilitiesDetector>();
 
+    // Create ConfigToolAdapter for configuration management tools
+    // Only initialize if config-service is enabled
+    std::unique_ptr<ConfigToolAdapter> config_tool_adapter;
+    if (config_service_enabled) {
+        try {
+            config_tool_adapter = std::make_unique<ConfigToolAdapter>(cm, db_manager);
+            CROW_LOG_INFO << "ConfigToolAdapter initialized - config MCP tools available";
+        } catch (const std::exception& e) {
+            CROW_LOG_WARNING << "Failed to initialize ConfigToolAdapter: " << e.what();
+            config_tool_adapter = nullptr;
+        }
+    } else {
+        CROW_LOG_DEBUG << "Config service disabled - config MCP tools will not be available";
+        config_tool_adapter = nullptr;
+    }
+
     // Initialize MCP route handlers (always enabled in unified configuration)
     // Port will be passed when registering routes
     CROW_LOG_INFO << "Initializing MCP Route Handlers...";
     try {
-        mcpRouteHandlers = std::make_unique<MCPRouteHandlers>(cm, db_manager, mcpSessionManager, mcpCapabilitiesDetector);
+        mcpRouteHandlers = std::make_unique<MCPRouteHandlers>(cm, db_manager, mcpSessionManager,
+                                                               mcpCapabilitiesDetector,
+                                                               std::move(config_tool_adapter));
         CROW_LOG_DEBUG << "MCP Route Handlers initialized successfully";
     } catch (const std::exception& e) {
         CROW_LOG_ERROR << "Failed to initialize MCP Route Handlers: " << e.what();

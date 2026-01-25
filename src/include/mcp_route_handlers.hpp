@@ -19,6 +19,7 @@
 #include "mcp_auth_handler.hpp"
 #include "rate_limit_middleware.hpp"
 #include "auth_middleware.hpp"
+#include "config_tool_adapter.hpp"
 
 namespace flapi {
 
@@ -32,6 +33,7 @@ public:
                              std::shared_ptr<DatabaseManager> db_manager,
                              std::shared_ptr<MCPSessionManager> session_manager,
                              std::shared_ptr<MCPClientCapabilitiesDetector> capabilities_detector,
+                             std::unique_ptr<ConfigToolAdapter> config_tool_adapter = nullptr,
                              int port = 8080);
 
     ~MCPRouteHandlers() = default;
@@ -163,6 +165,7 @@ private:
     std::shared_ptr<MCPClientCapabilitiesDetector> capabilities_detector_;
     std::unique_ptr<MCPToolHandler> tool_handler_;
     std::unique_ptr<MCPAuthHandler> auth_handler_;
+    std::unique_ptr<ConfigToolAdapter> config_tool_adapter_;
     int port_ = 8080;
 };
 

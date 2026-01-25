@@ -664,7 +664,15 @@ The build process will download and build DuckDB v1.1.2 and install the vcpkg pa
 
 ## 📚 Documentation
 
-For more detailed information, check out our [full documentation](link-to-your-docs).
+For more detailed information, check out our [full documentation](docs/):
+
+- **[Reference Documentation Map](docs/REFERENCE_MAP.md)** - Quick navigation guide for all docs
+- **[Configuration Reference](docs/CONFIG_REFERENCE.md)** - Complete flapi.yaml configuration options
+- **[MCP Reference](docs/MCP_REFERENCE.md)** - Model Context Protocol specification and implementation
+- **[Config Service API Reference](docs/CONFIG_SERVICE_API_REFERENCE.md)** - REST API for runtime configuration
+- **[CLI Reference](docs/CLI_REFERENCE.md)** - Server executable command-line options
+- **[Cloud Storage Guide](docs/CLOUD_STORAGE_GUIDE.md)** - Using cloud storage backends (S3, GCS, Azure)
+- **[Architecture & Design](docs/spec/)** - System architecture, design decisions, and component documentation
 
 ## 🤝 Contributing
 
