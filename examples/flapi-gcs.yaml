@@ -1,0 +1,68 @@
+# Example flAPI configuration with Google Cloud Storage
+#
+# Required environment variables:
+#   GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+#
+# Optional environment variables:
+#   GOOGLE_CLOUD_PROJECT=my-project-id
+#   GCLOUD_PROJECT=my-project-id (fallback)
+#
+# Usage:
+#   ./flapi -c gs://my-bucket/config/flapi.yaml
+#   # OR use this file locally with GCS templates:
+#   ./flapi -c examples/flapi-gcs.yaml
+
+project-name: flapi-gcs-example
+project-description: Example API with Google Cloud Storage
+version: 1.0.0
+
+# SQL templates can be stored in GCS
+template:
+  path: gs://my-bucket/api-templates/sqls
+
+# Storage configuration
+storage:
+  cache:
+    enabled: true
+    ttl: 300           # 5 minutes
+    max_size: 50MB
+  credentials:
+    gcs:
+      type: environment
+      # key_file: /path/to/service-account.json  # Optional explicit path
+
+# Data connections
+connections:
+  # GCS-hosted data files
+  gcs-data:
+    properties:
+      path: gs://my-bucket/data/
+
+  # BigQuery connection (also GCP)
+  bigquery-data:
+    properties:
+      project_id: my-project-id
+      dataset: my_dataset
+
+  # Local data (can coexist with cloud)
+  local-data:
+    properties:
+      path: ./data/
+
+# DuckDB configuration
+duckdb:
+  db_path: ./flapi_cache.db
+  threads: 4
+  max_memory: 2GB
+
+# Server settings
+server:
+  port: 8080
+  host: 0.0.0.0
+  log_level: info
+
+# Environment variable whitelist
+environment-whitelist:
+  - GOOGLE_APPLICATION_CREDENTIALS
+  - GOOGLE_CLOUD_PROJECT
+  - GCLOUD_PROJECT

@@ -13,6 +13,8 @@
 #include "cache_manager.hpp"
 #include "sql_template_processor.hpp"
 #include "arrow_metrics.hpp"
+#include "vfs_health_checker.hpp"
+#include "credential_manager.hpp"
 
 namespace flapi {
 
@@ -611,6 +613,45 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             arrow["stats"] = std::move(stats);
 
             health["arrow"] = std::move(arrow);
+
+            // Storage health status
+            if (config_manager) {
+                VFSHealthChecker vfs_checker;
+                std::string config_path = config_manager->getBasePath();
+                std::string templates_path = config_manager->getTemplatePath();
+
+                auto storage_health = vfs_checker.checkHealth(config_path, templates_path);
+
+                crow::json::wvalue storage;
+                storage["status"] = storage_health.healthy ? "healthy" : "unhealthy";
+                storage["total_latency_ms"] = storage_health.total_latency_ms;
+
+                crow::json::wvalue backends;
+                for (const auto& backend : storage_health.backends) {
+                    crow::json::wvalue backend_info;
+                    backend_info["path"] = backend.path;
+                    backend_info["accessible"] = backend.accessible;
+                    backend_info["latency_ms"] = backend.latency_ms;
+                    backend_info["scheme"] = backend.scheme;
+                    if (!backend.error.empty()) {
+                        backend_info["error"] = backend.error;
+                    }
+                    backends[backend.name] = std::move(backend_info);
+                }
+                storage["backends"] = std::move(backends);
+
+                health["storage"] = std::move(storage);
+            }
+
+            // Credential status (without revealing secrets)
+            {
+                auto& cred_manager = getGlobalCredentialManager();
+                crow::json::wvalue credentials;
+                credentials["s3_configured"] = cred_manager.hasS3Credentials();
+                credentials["gcs_configured"] = cred_manager.hasGCSCredentials();
+                credentials["azure_configured"] = cred_manager.hasAzureCredentials();
+                health["credentials"] = std::move(credentials);
+            }
 
             return crow::response(200, health);
         });

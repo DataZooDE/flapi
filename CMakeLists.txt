@@ -250,6 +250,9 @@ add_library(flapi-lib STATIC
     src/type_converter.cpp
     src/vfs_adapter.cpp
     src/path_validator.cpp
+    src/vfs_health_checker.cpp
+    src/caching_file_provider.cpp
+    src/credential_manager.cpp
 )
 
 # Ensure web_ui is built before flapi-lib
