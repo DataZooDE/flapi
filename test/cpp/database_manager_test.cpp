@@ -68,6 +68,10 @@ connections:
     }
 
     void TearDown() {
+        // Reset the DatabaseManager singleton to clean state for next test
+        if (db_manager) {
+            db_manager->reset();
+        }
         db_manager.reset();
         config_manager.reset();
         fs::remove_all(temp_dir);

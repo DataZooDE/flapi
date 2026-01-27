@@ -29,6 +29,48 @@ bool DatabaseManager::isInitialized() const {
     return db != nullptr;
 }
 
+void DatabaseManager::reset() {
+    std::lock_guard<std::mutex> lock(db_mutex);
+
+    // Close the database if open
+    if (db) {
+        // Try graceful shutdown first
+        if (config_manager) {
+            try {
+                const auto& ducklake_config = config_manager->getDuckLakeConfig();
+                if (ducklake_config.enabled) {
+                    try {
+                        std::string detach_stmt = "DETACH " + ducklake_config.alias + ";";
+                        // Need to execute without lock since we already hold it
+                        duckdb_connection conn;
+                        if (duckdb_connect(db, &conn) == DuckDBSuccess) {
+                            duckdb_result result;
+                            duckdb_query(conn, detach_stmt.c_str(), &result);
+                            duckdb_destroy_result(&result);
+                            duckdb_disconnect(&conn);
+                        }
+                    } catch (...) {
+                        // Ignore errors during cleanup
+                    }
+                }
+            } catch (...) {
+                // Ignore errors during cleanup
+            }
+        }
+
+        duckdb_close(&db);
+        db = nullptr;
+        CROW_LOG_DEBUG << "DatabaseManager reset: closed database";
+    }
+
+    // Clear all internal state
+    cache_manager.reset();
+    sql_processor.reset();
+    config_manager.reset();
+
+    CROW_LOG_DEBUG << "DatabaseManager reset: cleared all state";
+}
+
 DatabaseManager::~DatabaseManager() {
     try {
         // Graceful shutdown: Detach DuckLake and flush WAL before closing

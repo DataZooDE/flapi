@@ -42,6 +42,10 @@ public:
     // Check if the database has been initialized
     bool isInitialized() const;
 
+    // Reset the database manager to uninitialized state (for testing)
+    // This closes any open database and clears all internal state
+    void reset();
+
     void initializeDBManagerFromConfig(std::shared_ptr<ConfigManager> config_manager);
     void loadDefaultExtensions(std::shared_ptr<ConfigManager> config_manager);
     void initializeConnections(std::shared_ptr<ConfigManager> config_manager);
