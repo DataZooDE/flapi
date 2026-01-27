@@ -272,7 +272,7 @@ integration-test-ci: release integration-test-setup
 	else \
 		FLAPI_BIN=$(RELEASE_DIR)/flapi; \
 	fi; \
-	$$FLAPI_BIN --config examples/flapi.yaml --log-level info & \
+	$$FLAPI_BIN --config examples/flapi.yaml --log-level info --config-service --config-service-token test-token & \
 	SERVER_PID=$$!; \
 	echo "Server started with PID: $$SERVER_PID"; \
 	sleep 5; \
