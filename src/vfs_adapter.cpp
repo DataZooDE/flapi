@@ -236,6 +236,14 @@ DuckDBVFSProvider::DuckDBVFSProvider()
                 "Call DatabaseManager::initializeDBManagerFromConfig() first.");
         }
 
+        // Check if DatabaseManager has been initialized with a database
+        // This prevents crashes when trying to get a connection from an uninitialized manager
+        if (!db_manager->isInitialized()) {
+            throw FileOperationError(
+                "DatabaseManager is not initialized. DuckDBVFSProvider requires "
+                "a running database. Call DatabaseManager::initializeDBManagerFromConfig() first.");
+        }
+
         // Get the DuckDB database handle from DatabaseManager
         // We need to get a connection to access the database instance
         auto conn = db_manager->getConnection();

@@ -247,24 +247,37 @@ TEST_CASE("VFSHealthChecker::verifyStartupHealth", "[vfs][health]") {
 TEST_CASE("VFSHealthChecker remote path scheme detection", "[vfs][health]") {
     VFSHealthChecker checker;
 
+    // Note: These tests run without DatabaseManager initialized, so remote paths
+    // will correctly report accessible=false with an appropriate error message.
+    // This is the expected behavior - the health checker should gracefully handle
+    // missing database infrastructure and report status, not crash.
+
     SECTION("S3 paths have correct scheme") {
         auto status = checker.checkPath("remote", "s3://bucket/key/file.yaml");
         REQUIRE(status.scheme == "s3");
-        // Note: accessible will be false since we don't have actual S3 connectivity
+        REQUIRE_FALSE(status.accessible);
+        // Should indicate DB not initialized
+        REQUIRE(status.error.find("not initialized") != std::string::npos);
     }
 
     SECTION("GCS paths have correct scheme") {
         auto status = checker.checkPath("remote", "gs://bucket/path/file.yaml");
         REQUIRE(status.scheme == "gs");
+        REQUIRE_FALSE(status.accessible);
+        REQUIRE(status.error.find("not initialized") != std::string::npos);
     }
 
     SECTION("Azure paths have correct scheme") {
         auto status = checker.checkPath("remote", "az://container/blob.yaml");
         REQUIRE(status.scheme == "az");
+        REQUIRE_FALSE(status.accessible);
+        REQUIRE(status.error.find("not initialized") != std::string::npos);
     }
 
     SECTION("HTTPS paths have correct scheme") {
         auto status = checker.checkPath("remote", "https://example.com/config.yaml");
         REQUIRE(status.scheme == "https");
+        REQUIRE_FALSE(status.accessible);
+        REQUIRE(status.error.find("not initialized") != std::string::npos);
     }
 }

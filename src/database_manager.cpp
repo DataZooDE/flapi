@@ -25,6 +25,10 @@ DatabaseManager::DatabaseManager() {
     db = nullptr;
 }
 
+bool DatabaseManager::isInitialized() const {
+    return db != nullptr;
+}
+
 DatabaseManager::~DatabaseManager() {
     try {
         // Graceful shutdown: Detach DuckLake and flush WAL before closing
