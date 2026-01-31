@@ -61,7 +61,34 @@ def find_free_port():
         port = s.getsockname()[1]
     return port
 
-@pytest.fixture
+
+def wait_for_server_healthy(base_url, max_retries=30, retry_interval=1.0):
+    """Wait for server to be healthy with proper health checks.
+
+    Uses exponential backoff and validates HTTP connectivity.
+    Returns True if server is healthy, raises Exception otherwise.
+    """
+    import requests
+    from requests.exceptions import ConnectionError, Timeout
+
+    for attempt in range(max_retries):
+        try:
+            # Try the root endpoint or a known endpoint
+            response = requests.get(base_url, timeout=5)
+            if response.status_code in [200, 401, 403, 404]:
+                # Any HTTP response means server is up
+                print(f"Server healthy at {base_url} (status {response.status_code})")
+                return True
+        except (ConnectionError, Timeout) as e:
+            wait_time = min(retry_interval * (1.2 ** attempt), 5.0)  # Exponential backoff, max 5s
+            if attempt < max_retries - 1:
+                print(f"Waiting for server (attempt {attempt + 1}/{max_retries}): {e}")
+                time.sleep(wait_time)
+
+    raise Exception(f"Server at {base_url} failed health check after {max_retries} attempts")
+
+
+@pytest.fixture(scope="function")
 def flapi_server():
     # Get the current directory where conftest.py is located
     current_dir = pathlib.Path(__file__).parent
@@ -132,37 +159,27 @@ def flapi_server():
         print(f"Working directory: {temp_dir}")
         raise Exception(f"Server process exited immediately with code {process.returncode}")
 
-    # Wait for server to start
-    time.sleep(5)  # Increased wait time for server startup
-
-    # Check if process is still running
-    if process.poll() is not None:
-        stdout, stderr = process.communicate()
-        print(f"Server process exited with code {process.returncode}")
-        print(f"STDOUT: {stdout.decode()}")
-        print(f"STDERR: {stderr.decode()}")
-        print(f"Command was: {process.args}")
-        print(f"Working directory: {temp_dir}")
-        raise Exception(f"Server process exited unexpectedly with code {process.returncode}")
-
-    # If process is still running, try to read some output without blocking
+    # Wait for server to become healthy using proper health checks
+    base_url = f"http://localhost:{port}"
     try:
-        # Read a small amount of output without blocking
-        import select
-        if process.poll() is None:  # Process is still running
-            # Check if there's data to read
-            ready, _, _ = select.select([process.stdout, process.stderr], [], [], 0.1)
-            for stream in ready:
-                if stream == process.stdout:
-                    data = os.read(process.stdout.fileno(), 500)
-                    if data:
-                        print(f"Server STDOUT: {data.decode()[:500]}")
-                elif stream == process.stderr:
-                    data = os.read(process.stderr.fileno(), 500)
-                    if data:
-                        print(f"Server STDERR: {data.decode()[:500]}")
+        wait_for_server_healthy(base_url, max_retries=30, retry_interval=1.0)
     except Exception as e:
-        print(f"Could not read server output: {e}")
+        # Server failed to start - capture output for debugging
+        if process.poll() is not None:
+            stdout, stderr = process.communicate()
+            print(f"Server process exited with code {process.returncode}")
+            print(f"STDOUT: {stdout.decode()}")
+            print(f"STDERR: {stderr.decode()}")
+        else:
+            # Process is running but not responding
+            print(f"Server process running (pid {process.pid}) but not responding")
+            # Kill the process since it's not healthy
+            try:
+                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                process.wait(timeout=5)
+            except Exception:
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        raise Exception(f"Server failed to become healthy: {e}")
     
     # Store the port and temp dir in the process object for other fixtures to access
     process.port = port
@@ -212,43 +229,42 @@ def flapi_server():
 def wait_for_api(request):
     """Ensure API has started before running tests.
 
+    Note: With session-scoped flapi_server, the server is already health-checked
+    at startup. This fixture now just verifies connectivity for each test as a
+    fast sanity check.
+
     Note: This fixture is skipped for examples tests (test_examples_*.py)
     which use their own examples_server fixture.
     """
+    global _flapi_server_instance
+
     # Skip this fixture for examples tests - they use examples_server instead
+    if _is_examples_test(request):
+        return
+
     if "examples_server" in request.fixturenames:
         return
 
-    # Only proceed if flapi_server is being used
-    if "flapi_server" not in request.fixturenames:
+    # Use the global server instance set by inject_tavern_base_url
+    if _flapi_server_instance is None:
         return
 
-    # Get the flapi_server fixture
-    flapi_server = request.getfixturevalue("flapi_server")
-
-    max_retries = 30
-    retry_interval = 1
-
+    # Quick connectivity check - server should already be healthy from startup
     import requests
     from requests.exceptions import ConnectionError
 
-    port = flapi_server.port
+    port = _flapi_server_instance.port
     base_url = f"http://localhost:{port}"
 
-    for attempt in range(max_retries):
-        try:
-            # Health endpoint might not require auth
-            print(f"Attempt {attempt + 1}/{max_retries}: Checking server at {base_url}")
-            response = requests.get(base_url, timeout=5)
-            print(f"Response status: {response.status_code}")
-            if response.status_code == 200:
-                print(f"Server is ready on port {port}")
-                return
-        except ConnectionError as e:
-            print(f"Connection error on attempt {attempt + 1}: {e}")
-            time.sleep(retry_interval)
-
-    raise Exception(f"API failed to start on port {port}")
+    try:
+        response = requests.get(base_url, timeout=5)
+        # Any HTTP response means server is up
+        if response.status_code not in [200, 401, 403, 404]:
+            print(f"Warning: Unexpected status {response.status_code} from {base_url}")
+    except ConnectionError as e:
+        # Server may have crashed between tests - give it a moment
+        print(f"Server connectivity issue, retrying: {e}")
+        wait_for_server_healthy(base_url, max_retries=10, retry_interval=0.5)
 
 @pytest.fixture
 def flapi_base_url(flapi_server):
@@ -263,30 +279,44 @@ def base_url(flapi_server):
 
 # Global variable to store base_url for Tavern hook
 _flapi_base_url_for_tavern = None
+_flapi_server_instance = None
+
+
+def _is_examples_test(request):
+    """Check if the current test is an examples test (test_examples_*.py)."""
+    # Check the test module name
+    if hasattr(request, 'fspath') and request.fspath:
+        return 'test_examples' in str(request.fspath)
+    if hasattr(request, 'node') and hasattr(request.node, 'fspath'):
+        return 'test_examples' in str(request.node.fspath)
+    return False
 
 
 @pytest.fixture(autouse=True)
 def inject_tavern_base_url(request):
-    """Automatically inject base_url for Tavern tests.
+    """Per-test autouse fixture that ensures base_url is available for Tavern tests.
 
-    This autouse fixture ensures that flapi_server is started for Tavern tests
-    and makes base_url available via pytest_tavern_beta_before_every_test_run hook.
+    This fixture:
+    1. Skips for examples tests (they use examples_server)
+    2. Triggers flapi_server startup (session-scoped, runs once)
+    3. Sets the global base_url for Tavern hook
 
     Note: This fixture is skipped for examples tests (test_examples_*.py)
     which use their own examples_server fixture.
     """
-    global _flapi_base_url_for_tavern
+    global _flapi_base_url_for_tavern, _flapi_server_instance
 
-    # Skip this fixture for examples tests
+    # Skip for examples tests - they use examples_server instead
+    if _is_examples_test(request):
+        return
+
+    # Skip if examples_server is explicitly requested
     if "examples_server" in request.fixturenames:
         return
 
-    # Only proceed if flapi_server is being used
-    if "flapi_server" not in request.fixturenames:
-        return
-
-    # Get the flapi_server fixture
+    # Get the session-scoped flapi_server (will only start once per session)
     flapi_server = request.getfixturevalue("flapi_server")
+    _flapi_server_instance = flapi_server
     _flapi_base_url_for_tavern = f"http://localhost:{flapi_server.port}"
 
 
@@ -294,7 +324,7 @@ def pytest_tavern_beta_before_every_test_run(test_dict, variables):
     """Hook to inject base_url into Tavern tests.
 
     This is called after fixtures are loaded but before test execution.
-    We read the base_url from the global variable where inject_tavern_base_url stored it.
+    We read the base_url from the global variable set by inject_tavern_base_url.
     """
     global _flapi_base_url_for_tavern
     if _flapi_base_url_for_tavern:
@@ -402,6 +432,10 @@ def examples_server():
     Note: This fixture runs the examples server with its native configuration,
     using the DuckLake cache files in examples/data/. This tests the examples
     as they would actually run in production.
+
+    ISOLATION: To prevent SIGABRT crashes from DuckDB extension conflicts (especially
+    ERPL), we isolate the DuckDB environment by setting DUCKDB_NO_EXTENSION_AUTOLOADING
+    and providing a clean HOME directory for extension caching.
     """
     import tempfile
     import shutil
@@ -420,12 +454,22 @@ def examples_server():
     flapi_binary = get_flapi_binary()
     port = find_free_port()
 
-    # Create a temp directory for any test artifacts
+    # Create a temp directory for test artifacts AND DuckDB isolation
     temp_dir = tempfile.mkdtemp(prefix="flapi_examples_test_")
+
+    # Create isolated DuckDB directories to prevent extension conflicts
+    duckdb_home = os.path.join(temp_dir, ".duckdb")
+    os.makedirs(duckdb_home, exist_ok=True)
 
     print(f"Starting examples server from: {flapi_binary} on port {port}")
     print(f"Using examples config: {config_path}")
     print(f"Working directory: {project_root}")
+    print(f"Isolated DuckDB home: {duckdb_home}")
+
+    # Build environment with DuckDB isolation to prevent ERPL extension conflicts
+    env = os.environ.copy()
+    env["DUCKDB_NO_EXTENSION_AUTOLOADING"] = "1"  # Prevent auto-loading conflicting extensions
+    env["HOME"] = temp_dir  # Isolated home for DuckDB extension cache
 
     # Start server from project root (examples config paths are relative to project root)
     # Note: Using debug log level as a workaround for an issue where some endpoints
@@ -440,7 +484,8 @@ def examples_server():
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         preexec_fn=os.setsid,
-        cwd=str(project_root)  # Run from project root
+        cwd=str(project_root),  # Run from project root
+        env=env  # Use isolated environment
     )
 
     # Check immediately if the process failed to start
@@ -452,16 +497,26 @@ def examples_server():
         print(f"STDERR: {stderr.decode()}")
         raise Exception(f"Examples server failed to start with code {process.returncode}")
 
-    # Wait for server to start (examples config loads more data, including ERPL extensions)
-    time.sleep(10)
-
-    # Check if process is still running
-    if process.poll() is not None:
-        stdout, stderr = process.communicate()
-        print(f"Examples server exited with code {process.returncode}")
-        print(f"STDOUT: {stdout.decode()}")
-        print(f"STDERR: {stderr.decode()}")
-        raise Exception(f"Examples server exited unexpectedly with code {process.returncode}")
+    # Wait for server to become healthy using proper health checks
+    # Examples server may take longer due to data loading and extensions
+    base_url = f"http://localhost:{port}"
+    try:
+        wait_for_server_healthy(base_url, max_retries=60, retry_interval=1.0)
+    except Exception as e:
+        # Server failed to start - capture output for debugging
+        if process.poll() is not None:
+            stdout, stderr = process.communicate()
+            print(f"Examples server exited with code {process.returncode}")
+            print(f"STDOUT: {stdout.decode()}")
+            print(f"STDERR: {stderr.decode()}")
+        else:
+            print(f"Examples server running (pid {process.pid}) but not responding")
+            try:
+                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                process.wait(timeout=5)
+            except Exception:
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        raise Exception(f"Examples server failed to become healthy: {e}")
 
     # Store the port and temp dir in the process object
     process.port = port

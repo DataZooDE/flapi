@@ -592,13 +592,27 @@ cd build/release && ctest -V -R pattern  # Run specific test
 
 **Framework:** pytest + Tavern (`test/integration/`)
 
+**Python Environment:** Always use `uv` for Python virtual environments:
+```bash
+cd test/integration
+uv venv                            # Create virtual environment
+uv pip install -e .                # Install dependencies from pyproject.toml
+source .venv/bin/activate          # Activate environment
+```
+
 **Test types:**
 - `*.tavern.yaml`: REST API tests using Tavern specification
 - `*.py`: Custom Python tests (MCP, async, complex scenarios)
 
 **Running tests:**
 ```bash
-make integration-test-setup        # Install dependencies
+# Manual test runs (after uv environment setup)
+cd test/integration
+source .venv/bin/activate
+pytest test_customers.tavern.yaml -v           # Single test file
+pytest test_mcp_integration.py::test_name -v   # Single test function
+
+# Or use make targets (handles environment automatically)
 make integration-test-rest         # Tavern tests
 make integration-test-mcp          # MCP protocol tests
 make integration-test-ci           # Full suite with server management
