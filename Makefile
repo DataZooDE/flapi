@@ -196,7 +196,7 @@ run-release: release
 # Legacy integration tests target (kept for compatibility)
 run-integration-tests: debug
 	@echo "Running integration tests..."
-	@$(CMAKE) --build $(DEBUG_DIR) --target integration_tests
+	$(CMAKE) --build $(DEBUG_DIR) --target integration_tests
 
 # Integration test setup - install Python dependencies
 integration-test-setup:

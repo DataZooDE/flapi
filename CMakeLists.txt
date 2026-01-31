@@ -319,10 +319,8 @@ endif()
 
 # Integration tests
 add_custom_target(integration_tests
-    COMMAND ${CMAKE_COMMAND} -E env
-        "FLAPI_BUILD_TYPE=$<CONFIG>"
-        uv sync
-        && uv run python -m pytest *.tavern.yaml -v
+    COMMAND ${CMAKE_COMMAND} -E env "FLAPI_BUILD_TYPE=$<CONFIG>" uv sync
+    COMMAND ${CMAKE_COMMAND} -E env "FLAPI_BUILD_TYPE=$<CONFIG>" uv run python -m pytest "*.tavern.yaml" -v
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/test/integration
     DEPENDS flapi
 )
