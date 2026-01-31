@@ -1,0 +1,68 @@
+# Test-safe version of flapi.yaml - excludes problematic ERPL extension
+# Use this configuration for integration tests instead of flapi.yaml
+
+project-name: example-flapi-project
+project-description: Test configuration for examples (without ERPL extension)
+
+template:
+  path: './sqls'
+  environment-whitelist:
+    - '^FLAPI_.*'
+
+# Database connections (SAP ERPL excluded to prevent SIGABRT in tests)
+connections:
+  bigquery-lakehouse:
+    init: |
+      INSTALL 'bigquery' FROM community;
+      LOAD 'bigquery';
+    properties:
+      project_id: 'd-kaercher-lakehouse'
+
+  customers-parquet:
+    properties:
+      path: './data/customers.parquet'
+
+  northwind-sqlite:
+    init: |
+      INSTALL sqlite;
+      LOAD sqlite;
+      ATTACH IF NOT EXISTS './examples/data/northwind.sqlite' AS nw (TYPE sqlite);
+
+  # Note: sap-abap-trial connection excluded - ERPL extension causes SIGABRT in test context
+
+  taxi-parquet:
+    properties:
+      path: './data/taxi'
+
+heartbeat:
+  enabled: true
+  worker-interval: 10
+
+enforce-https:
+  enabled: false
+
+duckdb:
+  access_mode: READ_WRITE
+  threads: 4
+  max_memory: 2GB
+  default_order: DESC
+
+ducklake:
+  enabled: true
+  alias: cache
+  metadata-path: ./data/cache.ducklake
+  data-path: ./data/cache
+  retention:
+    keep-last-snapshots: 10
+    max-snapshot-age: 30d
+  compaction:
+    enabled: false  # Disabled for tests
+  scheduler:
+    enabled: false  # Disabled for tests
+
+mcp:
+  enabled: true
+  port: 8081
+  host: localhost
+  allow-list-changed-notifications: true
+  instructions-file: ./mcp_instructions.md

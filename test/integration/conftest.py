@@ -426,7 +426,7 @@ def flapi_mcp_client(flapi_server, flapi_base_url):
 def examples_server():
     """Start flapi server with examples configuration.
 
-    Reuses the same infrastructure as flapi_server but points to examples/flapi.yaml.
+    Reuses the same infrastructure as flapi_server but points to examples/flapi-test.yaml.
     Uses module scope so server starts once per test file.
 
     Note: This fixture runs the examples server with its native configuration,
@@ -445,7 +445,7 @@ def examples_server():
     # Project root is two levels up from test/integration
     project_root = current_dir.parent.parent
     # Config path relative to project root
-    config_path = project_root / "examples" / "flapi.yaml"
+    config_path = project_root / "examples" / "flapi-test.yaml"
 
     if not config_path.exists():
         raise FileNotFoundError(f"Examples config not found at {config_path}")
@@ -457,35 +457,23 @@ def examples_server():
     # Create a temp directory for test artifacts AND DuckDB isolation
     temp_dir = tempfile.mkdtemp(prefix="flapi_examples_test_")
 
-    # Create isolated DuckDB directories to prevent extension conflicts
-    duckdb_home = os.path.join(temp_dir, ".duckdb")
-    os.makedirs(duckdb_home, exist_ok=True)
-
     print(f"Starting examples server from: {flapi_binary} on port {port}")
     print(f"Using examples config: {config_path}")
     print(f"Working directory: {project_root}")
-    print(f"Isolated DuckDB home: {duckdb_home}")
-
-    # Build environment with DuckDB isolation to prevent ERPL extension conflicts
-    env = os.environ.copy()
-    env["DUCKDB_NO_EXTENSION_AUTOLOADING"] = "1"  # Prevent auto-loading conflicting extensions
-    env["HOME"] = temp_dir  # Isolated home for DuckDB extension cache
 
     # Start server from project root (examples config paths are relative to project root)
-    # Note: Using debug log level as a workaround for an issue where some endpoints
-    # incorrectly return 401 with info log level (possible race condition in auth loading)
+    # Using flapi-test.yaml which excludes ERPL extension to avoid SIGABRT crashes
     process = subprocess.Popen(
         [
             str(flapi_binary),
-            "-c", "examples/flapi.yaml",  # Use relative path from project root
+            "-c", "examples/flapi-test.yaml",  # Test config without ERPL extension
             "-p", str(port),
-            "--log-level", "debug"
+            "--log-level", "info"
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         preexec_fn=os.setsid,
-        cwd=str(project_root),  # Run from project root
-        env=env  # Use isolated environment
+        cwd=str(project_root)  # Run from project root
     )
 
     # Check immediately if the process failed to start
