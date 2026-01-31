@@ -442,6 +442,16 @@ struct DuckLakeConfig {
     std::optional<std::size_t> data_inlining_row_limit;
 };
 
+struct StorageCacheConfig {
+    bool enabled = true;
+    std::chrono::seconds ttl{300};          // 5 minutes default
+    size_t max_size_bytes = 50UL * 1024UL * 1024UL;  // 50 MB default
+};
+
+struct StorageConfig {
+    StorageCacheConfig cache;
+};
+
 // Forward declarations
 class EndpointConfigParser;
 class ConfigLoader;
@@ -501,6 +511,7 @@ public:
     const GlobalHeartbeatConfig& getGlobalHeartbeatConfig() const { return global_heartbeat_config; }
     const DuckLakeConfig& getDuckLakeConfig() const { return ducklake_config; }
     const MCPConfig& getMCPConfig() const { return mcp_config; }
+    const StorageConfig& getStorageConfig() const { return storage_config; }
 
     // Load MCP server instructions (inline or from file)
     std::string loadMCPInstructions() const;
@@ -559,6 +570,7 @@ protected:
     GlobalHeartbeatConfig global_heartbeat_config;
     DuckLakeConfig ducklake_config;
     MCPConfig mcp_config;
+    StorageConfig storage_config;
     ExtendedYamlParser yaml_parser;
 
     // Extracted classes for delegation (Facade pattern)
@@ -580,6 +592,7 @@ protected:
     void parseTemplateConfig();
     void parseDuckLakeConfig();
     void parseMCPConfig();
+    void parseStorageConfig();
     void parseEndpointConfig(const std::filesystem::path& config_file);
     void parseEndpointRequestFields(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
     void parseEndpointValidators(const YAML::Node& req, RequestFieldConfig& field);

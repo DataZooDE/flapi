@@ -22,6 +22,8 @@
 #include "database_manager.hpp"
 #include "rate_limit_middleware.hpp"
 #include "config_token_utils.hpp"
+#include "credential_manager.hpp"
+#include "vfs_health_checker.hpp"
 
 using namespace flapi;
 
@@ -135,6 +137,32 @@ void initializeDatabase(std::shared_ptr<ConfigManager> config_manager) {
     } catch (const std::exception& e) {
         throw std::runtime_error("Error creating database, Details: " + std::string(e.what()));
     }
+}
+
+void initializeCloudCredentials() {
+    CROW_LOG_INFO << "Initializing cloud storage credentials...";
+    auto& cred_manager = flapi::getGlobalCredentialManager();
+    cred_manager.loadFromEnvironment();
+    cred_manager.logCredentialStatus();
+}
+
+void configureCloudCredentialsInDuckDB() {
+    auto& cred_manager = flapi::getGlobalCredentialManager();
+    if (cred_manager.hasS3Credentials() || cred_manager.hasGCSCredentials() || cred_manager.hasAzureCredentials()) {
+        CROW_LOG_INFO << "Configuring cloud credentials in DuckDB...";
+        if (cred_manager.configureDuckDB()) {
+            CROW_LOG_INFO << "Cloud credentials configured successfully";
+        } else {
+            CROW_LOG_WARNING << "Failed to configure some cloud credentials in DuckDB";
+        }
+    }
+}
+
+void verifyStorageHealth(std::shared_ptr<ConfigManager> config_manager) {
+    flapi::VFSHealthChecker health_checker;
+    std::string config_path = config_manager->getBasePath();
+    std::string templates_path = config_manager->getTemplatePath();
+    health_checker.verifyStartupHealth(config_path, templates_path);
 }
 
 void terminateHandler() {
@@ -282,11 +310,20 @@ int main(int argc, char* argv[])
         return validateConfiguration(config_manager, config_file);
     }
 
+    // Initialize cloud storage credentials (reads environment variables)
+    initializeCloudCredentials();
+
     if (cmd_port != -1) {
         config_manager->setHttpPort(cmd_port);
     }
 
     initializeDatabase(config_manager);
+
+    // Configure cloud credentials in DuckDB after database is initialized
+    configureCloudCredentialsInDuckDB();
+
+    // Verify storage health at startup
+    verifyStorageHealth(config_manager);
 
     // Create unified API server with MCP support (always enabled in unified configuration)
     api_server = std::make_shared<APIServer>(

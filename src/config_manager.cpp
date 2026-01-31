@@ -4,6 +4,8 @@
 #include "endpoint_repository.hpp"
 #include "config_validator.hpp"
 #include "config_serializer.hpp"
+#include "caching_file_provider.hpp"
+#include "vfs_adapter.hpp"
 #include <stdexcept>
 #include <filesystem>
 #include <yaml-cpp/yaml.h>
@@ -107,6 +109,7 @@ void ConfigManager::parseMainConfig() {
         parseDuckDBConfig();
         parseDuckLakeConfig();
         parseMCPConfig();
+        parseStorageConfig();
         parseTemplateConfig();
         parseGlobalHeartbeatConfig();
 
@@ -228,6 +231,38 @@ void ConfigManager::parseDuckLakeConfig() {
         // Resolve relative paths against base path
         ducklake_config.metadata_path = makePathRelativeToBasePathIfNecessary(ducklake_config.metadata_path);
         ducklake_config.data_path = makePathRelativeToBasePathIfNecessary(ducklake_config.data_path);
+    }
+}
+
+// Storage configuration methods
+void ConfigManager::parseStorageConfig() {
+    CROW_LOG_INFO << "Parsing storage configuration";
+    storage_config = StorageConfig{};  // Reset to defaults
+
+    if (!config["storage"]) {
+        CROW_LOG_DEBUG << "Storage configuration not found, using defaults (cache.enabled=true, cache.ttl=300s, cache.max_size_mb=50)";
+        return;
+    }
+
+    auto storage_node = config["storage"];
+
+    if (storage_node["cache"]) {
+        auto cache_node = storage_node["cache"];
+        storage_config.cache.enabled = safeGet<bool>(cache_node, "enabled", "storage.cache.enabled", true);
+
+        if (cache_node["ttl"]) {
+            int ttl_seconds = safeGet<int>(cache_node, "ttl", "storage.cache.ttl", 300);
+            storage_config.cache.ttl = std::chrono::seconds(ttl_seconds);
+            CROW_LOG_DEBUG << "Storage cache TTL: " << ttl_seconds << " seconds";
+        }
+
+        if (cache_node["max_size_mb"]) {
+            int max_mb = safeGet<int>(cache_node, "max_size_mb", "storage.cache.max_size_mb", 50);
+            storage_config.cache.max_size_bytes = static_cast<size_t>(max_mb) * 1024UL * 1024UL;
+            CROW_LOG_DEBUG << "Storage cache max size: " << max_mb << " MB";
+        }
+
+        CROW_LOG_DEBUG << "Storage cache enabled: " << (storage_config.cache.enabled ? "true" : "false");
     }
 }
 
@@ -1035,7 +1070,20 @@ int ConfigManager::getHttpPort() const { return http_port; }
 void ConfigManager::setHttpPort(int port) { http_port = port; }
 std::string ConfigManager::getTemplatePath() const { return template_config.path; }
 std::filesystem::path ConfigManager::getFullTemplatePath() const { return std::filesystem::path(base_path) / template_config.path; }
-std::shared_ptr<IFileProvider> ConfigManager::getFileProvider() const { return config_loader->getFileProvider(); }
+std::shared_ptr<IFileProvider> ConfigManager::getFileProvider() const {
+    // For remote template paths with caching enabled, wrap with CachingFileProvider
+    if (storage_config.cache.enabled && PathSchemeUtils::IsRemotePath(template_config.path)) {
+        FileCacheConfig cache_config;
+        cache_config.enabled = true;
+        cache_config.ttl = storage_config.cache.ttl;
+        cache_config.max_size_bytes = storage_config.cache.max_size_bytes;
+
+        auto base_provider = FileProviderFactory::CreateDuckDBProvider();
+        return std::make_shared<CachingFileProvider>(base_provider, cache_config);
+    }
+
+    return config_loader->getFileProvider();
+}
 std::string ConfigManager::getCacheSchema() const { return cache_schema; }
 const std::unordered_map<std::string, ConnectionConfig>& ConfigManager::getConnections() const { return connections; }
 const RateLimitConfig& ConfigManager::getRateLimitConfig() const { return rate_limit_config; }
