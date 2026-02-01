@@ -245,6 +245,52 @@ stages:
 - Check response headers with `headers` block
 - Validate specific data types using the `verify_data_types` helper
 
+## Examples Tests Prerequisites
+
+The `test_examples_*.py` tests run against the `examples/` directory configuration and require specific setup:
+
+### Data Files
+The examples tests use data files from `examples/data/`:
+- `customers.parquet` - TPC-H customer data
+- `northwind/` - Northwind database data (products, orders, etc.)
+- `cache.ducklake` - DuckLake cache metadata (auto-generated)
+
+### Authentication
+Examples endpoints require Basic auth with credentials:
+- **Username**: `admin`
+- **Password**: `secret`
+
+These are configured in `examples/common/basic-auth.yaml` and provided via the `examples_auth` fixture.
+
+### DuckLake Cache
+Some examples endpoints use DuckLake caching. On first run:
+1. Cache tables are initialized automatically
+2. Metadata stored in `examples/data/cache.ducklake`
+3. Tests clean stale metadata to avoid path mismatch errors
+
+### Running Examples Tests
+```bash
+# Run all examples tests
+pytest test_examples_*.py -v
+
+# Run specific examples test file
+pytest test_examples_northwind.py -v
+
+# Use examples marker
+pytest -m examples -v
+```
+
+### Fixtures
+- `examples_server` - Starts server with `examples/flapi-test.yaml` (session scope)
+- `examples_url` - Base URL for examples server
+- `examples_auth` - Auth credentials tuple `("admin", "secret")`
+- `wait_for_examples` - Waits for examples server to be ready
+
+### Environment Variables
+Tests support configurable timeouts via environment variables:
+- `FLAPI_TEST_EXAMPLES_RETRIES` - Max retries for server startup (default: 60)
+- `FLAPI_TEST_EXAMPLES_INTERVAL` - Retry interval in seconds (default: 1.0)
+
 ## Debugging
 
 - Use `-v` flag for verbose output

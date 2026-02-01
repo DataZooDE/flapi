@@ -13,6 +13,86 @@ from contextlib import AsyncExitStack
 import socket
 import hashlib
 import hmac
+import atexit
+import shutil
+
+# =============================================================================
+# Test Configuration (Environment-configurable)
+# =============================================================================
+# These settings can be overridden via environment variables for CI or local runs
+
+class TestConfig:
+    """Centralized test configuration with environment variable overrides."""
+
+    # Server startup timeouts
+    SERVER_STARTUP_MAX_RETRIES = int(os.environ.get("FLAPI_TEST_STARTUP_RETRIES", "60"))
+    SERVER_STARTUP_RETRY_INTERVAL = float(os.environ.get("FLAPI_TEST_STARTUP_INTERVAL", "1.0"))
+    SERVER_SHUTDOWN_TIMEOUT = int(os.environ.get("FLAPI_TEST_SHUTDOWN_TIMEOUT", "5"))
+
+    # Request timeouts
+    REQUEST_TIMEOUT = int(os.environ.get("FLAPI_TEST_REQUEST_TIMEOUT", "10"))
+    HEALTH_CHECK_TIMEOUT = int(os.environ.get("FLAPI_TEST_HEALTH_TIMEOUT", "5"))
+
+    # MCP-specific settings
+    MCP_STARTUP_MAX_RETRIES = int(os.environ.get("FLAPI_TEST_MCP_RETRIES", "30"))
+    MCP_RETRY_INTERVAL = float(os.environ.get("FLAPI_TEST_MCP_INTERVAL", "1.0"))
+
+    # Examples server settings (may need longer startup for cache warmup)
+    EXAMPLES_STARTUP_MAX_RETRIES = int(os.environ.get("FLAPI_TEST_EXAMPLES_RETRIES", "60"))
+    EXAMPLES_STARTUP_INTERVAL = float(os.environ.get("FLAPI_TEST_EXAMPLES_INTERVAL", "1.0"))
+
+    @classmethod
+    def print_config(cls):
+        """Print current configuration (useful for CI debugging)."""
+        print("Test Configuration:")
+        for attr in dir(cls):
+            if attr.isupper():
+                print(f"  {attr}: {getattr(cls, attr)}")
+
+
+# Track all started flapi processes for cleanup
+_active_flapi_processes = []
+
+
+def _cleanup_orphan_processes():
+    """Cleanup function registered with atexit to kill any orphaned flapi processes."""
+    for process in _active_flapi_processes[:]:
+        try:
+            if process.poll() is None:  # Process still running
+                print(f"Atexit: Terminating orphaned flapi process {process.pid}")
+                try:
+                    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                    process.wait(timeout=2)
+                except (subprocess.TimeoutExpired, ProcessLookupError, OSError):
+                    try:
+                        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                        process.wait(timeout=1)
+                    except (ProcessLookupError, OSError):
+                        pass
+        except Exception as e:
+            print(f"Atexit cleanup error: {e}")
+        finally:
+            _active_flapi_processes.remove(process)
+
+
+# Register atexit handler for emergency cleanup
+atexit.register(_cleanup_orphan_processes)
+
+
+def cleanup_duckdb_locks(directory: pathlib.Path):
+    """Clean up DuckDB lock and WAL files that may prevent clean startup."""
+    patterns = ["*.ducklake", "*.ducklake.wal", "*.wal", "*.db.wal"]
+    cleaned = 0
+    for pattern in patterns:
+        for lock_file in directory.rglob(pattern):
+            try:
+                lock_file.unlink()
+                print(f"Cleaned up DuckDB file: {lock_file}")
+                cleaned += 1
+            except (OSError, PermissionError) as e:
+                print(f"Warning: Could not remove {lock_file}: {e}")
+    return cleaned
+
 
 def get_flapi_binary():
     """Get the path to the flapi binary based on build type.
@@ -173,6 +253,7 @@ def flapi_server():
     )
     process.log_path = log_path
     process.log_file = log_file
+    _active_flapi_processes.append(process)  # Track for cleanup
     print(f"Server logs: {log_path}")
 
     # Check immediately if the process failed to start
@@ -248,6 +329,9 @@ def flapi_server():
     finally:
         log_file.flush()
         log_file.close()
+        # Remove from tracking list
+        if process in _active_flapi_processes:
+            _active_flapi_processes.remove(process)
 
     # Clean up environment variables
     os.environ.pop('FLAPI_TEST_DUCKLAKE_METADATA', None)
@@ -255,7 +339,6 @@ def flapi_server():
     print("Cleaned up test environment variables")
 
     # Clean up temporary directory (includes isolated DuckLake files)
-    import shutil
     keep_temp = os.getenv("FLAPI_TEST_KEEP_TMP", "").lower() in {"1", "true", "yes"}
     if keep_temp:
         print(f"Keeping temporary directory for inspection: {temp_dir}")
@@ -573,6 +656,7 @@ def examples_server():
     )
     process.log_path = log_path
     process.log_file = log_file
+    _active_flapi_processes.append(process)  # Track for cleanup
     print(f"Examples server logs: {log_path}")
 
     # Check immediately if the process failed to start
@@ -630,6 +714,9 @@ def examples_server():
     finally:
         log_file.flush()
         log_file.close()
+        # Remove from tracking list
+        if process in _active_flapi_processes:
+            _active_flapi_processes.remove(process)
 
     # Clean up temporary directory
     keep_temp = os.getenv("FLAPI_TEST_KEEP_TMP", "").lower() in {"1", "true", "yes"}

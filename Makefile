@@ -1,7 +1,7 @@
 # Makefile for flAPI project
 
 # Phony targets
-.PHONY: all debug release clean run-debug run-release run-integration-tests docker-build web cli-build cli-test vscode-build vscode-dev integration-test integration-test-rest integration-test-mcp integration-test-ducklake integration-test-examples integration-test-setup integration-test-ci test-all help
+.PHONY: all debug release clean run-debug run-release run-integration-tests docker-build web cli-build cli-test vscode-build vscode-dev integration-test integration-tests integration-test-rest integration-test-mcp integration-test-ducklake integration-test-examples integration-test-setup integration-test-ci test-all help
 
 # Check if Ninja is available
 NINJA := $(shell which ninja)
@@ -214,14 +214,33 @@ integration-test-setup:
 	fi
 	@echo "Integration test setup completed"
 
-# Run all integration tests
+# Run all integration tests in parallel
 integration-test: release integration-test-setup
-	@echo "Running all integration tests..."
-	@$(MAKE) integration-test-rest
-	@$(MAKE) integration-test-mcp
-	@$(MAKE) integration-test-ducklake
-	@$(MAKE) integration-test-examples
+	@echo "Running all integration tests in parallel..."
+	@cd test/integration && \
+	if command -v uv >/dev/null 2>&1; then \
+		uv run pytest \
+			--ignore=test_load_testing.py \
+			--timeout=120 \
+			-n auto \
+			-v \
+			--tb=short; \
+	else \
+		source .venv/bin/activate && pytest \
+			--ignore=test_load_testing.py \
+			--timeout=120 \
+			-n auto \
+			-v \
+			--tb=short; \
+	fi
 	@echo "All integration tests completed"
+
+# Comprehensive integration sweep (includes skipped/slow suites)
+integration-tests: release integration-test-setup
+	@echo "Running comprehensive integration suite (with per-file timeouts)..."
+	@cd test/integration && UV_CACHE_DIR=/tmp/uv-cache \
+		python ../../tools/run_full_integration_suite.py
+	@echo "Comprehensive integration sweep completed. See diagnosis/integration_test_results.json for details."
 
 # Run REST API integration tests (Tavern-based)
 integration-test-rest: release integration-test-setup
@@ -238,9 +257,9 @@ integration-test-ducklake: release integration-test-setup
 	@echo "Running DuckLake integration tests..."
 	@cd test/integration && \
 	if command -v uv >/dev/null 2>&1; then \
-		uv run pytest test_ducklake_comprehensive.tavern.yaml test_ducklake_advanced.py test_ducklake_scheduler.py -v; \
+		uv run pytest test_ducklake_scheduler.py -v; \
 	else \
-		pytest test_ducklake_comprehensive.tavern.yaml test_ducklake_advanced.py test_ducklake_scheduler.py -v; \
+		pytest test_ducklake_scheduler.py -v; \
 	fi
 
 # Run MCP integration tests

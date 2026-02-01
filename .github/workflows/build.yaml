@@ -212,3 +212,69 @@ jobs:
         path: build/release-arm64/flapi
         if-no-files-found: error
         retention-days: 90
+
+  # -------------------------------------------------------------------------------------------------
+  # Integration Tests (Linux AMD64)
+  # -------------------------------------------------------------------------------------------------
+  integration-tests:
+    needs: [linux-build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Download flapi binary
+      uses: actions/download-artifact@v4
+      with:
+        name: flapi-linux-amd64
+        path: build/release
+
+    - name: Make binary executable
+      run: chmod +x build/release/flapi
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v3
+      with:
+        version: "latest"
+
+    - name: Install test dependencies
+      working-directory: test/integration
+      run: |
+        uv venv
+        uv pip install -e .
+
+    - name: Run integration tests
+      working-directory: test/integration
+      timeout-minutes: 20
+      run: |
+        source .venv/bin/activate
+        pytest --tb=short -v --timeout=60 \
+          --ignore=test_load_testing.py \
+          --junitxml=../../integration_test_results.xml \
+          2>&1 | tee ../../integration_test_output.log
+      continue-on-error: true
+
+    - name: Upload test results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: integration-test-results
+        path: |
+          integration_test_results.xml
+          integration_test_output.log
+        retention-days: 30
+
+    - name: Publish Test Results
+      uses: EnricoMi/publish-unit-test-result-action@v2
+      if: always()
+      with:
+        files: integration_test_results.xml
+        check_name: Integration Tests
+        comment_mode: off

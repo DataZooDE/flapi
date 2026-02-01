@@ -8,14 +8,11 @@ these tests are limited to avoid triggering the cache refresh hang bug.
 Reuses:
 - examples_server fixture (from conftest.py)
 - examples_url fixture (from conftest.py)
+- examples_auth fixture (from conftest.py)
 - wait_for_examples fixture (from conftest.py)
 """
 import pytest
 import requests
-
-
-# Default auth credentials from customer-common.yaml
-AUTH = ("admin", "secret")
 
 
 class TestExamplesCustomersREST:
@@ -40,11 +37,11 @@ class TestExamplesCustomersREST:
 
         assert response.status_code == 401
 
-    def test_customers_endpoint_returns_data(self, examples_url):
+    def test_customers_endpoint_returns_data(self, examples_url, examples_auth):
         """Verify basic endpoint functionality with auth."""
         response = requests.get(
             f"{examples_url}/customers/",
-            auth=AUTH,
+            auth=examples_auth,
             timeout=10
         )
 
@@ -53,12 +50,12 @@ class TestExamplesCustomersREST:
         assert "data" in data
         assert len(data["data"]) > 0
 
-    def test_segment_filter_automobile(self, examples_url):
+    def test_segment_filter_automobile(self, examples_url, examples_auth):
         """Verify segment enum validator works with AUTOMOBILE."""
         response = requests.get(
             f"{examples_url}/customers/",
             params={"segment": "AUTOMOBILE"},
-            auth=AUTH,
+            auth=examples_auth,
             timeout=10
         )
 
