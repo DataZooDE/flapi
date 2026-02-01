@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS test_customers (
 );
 
 INSERT INTO test_customers (
+    id,
     name,
     segment,
     balance,
@@ -24,7 +25,8 @@ INSERT INTO test_customers (
     last_login_time,
     uuid
 )
-VALUES (
+SELECT
+    COALESCE(MAX(id), 0) + 1,
     '{{{ params.name }}}',
     '{{{ params.segment }}}',
     {{#params.balance}}
@@ -63,8 +65,7 @@ VALUES (
     {{^params.uuid}}
     NULL
     {{/params.uuid}}
-);
+FROM test_customers;
 
--- Select the inserted record using last_insert_rowid() or rowid
-SELECT * FROM test_customers WHERE rowid = last_insert_rowid();
-
+-- Select the inserted record using max(id)
+SELECT * FROM test_customers WHERE id = (SELECT MAX(id) FROM test_customers);

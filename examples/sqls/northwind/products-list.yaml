@@ -6,6 +6,14 @@ method: GET
 
 # Request parameters
 request:
+  - field-name: product_id
+    field-in: query
+    description: Filter by product ID
+    required: false
+    validators:
+      - type: int
+        min: 1
+
   - field-name: product_name
     field-in: query
     description: Filter by product name (partial match)
@@ -47,4 +55,3 @@ connection:
 
 # Pagination enabled
 with-pagination: true
-

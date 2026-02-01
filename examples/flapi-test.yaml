@@ -52,6 +52,7 @@ ducklake:
   alias: cache
   metadata-path: ./data/cache.ducklake
   data-path: ./data/cache
+  override-data-path: true
   retention:
     keep-last-snapshots: 10
     max-snapshot-age: 30d
