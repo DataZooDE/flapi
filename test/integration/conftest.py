@@ -290,6 +290,10 @@ def wait_for_api(request):
     """
     global _flapi_server_instance
 
+    # Skip for tests that manage their own servers
+    if _is_standalone_server_test(request):
+        return
+
     # Skip this fixture for examples tests - they use examples_server instead
     if _is_examples_test(request) or _needs_examples_server(request):
         return
@@ -357,19 +361,31 @@ def _needs_examples_server(request):
     return False
 
 
+def _is_standalone_server_test(request):
+    """Check if the test manages its own server (marked with standalone_server)."""
+    if hasattr(request, "node") and request.node.get_closest_marker("standalone_server") is not None:
+        return True
+    return False
+
+
 @pytest.fixture(autouse=True)
 def inject_tavern_base_url(request):
     """Per-test autouse fixture that ensures base_url is available for Tavern tests.
 
     This fixture:
-    1. Skips for examples tests (they use examples_server)
-    2. Triggers flapi_server startup (session-scoped, runs once)
-    3. Sets the global base_url for Tavern hook
+    1. Skips for standalone_server tests (they manage their own servers)
+    2. Skips for examples tests (they use examples_server)
+    3. Triggers flapi_server startup (session-scoped, runs once)
+    4. Sets the global base_url for Tavern hook
 
     Note: This fixture is skipped for examples tests (test_examples_*.py)
     which use their own examples_server fixture.
     """
     global _flapi_base_url_for_tavern, _flapi_server_instance
+
+    # Skip for tests that manage their own servers
+    if _is_standalone_server_test(request):
+        return
 
     if _needs_examples_server(request) or "examples_server" in request.fixturenames:
         examples_server = request.getfixturevalue("examples_server")

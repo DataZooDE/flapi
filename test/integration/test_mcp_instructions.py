@@ -8,8 +8,17 @@ import os
 import tempfile
 import shutil
 from pathlib import Path
+import pytest
+import socket
+
+def find_free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        s.listen(1)
+        return s.getsockname()[1]
 
 
+@pytest.mark.standalone_server
 class TestMCPInstructions:
     """Test MCP server instructions configuration and delivery."""
 
@@ -35,7 +44,10 @@ This is a test instruction file.
             instructions_path.write_text(instructions_content)
 
             # Write minimal flapi.yaml with instructions
+            port = find_free_port()
             config_content = f"""project-name: test-instructions
+project-description: Test project for MCP instructions
+
 template:
   path: ./sqls
 
@@ -46,7 +58,7 @@ connections:
 
 mcp:
   enabled: true
-  port: 8081
+  port: {port}
   instructions-file: ./mcp_instructions.md
 """
             config_path.write_text(config_content)
@@ -67,17 +79,19 @@ mcp-tool:
             sql_path.write_text("SELECT 1")
 
             # Start the server
+            log_path = Path(tmpdir) / "mcp_instructions.log"
+            log_file = open(log_path, "w")
             server_process = subprocess.Popen(
                 [
                     "./build/release/flapi",
                     "-c",
                     str(config_path),
                     "--port",
-                    "18081",
+                    str(port),
                 ],
                 cwd="/home/jr/Projects/datazoo/flapi",
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
             )
 
             try:
@@ -86,7 +100,7 @@ mcp-tool:
 
                 # Test MCP initialize request
                 response = requests.post(
-                    "http://localhost:18081/mcp",
+                    f"http://localhost:{port}/mcp/jsonrpc",
                     json={
                         "jsonrpc": "2.0",
                         "id": 1,
@@ -118,6 +132,8 @@ mcp-tool:
                 # Clean up server
                 server_process.terminate()
                 server_process.wait(timeout=5)
+                log_file.flush()
+                log_file.close()
 
     def test_initialize_with_inline_instructions(self):
         """Test that inline instructions appear in initialize response."""
@@ -129,7 +145,10 @@ mcp-tool:
             sqls_dir.mkdir()
 
             # Write minimal flapi.yaml with inline instructions
-            config_content = """project-name: test-inline-instructions
+            port = find_free_port()
+            config_content = f"""project-name: test-inline-instructions
+project-description: Test project for inline MCP instructions
+
 template:
   path: ./sqls
 
@@ -140,7 +159,7 @@ connections:
 
 mcp:
   enabled: true
-  port: 8081
+  port: {port}
   instructions: |
     # Inline Test Instructions
 
@@ -168,17 +187,19 @@ mcp-tool:
             sql_path.write_text("SELECT 1")
 
             # Start the server
+            log_path = Path(tmpdir) / "mcp_inline_instructions.log"
+            log_file = open(log_path, "w")
             server_process = subprocess.Popen(
                 [
                     "./build/release/flapi",
                     "-c",
                     str(config_path),
                     "--port",
-                    "18082",
+                    str(port),
                 ],
                 cwd="/home/jr/Projects/datazoo/flapi",
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
             )
 
             try:
@@ -187,7 +208,7 @@ mcp-tool:
 
                 # Test MCP initialize request
                 response = requests.post(
-                    "http://localhost:18082/mcp",
+                    f"http://localhost:{port}/mcp/jsonrpc",
                     json={
                         "jsonrpc": "2.0",
                         "id": 1,
@@ -219,6 +240,8 @@ mcp-tool:
                 # Clean up server
                 server_process.terminate()
                 server_process.wait(timeout=5)
+                log_file.flush()
+                log_file.close()
 
     def test_initialize_without_instructions(self):
         """Test that initialize works fine without instructions configured."""
@@ -230,7 +253,10 @@ mcp-tool:
             sqls_dir.mkdir()
 
             # Write minimal flapi.yaml without instructions
-            config_content = """project-name: test-no-instructions
+            port = find_free_port()
+            config_content = f"""project-name: test-no-instructions
+project-description: Test project without MCP instructions
+
 template:
   path: ./sqls
 
@@ -241,7 +267,7 @@ connections:
 
 mcp:
   enabled: true
-  port: 8081
+  port: {port}
 """
             config_path.write_text(config_content)
 
@@ -261,17 +287,19 @@ mcp-tool:
             sql_path.write_text("SELECT 1")
 
             # Start the server
+            log_path = Path(tmpdir) / "mcp_no_instructions.log"
+            log_file = open(log_path, "w")
             server_process = subprocess.Popen(
                 [
                     "./build/release/flapi",
                     "-c",
                     str(config_path),
                     "--port",
-                    "18083",
+                    str(port),
                 ],
                 cwd="/home/jr/Projects/datazoo/flapi",
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
             )
 
             try:
@@ -280,7 +308,7 @@ mcp-tool:
 
                 # Test MCP initialize request
                 response = requests.post(
-                    "http://localhost:18083/mcp",
+                    f"http://localhost:{port}/mcp/jsonrpc",
                     json={
                         "jsonrpc": "2.0",
                         "id": 1,
@@ -312,6 +340,8 @@ mcp-tool:
                 # Clean up server
                 server_process.terminate()
                 server_process.wait(timeout=5)
+                log_file.flush()
+                log_file.close()
 
 
 if __name__ == "__main__":

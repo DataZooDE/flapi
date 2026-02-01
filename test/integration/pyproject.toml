@@ -22,6 +22,22 @@ dependencies = [
 [tool.pytest.ini_options]
 addopts = "-v"
 testpaths = ["."]
+markers = [
+    "integration: integration test suite",
+    "northwind: northwind example data tests",
+    "examples: tests that require the examples server",
+    "read-only: read-only endpoint tests",
+    "crud: create/read/update/delete tests",
+    "write-operations: write operation tests",
+    "multi-statement: multi-statement execution tests",
+    "comprehensive: comprehensive coverage tests",
+    "ducklake: DuckLake cache tests",
+    "cache: cache behavior tests",
+    "config-service: configuration service tests",
+    "endpoints: endpoint management tests",
+    "standalone_server: tests that manage their own server instance",
+    "slow: slow tests that should be skipped in quick runs",
+]
 filterwarnings = [
     "ignore::pytest.PytestDeprecationWarning:attr.*:",
     "ignore::DeprecationWarning:attr.*:"
