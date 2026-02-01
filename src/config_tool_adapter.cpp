@@ -1398,10 +1398,8 @@ std::string ConfigToolAdapter::isValidEndpointPath(const std::string& path) {
         return "Endpoint path cannot be empty";
     }
 
-    // Check for absolute paths (starting with /)
-    if (path[0] == '/') {
-        return "Endpoint path must be relative (cannot start with '/')";
-    }
+    // URL paths naturally start with '/' - this is valid for endpoint paths
+    // We only check for path traversal attacks
 
     // Check for parent directory traversal (..)
     size_t pos = 0;
