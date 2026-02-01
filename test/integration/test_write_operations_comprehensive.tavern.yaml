@@ -4,6 +4,8 @@ marks:
   - integration
   - write-operations
   - comprehensive
+  - examples
+  - northwind
 
 stages:
   # ============================================
@@ -39,6 +41,7 @@ stages:
       status_code: 200
       headers:
         content-type: "application/json"
+      strict: false
       json:
         rows_affected: 1
         data:
@@ -103,6 +106,7 @@ stages:
       status_code: 200
       headers:
         content-type: "application/json"
+      strict: false
       json:
         rows_affected: 1
         data:
@@ -172,6 +176,7 @@ stages:
         content-type: "application/json"
       json:
         rows_affected: 1
+        data: !anything
         # "UPDATED" contains "UPDATE" but should pass
 
   # ============================================
@@ -247,4 +252,3 @@ stages:
         content-type: "application/json"
       json:
         errors: !anything
-

@@ -277,3 +277,7 @@ def calculate_percentiles(values: List[float], percentiles: List[int] = [50, 90,
     
     return result
 
+
+def test_utility_module_smoke():
+    """Sanity check so pytest collects this helper module without error."""
+    assert True

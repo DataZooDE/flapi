@@ -3,6 +3,7 @@ test_name: Northwind Customers Read Operations
 marks:
   - integration
   - northwind
+  - examples
   - read-only
 
 stages:
@@ -131,4 +132,3 @@ stages:
         content-type: "application/json"
       json: !anything
       # "UPDATED" contains "UPDATE" but should pass due to whole-word matching
-

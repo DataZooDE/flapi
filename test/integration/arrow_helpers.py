@@ -267,6 +267,7 @@ def request_with_arrow_accept(
     url: str,
     method: str = "GET",
     params: Optional[Dict[str, Any]] = None,
+    auth: Optional[Tuple[str, str]] = None,
     **kwargs
 ) -> requests.Response:
     """
@@ -283,7 +284,14 @@ def request_with_arrow_accept(
     """
     headers = kwargs.pop("headers", {})
     headers["Accept"] = ARROW_STREAM_MEDIA_TYPE
-    return requests.request(method, url, headers=headers, params=params, **kwargs)
+    return requests.request(
+        method,
+        url,
+        headers=headers,
+        params=params,
+        auth=auth,
+        **kwargs,
+    )
 
 
 # Pytest fixtures (can be imported in conftest.py)

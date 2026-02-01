@@ -3,6 +3,7 @@ test_name: Northwind Orders Read Operations
 marks:
   - integration
   - northwind
+  - examples
   - read-only
 
 stages:
@@ -10,6 +11,8 @@ stages:
     request:
       url: "{base_url}/northwind/orders/"
       method: GET
+      params:
+        limit: 50
     response:
       status_code: 200
       headers:
@@ -144,4 +147,3 @@ stages:
         content-type: "application/json"
       json: !anything
       # Should contain order details in the response (structure depends on SQL query)
-

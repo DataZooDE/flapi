@@ -19,7 +19,6 @@ import requests
 import json
 from typing import Dict, Any, Tuple
 
-
 class SimpleMCPClient:
     """Simple HTTP-based MCP client for testing examples.
 

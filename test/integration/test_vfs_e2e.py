@@ -18,6 +18,11 @@ import pytest
 import subprocess
 import tempfile
 import os
+
+# TEMPORARILY DISABLED FOR DEBUGGING
+# pytestmark = pytest.mark.skip(
+#     reason="VFS E2E tests currently fail due to config path resolution bug; tracked for fix."
+# )
 import time
 import signal
 import yaml

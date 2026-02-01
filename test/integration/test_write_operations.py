@@ -2,26 +2,24 @@
 Integration tests for write operations (POST/PUT/PATCH)
 """
 import requests
-import time
 import pytest
 
-API_BASE_URL = "http://localhost:8080"
-CONFIG_API_BASE_URL = f"{API_BASE_URL}/api/v1/_config"
+
+def _auth_headers(jwt_token: str):
+    return {"Content-Type": "application/json", "Authorization": f"Bearer {jwt_token}"}
 
 
-def test_post_endpoint_creates_record(flapi_server):
+def test_post_endpoint_creates_record(flapi_base_url, jwt_token):
     """Test that POST endpoint creates a new record"""
-    # First, ensure we have a write endpoint configured
-    # This test assumes the endpoint is already set up via the API config service
-    
     # Create a record using POST
     response = requests.post(
-        f"{API_BASE_URL}/test-write",
+        f"{flapi_base_url}/customers/create",
         json={
             "name": "Test User",
+            "segment": "BUILDING",
             "email": "test@example.com"
         },
-        headers={"Content-Type": "application/json"}
+        headers=_auth_headers(jwt_token)
     )
     
     # Should return 201 Created for POST
@@ -33,62 +31,65 @@ def test_post_endpoint_creates_record(flapi_server):
         assert data["rows_affected"] >= 0
 
 
-def test_put_endpoint_updates_record(flapi_server):
+def test_put_endpoint_updates_record(flapi_base_url, jwt_token):
     """Test that PUT endpoint updates an existing record"""
     response = requests.put(
-        f"{API_BASE_URL}/test-write/1",
+        f"{flapi_base_url}/customers/1",
         json={
             "name": "Updated Name",
+            "segment": "AUTOMOBILE",
             "email": "updated@example.com"
         },
-        headers={"Content-Type": "application/json"}
+        headers=_auth_headers(jwt_token)
     )
     
     # Should return 200 OK for PUT
     assert response.status_code in [200, 404], f"Expected 200 or 404, got {response.status_code}: {response.text}"
 
 
-def test_patch_endpoint_partial_update(flapi_server):
+def test_patch_endpoint_partial_update(flapi_base_url, jwt_token):
     """Test that PATCH endpoint performs partial update"""
     response = requests.patch(
-        f"{API_BASE_URL}/test-write/1",
+        f"{flapi_base_url}/customers/1",
         json={
             "email": "patched@example.com"
         },
-        headers={"Content-Type": "application/json"}
+        headers=_auth_headers(jwt_token)
     )
     
     # Should return 200 OK for PATCH
     assert response.status_code in [200, 404], f"Expected 200 or 404, got {response.status_code}: {response.text}"
 
 
-def test_write_endpoint_validation_error(flapi_server):
+def test_write_endpoint_validation_error(flapi_base_url, jwt_token):
     """Test that write endpoints return 400 for validation errors"""
     response = requests.post(
-        f"{API_BASE_URL}/test-write",
+        f"{flapi_base_url}/customers/create",
         json={
             # Missing required field
+            "segment": "BUILDING",
             "email": "test@example.com"
         },
-        headers={"Content-Type": "application/json"}
+        headers=_auth_headers(jwt_token)
     )
     
     # Should return 400 Bad Request for validation errors
-    if response.status_code == 400:
-        data = response.json()
-        assert "errors" in data
-        assert len(data["errors"]) > 0
+    assert response.status_code == 400
+    data = response.json()
+    assert "errors" in data
+    assert len(data["errors"]) > 0
 
 
-def test_write_endpoint_with_returning_clause(flapi_server):
+def test_write_endpoint_with_returning_clause(flapi_base_url, jwt_token):
     """Test that write endpoints return data when RETURNING clause is used"""
     response = requests.post(
-        f"{API_BASE_URL}/test-write-returning",
+        f"{flapi_base_url}/customers/create",
         json={
             "name": "Return Test",
+            "segment": "FURNITURE",
             "email": "return@example.com"
         },
-        headers={"Content-Type": "application/json"}
+        headers=_auth_headers(jwt_token)
     )
     
     if response.status_code == 201:
@@ -99,10 +100,10 @@ def test_write_endpoint_with_returning_clause(flapi_server):
             assert isinstance(data["data"], list) or isinstance(data["data"], dict)
 
 
-def test_write_endpoint_cors_headers(flapi_server):
+def test_write_endpoint_cors_headers(flapi_base_url):
     """Test that CORS headers are set for POST/PUT/PATCH requests"""
     response = requests.options(
-        f"{API_BASE_URL}/test-write",
+        f"{flapi_base_url}/customers/create",
         headers={
             "Origin": "http://localhost:3000",
             "Access-Control-Request-Method": "POST"
@@ -118,4 +119,3 @@ def test_write_endpoint_cors_headers(flapi_server):
         assert "POST" in methods
         assert "PUT" in methods
         assert "PATCH" in methods
-

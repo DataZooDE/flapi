@@ -19,6 +19,7 @@ import threading
 import io
 import tracemalloc
 from typing import Optional
+import base64
 
 # Skip tests if pyarrow not installed
 pytest.importorskip("pyarrow")
@@ -39,10 +40,14 @@ from arrow_helpers import (
 class TestArrowContentNegotiation:
     """Test content negotiation for Arrow format."""
 
-    def test_accept_header_returns_arrow(self, examples_url, wait_for_examples):
+    def test_accept_header_returns_arrow(self, examples_url, wait_for_examples, examples_auth):
         """Request with Arrow Accept header should return Arrow content-type."""
         headers = {"Accept": ARROW_STREAM_MEDIA_TYPE}
-        response = requests.get(f"{examples_url}/northwind/products/", headers=headers)
+        response = requests.get(
+            f"{examples_url}/northwind/products/",
+            headers=headers,
+            auth=examples_auth,
+        )
 
         # Should return 200 OK or 406 if Arrow not yet supported
         assert response.status_code in [200, 406], f"Unexpected status: {response.status_code}"
@@ -51,9 +56,12 @@ class TestArrowContentNegotiation:
             content_type = response.headers.get("Content-Type", "")
             assert ARROW_STREAM_MEDIA_TYPE in content_type, f"Expected Arrow content-type, got {content_type}"
 
-    def test_format_query_param_returns_arrow(self, examples_url, wait_for_examples):
+    def test_format_query_param_returns_arrow(self, examples_url, wait_for_examples, examples_auth):
         """Request with ?format=arrow should return Arrow content-type."""
-        response = requests.get(f"{examples_url}/northwind/products/?format=arrow")
+        response = requests.get(
+            f"{examples_url}/northwind/products/?format=arrow",
+            auth=examples_auth,
+        )
 
         # Should return 200 OK or 400/406 if Arrow not yet supported
         assert response.status_code in [200, 400, 406], f"Unexpected status: {response.status_code}"
@@ -62,22 +70,30 @@ class TestArrowContentNegotiation:
             content_type = response.headers.get("Content-Type", "")
             assert ARROW_STREAM_MEDIA_TYPE in content_type
 
-    def test_quality_values_respected(self, examples_url, wait_for_examples):
+    def test_quality_values_respected(self, examples_url, wait_for_examples, examples_auth):
         """Higher quality values should be preferred."""
         # Prefer Arrow over JSON
         headers = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};q=1.0, application/json;q=0.5"}
-        response = requests.get(f"{examples_url}/northwind/products/", headers=headers)
+        response = requests.get(
+            f"{examples_url}/northwind/products/",
+            headers=headers,
+            auth=examples_auth,
+        )
 
         if response.status_code == 200:
             content_type = response.headers.get("Content-Type", "")
             # Should return Arrow since it has higher quality value
             assert ARROW_STREAM_MEDIA_TYPE in content_type or "application/json" in content_type
 
-    def test_fallback_to_json_when_arrow_not_supported(self, examples_url, wait_for_examples):
+    def test_fallback_to_json_when_arrow_not_supported(self, examples_url, wait_for_examples, examples_auth):
         """Should fall back to JSON if Arrow is not available."""
         # Request Arrow but accept JSON as fallback
         headers = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};q=1.0, application/json;q=0.9"}
-        response = requests.get(f"{examples_url}/northwind/products/", headers=headers)
+        response = requests.get(
+            f"{examples_url}/northwind/products/",
+            headers=headers,
+            auth=examples_auth,
+        )
 
         assert response.status_code in [200, 406]
         # Should return either Arrow or JSON
@@ -89,9 +105,12 @@ class TestArrowContentNegotiation:
 class TestArrowStreamValidity:
     """Test that Arrow responses are valid IPC streams."""
 
-    def test_response_is_valid_arrow_stream(self, examples_url, wait_for_examples):
+    def test_response_is_valid_arrow_stream(self, examples_url, wait_for_examples, examples_auth):
         """Response should be a valid Arrow IPC stream readable by pyarrow."""
-        response = request_with_arrow_accept(f"{examples_url}/northwind/products/")
+        response = request_with_arrow_accept(
+            f"{examples_url}/northwind/products/",
+            auth=examples_auth,
+        )
 
         if response.status_code != 200:
             pytest.skip("Arrow format not yet supported")
@@ -101,9 +120,12 @@ class TestArrowStreamValidity:
         assert table is not None
         assert table.num_rows > 0
 
-    def test_arrow_schema_matches_expected(self, examples_url, wait_for_examples):
+    def test_arrow_schema_matches_expected(self, examples_url, wait_for_examples, examples_auth):
         """Arrow schema should have expected columns and types."""
-        response = request_with_arrow_accept(f"{examples_url}/northwind/products/")
+        response = request_with_arrow_accept(
+            f"{examples_url}/northwind/products/",
+            auth=examples_auth,
+        )
 
         if response.status_code != 200:
             pytest.skip("Arrow format not yet supported")
@@ -117,12 +139,13 @@ class TestArrowStreamValidity:
         # At least these columns should exist
         assert expected_columns.issubset(actual_columns), f"Missing columns: {expected_columns - actual_columns}"
 
-    def test_empty_result_returns_valid_arrow(self, examples_url, wait_for_examples):
+    def test_empty_result_returns_valid_arrow(self, examples_url, wait_for_examples, examples_auth):
         """Empty result should still return valid Arrow with schema."""
         # Query with filter that returns no results
         response = request_with_arrow_accept(
             f"{examples_url}/northwind/products/",
-            params={"product_id": 999999}  # Non-existent ID
+            params={"product_id": 999999},  # Non-existent ID
+            auth=examples_auth,
         )
 
         if response.status_code != 200:
@@ -141,12 +164,16 @@ class TestArrowStreamValidity:
 class TestArrowDataIntegrity:
     """Test that Arrow data matches JSON data."""
 
-    def test_arrow_data_matches_json(self, examples_url, wait_for_examples):
+    def test_arrow_data_matches_json(self, examples_url, wait_for_examples, examples_auth):
         """Arrow and JSON responses should contain the same data."""
         endpoint = f"{examples_url}/northwind/products/"
 
         # Get JSON response
-        json_response = requests.get(endpoint, headers={"Accept": "application/json"})
+        json_response = requests.get(
+            endpoint,
+            headers={"Accept": "application/json"},
+            auth=examples_auth,
+        )
         if json_response.status_code != 200:
             pytest.skip("Endpoint not available")
 
@@ -155,7 +182,7 @@ class TestArrowDataIntegrity:
             json_data = json_data["data"]
 
         # Get Arrow response
-        arrow_response = request_with_arrow_accept(endpoint)
+        arrow_response = request_with_arrow_accept(endpoint, auth=examples_auth)
         if arrow_response.status_code != 200:
             pytest.skip("Arrow format not yet supported")
 
@@ -168,12 +195,12 @@ class TestArrowDataIntegrity:
 
         assert is_equal, f"Data mismatch: {diff}"
 
-    def test_null_values_preserved(self, examples_url, wait_for_examples):
+    def test_null_values_preserved(self, examples_url, wait_for_examples, examples_auth):
         """NULL values should be correctly represented in Arrow."""
         # This test requires an endpoint with nullable columns
         endpoint = f"{examples_url}/northwind/products/"
 
-        arrow_response = request_with_arrow_accept(endpoint)
+        arrow_response = request_with_arrow_accept(endpoint, auth=examples_auth)
         if arrow_response.status_code != 200:
             pytest.skip("Arrow format not yet supported")
 
@@ -187,11 +214,11 @@ class TestArrowDataIntegrity:
                 for value in column.to_pylist():
                     pass  # Just iterating should not raise
 
-    def test_various_data_types(self, examples_url, wait_for_examples):
+    def test_various_data_types(self, examples_url, wait_for_examples, examples_auth):
         """Various data types should be correctly serialized."""
         endpoint = f"{examples_url}/northwind/orders/"
 
-        arrow_response = request_with_arrow_accept(endpoint)
+        arrow_response = request_with_arrow_accept(endpoint, auth=examples_auth)
         if arrow_response.status_code != 200:
             pytest.skip("Arrow format not yet supported")
 
@@ -219,10 +246,14 @@ class TestArrowCompression:
     4. Client compatibility (pyarrow, polars can read compressed streams)
     """
 
-    def test_zstd_compression_basic(self, examples_url, wait_for_examples):
+    def test_zstd_compression_basic(self, examples_url, wait_for_examples, examples_auth):
         """Request with ZSTD codec should return compressed stream."""
         headers = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=zstd"}
-        response = requests.get(f"{examples_url}/northwind/products/", headers=headers)
+        response = requests.get(
+            f"{examples_url}/northwind/products/",
+            headers=headers,
+            auth=examples_auth,
+        )
 
         if response.status_code != 200:
             pytest.skip("Arrow format or ZSTD compression not yet supported")
@@ -234,10 +265,14 @@ class TestArrowCompression:
         except OSError as e:
             pytest.skip(f"ZSTD compression not properly implemented: {e}")
 
-    def test_lz4_compression_basic(self, examples_url, wait_for_examples):
+    def test_lz4_compression_basic(self, examples_url, wait_for_examples, examples_auth):
         """Request with LZ4 codec should return compressed stream."""
         headers = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=lz4"}
-        response = requests.get(f"{examples_url}/northwind/products/", headers=headers)
+        response = requests.get(
+            f"{examples_url}/northwind/products/",
+            headers=headers,
+            auth=examples_auth,
+        )
 
         if response.status_code != 200:
             pytest.skip("Arrow format or LZ4 compression not yet supported")
@@ -249,19 +284,19 @@ class TestArrowCompression:
         except OSError as e:
             pytest.skip(f"LZ4 compression not properly implemented: {e}")
 
-    def test_zstd_compression_smaller_than_uncompressed(self, examples_url, wait_for_examples):
+    def test_zstd_compression_smaller_than_uncompressed(self, examples_url, wait_for_examples, examples_auth):
         """ZSTD compressed response should be smaller than uncompressed."""
         endpoint = f"{examples_url}/publicis"  # Larger dataset
 
         # Get uncompressed size
-        uncompressed = request_with_arrow_accept(endpoint)
+        uncompressed = request_with_arrow_accept(endpoint, auth=examples_auth)
         if uncompressed.status_code != 200:
             pytest.skip("Arrow format not yet supported")
         uncompressed_size = len(uncompressed.content)
 
         # Get ZSTD compressed size
         headers = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=zstd"}
-        compressed = requests.get(endpoint, headers=headers)
+        compressed = requests.get(endpoint, headers=headers, auth=examples_auth)
         if compressed.status_code != 200:
             pytest.skip("ZSTD compression not yet supported")
         compressed_size = len(compressed.content)
@@ -274,19 +309,19 @@ class TestArrowCompression:
         table = read_arrow_stream_to_table(compressed.content)
         assert table.num_rows > 0
 
-    def test_lz4_compression_smaller_than_uncompressed(self, examples_url, wait_for_examples):
+    def test_lz4_compression_smaller_than_uncompressed(self, examples_url, wait_for_examples, examples_auth):
         """LZ4 compressed response should be smaller than uncompressed."""
         endpoint = f"{examples_url}/publicis"  # Larger dataset
 
         # Get uncompressed size
-        uncompressed = request_with_arrow_accept(endpoint)
+        uncompressed = request_with_arrow_accept(endpoint, auth=examples_auth)
         if uncompressed.status_code != 200:
             pytest.skip("Arrow format not yet supported")
         uncompressed_size = len(uncompressed.content)
 
         # Get LZ4 compressed size
         headers = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=lz4"}
-        compressed = requests.get(endpoint, headers=headers)
+        compressed = requests.get(endpoint, headers=headers, auth=examples_auth)
         if compressed.status_code != 200:
             pytest.skip("LZ4 compression not yet supported")
         compressed_size = len(compressed.content)
@@ -299,10 +334,14 @@ class TestArrowCompression:
         table = read_arrow_stream_to_table(compressed.content)
         assert table.num_rows > 0
 
-    def test_zstd_level_1_fast(self, examples_url, wait_for_examples):
+    def test_zstd_level_1_fast(self, examples_url, wait_for_examples, examples_auth):
         """ZSTD level 1 should provide fast compression."""
         headers = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=zstd;level=1"}
-        response = requests.get(f"{examples_url}/publicis", headers=headers)
+        response = requests.get(
+            f"{examples_url}/publicis",
+            headers=headers,
+            auth=examples_auth,
+        )
 
         if response.status_code != 200:
             pytest.skip("ZSTD compression with levels not yet supported")
@@ -310,20 +349,20 @@ class TestArrowCompression:
         table = read_arrow_stream_to_table(response.content)
         assert table.num_rows > 0
 
-    def test_zstd_level_3_better_ratio(self, examples_url, wait_for_examples):
+    def test_zstd_level_3_better_ratio(self, examples_url, wait_for_examples, examples_auth):
         """ZSTD level 3 should provide better compression ratio than level 1."""
         endpoint = f"{examples_url}/publicis"
 
         # Level 1
         headers_l1 = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=zstd;level=1"}
-        response_l1 = requests.get(endpoint, headers=headers_l1)
+        response_l1 = requests.get(endpoint, headers=headers_l1, auth=examples_auth)
         if response_l1.status_code != 200:
             pytest.skip("ZSTD compression with levels not yet supported")
         size_l1 = len(response_l1.content)
 
         # Level 3
         headers_l3 = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=zstd;level=3"}
-        response_l3 = requests.get(endpoint, headers=headers_l3)
+        response_l3 = requests.get(endpoint, headers=headers_l3, auth=examples_auth)
         if response_l3.status_code != 200:
             pytest.skip("ZSTD level 3 not supported")
         size_l3 = len(response_l3.content)
@@ -338,13 +377,17 @@ class TestArrowCompression:
         table_l3 = read_arrow_stream_to_table(response_l3.content)
         assert table_l1.num_rows == table_l3.num_rows
 
-    def test_codec_negotiation_quality_values(self, examples_url, wait_for_examples):
+    def test_codec_negotiation_quality_values(self, examples_url, wait_for_examples, examples_auth):
         """Codec should be selectable via Accept header quality values."""
         # Prefer ZSTD over LZ4
         headers = {
             "Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=zstd;q=1.0, {ARROW_STREAM_MEDIA_TYPE};codec=lz4;q=0.8"
         }
-        response = requests.get(f"{examples_url}/northwind/products/", headers=headers)
+        response = requests.get(
+            f"{examples_url}/northwind/products/",
+            headers=headers,
+            auth=examples_auth,
+        )
 
         if response.status_code != 200:
             pytest.skip("Codec negotiation not yet supported")
@@ -353,10 +396,14 @@ class TestArrowCompression:
         table = read_arrow_stream_to_table(response.content)
         assert table.num_rows > 0
 
-    def test_no_codec_returns_uncompressed(self, examples_url, wait_for_examples):
+    def test_no_codec_returns_uncompressed(self, examples_url, wait_for_examples, examples_auth):
         """Request without codec parameter should return uncompressed stream."""
         headers = {"Accept": ARROW_STREAM_MEDIA_TYPE}
-        response = requests.get(f"{examples_url}/northwind/products/", headers=headers)
+        response = requests.get(
+            f"{examples_url}/northwind/products/",
+            headers=headers,
+            auth=examples_auth,
+        )
 
         if response.status_code != 200:
             pytest.skip("Arrow format not yet supported")
@@ -371,10 +418,10 @@ class TestArrowCompression:
         assert content_encoding in ["", "identity"], \
             f"Uncompressed request should not have Content-Encoding, got: {content_encoding}"
 
-    def test_pyarrow_reads_zstd_compressed(self, examples_url, wait_for_examples):
+    def test_pyarrow_reads_zstd_compressed(self, examples_url, wait_for_examples, examples_auth):
         """pyarrow should be able to read ZSTD compressed Arrow streams."""
         headers = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=zstd"}
-        response = requests.get(f"{examples_url}/publicis", headers=headers)
+        response = requests.get(f"{examples_url}/publicis", headers=headers, auth=examples_auth)
 
         if response.status_code != 200:
             pytest.skip("ZSTD compression not yet supported")
@@ -390,10 +437,10 @@ class TestArrowCompression:
         df = table.to_pandas()
         assert len(df) == table.num_rows
 
-    def test_pyarrow_reads_lz4_compressed(self, examples_url, wait_for_examples):
+    def test_pyarrow_reads_lz4_compressed(self, examples_url, wait_for_examples, examples_auth):
         """pyarrow should be able to read LZ4 compressed Arrow streams."""
         headers = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=lz4"}
-        response = requests.get(f"{examples_url}/publicis", headers=headers)
+        response = requests.get(f"{examples_url}/publicis", headers=headers, auth=examples_auth)
 
         if response.status_code != 200:
             pytest.skip("LZ4 compression not yet supported")
@@ -409,7 +456,7 @@ class TestArrowCompression:
         df = table.to_pandas()
         assert len(df) == table.num_rows
 
-    def test_polars_reads_compressed_stream(self, examples_url, wait_for_examples):
+    def test_polars_reads_compressed_stream(self, examples_url, wait_for_examples, examples_auth):
         """Polars (if available) should read compressed Arrow streams."""
         try:
             import polars as pl
@@ -417,7 +464,7 @@ class TestArrowCompression:
             pytest.skip("Polars not installed")
 
         headers = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=zstd"}
-        response = requests.get(f"{examples_url}/publicis", headers=headers)
+        response = requests.get(f"{examples_url}/publicis", headers=headers, auth=examples_auth)
 
         if response.status_code != 200:
             pytest.skip("ZSTD compression not yet supported")
@@ -427,19 +474,19 @@ class TestArrowCompression:
         assert len(df) > 0
         assert len(df.columns) > 0
 
-    def test_compressed_data_integrity(self, examples_url, wait_for_examples):
+    def test_compressed_data_integrity(self, examples_url, wait_for_examples, examples_auth):
         """Compressed and uncompressed data should be identical."""
         endpoint = f"{examples_url}/publicis"
 
         # Get uncompressed
-        uncompressed = request_with_arrow_accept(endpoint)
+        uncompressed = request_with_arrow_accept(endpoint, auth=examples_auth)
         if uncompressed.status_code != 200:
             pytest.skip("Arrow format not yet supported")
         table_uncompressed = read_arrow_stream_to_table(uncompressed.content)
 
         # Get ZSTD compressed
         headers = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=zstd"}
-        compressed = requests.get(endpoint, headers=headers)
+        compressed = requests.get(endpoint, headers=headers, auth=examples_auth)
         if compressed.status_code != 200:
             pytest.skip("ZSTD compression not yet supported")
         table_compressed = read_arrow_stream_to_table(compressed.content)
@@ -457,10 +504,14 @@ class TestArrowCompression:
         import pandas as pd
         pd.testing.assert_frame_equal(df_uncompressed, df_compressed)
 
-    def test_invalid_codec_handled_gracefully(self, examples_url, wait_for_examples):
+    def test_invalid_codec_handled_gracefully(self, examples_url, wait_for_examples, examples_auth):
         """Invalid codec should be handled gracefully."""
         headers = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=invalid_codec_xyz"}
-        response = requests.get(f"{examples_url}/northwind/products/", headers=headers)
+        response = requests.get(
+            f"{examples_url}/northwind/products/",
+            headers=headers,
+            auth=examples_auth,
+        )
 
         # Should either:
         # - Return 406 Not Acceptable if codec is required
@@ -478,13 +529,13 @@ class TestArrowCompression:
 class TestArrowMemoryBounds:
     """Test memory usage stays bounded during streaming."""
 
-    def test_large_response_memory_bounded(self, examples_url, wait_for_examples):
+    def test_large_response_memory_bounded(self, examples_url, wait_for_examples, examples_auth):
         """Large responses should not consume unbounded memory."""
         # Start memory tracking
         tracemalloc.start()
 
         endpoint = f"{examples_url}/northwind/orders/"
-        arrow_response = request_with_arrow_accept(endpoint)
+        arrow_response = request_with_arrow_accept(endpoint, auth=examples_auth)
 
         if arrow_response.status_code != 200:
             tracemalloc.stop()
@@ -506,27 +557,35 @@ class TestArrowMemoryBounds:
 class TestArrowErrorHandling:
     """Test error handling for Arrow responses."""
 
-    def test_invalid_endpoint_returns_error(self, examples_url, wait_for_examples):
+    def test_invalid_endpoint_returns_error(self, examples_url, wait_for_examples, examples_auth):
         """Invalid endpoint should return appropriate error."""
-        response = request_with_arrow_accept(f"{examples_url}/nonexistent/endpoint/")
+        response = request_with_arrow_accept(
+            f"{examples_url}/nonexistent/endpoint/",
+            auth=examples_auth,
+        )
 
         assert response.status_code in [404, 406]
 
-    def test_invalid_parameters_returns_error(self, examples_url, wait_for_examples):
+    def test_invalid_parameters_returns_error(self, examples_url, wait_for_examples, examples_auth):
         """Invalid parameters should return appropriate error."""
         # Pass invalid parameter value
         response = request_with_arrow_accept(
             f"{examples_url}/northwind/products/",
-            params={"product_id": "not-a-number"}
+            params={"product_id": "not-a-number"},
+            auth=examples_auth,
         )
 
         # Should return validation error, not crash
         assert response.status_code in [200, 400, 422]  # May filter or reject
 
-    def test_unsupported_codec_handled(self, examples_url, wait_for_examples):
+    def test_unsupported_codec_handled(self, examples_url, wait_for_examples, examples_auth):
         """Unsupported codec should return error or fall back."""
         headers = {"Accept": f"{ARROW_STREAM_MEDIA_TYPE};codec=invalid_codec"}
-        response = requests.get(f"{examples_url}/northwind/products/", headers=headers)
+        response = requests.get(
+            f"{examples_url}/northwind/products/",
+            headers=headers,
+            auth=examples_auth,
+        )
 
         # Should either reject (406) or ignore invalid codec and return uncompressed
         assert response.status_code in [200, 406]
@@ -535,7 +594,7 @@ class TestArrowErrorHandling:
 class TestArrowClientDisconnect:
     """Test client disconnect handling."""
 
-    def test_client_disconnect_cleanup(self, examples_url, wait_for_examples):
+    def test_client_disconnect_cleanup(self, examples_url, wait_for_examples, examples_auth):
         """Server should handle client disconnect gracefully."""
         # This test verifies that early disconnect doesn't crash the server
         import socket
@@ -557,6 +616,7 @@ class TestArrowClientDisconnect:
                 f"GET {parsed.path} HTTP/1.1\r\n"
                 f"Host: {parsed.hostname}:{parsed.port}\r\n"
                 f"Accept: {ARROW_STREAM_MEDIA_TYPE}\r\n"
+                f"Authorization: Basic {base64.b64encode(f'{examples_auth[0]}:{examples_auth[1]}'.encode()).decode()}\r\n"
                 f"Connection: close\r\n"
                 f"\r\n"
             )
@@ -572,7 +632,11 @@ class TestArrowClientDisconnect:
             time.sleep(0.5)
 
             # Server should still be healthy
-            health_check = requests.get(f"{examples_url}/northwind/products/", timeout=5)
+            health_check = requests.get(
+                f"{examples_url}/northwind/products/",
+                timeout=5,
+                auth=examples_auth,
+            )
             assert health_check.status_code in [200, 406], "Server should still be responsive"
 
         except socket.error as e:
@@ -588,12 +652,12 @@ class TestArrowClientDisconnect:
 class TestArrowPerformance:
     """Basic performance validation tests."""
 
-    def test_arrow_response_time_reasonable(self, examples_url, wait_for_examples):
+    def test_arrow_response_time_reasonable(self, examples_url, wait_for_examples, examples_auth):
         """Arrow responses should complete in reasonable time."""
         endpoint = f"{examples_url}/northwind/products/"
 
         start = time.perf_counter()
-        response = request_with_arrow_accept(endpoint)
+        response = request_with_arrow_accept(endpoint, auth=examples_auth)
         elapsed = time.perf_counter() - start
 
         if response.status_code != 200:

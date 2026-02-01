@@ -6,12 +6,14 @@ marks:
 stages:
   - name: Test POST endpoint creates record
     request:
-      url: "{base_url}/test-write"
+      url: "{base_url}/customers/create"
       method: POST
       headers:
         Content-Type: application/json
+        Authorization: "Bearer {jwt_token}"
       json:
         name: "Test User"
+        segment: "BUILDING"
         email: "test@example.com"
     response:
       status_code: [201, 200]
@@ -22,12 +24,14 @@ stages:
 
   - name: Test PUT endpoint updates record
     request:
-      url: "{base_url}/test-write/1"
+      url: "{base_url}/customers/1"
       method: PUT
       headers:
         Content-Type: application/json
+        Authorization: "Bearer {jwt_token}"
       json:
         name: "Updated Name"
+        segment: "AUTOMOBILE"
         email: "updated@example.com"
     response:
       status_code: [200, 404]  # 404 if record doesn't exist
@@ -36,10 +40,11 @@ stages:
 
   - name: Test PATCH endpoint partial update
     request:
-      url: "{base_url}/test-write/1"
+      url: "{base_url}/customers/1"
       method: PATCH
       headers:
         Content-Type: application/json
+        Authorization: "Bearer {jwt_token}"
       json:
         email: "patched@example.com"
     response:
@@ -49,11 +54,13 @@ stages:
 
   - name: Test write endpoint validation error
     request:
-      url: "{base_url}/test-write"
+      url: "{base_url}/customers/create"
       method: POST
       headers:
         Content-Type: application/json
+        Authorization: "Bearer {jwt_token}"
       json:
+        segment: "BUILDING"
         email: "test@example.com"
         # Missing required 'name' field
     response:
@@ -65,7 +72,7 @@ stages:
 
   - name: Test CORS preflight for write operations
     request:
-      url: "{base_url}/test-write"
+      url: "{base_url}/customers/create"
       method: OPTIONS
       headers:
         Origin: "http://localhost:3000"
@@ -76,4 +83,3 @@ stages:
       headers:
         access-control-allow-methods: !anystr  # Should include POST, PUT, PATCH
         access-control-allow-origin: "*"
-
