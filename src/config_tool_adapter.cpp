@@ -37,11 +37,11 @@ void ConfigToolAdapter::registerDiscoveryTools() {
     // Phase 1: Discovery Tools Implementation
     // These tools are read-only and provide introspection capabilities
 
-    // Helper to build basic schema
+    // Helper to build basic schema with empty properties object
     auto build_basic_schema = []() {
         crow::json::wvalue schema;
         schema["type"] = "object";
-        schema["properties"] = crow::json::wvalue();
+        schema["properties"] = crow::json::wvalue::object();
         return schema;
     };
 
@@ -113,7 +113,7 @@ void ConfigToolAdapter::registerTemplateTools() {
     auto build_basic_schema = []() {
         crow::json::wvalue schema;
         schema["type"] = "object";
-        schema["properties"] = crow::json::wvalue();
+        schema["properties"] = crow::json::wvalue::object();
         return schema;
     };
 
@@ -173,7 +173,7 @@ void ConfigToolAdapter::registerEndpointTools() {
     auto build_basic_schema = []() {
         crow::json::wvalue schema;
         schema["type"] = "object";
-        schema["properties"] = crow::json::wvalue();
+        schema["properties"] = crow::json::wvalue::object();
         return schema;
     };
 
@@ -257,7 +257,7 @@ void ConfigToolAdapter::registerCacheTools() {
     auto build_basic_schema = []() {
         crow::json::wvalue schema;
         schema["type"] = "object";
-        schema["properties"] = crow::json::wvalue();
+        schema["properties"] = crow::json::wvalue::object();
         return schema;
     };
 
@@ -1381,14 +1381,14 @@ crow::json::wvalue ConfigToolAdapter::buildInputSchema(const std::vector<std::st
                                                        const std::unordered_map<std::string, std::string>& param_types) {
     crow::json::wvalue schema;
     schema["type"] = "object";
-    schema["properties"] = crow::json::wvalue();
+    schema["properties"] = crow::json::wvalue::object();
     return schema;
 }
 
 crow::json::wvalue ConfigToolAdapter::buildOutputSchema() {
     crow::json::wvalue schema;
     schema["type"] = "object";
-    schema["properties"] = crow::json::wvalue();
+    schema["properties"] = crow::json::wvalue::object();
     return schema;
 }
 
