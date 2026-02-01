@@ -1,0 +1,22 @@
+project-name: bigquery-procedure-example
+project-description: Example calling BigQuery stored procedures via flAPI
+version: 1.0.0
+
+template:
+  path: ./sqls-bigquery
+
+connections:
+  bigquery-kaercher:
+    init: |
+      INSTALL 'bigquery' FROM community;
+      LOAD 'bigquery';
+    properties:
+      project_id: 'd-kaercher-kaadala-mgmt'
+
+duckdb:
+  db_path: ':memory:'
+  access_mode: READ_WRITE
+
+server:
+  port: 8080
+  host: 0.0.0.0

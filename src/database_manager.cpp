@@ -9,6 +9,7 @@
 #include "duckdb/main/capi/capi_internal.hpp"
 
 #include "sql_template_processor.hpp"
+#include "sql_utils.hpp"
 #include "database_manager.hpp"
 #include "duckdb_raii.hpp"
 
@@ -480,17 +481,9 @@ WriteResult DatabaseManager::executeWrite(QueryExecutor& executor, const Endpoin
     };
     
     // Split query by semicolons to support multiple statements
-    std::vector<std::string> statements;
-    std::istringstream queryStream(processedQuery);
-    std::string statement;
-    
-    while (std::getline(queryStream, statement, ';')) {
-        std::string trimmed = trim(statement);
-        if (!trimmed.empty()) {
-            statements.push_back(trimmed);
-        }
-    }
-    
+    // Uses quote-aware splitting to handle semicolons inside string literals
+    std::vector<std::string> statements = splitSqlStatements(processedQuery);
+
     // If no statements found (shouldn't happen), treat entire query as single statement
     if (statements.empty()) {
         statements.push_back(trim(processedQuery));

@@ -1,0 +1,19 @@
+url-path: /customers/create
+method: POST
+
+request:
+  - field-name: name
+    field-in: body
+    field-type: string
+    required: true
+    validators:
+      - type: string
+        min-length: 1
+        max-length: 200
+
+template-source: create-customer.sql
+connection: [bigquery-kaercher]
+
+operation:
+  type: Write
+  returns-data: true

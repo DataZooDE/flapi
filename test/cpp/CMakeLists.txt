@@ -25,6 +25,7 @@ add_executable(flapi_tests
     request_handler_test.cpp
     request_validator_test.cpp
     sql_template_processor_test.cpp
+    sql_utils_test.cpp
     test_duckdb_raii.cpp
     test_json_utils.cpp
     test_config_loader.cpp

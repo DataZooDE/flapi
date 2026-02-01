@@ -1,0 +1,5 @@
+url-path: /customers
+method: GET
+
+template-source: get-customers.sql
+connection: [bigquery-kaercher]
