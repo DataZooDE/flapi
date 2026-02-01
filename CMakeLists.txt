@@ -304,16 +304,11 @@ endif()
 include(CTest)
 include(Catch)
 if(BUILD_TESTING)
-    if(APPLE)
-        # On macOS, only build tests for debug builds
-        if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-            add_subdirectory(test/cpp)
-        endif()
-    elseif(CMAKE_CROSSCOMPILING)
+    if(CMAKE_CROSSCOMPILING)
         # Skip running tests when cross-compiling
         message(STATUS "Skipping tests during cross-compilation")
     else()
-        # On other platforms (Linux), build tests for all configurations
+        # Build tests for all platforms and configurations
         add_subdirectory(test/cpp)
     endif()
 endif()
