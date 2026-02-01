@@ -26,8 +26,8 @@ struct TimeInterval {
 struct ConnectionConfig {
     std::string init;
     std::unordered_map<std::string, std::string> properties;
-    bool log_queries;
-    bool log_parameters;
+    bool log_queries = false;
+    bool log_parameters = false;
     std::string allow;
 
     const std::string& getInit() const { return init; }
@@ -40,9 +40,9 @@ struct HeartbeatConfig {
 };
 
 struct RateLimitConfig {
-    bool enabled;
-    int max;
-    int interval;
+    bool enabled = false;
+    int max = 100;
+    int interval = 60;
 };
 
 struct AuthUser {
@@ -96,7 +96,7 @@ struct OIDCConfig {
 };
 
 struct AuthConfig {
-    bool enabled;
+    bool enabled = false;
     std::string type;
     std::vector<AuthUser> users;
     std::optional<AuthFromSecretManagerConfig> from_aws_secretmanager;
@@ -108,8 +108,8 @@ struct AuthConfig {
 struct ValidatorConfig {
     std::string type;
     std::string regex;
-    int min;
-    int max;
+    int min = 0;
+    int max = 0;
     std::string minDate;
     std::string maxDate;
     std::string minTime;
@@ -436,6 +436,7 @@ struct DuckLakeConfig {
     std::string alias = "cache";
     std::string metadata_path;
     std::string data_path;
+    bool override_data_path = false;
     DuckLakeRetentionConfig retention;
     DuckLakeCompactionConfig compaction;
     DuckLakeSchedulerConfig scheduler;

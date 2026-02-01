@@ -11,6 +11,8 @@ import json
 import asyncio
 from contextlib import AsyncExitStack
 import socket
+import hashlib
+import hmac
 
 def get_flapi_binary():
     """Get the path to the flapi binary based on build type.
@@ -87,6 +89,38 @@ def wait_for_server_healthy(base_url, max_retries=30, retry_interval=1.0):
 
     raise Exception(f"Server at {base_url} failed health check after {max_retries} attempts")
 
+TEST_JWT_SECRET = "test-jwt-secret-key-for-integration-tests"
+TEST_JWT_ISSUER = "flapi-test"
+_TEST_JWT_TOKEN = None
+
+def _base64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("utf-8")
+
+def _get_test_jwt_token() -> str:
+    """Generate a deterministic HS256 JWT for integration tests."""
+    global _TEST_JWT_TOKEN
+    if _TEST_JWT_TOKEN is not None:
+        return _TEST_JWT_TOKEN
+
+    header = {"alg": "HS256", "typ": "JWT"}
+    now = int(time.time())
+    payload = {
+        "iss": TEST_JWT_ISSUER,
+        "sub": "integration-test",
+        "roles": ["write", "read"],
+        "iat": now,
+        "exp": now + 3600,
+    }
+
+    header_b64 = _base64url_encode(json.dumps(header, separators=(",", ":")).encode("utf-8"))
+    payload_b64 = _base64url_encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    signing_input = f"{header_b64}.{payload_b64}".encode("utf-8")
+    signature = hmac.new(TEST_JWT_SECRET.encode("utf-8"), signing_input, hashlib.sha256).digest()
+    signature_b64 = _base64url_encode(signature)
+
+    _TEST_JWT_TOKEN = f"{header_b64}.{payload_b64}.{signature_b64}"
+    return _TEST_JWT_TOKEN
+
 
 @pytest.fixture(scope="function")
 def flapi_server():
@@ -121,6 +155,8 @@ def flapi_server():
     
     # Start flapi binary with configuration and port
     # Enable config service for integration tests with a test token
+    log_path = os.path.join(temp_dir, "flapi_test.log")
+    log_file = open(log_path, "w")
     process = subprocess.Popen(
         [
             str(flapi_binary),
@@ -130,18 +166,23 @@ def flapi_server():
             "--config-service",
             "--config-service-token", "test-token"
         ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
         preexec_fn=os.setsid,
         cwd=temp_dir  # Run in temp directory to use unique db file
     )
+    process.log_path = log_path
+    process.log_file = log_file
+    print(f"Server logs: {log_path}")
 
     # Check immediately if the process failed to start
     if process.poll() is not None:
-        stdout, stderr = process.communicate()
+        log_file.flush()
+        log_file.close()
+        with open(log_path, "r") as log_reader:
+            log_contents = log_reader.read()
         print(f"Server process failed to start with code {process.returncode}")
-        print(f"STDOUT: {stdout.decode()}")
-        print(f"STDERR: {stderr.decode()}")
+        print(f"LOGS: {log_contents}")
         print(f"Command was: {process.args}")
         print(f"Working directory: {temp_dir}")
         raise Exception(f"Server process failed to start with code {process.returncode}")
@@ -151,10 +192,12 @@ def flapi_server():
 
     # Check immediately if the process failed
     if process.poll() is not None:
-        stdout, stderr = process.communicate()
+        log_file.flush()
+        log_file.close()
+        with open(log_path, "r") as log_reader:
+            log_contents = log_reader.read()
         print(f"Server process exited immediately with code {process.returncode}")
-        print(f"STDOUT: {stdout.decode()}")
-        print(f"STDERR: {stderr.decode()}")
+        print(f"LOGS: {log_contents}")
         print(f"Command was: {process.args}")
         print(f"Working directory: {temp_dir}")
         raise Exception(f"Server process exited immediately with code {process.returncode}")
@@ -166,10 +209,12 @@ def flapi_server():
     except Exception as e:
         # Server failed to start - capture output for debugging
         if process.poll() is not None:
-            stdout, stderr = process.communicate()
+            log_file.flush()
+            log_file.close()
+            with open(log_path, "r") as log_reader:
+                log_contents = log_reader.read()
             print(f"Server process exited with code {process.returncode}")
-            print(f"STDOUT: {stdout.decode()}")
-            print(f"STDERR: {stderr.decode()}")
+            print(f"LOGS: {log_contents}")
         else:
             # Process is running but not responding
             print(f"Server process running (pid {process.pid}) but not responding")
@@ -200,6 +245,9 @@ def flapi_server():
             process.wait()
     except ProcessLookupError:
         pass  # Process already terminated
+    finally:
+        log_file.flush()
+        log_file.close()
 
     # Clean up environment variables
     os.environ.pop('FLAPI_TEST_DUCKLAKE_METADATA', None)
@@ -208,11 +256,15 @@ def flapi_server():
 
     # Clean up temporary directory (includes isolated DuckLake files)
     import shutil
-    try:
-        shutil.rmtree(temp_dir)
-        print(f"Cleaned up temporary directory: {temp_dir}")
-    except Exception as e:
-        print(f"Warning: Failed to clean up temporary directory {temp_dir}: {e}")
+    keep_temp = os.getenv("FLAPI_TEST_KEEP_TMP", "").lower() in {"1", "true", "yes"}
+    if keep_temp:
+        print(f"Keeping temporary directory for inspection: {temp_dir}")
+    else:
+        try:
+            shutil.rmtree(temp_dir)
+            print(f"Cleaned up temporary directory: {temp_dir}")
+        except Exception as e:
+            print(f"Warning: Failed to clean up temporary directory {temp_dir}: {e}")
 
     # Clean up any stray lock files in api_configuration (legacy cleanup for robustness)
     current_dir = pathlib.Path(__file__).parent
@@ -239,7 +291,7 @@ def wait_for_api(request):
     global _flapi_server_instance
 
     # Skip this fixture for examples tests - they use examples_server instead
-    if _is_examples_test(request):
+    if _is_examples_test(request) or _needs_examples_server(request):
         return
 
     if "examples_server" in request.fixturenames:
@@ -276,6 +328,11 @@ def base_url(flapi_server):
     """Provide base_url for Tavern tests (uses flapi_server.port)."""
     return f"http://localhost:{flapi_server.port}"
 
+@pytest.fixture
+def jwt_token():
+    """Provide a test JWT for bearer-auth endpoints."""
+    return _get_test_jwt_token()
+
 
 # Global variable to store base_url for Tavern hook
 _flapi_base_url_for_tavern = None
@@ -289,6 +346,14 @@ def _is_examples_test(request):
         return 'test_examples' in str(request.fspath)
     if hasattr(request, 'node') and hasattr(request.node, 'fspath'):
         return 'test_examples' in str(request.node.fspath)
+    return False
+
+def _needs_examples_server(request):
+    """Check if the current test should use the examples server."""
+    if _is_examples_test(request):
+        return True
+    if hasattr(request, "node") and request.node.get_closest_marker("examples") is not None:
+        return True
     return False
 
 
@@ -306,12 +371,10 @@ def inject_tavern_base_url(request):
     """
     global _flapi_base_url_for_tavern, _flapi_server_instance
 
-    # Skip for examples tests - they use examples_server instead
-    if _is_examples_test(request):
-        return
-
-    # Skip if examples_server is explicitly requested
-    if "examples_server" in request.fixturenames:
+    if _needs_examples_server(request) or "examples_server" in request.fixturenames:
+        examples_server = request.getfixturevalue("examples_server")
+        _flapi_server_instance = examples_server
+        _flapi_base_url_for_tavern = f"http://localhost:{examples_server.port}"
         return
 
     # Get the session-scoped flapi_server (will only start once per session)
@@ -329,6 +392,7 @@ def pytest_tavern_beta_before_every_test_run(test_dict, variables):
     global _flapi_base_url_for_tavern
     if _flapi_base_url_for_tavern:
         variables["base_url"] = _flapi_base_url_for_tavern
+    variables["jwt_token"] = _get_test_jwt_token()
 
 
 def verify_data_types(response, expected_types):
@@ -422,12 +486,12 @@ def flapi_mcp_client(flapi_server, flapi_base_url):
 # to verify that the examples actually work.
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def examples_server():
     """Start flapi server with examples configuration.
 
     Reuses the same infrastructure as flapi_server but points to examples/flapi-test.yaml.
-    Uses module scope so server starts once per test file.
+    Uses session scope so server starts once for the test session.
 
     Note: This fixture runs the examples server with its native configuration,
     using the DuckLake cache files in examples/data/. This tests the examples
@@ -456,13 +520,29 @@ def examples_server():
 
     # Create a temp directory for test artifacts AND DuckDB isolation
     temp_dir = tempfile.mkdtemp(prefix="flapi_examples_test_")
+    temp_examples_root = pathlib.Path(temp_dir) / "examples"
+    shutil.copytree(project_root / "examples", temp_examples_root)
+
+    # Remove DuckLake metadata files - they contain embedded paths to the original location
+    # which causes "data path mismatch" errors when running from the temp directory.
+    # Removing these files forces DuckLake to create fresh metadata with correct paths.
+    ducklake_patterns = ["*.ducklake", "*.ducklake.wal"]
+    for pattern in ducklake_patterns:
+        for ducklake_file in temp_examples_root.rglob(pattern):
+            try:
+                ducklake_file.unlink()
+                print(f"Removed stale DuckLake metadata: {ducklake_file}")
+            except Exception as e:
+                print(f"Warning: Could not remove {ducklake_file}: {e}")
 
     print(f"Starting examples server from: {flapi_binary} on port {port}")
     print(f"Using examples config: {config_path}")
-    print(f"Working directory: {project_root}")
+    print(f"Working directory: {temp_dir}")
 
     # Start server from project root (examples config paths are relative to project root)
     # Using flapi-test.yaml which excludes ERPL extension to avoid SIGABRT crashes
+    log_path = os.path.join(temp_dir, "flapi_examples.log")
+    log_file = open(log_path, "w")
     process = subprocess.Popen(
         [
             str(flapi_binary),
@@ -470,19 +550,24 @@ def examples_server():
             "-p", str(port),
             "--log-level", "info"
         ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
         preexec_fn=os.setsid,
-        cwd=str(project_root)  # Run from project root
+        cwd=str(temp_dir)  # Run from isolated copy of examples
     )
+    process.log_path = log_path
+    process.log_file = log_file
+    print(f"Examples server logs: {log_path}")
 
     # Check immediately if the process failed to start
     time.sleep(1)
     if process.poll() is not None:
-        stdout, stderr = process.communicate()
+        log_file.flush()
+        log_file.close()
+        with open(log_path, "r") as log_reader:
+            log_contents = log_reader.read()
         print(f"Examples server failed to start with code {process.returncode}")
-        print(f"STDOUT: {stdout.decode()}")
-        print(f"STDERR: {stderr.decode()}")
+        print(f"LOGS: {log_contents}")
         raise Exception(f"Examples server failed to start with code {process.returncode}")
 
     # Wait for server to become healthy using proper health checks
@@ -493,10 +578,12 @@ def examples_server():
     except Exception as e:
         # Server failed to start - capture output for debugging
         if process.poll() is not None:
-            stdout, stderr = process.communicate()
+            log_file.flush()
+            log_file.close()
+            with open(log_path, "r") as log_reader:
+                log_contents = log_reader.read()
             print(f"Examples server exited with code {process.returncode}")
-            print(f"STDOUT: {stdout.decode()}")
-            print(f"STDERR: {stderr.decode()}")
+            print(f"LOGS: {log_contents}")
         else:
             print(f"Examples server running (pid {process.pid}) but not responding")
             try:
@@ -524,13 +611,20 @@ def examples_server():
             process.wait()
     except ProcessLookupError:
         pass  # Process already terminated
+    finally:
+        log_file.flush()
+        log_file.close()
 
     # Clean up temporary directory
-    try:
-        shutil.rmtree(temp_dir)
-        print(f"Cleaned up examples temp directory: {temp_dir}")
-    except Exception as e:
-        print(f"Warning: Failed to clean up temp directory {temp_dir}: {e}")
+    keep_temp = os.getenv("FLAPI_TEST_KEEP_TMP", "").lower() in {"1", "true", "yes"}
+    if keep_temp:
+        print(f"Keeping examples temp directory for inspection: {temp_dir}")
+    else:
+        try:
+            shutil.rmtree(temp_dir)
+            print(f"Cleaned up examples temp directory: {temp_dir}")
+        except Exception as e:
+            print(f"Warning: Failed to clean up temp directory {temp_dir}: {e}")
 
 
 @pytest.fixture
@@ -539,7 +633,13 @@ def examples_url(examples_server):
     return f"http://localhost:{examples_server.port}"
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
+def examples_auth():
+    """Default authentication tuple for examples endpoints."""
+    return ("admin", "secret")
+
+
+@pytest.fixture(scope="session")
 def wait_for_examples(examples_server):
     """Wait for examples server to be ready.
 
