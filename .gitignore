@@ -21,3 +21,6 @@ service-account.json
 diagnosis/
 dev_rfc.log.ai/
 .codex-delegate
+
+# bv (beads viewer) local config and caches
+.bv/
