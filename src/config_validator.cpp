@@ -59,6 +59,11 @@ void ConfigValidator::setConfigParser(EndpointConfigParser* parser) {
 std::filesystem::path ConfigValidator::resolvePath(const std::string& file_path) const {
     std::filesystem::path path(file_path);
 
+    // Handle empty path - return template path as-is
+    if (path.empty()) {
+        return std::filesystem::path(template_path_);
+    }
+
     // Absolute paths are returned as-is
     if (path.is_absolute()) {
         return path;
@@ -67,12 +72,20 @@ std::filesystem::path ConfigValidator::resolvePath(const std::string& file_path)
     // Relative paths are resolved against template_path_
     std::filesystem::path resolved = std::filesystem::path(template_path_) / path;
 
+    // Handle case where template_path_ is empty - resolved might still be relative
+    if (resolved.empty()) {
+        resolved = path;  // Use original path if nothing to resolve against
+    }
+
     // Try to canonicalize (resolve .. and .)
     try {
         resolved = std::filesystem::canonical(resolved);
     } catch (const std::filesystem::filesystem_error&) {
         // If canonical fails, just make it absolute
-        resolved = std::filesystem::absolute(resolved);
+        // Guard against empty path which would crash absolute()
+        if (!resolved.empty()) {
+            resolved = std::filesystem::absolute(resolved);
+        }
     }
 
     return resolved;

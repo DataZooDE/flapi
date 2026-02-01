@@ -82,6 +82,12 @@ std::vector<ValidationError> RequestValidator::validateField(const RequestFieldC
 
 std::vector<ValidationError> RequestValidator::validateString(const std::string& fieldName, const std::string& value, const ValidatorConfig& validator) {
     std::vector<ValidationError> errors;
+    if (validator.min > 0 && static_cast<int>(value.size()) < validator.min) {
+        errors.push_back({fieldName, "String is shorter than the minimum allowed length"});
+    }
+    if (validator.max > 0 && static_cast<int>(value.size()) > validator.max) {
+        errors.push_back({fieldName, "String is longer than the maximum allowed length"});
+    }
     if (!validator.regex.empty()) {
         std::regex pattern(validator.regex);
         if (!std::regex_match(value, pattern)) {
@@ -95,10 +101,10 @@ std::vector<ValidationError> RequestValidator::validateInt(const std::string& fi
     std::vector<ValidationError> errors;
     try {
         int intValue = std::stoi(value);
-        if (validator.min != 0 && intValue < validator.min) {
+        if (intValue < validator.min) {
             errors.push_back({fieldName, "Integer is less than the minimum allowed value"});
         }
-        if (validator.max != 0 && intValue > validator.max) {
+        if (intValue > validator.max) {
             errors.push_back({fieldName, "Integer is greater than the maximum allowed value"});
         }
     } catch (const std::exception&) {

@@ -6,14 +6,16 @@ namespace flapi {
 ConfigLoader::ConfigLoader(const std::filesystem::path& config_file_path)
     : config_file_path_(config_file_path),
       config_path_string_(config_file_path.string()),
-      base_path_(config_file_path_.parent_path()),
-      base_path_string_(base_path_.string()),
+      base_path_(),  // Will be set in constructor body after making config path absolute
+      base_path_string_(),
       _file_provider(std::make_shared<LocalFileProvider>()),
       _is_remote(false) {
 
-    // Normalize paths for local filesystem
+    // First make config file path absolute, THEN derive base path from it
+    // This handles the case where config_file_path has no directory component
+    // (e.g., "flapi.yaml" instead of "./flapi.yaml")
     config_file_path_ = std::filesystem::absolute(config_file_path_);
-    base_path_ = std::filesystem::absolute(base_path_);
+    base_path_ = config_file_path_.parent_path();
     config_path_string_ = config_file_path_.string();
     base_path_string_ = base_path_.string();
 

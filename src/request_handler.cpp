@@ -229,6 +229,17 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
 
         // Handle Arrow format
         if (negotiation.format == ResponseFormat::ARROW_STREAM) {
+            if (!negotiation.codec.empty()) {
+                res.code = 406;
+                res.set_header("Content-Type", "application/json");
+                crow::json::wvalue errorResponse;
+                errorResponse["error"] = "Arrow compression not supported";
+                errorResponse["codec"] = negotiation.codec;
+                res.write(errorResponse.dump());
+                res.end();
+                return;
+            }
+
             auto executor = db_manager->executeQueryRaw(endpoint, params);
 
             ArrowSerializerConfig arrowConfig;
@@ -473,9 +484,7 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
                     for (const auto& key : bodyJson.keys()) {
                         std::string fieldName = key;
                         std::string value = jsonValueToString(fieldName);
-                        if (!value.empty() || bodyJson[fieldName].t() == crow::json::type::Null) {
-                            params[fieldName] = value;
-                        }
+                        params[fieldName] = value;
                     }
                 }
             } catch (const std::exception& e) {

@@ -6,6 +6,7 @@
 #include "config_serializer.hpp"
 #include "caching_file_provider.hpp"
 #include "vfs_adapter.hpp"
+#include "path_validator.hpp"
 #include <stdexcept>
 #include <filesystem>
 #include <yaml-cpp/yaml.h>
@@ -196,6 +197,7 @@ void ConfigManager::parseDuckLakeConfig() {
     if (ducklake_config.enabled) {
         ducklake_config.metadata_path = safeGet<std::string>(node, "metadata-path", "ducklake.metadata-path");
         ducklake_config.data_path = safeGet<std::string>(node, "data-path", "ducklake.data-path");
+        ducklake_config.override_data_path = safeGet<bool>(node, "override-data-path", "ducklake.override-data-path", false);
 
         if (node["retention"]) {
             auto retention = node["retention"];
@@ -480,6 +482,14 @@ void ConfigManager::parseEndpointValidators(const YAML::Node& req, RequestFieldC
                 validatorConfig.max = safeGet<int>(validator, "max", "validators.max", std::numeric_limits<int>::max());
             } else if (validatorConfig.type == "string") {
                 validatorConfig.regex = safeGet<std::string>(validator, "regex", "validators.regex", "");
+                validatorConfig.min = safeGet<int>(validator, "min", "validators.min", 0);
+                validatorConfig.max = safeGet<int>(validator, "max", "validators.max", 0);
+                if (validator["min-length"]) {
+                    validatorConfig.min = safeGet<int>(validator, "min-length", "validators.min-length", validatorConfig.min);
+                }
+                if (validator["max-length"]) {
+                    validatorConfig.max = safeGet<int>(validator, "max-length", "validators.max-length", validatorConfig.max);
+                }
             } else if (validatorConfig.type == "enum") {
                 validatorConfig.allowedValues = safeGet<std::vector<std::string>>(validator, "allowedValues", "validators.allowedValues");
             } else if (validatorConfig.type == "date") {
@@ -517,6 +527,12 @@ void ConfigManager::parseEndpointAuth(const YAML::Node& endpoint_config, Endpoin
         auto auth_node = endpoint_config["auth"];
         endpoint.auth.enabled = safeGet<bool>(auth_node, "enabled", "auth.enabled", false);
         endpoint.auth.type = safeGet<std::string>(auth_node, "type", "auth.type", "");
+        if (auth_node["jwt-secret"]) {
+            endpoint.auth.jwt_secret = safeGet<std::string>(auth_node, "jwt-secret", "auth.jwt-secret");
+        }
+        if (auth_node["jwt-issuer"]) {
+            endpoint.auth.jwt_issuer = safeGet<std::string>(auth_node, "jwt-issuer", "auth.jwt-issuer");
+        }
         
         // Parse AWS Secrets Manager configuration if present
         if (auth_node["from-aws-secretmanager"]) {
@@ -1162,6 +1178,7 @@ crow::json::wvalue ConfigManager::getFlapiConfig() const {
     ducklakeJson["alias"] = ducklake_config.alias;
     ducklakeJson["metadata-path"] = ducklake_config.metadata_path;
     ducklakeJson["data-path"] = ducklake_config.data_path;
+    ducklakeJson["override-data-path"] = ducklake_config.override_data_path;
 
     // Add data inlining configuration
     if (ducklake_config.data_inlining_row_limit) {
@@ -1794,17 +1811,23 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
         result.valid = false;
         result.errors.emplace_back("template-source cannot be empty");
     } else {
-        // Check if template file exists
-        // Note: config.templateSource is already resolved relative to YAML file directory during parsing
-        std::filesystem::path template_path(config.templateSource);
-        
-        // If path is not absolute, prepend template_config.path
-        if (!template_path.is_absolute()) {
-            template_path = std::filesystem::path(template_config.path) / template_path;
-        }
-        
-        if (!std::filesystem::exists(template_path)) {
-            result.warnings.emplace_back("Template file does not exist: " + template_path.string());
+        // Security check: detect path traversal attempts
+        if (PathValidator::ContainsTraversal(config.templateSource)) {
+            result.warnings.emplace_back("Template source contains path traversal sequences: " + config.templateSource);
+            result.warnings.emplace_back("Template file does not exist (path traversal detected)");
+        } else {
+            // Check if template file exists
+            // Note: config.templateSource is already resolved relative to YAML file directory during parsing
+            std::filesystem::path template_path(config.templateSource);
+
+            // If path is not absolute, prepend template_config.path
+            if (!template_path.is_absolute()) {
+                template_path = std::filesystem::path(template_config.path) / template_path;
+            }
+
+            if (!std::filesystem::exists(template_path)) {
+                result.warnings.emplace_back("Template file does not exist: " + template_path.string());
+            }
         }
     }
     

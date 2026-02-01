@@ -150,6 +150,10 @@ void DatabaseManager::initializeDBManagerFromConfig(std::shared_ptr<ConfigManage
                 CROW_LOG_INFO << "DuckLake data inlining enabled with row limit: " << ducklake_config.data_inlining_row_limit.value();
             }
 
+            if (ducklake_config.override_data_path) {
+                attach_stmt += ", OVERRIDE_DATA_PATH TRUE";
+            }
+
             attach_stmt += ");";
 
             try {

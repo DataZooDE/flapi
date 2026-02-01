@@ -142,7 +142,10 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
     // Skip if response already completed (e.g., by rate limit middleware)
     if (res.is_completed()) return;
 
-    const auto* endpoint = config_manager->getEndpointForPath(req.url);
+    const auto* endpoint = config_manager->getEndpointForPathAndMethod(
+        req.url,
+        crow::method_name(req.method)
+    );
     if (!endpoint || !endpoint->auth.enabled) {
         return;
     }
