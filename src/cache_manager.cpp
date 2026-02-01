@@ -8,10 +8,17 @@
 
 #include "cache_manager.hpp"
 #include "database_manager.hpp"
+#include "database_manager_cache_adapter.hpp"
 
 namespace flapi {
 
-CacheManager::CacheManager(std::shared_ptr<DatabaseManager> db_manager) : db_manager(db_manager) {}
+CacheManager::CacheManager(std::shared_ptr<DatabaseManager> db_manager)
+    : db_adapter_(std::make_shared<DatabaseManagerCacheAdapter>(db_manager)),
+      db_manager(db_manager) {}
+
+CacheManager::CacheManager(std::shared_ptr<ICacheDatabaseAdapter> db_adapter)
+    : db_adapter_(std::move(db_adapter)),
+      db_manager(nullptr) {}
 
 void CacheManager::warmUpCaches(std::shared_ptr<ConfigManager> config_manager) {
     CROW_LOG_INFO << "Warming up endpoint caches, this might take some time...";
@@ -94,10 +101,10 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
         params["primaryKeys"] = joinStrings(cacheConfig.primary_keys, ",");
     }
 
-    const std::string rendered = db_manager->renderCacheTemplate(endpoint, cacheConfig, params);
-    
+    const std::string rendered = db_adapter_->renderCacheTemplate(endpoint, cacheConfig, params);
+
     try {
-        db_manager->executeDuckLakeQuery(rendered, params);
+        db_adapter_->executeDuckLakeQuery(rendered, params);
         recordSyncEvent(config_manager, endpoint, determineCacheMode(cacheConfig), "success", "Cache refreshed successfully");
     } catch (const std::exception& ex) {
         recordSyncEvent(config_manager, endpoint, determineCacheMode(cacheConfig), "error", ex.what());
@@ -117,7 +124,7 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
             expireSql = "CALL ducklake_expire_snapshots('" + catalog + "', versions => ARRAY[0:" + std::to_string(cacheConfig.retention.keep_last_snapshots.value()) + "])";
         }
         try {
-            db_manager->executeDuckLakeQuery(expireSql, params);
+            db_adapter_->executeDuckLakeQuery(expireSql, params);
         } catch (const std::exception& ex) {
             CROW_LOG_WARNING << "Failed to expire DuckLake snapshots for " << schema << "." << table << ": " << ex.what();
         }
@@ -157,7 +164,7 @@ CacheManager::SnapshotInfo CacheManager::fetchSnapshotInfo(const std::string& ca
         // Get all snapshots and derive current/previous from the highest versions
         std::string snapshotsQuery = "SELECT snapshot_id, snapshot_time FROM ducklake_snapshots('" + catalog + "') ORDER BY snapshot_id DESC LIMIT 2";
         try {
-            auto snapshots = db_manager->executeDuckLakeQuery(snapshotsQuery);
+            auto snapshots = db_adapter_->executeDuckLakeQueryWithResult(snapshotsQuery);
             auto snapshotsJson = crow::json::load(snapshots.data.dump());
 
             if (!(snapshotsJson && snapshotsJson.t() == crow::json::type::List && snapshotsJson.size() > 0)) {
@@ -223,7 +230,7 @@ void CacheManager::performGarbageCollection(std::shared_ptr<ConfigManager> confi
     // Use a simple time-based expiry for garbage collection
     std::string expireSql = "CALL ducklake_expire_snapshots('" + params["catalog"] + "', older_than => CAST(CURRENT_TIMESTAMP AS TIMESTAMP) - INTERVAL '1 day')";
     try {
-        db_manager->executeDuckLakeQuery(expireSql, params);
+        db_adapter_->executeDuckLakeQuery(expireSql, params);
         recordSyncEvent(config_manager, endpoint, "garbage_collection", "success", "Expired old snapshots");
     } catch (const std::exception& ex) {
         CROW_LOG_WARNING << "Failed to expire snapshots for " << params["schema"] << "." << params["table"] << ": " << ex.what();
@@ -263,8 +270,8 @@ void CacheManager::initializeAuditTables(std::shared_ptr<ConfigManager> config_m
 
     try {
         std::map<std::string, std::string> params;
-        db_manager->executeDuckLakeQuery(createSchemaSQL, params);
-        db_manager->executeDuckLakeQuery(createAuditTableSQL, params);
+        db_adapter_->executeDuckLakeQuery(createSchemaSQL, params);
+        db_adapter_->executeDuckLakeQuery(createAuditTableSQL, params);
         CROW_LOG_INFO << "Initialized DuckLake audit tables in " << catalog << "." << auditSchema;
     } catch (const std::exception& ex) {
         CROW_LOG_ERROR << "Failed to initialize audit tables: " << ex.what();
@@ -281,7 +288,7 @@ void CacheManager::ensureCacheSchemaExists(const std::string& catalog, const std
     
     try {
         std::map<std::string, std::string> params;
-        db_manager->executeDuckLakeQuery(createSchemaSQL, params);
+        db_adapter_->executeDuckLakeQuery(createSchemaSQL, params);
         CROW_LOG_DEBUG << "Ensured cache schema exists: " << catalog << "." << schema;
     } catch (const std::exception& ex) {
         CROW_LOG_WARNING << "Failed to create cache schema " << catalog << "." << schema << ": " << ex.what();
@@ -323,8 +330,8 @@ void CacheManager::recordSyncEvent(std::shared_ptr<ConfigManager> config_manager
             "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)";
 
         std::map<std::string, std::string> params;
-        db_manager->executeDuckLakeQuery(insertQuery, params);
-        
+        db_adapter_->executeDuckLakeQuery(insertQuery, params);
+
     } catch (const std::exception& ex) {
         CROW_LOG_WARNING << "Failed to record sync event: " << ex.what();
     }

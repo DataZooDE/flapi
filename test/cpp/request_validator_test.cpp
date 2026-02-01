@@ -158,6 +158,171 @@ TEST_CASE("RequestValidator: validateString", "[request_validator]") {
     }
 }
 
+TEST_CASE("RequestValidator: validateString min/max length", "[request_validator]") {
+    RequestValidator validator;
+
+    SECTION("String minimum length enforcement") {
+        RequestFieldConfig field = {};
+        field.fieldName = "username";
+        field.fieldIn = "body";
+        field.description = "Username";
+        field.required = true;
+
+        ValidatorConfig validatorConfig = {};
+        validatorConfig.type = "string";
+        validatorConfig.min = 3;  // Minimum 3 characters
+        validatorConfig.preventSqlInjection = false;  // Disable SQL injection check for this test
+        field.validators.push_back(validatorConfig);
+
+        // Valid: exactly at minimum
+        std::map<std::string, std::string> params = {{"username", "abc"}};
+        auto errors = validator.validateRequestParameters({field}, params);
+        REQUIRE(errors.empty());
+
+        // Valid: above minimum
+        params["username"] = "abcdef";
+        errors = validator.validateRequestParameters({field}, params);
+        REQUIRE(errors.empty());
+
+        // Invalid: below minimum
+        params["username"] = "ab";
+        errors = validator.validateRequestParameters({field}, params);
+        REQUIRE(errors.size() == 1);
+        REQUIRE(errors[0].fieldName == "username");
+        REQUIRE(errors[0].errorMessage == "String is shorter than the minimum allowed length");
+
+        // Invalid: single character
+        params["username"] = "a";
+        errors = validator.validateRequestParameters({field}, params);
+        REQUIRE(errors.size() == 1);
+        REQUIRE(errors[0].errorMessage == "String is shorter than the minimum allowed length");
+    }
+
+    SECTION("String maximum length enforcement") {
+        RequestFieldConfig field = {};
+        field.fieldName = "bio";
+        field.fieldIn = "body";
+        field.description = "Bio";
+        field.required = true;
+
+        ValidatorConfig validatorConfig = {};
+        validatorConfig.type = "string";
+        validatorConfig.max = 10;  // Maximum 10 characters
+        validatorConfig.preventSqlInjection = false;
+        field.validators.push_back(validatorConfig);
+
+        // Valid: exactly at maximum
+        std::map<std::string, std::string> params = {{"bio", "1234567890"}};
+        auto errors = validator.validateRequestParameters({field}, params);
+        REQUIRE(errors.empty());
+
+        // Valid: below maximum
+        params["bio"] = "short";
+        errors = validator.validateRequestParameters({field}, params);
+        REQUIRE(errors.empty());
+
+        // Invalid: exceeds maximum
+        params["bio"] = "12345678901";
+        errors = validator.validateRequestParameters({field}, params);
+        REQUIRE(errors.size() == 1);
+        REQUIRE(errors[0].fieldName == "bio");
+        REQUIRE(errors[0].errorMessage == "String is longer than the maximum allowed length");
+
+        // Invalid: significantly exceeds maximum
+        params["bio"] = "this is a very long string that exceeds the limit";
+        errors = validator.validateRequestParameters({field}, params);
+        REQUIRE(errors.size() == 1);
+        REQUIRE(errors[0].errorMessage == "String is longer than the maximum allowed length");
+    }
+
+    SECTION("String min and max length combined") {
+        RequestFieldConfig field = {};
+        field.fieldName = "password";
+        field.fieldIn = "body";
+        field.description = "Password";
+        field.required = true;
+
+        ValidatorConfig validatorConfig = {};
+        validatorConfig.type = "string";
+        validatorConfig.min = 8;   // Minimum 8 characters
+        validatorConfig.max = 20;  // Maximum 20 characters
+        validatorConfig.preventSqlInjection = false;
+        field.validators.push_back(validatorConfig);
+
+        // Valid: exactly at minimum
+        std::map<std::string, std::string> params = {{"password", "12345678"}};
+        auto errors = validator.validateRequestParameters({field}, params);
+        REQUIRE(errors.empty());
+
+        // Valid: exactly at maximum
+        params["password"] = "12345678901234567890";
+        errors = validator.validateRequestParameters({field}, params);
+        REQUIRE(errors.empty());
+
+        // Valid: in between
+        params["password"] = "password123";
+        errors = validator.validateRequestParameters({field}, params);
+        REQUIRE(errors.empty());
+
+        // Invalid: too short
+        params["password"] = "short";
+        errors = validator.validateRequestParameters({field}, params);
+        REQUIRE(errors.size() == 1);
+        REQUIRE(errors[0].errorMessage == "String is shorter than the minimum allowed length");
+
+        // Invalid: too long
+        params["password"] = "123456789012345678901";  // 21 chars
+        errors = validator.validateRequestParameters({field}, params);
+        REQUIRE(errors.size() == 1);
+        REQUIRE(errors[0].errorMessage == "String is longer than the maximum allowed length");
+    }
+
+    SECTION("Empty string validation") {
+        RequestFieldConfig field = {};
+        field.fieldName = "name";
+        field.fieldIn = "body";
+        field.description = "Name";
+        field.required = true;
+
+        ValidatorConfig validatorConfig = {};
+        validatorConfig.type = "string";
+        validatorConfig.min = 1;  // Require at least 1 character
+        validatorConfig.preventSqlInjection = false;
+        field.validators.push_back(validatorConfig);
+
+        // Empty string should fail min length validation
+        std::map<std::string, std::string> params = {{"name", ""}};
+        auto errors = validator.validateRequestParameters({field}, params);
+        REQUIRE(errors.size() == 1);
+        REQUIRE(errors[0].fieldName == "name");
+        REQUIRE(errors[0].errorMessage == "String is shorter than the minimum allowed length");
+    }
+
+    SECTION("No length constraints (min=0, max=0)") {
+        RequestFieldConfig field = {};
+        field.fieldName = "notes";
+        field.fieldIn = "body";
+        field.description = "Notes";
+        field.required = false;
+
+        ValidatorConfig validatorConfig = {};
+        validatorConfig.type = "string";
+        // min and max default to 0, meaning no length constraints
+        validatorConfig.preventSqlInjection = false;
+        field.validators.push_back(validatorConfig);
+
+        // Empty string should be allowed
+        std::map<std::string, std::string> params = {{"notes", ""}};
+        auto errors = validator.validateRequestParameters({field}, params);
+        REQUIRE(errors.empty());
+
+        // Very long string should be allowed
+        params["notes"] = std::string(1000, 'x');  // 1000 character string
+        errors = validator.validateRequestParameters({field}, params);
+        REQUIRE(errors.empty());
+    }
+}
+
 TEST_CASE("RequestValidator: validateInt", "[request_validator]") {
     RequestValidator validator;
     RequestFieldConfig field = {};

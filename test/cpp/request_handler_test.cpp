@@ -146,3 +146,115 @@ TEST_CASE("RequestHandler: combineWriteParameters incorporates query parameters 
     // Query email should not override default because body missing but default exists
     REQUIRE(params.at("email") == "default@example.com");
 }
+
+TEST_CASE("RequestHandler: combineWriteParameters preserves empty-string body values", "[request_handler]") {
+    TempTestConfig temp("request_handler_empty_strings");
+    auto config_manager = temp.createConfigManager();
+    RequestHandler handler(nullptr, config_manager);
+
+    EndpointConfig endpoint;
+    endpoint.urlPath = "/test";
+    endpoint.method = "PUT";
+    endpoint.operation.type = OperationConfig::Write;
+
+    // Define fields that can be empty strings
+    RequestFieldConfig nameField;
+    nameField.fieldName = "name";
+    nameField.fieldIn = "body";
+    nameField.required = false;
+    endpoint.request_fields.push_back(nameField);
+
+    RequestFieldConfig descField;
+    descField.fieldName = "description";
+    descField.fieldIn = "body";
+    descField.required = false;
+    endpoint.request_fields.push_back(descField);
+
+    RequestFieldConfig statusField;
+    statusField.fieldName = "status";
+    statusField.fieldIn = "body";
+    statusField.required = false;
+    endpoint.request_fields.push_back(statusField);
+
+    SECTION("Empty string from JSON body is preserved") {
+        crow::request req;
+        req.method = crow::HTTPMethod::Put;
+        req.body = R"({"name": "", "description": "Some description"})";
+
+        std::map<std::string, std::string> pathParams;
+        auto params = handler.combineWriteParameters(req, pathParams, endpoint);
+
+        // Empty string should be preserved, not treated as missing
+        REQUIRE(params.find("name") != params.end());
+        REQUIRE(params.at("name") == "");
+        REQUIRE(params.at("description") == "Some description");
+    }
+
+    SECTION("Multiple empty strings are all preserved") {
+        crow::request req;
+        req.method = crow::HTTPMethod::Put;
+        req.body = R"({"name": "", "description": "", "status": ""})";
+
+        std::map<std::string, std::string> pathParams;
+        auto params = handler.combineWriteParameters(req, pathParams, endpoint);
+
+        REQUIRE(params.at("name") == "");
+        REQUIRE(params.at("description") == "");
+        REQUIRE(params.at("status") == "");
+    }
+
+    SECTION("Empty string is different from missing field") {
+        crow::request req;
+        req.method = crow::HTTPMethod::Put;
+        req.body = R"({"name": ""})";  // description not present at all
+
+        std::map<std::string, std::string> pathParams;
+        auto params = handler.combineWriteParameters(req, pathParams, endpoint);
+
+        // name should be present with empty value
+        REQUIRE(params.find("name") != params.end());
+        REQUIRE(params.at("name") == "");
+
+        // description was never sent in the body
+        // It might not be in params at all, or it might be from defaults
+        // The key point is that empty string from body is preserved as empty
+    }
+
+    SECTION("Empty string body value triggers validation error if required") {
+        RequestValidator validator;
+
+        RequestFieldConfig requiredField;
+        requiredField.fieldName = "required_name";
+        requiredField.fieldIn = "body";
+        requiredField.required = true;
+
+        ValidatorConfig stringValidator;
+        stringValidator.type = "string";
+        stringValidator.min = 1;  // Require at least 1 character
+        stringValidator.preventSqlInjection = false;
+        requiredField.validators.push_back(stringValidator);
+
+        std::vector<RequestFieldConfig> fields = {requiredField};
+
+        // Test that empty string fails validation when min length is set
+        std::map<std::string, std::string> params = {{"required_name", ""}};
+        auto errors = validator.validateRequestParameters(fields, params);
+
+        REQUIRE(errors.size() == 1);
+        REQUIRE(errors[0].fieldName == "required_name");
+        REQUIRE(errors[0].errorMessage == "String is shorter than the minimum allowed length");
+    }
+
+    SECTION("Whitespace-only string is preserved (not trimmed)") {
+        crow::request req;
+        req.method = crow::HTTPMethod::Put;
+        req.body = R"({"name": "   ", "description": "\t\n"})";
+
+        std::map<std::string, std::string> pathParams;
+        auto params = handler.combineWriteParameters(req, pathParams, endpoint);
+
+        // Whitespace-only strings should be preserved as-is
+        REQUIRE(params.at("name") == "   ");
+        REQUIRE(params.at("description") == "\t\n");
+    }
+}

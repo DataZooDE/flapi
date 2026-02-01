@@ -4,6 +4,7 @@
 #include <optional>
 #include <chrono>
 #include "config_manager.hpp"
+#include "cache_database_adapter.hpp"
 #include <duckdb.h>
 
 namespace flapi {
@@ -12,7 +13,11 @@ class DatabaseManager; // Forward declaration
 
 class CacheManager {
 public:
-    CacheManager(std::shared_ptr<DatabaseManager> db_manager);
+    // Backward-compatible constructor: wraps DatabaseManager in adapter
+    explicit CacheManager(std::shared_ptr<DatabaseManager> db_manager);
+
+    // Constructor for unit testing: accepts mockable adapter directly
+    explicit CacheManager(std::shared_ptr<ICacheDatabaseAdapter> db_adapter);
 
     void warmUpCaches(std::shared_ptr<ConfigManager> config_manager);
     bool shouldRefreshCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint);
@@ -40,6 +45,10 @@ private:
     SnapshotInfo fetchSnapshotInfo(const std::string& catalog, const std::string& schema, const std::string& table);
     static std::string determineCacheMode(const CacheConfig& cacheConfig);
 
+    // Database adapter for cache operations (mockable for testing)
+    std::shared_ptr<ICacheDatabaseAdapter> db_adapter_;
+
+    // Keep db_manager for backward compatibility with code that accesses it directly
     std::shared_ptr<DatabaseManager> db_manager;
 };
 

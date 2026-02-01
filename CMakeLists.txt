@@ -213,6 +213,7 @@ add_library(flapi-lib STATIC
     src/api_server.cpp
     src/auth_middleware.cpp
     src/cache_manager.cpp
+    src/database_manager_cache_adapter.cpp
     src/config_loader.cpp
     src/endpoint_repository.cpp
     src/config_validator.cpp
