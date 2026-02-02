@@ -11,6 +11,9 @@ from pathlib import Path
 import pytest
 import socket
 
+# Get project root directory (test/integration -> project root)
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+
 def find_free_port():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("", 0))
@@ -89,7 +92,7 @@ mcp-tool:
                     "--port",
                     str(port),
                 ],
-                cwd="/home/jr/Projects/datazoo/flapi",
+                cwd=str(PROJECT_ROOT),
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
             )
@@ -197,7 +200,7 @@ mcp-tool:
                     "--port",
                     str(port),
                 ],
-                cwd="/home/jr/Projects/datazoo/flapi",
+                cwd=str(PROJECT_ROOT),
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
             )
@@ -297,7 +300,7 @@ mcp-tool:
                     "--port",
                     str(port),
                 ],
-                cwd="/home/jr/Projects/datazoo/flapi",
+                cwd=str(PROJECT_ROOT),
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
             )

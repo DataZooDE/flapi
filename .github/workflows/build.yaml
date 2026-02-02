@@ -1,10 +1,11 @@
 name: Build flAPI
 
-permissions: 
+permissions:
   contents: write
   packages: write
   issues: write
   pull-requests: write
+  checks: write
 
 on:
   push:
