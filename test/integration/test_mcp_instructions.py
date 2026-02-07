@@ -4,18 +4,14 @@ import json
 import subprocess
 import time
 import requests
-import os
 import tempfile
-import shutil
 from pathlib import Path
 import pytest
-import socket
 
-def find_free_port():
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        s.listen(1)
-        return s.getsockname()[1]
+from conftest import get_flapi_binary, find_free_port
+
+# Derive project root dynamically
+PROJECT_ROOT = str(Path(__file__).parent.parent.parent)
 
 
 @pytest.mark.standalone_server
@@ -81,15 +77,16 @@ mcp-tool:
             # Start the server
             log_path = Path(tmpdir) / "mcp_instructions.log"
             log_file = open(log_path, "w")
+            flapi_binary = str(get_flapi_binary())
             server_process = subprocess.Popen(
                 [
-                    "./build/release/flapi",
+                    flapi_binary,
                     "-c",
                     str(config_path),
                     "--port",
                     str(port),
                 ],
-                cwd="/home/jr/Projects/datazoo/flapi",
+                cwd=PROJECT_ROOT,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
             )
@@ -189,15 +186,16 @@ mcp-tool:
             # Start the server
             log_path = Path(tmpdir) / "mcp_inline_instructions.log"
             log_file = open(log_path, "w")
+            flapi_binary = str(get_flapi_binary())
             server_process = subprocess.Popen(
                 [
-                    "./build/release/flapi",
+                    flapi_binary,
                     "-c",
                     str(config_path),
                     "--port",
                     str(port),
                 ],
-                cwd="/home/jr/Projects/datazoo/flapi",
+                cwd=PROJECT_ROOT,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
             )
@@ -289,15 +287,16 @@ mcp-tool:
             # Start the server
             log_path = Path(tmpdir) / "mcp_no_instructions.log"
             log_file = open(log_path, "w")
+            flapi_binary = str(get_flapi_binary())
             server_process = subprocess.Popen(
                 [
-                    "./build/release/flapi",
+                    flapi_binary,
                     "-c",
                     str(config_path),
                     "--port",
                     str(port),
                 ],
-                cwd="/home/jr/Projects/datazoo/flapi",
+                cwd=PROJECT_ROOT,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
             )
