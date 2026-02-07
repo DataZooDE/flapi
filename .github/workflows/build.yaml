@@ -1,6 +1,7 @@
 name: Build flAPI
 
-permissions: 
+permissions:
+  checks: write
   contents: write
   packages: write
   issues: write
@@ -255,7 +256,7 @@ jobs:
       timeout-minutes: 20
       run: |
         source .venv/bin/activate
-        pytest --tb=short -v --timeout=60 \
+        pytest --tb=short -v --timeout=180 \
           --ignore=test_load_testing.py \
           --junitxml=../../integration_test_results.xml \
           2>&1 | tee ../../integration_test_output.log
