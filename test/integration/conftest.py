@@ -162,10 +162,9 @@ def wait_for_server_healthy(base_url, max_retries=30, retry_interval=1.0):
                 print(f"Server healthy at {base_url} (status {response.status_code})")
                 return True
         except (ConnectionError, Timeout) as e:
-            wait_time = min(retry_interval * (1.2 ** attempt), 5.0)  # Exponential backoff, max 5s
             if attempt < max_retries - 1:
                 print(f"Waiting for server (attempt {attempt + 1}/{max_retries}): {e}")
-                time.sleep(wait_time)
+                time.sleep(retry_interval)
 
     raise Exception(f"Server at {base_url} failed health check after {max_retries} attempts")
 

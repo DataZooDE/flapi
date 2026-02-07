@@ -9,15 +9,10 @@ template:
   environment-whitelist:
     - '^FLAPI_.*'
 
-# Database connections (SAP ERPL excluded to prevent SIGABRT in tests)
+# Database connections (SAP ERPL and BigQuery excluded for test isolation)
+# BigQuery excluded: extension download (~50MB) blocks server startup in CI,
+# and requires credentials that aren't available in automated test environments.
 connections:
-  bigquery-lakehouse:
-    init: |
-      INSTALL 'bigquery' FROM community;
-      LOAD 'bigquery';
-    properties:
-      project_id: 'd-kaercher-lakehouse'
-
   customers-parquet:
     properties:
       path: './data/customers.parquet'

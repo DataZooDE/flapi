@@ -262,6 +262,12 @@ jobs:
           2>&1 | tee ../../integration_test_output.log
       continue-on-error: true
 
+    - name: Capture server logs on failure
+      if: failure()
+      run: |
+        echo "=== Server log files ==="
+        find /tmp/flapi_* -name "*.log" -exec echo "--- {} ---" \; -exec cat {} \; 2>/dev/null || echo "No server logs found"
+
     - name: Upload test results
       uses: actions/upload-artifact@v4
       if: always()
