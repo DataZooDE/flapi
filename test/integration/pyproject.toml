@@ -20,6 +20,9 @@ dependencies = [
     "psutil>=5.9.0",
 ]
 
+[tool.setuptools]
+packages = []
+
 [tool.pytest.ini_options]
 addopts = "-v"
 testpaths = ["."]
