@@ -244,9 +244,9 @@ jobs:
       working-directory: cli
       run: bun install
 
-    - name: Point shared package to TypeScript source
+    - name: Rewrite shared import to relative path
       run: |
-        sed -i 's|"main".*"dist/index.js"|"main": "src/index.ts"|' cli/shared/package.json
+        sed -i "s|from '@flapi/shared'|from '../../shared/src/index'|" cli/src/lib/validation.ts
 
     - name: Build standalone binary
       working-directory: cli
