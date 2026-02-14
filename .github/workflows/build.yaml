@@ -215,6 +215,46 @@ jobs:
         retention-days: 90
 
   # -------------------------------------------------------------------------------------------------
+  # flapii CLI Build (Bun standalone binaries)
+  # -------------------------------------------------------------------------------------------------
+  flapii-build:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - target: bun-linux-x64
+            artifact: flapii-linux-amd64
+            binary: flapii
+          - target: bun-linux-arm64
+            artifact: flapii-linux-arm64
+            binary: flapii
+          - target: bun-darwin-arm64
+            artifact: flapii-macos-arm64
+            binary: flapii
+          - target: bun-windows-x64
+            artifact: flapii-windows-amd64
+            binary: flapii.exe
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Bun
+      uses: oven-sh/setup-bun@v2
+
+    - name: Install dependencies
+      working-directory: cli
+      run: bun install
+
+    - name: Build standalone binary
+      working-directory: cli
+      run: bun build --compile --target=${{ matrix.target }} src/index.ts --outfile ${{ matrix.binary }}
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.artifact }}
+        path: cli/${{ matrix.binary }}
+        if-no-files-found: error
+
+  # -------------------------------------------------------------------------------------------------
   # Integration Tests (Linux AMD64)
   # -------------------------------------------------------------------------------------------------
   integration-tests:
