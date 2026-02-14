@@ -5,6 +5,10 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+  id-token: write
+
 jobs:
   create-release:
     runs-on: ubuntu-24.04
@@ -150,6 +154,12 @@ jobs:
           --description "CLI client for flapi" --author "DataZoo GmbH" \
           --license MIT --url https://github.com/DataZooDE/flapi
 
+    - name: Upload wheels
+      uses: actions/upload-artifact@v4
+      with:
+        name: pypi-wheels
+        path: dist/*.whl
+
     - name: Create Release
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -171,3 +181,23 @@ jobs:
           --notes "$TAG_MSG" \
           --draft=false \
           --prerelease=false
+
+  pypi-publish:
+    needs: create-release
+    runs-on: ubuntu-latest
+    name: Publish to PyPI
+    environment:
+      name: pypi
+      url: https://pypi.org/p/flapi-io
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download wheels
+        uses: actions/download-artifact@v4
+        with:
+          name: pypi-wheels
+          path: dist
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
