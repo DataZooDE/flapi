@@ -244,13 +244,12 @@ jobs:
       working-directory: cli
       run: bun install
 
-    - name: Bundle CLI (resolves all imports including @flapi/shared)
-      working-directory: cli
-      run: bun build src/index.ts --outfile .bundle.js --target bun
+    - name: Point shared package to TypeScript source
+      run: sed -i 's|"main": "dist/index.js"|"main": "src/index.ts"|' cli/shared/package.json
 
-    - name: Compile standalone binary
+    - name: Build standalone binary
       working-directory: cli
-      run: bun build --compile --target=${{ matrix.target }} .bundle.js --outfile ${{ matrix.binary }}
+      run: bun build --compile --target=${{ matrix.target }} src/index.ts --outfile ${{ matrix.binary }}
 
     - uses: actions/upload-artifact@v4
       with:
