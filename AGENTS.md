@@ -1301,6 +1301,88 @@ make release                        # Build optimized release binary
 
 The binary is statically linked with all dependencies and can be deployed to any Linux/macOS/Windows system without additional runtime requirements.
 
+### PyPI Wheels
+
+Both `flapi` (server) and `flapii` (CLI) are distributed as platform-specific Python wheels, installable via pip:
+
+```bash
+pip install flapi-io    # SQL-to-API server
+pip install flapii      # CLI client
+```
+
+Wheels are built automatically during release using [bin-to-wheel](https://github.com/DataZooDE/bin-to-wheel).
+
+**Package names on PyPI:**
+- `flapi-io` — the server ("flapi" was taken on PyPI)
+- `flapii` — the TypeScript CLI client
+
+## Release Process
+
+Versioning: `v*` tags (e.g., `v0.5.0`). Tag push triggers the full release pipeline.
+
+### Cross-Platform Targets
+
+| Component | Platform | Build method | Artifact name |
+|-----------|----------|-------------|---------------|
+| flapi (server) | Linux x86_64 | Docker cross-compile | `flapi-linux-amd64` |
+| flapi (server) | Linux ARM64 | Docker cross-compile | `flapi-linux-arm64` |
+| flapi (server) | macOS ARM64 | Native (macos-latest) | `flapi-macos-arm64` |
+| flapi (server) | Windows x64 | MSVC (windows-latest) | `flapi-windows-amd64` |
+| flapii (CLI) | Linux x86_64 | `bun build --compile` | `flapii-linux-amd64` |
+| flapii (CLI) | Linux ARM64 | `bun build --compile` | `flapii-linux-arm64` |
+| flapii (CLI) | macOS ARM64 | `bun build --compile` | `flapii-macos-arm64` |
+| flapii (CLI) | Windows x64 | `bun build --compile` | `flapii-windows-amd64` |
+
+### Release Steps
+
+1. Ensure all CI builds pass on `main` (`gh run list`)
+2. Tag and push: `git tag v{version} && git push origin v{version}`
+3. `.github/workflows/release.yaml` triggers on `v*` tag push:
+   - Downloads build artifacts (4 flapi + 4 flapii binaries)
+   - Creates archive assets (`.tar.gz` for Unix, `.zip` for Windows)
+   - Builds 8 Python wheels via `bin-to-wheel` (4 flapi-io + 4 flapii)
+   - Creates GitHub Release with all archives and wheels
+   - Publishes wheels to PyPI via trusted publishing (OIDC)
+
+### PyPI Trusted Publishing Setup
+
+Uses OIDC trusted publishing — no API tokens needed. Configuration:
+
+| Package | GitHub Environment | PyPI Pending Publisher |
+|---------|-------------------|----------------------|
+| `flapi-io` | `pypi-flapi-io` | DataZooDE/flapi, release.yaml, pypi-flapi-io |
+| `flapii` | `pypi-flapii` | DataZooDE/flapi, release.yaml, pypi-flapii |
+
+Each package needs a separate GitHub environment because PyPI requires unique `(owner, repo, workflow, environment)` tuples for trusted publishers.
+
+### Wheel Output
+
+Each release produces 8 wheels:
+
+| Package | Platform | Wheel platform tag |
+|---------|----------|--------------------|
+| `flapi-io` | Linux x86_64 | `manylinux_2_17_x86_64` |
+| `flapi-io` | Linux ARM64 | `manylinux_2_17_aarch64` |
+| `flapi-io` | macOS ARM64 | `macosx_11_0_arm64` |
+| `flapi-io` | Windows x64 | `win_amd64` |
+| `flapii` | Linux x86_64 | `manylinux_2_17_x86_64` |
+| `flapii` | Linux ARM64 | `manylinux_2_17_aarch64` |
+| `flapii` | macOS ARM64 | `macosx_11_0_arm64` |
+| `flapii` | Windows x64 | `win_amd64` |
+
+### flapii Build Process
+
+The `flapii` CLI is a TypeScript project (Commander.js) compiled to standalone binaries using Bun's `--compile` flag. The `flapii-build` job in `build.yaml` runs a matrix build across 4 targets:
+
+```bash
+bun build --compile --target=bun-linux-x64 src/index.ts --outfile flapii
+bun build --compile --target=bun-linux-arm64 src/index.ts --outfile flapii
+bun build --compile --target=bun-darwin-arm64 src/index.ts --outfile flapii
+bun build --compile --target=bun-windows-x64 src/index.ts --outfile flapii.exe
+```
+
+Each produces a self-contained binary with no runtime dependencies (Bun runtime is embedded).
+
 ## Troubleshooting
 
 ### Build Issues
