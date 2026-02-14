@@ -245,8 +245,7 @@ jobs:
       run: bun install
 
     - name: Build shared package
-      working-directory: cli/shared
-      run: bunx --bun tsup src/index.ts --format esm,cjs --dts
+      run: bun build cli/shared/src/index.ts --outdir cli/shared/dist --format esm --target node
 
     - name: Build standalone binary
       working-directory: cli
