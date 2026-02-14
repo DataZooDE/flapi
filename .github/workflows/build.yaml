@@ -240,6 +240,10 @@ jobs:
     - name: Setup Bun
       uses: oven-sh/setup-bun@v2
 
+    - name: Build shared package
+      working-directory: cli/shared
+      run: bun install && bun run build
+
     - name: Install dependencies
       working-directory: cli
       run: bun install
