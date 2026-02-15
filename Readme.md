@@ -14,6 +14,27 @@ flAPI is a powerful service that automatically generates read-only APIs for data
 - **Security**: Implement row-level and column-level security with ease
 - **Easy deployment**: Deploy flAPI with a single binary file
 
+## 📦 Install
+
+The fastest way to try flAPI — no download, no Docker:
+
+```bash
+# Run the flapi server (note: "flapi" is taken on PyPI, so the package is "flapi-io")
+uvx --from flapi-io flapi -c flapi.yaml
+
+# Run the flapii CLI client
+uvx flapii
+```
+
+Or install permanently:
+
+```bash
+pip install flapi-io   # flapi server
+pip install flapii     # flapii CLI client
+```
+
+Pre-built binaries and Docker images are also available — see below.
+
 ## 🛠 Quick Start
 The easiest way to get started with flAPI is to use the pre-built docker image.
 
