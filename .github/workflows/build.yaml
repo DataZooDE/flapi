@@ -351,10 +351,19 @@ jobs:
       id: get_version
       run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
-    - name: Download all artifacts
+    - name: Download all build artifacts
       uses: actions/download-artifact@v4
       with:
         path: artifacts
+        pattern: flapi-*
+        merge-multiple: false
+
+    - name: Download flapii artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+        pattern: flapii-*
+        merge-multiple: false
 
     - name: Prepare release assets
       run: |
