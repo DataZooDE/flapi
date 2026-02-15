@@ -252,7 +252,7 @@ jobs:
 
     - name: Build standalone binary
       working-directory: cli
-      run: bun build --compile --target=${{ matrix.target }} src/index.ts --outfile ${{ matrix.binary }}
+      run: bun build --compile --minify --target=${{ matrix.target }} src/index.ts --outfile ${{ matrix.binary }}
 
     - uses: actions/upload-artifact@v4
       with:
@@ -364,6 +364,22 @@ jobs:
         path: artifacts
         pattern: flapii-*
         merge-multiple: false
+
+    - name: Strip binaries
+      run: |
+        # Strip debug symbols to reduce size. Use llvm-strip for cross-format support
+        # (ELF x86_64, ELF aarch64, Mach-O arm64). Skip Windows (MSVC Release is already stripped).
+        for bin in \
+          ./artifacts/flapi-linux-amd64/flapi \
+          ./artifacts/flapi-linux-arm64/flapi \
+          ./artifacts/flapi-macos-arm64/flapi \
+          ./artifacts/flapii-linux-amd64/flapii \
+          ./artifacts/flapii-linux-arm64/flapii \
+          ./artifacts/flapii-macos-arm64/flapii; do
+          echo "Stripping $bin ($(du -h "$bin" | cut -f1) before)"
+          llvm-strip "$bin" 2>/dev/null || strip "$bin" 2>/dev/null || echo "  skipped (unsupported format)"
+          echo "  -> $(du -h "$bin" | cut -f1) after"
+        done
 
     - name: Prepare release assets
       run: |
