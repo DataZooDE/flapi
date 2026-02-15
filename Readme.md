@@ -22,15 +22,14 @@ The fastest way to try flAPI — no download, no Docker:
 # Run the flapi server (note: "flapi" is taken on PyPI, so the package is "flapi-io")
 uvx --from flapi-io flapi -c flapi.yaml
 
-# Run the flapii CLI client
-uvx flapii
+# Run the flapii CLI client (also bundled in flapi-io)
+uvx --from flapi-io flapii
 ```
 
-Or install permanently:
+Or install permanently — one package gives you both commands:
 
 ```bash
-pip install flapi-io   # flapi server
-pip install flapii     # flapii CLI client
+pip install flapi-io   # installs both "flapi" and "flapii" commands
 ```
 
 Pre-built binaries and Docker images are also available — see below.

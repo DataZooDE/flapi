@@ -379,81 +379,49 @@ jobs:
     - name: Install bin-to-wheel
       run: pip install "bin-to-wheel @ git+https://github.com/DataZooDE/bin-to-wheel.git@main"
 
-    - name: Build flapi-io wheels
+    - name: Build flapi-io wheels (flapi + flapii)
       run: |
         WHEEL_VERSION="${{ steps.get_version.outputs.VERSION }}"
         WHEEL_VERSION="${WHEEL_VERSION#v}"
         mkdir -p dist/flapi-io
 
-        bin-to-wheel --name flapi-io --version "$WHEEL_VERSION" \
-          --binary ./artifacts/flapi-linux-amd64/flapi --platform linux-x86_64 \
-          --output-dir dist/flapi-io --entry-point flapi \
-          --description "SQL-to-API server" --author "DataZoo GmbH" \
-          --license Apache-2.0 --url https://github.com/DataZooDE/flapi
-
-        bin-to-wheel --name flapi-io --version "$WHEEL_VERSION" \
-          --binary ./artifacts/flapi-linux-arm64/flapi --platform linux-arm64 \
-          --output-dir dist/flapi-io --entry-point flapi \
-          --description "SQL-to-API server" --author "DataZoo GmbH" \
-          --license Apache-2.0 --url https://github.com/DataZooDE/flapi
-
-        bin-to-wheel --name flapi-io --version "$WHEEL_VERSION" \
-          --binary ./artifacts/flapi-macos-arm64/flapi --platform macos-arm64 \
-          --output-dir dist/flapi-io --entry-point flapi \
-          --description "SQL-to-API server" --author "DataZoo GmbH" \
-          --license Apache-2.0 --url https://github.com/DataZooDE/flapi
-
-        bin-to-wheel --name flapi-io --version "$WHEEL_VERSION" \
-          --binary ./artifacts/flapi-windows-amd64/flapi.exe --platform windows-x64 \
-          --output-dir dist/flapi-io --entry-point flapi \
-          --description "SQL-to-API server" --author "DataZoo GmbH" \
-          --license Apache-2.0 --url https://github.com/DataZooDE/flapi
-
-    - name: Build flapii wheels
-      run: |
-        WHEEL_VERSION="${{ steps.get_version.outputs.VERSION }}"
-        WHEEL_VERSION="${WHEEL_VERSION#v}"
-        mkdir -p dist/flapii
-
         chmod +x ./artifacts/flapii-linux-amd64/flapii
         chmod +x ./artifacts/flapii-linux-arm64/flapii
         chmod +x ./artifacts/flapii-macos-arm64/flapii
 
-        bin-to-wheel --name flapii --version "$WHEEL_VERSION" \
-          --binary ./artifacts/flapii-linux-amd64/flapii --platform linux-x86_64 \
-          --output-dir dist/flapii --entry-point flapii \
-          --description "CLI client for flapi" --author "DataZoo GmbH" \
-          --license MIT --url https://github.com/DataZooDE/flapi
+        bin-to-wheel --name flapi-io --version "$WHEEL_VERSION" \
+          --binary ./artifacts/flapi-linux-amd64/flapi --entry-point flapi \
+          --binary ./artifacts/flapii-linux-amd64/flapii --entry-point flapii \
+          --platform linux-x86_64 --output-dir dist/flapi-io \
+          --description "SQL-to-API server" --author "DataZoo GmbH" \
+          --license Apache-2.0 --url https://github.com/DataZooDE/flapi
 
-        bin-to-wheel --name flapii --version "$WHEEL_VERSION" \
-          --binary ./artifacts/flapii-linux-arm64/flapii --platform linux-arm64 \
-          --output-dir dist/flapii --entry-point flapii \
-          --description "CLI client for flapi" --author "DataZoo GmbH" \
-          --license MIT --url https://github.com/DataZooDE/flapi
+        bin-to-wheel --name flapi-io --version "$WHEEL_VERSION" \
+          --binary ./artifacts/flapi-linux-arm64/flapi --entry-point flapi \
+          --binary ./artifacts/flapii-linux-arm64/flapii --entry-point flapii \
+          --platform linux-arm64 --output-dir dist/flapi-io \
+          --description "SQL-to-API server" --author "DataZoo GmbH" \
+          --license Apache-2.0 --url https://github.com/DataZooDE/flapi
 
-        bin-to-wheel --name flapii --version "$WHEEL_VERSION" \
-          --binary ./artifacts/flapii-macos-arm64/flapii --platform macos-arm64 \
-          --output-dir dist/flapii --entry-point flapii \
-          --description "CLI client for flapi" --author "DataZoo GmbH" \
-          --license MIT --url https://github.com/DataZooDE/flapi
+        bin-to-wheel --name flapi-io --version "$WHEEL_VERSION" \
+          --binary ./artifacts/flapi-macos-arm64/flapi --entry-point flapi \
+          --binary ./artifacts/flapii-macos-arm64/flapii --entry-point flapii \
+          --platform macos-arm64 --output-dir dist/flapi-io \
+          --description "SQL-to-API server" --author "DataZoo GmbH" \
+          --license Apache-2.0 --url https://github.com/DataZooDE/flapi
 
-        bin-to-wheel --name flapii --version "$WHEEL_VERSION" \
-          --binary ./artifacts/flapii-windows-amd64/flapii.exe --platform windows-x64 \
-          --output-dir dist/flapii --entry-point flapii \
-          --description "CLI client for flapi" --author "DataZoo GmbH" \
-          --license MIT --url https://github.com/DataZooDE/flapi
+        bin-to-wheel --name flapi-io --version "$WHEEL_VERSION" \
+          --binary ./artifacts/flapi-windows-amd64/flapi.exe --entry-point flapi \
+          --binary ./artifacts/flapii-windows-amd64/flapii.exe --entry-point flapii \
+          --platform windows-x64 --output-dir dist/flapi-io \
+          --description "SQL-to-API server" --author "DataZoo GmbH" \
+          --license Apache-2.0 --url https://github.com/DataZooDE/flapi
 
     - name: Upload flapi-io wheels
       uses: actions/upload-artifact@v4
       with:
         name: pypi-wheels-flapi-io
         path: dist/flapi-io/*.whl
-
-    - name: Upload flapii wheels
-      uses: actions/upload-artifact@v4
-      with:
-        name: pypi-wheels-flapii
-        path: dist/flapii/*.whl
 
     - name: Create Release
       env:
@@ -470,7 +438,6 @@ jobs:
           ./artifacts/flapi-linux-arm64.tar.gz \
           ./artifacts/flapi-macos-arm64.tar.gz \
           ./dist/flapi-io/*.whl \
-          ./dist/flapii/*.whl \
           --title "${{ steps.get_version.outputs.VERSION }}" \
           --notes "$TAG_MSG" \
           --draft=false \
@@ -495,21 +462,3 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
-  pypi-publish-flapii:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: create-release
-    runs-on: ubuntu-latest
-    name: Publish flapii to PyPI
-    environment:
-      name: pypi-flapii
-      url: https://pypi.org/p/flapii
-    permissions:
-      id-token: write
-    steps:
-      - name: Download wheels
-        uses: actions/download-artifact@v4
-        with:
-          name: pypi-wheels-flapii
-          path: dist
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
