@@ -367,15 +367,13 @@ jobs:
 
     - name: Strip binaries
       run: |
-        # Strip debug symbols to reduce size. Use llvm-strip for cross-format support
-        # (ELF x86_64, ELF aarch64, Mach-O arm64). Skip Windows (MSVC Release is already stripped).
+        # Only strip flapi (C++ binary). Do NOT strip flapii — Bun standalone
+        # binaries embed JavaScript at the end of the ELF, and strip corrupts it.
+        # Skip Windows (MSVC Release is already stripped).
         for bin in \
           ./artifacts/flapi-linux-amd64/flapi \
           ./artifacts/flapi-linux-arm64/flapi \
-          ./artifacts/flapi-macos-arm64/flapi \
-          ./artifacts/flapii-linux-amd64/flapii \
-          ./artifacts/flapii-linux-arm64/flapii \
-          ./artifacts/flapii-macos-arm64/flapii; do
+          ./artifacts/flapi-macos-arm64/flapi; do
           echo "Stripping $bin ($(du -h "$bin" | cut -f1) before)"
           llvm-strip "$bin" 2>/dev/null || strip "$bin" 2>/dev/null || echo "  skipped (unsupported format)"
           echo "  -> $(du -h "$bin" | cut -f1) after"
