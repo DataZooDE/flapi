@@ -408,28 +408,32 @@ jobs:
           --binary ./artifacts/flapii-linux-amd64/flapii --entry-point flapii \
           --platform linux-x86_64 --output-dir dist/flapi-io \
           --description "SQL-to-API server" --author "DataZoo GmbH" \
-          --license Apache-2.0 --url https://github.com/DataZooDE/flapi
+          --license Apache-2.0 --url https://github.com/DataZooDE/flapi \
+          --readme ./Readme.md
 
         bin-to-wheel --name flapi-io --version "$WHEEL_VERSION" \
           --binary ./artifacts/flapi-linux-arm64/flapi --entry-point flapi \
           --binary ./artifacts/flapii-linux-arm64/flapii --entry-point flapii \
           --platform linux-arm64 --output-dir dist/flapi-io \
           --description "SQL-to-API server" --author "DataZoo GmbH" \
-          --license Apache-2.0 --url https://github.com/DataZooDE/flapi
+          --license Apache-2.0 --url https://github.com/DataZooDE/flapi \
+          --readme ./Readme.md
 
         bin-to-wheel --name flapi-io --version "$WHEEL_VERSION" \
           --binary ./artifacts/flapi-macos-arm64/flapi --entry-point flapi \
           --binary ./artifacts/flapii-macos-arm64/flapii --entry-point flapii \
           --platform macos-arm64 --output-dir dist/flapi-io \
           --description "SQL-to-API server" --author "DataZoo GmbH" \
-          --license Apache-2.0 --url https://github.com/DataZooDE/flapi
+          --license Apache-2.0 --url https://github.com/DataZooDE/flapi \
+          --readme ./Readme.md
 
         bin-to-wheel --name flapi-io --version "$WHEEL_VERSION" \
           --binary ./artifacts/flapi-windows-amd64/flapi.exe --entry-point flapi \
           --binary ./artifacts/flapii-windows-amd64/flapii.exe --entry-point flapii \
           --platform windows-x64 --output-dir dist/flapi-io \
           --description "SQL-to-API server" --author "DataZoo GmbH" \
-          --license Apache-2.0 --url https://github.com/DataZooDE/flapi
+          --license Apache-2.0 --url https://github.com/DataZooDE/flapi \
+          --readme ./Readme.md
 
     - name: Upload flapi-io wheels
       uses: actions/upload-artifact@v4
