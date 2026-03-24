@@ -16,6 +16,14 @@ if(WIN32)
             set(VCPKG_TARGET_TRIPLET "x64-windows-static" CACHE STRING "")
         endif()
     endif()
+
+    # Force static CRT (/MT) to match DuckDB 1.5.0's unconditional
+    # set(CMAKE_MSVC_RUNTIME_LIBRARY ...) in duckdb/CMakeLists.txt:39.
+    # vcpkg's toolchain only sets /MT for packages; flapi's own targets need
+    # this explicit setting or MSVC defaults to /MD → LNK2038 at link time.
+    if(NOT MINGW)
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING "")
+    endif()
 endif()
 
 if(APPLE)
