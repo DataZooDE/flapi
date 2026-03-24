@@ -184,7 +184,7 @@ find_package(zstd CONFIG REQUIRED)
 find_package(lz4 CONFIG REQUIRED)
 
 # Add DuckDB
-set(DUCKDB_EXPLICIT_VERSION 1.4.4)
+set(DUCKDB_EXPLICIT_VERSION 1.5.0)
 set(ENABLE_EXTENSION_AUTOLOADING true)
 set(ENABLE_EXTENSION_AUTOINSTALL true)
 if (WIN32)
@@ -269,6 +269,7 @@ add_library(flapi-lib STATIC
 # Link libraries to flapi-lib
 target_link_libraries(flapi-lib PUBLIC
     duckdb_static
+    dummy_static_extension_loader
     Crow::Crow
     yaml-cpp::yaml-cpp
     jwt-cpp::jwt-cpp

@@ -3,8 +3,7 @@
 #include <duckdb.h>
 #include <nanoarrow/nanoarrow.h>
 #include <nanoarrow/nanoarrow_ipc.h>
-// Use DuckDB's bundled ZSTD (in duckdb_zstd namespace)
-// Include path has duckdb/third_party/zstd/include so we use <zstd.h>
+// Use vcpkg's ZSTD (global namespace)
 #include <zstd.h>
 // Use vcpkg's LZ4 (in global namespace)
 #include <lz4frame.h>
@@ -72,16 +71,16 @@ inline std::vector<uint8_t> compressZstd(const std::vector<uint8_t>& input, int 
         level = 22;
     }
 
-    size_t compressBound = duckdb_zstd::ZSTD_compressBound(input.size());
+    size_t compressBound = ZSTD_compressBound(input.size());
     std::vector<uint8_t> output(compressBound);
 
-    size_t compressedSize = duckdb_zstd::ZSTD_compress(
+    size_t compressedSize = ZSTD_compress(
         output.data(), output.size(),
         input.data(), input.size(),
         level
     );
 
-    if (duckdb_zstd::ZSTD_isError(compressedSize)) {
+    if (ZSTD_isError(compressedSize)) {
         return {};
     }
 
