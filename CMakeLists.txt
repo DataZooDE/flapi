@@ -5,7 +5,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Windows-specific settings
 if(WIN32)
-    # Use dynamic runtime libraries for Windows builds
+    # Use static runtime libraries for Windows builds (/MT, matching DuckDB 1.5.0)
     add_definitions(-D_WIN32_WINNT=0x0601)  # Target Windows 7 or later
 
     # Set vcpkg triplet for Windows
@@ -13,7 +13,7 @@ if(WIN32)
         if(MINGW)
             set(VCPKG_TARGET_TRIPLET "x64-mingw-dynamic" CACHE STRING "")
         else()
-            set(VCPKG_TARGET_TRIPLET "x64-windows-static-md" CACHE STRING "")
+            set(VCPKG_TARGET_TRIPLET "x64-windows-static" CACHE STRING "")
         endif()
     endif()
 endif()
