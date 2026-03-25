@@ -5,7 +5,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Windows-specific settings
 if(WIN32)
-    # Use static runtime libraries for Windows builds (/MT, matching DuckDB 1.5.0)
+    # Use static runtime libraries for Windows builds (/MT, matching DuckDB 1.5.1)
     add_definitions(-D_WIN32_WINNT=0x0601)  # Target Windows 7 or later
 
     # Set vcpkg triplet for Windows
@@ -17,7 +17,7 @@ if(WIN32)
         endif()
     endif()
 
-    # Force static CRT (/MT) to match DuckDB 1.5.0's unconditional
+    # Force static CRT (/MT) to match DuckDB 1.5.1's unconditional
     # set(CMAKE_MSVC_RUNTIME_LIBRARY ...) in duckdb/CMakeLists.txt:39.
     # vcpkg's toolchain only sets /MT for packages; flapi's own targets need
     # this explicit setting or MSVC defaults to /MD → LNK2038 at link time.
@@ -192,7 +192,7 @@ find_package(zstd CONFIG REQUIRED)
 find_package(lz4 CONFIG REQUIRED)
 
 # Add DuckDB
-set(DUCKDB_EXPLICIT_VERSION 1.5.0)
+set(DUCKDB_EXPLICIT_VERSION 1.5.1)
 set(ENABLE_EXTENSION_AUTOLOADING true)
 set(ENABLE_EXTENSION_AUTOINSTALL true)
 if (WIN32)

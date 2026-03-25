@@ -2,7 +2,7 @@
 
 **Version:** 1.0.0
 **flAPI Version:** >= 1.0.0
-**DuckDB Version:** >= 1.5.0
+**DuckDB Version:** >= 1.5.1
 
 This document provides a complete reference for all configuration options in flAPI, the SQL-to-API framework that generates REST APIs and MCP tools from SQL templates.
 
