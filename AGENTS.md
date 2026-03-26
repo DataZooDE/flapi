@@ -18,7 +18,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ~13,400 lines of C++ code across 54 files
 - Supports Linux (x86/ARM64), macOS (Intel/Apple Silicon), and Windows
 - Declarative API philosophy: logic lives in YAML/SQL, not compiled code
-- Single binary deployment with built-in DuckDB 1.4.4
+- Single binary deployment with built-in DuckDB 1.5.1
 
 ## Architecture Documentation
 
@@ -627,7 +627,7 @@ make integration-test-ci           # Full suite with server management
 
 ### DuckDB Integration
 
-- Embedded in-process OLAP database (v1.4.3)
+- Embedded in-process OLAP database (v1.5.1)
 - Extensions for external data sources: BigQuery, Postgres, Iceberg, Parquet, CSV
 - Query execution with result caching
 
@@ -1152,7 +1152,7 @@ Common extensions:
 
 | Library | Purpose |
 |---------|---------|
-| **DuckDB 1.4.4** | In-process OLAP database |
+| **DuckDB 1.5.1** | In-process OLAP database |
 | **Crow** | C++ web framework |
 | **OpenSSL** | Encryption/security |
 | **jwt-cpp** | JWT authentication |

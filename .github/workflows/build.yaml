@@ -26,7 +26,7 @@ jobs:
   windows-build:
     runs-on: windows-latest
     env:
-      VCPKG_DEFAULT_TRIPLET: x64-windows-static-md
+      VCPKG_DEFAULT_TRIPLET: x64-windows-static
       VCPKG_ROOT: ${{ github.workspace }}\\vcpkg
     steps:
     - uses: actions/checkout@v4
@@ -57,7 +57,7 @@ jobs:
         cmake -G "Visual Studio 17 2022" -A x64 `
           -DCMAKE_BUILD_TYPE=Release `
           -DBUILD_TESTING=OFF `
-          -DVCPKG_TARGET_TRIPLET=x64-windows-static-md `
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static `
           -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
           ../..
 

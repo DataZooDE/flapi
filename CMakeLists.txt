@@ -5,7 +5,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Windows-specific settings
 if(WIN32)
-    # Use dynamic runtime libraries for Windows builds
+    # Use static runtime libraries for Windows builds (/MT, matching DuckDB 1.5.1)
     add_definitions(-D_WIN32_WINNT=0x0601)  # Target Windows 7 or later
 
     # Set vcpkg triplet for Windows
@@ -13,8 +13,16 @@ if(WIN32)
         if(MINGW)
             set(VCPKG_TARGET_TRIPLET "x64-mingw-dynamic" CACHE STRING "")
         else()
-            set(VCPKG_TARGET_TRIPLET "x64-windows-static-md" CACHE STRING "")
+            set(VCPKG_TARGET_TRIPLET "x64-windows-static" CACHE STRING "")
         endif()
+    endif()
+
+    # Force static CRT (/MT) to match DuckDB 1.5.1's unconditional
+    # set(CMAKE_MSVC_RUNTIME_LIBRARY ...) in duckdb/CMakeLists.txt:39.
+    # vcpkg's toolchain only sets /MT for packages; flapi's own targets need
+    # this explicit setting or MSVC defaults to /MD → LNK2038 at link time.
+    if(NOT MINGW)
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING "")
     endif()
 endif()
 
@@ -184,7 +192,7 @@ find_package(zstd CONFIG REQUIRED)
 find_package(lz4 CONFIG REQUIRED)
 
 # Add DuckDB
-set(DUCKDB_EXPLICIT_VERSION 1.4.4)
+set(DUCKDB_EXPLICIT_VERSION 1.5.1)
 set(ENABLE_EXTENSION_AUTOLOADING true)
 set(ENABLE_EXTENSION_AUTOINSTALL true)
 if (WIN32)
@@ -269,6 +277,7 @@ add_library(flapi-lib STATIC
 # Link libraries to flapi-lib
 target_link_libraries(flapi-lib PUBLIC
     duckdb_static
+    dummy_static_extension_loader
     Crow::Crow
     yaml-cpp::yaml-cpp
     jwt-cpp::jwt-cpp
