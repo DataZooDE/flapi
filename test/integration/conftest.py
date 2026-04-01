@@ -236,6 +236,7 @@ def flapi_server():
     # Enable config service for integration tests with a test token
     log_path = os.path.join(temp_dir, "flapi_test.log")
     log_file = open(log_path, "w")
+    test_env = {**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"}
     process = subprocess.Popen(
         [
             str(flapi_binary),
@@ -245,6 +246,7 @@ def flapi_server():
             "--config-service",
             "--config-service-token", "test-token"
         ],
+        env=test_env,
         stdout=log_file,
         stderr=subprocess.STDOUT,
         preexec_fn=os.setsid,
@@ -641,6 +643,7 @@ def examples_server():
     # Using flapi-test.yaml which excludes ERPL extension to avoid SIGABRT crashes
     log_path = os.path.join(temp_dir, "flapi_examples.log")
     log_file = open(log_path, "w")
+    test_env = {**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"}
     process = subprocess.Popen(
         [
             str(flapi_binary),
@@ -648,6 +651,7 @@ def examples_server():
             "-p", str(port),
             "--log-level", "info"
         ],
+        env=test_env,
         stdout=log_file,
         stderr=subprocess.STDOUT,
         preexec_fn=os.setsid,

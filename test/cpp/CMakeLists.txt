@@ -48,6 +48,7 @@ add_executable(flapi_tests
     test_vfs_s3.cpp
     test_vfs_gcs.cpp
     test_vfs_azure.cpp
+    test_flapi_telemetry.cpp
 )
 
 target_include_directories(flapi_tests PRIVATE 

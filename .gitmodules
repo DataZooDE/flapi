@@ -1,3 +1,6 @@
 [submodule "duckdb"]
 	path = duckdb
 	url = https://github.com/duckdb/duckdb.git
+[submodule "third_party/posthog-telemetry"]
+	path = third_party/posthog-telemetry
+	url = git@github.com:DataZooDE/posthog-telemetry.git

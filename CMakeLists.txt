@@ -201,6 +201,11 @@ endif()
 
 add_subdirectory(duckdb EXCLUDE_FROM_ALL)
 
+# Expose DuckDB paths for posthog-telemetry submodule
+set(DUCKDB_SRC_INCLUDE "${CMAKE_SOURCE_DIR}/duckdb/src/include")
+set(DUCKDB_THIRD_PARTY "${CMAKE_SOURCE_DIR}/duckdb/third_party")
+add_subdirectory(third_party/posthog-telemetry)
+
 # Include directories
 find_path(JWT_CPP_INCLUDE_DIRS "jwt-cpp/base.h")
 include_directories(
@@ -264,6 +269,7 @@ add_library(flapi-lib STATIC
     src/vfs_health_checker.cpp
     src/caching_file_provider.cpp
     src/credential_manager.cpp
+    src/flapi_telemetry.cpp
 )
 
 # Ensure web_ui is built before flapi-lib
@@ -291,6 +297,11 @@ target_link_libraries(flapi-lib PUBLIC
     nanoarrow::nanoarrow_ipc
     $<IF:$<TARGET_EXISTS:zstd::libzstd_shared>,zstd::libzstd_shared,zstd::libzstd_static>
     $<IF:$<TARGET_EXISTS:lz4::lz4>,lz4::lz4,lz4::lz4_shared>
+    posthog_telemetry
+)
+
+target_compile_definitions(flapi-lib PRIVATE
+    FLAPI_VERSION="${CMAKE_PROJECT_VERSION}"
 )
 
 # Add RPATH settings for macOS
@@ -303,6 +314,7 @@ endif()
 # Create main executable
 add_executable(flapi src/main.cpp)
 target_link_libraries(flapi PRIVATE flapi-lib)
+target_compile_definitions(flapi PRIVATE FLAPI_VERSION="${CMAKE_PROJECT_VERSION}")
 set_target_properties(flapi PROPERTIES ENABLE_EXPORTS TRUE)
 
 # Add Windows-specific libraries

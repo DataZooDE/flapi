@@ -20,6 +20,7 @@
 #include "auth_middleware.hpp"
 #include "config_manager.hpp"
 #include "database_manager.hpp"
+#include "flapi_telemetry.hpp"
 #include "rate_limit_middleware.hpp"
 #include "config_token_utils.hpp"
 #include "credential_manager.hpp"
@@ -30,6 +31,7 @@ using namespace flapi;
 // Add global variable for signal handling
 std::atomic<bool> should_exit(false);
 std::shared_ptr<APIServer> api_server;
+std::shared_ptr<flapi::FlapiTelemetry> flapi_telemetry;
 
 void set_log_level(const std::string& log_level) {
     if (log_level == "debug") {
@@ -223,6 +225,9 @@ void signal_handler(int signal) {
     if (signal == SIGINT) {
         CROW_LOG_INFO << "Received SIGINT, shutting down...";
         should_exit = true;
+        if (flapi_telemetry) {
+            flapi_telemetry->notifyStop(FLAPI_VERSION);
+        }
         if (api_server) {
             api_server->stop();
         }
@@ -327,11 +332,15 @@ int main(int argc, char* argv[])
 
     // Create unified API server with MCP support (always enabled in unified configuration)
     api_server = std::make_shared<APIServer>(
-        config_manager, 
-        DatabaseManager::getInstance(), 
+        config_manager,
+        DatabaseManager::getInstance(),
         config_service_enabled,
         config_service_token
     );
+
+    // Initialize telemetry and emit startup event
+    flapi_telemetry = std::make_shared<flapi::FlapiTelemetry>();
+    flapi_telemetry->notifyStart(FLAPI_VERSION);
 
     // Start unified server
     std::thread unified_server_thread([config_manager, server = api_server]() {
@@ -358,6 +367,11 @@ int main(int argc, char* argv[])
 
     // Wait for server to finish
     unified_server_thread.join();
+
+    // Emit shutdown event on normal (non-signal) exit; signal_handler handles the SIGINT path
+    if (!should_exit && flapi_telemetry) {
+        flapi_telemetry->notifyStop(FLAPI_VERSION);
+    }
 
     return 0;
 }
