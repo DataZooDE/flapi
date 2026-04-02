@@ -225,7 +225,7 @@ include_directories(
 # system-installed version, which may be compiled with GCC LTO and cause
 # linker failures with mold.
 add_library(dummy_static_extension_loader STATIC
-    duckdb/extension/loader/dummy_static_extension_loader.cpp
+    src/duckdb_loader_stub.cpp
 )
 target_include_directories(dummy_static_extension_loader PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/duckdb/src/include
