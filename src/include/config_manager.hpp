@@ -513,6 +513,7 @@ public:
     const DuckLakeConfig& getDuckLakeConfig() const { return ducklake_config; }
     const MCPConfig& getMCPConfig() const { return mcp_config; }
     const StorageConfig& getStorageConfig() const { return storage_config; }
+    bool isTelemetryEnabled() const { return telemetry_enabled; }
 
     // Load MCP server instructions (inline or from file)
     std::string loadMCPInstructions() const;
@@ -572,6 +573,7 @@ protected:
     DuckLakeConfig ducklake_config;
     MCPConfig mcp_config;
     StorageConfig storage_config;
+    bool telemetry_enabled = true;
     ExtendedYamlParser yaml_parser;
 
     // Extracted classes for delegation (Facade pattern)

@@ -277,6 +277,11 @@ int main(int argc, char* argv[])
         .help("Authentication token for configuration service API")
         .default_value(std::string(""));
 
+    program.add_argument("--no-telemetry")
+        .help("Disable telemetry (startup/shutdown events)")
+        .default_value(false)
+        .implicit_value(true);
+
     try {
         program.parse_args(argc, argv);
     } catch (const std::runtime_error& err) {
@@ -291,6 +296,7 @@ int main(int argc, char* argv[])
     bool validate_config = program.get<bool>("--validate-config");
     bool config_service_enabled = program.get<bool>("--config-service");
     std::string config_service_token = program.get<std::string>("--config-service-token");
+    bool no_telemetry = program.get<bool>("--no-telemetry");
 
     // Check environment variable for config service token if not provided via CLI
     if (config_service_token.empty()) {
@@ -313,6 +319,18 @@ int main(int argc, char* argv[])
     // If validate-config flag is set, validate and exit
     if (validate_config) {
         return validateConfiguration(config_manager, config_file);
+    }
+
+    // Resolve no_telemetry: CLI flag > FLAPI_NO_TELEMETRY env > config file
+    if (!no_telemetry) {
+        const char* env_val = std::getenv("FLAPI_NO_TELEMETRY");
+        if (env_val) {
+            std::string s(env_val);
+            no_telemetry = (s == "1" || s == "true" || s == "yes");
+        }
+    }
+    if (!no_telemetry && !config_manager->isTelemetryEnabled()) {
+        no_telemetry = true;
     }
 
     // Initialize cloud storage credentials (reads environment variables)
@@ -340,6 +358,9 @@ int main(int argc, char* argv[])
 
     // Initialize telemetry and emit startup event
     flapi_telemetry = std::make_shared<flapi::FlapiTelemetry>();
+    if (no_telemetry) {
+        flapi_telemetry->setEnabled(false);
+    }
     flapi_telemetry->notifyStart(FLAPI_VERSION);
 
     // Start unified server

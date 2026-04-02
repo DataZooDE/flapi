@@ -591,6 +591,30 @@ connection:
 
 ---
 
+### 2.12 Telemetry Configuration
+
+Controls whether flapi sends anonymous startup/shutdown analytics to PostHog.
+
+```yaml
+telemetry:
+  enabled: true   # Set to false to opt out of startup/shutdown analytics
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `telemetry.enabled` | `true` | Enable/disable telemetry events |
+
+**Opt-out precedence (highest wins):**
+
+1. `--no-telemetry` CLI flag
+2. `FLAPI_NO_TELEMETRY=1` environment variable
+3. `telemetry.enabled: false` in `flapi.yaml`
+4. `DATAZOO_DISABLE_TELEMETRY=1` (cross-product env var, handled at the PostHog layer)
+
+> **Implementation:** `src/flapi_telemetry.cpp`, `src/include/flapi_telemetry.hpp` | **Tests:** `test/cpp/test_flapi_telemetry.cpp`
+
+---
+
 ## 3. Endpoint Configuration
 
 Endpoints are defined in YAML files within the `template.path` directory. Each file can define one endpoint type: REST, MCP Tool, MCP Resource, or MCP Prompt.

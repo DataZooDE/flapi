@@ -118,6 +118,11 @@ void ConfigManager::parseMainConfig() {
             cache_schema = safeGet<std::string>(config, "cache-schema", "cache-schema");
             CROW_LOG_DEBUG << "Cache Schema: " << cache_schema;
         }
+
+        if (config["telemetry"]) {
+            telemetry_enabled = safeGet<bool>(config["telemetry"], "enabled", "telemetry.enabled", true);
+            CROW_LOG_DEBUG << "Telemetry Enabled: " << telemetry_enabled;
+        }
     } catch (const std::exception& e) {
         CROW_LOG_ERROR << "Error in parseMainConfig: " << e.what();
         throw;

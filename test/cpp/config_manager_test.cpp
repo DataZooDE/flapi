@@ -473,3 +473,53 @@ TEST_CASE("ConfigManager replace and remove endpoints", "[config_manager]") {
         REQUIRE(config.request_fields[0].fieldName == "name");
     }
 }
+
+TEST_CASE("ConfigManager telemetry config", "[config_manager]") {
+    std::string temp_template_dir = createTempDir();
+
+    SECTION("telemetry.enabled: false disables telemetry") {
+        std::string yaml_content = R"(
+project-name: TelemetryTest
+project-description: Test
+template:
+  path: )" + temp_template_dir + R"(
+telemetry:
+  enabled: false
+)";
+        std::string config_file = createTempYamlFile(yaml_content, "telemetry_false.yaml");
+        ConfigManager mgr{std::filesystem::path(config_file)};
+        mgr.loadConfig();
+
+        REQUIRE(mgr.isTelemetryEnabled() == false);
+    }
+
+    SECTION("telemetry.enabled: true keeps telemetry on") {
+        std::string yaml_content = R"(
+project-name: TelemetryTest
+project-description: Test
+template:
+  path: )" + temp_template_dir + R"(
+telemetry:
+  enabled: true
+)";
+        std::string config_file = createTempYamlFile(yaml_content, "telemetry_true.yaml");
+        ConfigManager mgr{std::filesystem::path(config_file)};
+        mgr.loadConfig();
+
+        REQUIRE(mgr.isTelemetryEnabled() == true);
+    }
+
+    SECTION("no telemetry key defaults to enabled") {
+        std::string yaml_content = R"(
+project-name: TelemetryTest
+project-description: Test
+template:
+  path: )" + temp_template_dir + R"(
+)";
+        std::string config_file = createTempYamlFile(yaml_content, "telemetry_absent.yaml");
+        ConfigManager mgr{std::filesystem::path(config_file)};
+        mgr.loadConfig();
+
+        REQUIRE(mgr.isTelemetryEnabled() == true);
+    }
+}

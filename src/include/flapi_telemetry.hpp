@@ -39,10 +39,14 @@ public:
     // Emit application_stop event
     void notifyStop(const std::string& version);
 
+    // Programmatic opt-out (CLI flag, env var, config file)
+    void setEnabled(bool enabled);
+
 private:
-    static bool isTelemetryDisabled();
+    static bool isTelemetryDisabled(bool enabled);
 
     std::unique_ptr<ITelemetryBackend> backend_;
+    bool enabled_ = true;
     static constexpr const char* APP_NAME = "flapi";
 };
 

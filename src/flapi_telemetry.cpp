@@ -24,15 +24,23 @@ void PostHogBackend::captureStop(const std::string& app_name,
 // ── FlapiTelemetry ────────────────────────────────────────────────────────────
 
 FlapiTelemetry::FlapiTelemetry()
-    : backend_(std::make_unique<PostHogBackend>())
+    : backend_(std::make_unique<PostHogBackend>()), enabled_(true)
 {}
 
 FlapiTelemetry::FlapiTelemetry(std::unique_ptr<ITelemetryBackend> backend)
-    : backend_(std::move(backend))
+    : backend_(std::move(backend)), enabled_(true)
 {}
 
-bool FlapiTelemetry::isTelemetryDisabled()
+void FlapiTelemetry::setEnabled(bool enabled)
 {
+    enabled_ = enabled;
+}
+
+bool FlapiTelemetry::isTelemetryDisabled(bool enabled)
+{
+    if (!enabled) {
+        return true;
+    }
     const char* val = std::getenv("DATAZOO_DISABLE_TELEMETRY");
     if (!val) {
         return false;
@@ -43,7 +51,7 @@ bool FlapiTelemetry::isTelemetryDisabled()
 
 void FlapiTelemetry::notifyStart(const std::string& version)
 {
-    if (isTelemetryDisabled()) {
+    if (isTelemetryDisabled(enabled_)) {
         return;
     }
     backend_->captureStart(APP_NAME, version);
@@ -51,7 +59,7 @@ void FlapiTelemetry::notifyStart(const std::string& version)
 
 void FlapiTelemetry::notifyStop(const std::string& version)
 {
-    if (isTelemetryDisabled()) {
+    if (isTelemetryDisabled(enabled_)) {
         return;
     }
     backend_->captureStop(APP_NAME, version);

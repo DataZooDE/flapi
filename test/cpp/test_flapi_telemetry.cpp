@@ -148,3 +148,55 @@ TEST_CASE("FlapiTelemetry - production constructor compiles and constructs", "[f
 
     REQUIRE_NOTHROW(flapi::FlapiTelemetry{});
 }
+
+TEST_CASE("FlapiTelemetry - setEnabled(false) suppresses notifyStart", "[flapi_telemetry]") {
+    auto mock = std::make_unique<MockBackend>();
+    MockBackend* raw = mock.get();
+
+    flapi::FlapiTelemetry telemetry(std::move(mock));
+    telemetry.setEnabled(false);
+    telemetry.notifyStart("1.2.3");
+
+    REQUIRE(raw->start_calls == 0);
+}
+
+TEST_CASE("FlapiTelemetry - setEnabled(false) suppresses notifyStop", "[flapi_telemetry]") {
+    auto mock = std::make_unique<MockBackend>();
+    MockBackend* raw = mock.get();
+
+    flapi::FlapiTelemetry telemetry(std::move(mock));
+    telemetry.setEnabled(false);
+    telemetry.notifyStop("1.2.3");
+
+    REQUIRE(raw->stop_calls == 0);
+}
+
+TEST_CASE("FlapiTelemetry - setEnabled(false) takes precedence over env var not set", "[flapi_telemetry]") {
+    EnvGuard guard("DATAZOO_DISABLE_TELEMETRY", "0");
+
+    auto mock = std::make_unique<MockBackend>();
+    MockBackend* raw = mock.get();
+
+    flapi::FlapiTelemetry telemetry(std::move(mock));
+    telemetry.setEnabled(false);
+    telemetry.notifyStart("1.0.0");
+    telemetry.notifyStop("1.0.0");
+
+    REQUIRE(raw->start_calls == 0);
+    REQUIRE(raw->stop_calls == 0);
+}
+
+TEST_CASE("FlapiTelemetry - setEnabled(true) allows calls through", "[flapi_telemetry]") {
+    EnvGuard guard("DATAZOO_DISABLE_TELEMETRY", "0");
+
+    auto mock = std::make_unique<MockBackend>();
+    MockBackend* raw = mock.get();
+
+    flapi::FlapiTelemetry telemetry(std::move(mock));
+    telemetry.setEnabled(true);
+    telemetry.notifyStart("1.0.0");
+    telemetry.notifyStop("1.0.0");
+
+    REQUIRE(raw->start_calls == 1);
+    REQUIRE(raw->stop_calls == 1);
+}

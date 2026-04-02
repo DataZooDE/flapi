@@ -331,11 +331,53 @@ export FLAPI_CONFIG_SERVICE_TOKEN="secret-token-12345"
 
 ---
 
+### Disable Telemetry (`--no-telemetry`)
+
+Disables startup and shutdown telemetry events.
+
+| Property | Value |
+|----------|-------|
+| Long form | `--no-telemetry` |
+| Type | flag (boolean) |
+| Default | `false` (telemetry enabled) |
+| Required | No |
+| Environment variable | `FLAPI_NO_TELEMETRY` |
+
+**Description:**
+
+When set, flapi will not send `application_start` or `application_stop` events to PostHog. Telemetry can also be disabled via the `FLAPI_NO_TELEMETRY` environment variable or via `telemetry.enabled: false` in `flapi.yaml`.
+
+**Precedence (highest wins):**
+1. `--no-telemetry` CLI flag
+2. `FLAPI_NO_TELEMETRY=1` (or `true` / `yes`)
+3. `telemetry.enabled: false` in `flapi.yaml`
+
+**Example:**
+
+```bash
+# One-off: disable telemetry for this run
+./flapi --no-telemetry
+
+# Disable via environment variable
+export FLAPI_NO_TELEMETRY=1
+./flapi
+
+# Disable permanently via config file
+# In flapi.yaml:
+#   telemetry:
+#     enabled: false
+```
+
+> **Implementation:** `src/main.cpp`, `src/flapi_telemetry.cpp` | **Tests:** `test/cpp/test_flapi_telemetry.cpp`
+
+---
+
 ## 3. Environment Variables
 
 | Variable | Description | Used By |
 |----------|-------------|---------|
 | `FLAPI_CONFIG_SERVICE_TOKEN` | Authentication token for configuration service API | `--config-service-token` fallback |
+| `FLAPI_NO_TELEMETRY` | Disable telemetry when set to `1`, `true`, or `yes` | `--no-telemetry` fallback |
 
 **Configuration File Variables:**
 
