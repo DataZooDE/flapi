@@ -13,6 +13,7 @@ flAPI is a powerful service that automatically generates read-only APIs for data
 - **Caching**: DuckLake-backed cache with full refresh and incremental sync
 - **Security**: Implement row-level and column-level security with ease
 - **Easy deployment**: Deploy flAPI with a single binary file
+- **Privacy-respecting telemetry**: Anonymous startup/shutdown analytics with easy opt-out via `--no-telemetry` flag, `FLAPI_NO_TELEMETRY` env var, or `flapi.yaml`
 
 ## 📦 Install
 
@@ -693,6 +694,27 @@ For more detailed information, check out our [full documentation](docs/):
 - **[CLI Reference](docs/CLI_REFERENCE.md)** - Server executable command-line options
 - **[Cloud Storage Guide](docs/CLOUD_STORAGE_GUIDE.md)** - Using cloud storage backends (S3, GCS, Azure)
 - **[Architecture & Design](docs/spec/)** - System architecture, design decisions, and component documentation
+
+## 📊 Telemetry
+
+flAPI sends anonymous `application_start` and `application_stop` events to help the team understand adoption. No query data, credentials, or personal information is ever sent.
+
+**Opt out** (any one of these is sufficient):
+
+```bash
+# One-off via CLI flag
+./flapi --no-telemetry
+
+# Per-session via environment variable
+export FLAPI_NO_TELEMETRY=1
+./flapi
+
+# Permanently via config file (flapi.yaml)
+telemetry:
+  enabled: false
+```
+
+See [CLI Reference](docs/CLI_REFERENCE.md#disable-telemetry---no-telemetry) and [Configuration Reference](docs/CONFIG_REFERENCE.md) for full details.
 
 ## 🤝 Contributing
 
