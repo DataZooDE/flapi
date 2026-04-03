@@ -221,18 +221,6 @@ include_directories(
 # add_subdirectory(web)
 # message(STATUS "Web UI subdirectory added")
 
-# Build dummy_static_extension_loader from source to avoid depending on the
-# system-installed version, which may be compiled with GCC LTO and cause
-# linker failures with mold.
-add_library(dummy_static_extension_loader STATIC
-    src/duckdb_loader_stub.cpp
-)
-target_include_directories(dummy_static_extension_loader PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/duckdb/src/include
-)
-set_target_properties(dummy_static_extension_loader PROPERTIES
-    COMPILE_OPTIONS "-fno-lto"
-)
 
 # Create flapi-lib
 add_library(flapi-lib STATIC
