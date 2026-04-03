@@ -111,16 +111,18 @@ std::string CachingFileProvider::ReadFile(const std::string& path) {
             evictLRU(content_size);
         }
 
-        // Add to cache
+        // Add to cache only if not already inserted by a concurrent thread
         CacheEntry entry;
         entry.content = content;
         entry.expires_at = std::chrono::steady_clock::now() + _config.ttl;
         entry.last_access = std::chrono::steady_clock::now();
         entry.size_bytes = content_size;
 
-        _cache[path] = std::move(entry);
-        _stats.current_entries.fetch_add(1);
-        _stats.current_size_bytes.fetch_add(content_size);
+        auto [it, inserted] = _cache.emplace(path, std::move(entry));
+        if (inserted) {
+            _stats.current_entries.fetch_add(1);
+            _stats.current_size_bytes.fetch_add(content_size);
+        }
     }
 
     return content;
