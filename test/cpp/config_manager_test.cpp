@@ -523,3 +523,131 @@ template:
         REQUIRE(mgr.isTelemetryEnabled() == true);
     }
 }
+
+// ── Bug #17 ────────────────────────────────────────────────────────────────
+// OIDC config not parsed at endpoint level; global OIDC not propagated
+// ──────────────────────────────────────────────────────────────────────────
+
+TEST_CASE("ConfigManager: OIDC block parsed at endpoint level", "[config_manager][oidc][bug17]") {
+    // Use a unique temp dir to avoid shared-state collisions between tests
+    namespace fs = std::filesystem;
+    fs::path temp_ep_dir = fs::temp_directory_path() / "flapi_oidc_ep_test";
+    fs::create_directories(temp_ep_dir);
+
+    // Write endpoint YAML into the template dir before loadConfig
+    std::string endpoint_yaml = R"(
+url-path: /secure
+template-source: secure.sql
+connection:
+  - default
+auth:
+  enabled: true
+  type: oidc
+  oidc:
+    issuer-url: https://accounts.google.com
+    allowed-audiences:
+      - my-client-id
+    username-claim: email
+)";
+    {
+        std::ofstream f(temp_ep_dir / "oidc_secure.yaml");
+        f << endpoint_yaml;
+    }
+
+    std::string config_yaml = R"(
+project-name: OIDCTest
+project-description: Test
+template:
+  path: )" + temp_ep_dir.string() + R"(
+connections:
+  default:
+    properties:
+      db_file: ./data/test.db
+)";
+
+    std::string config_file = createTempYamlFile(config_yaml, "oidc_ep_test_config.yaml");
+    ConfigManager mgr{fs::path(config_file)};
+    mgr.loadConfig();
+
+    SECTION("endpoint with oidc block has oidc config populated") {
+        const auto& endpoints = mgr.getEndpoints();
+        REQUIRE(endpoints.size() == 1);
+        const auto& ep = endpoints[0];
+
+        REQUIRE(ep.auth.enabled == true);
+        REQUIRE(ep.auth.type == "oidc");
+        REQUIRE(ep.auth.oidc.has_value());
+        REQUIRE(ep.auth.oidc->issuer_url == "https://accounts.google.com");
+        REQUIRE(ep.auth.oidc->allowed_audiences == std::vector<std::string>{"my-client-id"});
+        REQUIRE(ep.auth.oidc->username_claim == "email");
+    }
+
+    fs::remove_all(temp_ep_dir);
+}
+
+TEST_CASE("ConfigManager: global OIDC config propagated to endpoints", "[config_manager][oidc][bug17]") {
+    namespace fs = std::filesystem;
+    fs::path temp_template_dir = fs::temp_directory_path() / "flapi_oidc_global_test";
+    fs::create_directories(temp_template_dir);
+    std::string temp_template_dir_str = temp_template_dir.string();
+
+    // Global flapi.yaml with auth.oidc block
+    std::string config_yaml = R"(
+project-name: OIDCPropagationTest
+project-description: Test
+template:
+  path: )" + temp_template_dir_str + R"(
+connections:
+  default:
+    properties:
+      db_file: ./data/test.db
+auth:
+  enabled: true
+  type: oidc
+  oidc:
+    issuer-url: https://global-idp.example.com
+    allowed-audiences:
+      - global-audience
+    username-claim: email
+)";
+
+    // Write endpoint YAML into template dir so loadConfig picks it up
+    std::string endpoint_yaml = R"(
+url-path: /protected
+template-source: protected.sql
+connection:
+  - default
+auth:
+  enabled: true
+  type: oidc
+)";
+    // Write endpoint into the template directory
+    std::filesystem::path ep_path = temp_template_dir / "protected.yaml";
+    {
+        std::ofstream f(ep_path);
+        f << endpoint_yaml;
+    }
+
+    std::string config_file = createTempYamlFile(config_yaml, "oidc_global_test_config.yaml");
+    ConfigManager mgr{std::filesystem::path(config_file)};
+    mgr.loadConfig();
+
+    SECTION("global OIDC config is accessible via accessor") {
+        auto global_oidc = mgr.getGlobalOIDCConfig();
+        REQUIRE(global_oidc.has_value());
+        REQUIRE(global_oidc->issuer_url == "https://global-idp.example.com");
+    }
+
+    SECTION("endpoint without local oidc block inherits global config") {
+        const auto& endpoints = mgr.getEndpoints();
+        REQUIRE(endpoints.size() == 1);
+        const auto& ep = endpoints[0];
+
+        REQUIRE(ep.auth.type == "oidc");
+        REQUIRE(ep.auth.oidc.has_value());
+        REQUIRE(ep.auth.oidc->issuer_url == "https://global-idp.example.com");
+        REQUIRE(ep.auth.oidc->allowed_audiences == std::vector<std::string>{"global-audience"});
+    }
+
+    fs::remove_all(temp_template_dir);
+}

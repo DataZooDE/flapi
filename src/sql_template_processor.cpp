@@ -150,6 +150,22 @@ crow::mustache::context SQLTemplateProcessor::createTemplateContext(const Endpoi
         params.erase("primaryKeys");
     }
 
+    // Extract auth params (reserved __auth_ prefix) and inject into ctx["auth"]
+    static const std::vector<std::pair<std::string, std::string>> auth_keys = {
+        {"__auth_username",      "username"},
+        {"__auth_roles",         "roles"},
+        {"__auth_email",         "email"},
+        {"__auth_type",          "type"},
+        {"__auth_authenticated", "authenticated"},
+    };
+    for (const auto& [param_key, ctx_key] : auth_keys) {
+        auto it = params.find(param_key);
+        if (it != params.end()) {
+            ctx["auth"][ctx_key] = it->second;
+            params.erase(it);
+        }
+    }
+
     // Add request parameters
     for (const auto& [key, value] : params) {
         ctx["params"][key] = value;

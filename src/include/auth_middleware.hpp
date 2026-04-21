@@ -41,6 +41,8 @@ public:
     struct context {
         bool authenticated = false;
         std::string username;
+        std::string email;       // populated for OIDC auth, empty otherwise
+        std::string auth_type;   // "basic", "bearer", or "oidc"
         std::vector<std::string> roles;
     };
 

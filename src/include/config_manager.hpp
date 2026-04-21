@@ -497,6 +497,7 @@ public:
     const HttpsConfig& getHttpsConfig() const;
     bool isHttpsEnforced() const;
     bool isAuthEnabled() const;
+    std::optional<OIDCConfig> getGlobalOIDCConfig() const;
     const EndpointConfig* getEndpointForPath(const std::string& path) const;
     const EndpointConfig* getEndpointForPathAndMethod(const std::string& path, const std::string& httpMethod) const;
     const std::vector<EndpointConfig>& getEndpoints() const;
@@ -564,6 +565,7 @@ protected:
     std::unordered_map<std::string, ConnectionConfig> connections;
     RateLimitConfig rate_limit_config;
     bool auth_enabled;
+    AuthConfig global_auth_config;
     std::vector<EndpointConfig> endpoints;
     std::filesystem::path base_path;
     DuckDBConfig duckdb_config;

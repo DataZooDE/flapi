@@ -78,6 +78,17 @@ void ConfigManager::loadConfig() {
 
         std::filesystem::path template_path = getTemplateConfig().path;
         loadEndpointConfigsRecursively(template_path);
+
+        // Propagate global OIDC config to endpoints that have type:oidc but no local oidc block
+        if (global_auth_config.oidc) {
+            for (auto& ep : endpoints) {
+                if (ep.auth.type == "oidc" && !ep.auth.oidc) {
+                    ep.auth.oidc = global_auth_config.oidc;
+                    CROW_LOG_DEBUG << "Propagated global OIDC config to endpoint: " << ep.urlPath;
+                }
+            }
+        }
+
         CROW_LOG_INFO << "Configuration loaded successfully";
     } catch (const YAML::Exception& e) {
         std::ostringstream error_msg;
@@ -580,8 +591,14 @@ void ConfigManager::parseEndpointAuth(const YAML::Node& endpoint_config, Endpoin
             CROW_LOG_DEBUG << "\t\t\tSecret Key: *****[" << aws_config.secret_key.length() << "]";
         }
 
+        // Parse OIDC configuration if present
+        if (auth_node["oidc"]) {
+            CROW_LOG_DEBUG << "\t\tParsing OIDC configuration for endpoint";
+            endpoint.auth.oidc = parseOIDCConfigNode(auth_node["oidc"]);
+        }
+
         // Parse inline users if present
-        else if (auth_node["users"]) {
+        if (auth_node["users"]) {
             CROW_LOG_DEBUG << "\t\tParsing inline users configuration";
             for (const auto& user : auth_node["users"]) {
                 AuthUser auth_user;
@@ -806,33 +823,37 @@ void ConfigManager::parseAuthConfig() {
         auto auth_node = config["auth"];
         auth_enabled = auth_node["enabled"].as<bool>();
         CROW_LOG_DEBUG << "Auth enabled: " << auth_enabled;
-        if (auth_enabled) {
-            AuthConfig auth_config;
-            auth_config.type = auth_node["type"].as<std::string>();
-            auth_config.jwt_secret = auth_node["jwt-secret"].as<std::string>();
-            auth_config.jwt_issuer = auth_node["jwt-issuer"].as<std::string>();
-            CROW_LOG_DEBUG << "Auth type: " << auth_config.type;
-            CROW_LOG_DEBUG << "JWT issuer: " << auth_config.jwt_issuer;
 
-            if (auth_node["users"]) {
-                for (const auto& user : auth_node["users"]) {
-                    AuthUser auth_user;
-                    auth_user.username = user["username"].as<std::string>();
-                    auth_user.password = user["password"].as<std::string>();
-                    if (user["roles"]) {
-                        auth_user.roles = user["roles"].as<std::vector<std::string>>();
-                    }
-                    auth_config.users.push_back(auth_user);
-                    CROW_LOG_DEBUG << "Added user: " << auth_user.username << " with " << auth_user.roles.size() << " roles";
+        if (auth_node["type"]) {
+            global_auth_config.type = auth_node["type"].as<std::string>();
+            CROW_LOG_DEBUG << "Auth type: " << global_auth_config.type;
+        }
+        if (auth_node["jwt-secret"]) {
+            global_auth_config.jwt_secret = auth_node["jwt-secret"].as<std::string>();
+        }
+        if (auth_node["jwt-issuer"]) {
+            global_auth_config.jwt_issuer = auth_node["jwt-issuer"].as<std::string>();
+            CROW_LOG_DEBUG << "JWT issuer: " << global_auth_config.jwt_issuer;
+        }
+
+        if (auth_node["users"]) {
+            for (const auto& user : auth_node["users"]) {
+                AuthUser auth_user;
+                auth_user.username = user["username"].as<std::string>();
+                auth_user.password = user["password"].as<std::string>();
+                if (user["roles"]) {
+                    auth_user.roles = user["roles"].as<std::vector<std::string>>();
                 }
+                global_auth_config.users.push_back(auth_user);
+                CROW_LOG_DEBUG << "Added user: " << auth_user.username << " with " << auth_user.roles.size() << " roles";
             }
+        }
 
-            // Parse OIDC configuration if present
-            if (auth_node["oidc"]) {
-                CROW_LOG_INFO << "Parsing OIDC configuration";
-                auth_config.oidc = parseOIDCConfigNode(auth_node["oidc"]);
-                CROW_LOG_INFO << "OIDC configuration parsed successfully";
-            }
+        // Parse OIDC configuration if present — store in global_auth_config
+        if (auth_node["oidc"]) {
+            CROW_LOG_INFO << "Parsing global OIDC configuration";
+            global_auth_config.oidc = parseOIDCConfigNode(auth_node["oidc"]);
+            CROW_LOG_INFO << "Global OIDC configuration parsed: issuer=" << global_auth_config.oidc->issuer_url;
         }
     }
 }
@@ -1111,6 +1132,7 @@ const RateLimitConfig& ConfigManager::getRateLimitConfig() const { return rate_l
 bool ConfigManager::isHttpsEnforced() const { return https_config.enabled; }
 const HttpsConfig& ConfigManager::getHttpsConfig() const { return https_config; }
 bool ConfigManager::isAuthEnabled() const { return auth_enabled; }
+std::optional<OIDCConfig> ConfigManager::getGlobalOIDCConfig() const { return global_auth_config.oidc; }
 const std::vector<EndpointConfig>& ConfigManager::getEndpoints() const { return endpoints; }
 std::string ConfigManager::getBasePath() const { return base_path.string(); }
 

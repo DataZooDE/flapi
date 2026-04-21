@@ -162,10 +162,13 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
     }
 
     if (endpoint->auth.type == "basic") {
+        ctx.auth_type = "basic";
         ctx.authenticated = authenticateBasic(auth_header, *endpoint, ctx);
     } else if (endpoint->auth.type == "bearer") {
+        ctx.auth_type = "bearer";
         ctx.authenticated = authenticateBearer(auth_header, *endpoint, ctx);
     } else if (endpoint->auth.type == "oidc") {
+        ctx.auth_type = "oidc";
         ctx.authenticated = authenticateOIDC(auth_header, *endpoint, ctx);
     }
 
@@ -410,6 +413,7 @@ bool AuthMiddleware::authenticateOIDC(const std::string& auth_header, const Endp
 
     // Set authentication context
     ctx.username = claims->username;
+    ctx.email = claims->email;
     ctx.roles = claims->roles;
     ctx.authenticated = true;
 

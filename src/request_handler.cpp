@@ -19,7 +19,7 @@ RequestHandler::RequestHandler(std::shared_ptr<DatabaseManager> db_manager, std:
     defaultParams["limit"] = "100";
 }
 
-void RequestHandler::handleRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams) {
+void RequestHandler::handleRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams, const std::map<std::string, std::string>& authParams) {
     // Skip if response already completed (e.g., by rate limit or auth middleware)
     if (res.is_completed()) {
         CROW_LOG_DEBUG << "Skipping request handler - response already completed";
@@ -30,12 +30,12 @@ void RequestHandler::handleRequest(const crow::request& req, crow::response& res
 
     switch (req.method) {
         case crow::HTTPMethod::Get:
-            handleGetRequest(req, res, endpoint, pathParams);
+            handleGetRequest(req, res, endpoint, pathParams, authParams);
             break;
         case crow::HTTPMethod::Post:
         case crow::HTTPMethod::Put:
         case crow::HTTPMethod::Patch:
-            handleWriteRequest(req, res, endpoint, pathParams);
+            handleWriteRequest(req, res, endpoint, pathParams, authParams);
             break;
         case crow::HTTPMethod::Delete:
             handleDeleteRequest(req, res, endpoint, pathParams);
@@ -48,11 +48,15 @@ void RequestHandler::handleRequest(const crow::request& req, crow::response& res
     }
 }
 
-void RequestHandler::handleWriteRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams) {
+void RequestHandler::handleWriteRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams, const std::map<std::string, std::string>& authParams) {
     try {
         // Extract parameters from body, path, query (body takes precedence)
         auto params = combineWriteParameters(req, pathParams, endpoint);
-        
+        // Inject auth context as reserved params for template rendering
+        for (const auto& [k, v] : authParams) {
+            params[k] = v;
+        }
+
         // Validate parameters
         auto validationErrors = validator->validateRequestParameters(endpoint.request_fields, params);
         
@@ -159,9 +163,13 @@ void RequestHandler::handleDeleteRequest(const crow::request& req, crow::respons
     }
 }
 
-void RequestHandler::handleGetRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams) {
+void RequestHandler::handleGetRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams, const std::map<std::string, std::string>& authParams) {
     try {
         auto params = combineParameters(req, defaultParams, pathParams, endpoint);
+        // Inject auth context as reserved params for template rendering
+        for (const auto& [k, v] : authParams) {
+            params[k] = v;
+        }
         
         // First validate the known parameters
         auto validationErrors = validator->validateRequestParameters(endpoint.request_fields, params);

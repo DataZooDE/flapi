@@ -184,7 +184,25 @@ void APIServer::handleDynamicRequest(const crow::request& req, crow::response& r
         return;
     }
 
-    requestHandler.handleRequest(req, res, *endpoint, pathParams);    
+    // Build auth params from middleware context for template variable injection
+    auto& auth_ctx = app.get_context<AuthMiddleware>(req);
+    std::map<std::string, std::string> auth_params;
+    if (auth_ctx.authenticated) {
+        auth_params["__auth_username"] = auth_ctx.username;
+        auth_params["__auth_email"]    = auth_ctx.email;
+        auth_params["__auth_type"]     = auth_ctx.auth_type;
+        auth_params["__auth_authenticated"] = "true";
+        std::string roles;
+        for (const auto& r : auth_ctx.roles) {
+            if (!roles.empty()) {
+                roles += ",";
+            }
+            roles += r;
+        }
+        auth_params["__auth_roles"] = roles;
+    }
+
+    requestHandler.handleRequest(req, res, *endpoint, pathParams, auth_params);
 }
 
 crow::response APIServer::getConfig() {

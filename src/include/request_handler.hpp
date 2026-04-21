@@ -14,14 +14,14 @@ namespace flapi {
 class RequestHandler {
 public:
     RequestHandler(std::shared_ptr<DatabaseManager> db_manager, std::shared_ptr<ConfigManager> config_manager);
-    void handleRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams);
+    void handleRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams, const std::map<std::string, std::string>& authParams = {});
 
 private:
     std::map<std::string, std::string> defaultParams;
 
     void handleDeleteRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams);
-    void handleGetRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams);
-    void handleWriteRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams);
+    void handleGetRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams, const std::map<std::string, std::string>& authParams);
+    void handleWriteRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams, const std::map<std::string, std::string>& authParams);
     void handleCacheAfterWrite(const EndpointConfig& endpoint, const WriteResult& writeResult);
 
     bool isCacheDetailsRequest(const crow::request& req, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams);

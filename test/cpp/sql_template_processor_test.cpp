@@ -515,3 +515,141 @@ TEST_CASE("SQLTemplateProcessor: PathSchemeUtils integration", "[sql_template_pr
         REQUIRE_FALSE(PathSchemeUtils::IsRemotePath("file:///local/file.sql"));
     }
 }
+
+// ── Bug #17 ────────────────────────────────────────────────────────────────
+// auth.* template variables not injected into Mustache context
+// ──────────────────────────────────────────────────────────────────────────
+
+TEST_CASE("SQLTemplateProcessor: auth.username injected from reserved param", "[sql_template_processor][auth][bug17]") {
+    auto config_manager = std::make_shared<MockConfigManager>();
+    TemporaryDirectory temp_dir;
+    config_manager->setTemplatePath(temp_dir.getPath().string());
+
+    SQLTemplateProcessor processor(config_manager);
+
+    SECTION("auth.username rendered in template") {
+        std::string template_content = "SELECT * FROM t WHERE user = '{{{auth.username}}}'";
+        std::ofstream f(temp_dir.getPath() / "auth_username.sql");
+        f << template_content;
+        f.close();
+
+        EndpointConfig endpoint;
+        endpoint.templateSource = "auth_username.sql";
+
+        std::map<std::string, std::string> params = {{"__auth_username", "alice"}};
+
+        std::string result = processor.loadAndProcessTemplate(endpoint, params);
+        REQUIRE(result == "SELECT * FROM t WHERE user = 'alice'");
+    }
+
+    SECTION("__auth_username not exposed as params.* variable") {
+        std::string template_content = "{{params.__auth_username}}";
+        std::ofstream f(temp_dir.getPath() / "auth_leak.sql");
+        f << template_content;
+        f.close();
+
+        EndpointConfig endpoint;
+        endpoint.templateSource = "auth_leak.sql";
+
+        std::map<std::string, std::string> params = {{"__auth_username", "alice"}};
+
+        std::string result = processor.loadAndProcessTemplate(endpoint, params);
+        REQUIRE(result == "");  // must NOT leak into params.*
+    }
+}
+
+TEST_CASE("SQLTemplateProcessor: auth.roles injected from reserved param", "[sql_template_processor][auth][bug17]") {
+    auto config_manager = std::make_shared<MockConfigManager>();
+    TemporaryDirectory temp_dir;
+    config_manager->setTemplatePath(temp_dir.getPath().string());
+
+    SQLTemplateProcessor processor(config_manager);
+
+    SECTION("auth.roles rendered in template") {
+        std::string template_content = "-- roles: {{{auth.roles}}}";
+        std::ofstream f(temp_dir.getPath() / "auth_roles.sql");
+        f << template_content;
+        f.close();
+
+        EndpointConfig endpoint;
+        endpoint.templateSource = "auth_roles.sql";
+
+        std::map<std::string, std::string> params = {{"__auth_roles", "admin,user"}};
+
+        std::string result = processor.loadAndProcessTemplate(endpoint, params);
+        REQUIRE(result == "-- roles: admin,user");
+    }
+}
+
+TEST_CASE("SQLTemplateProcessor: auth.email injected from reserved param", "[sql_template_processor][auth][bug17]") {
+    auto config_manager = std::make_shared<MockConfigManager>();
+    TemporaryDirectory temp_dir;
+    config_manager->setTemplatePath(temp_dir.getPath().string());
+
+    SQLTemplateProcessor processor(config_manager);
+
+    SECTION("auth.email rendered in template") {
+        std::string template_content = "SELECT email = '{{{auth.email}}}'";
+        std::ofstream f(temp_dir.getPath() / "auth_email.sql");
+        f << template_content;
+        f.close();
+
+        EndpointConfig endpoint;
+        endpoint.templateSource = "auth_email.sql";
+
+        std::map<std::string, std::string> params = {{"__auth_email", "alice@example.com"}};
+
+        std::string result = processor.loadAndProcessTemplate(endpoint, params);
+        REQUIRE(result == "SELECT email = 'alice@example.com'");
+    }
+}
+
+TEST_CASE("SQLTemplateProcessor: missing auth params render as empty string", "[sql_template_processor][auth][bug17]") {
+    auto config_manager = std::make_shared<MockConfigManager>();
+    TemporaryDirectory temp_dir;
+    config_manager->setTemplatePath(temp_dir.getPath().string());
+
+    SQLTemplateProcessor processor(config_manager);
+
+    SECTION("no auth params present — auth.username is empty string not error") {
+        std::string template_content = "SELECT '{{{auth.username}}}'";
+        std::ofstream f(temp_dir.getPath() / "auth_missing.sql");
+        f << template_content;
+        f.close();
+
+        EndpointConfig endpoint;
+        endpoint.templateSource = "auth_missing.sql";
+
+        std::map<std::string, std::string> params;  // no __auth_* keys
+
+        std::string result = processor.loadAndProcessTemplate(endpoint, params);
+        REQUIRE(result == "SELECT ''");
+    }
+}
+
+TEST_CASE("SQLTemplateProcessor: auth and regular params coexist", "[sql_template_processor][auth][bug17]") {
+    auto config_manager = std::make_shared<MockConfigManager>();
+    TemporaryDirectory temp_dir;
+    config_manager->setTemplatePath(temp_dir.getPath().string());
+
+    SQLTemplateProcessor processor(config_manager);
+
+    SECTION("auth.username and params.id both rendered correctly") {
+        std::string template_content =
+            "SELECT * FROM orders WHERE id = {{params.id}} AND owner = '{{{auth.username}}}'";
+        std::ofstream f(temp_dir.getPath() / "auth_and_params.sql");
+        f << template_content;
+        f.close();
+
+        EndpointConfig endpoint;
+        endpoint.templateSource = "auth_and_params.sql";
+
+        std::map<std::string, std::string> params = {
+            {"id", "42"},
+            {"__auth_username", "bob"}
+        };
+
+        std::string result = processor.loadAndProcessTemplate(endpoint, params);
+        REQUIRE(result == "SELECT * FROM orders WHERE id = 42 AND owner = 'bob'");
+    }
+}
