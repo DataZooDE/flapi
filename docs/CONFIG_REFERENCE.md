@@ -1378,7 +1378,7 @@ AND status = '{{{ params.status }}}'
 | `conn.*` | Connection properties | `{{{ conn.path }}}` |
 | `cache.*` | Cache metadata | `{{ cache.table }}` |
 | `env.*` | Whitelisted environment variables | `{{{ env.API_KEY }}}` |
-| `context.auth.*` | Authentication context | `{{ context.auth.username }}` |
+| `auth.*` | Authentication context | `{{{ auth.username }}}`, `{{{ auth.roles }}}`, `{{{ auth.email }}}`, `{{{ auth.type }}}` |
 
 ### 9.3 Conditional Sections
 

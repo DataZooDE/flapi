@@ -59,7 +59,7 @@ Templates have access to these variables:
 | `conn.*` | Connection properties | `conn.path`, `conn.host` |
 | `env.*` | Environment variables | `env.API_KEY` |
 | `cache.*` | Cache metadata | `cache.table`, `cache.previousSnapshotTimestamp` |
-| `auth.*` | Auth context | `auth.user`, `auth.roles` |
+| `auth.*` | Auth context | `auth.username`, `auth.roles`, `auth.email`, `auth.type` |
 
 ### Template Syntax
 
