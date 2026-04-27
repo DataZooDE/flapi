@@ -333,11 +333,227 @@ jobs:
         comment_mode: off
 
   # -------------------------------------------------------------------------------------------------
+  # Smoke Tests — start each platform binary and verify HTTP health before any release
+  # -------------------------------------------------------------------------------------------------
+  smoke-test-linux-amd64:
+    needs: [linux-build]
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Download binary
+      uses: actions/download-artifact@v4
+      with:
+        name: flapi-linux-amd64
+        path: smoke
+
+    - name: Start server and health-check
+      env:
+        SMOKE_CONFIG: |
+          project-name: smoke-test
+          project-description: CI smoke test
+          template:
+            path: ./sqls
+          duckdb:
+            db-path: ./smoke-test.duckdb
+            access-mode: READ_WRITE
+            threads: 1
+            max-memory: 256MB
+          server:
+            port: 18080
+      run: |
+        cd smoke
+        chmod +x flapi
+        mkdir -p sqls
+        printf '%s' "$SMOKE_CONFIG" > smoke-config.yaml
+
+        DATAZOO_DISABLE_TELEMETRY=1 ./flapi -c smoke-config.yaml --config-service \
+          > server.log 2>&1 &
+        FLAPI_PID=$!
+
+        healthy=false
+        for i in $(seq 1 30); do
+          sleep 1
+          if curl -sf --max-time 3 http://localhost:18080/api/v1/_config/health > /dev/null; then
+            echo "Healthy after ${i}s"
+            healthy=true
+            break
+          fi
+        done
+
+        kill $FLAPI_PID 2>/dev/null; wait $FLAPI_PID 2>/dev/null || true
+
+        if [ "$healthy" != "true" ]; then
+          echo "=== server logs ===" && cat server.log
+          exit 1
+        fi
+
+  smoke-test-linux-arm64:
+    needs: [linux-build]
+    runs-on: ubuntu-24.04-arm
+    steps:
+    - name: Download binary
+      uses: actions/download-artifact@v4
+      with:
+        name: flapi-linux-arm64
+        path: smoke
+
+    - name: Start server and health-check
+      env:
+        SMOKE_CONFIG: |
+          project-name: smoke-test
+          project-description: CI smoke test
+          template:
+            path: ./sqls
+          duckdb:
+            db-path: ./smoke-test.duckdb
+            access-mode: READ_WRITE
+            threads: 1
+            max-memory: 256MB
+          server:
+            port: 18080
+      run: |
+        cd smoke
+        chmod +x flapi
+        mkdir -p sqls
+        printf '%s' "$SMOKE_CONFIG" > smoke-config.yaml
+
+        DATAZOO_DISABLE_TELEMETRY=1 ./flapi -c smoke-config.yaml --config-service \
+          > server.log 2>&1 &
+        FLAPI_PID=$!
+
+        healthy=false
+        for i in $(seq 1 30); do
+          sleep 1
+          if curl -sf --max-time 3 http://localhost:18080/api/v1/_config/health > /dev/null; then
+            echo "Healthy after ${i}s"
+            healthy=true
+            break
+          fi
+        done
+
+        kill $FLAPI_PID 2>/dev/null; wait $FLAPI_PID 2>/dev/null || true
+
+        if [ "$healthy" != "true" ]; then
+          echo "=== server logs ===" && cat server.log
+          exit 1
+        fi
+
+  smoke-test-macos:
+    needs: [osx-universal-build]
+    runs-on: macos-latest
+    steps:
+    - name: Download binary
+      uses: actions/download-artifact@v4
+      with:
+        name: flapi-macos-arm64
+        path: smoke
+
+    - name: Start server and health-check
+      env:
+        SMOKE_CONFIG: |
+          project-name: smoke-test
+          project-description: CI smoke test
+          template:
+            path: ./sqls
+          duckdb:
+            db-path: ./smoke-test.duckdb
+            access-mode: READ_WRITE
+            threads: 1
+            max-memory: 256MB
+          server:
+            port: 18080
+      run: |
+        cd smoke
+        chmod +x flapi
+        mkdir -p sqls
+        printf '%s' "$SMOKE_CONFIG" > smoke-config.yaml
+
+        DATAZOO_DISABLE_TELEMETRY=1 ./flapi -c smoke-config.yaml --config-service \
+          > server.log 2>&1 &
+        FLAPI_PID=$!
+
+        healthy=false
+        for i in $(seq 1 30); do
+          sleep 1
+          if curl -sf --max-time 3 http://localhost:18080/api/v1/_config/health > /dev/null; then
+            echo "Healthy after ${i}s"
+            healthy=true
+            break
+          fi
+        done
+
+        kill $FLAPI_PID 2>/dev/null; wait $FLAPI_PID 2>/dev/null || true
+
+        if [ "$healthy" != "true" ]; then
+          echo "=== server logs ===" && cat server.log
+          exit 1
+        fi
+
+  smoke-test-windows:
+    needs: [windows-build]
+    runs-on: windows-latest
+    steps:
+    - name: Download binary
+      uses: actions/download-artifact@v4
+      with:
+        name: flapi-windows-amd64
+        path: smoke
+
+    - name: Start server and health-check
+      env:
+        SMOKE_CONFIG: |
+          project-name: smoke-test
+          project-description: CI smoke test
+          template:
+            path: ./sqls
+          duckdb:
+            db-path: ./smoke-test.duckdb
+            access-mode: READ_WRITE
+            threads: 1
+            max-memory: 256MB
+          server:
+            port: 18080
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force smoke\sqls | Out-Null
+        $env:SMOKE_CONFIG | Out-File -FilePath smoke\smoke-config.yaml -Encoding UTF8
+
+        $env:DATAZOO_DISABLE_TELEMETRY = "1"
+        $p = Start-Process `
+          -FilePath "smoke\flapi.exe" `
+          -ArgumentList @("-c", "smoke-config.yaml", "--config-service") `
+          -WorkingDirectory smoke `
+          -RedirectStandardOutput smoke\stdout.log `
+          -RedirectStandardError  smoke\stderr.log `
+          -PassThru
+        Write-Host "flapi.exe PID: $($p.Id)"
+
+        $healthy = $false
+        for ($i = 1; $i -le 30; $i++) {
+          Start-Sleep -Seconds 1
+          try {
+            $r = Invoke-WebRequest -Uri "http://localhost:18080/api/v1/_config/health" `
+                 -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
+            if ($r.StatusCode -eq 200) {
+              Write-Host "Healthy after ${i}s"
+              $healthy = $true
+              break
+            }
+          } catch {}
+        }
+
+        Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+        if (-not $healthy) {
+          Write-Host "=== stdout ===" ; Get-Content smoke\stdout.log -ErrorAction SilentlyContinue
+          Write-Host "=== stderr ===" ; Get-Content smoke\stderr.log -ErrorAction SilentlyContinue
+          exit 1
+        }
+
+  # -------------------------------------------------------------------------------------------------
   # Create GitHub Release + PyPI Wheels (tag pushes only)
   # -------------------------------------------------------------------------------------------------
   create-release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows-build, linux-build, osx-universal-build, flapii-build]
+    needs: [windows-build, linux-build, osx-universal-build, flapii-build, smoke-test-windows, smoke-test-linux-amd64, smoke-test-linux-arm64, smoke-test-macos]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
