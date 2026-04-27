@@ -353,6 +353,7 @@ jobs:
           template:
             path: ./sqls
           duckdb:
+            db_path: ./smoke-test.duckdb
             access_mode: READ_WRITE
             threads: 1
             max_memory: 256MB
@@ -404,6 +405,7 @@ jobs:
           template:
             path: ./sqls
           duckdb:
+            db_path: ./smoke-test.duckdb
             access_mode: READ_WRITE
             threads: 1
             max_memory: 256MB
@@ -455,6 +457,7 @@ jobs:
           template:
             path: ./sqls
           duckdb:
+            db_path: ./smoke-test.duckdb
             access_mode: READ_WRITE
             threads: 1
             max_memory: 256MB
@@ -506,6 +509,7 @@ jobs:
           template:
             path: ./sqls
           duckdb:
+            db_path: ./smoke-test.duckdb
             access_mode: READ_WRITE
             threads: 1
             max_memory: 256MB
