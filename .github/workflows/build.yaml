@@ -353,19 +353,19 @@ jobs:
           template:
             path: ./sqls
           duckdb:
-            db-path: ./smoke-test.duckdb
-            access-mode: READ_WRITE
+            access_mode: READ_WRITE
             threads: 1
-            max-memory: 256MB
-          server:
-            port: 18080
+            max_memory: 256MB
+          mcp:
+            enabled: false
       run: |
         cd smoke
         chmod +x flapi
         mkdir -p sqls
         printf '%s' "$SMOKE_CONFIG" > smoke-config.yaml
 
-        DATAZOO_DISABLE_TELEMETRY=1 ./flapi -c smoke-config.yaml --config-service \
+        DATAZOO_DISABLE_TELEMETRY=1 ./flapi -c smoke-config.yaml -p 18080 \
+          --config-service --config-service-token smoke-test \
           > server.log 2>&1 &
         FLAPI_PID=$!
 
@@ -404,19 +404,19 @@ jobs:
           template:
             path: ./sqls
           duckdb:
-            db-path: ./smoke-test.duckdb
-            access-mode: READ_WRITE
+            access_mode: READ_WRITE
             threads: 1
-            max-memory: 256MB
-          server:
-            port: 18080
+            max_memory: 256MB
+          mcp:
+            enabled: false
       run: |
         cd smoke
         chmod +x flapi
         mkdir -p sqls
         printf '%s' "$SMOKE_CONFIG" > smoke-config.yaml
 
-        DATAZOO_DISABLE_TELEMETRY=1 ./flapi -c smoke-config.yaml --config-service \
+        DATAZOO_DISABLE_TELEMETRY=1 ./flapi -c smoke-config.yaml -p 18080 \
+          --config-service --config-service-token smoke-test \
           > server.log 2>&1 &
         FLAPI_PID=$!
 
@@ -455,19 +455,19 @@ jobs:
           template:
             path: ./sqls
           duckdb:
-            db-path: ./smoke-test.duckdb
-            access-mode: READ_WRITE
+            access_mode: READ_WRITE
             threads: 1
-            max-memory: 256MB
-          server:
-            port: 18080
+            max_memory: 256MB
+          mcp:
+            enabled: false
       run: |
         cd smoke
         chmod +x flapi
         mkdir -p sqls
         printf '%s' "$SMOKE_CONFIG" > smoke-config.yaml
 
-        DATAZOO_DISABLE_TELEMETRY=1 ./flapi -c smoke-config.yaml --config-service \
+        DATAZOO_DISABLE_TELEMETRY=1 ./flapi -c smoke-config.yaml -p 18080 \
+          --config-service --config-service-token smoke-test \
           > server.log 2>&1 &
         FLAPI_PID=$!
 
@@ -506,12 +506,11 @@ jobs:
           template:
             path: ./sqls
           duckdb:
-            db-path: ./smoke-test.duckdb
-            access-mode: READ_WRITE
+            access_mode: READ_WRITE
             threads: 1
-            max-memory: 256MB
-          server:
-            port: 18080
+            max_memory: 256MB
+          mcp:
+            enabled: false
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force smoke\sqls | Out-Null
@@ -520,7 +519,7 @@ jobs:
         $env:DATAZOO_DISABLE_TELEMETRY = "1"
         $p = Start-Process `
           -FilePath "smoke\flapi.exe" `
-          -ArgumentList @("-c", "smoke-config.yaml", "--config-service") `
+          -ArgumentList @("-c", "smoke-config.yaml", "-p", "18080", "--config-service", "--config-service-token", "smoke-test") `
           -WorkingDirectory smoke `
           -RedirectStandardOutput smoke\stdout.log `
           -RedirectStandardError  smoke\stderr.log `
