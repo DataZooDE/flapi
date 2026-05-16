@@ -10,6 +10,7 @@
 #include "config_manager.hpp"
 #include "database_manager.hpp"
 #include "mcp_authorization_policy.hpp"
+#include "mcp_tool_rate_limiter.hpp"
 #include "sql_template_processor.hpp"
 #include "request_validator.hpp"
 
@@ -82,6 +83,7 @@ QueryResult executeQueryWithEndpoint(const EndpointConfig& endpoint_config,
     std::unique_ptr<SQLTemplateProcessor> sql_processor;
     std::shared_ptr<AuditLogger> audit_logger;
     MCPAuthorizationPolicy authorization_policy;
+    MCPToolRateLimiter rate_limiter;
 };
 
 } // namespace flapi

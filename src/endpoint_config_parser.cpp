@@ -212,6 +212,13 @@ void EndpointConfigParser::parseMcpToolFields(
         }
     }
 
+    // W2.5: per-tool rate limit. Absent block → enabled=false (no gate).
+    if (auto rl = mcp_tool_node["rate-limit"]; rl.IsDefined()) {
+        tool_info.rate_limit.enabled = config_manager_->safeGet<bool>(rl, "enabled", "mcp-tool.rate-limit.enabled", true);
+        tool_info.rate_limit.max = config_manager_->safeGet<int>(rl, "max", "mcp-tool.rate-limit.max", 100);
+        tool_info.rate_limit.interval = config_manager_->safeGet<int>(rl, "interval", "mcp-tool.rate-limit.interval", 60);
+    }
+
     config.mcp_tool = tool_info;
 }
 

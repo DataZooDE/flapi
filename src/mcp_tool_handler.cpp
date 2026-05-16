@@ -77,6 +77,35 @@ MCPToolExecutionResult MCPToolHandler::executeTool(const MCPToolCallRequest& req
             }
         }
 
+        // W2.5: per-tool rate limit. Runs before argument validation so a
+        // flooded caller never consumes DB or template I/O. The principal
+        // key falls back to a stable marker when the request is anonymous
+        // so anonymous floods share one bucket per tool.
+        if (endpoint_config->mcp_tool && endpoint_config->mcp_tool->rate_limit.enabled) {
+            std::string principal = "anonymous";
+            auto ctx_it = request.context.find("auth.username");
+            if (ctx_it != request.context.end() && !ctx_it->second.empty()) {
+                principal = ctx_it->second;
+            }
+            auto decision = rate_limiter.tryAcquire(request.tool_name,
+                                                   principal,
+                                                   endpoint_config->mcp_tool->rate_limit);
+            if (!decision.allowed) {
+                std::unordered_map<std::string, std::string> metadata;
+                metadata["tool_name"] = request.tool_name;
+                metadata["rate_limited"] = "true";
+                metadata["retry_after_seconds"] = std::to_string(decision.retry_after_seconds);
+                MCPToolExecutionResult result;
+                result.success = false;
+                result.error_message = "Rate limit exceeded for tool '" + request.tool_name +
+                                       "'. Retry after " +
+                                       std::to_string(decision.retry_after_seconds) +
+                                       " seconds.";
+                result.metadata = std::move(metadata);
+                return result;
+            }
+        }
+
         // W2.2 dry-run: peel `_dryRun` off the arguments before validation so
         // the reserved key never reaches the unknown-parameter check. A copy
         // of the arguments is made because MCPToolCallRequest is const here.
