@@ -194,6 +194,14 @@ struct EndpointConfig {
         // — under MCP auth this denies by default; with MCP auth disabled the
         // policy short-circuits to allow. An explicit empty vector denies all.
         std::optional<std::vector<std::string>> allowed_roles;
+
+        // Per-tool response shaping (W2.4). Empty / unset → no shaping,
+        // result is returned as-is. See `MCPResponseShaper` for semantics.
+        struct ResponseShape {
+            std::optional<std::size_t> max_rows;
+            std::vector<std::string> redact_columns;
+            bool sample = false;
+        } response;
     };
 
     struct MCPResourceInfo {

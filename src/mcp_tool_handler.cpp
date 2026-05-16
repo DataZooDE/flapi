@@ -4,6 +4,7 @@
 #include <algorithm>
 
 #include "mcp_dry_run.hpp"
+#include "mcp_response_shaper.hpp"
 
 namespace flapi {
 
@@ -161,11 +162,31 @@ MCPToolExecutionResult MCPToolHandler::executeTool(const MCPToolCallRequest& req
         std::string result_format = endpoint_config->mcp_tool ? endpoint_config->mcp_tool->result_mime_type : "application/json";
         std::string formatted_result = formatResult(query_result, result_format);
 
+        // W2.4 response shaping: redact columns / cap rows / collapse to sample
+        // summary per the tool's `mcp-tool.response` config. No-op when the
+        // operator hasn't configured anything.
+        bool shaped = false;
+        if (endpoint_config->mcp_tool) {
+            const auto& shape_yaml = endpoint_config->mcp_tool->response;
+            ResponseShape shape_config;
+            shape_config.max_rows = shape_yaml.max_rows;
+            shape_config.redact_columns = shape_yaml.redact_columns;
+            shape_config.sample = shape_yaml.sample;
+            if (!shape_config.isNoOp()) {
+                MCPResponseShaper shaper;
+                formatted_result = shaper.shape(formatted_result, shape_config);
+                shaped = true;
+            }
+        }
+
         // Create metadata
         std::unordered_map<std::string, std::string> metadata;
         metadata["tool_name"] = request.tool_name;
         metadata["query_rows"] = std::to_string(query_result.data.size());
         metadata["execution_time_ms"] = "0"; // Simplified
+        if (shaped) {
+            metadata["response_shaped"] = "true";
+        }
 
         emit_audit("success", static_cast<std::int64_t>(query_result.data.size()));
         return createSuccessResult(formatted_result, metadata);
