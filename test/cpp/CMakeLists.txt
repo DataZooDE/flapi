@@ -23,8 +23,10 @@ add_executable(flapi_tests
     query_executor_test.cpp
     rate_limit_middleware_test.cpp
     request_handler_test.cpp
+    prepared_template_rewriter_test.cpp
     request_validator_test.cpp
     security_auditor_test.cpp
+    sql_parameter_classifier_test.cpp
     sql_template_processor_test.cpp
     sql_utils_test.cpp
     test_duckdb_raii.cpp
