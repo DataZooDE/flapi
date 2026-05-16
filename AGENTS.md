@@ -248,8 +248,10 @@ Templates are **Mustache files** that generate SQL from request parameters.
 - `env.*` - Whitelisted environment variables
 
 **Key Rule: Triple vs. Double Braces**
-- **Triple braces `{{{ }}}`** for strings: Auto-escapes quotes, prevents SQL injection
-- **Double braces `{{ }}`** for numbers/identifiers: No quotes, safe for numeric types
+- **Triple braces `{{{ }}}`** for strings: Renders the raw value (no HTML entity escaping). Use inside single-quoted SQL string literals.
+- **Double braces `{{ }}`** for numbers/identifiers: HTML-escapes the value (turns `<` into `&lt;` etc.), which is harmless but not SQL-aware — use only where the value is a number or known-safe identifier.
+
+> **Security note:** Neither form performs SQL-specific escaping. Mustache does not understand SQL string literals, quote-doubling, or comment syntax. Defense against injection comes from the `RequestValidator` (typed fields, regex/range/enum checks) and disciplined template authoring (quote string params, parameterise numerics). When in doubt, add a stricter validator rather than relying on rendering.
 
 **Example Template:**
 ```sql

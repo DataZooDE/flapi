@@ -1362,13 +1362,15 @@ WHERE id = {{ params.id }}
 LIMIT {{ params.limit }}
 ```
 
-**Triple Braces `{{{ }}}`** - For string values (escapes quotes, prevents SQL injection):
+**Triple Braces `{{{ }}}`** - For string values, renders the raw value with no HTML entity escaping. Use this form inside single-quoted SQL string literals:
 
 ```sql
 SELECT * FROM table
 WHERE name = '{{{ params.name }}}'
 AND status = '{{{ params.status }}}'
 ```
+
+> **Security note:** Neither double nor triple braces perform SQL-specific escaping. Mustache does not understand SQL string literals, quote-doubling, or comment syntax. Defense against SQL injection comes from the `RequestValidator` (typed fields, regex/range/enum checks) plus disciplined template authoring — not from the brace form alone. Pair every user-supplied string field with an appropriately strict validator.
 
 ### 9.2 Available Contexts
 
@@ -1416,12 +1418,14 @@ WHERE 1=1
 **2. Always Use Triple Braces for Strings:**
 
 ```sql
--- CORRECT: Prevents SQL injection
+-- CORRECT: renders the raw string inside the quoted literal
 WHERE name = '{{{ params.name }}}'
 
--- INCORRECT: Vulnerable to injection
+-- INCORRECT: HTML-entity escaping mangles legitimate characters (e.g., `'` → `&#39;`)
 WHERE name = '{{ params.name }}'
 ```
+
+Note: the triple-brace rule keeps the rendered SQL syntactically correct. It does **not** by itself prevent SQL injection — that protection comes from the `RequestValidator` for the corresponding request field.
 
 **3. Provide Default Values:**
 

@@ -24,6 +24,7 @@ add_executable(flapi_tests
     rate_limit_middleware_test.cpp
     request_handler_test.cpp
     request_validator_test.cpp
+    security_auditor_test.cpp
     sql_template_processor_test.cpp
     sql_utils_test.cpp
     test_duckdb_raii.cpp
