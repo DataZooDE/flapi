@@ -23,6 +23,6 @@ LABEL org.opencontainers.image.version="0.2.0"
 LABEL org.opencontainers.image.authors="DataZoo GmbH <hello@datazoo.com>"
 LABEL org.opencontainers.image.url="https://github.com/datazoo/flapi"
 LABEL org.opencontainers.image.source="https://github.com/datazoo/flapi"
-LABEL org.opencontainers.image.licenses="Apache-2.0"
+LABEL org.opencontainers.image.licenses="BUSL-1.1"
 
 ENTRYPOINT ["/app/flapi"]

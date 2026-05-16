@@ -722,7 +722,28 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 
 ## 📄 License
 
-flAPI is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for more details.
+flAPI is licensed under the [Business Source License (BSL) Version 1.1](./LICENSE). The BSL is a source-available license that gives you the following permissions:
+
+### Allowed
+1. **Copy, modify, and create derivative works**: You can copy the software, modify it, and create derivative works.
+2. **Redistribute and non-production use**: Redistribution and non-production use of the software is permitted.
+3. **Limited production use**: You can use flAPI in production, but with one restriction (see below).
+4. **Change License rights**: After the Change Date (five years from first publication of the Licensed Work), the software automatically becomes available under the Change License (MPL 2.0).
+
+### Not allowed
+1. **Offering to third parties on a hosted or embedded basis**: The Additional Use Grant explicitly restricts using the software in a way that offers it to third parties as a hosted service or embedded component. If you want to do that, you need a commercial license.
+2. **Violation of current license requirements**: If your use does not comply with the BSL, you must either purchase a commercial license or stop using flAPI.
+3. **Trademark usage**: You do not have rights to the flAPI or DataZoo trademarks or logos, except as expressly required by the License.
+
+For commercial licensing — embedding flAPI in a product, offering it as a hosted service, or any redistribution that the Additional Use Grant restricts — contact [contact@data-zoo.de](mailto:contact@data-zoo.de).
+
+### Licensing parameters
+- **Licensor**: DataZoo GmbH
+- **Licensed Work**: flAPI — SQL-to-API framework
+- **Change Date**: five years from the first publication of each version
+- **Change License**: MPL 2.0
+
+See the [LICENSE](./LICENSE) file for the full text.
 
 ## 🙋‍♀️ Support
 
