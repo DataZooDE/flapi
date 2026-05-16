@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "rate_limit_key_builder.hpp"
+
 namespace flapi {
 
 void RateLimitMiddleware::setConfig(std::shared_ptr<ConfigManager> config_manager) {
@@ -16,9 +18,17 @@ void RateLimitMiddleware::before_handle(crow::request& req, crow::response& res,
         return;
     }
 
-    // FIX #4: Include path in rate limit key (per-endpoint rate limits)
+    // W1.4: pick the bucket key based on the endpoint's `rate-limit.key`
+    // strategy (defaults to "ip" for backward compat).
     std::string client_ip = req.remote_ip_address;
-    std::string rate_key = client_ip + "|" + req.url;
+    std::string auth_header;
+    auto it = req.headers.find("Authorization");
+    if (it != req.headers.end()) {
+        auth_header = it->second;
+    }
+    const auto strategy = RateLimitKeyStrategyUtils::parse(endpoint->rate_limit.key_strategy);
+    RateLimitKeyBuilder key_builder;
+    std::string rate_key = key_builder.buildKey(strategy, client_ip, auth_header, req.url);
 
     {
         std::lock_guard<std::mutex> lock(mutex);

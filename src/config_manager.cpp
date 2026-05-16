@@ -534,6 +534,8 @@ void ConfigManager::parseEndpointRateLimit(const YAML::Node& endpoint_config, En
         endpoint.rate_limit.enabled = safeGet<bool>(rate_limit_node, "enabled", "rate-limit.enabled", false);
         endpoint.rate_limit.max = safeGet<int>(rate_limit_node, "max", "rate-limit.max", 100);
         endpoint.rate_limit.interval = safeGet<int>(rate_limit_node, "interval", "rate-limit.interval", 60);
+        endpoint.rate_limit.key_strategy = safeGet<std::string>(
+            rate_limit_node, "key", "rate-limit.key", rate_limit_config.key_strategy);
     }
 }
 
@@ -810,9 +812,13 @@ void ConfigManager::parseRateLimitConfig() {
         rate_limit_config.enabled = rate_limit_node["enabled"].as<bool>();
         rate_limit_config.max = rate_limit_node["max"].as<int>();
         rate_limit_config.interval = rate_limit_node["interval"].as<int>();
-        CROW_LOG_DEBUG << "Rate Limit: enabled=" << rate_limit_config.enabled 
-                       << ", max=" << rate_limit_config.max 
-                       << ", interval=" << rate_limit_config.interval;
+        if (rate_limit_node["key"]) {
+            rate_limit_config.key_strategy = rate_limit_node["key"].as<std::string>();
+        }
+        CROW_LOG_DEBUG << "Rate Limit: enabled=" << rate_limit_config.enabled
+                       << ", max=" << rate_limit_config.max
+                       << ", interval=" << rate_limit_config.interval
+                       << ", key=" << rate_limit_config.key_strategy;
     }
 }
 
