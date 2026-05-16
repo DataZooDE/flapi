@@ -105,6 +105,7 @@ connection: [inmem]
 mcp-tool:
   name: tool_a
   description: Tool A, capped at 2 calls/minute
+  allowed-roles: [analyst]
   rate-limit:
     enabled: true
     max: 2
@@ -121,6 +122,7 @@ connection: [inmem]
 mcp-tool:
   name: tool_b
   description: Tool B, capped at 5 calls/minute
+  allowed-roles: [analyst]
   rate-limit:
     enabled: true
     max: 5

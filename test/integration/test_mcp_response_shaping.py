@@ -109,6 +109,7 @@ connection: [inmem]
 mcp-tool:
   name: redact_tool
   description: People list with salary redacted
+  allowed-roles: [analyst]
   response:
     redact-columns:
       - salary
@@ -122,6 +123,7 @@ connection: [inmem]
 mcp-tool:
   name: cap_tool
   description: People list capped at 2 rows
+  allowed-roles: [analyst]
   response:
     max-rows: 2
 """)
@@ -134,6 +136,7 @@ connection: [inmem]
 mcp-tool:
   name: sample_tool
   description: People list returning summary only
+  allowed-roles: [analyst]
   response:
     sample: true
 """)
@@ -255,7 +258,7 @@ class TestResponseShaping:
         assert r.status_code == 200, r.text
         body = r.json()
         assert "error" not in body, f"redact_tool errored: {body}"
-        result_str = body["result"]
+        result_str = r.text  # MCP wraps tool JSON in result.content[0].text; r.text contains it raw
         # salary must be the redaction sentinel; non-redacted columns survive.
         assert "<redacted>" in result_str, result_str
         assert "alice" in result_str, result_str
@@ -269,7 +272,7 @@ class TestResponseShaping:
         assert r.status_code == 200, r.text
         body = r.json()
         assert "error" not in body, f"cap_tool errored: {body}"
-        result_str = body["result"]
+        result_str = r.text  # MCP wraps tool JSON in result.content[0].text; r.text contains it raw
         # 2 rows max → alice and bob present, carol absent.
         assert "alice" in result_str, result_str
         assert "bob" in result_str, result_str
@@ -282,10 +285,14 @@ class TestResponseShaping:
         assert r.status_code == 200, r.text
         body = r.json()
         assert "error" not in body, f"sample_tool errored: {body}"
-        result_str = body["result"]
-        # Sample mode emits row_count + columns, no row data.
-        assert "\"sampled\":true" in result_str, result_str
-        assert "\"row_count\":3" in result_str, result_str
-        # None of the per-row values should appear.
-        assert "alice" not in result_str, result_str
-        assert "bob" not in result_str, result_str
+        # The MCP envelope nests the shaper's JSON inside
+        # `result.content[0].text` (escaped). Parse it to assert on
+        # structure rather than relying on substring matches against
+        # double-escaped JSON.
+        inner = json.loads(body["result"]["content"][0]["text"])
+        assert inner["sampled"] is True, inner
+        assert inner["row_count"] == 3, inner
+        assert sorted(inner["columns"]) == ["id", "name", "salary"], inner
+        # None of the per-row values should appear anywhere in the response.
+        assert "alice" not in r.text, r.text
+        assert "bob" not in r.text, r.text

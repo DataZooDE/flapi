@@ -249,8 +249,8 @@ class TestPerToolRbac:
         assert r.status_code == 200, r.text
         body = r.json()
         assert "error" not in body, f"Expected success, got error: {body}"
-        # Result is a JSON string wrapped in MCP content envelope.
-        assert "admin-result" in body["result"], body
+        # The MCP envelope wraps the tool's JSON payload in result.content[0].text.
+        assert "admin-result" in r.text, body
 
     def test_admin_token_cannot_call_analyst_tool(self, rbac_server):
         token = _make_jwt(roles=["admin"])
@@ -260,8 +260,8 @@ class TestPerToolRbac:
         assert r.status_code == 200, r.text
         body = r.json()
         assert "error" in body, f"Expected denial, got success: {body}"
-        assert "Permission denied" in body["error"]
-        assert "analyst" in body["error"]
+        assert "Permission denied" in r.text
+        assert "analyst" in r.text
 
     def test_analyst_token_can_call_analyst_tool(self, rbac_server):
         token = _make_jwt(roles=["analyst"])
@@ -271,7 +271,7 @@ class TestPerToolRbac:
         assert r.status_code == 200, r.text
         body = r.json()
         assert "error" not in body, body
-        assert "analyst-result" in body["result"]
+        assert "analyst-result" in r.text
 
     def test_analyst_token_cannot_call_admin_tool(self, rbac_server):
         token = _make_jwt(roles=["analyst"])
@@ -281,8 +281,8 @@ class TestPerToolRbac:
         assert r.status_code == 200, r.text
         body = r.json()
         assert "error" in body, body
-        assert "Permission denied" in body["error"]
-        assert "admin" in body["error"]
+        assert "Permission denied" in r.text
+        assert "admin" in r.text
 
     def test_token_with_no_roles_is_denied_for_role_gated_tools(self, rbac_server):
         token = _make_jwt(roles=[])
@@ -293,4 +293,4 @@ class TestPerToolRbac:
             assert r.status_code == 200, r.text
             body = r.json()
             assert "error" in body, f"{tool} unexpectedly allowed: {body}"
-            assert "Permission denied" in body["error"]
+            assert "Permission denied" in r.text

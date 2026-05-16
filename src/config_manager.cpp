@@ -115,6 +115,7 @@ void ConfigManager::parseMainConfig() {
         CROW_LOG_DEBUG << "HTTP Port: " << http_port;
 
         parseHttpsConfig();
+        parseCorsConfig();
         parseConnections();
         parseRateLimitConfig();
         parseAuthConfig();

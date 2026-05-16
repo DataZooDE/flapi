@@ -96,7 +96,9 @@ def _wait_for_server(proc: subprocess.Popen, base_url: str, log_path: str) -> bo
         if proc.poll() is not None:
             return False
         try:
-            r = requests.get(f"{base_url}/ping", timeout=1)
+            # Probe the root path, NOT /ping — /ping is the rate-limited
+            # endpoint under test and the probe must not consume a slot.
+            r = requests.get(f"{base_url}/", timeout=1)
             if r.status_code < 500:
                 return True
         except requests.exceptions.RequestException:

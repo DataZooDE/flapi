@@ -111,6 +111,7 @@ request:
 mcp-tool:
   name: customer_lookup
   description: Look up a customer by id (deterministic SELECT for dry-run testing)
+  allowed-roles: [analyst]
 """)
     with open(os.path.join(sqls, "lookup.sql"), "w") as f:
         # Mustache rendering: {{ params.id }} substitutes the literal value.
@@ -226,15 +227,15 @@ class TestDryRunMode:
         assert "error" not in body, f"dry-run unexpectedly errored: {body}"
 
         # The MCP envelope wraps the tool result as a JSON string in
-        # `result`. The dry-run payload itself is inside that string.
-        result_str = body["result"]
-        # The content[].text field carries our payload; verify by substring.
-        assert "\"dry_run\":true" in result_str, result_str
-        assert "rendered_sql" in result_str, result_str
+        # `result.content[0].text` — so the dry-run payload's quotes
+        # appear escaped in the outer JSON. Extract and re-parse to
+        # check the inner shape directly.
+        inner_text = body["result"]["content"][0]["text"]
+        inner = json.loads(inner_text)
+        assert inner["dry_run"] is True, inner
+        assert "rendered_sql" in inner, inner
         # The rendered SQL must contain the substituted id literal.
-        assert "42" in result_str, result_str
-        # No actual row data should appear (the SQL is *not* executed).
-        assert "customer_id" not in result_str or "rendered_sql" in result_str
+        assert "42" in inner["rendered_sql"], inner["rendered_sql"]
 
     def test_normal_call_does_not_emit_dry_run_payload(self, dry_run_server):
         # Sanity: a regular call still works against the in-mem connection
@@ -244,10 +245,7 @@ class TestDryRunMode:
 
         r = _tools_call(dry_run_server, token, sid, {"id": 7})
         assert r.status_code == 200, r.text
-        body = r.json()
-        # We do not assert on success vs. error here (the in-mem DB may
-        # not have core_functions available), only that the dry-run
-        # markers are absent when the flag is not set.
-        result_or_error = body.get("result", "") + body.get("error", "")
-        assert "\"dry_run\":true" not in result_or_error
-        assert "rendered_sql" not in result_or_error
+        # The dry-run payload's distinctive fields must NOT appear anywhere
+        # in the raw response (success or error path).
+        assert "dry_run" not in r.text, r.text
+        assert "rendered_sql" not in r.text, r.text

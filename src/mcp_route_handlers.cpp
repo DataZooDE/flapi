@@ -862,19 +862,26 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                 tool_request.tool_name = tool_name;
                 tool_request.arguments = crow::json::wvalue(arguments);
 
-                // Plumb authenticated caller's roles into the tool request so the
-                // MCPToolHandler can enforce per-tool RBAC (W2.1).
+                // Plumb authenticated caller's identity into the tool request:
+                //  - roles for W2.1 per-tool RBAC
+                //  - username for W1.3 audit log and W2.5 per-tool rate-limit
+                //    principal keying
                 if (auth_handler_) {
                     auto auth_context = auth_handler_->authenticate(http_req);
-                    if (auth_context && !auth_context->roles.empty()) {
-                        std::string roles_csv;
-                        for (size_t i = 0; i < auth_context->roles.size(); ++i) {
-                            if (i > 0) {
-                                roles_csv += ",";
-                            }
-                            roles_csv += auth_context->roles[i];
+                    if (auth_context) {
+                        if (!auth_context->username.empty()) {
+                            tool_request.context["auth.username"] = auth_context->username;
                         }
-                        tool_request.context[MCPToolCallRequest::kRolesContextKey] = roles_csv;
+                        if (!auth_context->roles.empty()) {
+                            std::string roles_csv;
+                            for (size_t i = 0; i < auth_context->roles.size(); ++i) {
+                                if (i > 0) {
+                                    roles_csv += ",";
+                                }
+                                roles_csv += auth_context->roles[i];
+                            }
+                            tool_request.context[MCPToolCallRequest::kRolesContextKey] = roles_csv;
+                        }
                     }
                 }
 

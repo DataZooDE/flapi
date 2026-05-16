@@ -28,13 +28,13 @@ void FlapiCorsMiddleware::after_handle(crow::request& req, crow::response& res, 
         return;  // No CORS header — browser blocks cross-origin access.
     }
 
-    // Only set if Crow's CORSHandler hasn't already (it shouldn't have, by
-    // construction of the middleware order; defensive set_header avoids
-    // doubled headers regardless).
-    auto existing = res.headers.find("Access-Control-Allow-Origin");
-    if (existing == res.headers.end()) {
-        res.add_header("Access-Control-Allow-Origin", *resolved);
-    }
+    // Overwrite any value Crow's CORSHandler may already have set. The
+    // built-in handler keeps a static origin string (defaults to "*") and
+    // applies it without inspecting the request's Origin header — when an
+    // operator configures `cors.allow-origins`, the per-request value
+    // resolved here must take precedence so a non-allowlisted Origin does
+    // not see "*" echoed back.
+    res.set_header("Access-Control-Allow-Origin", *resolved);
 }
 
 } // namespace flapi

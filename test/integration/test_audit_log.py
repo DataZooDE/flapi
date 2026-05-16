@@ -123,6 +123,7 @@ request:
 mcp-tool:
   name: customer_lookup
   description: Look up a customer by id
+  allowed-roles: [analyst]
 """)
     with open(os.path.join(sqls, "lookup.sql"), "w") as f:
         f.write("SELECT {{ params.id }} AS id\n")
