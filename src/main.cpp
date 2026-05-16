@@ -24,6 +24,7 @@
 #include "rate_limit_middleware.hpp"
 #include "config_token_utils.hpp"
 #include "credential_manager.hpp"
+#include "security_auditor.hpp"
 #include "vfs_health_checker.hpp"
 
 using namespace flapi;
@@ -88,6 +89,23 @@ void printValidationWarnings(const std::string& endpoint_name, const std::vector
         std::cout << "  WARNING: " << warning << std::endl;
         warnings_count++;
     }
+}
+
+void printSecurityWarnings(const std::vector<SecurityWarning>& warnings) {
+    if (warnings.empty()) {
+        return;
+    }
+    std::cerr << "\n" << std::string(60, '=') << std::endl;
+    std::cerr << "SECURITY WARNINGS (" << warnings.size() << ")" << std::endl;
+    std::cerr << std::string(60, '=') << std::endl;
+    for (const auto& w : warnings) {
+        std::cerr << "[" << w.code << "] " << w.message;
+        if (!w.location.empty()) {
+            std::cerr << " (at: " << w.location << ")";
+        }
+        std::cerr << std::endl;
+    }
+    std::cerr << std::endl;
 }
 
 void printValidationSummary(bool all_valid, int errors_count, int warnings_count) {
@@ -315,6 +333,13 @@ int main(int argc, char* argv[])
     set_log_level(log_level);
 
     auto config_manager = initializeConfig(config_file);
+
+    // Surface configuration-level security warnings (plaintext passwords, MCP without auth, etc.)
+    // Runs in both --validate-config mode and normal server start; never aborts startup.
+    {
+        SecurityAuditor auditor;
+        printSecurityWarnings(auditor.audit(*config_manager));
+    }
 
     // If validate-config flag is set, validate and exit
     if (validate_config) {
