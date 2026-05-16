@@ -242,12 +242,25 @@ void APIServer::run(int port) {
         configManager->setHttpPort(port);
     }
 
-    CROW_LOG_INFO << "Server starting on port " << configManager->getHttpPort() << "...";
-    app.port(configManager->getHttpPort())
-       .server_name("flAPI")
-       .multithreaded()
-       .use_compression(crow::compression::GZIP)
-       .run();
+    const auto& https = configManager->getHttpsConfig();
+    if (https.enabled) {
+        CROW_LOG_INFO << "HTTPS enabled: serving TLS on port " << configManager->getHttpPort();
+        CROW_LOG_DEBUG << "  cert: " << https.ssl_cert_file;
+        CROW_LOG_DEBUG << "  key:  " << https.ssl_key_file;
+        app.port(configManager->getHttpPort())
+           .server_name("flAPI")
+           .multithreaded()
+           .use_compression(crow::compression::GZIP)
+           .ssl_file(https.ssl_cert_file, https.ssl_key_file)
+           .run();
+    } else {
+        CROW_LOG_INFO << "Server starting on port " << configManager->getHttpPort() << "...";
+        app.port(configManager->getHttpPort())
+           .server_name("flAPI")
+           .multithreaded()
+           .use_compression(crow::compression::GZIP)
+           .run();
+    }
 }
 
 void APIServer::requestForEndpoint(const EndpointConfig& endpoint, const std::unordered_map<std::string, std::string>& pathParams) 

@@ -110,6 +110,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
 set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 set(CROW_ENABLE_COMPRESSION ON)
+# W3.2: enable Crow's SSL/TLS support so `app.ssl_file()` is compiled in.
+# OpenSSL is already a required dependency; turning this on has no runtime
+# cost when `enforce-https.enabled` is false.
+add_compile_definitions(CROW_ENABLE_SSL)
 
 # Compiler flags
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
