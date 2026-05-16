@@ -389,6 +389,12 @@ struct MCPConfig {
     MCPAuthConfig auth;
     std::string instructions;           // Inline instructions content
     std::string instructions_file;      // Path to markdown file (optional)
+
+    // When true, the endpoint parser rejects any mcp-tool whose description
+    // trips the MCPDescriptionScanner (control chars, prompt-injection
+    // phrases, oversize). When false (default) the scanner warns at parse
+    // time but loading still succeeds. See W2.3 in issue #24.
+    bool strict_descriptions = false;
 };
 
 struct DuckDBConfig {

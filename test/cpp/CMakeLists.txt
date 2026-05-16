@@ -21,6 +21,7 @@ add_executable(flapi_tests
     https_config_test.cpp
     cache_manager_test.cpp
     mcp_authorization_policy_test.cpp
+    mcp_description_scanner_test.cpp
     mcp_dry_run_test.cpp
     mcp_prompt_handler_test.cpp
     mcp_request_validator_test.cpp
