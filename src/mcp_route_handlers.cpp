@@ -862,6 +862,22 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                 tool_request.tool_name = tool_name;
                 tool_request.arguments = crow::json::wvalue(arguments);
 
+                // Plumb authenticated caller's roles into the tool request so the
+                // MCPToolHandler can enforce per-tool RBAC (W2.1).
+                if (auth_handler_) {
+                    auto auth_context = auth_handler_->authenticate(http_req);
+                    if (auth_context && !auth_context->roles.empty()) {
+                        std::string roles_csv;
+                        for (size_t i = 0; i < auth_context->roles.size(); ++i) {
+                            if (i > 0) {
+                                roles_csv += ",";
+                            }
+                            roles_csv += auth_context->roles[i];
+                        }
+                        tool_request.context[MCPToolCallRequest::kRolesContextKey] = roles_csv;
+                    }
+                }
+
                 auto result = tool_handler_->executeTool(tool_request);
 
                 if (result.success) {

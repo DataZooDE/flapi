@@ -162,6 +162,18 @@ void EndpointConfigParser::parseMcpToolFields(
     tool_info.name = config_manager_->safeGet<std::string>(mcp_tool_node, "name", "mcp-tool.name");
     tool_info.description = config_manager_->safeGet<std::string>(mcp_tool_node, "description", "mcp-tool.description");
     tool_info.result_mime_type = config_manager_->safeGet<std::string>(mcp_tool_node, "result-mime-type", "mcp-tool.result-mime-type", "application/json");
+
+    // Per-tool RBAC (W2.1). Absent key → std::nullopt (deny-by-default under
+    // MCP auth, transparent under demo mode). Present-but-empty list is the
+    // strict "no role passes this gate" form.
+    if (mcp_tool_node["allowed-roles"].IsDefined()) {
+        std::vector<std::string> roles;
+        for (const auto& role_node : mcp_tool_node["allowed-roles"]) {
+            roles.push_back(role_node.as<std::string>());
+        }
+        tool_info.allowed_roles = std::move(roles);
+    }
+
     config.mcp_tool = tool_info;
 }
 
