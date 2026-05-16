@@ -254,6 +254,7 @@ add_library(flapi-lib STATIC
     src/rate_limit_key_builder.cpp
     src/rate_limit_middleware.cpp
     src/mcp_authorization_policy.cpp
+    src/mcp_dry_run.cpp
     src/prepared_template_rewriter.cpp
     src/route_translator.cpp
     src/security_auditor.cpp

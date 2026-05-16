@@ -3,6 +3,8 @@
 #include <sstream>
 #include <algorithm>
 
+#include "mcp_dry_run.hpp"
+
 namespace flapi {
 
 MCPToolHandler::MCPToolHandler(std::shared_ptr<DatabaseManager> db_manager,
@@ -74,14 +76,42 @@ MCPToolExecutionResult MCPToolHandler::executeTool(const MCPToolCallRequest& req
             }
         }
 
-        // Validate arguments
-        if (!validateToolArguments(request.tool_name, request.arguments)) {
+        // W2.2 dry-run: peel `_dryRun` off the arguments before validation so
+        // the reserved key never reaches the unknown-parameter check. A copy
+        // of the arguments is made because MCPToolCallRequest is const here.
+        crow::json::wvalue effective_arguments;
+        {
+            auto reparsed = crow::json::load(request.arguments.dump());
+            if (reparsed) {
+                effective_arguments = crow::json::wvalue(reparsed);
+            }
+        }
+        const bool is_dry_run = MCPDryRun::extractFlag(effective_arguments);
+
+        // Validate arguments (post-strip).
+        if (!validateToolArguments(request.tool_name, effective_arguments)) {
             emit_audit("error:invalid_arguments", -1);
             return createErrorResult("Invalid arguments for tool: " + request.tool_name);
         }
 
         // Prepare parameters for SQL template
-        std::map<std::string, std::string> params = prepareParameters(*endpoint_config, request.arguments);
+        std::map<std::string, std::string> params = prepareParameters(*endpoint_config, effective_arguments);
+
+        // W2.2 dry-run short-circuit: render the SQL via the existing template
+        // processor and return it without touching the database. Write tools
+        // honour dry-run the same way — no side effects, just the SQL that
+        // would have run.
+        if (is_dry_run) {
+            std::string rendered_sql = sql_processor->loadAndProcessTemplate(*endpoint_config, params);
+            std::string payload = MCPDryRun::formatResult(request.tool_name, rendered_sql, params);
+
+            std::unordered_map<std::string, std::string> metadata;
+            metadata["tool_name"] = request.tool_name;
+            metadata["dry_run"] = "true";
+            metadata["execution_time_ms"] = "0";
+
+            return createSuccessResult(payload, metadata);
+        }
 
         // Check if this is a write operation
         if (endpoint_config->operation.type == OperationConfig::Write) {
