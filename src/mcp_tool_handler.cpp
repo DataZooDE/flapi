@@ -1,4 +1,5 @@
 #include "mcp_tool_handler.hpp"
+#include <chrono>
 #include <sstream>
 #include <algorithm>
 
@@ -8,20 +9,60 @@ MCPToolHandler::MCPToolHandler(std::shared_ptr<DatabaseManager> db_manager,
                               std::shared_ptr<ConfigManager> config_manager)
     : db_manager(db_manager), config_manager(config_manager),
       validator(std::make_shared<RequestValidator>()),
-      sql_processor(std::make_unique<SQLTemplateProcessor>(config_manager))
+      sql_processor(std::make_unique<SQLTemplateProcessor>(config_manager)),
+      audit_logger(config_manager->getAuditLogger())
 {
 }
 
 MCPToolExecutionResult MCPToolHandler::executeTool(const MCPToolCallRequest& request) {
+    const auto audit_started_at = std::chrono::steady_clock::now();
+    const auto emit_audit = [&](const std::string& status, std::int64_t row_count) {
+        if (!audit_logger || !audit_logger->isEnabled()) {
+            return;
+        }
+        AuditEvent ev;
+        ev.method = "tools/call";
+        ev.target = request.tool_name;
+        ev.status = status;
+        ev.row_count = row_count;
+        ev.latency_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - audit_started_at).count();
+        auto principal_it = request.context.find("auth.username");
+        if (principal_it != request.context.end() && !principal_it->second.empty()) {
+            ev.principal = principal_it->second;
+        }
+        // Mirror the JSON arguments into the audit params map as strings; the
+        // logger applies the configured redaction. We re-wrap each rvalue
+        // child as a wvalue so .dump() handles all JSON types uniformly.
+        if (request.arguments.t() == crow::json::type::Object) {
+            auto parsed = crow::json::load(request.arguments.dump());
+            if (parsed) {
+                for (const auto& key : parsed.keys()) {
+                    crow::json::wvalue tmp(parsed[key]);
+                    std::string serialised = tmp.dump();
+                    // Strip surrounding quotes for plain string values so the
+                    // audit log doesn't contain visually doubled quoting.
+                    if (serialised.size() >= 2 && serialised.front() == '"' && serialised.back() == '"') {
+                        serialised = serialised.substr(1, serialised.size() - 2);
+                    }
+                    ev.params[key] = std::move(serialised);
+                }
+            }
+        }
+        audit_logger->log(std::move(ev));
+    };
+
     try {
         // Get the endpoint configuration by tool name
         const EndpointConfig* endpoint_config = getEndpointConfigByToolName(request.tool_name);
         if (!endpoint_config) {
+            emit_audit("error:tool_not_found", -1);
             return createErrorResult("Tool not found: " + request.tool_name);
         }
 
         // Validate arguments
         if (!validateToolArguments(request.tool_name, request.arguments)) {
+            emit_audit("error:invalid_arguments", -1);
             return createErrorResult("Invalid arguments for tool: " + request.tool_name);
         }
 
@@ -65,6 +106,7 @@ MCPToolExecutionResult MCPToolHandler::executeTool(const MCPToolCallRequest& req
             metadata["rows_affected"] = std::to_string(write_result.rows_affected);
             metadata["execution_time_ms"] = "0"; // Simplified
 
+            emit_audit("success", static_cast<std::int64_t>(write_result.rows_affected));
             return createSuccessResult(write_response.dump(), metadata);
         } else {
             // Execute read query
@@ -81,9 +123,11 @@ MCPToolExecutionResult MCPToolHandler::executeTool(const MCPToolCallRequest& req
         metadata["query_rows"] = std::to_string(query_result.data.size());
         metadata["execution_time_ms"] = "0"; // Simplified
 
+        emit_audit("success", static_cast<std::int64_t>(query_result.data.size()));
         return createSuccessResult(formatted_result, metadata);
         }
     } catch (const std::exception& e) {
+        emit_audit("error:exception", -1);
         return createErrorResult("Tool execution error: " + std::string(e.what()));
     }
 }
