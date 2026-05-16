@@ -265,6 +265,7 @@ add_library(flapi-lib STATIC
     src/sql_utils.cpp
     src/mcp_server.cpp
     src/mcp_tool_handler.cpp
+    src/mcp_tool_rate_limiter.cpp
     src/mcp_route_handlers.cpp
     src/mcp_session_manager.cpp
     src/mcp_error_builder.cpp

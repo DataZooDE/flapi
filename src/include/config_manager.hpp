@@ -202,6 +202,11 @@ struct EndpointConfig {
             std::vector<std::string> redact_columns;
             bool sample = false;
         } response;
+
+        // W2.5: per-tool rate limit. `enabled: false` (default) leaves
+        // the tool ungated; otherwise `max` calls are permitted per
+        // `interval` seconds, scoped to (tool_name, principal).
+        RateLimitConfig rate_limit;
     };
 
     struct MCPResourceInfo {

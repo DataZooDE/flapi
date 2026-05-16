@@ -91,6 +91,38 @@ connection:
     REQUIRE_FALSE(result.config.mcp_tool->response.max_rows.has_value());
     REQUIRE(result.config.mcp_tool->response.redact_columns.empty());
     REQUIRE_FALSE(result.config.mcp_tool->response.sample);
+    // Default: no per-tool rate limit configured.
+    REQUIRE_FALSE(result.config.mcp_tool->rate_limit.enabled);
+
+    fs::remove(yaml_file);
+    fs::remove(config_file);
+}
+
+TEST_CASE("EndpointConfigParser: Parse MCP Tool with rate-limit", "[endpoint_parser][ratelimit]") {
+    std::string yaml_content = R"(
+mcp-tool:
+  name: throttled_tool
+  description: Tool with a per-tool rate limit
+  rate-limit:
+    enabled: true
+    max: 5
+    interval: 30
+template-source: test.sql
+connection:
+  - test_db
+)";
+
+    std::string yaml_file = createTempYamlFile(yaml_content);
+    std::string config_file = createMinimalFlapiConfig();
+
+    ConfigManager manager{fs::path(config_file)};
+    EndpointConfigParser parser(manager.getYamlParser(), &manager);
+    auto result = parser.parseFromFile(yaml_file);
+
+    REQUIRE(result.success == true);
+    REQUIRE(result.config.mcp_tool->rate_limit.enabled);
+    REQUIRE(result.config.mcp_tool->rate_limit.max == 5);
+    REQUIRE(result.config.mcp_tool->rate_limit.interval == 30);
 
     fs::remove(yaml_file);
     fs::remove(config_file);
