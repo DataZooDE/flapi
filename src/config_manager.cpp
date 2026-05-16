@@ -2139,5 +2139,6 @@ template int ConfigManager::getValueOrThrow<int>(const YAML::Node& node, const s
 template std::string ConfigManager::safeGet<std::string>(const YAML::Node& node, const std::string& key, const std::string& path) const;
 template std::string ConfigManager::safeGet<std::string>(const YAML::Node& node, const std::string& key, const std::string& path, const std::string& defaultValue) const;
 template bool ConfigManager::safeGet<bool>(const YAML::Node& node, const std::string& key, const std::string& path, const bool& defaultValue) const;
+template int ConfigManager::safeGet<int>(const YAML::Node& node, const std::string& key, const std::string& path, const int& defaultValue) const;
 
 } // namespace flapi
