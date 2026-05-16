@@ -9,6 +9,7 @@
 #include "audit_logger.hpp"
 #include "config_manager.hpp"
 #include "database_manager.hpp"
+#include "mcp_authorization_policy.hpp"
 #include "sql_template_processor.hpp"
 #include "request_validator.hpp"
 
@@ -25,6 +26,11 @@ struct MCPToolCallRequest {
     std::string tool_name;
     crow::json::wvalue arguments;
     std::unordered_map<std::string, std::string> context;
+
+    // Key used in `context` to pass the authenticated caller's roles
+    // through to the tool handler as a comma-separated list. Kept as a
+    // single string to keep the existing context map signature stable.
+    static constexpr const char* kRolesContextKey = "auth.roles";
 };
 
 class MCPToolHandler {
@@ -42,6 +48,12 @@ public:
     // Tool discovery
     std::vector<std::string> getAvailableTools() const;
     crow::json::wvalue getToolDefinition(const std::string& tool_name) const;
+
+    // Parse `context[kRolesContextKey]` (comma-separated) into a role list.
+    // Public so callers preparing an `MCPToolCallRequest` (and unit tests)
+    // can use the same parsing rules as `executeTool` itself.
+    static std::vector<std::string> parseRolesFromContext(
+        const std::unordered_map<std::string, std::string>& context);
 
 private:
     // Helper methods to work with unified EndpointConfig
@@ -69,6 +81,7 @@ QueryResult executeQueryWithEndpoint(const EndpointConfig& endpoint_config,
     std::shared_ptr<RequestValidator> validator;
     std::unique_ptr<SQLTemplateProcessor> sql_processor;
     std::shared_ptr<AuditLogger> audit_logger;
+    MCPAuthorizationPolicy authorization_policy;
 };
 
 } // namespace flapi

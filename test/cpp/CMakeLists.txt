@@ -20,6 +20,7 @@ add_executable(flapi_tests
     extended_yaml_parser_test.cpp
     https_config_test.cpp
     cache_manager_test.cpp
+    mcp_authorization_policy_test.cpp
     mcp_prompt_handler_test.cpp
     mcp_request_validator_test.cpp
     password_hasher_test.cpp

@@ -189,6 +189,11 @@ struct EndpointConfig {
         std::string name;
         std::string description;
         std::string result_mime_type = "application/json";
+
+        // Per-tool RBAC (W2.1). std::nullopt means "no allowed-roles configured"
+        // — under MCP auth this denies by default; with MCP auth disabled the
+        // policy short-circuits to allow. An explicit empty vector denies all.
+        std::optional<std::vector<std::string>> allowed_roles;
     };
 
     struct MCPResourceInfo {

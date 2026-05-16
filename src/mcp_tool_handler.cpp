@@ -60,6 +60,20 @@ MCPToolExecutionResult MCPToolHandler::executeTool(const MCPToolCallRequest& req
             return createErrorResult("Tool not found: " + request.tool_name);
         }
 
+        // Per-tool RBAC check (W2.1). Runs before argument validation so a
+        // denied caller never learns the parameter shape of a tool they
+        // cannot invoke.
+        {
+            const bool mcp_auth_enabled = config_manager->getMCPConfig().auth.enabled;
+            const std::vector<std::string> user_roles = parseRolesFromContext(request.context);
+            const auto decision = authorization_policy.authorize(*endpoint_config, user_roles, mcp_auth_enabled);
+            if (!decision.allowed) {
+                CROW_LOG_WARNING << "MCP tool call denied for '" << request.tool_name
+                                 << "': " << decision.reason;
+                return createErrorResult("Permission denied: " + decision.reason);
+            }
+        }
+
         // Validate arguments
         if (!validateToolArguments(request.tool_name, request.arguments)) {
             emit_audit("error:invalid_arguments", -1);
@@ -319,6 +333,35 @@ MCPToolExecutionResult MCPToolHandler::createSuccessResult(const std::string& re
     execution_result.result = result;
     execution_result.metadata = metadata;
     return execution_result;
+}
+
+std::vector<std::string> MCPToolHandler::parseRolesFromContext(
+    const std::unordered_map<std::string, std::string>& context)
+{
+    std::vector<std::string> roles;
+    auto it = context.find(MCPToolCallRequest::kRolesContextKey);
+    if (it == context.end() || it->second.empty()) {
+        return roles;
+    }
+
+    const std::string& raw = it->second;
+    std::string::size_type start = 0;
+    while (start <= raw.size()) {
+        const auto pos = raw.find(',', start);
+        const auto end = (pos == std::string::npos) ? raw.size() : pos;
+        const auto begin = raw.find_first_not_of(" \t", start);
+        if (begin != std::string::npos && begin < end) {
+            const auto trim_end = raw.find_last_not_of(" \t", end == 0 ? 0 : end - 1);
+            if (trim_end != std::string::npos && trim_end >= begin) {
+                roles.emplace_back(raw.substr(begin, trim_end - begin + 1));
+            }
+        }
+        if (pos == std::string::npos) {
+            break;
+        }
+        start = pos + 1;
+    }
+    return roles;
 }
 
 

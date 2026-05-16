@@ -86,7 +86,67 @@ connection:
     REQUIRE(result.config.isMCPTool() == true);
     REQUIRE(result.config.mcp_tool->name == "test_tool");
     REQUIRE(result.config.mcp_tool->description == "Test tool description");
-    
+    REQUIRE_FALSE(result.config.mcp_tool->allowed_roles.has_value());
+
+    fs::remove(yaml_file);
+    fs::remove(config_file);
+}
+
+TEST_CASE("EndpointConfigParser: Parse MCP Tool with allowed-roles", "[endpoint_parser][rbac]") {
+    std::string yaml_content = R"(
+mcp-tool:
+  name: gated_tool
+  description: Tool that requires a role
+  allowed-roles:
+    - analyst
+    - admin
+template-source: test.sql
+connection:
+  - test_db
+)";
+
+    std::string yaml_file = createTempYamlFile(yaml_content);
+    std::string config_file = createMinimalFlapiConfig();
+
+    ConfigManager manager{fs::path(config_file)};
+    EndpointConfigParser parser(manager.getYamlParser(), &manager);
+    auto result = parser.parseFromFile(yaml_file);
+
+    REQUIRE(result.success == true);
+    REQUIRE(result.config.isMCPTool() == true);
+    REQUIRE(result.config.mcp_tool->allowed_roles.has_value());
+    REQUIRE(result.config.mcp_tool->allowed_roles->size() == 2);
+    REQUIRE((*result.config.mcp_tool->allowed_roles)[0] == "analyst");
+    REQUIRE((*result.config.mcp_tool->allowed_roles)[1] == "admin");
+
+    fs::remove(yaml_file);
+    fs::remove(config_file);
+}
+
+TEST_CASE("EndpointConfigParser: Parse MCP Tool with empty allowed-roles list", "[endpoint_parser][rbac]") {
+    // An explicit empty list must round-trip distinctly from "absent" so the
+    // policy can treat it as the strict deny-all sentinel.
+    std::string yaml_content = R"(
+mcp-tool:
+  name: locked_tool
+  description: Locked tool, allowed-roles intentionally empty
+  allowed-roles: []
+template-source: test.sql
+connection:
+  - test_db
+)";
+
+    std::string yaml_file = createTempYamlFile(yaml_content);
+    std::string config_file = createMinimalFlapiConfig();
+
+    ConfigManager manager{fs::path(config_file)};
+    EndpointConfigParser parser(manager.getYamlParser(), &manager);
+    auto result = parser.parseFromFile(yaml_file);
+
+    REQUIRE(result.success == true);
+    REQUIRE(result.config.mcp_tool->allowed_roles.has_value());
+    REQUIRE(result.config.mcp_tool->allowed_roles->empty());
+
     fs::remove(yaml_file);
     fs::remove(config_file);
 }
