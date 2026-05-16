@@ -2,6 +2,9 @@
 #include <crow/logging.h>
 #include <algorithm>
 #include <cctype>
+#include <stdexcept>
+
+#include "mcp_description_scanner.hpp"
 
 namespace flapi {
 
@@ -162,6 +165,25 @@ void EndpointConfigParser::parseMcpToolFields(
     tool_info.name = config_manager_->safeGet<std::string>(mcp_tool_node, "name", "mcp-tool.name");
     tool_info.description = config_manager_->safeGet<std::string>(mcp_tool_node, "description", "mcp-tool.description");
     tool_info.result_mime_type = config_manager_->safeGet<std::string>(mcp_tool_node, "result-mime-type", "mcp-tool.result-mime-type", "application/json");
+
+    // W2.3: scan the description for control characters, prompt-injection
+    // phrases, and oversize content. Always warn; reject only when the
+    // operator has opted into strict mode.
+    {
+        MCPDescriptionScanner scanner;
+        const auto issues = scanner.scan(tool_info.description);
+        const bool strict = config_manager_->getMCPConfig().strict_descriptions;
+        for (const auto& issue : issues) {
+            CROW_LOG_WARNING << "MCP tool '" << tool_info.name << "' description: ["
+                             << issue.code << "] " << issue.message;
+        }
+        if (strict && !issues.empty()) {
+            throw std::runtime_error(
+                "MCP tool '" + tool_info.name + "' has a description that failed strict "
+                "validation (mcp.strict-descriptions is true). First issue: [" +
+                issues.front().code + "] " + issues.front().message);
+        }
+    }
 
     // Per-tool RBAC (W2.1). Absent key → std::nullopt (deny-by-default under
     // MCP auth, transparent under demo mode). Present-but-empty list is the
