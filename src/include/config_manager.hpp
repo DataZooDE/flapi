@@ -10,9 +10,11 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <yaml-cpp/yaml.h>
 
+#include "audit_logger.hpp"
 #include "route_translator.hpp"
 #include "extended_yaml_parser.hpp"
 #include "path_utils.hpp"
@@ -514,6 +516,12 @@ public:
     const DuckLakeConfig& getDuckLakeConfig() const { return ducklake_config; }
     const MCPConfig& getMCPConfig() const { return mcp_config; }
     const StorageConfig& getStorageConfig() const { return storage_config; }
+    const AuditConfig& getAuditConfig() const { return audit_config; }
+
+    // Process-wide audit sink. Initialised lazily on first access from the
+    // current AuditConfig; shared across REST and MCP handlers so every
+    // request lands in the same JSONL stream.
+    std::shared_ptr<AuditLogger> getAuditLogger();
     bool isTelemetryEnabled() const { return telemetry_enabled; }
 
     // Load MCP server instructions (inline or from file)
@@ -575,6 +583,8 @@ protected:
     DuckLakeConfig ducklake_config;
     MCPConfig mcp_config;
     StorageConfig storage_config;
+    AuditConfig audit_config;
+    std::shared_ptr<AuditLogger> audit_logger_;
     bool telemetry_enabled = true;
     ExtendedYamlParser yaml_parser;
 
@@ -597,6 +607,7 @@ protected:
     void parseTemplateConfig();
     void parseDuckLakeConfig();
     void parseMCPConfig();
+    void parseAuditConfig();
     void parseStorageConfig();
     void parseEndpointConfig(const std::filesystem::path& config_file);
     void parseEndpointRequestFields(const YAML::Node& endpoint_config, EndpointConfig& endpoint);

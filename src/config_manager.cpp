@@ -121,6 +121,7 @@ void ConfigManager::parseMainConfig() {
         parseDuckDBConfig();
         parseDuckLakeConfig();
         parseMCPConfig();
+        parseAuditConfig();
         parseStorageConfig();
         parseTemplateConfig();
         parseGlobalHeartbeatConfig();
@@ -253,6 +254,42 @@ void ConfigManager::parseDuckLakeConfig() {
 }
 
 // Storage configuration methods
+std::shared_ptr<AuditLogger> ConfigManager::getAuditLogger() {
+    // Eagerly built once at the end of parseAuditConfig(); the AuditLogger
+    // itself owns the write mutex so this method is a simple accessor.
+    if (!audit_logger_) {
+        audit_logger_ = std::make_shared<AuditLogger>(audit_config);
+    }
+    return audit_logger_;
+}
+
+void ConfigManager::parseAuditConfig() {
+    CROW_LOG_INFO << "Parsing audit configuration";
+    audit_config = AuditConfig{};  // Reset to defaults (enabled=false)
+
+    if (!config["audit"]) {
+        CROW_LOG_DEBUG << "Audit configuration not found, using defaults (enabled=false)";
+        return;
+    }
+
+    auto audit_node = config["audit"];
+    audit_config.enabled = safeGet<bool>(audit_node, "enabled", "audit.enabled", false);
+    audit_config.sink = safeGet<std::string>(audit_node, "sink", "audit.sink", "stdout");
+    audit_config.path = safeGet<std::string>(audit_node, "path", "audit.path", "");
+
+    if (audit_node["redact"]) {
+        for (const auto& key_node : audit_node["redact"]) {
+            audit_config.redact_keys.insert(key_node.as<std::string>());
+        }
+    }
+
+    CROW_LOG_DEBUG << "Audit enabled: " << (audit_config.enabled ? "true" : "false");
+    CROW_LOG_DEBUG << "Audit sink: " << audit_config.sink;
+    if (!audit_config.path.empty()) {
+        CROW_LOG_DEBUG << "Audit path: " << audit_config.path;
+    }
+}
+
 void ConfigManager::parseStorageConfig() {
     CROW_LOG_INFO << "Parsing storage configuration";
     storage_config = StorageConfig{};  // Reset to defaults

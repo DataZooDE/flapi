@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "audit_logger.hpp"
 #include "config_manager.hpp"
 #include "database_manager.hpp"
 #include "sql_template_processor.hpp"
@@ -67,6 +68,7 @@ QueryResult executeQueryWithEndpoint(const EndpointConfig& endpoint_config,
     std::shared_ptr<ConfigManager> config_manager;
     std::shared_ptr<RequestValidator> validator;
     std::unique_ptr<SQLTemplateProcessor> sql_processor;
+    std::shared_ptr<AuditLogger> audit_logger;
 };
 
 } // namespace flapi
