@@ -256,6 +256,7 @@ add_library(flapi-lib STATIC
     src/mcp_authorization_policy.cpp
     src/mcp_description_scanner.cpp
     src/mcp_dry_run.cpp
+    src/mcp_response_shaper.cpp
     src/prepared_template_rewriter.cpp
     src/route_translator.cpp
     src/security_auditor.cpp

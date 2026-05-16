@@ -87,6 +87,75 @@ connection:
     REQUIRE(result.config.mcp_tool->name == "test_tool");
     REQUIRE(result.config.mcp_tool->description == "Test tool description");
     REQUIRE_FALSE(result.config.mcp_tool->allowed_roles.has_value());
+    // Default response-shape config: every field inert.
+    REQUIRE_FALSE(result.config.mcp_tool->response.max_rows.has_value());
+    REQUIRE(result.config.mcp_tool->response.redact_columns.empty());
+    REQUIRE_FALSE(result.config.mcp_tool->response.sample);
+
+    fs::remove(yaml_file);
+    fs::remove(config_file);
+}
+
+TEST_CASE("EndpointConfigParser: Parse MCP Tool with response shape config",
+          "[endpoint_parser][response_shape]") {
+    std::string yaml_content = R"(
+mcp-tool:
+  name: shaped_tool
+  description: Tool with response-shape config
+  response:
+    max-rows: 50
+    redact-columns:
+      - ssn
+      - salary
+    sample: false
+template-source: test.sql
+connection:
+  - test_db
+)";
+
+    std::string yaml_file = createTempYamlFile(yaml_content);
+    std::string config_file = createMinimalFlapiConfig();
+
+    ConfigManager manager{fs::path(config_file)};
+    EndpointConfigParser parser(manager.getYamlParser(), &manager);
+    auto result = parser.parseFromFile(yaml_file);
+
+    REQUIRE(result.success == true);
+    REQUIRE(result.config.mcp_tool->response.max_rows.has_value());
+    REQUIRE(*result.config.mcp_tool->response.max_rows == 50);
+    REQUIRE(result.config.mcp_tool->response.redact_columns.size() == 2);
+    REQUIRE(result.config.mcp_tool->response.redact_columns[0] == "ssn");
+    REQUIRE(result.config.mcp_tool->response.redact_columns[1] == "salary");
+    REQUIRE_FALSE(result.config.mcp_tool->response.sample);
+
+    fs::remove(yaml_file);
+    fs::remove(config_file);
+}
+
+TEST_CASE("EndpointConfigParser: Parse MCP Tool with sample-only response shape",
+          "[endpoint_parser][response_shape]") {
+    std::string yaml_content = R"(
+mcp-tool:
+  name: sampling_tool
+  description: Tool that returns only summary statistics
+  response:
+    sample: true
+template-source: test.sql
+connection:
+  - test_db
+)";
+
+    std::string yaml_file = createTempYamlFile(yaml_content);
+    std::string config_file = createMinimalFlapiConfig();
+
+    ConfigManager manager{fs::path(config_file)};
+    EndpointConfigParser parser(manager.getYamlParser(), &manager);
+    auto result = parser.parseFromFile(yaml_file);
+
+    REQUIRE(result.success == true);
+    REQUIRE(result.config.mcp_tool->response.sample == true);
+    REQUIRE_FALSE(result.config.mcp_tool->response.max_rows.has_value());
+    REQUIRE(result.config.mcp_tool->response.redact_columns.empty());
 
     fs::remove(yaml_file);
     fs::remove(config_file);

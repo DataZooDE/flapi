@@ -196,6 +196,22 @@ void EndpointConfigParser::parseMcpToolFields(
         tool_info.allowed_roles = std::move(roles);
     }
 
+    // W2.4: parse optional response-shaping block. All fields are independent
+    // and default-inert, so leaving the block out preserves existing behaviour.
+    if (auto response_node = mcp_tool_node["response"]; response_node.IsDefined()) {
+        if (auto mr = response_node["max-rows"]; mr.IsDefined()) {
+            tool_info.response.max_rows = mr.as<std::size_t>();
+        }
+        if (auto rc = response_node["redact-columns"]; rc.IsDefined()) {
+            for (const auto& column : rc) {
+                tool_info.response.redact_columns.push_back(column.as<std::string>());
+            }
+        }
+        if (auto sample = response_node["sample"]; sample.IsDefined()) {
+            tool_info.response.sample = sample.as<bool>();
+        }
+    }
+
     config.mcp_tool = tool_info;
 }
 
