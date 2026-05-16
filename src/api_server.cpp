@@ -147,10 +147,50 @@ void APIServer::setupRoutes() {
 }
 
 void APIServer::setupCORS() {
+    const auto& cors_cfg = configManager->getCorsConfig();
+
     auto& cors = app.get_middleware<crow::CORSHandler>();
-    cors.global()
-        .headers("*")
-        .methods("GET"_method, "POST"_method, "PUT"_method, "PATCH"_method, "DELETE"_method);
+    auto& rules = cors.global();
+
+    // Crow's built-in CORSHandler covers methods + headers. Origin handling
+    // is intentionally left as the wildcard default here so it doesn't
+    // conflict with FlapiCorsMiddleware, which sets ACAO per request based
+    // on the configured allowlist (see cors_middleware.cpp).
+    if (cors_cfg.allow_headers.empty()) {
+        rules.headers("*");
+    } else {
+        for (const auto& h : cors_cfg.allow_headers) {
+            rules.headers(h);
+        }
+    }
+
+    if (cors_cfg.allow_methods.empty()) {
+        rules.methods("GET"_method, "POST"_method, "PUT"_method,
+                      "PATCH"_method, "DELETE"_method);
+    } else {
+        for (const auto& m : cors_cfg.allow_methods) {
+            if (m == "GET") {
+                rules.methods("GET"_method);
+            } else if (m == "POST") {
+                rules.methods("POST"_method);
+            } else if (m == "PUT") {
+                rules.methods("PUT"_method);
+            } else if (m == "PATCH") {
+                rules.methods("PATCH"_method);
+            } else if (m == "DELETE") {
+                rules.methods("DELETE"_method);
+            } else if (m == "OPTIONS") {
+                rules.methods("OPTIONS"_method);
+            } else if (m == "HEAD") {
+                rules.methods("HEAD"_method);
+            }
+        }
+    }
+
+    // Hand the allowlist to the flapi-owned middleware so it can resolve
+    // the per-request `Access-Control-Allow-Origin` value.
+    auto& flapi_cors = app.get_middleware<FlapiCorsMiddleware>();
+    flapi_cors.initialize(configManager);
 }
 
 void APIServer::setupHeartbeat() {

@@ -7,6 +7,7 @@
 
 #include "auth_middleware.hpp"
 #include "config_manager.hpp"
+#include "cors_middleware.hpp"
 #include "database_manager.hpp"
 #include "heartbeat_worker.hpp"
 #include "open_api_doc_generator.hpp"
@@ -19,7 +20,12 @@
 
 namespace flapi {
 
-using FlapiApp = crow::App<crow::CORSHandler, RateLimitMiddleware, AuthMiddleware>;
+// Middleware order matters: `after_handle` runs in reverse order, so
+// `FlapiCorsMiddleware` (sitting between `crow::CORSHandler` and the
+// rest) gets its turn to set `Access-Control-Allow-Origin` BEFORE
+// Crow's CORSHandler does. Crow uses `set_header_no_override`, so the
+// origin we choose dynamically wins.
+using FlapiApp = crow::App<crow::CORSHandler, FlapiCorsMiddleware, RateLimitMiddleware, AuthMiddleware>;
 
 class ConfigService;   // forward declaration
 class HeartbeatWorker; // forward declaration
