@@ -7,6 +7,7 @@
 #include <memory>
 
 #include "config_manager.hpp"
+#include "cors_middleware.hpp"
 #include "database_manager.hpp"
 #include "auth_middleware.hpp"
 #include "rate_limit_middleware.hpp"
@@ -16,8 +17,8 @@ namespace flapi {
 class OpenAPIDocGenerator {
 public:
     OpenAPIDocGenerator(std::shared_ptr<ConfigManager> cm, std::shared_ptr<DatabaseManager> dm);
-    YAML::Node generateDoc(crow::App<crow::CORSHandler, RateLimitMiddleware, AuthMiddleware>& app);
-    YAML::Node generateConfigServiceDoc(crow::App<crow::CORSHandler, RateLimitMiddleware, AuthMiddleware>& app);
+    YAML::Node generateDoc(crow::App<crow::CORSHandler, FlapiCorsMiddleware, RateLimitMiddleware, AuthMiddleware>& app);
+    YAML::Node generateConfigServiceDoc(crow::App<crow::CORSHandler, FlapiCorsMiddleware, RateLimitMiddleware, AuthMiddleware>& app);
 
 private:
     std::shared_ptr<ConfigManager> configManager;

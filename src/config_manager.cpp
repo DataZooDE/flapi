@@ -946,6 +946,34 @@ OIDCConfig ConfigManager::parseOIDCConfigNode(const YAML::Node& oidc_node, const
 }
 
 // HTTPS configuration methods
+void ConfigManager::parseCorsConfig() {
+    CROW_LOG_INFO << "Parsing CORS configuration";
+    cors_config = CorsConfig{};  // defaults to empty allowlist → wildcard
+
+    if (!config["cors"]) {
+        CROW_LOG_DEBUG << "CORS configuration not found, using defaults (Access-Control-Allow-Origin: *)";
+        return;
+    }
+
+    auto cors_node = config["cors"];
+    if (cors_node["allow-origins"]) {
+        for (const auto& entry : cors_node["allow-origins"]) {
+            cors_config.allow_origins.push_back(entry.as<std::string>());
+        }
+    }
+    if (cors_node["allow-headers"]) {
+        for (const auto& entry : cors_node["allow-headers"]) {
+            cors_config.allow_headers.push_back(entry.as<std::string>());
+        }
+    }
+    if (cors_node["allow-methods"]) {
+        for (const auto& entry : cors_node["allow-methods"]) {
+            cors_config.allow_methods.push_back(entry.as<std::string>());
+        }
+    }
+    CROW_LOG_DEBUG << "CORS allow-origins count: " << cors_config.allow_origins.size();
+}
+
 void ConfigManager::parseHttpsConfig() {
     if (config["enforce-https"]) {
         auto https_node = config["enforce-https"];

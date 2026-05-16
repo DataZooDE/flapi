@@ -8,7 +8,7 @@ namespace flapi {
 OpenAPIDocGenerator::OpenAPIDocGenerator(std::shared_ptr<ConfigManager> cm, std::shared_ptr<DatabaseManager> dm)
     : configManager(cm), dbManager(dm) {}
 
-YAML::Node OpenAPIDocGenerator::generateDoc(crow::App<crow::CORSHandler, RateLimitMiddleware, AuthMiddleware>& app) 
+YAML::Node OpenAPIDocGenerator::generateDoc(crow::App<crow::CORSHandler, FlapiCorsMiddleware, RateLimitMiddleware, AuthMiddleware>& app) 
 {
     YAML::Node doc;
     
@@ -275,7 +275,7 @@ YAML::Node OpenAPIDocGenerator::generateResponseSchema(const EndpointConfig& end
     return schema;
 }
 
-YAML::Node OpenAPIDocGenerator::generateConfigServiceDoc(crow::App<crow::CORSHandler, RateLimitMiddleware, AuthMiddleware>& app) {
+YAML::Node OpenAPIDocGenerator::generateConfigServiceDoc(crow::App<crow::CORSHandler, FlapiCorsMiddleware, RateLimitMiddleware, AuthMiddleware>& app) {
     YAML::Node doc;
     
     // OpenAPI version

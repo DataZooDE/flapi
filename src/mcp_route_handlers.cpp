@@ -122,7 +122,7 @@ MCPRouteHandlers::MCPRouteHandlers(std::shared_ptr<ConfigManager> config_manager
     CROW_LOG_INFO << "Transport type: Streamable HTTP, URL ready to paste into MCP inspector tool";
 }
 
-void MCPRouteHandlers::registerRoutes(crow::App<crow::CORSHandler, RateLimitMiddleware, AuthMiddleware>& app, int port) {
+void MCPRouteHandlers::registerRoutes(crow::App<crow::CORSHandler, FlapiCorsMiddleware, RateLimitMiddleware, AuthMiddleware>& app, int port) {
     port_ = port; // Update port if provided
 
     CROW_LOG_INFO << "Registering MCP routes with application...";

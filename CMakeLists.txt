@@ -238,6 +238,8 @@ add_library(flapi-lib STATIC
     src/config_serializer.cpp
     src/config_manager.cpp
     src/config_service.cpp
+    src/cors_middleware.cpp
+    src/cors_policy.cpp
     src/database_manager.cpp
     src/endpoint_config_parser.cpp
     src/extended_yaml_parser.cpp

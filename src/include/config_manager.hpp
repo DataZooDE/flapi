@@ -414,6 +414,14 @@ struct HttpsConfig {
     std::string ssl_key_file;
 };
 
+// W1.2: CORS allowlist configuration. Empty fields preserve the historic
+// wildcard behaviour so demo / init projects keep working in browsers.
+struct CorsConfig {
+    std::vector<std::string> allow_origins;   // empty → "*"; "*" → "*"; else allowlist
+    std::vector<std::string> allow_headers;   // empty → "*"
+    std::vector<std::string> allow_methods;   // empty → default GET/POST/PUT/PATCH/DELETE
+};
+
 struct GlobalHeartbeatConfig {
     bool enabled = false;
     std::chrono::seconds workerInterval = std::chrono::seconds(60);
@@ -498,6 +506,7 @@ public:
     const RateLimitConfig& getRateLimitConfig() const;
     const DuckDBConfig& getDuckDBConfig() const;
     const HttpsConfig& getHttpsConfig() const;
+    const CorsConfig& getCorsConfig() const { return cors_config; }
     bool isHttpsEnforced() const;
     bool isAuthEnabled() const;
     std::optional<OIDCConfig> getGlobalOIDCConfig() const;
@@ -574,6 +583,7 @@ protected:
     DuckDBConfig duckdb_config;
     TemplateConfig template_config;
     HttpsConfig https_config;
+    CorsConfig cors_config;
     GlobalHeartbeatConfig global_heartbeat_config;
     DuckLakeConfig ducklake_config;
     MCPConfig mcp_config;
@@ -597,6 +607,7 @@ protected:
     void parseAuthConfig();
     void parseDuckDBConfig();
     void parseHttpsConfig();
+    void parseCorsConfig();
     void parseTemplateConfig();
     void parseDuckLakeConfig();
     void parseMCPConfig();
