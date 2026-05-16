@@ -16,6 +16,7 @@
 #include "duckdb/main/secret/secret_manager.hpp"
 
 #include "auth_middleware.hpp"
+#include "password_hasher.hpp"
 #include "database_manager.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/types/blob.hpp"
@@ -297,13 +298,12 @@ std::string AuthMiddleware::md5Hash(const std::string& input) {
 }
 
 bool AuthMiddleware::verifyPassword(const std::string& provided_password, const std::string& stored_password) {
-    // Check if the stored password is an MD5 hash
-    if (stored_password.length() == 32 && std::all_of(stored_password.begin(), stored_password.end(),
-            [](char c) { return std::isxdigit(c); })) {
-        return md5Hash(provided_password) == stored_password;
-    }
-    
-    return provided_password == stored_password;
+    // W1.1: delegate to PasswordHasher so all supported formats
+    // (PBKDF2-SHA256 modern, MD5 deprecated, plaintext deprecated) are
+    // handled in one place. The Wave 0 startup auditor surfaces
+    // deprecation warnings; the runtime keeps accepting legacy hashes so
+    // existing configs do not break on upgrade.
+    return PasswordHasher{}.verify(provided_password, stored_password);
 }
 
 bool AuthMiddleware::authenticateBearer(const std::string& auth_header, const EndpointConfig& endpoint, context& ctx) {
