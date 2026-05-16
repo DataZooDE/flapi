@@ -43,6 +43,9 @@ struct RateLimitConfig {
     bool enabled = false;
     int max = 100;
     int interval = 60;
+    // W1.4: how requests are grouped into buckets. "ip" preserves the
+    // historic default; "user" / "user-or-ip" enable per-principal limits.
+    std::string key_strategy = "ip";
 };
 
 struct AuthUser {

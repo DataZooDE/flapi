@@ -243,6 +243,7 @@ add_library(flapi-lib STATIC
     src/query_executor.cpp
     src/request_handler.cpp
     src/request_validator.cpp
+    src/rate_limit_key_builder.cpp
     src/rate_limit_middleware.cpp
     src/route_translator.cpp
     src/sql_template_processor.cpp
