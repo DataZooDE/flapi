@@ -133,8 +133,11 @@ void QueryExecutor::executeWithBindings(const std::string& sql,
             const std::string& raw = present ? it->second : std::string();
             auto outcome = converter.convert(spec.type, raw, present);
             if (!outcome.ok) {
-                throw std::runtime_error(
-                    "Bind conversion failed for '" + spec.field_name + "': " + outcome.error);
+                // CLIENT-input failure: the value supplied for a typed
+                // request param cannot be converted to its declared SQL
+                // type. RequestHandler maps BadRequestError to HTTP 400.
+                throw BadRequestError(
+                    "Invalid value for parameter '" + spec.field_name + "': " + outcome.error);
             }
             // DuckDB parameter indexes are 1-based.
             bindOne(stmt, spec.position + 1, outcome.value, spec);

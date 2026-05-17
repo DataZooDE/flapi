@@ -1,0 +1,68 @@
+URL: /api/v1/_config/project
+HTTP/1.1 200 OK
+access-control-allow-origin: *
+access-control-allow-methods: GET, DELETE
+access-control-allow-headers: *
+content-type: application/json
+content-length: 709
+server: flAPI
+date: Sat, 11 Jan 2025 15:36:09 GMT
+connection: Keep-Alive
+-------------------------------------------------
+{
+  "connections": {
+    "bigquery-lakehouse": {
+      "properties": {
+        "project_id": "d-kaercher-lakehouse"
+      },
+      "allow": "",
+      "log-parameters": false,
+      "log-queries": false,
+      "init": "FORCE INSTALL 'bigquery' FROM 'http://storage.googleapis.com/hafenkran';\nLOAD 'bigquery';\n"
+    },
+    "customers-parquet": {
+      "properties": {
+        "path": "./data/customers.parquet"
+      },
+      "allow": "",
+      "log-parameters": false,
+      "log-queries": false,
+      "init": ""
+    },
+    "taxi-parquet": {
+      "properties": {
+        "path": "~/Downloads/taxi"
+      },
+      "allow": "",
+      "log-parameters": false,
+      "log-queries": false,
+      "init": ""
+    }
+  },
+  "template-path": "/home/jr/Projects/datazoo/flapi/examples/sqls",
+  "description": "An example flAPI project demonstrating various configuration options",
+  "name": "example-flapi-project",
+  "server": {
+    "hostname": "localhost",
+    "http_port": 8080,
+    "cache_schema": "true"
+  },
+  "duckdb": {
+    "db_path": "./flapi.db"
+    "settings": {
+      "threads": "8",
+      "max_memory": "8GB",
+      "default_order": "DESC"
+    }
+  },
+  "heartbeat": {
+    "enabled": true,
+    "worker_interval": 10
+  },
+  "enforce-https": {
+    "enabled": false,
+    "ssl_cert_file": "./ssl/cert.pem",
+    "ssl_key_file": "./ssl/key.pem"
+  }
+}
+

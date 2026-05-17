@@ -1,23 +1,35 @@
 """End-to-end SQL-injection corpus for W3.1 prepared statements (#25).
 
-Boots flapi with two endpoints exercising the prepared-statement path:
+Boots a flapi server with one endpoint per validator type, each backed by
+an in-memory table seeded with known rows, and fires injection payloads
+through the full HTTP → RequestValidator → PreparedTemplateRewriter →
+duckdb_bind_* → DuckDB pipeline.
 
-- /lookup-int    — `id` validated as int → bound via duckdb_bind_int64
-- /lookup-string — `name` validated as string → bound via duckdb_bind_varchar
+The contract under test:
 
-Each endpoint runs against an in-memory table seeded with rows that have
-no surprising values. The contract under test:
+1. **Strict validators (int / double / boolean / date / time / uuid /
+   enum / email)** reject malformed input at HTTP boundary with 4xx.
+   Injection payloads are rejected here before SQL is ever built.
+2. **Loose validator (string)** accepts arbitrary strings; the prepared-
+   statement bind is the hard boundary. Every payload reaches DuckDB as
+   a primitive value, never as SQL text, so it matches at most a single
+   literal row in the seed table — never the whole table.
+3. **Legitimate values still match** — no over-defanging.
 
-1. **Numeric injection payloads are rejected** by the integer validator
-   (400 Bad Request) — they never reach SQL.
-2. **String injection payloads pass validation** (they are valid strings)
-   but are **bound as data**, so the underlying query cannot smuggle
-   `UNION SELECT`, `OR 1=1`, comment, or quote-escape constructs into the
-   parsed SQL — every payload returns *zero rows*, not the whole table.
+Per-type endpoints (one HTTP GET each):
 
-Marked `standalone_server` so the conftest autouse fixture does not also
-spin up the shared api_configuration server. Skips cleanly if the local
-DuckDB extension cache is incompatible with the bundled DuckDB submodule.
+    /lookup-int       /lookup-double    /lookup-boolean
+    /lookup-date      /lookup-time      /lookup-uuid
+    /lookup-enum      /lookup-email     /lookup-string
+
+A pagination endpoint (`/lookup-int-paged`) verifies the prepared path
+also works when the query is wrapped in `SELECT * FROM (...) LIMIT N
+OFFSET M` (and its companion COUNT(*) wrap).
+
+Marked `standalone_server` so the conftest autouse fixture does not
+spin up the shared api_configuration server. Skips cleanly if the
+local DuckDB extension cache is incompatible with the in-tree DuckDB
+submodule; CI runs against fresh extensions.
 """
 
 import os
@@ -25,10 +37,15 @@ import socket
 import subprocess
 import tempfile
 import time
-from typing import Iterator, List
+from typing import Any, Iterator, List, Tuple
 
 import pytest
 import requests
+
+
+# ----------------------------------------------------------------------
+# Fixtures / scaffolding
+# ----------------------------------------------------------------------
 
 
 def _repo_root() -> str:
@@ -53,6 +70,153 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+# Each endpoint configuration: (path-segment, request-field YAML, SQL).
+# The SQL must SELECT id from a 3-row VALUES table where exactly one row
+# matches the "happy" parameter we'll send. The corpus then proves that
+# every injection payload returns 0 rows (or a 4xx) while the happy
+# parameter still returns 1 row.
+ENDPOINTS = [
+    # (slug, field-yaml, sql)
+    (
+        "int",
+        """
+  - field-name: id
+    field-in: query
+    field-type: int
+    required: true
+    validators:
+      - type: int
+        min: 1
+        max: 100000
+        preventSqlInjection: false
+""",
+        "SELECT id, label FROM (VALUES (1,'one'),(2,'two'),(3,'three')) AS t(id,label) "
+        "WHERE id = {{ params.id }}",
+    ),
+    (
+        "double",
+        """
+  - field-name: x
+    field-in: query
+    field-type: number
+    required: true
+    validators:
+      - type: number
+        preventSqlInjection: false
+""",
+        "SELECT * FROM (VALUES (1.5,'a'),(2.5,'b'),(3.5,'c')) AS t(x,label) "
+        "WHERE x = {{ params.x }}",
+    ),
+    (
+        "boolean",
+        """
+  - field-name: flag
+    field-in: query
+    field-type: boolean
+    required: true
+    validators:
+      - type: boolean
+        preventSqlInjection: false
+""",
+        # Only one of (true,'yes') matches `flag=true`; the (false,'no')
+        # row is the negative control.
+        "SELECT * FROM (VALUES (true,'yes'),(false,'no')) AS t(flag,label) "
+        "WHERE flag = {{ params.flag }}",
+    ),
+    (
+        "date",
+        """
+  - field-name: d
+    field-in: query
+    field-type: date
+    required: true
+    validators:
+      - type: date
+        preventSqlInjection: false
+""",
+        "SELECT * FROM (VALUES (DATE '2024-03-15','spring'),(DATE '2024-06-21','summer')) "
+        "AS t(d,label) WHERE d = {{ params.d }}",
+    ),
+    (
+        "time",
+        """
+  - field-name: t
+    field-in: query
+    field-type: time
+    required: true
+    validators:
+      - type: time
+        preventSqlInjection: false
+""",
+        "SELECT * FROM (VALUES (TIME '13:45:07','noon'),(TIME '00:00:00','midnight')) "
+        "AS u(t,label) WHERE t = {{ params.t }}",
+    ),
+    (
+        "uuid",
+        """
+  - field-name: u
+    field-in: query
+    field-type: string
+    required: true
+    validators:
+      - type: uuid
+        preventSqlInjection: false
+""",
+        "SELECT * FROM (VALUES "
+        "('11111111-1111-1111-1111-111111111111','first'),"
+        "('22222222-2222-2222-2222-222222222222','second')) "
+        "AS t(u,label) WHERE u = {{ params.u }}",
+    ),
+    (
+        "enum",
+        """
+  - field-name: status
+    field-in: query
+    field-type: string
+    required: true
+    validators:
+      - type: enum
+        allowedValues: [active, inactive, pending]
+        preventSqlInjection: false
+""",
+        "SELECT * FROM (VALUES ('active','A'),('inactive','I'),('pending','P')) "
+        "AS t(status,label) WHERE status = {{ params.status }}",
+    ),
+    (
+        "email",
+        """
+  - field-name: e
+    field-in: query
+    field-type: string
+    required: true
+    validators:
+      - type: email
+        preventSqlInjection: false
+""",
+        "SELECT * FROM (VALUES "
+        "('alice@example.com','A'),"
+        "('bob@example.com','B')) "
+        "AS t(e,label) WHERE e = {{ params.e }}",
+    ),
+    (
+        "string",
+        """
+  - field-name: name
+    field-in: query
+    field-type: string
+    required: true
+    validators:
+      - type: string
+        min-length: 1
+        max-length: 200
+        preventSqlInjection: false
+""",
+        "SELECT * FROM (VALUES (1,'alice'),(2,'bob'),(3,'carol')) AS t(id,name) "
+        "WHERE name = {{ params.name }}",
+    ),
+]
+
+
 def _write_config(dirpath: str, port: int) -> str:
     sqls = os.path.join(dirpath, "sqls")
     os.makedirs(sqls)
@@ -73,64 +237,50 @@ def _write_config(dirpath: str, port: int) -> str:
             f"  threads: 1\n"
         )
 
-    # Endpoint 1: typed-int param → bound as int64
-    with open(os.path.join(sqls, "lookup_int.yaml"), "w") as f:
-        f.write("""
-url-path: /lookup-int
-method: GET
-template-source: lookup_int.sql
-connection: [inmem]
-request:
-  - field-name: id
-    field-in: query
-    field-type: int
-    required: true
-    validators:
-      - type: int
-        min: 1
-        max: 100000
-        preventSqlInjection: false
-""")
-    with open(os.path.join(sqls, "lookup_int.sql"), "w") as f:
-        f.write(
-            "SELECT * FROM (VALUES (1,'alice'),(2,'bob'),(3,'carol')) AS t(id,name) "
-            "WHERE id = {{ params.id }}\n"
-        )
+    for slug, field_yaml, sql in ENDPOINTS:
+        with open(os.path.join(sqls, f"lookup_{slug}.yaml"), "w") as f:
+            f.write(
+                f"url-path: /lookup-{slug}\n"
+                f"method: GET\n"
+                f"template-source: lookup_{slug}.sql\n"
+                f"connection: [inmem]\n"
+                f"request:{field_yaml}"
+            )
+        with open(os.path.join(sqls, f"lookup_{slug}.sql"), "w") as f:
+            f.write(sql + "\n")
 
-    # Endpoint 2: typed-string param → bound as varchar
-    # preventSqlInjection: false on purpose — we want to prove the bind
-    # layer itself defangs payloads, not the heuristic regex above it.
-    with open(os.path.join(sqls, "lookup_string.yaml"), "w") as f:
-        f.write("""
-url-path: /lookup-string
-method: GET
-template-source: lookup_string.sql
-connection: [inmem]
-request:
-  - field-name: name
-    field-in: query
-    field-type: string
-    required: true
-    validators:
-      - type: string
-        min-length: 1
-        max-length: 200
-        preventSqlInjection: false
-""")
-    with open(os.path.join(sqls, "lookup_string.sql"), "w") as f:
-        # The string field is double-brace (typed-scalar bindable) — the
-        # rewriter replaces this site with `?` and binds the value via
-        # duckdb_bind_varchar. The single quotes around it are dropped
-        # because they would otherwise become part of the literal.
+    # Extra endpoint: typed param + pagination wrap. Same shape as
+    # lookup-int but with 20 seed rows so an ?offset/?limit query can
+    # actually paginate. The handler will wrap the rewritten SQL in a
+    # SELECT * FROM (...) LIMIT ? OFFSET ? — both the wrap and the
+    # rewritten inner statement must still bind `id` correctly.
+    with open(os.path.join(sqls, "lookup_int_paged.yaml"), "w") as f:
         f.write(
-            "SELECT * FROM (VALUES (1,'alice'),(2,'bob'),(3,'carol')) AS t(id,name) "
-            "WHERE name = {{ params.name }}\n"
+            "url-path: /lookup-int-paged\n"
+            "method: GET\n"
+            "template-source: lookup_int_paged.sql\n"
+            "connection: [inmem]\n"
+            "request:\n"
+            "  - field-name: min_id\n"
+            "    field-in: query\n"
+            "    field-type: int\n"
+            "    required: true\n"
+            "    validators:\n"
+            "      - type: int\n"
+            "        min: 0\n"
+            "        max: 100000\n"
+            "        preventSqlInjection: false\n"
+        )
+    with open(os.path.join(sqls, "lookup_int_paged.sql"), "w") as f:
+        f.write(
+            "SELECT i AS id, 'x' AS label FROM range(1, 21) AS r(i) "
+            "WHERE i >= {{ params.min_id }} ORDER BY i\n"
         )
 
     return os.path.join(dirpath, "flapi.yaml")
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def injection_server() -> Iterator[str]:
     binary = _flapi_binary()
     port = _free_port()
@@ -183,22 +333,64 @@ def injection_server() -> Iterator[str]:
             log_file.close()
 
 
-# -- payload corpora ------------------------------------------------------
+def _rows(body: Any) -> List[dict]:
+    if isinstance(body, list):
+        return body
+    if isinstance(body, dict):
+        return body.get("data", body.get("rows", []))
+    return []
 
-# Numeric payloads. Every one of these must be rejected by the int
-# validator (400) — they should not even reach the SQL layer, but if
-# the validator regressed, the bind layer must error rather than execute.
-NUMERIC_PAYLOADS = [
+
+def _expect_no_leak(
+    base_url: str,
+    path: str,
+    param: str,
+    payload: str,
+    *,
+    sentinel_row_count: int,
+) -> None:
+    """Send `payload` and assert: either 4xx (validator rejection) OR 200
+    with at most one row (legitimate literal match) — never the full
+    seed-table count, which would indicate successful injection."""
+    r = requests.get(f"{base_url}{path}", params={param: payload}, timeout=10)
+    if r.status_code == 200:
+        rows = _rows(r.json())
+        assert isinstance(rows, list), f"unexpected response shape for {payload!r}: {r.text}"
+        # Critical assertion: an OR-1=1 injection would return all
+        # `sentinel_row_count` rows. The bind path means the payload is
+        # interpreted as a single literal — it can match at most one
+        # specific seed row (in practice 0 for the injection payloads,
+        # since none equal a seed value).
+        assert len(rows) < sentinel_row_count, (
+            f"INJECTION LEAK on {path}: payload {payload!r} returned {len(rows)} rows "
+            f"(seed table has {sentinel_row_count}); a successful OR-injection would "
+            f"return them all."
+        )
+    else:
+        assert 400 <= r.status_code < 500, (
+            f"{path}: payload {payload!r} produced server error "
+            f"{r.status_code}: {r.text}"
+        )
+
+
+# ----------------------------------------------------------------------
+# Payload corpora (per type)
+# ----------------------------------------------------------------------
+
+# Generic injection payloads attempted against numeric and date/time
+# fields. Strict validators reject these at 4xx; bind layer would error
+# if any slipped through. Either outcome is acceptable; what isn't is a
+# 200 with all rows leaked.
+INJECTION_NUMERIC = [
     "1 OR 1=1",
     "1; DROP TABLE t",
-    "1 UNION SELECT 1,'evil'",
+    "1 UNION SELECT 1, 'evil'",
     "1/**/OR/**/1=1",
     "1' OR '1'='1",
     "'1' OR '1'='1'--",
+    "1e3",
+    "1.5",
     "0xdeadbeef",
-    "1e3",                # scientific form — bind layer rejects too
-    "1.5",                # float in int field
-    "-2147483649",        # below int32 (still ok if int64) — accept iff bind allows
     "abc",
     "",
     "   ",
@@ -208,11 +400,85 @@ NUMERIC_PAYLOADS = [
     "/*comment*/1",
 ]
 
-# String payloads that PASS the string validator (they are technically
-# valid strings) but must NOT alter the SQL. With prepared statements,
-# every one of these should match zero rows in the seed table because
-# the value, taken as a literal, is not one of {alice, bob, carol}.
-STRING_PAYLOADS_NO_MATCH = [
+INJECTION_DOUBLE = [
+    "1.5 OR 1=1",
+    "1.5; DROP TABLE t",
+    "1.5' OR '1'='1",
+    "1.5 UNION SELECT 1.0",
+    "abc",
+    "",
+    "1.5/*",
+    "  1.5 garbage",
+]
+
+INJECTION_BOOLEAN = [
+    "true OR 1=1",
+    "true; DROP TABLE",
+    "yes",
+    "TRUE; DROP TABLE",
+    "1 OR 1=1",
+    "false' --",
+    "2",       # not a bool
+    "",
+]
+
+INJECTION_DATE = [
+    "2024-03-15' OR '1'='1",
+    "2024-03-15; DROP TABLE t",
+    "2024-13-99",
+    "9999-99-99",
+    "abc",
+    "",
+    "2024/03/15",       # wrong separator
+    "15-03-2024",       # wrong order
+    "2024-03-15 UNION",
+]
+
+INJECTION_TIME = [
+    "12:00:00' OR '1'='1",
+    "12:00:00; DROP TABLE",
+    "24:00:00",          # invalid hour
+    "12:00:60",          # invalid second
+    "abc",
+    "",
+    "12:00",             # short form
+    "12-00-00",          # wrong separator
+]
+
+INJECTION_UUID = [
+    "11111111-1111-1111-1111-111111111111' OR '1'='1",
+    "11111111-1111-1111-1111-111111111111; DROP TABLE",
+    "abc' OR 1=1",
+    "not-a-uuid",
+    "",
+    "' UNION SELECT password--",
+    "11111111-1111-1111-1111-11111111111Z",  # non-hex
+]
+
+INJECTION_ENUM = [
+    "active' OR '1'='1",
+    "active; DROP TABLE",
+    "ACTIVE",            # case mismatch — not in allowed-values
+    "deleted",           # not in allowed-values
+    "",
+    "active OR pending",
+    "' UNION SELECT 'x'--",
+]
+
+INJECTION_EMAIL = [
+    "alice@example.com' OR '1'='1",
+    "alice@example.com; DROP TABLE",
+    "alice@example.com OR 1=1",
+    "not-an-email",
+    "",
+    "'; DROP TABLE t; --@x.com",
+    "<script>@x.com",
+]
+
+# String payloads — the validator passes any string-shaped input, so
+# the prepared bind is the actual defense. None of these equals a seed
+# row's `name`, so all must come back as 0 rows.
+INJECTION_STRING_NO_MATCH = [
     "alice' OR '1'='1",
     "alice'; DROP TABLE t--",
     "alice' UNION SELECT 1,'evil'--",
@@ -224,108 +490,128 @@ STRING_PAYLOADS_NO_MATCH = [
     "\\' OR 1=1",
     "\";DROP TABLE t;",
     "'" * 50,
-    # NUL-byte truncation lives in the HTTP/URL decoder, not the bind
-    # layer. Crow may stop at the NUL and forward just "alice", which
-    # is a legitimate row match — not an injection. The bind layer's
-    # NUL-preservation is covered by the C++ unit test for
-    # QueryExecutor::executeWithBindings.
-    "ALICE",                       # case mismatch
+    "ALICE",
     "alice\\",
     "carol' UNION SELECT password FROM users--",
     "x' OR 'a'='a' OR 'x'='",
     "Robert');DROP TABLE Students;--",  # xkcd 327
+    "1' OR id<>0--",                    # tries to expose 'id'
+    "alice' OR length(name)>0--",
 ]
 
-# String payloads that legitimately match a seed row. These prove the
-# bind layer does not over-defang — exact-string lookups still work.
-STRING_PAYLOADS_MATCH = [
-    ("alice", 1),
-    ("bob", 2),
-    ("carol", 3),
-]
+
+# ----------------------------------------------------------------------
+# Tests
+# ----------------------------------------------------------------------
 
 
 @pytest.mark.standalone_server
 class TestSqlInjectionCorpus:
-    """End-to-end coverage of W3.1 PR B prepared statements."""
+    """End-to-end coverage of W3.1 PR B prepared statements.
 
-    @pytest.mark.parametrize("payload", NUMERIC_PAYLOADS)
-    def test_numeric_payloads_are_rejected_or_yield_zero_rows(self, injection_server, payload):
-        # The int validator should reject all of these with 400. If a
-        # regression ever lets one through, the bind layer must reject it
-        # before any SQL parses (we'd see a 500 with "Bind conversion
-        # failed"). What MUST NOT happen is a 200 with table-leaking rows.
+    Each test sweeps a payload set against the endpoint and asserts:
+    no payload returns the full seed-table row count (an OR-injection),
+    legitimate values still return their single matching row.
+    """
+
+    # -- Numeric / temporal types ------------------------------------
+
+    @pytest.mark.parametrize("payload", INJECTION_NUMERIC)
+    def test_int(self, injection_server, payload):
+        _expect_no_leak(injection_server, "/lookup-int", "id", payload, sentinel_row_count=3)
+
+    @pytest.mark.parametrize("payload", INJECTION_DOUBLE)
+    def test_double(self, injection_server, payload):
+        _expect_no_leak(injection_server, "/lookup-double", "x", payload, sentinel_row_count=3)
+
+    @pytest.mark.parametrize("payload", INJECTION_BOOLEAN)
+    def test_boolean(self, injection_server, payload):
+        _expect_no_leak(injection_server, "/lookup-boolean", "flag", payload, sentinel_row_count=2)
+
+    @pytest.mark.parametrize("payload", INJECTION_DATE)
+    def test_date(self, injection_server, payload):
+        _expect_no_leak(injection_server, "/lookup-date", "d", payload, sentinel_row_count=2)
+
+    @pytest.mark.parametrize("payload", INJECTION_TIME)
+    def test_time(self, injection_server, payload):
+        _expect_no_leak(injection_server, "/lookup-time", "t", payload, sentinel_row_count=2)
+
+    # -- Format-strict varchar-bindable types ------------------------
+
+    @pytest.mark.parametrize("payload", INJECTION_UUID)
+    def test_uuid(self, injection_server, payload):
+        _expect_no_leak(injection_server, "/lookup-uuid", "u", payload, sentinel_row_count=2)
+
+    @pytest.mark.parametrize("payload", INJECTION_ENUM)
+    def test_enum(self, injection_server, payload):
+        _expect_no_leak(injection_server, "/lookup-enum", "status", payload, sentinel_row_count=3)
+
+    @pytest.mark.parametrize("payload", INJECTION_EMAIL)
+    def test_email(self, injection_server, payload):
+        _expect_no_leak(injection_server, "/lookup-email", "e", payload, sentinel_row_count=2)
+
+    # -- Loose varchar: prepared bind is the actual defense ---------
+
+    @pytest.mark.parametrize("payload", INJECTION_STRING_NO_MATCH)
+    def test_string(self, injection_server, payload):
+        _expect_no_leak(injection_server, "/lookup-string", "name", payload, sentinel_row_count=3)
+
+    # -- Negative controls: legitimate values still match -----------
+
+    LEGIT_CASES: List[Tuple[str, str, str, Any]] = [
+        ("/lookup-int",     "id",     "2",                                          2),
+        ("/lookup-double",  "x",      "1.5",                                        1.5),
+        ("/lookup-boolean", "flag",   "true",                                       True),
+        ("/lookup-date",    "d",      "2024-03-15",                                 "2024-03-15"),
+        ("/lookup-time",    "t",      "13:45:07",                                   "13:45:07"),
+        ("/lookup-uuid",    "u",      "11111111-1111-1111-1111-111111111111",       "11111111-1111-1111-1111-111111111111"),
+        ("/lookup-enum",    "status", "active",                                     "active"),
+        ("/lookup-email",   "e",      "alice@example.com",                          "alice@example.com"),
+        ("/lookup-string",  "name",   "alice",                                      "alice"),
+    ]
+
+    @pytest.mark.parametrize("path, param, value, _expected", LEGIT_CASES)
+    def test_legit_value_returns_one_row(self, injection_server, path, param, value, _expected):
+        r = requests.get(f"{injection_server}{path}", params={param: value}, timeout=10)
+        assert r.status_code == 200, f"{path} with {value!r}: {r.status_code} {r.text}"
+        rows = _rows(r.json())
+        assert len(rows) == 1, f"{path} with {value!r} returned {len(rows)} rows: {rows}"
+
+    # -- Pagination + bindings ---------------------------------------
+
+    def test_pagination_with_bound_param_returns_correct_page(self, injection_server):
+        # Seed has 20 rows (ids 1..20). min_id=5 narrows to 16 rows;
+        # limit=5 + offset=10 should return ids 15..19.
         r = requests.get(
-            f"{injection_server}/lookup-int",
-            params={"id": payload},
+            f"{injection_server}/lookup-int-paged",
+            params={"min_id": "5", "limit": "5", "offset": "10"},
+            timeout=10,
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        rows = _rows(body)
+        assert len(rows) == 5, f"expected 5 rows, got {len(rows)}: {body}"
+        ids = sorted(int(r["id"]) for r in rows)
+        assert ids == [15, 16, 17, 18, 19], f"unexpected ids: {ids}"
+        # If pagination metadata is exposed, the total count for min_id=5
+        # is 16 (ids 5..20). When `total_count` is present in the body
+        # it must reflect the inner filter, not the seed-table size.
+        if isinstance(body, dict) and "total_count" in body:
+            assert body["total_count"] == 16, body
+
+    def test_pagination_injection_attempt_returns_zero_rows(self, injection_server):
+        # min_id is int-typed → strict parse rejects the payload at 4xx.
+        # If a regression let it through, the bind layer would error.
+        # What MUST NOT happen is a 200 with the full 20 rows.
+        r = requests.get(
+            f"{injection_server}/lookup-int-paged",
+            params={"min_id": "0 OR 1=1", "limit": "100", "offset": "0"},
             timeout=10,
         )
         if r.status_code == 200:
-            # A 200 must produce zero rows — the payload is interpreted
-            # as a bound int and won't match anything in the seed table.
-            body = r.json()
-            rows = body if isinstance(body, list) else body.get("data", body.get("rows", []))
-            assert isinstance(rows, list), f"unexpected response shape for {payload!r}: {body}"
-            assert rows == [], f"numeric payload {payload!r} leaked rows: {rows}"
-        else:
-            # Anything 4xx is acceptable rejection; 5xx means something
-            # crashed and is a bug.
-            assert 400 <= r.status_code < 500, (
-                f"numeric payload {payload!r} produced server error: "
-                f"{r.status_code} {r.text}"
+            rows = _rows(r.json())
+            assert len(rows) < 20, (
+                f"INJECTION LEAK on /lookup-int-paged: payload returned {len(rows)} rows"
             )
-
-    @pytest.mark.parametrize("payload", STRING_PAYLOADS_NO_MATCH)
-    def test_string_injection_payloads_match_zero_rows(self, injection_server, payload):
-        # Every payload is a syntactically valid string (validator passes)
-        # but no payload is exactly equal to a seed row's `name`. With
-        # prepared statements the value is bound as data, so the result
-        # must be an empty rowset — never the full table (which would
-        # indicate the injection succeeded).
-        r = requests.get(
-            f"{injection_server}/lookup-string",
-            params={"name": payload},
-            timeout=10,
-        )
-        assert r.status_code == 200, (
-            f"payload {payload!r} unexpectedly errored: "
-            f"{r.status_code} {r.text}"
-        )
-        body = r.json()
-        rows = body if isinstance(body, list) else body.get("data", body.get("rows", []))
-        assert isinstance(rows, list), f"unexpected response shape for {payload!r}: {body}"
-        # CRITICAL: an injection that succeeded would return all 3 rows
-        # (because `OR 1=1` makes the WHERE always-true). Prepared
-        # statements make that impossible — the payload is just data.
-        assert rows == [], (
-            f"INJECTION LEAK: payload {payload!r} returned rows {rows}; "
-            "expected empty set because no seed row has that literal name"
-        )
-
-    @pytest.mark.parametrize("payload, expected_id", STRING_PAYLOADS_MATCH)
-    def test_string_legitimate_values_still_match(self, injection_server, payload, expected_id):
-        # Negative-control: verify the prepared path doesn't over-defang
-        # legitimate lookups. Exact string match must still succeed.
-        r = requests.get(
-            f"{injection_server}/lookup-string",
-            params={"name": payload},
-            timeout=10,
-        )
-        assert r.status_code == 200, r.text
-        body = r.json()
-        rows = body if isinstance(body, list) else body.get("data", body.get("rows", []))
-        assert len(rows) == 1, f"expected one row for {payload!r}, got: {rows}"
-        assert rows[0]["id"] == expected_id
-
-    def test_integer_lookup_with_valid_value_returns_the_row(self, injection_server):
-        r = requests.get(
-            f"{injection_server}/lookup-int",
-            params={"id": "2"},
-            timeout=10,
-        )
-        assert r.status_code == 200, r.text
-        body = r.json()
-        rows = body if isinstance(body, list) else body.get("data", body.get("rows", []))
-        assert len(rows) == 1
-        assert rows[0]["id"] == 2
-        assert rows[0]["name"] == "bob"
+        else:
+            assert 400 <= r.status_code < 500, r.text

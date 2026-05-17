@@ -1,0 +1,651 @@
+2025-10-11T15:24:03.6034621Z Current runner version: '2.328.0'
+2025-10-11T15:24:03.6061127Z ##[group]Runner Image Provisioner
+2025-10-11T15:24:03.6061893Z Hosted Compute Agent
+2025-10-11T15:24:03.6062379Z Version: 20250912.392
+2025-10-11T15:24:03.6062918Z Commit: d921fda672a98b64f4f82364647e2f10b2267d0b
+2025-10-11T15:24:03.6063532Z Build Date: 2025-09-12T15:23:14Z
+2025-10-11T15:24:03.6064017Z ##[endgroup]
+2025-10-11T15:24:03.6064492Z ##[group]Operating System
+2025-10-11T15:24:03.6064970Z Microsoft Windows Server 2025
+2025-10-11T15:24:03.6065462Z 10.0.26100
+2025-10-11T15:24:03.6065829Z Datacenter
+2025-10-11T15:24:03.6066261Z ##[endgroup]
+2025-10-11T15:24:03.6066633Z ##[group]Runner Image
+2025-10-11T15:24:03.6067081Z Image: windows-2025
+2025-10-11T15:24:03.6067527Z Version: 20250929.44.1
+2025-10-11T15:24:03.6068380Z Included Software: https://github.com/actions/runner-images/blob/win25/20250929.44/images/windows/Windows2025-Readme.md
+2025-10-11T15:24:03.6070060Z Image Release: https://github.com/actions/runner-images/releases/tag/win25%2F20250929.44
+2025-10-11T15:24:03.6070885Z ##[endgroup]
+2025-10-11T15:24:03.6072041Z ##[group]GITHUB_TOKEN Permissions
+2025-10-11T15:24:03.6074380Z Contents: write
+2025-10-11T15:24:03.6074812Z Issues: write
+2025-10-11T15:24:03.6075295Z Metadata: read
+2025-10-11T15:24:03.6075692Z Packages: write
+2025-10-11T15:24:03.6076114Z PullRequests: write
+2025-10-11T15:24:03.6076638Z ##[endgroup]
+2025-10-11T15:24:03.6078612Z Secret source: Actions
+2025-10-11T15:24:03.6079209Z Prepare workflow directory
+2025-10-11T15:24:03.6632863Z Prepare all required actions
+2025-10-11T15:24:03.6670693Z Getting action download info
+2025-10-11T15:24:04.0582333Z Download action repository 'actions/checkout@v4' (SHA:08eba0b27e820071cde6df949e0beb9ba4906955)
+2025-10-11T15:24:04.1847477Z Download action repository 'microsoft/setup-msbuild@v2' (SHA:6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce)
+2025-10-11T15:24:04.7562757Z Download action repository 'msys2/setup-msys2@v2' (SHA:fb197b72ce45fb24f17bf3f807a388985654d1f2)
+2025-10-11T15:24:05.3629404Z Download action repository 'hendrikmuhs/ccache-action@main' (SHA:30ae3502c7f2d3200209bf2f90eccef2357896cf)
+2025-10-11T15:24:05.9956461Z Download action repository 'actions/upload-artifact@v4' (SHA:ea165f8d65b6e75b540449e92b4886f43607fa02)
+2025-10-11T15:24:06.3320791Z Complete job name: windows-build
+2025-10-11T15:24:06.5226552Z ##[group]Run actions/checkout@v4
+2025-10-11T15:24:06.5228115Z with:
+2025-10-11T15:24:06.5228370Z   submodules: recursive
+2025-10-11T15:24:06.5228614Z   fetch-depth: 0
+2025-10-11T15:24:06.5228819Z   repository: DataZooDE/flapi
+2025-10-11T15:24:06.5229574Z   token: ***
+2025-10-11T15:24:06.5229780Z   ssh-strict: true
+2025-10-11T15:24:06.5229975Z   ssh-user: git
+2025-10-11T15:24:06.5230208Z   persist-credentials: true
+2025-10-11T15:24:06.5230460Z   clean: true
+2025-10-11T15:24:06.5230669Z   sparse-checkout-cone-mode: true
+2025-10-11T15:24:06.5230912Z   fetch-tags: false
+2025-10-11T15:24:06.5231398Z   show-progress: true
+2025-10-11T15:24:06.5231639Z   lfs: false
+2025-10-11T15:24:06.5231838Z   set-safe-directory: true
+2025-10-11T15:24:06.5232414Z env:
+2025-10-11T15:24:06.5232627Z   VCPKG_DEFAULT_TRIPLET: x64-windows-static
+2025-10-11T15:24:06.5232909Z   VCPKG_ROOT: D:\a\flapi\flapi/vcpkg
+2025-10-11T15:24:06.5233142Z ##[endgroup]
+2025-10-11T15:24:06.7222399Z Syncing repository: DataZooDE/flapi
+2025-10-11T15:24:06.7223884Z ##[group]Getting Git version info
+2025-10-11T15:24:06.7224365Z Working directory is 'D:\a\flapi\flapi'
+2025-10-11T15:24:06.8296161Z [command]"C:\Program Files\Git\bin\git.exe" version
+2025-10-11T15:24:07.3616811Z git version 2.51.0.windows.2
+2025-10-11T15:24:07.3686554Z ##[endgroup]
+2025-10-11T15:24:07.3713630Z Temporarily overriding HOME='D:\a\_temp\af885b72-00ba-4e81-a0a9-ae7d8f361fa3' before making global git config changes
+2025-10-11T15:24:07.3714433Z Adding repository directory to the temporary git global config as a safe directory
+2025-10-11T15:24:07.3725742Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add safe.directory D:\a\flapi\flapi
+2025-10-11T15:24:07.4357731Z Deleting the contents of 'D:\a\flapi\flapi'
+2025-10-11T15:24:07.4364334Z ##[group]Initializing the repository
+2025-10-11T15:24:07.4374866Z [command]"C:\Program Files\Git\bin\git.exe" init D:\a\flapi\flapi
+2025-10-11T15:24:07.5716830Z Initialized empty Git repository in D:/a/flapi/flapi/.git/
+2025-10-11T15:24:07.5781744Z [command]"C:\Program Files\Git\bin\git.exe" remote add origin https://github.com/DataZooDE/flapi
+2025-10-11T15:24:07.6472356Z ##[endgroup]
+2025-10-11T15:24:07.6472798Z ##[group]Disabling automatic garbage collection
+2025-10-11T15:24:07.6484545Z [command]"C:\Program Files\Git\bin\git.exe" config --local gc.auto 0
+2025-10-11T15:24:07.6795710Z ##[endgroup]
+2025-10-11T15:24:07.6796098Z ##[group]Setting up auth
+2025-10-11T15:24:07.6811616Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2025-10-11T15:24:07.7130410Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2025-10-11T15:24:09.6591812Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2025-10-11T15:24:09.6903145Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2025-10-11T15:24:10.2235597Z [command]"C:\Program Files\Git\bin\git.exe" config --local http.https://github.com/.extraheader "AUTHORIZATION: basic ***"
+2025-10-11T15:24:10.2560491Z ##[endgroup]
+2025-10-11T15:24:10.2562235Z ##[group]Fetching the repository
+2025-10-11T15:24:10.2575899Z [command]"C:\Program Files\Git\bin\git.exe" -c protocol.version=2 fetch --prune --no-recurse-submodules origin +refs/heads/*:refs/remotes/origin/* +refs/tags/*:refs/tags/*
+2025-10-11T15:24:12.1941993Z From https://github.com/DataZooDE/flapi
+2025-10-11T15:24:12.1942585Z  * [new branch]      main       -> origin/main
+2025-10-11T15:24:12.1942964Z  * [new tag]         v25.03.22  -> v25.03.22
+2025-10-11T15:24:12.2298312Z [command]"C:\Program Files\Git\bin\git.exe" branch --list --remote origin/main
+2025-10-11T15:24:12.2784409Z   origin/main
+2025-10-11T15:24:12.2840344Z [command]"C:\Program Files\Git\bin\git.exe" rev-parse refs/remotes/origin/main
+2025-10-11T15:24:12.3193347Z f02a1e7fd1daf293409a721fb527c1eab6ac1481
+2025-10-11T15:24:12.3237795Z ##[endgroup]
+2025-10-11T15:24:12.3238382Z ##[group]Determining the checkout info
+2025-10-11T15:24:12.3240913Z ##[endgroup]
+2025-10-11T15:24:12.3253709Z [command]"C:\Program Files\Git\bin\git.exe" sparse-checkout disable
+2025-10-11T15:24:12.3722157Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset-all extensions.worktreeConfig
+2025-10-11T15:24:12.4033831Z ##[group]Checking out the ref
+2025-10-11T15:24:12.4046921Z [command]"C:\Program Files\Git\bin\git.exe" checkout --progress --force -B main refs/remotes/origin/main
+2025-10-11T15:24:12.6246163Z branch 'main' set up to track 'origin/main'.
+2025-10-11T15:24:12.6259362Z Switched to a new branch 'main'
+2025-10-11T15:24:12.6331478Z ##[endgroup]
+2025-10-11T15:24:12.6332013Z ##[group]Setting up auth for fetching submodules
+2025-10-11T15:24:12.6345262Z [command]"C:\Program Files\Git\bin\git.exe" config --global http.https://github.com/.extraheader "AUTHORIZATION: basic ***"
+2025-10-11T15:24:12.6689869Z [command]"C:\Program Files\Git\bin\git.exe" config --global --unset-all url.https://github.com/.insteadOf
+2025-10-11T15:24:12.7003363Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add url.https://github.com/.insteadOf git@github.com:
+2025-10-11T15:24:12.7318061Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add url.https://github.com/.insteadOf org-136052936@github.com:
+2025-10-11T15:24:12.7609574Z ##[endgroup]
+2025-10-11T15:24:12.7610982Z ##[group]Fetching submodules
+2025-10-11T15:24:12.7620223Z [command]"C:\Program Files\Git\bin\git.exe" submodule sync --recursive
+2025-10-11T15:24:13.3148320Z [command]"C:\Program Files\Git\bin\git.exe" -c protocol.version=2 submodule update --init --force --recursive
+2025-10-11T15:24:13.8774341Z Submodule 'duckdb' (https://github.com/duckdb/duckdb.git) registered for path 'duckdb'
+2025-10-11T15:24:37.5124632Z Cloning into 'D:/a/flapi/flapi/duckdb'...
+2025-10-11T15:24:41.7750800Z Submodule path 'duckdb': checked out 'b390a7c3760bd95926fe8aefde20d04b349b472e'
+2025-10-11T15:24:41.8035782Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local gc.auto 0"
+2025-10-11T15:24:42.3041295Z Entering 'duckdb'
+2025-10-11T15:24:42.3659226Z ##[endgroup]
+2025-10-11T15:24:42.3659596Z ##[group]Persisting credentials for submodules
+2025-10-11T15:24:42.3672883Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'url\.https\:\/\/github\.com\/\.insteadOf' && git config --local --unset-all 'url.https://github.com/.insteadOf' || :\""
+2025-10-11T15:24:42.9348245Z Entering 'duckdb'
+2025-10-11T15:24:43.0289227Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local 'http.https://github.com/.extraheader' 'AUTHORIZATION: basic ***' && git config --local --show-origin --name-only --get-regexp remote.origin.url\""
+2025-10-11T15:24:43.5565572Z Entering 'duckdb'
+2025-10-11T15:24:43.6341068Z file:D:/a/flapi/flapi/.git/modules/duckdb/config	remote.origin.url
+2025-10-11T15:24:43.6646065Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --add 'url.https://github.com/.insteadOf' 'git@github.com:'"
+2025-10-11T15:24:44.1912737Z Entering 'duckdb'
+2025-10-11T15:24:44.2529886Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --add 'url.https://github.com/.insteadOf' 'org-136052936@github.com:'"
+2025-10-11T15:24:44.7760516Z Entering 'duckdb'
+2025-10-11T15:24:44.8380567Z ##[endgroup]
+2025-10-11T15:24:44.8827994Z [command]"C:\Program Files\Git\bin\git.exe" log -1 --format=%H
+2025-10-11T15:24:44.9103472Z f02a1e7fd1daf293409a721fb527c1eab6ac1481
+2025-10-11T15:24:44.9502909Z ##[group]Run microsoft/setup-msbuild@v2
+2025-10-11T15:24:44.9503261Z with:
+2025-10-11T15:24:44.9503442Z   msbuild-architecture: x86
+2025-10-11T15:24:44.9503648Z env:
+2025-10-11T15:24:44.9503839Z   VCPKG_DEFAULT_TRIPLET: x64-windows-static
+2025-10-11T15:24:44.9504101Z   VCPKG_ROOT: D:\a\flapi\flapi/vcpkg
+2025-10-11T15:24:44.9504318Z ##[endgroup]
+2025-10-11T15:24:45.0789900Z [command]C:\ProgramData\Chocolatey\bin\vswhere.exe -products * -requires Microsoft.Component.MSBuild -property installationPath -latest
+2025-10-11T15:24:45.8454844Z C:\Program Files\Microsoft Visual Studio\2022\Enterprise
+2025-10-11T15:24:45.8767125Z ##[group]Run msys2/setup-msys2@v2
+2025-10-11T15:24:45.8767477Z with:
+2025-10-11T15:24:45.8767638Z   msystem: MINGW64
+2025-10-11T15:24:45.8767811Z   update: true
+2025-10-11T15:24:45.8768138Z   install: mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-make mingw-w64-x86_64-ninja
+2025-10-11T15:24:45.8768490Z   path-type: minimal
+2025-10-11T15:24:45.8768672Z   pacboy: false
+2025-10-11T15:24:45.8768821Z   release: true
+2025-10-11T15:24:45.8768994Z   location: RUNNER_TEMP
+2025-10-11T15:24:45.8769181Z   platform-check-severity: fatal
+2025-10-11T15:24:45.8769380Z   cache: true
+2025-10-11T15:24:45.8769516Z env:
+2025-10-11T15:24:45.8769681Z   VCPKG_DEFAULT_TRIPLET: x64-windows-static
+2025-10-11T15:24:45.8769915Z   VCPKG_ROOT: D:\a\flapi\flapi/vcpkg
+2025-10-11T15:24:45.8770121Z ##[endgroup]
+2025-10-11T15:24:46.0955744Z ##[group]Downloading MSYS2...
+2025-10-11T15:24:46.9302827Z ##[endgroup]
+2025-10-11T15:24:46.9303170Z ##[group]Extracting MSYS2...
+2025-10-11T15:24:46.9321532Z [command]C:\hostedtoolcache\windows\msys2-installer\0.0.20250830\x64\base.exe -y
+2025-10-11T15:24:47.1943040Z 
+2025-10-11T15:24:47.1944081Z 7-Zip SFX 25.01 ZS v1.5.7 (x64) : Copyright (c) 1999-2025 Igor Pavlov, 2016-2025 Tino Reichardt, 2022-2025 Sergey G. Brester : 2025-08-06
+2025-10-11T15:24:47.1944782Z 
+2025-10-11T15:24:47.1945150Z Extracting archive: C:\hostedtoolcache\windows\msys2-installer\0.0.20250830\x64\base.exe
+2025-10-11T15:24:47.1945839Z --
+2025-10-11T15:24:47.1946519Z Path = C:\hostedtoolcache\windows\msys2-installer\0.0.20250830\x64\base.exe
+2025-10-11T15:24:47.1947040Z Type = 7z
+2025-10-11T15:24:47.1947191Z 
+2025-10-11T15:24:47.3938964Z   0%
+2025-10-11T15:24:47.3939330Z     
+2025-10-11T15:24:47.5980402Z   0% 823 - msys64\usr\share\terminfo\35
+2025-10-11T15:24:47.5981011Z                                        
+2025-10-11T15:24:47.7995416Z   5% 1440 - msys64\usr\lib\systemd\system\paccache.service
+2025-10-11T15:24:47.7995829Z                                                           
+2025-10-11T15:24:48.0029248Z   5% 2138 - msys64\usr\lib\terminfo\64\d462-dg
+2025-10-11T15:24:48.0029821Z                                               
+2025-10-11T15:24:48.2070862Z   5% 2841 - msys64\usr\lib\terminfo\6e\n7900
+2025-10-11T15:24:48.2071340Z                                             
+2025-10-11T15:24:48.4090933Z   5% 3543 - msys64\usr\lib\terminfo\74\tn1200
+2025-10-11T15:24:48.4091457Z                                              
+2025-10-11T15:24:48.6132022Z   6% 4240 - msys64\usr\lib\terminfo\78\xterm-8bit
+2025-10-11T15:24:48.6132404Z                                                  
+2025-10-11T15:24:48.8149367Z   6% 4931 - msys64\usr\share\bash-completion\completions\pydocstyle
+2025-10-11T15:24:48.8149759Z                                                                    
+2025-10-11T15:24:49.0190841Z   8% 5598 - msys64\usr\share\doc\libunistring\libunistring_fot.html
+2025-10-11T15:24:49.0191286Z                                                                    
+2025-10-11T15:24:49.2213375Z  15% 6108 - msys64\usr\share\locale\en_GB\LC_MESSAGES\p11-kit.mo
+2025-10-11T15:24:49.2214156Z                                                                 
+2025-10-11T15:24:49.4243208Z  23% 6521 - msys64\usr\share\locale\pl\LC_MESSAGES\findutils.mo
+2025-10-11T15:24:49.4244277Z                                                                
+2025-10-11T15:24:49.6283628Z  32% 6880 - msys64\usr\share\makepkg\lint_config.sh
+2025-10-11T15:24:49.6284408Z                                                    
+2025-10-11T15:24:49.8309287Z  33% 7506 - msys64\usr\share\man\man1\version.1ssl.gz
+2025-10-11T15:24:49.8310042Z                                                      
+2025-10-11T15:24:50.0339852Z  33% 8162 - msys64\usr\share\man\man3\curs_add_wch.3x.gz
+2025-10-11T15:24:50.0340321Z                                                         
+2025-10-11T15:24:50.2368221Z  34% 8850 - msys64\usr\share\man\man3\mvhline.3x.gz
+2025-10-11T15:24:50.2371679Z                                                    
+2025-10-11T15:24:50.4404673Z  35% 9483 - msys64\usr\share\man\uk\man1\xzcat.1.gz
+2025-10-11T15:24:50.4405246Z                                                    
+2025-10-11T15:24:50.6440108Z  42% 9959 - msys64\usr\share\perl5\core_perl\TAP\Formatter\Session.pm
+2025-10-11T15:24:50.6440846Z                                                                      
+2025-10-11T15:24:50.8461954Z  44% 10465 - msys64\usr\share\perl5\core_perl\unicore\lib\IdType\Exclusio.pl
+2025-10-11T15:24:50.8462505Z                                                                             
+2025-10-11T15:24:51.0497449Z  45% 10898 - msys64\usr\share\readline\rl-timeout.c
+2025-10-11T15:24:51.0498020Z                                                    
+2025-10-11T15:24:51.2531379Z  46% 11621 - msys64\usr\share\terminfo\64\d470
+2025-10-11T15:24:51.2531728Z                                               
+2025-10-11T15:24:51.4570879Z  46% 12356 - msys64\usr\share\terminfo\6e\ncr260wy60wpp
+2025-10-11T15:24:51.4571395Z                                                        
+2025-10-11T15:24:51.6586884Z  46% 13075 - msys64\usr\share\terminfo\74\tvi912b-p-vb
+2025-10-11T15:24:51.6587241Z                                                       
+2025-10-11T15:24:51.8616638Z  47% 13794 - msys64\usr\share\zoneinfo\Africa\Blantyre
+2025-10-11T15:24:51.8616983Z                                                       
+2025-10-11T15:24:52.0657495Z  47% 14517 - msys64\usr\share\zoneinfo\posix\America\Matamoros
+2025-10-11T15:24:52.0657932Z                                                               
+2025-10-11T15:24:52.2693716Z  47% 15202 - msys64\usr\share\zoneinfo\right\Asia\Aqtau
+2025-10-11T15:24:52.2694151Z                                                        
+2025-10-11T15:24:52.4800948Z  48% 15840 - msys64\var\lib\pacman\local\p11-kit-0.25.5-2\mtree
+2025-10-11T15:24:52.4801554Z                                                                
+2025-10-11T15:24:52.6811183Z  54% 16140 - msys64\usr\bin\msys-curl-4.dll
+2025-10-11T15:24:52.6811513Z                                            
+2025-10-11T15:24:52.8955020Z  77% 16235 - msys64\usr\bin\pacsort.exe
+2025-10-11T15:24:52.8955475Z                                        
+2025-10-11T15:24:52.8955794Z Everything is Ok
+2025-10-11T15:24:52.8980546Z ##[endgroup]
+2025-10-11T15:24:52.8980904Z ##[group]Disable Key Refresh...
+2025-10-11T15:24:52.8998352Z ##[endgroup]
+2025-10-11T15:24:52.9021356Z ##[group]Restoring package cache...
+2025-10-11T15:24:53.2382236Z Cache restore for msys2-pkgs-upd:true-conf:4c1ef0bc, got undefined
+2025-10-11T15:24:53.2383677Z Cache restore for msys2-pkgs-upd:true-conf:4c1ef0bc, got undefined
+2025-10-11T15:24:53.2384593Z ##[endgroup]
+2025-10-11T15:24:53.2385108Z ##[group]Starting MSYS2 for the first time...
+2025-10-11T15:24:53.3832305Z [command]C:\Windows\system32\cmd.exe /D /S /C D:\a\_temp\setup-msys2\msys2.cmd -c "'uname' '-a'"
+2025-10-11T15:24:53.4506697Z [1;32mMSYS2 is starting for the first time. Executing the initial setup.[1;0m
+2025-10-11T15:24:53.5705024Z Copying skeleton files.
+2025-10-11T15:24:53.5705685Z These files are for the users to personalise their msys2 experience.
+2025-10-11T15:24:53.5706105Z 
+2025-10-11T15:24:53.5706699Z They will never be overwritten nor automatically updated.
+2025-10-11T15:24:53.5707030Z 
+2025-10-11T15:24:53.6350664Z './.bashrc' -> '/home/runneradmin/.bashrc'
+2025-10-11T15:24:53.6517927Z './.bash_profile' -> '/home/runneradmin/.bash_profile'
+2025-10-11T15:24:53.6685849Z './.profile' -> '/home/runneradmin/.profile'
+2025-10-11T15:24:53.7418134Z 'C:\Windows\system32\drivers\etc\hosts' -> '/etc/hosts'
+2025-10-11T15:24:53.7950315Z 'C:\Windows\system32\drivers\etc\protocol' -> '/etc/protocols'
+2025-10-11T15:24:53.8473515Z 'C:\Windows\system32\drivers\etc\services' -> '/etc/services'
+2025-10-11T15:24:53.8997416Z 'C:\Windows\system32\drivers\etc\networks' -> '/etc/networks'
+2025-10-11T15:24:54.0974792Z gpg: /etc/pacman.d/gnupg/trustdb.gpg: trustdb created
+2025-10-11T15:24:54.1052229Z gpg: no ultimately trusted keys found
+2025-10-11T15:24:54.4129659Z gpg: starting migration from earlier GnuPG versions
+2025-10-11T15:24:54.4786585Z gpg: porting secret keys from '/etc/pacman.d/gnupg/secring.gpg' to gpg-agent
+2025-10-11T15:24:54.4788567Z gpg: migration succeeded
+2025-10-11T15:24:54.5029784Z ==> Generating pacman master key. This may take some time.
+2025-10-11T15:24:54.5227583Z gpg: Generating pacman keyring master key...
+2025-10-11T15:24:55.2771121Z gpg: directory '/etc/pacman.d/gnupg/openpgp-revocs.d' created
+2025-10-11T15:24:55.3027878Z gpg: revocation certificate stored as '/etc/pacman.d/gnupg/openpgp-revocs.d/A1475861B383F06DD3553EF3AC28F570693686C8.rev'
+2025-10-11T15:24:55.3028407Z gpg: Done
+2025-10-11T15:24:55.3217756Z ==> Updating trust database...
+2025-10-11T15:24:55.3615542Z gpg: marginals needed: 3  completes needed: 1  trust model: pgp
+2025-10-11T15:24:55.3616158Z gpg: depth: 0  valid:   1  signed:   0  trust: 0-, 0q, 0n, 0m, 0f, 1u
+2025-10-11T15:24:55.4927174Z ==> Appending keys from msys2.gpg...
+2025-10-11T15:24:56.0657601Z ==> Locally signing trusted keys in keyring...
+2025-10-11T15:24:56.6702615Z   -> Locally signed 5 keys.
+2025-10-11T15:24:56.6858536Z ==> Importing owner trust values...
+2025-10-11T15:24:56.7061458Z gpg: setting ownertrust to 4
+2025-10-11T15:24:56.7062525Z gpg: setting ownertrust to 4
+2025-10-11T15:24:56.7062837Z gpg: setting ownertrust to 4
+2025-10-11T15:24:56.7063127Z gpg: setting ownertrust to 4
+2025-10-11T15:24:56.7063420Z gpg: setting ownertrust to 4
+2025-10-11T15:24:56.7364424Z ==> Disabling revoked keys in keyring...
+2025-10-11T15:24:56.9984701Z   -> Disabled 4 keys.
+2025-10-11T15:24:57.0143049Z ==> Updating trust database...
+2025-10-11T15:24:57.0548779Z gpg: marginals needed: 3  completes needed: 1  trust model: pgp
+2025-10-11T15:24:57.0578976Z gpg: depth: 0  valid:   1  signed:   5  trust: 0-, 0q, 0n, 0m, 0f, 1u
+2025-10-11T15:24:57.0640831Z gpg: depth: 1  valid:   5  signed:   7  trust: 0-, 0q, 0n, 5m, 0f, 0u
+2025-10-11T15:24:57.0654904Z gpg: depth: 2  valid:   4  signed:   2  trust: 4-, 0q, 0n, 0m, 0f, 0u
+2025-10-11T15:24:57.0658053Z gpg: next trustdb check due at 2025-12-16
+2025-10-11T15:24:57.1079746Z pacman-key (pacman) 6.1.0
+2025-10-11T15:24:57.1080307Z Copyright (c) 2010-2024 Pacman Development Team <pacman-dev@lists.archlinux.org>.
+2025-10-11T15:24:57.1243195Z 
+2025-10-11T15:24:57.1243771Z This is free software; see the source for copying conditions.
+2025-10-11T15:24:57.1245580Z There is NO WARRANTY, to the extent permitted by law.
+2025-10-11T15:24:57.3740720Z [1;32mInitial setup complete. MSYS2 is now ready to use.[1;0m
+2025-10-11T15:24:57.3918660Z MINGW64_NT-10.0-26100 runnervmd3hz3 3.6.4-23a25d49.x86_64 2025-07-16 16:15 UTC x86_64 Msys
+2025-10-11T15:24:57.3977365Z ##[endgroup]
+2025-10-11T15:24:57.3977895Z ##[group]Disable CheckSpace...
+2025-10-11T15:24:57.4712600Z [command]C:\Windows\system32\cmd.exe /D /S /C D:\a\_temp\setup-msys2\msys2.cmd -c "'sed' '-i' 's/^CheckSpace/#CheckSpace/g' '/etc/pacman.conf'"
+2025-10-11T15:24:57.7293844Z ##[endgroup]
+2025-10-11T15:24:57.7294237Z ##[group]Updating packages...
+2025-10-11T15:24:57.8002882Z [command]C:\Windows\system32\cmd.exe /D /S /C D:\a\_temp\setup-msys2\msys2.cmd -c "'pacman' '--noconfirm' '-Syuu' '--overwrite' '*'"
+2025-10-11T15:24:58.5701909Z :: Synchronizing package databases...
+2025-10-11T15:25:02.0909178Z  clangarm64 downloading...
+2025-10-11T15:25:02.0909510Z  mingw32 downloading...
+2025-10-11T15:25:02.0909702Z  mingw64 downloading...
+2025-10-11T15:25:02.0909900Z  ucrt64 downloading...
+2025-10-11T15:25:02.0910099Z  clang64 downloading...
+2025-10-11T15:25:02.0910277Z  msys downloading...
+2025-10-11T15:25:02.6126527Z :: Starting core system upgrade...
+2025-10-11T15:25:02.8476424Z warning: terminate other MSYS2 programs before proceeding
+2025-10-11T15:25:02.8476814Z resolving dependencies...
+2025-10-11T15:25:02.8564798Z looking for conflicting packages...
+2025-10-11T15:25:02.8579404Z 
+2025-10-11T15:25:02.8580975Z Packages (3) mintty-1~3.8.1-1  msys2-runtime-3.6.4-2  pacman-6.1.0-19
+2025-10-11T15:25:02.8581565Z 
+2025-10-11T15:25:02.8581747Z Total Download Size:   10.05 MiB
+2025-10-11T15:25:02.8582037Z Total Installed Size:  54.79 MiB
+2025-10-11T15:25:02.8582351Z Net Upgrade Size:       1.71 MiB
+2025-10-11T15:25:02.8582547Z 
+2025-10-11T15:25:02.8582753Z :: Proceed with installation? [Y/n] 
+2025-10-11T15:25:02.8583123Z :: Retrieving packages...
+2025-10-11T15:25:06.5043748Z  pacman-6.1.0-19-x86_64 downloading...
+2025-10-11T15:25:06.5044126Z  msys2-runtime-3.6.4-2-x86_64 downloading...
+2025-10-11T15:25:06.5044400Z  mintty-1~3.8.1-1-x86_64 downloading...
+2025-10-11T15:25:06.5044643Z checking keyring...
+2025-10-11T15:25:06.5724652Z checking package integrity...
+2025-10-11T15:25:07.2030946Z loading package files...
+2025-10-11T15:25:07.2188842Z checking for file conflicts...
+2025-10-11T15:25:07.2193274Z :: Processing package changes...
+2025-10-11T15:25:07.2193655Z upgrading mintty...
+2025-10-11T15:25:07.3013926Z upgrading msys2-runtime...
+2025-10-11T15:25:07.4405014Z upgrading pacman...
+2025-10-11T15:25:07.7919670Z :: To complete this update all MSYS2 processes including this terminal will be closed. Confirm to proceed [Y/n] 
+2025-10-11T15:25:08.1164686Z ##[endgroup]
+2025-10-11T15:25:08.1165095Z ##[group]Killing remaining tasks...
+2025-10-11T15:25:08.2086035Z [command]C:\Windows\system32\taskkill.exe /F /FI "MODULES eq msys-2.0.dll"
+2025-10-11T15:25:08.3791911Z 
+2025-10-11T15:25:08.3792652Z INFO: No tasks running with the specified criteria.
+2025-10-11T15:25:08.3837020Z ##[endgroup]
+2025-10-11T15:25:08.3837428Z ##[group]Final system upgrade...
+2025-10-11T15:25:08.4615637Z [command]C:\Windows\system32\cmd.exe /D /S /C D:\a\_temp\setup-msys2\msys2.cmd -c "'pacman' '--noconfirm' '-Syuu' '--overwrite' '*'"
+2025-10-11T15:25:09.2615394Z :: Synchronizing package databases...
+2025-10-11T15:25:10.2244657Z  clangarm64 downloading...
+2025-10-11T15:25:10.2244952Z  mingw32 downloading...
+2025-10-11T15:25:10.2245173Z  mingw64 downloading...
+2025-10-11T15:25:10.2245406Z  ucrt64 downloading...
+2025-10-11T15:25:10.2245608Z  clang64 downloading...
+2025-10-11T15:25:10.2245817Z  msys downloading...
+2025-10-11T15:25:10.7302677Z :: Starting core system upgrade...
+2025-10-11T15:25:10.9655874Z  there is nothing to do
+2025-10-11T15:25:10.9656257Z :: Starting full system upgrade...
+2025-10-11T15:25:11.0104785Z resolving dependencies...
+2025-10-11T15:25:11.0185503Z looking for conflicting packages...
+2025-10-11T15:25:11.0225767Z 
+2025-10-11T15:25:11.0226934Z Packages (11) curl-8.16.0-1  libcurl-8.16.0-1  libexpat-2.7.3-1  libffi-3.5.2-1  libnghttp2-1.67.1-1  libnghttp3-1.12.0-1  libngtcp2-1.16.0-1  libopenssl-3.6.0-1  libp11-kit-0.25.10-1  openssl-3.6.0-1  p11-kit-0.25.10-1
+2025-10-11T15:25:11.0227865Z 
+2025-10-11T15:25:11.0228022Z Total Download Size:    4.91 MiB
+2025-10-11T15:25:11.0228259Z Total Installed Size:  14.63 MiB
+2025-10-11T15:25:11.0228483Z Net Upgrade Size:       0.34 MiB
+2025-10-11T15:25:11.0228617Z 
+2025-10-11T15:25:11.0228801Z :: Proceed with installation? [Y/n] 
+2025-10-11T15:25:11.0229048Z :: Retrieving packages...
+2025-10-11T15:25:12.6071265Z  libopenssl-3.6.0-1-x86_64 downloading...
+2025-10-11T15:25:12.6071675Z  curl-8.16.0-1-x86_64 downloading...
+2025-10-11T15:25:12.6071905Z  openssl-3.6.0-1-x86_64 downloading...
+2025-10-11T15:25:12.6072254Z  p11-kit-0.25.10-1-x86_64 downloading...
+2025-10-11T15:25:12.6072609Z  libcurl-8.16.0-1-x86_64 downloading...
+2025-10-11T15:25:12.6073052Z  libp11-kit-0.25.10-1-x86_64 downloading...
+2025-10-11T15:25:12.6073327Z  libngtcp2-1.16.0-1-x86_64 downloading...
+2025-10-11T15:25:12.6073602Z  libnghttp3-1.12.0-1-x86_64 downloading...
+2025-10-11T15:25:12.6073839Z  libnghttp2-1.67.1-1-x86_64 downloading...
+2025-10-11T15:25:12.6074090Z  libexpat-2.7.3-1-x86_64 downloading...
+2025-10-11T15:25:12.6074333Z  libffi-3.5.2-1-x86_64 downloading...
+2025-10-11T15:25:12.6074568Z checking keyring...
+2025-10-11T15:25:12.6734999Z checking package integrity...
+2025-10-11T15:25:14.2669675Z loading package files...
+2025-10-11T15:25:14.2870953Z checking for file conflicts...
+2025-10-11T15:25:14.2894558Z :: Processing package changes...
+2025-10-11T15:25:14.2895065Z upgrading libnghttp3...
+2025-10-11T15:25:14.2958685Z upgrading libopenssl...
+2025-10-11T15:25:14.3241520Z upgrading libngtcp2...
+2025-10-11T15:25:14.3325266Z upgrading libnghttp2...
+2025-10-11T15:25:14.3384790Z upgrading openssl...
+2025-10-11T15:25:14.4378106Z upgrading libffi...
+2025-10-11T15:25:14.4479532Z upgrading libp11-kit...
+2025-10-11T15:25:14.4549947Z upgrading p11-kit...
+2025-10-11T15:25:14.6006242Z upgrading libcurl...
+2025-10-11T15:25:14.6076476Z upgrading curl...
+2025-10-11T15:25:15.0205237Z upgrading libexpat...
+2025-10-11T15:25:15.0267363Z :: Running post-transaction hooks...
+2025-10-11T15:25:15.0267847Z (1/1) Updating the info directory file...
+2025-10-11T15:25:15.2738200Z ##[endgroup]
+2025-10-11T15:25:15.2738654Z ##[group]Installing additional packages through pacman...
+2025-10-11T15:25:15.3453483Z [command]C:\Windows\system32\cmd.exe /D /S /C D:\a\_temp\setup-msys2\msys2.cmd -c "'pacman' '--noconfirm' '-S' '--needed' '--overwrite' '*' 'mingw-w64-x86_64-gcc' 'mingw-w64-x86_64-cmake' 'mingw-w64-x86_64-make' 'mingw-w64-x86_64-ninja'"
+2025-10-11T15:25:16.2451077Z resolving dependencies...
+2025-10-11T15:25:16.3758181Z looking for conflicting packages...
+2025-10-11T15:25:16.3832229Z 
+2025-10-11T15:25:16.3839885Z Packages (50) mingw-w64-x86_64-binutils-2.45-2  mingw-w64-x86_64-brotli-1.1.0-5  mingw-w64-x86_64-bzip2-1.0.8-3  mingw-w64-x86_64-c-ares-1.34.5-1  mingw-w64-x86_64-ca-certificates-20250419-1  mingw-w64-x86_64-cppdap-1.65-1  mingw-w64-x86_64-crt-git-13.0.0.r223.gf82613935-1  mingw-w64-x86_64-curl-8.16.0-1  mingw-w64-x86_64-expat-2.7.3-1  mingw-w64-x86_64-gcc-libs-15.2.0-8  mingw-w64-x86_64-gettext-runtime-0.26-2  mingw-w64-x86_64-gmp-6.3.0-2  mingw-w64-x86_64-gnutls-3.8.10-2  mingw-w64-x86_64-headers-git-13.0.0.r223.gf82613935-1  mingw-w64-x86_64-isl-0.27-1  mingw-w64-x86_64-jsoncpp-1.9.6-3  mingw-w64-x86_64-libarchive-3.8.1-2  mingw-w64-x86_64-libb2-0.98.1-3  mingw-w64-x86_64-libffi-3.5.2-1  mingw-w64-x86_64-libiconv-1.18-1  mingw-w64-x86_64-libidn2-2.3.8-4  mingw-w64-x86_64-libpsl-0.21.5-3  mingw-w64-x86_64-libssh2-1.11.1-1  mingw-w64-x86_64-libsystre-1.0.2-2  mingw-w64-x86_64-libtasn1-4.20.0-1  mingw-w64-x86_64-libtre-0.9.0-2  mingw-w64-x86_64-libunistring-1.3-1  mingw-w64-x86_64-libuv-1.51.0-1  mingw-w64-x86_64-libwinpthread-13.0.0.r223.gf82613935-1  mingw-w64-x86_64-lz4-1.10.0-1  mingw-w64-x86_64-mpc-1.3.1-2  mingw-w64-x86_64-mpfr-4.2.2-1  mingw-w64-x86_64-nettle-3.10.2-1  mingw-w64-x86_64-nghttp2-1.67.1-1  mingw-w64-x86_64-nghttp3-1.12.0-1  mingw-w64-x86_64-ngtcp2-1.16.0-1  mingw-w64-x86_64-openssl-3.6.0-1  mingw-w64-x86_64-p11-kit-0.25.10-1  mingw-w64-x86_64-pkgconf-1~2.5.1-1  mingw-w64-x86_64-rhash-1.4.5-1  mingw-w64-x86_64-tzdata-2025b-2  mingw-w64-x86_64-windows-default-manifest-6.4-4  mingw-w64-x86_64-winpthreads-13.0.0.r223.gf82613935-1  mingw-w64-x86_64-xz-5.8.1-2  mingw-w64-x86_64-zlib-1.3.1-1  mingw-w64-x86_64-zstd-1.5.7-1  mingw-w64-x86_64-cmake-4.1.2-1  mingw-w64-x86_64-gcc-15.2.0-8  mingw-w64-x86_64-make-4.4.1-3  mingw-w64-x86_64-ninja-1.13.1-1
+2025-10-11T15:25:16.3848373Z 
+2025-10-11T15:25:16.3848873Z Total Download Size:    98.39 MiB
+2025-10-11T15:25:16.3849263Z Total Installed Size:  720.37 MiB
+2025-10-11T15:25:16.3849537Z 
+2025-10-11T15:25:16.3849727Z :: Proceed with installation? [Y/n] 
+2025-10-11T15:25:16.3850099Z :: Retrieving packages...
+2025-10-11T15:25:38.6041514Z  mingw-w64-x86_64-gcc-15.2.0-8-any downloading...
+2025-10-11T15:25:38.6042096Z  mingw-w64-x86_64-cmake-4.1.2-1-any downloading...
+2025-10-11T15:25:38.6042530Z  mingw-w64-x86_64-openssl-3.6.0-1-any downloading...
+2025-10-11T15:25:38.6043069Z  mingw-w64-x86_64-headers-git-13.0.0.r223.gf82613935-1-any downloading...
+2025-10-11T15:25:38.6043610Z  mingw-w64-x86_64-binutils-2.45-2-any downloading...
+2025-10-11T15:25:38.6044162Z  mingw-w64-x86_64-crt-git-13.0.0.r223.gf82613935-1-any downloading...
+2025-10-11T15:25:38.6046927Z  mingw-w64-x86_64-gnutls-3.8.10-2-any downloading...
+2025-10-11T15:25:38.6047584Z  mingw-w64-x86_64-curl-8.16.0-1-any downloading...
+2025-10-11T15:25:38.6048055Z  mingw-w64-x86_64-isl-0.27-1-any downloading...
+2025-10-11T15:25:38.6048519Z  mingw-w64-x86_64-gcc-libs-15.2.0-8-any downloading...
+2025-10-11T15:25:38.6048918Z  mingw-w64-x86_64-libarchive-3.8.1-2-any downloading...
+2025-10-11T15:25:38.6049210Z  mingw-w64-x86_64-libunistring-1.3-1-any downloading...
+2025-10-11T15:25:38.6049505Z  mingw-w64-x86_64-libiconv-1.18-1-any downloading...
+2025-10-11T15:25:38.6049783Z  mingw-w64-x86_64-zstd-1.5.7-1-any downloading...
+2025-10-11T15:25:38.6050041Z  mingw-w64-x86_64-gmp-6.3.0-2-any downloading...
+2025-10-11T15:25:38.6050318Z  mingw-w64-x86_64-nettle-3.10.2-1-any downloading...
+2025-10-11T15:25:38.6050580Z  mingw-w64-x86_64-mpfr-4.2.2-1-any downloading...
+2025-10-11T15:25:38.6050864Z  mingw-w64-x86_64-cppdap-1.65-1-any downloading...
+2025-10-11T15:25:38.6051127Z  mingw-w64-x86_64-xz-5.8.1-2-any downloading...
+2025-10-11T15:25:38.6051418Z  mingw-w64-x86_64-p11-kit-0.25.10-1-any downloading...
+2025-10-11T15:25:38.6051969Z  mingw-w64-x86_64-brotli-1.1.0-5-any downloading...
+2025-10-11T15:25:38.6052295Z  mingw-w64-x86_64-gettext-runtime-0.26-2-any downloading...
+2025-10-11T15:25:38.6052690Z  mingw-w64-x86_64-ca-certificates-20250419-1-any downloading...
+2025-10-11T15:25:38.6053001Z  mingw-w64-x86_64-c-ares-1.34.5-1-any downloading...
+2025-10-11T15:25:38.6053285Z  mingw-w64-x86_64-libssh2-1.11.1-1-any downloading...
+2025-10-11T15:25:38.6053563Z  mingw-w64-x86_64-ngtcp2-1.16.0-1-any downloading...
+2025-10-11T15:25:38.6053849Z  mingw-w64-x86_64-libuv-1.51.0-1-any downloading...
+2025-10-11T15:25:38.6054110Z  mingw-w64-x86_64-tzdata-2025b-2-any downloading...
+2025-10-11T15:25:38.6054388Z  mingw-w64-x86_64-rhash-1.4.5-1-any downloading...
+2025-10-11T15:25:38.6054709Z  mingw-w64-x86_64-nghttp2-1.67.1-1-any downloading...
+2025-10-11T15:25:38.6054988Z  mingw-w64-x86_64-libtasn1-4.20.0-1-any downloading...
+2025-10-11T15:25:38.6055273Z  mingw-w64-x86_64-ninja-1.13.1-1-any downloading...
+2025-10-11T15:25:38.6055644Z  mingw-w64-x86_64-jsoncpp-1.9.6-3-any downloading...
+2025-10-11T15:25:38.6056397Z  mingw-w64-x86_64-libidn2-2.3.8-4-any downloading...
+2025-10-11T15:25:38.6056973Z  mingw-w64-x86_64-expat-2.7.3-1-any downloading...
+2025-10-11T15:25:38.6057236Z  mingw-w64-x86_64-lz4-1.10.0-1-any downloading...
+2025-10-11T15:25:38.6057511Z  mingw-w64-x86_64-make-4.4.1-3-any downloading...
+2025-10-11T15:25:38.6057785Z  mingw-w64-x86_64-nghttp3-1.12.0-1-any downloading...
+2025-10-11T15:25:38.6058091Z  mingw-w64-x86_64-mpc-1.3.1-2-any downloading...
+2025-10-11T15:25:38.6058427Z  mingw-w64-x86_64-zlib-1.3.1-1-any downloading...
+2025-10-11T15:25:38.6058817Z  mingw-w64-x86_64-pkgconf-1~2.5.1-1-any downloading...
+2025-10-11T15:25:38.6059092Z  mingw-w64-x86_64-libpsl-0.21.5-3-any downloading...
+2025-10-11T15:25:38.6059369Z  mingw-w64-x86_64-bzip2-1.0.8-3-any downloading...
+2025-10-11T15:25:38.6059657Z  mingw-w64-x86_64-libtre-0.9.0-2-any downloading...
+2025-10-11T15:25:38.6059921Z  mingw-w64-x86_64-libffi-3.5.2-1-any downloading...
+2025-10-11T15:25:38.6060286Z  mingw-w64-x86_64-winpthreads-13.0.0.r223.gf82613935-1-any downloading...
+2025-10-11T15:25:38.6060701Z  mingw-w64-x86_64-libwinpthread-13.0.0.r223.gf82613935-1-any downloading...
+2025-10-11T15:25:38.6061056Z  mingw-w64-x86_64-libb2-0.98.1-3-any downloading...
+2025-10-11T15:25:38.6061344Z  mingw-w64-x86_64-libsystre-1.0.2-2-any downloading...
+2025-10-11T15:25:38.6061715Z  mingw-w64-x86_64-windows-default-manifest-6.4-4-any downloading...
+2025-10-11T15:25:38.6062032Z checking keyring...
+2025-10-11T15:25:38.6859711Z checking package integrity...
+2025-10-11T15:25:48.1492171Z loading package files...
+2025-10-11T15:25:48.3610647Z checking for file conflicts...
+2025-10-11T15:25:49.2573818Z :: Processing package changes...
+2025-10-11T15:25:49.2574162Z installing mingw-w64-x86_64-libwinpthread...
+2025-10-11T15:25:49.2629540Z installing mingw-w64-x86_64-tzdata...
+2025-10-11T15:25:50.8840099Z installing mingw-w64-x86_64-gcc-libs...
+2025-10-11T15:25:50.9025200Z installing mingw-w64-x86_64-libiconv...
+2025-10-11T15:25:50.9286131Z installing mingw-w64-x86_64-gettext-runtime...
+2025-10-11T15:25:51.0707498Z installing mingw-w64-x86_64-zlib...
+2025-10-11T15:25:51.0802696Z installing mingw-w64-x86_64-zstd...
+2025-10-11T15:25:51.1030821Z installing mingw-w64-x86_64-binutils...
+2025-10-11T15:25:51.3484756Z installing mingw-w64-x86_64-headers-git...
+2025-10-11T15:25:52.6304832Z installing mingw-w64-x86_64-crt-git...
+2025-10-11T15:25:53.2877637Z installing mingw-w64-x86_64-gmp...
+2025-10-11T15:25:53.3033340Z installing mingw-w64-x86_64-isl...
+2025-10-11T15:25:53.3669550Z installing mingw-w64-x86_64-mpfr...
+2025-10-11T15:25:53.3894239Z installing mingw-w64-x86_64-mpc...
+2025-10-11T15:25:53.3963851Z installing mingw-w64-x86_64-windows-default-manifest...
+2025-10-11T15:25:53.3997500Z installing mingw-w64-x86_64-winpthreads...
+2025-10-11T15:25:53.4099148Z installing mingw-w64-x86_64-gcc...
+2025-10-11T15:25:55.2948191Z installing mingw-w64-x86_64-cppdap...
+2025-10-11T15:25:55.3196087Z installing mingw-w64-x86_64-c-ares...
+2025-10-11T15:25:55.4299405Z installing mingw-w64-x86_64-brotli...
+2025-10-11T15:25:55.4483534Z installing mingw-w64-x86_64-libunistring...
+2025-10-11T15:25:55.4948223Z installing mingw-w64-x86_64-libidn2...
+2025-10-11T15:25:55.5241208Z installing mingw-w64-x86_64-libpsl...
+2025-10-11T15:25:55.5346201Z installing mingw-w64-x86_64-libtasn1...
+2025-10-11T15:25:55.5733877Z installing mingw-w64-x86_64-libffi...
+2025-10-11T15:25:55.5833260Z installing mingw-w64-x86_64-p11-kit...
+2025-10-11T15:25:55.6081158Z installing mingw-w64-x86_64-ca-certificates...
+2025-10-11T15:25:56.3149341Z installing mingw-w64-x86_64-openssl...
+2025-10-11T15:26:01.6212616Z Optional dependencies for mingw-w64-x86_64-openssl
+2025-10-11T15:26:01.6213189Z     mingw-w64-x86_64-ca-certificates [installed]
+2025-10-11T15:26:01.6213626Z installing mingw-w64-x86_64-libssh2...
+2025-10-11T15:26:01.7516768Z installing mingw-w64-x86_64-nghttp2...
+2025-10-11T15:26:01.7678585Z installing mingw-w64-x86_64-nettle...
+2025-10-11T15:26:01.8236721Z installing mingw-w64-x86_64-gnutls...
+2025-10-11T15:26:02.7039014Z installing mingw-w64-x86_64-ngtcp2...
+2025-10-11T15:26:02.7261343Z installing mingw-w64-x86_64-nghttp3...
+2025-10-11T15:26:02.7396682Z installing mingw-w64-x86_64-curl...
+2025-10-11T15:26:03.1328648Z installing mingw-w64-x86_64-expat...
+2025-10-11T15:26:03.1476627Z installing mingw-w64-x86_64-jsoncpp...
+2025-10-11T15:26:03.1652943Z installing mingw-w64-x86_64-bzip2...
+2025-10-11T15:26:03.1822230Z installing mingw-w64-x86_64-libb2...
+2025-10-11T15:26:03.1883563Z installing mingw-w64-x86_64-lz4...
+2025-10-11T15:26:03.2028962Z installing mingw-w64-x86_64-libtre...
+2025-10-11T15:26:03.2153647Z installing mingw-w64-x86_64-libsystre...
+2025-10-11T15:26:03.2239370Z installing mingw-w64-x86_64-xz...
+2025-10-11T15:26:03.3553958Z installing mingw-w64-x86_64-libarchive...
+2025-10-11T15:26:03.4015088Z installing mingw-w64-x86_64-libuv...
+2025-10-11T15:26:03.4226341Z installing mingw-w64-x86_64-ninja...
+2025-10-11T15:26:03.4278516Z installing mingw-w64-x86_64-pkgconf...
+2025-10-11T15:26:03.4464297Z installing mingw-w64-x86_64-rhash...
+2025-10-11T15:26:03.4824665Z installing mingw-w64-x86_64-cmake...
+2025-10-11T15:26:06.3787359Z Optional dependencies for mingw-w64-x86_64-cmake
+2025-10-11T15:26:06.3787744Z     mingw-w64-x86_64-emacs: for cmake emacs mode
+2025-10-11T15:26:06.3788020Z installing mingw-w64-x86_64-make...
+2025-10-11T15:26:06.4698757Z ##[endgroup]
+2025-10-11T15:26:06.4699285Z ##[group]Saving package cache...
+2025-10-11T15:26:06.5533714Z [command]C:\Windows\system32\cmd.exe /D /S /C D:\a\_temp\setup-msys2\msys2.cmd -c "'paccache' '-r' '-f' '-u' '-k0'"
+2025-10-11T15:26:07.5915104Z ==> no candidate packages found for pruning
+2025-10-11T15:26:07.6875916Z [command]C:\Windows\system32\cmd.exe /D /S /C D:\a\_temp\setup-msys2\msys2.cmd -c "'paccache' '-r' '-f' '-k1'"
+2025-10-11T15:26:08.0634147Z ==> no candidate packages found for pruning
+2025-10-11T15:26:08.5104872Z [command]"C:\Program Files\Git\usr\bin\tar.exe" --posix -cf cache.tzst --exclude cache.tzst -P -C D:/a/flapi/flapi --files-from manifest.txt --force-local --use-compress-program "zstd -T0"
+2025-10-11T15:26:10.4598955Z Sent 28639232 of 118846194 (24.1%), 27.1 MBs/sec
+2025-10-11T15:26:11.4598574Z Sent 110428160 of 118846194 (92.9%), 52.4 MBs/sec
+2025-10-11T15:26:11.9022769Z Sent 118846194 of 118846194 (100.0%), 46.4 MBs/sec
+2025-10-11T15:26:12.0741463Z Cache saved as ID 1353433727 using key msys2-pkgs-upd:true-conf:4c1ef0bc-files:324b5de81d33b781783a2eba7b2609e374a08ee7
+2025-10-11T15:26:12.1505714Z [command]C:\Windows\system32\cmd.exe /D /S /C D:\a\_temp\setup-msys2\msys2.cmd -c "'pacman' '--noconfirm' '-Scc'"
+2025-10-11T15:26:13.0259323Z 
+2025-10-11T15:26:13.0260148Z Cache directory: /var/cache/pacman/pkg/
+2025-10-11T15:26:13.0512637Z :: Do you want to remove ALL files from cache? [Y/n] 
+2025-10-11T15:26:13.0513094Z removing all files from cache...
+2025-10-11T15:26:13.0513252Z 
+2025-10-11T15:26:13.0513745Z Database directory: /var/lib/pacman/
+2025-10-11T15:26:13.0532424Z :: Do you want to remove unused repositories? [Y/n] 
+2025-10-11T15:26:13.0532948Z removing unused sync repositories...
+2025-10-11T15:26:13.0600599Z ##[endgroup]
+2025-10-11T15:26:13.0992304Z ##[group]Run hendrikmuhs/ccache-action@main
+2025-10-11T15:26:13.0992767Z with:
+2025-10-11T15:26:13.0992971Z   key: windows-build-windows
+2025-10-11T15:26:13.0993187Z   restore: true
+2025-10-11T15:26:13.0993369Z   max-size: 500MB
+2025-10-11T15:26:13.0993552Z   verbose: 0
+2025-10-11T15:26:13.0993709Z   variant: ccache
+2025-10-11T15:26:13.0993881Z   save: true
+2025-10-11T15:26:13.0994055Z   append-timestamp: true
+2025-10-11T15:26:13.0994251Z   create-symlink: false
+2025-10-11T15:26:13.0994463Z   job-summary: CCache Statistics
+2025-10-11T15:26:13.0994668Z env:
+2025-10-11T15:26:13.0994837Z   VCPKG_DEFAULT_TRIPLET: x64-windows-static
+2025-10-11T15:26:13.0995095Z   VCPKG_ROOT: D:\a\flapi\flapi/vcpkg
+2025-10-11T15:26:13.0995324Z   MSYSTEM: MINGW64
+2025-10-11T15:26:13.0995523Z ##[endgroup]
+2025-10-11T15:26:13.4143489Z ##[group]Restore cache
+2025-10-11T15:26:13.7478249Z No cache found.
+2025-10-11T15:26:13.7553484Z ##[endgroup]
+2025-10-11T15:26:13.7554344Z ##[group]Configure ccache, win32
+2025-10-11T15:26:13.8831181Z [command]"C:\Program Files\Git\bin\sh.exe" -xc "ccache --set-config=cache_dir='D:\a\flapi\flapi\.ccache'"
+2025-10-11T15:26:14.0850052Z + ccache '--set-config=cache_dir=D:\a\flapi\flapi\.ccache'
+2025-10-11T15:26:14.6826152Z [command]"C:\Program Files\Git\bin\sh.exe" -xc "ccache --set-config=max_size='500MB'"
+2025-10-11T15:26:14.7268257Z + ccache --set-config=max_size=500MB
+2025-10-11T15:26:14.8352797Z [command]"C:\Program Files\Git\bin\sh.exe" -xc "ccache --set-config=compression=true"
+2025-10-11T15:26:14.8703981Z + ccache --set-config=compression=true
+2025-10-11T15:26:14.8924520Z Ccache config:
+2025-10-11T15:26:14.9658999Z [command]"C:\Program Files\Git\bin\sh.exe" -xc "ccache -p"
+2025-10-11T15:26:15.0025981Z + ccache -p
+2025-10-11T15:26:15.0195714Z (default) absolute_paths_in_stderr = false
+2025-10-11T15:26:15.0196419Z (default) base_dir = 
+2025-10-11T15:26:15.0197122Z (C:\Users\runneradmin\AppData\Local\ccache\ccache.conf) cache_dir = D:\a\flapi\flapi\.ccache
+2025-10-11T15:26:15.0197774Z (default) compiler = 
+2025-10-11T15:26:15.0198101Z (default) compiler_check = mtime
+2025-10-11T15:26:15.0198470Z (default) compiler_type = auto
+2025-10-11T15:26:15.0199020Z (C:\Users\runneradmin\AppData\Local\ccache\ccache.conf) compression = true
+2025-10-11T15:26:15.0199643Z (default) compression_level = 0
+2025-10-11T15:26:15.0200000Z (default) cpp_extension = 
+2025-10-11T15:26:15.0200330Z (default) debug = false
+2025-10-11T15:26:15.0200642Z (default) debug_dir = 
+2025-10-11T15:26:15.0201219Z (default) debug_level = 2
+2025-10-11T15:26:15.0201543Z (default) depend_mode = false
+2025-10-11T15:26:15.0201921Z (default) direct_mode = true
+2025-10-11T15:26:15.0202250Z (default) disable = false
+2025-10-11T15:26:15.0202589Z (default) extra_files_to_hash = 
+2025-10-11T15:26:15.0203004Z (default) file_clone = false
+2025-10-11T15:26:15.0203343Z (default) hard_link = false
+2025-10-11T15:26:15.0203680Z (default) hash_dir = true
+2025-10-11T15:26:15.0204052Z (default) ignore_headers_in_manifest = 
+2025-10-11T15:26:15.0204451Z (default) ignore_options = 
+2025-10-11T15:26:15.0204811Z (default) inode_cache = true
+2025-10-11T15:26:15.0205144Z (default) keep_comments_cpp = false
+2025-10-11T15:26:15.0205521Z (default) log_file = 
+2025-10-11T15:26:15.0205806Z (default) max_files = 0
+2025-10-11T15:26:15.0206298Z (C:\Users\runneradmin\AppData\Local\ccache\ccache.conf) max_size = 500.0 MB
+2025-10-11T15:26:15.0206927Z (default) msvc_dep_prefix = Note: including file:
+2025-10-11T15:26:15.0207384Z (default) namespace = 
+2025-10-11T15:26:15.0207671Z (default) path = 
+2025-10-11T15:26:15.0208020Z (default) pch_external_checksum = false
+2025-10-11T15:26:15.0208438Z (default) prefix_command = 
+2025-10-11T15:26:15.0208762Z (default) prefix_command_cpp = 
+2025-10-11T15:26:15.0211209Z (default) read_only = false
+2025-10-11T15:26:15.0211553Z (default) read_only_direct = false
+2025-10-11T15:26:15.0211950Z (default) recache = false
+2025-10-11T15:26:15.0214521Z (default) remote_only = false
+2025-10-11T15:26:15.0214923Z (default) remote_storage = 
+2025-10-11T15:26:15.0215226Z (default) reshare = false
+2025-10-11T15:26:15.0215429Z (default) run_second_cpp = true
+2025-10-11T15:26:15.0215645Z (default) sloppiness = 
+2025-10-11T15:26:15.0215873Z (default) stats = true
+2025-10-11T15:26:15.0216130Z (default) stats_log = 
+2025-10-11T15:26:15.0216389Z (default) temporary_dir = D:\a\flapi\flapi\.ccache/tmp
+2025-10-11T15:26:15.0216650Z (default) umask = 
+2025-10-11T15:26:15.0974688Z [command]"C:\Program Files\Git\bin\sh.exe" -xc "ccache -z"
+2025-10-11T15:26:15.1325273Z + ccache -z
+2025-10-11T15:26:15.2932667Z Statistics zeroed
+2025-10-11T15:26:15.2990457Z ##[endgroup]
+2025-10-11T15:26:15.3352767Z ##[group]Run mkdir -p build/release
+2025-10-11T15:26:15.3353234Z [36;1mmkdir -p build/release[0m
+2025-10-11T15:26:15.3353457Z [36;1mcd build/release[0m
+2025-10-11T15:26:15.3353810Z [36;1mcmake -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF ../..[0m
+2025-10-11T15:26:15.3354217Z [36;1mcmake --build . --config Release[0m
+2025-10-11T15:26:15.3358440Z shell: D:\a\_temp\setup-msys2\msys2.CMD {0}
+2025-10-11T15:26:15.3358683Z env:
+2025-10-11T15:26:15.3358879Z   VCPKG_DEFAULT_TRIPLET: x64-windows-static
+2025-10-11T15:26:15.3359117Z   VCPKG_ROOT: D:\a\flapi\flapi/vcpkg
+2025-10-11T15:26:15.3359331Z   MSYSTEM: MINGW64
+2025-10-11T15:26:15.3359494Z ##[endgroup]
+2025-10-11T15:26:15.8110281Z CMake Error at D:/a/_temp/msys64/mingw64/share/cmake/Modules/CMakeDetermineSystem.cmake:159 (message):
+2025-10-11T15:26:15.8111056Z   Could not find toolchain file:
+2025-10-11T15:26:15.8111286Z 
+2025-10-11T15:26:15.8111584Z    "D:\a\flapi\flapi/vcpkg/scripts/buildsystems/vcpkg.cmake"
+2025-10-11T15:26:15.8112021Z Call Stack (most recent call first):
+2025-10-11T15:26:15.8112387Z   CMakeLists.txt:93 (project)
+2025-10-11T15:26:15.8112593Z 
+2025-10-11T15:26:15.8112599Z 
+2025-10-11T15:26:24.7935102Z -- Configuring incomplete, errors occurred!
+2025-10-11T15:26:24.8103101Z ##[error]Process completed with exit code 1.
+2025-10-11T15:26:24.8299842Z Post job cleanup.
+2025-10-11T15:26:25.1630311Z ##[group]ccache stats
+2025-10-11T15:26:25.2922274Z [command]C:\Strawberry\c\bin\ccache.exe -s
+2025-10-11T15:26:25.3315321Z Local storage:
+2025-10-11T15:26:25.3315925Z   Cache size (GB): 0.0 / 0.5 ( 0.00%)
+2025-10-11T15:26:25.4017718Z [command]C:\Strawberry\c\bin\ccache.exe --version
+2025-10-11T15:26:25.4125272Z ccache version 4.9.1
+2025-10-11T15:26:25.4126078Z Features: file-storage http-storage redis+unix-storage redis-storage
+2025-10-11T15:26:25.4126496Z 
+2025-10-11T15:26:25.4126631Z Copyright (C) 2002-2007 Andrew Tridgell
+2025-10-11T15:26:25.4127099Z Copyright (C) 2009-2024 Joel Rosdahl and other contributors
+2025-10-11T15:26:25.4127492Z 
+2025-10-11T15:26:25.4127830Z See <https://ccache.dev/credits.html> for a complete list of contributors.
+2025-10-11T15:26:25.4128217Z 
+2025-10-11T15:26:25.4128530Z This program is free software; you can redistribute it and/or modify it under
+2025-10-11T15:26:25.4129384Z the terms of the GNU General Public License as published by the Free Software
+2025-10-11T15:26:25.4130089Z Foundation; either version 3 of the License, or (at your option) any later
+2025-10-11T15:26:25.4130573Z version.
+2025-10-11T15:26:25.4143474Z ##[endgroup]
+2025-10-11T15:26:25.5553645Z Not saving cache because no objects are cached.
+2025-10-11T15:26:25.5832083Z Post job cleanup.
+2025-10-11T15:26:25.7972007Z [command]"C:\Program Files\Git\bin\git.exe" version
+2025-10-11T15:26:25.8263569Z git version 2.51.0.windows.2
+2025-10-11T15:26:25.8341418Z Temporarily overriding HOME='D:\a\_temp\58ab362d-aa97-4e24-b97e-80001e083f3d' before making global git config changes
+2025-10-11T15:26:25.8342040Z Adding repository directory to the temporary git global config as a safe directory
+2025-10-11T15:26:25.8353228Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add safe.directory D:\a\flapi\flapi
+2025-10-11T15:26:25.8691719Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2025-10-11T15:26:25.9017488Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2025-10-11T15:26:26.4616777Z Entering 'duckdb'
+2025-10-11T15:26:26.5632368Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2025-10-11T15:26:26.5931253Z http.https://github.com/.extraheader
+2025-10-11T15:26:26.6048172Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset-all http.https://github.com/.extraheader
+2025-10-11T15:26:26.6555005Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2025-10-11T15:26:27.2175793Z Entering 'duckdb'
+2025-10-11T15:26:27.2839045Z http.https://github.com/.extraheader
+2025-10-11T15:26:27.3656868Z Cleaning up orphan processes

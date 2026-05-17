@@ -2,11 +2,27 @@
 
 #include <duckdb.h>
 #include <crow.h>
+#include <stdexcept>
 #include <string>
 #include <map>
 #include <vector>
 
 #include "prepared_template_rewriter.hpp"
+
+namespace flapi {
+
+// W3.1 PR B: thrown by `QueryExecutor::executeWithBindings` when a
+// supplied parameter cannot be converted to its declared SQL type
+// (e.g. `id=abc` for an int field, `d=2024-13-99` for a date field).
+// This is a CLIENT-input error — RequestHandler maps it to HTTP 400,
+// not 500. Distinct from `std::runtime_error` which signals an
+// internal failure (prepare/execute) and remains 500.
+class BadRequestError : public std::runtime_error {
+public:
+    explicit BadRequestError(const std::string& msg) : std::runtime_error(msg) {}
+};
+
+} // namespace flapi
 
 // Define standard vector size if not defined by DuckDB
 #ifndef STANDARD_VECTOR_SIZE

@@ -1,0 +1,6 @@
+Svelte error: rune_outside_svelte
+The `$state` rune is only available inside `.svelte` and `.svelte.js/ts` files
+https://svelte.dev/e/rune_outside_svelte
+    at rune_outside_svelte (http://localhost:5173/node_modules/.vite/deps/chunk-6KVZ5LIU.js?v=3a706b0c:245:19)
+    at get (http://localhost:5173/node_modules/.vite/deps/chunk-6KVZ5LIU.js?v=3a706b0c:1833:11)
+    at http://localhost:5173/src/lib/state/index.ts:1:21

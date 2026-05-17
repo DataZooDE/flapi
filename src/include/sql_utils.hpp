@@ -27,6 +27,16 @@ namespace flapi {
 std::vector<std::string> splitSqlStatements(const std::string& query);
 
 /**
+ * Counts unquoted `?` characters in a SQL statement. Uses the same
+ * quote-awareness as splitSqlStatements so `?` inside single, double,
+ * or dollar-quoted strings is not counted.
+ *
+ * Used by the prepared-statement write path to split a binding plan
+ * across the statements that splitSqlStatements produced.
+ */
+std::size_t countSqlPlaceholders(const std::string& statement);
+
+/**
  * Trims whitespace from both ends of a string.
  * @param str The string to trim
  * @return Trimmed string

@@ -1454,11 +1454,11 @@ WHERE name LIKE '%{{{ params.name }}}%'
 
 > **Security note:** Neither brace form performs SQL-specific escaping; Mustache doesn't understand SQL string literals, quote-doubling, or comment syntax. flAPI's SQL-injection defense is **layered**:
 >
-> 1. `RequestValidator` rejects obviously-bad input before SQL is rendered (typed fields, regex/range/enum/format checks). Strict integer parsing rejects trailing garbage so `1; DROP TABLE` cannot slip through as `1`.
-> 2. For double-brace references on typed fields, the **DuckDB prepared-statement bind** is the hard boundary — the value travels as a primitive, not as text, and cannot smuggle SQL.
+> 1. `RequestValidator` rejects obviously-bad input before SQL is rendered (typed fields, regex/range/enum/format checks). Strict integer/date/time parsing rejects trailing garbage so `1; DROP TABLE` cannot slip through as `1` and `2024-03-15' OR 1=1` cannot slip through as `2024-03-15`.
+> 2. For double-brace references on typed fields, the **DuckDB prepared-statement bind** is the hard boundary — the value travels as a primitive, not as text, and cannot smuggle SQL. This applies uniformly to **GET, POST, PUT, PATCH, and Arrow-streaming endpoints** (multi-statement write templates have their binding plan sliced across statements based on `?` count).
 > 3. For triple-brace references and for non-typed fields, the legacy keyword regex still rejects obvious injection patterns. (It is demoted to a debug-level log only for fields the prepared-statement path already protects — Integer / Double / Boolean / Date / Time — because the regex is a known false-positive source for clean numeric and temporal values.)
 >
-> The end-to-end injection corpus at `test/integration/test_sql_injection_corpus.py` exercises 37 classic payloads against both an int-typed and a string-typed endpoint; every one returns zero rows.
+> The end-to-end injection corpus at `test/integration/test_sql_injection_corpus.py` (99 GET-path payloads spanning all 9 validator types + pagination wraps) and `test/integration/test_sql_injection_write_corpus.py` (19 POST-path payloads including multi-statement RETURNING) exercise these layers. Bind-conversion failures on typed params return HTTP 400 (client error) rather than 500.
 
 ### 9.2 Available Contexts
 

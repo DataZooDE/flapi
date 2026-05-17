@@ -1,0 +1,407 @@
+2025-10-11T15:24:02.5117630Z Current runner version: '2.328.0'
+2025-10-11T15:24:02.5130740Z ##[group]Runner Image Provisioner
+2025-10-11T15:24:02.5131180Z Hosted Compute Agent
+2025-10-11T15:24:02.5131480Z Version: 20251003.420
+2025-10-11T15:24:02.5131900Z Commit: 2377dc5bf0f6cca5c863dfc4fa0dabc70e08de87
+2025-10-11T15:24:02.5132310Z Build Date: 2025-10-03T16:01:39Z
+2025-10-11T15:24:02.5132660Z ##[endgroup]
+2025-10-11T15:24:02.5132970Z ##[group]Operating System
+2025-10-11T15:24:02.5133310Z macOS
+2025-10-11T15:24:02.5133590Z 15.6.1
+2025-10-11T15:24:02.5133860Z 24G90
+2025-10-11T15:24:02.5134140Z ##[endgroup]
+2025-10-11T15:24:02.5134430Z ##[group]Runner Image
+2025-10-11T15:24:02.5134750Z Image: macos-15-arm64
+2025-10-11T15:24:02.5135050Z Version: 20250928.2397
+2025-10-11T15:24:02.5135690Z Included Software: https://github.com/actions/runner-images/blob/macos-15-arm64/20250928.2397/images/macos/macos-15-arm64-Readme.md
+2025-10-11T15:24:02.5136630Z Image Release: https://github.com/actions/runner-images/releases/tag/macos-15-arm64%2F20250928.2397
+2025-10-11T15:24:02.5137200Z ##[endgroup]
+2025-10-11T15:24:02.5137960Z ##[group]GITHUB_TOKEN Permissions
+2025-10-11T15:24:02.5138830Z Contents: write
+2025-10-11T15:24:02.5139140Z Issues: write
+2025-10-11T15:24:02.5139430Z Metadata: read
+2025-10-11T15:24:02.5139730Z Packages: write
+2025-10-11T15:24:02.5140040Z PullRequests: write
+2025-10-11T15:24:02.5140350Z ##[endgroup]
+2025-10-11T15:24:02.5141570Z Secret source: Actions
+2025-10-11T15:24:02.5141960Z Prepare workflow directory
+2025-10-11T15:24:02.5344440Z Prepare all required actions
+2025-10-11T15:24:02.5370580Z Getting action download info
+2025-10-11T15:24:02.7377940Z Download action repository 'actions/checkout@v4' (SHA:08eba0b27e820071cde6df949e0beb9ba4906955)
+2025-10-11T15:24:03.0599450Z Download action repository 'hendrikmuhs/ccache-action@main' (SHA:30ae3502c7f2d3200209bf2f90eccef2357896cf)
+2025-10-11T15:24:04.5353040Z Download action repository 'actions/upload-artifact@v4' (SHA:ea165f8d65b6e75b540449e92b4886f43607fa02)
+2025-10-11T15:24:04.6985120Z Complete job name: osx-universal-build
+2025-10-11T15:24:04.7365820Z ##[group]Run actions/checkout@v4
+2025-10-11T15:24:04.7366350Z with:
+2025-10-11T15:24:04.7366620Z   submodules: recursive
+2025-10-11T15:24:04.7366950Z   repository: DataZooDE/flapi
+2025-10-11T15:24:04.7367400Z   token: ***
+2025-10-11T15:24:04.7367680Z   ssh-strict: true
+2025-10-11T15:24:04.7367980Z   ssh-user: git
+2025-10-11T15:24:04.7368270Z   persist-credentials: true
+2025-10-11T15:24:04.7368600Z   clean: true
+2025-10-11T15:24:04.7368910Z   sparse-checkout-cone-mode: true
+2025-10-11T15:24:04.7369260Z   fetch-depth: 1
+2025-10-11T15:24:04.7369550Z   fetch-tags: false
+2025-10-11T15:24:04.7369860Z   show-progress: true
+2025-10-11T15:24:04.7370160Z   lfs: false
+2025-10-11T15:24:04.7370440Z   set-safe-directory: true
+2025-10-11T15:24:04.7370860Z ##[endgroup]
+2025-10-11T15:24:05.0158960Z Syncing repository: DataZooDE/flapi
+2025-10-11T15:24:05.0160780Z ##[group]Getting Git version info
+2025-10-11T15:24:05.0161390Z Working directory is '/Users/runner/work/flapi/flapi'
+2025-10-11T15:24:05.0162440Z [command]/opt/homebrew/bin/git version
+2025-10-11T15:24:05.0383060Z git version 2.50.1
+2025-10-11T15:24:05.0413340Z ##[endgroup]
+2025-10-11T15:24:05.0418930Z Copying '/Users/runner/.gitconfig' to '/Users/runner/work/_temp/18a0115e-1815-4870-93aa-d7cdf1209b71/.gitconfig'
+2025-10-11T15:24:05.0426010Z Temporarily overriding HOME='/Users/runner/work/_temp/18a0115e-1815-4870-93aa-d7cdf1209b71' before making global git config changes
+2025-10-11T15:24:05.0427710Z Adding repository directory to the temporary git global config as a safe directory
+2025-10-11T15:24:05.0429540Z [command]/opt/homebrew/bin/git config --global --add safe.directory /Users/runner/work/flapi/flapi
+2025-10-11T15:24:05.0518540Z Deleting the contents of '/Users/runner/work/flapi/flapi'
+2025-10-11T15:24:05.0523120Z ##[group]Initializing the repository
+2025-10-11T15:24:05.0527400Z [command]/opt/homebrew/bin/git init /Users/runner/work/flapi/flapi
+2025-10-11T15:24:05.0691940Z hint: Using 'master' as the name for the initial branch. This default branch name
+2025-10-11T15:24:05.0694480Z hint: is subject to change. To configure the initial branch name to use in all
+2025-10-11T15:24:05.0696040Z hint: of your new repositories, which will suppress this warning, call:
+2025-10-11T15:24:05.0697220Z hint:
+2025-10-11T15:24:05.0698090Z hint: 	git config --global init.defaultBranch <name>
+2025-10-11T15:24:05.0699170Z hint:
+2025-10-11T15:24:05.0700180Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2025-10-11T15:24:05.0701900Z hint: 'development'. The just-created branch can be renamed via this command:
+2025-10-11T15:24:05.0703260Z hint:
+2025-10-11T15:24:05.0703950Z hint: 	git branch -m <name>
+2025-10-11T15:24:05.0704760Z hint:
+2025-10-11T15:24:05.0705880Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2025-10-11T15:24:05.0707690Z Initialized empty Git repository in /Users/runner/work/flapi/flapi/.git/
+2025-10-11T15:24:05.0710680Z [command]/opt/homebrew/bin/git remote add origin https://github.com/DataZooDE/flapi
+2025-10-11T15:24:05.0759930Z ##[endgroup]
+2025-10-11T15:24:05.0761260Z ##[group]Disabling automatic garbage collection
+2025-10-11T15:24:05.0762610Z [command]/opt/homebrew/bin/git config --local gc.auto 0
+2025-10-11T15:24:05.0810240Z ##[endgroup]
+2025-10-11T15:24:05.0813980Z ##[group]Setting up auth
+2025-10-11T15:24:05.0815370Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp core\.sshCommand
+2025-10-11T15:24:05.0865250Z [command]/opt/homebrew/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2025-10-11T15:24:05.1559480Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2025-10-11T15:24:05.1611820Z [command]/opt/homebrew/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2025-10-11T15:24:05.3541520Z [command]/opt/homebrew/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2025-10-11T15:24:05.3544800Z ##[endgroup]
+2025-10-11T15:24:05.3561670Z ##[group]Fetching the repository
+2025-10-11T15:24:05.3564210Z [command]/opt/homebrew/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +f02a1e7fd1daf293409a721fb527c1eab6ac1481:refs/remotes/origin/main
+2025-10-11T15:24:06.5070130Z From https://github.com/DataZooDE/flapi
+2025-10-11T15:24:06.5072360Z  * [new ref]         f02a1e7fd1daf293409a721fb527c1eab6ac1481 -> origin/main
+2025-10-11T15:24:06.5134980Z ##[endgroup]
+2025-10-11T15:24:06.5135310Z ##[group]Determining the checkout info
+2025-10-11T15:24:06.5135690Z ##[endgroup]
+2025-10-11T15:24:06.5138970Z [command]/opt/homebrew/bin/git sparse-checkout disable
+2025-10-11T15:24:06.5199300Z [command]/opt/homebrew/bin/git config --local --unset-all extensions.worktreeConfig
+2025-10-11T15:24:06.5248360Z ##[group]Checking out the ref
+2025-10-11T15:24:06.5250470Z [command]/opt/homebrew/bin/git checkout --progress --force -B main refs/remotes/origin/main
+2025-10-11T15:24:06.5928720Z Switched to a new branch 'main'
+2025-10-11T15:24:06.6029570Z branch 'main' set up to track 'origin/main'.
+2025-10-11T15:24:06.6332640Z ##[endgroup]
+2025-10-11T15:24:06.6434660Z ##[group]Setting up auth for fetching submodules
+2025-10-11T15:24:06.6534610Z [command]/opt/homebrew/bin/git config --global http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2025-10-11T15:24:06.6838250Z [command]/opt/homebrew/bin/git config --global --unset-all url.https://github.com/.insteadOf
+2025-10-11T15:24:06.7141720Z [command]/opt/homebrew/bin/git config --global --add url.https://github.com/.insteadOf git@github.com:
+2025-10-11T15:24:06.7444290Z [command]/opt/homebrew/bin/git config --global --add url.https://github.com/.insteadOf org-136052936@github.com:
+2025-10-11T15:24:06.7746620Z ##[endgroup]
+2025-10-11T15:24:06.7847020Z ##[group]Fetching submodules
+2025-10-11T15:24:06.7948700Z [command]/opt/homebrew/bin/git submodule sync --recursive
+2025-10-11T15:24:06.8250620Z [command]/opt/homebrew/bin/git -c protocol.version=2 submodule update --init --force --depth=1 --recursive
+2025-10-11T15:24:06.8952380Z Submodule 'duckdb' (https://github.com/duckdb/duckdb.git) registered for path 'duckdb'
+2025-10-11T15:24:06.9052710Z Cloning into '/Users/runner/work/flapi/flapi/duckdb'...
+2025-10-11T15:24:15.2816570Z From https://github.com/duckdb/duckdb
+2025-10-11T15:24:15.2818390Z  * branch              b390a7c3760bd95926fe8aefde20d04b349b472e -> FETCH_HEAD
+2025-10-11T15:24:17.7618930Z Submodule path 'duckdb': checked out 'b390a7c3760bd95926fe8aefde20d04b349b472e'
+2025-10-11T15:24:17.7742200Z [command]/opt/homebrew/bin/git submodule foreach --recursive git config --local gc.auto 0
+2025-10-11T15:24:17.8498710Z Entering 'duckdb'
+2025-10-11T15:24:17.8648030Z ##[endgroup]
+2025-10-11T15:24:17.8651790Z ##[group]Persisting credentials for submodules
+2025-10-11T15:24:17.8714560Z [command]/opt/homebrew/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'url\.https\:\/\/github\.com\/\.insteadOf' && git config --local --unset-all 'url.https://github.com/.insteadOf' || :"
+2025-10-11T15:24:17.9322270Z Entering 'duckdb'
+2025-10-11T15:24:17.9516000Z [command]/opt/homebrew/bin/git submodule foreach --recursive sh -c "git config --local 'http.https://github.com/.extraheader' 'AUTHORIZATION: basic ***' && git config --local --show-origin --name-only --get-regexp remote.origin.url"
+2025-10-11T15:24:18.0298180Z Entering 'duckdb'
+2025-10-11T15:24:18.0458130Z file:/Users/runner/work/flapi/flapi/.git/modules/duckdb/config	remote.origin.url
+2025-10-11T15:24:18.0566510Z [command]/opt/homebrew/bin/git submodule foreach --recursive git config --local --add 'url.https://github.com/.insteadOf' 'git@github.com:'
+2025-10-11T15:24:18.1239350Z Entering 'duckdb'
+2025-10-11T15:24:18.1368790Z [command]/opt/homebrew/bin/git submodule foreach --recursive git config --local --add 'url.https://github.com/.insteadOf' 'org-136052936@github.com:'
+2025-10-11T15:24:18.1989780Z Entering 'duckdb'
+2025-10-11T15:24:18.2134730Z ##[endgroup]
+2025-10-11T15:24:18.2222630Z [command]/opt/homebrew/bin/git log -1 --format=%H
+2025-10-11T15:24:18.2283170Z f02a1e7fd1daf293409a721fb527c1eab6ac1481
+2025-10-11T15:24:18.2570990Z ##[group]Run hendrikmuhs/ccache-action@main
+2025-10-11T15:24:18.2571210Z with:
+2025-10-11T15:24:18.2571340Z   key: osx-universal-build
+2025-10-11T15:24:18.2571510Z   restore: true
+2025-10-11T15:24:18.2571630Z   max-size: 500MB
+2025-10-11T15:24:18.2571750Z   verbose: 0
+2025-10-11T15:24:18.2571910Z   variant: ccache
+2025-10-11T15:24:18.2572040Z   save: true
+2025-10-11T15:24:18.2572160Z   append-timestamp: true
+2025-10-11T15:24:18.2572310Z   create-symlink: false
+2025-10-11T15:24:18.2572460Z   job-summary: CCache Statistics
+2025-10-11T15:24:18.2572630Z ##[endgroup]
+2025-10-11T15:24:18.3623860Z ##[group]Install ccache
+2025-10-11T15:24:18.3640240Z [command]/bin/sh -xc brew install ccache
+2025-10-11T15:24:18.3681520Z + brew install ccache
+2025-10-11T15:24:21.4058360Z [32m==>[0m [1mFetching downloads for: [32mccache[39m[0m
+2025-10-11T15:24:21.4145260Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/ccache/manifests/4.12[0m
+2025-10-11T15:24:22.0357500Z [32m==>[0m [1mFetching dependencies for ccache: [32mblake3[39m, [32mfmt[39m, [32mhiredis[39m and [32mxxhash[39m[0m
+2025-10-11T15:24:22.0373460Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/blake3/manifests/1.8.2[0m
+2025-10-11T15:24:22.3913370Z [32m==>[0m [1mFetching [32mblake3[39m[0m
+2025-10-11T15:24:22.3918100Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/blake3/blobs/sha256:601904a1b1f08581bc60847875b444ccd2c23f11aa68acb8d635ae57fb104304[0m
+2025-10-11T15:24:22.7680450Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/fmt/manifests/11.2.0-1[0m
+2025-10-11T15:24:23.1373490Z [32m==>[0m [1mFetching [32mfmt[39m[0m
+2025-10-11T15:24:23.1380270Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/fmt/blobs/sha256:585f4564a32043378cf78eaf8fe3ad3cd3f30ce25c24a5795204225d2fc62bf2[0m
+2025-10-11T15:24:23.4984580Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/hiredis/manifests/1.3.0[0m
+2025-10-11T15:24:23.8643300Z [32m==>[0m [1mFetching [32mhiredis[39m[0m
+2025-10-11T15:24:23.8647000Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/hiredis/blobs/sha256:d3bb6a7fd40584c74321d404d0c459f11e3d612c329a5f95367c372cb21bbdca[0m
+2025-10-11T15:24:24.2314400Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/xxhash/manifests/0.8.3[0m
+2025-10-11T15:24:24.6277750Z [32m==>[0m [1mFetching [32mxxhash[39m[0m
+2025-10-11T15:24:24.6281250Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/xxhash/blobs/sha256:89bd0369c7033c364428cf03daad6f58ca5e5defd8dc585b8f0bc6a111714013[0m
+2025-10-11T15:24:24.9987620Z [32m==>[0m [1mFetching [32mccache[39m[0m
+2025-10-11T15:24:25.0002040Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/ccache/blobs/sha256:61163244c523642829b5acc9dee363df1dad4b5c89c141edc368c0b0771acf98[0m
+2025-10-11T15:24:25.4008800Z [32m==>[0m [1mInstalling dependencies for ccache: [32mblake3[39m, [32mfmt[39m, [32mhiredis[39m and [32mxxhash[39m[0m
+2025-10-11T15:24:25.4013420Z [32m==>[0m [1mInstalling ccache dependency: [32mblake3[39m[0m
+2025-10-11T15:24:25.4014770Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/blake3/manifests/1.8.2[0m
+2025-10-11T15:24:25.4015630Z Already downloaded: /Users/runner/Library/Caches/Homebrew/downloads/fd8aa2201dffd4a0db6644c9eff70b8c0d1a0a643ed362fc54f77d3a80fd3478--blake3-1.8.2.bottle_manifest.json
+2025-10-11T15:24:25.4052530Z [34m==>[0m [1mPouring blake3--1.8.2.arm64_sequoia.bottle.tar.gz[0m
+2025-10-11T15:24:25.5857130Z 🍺  /opt/homebrew/Cellar/blake3/1.8.2: 13 files, 94.8KB
+2025-10-11T15:24:25.5897120Z [32m==>[0m [1mInstalling ccache dependency: [32mfmt[39m[0m
+2025-10-11T15:24:25.5901970Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/fmt/manifests/11.2.0-1[0m
+2025-10-11T15:24:25.5903000Z Already downloaded: /Users/runner/Library/Caches/Homebrew/downloads/e861b31c0edc5f958c9bf5cc6d0749b460620700fddec3557bd4c5d236f045cd--fmt-11.2.0-1.bottle_manifest.json
+2025-10-11T15:24:25.5926040Z [34m==>[0m [1mPouring fmt--11.2.0.arm64_sequoia.bottle.1.tar.gz[0m
+2025-10-11T15:24:25.7103040Z 🍺  /opt/homebrew/Cellar/fmt/11.2.0: 29 files, 1MB
+2025-10-11T15:24:25.7108020Z [32m==>[0m [1mInstalling ccache dependency: [32mhiredis[39m[0m
+2025-10-11T15:24:25.7112570Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/hiredis/manifests/1.3.0[0m
+2025-10-11T15:24:25.7113440Z Already downloaded: /Users/runner/Library/Caches/Homebrew/downloads/3b794b72d22c70fbaa25fdada9fa1613da0c754151bdbd9118fb9008b989a1c8--hiredis-1.3.0.bottle_manifest.json
+2025-10-11T15:24:25.7231640Z [34m==>[0m [1mPouring hiredis--1.3.0.arm64_sequoia.bottle.tar.gz[0m
+2025-10-11T15:24:25.9658200Z 🍺  /opt/homebrew/Cellar/hiredis/1.3.0: 53 files, 476KB
+2025-10-11T15:24:25.9671430Z [32m==>[0m [1mInstalling ccache dependency: [32mxxhash[39m[0m
+2025-10-11T15:24:25.9671990Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/xxhash/manifests/0.8.3[0m
+2025-10-11T15:24:25.9672810Z Already downloaded: /Users/runner/Library/Caches/Homebrew/downloads/50d7a45c8aca7a38ebe38c4b8fb63fa7404dc4c360092f1e301c275fcc585cf0--xxhash-0.8.3.bottle_manifest.json
+2025-10-11T15:24:25.9708750Z [34m==>[0m [1mPouring xxhash--0.8.3.arm64_sequoia.bottle.tar.gz[0m
+2025-10-11T15:24:26.0997730Z 🍺  /opt/homebrew/Cellar/xxhash/0.8.3: 28 files, 544.0KB
+2025-10-11T15:24:26.1002550Z [32m==>[0m [1mInstalling [32mccache[39m[0m
+2025-10-11T15:24:26.1008900Z [34m==>[0m [1mPouring ccache--4.12.arm64_sequoia.bottle.tar.gz[0m
+2025-10-11T15:24:26.2595870Z [34m==>[0m [1mCaveats[0m
+2025-10-11T15:24:26.2596170Z To install symlinks for compilers that will automatically use
+2025-10-11T15:24:26.2616610Z ccache, prepend this directory to your PATH:
+2025-10-11T15:24:26.2616860Z   /opt/homebrew/opt/ccache/libexec
+2025-10-11T15:24:26.2616980Z 
+2025-10-11T15:24:26.2617120Z If this is an upgrade and you have previously added the symlinks to
+2025-10-11T15:24:26.2617450Z your PATH, you may need to modify it to the path specified above so
+2025-10-11T15:24:26.2617720Z it points to the current version.
+2025-10-11T15:24:26.2617840Z 
+2025-10-11T15:24:26.2617940Z NOTE: ccache can prevent some software from compiling.
+2025-10-11T15:24:26.2618220Z ALSO NOTE: The brew command, by design, will never use ccache.
+2025-10-11T15:24:26.2618530Z [34m==>[0m [1mSummary[0m
+2025-10-11T15:24:26.2624880Z 🍺  /opt/homebrew/Cellar/ccache/4.12: 93 files, 2.1MB
+2025-10-11T15:24:26.2632490Z [34m==>[0m [1mNo outdated dependents to upgrade![0m
+2025-10-11T15:24:26.2633550Z [32m==>[0m [1mCaveats[0m
+2025-10-11T15:24:26.2633730Z [34m==>[0m [1mccache[0m
+2025-10-11T15:24:26.2633980Z To install symlinks for compilers that will automatically use
+2025-10-11T15:24:26.2634270Z ccache, prepend this directory to your PATH:
+2025-10-11T15:24:26.2634470Z   /opt/homebrew/opt/ccache/libexec
+2025-10-11T15:24:26.2634590Z 
+2025-10-11T15:24:26.2634710Z If this is an upgrade and you have previously added the symlinks to
+2025-10-11T15:24:26.2635140Z your PATH, you may need to modify it to the path specified above so
+2025-10-11T15:24:26.2635510Z it points to the current version.
+2025-10-11T15:24:26.2635730Z 
+2025-10-11T15:24:26.2635880Z NOTE: ccache can prevent some software from compiling.
+2025-10-11T15:24:26.2636220Z ALSO NOTE: The brew command, by design, will never use ccache.
+2025-10-11T15:24:26.2848230Z 
+2025-10-11T15:24:26.2856820Z ##[endgroup]
+2025-10-11T15:24:26.2857230Z ##[group]Restore cache
+2025-10-11T15:24:26.3940940Z No cache found.
+2025-10-11T15:24:26.3941580Z ##[endgroup]
+2025-10-11T15:24:26.3941970Z ##[group]Configure ccache, darwin
+2025-10-11T15:24:26.3958760Z [command]/bin/sh -xc ccache --set-config=cache_dir='/Users/runner/work/flapi/flapi/.ccache'
+2025-10-11T15:24:26.4001990Z + ccache --set-config=cache_dir=/Users/runner/work/flapi/flapi/.ccache
+2025-10-11T15:24:26.4092310Z [command]/bin/sh -xc ccache --set-config=max_size='500MB'
+2025-10-11T15:24:26.4128530Z + ccache --set-config=max_size=500MB
+2025-10-11T15:24:26.4175930Z [command]/bin/sh -xc ccache --set-config=compression=true
+2025-10-11T15:24:26.4208240Z + ccache --set-config=compression=true
+2025-10-11T15:24:26.4254850Z [command]/bin/sh -xc ccache --set-config=compiler_check=content
+2025-10-11T15:24:26.4286620Z + ccache --set-config=compiler_check=content
+2025-10-11T15:24:26.4330150Z Ccache config:
+2025-10-11T15:24:26.4338290Z [command]/bin/sh -xc ccache -p
+2025-10-11T15:24:26.4373350Z + ccache -p
+2025-10-11T15:24:26.4407610Z (default) absolute_paths_in_stderr = false
+2025-10-11T15:24:26.4408040Z (default) base_dir = 
+2025-10-11T15:24:26.4408440Z (/Users/runner/Library/Preferences/ccache/ccache.conf) cache_dir = /Users/runner/work/flapi/flapi/.ccache
+2025-10-11T15:24:26.4408910Z (default) compiler = 
+2025-10-11T15:24:26.4409250Z (/Users/runner/Library/Preferences/ccache/ccache.conf) compiler_check = content
+2025-10-11T15:24:26.4409560Z (default) compiler_type = auto
+2025-10-11T15:24:26.4409900Z (/Users/runner/Library/Preferences/ccache/ccache.conf) compression = true
+2025-10-11T15:24:26.4410200Z (default) compression_level = 0
+2025-10-11T15:24:26.4410430Z (default) cpp_extension = 
+2025-10-11T15:24:26.4410590Z (default) debug = false
+2025-10-11T15:24:26.4410820Z (default) debug_dir = 
+2025-10-11T15:24:26.4411020Z (default) debug_level = 2
+2025-10-11T15:24:26.4411180Z (default) depend_mode = false
+2025-10-11T15:24:26.4411440Z (default) direct_mode = true
+2025-10-11T15:24:26.4411720Z (default) disable = false
+2025-10-11T15:24:26.4411880Z (default) extra_files_to_hash = 
+2025-10-11T15:24:26.4412150Z (default) file_clone = false
+2025-10-11T15:24:26.4412380Z (default) hard_link = false
+2025-10-11T15:24:26.4412650Z (default) hash_dir = true
+2025-10-11T15:24:26.4412870Z (default) ignore_headers_in_manifest = 
+2025-10-11T15:24:26.4413560Z (default) ignore_options = 
+2025-10-11T15:24:26.4413820Z (default) inode_cache = true
+2025-10-11T15:24:26.4414020Z (default) keep_comments_cpp = false
+2025-10-11T15:24:26.4414200Z (default) log_file = 
+2025-10-11T15:24:26.4414350Z (default) max_files = 0
+2025-10-11T15:24:26.4414660Z (/Users/runner/Library/Preferences/ccache/ccache.conf) max_size = 500.0 MB
+2025-10-11T15:24:26.4415030Z (default) msvc_dep_prefix = Note: including file:
+2025-10-11T15:24:26.4415300Z (default) namespace = 
+2025-10-11T15:24:26.4415550Z (default) path = 
+2025-10-11T15:24:26.4415720Z (default) pch_external_checksum = false
+2025-10-11T15:24:26.4415970Z (default) prefix_command = 
+2025-10-11T15:24:26.4416190Z (default) prefix_command_cpp = 
+2025-10-11T15:24:26.4416430Z (default) read_only = false
+2025-10-11T15:24:26.4416630Z (default) read_only_direct = false
+2025-10-11T15:24:26.4416900Z (default) recache = false
+2025-10-11T15:24:26.4417120Z (default) remote_only = false
+2025-10-11T15:24:26.4417340Z (default) remote_storage = 
+2025-10-11T15:24:26.4417570Z (default) reshare = false
+2025-10-11T15:24:26.4417810Z (default) response_file_format = auto
+2025-10-11T15:24:26.4418100Z (default) sloppiness = 
+2025-10-11T15:24:26.4418280Z (default) stats = true
+2025-10-11T15:24:26.4418480Z (default) stats_log = 
+2025-10-11T15:24:26.4418770Z (default) temporary_dir = /Users/runner/work/flapi/flapi/.ccache/tmp
+2025-10-11T15:24:26.4419050Z (default) umask = 
+2025-10-11T15:24:26.4422060Z [command]/bin/sh -xc ccache -z
+2025-10-11T15:24:26.4459160Z + ccache -z
+2025-10-11T15:24:26.5170430Z Statistics zeroed
+2025-10-11T15:24:26.5173840Z ##[endgroup]
+2025-10-11T15:24:26.5248580Z ##[group]Run brew install ninja autoconf make libtool pkg-config automake autoconf-archive
+2025-10-11T15:24:26.5249110Z [36;1mbrew install ninja autoconf make libtool pkg-config automake autoconf-archive[0m
+2025-10-11T15:24:26.5295660Z shell: /bin/bash --noprofile --norc -e -o pipefail {0}
+2025-10-11T15:24:26.5295960Z ##[endgroup]
+2025-10-11T15:24:27.7737970Z ##[warning]ninja 1.13.1 is already installed and up-to-date.
+To reinstall 1.13.1, run:
+  brew reinstall ninja
+
+2025-10-11T15:24:27.7799600Z ##[warning]pkgconf 2.5.1 is already installed and up-to-date.
+To reinstall 2.5.1, run:
+  brew reinstall pkgconf
+
+2025-10-11T15:24:28.0158230Z [32m==>[0m [1mFetching downloads for: [32mautoconf[39m, [32mmake[39m, [32mlibtool[39m, [32mautomake[39m and [32mautoconf-archive[39m[0m
+2025-10-11T15:24:28.0166070Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/autoconf/manifests/2.72-1[0m
+2025-10-11T15:24:28.4614590Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/make/manifests/4.4.1-1[0m
+2025-10-11T15:24:29.3026710Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/libtool/manifests/2.5.4[0m
+2025-10-11T15:24:29.7252880Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/automake/manifests/1.18.1[0m
+2025-10-11T15:24:30.1731970Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/autoconf-archive/manifests/2024.10.16-1[0m
+2025-10-11T15:24:30.6913080Z [32m==>[0m [1mFetching dependencies for autoconf: [32mm4[39m[0m
+2025-10-11T15:24:30.6920320Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/m4/manifests/1.4.20[0m
+2025-10-11T15:24:31.0783270Z [32m==>[0m [1mFetching [32mm4[39m[0m
+2025-10-11T15:24:31.0790150Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/m4/blobs/sha256:80bd9ecaa8798a7db6a2e86acc61089dc31d83e6e9e01495a6a57c3703155f47[0m
+2025-10-11T15:24:31.4573800Z [32m==>[0m [1mFetching [32mautoconf[39m[0m
+2025-10-11T15:24:31.4595210Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/autoconf/blobs/sha256:b1d110e2efd457a5e56c4469f2d6741109d542801a401fe08b750d0614581a9a[0m
+2025-10-11T15:24:31.8317300Z [32m==>[0m [1mFetching [32mmake[39m[0m
+2025-10-11T15:24:31.8367830Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/make/blobs/sha256:f361639a5ec1a9355e12f985c511dd6631b6790452a52057032a3a07a690ca4e[0m
+2025-10-11T15:24:32.2528700Z [32m==>[0m [1mFetching [32mlibtool[39m[0m
+2025-10-11T15:24:32.2630210Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/libtool/blobs/sha256:f21ea809c3bdc0aa1b25dce05dc05bebd228adb213957df244bf00af760392ef[0m
+2025-10-11T15:24:32.6733680Z [32m==>[0m [1mFetching [32mautomake[39m[0m
+2025-10-11T15:24:32.6835320Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/automake/blobs/sha256:3c00a332610983c37659eee42e4a93341a3051892481362d223a40f5435b7555[0m
+2025-10-11T15:24:33.0750330Z [32m==>[0m [1mFetching [32mautoconf-archive[39m[0m
+2025-10-11T15:24:33.0851960Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/autoconf-archive/blobs/sha256:7652c1e3d7ef6dc9cc8d6ef298f1bfe80d9888876052bedba5f5638b5e280945[0m
+2025-10-11T15:24:33.4797980Z [32m==>[0m [1mInstalling autoconf dependency: [32mm4[39m[0m
+2025-10-11T15:24:33.4899240Z [34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/m4/manifests/1.4.20[0m
+2025-10-11T15:24:33.5001070Z Already downloaded: /Users/runner/Library/Caches/Homebrew/downloads/6daeb2039950dd6932facf910fa817e9572e091a75508870ed06c1711c450a43--m4-1.4.20.bottle_manifest.json
+2025-10-11T15:24:33.5102820Z [34m==>[0m [1mPouring m4--1.4.20.arm64_sequoia.bottle.tar.gz[0m
+2025-10-11T15:24:33.6338360Z 🍺  /opt/homebrew/Cellar/m4/1.4.20: 14 files, 783.8KB
+2025-10-11T15:24:33.6343780Z [34m==>[0m [1mPouring autoconf--2.72.arm64_sequoia.bottle.1.tar.gz[0m
+2025-10-11T15:24:33.7223650Z 🍺  /opt/homebrew/Cellar/autoconf/2.72: 72 files, 3.6MB
+2025-10-11T15:24:33.7247950Z [34m==>[0m [1mPouring make--4.4.1.arm64_sequoia.bottle.1.tar.gz[0m
+2025-10-11T15:24:33.8040790Z [34m==>[0m [1mCaveats[0m
+2025-10-11T15:24:33.8141710Z GNU "make" has been installed as "gmake".
+2025-10-11T15:24:33.8222220Z If you need to use it as "make", you can add a "gnubin" directory
+2025-10-11T15:24:33.8225690Z to your PATH from your bashrc like:
+2025-10-11T15:24:33.8239620Z 
+2025-10-11T15:24:33.8239900Z     PATH="/opt/homebrew/opt/make/libexec/gnubin:$PATH"
+2025-10-11T15:24:33.8240430Z [34m==>[0m [1mSummary[0m
+2025-10-11T15:24:33.8240800Z 🍺  /opt/homebrew/Cellar/make/4.4.1: 17 files, 1.3MB
+2025-10-11T15:24:33.8241190Z [34m==>[0m [1mPouring libtool--2.5.4.arm64_sequoia.bottle.tar.gz[0m
+2025-10-11T15:24:33.9424600Z [34m==>[0m [1mCaveats[0m
+2025-10-11T15:24:33.9457740Z All commands have been installed with the prefix "g".
+2025-10-11T15:24:33.9458200Z If you need to use these commands with their normal names, you
+2025-10-11T15:24:33.9458560Z can add a "gnubin" directory to your PATH from your bashrc like:
+2025-10-11T15:24:33.9458930Z   PATH="/opt/homebrew/opt/libtool/libexec/gnubin:$PATH"
+2025-10-11T15:24:33.9459350Z [34m==>[0m [1mSummary[0m
+2025-10-11T15:24:33.9459670Z 🍺  /opt/homebrew/Cellar/libtool/2.5.4: 76 files, 4.0MB
+2025-10-11T15:24:33.9505210Z [34m==>[0m [1mPouring automake--1.18.1.arm64_sequoia.bottle.tar.gz[0m
+2025-10-11T15:24:34.1099860Z 🍺  /opt/homebrew/Cellar/automake/1.18.1: 134 files, 3.4MB
+2025-10-11T15:24:34.1177120Z [34m==>[0m [1mPouring autoconf-archive--2024.10.16.arm64_sequoia.bottle.1.tar.gz[0m
+2025-10-11T15:24:34.4227510Z 🍺  /opt/homebrew/Cellar/autoconf-archive/2024.10.16: 605 files, 3.6MB
+2025-10-11T15:24:34.4328750Z [34m==>[0m [1mNo outdated dependents to upgrade![0m
+2025-10-11T15:24:34.4390650Z [32m==>[0m [1mCaveats[0m
+2025-10-11T15:24:34.4391040Z [34m==>[0m [1mmake[0m
+2025-10-11T15:24:34.4392390Z GNU "make" has been installed as "gmake".
+2025-10-11T15:24:34.4394860Z If you need to use it as "make", you can add a "gnubin" directory
+2025-10-11T15:24:34.4395180Z to your PATH from your bashrc like:
+2025-10-11T15:24:34.4395520Z 
+2025-10-11T15:24:34.4395700Z     PATH="/opt/homebrew/opt/make/libexec/gnubin:$PATH"
+2025-10-11T15:24:34.4396020Z [34m==>[0m [1mlibtool[0m
+2025-10-11T15:24:34.4396300Z All commands have been installed with the prefix "g".
+2025-10-11T15:24:34.4396640Z If you need to use these commands with their normal names, you
+2025-10-11T15:24:34.4397000Z can add a "gnubin" directory to your PATH from your bashrc like:
+2025-10-11T15:24:34.4399740Z   PATH="/opt/homebrew/opt/libtool/libexec/gnubin:$PATH"
+2025-10-11T15:24:34.4482630Z ##[group]Run make release && make test
+2025-10-11T15:24:34.4482870Z [36;1mmake release && make test[0m
+2025-10-11T15:24:34.4521120Z shell: /bin/bash -e {0}
+2025-10-11T15:24:34.4521290Z ##[endgroup]
+2025-10-11T15:24:34.8988490Z Building release version for x86_64...
+2025-10-11T15:24:34.9443270Z -- Building for architecture: x86_64
+2025-10-11T15:24:34.9443810Z -- Using vcpkg triplet: x64-osx
+2025-10-11T15:24:34.9504460Z CMake Error at /opt/homebrew/share/cmake/Modules/CMakeDetermineSystem.cmake:159 (message):
+2025-10-11T15:24:34.9504920Z   Could not find toolchain file:
+2025-10-11T15:24:34.9505170Z 
+2025-10-11T15:24:34.9505370Z    "/scripts/buildsystems/vcpkg.cmake"
+2025-10-11T15:24:34.9505640Z Call Stack (most recent call first):
+2025-10-11T15:24:34.9505860Z   CMakeLists.txt:93 (project)
+2025-10-11T15:24:34.9505970Z 
+2025-10-11T15:24:34.9505980Z 
+2025-10-11T15:24:34.9507970Z CMake Error: CMake was unable to find a build program corresponding to "Ninja".  CMAKE_MAKE_PROGRAM is not set.  You probably need to select a different build tool.
+2025-10-11T15:24:34.9508520Z CMake Error: CMAKE_CXX_COMPILER not set, after EnableLanguage
+2025-10-11T15:24:34.9509250Z -- Configuring incomplete, errors occurred!
+2025-10-11T15:24:34.9516910Z make: *** [release-x86_64] Error 1
+2025-10-11T15:24:34.9523960Z ##[error]Process completed with exit code 2.
+2025-10-11T15:24:34.9572880Z Post job cleanup.
+2025-10-11T15:24:35.0781510Z ##[group]ccache stats
+2025-10-11T15:24:35.0792090Z [command]/opt/homebrew/bin/ccache -s
+2025-10-11T15:24:35.1015930Z Local storage:
+2025-10-11T15:24:35.1016420Z   Cache size (GB): 0.0 / 0.5 ( 0.00%)
+2025-10-11T15:24:35.1028480Z [command]/opt/homebrew/bin/ccache --version
+2025-10-11T15:24:35.1068520Z ccache version 4.12
+2025-10-11T15:24:35.1068930Z Features: file-storage http-storage redis+unix-storage redis-storage
+2025-10-11T15:24:35.1069270Z 
+2025-10-11T15:24:35.1069490Z Copyright (C) 2002-2007 Andrew Tridgell
+2025-10-11T15:24:35.1070100Z Copyright (C) 2009-2025 Joel Rosdahl and other contributors
+2025-10-11T15:24:35.1070420Z 
+2025-10-11T15:24:35.1070700Z See <https://ccache.dev/credits.html> for a complete list of contributors.
+2025-10-11T15:24:35.1071020Z 
+2025-10-11T15:24:35.1071290Z This program is free software; you can redistribute it and/or modify it under
+2025-10-11T15:24:35.1071870Z the terms of the GNU General Public License as published by the Free Software
+2025-10-11T15:24:35.1072330Z Foundation; either version 3 of the License, or (at your option) any later
+2025-10-11T15:24:35.1072690Z version.
+2025-10-11T15:24:35.1073160Z ##[endgroup]
+2025-10-11T15:24:35.1185250Z Not saving cache because no objects are cached.
+2025-10-11T15:24:35.1258310Z Post job cleanup.
+2025-10-11T15:24:35.2144130Z [command]/opt/homebrew/bin/git version
+2025-10-11T15:24:35.2190780Z git version 2.50.1
+2025-10-11T15:24:35.2211900Z Copying '/Users/runner/.gitconfig' to '/Users/runner/work/_temp/88b647e5-4086-49b4-8ffc-fca02dce5ad5/.gitconfig'
+2025-10-11T15:24:35.2223460Z Temporarily overriding HOME='/Users/runner/work/_temp/88b647e5-4086-49b4-8ffc-fca02dce5ad5' before making global git config changes
+2025-10-11T15:24:35.2224400Z Adding repository directory to the temporary git global config as a safe directory
+2025-10-11T15:24:35.2228010Z [command]/opt/homebrew/bin/git config --global --add safe.directory /Users/runner/work/flapi/flapi
+2025-10-11T15:24:35.2287730Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp core\.sshCommand
+2025-10-11T15:24:35.2362010Z [command]/opt/homebrew/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2025-10-11T15:24:35.2978150Z Entering 'duckdb'
+2025-10-11T15:24:35.3163120Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2025-10-11T15:24:35.3206600Z http.https://github.com/.extraheader
+2025-10-11T15:24:35.3213640Z [command]/opt/homebrew/bin/git config --local --unset-all http.https://github.com/.extraheader
+2025-10-11T15:24:35.3262040Z [command]/opt/homebrew/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2025-10-11T15:24:35.3930240Z Entering 'duckdb'
+2025-10-11T15:24:35.4039370Z http.https://github.com/.extraheader
+2025-10-11T15:24:35.4231380Z Cleaning up orphan processes

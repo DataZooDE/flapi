@@ -179,6 +179,13 @@ std::vector<ValidationError> RequestValidator::validateDate(const std::string& f
         errors.push_back({fieldName, "Invalid date format"});
         return errors;
     }
+    // Strict parse: get_time stops at the first non-matching char, so
+    // "2024-03-15' OR 1=1" would parse the date and silently drop the
+    // suffix. Require the entire string be consumed.
+    if (ss.peek() != EOF) {
+        errors.push_back({fieldName, "Invalid date format"});
+        return errors;
+    }
 
     auto date = std::chrono::system_clock::from_time_t(std::mktime(&tm));
 
@@ -209,6 +216,17 @@ std::vector<ValidationError> RequestValidator::validateTime(const std::string& f
     std::istringstream ss(value);
     ss >> std::get_time(&tm, "%H:%M:%S");
     if (ss.fail()) {
+        errors.push_back({fieldName, "Invalid time format"});
+        return errors;
+    }
+    // Strict: reject trailing garbage, range-check the components.
+    if (ss.peek() != EOF) {
+        errors.push_back({fieldName, "Invalid time format"});
+        return errors;
+    }
+    if (tm.tm_hour < 0 || tm.tm_hour > 23 ||
+        tm.tm_min  < 0 || tm.tm_min  > 59 ||
+        tm.tm_sec  < 0 || tm.tm_sec  > 59) {
         errors.push_back({fieldName, "Invalid time format"});
         return errors;
     }

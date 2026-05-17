@@ -1,0 +1,78 @@
+# Updates to ProjectConfig schema
+    ProjectConfig:
+      type: object
+      required: [project_name, project_description, template]
+      properties:
+        project_name:
+          type: string
+          minLength: 1
+        project_description:
+          type: string
+        server_name:
+          type: string
+          default: "localhost"
+        http_port:
+          type: integer
+          default: 8080
+        cache_schema:
+          type: string
+          default: "flapi"
+        template:
+          # ... (existing template config remains the same)
+        connections:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              init:
+                type: string
+              properties:
+                type: object
+                additionalProperties: true
+              log-queries:
+                type: boolean
+                default: false
+              log-parameters:
+                type: boolean
+                default: false
+              allow:
+                type: string
+                default: '*'
+        duckdb:
+          type: object
+          properties:
+            settings:
+              type: object
+              additionalProperties:
+                type: string
+            db_path:
+              type: string
+
+# Add AWS Secrets Manager Auth Configuration
+    AuthConfig:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        type:
+          type: string
+          enum: [basic, bearer, aws-secretsmanager]
+        users:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuthUser'
+        from_aws_secretmanager:
+          type: object
+          properties:
+            secret_name:
+              type: string
+            region:
+              type: string
+            secret_id:
+              type: string
+            secret_key:
+              type: string
+            secret_table:
+              type: string
+            init:
+              type: string

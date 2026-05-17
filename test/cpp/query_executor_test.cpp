@@ -231,9 +231,12 @@ TEST_CASE("QueryExecutor::executeWithBindings - prepared path", "[query_executor
         };
         std::map<std::string, std::string> v = {{"id", "not-an-int"}};
 
+        REQUIRE_THROWS_AS(
+            executor.executeWithBindings("SELECT * FROM n WHERE id = ?", b, v, "test"),
+            BadRequestError);
         REQUIRE_THROWS_WITH(
             executor.executeWithBindings("SELECT * FROM n WHERE id = ?", b, v, "test"),
-            Catch::Matchers::ContainsSubstring("Bind conversion failed"));
+            Catch::Matchers::ContainsSubstring("Invalid value for parameter"));
     }
 
     SECTION("date and time bindings round-trip") {

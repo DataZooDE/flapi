@@ -130,4 +130,67 @@ std::vector<std::string> splitSqlStatements(const std::string& query) {
     return statements;
 }
 
+std::size_t countSqlPlaceholders(const std::string& statement) {
+    std::size_t count = 0;
+    bool inSingleQuote = false;
+    bool inDoubleQuote = false;
+    bool inDollarQuote = false;
+    std::string dollarTag;
+
+    for (std::size_t i = 0; i < statement.size(); ++i) {
+        const char c = statement[i];
+
+        if (!inSingleQuote && !inDoubleQuote && c == '$') {
+            std::size_t tagEnd = statement.find('$', i + 1);
+            if (tagEnd != std::string::npos) {
+                std::string potentialTag = statement.substr(i, tagEnd - i + 1);
+                bool validTag = true;
+                for (std::size_t j = 1; j < potentialTag.size() - 1; ++j) {
+                    char tc = potentialTag[j];
+                    if (!std::isalnum(static_cast<unsigned char>(tc)) && tc != '_') {
+                        validTag = false;
+                        break;
+                    }
+                }
+                if (validTag) {
+                    if (inDollarQuote && potentialTag == dollarTag) {
+                        inDollarQuote = false;
+                        i = tagEnd;
+                        continue;
+                    }
+                    if (!inDollarQuote) {
+                        inDollarQuote = true;
+                        dollarTag = potentialTag;
+                        i = tagEnd;
+                        continue;
+                    }
+                }
+            }
+            continue;
+        }
+
+        if (!inDoubleQuote && !inDollarQuote && c == '\'') {
+            if (inSingleQuote && i + 1 < statement.size() && statement[i + 1] == '\'') {
+                ++i;  // escaped quote
+                continue;
+            }
+            inSingleQuote = !inSingleQuote;
+            continue;
+        }
+        if (!inSingleQuote && !inDollarQuote && c == '"') {
+            if (inDoubleQuote && i + 1 < statement.size() && statement[i + 1] == '"') {
+                ++i;
+                continue;
+            }
+            inDoubleQuote = !inDoubleQuote;
+            continue;
+        }
+
+        if (c == '?' && !inSingleQuote && !inDoubleQuote && !inDollarQuote) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 } // namespace flapi

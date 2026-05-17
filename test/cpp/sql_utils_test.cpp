@@ -3,6 +3,7 @@
 
 using flapi::splitSqlStatements;
 using flapi::trimSqlString;
+using flapi::countSqlPlaceholders;
 
 // =============================================================================
 // BASIC SPLITTING
@@ -428,4 +429,64 @@ TEST_CASE("trimSqlString", "[sql_utils]") {
     SECTION("preserves internal whitespace") {
         REQUIRE(trimSqlString("  hello   world  ") == "hello   world");
     }
+}
+
+// =============================================================================
+// PLACEHOLDER COUNTING — security-critical for the prepared write path
+// =============================================================================
+
+TEST_CASE("countSqlPlaceholders - basic", "[sql_utils][placeholders]") {
+    REQUIRE(countSqlPlaceholders("") == 0);
+    REQUIRE(countSqlPlaceholders("SELECT 1") == 0);
+    REQUIRE(countSqlPlaceholders("SELECT ?") == 1);
+    REQUIRE(countSqlPlaceholders("INSERT INTO t VALUES (?, ?, ?)") == 3);
+}
+
+TEST_CASE("countSqlPlaceholders - quoted ? doesn't count", "[sql_utils][placeholders]") {
+    // The most important invariant: a `?` inside a string literal must
+    // not be counted as a bind site, otherwise the write-path binding
+    // distributor would skew the slice across statements.
+    REQUIRE(countSqlPlaceholders("SELECT '?'") == 0);
+    REQUIRE(countSqlPlaceholders("SELECT 'literal ? mark'") == 0);
+    REQUIRE(countSqlPlaceholders("SELECT \"col?name\"") == 0);
+    REQUIRE(countSqlPlaceholders("SELECT $$body with ? inside$$") == 0);
+    REQUIRE(countSqlPlaceholders("SELECT $tag$with ? inside$tag$") == 0);
+}
+
+TEST_CASE("countSqlPlaceholders - mix of quoted and unquoted", "[sql_utils][placeholders]") {
+    REQUIRE(countSqlPlaceholders("WHERE x = ? AND label = '?'") == 1);
+    REQUIRE(countSqlPlaceholders("WHERE a = ? AND b = '?' AND c = ?") == 2);
+    REQUIRE(countSqlPlaceholders("WHERE a = ? AND b LIKE 'x?y' AND c = ?") == 2);
+}
+
+TEST_CASE("countSqlPlaceholders - escaped quotes inside string", "[sql_utils][placeholders]") {
+    // SQL escapes single quote by doubling: 'O''Brien'. The `?` between
+    // the two `''` is still inside the string.
+    REQUIRE(countSqlPlaceholders("SELECT 'O''?''Brien'") == 0);
+    REQUIRE(countSqlPlaceholders("SELECT 'O''?''Brien' WHERE x = ?") == 1);
+}
+
+TEST_CASE("countSqlPlaceholders - real write-path templates", "[sql_utils][placeholders]") {
+    // Single-statement INSERT rewritten by PreparedTemplateRewriter:
+    REQUIRE(countSqlPlaceholders("INSERT INTO widgets VALUES (?, ?)") == 2);
+
+    // Multi-statement template (one bound id and one bound name in each
+    // statement). The caller must call splitSqlStatements first and
+    // then countSqlPlaceholders on each piece — counts per statement
+    // are 2 and 2.
+    const std::string multi =
+        "INSERT INTO widgets VALUES (?, ?);"
+        "SELECT * FROM widgets WHERE id = ? AND name = ?";
+    auto parts = splitSqlStatements(multi);
+    REQUIRE(parts.size() == 2);
+    REQUIRE(countSqlPlaceholders(parts[0]) == 2);
+    REQUIRE(countSqlPlaceholders(parts[1]) == 2);
+}
+
+TEST_CASE("countSqlPlaceholders - unclosed string is fail-safe", "[sql_utils][placeholders]") {
+    // Matches splitSqlStatements semantics: an unclosed quote treats
+    // the rest of the input as quoted, so trailing `?` characters are
+    // NOT counted. This is fail-safe — a binding mismatch surfaces as
+    // a server-side error rather than a security-relevant bind skew.
+    REQUIRE(countSqlPlaceholders("SELECT 'unterminated ? string") == 0);
 }

@@ -2,6 +2,7 @@
 #include "json_utils.hpp"
 #include "content_negotiation.hpp"
 #include "arrow_serializer.hpp"
+#include "query_executor.hpp"
 
 #include <iostream>
 #include <map>
@@ -133,6 +134,15 @@ void RequestHandler::handleWriteRequest(const crow::request& req, crow::response
         res.end();
         return;
         
+    } catch (const BadRequestError& e) {
+        CROW_LOG_WARNING << "Bad request (write): " << e.what();
+        crow::json::wvalue body;
+        body["error"] = std::string(e.what());
+        res.code = 400;
+        res.set_header("Content-Type", "application/json");
+        res.write(body.dump());
+        res.end();
+        return;
     } catch (const std::exception& e) {
         CROW_LOG_ERROR << "Error handling write request: " << e.what();
         res.code = 500;
@@ -321,6 +331,15 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
         res.add_header("X-Offset", std::to_string(offset));
         res.add_header("X-Limit", std::to_string(limit));
         res.add_header("X-Next", createNextUrl(req, queryResult));
+        res.end();
+        return;
+    } catch (const BadRequestError& e) {
+        CROW_LOG_WARNING << "Bad request (read): " << e.what();
+        crow::json::wvalue body;
+        body["error"] = std::string(e.what());
+        res.code = 400;
+        res.set_header("Content-Type", "application/json");
+        res.write(body.dump());
         res.end();
         return;
     } catch (const std::exception& e) {

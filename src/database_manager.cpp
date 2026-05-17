@@ -402,10 +402,19 @@ std::string DatabaseManager::renderCacheTemplate(const EndpointConfig& endpoint,
 
 std::unique_ptr<QueryExecutor> DatabaseManager::executeQueryRaw(const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
     cache_manager->addQueryCacheParamsIfNecessary(config_manager, endpoint, params);
-    std::string processedQuery = processTemplate(endpoint, params);
+
+    // W3.1 PR B: Arrow-streaming endpoint also takes the prepared path
+    // when the endpoint has typed scalar params; falls back to direct
+    // execute when the binding plan is empty (no behaviour change).
+    std::map<std::string, std::string> bind_values = params;
+    auto prepared = sql_processor->loadAndProcessTemplatePrepared(endpoint, params);
 
     auto executor = std::make_unique<QueryExecutor>(db);
-    executor->execute(processedQuery);
+    if (prepared.bindings.empty()) {
+        executor->execute(prepared.sql);
+    } else {
+        executor->executeWithBindings(prepared.sql, prepared.bindings, bind_values, "arrow streaming");
+    }
     return executor;
 }
 
@@ -531,19 +540,23 @@ WriteResult DatabaseManager::executeWrite(const EndpointConfig& endpoint, std::m
 
 WriteResult DatabaseManager::executeWrite(QueryExecutor& executor, const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
     WriteResult result;
-    
-    // Process SQL template (reuse existing template processor)
-    std::string processedQuery = processTemplate(endpoint, params);
-    
-    // Helper function to trim whitespace
+
+    // W3.1 PR B: route writes through the prepared path. The rewriter
+    // produces SQL with `?` placeholders for typed scalar refs; we
+    // distribute the binding plan across statements that
+    // `splitSqlStatements` produces, so multi-statement INSERT;SELECT
+    // and RETURNING workflows keep working — each statement is its own
+    // prepared statement with the relevant slice of the binding plan.
+    std::map<std::string, std::string> bind_values = params;
+    auto prepared = sql_processor->loadAndProcessTemplatePrepared(endpoint, params);
+    const std::string& processedQuery = prepared.sql;
+
     auto trim = [](const std::string& str) -> std::string {
         size_t first = str.find_first_not_of(" \t\n\r");
         if (first == std::string::npos) return "";
         size_t last = str.find_last_not_of(" \t\n\r");
         return str.substr(first, (last - first + 1));
     };
-    
-    // Helper function to check if a string starts with another (case-insensitive)
     auto startsWith = [](const std::string& str, const std::string& prefix) -> bool {
         if (str.length() < prefix.length()) return false;
         std::string strLower = str;
@@ -552,72 +565,84 @@ WriteResult DatabaseManager::executeWrite(QueryExecutor& executor, const Endpoin
         std::transform(prefixLower.begin(), prefixLower.end(), prefixLower.begin(), ::tolower);
         return strLower.compare(0, prefixLower.length(), prefixLower) == 0;
     };
-    
-    // Split query by semicolons to support multiple statements
-    // Uses quote-aware splitting to handle semicolons inside string literals
-    std::vector<std::string> statements = splitSqlStatements(processedQuery);
 
-    // If no statements found (shouldn't happen), treat entire query as single statement
+    std::vector<std::string> statements = splitSqlStatements(processedQuery);
     if (statements.empty()) {
         statements.push_back(trim(processedQuery));
     }
-    
+
+    // Slice the binding plan per statement based on `?` count.
+    std::vector<std::vector<PreparedBindingSpec>> bindings_per_stmt;
+    bindings_per_stmt.reserve(statements.size());
+    std::size_t binding_cursor = 0;
+    for (const auto& stmt : statements) {
+        const std::size_t count = countSqlPlaceholders(stmt);
+        std::vector<PreparedBindingSpec> slice;
+        slice.reserve(count);
+        for (std::size_t k = 0; k < count; ++k) {
+            PreparedBindingSpec spec = prepared.bindings.at(binding_cursor + k);
+            spec.position = k;   // re-base to the per-statement index
+            slice.push_back(std::move(spec));
+        }
+        binding_cursor += count;
+        bindings_per_stmt.push_back(std::move(slice));
+    }
+    // Defensive: the total ? count across statements must equal the
+    // size of the binding plan. A mismatch would indicate a bug in the
+    // rewriter (extra ? not in plan, or extra plan entries with no ?).
+    if (binding_cursor != prepared.bindings.size()) {
+        throw std::runtime_error(
+            "Prepared-statement write path: binding plan/placeholder mismatch (" +
+            std::to_string(binding_cursor) + " placeholders vs " +
+            std::to_string(prepared.bindings.size()) + " bindings)");
+    }
+
+    auto runStatement = [&](size_t idx, const std::string& label) {
+        if (bindings_per_stmt[idx].empty()) {
+            executor.execute(statements[idx], label);
+        } else {
+            executor.executeWithBindings(statements[idx], bindings_per_stmt[idx], bind_values, label);
+        }
+    };
+
     bool hasReturningData = false;
-    
-    // Execute all statements except potentially the last one
-    // The last statement might be a SELECT if returns-data is true and no RETURNING clause worked
     size_t statementsToExecute = statements.size();
     bool lastStatementIsSelect = false;
-    
+
     if (statements.size() > 1 && endpoint.operation.returns_data) {
-        // Check if last statement is a SELECT
         std::string lastStatement = trim(statements.back());
         lastStatementIsSelect = startsWith(lastStatement, "SELECT");
-        
         if (lastStatementIsSelect) {
-            // Execute all but the last statement first
             statementsToExecute = statements.size() - 1;
         }
     }
-    
-    // Execute statements
+
     for (size_t i = 0; i < statementsToExecute; ++i) {
-        executor.execute(statements[i], "write operation statement " + std::to_string(i + 1));
-        
-        // Track rows affected from the last write statement (INSERT/UPDATE/DELETE)
-        // For multi-statement queries, we want the total rows affected
+        runStatement(i, "write operation statement " + std::to_string(i + 1));
+
         int64_t currentRows = executor.rowCount();
         if (currentRows > 0) {
             result.rows_affected = currentRows;
         }
-        
-        // Check if there's a RETURNING clause - if so, capture the returned data
-        // We detect RETURNING by:
-        // 1. Checking if the statement contains "RETURNING" (case-insensitive)
-        // 2. AND checking if there are columns AND rows in the result
+
         std::string currentStatement = trim(statements[i]);
         std::string upperStatement = currentStatement;
         std::transform(upperStatement.begin(), upperStatement.end(), upperStatement.begin(), ::toupper);
         bool hasReturningClause = upperStatement.find("RETURNING") != std::string::npos;
-        
+
         if (hasReturningClause && executor.columnCount() > 0 && executor.rowCount() > 0) {
-            // There's a RETURNING clause with data
             result.returned_data = executor.toJson();
             hasReturningData = true;
         }
     }
-    
-    // If we need to return data but didn't get it from RETURNING clause,
-    // and the last statement is a SELECT, execute it and capture the result
+
     if (endpoint.operation.returns_data && !hasReturningData && lastStatementIsSelect && statements.size() > 1) {
-        std::string selectStatement = trim(statements.back());
-        executor.execute(selectStatement, "select returning data");
-        
+        runStatement(statements.size() - 1, "select returning data");
         if (executor.columnCount() > 0 && executor.rowCount() > 0) {
             result.returned_data = executor.toJson();
         }
     }
-    
+
     return result;
 }
 
