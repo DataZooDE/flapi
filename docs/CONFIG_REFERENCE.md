@@ -340,6 +340,7 @@ Configures the Model Context Protocol (MCP) server.
 | `mcp.allow-list-changed-notifications` | boolean | - | Enable list change notifications |
 | `mcp.instructions` | string | - | Inline instructions for LLM clients |
 | `mcp.instructions-file` | string | - | Path to instructions markdown file |
+| `mcp.strict-descriptions` | boolean | `false` | Reject tool descriptions containing control characters, JSON-breakout patterns, or role-override phrases ("ignore previous instructions") at config-load time |
 
 **MCP Authentication:**
 
@@ -348,6 +349,8 @@ Configures the Model Context Protocol (MCP) server.
 | `mcp.auth.enabled` | boolean | `false` | Enable MCP authentication |
 | `mcp.auth.type` | string | - | Auth type: `basic`, `bearer`, `oidc` |
 | `mcp.auth.methods.<method>.required` | boolean | `true` | Per-method authentication requirement |
+
+> **Deny-by-default RBAC:** when `mcp.auth.enabled: true`, every MCP tool MUST declare `mcp-tool.allowed-roles`. A tool without that list refuses every call with `Permission denied`. This prevents a freshly-added tool from being callable by any authenticated user. Endpoints without `mcp.auth.enabled` keep working without role config — the `flapii project init` demo path stays simple.
 
 **Example:**
 
@@ -358,17 +361,32 @@ mcp:
   host: localhost
   allow-list-changed-notifications: true
   instructions-file: ./mcp_instructions.md
+  strict-descriptions: true
   auth:
     enabled: true
     type: bearer
     jwt-secret: '${MCP_JWT_SECRET}'
 ```
 
+**Per-tool hardening keys** (in each endpoint's `mcp-tool:` block — see Section 3.2):
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `mcp-tool.allowed-roles` | array | - | Required JWT/OIDC roles to call this tool. Required when `mcp.auth.enabled: true` |
+| `mcp-tool.response.max-rows` | integer | - | Cap result-set size |
+| `mcp-tool.response.redact-columns` | array | - | Replace listed columns with the redaction sentinel before returning rows |
+| `mcp-tool.response.sample` | boolean | `false` | Return only summary metadata (`row_count`, `columns`, `sampled: true`), never row data |
+| `mcp-tool.rate-limit.enabled` | boolean | `false` | Per-tool rate limit (keyed on authenticated principal, falling back to anonymous) |
+| `mcp-tool.rate-limit.max` | integer | `60` | Maximum tool invocations per interval |
+| `mcp-tool.rate-limit.interval` | integer | `60` | Window in seconds |
+
+**Dry-run / shadow mode:** any `tools/call` request may include `"arguments": { ..., "_dryRun": true }`. flAPI runs validators and template expansion (`?` placeholders rendered, `EXPLAIN` requested) and returns the rendered SQL + plan as a JSON payload, but never executes the query. Maps 1:1 onto the audit/shadow-mode use case for batch validation before promoting an endpoint to production.
+
 **Notes:**
 - MCP server is auto-enabled when endpoints define `mcp-tool`, `mcp-resource`, or `mcp-prompt`
 - Use `instructions-file` for large instruction sets, `instructions` for inline content
 
-> **Implementation:** `src/mcp_server.cpp`, `src/mcp_route_handlers.cpp` | **Tests:** `test/cpp/mcp_server_test.cpp`, `test/integration/test_mcp_methods.py`
+> **Implementation:** `src/mcp_server.cpp`, `src/mcp_route_handlers.cpp`, `src/mcp_authorization_policy.cpp`, `src/mcp_description_scanner.cpp`, `src/mcp_dry_run.cpp`, `src/mcp_response_shaper.cpp`, `src/mcp_tool_rate_limiter.cpp` | **Tests:** `test/integration/test_mcp_rbac.py`, `test_mcp_dry_run.py`, `test_mcp_description_hygiene.py`, `test_mcp_response_shaping.py`, `test_mcp_per_tool_rate_limit.py`
 
 ### 2.7 Authentication (Global)
 
@@ -382,9 +400,16 @@ Global authentication settings that apply to all endpoints unless overridden.
 | `auth.jwt-issuer` | string | - | Expected JWT issuer claim |
 | `auth.users` | array | - | User list for basic auth |
 
+**Password hashing for `auth.users[*].password`:**
+flAPI accepts three formats and detects them by prefix:
+
+- `$pbkdf2-sha256$<iter>$<base64-salt>$<base64-hash>` — **recommended.** Modular Crypt Format (MCF) string compatible with Python `passlib` and any other PBKDF2-SHA256 generator. flAPI uses OpenSSL `PKCS5_PBKDF2_HMAC` with 600 000 iterations (OWASP 2023 minimum), 16-byte random salt, 32-byte derived key.
+- 32-character lowercase hex — interpreted as MD5. Still accepted, but the startup auditor emits a **deprecation warning** (MD5 has no salt and is fast to brute-force).
+- Anything else — interpreted as plaintext. Accepted for local demos; the startup auditor emits a deprecation warning.
+
 See [Section 7: Authentication](#7-authentication) for detailed configuration options.
 
-> **Implementation:** `src/auth_middleware.cpp` | **Tests:** `test/cpp/auth_middleware_test.cpp`, `test/integration/test_customers.tavern.yaml`
+> **Implementation:** `src/auth_middleware.cpp`, `src/password_hasher.cpp` | **Tests:** `test/cpp/auth_middleware_test.cpp`, `test/cpp/password_hasher_test.cpp`, `test/integration/test_password_hashing.py`
 
 ### 2.8 Rate Limiting (Global)
 
@@ -395,6 +420,7 @@ Global rate limiting settings.
 | `rate_limit.enabled` | boolean | `false` | Enable rate limiting globally |
 | `rate_limit.max` | integer | `100` | Maximum requests per interval |
 | `rate_limit.interval` | integer | `60` | Time window in seconds |
+| `rate_limit.key` | string | `ip` | Bucket key: `ip` (legacy, per-IP), `user` (authenticated principal only), or `user-or-ip` (principal when present, IP fallback) |
 
 **Example:**
 
@@ -403,28 +429,85 @@ rate_limit:
   enabled: true
   max: 100
   interval: 60
+  key: user-or-ip   # share-NAT-friendly: each authenticated user gets its own bucket
 ```
 
-> **Implementation:** `src/rate_limit_middleware.cpp` | **Tests:** *None - see [TEST_TODO.md](./TEST_TODO.md)*
+> **Implementation:** `src/rate_limit_middleware.cpp`, `src/rate_limit_key_builder.cpp` | **Tests:** `test/cpp/rate_limit_key_builder_test.cpp`, `test/integration/test_per_user_rate_limit.py`
 
 ### 2.9 HTTPS Configuration
 
+flAPI's embedded server can terminate TLS directly. Reverse-proxy termination is still recommended for production, but direct TLS is supported for self-contained deployments.
+
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `enforce-https.enabled` | boolean | `false` | Force HTTPS for all connections |
-| `enforce-https.ssl-cert-file` | string | - | Path to SSL certificate |
-| `enforce-https.ssl-key-file` | string | - | Path to SSL private key |
+| `https.enabled` | boolean | `false` | Bind the listener via OpenSSL using the cert+key pair below |
+| `https.ssl_cert_file` | string | - | PEM-encoded certificate |
+| `https.ssl_key_file` | string | - | PEM-encoded private key |
+| `enforce-https.enabled` | boolean | `false` | When the server is HTTPS, redirect plain-HTTP requests instead of refusing |
 
 **Example:**
 
 ```yaml
+https:
+  enabled: true
+  ssl_cert_file: ./ssl/cert.pem
+  ssl_key_file: ./ssl/key.pem
 enforce-https:
   enabled: true
-  ssl-cert-file: ./ssl/cert.pem
-  ssl-key-file: ./ssl/key.pem
 ```
 
-> **Implementation:** `src/api_server.cpp` | **Tests:** *None - see [TEST_TODO.md](./TEST_TODO.md)*
+> **Implementation:** `src/api_server.cpp` | **Tests:** `test/integration/test_tls_wireup.py`
+
+### 2.9.1 CORS
+
+Cross-Origin Resource Sharing. The legacy wildcard `*` is gone — the default is same-origin only, and operators opt into a config-driven allowlist.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `cors.allow-origins` | array | `[]` | List of allowed `Origin:` values. Use `["*"]` only for demos / local development |
+
+**Example:**
+
+```yaml
+cors:
+  allow-origins:
+    - https://app.example.com
+    - https://staging.example.com
+```
+
+`flapii project init` ships a `cors.allow-origins: ["*"]` in the generated `flapi.yaml` so first-run experiences stay friction-free; the startup auditor emits a warning when `*` is combined with `auth.enabled: true` (credential-bearing requests across origins).
+
+> **Implementation:** `src/cors_middleware.cpp`, `src/cors_policy.cpp` | **Tests:** `test/cpp/cors_policy_test.cpp`, `test/integration/test_cors_allowlist.py`
+
+### 2.9.2 Audit Log
+
+Per-request JSONL audit log. Records the principal, method, target (REST path or MCP tool name), parameters (with operator-defined redaction), latency, status, and row count for both REST and MCP traffic.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `audit.enabled` | boolean | `false` | Off by default — operators opt in |
+| `audit.sink` | string | `stdout` | `stdout` for container log collectors or `file` for a JSONL file |
+| `audit.path` | string | - | Required when `sink: file`. Created if missing |
+| `audit.redact` | array | `[]` | Parameter names to replace with `<redacted>` (e.g. `[ssn, jwt]`) |
+
+**Example:**
+
+```yaml
+audit:
+  enabled: true
+  sink: file
+  path: ./logs/audit.jsonl
+  redact:
+    - password
+    - api_key
+```
+
+Each event is a single JSON line of the shape:
+```json
+{"ts":"2026-05-17T05:32:11Z","request_id":"…","principal":"alice","method":"tools/call","target":"customer_lookup","params":{"id":"42"},"status":"ok","row_count":1,"latency_ms":12}
+```
+
+> **Implementation:** `src/audit_logger.cpp` | **Tests:** `test/cpp/audit_logger_test.cpp`, `test/integration/test_audit_log.py`
 
 ### 2.10 Heartbeat Configuration
 
@@ -1354,23 +1437,28 @@ SQL templates use Mustache syntax for dynamic query generation.
 
 ### 9.1 Variable Syntax
 
-**Double Braces `{{ }}`** - For numeric values and identifiers (no escaping):
+**Double Braces `{{ }}`** - For numeric values and identifiers. **When the field has a typed validator that flAPI recognises (`int`, `double`, `boolean`, `date`, `time`, `uuid`, `enum`, `email`, `string`), the renderer replaces this site with a DuckDB `?` placeholder and binds the value via `duckdb_bind_*`** — the rendered SQL is then executed as a prepared statement, and the value can never alter the SQL's structure.
 
 ```sql
 SELECT * FROM table
-WHERE id = {{ params.id }}
+WHERE id = {{ params.id }}        -- with `validators: [{type: int}]` → bound as int64
 LIMIT {{ params.limit }}
 ```
 
-**Triple Braces `{{{ }}}`** - For string values, renders the raw value with no HTML entity escaping. Use this form inside single-quoted SQL string literals:
+**Triple Braces `{{{ }}}`** - Renders the raw value with no HTML entity escaping; **always** flows through Mustache, never through the prepared path. Use inside single-quoted SQL string literals, inside `LIKE` patterns, or anywhere the value participates in the SQL text itself:
 
 ```sql
 SELECT * FROM table
-WHERE name = '{{{ params.name }}}'
-AND status = '{{{ params.status }}}'
+WHERE name LIKE '%{{{ params.name }}}%'
 ```
 
-> **Security note:** Neither double nor triple braces perform SQL-specific escaping. Mustache does not understand SQL string literals, quote-doubling, or comment syntax. Defense against SQL injection comes from the `RequestValidator` (typed fields, regex/range/enum checks) plus disciplined template authoring — not from the brace form alone. Pair every user-supplied string field with an appropriately strict validator.
+> **Security note:** Neither brace form performs SQL-specific escaping; Mustache doesn't understand SQL string literals, quote-doubling, or comment syntax. flAPI's SQL-injection defense is **layered**:
+>
+> 1. `RequestValidator` rejects obviously-bad input before SQL is rendered (typed fields, regex/range/enum/format checks). Strict integer parsing rejects trailing garbage so `1; DROP TABLE` cannot slip through as `1`.
+> 2. For double-brace references on typed fields, the **DuckDB prepared-statement bind** is the hard boundary — the value travels as a primitive, not as text, and cannot smuggle SQL.
+> 3. For triple-brace references and for non-typed fields, the legacy keyword regex still rejects obvious injection patterns. (It is demoted to a debug-level log only for fields the prepared-statement path already protects — Integer / Double / Boolean / Date / Time — because the regex is a known false-positive source for clean numeric and temporal values.)
+>
+> The end-to-end injection corpus at `test/integration/test_sql_injection_corpus.py` exercises 37 classic payloads against both an int-typed and a string-typed endpoint; every one returns zero rows.
 
 ### 9.2 Available Contexts
 
@@ -1415,17 +1503,20 @@ WHERE 1=1
 {{/params.filter1}}
 ```
 
-**2. Always Use Triple Braces for Strings:**
+**2. Prefer Double Braces for Typed Equality Lookups:**
+
+When the field has a typed validator (`int`, `double`, `boolean`, `date`, `time`, `uuid`, `enum`, `email`, `string`), use the double-brace form **without** wrapping quotes. The renderer emits a `?` and binds the value via DuckDB's prepared-statement API — no quotes are needed and SQL injection is structurally impossible.
 
 ```sql
--- CORRECT: renders the raw string inside the quoted literal
-WHERE name = '{{{ params.name }}}'
+-- RECOMMENDED for typed equality: the value is bound via duckdb_bind_*
+WHERE id = {{ params.id }}              -- field has `validators: [{type: int}]`
+WHERE email = {{ params.email }}        -- field has `validators: [{type: email}]`
 
--- INCORRECT: HTML-entity escaping mangles legitimate characters (e.g., `'` → `&#39;`)
-WHERE name = '{{ params.name }}'
+-- For LIKE patterns or substring matches, triple-brace is required
+WHERE name LIKE '%{{{ params.name }}}%'
 ```
 
-Note: the triple-brace rule keeps the rendered SQL syntactically correct. It does **not** by itself prevent SQL injection — that protection comes from the `RequestValidator` for the corresponding request field.
+Use triple braces (`{{{ params.X }}}`) when the value participates in the SQL text — `LIKE`, identifier substitution, or composite expressions that the prepared-statement rewriter cannot decompose.
 
 **3. Provide Default Values:**
 

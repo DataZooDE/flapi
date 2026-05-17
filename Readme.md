@@ -7,11 +7,11 @@ flAPI is a powerful service that automatically generates read-only APIs for data
 ## ⚡ Features
 
 - **Automatic API Generation**: Create APIs for your datasets without coding
-- **MCP (Model Context Protocol) Support**: Declarative creation of AI tools alongside REST endpoints
+- **MCP (Model Context Protocol) Support**: Declarative creation of AI tools alongside REST endpoints — with **per-tool RBAC** (`allowed-roles`), **shadow/dry-run** (`_dryRun: true`), **response shaping** (`max-rows` / `redact-columns` / `sample`), **per-tool rate limit**, and a **tool-description hygiene scanner** for prompt-injection attempts
 - **Multiple Data Sources**: Connect to [BigQuery](https://github.com/hafenkran/duckdb-bigquery), SAP ERP & BW (via [ERPL](https://github.com/datazoode/erpl)), Parquet, [Iceberg](https://github.com/duckdb/duckdb_iceberg), [Postgres](https://github.com/duckdb/postgres_scanner), [MySQL](https://github.com/duckdb/duckdb_mysql), and more
-- **SQL Templates**: Use Mustache-like syntax for dynamic queries
+- **SQL Templates**: Mustache-like syntax. Typed `{{ params.X }}` references on `int`/`double`/`boolean`/`date`/`time`/`uuid`/`enum`/`email`/`string` fields are bound as **DuckDB prepared statements** — SQL injection is structurally impossible for those sites
 - **Caching**: DuckLake-backed cache with full refresh and incremental sync
-- **Security**: Implement row-level and column-level security with ease
+- **Production security**: PBKDF2-SHA256 password hashing, config-driven CORS allowlist, per-user rate limiting, JSONL request audit log, TLS termination, startup config auditor — all opt-in via single-line YAML so `flapii project init` demos stay simple
 - **Easy deployment**: Deploy flAPI with a single binary file
 - **Privacy-respecting telemetry**: Anonymous startup/shutdown analytics with easy opt-out via `--no-telemetry` flag, `FLAPI_NO_TELEMETRY` env var, or `flapi.yaml`
 

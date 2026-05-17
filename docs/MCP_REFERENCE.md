@@ -543,6 +543,7 @@ Executes an MCP tool with provided arguments.
 |-----------|------|----------|-------------|
 | `name` | string | Yes | Tool name to execute |
 | `arguments` | object | No | Tool input arguments |
+| `arguments._dryRun` | boolean | No | Reserved flag. When `true`, flAPI renders the SQL (with `?` placeholders for typed params), validates inputs, and returns the rendered SQL + execution plan as a JSON payload **without** executing the query. Use for shadow-mode auditing and pre-production batch validation. See [§ 4.4.1 Dry-run mode](#441-dry-run-mode) |
 
 **Response:**
 
@@ -563,7 +564,45 @@ Executes an MCP tool with provided arguments.
 
 Tool results are returned as content blocks (see [Content Types](#9-content-types)).
 
-> **Implementation:** `src/mcp_route_handlers.cpp` | **Tests:** `test/cpp/mcp_tool_handler_test.cpp`, `test/integration/test_mcp_methods.py`
+**Authorization:** when `mcp.auth.enabled: true`, every tool MUST declare `mcp-tool.allowed-roles` in its YAML. Calls from a JWT/OIDC principal whose `roles` claim doesn't intersect the allowed list return:
+
+```json
+{"jsonrpc":"2.0","id":4,"error":{"code":-32603,"message":"Permission denied: Tool 'X' requires one of [analyst]; caller has [reader]."}}
+```
+
+Tools without `allowed-roles` are denied — this is the secure-by-default stance.
+
+**Per-tool rate limit:** if `mcp-tool.rate-limit.enabled: true`, requests over the configured budget receive a JSON-RPC error similar to the RBAC denial. Rate limits are keyed on the authenticated principal (with an anonymous fallback bucket per tool).
+
+**Response shaping:** the tool's `mcp-tool.response` block (see [CONFIG_REFERENCE § 2.6](./CONFIG_REFERENCE.md#26-mcp-configuration)) applies redaction, row-count caps, or summary-only sampling to the result before it enters the content block.
+
+#### 4.4.1 Dry-run mode
+
+Set `arguments._dryRun: true` to run the validate → render → plan pipeline without executing the query. Useful for:
+
+- Pre-production audit: have every tool definition exercised by a smoke-test harness before promoting the endpoint.
+- Operator debugging: see exactly what SQL would have been built for a given parameter set.
+
+**Request:**
+```json
+{
+  "jsonrpc":"2.0","id":4,"method":"tools/call",
+  "params":{"name":"customer_lookup","arguments":{"id":42,"_dryRun":true}}
+}
+```
+
+**Response payload** (inside `result.content[0].text`, JSON-encoded):
+```json
+{
+  "dry_run": true,
+  "rendered_sql": "SELECT 42 AS customer_id, 'fake' AS name",
+  "params": {"id": "42"}
+}
+```
+
+The dry-run path does NOT skip validators, role checks, or rate limits — it skips only the SQL execution step. A caller that lacks the role to invoke the tool gets the same `Permission denied` from a dry-run as from a real call.
+
+> **Implementation:** `src/mcp_route_handlers.cpp`, `src/mcp_authorization_policy.cpp`, `src/mcp_dry_run.cpp`, `src/mcp_response_shaper.cpp`, `src/mcp_tool_rate_limiter.cpp` | **Tests:** `test/integration/test_mcp_methods.py`, `test_mcp_rbac.py`, `test_mcp_dry_run.py`, `test_mcp_response_shaping.py`, `test_mcp_per_tool_rate_limit.py`
 
 ---
 

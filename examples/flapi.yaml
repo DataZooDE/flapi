@@ -63,8 +63,43 @@ heartbeat:
 enforce-https:
   # Whether to force HTTPS for all connections
   enabled: false
-  # ssl-cert-file: './ssl/cert.pem'
-  # ssl-key-file: './ssl/key.pem'
+
+# Direct TLS termination by flAPI's embedded server (optional). Production
+# deployments usually terminate TLS at a reverse proxy; enable this only
+# if flAPI is exposed directly.
+# https:
+#   enabled: true
+#   ssl_cert_file: './ssl/cert.pem'
+#   ssl_key_file: './ssl/key.pem'
+
+# CORS allow-list. The historic wildcard '*' is permitted but the
+# startup auditor warns if it is combined with auth.enabled: true
+# (credential-bearing requests across origins).
+cors:
+  allow-origins:
+    - '*'   # dev/demo default; replace with a real allow-list for production
+    # - https://app.example.com
+
+# Per-request JSONL audit log (off by default). Sink can be 'stdout' (for
+# container log collectors) or 'file' (with a `path` key); `redact`
+# replaces the listed parameter names with <redacted> in the emitted
+# JSON. Covers both REST and MCP traffic.
+# audit:
+#   enabled: true
+#   sink: file
+#   path: ./logs/audit.jsonl
+#   redact:
+#     - password
+#     - api_key
+
+# Global rate limiting (off by default). `key` picks the bucket: `ip`
+# (legacy), `user` (authenticated principal only), or `user-or-ip`
+# (principal when present, IP fallback — recommended for share-NAT users).
+# rate_limit:
+#   enabled: true
+#   max: 100
+#   interval: 60
+#   key: user-or-ip
 
 # DuckDB configuration
 duckdb:
@@ -121,6 +156,22 @@ mcp:
   host: localhost
   allow-list-changed-notifications: true
 
+  # Tool-description hygiene scanner. When true, flAPI refuses to start
+  # if any mcp-tool.description contains control characters,
+  # JSON-breakout patterns, or known role-override phrases ("ignore
+  # previous instructions"). Recommended for production.
+  # strict-descriptions: true
+
+  # When auth.enabled is true, every mcp-tool MUST declare
+  # `allowed-roles` — tools without one are denied by default. This
+  # secure-by-default stance prevents a freshly-added tool from being
+  # callable by any authenticated user.
+  # auth:
+  #   enabled: true
+  #   type: bearer
+  #   jwt-secret: '${MCP_JWT_SECRET}'
+  #   jwt-issuer: 'https://issuer.example.com'
+
   # Option 1: Load instructions from external markdown file
   # This file contains usage guidance for LLM clients
   instructions-file: ./mcp_instructions.md
@@ -136,4 +187,24 @@ mcp:
   #   - Use search tools for filtering
   #   - Apply pagination with limit parameter
   #   - Check tool descriptions for cache status
+
+# Per-tool hardening lives inside each endpoint's `mcp-tool:` block.
+# A production-ready tool typically looks like:
+#
+#   mcp-tool:
+#     name: customer_lookup
+#     description: Look up a customer by id.
+#     allowed-roles: [analyst, admin]   # required when mcp.auth.enabled
+#     response:
+#       max-rows: 1000                  # hard cap on returned rows
+#       redact-columns: [ssn, salary]   # replace listed columns with <redacted>
+#       # sample: true                  # return summary only, never rows
+#     rate-limit:
+#       enabled: true
+#       max: 30                         # per-tool quota per principal
+#       interval: 60
+#
+# MCP clients may also pass `_dryRun: true` in `tools/call` arguments —
+# flAPI renders the SQL + EXPLAIN plan and returns it without executing
+# the query. Use for shadow-mode audits before promoting an endpoint.
 
