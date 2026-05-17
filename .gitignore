@@ -24,3 +24,19 @@ dev_rfc.log.ai/
 
 # bv (beads viewer) local config and caches
 .bv/
+
+# beads (bd) transient runtime state — daemon lock/log/port and local
+# Dolt database files. The canonical issue store is `.beads/issues.jsonl`,
+# which IS checked in; everything else under .beads/ is per-clone state.
+.beads/backup/
+.beads/dolt/
+.beads/embeddeddolt/
+.beads/dolt-server.lock
+.beads/dolt-server.log
+.beads/dolt-server.pid
+.beads/dolt-server.port
+.beads/daemon.lock
+.beads/daemon.log
+.beads/beads.db
+.beads/beads.db-shm
+.beads/beads.db-wal
