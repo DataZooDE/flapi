@@ -86,6 +86,17 @@ public:
 private:
     QueryExecutor createQueryExecutor();
 
+    // W3.1 PR B: prepared-statement path counterpart to `executeQuery(string, ...)`.
+    // `sql` carries `?` placeholders, `bindings` records the per-placeholder
+    // type and field name, `bind_values` is the user param map (pre-Mustache
+    // strip) from which values are pulled. `for_template_params` is the
+    // post-Mustache map used for pagination + next-link composition.
+    QueryResult executeQueryWithBindings(const std::string& sql,
+                                         const std::vector<PreparedBindingSpec>& bindings,
+                                         const std::map<std::string, std::string>& bind_values,
+                                         const std::map<std::string, std::string>& for_template_params,
+                                         bool with_pagination);
+
     void logDuckDBVersion();
     
     void createAndInitializeDuckDBConfig(std::shared_ptr<ConfigManager> config_manager, duckdb_config& config);

@@ -653,3 +653,107 @@ TEST_CASE("SQLTemplateProcessor: auth and regular params coexist", "[sql_templat
         REQUIRE(result == "SELECT * FROM orders WHERE id = 42 AND owner = 'bob'");
     }
 }
+TEST_CASE("SQLTemplateProcessor: prepared rendering replaces typed params with ?", "[sql_template_processor][prepared]") {
+    auto config_manager = std::make_shared<MockConfigManager>();
+    TemporaryDirectory temp_dir;
+    config_manager->setTemplatePath(temp_dir.getPath().string());
+
+    SQLTemplateProcessor processor(config_manager);
+
+    SECTION("int-typed param becomes ?, untyped param stays inline") {
+        std::string template_content =
+            "SELECT * FROM t WHERE id = {{params.id}} AND status = '{{params.status}}'";
+        std::ofstream(temp_dir.getPath() / "tpl.sql") << template_content;
+
+        EndpointConfig endpoint;
+        endpoint.templateSource = "tpl.sql";
+
+        RequestFieldConfig id_field;
+        id_field.fieldName = "id";
+        ValidatorConfig int_v;
+        int_v.type = "int";
+        id_field.validators.push_back(int_v);
+        endpoint.request_fields.push_back(id_field);
+
+        // status has no validator -> stays on Mustache path
+        RequestFieldConfig status_field;
+        status_field.fieldName = "status";
+        endpoint.request_fields.push_back(status_field);
+
+        std::map<std::string, std::string> params = {{"id", "42"}, {"status", "ok"}};
+
+        auto prepared = processor.loadAndProcessTemplatePrepared(endpoint, params);
+        REQUIRE(prepared.bindings.size() == 1);
+        REQUIRE(prepared.bindings[0].field_name == "id");
+        REQUIRE(prepared.bindings[0].type == SqlParameterType::Integer);
+        REQUIRE(prepared.sql == "SELECT * FROM t WHERE id = ? AND status = 'ok'");
+    }
+
+    SECTION("template with only conn.* references produces no bindings") {
+        std::string template_content = "SELECT 1 FROM {{conn.schema}}.users";
+        std::ofstream(temp_dir.getPath() / "no_params.sql") << template_content;
+
+        ConnectionConfig cc;
+        cc.properties["schema"] = "public";
+        config_manager->addConnection("default", cc);
+
+        EndpointConfig endpoint;
+        endpoint.templateSource = "no_params.sql";
+        endpoint.connection = {"default"};
+
+        std::map<std::string, std::string> params;
+        auto prepared = processor.loadAndProcessTemplatePrepared(endpoint, params);
+        REQUIRE(prepared.bindings.empty());
+        REQUIRE(prepared.sql == "SELECT 1 FROM public.users");
+    }
+
+    SECTION("triple-brace stays inline even for typed param (operator must migrate)") {
+        // Triple-brace is intentionally left alone by the rewriter so
+        // operators have time to drop the surrounding quotes when
+        // migrating a string-quoted reference to the prepared path.
+        std::string template_content = "SELECT '{{{params.name}}}'";
+        std::ofstream(temp_dir.getPath() / "triple.sql") << template_content;
+
+        EndpointConfig endpoint;
+        endpoint.templateSource = "triple.sql";
+        RequestFieldConfig f;
+        f.fieldName = "name";
+        ValidatorConfig sv;
+        sv.type = "string";
+        f.validators.push_back(sv);
+        endpoint.request_fields.push_back(f);
+
+        std::map<std::string, std::string> params = {{"name", "alice"}};
+        auto prepared = processor.loadAndProcessTemplatePrepared(endpoint, params);
+        REQUIRE(prepared.bindings.empty());
+        REQUIRE(prepared.sql == "SELECT 'alice'");
+    }
+
+    SECTION("auth.username inside template is rendered, not bound") {
+        // __auth_username is stripped from params by createTemplateContext
+        // and surfaces as auth.username. The rewriter never sees it as a
+        // request field, so it stays on the Mustache path. Verifying
+        // here so the auth-context plumbing keeps working under prepared.
+        std::string template_content =
+            "SELECT * FROM t WHERE id = {{params.id}} AND owner = '{{{auth.username}}}'";
+        std::ofstream(temp_dir.getPath() / "auth_prep.sql") << template_content;
+
+        EndpointConfig endpoint;
+        endpoint.templateSource = "auth_prep.sql";
+        RequestFieldConfig f;
+        f.fieldName = "id";
+        ValidatorConfig iv;
+        iv.type = "int";
+        f.validators.push_back(iv);
+        endpoint.request_fields.push_back(f);
+
+        std::map<std::string, std::string> params = {
+            {"id", "7"},
+            {"__auth_username", "alice"}
+        };
+        auto prepared = processor.loadAndProcessTemplatePrepared(endpoint, params);
+        REQUIRE(prepared.bindings.size() == 1);
+        REQUIRE(prepared.bindings[0].field_name == "id");
+        REQUIRE(prepared.sql == "SELECT * FROM t WHERE id = ? AND owner = 'alice'");
+    }
+}

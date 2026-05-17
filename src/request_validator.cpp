@@ -1,4 +1,7 @@
 #include "request_validator.hpp"
+#include "config_manager.hpp"
+#include "sql_parameter_classifier.hpp"
+#include <crow.h>
 #include <regex>
 #include <chrono>
 #include <iomanip>
@@ -71,10 +74,37 @@ std::vector<ValidationError> RequestValidator::validateField(const RequestFieldC
         }
     }
 
-    // Perform SQL injection validation if enabled
+    // W3.3: demote the SQL-keyword regex when the field is bound through
+    // a NUMERIC / DATE / TIME / BOOL prepared-statement type. Those bind
+    // sites cannot meaningfully participate in SQL injection — the value
+    // is encoded as a primitive on the wire, not interpolated as text.
+    //
+    // Varchar-bindable fields (string/uuid/email/enum classify to
+    // Varchar) deliberately keep the regex because flAPI templates
+    // commonly still reference them via triple-brace `{{{ params.X }}}`
+    // for `LIKE '%...%'` patterns or other contexts the rewriter
+    // doesn't migrate. Without the regex those would still flow
+    // unescaped into SQL. Operators who have migrated a varchar
+    // template to the double-brace prepared path can opt out via
+    // `preventSqlInjection: false`.
     if (shouldValidateSqlInjection) {
-        auto sqlInjectionErrors = validateSqlInjection(field.fieldName, value);
-        errors.insert(errors.end(), sqlInjectionErrors.begin(), sqlInjectionErrors.end());
+        const SqlParameterClassifier classifier;
+        const auto bindability = classifier.classify(field);
+        const bool bypass_regex =
+            bindability.bindable && bindability.type != SqlParameterType::Varchar;
+        if (bypass_regex) {
+            auto soft_warnings = validateSqlInjection(field.fieldName, value);
+            if (!soft_warnings.empty()) {
+                CROW_LOG_DEBUG << "request_validator: numeric-bindable field '"
+                               << field.fieldName
+                               << "' has value that matches the SQL-keyword heuristic ("
+                               << soft_warnings.front().errorMessage
+                               << "); allowing because prepared-statement binding is the hard defense.";
+            }
+        } else {
+            auto sqlInjectionErrors = validateSqlInjection(field.fieldName, value);
+            errors.insert(errors.end(), sqlInjectionErrors.begin(), sqlInjectionErrors.end());
+        }
     }
 
     return errors;
@@ -100,7 +130,16 @@ std::vector<ValidationError> RequestValidator::validateString(const std::string&
 std::vector<ValidationError> RequestValidator::validateInt(const std::string& fieldName, const std::string& value, const ValidatorConfig& validator) {
     std::vector<ValidationError> errors;
     try {
-        int intValue = std::stoi(value);
+        // Strict parse: std::stoi silently stops at the first non-digit
+        // so "1; DROP TABLE t" would return 1 and pass — letting the
+        // attacker get a valid-but-truncated value into the param map.
+        // Demand the entire string be consumed.
+        std::size_t consumed = 0;
+        int intValue = std::stoi(value, &consumed);
+        if (consumed != value.size()) {
+            errors.push_back({fieldName, "Invalid integer value"});
+            return errors;
+        }
         if (intValue < validator.min) {
             errors.push_back({fieldName, "Integer is less than the minimum allowed value"});
         }

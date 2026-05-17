@@ -1,5 +1,6 @@
 #include "query_executor.hpp"
 #include "duckdb_raii.hpp"
+#include "prepared_value_converter.hpp"
 #include <crow.h>
 #include <fmt/core.h>
 #include <sstream>
@@ -41,7 +42,7 @@ void QueryExecutor::executePrepared(duckdb_prepared_statement stmt, const std::s
         duckdb_destroy_result(&result);
         has_result = false;
     }
-    
+
     if (duckdb_execute_prepared(stmt, &result) == DuckDBError) {
         std::string error_message = duckdb_result_error(&result);
         std::string context_msg = context.empty() ? "" : " during " + context;
@@ -49,6 +50,101 @@ void QueryExecutor::executePrepared(duckdb_prepared_statement stmt, const std::s
         throw std::runtime_error("Prepared statement execution failed" + context_msg + ": " + error_message);
     }
     has_result = true;
+}
+
+namespace {
+
+// W3.1 PR B helper. Binds a single PreparedValue at 1-indexed `pos` and
+// throws on DuckDB error so the caller can guarantee the statement is
+// destroyed in the surrounding RAII scope.
+void bindOne(duckdb_prepared_statement stmt,
+             idx_t pos,
+             const PreparedValue& v,
+             const PreparedBindingSpec& spec) {
+    duckdb_state st = DuckDBSuccess;
+    switch (v.kind) {
+        case PreparedValue::Kind::Null:
+            st = duckdb_bind_null(stmt, pos);
+            break;
+        case PreparedValue::Kind::Int64:
+            st = duckdb_bind_int64(stmt, pos, v.int64_value);
+            break;
+        case PreparedValue::Kind::Double:
+            st = duckdb_bind_double(stmt, pos, v.double_value);
+            break;
+        case PreparedValue::Kind::Bool:
+            st = duckdb_bind_boolean(stmt, pos, v.bool_value);
+            break;
+        case PreparedValue::Kind::Date: {
+            duckdb_date_struct ds;
+            ds.year  = v.year;
+            ds.month = v.month;
+            ds.day   = v.day;
+            duckdb_date d = duckdb_to_date(ds);
+            st = duckdb_bind_date(stmt, pos, d);
+            break;
+        }
+        case PreparedValue::Kind::Time: {
+            duckdb_time_struct ts;
+            ts.hour   = v.hour;
+            ts.min    = v.minute;
+            ts.sec    = v.second;
+            ts.micros = v.micros;
+            duckdb_time t = duckdb_to_time(ts);
+            st = duckdb_bind_time(stmt, pos, t);
+            break;
+        }
+        case PreparedValue::Kind::Varchar:
+            // Use the length-aware variant so embedded NUL bytes survive
+            // and are preserved as part of the bound value. The C-string
+            // form would silently truncate `alice\0 OR 1=1` to `alice`,
+            // letting an attacker smuggle a shorter value past length
+            // validators.
+            st = duckdb_bind_varchar_length(stmt, pos, v.varchar.data(), v.varchar.size());
+            break;
+    }
+    if (st == DuckDBError) {
+        throw std::runtime_error(
+            "Failed to bind parameter '" + spec.field_name +
+            "' at position " + std::to_string(pos));
+    }
+}
+
+} // namespace
+
+void QueryExecutor::executeWithBindings(const std::string& sql,
+                                        const std::vector<PreparedBindingSpec>& bindings,
+                                        const std::map<std::string, std::string>& values,
+                                        const std::string& context) {
+    duckdb_prepared_statement stmt = nullptr;
+    if (duckdb_prepare(conn, sql.c_str(), &stmt) == DuckDBError) {
+        const char* err = duckdb_prepare_error(stmt);
+        std::string err_str = err ? err : "(no detail)";
+        duckdb_destroy_prepare(&stmt);
+        std::string context_msg = context.empty() ? "" : " during " + context;
+        throw std::runtime_error("Prepare failed" + context_msg + ": " + err_str);
+    }
+
+    try {
+        PreparedValueConverter converter;
+        for (const auto& spec : bindings) {
+            auto it = values.find(spec.field_name);
+            const bool present = it != values.end();
+            const std::string& raw = present ? it->second : std::string();
+            auto outcome = converter.convert(spec.type, raw, present);
+            if (!outcome.ok) {
+                throw std::runtime_error(
+                    "Bind conversion failed for '" + spec.field_name + "': " + outcome.error);
+            }
+            // DuckDB parameter indexes are 1-based.
+            bindOne(stmt, spec.position + 1, outcome.value, spec);
+        }
+        executePrepared(stmt, context);
+    } catch (...) {
+        duckdb_destroy_prepare(&stmt);
+        throw;
+    }
+    duckdb_destroy_prepare(&stmt);
 }
 
 crow::json::wvalue QueryExecutor::toJson() const {

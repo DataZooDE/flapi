@@ -16,6 +16,30 @@ std::string SQLTemplateProcessor::loadAndProcessTemplate(const EndpointConfig& e
     return processTemplate(templateContent, ctx);
 }
 
+PreparedQueryRender SQLTemplateProcessor::loadAndProcessTemplatePrepared(
+    const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
+    PreparedQueryRender out;
+
+    const std::string templatePath = getFullTemplatePath(endpoint.templateSource);
+    CROW_LOG_DEBUG << "Prepared template path: " << templatePath;
+    const std::string templateContent = loadTemplateContent(templatePath);
+
+    PreparedTemplateRewriter rewriter;
+    SqlParameterClassifier classifier;
+    auto rewrite = rewriter.rewrite(templateContent, endpoint.request_fields, classifier);
+
+    // createTemplateContext mutates params (it strips cache/auth keys
+    // before exposing the remainder as params.*). Run it after rewriting
+    // so the rewriter still sees the auth-prefixed keys it ignores by
+    // design (they are not declared as request_fields, so the rewriter's
+    // findField() path returns nullptr and they pass through untouched).
+    crow::mustache::context ctx = createTemplateContext(endpoint, params);
+
+    out.sql = processTemplate(rewrite.rewritten_template, ctx);
+    out.bindings = std::move(rewrite.bindings);
+    return out;
+}
+
 std::string SQLTemplateProcessor::loadAndProcessTemplate(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params) {
     std::string templatePath;
     if (cacheConfig.template_file) {

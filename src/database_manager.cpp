@@ -356,11 +356,26 @@ duckdb_connection DatabaseManager::getConnection() {
     return conn; // Return the connection handle
 }
 
-QueryResult DatabaseManager::executeQuery(const EndpointConfig& endpoint, std::map<std::string, std::string>& params, bool with_pagination) 
-{   
+QueryResult DatabaseManager::executeQuery(const EndpointConfig& endpoint, std::map<std::string, std::string>& params, bool with_pagination)
+{
     cache_manager->addQueryCacheParamsIfNecessary(config_manager, endpoint, params);
-    std::string processedQuery = processTemplate(endpoint, params);
-    return executeQuery(processedQuery, params, with_pagination);
+
+    // W3.1 PR B: route typed scalar params through the prepared path.
+    // The rewriter is conservative — endpoints without typed validators
+    // produce an empty binding plan, so the call collapses to the
+    // historic string-execute path with no behaviour change.
+    //
+    // We hold onto `params` *before* template rendering because
+    // loadAndProcessTemplatePrepared mutates the map (it strips cache/
+    // auth keys when assembling the Mustache context). The binder needs
+    // the pre-strip map to look up the user-supplied param values.
+    std::map<std::string, std::string> bind_values = params;
+    auto prepared = sql_processor->loadAndProcessTemplatePrepared(endpoint, params);
+
+    if (prepared.bindings.empty()) {
+        return executeQuery(prepared.sql, params, with_pagination);
+    }
+    return executeQueryWithBindings(prepared.sql, prepared.bindings, bind_values, params, with_pagination);
 }
 
 QueryResult DatabaseManager::executeCacheQuery(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params) 
@@ -394,7 +409,65 @@ std::unique_ptr<QueryExecutor> DatabaseManager::executeQueryRaw(const EndpointCo
     return executor;
 }
 
-QueryResult DatabaseManager::executeQuery(const std::string& query, 
+QueryResult DatabaseManager::executeQueryWithBindings(
+    const std::string& sql,
+    const std::vector<PreparedBindingSpec>& bindings,
+    const std::map<std::string, std::string>& bind_values,
+    const std::map<std::string, std::string>& for_template_params,
+    bool with_pagination)
+{
+    auto executor = createQueryExecutor();
+    std::string paginatedQuery = sql;
+    std::string countQuery = "SELECT COUNT(*) FROM (" + sql + ") AS subquery";
+
+    int64_t limit = 0;
+    int64_t offset = 0;
+    bool hasPagination = false;
+
+    if (with_pagination &&
+        (for_template_params.find("limit") != for_template_params.end() ||
+         for_template_params.find("offset") != for_template_params.end())) {
+        hasPagination = true;
+        if (for_template_params.find("limit") != for_template_params.end()) {
+            limit = std::stoll(for_template_params.find("limit")->second);
+        }
+        if (for_template_params.find("offset") != for_template_params.end()) {
+            offset = std::stoll(for_template_params.find("offset")->second);
+        }
+        paginatedQuery = "SELECT * FROM (" + paginatedQuery + ") AS subquery "
+                         "LIMIT " + std::to_string(limit) +
+                         " OFFSET " + std::to_string(offset);
+    }
+
+    // Run the main (possibly wrapped) query against the prepared path.
+    executor.executeWithBindings(paginatedQuery, bindings, bind_values, "main query");
+
+    QueryResult result;
+    result.data = executor.toJson();
+
+    if (with_pagination) {
+        auto countExecutor = createQueryExecutor();
+        countExecutor.executeWithBindings(countQuery, bindings, bind_values, "count query");
+        if (countExecutor.rowCount() > 0) {
+            result.total_count = duckdb_value_int64(&countExecutor.result, 0, 0);
+        }
+
+        if (hasPagination && offset + limit < result.total_count) {
+            std::stringstream next_ss;
+            next_ss << "?offset=" << (offset + limit);
+            for (const auto& [key, value] : for_template_params) {
+                if (key != "offset") {
+                    next_ss << "&" << key << "=" << value;
+                }
+            }
+            result.next = next_ss.str();
+        }
+    }
+
+    return result;
+}
+
+QueryResult DatabaseManager::executeQuery(const std::string& query,
                                           const std::map<std::string, std::string>& params,
                                           bool with_pagination) {
     auto executor = createQueryExecutor();

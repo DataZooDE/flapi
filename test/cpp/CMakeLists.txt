@@ -33,6 +33,7 @@ add_executable(flapi_tests
     rate_limit_middleware_test.cpp
     request_handler_test.cpp
     prepared_template_rewriter_test.cpp
+    prepared_value_converter_test.cpp
     request_validator_test.cpp
     security_auditor_test.cpp
     sql_parameter_classifier_test.cpp

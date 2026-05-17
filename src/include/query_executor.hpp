@@ -6,6 +6,8 @@
 #include <map>
 #include <vector>
 
+#include "prepared_template_rewriter.hpp"
+
 // Define standard vector size if not defined by DuckDB
 #ifndef STANDARD_VECTOR_SIZE
 #define STANDARD_VECTOR_SIZE 1024
@@ -67,6 +69,18 @@ public:
     
     void execute(const std::string& query, const std::string& context = "");
     void executePrepared(duckdb_prepared_statement stmt, const std::string& context = "");
+
+    // W3.1 PR B: prepare a query that contains `?` placeholders, bind
+    // each according to `bindings` (typed conversion via
+    // PreparedValueConverter; missing/empty values become NULL where
+    // semantically appropriate), then execute. The result is exposed via
+    // the same `result` / `toJson()` accessors as `execute()` so callers
+    // can route through either path interchangeably. Throws on bind or
+    // prepare failure; the statement is always destroyed.
+    void executeWithBindings(const std::string& sql,
+                             const std::vector<PreparedBindingSpec>& bindings,
+                             const std::map<std::string, std::string>& values,
+                             const std::string& context = "");
     
     idx_t rowCount() const { return has_result ? duckdb_row_count(&result) : 0; }
     idx_t columnCount() const { return has_result ? duckdb_column_count(&result) : 0; }

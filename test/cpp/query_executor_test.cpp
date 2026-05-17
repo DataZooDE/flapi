@@ -1,6 +1,8 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/benchmark/catch_benchmark.hpp>
+#include <catch2/matchers/catch_matchers.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 #include "query_executor.hpp"
 #include <cstdlib>
 
@@ -156,5 +158,125 @@ TEST_CASE("QueryExecutor chunk experiment", "[query_executor]") {
 	duckdb_close(&database);
 }
 
+TEST_CASE("QueryExecutor::executeWithBindings - prepared path", "[query_executor][prepared]") {
+    duckdb_database database;
+    REQUIRE(duckdb_open(NULL, &database) == DuckDBSuccess);
+
+    SECTION("bind int64 + varchar + null mix") {
+        QueryExecutor executor(database);
+        // Seed a table to exercise typed binding end-to-end.
+        executor.execute("CREATE TABLE t (id BIGINT, name VARCHAR, score DOUBLE)");
+        executor.execute("INSERT INTO t VALUES (1,'alice',1.5),(2,'bob',2.5),(3,NULL,3.5)");
+
+        std::vector<PreparedBindingSpec> b = {
+            {"id",   SqlParameterType::Integer, 0},
+            {"name", SqlParameterType::Varchar, 1},
+        };
+        std::map<std::string, std::string> v = {{"id", "2"}, {"name", "bob"}};
+
+        executor.executeWithBindings(
+            "SELECT id, name FROM t WHERE id = ? AND name = ?",
+            b, v, "test");
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc.size() == 1);
+        REQUIRE(doc[0]["id"].i() == 2);
+        REQUIRE(doc[0]["name"].s() == "bob");
+    }
+
+    SECTION("missing param binds NULL and matches IS NULL") {
+        QueryExecutor executor(database);
+        executor.execute("CREATE TABLE u (id BIGINT, opt VARCHAR)");
+        executor.execute("INSERT INTO u VALUES (10,NULL),(11,'x')");
+
+        std::vector<PreparedBindingSpec> b = {
+            {"opt", SqlParameterType::Varchar, 0},
+        };
+        std::map<std::string, std::string> v;  // 'opt' absent → NULL
+
+        // `IS NOT DISTINCT FROM` returns true when both sides are NULL.
+        executor.executeWithBindings(
+            "SELECT id FROM u WHERE opt IS NOT DISTINCT FROM ? ORDER BY id",
+            b, v, "test");
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc.size() == 1);
+        REQUIRE(doc[0]["id"].i() == 10);
+    }
+
+    SECTION("SQL injection payload bound as data, not parsed") {
+        QueryExecutor executor(database);
+        executor.execute("CREATE TABLE s (id BIGINT, label VARCHAR)");
+        executor.execute("INSERT INTO s VALUES (1,'normal')");
+
+        std::vector<PreparedBindingSpec> b = {
+            {"label", SqlParameterType::Varchar, 0},
+        };
+        // Classic injection payload — must end up as a literal compared to
+        // 'normal', not parsed.
+        std::map<std::string, std::string> v = {
+            {"label", "' OR 1=1 --"}
+        };
+
+        executor.executeWithBindings(
+            "SELECT id FROM s WHERE label = ?", b, v, "test");
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc.size() == 0);
+    }
+
+    SECTION("bad numeric input surfaces as bind error") {
+        QueryExecutor executor(database);
+        executor.execute("CREATE TABLE n (id BIGINT)");
+
+        std::vector<PreparedBindingSpec> b = {
+            {"id", SqlParameterType::Integer, 0},
+        };
+        std::map<std::string, std::string> v = {{"id", "not-an-int"}};
+
+        REQUIRE_THROWS_WITH(
+            executor.executeWithBindings("SELECT * FROM n WHERE id = ?", b, v, "test"),
+            Catch::Matchers::ContainsSubstring("Bind conversion failed"));
+    }
+
+    SECTION("date and time bindings round-trip") {
+        QueryExecutor executor(database);
+        executor.execute("CREATE TABLE dt (d DATE, t TIME)");
+        executor.execute("INSERT INTO dt VALUES (DATE '2024-03-15', TIME '13:45:07')");
+
+        std::vector<PreparedBindingSpec> b = {
+            {"d", SqlParameterType::Date, 0},
+            {"t", SqlParameterType::Time, 1},
+        };
+        std::map<std::string, std::string> v = {
+            {"d", "2024-03-15"},
+            {"t", "13:45:07"},
+        };
+
+        executor.executeWithBindings(
+            "SELECT 1 AS hit FROM dt WHERE d = ? AND t = ?", b, v, "test");
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc.size() == 1);
+        REQUIRE(doc[0]["hit"].i() == 1);
+    }
+
+    SECTION("empty bindings vector behaves like execute()") {
+        QueryExecutor executor(database);
+        std::vector<PreparedBindingSpec> b;
+        std::map<std::string, std::string> v;
+        executor.executeWithBindings("SELECT 7 AS n", b, v, "test");
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc[0]["n"].i() == 7);
+    }
+
+    SECTION("prepare failure (syntax error) raises with diagnostic") {
+        QueryExecutor executor(database);
+        std::vector<PreparedBindingSpec> b = {{"id", SqlParameterType::Integer, 0}};
+        std::map<std::string, std::string> v = {{"id", "1"}};
+        REQUIRE_THROWS_WITH(
+            executor.executeWithBindings("SELEKT ? FROM nowhere", b, v, "test"),
+            Catch::Matchers::ContainsSubstring("Prepare failed"));
+    }
+
+    duckdb_close(&database);
 }
-}
+
+}  // namespace test
+}  // namespace flapi

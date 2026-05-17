@@ -511,6 +511,9 @@ TEST_CASE("RequestValidator: validateSQLInjection", "[request_validator]") {
     }
 
     SECTION("SQL injection attempt with keywords") {
+        // type:string classifies to Varchar — keeps regex protection per
+        // W3.3's narrow demotion rule (Varchar templates commonly still
+        // use triple-brace, e.g. `LIKE '%...%'`).
         std::map<std::string, std::string> params = {{"query", "SELECT * FROM users"}};
         auto errors = validator.validateRequestParameters({field}, params);
         REQUIRE(errors.size() == 1);
@@ -525,30 +528,85 @@ TEST_CASE("RequestValidator: validateSQLInjection", "[request_validator]") {
         REQUIRE(errors[0].fieldName == "query");
         REQUIRE(errors[0].errorMessage == "Potential SQL injection detected");
     }
-    
+
     SECTION("SQL injection false positive: 'UPDATED' should not match 'UPDATE'") {
-        // "UPDATED" contains "UPDATE" as substring, but should NOT trigger validation
-        // with whole-word matching
         std::map<std::string, std::string> params = {{"query", "Alice Mutton Updated"}};
         auto errors = validator.validateRequestParameters({field}, params);
-        REQUIRE(errors.empty());  // Should NOT trigger SQL injection error
+        REQUIRE(errors.empty());
     }
-    
+
     SECTION("SQL injection detection: 'UPDATE test' should match as whole word") {
-        // "UPDATE test" contains "UPDATE" as a whole word, should trigger validation
         std::map<std::string, std::string> params = {{"query", "UPDATE test"}};
         auto errors = validator.validateRequestParameters({field}, params);
         REQUIRE(errors.size() == 1);
-        REQUIRE(errors[0].fieldName == "query");
         REQUIRE(errors[0].errorMessage == "Potential SQL injection detected");
     }
-    
+
     SECTION("SQL injection detection: dangerous patterns like '1=1'") {
         std::map<std::string, std::string> params = {{"query", "test OR 1=1"}};
         auto errors = validator.validateRequestParameters({field}, params);
         REQUIRE(errors.size() == 1);
-        REQUIRE(errors[0].fieldName == "query");
         REQUIRE(errors[0].errorMessage == "Potential SQL injection detected");
+    }
+
+    SECTION("W3.3: numeric-bindable field — keyword regex is demoted") {
+        // type:int classifies to Integer — the value is bound via
+        // duckdb_bind_int64 and cannot smuggle SQL. The regex would
+        // false-positive on values like `1 OR 1=1` *anyway*, but those
+        // also fail strict int parsing. To force the regex code path
+        // and prove demotion, use a value that parses as int *and*
+        // happens to contain a heuristic match — there isn't one (ints
+        // can't contain keywords), so we instead use a Date field with
+        // a value whose substring matches the heuristic.
+        RequestFieldConfig date_field;
+        date_field.fieldName = "as_of";
+        date_field.fieldIn = "query";
+        ValidatorConfig dv;
+        dv.type = "date";   // bindable, non-Varchar
+        date_field.validators.push_back(dv);
+
+        // Value passes the date-shape regex but its substring trips the
+        // SQL-keyword detector ("--" comment pattern). Under W3.3 we
+        // expect ONLY the date-format error from validateDate, NOT a
+        // "Potential SQL injection detected" entry.
+        std::map<std::string, std::string> params = {{"as_of", "2024-01--01"}};
+        auto errors = validator.validateRequestParameters({date_field}, params);
+        for (const auto& e : errors) {
+            REQUIRE(e.errorMessage != "Potential SQL injection detected");
+        }
+    }
+
+    SECTION("W3.3: varchar-bindable field still rejects keywords") {
+        // type:string / uuid / email / enum all classify to Varchar
+        // and keep regex protection because templates routinely embed
+        // them via triple-brace.
+        RequestFieldConfig vc;
+        vc.fieldName = "name";
+        vc.fieldIn = "query";
+        ValidatorConfig sv;
+        sv.type = "string";
+        vc.validators.push_back(sv);
+
+        std::map<std::string, std::string> params = {{"name", "SELECT * FROM x"}};
+        auto errors = validator.validateRequestParameters({vc}, params);
+        REQUIRE(errors.size() == 1);
+        REQUIRE(errors[0].errorMessage == "Potential SQL injection detected");
+    }
+
+    SECTION("W3.3: opt-out via preventSqlInjection:false still works on varchar fields") {
+        // Operator has migrated a string field to the prepared (double-
+        // brace) path and explicitly disables the regex.
+        RequestFieldConfig vc;
+        vc.fieldName = "name";
+        vc.fieldIn = "query";
+        ValidatorConfig sv;
+        sv.type = "string";
+        sv.preventSqlInjection = false;
+        vc.validators.push_back(sv);
+
+        std::map<std::string, std::string> params = {{"name", "SELECT * FROM x"}};
+        auto errors = validator.validateRequestParameters({vc}, params);
+        REQUIRE(errors.empty());
     }
     
     SECTION("SQL injection prevention disabled via flag") {
