@@ -311,8 +311,14 @@ std::vector<ValidationError> RequestValidator::validateRequestFields(
     knownFields.insert("offset");
     knownFields.insert("limit");
     
-    // Check each parameter against known fields
+    // Check each parameter against known fields. The `__auth_*` prefix is
+    // reserved for the auth-context injection performed by APIServer; those
+    // keys are not user input and must not be flagged as unknown.
+    const std::string kAuthReservedPrefix = "__auth_";
     for (const auto& param : params) {
+        if (param.first.rfind(kAuthReservedPrefix, 0) == 0) {
+            continue;
+        }
         if (knownFields.find(param.first) == knownFields.end()) {
             errors.push_back({
                 param.first,

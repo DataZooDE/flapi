@@ -723,4 +723,33 @@ TEST_CASE("RequestValidator: validateRequestFields", "[request_validator]") {
         REQUIRE(hasUnknownParam);
         REQUIRE(hasInvalidField);
     }
+
+    SECTION("Reserved __auth_* injection keys are not flagged as unknown") {
+        // APIServer injects auth-context fields under the reserved __auth_*
+        // prefix before validation. They are not user input, so the unknown-
+        // parameter check must let them through silently. Without this skip,
+        // every authenticated write request would 400 with phantom errors.
+        std::map<std::string, std::string> params = {
+            {"name", "John"},
+            {"__auth_username", "alice"},
+            {"__auth_email", "alice@example.com"},
+            {"__auth_roles", "admin,analyst"},
+            {"__auth_type", "jwt"},
+            {"__auth_authenticated", "true"}
+        };
+        auto errors = validator.validateRequestFields(requestFields, params);
+        REQUIRE(errors.empty());
+    }
+
+    SECTION("Keys merely containing __auth_ are still flagged if not a prefix") {
+        // The skip is prefix-based, so a key like "user___auth_token" that
+        // contains the marker but does not start with it must still be
+        // rejected — it could otherwise be smuggled past as a phantom field.
+        std::map<std::string, std::string> params = {
+            {"user___auth_token", "value"}
+        };
+        auto errors = validator.validateRequestFields(requestFields, params);
+        REQUIRE(errors.size() == 1);
+        REQUIRE(errors[0].fieldName == "user___auth_token");
+    }
 }

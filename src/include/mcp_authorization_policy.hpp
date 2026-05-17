@@ -5,7 +5,7 @@
 
 namespace flapi {
 
-class EndpointConfig;
+struct EndpointConfig;
 
 class MCPAuthorizationPolicy {
 public:
