@@ -48,6 +48,7 @@ private:
 
     static crow::json::wvalue convertVectorEntryToJson(const duckdb_vector &vector, const idx_t row_idx);
     static crow::json::wvalue convertVectorVarcharToJson(const duckdb_vector &vector, const idx_t row_idx);
+    static crow::json::wvalue convertVectorJsonToJson(const duckdb_vector &vector, const idx_t row_idx);
     static crow::json::wvalue convertVectorDecimalToJson(const duckdb_vector &vector, const idx_t row_idx);
     static crow::json::wvalue convertVectorTimestampToJson(const duckdb_vector &vector, const idx_t row_idx);
     static crow::json::wvalue convertVectorDateToJson(const duckdb_vector &vector, const idx_t row_idx);
