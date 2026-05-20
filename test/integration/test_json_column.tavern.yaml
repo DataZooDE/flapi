@@ -1,0 +1,26 @@
+# Regression test for issue #38:
+# A column declared as DuckDB's JSON logical type must appear in the HTTP
+# response body as a nested JSON object, not as a JSON-escaped string.
+test_name: JSON-aliased VARCHAR columns are returned as nested JSON
+
+stages:
+  - name: GET /json-demo embeds payload as a nested object
+    request:
+      url: "{base_url}/json-demo/"
+      method: GET
+    response:
+      status_code: 200
+      headers:
+        content-type: application/json
+      json:
+        data:
+          - id: 1
+            payload:
+              a: 1
+              b:
+                - 10
+                - 20
+              c:
+                nested: true
+        next: !anything
+        total_count: !anything

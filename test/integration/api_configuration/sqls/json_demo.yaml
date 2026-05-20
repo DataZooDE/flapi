@@ -1,0 +1,16 @@
+# Reproduces issue #38: a DuckDB JSON-aliased VARCHAR column must serialise
+# as nested JSON, not as a JSON-escaped string the caller has to parse a
+# second time. The endpoint returns the literal payload from the issue's
+# reproduction so a test can assert on the structure directly.
+url-path: /json-demo/
+method: GET
+
+template-source: json_demo.sql
+
+# A connection is required by the endpoint loader; the SQL itself does not
+# touch the connection, so the existing parquet connection works.
+connection:
+  - data-types-parquet
+
+auth:
+  enabled: false

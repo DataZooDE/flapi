@@ -203,6 +203,23 @@ std::vector<crow::json::wvalue> QueryResult::convertChunkToJson(const std::vecto
 crow::json::wvalue QueryResult::convertVectorEntryToJson(const duckdb_vector &vector, const idx_t row_idx) {
     auto type = duckdb_vector_get_column_type(vector);
     auto type_id = duckdb_get_type_id(type);
+
+    // DuckDB's JSON type is a logical-type alias over VARCHAR (see
+    // DuckDB's LogicalType::JSON()), so `duckdb_get_type_id` returns
+    // VARCHAR for it. Detect the alias before dispatching to the VARCHAR
+    // handler so JSON columns are embedded as nested JSON rather than
+    // emitted as escaped strings.
+    bool is_json_alias = false;
+    if (type_id == DUCKDB_TYPE_VARCHAR) {
+        DuckDBString alias(duckdb_logical_type_get_alias(type));
+        is_json_alias = !alias.is_null() && std::string(alias.get()) == "JSON";
+    }
+    duckdb_destroy_logical_type(&type);
+
+    if (is_json_alias) {
+        return convertVectorJsonToJson(vector, row_idx);
+    }
+
     switch (type_id) {
         case DUCKDB_TYPE_SQLNULL:
             return crow::json::wvalue(nullptr);
@@ -278,9 +295,6 @@ crow::json::wvalue QueryResult::convertVectorEntryToJson(const duckdb_vector &ve
             CROW_LOG_WARNING << "Unknown type: " << type_id;
             return crow::json::wvalue(nullptr);
     }
-
-    duckdb_destroy_logical_type(&type);
-    return crow::json::wvalue();
 }
 
 crow::json::wvalue QueryResult::convertVectorVarcharToJson(const duckdb_vector &vector, const idx_t row_idx) {
@@ -288,13 +302,37 @@ crow::json::wvalue QueryResult::convertVectorVarcharToJson(const duckdb_vector &
     if (!duckdb_validity_row_is_valid(validity, row_idx)) {
         return crow::json::wvalue(nullptr);
     }
-    
+
     auto data = (duckdb_string_t *)duckdb_vector_get_data(vector);
     auto str = duckdb_string_is_inlined(data[row_idx])
              ? std::string(data[row_idx].value.inlined.inlined, data[row_idx].value.inlined.length)
              : std::string((const char*)data[row_idx].value.pointer.ptr, data[row_idx].value.pointer.length);
 
     return crow::json::wvalue(str);
+}
+
+crow::json::wvalue QueryResult::convertVectorJsonToJson(const duckdb_vector &vector, const idx_t row_idx) {
+    auto validity = duckdb_vector_get_validity(vector);
+    if (!duckdb_validity_row_is_valid(validity, row_idx)) {
+        return crow::json::wvalue(nullptr);
+    }
+
+    auto data = (duckdb_string_t *)duckdb_vector_get_data(vector);
+    const char* str_ptr = duckdb_string_is_inlined(data[row_idx])
+                        ? data[row_idx].value.inlined.inlined
+                        : (const char*)data[row_idx].value.pointer.ptr;
+    const idx_t str_len = duckdb_string_is_inlined(data[row_idx])
+                        ? data[row_idx].value.inlined.length
+                        : data[row_idx].value.pointer.length;
+
+    auto parsed = crow::json::load(str_ptr, str_len);
+    if (!parsed) {
+        // Source row contains malformed JSON; degrade to the raw string
+        // rather than dropping the row or returning null. The cell stays
+        // queryable, just as a string.
+        return crow::json::wvalue(std::string(str_ptr, str_len));
+    }
+    return crow::json::wvalue(parsed);
 }
 
 crow::json::wvalue QueryResult::convertVectorDecimalToJson(const duckdb_vector &vector, const idx_t row_idx) {
