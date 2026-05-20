@@ -79,6 +79,76 @@ TEST_CASE("QueryExecutor error handling", "[query_executor]") {
     duckdb_close(&database);
 }
 
+TEST_CASE("QueryExecutor JSON column", "[query_executor][json]") {
+    duckdb_database database;
+    REQUIRE(duckdb_open(NULL, &database) == DuckDBSuccess);
+
+    QueryExecutor executor(database);
+    executor.execute("INSTALL json; LOAD json;");
+
+    SECTION("nested JSON value is embedded, not escaped") {
+        // Reproduction from issue #38: a column with the DuckDB `JSON`
+        // logical-type alias must serialise as nested JSON, not as a
+        // JSON-escaped string the caller has to parse a second time.
+        executor.execute(R"SQL(
+            SELECT
+                1 AS id,
+                '{"a": 1, "b": [10, 20], "c": {"nested": true}}'::JSON AS payload
+        )SQL");
+
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc.size() == 1);
+        REQUIRE(doc[0]["id"].i() == 1);
+
+        // The crux: payload must be an Object, not a String.
+        REQUIRE(doc[0]["payload"].t() == crow::json::type::Object);
+        REQUIRE(doc[0]["payload"]["a"].i() == 1);
+        REQUIRE(doc[0]["payload"]["b"].t() == crow::json::type::List);
+        REQUIRE(doc[0]["payload"]["b"].size() == 2);
+        REQUIRE(doc[0]["payload"]["b"][0].i() == 10);
+        REQUIRE(doc[0]["payload"]["b"][1].i() == 20);
+        REQUIRE(doc[0]["payload"]["c"]["nested"].b() == true);
+    }
+
+    SECTION("JSON array column is embedded as array") {
+        executor.execute(R"SQL(
+            SELECT '[1, 2, 3]'::JSON AS arr
+        )SQL");
+
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc.size() == 1);
+        REQUIRE(doc[0]["arr"].t() == crow::json::type::List);
+        REQUIRE(doc[0]["arr"].size() == 3);
+        REQUIRE(doc[0]["arr"][0].i() == 1);
+        REQUIRE(doc[0]["arr"][2].i() == 3);
+    }
+
+    SECTION("NULL JSON column stays null") {
+        executor.execute(R"SQL(
+            SELECT CAST(NULL AS JSON) AS payload
+        )SQL");
+
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc.size() == 1);
+        REQUIRE(doc[0]["payload"].t() == crow::json::type::Null);
+    }
+
+    SECTION("plain VARCHAR is still emitted as a string") {
+        // Regression guard: only the JSON-aliased VARCHAR path changes;
+        // bare VARCHAR must continue to render as a JSON string.
+        executor.execute(R"SQL(
+            SELECT '{"looks":"like json"}'::VARCHAR AS not_json
+        )SQL");
+
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc.size() == 1);
+        REQUIRE(doc[0]["not_json"].t() == crow::json::type::String);
+        REQUIRE(doc[0]["not_json"].s() == "{\"looks\":\"like json\"}");
+    }
+
+    duckdb_close(&database);
+}
+
 TEST_CASE("QueryExecutor type coverage", "[query_executor]") {
     duckdb_database database;
     REQUIRE(duckdb_open(NULL, &database) == DuckDBSuccess);
