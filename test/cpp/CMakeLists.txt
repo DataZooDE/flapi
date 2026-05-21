@@ -4,6 +4,7 @@ add_executable(flapi_tests
     main.cpp
     archive_io_test.cpp
     audit_logger_test.cpp
+    bundle_locator_test.cpp
     auth_middleware_test.cpp
     config_manager_test.cpp
     config_manager_yaml_validation_test.cpp
