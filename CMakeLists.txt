@@ -232,6 +232,7 @@ add_library(flapi-lib STATIC
     src/api_server.cpp
     src/archive_io.cpp
     src/audit_logger.cpp
+    src/bundle_locator.cpp
     src/auth_middleware.cpp
     src/cache_manager.cpp
     src/database_manager_cache_adapter.cpp
@@ -263,6 +264,7 @@ add_library(flapi-lib STATIC
     src/prepared_value_converter.cpp
     src/route_translator.cpp
     src/security_auditor.cpp
+    src/selfpath.cpp
     src/sql_parameter_classifier.cpp
     src/sql_template_processor.cpp
     src/sql_utils.cpp
