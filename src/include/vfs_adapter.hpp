@@ -1,11 +1,17 @@
 #pragma once
 
-#include <string>
-#include <vector>
+#include <cstdint>
+#include <map>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 namespace flapi {
+
+// Forward-declared so the factory can refer to bundle contents without
+// pulling in the archive_io.hpp dependency.
+using ArchiveEntries = std::map<std::string, std::vector<std::uint8_t>>;
 
 /**
  * Exception thrown when a file operation fails.
@@ -22,7 +28,8 @@ public:
  *
  * Implementations:
  * - LocalFileProvider: Standard filesystem operations (std::filesystem)
- * - DuckDBVFSProvider: DuckDB's VFS for S3, GCS, Azure, HTTP (future)
+ * - DuckDBVFSProvider: DuckDB's VFS for S3, GCS, Azure, HTTP
+ * - EmbeddedArchiveFileProvider: in-memory ZIP appended to the binary
  */
 class IFileProvider {
 public:
@@ -208,11 +215,12 @@ class FileProviderFactory {
 public:
     /**
      * Create an appropriate file provider for the given path.
-     * Returns LocalFileProvider for local paths (no scheme or file://).
-     * Returns DuckDBVFSProvider for remote paths (s3://, gs://, az://, http://, https://).
      *
-     * @param path Path to create provider for (used to detect scheme)
-     * @return Shared pointer to appropriate file provider
+     * Dispatch order:
+     *   1. Remote schemes (s3://, gs://, az://, http(s)://) -> DuckDBVFSProvider
+     *   2. Process has a bundle set via SetBundleContents() -> EmbeddedArchiveFileProvider
+     *   3. Otherwise -> LocalFileProvider
+     *
      * @throws FileOperationError if remote path requested but DatabaseManager not initialized
      */
     static std::shared_ptr<IFileProvider> CreateProvider(const std::string& path);
@@ -229,6 +237,27 @@ public:
      * @throws FileOperationError if DatabaseManager is not initialized
      */
     static std::shared_ptr<IFileProvider> CreateDuckDBProvider();
+
+    /**
+     * Create an embedded provider backed by the currently set bundle.
+     * @throws FileOperationError if no bundle is currently set.
+     */
+    static std::shared_ptr<IFileProvider> CreateEmbeddedProvider();
+
+    /**
+     * Set the process-wide ZIP-bundle contents that CreateProvider() and
+     * CreateEmbeddedProvider() consult. Pass nullptr to clear.
+     *
+     * Called once at startup by main() after `LocateBundleInSelf()`
+     * succeeds. Tests should pair set/clear with an RAII guard to keep
+     * the static clean.
+     */
+    static void SetBundleContents(std::shared_ptr<const ArchiveEntries> entries);
+
+    /**
+     * Returns the currently set bundle contents, or nullptr if none.
+     */
+    static std::shared_ptr<const ArchiveEntries> GetBundleContents();
 };
 
 } // namespace flapi
