@@ -2,6 +2,7 @@ find_package(Catch2 3 REQUIRED)
 
 add_executable(flapi_tests
     main.cpp
+    archive_io_test.cpp
     audit_logger_test.cpp
     auth_middleware_test.cpp
     config_manager_test.cpp
