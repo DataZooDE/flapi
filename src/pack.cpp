@@ -8,6 +8,7 @@
 #include <array>
 #include <cstdlib>
 #include <fstream>
+#include <iostream>
 #include <ostream>
 #include <regex>
 #include <vector>
