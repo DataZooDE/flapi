@@ -355,10 +355,18 @@ if(APPLE)
         "Size in MiB of the reserved __FLAPI/__bundle Mach-O segment.")
     set(FLAPI_BUNDLE_PLACEHOLDER
         "${CMAKE_BINARY_DIR}/_flapi_bundle_placeholder.bin")
+    # Use dd directly via execve (no shell). The previous `bash -c
+    # "... >/dev/null 2>&1"` wrapping broke under ninja-on-macos because
+    # the redirect operators were parsed by the outer shell rather than
+    # the bash -c subshell, producing "/dev/null 2: Permission denied".
+    # dd prints a 2-3 line summary on stderr; that's fine in CI logs.
     add_custom_command(
         OUTPUT "${FLAPI_BUNDLE_PLACEHOLDER}"
-        COMMAND ${CMAKE_COMMAND} -E env
-                bash -c "dd if=/dev/zero of='${FLAPI_BUNDLE_PLACEHOLDER}' bs=1m count=${FLAPI_RESERVED_BUNDLE_MIB} >/dev/null 2>&1"
+        COMMAND dd
+                if=/dev/zero
+                "of=${FLAPI_BUNDLE_PLACEHOLDER}"
+                bs=1m
+                count=${FLAPI_RESERVED_BUNDLE_MIB}
         COMMENT "flapi: generating ${FLAPI_RESERVED_BUNDLE_MIB}-MiB __FLAPI/__bundle placeholder")
     add_custom_target(flapi_bundle_placeholder
         DEPENDS "${FLAPI_BUNDLE_PLACEHOLDER}")
