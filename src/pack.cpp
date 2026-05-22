@@ -8,6 +8,7 @@
 #include <array>
 #include <cstdlib>
 #include <fstream>
+#include <iostream>
 #include <ostream>
 #include <regex>
 #include <vector>
@@ -192,20 +193,27 @@ PackResult Pack(const std::filesystem::path& in_dir,
     }
 
     // Re-sign on Darwin. CodesignBinary is a benign no-op on other
-    // platforms so we don't need a platform guard here. Note: a
-    // codesign failure is reported to the caller via PackError; the
-    // append path on macOS still benefits from an ad-hoc re-sign
-    // because the trailing-data invalidates the original signature.
+    // platforms so we don't need a platform guard here.
+    //
+    // Note on the --macos-append legacy path: codesign --force fails
+    // with "main executable failed strict validation" because the
+    // trailing ZIP after __LINKEDIT puts the binary outside what
+    // codesign considers signable. That's the documented trade-off --
+    // append-mode output is explicitly not notarisable. We warn and
+    // continue; only the reserved-segment path treats codesign failure
+    // as fatal.
     if (options.codesign) {
         auto cs = CodesignBinary(out_path);
         if (cs.exit_code != 0) {
-            // Don't crash a Linux build over codesign output. On macOS
-            // a non-zero exit means we couldn't make the binary
-            // launchable -- surface it.
 #ifdef __APPLE__
-            throw PackError("codesign failed (exit " +
-                             std::to_string(cs.exit_code) + "): " +
-                             cs.stderr_tail);
+            if (used_section_path) {
+                throw PackError("codesign failed (exit " +
+                                 std::to_string(cs.exit_code) + "): " +
+                                 cs.stderr_tail);
+            }
+            std::cerr << "flapi pack: warning: codesign failed on --macos-append "
+                         "output (expected; result is not notarisable): "
+                      << cs.stderr_tail << '\n';
 #else
             (void)cs;  // unreachable in practice (we always set exit_code = 0)
 #endif

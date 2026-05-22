@@ -112,6 +112,20 @@ std::optional<BundleLocation> ScanBufferForEocd(
 
 std::optional<BundleLocation> LocateBundle(const std::filesystem::path& path) {
     std::error_code ec;
+    // macOS reserved-segment path (#48): try the __FLAPI/__bundle section
+    // first. Linux/Windows binaries don't have the section, so this is a
+    // cheap miss and we fall through to the EOF tail scan below. Required
+    // so `flapi info` / `flapi unpack` (which call LocateBundle directly,
+    // not LocateBundleInSelf) find macOS-packed bundles.
+    if (auto sect = LocateFlapiSection(path); sect.has_value()) {
+        if (auto loc = LocateBundleInRange(path, sect->file_offset, sect->size);
+            loc.has_value()) {
+            return loc;
+        }
+        // Section present but unpopulated -- fall through to EOF scan
+        // so --macos-append bundles are still discoverable.
+    }
+
     const auto file_size = std::filesystem::file_size(path, ec);
     if (ec || file_size < kEocdRecordSize) {
         return std::nullopt;
@@ -175,19 +189,7 @@ std::optional<BundleLocation> LocateBundleInSelf() {
     } catch (...) {
         return std::nullopt;
     }
-
-    // Prefer the reserved Mach-O section if present (#48). Linux/Windows
-    // binaries lack the section, so this returns nullopt and we fall
-    // through to the EOF-tail scan unchanged.
-    if (auto sect = LocateFlapiSection(self_path); sect.has_value()) {
-        if (auto loc = LocateBundleInRange(self_path, sect->file_offset, sect->size);
-            loc.has_value()) {
-            return loc;
-        }
-        // Section is present but empty / unpopulated (e.g., un-packed
-        // build): fall through to the EOF-tail scan.
-    }
-
+    // LocateBundle now tries section-mode first, then EOF tail.
     try {
         return LocateBundle(self_path);
     } catch (...) {
