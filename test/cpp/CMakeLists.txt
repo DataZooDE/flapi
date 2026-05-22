@@ -12,6 +12,7 @@ add_executable(flapi_tests
     config_service_test.cpp
     config_service_filesystem_test.cpp
     cors_policy_test.cpp
+    duckdb_embed_fs_test.cpp
     config_service_parameters_test.cpp
     config_service_slug_test.cpp
     config_service_template_lookup_test.cpp

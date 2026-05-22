@@ -22,6 +22,7 @@
 #include "bundle_locator.hpp"
 #include "config_manager.hpp"
 #include "database_manager.hpp"
+#include "duckdb_embed_fs.hpp"
 #include "flapi_telemetry.hpp"
 #include "rate_limit_middleware.hpp"
 #include "config_token_utils.hpp"
@@ -411,6 +412,13 @@ int main(int argc, char* argv[])
     }
 
     initializeDatabase(config_manager);
+
+    // If a bundle was detected at startup, register the embed:// FS
+    // on the DuckDB instance so `read_csv('embed://...')` and similar
+    // calls inside SQL templates can resolve to the in-memory archive.
+    if (RegisterEmbeddedFileSystem()) {
+        CROW_LOG_INFO << "Registered embed:// DuckDB filesystem";
+    }
 
     // Configure cloud credentials in DuckDB after database is initialized
     configureCloudCredentialsInDuckDB();

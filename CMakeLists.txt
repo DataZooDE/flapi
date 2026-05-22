@@ -236,6 +236,7 @@ add_library(flapi-lib STATIC
     src/auth_middleware.cpp
     src/cache_manager.cpp
     src/database_manager_cache_adapter.cpp
+    src/duckdb_embed_fs.cpp
     src/config_loader.cpp
     src/endpoint_repository.cpp
     src/config_validator.cpp
