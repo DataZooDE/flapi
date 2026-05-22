@@ -17,7 +17,9 @@
 #endif
 
 #include "api_server.hpp"
+#include "archive_io.hpp"
 #include "auth_middleware.hpp"
+#include "bundle_locator.hpp"
 #include "config_manager.hpp"
 #include "database_manager.hpp"
 #include "flapi_telemetry.hpp"
@@ -25,6 +27,8 @@
 #include "config_token_utils.hpp"
 #include "credential_manager.hpp"
 #include "security_auditor.hpp"
+#include "selfpath.hpp"
+#include "vfs_adapter.hpp"
 #include "vfs_health_checker.hpp"
 
 using namespace flapi;
@@ -57,6 +61,45 @@ std::shared_ptr<ConfigManager> initializeConfig(const std::string& config_file) 
         throw std::runtime_error("Error while loading configuration, Details: " + std::string(e.what()));
     }
     return config_manager;
+}
+
+// Detects whether the running binary has a ZIP bundle appended to it and,
+// if so, decompresses it once and hands it to FileProviderFactory so all
+// later config / SQL-template reads come from the in-memory map.
+// Failure to read or decompress is logged at WARNING and silently falls
+// back to filesystem mode -- the spike's safety-net behaviour (#42).
+void detectAndRegisterEmbeddedBundle() {
+    auto loc = LocateBundleInSelf();
+    if (!loc.has_value()) {
+        return;
+    }
+
+    try {
+        const auto self_path = GetSelfPath();
+        std::ifstream f(self_path, std::ios::binary);
+        if (!f.is_open()) {
+            CROW_LOG_WARNING << "Bundle detected but self-binary unreadable; "
+                                "falling back to filesystem mode";
+            return;
+        }
+
+        std::vector<std::uint8_t> bytes(loc->size);
+        f.seekg(static_cast<std::streamoff>(loc->offset), std::ios::beg);
+        f.read(reinterpret_cast<char*>(bytes.data()),
+               static_cast<std::streamsize>(loc->size));
+        if (!f) {
+            CROW_LOG_WARNING << "Bundle read truncated; falling back to filesystem mode";
+            return;
+        }
+
+        auto entries = std::make_shared<ArchiveEntries>(ReadArchive(bytes));
+        const std::size_t entry_count = entries->size();
+        FileProviderFactory::SetBundleContents(std::move(entries));
+        CROW_LOG_INFO << "Bundle detected and registered (" << entry_count << " entries)";
+    } catch (const std::exception& e) {
+        CROW_LOG_WARNING << "Bundle detection failed (" << e.what()
+                         << "); falling back to filesystem mode";
+    }
 }
 
 std::string getEndpointName(const EndpointConfig& endpoint) {
@@ -331,6 +374,8 @@ int main(int argc, char* argv[])
     }
 
     set_log_level(log_level);
+
+    detectAndRegisterEmbeddedBundle();
 
     auto config_manager = initializeConfig(config_file);
 

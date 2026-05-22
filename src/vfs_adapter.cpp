@@ -1,4 +1,7 @@
 #include "vfs_adapter.hpp"
+
+#include "embedded_archive_file_provider.hpp"
+
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -400,9 +403,21 @@ bool DuckDBVFSProvider::IsRemotePath(const std::string& path) const {
 // FileProviderFactory Implementation
 // ============================================================================
 
+namespace {
+
+// Process-wide bundle contents pointer. Set once by main() after
+// LocateBundleInSelf() succeeds; nullptr means filesystem-mode is
+// active.
+std::shared_ptr<const ArchiveEntries> g_bundle_entries;
+
+}  // namespace
+
 std::shared_ptr<IFileProvider> FileProviderFactory::CreateProvider(const std::string& path) {
     if (PathSchemeUtils::IsRemotePath(path)) {
         return CreateDuckDBProvider();
+    }
+    if (g_bundle_entries != nullptr) {
+        return CreateEmbeddedProvider();
     }
     return CreateLocalProvider();
 }
@@ -413,6 +428,22 @@ std::shared_ptr<IFileProvider> FileProviderFactory::CreateLocalProvider() {
 
 std::shared_ptr<IFileProvider> FileProviderFactory::CreateDuckDBProvider() {
     return std::make_shared<DuckDBVFSProvider>();
+}
+
+std::shared_ptr<IFileProvider> FileProviderFactory::CreateEmbeddedProvider() {
+    if (g_bundle_entries == nullptr) {
+        throw FileOperationError(
+            "Cannot create embedded provider: no bundle is currently set");
+    }
+    return std::make_shared<EmbeddedArchiveFileProvider>(g_bundle_entries);
+}
+
+void FileProviderFactory::SetBundleContents(std::shared_ptr<const ArchiveEntries> entries) {
+    g_bundle_entries = std::move(entries);
+}
+
+std::shared_ptr<const ArchiveEntries> FileProviderFactory::GetBundleContents() {
+    return g_bundle_entries;
 }
 
 } // namespace flapi
