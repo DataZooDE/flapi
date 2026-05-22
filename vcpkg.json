@@ -4,6 +4,7 @@
   "dependencies": [
     "catch2",
     "crow",
+    "libarchive",
     "fmt",
     "jwt-cpp",
     "argparse",

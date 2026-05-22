@@ -168,6 +168,7 @@ find_package(jwt-cpp CONFIG REQUIRED)
 find_package(argparse CONFIG REQUIRED)
 find_package(fmt CONFIG REQUIRED)
 find_package(CURL CONFIG REQUIRED)
+find_package(LibArchive REQUIRED)
 
 include(FetchContent)
 FetchContent_Declare(
@@ -229,6 +230,7 @@ include_directories(
 # Create flapi-lib
 add_library(flapi-lib STATIC
     src/api_server.cpp
+    src/archive_io.cpp
     src/audit_logger.cpp
     src/auth_middleware.cpp
     src/cache_manager.cpp
@@ -312,6 +314,7 @@ target_link_libraries(flapi-lib PUBLIC
     ${AWSSDK_LIBRARIES}
     fmt::fmt
     CURL::libcurl
+    LibArchive::LibArchive
     nanoarrow::nanoarrow
     nanoarrow::nanoarrow_ipc
     $<IF:$<TARGET_EXISTS:zstd::libzstd_shared>,zstd::libzstd_shared,zstd::libzstd_static>
