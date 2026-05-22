@@ -145,17 +145,20 @@ bool IsSecretExcluded(const std::string& rel_path) {
 PackResult Pack(const std::filesystem::path& in_dir,
                 const std::filesystem::path& out_path,
                 const PackOptions& options) {
-    const auto host_path = options.host_binary_override.value_or(GetSelfPath());
-    const auto host_bytes = HostByteCount(host_path);
-
-    CopyHostPrefix(host_path, out_path, host_bytes);
-    CopyExecutableBits(host_path, out_path);
-
+    // Collect (and validate against the secret deny list) BEFORE doing any
+    // I/O on the output. Otherwise a rejected `.env` leaves a multi-GB
+    // half-written binary sitting in the user's tmp dir.
     auto entries = CollectEntries(in_dir, options.allow_secrets);
 
     ArchiveWriteOptions write_opts;
     write_opts.source_date_epoch = ResolveSourceDateEpoch(options.source_date_epoch);
     const auto archive = WriteArchive(entries, write_opts);
+
+    const auto host_path = options.host_binary_override.value_or(GetSelfPath());
+    const auto host_bytes = HostByteCount(host_path);
+
+    CopyHostPrefix(host_path, out_path, host_bytes);
+    CopyExecutableBits(host_path, out_path);
 
     AppendArchive(out_path, archive);
 
