@@ -552,11 +552,262 @@ jobs:
         }
 
   # -------------------------------------------------------------------------------------------------
+  # Self-packaging Smoke Tests (#49) — pack / info / unpack + reproducibility on every platform.
+  # macOS additionally verifies the codesign signature on the reserved-segment output.
+  # -------------------------------------------------------------------------------------------------
+  pack-smoke-linux-amd64:
+    needs: [linux-build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - name: Download flapi binary
+      uses: actions/download-artifact@v4
+      with:
+        name: flapi-linux-amd64
+        path: bin
+
+    - name: Pack / info / unpack / reproducibility
+      env:
+        SOURCE_DATE_EPOCH: "1700000000"
+      run: |
+        chmod +x bin/flapi
+        ./bin/flapi --version || true
+
+        mkdir -p fixture/sqls
+        cat > fixture/flapi.yaml <<'YAML'
+        project-name: pack-smoke
+        project-description: CI pack smoke fixture
+        template:
+          path: ./sqls
+        connections: {}
+        duckdb:
+          access_mode: READ_WRITE
+          threads: 1
+        YAML
+        cat > fixture/sqls/hello.yaml <<'YAML'
+        url-path: /hello
+        method: GET
+        template-source: hello.sql
+        connection: []
+        YAML
+        echo "SELECT 'world' AS greeting" > fixture/sqls/hello.sql
+
+        # pack
+        ./bin/flapi pack --in fixture --out out-a
+        test -s out-a
+        chmod +x out-a
+
+        # info should list the fixture entries
+        ./out-a info | tee info-a.txt
+        grep -q "flapi.yaml" info-a.txt
+        grep -q "sqls/hello.sql" info-a.txt
+
+        # unpack and verify
+        ./out-a unpack --to extracted
+        test -s extracted/flapi.yaml
+        test -s extracted/sqls/hello.sql
+        diff fixture/sqls/hello.sql extracted/sqls/hello.sql
+
+        # reproducibility: same input + same SOURCE_DATE_EPOCH ⇒ identical sha256
+        ./bin/flapi pack --in fixture --out out-b
+        sha256sum out-a out-b
+        test "$(sha256sum out-a | awk '{print $1}')" = "$(sha256sum out-b | awk '{print $1}')"
+
+  pack-smoke-linux-arm64:
+    needs: [linux-build]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+    - name: Download flapi binary
+      uses: actions/download-artifact@v4
+      with:
+        name: flapi-linux-arm64
+        path: bin
+
+    - name: Pack / info / unpack / reproducibility
+      env:
+        SOURCE_DATE_EPOCH: "1700000000"
+      run: |
+        chmod +x bin/flapi
+        mkdir -p fixture/sqls
+        cat > fixture/flapi.yaml <<'YAML'
+        project-name: pack-smoke
+        project-description: CI pack smoke fixture
+        template:
+          path: ./sqls
+        connections: {}
+        duckdb:
+          access_mode: READ_WRITE
+          threads: 1
+        YAML
+        cat > fixture/sqls/hello.yaml <<'YAML'
+        url-path: /hello
+        method: GET
+        template-source: hello.sql
+        connection: []
+        YAML
+        echo "SELECT 'world' AS greeting" > fixture/sqls/hello.sql
+
+        ./bin/flapi pack --in fixture --out out-a
+        chmod +x out-a
+        ./out-a info | tee info.txt
+        grep -q "flapi.yaml" info.txt
+        ./out-a unpack --to extracted
+        diff fixture/sqls/hello.sql extracted/sqls/hello.sql
+
+        ./bin/flapi pack --in fixture --out out-b
+        test "$(sha256sum out-a | awk '{print $1}')" = "$(sha256sum out-b | awk '{print $1}')"
+
+  pack-smoke-macos:
+    needs: [osx-universal-build]
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: false
+
+    - name: Download flapi binary
+      uses: actions/download-artifact@v4
+      with:
+        name: flapi-macos-arm64
+        path: bin
+
+    - name: Pack / info / unpack + codesign verify (reserved segment)
+      env:
+        SOURCE_DATE_EPOCH: "1700000000"
+      run: |
+        chmod +x bin/flapi
+
+        # The link-time placeholder should exist before any pack.
+        otool -l bin/flapi | grep -q "segname __FLAPI"
+        otool -l bin/flapi | grep -q "sectname __bundle"
+
+        mkdir -p fixture/sqls
+        cat > fixture/flapi.yaml <<'YAML'
+        project-name: pack-smoke
+        project-description: CI pack smoke fixture
+        template:
+          path: ./sqls
+        connections: {}
+        duckdb:
+          access_mode: READ_WRITE
+          threads: 1
+        YAML
+        cat > fixture/sqls/hello.yaml <<'YAML'
+        url-path: /hello
+        method: GET
+        template-source: hello.sql
+        connection: []
+        YAML
+        echo "SELECT 'world' AS greeting" > fixture/sqls/hello.sql
+
+        # Default pack uses the reserved-segment path on macOS.
+        ./bin/flapi pack --in fixture --out out-segment
+        chmod +x out-segment
+        ./out-segment info | tee info.txt
+        grep -q "flapi.yaml" info.txt
+        ./out-segment unpack --to extracted
+        diff fixture/sqls/hello.sql extracted/sqls/hello.sql
+
+        # Notarisation precondition: codesign must verify cleanly.
+        codesign --verify --strict out-segment
+
+        # Legacy append mode -- still produces a working bundle but the
+        # signature is intentionally ad-hoc. We assert info works; we
+        # do not assert codesign --verify because the trailing bytes
+        # cause that to fail (which is precisely why the segment path
+        # is the default).
+        ./bin/flapi pack --in fixture --out out-append --macos-append
+        chmod +x out-append
+        ./out-append info | grep -q "flapi.yaml"
+
+    - name: oversized payload is rejected with a corrective message
+      env:
+        SOURCE_DATE_EPOCH: "1700000000"
+      run: |
+        # Default reserved size is 16 MiB. A 32-MiB blob can't fit.
+        mkdir -p fixture/data
+        dd if=/dev/urandom of=fixture/data/huge.bin bs=1m count=32 2>/dev/null
+
+        # We expect a non-zero exit. Capture stdout+stderr to one file.
+        set +e
+        ./bin/flapi pack --in fixture --out out-too-big > err.txt 2>&1
+        rc=$?
+        set -e
+        cat err.txt
+        if [ "$rc" -eq 0 ]; then
+          echo "ERROR: oversized pack unexpectedly succeeded"
+          exit 1
+        fi
+        grep -qi "FLAPI_RESERVED_BUNDLE_MIB" err.txt
+        grep -Eqi "reserved|exceeds" err.txt
+
+  pack-smoke-windows:
+    needs: [windows-build]
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+    - name: Download flapi binary
+      uses: actions/download-artifact@v4
+      with:
+        name: flapi-windows-amd64
+        path: bin
+
+    - name: Pack / info / unpack / reproducibility
+      shell: pwsh
+      env:
+        SOURCE_DATE_EPOCH: "1700000000"
+      run: |
+        New-Item -ItemType Directory -Force fixture\sqls | Out-Null
+
+        @'
+        project-name: pack-smoke
+        project-description: CI pack smoke fixture
+        template:
+          path: ./sqls
+        connections: {}
+        duckdb:
+          access_mode: READ_WRITE
+          threads: 1
+        '@ | Out-File -FilePath fixture\flapi.yaml -Encoding UTF8
+
+        @'
+        url-path: /hello
+        method: GET
+        template-source: hello.sql
+        connection: []
+        '@ | Out-File -FilePath fixture\sqls\hello.yaml -Encoding UTF8
+
+        "SELECT 'world' AS greeting" | Out-File -FilePath fixture\sqls\hello.sql -Encoding UTF8
+
+        & bin\flapi.exe pack --in fixture --out out-a.exe
+        if ($LASTEXITCODE -ne 0) { throw "pack a failed" }
+
+        $info = & .\out-a.exe info
+        $info | Out-Host
+        if ($info -notmatch "flapi.yaml") { throw "info missing flapi.yaml" }
+        if ($info -notmatch "sqls/hello.sql") { throw "info missing hello.sql" }
+
+        & .\out-a.exe unpack --to extracted
+        if (-not (Test-Path extracted\flapi.yaml)) { throw "unpack missing flapi.yaml" }
+        if (-not (Test-Path extracted\sqls\hello.sql)) { throw "unpack missing hello.sql" }
+
+        & bin\flapi.exe pack --in fixture --out out-b.exe
+        if ($LASTEXITCODE -ne 0) { throw "pack b failed" }
+
+        $h1 = (Get-FileHash out-a.exe -Algorithm SHA256).Hash
+        $h2 = (Get-FileHash out-b.exe -Algorithm SHA256).Hash
+        Write-Host "out-a sha256: $h1"
+        Write-Host "out-b sha256: $h2"
+        if ($h1 -ne $h2) { throw "reproducibility check failed: $h1 != $h2" }
+
+  # -------------------------------------------------------------------------------------------------
   # Create GitHub Release + PyPI Wheels (tag pushes only)
   # -------------------------------------------------------------------------------------------------
   create-release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows-build, linux-build, osx-universal-build, flapii-build, smoke-test-windows, smoke-test-linux-amd64, smoke-test-linux-arm64, smoke-test-macos]
+    needs: [windows-build, linux-build, osx-universal-build, flapii-build, smoke-test-windows, smoke-test-linux-amd64, smoke-test-linux-arm64, smoke-test-macos, pack-smoke-linux-amd64, pack-smoke-linux-arm64, pack-smoke-macos, pack-smoke-windows]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
