@@ -31,6 +31,7 @@ add_executable(flapi_tests
     mcp_request_validator_test.cpp
     mcp_response_shaper_test.cpp
     mcp_tool_rate_limiter_test.cpp
+    pack_test.cpp
     password_hasher_test.cpp
     query_executor_test.cpp
     rate_limit_key_builder_test.cpp
