@@ -291,6 +291,131 @@ request:
 
 ---
 
+## 9. Self-Packaging via Appended ZIP
+
+**Decision:** Bundle the config tree (`flapi.yaml` + endpoint YAMLs +
+SQL templates + small data files) into the flapi executable itself,
+producing a single self-contained artifact deployable via `scp`.
+Four sub-decisions form the design:
+
+### 9a. ZIP appended after the executable
+
+**Why ZIP, not tar/7z/custom container:**
+
+- The ZIP End-of-Central-Directory (EOCD) record is _designed_ to be
+  found by a reverse scan from EOF -- that is precisely why ZIPs
+  appended to SFX headers, AppImage payloads, etc. remain valid.
+- ELF and PE loaders ignore trailing bytes after their own structures;
+  the appended ZIP is invisible at execution time. (Mach-O is the
+  awkward case -- see 9d.)
+- `libarchive` reads and writes ZIPs from memory buffers without
+  touching disk, and is already vcpkg-available.
+
+**Why-not the alternatives:**
+
+- **tar:** no EOCD-equivalent self-locator; we'd have to invent one.
+- **7z:** modern C++ surface is nicer (`bit7z`), but the format
+  doesn't tolerate arbitrary leading bytes as gracefully and lacks
+  ZIP's reverse-scan property.
+- **Custom container:** every byte of complexity is one we'd need to
+  defend against drift. ZIP is documented, ubiquitous, debuggable
+  with `unzip -l`.
+
+**The spike caught one ZIP-specific gotcha:** libarchive's default
+output rounds up to a 10240-byte tar-block boundary, padding with
+zeros. That pushes the EOCD record off file-EOF and a naive reverse
+scan misses it. Fix in `archive_io.cpp`:
+```cpp
+archive_write_set_bytes_in_last_block(a, 1);
+```
+
+### 9b. Reuse the existing `IFileProvider` abstraction
+
+flapi already routes every file read through `IFileProvider`
+(`src/include/vfs_adapter.hpp`), with two implementations: local disk
+and DuckDB's VFS (for `s3://`, `gs://`, etc). Adding a third --
+`EmbeddedArchiveFileProvider` -- serves config files straight from
+the decompressed in-memory archive. The `FileProviderFactory` picks
+it whenever a bundle is detected at startup.
+
+**Why-not extract-to-tmpdir:**
+
+- Race conditions on parallel `pack` invocations on the same host.
+- File-permission surprises (umask, immutable tmpfs).
+- Disk pressure on small container images.
+- No way for SQL templates to reference files inside an extracted
+  tree _by their bundle-relative path_, which we want for
+  reproducible config.
+
+The result: `ConfigLoader`, `SqlTemplateProcessor`, endpoint
+handlers, and everything else read through `IFileProvider` exactly
+as before. The factory's dispatch is the only seam.
+
+### 9c. `embed://` DuckDB FileSystem for SQL-side reads
+
+SQL templates often contain `read_csv('data/foo.csv')` or
+`read_parquet('s3://...')`. These bypass `IFileProvider` entirely
+and hit DuckDB's `VirtualFileSystem`. Registering a custom
+`duckdb::FileSystem` for the `embed://` scheme makes
+`read_csv('embed://data/foo.csv')` resolve to the same in-memory
+ArchiveEntries map.
+
+**Why a separate filesystem (vs. forcing every read through
+IFileProvider):**
+
+- DuckDB's CSV/Parquet readers stream data with seek-based access.
+  Going through `IFileProvider::ReadFile` would materialise the
+  whole file as a `std::string` first -- defeating streaming.
+- The DuckDB `embed://` filesystem subclasses `duckdb::FileSystem`
+  and serves bytes from the shared `ArchiveEntries` pointer
+  directly, so DuckDB streams as if from a real file.
+
+**Spike-caught requirement:** `Glob()` and `SeekPosition()` _must_
+be overridden, not just `OpenFile` / `Read` / `Seek`. `read_csv()`
+expands paths via `Glob` before opening; the base `FileSystem`
+throws "not implemented" rather than no-oping.
+
+### 9d. Reserved-segment + re-codesign on macOS
+
+Mach-O is the awkward case: appending bytes after `__LINKEDIT`
+invalidates the codesign signature, breaking notarisation.
+
+**Decision:** allocate a placeholder `__FLAPI/__bundle` section at
+link time (16 MiB default, configurable via
+`FLAPI_RESERVED_BUNDLE_MIB`). `flapi pack` overwrites the section
+in place rather than appending, then invokes `codesign --force
+--sign $CODESIGN_IDENTITY` (defaulting to `-` for ad-hoc) so the
+signature covers the new bytes.
+
+**Why-not:** the trailing-append-and-resign approach used by the
+spike works for ad-hoc use but produces a binary that fails
+notarisation. The reserved-segment approach is the
+industry-standard fix used by AppImage, PyInstaller, Wails.
+
+**Tradeoffs:**
+- (+) Single artifact deploys via `scp`; container images shrink
+  (`COPY sqls/` step removed).
+- (+) Reproducible builds (`SOURCE_DATE_EPOCH` + sorted entries) --
+  CI asserts `sha256(pack(x)) == sha256(pack(x))`.
+- (+) Existing operators see _zero_ change -- if no bundle is
+  appended, all code paths fall back to filesystem mode.
+- (-) Bundled binaries are immutable; live edits require a rebuild.
+- (-) Reserved-segment size is a hard cap at link time (default
+  16 MiB; rebuild with a larger value if needed).
+- (-) Universal/fat Mach-O binaries are out of scope (parser handles
+  thin 64-bit only); release artifacts are per-architecture thin.
+
+**Source files:** `src/archive_io.cpp`, `src/bundle_locator.cpp`,
+`src/selfpath.cpp`, `src/embedded_archive_file_provider.cpp`,
+`src/duckdb_embed_fs.cpp`, `src/macho_bundle.cpp`, `src/pack.cpp`
+
+**Tests:** 35+ Catch2 unit tests across the listed source files;
+8 pytest integration tests (`test/integration/test_self_packaging.py`);
+4 macOS-specific tests (skipped on non-Darwin); CI smoke jobs on all
+four supported platforms (#49 / `.github/workflows/build.yaml`).
+
+---
+
 ## Summary
 
 These design decisions prioritize:
@@ -299,5 +424,6 @@ These design decisions prioritize:
 3. **Flexibility** - Support multiple protocols from unified config
 4. **Maintainability** - Clear separation of concerns
 5. **Performance** - Caching and efficient query execution
+6. **Deployability** - One artifact ships everything (#9 self-packaging)
 
 For implementation details, see the [component documentation](./components/).

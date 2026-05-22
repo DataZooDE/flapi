@@ -19,14 +19,19 @@ This document provides a complete reference for the `flapi` server executable's 
    - [Validate Configuration](#validate-configuration---validate-config)
    - [Configuration Service](#configuration-service---config-service)
    - [Configuration Service Token](#configuration-service-token---config-service-token)
-3. [Environment Variables](#3-environment-variables)
-4. [Usage Examples](#4-usage-examples)
+3. [Self-Packaging Subcommands](#3-self-packaging-subcommands)
+   - [`flapi pack`](#flapi-pack----create-a-self-contained-binary)
+   - [`flapi info`](#flapi-info----inspect-the-running-binarys-bundle)
+   - [`flapi unpack`](#flapi-unpack---to-dir----dump-the-bundle-for-debugging)
+   - [macOS notarisation specifics](#macos-notarisation-specifics)
+4. [Environment Variables](#4-environment-variables)
+5. [Usage Examples](#5-usage-examples)
    - [Basic Startup](#basic-startup)
    - [Development Mode](#development-mode)
    - [Production Mode](#production-mode)
    - [CI/CD Validation](#cicd-validation)
-5. [Signal Handling](#5-signal-handling)
-6. [Exit Codes](#6-exit-codes)
+6. [Signal Handling](#6-signal-handling)
+7. [Exit Codes](#7-exit-codes)
 - [Related Documentation](#related-documentation)
 
 ---
@@ -396,12 +401,130 @@ export FLAPI_NO_TELEMETRY=1
 
 ---
 
-## 3. Environment Variables
+## 3. Self-Packaging Subcommands
+
+flapi can fold its config tree (flapi.yaml + endpoint YAMLs + SQL
+templates + small data files) into the binary itself, producing a
+single self-contained artifact deployable via `scp`. The same binary
+that serves the API also produces new bundled artifacts -- there is
+no separate packager.
+
+See [DESIGN_DECISIONS.md §9](./spec/DESIGN_DECISIONS.md#9-self-packaging-via-appended-zip)
+for the architectural rationale.
+
+### `flapi pack` -- create a self-contained binary
+
+```
+flapi pack --in <config-dir> --out <new-binary> [--allow-secrets] [--macos-append]
+```
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `--in` | yes | Directory containing `flapi.yaml` and friends. Walked recursively. |
+| `--out` | yes | Path for the bundled output binary. Overwritten if it exists. |
+| `--allow-secrets` | no | Bypass the default secret deny list. Testing only -- production users must never set this. |
+| `--macos-append` | no | macOS only: append the archive after `__LINKEDIT` instead of overwriting the reserved `__FLAPI/__bundle` segment. **Not notarisable.** |
+
+**Default secret deny list** (refusal with non-zero exit, unless
+`--allow-secrets`):
+
+- `*.env`             at any depth
+- `secrets/` segment  at any depth
+- `*.pem`             at any depth
+- `*.key`             at any depth
+
+**Reproducible builds.** Set `SOURCE_DATE_EPOCH` to stamp every
+archive entry with a deterministic mtime; the produced binary is
+then bit-identical across runs given the same input.
+
+**Re-pack idempotence.** If the host binary already has a trailing
+bundle, `pack` strips it from the _copy_ (not the running binary)
+before appending the new one, so repeated invocations don't grow the
+output.
+
+**Example:**
+
+```bash
+SOURCE_DATE_EPOCH=1700000000 flapi pack --in ./examples --out flapi-prod
+chmod +x flapi-prod                            # exec bits already preserved
+scp flapi-prod user@host:/opt/flapi/           # one-file deploy
+ssh user@host '/opt/flapi/flapi-prod'          # serves bundled config from any cwd
+```
+
+> **Implementation:** `src/pack.cpp`, `src/archive_io.cpp` | **Tests:** `test/cpp/pack_test.cpp`, `test/integration/test_self_packaging.py`
+
+### `flapi info` -- inspect the running binary's bundle
+
+```
+flapi info
+```
+
+Prints the EOCD offset, bundle size, and entry list (with byte
+counts). Exits non-zero with `"Bundle: none (filesystem mode)"` if
+the binary has no appended (or in-section, on macOS) bundle.
+
+**Example:**
+
+```bash
+$ ./flapi-prod info
+Binary: /opt/flapi/flapi-prod
+Bundle offset: 70123456
+Bundle size:   12534 bytes
+Entries (17):
+  flapi.yaml (1024 bytes)
+  sqls/customers.yaml (412 bytes)
+  ...
+```
+
+### `flapi unpack --to <dir>` -- dump the bundle for debugging
+
+```
+flapi unpack --to <dir>
+```
+
+Writes every bundle entry to `<dir>` (creating intermediate
+directories as needed), preserving paths. Useful for diffing a
+deployed bundle against a development tree.
+
+**Example:**
+
+```bash
+$ ./flapi-prod unpack --to /tmp/extracted
+Unpacked 17 entries to /tmp/extracted
+
+$ diff -ru ./examples /tmp/extracted
+# (empty -- bundle matches source tree)
+```
+
+### macOS notarisation specifics
+
+On Darwin, `flapi` is linked with a reserved `__FLAPI/__bundle`
+Mach-O section (default 16 MiB, knob `FLAPI_RESERVED_BUNDLE_MIB` at
+CMake configure time). `flapi pack` overwrites this section in
+place and re-invokes `codesign --force --sign $CODESIGN_IDENTITY`
+(defaulting to `-` for ad-hoc) so the freshly bundled binary has a
+fresh valid signature. The output is suitable for `notarytool
+submit`.
+
+The `--macos-append` flag falls back to the Linux/Windows-style
+trailing-bytes layout. Use it only for local debugging -- the
+signature is intentionally invalid and the binary will fail
+notarisation.
+
+> **Implementation:** `src/macho_bundle.cpp` | **Tests:** `test/cpp/macho_bundle_test.cpp`, `test/integration/test_self_packaging_macos.py`
+
+---
+
+## 4. Environment Variables
 
 | Variable | Description | Used By |
 |----------|-------------|---------|
+| `FLAPI_CONFIG` | Path to `flapi.yaml` (fallback for `-c`) | `--config` fallback |
+| `FLAPI_LOG_LEVEL` | Log verbosity (fallback for `--log-level`); invalid values exit 1 | `--log-level` fallback |
 | `FLAPI_CONFIG_SERVICE_TOKEN` | Authentication token for configuration service API | `--config-service-token` fallback |
 | `FLAPI_NO_TELEMETRY` | Disable telemetry when set to `1`, `true`, or `yes` | `--no-telemetry` fallback |
+| `SOURCE_DATE_EPOCH` | Mtime stamped on every entry by `flapi pack` (reproducible builds) | `flapi pack` |
+| `CODESIGN_IDENTITY` | macOS only: identity passed to `codesign --sign` after `flapi pack`. Defaults to `-` (ad-hoc). | `flapi pack` |
 
 **Configuration File Variables:**
 
@@ -418,7 +541,7 @@ See [Configuration Reference - Environment Variables](./CONFIG_REFERENCE.md#10-e
 
 ---
 
-## 4. Usage Examples
+## 5. Usage Examples
 
 ### Basic Startup
 
@@ -474,7 +597,7 @@ fi
 
 ---
 
-## 5. Signal Handling
+## 6. Signal Handling
 
 | Signal | Behavior |
 |--------|----------|
@@ -499,7 +622,7 @@ On receiving a shutdown signal, the server:
 
 ---
 
-## 6. Exit Codes
+## 7. Exit Codes
 
 | Code | Description |
 |------|-------------|

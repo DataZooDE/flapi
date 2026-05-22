@@ -401,6 +401,56 @@ Template variables available:
 - `context.conn.*`: Connection properties (paths, credentials)
 - `context.auth.*`: Authentication context
 
+### 6. Self-Packaging (single-binary deploy)
+
+The same `flapi` binary that serves the API can also fold an entire
+config tree into itself, producing a self-contained executable
+deployable via `scp`.
+
+```bash
+# Pack a config tree into a new bundled binary
+flapi pack --in ./examples --out flapi-prod
+
+# Inspect what's bundled
+./flapi-prod info
+
+# Extract the bundle for debugging
+./flapi-prod unpack --to /tmp/extracted
+
+# Run it -- serves the bundled config from any cwd
+cd /tmp && ./flapi-prod
+```
+
+**How it works:**
+
+- A ZIP archive is appended after the executable (or, on macOS,
+  written into a reserved `__FLAPI/__bundle` Mach-O segment that
+  was allocated at link time -- 16 MiB default, knob
+  `FLAPI_RESERVED_BUNDLE_MIB`). Mach-O is re-codesigned so the
+  output is notarisable.
+- At startup, `bundle_locator` either reverse-scans the EOCD
+  signature from EOF (Linux / Windows) or probes the reserved
+  section (macOS). On hit, entries are decompressed once into a
+  shared `ArchiveEntries`.
+- `EmbeddedArchiveFileProvider` (implements `IFileProvider`) serves
+  config / SQL templates from that map. `FileProviderFactory`
+  dispatches non-remote paths to it when a bundle is present.
+- For SQL templates that use `read_csv()` / `read_parquet()`, an
+  `EmbeddedFileSystem` is registered with DuckDB on the `embed://`
+  scheme, so `read_csv('embed://data/cities.csv')` resolves to the
+  same in-memory bytes.
+
+**Secrets never go in the bundle.** `pack` refuses files matching
+`*.env`, `secrets/*`, `*.pem`, `*.key` by default. Credentials come
+from environment variables at runtime (`AWS_*`, `GOOGLE_*`, `AZURE_*`,
+`FLAPI_CONFIG_SERVICE_TOKEN`, `{{env.VARNAME}}` interpolation in
+YAML). See [DESIGN_DECISIONS §9](docs/spec/DESIGN_DECISIONS.md#9-self-packaging-via-appended-zip)
+for the rationale and [CLI_REFERENCE §3](docs/CLI_REFERENCE.md#3-self-packaging-subcommands)
+for full subcommand options.
+
+**Reproducibility.** Set `SOURCE_DATE_EPOCH` (epoch seconds) before
+`flapi pack` and the output is bit-identical across runs.
+
 ## Key Patterns
 
 ### Safe Query Building Pattern
