@@ -365,6 +365,12 @@ int main(int argc, char* argv[])
               "(*.env, secrets/*, *.pem, *.key). Testing only.")
         .default_value(false)
         .implicit_value(true);
+    pack_cmd.add_argument("--macos-append")
+        .help("macOS only: append the archive after __LINKEDIT instead of "
+              "overwriting the reserved __FLAPI/__bundle segment. "
+              "Result is ad-hoc signed and NOT notarisable.")
+        .default_value(false)
+        .implicit_value(true);
     program.add_subparser(pack_cmd);
 
     argparse::ArgumentParser info_cmd("info");
@@ -395,6 +401,9 @@ int main(int argc, char* argv[])
         try {
             PackOptions opts;
             opts.allow_secrets = pack_cmd.get<bool>("--allow-secrets");
+            opts.macos_mode = pack_cmd.get<bool>("--macos-append")
+                ? MacOSPackMode::kAppend
+                : MacOSPackMode::kReservedSegment;
             const auto in_dir = pack_cmd.get<std::string>("--in");
             const auto out_path = pack_cmd.get<std::string>("--out");
             const auto result = Pack(in_dir, out_path, opts);

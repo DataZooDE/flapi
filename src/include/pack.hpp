@@ -16,6 +16,16 @@ public:
     explicit PackError(const std::string& m) : std::runtime_error(m) {}
 };
 
+enum class MacOSPackMode {
+    // Default on macOS: overwrite the reserved __FLAPI/__bundle Mach-O
+    // section in place and re-`codesign`. Produces notarisable output.
+    kReservedSegment,
+    // Legacy: append the archive after __LINKEDIT (the
+    // Linux/Windows path). Result is *not* notarisable -- ad-hoc
+    // signing only. Kept for compatibility / debugging.
+    kAppend,
+};
+
 struct PackOptions {
     // Bundle files even when their relative path matches the default
     // secret-exclude list. Intended for tests; production users must
@@ -33,6 +43,16 @@ struct PackOptions {
     // binary -- avoiding the cost of copying the multi-GB
     // sanitiser-instrumented test binary on every test case.
     std::optional<std::filesystem::path> host_binary_override;
+
+    // macOS-only: which packaging mode to use. Defaults to
+    // kReservedSegment (notarisable). On Linux/Windows builds this
+    // field is ignored.
+    MacOSPackMode macos_mode = MacOSPackMode::kReservedSegment;
+
+    // Re-sign the output via `codesign` after writing. Only honoured
+    // on Darwin (silent no-op elsewhere). Defaults to true; tests set
+    // this to false to skip the codesign call.
+    bool codesign = true;
 };
 
 struct PackResult {

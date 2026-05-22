@@ -1,6 +1,7 @@
 #include "pack.hpp"
 
 #include "bundle_locator.hpp"
+#include "macho_bundle.hpp"
 #include "selfpath.hpp"
 
 #include <algorithm>
@@ -155,17 +156,62 @@ PackResult Pack(const std::filesystem::path& in_dir,
     const auto archive = WriteArchive(entries, write_opts);
 
     const auto host_path = options.host_binary_override.value_or(GetSelfPath());
-    const auto host_bytes = HostByteCount(host_path);
-
-    CopyHostPrefix(host_path, out_path, host_bytes);
-    CopyExecutableBits(host_path, out_path);
-
-    AppendArchive(out_path, archive);
 
     PackResult r;
     r.output = out_path;
     r.entry_count = entries.size();
     r.archive_size = archive.size();
+
+    // Try the reserved-segment path on macOS (kReservedSegment mode).
+    // The Mach-O parser lives on every platform, so we can probe for
+    // the section anywhere -- but in practice only macOS builds emit
+    // one. If the host has no section, fall through to the append path.
+    bool used_section_path = false;
+    if (options.macos_mode == MacOSPackMode::kReservedSegment) {
+        if (auto sect = LocateFlapiSection(host_path); sect.has_value()) {
+            // Copy the entire host (including the placeholder section),
+            // then overwrite the section bytes in place.
+            std::error_code ec;
+            std::filesystem::copy_file(
+                host_path, out_path,
+                std::filesystem::copy_options::overwrite_existing, ec);
+            if (ec) {
+                throw PackError("cannot copy host binary to " + out_path.string());
+            }
+            CopyExecutableBits(host_path, out_path);
+            OverwriteFlapiSection(out_path, *sect, archive);
+            used_section_path = true;
+        }
+    }
+
+    if (!used_section_path) {
+        const auto host_bytes = HostByteCount(host_path);
+        CopyHostPrefix(host_path, out_path, host_bytes);
+        CopyExecutableBits(host_path, out_path);
+        AppendArchive(out_path, archive);
+    }
+
+    // Re-sign on Darwin. CodesignBinary is a benign no-op on other
+    // platforms so we don't need a platform guard here. Note: a
+    // codesign failure is reported to the caller via PackError; the
+    // append path on macOS still benefits from an ad-hoc re-sign
+    // because the trailing-data invalidates the original signature.
+    if (options.codesign) {
+        auto cs = CodesignBinary(out_path);
+        if (cs.exit_code != 0) {
+            // Don't crash a Linux build over codesign output. On macOS
+            // a non-zero exit means we couldn't make the binary
+            // launchable -- surface it.
+#ifdef __APPLE__
+            throw PackError("codesign failed (exit " +
+                             std::to_string(cs.exit_code) + "): " +
+                             cs.stderr_tail);
+#else
+            (void)cs;  // unreachable in practice (we always set exit_code = 0)
+#endif
+        }
+    }
+
     return r;
 }
 
