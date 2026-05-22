@@ -784,9 +784,12 @@ jobs:
         & bin\flapi.exe pack --in fixture --out out-a.exe
         if ($LASTEXITCODE -ne 0) { throw "pack a failed" }
 
-        $info = & .\out-a.exe info
-        $info | Out-Host
-        if ($info -notmatch "flapi.yaml") { throw "info missing flapi.yaml" }
+        # PowerShell's `$arr -notmatch "x"` returns a filtered array,
+        # not a boolean. Join the captured lines so substring match
+        # actually does what we mean.
+        $info = (& .\out-a.exe info) -join "`n"
+        Write-Host $info
+        if ($info -notmatch "flapi.yaml")     { throw "info missing flapi.yaml" }
         if ($info -notmatch "sqls/hello.sql") { throw "info missing hello.sql" }
 
         & .\out-a.exe unpack --to extracted
