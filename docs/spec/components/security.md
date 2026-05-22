@@ -395,6 +395,9 @@ mcp:
 5. **Rate limit** - Protect against abuse
 6. **Whitelist env vars** - Only expose needed environment variables
 7. **Use HTTPS** - Enable TLS in production
+8. **Never bundle secrets** - Credentials come from environment
+   variables at runtime, never from a config file checked into version
+   control. See _Secrets and the bundle_ below.
 
 ```yaml
 https:
@@ -402,6 +405,50 @@ https:
   ssl_cert_file: /path/to/cert.pem
   ssl_key_file: /path/to/key.pem
 ```
+
+## Secrets and the bundle
+
+When `flapi pack` produces a self-contained binary, it must _not_
+include credentials. A bundled binary that contains a database
+password is itself a secret: it can be `scp`-ed, shared, attached to
+a bug report, or pushed to a public registry by mistake. The single
+artifact value disappears the moment the artifact is sensitive.
+
+Two mechanisms enforce this:
+
+1. **Pack-time refusal of the default deny list.** `Pack()` walks
+   the input tree and aborts with a non-zero exit if any file
+   matches:
+   - `*.env`              at any depth (e.g. `.env`, `config/.env`)
+   - `secrets/` segment   at any depth (e.g. `secrets/db.token`,
+     `nested/secrets/api.key`)
+   - `*.pem`              at any depth
+   - `*.key`              at any depth
+
+   The error message names the offending file and points at the
+   `--allow-secrets` testing-only override. The override exists so
+   we can integration-test the deny list; production users must not
+   flip it.
+
+2. **Runtime expects credentials from the environment.** Every
+   credential flapi understands is read from a documented
+   environment variable -- never from a bundled YAML field:
+   - AWS S3:    `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION`
+   - GCS:       `GOOGLE_APPLICATION_CREDENTIALS` / `GOOGLE_CLOUD_PROJECT`
+   - Azure:     `AZURE_STORAGE_CONNECTION_STRING` / `AZURE_STORAGE_ACCOUNT` / `AZURE_STORAGE_KEY`
+   - Mgmt API:  `FLAPI_CONFIG_SERVICE_TOKEN`
+   - JWT:       configured via `{{env.JWT_SECRET}}` against a
+                whitelisted env var
+
+   YAML strings may interpolate `{{env.VARNAME}}` for any env var
+   declared in `environment-whitelist`. The whitelist is itself part
+   of the configuration, so it ships in the bundle -- which is fine
+   because it names env vars by _key_, not value.
+
+See [DESIGN_DECISIONS.md §9](../DESIGN_DECISIONS.md#9-self-packaging-via-appended-zip)
+for the broader rationale and
+[CONFIG_REFERENCE.md §1.4](../../CONFIG_REFERENCE.md) for the
+12-factor checklist of every env var flapi reads.
 
 ## Source Files
 
@@ -414,6 +461,7 @@ https:
 | `src/oidc_jwks_manager.cpp` | JWKS key management |
 | `src/request_validator.cpp` | Input validation |
 | `src/rate_limit_middleware.cpp` | Rate limiting |
+| `src/pack.cpp` (`IsSecretExcluded`) | Default secret deny list for `flapi pack` |
 
 ## Related Documentation
 

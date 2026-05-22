@@ -139,6 +139,23 @@ Storage and external data access:
 | **AuthMiddleware** | `src/auth_middleware.cpp` | JWT/Basic/OIDC authentication |
 | **RateLimitMiddleware** | `src/rate_limit_middleware.cpp` | Request rate limiting |
 
+### Self-Packaging (optional)
+
+These components are loaded only when the running binary contains an
+appended (or, on macOS, in-section) ZIP bundle. They let the same
+artifact serve the API _and_ produce new bundled artifacts via
+`flapi pack`.
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| **archive_io** | `src/archive_io.cpp` | RAII wrapper around libarchive; reads/writes ZIPs in memory, with `bytes_in_last_block=1` and `SOURCE_DATE_EPOCH` mtime stamping for reproducible builds. |
+| **selfpath** | `src/selfpath.cpp` | Cross-platform self-binary path (`/proc/self/exe`, `_NSGetExecutablePath`, `GetModuleFileNameW`). |
+| **bundle_locator** | `src/bundle_locator.cpp` | Reverse-scans for the ZIP EOCD record (Linux/Windows); on macOS prefers the reserved `__FLAPI/__bundle` Mach-O section. Tolerates trailing zero padding. |
+| **macho_bundle** | `src/macho_bundle.cpp` | 64-bit Mach-O header + LC_SEGMENT_64 parser; writes the archive into the reserved section in place and re-invokes `codesign`. |
+| **EmbeddedArchiveFileProvider** | `src/embedded_archive_file_provider.cpp` | `IFileProvider` implementation backed by a `std::shared_ptr<const ArchiveEntries>`. Sibling of `LocalFileProvider` / `DuckDBVFSProvider`. |
+| **EmbeddedFileSystem** | `src/duckdb_embed_fs.cpp` | `duckdb::FileSystem` for the `embed://` scheme. Lets SQL templates do `read_csv('embed://data/x.csv')`. Same `ArchiveEntries` instance as `EmbeddedArchiveFileProvider`. |
+| **pack** | `src/pack.cpp` | `flapi pack` / `info` / `unpack` subcommand logic. Enforces a default secret deny list (`*.env`, `secrets/*`, `*.pem`, `*.key`). |
+
 ## Data Flow
 
 ### REST Request Flow
@@ -166,6 +183,36 @@ Storage and external data access:
 ```
 
 For detailed request flows with sequence diagrams, see [REQUEST_LIFECYCLE.md](./REQUEST_LIFECYCLE.md).
+
+### Self-Packaging Bootstrap
+
+When `flapi` starts, _before_ loading the config:
+
+```
+1. main() calls detectAndRegisterEmbeddedBundle()
+   ├─ bundle_locator::LocateBundleInSelf()
+   │    macOS: probe __FLAPI/__bundle Mach-O section first
+   │    fallback: reverse-scan EOCD signature from EOF
+   ├─ if bundle found: read slice → archive_io::ReadArchive()
+   └─ store entries in FileProviderFactory (process-wide shared_ptr)
+
+2. main() proceeds to initializeConfig()
+   ConfigLoader.loadYamlFile("flapi.yaml")
+   ├─ FileProviderFactory::CreateProvider("flapi.yaml")
+   │    bundle present + non-remote path → EmbeddedArchiveFileProvider
+   │    no bundle              + non-remote → LocalFileProvider
+   │    any remote scheme                    → DuckDBVFSProvider
+   └─ provider.ReadFile() returns bytes (from bundle or disk)
+
+3. After DatabaseManager is up, main() calls
+   RegisterEmbeddedFileSystem() which adds the embed:// VFS to
+   DuckDB so SQL templates can `read_csv('embed://data/foo.csv')`.
+```
+
+If no bundle is present (Linux/Windows shipped without `pack`, or
+the trailing 1 KiB has been truncated), all bundle-aware components
+silently return nullopt and the binary serves from the local
+filesystem -- existing behaviour, zero churn.
 
 ## Protocol Support
 
