@@ -250,6 +250,7 @@ add_library(flapi-lib STATIC
     src/endpoint_config_parser.cpp
     src/extended_yaml_parser.cpp
     src/heartbeat_worker.cpp
+    src/macho_bundle.cpp
     src/open_api_doc_generator.cpp
     src/pack.cpp
     src/password_hasher.cpp
@@ -343,6 +344,36 @@ add_executable(flapi src/main.cpp)
 target_link_libraries(flapi PRIVATE flapi-lib)
 target_compile_definitions(flapi PRIVATE FLAPI_VERSION="${CMAKE_PROJECT_VERSION}")
 set_target_properties(flapi PROPERTIES ENABLE_EXPORTS TRUE)
+
+# macOS reserved-segment for self-packaging (#48). Allocates a
+# placeholder __FLAPI/__bundle section at link time that `flapi pack`
+# overwrites with the user's config tree, then re-signs. Required for
+# notarised distribution -- appending after __LINKEDIT invalidates
+# the signature.
+if(APPLE)
+    set(FLAPI_RESERVED_BUNDLE_MIB "16" CACHE STRING
+        "Size in MiB of the reserved __FLAPI/__bundle Mach-O segment.")
+    set(FLAPI_BUNDLE_PLACEHOLDER
+        "${CMAKE_BINARY_DIR}/_flapi_bundle_placeholder.bin")
+    # Use dd directly via execve (no shell). The previous `bash -c
+    # "... >/dev/null 2>&1"` wrapping broke under ninja-on-macos because
+    # the redirect operators were parsed by the outer shell rather than
+    # the bash -c subshell, producing "/dev/null 2: Permission denied".
+    # dd prints a 2-3 line summary on stderr; that's fine in CI logs.
+    add_custom_command(
+        OUTPUT "${FLAPI_BUNDLE_PLACEHOLDER}"
+        COMMAND dd
+                if=/dev/zero
+                "of=${FLAPI_BUNDLE_PLACEHOLDER}"
+                bs=1m
+                count=${FLAPI_RESERVED_BUNDLE_MIB}
+        COMMENT "flapi: generating ${FLAPI_RESERVED_BUNDLE_MIB}-MiB __FLAPI/__bundle placeholder")
+    add_custom_target(flapi_bundle_placeholder
+        DEPENDS "${FLAPI_BUNDLE_PLACEHOLDER}")
+    target_link_options(flapi PRIVATE
+        "-Wl,-sectcreate,__FLAPI,__bundle,${FLAPI_BUNDLE_PLACEHOLDER}")
+    add_dependencies(flapi flapi_bundle_placeholder)
+endif()
 
 # Add Windows-specific libraries
 if(WIN32)

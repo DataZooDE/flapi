@@ -23,6 +23,7 @@ add_executable(flapi_tests
     endpoint_config_parser_test.cpp
     extended_yaml_parser_test.cpp
     https_config_test.cpp
+    macho_bundle_test.cpp
     cache_manager_test.cpp
     mcp_authorization_policy_test.cpp
     mcp_description_scanner_test.cpp

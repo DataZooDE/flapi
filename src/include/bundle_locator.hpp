@@ -27,8 +27,20 @@ struct BundleLocation {
 // rounding pushing the EOCD off file-EOF.
 std::optional<BundleLocation> LocateBundle(const std::filesystem::path& path);
 
-// Convenience: scan the currently running executable. Returns nullopt
-// if either the self-path lookup or the EOCD scan fails.
+// Scans a specific byte range of `path` for a ZIP EOCD. Used by the
+// macOS section-mode locator (#48) where the bundle lives inside a
+// reserved Mach-O segment, not at file EOF. The returned
+// BundleLocation.offset is the absolute file offset; padding-tolerance
+// runs against `range_size` (treat range end as logical EOF).
+std::optional<BundleLocation> LocateBundleInRange(
+    const std::filesystem::path& path,
+    std::uint64_t range_offset,
+    std::uint64_t range_size);
+
+// Convenience: scan the currently running executable. On macOS, first
+// looks at the reserved __FLAPI/__bundle Mach-O section; if absent or
+// unpopulated, falls back to a reverse-EOF scan. Returns nullopt if
+// either fails.
 std::optional<BundleLocation> LocateBundleInSelf();
 
 }  // namespace flapi
