@@ -432,6 +432,30 @@ int main(int argc, char* argv[])
     int cmd_port = program.get<int>("--port");
     std::string log_level = program.get<std::string>("--log-level");
     bool validate_config = program.get<bool>("--validate-config");
+
+    // 12-factor env-var fallback (#47). Precedence:
+    //   CLI flag > env var > built-in default.
+    // CLI wins because we only consult the env when the user didn't
+    // pass the flag.
+    if (!program.is_used("--config")) {
+        if (const char* env = std::getenv("FLAPI_CONFIG"); env != nullptr && *env != '\0') {
+            config_file = env;
+        }
+    }
+    if (!program.is_used("--log-level")) {
+        if (const char* env = std::getenv("FLAPI_LOG_LEVEL"); env != nullptr && *env != '\0') {
+            log_level = env;
+        }
+    }
+    // Validate log_level. Invalid values are an error, not a silent
+    // fallback -- typos like FLAPI_LOG_LEVEL=DEBUG should surface
+    // immediately, not run the server at the wrong verbosity.
+    if (log_level != "debug" && log_level != "info" &&
+        log_level != "warning" && log_level != "error") {
+        std::cerr << "flapi: invalid log level '" << log_level
+                  << "'; must be one of: debug, info, warning, error\n";
+        return 1;
+    }
     bool config_service_enabled = program.get<bool>("--config-service");
     std::string config_service_token = program.get<std::string>("--config-service-token");
     bool no_telemetry = program.get<bool>("--no-telemetry");

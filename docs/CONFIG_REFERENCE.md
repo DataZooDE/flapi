@@ -142,6 +142,31 @@ LIMIT 100
 
 ---
 
+### 1.4 12-factor checklist (environment variables)
+
+flapi follows the [12-factor app](https://12factor.net/) principle of
+configuration via the environment for the bits a deployment artifact
+should not bake in.
+
+| Env var | Read at | Effect | Precedence |
+|---------|---------|--------|------------|
+| `FLAPI_CONFIG` | startup | Path to `flapi.yaml` (fallback for `-c`) | CLI > env > `flapi.yaml` default |
+| `FLAPI_LOG_LEVEL` | startup | Log verbosity (fallback for `--log-level`) | CLI > env > `info` default; invalid values exit non-zero |
+| `FLAPI_CONFIG_SERVICE_TOKEN` | startup | Bearer token for the management API (fallback for `--config-service-token`) | CLI > env > auto-generate |
+| `FLAPI_NO_TELEMETRY` | startup | Disable PostHog telemetry (fallback for `--no-telemetry`) | CLI > env > config-file > enabled |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` | startup, query time | S3 credentials (DuckDB `httpfs`) | env only |
+| `GOOGLE_APPLICATION_CREDENTIALS` / `GOOGLE_CLOUD_PROJECT` | startup, query time | GCS credentials (DuckDB `httpfs`) | env only |
+| `AZURE_STORAGE_CONNECTION_STRING` / `AZURE_STORAGE_ACCOUNT` / `AZURE_STORAGE_KEY` | startup, query time | Azure Blob credentials | env only |
+| `{{env.VARNAME}}` in YAML | startup (config parse) | Interpolated into any string field | requires `environment-whitelist` entry |
+
+Secrets should always come from the environment, never from a config
+file checked into version control. When using the self-packaging
+feature (`flapi pack`), the default secret deny list refuses to
+bundle `*.env`, `secrets/*`, `*.pem`, and `*.key` files -- enforcing
+this same principle at packaging time.
+
+---
+
 ## 2. Main Configuration (flapi.yaml)
 
 The main configuration file defines global settings, connections, and server behavior.
