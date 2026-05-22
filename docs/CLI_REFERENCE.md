@@ -86,10 +86,16 @@ Specifies the path to the flAPI YAML configuration file.
 | Type | string (file path) |
 | Default | `flapi.yaml` |
 | Required | No |
+| Environment variable | `FLAPI_CONFIG` |
 
 **Description:**
 
 The configuration file defines connections, endpoint directories, DuckDB settings, authentication, caching, and other server options. The path can be absolute or relative to the current working directory.
+
+**Precedence (highest wins):**
+1. `-c` / `--config` CLI flag
+2. `FLAPI_CONFIG` environment variable
+3. Built-in default (`flapi.yaml` in the current working directory)
 
 **Example:**
 
@@ -100,11 +106,15 @@ The configuration file defines connections, endpoint directories, DuckDB setting
 # Specify a custom configuration file
 ./flapi -c production.yaml
 ./flapi --config /etc/flapi/config.yaml
+
+# Point at a config via environment variable (12-factor style)
+export FLAPI_CONFIG=/etc/flapi/production.yaml
+./flapi
 ```
 
 **See also:** [Configuration Reference](./CONFIG_REFERENCE.md) for configuration file options.
 
-> **Implementation:** `src/main.cpp`, `src/config_manager.cpp` | **Tests:** `test/cpp/config_manager_test.cpp`
+> **Implementation:** `src/main.cpp`, `src/config_manager.cpp` | **Tests:** `test/cpp/config_manager_test.cpp`, `test/integration/test_env_overrides.py`
 
 ---
 
@@ -149,10 +159,20 @@ Sets the logging verbosity level.
 | Default | `info` |
 | Required | No |
 | Valid values | `debug`, `info`, `warning`, `error` |
+| Environment variable | `FLAPI_LOG_LEVEL` |
 
 **Description:**
 
 Controls the amount of log output. More verbose levels include all messages from less verbose levels.
+
+**Precedence (highest wins):**
+1. `--log-level` CLI flag
+2. `FLAPI_LOG_LEVEL` environment variable
+3. Built-in default (`info`)
+
+Invalid values cause flapi to exit with a single-line error -- typos
+like `FLAPI_LOG_LEVEL=DEBUG` surface immediately rather than silently
+defaulting to `info`.
 
 | Level | Description |
 |-------|-------------|
@@ -172,6 +192,10 @@ Controls the amount of log output. More verbose levels include all messages from
 
 # Default info level
 ./flapi --log-level info
+
+# Set verbosity via environment variable (12-factor style)
+export FLAPI_LOG_LEVEL=debug
+./flapi
 ```
 
 > **Implementation:** `src/main.cpp` | **Tests:** `test/integration/test_mcp_methods.py` (logging/setLevel)
