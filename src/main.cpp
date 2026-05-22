@@ -23,6 +23,7 @@
 #include "config_manager.hpp"
 #include "database_manager.hpp"
 #include "duckdb_embed_fs.hpp"
+#include "pack.hpp"
 #include "flapi_telemetry.hpp"
 #include "rate_limit_middleware.hpp"
 #include "config_token_utils.hpp"
@@ -344,12 +345,87 @@ int main(int argc, char* argv[])
         .default_value(false)
         .implicit_value(true);
 
+    // ------------------------------------------------------------------
+    // Self-packaging subcommands (#45). Each subcommand is optional; if
+    // none is given the binary runs as the API server, preserving the
+    // pre-existing `./flapi -c flapi.yaml` invocation.
+    // ------------------------------------------------------------------
+
+    argparse::ArgumentParser pack_cmd("pack");
+    pack_cmd.add_description(
+        "Package a flapi config tree into a self-contained executable.");
+    pack_cmd.add_argument("--in")
+        .help("Directory containing flapi.yaml + sqls/ + data/")
+        .required();
+    pack_cmd.add_argument("--out")
+        .help("Output path for the new bundled executable")
+        .required();
+    pack_cmd.add_argument("--allow-secrets")
+        .help("Bundle files matching the default secret exclude list "
+              "(*.env, secrets/*, *.pem, *.key). Testing only.")
+        .default_value(false)
+        .implicit_value(true);
+    program.add_subparser(pack_cmd);
+
+    argparse::ArgumentParser info_cmd("info");
+    info_cmd.add_description(
+        "Print bundle info (offset, size, entries) for this binary.");
+    program.add_subparser(info_cmd);
+
+    argparse::ArgumentParser unpack_cmd("unpack");
+    unpack_cmd.add_description(
+        "Dump the bundle of this binary into a directory.");
+    unpack_cmd.add_argument("--to")
+        .help("Destination directory (will be created if missing)")
+        .required();
+    program.add_subparser(unpack_cmd);
+
     try {
         program.parse_args(argc, argv);
     } catch (const std::runtime_error& err) {
         std::cerr << err.what() << std::endl;
         std::cerr << program;
         return 1;
+    }
+
+    // ------------------------------------------------------------------
+    // Subcommand dispatch. Returns early; never reaches server startup.
+    // ------------------------------------------------------------------
+    if (program.is_subcommand_used("pack")) {
+        try {
+            PackOptions opts;
+            opts.allow_secrets = pack_cmd.get<bool>("--allow-secrets");
+            const auto in_dir = pack_cmd.get<std::string>("--in");
+            const auto out_path = pack_cmd.get<std::string>("--out");
+            const auto result = Pack(in_dir, out_path, opts);
+            std::cout << "Packed " << result.entry_count
+                      << " entries (" << result.archive_size
+                      << " bytes) into " << result.output.string() << "\n";
+            return 0;
+        } catch (const PackError& e) {
+            std::cerr << "flapi pack: " << e.what() << "\n";
+            return 1;
+        } catch (const std::exception& e) {
+            std::cerr << "flapi pack: unexpected error: " << e.what() << "\n";
+            return 1;
+        }
+    }
+
+    if (program.is_subcommand_used("info")) {
+        return PrintBundleInfo(std::cout);
+    }
+
+    if (program.is_subcommand_used("unpack")) {
+        try {
+            const auto dst = unpack_cmd.get<std::string>("--to");
+            const auto result = UnpackBundle(dst);
+            std::cout << "Unpacked " << result.entries_written
+                      << " entries to " << dst << "\n";
+            return 0;
+        } catch (const PackError& e) {
+            std::cerr << "flapi unpack: " << e.what() << "\n";
+            return 1;
+        }
     }
 
     std::string config_file = program.get<std::string>("--config");
