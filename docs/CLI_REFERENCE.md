@@ -15,6 +15,7 @@ This document provides a complete reference for the `flapi` server executable's 
 2. [Command-Line Options](#2-command-line-options)
    - [Configuration File](#configuration-file---c---config)
    - [Server Port](#server-port---p---port)
+   - [Bind Host](#bind-host---host)
    - [Log Level](#log-level---log-level)
    - [Validate Configuration](#validate-configuration---validate-config)
    - [Configuration Service](#configuration-service---config-service)
@@ -134,10 +135,21 @@ Overrides the HTTP server port defined in the configuration file.
 | Type | integer |
 | Default | From config file (typically `8080`) |
 | Required | No |
+| Environment variable | `FLAPI_PORT` |
 
 **Description:**
 
 When specified, this option overrides the `http-port` value in the configuration file. Useful for running multiple instances or when port configuration needs to be dynamic.
+
+**Precedence (highest wins):**
+1. `-p` / `--port` CLI flag
+2. `FLAPI_PORT` environment variable
+3. `http-port` from `flapi.yaml`
+4. Built-in default (`8080`)
+
+Invalid `FLAPI_PORT` values (non-integer, `<1`, `>65535`) cause flapi to
+exit with a single-line error -- a typo like `FLAPI_PORT=abc` surfaces
+immediately rather than silently falling through to the config-file value.
 
 **Example:**
 
@@ -147,9 +159,52 @@ When specified, this option overrides the `http-port` value in the configuration
 
 # Override config file port
 ./flapi -c production.yaml --port 80
+
+# 12-factor: pick up the port from the environment
+export FLAPI_PORT=9000
+./flapi
 ```
 
-> **Implementation:** `src/main.cpp`, `src/api_server.cpp` | **Tests:** `test/integration/conftest.py`
+> **Implementation:** `src/main.cpp`, `src/api_server.cpp` | **Tests:** `test/integration/test_env_overrides.py`, `test/integration/conftest.py`
+
+---
+
+### Bind Host (`--host`)
+
+Overrides the bind address (`http-host`) defined in the configuration file.
+
+| Property | Value |
+|----------|-------|
+| Long form | `--host` |
+| Type | string |
+| Default | From config file (`0.0.0.0` if unset) |
+| Required | No |
+| Environment variable | `FLAPI_HOST` |
+
+**Description:**
+
+Controls which network interface the HTTP server binds on. Use
+`127.0.0.1` to restrict access to the loopback interface only, or
+`0.0.0.0` to accept connections on all interfaces.
+
+**Precedence (highest wins):**
+1. `--host` CLI flag
+2. `FLAPI_HOST` environment variable
+3. `http-host` from `flapi.yaml`
+4. Built-in default (`0.0.0.0`)
+
+**Example:**
+
+```bash
+# Loopback only (useful behind a reverse proxy)
+./flapi --host 127.0.0.1
+
+# 12-factor: pick up the host from the environment
+export FLAPI_HOST=127.0.0.1
+./flapi
+```
+
+> **Implementation:** `src/main.cpp`, `src/api_server.cpp`, `src/config_manager.cpp` | **Tests:** `test/integration/test_env_overrides.py`
 
 ---
 
@@ -520,6 +575,8 @@ notarisation.
 | Variable | Description | Used By |
 |----------|-------------|---------|
 | `FLAPI_CONFIG` | Path to `flapi.yaml` (fallback for `-c`) | `--config` fallback |
+| `FLAPI_PORT` | HTTP server port (fallback for `-p` / `--port`); invalid values exit 1 | `--port` fallback |
+| `FLAPI_HOST` | Bind address (fallback for `--host`) | `--host` fallback |
 | `FLAPI_LOG_LEVEL` | Log verbosity (fallback for `--log-level`); invalid values exit 1 | `--log-level` fallback |
 | `FLAPI_CONFIG_SERVICE_TOKEN` | Authentication token for configuration service API | `--config-service-token` fallback |
 | `FLAPI_NO_TELEMETRY` | Disable telemetry when set to `1`, `true`, or `yes` | `--no-telemetry` fallback |

@@ -526,6 +526,8 @@ public:
     std::string getServerName() const;
     int getHttpPort() const;
     void setHttpPort(int port);
+    std::string getHttpHost() const;
+    void setHttpHost(const std::string& host);
     virtual std::string getTemplatePath() const;
     std::string getCacheSchema() const;
     const std::unordered_map<std::string, ConnectionConfig>& getConnections() const;
@@ -606,6 +608,7 @@ protected:
     std::string cache_schema = "flapi";
     std::string server_name;
     int http_port = 8080;
+    std::string http_host = "0.0.0.0";
     std::unordered_map<std::string, ConnectionConfig> connections;
     RateLimitConfig rate_limit_config;
     bool auth_enabled;

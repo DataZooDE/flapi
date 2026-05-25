@@ -151,6 +151,8 @@ should not bake in.
 | Env var | Read at | Effect | Precedence |
 |---------|---------|--------|------------|
 | `FLAPI_CONFIG` | startup | Path to `flapi.yaml` (fallback for `-c`) | CLI > env > `flapi.yaml` default |
+| `FLAPI_PORT` | startup | HTTP server port (fallback for `-p` / `--port`) | CLI > env > `http-port` config > `8080`; invalid values exit non-zero |
+| `FLAPI_HOST` | startup | Bind address (fallback for `--host`) | CLI > env > `http-host` config > `0.0.0.0` |
 | `FLAPI_LOG_LEVEL` | startup | Log verbosity (fallback for `--log-level`) | CLI > env > `info` default; invalid values exit non-zero |
 | `FLAPI_CONFIG_SERVICE_TOKEN` | startup | Bearer token for the management API (fallback for `--config-service-token`) | CLI > env > auto-generate |
 | `FLAPI_NO_TELEMETRY` | startup | Disable PostHog telemetry (fallback for `--no-telemetry`) | CLI > env > config-file > enabled |
@@ -178,7 +180,8 @@ The main configuration file defines global settings, connections, and server beh
 | `project-name` | string | - | Human-readable project name |
 | `project-description` | string | - | Project description |
 | `server-name` | string | `"localhost"` | Server hostname for generated URLs |
-| `http-port` | integer | `8080` | HTTP server port |
+| `http-port` | integer | `8080` | HTTP server port (overridable via `--port` / `FLAPI_PORT`) |
+| `http-host` | string | `"0.0.0.0"` | Bind address (overridable via `--host` / `FLAPI_HOST`); use `127.0.0.1` to restrict to loopback |
 
 **Example:**
 
@@ -186,6 +189,7 @@ The main configuration file defines global settings, connections, and server beh
 project-name: Customer API
 project-description: REST API for customer data access
 server-name: api.example.com
+http-host: 0.0.0.0
 http-port: 8080
 ```
 
@@ -1808,6 +1812,7 @@ flAPI supports both hyphenated and camelCase naming for backward compatibility:
 | Configuration | Default Value |
 |---------------|---------------|
 | `http-port` | `8080` |
+| `http-host` | `"0.0.0.0"` |
 | `server-name` | `"localhost"` |
 | `duckdb.db_path` | `:memory:` |
 | `duckdb.access_mode` | `READ_WRITE` |

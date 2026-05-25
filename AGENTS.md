@@ -771,6 +771,8 @@ rate_limit:
 # Configuration
 FLAPI_CONFIG=path/to/flapi.yaml     # Config file path
 FLAPI_LOG_LEVEL=debug|info|warn|error
+FLAPI_PORT=8080                      # HTTP port (fallback for --port)
+FLAPI_HOST=0.0.0.0                   # Bind address (fallback for --host)
 
 # Authentication
 JWT_SECRET=your-secret-key          # JWT signing key
