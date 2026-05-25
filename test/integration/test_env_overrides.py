@@ -1,20 +1,25 @@
-"""12-factor env-var precedence tests (issue #47).
+"""12-factor env-var precedence tests (issues #47, #63).
 
-Verifies that `FLAPI_CONFIG` and `FLAPI_LOG_LEVEL` work as documented:
-    CLI flag > env var > built-in default.
-Plus: invalid `FLAPI_LOG_LEVEL` values are rejected with a clear
-single-line error, not silently coerced.
+Verifies that `FLAPI_CONFIG`, `FLAPI_LOG_LEVEL`, `FLAPI_PORT` and
+`FLAPI_HOST` all work as documented:
+    CLI flag > env var > config file > built-in default.
+Plus: invalid `FLAPI_LOG_LEVEL` and `FLAPI_PORT` values are rejected
+with a clear single-line error, not silently coerced.
 
-These tests build a tiny fixture config and invoke `flapi --validate-config`
-as a subprocess -- no HTTP server lifecycle needed.
+Most tests build a tiny fixture config and invoke `flapi --validate-config`
+as a subprocess -- no HTTP server lifecycle needed. The FLAPI_PORT /
+FLAPI_HOST bind tests actually start the server and observe the listening
+socket, since `--validate-config` exits before binding.
 """
 
 from __future__ import annotations
 
 import os
 import pathlib
+import socket
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -147,3 +152,133 @@ def test_default_config_path_unchanged_when_no_env(tmp_path: pathlib.Path, monke
         f"default flapi.yaml lookup failed: "
         f"stdout={res.stdout} stderr={res.stderr}"
     )
+
+
+# --- FLAPI_PORT / FLAPI_HOST (issue #63) --------------------------------------
+
+def _pick_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _wait_for_bind(host: str, port: int, timeout_s: float = 10.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            try:
+                s.connect((host, port))
+                return True
+            except OSError:
+                time.sleep(0.1)
+    return False
+
+
+def _start_server(config: pathlib.Path, env_overrides: dict, extra_args=None):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("FLAPI_")}
+    env.update(env_overrides)
+    args = [str(_flapi()), "-c", str(config)] + (extra_args or [])
+    return subprocess.Popen(
+        args,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+
+@pytest.mark.parametrize("bogus", ["abc", "0", "99999", "-1"])
+def test_invalid_FLAPI_PORT_is_rejected(tmp_path: pathlib.Path, bogus: str):
+    config = _write_minimal_config(tmp_path)
+    res = _run(
+        [str(_flapi()), "--validate-config", "-c", str(config)],
+        env_overrides={"FLAPI_PORT": bogus},
+    )
+    assert res.returncode == 1
+    combined = (res.stderr + res.stdout).lower()
+    assert "invalid flapi_port" in combined
+    assert bogus.lower() in combined
+
+
+def test_FLAPI_PORT_used_when_no_port_flag(tmp_path: pathlib.Path):
+    config = _write_minimal_config(tmp_path)
+    port = _pick_free_port()
+    proc = _start_server(config, {"FLAPI_PORT": str(port)})
+    try:
+        assert _wait_for_bind("127.0.0.1", port), (
+            f"FLAPI_PORT={port} did not result in a listening socket; "
+            f"server output: {(proc.stdout.read() if proc.stdout else '')[:500]}"
+        )
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_CLI_port_wins_over_FLAPI_PORT(tmp_path: pathlib.Path):
+    config = _write_minimal_config(tmp_path)
+    cli_port = _pick_free_port()
+    env_port = _pick_free_port()
+    while env_port == cli_port:
+        env_port = _pick_free_port()
+    proc = _start_server(
+        config,
+        {"FLAPI_PORT": str(env_port)},
+        extra_args=["--port", str(cli_port)],
+    )
+    try:
+        assert _wait_for_bind("127.0.0.1", cli_port), (
+            f"--port {cli_port} did not bind despite being given on the CLI"
+        )
+        # And the env-supplied port must NOT be listening.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            assert s.connect_ex(("127.0.0.1", env_port)) != 0, (
+                f"FLAPI_PORT={env_port} bound despite CLI override; "
+                f"CLI precedence broken"
+            )
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_FLAPI_HOST_used_when_no_host_flag(tmp_path: pathlib.Path):
+    config = _write_minimal_config(tmp_path)
+    port = _pick_free_port()
+    proc = _start_server(
+        config,
+        {"FLAPI_PORT": str(port), "FLAPI_HOST": "127.0.0.1"},
+    )
+    try:
+        assert _wait_for_bind("127.0.0.1", port), (
+            "server did not bind on 127.0.0.1 as FLAPI_HOST requested"
+        )
+        # External-iface check: binding 127.0.0.1 should NOT make the
+        # port reachable from a non-loopback address. Skip if no
+        # non-loopback iface available (e.g. CI sandboxes).
+        try:
+            hostname_ip = socket.gethostbyname(socket.gethostname())
+        except OSError:
+            hostname_ip = "127.0.0.1"
+        if hostname_ip != "127.0.0.1":
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.5)
+                assert s.connect_ex((hostname_ip, port)) != 0, (
+                    f"FLAPI_HOST=127.0.0.1 leaked onto {hostname_ip}; "
+                    f"bindaddr not respected"
+                )
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)

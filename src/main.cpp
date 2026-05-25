@@ -3,6 +3,7 @@
 #include <fstream>
 #include <iostream>
 #include <cstdlib>
+#include <cstring>
 #include <csignal>
 #include <atomic>
 #include <thread>
@@ -322,6 +323,10 @@ int main(int argc, char* argv[])
         .default_value(-1)
         .scan<'i', int>();
 
+    program.add_argument("--host")
+        .help("Bind address for the web server (e.g. 0.0.0.0, 127.0.0.1)")
+        .default_value(std::string(""));
+
     program.add_argument("--log-level")
         .help("Set the log level (debug, info, warning, error)")
         .default_value(std::string("info"));
@@ -439,13 +444,16 @@ int main(int argc, char* argv[])
 
     std::string config_file = program.get<std::string>("--config");
     int cmd_port = program.get<int>("--port");
+    std::string cmd_host = program.get<std::string>("--host");
     std::string log_level = program.get<std::string>("--log-level");
     bool validate_config = program.get<bool>("--validate-config");
 
-    // 12-factor env-var fallback (#47). Precedence:
-    //   CLI flag > env var > built-in default.
+    // 12-factor env-var fallback (#47, #63). Precedence:
+    //   CLI flag > env var > config file > built-in default.
     // CLI wins because we only consult the env when the user didn't
-    // pass the flag.
+    // pass the flag; config-file values are applied later in
+    // initializeConfig() and only kick in when neither CLI nor env
+    // provided a value.
     if (!program.is_used("--config")) {
         if (const char* env = std::getenv("FLAPI_CONFIG"); env != nullptr && *env != '\0') {
             config_file = env;
@@ -454,6 +462,29 @@ int main(int argc, char* argv[])
     if (!program.is_used("--log-level")) {
         if (const char* env = std::getenv("FLAPI_LOG_LEVEL"); env != nullptr && *env != '\0') {
             log_level = env;
+        }
+    }
+    if (!program.is_used("--port")) {
+        if (const char* env = std::getenv("FLAPI_PORT"); env != nullptr && *env != '\0') {
+            // Reject non-int / out-of-range early so a typo doesn't
+            // silently fall through to the config-file value.
+            try {
+                size_t consumed = 0;
+                const int parsed = std::stoi(env, &consumed);
+                if (consumed != std::strlen(env) || parsed < 1 || parsed > 65535) {
+                    throw std::invalid_argument("out of range");
+                }
+                cmd_port = parsed;
+            } catch (const std::exception&) {
+                std::cerr << "flapi: invalid FLAPI_PORT '" << env
+                          << "'; must be an integer in 1..65535\n";
+                return 1;
+            }
+        }
+    }
+    if (!program.is_used("--host")) {
+        if (const char* env = std::getenv("FLAPI_HOST"); env != nullptr && *env != '\0') {
+            cmd_host = env;
         }
     }
     // Validate log_level. Invalid values are an error, not a silent
@@ -518,6 +549,9 @@ int main(int argc, char* argv[])
 
     if (cmd_port != -1) {
         config_manager->setHttpPort(cmd_port);
+    }
+    if (!cmd_host.empty()) {
+        config_manager->setHttpHost(cmd_host);
     }
 
     initializeDatabase(config_manager);

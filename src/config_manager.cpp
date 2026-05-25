@@ -109,9 +109,11 @@ void ConfigManager::parseMainConfig() {
         project_description = safeGet<std::string>(config, "project-description", "project-description");
         server_name = safeGet<std::string>(config, "server-name", "server-name", "localhost");
         http_port = safeGet<int>(config, "http-port", "http-port", 8080);
+        http_host = safeGet<std::string>(config, "http-host", "http-host", "0.0.0.0");
 
         CROW_LOG_DEBUG << "Project Name: " << project_name;
         CROW_LOG_DEBUG << "Server Name: " << server_name;
+        CROW_LOG_DEBUG << "HTTP Host: " << http_host;
         CROW_LOG_DEBUG << "HTTP Port: " << http_port;
 
         parseHttpsConfig();
@@ -1184,6 +1186,8 @@ std::string ConfigManager::getProjectDescription() const { return project_descri
 std::string ConfigManager::getServerName() const { return server_name; }
 int ConfigManager::getHttpPort() const { return http_port; }
 void ConfigManager::setHttpPort(int port) { http_port = port; }
+std::string ConfigManager::getHttpHost() const { return http_host; }
+void ConfigManager::setHttpHost(const std::string& host) { http_host = host; }
 std::string ConfigManager::getTemplatePath() const { return template_config.path; }
 std::filesystem::path ConfigManager::getFullTemplatePath() const { return std::filesystem::path(base_path) / template_config.path; }
 std::shared_ptr<IFileProvider> ConfigManager::getFileProvider() const {
