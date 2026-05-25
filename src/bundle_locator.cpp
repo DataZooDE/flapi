@@ -2,6 +2,8 @@
 #include "macho_bundle.hpp"
 #include "selfpath.hpp"
 
+#include <crow/logging.h>
+
 #include <algorithm>
 #include <cstdint>
 #include <fstream>
@@ -63,6 +65,26 @@ std::optional<BundleLocation> ScanBufferForEocd(
 
         if (this_disk != 0 || cd_start_disk != 0) {
             continue;
+        }
+        // ZIP64 sentinels (#65): when a ZIP exceeds 4 GiB or 65535 entries,
+        // the EOCD's size / offset / entry-count fields are pinned to
+        // 0xffffffff / 0xffff and the real values live in a ZIP64 EOCD
+        // record we don't parse. Surface this explicitly -- the implicit
+        // range-check rejection below would otherwise return nullopt with
+        // no log line, making the failure indistinguishable from "no
+        // bundle present" in operator logs.
+        constexpr std::uint16_t kZip64SentinelU16 = 0xffffu;
+        constexpr std::uint32_t kZip64SentinelU32 = 0xffffffffu;
+        if (cd_size == kZip64SentinelU32 || cd_offset_arch == kZip64SentinelU32 ||
+            entries_this == kZip64SentinelU16 || entries_total == kZip64SentinelU16) {
+            CROW_LOG_WARNING
+                << "bundle_locator: ZIP64-shaped EOCD detected at file offset "
+                << (buf_start_in_file + i)
+                << " (cd_size=0x" << std::hex << cd_size
+                << " cd_offset=0x" << cd_offset_arch
+                << " entries=" << std::dec << entries_this
+                << "); ZIP64 is not supported -- treating as no bundle present";
+            return std::nullopt;
         }
         if (entries_this != entries_total) {
             continue;

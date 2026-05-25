@@ -119,31 +119,66 @@ TEST_CASE("bundle_locator returns nullopt when no EOCD signature is present",
     REQUIRE_FALSE(loc.has_value());
 }
 
-TEST_CASE("bundle_locator rejects an EOCD with implausible fields", "[bundle_locator]") {
+namespace {
+
+// Helpers for building a synthetic EOCD record at the tail of a buffer.
+// Used by the ZIP64 sentinel tests; the EOCD layout is constant across
+// them and the existing tests would benefit from the same shorthand if
+// they ever need to grow.
+void PutU16(std::vector<std::uint8_t>& bytes, std::size_t off, std::uint16_t v) {
+    bytes[off] = static_cast<std::uint8_t>(v & 0xff);
+    bytes[off + 1] = static_cast<std::uint8_t>((v >> 8) & 0xff);
+}
+void PutU32(std::vector<std::uint8_t>& bytes, std::size_t off, std::uint32_t v) {
+    bytes[off]     = static_cast<std::uint8_t>(v & 0xff);
+    bytes[off + 1] = static_cast<std::uint8_t>((v >> 8) & 0xff);
+    bytes[off + 2] = static_cast<std::uint8_t>((v >> 16) & 0xff);
+    bytes[off + 3] = static_cast<std::uint8_t>((v >> 24) & 0xff);
+}
+
+}  // namespace
+
+TEST_CASE("bundle_locator rejects ZIP64-sentinel cd_size / cd_offset (issue #65)",
+          "[bundle_locator][zip64]") {
     // 2 KiB of filler with a fake EOCD signature at the very end whose
-    // central-directory size/offset can't possibly fit in the file.
+    // central-directory size/offset carry the ZIP64 sentinel 0xffffffff
+    // -- the marker that says "the real values live in a ZIP64 EOCD
+    // record". flapi does not parse ZIP64 records, so it must reject
+    // these as "no bundle present" rather than masquerading as malformed.
     std::vector<std::uint8_t> bytes(2048, std::uint8_t{0xab});
     const std::size_t eocd_off = bytes.size() - 22;
 
-    auto put_u16 = [&](std::size_t off, std::uint16_t v) {
-        bytes[off] = static_cast<std::uint8_t>(v & 0xff);
-        bytes[off + 1] = static_cast<std::uint8_t>((v >> 8) & 0xff);
-    };
-    auto put_u32 = [&](std::size_t off, std::uint32_t v) {
-        bytes[off]     = static_cast<std::uint8_t>(v & 0xff);
-        bytes[off + 1] = static_cast<std::uint8_t>((v >> 8) & 0xff);
-        bytes[off + 2] = static_cast<std::uint8_t>((v >> 16) & 0xff);
-        bytes[off + 3] = static_cast<std::uint8_t>((v >> 24) & 0xff);
-    };
+    PutU32(bytes, eocd_off + 0, 0x06054b50);   // signature
+    PutU16(bytes, eocd_off + 4, 0);             // disk number
+    PutU16(bytes, eocd_off + 6, 0);             // disk where CD starts
+    PutU16(bytes, eocd_off + 8, 1);             // entries on this disk
+    PutU16(bytes, eocd_off + 10, 1);            // total entries
+    PutU32(bytes, eocd_off + 12, 0xffffffffu);  // central directory size (ZIP64 sentinel)
+    PutU32(bytes, eocd_off + 16, 0xffffffffu);  // central directory offset (ZIP64 sentinel)
+    PutU16(bytes, eocd_off + 20, 0);            // comment length
 
-    put_u32(eocd_off + 0, 0x06054b50);   // signature
-    put_u16(eocd_off + 4, 0);             // disk number
-    put_u16(eocd_off + 6, 0);             // disk where CD starts
-    put_u16(eocd_off + 8, 1);             // entries on this disk
-    put_u16(eocd_off + 10, 1);            // total entries
-    put_u32(eocd_off + 12, 0xffffffffu);  // central directory size
-    put_u32(eocd_off + 16, 0xffffffffu);  // central directory offset
-    put_u16(eocd_off + 20, 0);            // comment length
+    TempBinary tb{bytes};
+    auto loc = LocateBundle(tb.path());
+    REQUIRE_FALSE(loc.has_value());
+}
+
+TEST_CASE("bundle_locator rejects ZIP64-sentinel entry counts (issue #65)",
+          "[bundle_locator][zip64]") {
+    // Same shape as above but the sentinel sits on the 16-bit entry-count
+    // fields (signals > 65535 entries). cd_size/cd_offset are kept
+    // plausible so they'd pass the range checks; the ZIP64 detection
+    // must catch the entry-count sentinel before then.
+    std::vector<std::uint8_t> bytes(2048, std::uint8_t{0xab});
+    const std::size_t eocd_off = bytes.size() - 22;
+
+    PutU32(bytes, eocd_off + 0, 0x06054b50);   // signature
+    PutU16(bytes, eocd_off + 4, 0);             // disk number
+    PutU16(bytes, eocd_off + 6, 0);             // disk where CD starts
+    PutU16(bytes, eocd_off + 8, 0xffffu);       // entries on this disk (ZIP64 sentinel)
+    PutU16(bytes, eocd_off + 10, 0xffffu);      // total entries (ZIP64 sentinel)
+    PutU32(bytes, eocd_off + 12, 64);           // central directory size (plausible)
+    PutU32(bytes, eocd_off + 16, 256);          // central directory offset (plausible)
+    PutU16(bytes, eocd_off + 20, 0);            // comment length
 
     TempBinary tb{bytes};
     auto loc = LocateBundle(tb.path());
