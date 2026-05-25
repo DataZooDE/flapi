@@ -95,6 +95,23 @@ std::string SQLTemplateProcessor::getFullTemplatePath(const std::string& templat
         return basePath + templateSource;
     }
 
+    // In bundled mode the endpoint parser already resolved templateSource
+    // against the YAML's parent directory, so it carries the full bundle
+    // key (e.g. "sqls/hello.sql"). Joining with the basePath ("sqls")
+    // would produce "sqls/sqls/hello.sql". Mirror the absolute-path
+    // short-circuit above: if templateSource already starts with the
+    // basePath prefix, return it as-is.
+    {
+        std::string base_with_sep = basePath;
+        if (!base_with_sep.empty() && base_with_sep.back() != '/') {
+            base_with_sep += '/';
+        }
+        if (!base_with_sep.empty() &&
+            templateSource.compare(0, base_with_sep.size(), base_with_sep) == 0) {
+            return templateSource;
+        }
+    }
+
     // Local path resolution
     std::filesystem::path fullPath = std::filesystem::path(basePath) / templateSource;
     return fullPath.string();
