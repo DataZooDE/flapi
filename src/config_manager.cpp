@@ -151,7 +151,16 @@ void ConfigManager::parseTemplateConfig() {
     if (template_node) {
         template_config.path = template_node["path"].as<std::string>();
         std::filesystem::path template_path_relative(template_config.path);
-        template_config.path = std::filesystem::absolute((base_path / template_path_relative).lexically_normal()).string();
+        std::filesystem::path joined = (base_path / template_path_relative).lexically_normal();
+        // In bundled mode the template path is a bundle-relative key
+        // (e.g. "sqls"), not a filesystem path. Calling absolute() would
+        // turn it into "/cwd/sqls" which the EmbeddedArchiveFileProvider
+        // would fail to look up.
+        if (FileProviderFactory::GetBundleContents() != nullptr) {
+            template_config.path = joined.string();
+        } else {
+            template_config.path = std::filesystem::absolute(joined).string();
+        }
         CROW_LOG_DEBUG << "Template Path: " << template_config.path;
 
         if (template_node["environment-whitelist"]) {
@@ -432,7 +441,40 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
     size_t total_yaml_files = 0;
     size_t loaded_endpoints = 0;
 
-    if (std::filesystem::exists(template_path) && std::filesystem::is_directory(template_path)) {
+    // Bundled mode: enumerate endpoint YAMLs by prefix-matching the
+    // in-memory archive. EmbeddedArchiveFileProvider::ListFiles is
+    // non-recursive on purpose, so we walk the bundle directly here.
+    if (auto bundle = FileProviderFactory::GetBundleContents();
+        bundle != nullptr) {
+        std::string prefix = template_path.string();
+        // Normalise to a key shape that matches archive entries (no
+        // leading "./", no leading "/", a single trailing "/").
+        while (prefix.size() >= 2 && prefix[0] == '.' && prefix[1] == '/') {
+            prefix.erase(0, 2);
+        }
+        if (!prefix.empty() && prefix.front() == '/') {
+            prefix.erase(0, 1);
+        }
+        if (!prefix.empty() && prefix.back() != '/') {
+            prefix += '/';
+        }
+        for (const auto& [name, _data] : *bundle) {
+            if (!prefix.empty() && name.rfind(prefix, 0) != 0) {
+                continue;
+            }
+            const std::filesystem::path entry_path(name);
+            const auto extension = entry_path.extension();
+            if (extension != ".yaml" && extension != ".yml") {
+                continue;
+            }
+            total_yaml_files++;
+            size_t endpoints_before = endpoints.size();
+            loadEndpointConfig(name);
+            if (endpoints.size() > endpoints_before) {
+                loaded_endpoints++;
+            }
+        }
+    } else if (std::filesystem::exists(template_path) && std::filesystem::is_directory(template_path)) {
         for (const auto& entry : std::filesystem::recursive_directory_iterator(template_path)) {
             if (entry.is_regular_file()) {
                 auto extension = entry.path().extension();
@@ -1200,6 +1242,15 @@ std::shared_ptr<IFileProvider> ConfigManager::getFileProvider() const {
 
         auto base_provider = FileProviderFactory::CreateDuckDBProvider();
         return std::make_shared<CachingFileProvider>(base_provider, cache_config);
+    }
+
+    // Bundled mode (#62): templates live in the in-memory archive, not on
+    // disk. Route through the factory so SQLTemplateProcessor gets an
+    // EmbeddedArchiveFileProvider when SetBundleContents has been called.
+    // Falls back to LocalFileProvider when no bundle is active, which
+    // matches the pre-bundled behaviour.
+    if (FileProviderFactory::GetBundleContents() != nullptr) {
+        return FileProviderFactory::CreateProvider(template_config.path);
     }
 
     return config_loader->getFileProvider();

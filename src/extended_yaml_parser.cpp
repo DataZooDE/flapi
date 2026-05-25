@@ -1,4 +1,5 @@
 #include "include/extended_yaml_parser.hpp"
+#include "include/vfs_adapter.hpp"
 #include <fstream>
 #include <sstream>
 #include <iostream>
@@ -14,6 +15,34 @@
 #endif
 
 namespace flapi {
+
+namespace {
+
+// Read a file through FileProviderFactory so bundled-mode startup
+// (`flapi pack` then run from a clean cwd) can resolve `flapi.yaml`
+// and any `{{include from ...}}` references against the in-memory
+// archive instead of std::ifstream. When no bundle is active the
+// factory returns a LocalFileProvider, so the unbundled path is
+// behaviourally unchanged.
+std::string ReadConfigFile(const std::filesystem::path& file_path) {
+    const std::string path_str = file_path.string();
+    auto provider = FileProviderFactory::CreateProvider(path_str);
+    if (!provider->FileExists(path_str)) {
+        throw std::runtime_error("Could not open file: " + path_str);
+    }
+    return provider->ReadFile(path_str);
+}
+
+// Provider-aware existence check used by include resolution. When a bundle
+// is active, std::filesystem::exists would always say "no" for entries
+// that live only in the in-memory archive.
+bool ConfigFileExists(const std::filesystem::path& file_path) {
+    const std::string path_str = file_path.string();
+    auto provider = FileProviderFactory::CreateProvider(path_str);
+    return provider->FileExists(path_str);
+}
+
+}  // namespace
 
 // IncludeConfig implementation
 bool ExtendedYamlParser::IncludeConfig::isEnvironmentVariableAllowed(const std::string& var_name) const {
@@ -50,17 +79,14 @@ ExtendedYamlParser::ParseResult ExtendedYamlParser::parseFile(const std::filesys
             actual_base_path = file_path.parent_path();
         }
 
-        // Load file content
-        std::ifstream file(file_path);
-        if (!file.is_open()) {
+        std::string content;
+        try {
+            content = ReadConfigFile(file_path);
+        } catch (const std::exception& e) {
             result.success = false;
-            result.error_message = "Could not open file: " + file_path.string();
+            result.error_message = e.what();
             return result;
         }
-
-        std::stringstream buffer;
-        buffer << file.rdbuf();
-        std::string content = buffer.str();
 
         // Track included files for circular dependency detection
         std::unordered_set<std::string> included_files;
@@ -573,12 +599,12 @@ bool ExtendedYamlParser::resolveIncludePath(const std::filesystem::path& include
                                            const std::vector<std::string>& include_paths) {
     // First try relative to base path
     resolved_path = base_path / include_path;
-    if (std::filesystem::exists(resolved_path)) {
+    if (ConfigFileExists(resolved_path)) {
         return true;
     }
 
     // Try absolute path
-    if (include_path.is_absolute() && std::filesystem::exists(include_path)) {
+    if (include_path.is_absolute() && ConfigFileExists(include_path)) {
         resolved_path = include_path;
         return true;
     }
@@ -586,7 +612,7 @@ bool ExtendedYamlParser::resolveIncludePath(const std::filesystem::path& include
     // Try include paths
     for (const auto& include_base : include_paths) {
         resolved_path = std::filesystem::path(include_base) / include_path;
-        if (std::filesystem::exists(resolved_path)) {
+        if (ConfigFileExists(resolved_path)) {
             return true;
         }
     }
@@ -595,14 +621,7 @@ bool ExtendedYamlParser::resolveIncludePath(const std::filesystem::path& include
 }
 
 YAML::Node ExtendedYamlParser::loadYamlFile(const std::filesystem::path& file_path) {
-    std::ifstream file(file_path);
-    if (!file.is_open()) {
-        throw std::runtime_error("Could not open file: " + file_path.string());
-    }
-
-    std::stringstream buffer;
-    buffer << file.rdbuf();
-    return YAML::Load(buffer.str());
+    return YAML::Load(ReadConfigFile(file_path));
 }
 
 YAML::Node ExtendedYamlParser::extractSection(const YAML::Node& node, const std::string& section_name) {
