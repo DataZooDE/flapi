@@ -30,9 +30,30 @@ constexpr std::uint32_t kMachOMagic64   = 0xFEEDFACFu;
 constexpr std::uint32_t kMachOCigam64   = 0xCFFAEDFEu;
 constexpr std::uint32_t kFatMagic       = 0xCAFEBABEu;
 constexpr std::uint32_t kFatCigam       = 0xBEBAFECAu;
+constexpr std::uint32_t kFatMagic64     = 0xCAFEBABFu;
+constexpr std::uint32_t kFatCigam64     = 0xBFBAFECAu;
 
 constexpr std::uint32_t kLcSegment      = 0x01;
 constexpr std::uint32_t kLcSegment64    = 0x19;
+
+// Apple CPU type constants (from <mach/machine.h>). Only the ones we
+// care about for slice selection on hosts we actually run on. Marked
+// maybe_unused because the host-arch #ifdef below only picks one.
+[[maybe_unused]] constexpr std::uint32_t kCpuTypeX86_64 = 0x01000007u;
+[[maybe_unused]] constexpr std::uint32_t kCpuTypeArm64  = 0x0100000Cu;
+
+// What slice to prefer when the input is a fat / universal binary.
+// Resolved at compile time from the host arch so the recursive
+// LocateFlapiSection call picks the slice that matches the binary
+// doing the lookup -- which, in the self-packaging case, is the
+// binary being looked at. 0 means "no preference; first slice".
+#if defined(__aarch64__) || defined(__arm64__)
+constexpr std::uint32_t kPreferredCpuType = kCpuTypeArm64;
+#elif defined(__x86_64__) || defined(_M_X64)
+constexpr std::uint32_t kPreferredCpuType = kCpuTypeX86_64;
+#else
+constexpr std::uint32_t kPreferredCpuType = 0u;
+#endif
 
 std::uint32_t ReadU32LE(const std::uint8_t* p) {
     return static_cast<std::uint32_t>(p[0])
@@ -44,6 +65,20 @@ std::uint32_t ReadU32LE(const std::uint8_t* p) {
 std::uint64_t ReadU64LE(const std::uint8_t* p) {
     return static_cast<std::uint64_t>(ReadU32LE(p))
          | (static_cast<std::uint64_t>(ReadU32LE(p + 4)) << 32);
+}
+
+// Fat header + fat_arch records are stored big-endian on disk
+// regardless of host endianness (Apple's universal-binary spec).
+std::uint32_t ReadU32BE(const std::uint8_t* p) {
+    return (static_cast<std::uint32_t>(p[0]) << 24)
+         | (static_cast<std::uint32_t>(p[1]) << 16)
+         | (static_cast<std::uint32_t>(p[2]) << 8)
+         |  static_cast<std::uint32_t>(p[3]);
+}
+
+std::uint64_t ReadU64BE(const std::uint8_t* p) {
+    return (static_cast<std::uint64_t>(ReadU32BE(p)) << 32)
+         |  static_cast<std::uint64_t>(ReadU32BE(p + 4));
 }
 
 bool NameEquals(const std::uint8_t* fixed, std::size_t cap, const char* expected) {
@@ -177,13 +212,132 @@ std::optional<MachOSection> FindInLoadCommands64(
     return std::nullopt;
 }
 
+// Parses a fat / universal Mach-O header at buffer[0] and returns the
+// absolute file offset of the slice we want to recurse into. The
+// caller is responsible for the magic dispatch and for adding the
+// returned offset to any per-slice section offsets it computes.
+//
+// Selection rule: first slice whose cputype matches kPreferredCpuType;
+// else the first slice. The fallback gives deterministic behaviour on
+// hosts whose arch isn't represented in the file (e.g., a PPC-only
+// fat binary inspected on x86_64, or a test fixture built on a host
+// arch we don't compile-time match).
+//
+// Returns nullopt on truncation, an absurd nfat_arch (we cap at 64
+// slices -- real universal binaries top out at 4-5), or a slice whose
+// declared extent exceeds the buffer.
+struct FatSlice {
+    std::uint64_t file_offset = 0;
+    std::uint64_t size = 0;
+};
+
+std::optional<FatSlice> ParseFatHeader(
+        const std::vector<std::uint8_t>& buffer,
+        std::uint32_t magic) {
+    constexpr std::size_t kFatHeaderSize = 8;
+    if (buffer.size() < kFatHeaderSize) {
+        return std::nullopt;
+    }
+    const bool is_64 = (magic == kFatMagic64 || magic == kFatCigam64);
+    const std::size_t arch_size = is_64 ? 32u : 20u;
+    const std::uint32_t nfat_arch = ReadU32BE(buffer.data() + 4);
+    constexpr std::uint32_t kMaxSlices = 64u;
+    if (nfat_arch == 0 || nfat_arch > kMaxSlices) {
+        return std::nullopt;
+    }
+    if (buffer.size() < kFatHeaderSize + nfat_arch * arch_size) {
+        return std::nullopt;
+    }
+
+    auto read_slice = [&](std::uint32_t i) -> FatSlice {
+        const std::size_t off = kFatHeaderSize + i * arch_size;
+        FatSlice s;
+        // Layout (fat_arch):    cputype, cpusubtype, offset, size, align
+        // Layout (fat_arch_64): cputype, cpusubtype, offset(64), size(64),
+        //                       align, reserved
+        if (is_64) {
+            s.file_offset = ReadU64BE(buffer.data() + off + 8);
+            s.size        = ReadU64BE(buffer.data() + off + 16);
+        } else {
+            s.file_offset = ReadU32BE(buffer.data() + off + 8);
+            s.size        = ReadU32BE(buffer.data() + off + 12);
+        }
+        return s;
+    };
+    auto read_cputype = [&](std::uint32_t i) -> std::uint32_t {
+        const std::size_t off = kFatHeaderSize + i * arch_size;
+        return ReadU32BE(buffer.data() + off);
+    };
+
+    // Pass 1: preferred cputype.
+    if (kPreferredCpuType != 0) {
+        for (std::uint32_t i = 0; i < nfat_arch; ++i) {
+            if (read_cputype(i) == kPreferredCpuType) {
+                FatSlice s = read_slice(i);
+                if (s.file_offset > buffer.size() ||
+                    s.size > buffer.size() ||
+                    s.file_offset + s.size > buffer.size()) {
+                    return std::nullopt;
+                }
+                return s;
+            }
+        }
+    }
+    // Pass 2: first slice as fallback.
+    FatSlice s = read_slice(0);
+    if (s.file_offset > buffer.size() ||
+        s.size > buffer.size() ||
+        s.file_offset + s.size > buffer.size()) {
+        return std::nullopt;
+    }
+    return s;
+}
+
+// Inner overload: parse a Mach-O whose first byte lives at
+// buffer[base] and produce a section file_offset that is absolute
+// within the original (possibly fat-wrapping) buffer.
+std::optional<MachOSection> LocateFlapiSectionAt(
+        const std::vector<std::uint8_t>& buffer,
+        std::uint64_t base) {
+    if (base + 32 > buffer.size()) {
+        return std::nullopt;
+    }
+    const std::uint32_t magic = ReadU32LE(buffer.data() + base);
+
+    // 32-bit Mach-O: we don't ship 32-bit artifacts; cigam (byte-swapped)
+    // is also out of scope for this parser. A future PR can extend if a
+    // legit use-case appears.
+    if (magic != kMachOMagic64) {
+        return std::nullopt;
+    }
+
+    // mach_header_64 layout:
+    //   uint32 magic, cputype, cpusubtype, filetype,
+    //   uint32 ncmds, sizeofcmds, flags, reserved
+    const std::uint32_t ncmds      = ReadU32LE(buffer.data() + base + 16);
+    const std::uint32_t sizeofcmds = ReadU32LE(buffer.data() + base + 20);
+
+    auto inner = FindInLoadCommands64(buffer, base, ncmds, sizeofcmds);
+    if (!inner.has_value()) {
+        return std::nullopt;
+    }
+    // The section's offset field is recorded relative to its slice's
+    // base in the on-disk Mach-O, so callers further out need the
+    // absolute file offset. base is the slice's absolute offset in the
+    // outer (potentially fat) file; adding it gives the absolute byte
+    // position seek() should land on.
+    inner->file_offset += base;
+    return inner;
+}
+
 }  // namespace
 
 bool IsMachOMagic(const std::uint8_t magic_bytes[4]) {
     const std::uint32_t m = ReadU32LE(magic_bytes);
     return m == kMachOMagic32 || m == kMachOCigam32 ||
            m == kMachOMagic64 || m == kMachOCigam64 ||
-           m == kFatMagic     || m == kFatCigam;
+           m == kFatMagic     || m == kFatCigam ||
+           m == kFatMagic64   || m == kFatCigam64;
 }
 
 std::optional<MachOSection> LocateFlapiSectionInBuffer(
@@ -193,21 +347,21 @@ std::optional<MachOSection> LocateFlapiSectionInBuffer(
     }
     const std::uint32_t magic = ReadU32LE(buffer.data());
 
-    // We only handle 64-bit little-endian Mach-O here. Production
-    // arm64/x86_64 builds emit this format. Cigam (byte-swapped),
-    // 32-bit, and fat (universal) are out of scope for the spike --
-    // documented in the header.
-    if (magic != kMachOMagic64) {
-        return std::nullopt;
+    // Fat / universal binary: pick the slice that matches the host
+    // arch (or the first slice as a deterministic fallback) and recurse
+    // into the inner thin Mach-O. The returned file_offset is absolute
+    // within the fat file, which is what OverwriteFlapiSection and
+    // LocateBundleInRange both expect.
+    if (magic == kFatMagic || magic == kFatCigam ||
+        magic == kFatMagic64 || magic == kFatCigam64) {
+        auto slice = ParseFatHeader(buffer, magic);
+        if (!slice.has_value()) {
+            return std::nullopt;
+        }
+        return LocateFlapiSectionAt(buffer, slice->file_offset);
     }
 
-    // mach_header_64:
-    //   uint32 magic, cputype, cpusubtype, filetype,
-    //   uint32 ncmds, sizeofcmds, flags, reserved
-    const std::uint32_t ncmds      = ReadU32LE(buffer.data() + 16);
-    const std::uint32_t sizeofcmds = ReadU32LE(buffer.data() + 20);
-
-    return FindInLoadCommands64(buffer, /*base=*/0, ncmds, sizeofcmds);
+    return LocateFlapiSectionAt(buffer, /*base=*/0);
 }
 
 std::optional<MachOSection> LocateFlapiSection(const std::filesystem::path& path) {

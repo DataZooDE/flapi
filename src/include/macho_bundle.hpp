@@ -29,13 +29,19 @@ bool IsMachOMagic(const std::uint8_t magic_bytes[4]);
 
 // Locate the __FLAPI/__bundle section in a Mach-O file on disk.
 // Returns nullopt if:
-//   - the file isn't a thin (non-fat) Mach-O,
+//   - the file isn't a 64-bit Mach-O (thin or fat / universal),
 //   - the file is malformed,
 //   - the section doesn't exist (e.g., on a non-macOS build).
 //
-// Fat / universal binaries are currently not supported -- a follow-up
-// can iterate slices. macOS releases produced by this repo are thin
-// per-architecture, so the gap is acceptable for now.
+// Fat / universal binaries (FAT_MAGIC, FAT_MAGIC_64) are supported:
+// the parser walks fat_arch[] and picks the slice whose cputype
+// matches the host arch (compile-time), or the first slice as a
+// deterministic fallback. The returned `file_offset` is absolute
+// within the fat file so OverwriteFlapiSection seeks to the right
+// place inside the chosen slice.
+//
+// 32-bit Mach-O (MH_MAGIC / MH_CIGAM) is intentionally rejected --
+// no flapi release ships a 32-bit slice today.
 std::optional<MachOSection> LocateFlapiSection(const std::filesystem::path& path);
 
 // Overload that scans a buffer instead of opening a file. Used by
