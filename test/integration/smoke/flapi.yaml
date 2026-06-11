@@ -1,0 +1,24 @@
+# Smoke-test configuration for container memory-limit behavior (#71).
+#
+# Deliberately does NOT set duckdb.max_memory or duckdb.threads, so DuckDB's
+# own cgroup-aware detection sizes them from the container's limit. In-memory
+# DuckDB with no temp_directory, so the memory-pressure query in
+# sqls/memtest.sql cannot spill to disk and exercises the buffer-pool limit.
+project-name: flapi-resource-limit-smoke
+project-description: Container smoke test for cgroup-aware memory sizing
+
+template:
+  path: './sqls'
+
+connections:
+  mem:
+    properties: {}
+    allow: '*'
+
+# In-memory DuckDB; intentionally no max_memory / threads (auto-memory fills them).
+duckdb:
+  access_mode: READ_WRITE
+
+# No DuckLake / caching -- keep startup trivial and fully in-memory.
+mcp:
+  enabled: false

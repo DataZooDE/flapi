@@ -100,7 +100,12 @@ private:
     void logDuckDBVersion();
     
     void createAndInitializeDuckDBConfig(std::shared_ptr<ConfigManager> config_manager, duckdb_config& config);
-   
+
+    // Observability (#71): log the cgroup-detected memory / CPU limits at
+    // startup. Does not change any DuckDB setting (DuckDB is itself
+    // cgroup-aware); purely diagnostic so the running ceiling is visible.
+    void logDetectedResourceLimits(std::shared_ptr<ConfigManager> config_manager);
+
 
     std::string processTemplate(const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
     std::string processCacheTemplate(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params);

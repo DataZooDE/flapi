@@ -300,8 +300,16 @@ duckdb:
 **Notes:**
 - Omit `db_path` or set to `:memory:` for an in-memory database
 - Any key-value pairs are passed directly as DuckDB settings
+- **Containers (cgroup limits):** when `threads`/`max_memory` are omitted (the
+  default), DuckDB sizes them from the container's cgroup limits — `max_memory`
+  to ~80% of the cgroup memory limit and `threads` from the CPU quota (Kubernetes
+  limits, Docker `--memory`/`--cpus`, etc.). You normally do **not** need to set
+  these per deployment target. To pin explicit values, set them here and they are
+  passed straight through. flAPI logs the detected ceiling at startup as
+  `resource-limits: memory source=cgroup-v2 available=...MB` / `cpu source=...`,
+  so the limit it is actually running under is visible in the logs (#71).
 
-> **Implementation:** `src/database_manager.cpp` | **Tests:** `test/cpp/database_manager_test.cpp`
+> **Implementation:** `src/database_manager.cpp`, `src/system_resources.cpp` | **Tests:** `test/cpp/database_manager_test.cpp`, `test/cpp/system_resources_test.cpp`
 
 ### 2.5 DuckLake Configuration
 

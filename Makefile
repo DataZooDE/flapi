@@ -1,7 +1,7 @@
 # Makefile for flAPI project
 
 # Phony targets
-.PHONY: all debug release clean run-debug run-release run-integration-tests docker-build web cli-build cli-test vscode-build vscode-dev integration-test integration-tests integration-test-rest integration-test-mcp integration-test-ducklake integration-test-examples integration-test-setup integration-test-ci test-all help
+.PHONY: all debug release clean run-debug run-release run-integration-tests docker-build web cli-build cli-test vscode-build vscode-dev integration-test integration-tests integration-test-rest integration-test-mcp integration-test-ducklake integration-test-examples integration-test-setup integration-test-ci smoke-test-resources test-all help
 
 # Check if Ninja is available
 NINJA := $(shell which ninja)
@@ -308,6 +308,13 @@ integration-test-ci: release integration-test-setup
 	wait $$SERVER_PID 2>/dev/null || true; \
 	echo "Integration tests completed with exit code: $$TEST_RESULT"; \
 	exit $$TEST_RESULT
+
+# Container smoke test for cgroup-aware memory sizing (#71).
+# Runs the release binary in a memory-limited Docker container and asserts
+# DuckDB honors the cgroup limit (graceful OOM, server survives). Skips on
+# non-Linux / no-Docker hosts. See test/integration/smoke_resource_limits.sh.
+smoke-test-resources: release
+	@bash test/integration/smoke_resource_limits.sh
 
 # Build Docker image
 docker: release

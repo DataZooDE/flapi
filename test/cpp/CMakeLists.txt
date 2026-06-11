@@ -45,6 +45,7 @@ add_executable(flapi_tests
     sql_parameter_classifier_test.cpp
     sql_template_processor_test.cpp
     sql_utils_test.cpp
+    system_resources_test.cpp
     test_duckdb_raii.cpp
     test_json_utils.cpp
     test_config_loader.cpp

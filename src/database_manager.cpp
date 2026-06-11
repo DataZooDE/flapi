@@ -12,6 +12,7 @@
 #include "sql_utils.hpp"
 #include "database_manager.hpp"
 #include "duckdb_raii.hpp"
+#include "system_resources.hpp"
 
 namespace flapi {
 
@@ -259,13 +260,50 @@ void DatabaseManager::createAndInitializeDuckDBConfig(std::shared_ptr<ConfigMana
         throw std::runtime_error("Failed to set DuckDB configuration: autoload_known_extensions");
     }
 
-    // Apply settings from the configuration
+    // Observability (#71): log the memory / CPU limits we detect for this
+    // process (honoring container cgroup limits). This does NOT change any
+    // DuckDB setting -- DuckDB 1.5.2 is itself cgroup-aware and sizes
+    // max_memory (~80% of the limit) and threads from the same limits. The
+    // log makes container misconfiguration diagnosable and lets operators see
+    // the ceiling flAPI is actually running under. To override, set
+    // duckdb.max_memory / duckdb.threads explicitly in flapi.yaml.
+    logDetectedResourceLimits(config_manager);
+
+    // Apply settings from the configuration.
     const auto& duckdb_settings = config_manager->getDuckDBConfig().settings;
     for (const auto& [key, value] : duckdb_settings) {
         if (duckdb_set_config(config, key.c_str(), value.c_str()) == DuckDBError) {
             duckdb_destroy_config(&config);
             throw std::runtime_error("Failed to set DuckDB configuration: " + key);
         }
+    }
+}
+
+void DatabaseManager::logDetectedResourceLimits(std::shared_ptr<ConfigManager> config_manager) {
+    const auto& settings = config_manager->getDuckDBConfig().settings;
+
+    flapi::MemoryDetection mem = flapi::DetectAvailableMemoryBytes();
+    if (mem.source != "unknown" && mem.bytes > 0) {
+        CROW_LOG_INFO << "resource-limits: memory source=" << mem.source
+                      << " available=" << (mem.bytes / (1024ull * 1024ull)) << "MB"
+                      << (settings.count("max_memory") > 0
+                              ? " (overridden by duckdb.max_memory=" + settings.at("max_memory") + ")"
+                              : " (DuckDB sizes max_memory from this limit)");
+    } else {
+        CROW_LOG_DEBUG << "resource-limits: could not detect a memory limit; "
+                       << "DuckDB will use its own detection.";
+    }
+
+    flapi::CpuDetection cpu = flapi::DetectAvailableCpuCount();
+    if (cpu.source != "unknown" && cpu.cores >= 1) {
+        CROW_LOG_INFO << "resource-limits: cpu source=" << cpu.source
+                      << " cores=" << cpu.cores
+                      << (settings.count("threads") > 0
+                              ? " (overridden by duckdb.threads=" + settings.at("threads") + ")"
+                              : " (DuckDB sizes threads from this limit)");
+    } else {
+        CROW_LOG_DEBUG << "resource-limits: could not detect a CPU quota; "
+                       << "DuckDB will use its own detection.";
     }
 }
 

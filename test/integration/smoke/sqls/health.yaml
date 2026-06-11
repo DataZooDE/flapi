@@ -1,0 +1,10 @@
+# Liveness endpoint for the auto-memory smoke test (#71).
+url-path: /health/
+method: GET
+
+template-source: health.sql
+connection:
+  - mem
+
+auth:
+  enabled: false

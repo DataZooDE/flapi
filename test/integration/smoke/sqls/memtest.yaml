@@ -1,0 +1,20 @@
+# Memory-pressure endpoint for the auto-memory smoke test (#71).
+url-path: /memtest/
+method: GET
+
+request:
+  - field-name: rows
+    field-in: query
+    description: Number of 1000-char rows to aggregate (memory pressure knob)
+    required: false
+    validators:
+      - type: int
+        min: 1
+        max: 100000000
+
+template-source: memtest.sql
+connection:
+  - mem
+
+auth:
+  enabled: false

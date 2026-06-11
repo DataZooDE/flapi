@@ -272,6 +272,7 @@ add_library(flapi-lib STATIC
     src/sql_parameter_classifier.cpp
     src/sql_template_processor.cpp
     src/sql_utils.cpp
+    src/system_resources.cpp
     src/mcp_server.cpp
     src/mcp_tool_handler.cpp
     src/mcp_tool_rate_limiter.cpp

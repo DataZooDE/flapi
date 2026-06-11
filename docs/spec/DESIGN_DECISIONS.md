@@ -416,6 +416,47 @@ four supported platforms (#49 / `.github/workflows/build.yaml`).
 
 ---
 
+## 10. Container memory/CPU limits: rely on DuckDB's cgroup awareness (#71)
+
+**Decision:** Do **not** add a flApi-side mechanism to size `max_memory` /
+`threads` from container cgroup limits. Instead, rely on DuckDB's own
+cgroup-aware detection and simply **log the detected limits at startup** for
+observability.
+
+**Context:** Issue #71 proposed an opt-in `--auto-memory` flag, on the premise
+that DuckDB reads *host* RAM (via `/proc/meminfo`, `sysconf`) and ignores
+container cgroup limits — so an unbounded buffer pool inside a small container
+would be kernel-OOM-killed (exit 137) rather than failing gracefully.
+
+**Finding (empirically verified, DuckDB 1.5.2):** that premise no longer holds.
+Running the binary in memory/CPU-limited containers shows DuckDB **already**
+honors cgroup limits:
+
+| Container limit | DuckDB `memory_limit` (no config) | DuckDB `threads` (no config) |
+|---|---|---|
+| `--memory=512m` | 409.5 MiB (≈80% of cgroup) | — |
+| `--memory=1g --cpus=2` | 819 MiB (≈80% of cgroup) | 2 (from CPU quota) |
+
+A ~3 GiB query in a 1 GiB container raises a **graceful** DuckDB "Out of Memory"
+error and the server survives — no kernel kill. (The `using 32 threads` startup
+line is Crow's HTTP thread pool, not DuckDB query parallelism — a red herring.)
+
+**Consequences:**
+- A flApi-side override would, at best, duplicate DuckDB's behavior; its only
+  unique value would be a tunable percentage (DuckDB hardcodes ~80%). That did
+  not justify the cross-platform detection/precedence surface area, so it was
+  dropped.
+- `src/system_resources.{hpp,cpp}` provides cgroup v1/v2 memory + CPU detection
+  (unit-tested with injectable `/sys/fs/cgroup` roots) used **only** to emit a
+  startup `resource-limits:` INFO log, so the ceiling flApi runs under is
+  visible and container misconfiguration is diagnosable.
+- **To override** the defaults, set `duckdb.max_memory` / `duckdb.threads`
+  explicitly in `flapi.yaml` (these are passed straight through to DuckDB).
+- `test/integration/smoke_resource_limits.sh` (`make smoke-test-resources`) is a
+  Docker regression guard asserting the graceful-degradation behavior.
+
+---
+
 ## Summary
 
 These design decisions prioritize:
