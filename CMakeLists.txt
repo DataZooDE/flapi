@@ -102,7 +102,30 @@ else()
 endif()
 
 # Set project name and version
-project(flAPI VERSION 0.3.0 LANGUAGES CXX)
+project(flAPI VERSION 26.06.11 LANGUAGES CXX)
+
+# Resolve the version string baked into the binary (FLAPI_VERSION), used for
+# telemetry app_version and `flapi --version`. Priority:
+#   1. -DFLAPI_VERSION_OVERRIDE=...  (set by CI from the git tag)
+#   2. `git describe --tags --dirty` (meaningful versions for local dev builds)
+#   3. "latest"                       (fallback: source tarball / no git)
+# A leading "v" is stripped so the binary reports clean semver (e.g. 0.4.0),
+# matching the wheel pipeline.
+if(FLAPI_VERSION_OVERRIDE)
+    set(FLAPI_VERSION_STR "${FLAPI_VERSION_OVERRIDE}")
+else()
+    execute_process(
+        COMMAND git describe --tags --dirty --always
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        OUTPUT_VARIABLE FLAPI_VERSION_STR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if(NOT FLAPI_VERSION_STR)
+        set(FLAPI_VERSION_STR "latest")
+    endif()
+endif()
+string(REGEX REPLACE "^v" "" FLAPI_VERSION_STR "${FLAPI_VERSION_STR}")
+message(STATUS "flAPI version (FLAPI_VERSION): ${FLAPI_VERSION_STR}")
 
 # Basic settings
 set(CMAKE_CXX_STANDARD 17)
@@ -329,7 +352,7 @@ target_link_libraries(flapi-lib PUBLIC
 )
 
 target_compile_definitions(flapi-lib PRIVATE
-    FLAPI_VERSION="${CMAKE_PROJECT_VERSION}"
+    FLAPI_VERSION="${FLAPI_VERSION_STR}"
 )
 
 # Add RPATH settings for macOS
@@ -342,7 +365,7 @@ endif()
 # Create main executable
 add_executable(flapi src/main.cpp)
 target_link_libraries(flapi PRIVATE flapi-lib)
-target_compile_definitions(flapi PRIVATE FLAPI_VERSION="${CMAKE_PROJECT_VERSION}")
+target_compile_definitions(flapi PRIVATE FLAPI_VERSION="${FLAPI_VERSION_STR}")
 set_target_properties(flapi PROPERTIES ENABLE_EXPORTS TRUE)
 
 # macOS reserved-segment for self-packaging (#48). Allocates a

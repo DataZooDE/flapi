@@ -62,6 +62,7 @@ jobs:
           -DBUILD_TESTING=OFF `
           -DVCPKG_TARGET_TRIPLET=x64-windows-static `
           -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
+          ${{ startsWith(github.ref, 'refs/tags/v') && format('-DFLAPI_VERSION_OVERRIDE={0}', github.ref_name) || '' }} `
           ../..
 
     - name: Build
@@ -111,6 +112,7 @@ jobs:
       run: |
         docker run \
           ${{ matrix.arch == 'arm64' && format('-e FLAPI_CROSS_COMPILE="{0}"', matrix.arch) || '' }} \
+          ${{ startsWith(github.ref, 'refs/tags/v') && format('-e CMAKE_EXTRA_FLAGS="-DFLAPI_VERSION_OVERRIDE={0}"', github.ref_name) || '' }} \
           -v `pwd`:/build_dir \
           -v ~/.ccache:/ccache_dir \
           ${BUILD_IMAGE} \
@@ -209,6 +211,8 @@ jobs:
         ./bootstrap-vcpkg.sh -disableMetrics
 
     - name: Build
+      env:
+        CMAKE_EXTRA_FLAGS: ${{ startsWith(github.ref, 'refs/tags/v') && format('-DFLAPI_VERSION_OVERRIDE={0}', github.ref_name) || '' }}
       run: make release-arm64 && make test
 
     - name: Upload artifact
