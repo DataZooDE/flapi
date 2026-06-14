@@ -63,6 +63,43 @@ export function registerEndpointCommands(program: Command, ctx: CliContext) {
       }
     });
 
+  endpoints
+    .command('parameters <path>')
+    .description('Get parameter definitions for an endpoint')
+    .option('--output <format>', 'Output format: json or table')
+    .action(async (path: string, options: { output?: 'json' | 'table' }) => {
+      const spinner = Console.spinner(`Fetching parameters for ${path}...`);
+      try {
+        const endpointUrl = buildEndpointUrl(path, 'parameters');
+        const response = await ctx.client.get(endpointUrl);
+        spinner.succeed(chalk.green(`✓ Parameters for ${path} retrieved`));
+        const data = response.data;
+        const resolved = applyOutputOverride(ctx.config, options.output);
+        if (resolved.output === 'json') {
+          renderJson(data, resolved.jsonStyle);
+        } else {
+          Console.info(chalk.cyan(`\n🔧 Parameters: ${path}`));
+          Console.info(chalk.gray('═'.repeat(60)));
+          const params = Array.isArray(data?.parameters) ? data.parameters : [];
+          if (params.length === 0) {
+            Console.info(chalk.gray('No parameters defined'));
+          } else {
+            params.forEach((p: any) => {
+              const req = p.required ? chalk.red('required') : chalk.gray('optional');
+              Console.info(chalk.bold.blue(p.name) + chalk.gray(` (in: ${p.in})`) + ' ' + req);
+              if (p.description) {
+                Console.info(chalk.gray(`  ${p.description}`));
+              }
+            });
+          }
+        }
+      } catch (error) {
+        spinner.fail(chalk.red(`✗ Failed to fetch parameters for ${path}`));
+        handleError(error, ctx.config);
+        process.exitCode = 1;
+      }
+    });
+
   withPayloadOptions(
     endpoints
       .command('create')

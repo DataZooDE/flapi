@@ -257,12 +257,14 @@ export class FlapiApiClient {
   }
 
   /**
-   * Test an endpoint with given parameters
+   * Test an endpoint with given parameters.
+   * Targets the server's `/template/test` route (the only test route that exists;
+   * see src/config_service.cpp).
    */
   async testEndpoint(pathOrName: string, parameters: Record<string, any>): Promise<any> {
     const slug = pathToSlug(pathOrName);
     const response = await this.client.post(
-      `/api/v1/_config/endpoints/${slug}/test`,
+      `/api/v1/_config/endpoints/${slug}/template/test`,
       { parameters }
     );
     return response.data;
