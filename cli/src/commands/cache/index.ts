@@ -275,4 +275,51 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
         process.exitCode = 1;
       }
     });
+
+  cache
+    .command('gc <path>')
+    .description('Run garbage collection on cache snapshots (DuckLake)')
+    .action(async (path: string) => {
+      const spinner = Console.spinner(`Running cache GC for ${path}...`);
+      try {
+        const endpointUrl = buildEndpointUrl(path, 'cache/gc');
+        const response = await ctx.client.post(endpointUrl, {});
+        spinner.succeed(chalk.green(`✓ Cache GC for ${path} completed`));
+
+        if (ctx.config.output !== 'json') {
+          Console.info(chalk.cyan(`\n🧹 Cache GC: ${path}`));
+          Console.info(chalk.gray('═'.repeat(60)));
+        }
+        renderJson(response.data, ctx.config.jsonStyle);
+      } catch (error) {
+        spinner.fail(chalk.red(`✗ Failed to run cache GC for ${path}`));
+        handleError(error, ctx.config);
+        process.exitCode = 1;
+      }
+    });
+
+  cache
+    .command('audit [path]')
+    .description('Get cache sync audit log (for one endpoint, or all endpoints if no path given)')
+    .action(async (path?: string) => {
+      const target = path ? `for ${path}` : '(all endpoints)';
+      const spinner = Console.spinner(`Fetching cache audit log ${target}...`);
+      try {
+        const url = path
+          ? buildEndpointUrl(path, 'cache/audit')
+          : '/api/v1/_config/cache/audit';
+        const response = await ctx.client.get(url);
+        spinner.succeed(chalk.green(`✓ Cache audit log ${target} retrieved`));
+
+        if (ctx.config.output !== 'json') {
+          Console.info(chalk.cyan(`\n📋 Cache Audit ${target}`));
+          Console.info(chalk.gray('═'.repeat(60)));
+        }
+        renderJson(response.data, ctx.config.jsonStyle);
+      } catch (error) {
+        spinner.fail(chalk.red(`✗ Failed to fetch cache audit log ${target}`));
+        handleError(error, ctx.config);
+        process.exitCode = 1;
+      }
+    });
 }

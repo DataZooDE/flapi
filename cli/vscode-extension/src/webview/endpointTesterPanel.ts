@@ -1942,27 +1942,27 @@ export class EndpointTesterPanel {
           let summaryHTML = '<div style="font-weight: bold; margin-bottom: 8px; color: var(--vscode-activityBarBadge-background);">📝 Write Operation Result</div>';
           
           if (parsedData.rows_affected !== undefined) {
-            summaryHTML += `<div style="margin: 4px 0;"><strong>Rows Affected:</strong> <span style="color: var(--vscode-textLink-foreground);">${parsedData.rows_affected}</span></div>`;
+            summaryHTML += \`<div style="margin: 4px 0;"><strong>Rows Affected:</strong> <span style="color: var(--vscode-textLink-foreground);">\${parsedData.rows_affected}</span></div>\`;
           }
-          
+
           if (parsedData.last_insert_id !== undefined) {
-            summaryHTML += `<div style="margin: 4px 0;"><strong>Last Insert ID:</strong> <span style="color: var(--vscode-textLink-foreground);">${parsedData.last_insert_id}</span></div>`;
+            summaryHTML += \`<div style="margin: 4px 0;"><strong>Last Insert ID:</strong> <span style="color: var(--vscode-textLink-foreground);">\${parsedData.last_insert_id}</span></div>\`;
           }
-          
+
           if (parsedData.returned_data && Array.isArray(parsedData.returned_data) && parsedData.returned_data.length > 0) {
-            summaryHTML += `<div style="margin: 4px 0;"><strong>Returned Data:</strong> ${parsedData.returned_data.length} record(s)</div>`;
+            summaryHTML += \`<div style="margin: 4px 0;"><strong>Returned Data:</strong> \${parsedData.returned_data.length} record(s)</div>\`;
           }
-          
+
           if (parsedData.errors && Array.isArray(parsedData.errors) && parsedData.errors.length > 0) {
-            summaryHTML += `<div style="margin: 8px 0; padding: 8px; background: var(--vscode-inputValidation-errorBackground); border-radius: 4px;">`;
+            summaryHTML += \`<div style="margin: 8px 0; padding: 8px; background: var(--vscode-inputValidation-errorBackground); border-radius: 4px;">\`;
             summaryHTML += '<div style="font-weight: bold; color: var(--vscode-errorForeground); margin-bottom: 4px;">⚠️ Validation Errors:</div>';
             parsedData.errors.forEach(error => {
-              summaryHTML += `<div style="margin: 2px 0; color: var(--vscode-errorForeground);">• ${error.field || 'Unknown'}: ${error.message || 'Error'}</div>`;
+              summaryHTML += \`<div style="margin: 2px 0; color: var(--vscode-errorForeground);">• \${error.field || 'Unknown'}: \${error.message || 'Error'}</div>\`;
             });
             summaryHTML += '</div>';
           } else if (parsedData.error) {
-            summaryHTML += `<div style="margin: 8px 0; padding: 8px; background: var(--vscode-inputValidation-errorBackground); border-radius: 4px;">`;
-            summaryHTML += `<div style="color: var(--vscode-errorForeground);">⚠️ Error: ${parsedData.error.field || 'Unknown'}: ${parsedData.error.message || 'Error'}</div>`;
+            summaryHTML += \`<div style="margin: 8px 0; padding: 8px; background: var(--vscode-inputValidation-errorBackground); border-radius: 4px;">\`;
+            summaryHTML += \`<div style="color: var(--vscode-errorForeground);">⚠️ Error: \${parsedData.error.field || 'Unknown'}: \${parsedData.error.message || 'Error'}</div>\`;
             summaryHTML += '</div>';
           }
           
