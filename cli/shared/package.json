@@ -1,6 +1,6 @@
 {
   "name": "@flapi/shared",
-  "version": "0.1.0",
+  "version": "26.6.13",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

@@ -1,6 +1,7 @@
 import axios from 'axios';
 import type { AxiosInstance, AxiosRequestConfig, InternalAxiosRequestConfig } from 'axios';
 import { pathToSlug, slugToPath } from './lib/url';
+import type { ValidationResult, ReloadResult } from './lib/types';
 
 /**
  * Configuration options for FlapiApiClient
@@ -188,8 +189,14 @@ export class FlapiApiClient {
   /**
    * Update authentication token
    */
-  setToken(token: string) {
-    this.client.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+  setToken(token: string | undefined) {
+    if (token) {
+      this.client.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+      this.client.defaults.headers.common['X-Config-Token'] = token;
+    } else {
+      delete this.client.defaults.headers.common['Authorization'];
+      delete this.client.defaults.headers.common['X-Config-Token'];
+    }
     if (this.debug) {
       console.log('[FlapiAPI] Token updated');
     }
@@ -346,6 +353,41 @@ export class FlapiApiClient {
   async listEndpoints(): Promise<any> {
     const response = await this.client.get('/api/v1/_config/endpoints');
     return response.data;
+  }
+
+  /**
+   * Validate raw endpoint YAML for an already-encoded endpoint slug.
+   * A 400 (invalid config) is returned as a normalized result rather than thrown.
+   */
+  async validateEndpointConfig(slug: string, yamlContent: string): Promise<ValidationResult> {
+    const response = await this.client.post(
+      `/api/v1/_config/endpoints/${encodeURIComponent(slug)}/validate`,
+      yamlContent,
+      {
+        headers: { 'Content-Type': 'application/x-yaml' },
+        validateStatus: (status) => status < 500,
+      },
+    );
+    const result = response.data ?? {};
+    return {
+      valid: result.valid ?? false,
+      errors: result.errors ?? [],
+      warnings: result.warnings ?? [],
+    };
+  }
+
+  /**
+   * Reload an endpoint configuration from disk by already-encoded slug.
+   */
+  async reloadEndpointConfig(slug: string): Promise<ReloadResult> {
+    const response = await this.client.post(
+      `/api/v1/_config/endpoints/${encodeURIComponent(slug)}/reload`,
+    );
+    const result = response.data ?? {};
+    return {
+      success: result.success ?? false,
+      message: result.message ?? '',
+    };
   }
 }
 
