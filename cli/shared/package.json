@@ -6,7 +6,8 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsup src/index.ts --format esm,cjs --dts",
-    "dev": "tsup src/index.ts --format esm,cjs --dts --watch"
+    "dev": "tsup src/index.ts --format esm,cjs --dts --watch",
+    "prepare": "npm run build"
   },
   "dependencies": {
     "axios": "^1.7.7",

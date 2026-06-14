@@ -367,6 +367,8 @@
     }
   },
   "scripts": {
+    "build:shared": "npm --prefix ../shared run build",
+    "prebuild": "npm run build:shared",
     "build": "webpack --mode production && npm run build:webview",
     "dev": "webpack --mode development --watch",
     "build:webview": "webpack --config webview/webpack.config.js --mode production",
