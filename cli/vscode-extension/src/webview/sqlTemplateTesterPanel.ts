@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import type { AxiosInstance } from 'axios';
 import { pathToSlug } from '@flapi/shared';
+import { buildEndpointPickItems } from './endpointPick';
 import { TestStateService, TestState, TestHistoryEntry, TestResponse } from '../services/testStateService';
 import { 
   getParameterEditorCSS, 
@@ -115,13 +116,14 @@ export class SqlTemplateTesterPanel {
       throw new Error('No endpoints found for template');
     }
     
-    // Use the first endpoint by default (TODO: allow user to select if multiple)
-    const endpointConfig = endpointConfigs[0];
-    
+    // When several endpoints reference the same template, let the user choose.
+    let endpointConfig = endpointConfigs[0];
     if (endpointConfigs.length > 1) {
-      vscode.window.showInformationMessage(
-        `Found ${endpointConfigs.length} endpoints for this template. Using: ${endpointConfig['url-path'] || endpointConfig.urlPath}`
-      );
+      const picked = await SqlTemplateTesterPanel.pickEndpointConfig(endpointConfigs);
+      if (!picked) {
+        throw new Error('Endpoint selection cancelled');
+      }
+      endpointConfig = picked;
     }
 
     // Otherwise, create a new panel
@@ -153,6 +155,19 @@ export class SqlTemplateTesterPanel {
     return SqlTemplateTesterPanel.currentPanel;
   }
 
+
+  /**
+   * Prompt the user to choose among endpoints that reference the same template.
+   * Returns the chosen config, or undefined if the user cancelled.
+   */
+  private static async pickEndpointConfig(configs: any[]): Promise<any | undefined> {
+    const items = buildEndpointPickItems(configs);
+    const choice = await vscode.window.showQuickPick(items, {
+      placeHolder: 'Multiple endpoints use this template — choose one to test',
+      matchOnDescription: true,
+    });
+    return choice?.config;
+  }
 
   /**
    * Load endpoint configurations from backend that reference the SQL template
