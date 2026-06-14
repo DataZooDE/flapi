@@ -11,7 +11,7 @@ import { registerEndpointCommands } from './commands/endpointCommands';
 import { LanguageSupport } from './language/languageSupport';
 import { SchemaProvider, type SchemaNode } from './providers/SchemaProvider';
 import { YamlValidator } from './validation/yamlValidator';
-import { FlapiApiClient } from './shared/apiClient';
+import { FlapiApiClient } from '@flapi/shared';
 import { TokenStorageService } from './services/tokenStorage';
 import { ParameterStorageService } from './services/parameterStorage';
 import { TestStateService } from './services/testStateService';
@@ -136,7 +136,10 @@ export function activate(context: vscode.ExtensionContext) {
   
   // Create clients with token
   const client = createClient(token);
-  configApiClient = new FlapiApiClient(token);
+  const serverUrl = vscode.workspace
+    .getConfiguration('flapi')
+    .get<string>('serverUrl', 'http://localhost:8080');
+  configApiClient = new FlapiApiClient({ baseURL: serverUrl, token });
   
   // Initialize explorer with token
   initializeExplorer(context, token);
@@ -888,23 +891,6 @@ connection:
       // Handle YAML endpoint config saves - trigger reload
       if (doc.languageId === 'yaml') {
         await yamlValidator.reloadEndpointConfig(doc);
-      }
-    }),
-    vscode.window.onDidChangeActiveTextEditor(async (ed) => {
-      if (!ed) return;
-      const ctx = getDocContext(ed.document.uri);
-      if (!ctx || !virtualDocuments) return;
-      // Refresh variable list for current endpoint
-      try {
-        const paramsProvider = virtualDocuments.getParametersProvider();
-        const slug = ctx.slug;
-        const path = ctx.path;
-        const params = paramsProvider.getParameters(slug) ?? {};
-        const url = buildEndpointUrl(path, 'template/expand') + '?include_variables=true&validate_only=true';
-        const resp = await client.post(url, { parameters: params });
-        // Variables provider removed
-      } catch {
-        // ignore
       }
     })
   );

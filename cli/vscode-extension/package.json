@@ -2,7 +2,7 @@
   "name": "flapi-vscode",
   "displayName": "flapi Development Tools",
   "description": "VSCode extension for flapi development with live configuration management",
-  "version": "0.1.0",
+  "version": "26.6.13",
   "publisher": "flapi",
   "engines": {
     "vscode": "^1.74.0"
