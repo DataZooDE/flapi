@@ -2,7 +2,7 @@
   "name": "flapi-vscode",
   "displayName": "flapi Development Tools",
   "description": "VSCode extension for flapi development with live configuration management",
-  "version": "0.1.0",
+  "version": "26.6.13",
   "publisher": "flapi",
   "engines": {
     "vscode": "^1.74.0"
@@ -372,15 +372,20 @@
     "build": "webpack --mode production && npm run build:webview",
     "dev": "webpack --mode development --watch",
     "build:webview": "webpack --config webview/webpack.config.js --mode production",
-    "dev:webview": "webpack --config webview/webpack.config.js --mode development --watch"
+    "dev:webview": "webpack --config webview/webpack.config.js --mode development --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "devDependencies": {
+    "@types/node": "^22.0.0",
     "@types/vscode": "^1.74.0",
     "css-loader": "^6.9.1",
     "monaco-editor-webpack-plugin": "^7.1.0",
     "style-loader": "^3.3.4",
     "ts-loader": "^9.5.1",
     "typescript": "^5.5.4",
+    "vitest": "^3.2.4",
     "webpack": "^5.94.0",
     "webpack-cli": "^5.1.4"
   },

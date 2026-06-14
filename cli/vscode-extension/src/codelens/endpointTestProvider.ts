@@ -1,6 +1,9 @@
 import * as vscode from 'vscode';
 import * as yaml from 'yaml';
+import * as fs from 'fs';
+import * as path from 'path';
 import type { AxiosInstance } from 'axios';
+import { resolveExtendedYaml } from './extendedYaml';
 
 /**
  * CodeLens provider to show "Test Endpoint" button above url-path in YAML files
@@ -166,35 +169,27 @@ export class EndpointTestCodeLensProvider implements vscode.CodeLensProvider {
   }
 
   /**
-   * Get endpoint configuration from backend (for extended YAML files)
+   * Parse an extended-YAML config by resolving `{{include:...}}` directives
+   * against sibling files in the workspace. Falls back to stripped parsing if
+   * resolution fails for any reason.
    */
   private async getEndpointConfigFromBackend(document: vscode.TextDocument): Promise<any> {
-    try {
-      // Get the file path relative to workspace
-      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-      if (!workspaceFolder) {
-        throw new Error('No workspace folder found');
-      }
+    const text = document.getText();
+    const dir = path.dirname(document.uri.fsPath);
 
-      const relativePath = vscode.workspace.asRelativePath(document.uri, false);
-      
-      // Use the authenticated client to get filesystem data
-      const response = await this.client.get('/api/v1/_config/filesystem');
-      
-      // Find this file in the tree and return its parsed content
-      // For now, we'll parse the stripped version locally
-      // TODO: Add a dedicated backend endpoint for parsing single YAML files
-      
-      const text = document.getText();
-      const strippedText = this.stripExtendedSyntax(text);
-      return yaml.parse(strippedText);
-      
+    const readFile = (file: string): string | undefined => {
+      try {
+        return fs.readFileSync(path.resolve(dir, file), 'utf8');
+      } catch {
+        return undefined;
+      }
+    };
+
+    try {
+      return resolveExtendedYaml(text, readFile);
     } catch (error) {
-      // Fallback to stripped parsing
-      console.warn('Failed to get config from backend, using local parsing:', error);
-      const text = document.getText();
-      const strippedText = this.stripExtendedSyntax(text);
-      return yaml.parse(strippedText);
+      console.warn('Failed to resolve extended YAML, using stripped parsing:', error);
+      return yaml.parse(this.stripExtendedSyntax(text));
     }
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "flapii",
-  "version": "0.1.0",
+  "version": "26.6.13",
   "description": "CLI client for flapi ConfigService",
   "license": "MIT",
   "type": "module",
