@@ -2,6 +2,10 @@ name: Clients (CLI + VSCode)
 
 # Compile/test gate for the TypeScript packages under cli/. This exists so a broken
 # build (like the extension being uncompilable for months) is caught on every PR.
+#
+# Each job builds @flapi/shared first: the CLI and the extension both resolve
+# @flapi/shared to its built dist/, and the extension's prebuild invokes shared's
+# tsup, which needs shared's devDependencies installed.
 
 on:
   push:
@@ -40,6 +44,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Build @flapi/shared (dependency)
+        working-directory: cli/shared
+        run: |
+          npm ci
+          npm run build
       - name: Build & test flapii CLI
         working-directory: cli
         run: |
@@ -54,6 +63,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Build @flapi/shared (dependency)
+        working-directory: cli/shared
+        run: |
+          npm ci
+          npm run build
       - name: Build, typecheck & test the VSCode extension
         working-directory: cli/vscode-extension
         run: |
