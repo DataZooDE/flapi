@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import type { AxiosInstance } from 'axios';
+import type { AxiosInstance } from '@flapi/shared';
 import { pathToSlug } from '@flapi/shared';
 import { buildEndpointPickItems } from './endpointPick';
 import { TestStateService, TestState, TestHistoryEntry, TestResponse } from '../services/testStateService';

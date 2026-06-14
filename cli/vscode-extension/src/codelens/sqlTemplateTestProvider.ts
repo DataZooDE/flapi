@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import type { AxiosInstance } from 'axios';
+import type { AxiosInstance } from '@flapi/shared';
 
 /**
  * CodeLens provider for SQL template files

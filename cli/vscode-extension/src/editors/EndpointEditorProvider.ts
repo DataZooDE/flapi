@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { AxiosInstance } from 'axios';
+import type { AxiosInstance } from '@flapi/shared';
 import { slugToPath, buildEndpointUrl } from '@flapi/shared';
 
 class EndpointDocument implements vscode.CustomDocument {

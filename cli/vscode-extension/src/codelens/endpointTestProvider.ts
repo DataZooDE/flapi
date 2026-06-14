@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as yaml from 'yaml';
 import * as fs from 'fs';
 import * as path from 'path';
-import type { AxiosInstance } from 'axios';
+import type { AxiosInstance } from '@flapi/shared';
 import { resolveExtendedYaml } from './extendedYaml';
 
 /**

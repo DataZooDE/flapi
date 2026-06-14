@@ -103,11 +103,18 @@ export class EndpointTestService {
         : JSON.stringify(response.data, null, 2);
       const size = new Blob([responseBody]).size;
 
-      // Extract content type
-      const contentType = response.headers['content-type'] || response.headers['Content-Type'] || 'text/plain';
+      // Extract content type (axios header values are a broad union; coerce to string)
+      const contentType = String(
+        response.headers['content-type'] || response.headers['Content-Type'] || 'text/plain',
+      );
 
       // Parse cookies from Set-Cookie header
-      const cookies = this.parseCookies(response.headers['set-cookie'] || response.headers['Set-Cookie']);
+      const cookies = this.parseCookies(
+        (response.headers['set-cookie'] || response.headers['Set-Cookie']) as
+          | string
+          | string[]
+          | undefined,
+      );
 
       // Detect write operation response
       let parsedBody: any = null;
