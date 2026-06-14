@@ -391,6 +391,7 @@
   },
   "dependencies": {
     "@flapi/shared": "file:../shared",
+    "axios": "^1.7.7",
     "monaco-editor": "^0.52.0",
     "yaml": "^2.8.1"
   }

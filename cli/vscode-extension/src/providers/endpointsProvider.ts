@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { AxiosInstance } from 'axios';
+import type { AxiosInstance } from '@flapi/shared';
 import type { EndpointConfig } from '@flapi/shared';
 
 export class EndpointsProvider implements vscode.TreeDataProvider<EndpointItem> {
