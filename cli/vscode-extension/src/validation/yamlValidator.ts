@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { FlapiApiClient } from '../shared/apiClient';
+import { FlapiApiClient } from '@flapi/shared';
 
 export interface ValidationError {
     line?: number;
