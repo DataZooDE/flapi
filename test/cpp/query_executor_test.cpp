@@ -352,6 +352,33 @@ TEST_CASE("QueryExecutor LIST/STRUCT per-row serialization", "[query_executor][l
         REQUIRE(doc[2]["coords"][2].i() == 32);
     }
 
+    SECTION("multi-row UNION emits only the active member per row") {
+        QueryExecutor executor(database);
+        executor.execute(R"SQL(
+            SELECT id, u FROM (
+                SELECT 1 AS id, union_value(num := 42)::UNION(num INTEGER, str VARCHAR) AS u
+                UNION ALL
+                SELECT 2, union_value(str := 'hi')::UNION(num INTEGER, str VARCHAR)
+                UNION ALL
+                SELECT 3, union_value(num := 7)::UNION(num INTEGER, str VARCHAR)
+            ) ORDER BY id
+        )SQL");
+
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc.size() == 3);
+
+        // Each row exposes only its active member ({name: value}), matching
+        // DuckDB's to_json — not every union member.
+        REQUIRE(doc[0]["u"]["num"].i() == 42);
+        REQUIRE_FALSE(doc[0]["u"].has("str"));
+
+        REQUIRE(doc[1]["u"]["str"].s() == "hi");
+        REQUIRE_FALSE(doc[1]["u"].has("num"));
+
+        REQUIRE(doc[2]["u"]["num"].i() == 7);
+        REQUIRE_FALSE(doc[2]["u"].has("str"));
+    }
+
     SECTION("NULL list entry stays null") {
         QueryExecutor executor(database);
         executor.execute(R"SQL(

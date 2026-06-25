@@ -58,6 +58,7 @@ private:
     static crow::json::wvalue convertVectorListToJson(const duckdb_vector &vector, const idx_t row_idx);
     static crow::json::wvalue convertVectorArrayToJson(const duckdb_vector &vector, const idx_t row_idx);
     static crow::json::wvalue convertVectorStructToJson(const duckdb_vector &vector, const idx_t row_idx);
+    static crow::json::wvalue convertVectorUnionToJson(const duckdb_vector &vector, const idx_t row_idx);
     
     template<typename T>
     static crow::json::wvalue convertVectorEntryToJson(const duckdb_vector &vector, const idx_t row_idx) {

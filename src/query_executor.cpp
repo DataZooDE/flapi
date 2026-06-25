@@ -290,7 +290,7 @@ crow::json::wvalue QueryResult::convertVectorEntryToJson(const duckdb_vector &ve
         case DUCKDB_TYPE_ARRAY:
             return convertVectorArrayToJson(vector, row_idx);
         case DUCKDB_TYPE_UNION:
-            return convertVectorStructToJson(vector, row_idx);  // Treat as struct for JSON
+            return convertVectorUnionToJson(vector, row_idx);
         default:
             CROW_LOG_WARNING << "Unknown type: " << type_id;
             return crow::json::wvalue(nullptr);
@@ -494,6 +494,42 @@ crow::json::wvalue QueryResult::convertVectorStructToJson(const duckdb_vector &v
     }
 
     duckdb_destroy_logical_type(&struct_type);
+    return result;
+}
+
+crow::json::wvalue QueryResult::convertVectorUnionToJson(const duckdb_vector &vector, const idx_t row_idx) {
+    auto validity = duckdb_vector_get_validity(vector);
+    if (!duckdb_validity_row_is_valid(validity, row_idx)) {
+        return crow::json::wvalue(nullptr);
+    }
+
+    // A UNION is physically a STRUCT: child 0 is the tag (uint8_t), children
+    // 1..n are the candidate members. Only the member selected by the row's
+    // tag is valid, so emit just that member as {name: value} (matching
+    // DuckDB's own to_json) rather than every member, which the generic
+    // struct path did, exposing inactive members.
+    auto union_type = duckdb_vector_get_column_type(vector);
+    auto member_count = duckdb_union_type_member_count(union_type);
+
+    auto tag_vector = duckdb_struct_vector_get_child(vector, 0);
+    auto tags = static_cast<uint8_t *>(duckdb_vector_get_data(tag_vector));
+    idx_t member_idx = static_cast<idx_t>(tags[row_idx]);
+    if (member_idx >= member_count) {
+        // Out-of-range tag should not happen for well-formed unions; fail
+        // safe rather than reading past the struct children.
+        duckdb_destroy_logical_type(&union_type);
+        return crow::json::wvalue(nullptr);
+    }
+
+    DuckDBString member_name_wrapper(duckdb_union_type_member_name(union_type, member_idx));
+    auto member_name = member_name_wrapper.to_string();
+    duckdb_destroy_logical_type(&union_type);
+
+    // Member i lives at struct child index i + 1 (the tag occupies slot 0).
+    auto member_vector = duckdb_struct_vector_get_child(vector, member_idx + 1);
+
+    crow::json::wvalue result;
+    result[member_name] = convertVectorEntryToJson(member_vector, row_idx);
     return result;
 }
 
