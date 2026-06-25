@@ -329,6 +329,29 @@ TEST_CASE("QueryExecutor LIST/STRUCT per-row serialization", "[query_executor][l
         REQUIRE(doc[1]["person"]["age"].i() == 40);
     }
 
+    SECTION("multi-row fixed-size ARRAY keeps each row's own elements") {
+        QueryExecutor executor(database);
+        executor.execute(R"SQL(
+            SELECT * FROM (VALUES
+                (1, [10, 11, 12]::INTEGER[3]),
+                (2, [20, 21, 22]::INTEGER[3]),
+                (3, [30, 31, 32]::INTEGER[3])
+            ) AS t(id, coords)
+            ORDER BY id
+        )SQL");
+
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc.size() == 3);
+
+        REQUIRE(doc[0]["coords"].size() == 3);
+        REQUIRE(doc[0]["coords"][0].i() == 10);
+        REQUIRE(doc[0]["coords"][2].i() == 12);
+
+        REQUIRE(doc[2]["coords"].size() == 3);
+        REQUIRE(doc[2]["coords"][0].i() == 30);
+        REQUIRE(doc[2]["coords"][2].i() == 32);
+    }
+
     SECTION("NULL list entry stays null") {
         QueryExecutor executor(database);
         executor.execute(R"SQL(

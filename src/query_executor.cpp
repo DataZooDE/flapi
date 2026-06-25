@@ -288,7 +288,7 @@ crow::json::wvalue QueryResult::convertVectorEntryToJson(const duckdb_vector &ve
         case DUCKDB_TYPE_MAP:
             return convertVectorStructToJson(vector, row_idx);  // Treat as struct for JSON
         case DUCKDB_TYPE_ARRAY:
-            return convertVectorListToJson(vector, row_idx);  // Treat as list for JSON
+            return convertVectorArrayToJson(vector, row_idx);
         case DUCKDB_TYPE_UNION:
             return convertVectorStructToJson(vector, row_idx);  // Treat as struct for JSON
         default:
@@ -443,6 +443,29 @@ crow::json::wvalue QueryResult::convertVectorListToJson(const duckdb_vector &vec
             break;
         }
         result.push_back(convertVectorEntryToJson(child_vector, child_idx));
+    }
+
+    return crow::json::wvalue(result);
+}
+
+crow::json::wvalue QueryResult::convertVectorArrayToJson(const duckdb_vector &vector, const idx_t row_idx) {
+    auto validity = duckdb_vector_get_validity(vector);
+    if (!duckdb_validity_row_is_valid(validity, row_idx)) {
+        return crow::json::wvalue(nullptr);
+    }
+
+    // A fixed-size ARRAY has no per-row list_entry: every row occupies a
+    // constant `array_size` run in the child vector, so this row's slice
+    // starts at row_idx * array_size (unlike LIST, which carries offsets).
+    auto array_type = duckdb_vector_get_column_type(vector);
+    auto array_size = duckdb_array_type_array_size(array_type);
+    duckdb_destroy_logical_type(&array_type);
+
+    auto child_vector = duckdb_array_vector_get_child(vector);
+
+    std::vector<crow::json::wvalue> result;
+    for (idx_t i = 0; i < array_size; i++) {
+        result.push_back(convertVectorEntryToJson(child_vector, row_idx * array_size + i));
     }
 
     return crow::json::wvalue(result);
