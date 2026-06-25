@@ -228,6 +228,126 @@ TEST_CASE("QueryExecutor chunk experiment", "[query_executor]") {
 	duckdb_close(&database);
 }
 
+TEST_CASE("QueryExecutor LIST/STRUCT per-row serialization", "[query_executor][list]") {
+    // Regression for issue #89: native LIST(STRUCT) / LIST(VARCHAR) columns
+    // must serialize each row's own slice of the list child vector, not the
+    // whole child vector, and structs nested inside a list must read their
+    // own element rather than always element[0].
+    duckdb_database database;
+    REQUIRE(duckdb_open(NULL, &database) == DuckDBSuccess);
+
+    SECTION("single-row LIST(STRUCT) emits distinct elements") {
+        QueryExecutor executor(database);
+        executor.execute(R"SQL(
+            SELECT [
+                {'stage': 'prepare',     'n_dropped': 11945},
+                {'stage': 'features',    'n_dropped': 57203},
+                {'stage': 'postprocess', 'n_dropped': 238505}
+            ] AS by_stage
+        )SQL");
+
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc.size() == 1);
+        REQUIRE(doc[0]["by_stage"].size() == 3);
+        REQUIRE(doc[0]["by_stage"][0]["stage"].s() == "prepare");
+        REQUIRE(doc[0]["by_stage"][0]["n_dropped"].i() == 11945);
+        REQUIRE(doc[0]["by_stage"][1]["stage"].s() == "features");
+        REQUIRE(doc[0]["by_stage"][1]["n_dropped"].i() == 57203);
+        REQUIRE(doc[0]["by_stage"][2]["stage"].s() == "postprocess");
+        REQUIRE(doc[0]["by_stage"][2]["n_dropped"].i() == 238505);
+    }
+
+    SECTION("multi-row LIST(VARCHAR) keeps each row's own list") {
+        QueryExecutor executor(database);
+        executor.execute(R"SQL(
+            SELECT * FROM (VALUES
+                (1, ['a1', 'a2', 'a3']),
+                (2, ['b1', 'b2', 'b3']),
+                (3, ['c1', 'c2', 'c3']),
+                (4, ['d1', 'd2', 'd3'])
+            ) AS t(id, flags)
+            ORDER BY id
+        )SQL");
+
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc.size() == 4);
+
+        REQUIRE(doc[0]["flags"].size() == 3);
+        REQUIRE(doc[0]["flags"][0].s() == "a1");
+        REQUIRE(doc[0]["flags"][2].s() == "a3");
+
+        REQUIRE(doc[1]["flags"].size() == 3);
+        REQUIRE(doc[1]["flags"][0].s() == "b1");
+        REQUIRE(doc[1]["flags"][2].s() == "b3");
+
+        REQUIRE(doc[3]["flags"].size() == 3);
+        REQUIRE(doc[3]["flags"][0].s() == "d1");
+        REQUIRE(doc[3]["flags"][2].s() == "d3");
+    }
+
+    SECTION("multi-row LIST(STRUCT) keeps each row's own elements") {
+        QueryExecutor executor(database);
+        executor.execute(R"SQL(
+            SELECT * FROM (VALUES
+                (1, [{'k': 'a', 'v': 1}, {'k': 'b', 'v': 2}]),
+                (2, [{'k': 'c', 'v': 3}, {'k': 'd', 'v': 4}])
+            ) AS t(id, items)
+            ORDER BY id
+        )SQL");
+
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc.size() == 2);
+
+        REQUIRE(doc[0]["items"].size() == 2);
+        REQUIRE(doc[0]["items"][0]["k"].s() == "a");
+        REQUIRE(doc[0]["items"][0]["v"].i() == 1);
+        REQUIRE(doc[0]["items"][1]["k"].s() == "b");
+        REQUIRE(doc[0]["items"][1]["v"].i() == 2);
+
+        REQUIRE(doc[1]["items"].size() == 2);
+        REQUIRE(doc[1]["items"][0]["k"].s() == "c");
+        REQUIRE(doc[1]["items"][0]["v"].i() == 3);
+        REQUIRE(doc[1]["items"][1]["k"].s() == "d");
+        REQUIRE(doc[1]["items"][1]["v"].i() == 4);
+    }
+
+    SECTION("multi-row STRUCT column reads its own row") {
+        QueryExecutor executor(database);
+        executor.execute(R"SQL(
+            SELECT * FROM (VALUES
+                (1, {'name': 'alice', 'age': 30}),
+                (2, {'name': 'bob',   'age': 40})
+            ) AS t(id, person)
+            ORDER BY id
+        )SQL");
+
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc.size() == 2);
+        REQUIRE(doc[0]["person"]["name"].s() == "alice");
+        REQUIRE(doc[0]["person"]["age"].i() == 30);
+        REQUIRE(doc[1]["person"]["name"].s() == "bob");
+        REQUIRE(doc[1]["person"]["age"].i() == 40);
+    }
+
+    SECTION("NULL list entry stays null") {
+        QueryExecutor executor(database);
+        executor.execute(R"SQL(
+            SELECT * FROM (VALUES
+                (1, ['x', 'y']),
+                (2, CAST(NULL AS VARCHAR[]))
+            ) AS t(id, flags)
+            ORDER BY id
+        )SQL");
+
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc.size() == 2);
+        REQUIRE(doc[0]["flags"].size() == 2);
+        REQUIRE(doc[1]["flags"].t() == crow::json::type::Null);
+    }
+
+    duckdb_close(&database);
+}
+
 TEST_CASE("QueryExecutor::executeWithBindings - prepared path", "[query_executor][prepared]") {
     duckdb_database database;
     REQUIRE(duckdb_open(NULL, &database) == DuckDBSuccess);

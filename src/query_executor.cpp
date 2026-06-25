@@ -422,18 +422,38 @@ crow::json::wvalue QueryResult::convertVectorEnumToJson(const duckdb_vector &vec
 }
 
 crow::json::wvalue QueryResult::convertVectorListToJson(const duckdb_vector &vector, const idx_t row_idx) {
+    auto validity = duckdb_vector_get_validity(vector);
+    if (!duckdb_validity_row_is_valid(validity, row_idx)) {
+        return crow::json::wvalue(nullptr);
+    }
+
+    // A LIST column stores every row's elements back-to-back in a single child
+    // vector. The per-row slice is described by the list_entry at `row_idx`
+    // (offset + length); emitting the whole child vector instead would repeat
+    // every other row's elements (issue #89).
+    auto entries = static_cast<duckdb_list_entry *>(duckdb_vector_get_data(vector));
+    auto entry = entries[row_idx];
     auto child_vector = duckdb_list_vector_get_child(vector);
     auto child_size = duckdb_list_vector_get_size(vector);
 
     std::vector<crow::json::wvalue> result;
-    for (idx_t i = 0; i < child_size; i++) {
-        result.push_back(convertVectorEntryToJson(child_vector, i));
+    for (idx_t i = 0; i < entry.length; i++) {
+        idx_t child_idx = entry.offset + i;
+        if (child_idx >= child_size) {
+            break;
+        }
+        result.push_back(convertVectorEntryToJson(child_vector, child_idx));
     }
 
     return crow::json::wvalue(result);
 }
 
 crow::json::wvalue QueryResult::convertVectorStructToJson(const duckdb_vector &vector, const idx_t row_idx) {
+    auto validity = duckdb_vector_get_validity(vector);
+    if (!duckdb_validity_row_is_valid(validity, row_idx)) {
+        return crow::json::wvalue(nullptr);
+    }
+
     auto struct_type = duckdb_vector_get_column_type(vector);
     auto child_size = duckdb_struct_type_child_count(struct_type);
 
@@ -443,8 +463,11 @@ crow::json::wvalue QueryResult::convertVectorStructToJson(const duckdb_vector &v
         DuckDBString child_name_wrapper(duckdb_struct_type_child_name(struct_type, i));
         auto str_name = child_name_wrapper.to_string();
 
+        // Each struct field is a parallel child vector; read this row's entry
+        // (`row_idx`), not element 0, so multi-row results and structs nested
+        // inside a list resolve the correct element (issue #89).
         auto child_vector = duckdb_struct_vector_get_child(vector, i);
-        result[str_name] = convertVectorEntryToJson(child_vector, 0);
+        result[str_name] = convertVectorEntryToJson(child_vector, row_idx);
     }
 
     duckdb_destroy_logical_type(&struct_type);
