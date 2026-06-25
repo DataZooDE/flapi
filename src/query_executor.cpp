@@ -288,9 +288,9 @@ crow::json::wvalue QueryResult::convertVectorEntryToJson(const duckdb_vector &ve
         case DUCKDB_TYPE_MAP:
             return convertVectorStructToJson(vector, row_idx);  // Treat as struct for JSON
         case DUCKDB_TYPE_ARRAY:
-            return convertVectorListToJson(vector, row_idx);  // Treat as list for JSON
+            return convertVectorArrayToJson(vector, row_idx);
         case DUCKDB_TYPE_UNION:
-            return convertVectorStructToJson(vector, row_idx);  // Treat as struct for JSON
+            return convertVectorUnionToJson(vector, row_idx);
         default:
             CROW_LOG_WARNING << "Unknown type: " << type_id;
             return crow::json::wvalue(nullptr);
@@ -422,18 +422,61 @@ crow::json::wvalue QueryResult::convertVectorEnumToJson(const duckdb_vector &vec
 }
 
 crow::json::wvalue QueryResult::convertVectorListToJson(const duckdb_vector &vector, const idx_t row_idx) {
+    auto validity = duckdb_vector_get_validity(vector);
+    if (!duckdb_validity_row_is_valid(validity, row_idx)) {
+        return crow::json::wvalue(nullptr);
+    }
+
+    // A LIST column stores every row's elements back-to-back in a single child
+    // vector. The per-row slice is described by the list_entry at `row_idx`
+    // (offset + length); emitting the whole child vector instead would repeat
+    // every other row's elements (issue #89).
+    auto entries = static_cast<duckdb_list_entry *>(duckdb_vector_get_data(vector));
+    auto entry = entries[row_idx];
     auto child_vector = duckdb_list_vector_get_child(vector);
     auto child_size = duckdb_list_vector_get_size(vector);
 
     std::vector<crow::json::wvalue> result;
-    for (idx_t i = 0; i < child_size; i++) {
-        result.push_back(convertVectorEntryToJson(child_vector, i));
+    for (idx_t i = 0; i < entry.length; i++) {
+        idx_t child_idx = entry.offset + i;
+        if (child_idx >= child_size) {
+            break;
+        }
+        result.push_back(convertVectorEntryToJson(child_vector, child_idx));
+    }
+
+    return crow::json::wvalue(result);
+}
+
+crow::json::wvalue QueryResult::convertVectorArrayToJson(const duckdb_vector &vector, const idx_t row_idx) {
+    auto validity = duckdb_vector_get_validity(vector);
+    if (!duckdb_validity_row_is_valid(validity, row_idx)) {
+        return crow::json::wvalue(nullptr);
+    }
+
+    // A fixed-size ARRAY has no per-row list_entry: every row occupies a
+    // constant `array_size` run in the child vector, so this row's slice
+    // starts at row_idx * array_size (unlike LIST, which carries offsets).
+    auto array_type = duckdb_vector_get_column_type(vector);
+    auto array_size = duckdb_array_type_array_size(array_type);
+    duckdb_destroy_logical_type(&array_type);
+
+    auto child_vector = duckdb_array_vector_get_child(vector);
+
+    std::vector<crow::json::wvalue> result;
+    for (idx_t i = 0; i < array_size; i++) {
+        result.push_back(convertVectorEntryToJson(child_vector, row_idx * array_size + i));
     }
 
     return crow::json::wvalue(result);
 }
 
 crow::json::wvalue QueryResult::convertVectorStructToJson(const duckdb_vector &vector, const idx_t row_idx) {
+    auto validity = duckdb_vector_get_validity(vector);
+    if (!duckdb_validity_row_is_valid(validity, row_idx)) {
+        return crow::json::wvalue(nullptr);
+    }
+
     auto struct_type = duckdb_vector_get_column_type(vector);
     auto child_size = duckdb_struct_type_child_count(struct_type);
 
@@ -443,11 +486,50 @@ crow::json::wvalue QueryResult::convertVectorStructToJson(const duckdb_vector &v
         DuckDBString child_name_wrapper(duckdb_struct_type_child_name(struct_type, i));
         auto str_name = child_name_wrapper.to_string();
 
+        // Each struct field is a parallel child vector; read this row's entry
+        // (`row_idx`), not element 0, so multi-row results and structs nested
+        // inside a list resolve the correct element (issue #89).
         auto child_vector = duckdb_struct_vector_get_child(vector, i);
-        result[str_name] = convertVectorEntryToJson(child_vector, 0);
+        result[str_name] = convertVectorEntryToJson(child_vector, row_idx);
     }
 
     duckdb_destroy_logical_type(&struct_type);
+    return result;
+}
+
+crow::json::wvalue QueryResult::convertVectorUnionToJson(const duckdb_vector &vector, const idx_t row_idx) {
+    auto validity = duckdb_vector_get_validity(vector);
+    if (!duckdb_validity_row_is_valid(validity, row_idx)) {
+        return crow::json::wvalue(nullptr);
+    }
+
+    // A UNION is physically a STRUCT: child 0 is the tag (uint8_t), children
+    // 1..n are the candidate members. Only the member selected by the row's
+    // tag is valid, so emit just that member as {name: value} (matching
+    // DuckDB's own to_json) rather than every member, which the generic
+    // struct path did, exposing inactive members.
+    auto union_type = duckdb_vector_get_column_type(vector);
+    auto member_count = duckdb_union_type_member_count(union_type);
+
+    auto tag_vector = duckdb_struct_vector_get_child(vector, 0);
+    auto tags = static_cast<uint8_t *>(duckdb_vector_get_data(tag_vector));
+    idx_t member_idx = static_cast<idx_t>(tags[row_idx]);
+    if (member_idx >= member_count) {
+        // Out-of-range tag should not happen for well-formed unions; fail
+        // safe rather than reading past the struct children.
+        duckdb_destroy_logical_type(&union_type);
+        return crow::json::wvalue(nullptr);
+    }
+
+    DuckDBString member_name_wrapper(duckdb_union_type_member_name(union_type, member_idx));
+    auto member_name = member_name_wrapper.to_string();
+    duckdb_destroy_logical_type(&union_type);
+
+    // Member i lives at struct child index i + 1 (the tag occupies slot 0).
+    auto member_vector = duckdb_struct_vector_get_child(vector, member_idx + 1);
+
+    crow::json::wvalue result;
+    result[member_name] = convertVectorEntryToJson(member_vector, row_idx);
     return result;
 }
 
