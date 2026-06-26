@@ -286,7 +286,7 @@ crow::json::wvalue QueryResult::convertVectorEntryToJson(const duckdb_vector &ve
         case DUCKDB_TYPE_BIT:
             return convertVectorVarcharToJson(vector, row_idx);  // Treat as string for JSON
         case DUCKDB_TYPE_MAP:
-            return convertVectorStructToJson(vector, row_idx);  // Treat as struct for JSON
+            return convertVectorMapToJson(vector, row_idx);
         case DUCKDB_TYPE_ARRAY:
             return convertVectorArrayToJson(vector, row_idx);
         case DUCKDB_TYPE_UNION:
@@ -348,6 +348,7 @@ crow::json::wvalue QueryResult::convertVectorDecimalToJson(const duckdb_vector &
     auto decimal_type = duckdb_decimal_internal_type(type);
     auto decimal_width = duckdb_decimal_width(type);
     auto decimal_scale = duckdb_decimal_scale(type);
+    duckdb_destroy_logical_type(&type);
     auto hugeint = duckdb_hugeint {0, 0};
 
     switch (decimal_type) {
@@ -530,6 +531,66 @@ crow::json::wvalue QueryResult::convertVectorUnionToJson(const duckdb_vector &ve
 
     crow::json::wvalue result;
     result[member_name] = convertVectorEntryToJson(member_vector, row_idx);
+    return result;
+}
+
+std::string QueryResult::vectorEntryToMapKey(const duckdb_vector &vector, const idx_t row_idx) {
+    auto type = duckdb_vector_get_column_type(vector);
+    bool is_string = duckdb_get_type_id(type) == DUCKDB_TYPE_VARCHAR;
+    duckdb_destroy_logical_type(&type);
+
+    auto validity = duckdb_vector_get_validity(vector);
+    if (!duckdb_validity_row_is_valid(validity, row_idx)) {
+        return std::string();
+    }
+
+    if (is_string) {
+        auto data = static_cast<duckdb_string_t *>(duckdb_vector_get_data(vector));
+        return duckdb_string_is_inlined(data[row_idx])
+             ? std::string(data[row_idx].value.inlined.inlined, data[row_idx].value.inlined.length)
+             : std::string(static_cast<const char *>(data[row_idx].value.pointer.ptr), data[row_idx].value.pointer.length);
+    }
+
+    // Non-string key: render the scalar and use its JSON form as the object
+    // key (e.g. integer 10 -> "10"), matching DuckDB's to_json for scalar
+    // keys. Strip the quotes a string-like rendering (date/UUID/etc.) adds.
+    // Composite keys (STRUCT/LIST) are rare and fall back to their JSON
+    // rendering rather than DuckDB's VARCHAR cast.
+    auto rendered = convertVectorEntryToJson(vector, row_idx);
+    auto dumped = rendered.dump();
+    if (dumped.size() >= 2 && dumped.front() == '"' && dumped.back() == '"') {
+        return dumped.substr(1, dumped.size() - 2);
+    }
+    return dumped;
+}
+
+crow::json::wvalue QueryResult::convertVectorMapToJson(const duckdb_vector &vector, const idx_t row_idx) {
+    auto validity = duckdb_vector_get_validity(vector);
+    if (!duckdb_validity_row_is_valid(validity, row_idx)) {
+        return crow::json::wvalue(nullptr);
+    }
+
+    // A MAP is physically LIST(STRUCT(key, value)). Slice the row's entries
+    // from the list child via its duckdb_list_entry, then emit a JSON object
+    // {key: value} (DuckDB's own to_json shape). A non-null but empty map
+    // serializes as {} rather than null.
+    auto entries = static_cast<duckdb_list_entry *>(duckdb_vector_get_data(vector));
+    auto entry = entries[row_idx];
+
+    auto kv_struct = duckdb_list_vector_get_child(vector);
+    auto child_size = duckdb_list_vector_get_size(vector);
+    auto key_vector = duckdb_struct_vector_get_child(kv_struct, 0);
+    auto value_vector = duckdb_struct_vector_get_child(kv_struct, 1);
+
+    crow::json::wvalue result = crow::json::wvalue::empty_object();
+    for (idx_t i = 0; i < entry.length; i++) {
+        idx_t child_idx = entry.offset + i;
+        if (child_idx >= child_size) {
+            break;
+        }
+        result[vectorEntryToMapKey(key_vector, child_idx)] = convertVectorEntryToJson(value_vector, child_idx);
+    }
+
     return result;
 }
 

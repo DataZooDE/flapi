@@ -379,6 +379,58 @@ TEST_CASE("QueryExecutor LIST/STRUCT per-row serialization", "[query_executor][l
         REQUIRE_FALSE(doc[2]["u"].has("str"));
     }
 
+    SECTION("multi-row MAP serializes as a per-row {key: value} object") {
+        QueryExecutor executor(database);
+        executor.execute(R"SQL(
+            SELECT * FROM (VALUES
+                (1, map_from_entries([('a', 1), ('b', 2)])),
+                (2, map_from_entries([('x', 9)]))
+            ) AS t(id, reasons)
+            ORDER BY id
+        )SQL");
+
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc.size() == 2);
+
+        // Matches DuckDB's to_json(map) shape; previously serialized to null.
+        REQUIRE(doc[0]["reasons"].t() == crow::json::type::Object);
+        REQUIRE(doc[0]["reasons"]["a"].i() == 1);
+        REQUIRE(doc[0]["reasons"]["b"].i() == 2);
+
+        REQUIRE(doc[1]["reasons"].t() == crow::json::type::Object);
+        REQUIRE(doc[1]["reasons"]["x"].i() == 9);
+        REQUIRE_FALSE(doc[1]["reasons"].has("a"));
+    }
+
+    SECTION("MAP with integer keys stringifies keys like to_json") {
+        QueryExecutor executor(database);
+        executor.execute(R"SQL(
+            SELECT map_from_entries([(10, 'x'), (20, 'y')]) AS m
+        )SQL");
+
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc.size() == 1);
+        REQUIRE(doc[0]["m"].t() == crow::json::type::Object);
+        REQUIRE(doc[0]["m"]["10"].s() == "x");
+        REQUIRE(doc[0]["m"]["20"].s() == "y");
+    }
+
+    SECTION("NULL and empty MAP") {
+        QueryExecutor executor(database);
+        executor.execute(R"SQL(
+            SELECT id, m FROM (
+                SELECT 1 AS id, MAP{}::MAP(VARCHAR, INTEGER) AS m
+                UNION ALL
+                SELECT 2, CAST(NULL AS MAP(VARCHAR, INTEGER))
+            ) ORDER BY id
+        )SQL");
+
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc.size() == 2);
+        REQUIRE(doc[0]["m"].t() == crow::json::type::Object);  // empty -> {}
+        REQUIRE(doc[1]["m"].t() == crow::json::type::Null);    // null  -> null
+    }
+
     SECTION("NULL list entry stays null") {
         QueryExecutor executor(database);
         executor.execute(R"SQL(
