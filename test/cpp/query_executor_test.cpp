@@ -199,6 +199,90 @@ TEST_CASE("QueryExecutor type coverage", "[query_executor]") {
     duckdb_close(&database);
 }
 
+TEST_CASE("QueryExecutor scalar type coverage", "[query_executor][scalar_types]") {
+    // Regression for issue #89 type audit: UUID previously crashed (read as a
+    // string pointer), HUGEINT/UHUGEINT silently truncated, BLOB/BIT emitted
+    // garbage. All now match DuckDB's own string/JSON representation.
+    duckdb_database database;
+    REQUIRE(duckdb_open(NULL, &database) == DuckDBSuccess);
+
+    SECTION("UUID serializes as canonical string (no crash)") {
+        QueryExecutor executor(database);
+        executor.execute("SELECT '12345678-1234-5678-1234-567812345678'::UUID AS v");
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc.size() == 1);
+        REQUIRE(doc[0]["v"].t() == crow::json::type::String);
+        REQUIRE(doc[0]["v"].s() == "12345678-1234-5678-1234-567812345678");
+    }
+
+    SECTION("multi-row UUID keeps each row's own value") {
+        QueryExecutor executor(database);
+        executor.execute(R"SQL(
+            SELECT * FROM (VALUES
+                ('11111111-1111-1111-1111-111111111111'::UUID),
+                ('22222222-2222-2222-2222-222222222222'::UUID)
+            ) t(v) ORDER BY v
+        )SQL");
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc.size() == 2);
+        REQUIRE(doc[0]["v"].s() == "11111111-1111-1111-1111-111111111111");
+        REQUIRE(doc[1]["v"].s() == "22222222-2222-2222-2222-222222222222");
+    }
+
+    SECTION("HUGEINT emits exact decimal string") {
+        QueryExecutor executor(database);
+        executor.execute(R"SQL(
+            SELECT * FROM (VALUES
+                (1, 1::HUGEINT),
+                (2, 170141183460469231731687303715884105727::HUGEINT),
+                (3, (-9999999999999999999)::HUGEINT)
+            ) t(id, v) ORDER BY id
+        )SQL");
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc.size() == 3);
+        REQUIRE(doc[0]["v"].s() == "1");
+        REQUIRE(doc[1]["v"].s() == "170141183460469231731687303715884105727");
+        REQUIRE(doc[2]["v"].s() == "-9999999999999999999");
+    }
+
+    SECTION("UHUGEINT emits exact decimal string") {
+        QueryExecutor executor(database);
+        executor.execute("SELECT 340282366920938463463374607431768211455::UHUGEINT AS v");
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc[0]["v"].s() == "340282366920938463463374607431768211455");
+    }
+
+    SECTION("BLOB emits DuckDB blob string, not garbled bytes") {
+        QueryExecutor executor(database);
+        executor.execute("SELECT '\\xAA\\xBB'::BLOB AS v");
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc[0]["v"].t() == crow::json::type::String);
+        REQUIRE(doc[0]["v"].s() == "\\xAA\\xBB");
+    }
+
+    SECTION("BIT emits its 0/1 string") {
+        QueryExecutor executor(database);
+        executor.execute("SELECT '101010'::BIT AS v");
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc[0]["v"].s() == "101010");
+    }
+
+    SECTION("NULL values of these types stay null") {
+        QueryExecutor executor(database);
+        executor.execute(R"SQL(
+            SELECT CAST(NULL AS UUID) AS u, CAST(NULL AS HUGEINT) AS h,
+                   CAST(NULL AS BLOB) AS b, CAST(NULL AS BIT) AS t
+        )SQL");
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc[0]["u"].t() == crow::json::type::Null);
+        REQUIRE(doc[0]["h"].t() == crow::json::type::Null);
+        REQUIRE(doc[0]["b"].t() == crow::json::type::Null);
+        REQUIRE(doc[0]["t"].t() == crow::json::type::Null);
+    }
+
+    duckdb_close(&database);
+}
+
 TEST_CASE("QueryExecutor chunk experiment", "[query_executor]") {
     duckdb_database database;
 	REQUIRE(duckdb_open(NULL, &database) == DuckDBSuccess);

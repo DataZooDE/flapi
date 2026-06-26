@@ -234,7 +234,7 @@ crow::json::wvalue QueryResult::convertVectorEntryToJson(const duckdb_vector &ve
         case DUCKDB_TYPE_BIGINT:
             return convertVectorEntryToJson<std::int64_t>(vector, row_idx);
         case DUCKDB_TYPE_HUGEINT:
-            return convertVectorEntryToJson<std::int64_t>(vector, row_idx);
+            return convertVectorHugeintToJson(vector, row_idx);
         case DUCKDB_TYPE_FLOAT:
             return convertVectorEntryToJson<float>(vector, row_idx);
         case DUCKDB_TYPE_DOUBLE:
@@ -278,13 +278,13 @@ crow::json::wvalue QueryResult::convertVectorEntryToJson(const duckdb_vector &ve
         case DUCKDB_TYPE_UBIGINT:
             return convertVectorEntryToJson<std::uint64_t>(vector, row_idx);
         case DUCKDB_TYPE_UHUGEINT:
-            return convertVectorEntryToJson<std::uint64_t>(vector, row_idx);  // Treat as uint64
+            return convertVectorUhugeintToJson(vector, row_idx);
         case DUCKDB_TYPE_BLOB:
-            return convertVectorVarcharToJson(vector, row_idx);  // Treat as string for JSON
+            return convertVectorBlobToJson(vector, row_idx);
         case DUCKDB_TYPE_UUID:
-            return convertVectorVarcharToJson(vector, row_idx);  // Treat as string for JSON
+            return convertVectorUuidToJson(vector, row_idx);
         case DUCKDB_TYPE_BIT:
-            return convertVectorVarcharToJson(vector, row_idx);  // Treat as string for JSON
+            return convertVectorBitToJson(vector, row_idx);
         case DUCKDB_TYPE_MAP:
             return convertVectorMapToJson(vector, row_idx);
         case DUCKDB_TYPE_ARRAY:
@@ -420,6 +420,143 @@ crow::json::wvalue QueryResult::convertVectorEnumToJson(const duckdb_vector &vec
 
     duckdb_destroy_logical_type(&type);
     return crow::json::wvalue(str_val);
+}
+
+crow::json::wvalue QueryResult::convertVectorUuidToJson(const duckdb_vector &vector, const idx_t row_idx) {
+    auto validity = duckdb_vector_get_validity(vector);
+    if (!duckdb_validity_row_is_valid(validity, row_idx)) {
+        return crow::json::wvalue(nullptr);
+    }
+
+    // UUID is physically a 128-bit integer (hugeint), NOT a string — reading
+    // it via the VARCHAR path dereferences garbage and crashes (issue #89).
+    // Format it the way DuckDB's UUID::ToString does: flip the stored MSB
+    // back, then emit the canonical 8-4-4-4-12 lowercase hex form.
+    auto data = static_cast<duckdb_hugeint *>(duckdb_vector_get_data(vector));
+    auto value = data[row_idx];
+    uint64_t upper = static_cast<uint64_t>(value.upper) ^ (uint64_t(1) << 63);
+    uint64_t lower = value.lower;
+
+    static const char *HEX = "0123456789abcdef";
+    char buf[36];
+    idx_t pos = 0;
+    auto byte_to_hex = [&](uint64_t byte_val) {
+        buf[pos++] = HEX[(byte_val >> 4) & 0xf];
+        buf[pos++] = HEX[byte_val & 0xf];
+    };
+    byte_to_hex((upper >> 56) & 0xFF);
+    byte_to_hex((upper >> 48) & 0xFF);
+    byte_to_hex((upper >> 40) & 0xFF);
+    byte_to_hex((upper >> 32) & 0xFF);
+    buf[pos++] = '-';
+    byte_to_hex((upper >> 24) & 0xFF);
+    byte_to_hex((upper >> 16) & 0xFF);
+    buf[pos++] = '-';
+    byte_to_hex((upper >> 8) & 0xFF);
+    byte_to_hex(upper & 0xFF);
+    buf[pos++] = '-';
+    byte_to_hex((lower >> 56) & 0xFF);
+    byte_to_hex((lower >> 48) & 0xFF);
+    buf[pos++] = '-';
+    byte_to_hex((lower >> 40) & 0xFF);
+    byte_to_hex((lower >> 32) & 0xFF);
+    byte_to_hex((lower >> 24) & 0xFF);
+    byte_to_hex((lower >> 16) & 0xFF);
+    byte_to_hex((lower >> 8) & 0xFF);
+    byte_to_hex(lower & 0xFF);
+
+    return crow::json::wvalue(std::string(buf, pos));
+}
+
+crow::json::wvalue QueryResult::convertVectorHugeintToJson(const duckdb_vector &vector, const idx_t row_idx) {
+    auto validity = duckdb_vector_get_validity(vector);
+    if (!duckdb_validity_row_is_valid(validity, row_idx)) {
+        return crow::json::wvalue(nullptr);
+    }
+
+    // HUGEINT is 128-bit: reading it as int64 truncates and mis-strides for
+    // multi-row chunks (issue #89). Emit the exact decimal as a JSON string so
+    // values beyond 2^63 survive (JSON consumers lose precision above 2^53).
+    auto data = static_cast<duckdb_hugeint *>(duckdb_vector_get_data(vector));
+    auto value = duckdb_create_hugeint(data[row_idx]);
+    DuckDBString str(duckdb_value_to_string(value));
+    duckdb_destroy_value(&value);
+    return crow::json::wvalue(str.to_string());
+}
+
+crow::json::wvalue QueryResult::convertVectorUhugeintToJson(const duckdb_vector &vector, const idx_t row_idx) {
+    auto validity = duckdb_vector_get_validity(vector);
+    if (!duckdb_validity_row_is_valid(validity, row_idx)) {
+        return crow::json::wvalue(nullptr);
+    }
+
+    // UHUGEINT is unsigned 128-bit; emit as a decimal string for the same
+    // precision reasons as HUGEINT.
+    auto data = static_cast<duckdb_uhugeint *>(duckdb_vector_get_data(vector));
+    auto value = duckdb_create_uhugeint(data[row_idx]);
+    DuckDBString str(duckdb_value_to_string(value));
+    duckdb_destroy_value(&value);
+    return crow::json::wvalue(str.to_string());
+}
+
+crow::json::wvalue QueryResult::convertVectorBlobToJson(const duckdb_vector &vector, const idx_t row_idx) {
+    auto validity = duckdb_vector_get_validity(vector);
+    if (!duckdb_validity_row_is_valid(validity, row_idx)) {
+        return crow::json::wvalue(nullptr);
+    }
+
+    // A BLOB's bytes are arbitrary binary; emitting them raw via the VARCHAR
+    // path can produce invalid UTF-8 / invalid JSON. Render DuckDB's own blob
+    // string form (printable bytes as-is, others as \xNN), matching to_json /
+    // CAST AS VARCHAR. (duckdb_value_to_string would add a '...'::BLOB wrapper.)
+    auto data = static_cast<duckdb_string_t *>(duckdb_vector_get_data(vector));
+    auto length = duckdb_string_is_inlined(data[row_idx])
+                ? data[row_idx].value.inlined.length
+                : data[row_idx].value.pointer.length;
+    auto bytes = duckdb_string_is_inlined(data[row_idx])
+               ? reinterpret_cast<const uint8_t *>(data[row_idx].value.inlined.inlined)
+               : reinterpret_cast<const uint8_t *>(data[row_idx].value.pointer.ptr);
+
+    static const char *HEX = "0123456789ABCDEF";
+    std::string out;
+    out.reserve(length);
+    for (idx_t i = 0; i < length; i++) {
+        uint8_t c = bytes[i];
+        bool regular = c >= 32 && c <= 126 && c != '\\' && c != '\'' && c != '"';
+        if (regular) {
+            out.push_back(static_cast<char>(c));
+        } else {
+            out.push_back('\\');
+            out.push_back('x');
+            out.push_back(HEX[(c >> 4) & 0xF]);
+            out.push_back(HEX[c & 0xF]);
+        }
+    }
+    return crow::json::wvalue(out);
+}
+
+crow::json::wvalue QueryResult::convertVectorBitToJson(const duckdb_vector &vector, const idx_t row_idx) {
+    auto validity = duckdb_vector_get_validity(vector);
+    if (!duckdb_validity_row_is_valid(validity, row_idx)) {
+        return crow::json::wvalue(nullptr);
+    }
+
+    // BIT is stored as its internal bitstring blob; the VARCHAR path renders
+    // that raw storage (padding byte + bytes) as garbage. Round-trip through a
+    // BIT value so it serializes as a "0101" string, matching to_json.
+    auto data = static_cast<duckdb_string_t *>(duckdb_vector_get_data(vector));
+    auto length = duckdb_string_is_inlined(data[row_idx])
+                ? data[row_idx].value.inlined.length
+                : data[row_idx].value.pointer.length;
+    auto bytes = duckdb_string_is_inlined(data[row_idx])
+               ? reinterpret_cast<const uint8_t *>(data[row_idx].value.inlined.inlined)
+               : reinterpret_cast<const uint8_t *>(data[row_idx].value.pointer.ptr);
+
+    duckdb_bit bit { const_cast<uint8_t *>(bytes), length };
+    auto value = duckdb_create_bit(bit);
+    DuckDBString str(duckdb_value_to_string(value));
+    duckdb_destroy_value(&value);
+    return crow::json::wvalue(str.to_string());
 }
 
 crow::json::wvalue QueryResult::convertVectorListToJson(const duckdb_vector &vector, const idx_t row_idx) {

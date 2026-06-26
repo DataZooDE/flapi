@@ -55,6 +55,11 @@ private:
     static crow::json::wvalue convertVectorTimeToJson(const duckdb_vector &vector, const idx_t row_idx);
     static crow::json::wvalue convertVectorIntervalToJson(const duckdb_vector &vector, const idx_t row_idx);
     static crow::json::wvalue convertVectorEnumToJson(const duckdb_vector &vector, const idx_t row_idx);
+    static crow::json::wvalue convertVectorUuidToJson(const duckdb_vector &vector, const idx_t row_idx);
+    static crow::json::wvalue convertVectorHugeintToJson(const duckdb_vector &vector, const idx_t row_idx);
+    static crow::json::wvalue convertVectorUhugeintToJson(const duckdb_vector &vector, const idx_t row_idx);
+    static crow::json::wvalue convertVectorBlobToJson(const duckdb_vector &vector, const idx_t row_idx);
+    static crow::json::wvalue convertVectorBitToJson(const duckdb_vector &vector, const idx_t row_idx);
     static crow::json::wvalue convertVectorListToJson(const duckdb_vector &vector, const idx_t row_idx);
     static crow::json::wvalue convertVectorArrayToJson(const duckdb_vector &vector, const idx_t row_idx);
     static crow::json::wvalue convertVectorStructToJson(const duckdb_vector &vector, const idx_t row_idx);
