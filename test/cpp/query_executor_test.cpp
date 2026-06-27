@@ -199,6 +199,72 @@ TEST_CASE("QueryExecutor type coverage", "[query_executor]") {
     duckdb_close(&database);
 }
 
+TEST_CASE("QueryExecutor exotic type coverage", "[query_executor][exotic_types]") {
+    // Regression for the issue #89 follow-up: VARINT/BIGNUM and VARIANT used
+    // to serialize as null (no dedicated reader). They now round-trip via the
+    // C++ Value fallback. GEOMETRY uses the same path (verified manually; not
+    // tested here as it needs the spatial extension download).
+    duckdb_database database;
+    REQUIRE(duckdb_open(NULL, &database) == DuckDBSuccess);
+
+    SECTION("VARINT emits exact decimal string (lossless)") {
+        QueryExecutor executor(database);
+        executor.execute(R"SQL(
+            SELECT * FROM (VALUES
+                (1, '123456789012345678901234567890'::VARINT),
+                (2, (-5)::VARINT),
+                (3, '0'::VARINT)
+            ) t(id, v) ORDER BY id
+        )SQL");
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc.size() == 3);
+        REQUIRE(doc[0]["v"].t() == crow::json::type::String);
+        REQUIRE(doc[0]["v"].s() == "123456789012345678901234567890");
+        REQUIRE(doc[1]["v"].s() == "-5");
+        REQUIRE(doc[2]["v"].s() == "0");
+    }
+
+    SECTION("VARIANT object is embedded as nested JSON") {
+        QueryExecutor executor(database);
+        executor.execute(R"SQL(SELECT '{"a":1,"b":[2,3]}'::VARIANT AS v)SQL");
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc.size() == 1);
+        REQUIRE(doc[0]["v"].t() == crow::json::type::Object);
+        REQUIRE(doc[0]["v"]["a"].i() == 1);
+        REQUIRE(doc[0]["v"]["b"].size() == 2);
+        REQUIRE(doc[0]["v"]["b"][1].i() == 3);
+    }
+
+    SECTION("struct-origin VARIANT serializes (as DuckDB's string form)") {
+        // A VARIANT built from a struct stringifies as {'k': v} (single
+        // quotes), which isn't JSON — so it degrades to a string rather than
+        // null. (JSON-derived VARIANTs embed as nested JSON, see above.)
+        QueryExecutor executor(database);
+        executor.execute("SELECT {'test': 123, 'arr': [1, 2]}::VARIANT AS v");
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc.size() == 1);
+        REQUIRE(doc[0]["v"].t() == crow::json::type::String);
+        REQUIRE(std::string(doc[0]["v"].s()).find("test") != std::string::npos);
+    }
+
+    SECTION("VARIANT scalar is embedded as its JSON value") {
+        QueryExecutor executor(database);
+        executor.execute("SELECT 42::VARIANT AS v");
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc[0]["v"].i() == 42);
+    }
+
+    SECTION("NULL VARINT / VARIANT stay null") {
+        QueryExecutor executor(database);
+        executor.execute("SELECT CAST(NULL AS VARINT) AS a, CAST(NULL AS VARIANT) AS b");
+        auto doc = crow::json::load(executor.toJson().dump());
+        REQUIRE(doc[0]["a"].t() == crow::json::type::Null);
+        REQUIRE(doc[0]["b"].t() == crow::json::type::Null);
+    }
+
+    duckdb_close(&database);
+}
+
 TEST_CASE("QueryExecutor scalar type coverage", "[query_executor][scalar_types]") {
     // Regression for issue #89 type audit: UUID previously crashed (read as a
     // string pointer), HUGEINT/UHUGEINT silently truncated, BLOB/BIT emitted
