@@ -6,6 +6,12 @@
 #include <sstream>
 #include <stdexcept>
 
+// The C++ API is used as a universal fallback for exotic column types
+// (BIGNUM/VARINT, GEOMETRY, VARIANT, ...) that have no dedicated C-API
+// reader. A duckdb_vector handle is just a reinterpret_cast of a
+// duckdb::Vector*, so dropping to Vector::GetValue() is a safe round-trip.
+#include "duckdb.hpp"
+
 namespace flapi {
 
 QueryExecutor::QueryExecutor(duckdb_database db) : has_result(false) {
@@ -291,9 +297,12 @@ crow::json::wvalue QueryResult::convertVectorEntryToJson(const duckdb_vector &ve
             return convertVectorArrayToJson(vector, row_idx);
         case DUCKDB_TYPE_UNION:
             return convertVectorUnionToJson(vector, row_idx);
-        default:
-            CROW_LOG_WARNING << "Unknown type: " << type_id;
-            return crow::json::wvalue(nullptr);
+        case DUCKDB_TYPE_BIGNUM:      // arbitrary-precision integer (VARINT)
+        case DUCKDB_TYPE_VARIANT:     // dynamically-typed value
+        default:                      // GEOMETRY and any future/unknown type
+            // No dedicated C-API reader; use DuckDB's own value
+            // stringification via the C++ fallback.
+            return convertVectorValueToJson(vector, row_idx);
     }
 }
 
@@ -729,6 +738,39 @@ crow::json::wvalue QueryResult::convertVectorMapToJson(const duckdb_vector &vect
     }
 
     return result;
+}
+
+crow::json::wvalue QueryResult::convertVectorValueToJson(const duckdb_vector &vector, const idx_t row_idx) {
+    // duckdb_vector is a reinterpret_cast of duckdb::Vector* (see the C API's
+    // data_chunk-c.cpp), so we can borrow the C++ Vector to let DuckDB itself
+    // produce the value's canonical string — covering BIGNUM/VARINT, GEOMETRY,
+    // VARIANT and any type lacking a dedicated reader. Wrapped in try/catch so
+    // an unconvertible extension value degrades to null instead of crashing.
+    try {
+        auto *vec = reinterpret_cast<duckdb::Vector *>(vector);
+        duckdb::Value value = vec->GetValue(row_idx);
+        if (value.IsNull()) {
+            return crow::json::wvalue(nullptr);
+        }
+
+        // A VARIANT whose string form is already JSON (the common case for
+        // JSON-derived values) is embedded as nested JSON so callers don't have
+        // to parse twice. Other VARIANT renderings (DuckDB's SQL-ish form, e.g.
+        // {'a': 1}) and every other fallback type are emitted as a string.
+        if (value.type().id() == duckdb::LogicalTypeId::VARIANT) {
+            auto str = value.ToString();
+            auto parsed = crow::json::load(str);
+            if (parsed) {
+                return crow::json::wvalue(parsed);
+            }
+            return crow::json::wvalue(str);
+        }
+
+        return crow::json::wvalue(value.ToString());
+    } catch (const std::exception &e) {
+        CROW_LOG_WARNING << "Unable to serialize value at row " << row_idx << ": " << e.what();
+        return crow::json::wvalue(nullptr);
+    }
 }
 
 } // namespace flapi
