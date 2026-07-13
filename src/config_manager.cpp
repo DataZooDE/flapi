@@ -136,7 +136,9 @@ void ConfigManager::parseMainConfig() {
 
         if (config["telemetry"]) {
             telemetry_enabled = safeGet<bool>(config["telemetry"], "enabled", "telemetry.enabled", true);
-            CROW_LOG_DEBUG << "Telemetry Enabled: " << telemetry_enabled;
+            telemetry_sample_rate = safeGet<double>(config["telemetry"], "sample_rate", "telemetry.sample_rate", 1.0);
+            CROW_LOG_DEBUG << "Telemetry Enabled: " << telemetry_enabled
+                           << ", sample_rate: " << telemetry_sample_rate;
         }
     } catch (const std::exception& e) {
         CROW_LOG_ERROR << "Error in parseMainConfig: " << e.what();
