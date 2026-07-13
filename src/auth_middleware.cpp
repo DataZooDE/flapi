@@ -18,6 +18,7 @@
 #include "auth_middleware.hpp"
 #include "password_hasher.hpp"
 #include "database_manager.hpp"
+#include "flapi_telemetry.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/types/blob.hpp"
 #include "oidc_provider_presets.hpp"
@@ -153,12 +154,16 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
 
     CROW_LOG_DEBUG << "Auth enabled for endpoint: " << req.url;
 
+    // auth_kind is the endpoint's configured scheme (enum, never a secret).
+    const std::string auth_kind = endpoint->auth.type;
+
     auto auth_header = req.get_header_value("Authorization");
     if (auth_header.empty()) {
         CROW_LOG_DEBUG << "No Authorization header found";
         res.code = 401;
         res.set_header("WWW-Authenticate", "Basic realm=\"flAPI\"");
         res.end();
+        flapi::GlobalTelemetry().authEnforced(auth_kind, /*allow=*/false);
         return;
     }
 
@@ -180,6 +185,7 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
     } else {
         CROW_LOG_DEBUG << "Authentication successful for user: " << ctx.username;
     }
+    flapi::GlobalTelemetry().authEnforced(auth_kind, ctx.authenticated);
 }
 
 bool AuthMiddleware::authenticateBasic(const std::string& auth_header, const EndpointConfig& endpoint, context& ctx) {

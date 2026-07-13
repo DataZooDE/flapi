@@ -3,6 +3,9 @@
 #include "api_server.hpp"
 #include "auth_middleware.hpp"
 #include "database_manager.hpp"
+#include "flapi_telemetry.hpp"
+
+#include <chrono>
 #include "config_service.hpp"
 #include "config_tool_adapter.hpp"
 #include "open_api_doc_generator.hpp"
@@ -198,29 +201,48 @@ void APIServer::setupHeartbeat() {
     heartbeatWorker->start();
 }
 
-void APIServer::handleDynamicRequest(const crow::request& req, crow::response& res) 
+void APIServer::handleDynamicRequest(const crow::request& req, crow::response& res)
 {
+    const auto t0 = std::chrono::steady_clock::now();
     std::string path = req.url;
     // Match endpoint by both path and HTTP method
     std::string method = crow::method_name(req.method);
     const auto& endpoint = configManager->getEndpointForPathAndMethod(path, method);
 
+    // Emit one rest_endpoint_served with the ROUTE TEMPLATE (never the filled
+    // path), status class, duration, and whether the endpoint is cache-backed.
+    // Errors are emitted with an enumerated class only (no message/SQL/body).
+    auto emit_telemetry = [&](const std::string& route_template, bool cache_hit) {
+        const double duration_ms =
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - t0).count();
+        auto& telemetry = flapi::GlobalTelemetry();
+        telemetry.restEndpointServed(method, route_template, res.code, duration_ms, cache_hit);
+        if (res.code >= 500) {
+            telemetry.error("server_error", "rest_endpoint_served", route_template);
+        } else if (res.code == 400) {
+            telemetry.error("bad_request", "rest_endpoint_served", route_template);
+        }
+    };
+
     if (!endpoint) {
         res.code = 404;
         res.body = "Not Found";
         res.end();
+        emit_telemetry("<unmatched>", false);
         return;
     }
 
     std::vector<std::string> paramNames;
     std::map<std::string, std::string> pathParams;
-    
+
     bool matched = RouteTranslator::matchAndExtractParams(endpoint->urlPath, path, paramNames, pathParams);
 
     if (!matched) {
         res.code = 404;
         res.body = "Not Found";
         res.end();
+        emit_telemetry("<unmatched>", false);
         return;
     }
 
@@ -243,6 +265,11 @@ void APIServer::handleDynamicRequest(const crow::request& req, crow::response& r
     }
 
     requestHandler.handleRequest(req, res, *endpoint, pathParams, auth_params);
+
+    // flapi has no per-request cache hit/miss signal (the "cache" is a
+    // materialized DuckLake table the template queries); the honest bounded
+    // value is whether this endpoint is cache-backed. See TELEMETRY.md.
+    emit_telemetry(endpoint->urlPath, dbManager->isCacheEnabled(*endpoint));
 }
 
 crow::response APIServer::getConfig() {

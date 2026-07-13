@@ -39,7 +39,42 @@ using namespace flapi;
 // Add global variable for signal handling
 std::atomic<bool> should_exit(false);
 std::shared_ptr<APIServer> api_server;
-std::shared_ptr<flapi::FlapiTelemetry> flapi_telemetry;
+
+// Derive a single, bounded auth_kind for the server_started envelope.
+// flapi auth is per-endpoint with an optional global block and a separate MCP
+// block; we collapse that to one enum {none,basic,bearer,oidc} for telemetry.
+// Counts/kinds only — never routes, users, secrets.
+static std::string deriveAuthKind(const ConfigManager& cfg) {
+    auto normalize = [](const std::string& t) -> std::string {
+        if (t == "basic" || t == "bearer" || t == "oidc") {
+            return t;
+        }
+        return "";
+    };
+
+    if (cfg.isAuthEnabled()) {
+        std::string t = normalize(cfg.getGlobalAuthConfig().type);
+        if (!t.empty()) {
+            return t;
+        }
+    }
+    for (const auto& endpoint : cfg.getEndpoints()) {
+        if (endpoint.auth.enabled) {
+            std::string t = normalize(endpoint.auth.type);
+            if (!t.empty()) {
+                return t;
+            }
+        }
+    }
+    const auto& mcp_auth = cfg.getMCPConfig().auth;
+    if (mcp_auth.enabled) {
+        std::string t = normalize(mcp_auth.type);
+        if (!t.empty()) {
+            return t;
+        }
+    }
+    return "none";
+}
 
 void set_log_level(const std::string& log_level) {
     if (log_level == "debug") {
@@ -286,12 +321,13 @@ LONG WINAPI windowsExceptionHandler(EXCEPTION_POINTERS* exceptionInfo) {
 
 
 void signal_handler(int signal) {
-    if (signal == SIGINT) {
-        CROW_LOG_INFO << "Received SIGINT, shutting down...";
+    if (signal == SIGINT || signal == SIGTERM) {
+        CROW_LOG_INFO << "Received " << (signal == SIGINT ? "SIGINT" : "SIGTERM")
+                      << ", shutting down...";
         should_exit = true;
-        if (flapi_telemetry) {
-            flapi_telemetry->notifyStop(FLAPI_VERSION);
-        }
+        // Drain buffered telemetry before exit: the library's at-exit handler
+        // discards in-flight events by design, so a server must flush explicitly.
+        flapi::GlobalTelemetry().flush();
         if (api_server) {
             api_server->stop();
         }
@@ -304,12 +340,14 @@ int main(int argc, char* argv[])
 #ifdef _WIN32
     SetUnhandledExceptionFilter(windowsExceptionHandler);
     signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
 #else
     struct sigaction sa;
     sa.sa_handler = signal_handler;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
     sigaction(SIGINT, &sa, nullptr);
+    sigaction(SIGTERM, &sa, nullptr);
 #endif
 
     static argparse::ArgumentParser program("flapi");
@@ -577,12 +615,28 @@ int main(int argc, char* argv[])
         config_service_token
     );
 
-    // Initialize telemetry and emit startup event
-    flapi_telemetry = std::make_shared<flapi::FlapiTelemetry>();
-    if (no_telemetry) {
-        flapi_telemetry->setEnabled(false);
+    // Initialize telemetry (this is a long-running server: install_kind="server",
+    // one $session_id per uptime) and emit server_started. A single opt-out —
+    // CLI flag, env, or YAML, already resolved into no_telemetry — disables
+    // everything via setEnabled(false).
+    {
+        auto& telemetry = flapi::GlobalTelemetry();
+        telemetry.setEnabled(!no_telemetry);
+        telemetry.setSampling(config_manager->getTelemetrySampleRate());
+
+        const char* edition_env = std::getenv("FLAPI_EDITION");
+        const std::string edition =
+            (edition_env != nullptr && *edition_env != '\0') ? edition_env : "oss";
+        telemetry.configureProduct(FLAPI_VERSION, edition);
+        telemetry.associateDeployment();
+        if (const char* lic = std::getenv("FLAPI_LICENSE_ID");
+            lic != nullptr && *lic != '\0') {
+            telemetry.associateAccount(lic);
+        }
+        telemetry.serverStarted(
+            static_cast<int>(config_manager->getEndpoints().size()),
+            deriveAuthKind(*config_manager));
     }
-    flapi_telemetry->notifyStart(FLAPI_VERSION);
 
     // Start unified server
     std::thread unified_server_thread([config_manager, server = api_server]() {
@@ -610,9 +664,9 @@ int main(int argc, char* argv[])
     // Wait for server to finish
     unified_server_thread.join();
 
-    // Emit shutdown event on normal (non-signal) exit; signal_handler handles the SIGINT path
-    if (!should_exit && flapi_telemetry) {
-        flapi_telemetry->notifyStop(FLAPI_VERSION);
+    // Drain buffered telemetry on clean exit; the signal path already flushed.
+    if (!should_exit) {
+        flapi::GlobalTelemetry().flush();
     }
 
     return 0;

@@ -5,8 +5,21 @@
 
 #include "mcp_dry_run.hpp"
 #include "mcp_response_shaper.hpp"
+#include "flapi_telemetry.hpp"
 
 namespace flapi {
+
+MCPToolExecutionResult MCPToolHandler::executeTool(const MCPToolCallRequest& request) {
+    const auto t0 = std::chrono::steady_clock::now();
+    MCPToolExecutionResult result = executeToolImpl(request);
+    const double duration_ms =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - t0).count();
+    // Bounded, registered tool name + success/duration only — never arguments,
+    // SQL, or results.
+    flapi::GlobalTelemetry().mcpToolCalled(request.tool_name, result.success, duration_ms);
+    return result;
+}
 
 MCPToolHandler::MCPToolHandler(std::shared_ptr<DatabaseManager> db_manager,
                               std::shared_ptr<ConfigManager> config_manager)
@@ -17,7 +30,7 @@ MCPToolHandler::MCPToolHandler(std::shared_ptr<DatabaseManager> db_manager,
 {
 }
 
-MCPToolExecutionResult MCPToolHandler::executeTool(const MCPToolCallRequest& request) {
+MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest& request) {
     const auto audit_started_at = std::chrono::steady_clock::now();
     const auto emit_audit = [&](const std::string& status, std::int64_t row_count) {
         if (!audit_logger || !audit_logger->isEnabled()) {

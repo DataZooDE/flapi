@@ -561,6 +561,8 @@ public:
     // request lands in the same JSONL stream.
     std::shared_ptr<AuditLogger> getAuditLogger();
     bool isTelemetryEnabled() const { return telemetry_enabled; }
+    double getTelemetrySampleRate() const { return telemetry_sample_rate; }
+    const AuthConfig& getGlobalAuthConfig() const { return global_auth_config; }
 
     // Load MCP server instructions (inline or from file)
     std::string loadMCPInstructions() const;
@@ -626,6 +628,7 @@ protected:
     AuditConfig audit_config;
     std::shared_ptr<AuditLogger> audit_logger_;
     bool telemetry_enabled = true;
+    double telemetry_sample_rate = 1.0;
     ExtendedYamlParser yaml_parser;
 
     // Extracted classes for delegation (Facade pattern)

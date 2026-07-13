@@ -40,7 +40,9 @@ public:
                            std::shared_ptr<ConfigManager> config_manager);
     ~MCPToolHandler() = default;
 
-    // Tool execution
+    // Tool execution. Thin wrapper that times the call and emits the
+    // `mcp_tool_called` telemetry event (bounded tool name + status + duration
+    // only); the real work lives in executeToolImpl.
     MCPToolExecutionResult executeTool(const MCPToolCallRequest& request);
 
     // Tool validation
@@ -57,6 +59,9 @@ public:
         const std::unordered_map<std::string, std::string>& context);
 
 private:
+    // Real tool execution body (wrapped by executeTool for telemetry).
+    MCPToolExecutionResult executeToolImpl(const MCPToolCallRequest& request);
+
     // Helper methods to work with unified EndpointConfig
     const EndpointConfig* getEndpointConfigByToolName(const std::string& tool_name) const;
 
