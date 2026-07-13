@@ -83,7 +83,7 @@ they are worded to survive skeptical audiences (HN, r/dataengineering).
   ```
 - Keep `version` in `server.json` in sync with releases (add to release checklist/workflow).
 
-### 2. punkpeye/awesome-mcp-servers — ✅ PR content ready, needs approval to submit
+### 2. punkpeye/awesome-mcp-servers — ✅ SUBMITTED: [PR #10023](https://github.com/punkpeye/awesome-mcp-servers/pull/10023)
 - File: `README.md`, **Databases** section, alphabetical (case-insensitive)
   — insert between `Dataring-engineering/mcp-server-trino` and
   `davewind/mysql-mcp-server`.
@@ -97,14 +97,17 @@ they are worded to survive skeptical audiences (HN, r/dataengineering).
 - PR body: entry line + "Disclosure: submitted on behalf of the flAPI
   maintainers (DataZooDE)."
 
-### 3. wong2/awesome-mcp-servers — ✅ PR content ready, needs approval to submit
-- File: `README.md`, **Official Servers** section, alphabetical — insert
-  between `Fireproof` and `FlyonUI`.
-- Entry line:
-  ```markdown
-  - **[flAPI](https://github.com/DataZooDE/flapi)** - Turn SQL templates into REST APIs and MCP tools from a single YAML config — one static binary with embedded DuckDB, per-tool RBAC, and DuckLake caching.
-  ```
-- PR title: `Add flAPI to Official Servers`; same disclosure in body.
+### 3. wong2/awesome-mcp-servers (mcpservers.org) — ⚠️ no PRs accepted; use the web form
+- Their README states: *"We do not accept PRs. Please submit your MCP on the
+  website: https://mcpservers.org/submit"* (verified 2026-07-13 — a PR
+  attempt is rejected by GitHub permissions).
+- Form fields (no login, no captcha; free tier is fine — skip the $39
+  "Premium Submit"):
+  - Server Name: `flAPI`
+  - Short Description: `Turn SQL templates + YAML into REST APIs and MCP tools — one static binary with embedded DuckDB (Parquet, Postgres, BigQuery, S3 and 50+ sources), per-tool RBAC, and DuckLake caching.`
+  - Link: `https://github.com/DataZooDE/flapi`
+  - Category: `Database`
+  - Contact Email: maintainer address
 
 ### 4. mcp.so — needs human (web form)
 - https://mcp.so → Submit. Paste the long blurb; category Database/Data
