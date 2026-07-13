@@ -39,6 +39,7 @@ public:
               ::duckdb::idx_t location) override;
 
     int64_t GetFileSize(::duckdb::FileHandle& handle) override;
+    ::duckdb::timestamp_t GetLastModifiedTime(::duckdb::FileHandle& handle) override;
 
     void Seek(::duckdb::FileHandle& handle, ::duckdb::idx_t location) override;
     ::duckdb::idx_t SeekPosition(::duckdb::FileHandle& handle) override;
