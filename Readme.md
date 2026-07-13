@@ -760,6 +760,12 @@ For more detailed information, check out our [full documentation](docs/):
 - **[Cloud Storage Guide](docs/CLOUD_STORAGE_GUIDE.md)** - Using cloud storage backends (S3, GCS, Azure)
 - **[Architecture & Design](docs/spec/)** - System architecture, design decisions, and component documentation
 
+### MCP Registry
+
+flAPI is listed in the official [MCP Registry](https://registry.modelcontextprotocol.io) under the name below (this line also serves as the registry's PyPI ownership marker):
+
+mcp-name: io.github.datazoode/flapi
+
 ## 📊 Telemetry
 
 flAPI sends anonymous `application_start` and `application_stop` events to help the team understand adoption. No query data, credentials, or personal information is ever sent.
