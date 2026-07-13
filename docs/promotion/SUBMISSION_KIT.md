@@ -97,7 +97,7 @@ they are worded to survive skeptical audiences (HN, r/dataengineering).
 - PR body: entry line + "Disclosure: submitted on behalf of the flAPI
   maintainers (DataZooDE)."
 
-### 3. wong2/awesome-mcp-servers (mcpservers.org) — ⚠️ no PRs accepted; use the web form
+### 3. wong2/awesome-mcp-servers (mcpservers.org) — ✅ SUBMITTED 2026-07-13 via web form (review ≤12h, confirmation to jr@data-zoo.de)
 - Their README states: *"We do not accept PRs. Please submit your MCP on the
   website: https://mcpservers.org/submit"* (verified 2026-07-13 — a PR
   attempt is rejected by GitHub permissions).

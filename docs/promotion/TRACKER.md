@@ -23,7 +23,7 @@ copy-paste material lives in [SUBMISSION_KIT.md](SUBMISSION_KIT.md) and
 
 - [ ] Official MCP Registry: `mcp-publisher login github && mcp-publisher publish` (after blockers 1–2)
 - [x] PR to punkpeye/awesome-mcp-servers — [punkpeye#10023](https://github.com/punkpeye/awesome-mcp-servers/pull/10023), submitted 2026-07-13
-- [ ] wong2/awesome-mcp-servers: no PRs accepted — submit via https://mcpservers.org/submit (fields in SUBMISSION_KIT.md §3)
+- [x] wong2 list (mcpservers.org): submitted via web form 2026-07-13 (free tier, category Database, contact jr@data-zoo.de) — "reviewed within 12 hours", approval lands by email
 - [ ] mcp.so submit form · Smithery · claim Glama listing · PulseMCP submit
 - [ ] AlternativeTo / LibHunt / SaaSHub (alternative to PostgREST, Hasura, Datasette, ROAPI, MXCP)
 - [ ] Publish flagship blog post; post DuckDB Discord #show-and-tell (draft ready)
