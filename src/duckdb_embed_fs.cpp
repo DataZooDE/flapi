@@ -165,6 +165,13 @@ int64_t EmbeddedFileSystem::GetFileSize(::duckdb::FileHandle& handle) {
     return static_cast<int64_t>(h.data()->size());
 }
 
+::duckdb::timestamp_t EmbeddedFileSystem::GetLastModifiedTime(::duckdb::FileHandle& /*handle*/) {
+    // Bundle entries are immutable in-memory bytes. Report the epoch so
+    // readers that key caches on mtime (e.g. parquet) get a stable value;
+    // anything else would break `SOURCE_DATE_EPOCH` reproducibility.
+    return ::duckdb::timestamp_t(0);
+}
+
 void EmbeddedFileSystem::Seek(::duckdb::FileHandle& handle, ::duckdb::idx_t location) {
     auto& h = AsEmbedded(handle);
     if (h.data() == nullptr) {
