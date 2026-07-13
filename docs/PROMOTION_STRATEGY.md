@@ -21,10 +21,10 @@ pain they felt this week. Lead with one of these, matched to the audience:
 
 | Audience | One-liner |
 |----------|-----------|
-| **AI / MCP crowd** | "Write one SQL file. Get a REST endpoint **and** an MCP tool your LLM can call — with per-tool RBAC and a prompt-injection scanner built in." |
+| **AI / MCP crowd** | "Write one SQL file. Get a REST endpoint **and** an MCP tool your LLM can call — with per-tool RBAC and a tool-description injection scanner built in." |
 | **Data engineers** | "Your parquet/Postgres/BigQuery/S3 data as a governed REST API in a YAML file. No Flask, no FastAPI, no glue code." |
 | **Self-hosters** | "A single static binary that turns SQL into an API. `scp flapi-prod user@host` *is* the whole deploy — config folded into the binary." |
-| **Security-minded** | "Typed params are bound as **DuckDB prepared statements** — SQL injection is structurally impossible, not just 'mitigated'." |
+| **Security-minded** | "Typed params are bound as **DuckDB prepared statements** — SQL injection is structurally impossible at those sites, not just 'mitigated'." |
 | **DuckDB users** | "You already query 50+ sources with DuckDB. flAPI puts a REST + MCP server in front of it in one binary." |
 
 **The single most valuable angle in 2026 is the MCP one.** "Every REST
@@ -59,7 +59,7 @@ tools:
 - **MotherDuck** actively publishes "MCP + DuckDB" content — pitch a guest post or get cited; their blog and videos are already covering exactly this space.
 
 ### Self-hosting & general
-- **[awesome-selfhosted](https://github.com/awesome-selfhosted/awesome-selfhosted)** — PR to the "Automation" or "Miscellaneous / API" section. The single-binary story is tailor-made.
+- **[awesome-selfhosted](https://github.com/awesome-selfhosted/awesome-selfhosted)** — PR to the "Automation" or "Miscellaneous / API" section. The single-binary story is tailor-made. *Caveat (verified 2026-07-13): flAPI's BSL 1.1 license is not in their accepted-licenses list; a listing would have to go through their non-free (⊘) section. See SUBMISSION_KIT.md §8 — low priority.*
 - **[Awesome list for APIs / data-engineering]** — find the relevant `awesome-*` repos (awesome-datascience, awesome-data-engineering) and PR flAPI in.
 - **AlternativeTo / LibHunt / SaaSHub** — list flAPI as an alternative to PostgREST, Hasura, Datasette, ROAPI. Captures comparison-shopping traffic forever.
 
