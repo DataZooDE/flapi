@@ -14,9 +14,9 @@ copy-paste material lives in [SUBMISSION_KIT.md](SUBMISSION_KIT.md) and
 
 ## 🔴 Blockers before launch (Week 0)
 
-- [ ] Fix wheel license metadata (Apache-2.0 → BUSL-1.1) — see companion issue
-- [ ] Add `mcp-name: io.github.datazoode/flapi` marker to PyPI README (MCP Registry ownership validation)
-- [ ] Record 60-second demo GIF (`uvx` → curl → Claude calls the MCP tool); embed in README
+- [x] Fix wheel license metadata (Apache-2.0 → BUSL-1.1) — [PR #99](https://github.com/DataZooDE/flapi/pull/99), closes #97 (needs a patch release to land on PyPI)
+- [x] Add `mcp-name: io.github.datazoode/flapi` marker to PyPI README — included in PR #99
+- [x] Record demo GIF — `docs/promotion/assets/flapi-demo.gif` (36 s, 825 KB, VHS; embedded at the top of Readme.md). Re-record anytime: `vhs docs/promotion/assets/demo.tape`
 - [ ] README polish: lead with the MCP angle
 
 ## 📤 Submissions (Week 1 — "seed quietly")
