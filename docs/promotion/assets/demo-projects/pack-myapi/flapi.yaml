@@ -1,0 +1,14 @@
+project-name: my-api
+project-description: Customers API packed into a single binary
+
+template:
+  path: './sqls'
+
+connections:
+  customers:
+    properties:
+      path: 'embed://data/customers.csv'
+
+duckdb:
+  threads: 4
+  max_memory: 1GB
