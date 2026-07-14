@@ -127,6 +127,7 @@ is pitching them a SQL-to-API+MCP tool:
 - **Locally Optimistic / dbt Slack / Data Twitter(X)** — the analytics-engineering crowd. Frame: "let analysts ship read-only APIs without begging a backend team."
 - **MotherDuck / DuckDB office hours & meetups** — lightning-talk or demo slot. This community *is* your ICP.
 - **ERPL / SAP-on-DuckDB niche** — flAPI can expose **SAP ERP & BW** via ERPL. Almost nobody offers "SAP data as a governed REST/MCP API from a YAML file." SAP developer communities (SAP Community, r/SAP, SAP-focused Discords/LinkedIn groups) are an untapped, high-value, low-competition audience. This is arguably flAPI's most differentiated single wedge.
+- **Microsoft 365 / SharePoint niche** — via the [erpl-web](https://github.com/DataZooDE/erpl-web) DuckDB extension, flAPI serves **SharePoint lists** (plus Entra ID, Teams, Business Central, Dataverse) as REST + MCP tools — working demo recorded (`docs/promotion/assets/flapi-demo-sharepoint.gif`). "Your team's SharePoint list as an AI tool, no Power Platform needed" is untapped: r/Office365, r/sharepoint, Microsoft Tech Community, M365 admin Discords. Same low-competition logic as the SAP wedge.
 - **LLM tooling Discords** (Claude/Anthropic dev community, Cursor, LangChain, LlamaIndex) — wherever people wire up MCP servers, "expose your warehouse as governed MCP tools" is on-topic.
 - **AI engineering newsletters** (Latent Space, tldr.ai, Ben's Bites, Data Engineering Weekly) — pitch the MCP-governance angle; these curate tools weekly and are hungry for concrete demos.
 

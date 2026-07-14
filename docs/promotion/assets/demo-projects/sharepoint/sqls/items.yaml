@@ -1,0 +1,17 @@
+mcp-tool:
+  name: project_tracker
+  description: The team's SharePoint project tracker — project, % complete, due date
+
+request:
+  - field-name: min_pct
+    field-in: query
+    description: Only projects at least this % complete
+    required: false
+    validators:
+      - type: int
+        min: 10
+        max: 100
+
+template-source: items.sql
+connection:
+  - sharepoint
