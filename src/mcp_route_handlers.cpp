@@ -759,7 +759,7 @@ MCPResponse MCPRouteHandlers::handleInitializeRequest(const MCPRequest& request,
         result["capabilities"]["resources"]["listChanged"] = true;
         result["capabilities"]["prompts"] = crow::json::wvalue();
         result["capabilities"]["prompts"]["listChanged"] = true;
-        result["capabilities"]["logging"] = crow::json::wvalue();  // NEW in 2025-11-25
+        result["capabilities"]["logging"] = crow::json::wvalue::object();  // NEW in 2025-11-25; must serialize as {} — null fails strict client schema validation (#100)
         result["serverInfo"]["name"] = server_info_.name;
         result["serverInfo"]["version"] = server_info_.version;
 
