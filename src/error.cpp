@@ -1,4 +1,11 @@
 #include "error.hpp"
+#include "datazoo_banner.hpp"
+
+namespace {
+// Repo identity for the issue link. Duplicated rather than shared with main.cpp
+// so error.cpp stays independent of the entry point's translation unit.
+constexpr datazoo::BannerInfo kFlapiBanner {"flapi", "", "https://github.com/DataZooDE/flapi"};
+} // namespace
 
 namespace flapi {
 
@@ -43,6 +50,11 @@ crow::json::wvalue Error::toJson() const {
     if (!details.empty()) {
         error_json["error"]["details"] = details;
     }
+
+    // A structured field rather than text appended to `message`: this payload is
+    // parsed by clients, so the link has to be additive and ignorable. Anything
+    // concatenated into the message would change what existing consumers read.
+    error_json["error"]["report_issue"] = datazoo::IssuesUrl(kFlapiBanner);
 
     return error_json;
 }

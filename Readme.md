@@ -821,3 +821,18 @@ See the [LICENSE](./LICENSE) file for the full text.
 If you have any questions or need help, please [open an issue](https://github.com/yourusername/flapi/issues) or join our [community chat](link-to-your-chat).
 
 ---
+
+## Feedback
+
+If flAPI misbehaves — an endpoint that will not serve, a cache that will not invalidate,
+an auth flow that will not complete — please
+[open an issue](https://github.com/DataZooDE/flapi/issues). Deployments differ in ways we
+cannot reproduce here, so a report with your config is the fastest path to a fix. Every
+JSON error response carries a `report_issue` link for exactly this reason.
+
+If it saved you time, a star on the repo helps other people find it.
+
+On an interactive start, a small banner says the same thing once a day. Under a container
+or systemd there is no terminal, so it never prints — the startup log line carries the
+pointer instead. Silence both with `DATAZOO_NO_BANNER=1`.
+
