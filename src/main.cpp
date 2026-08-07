@@ -33,6 +33,7 @@
 #include "selfpath.hpp"
 #include "vfs_adapter.hpp"
 #include "vfs_health_checker.hpp"
+#include "datazoo_banner.hpp"
 
 using namespace flapi;
 
@@ -333,6 +334,10 @@ void signal_handler(int signal) {
         }
     }
 }
+
+// Identity for the feedback banner and the issue link on error payloads.
+static constexpr datazoo::BannerInfo kBanner {"flapi", FLAPI_VERSION,
+                                              "https://github.com/DataZooDE/flapi"};
 
 int main(int argc, char* argv[]) 
 {
@@ -644,6 +649,13 @@ int main(int argc, char* argv[])
     });
 
     CROW_LOG_INFO << "flAPI unified server started - REST API and MCP on port " << config_manager->getHttpPort();
+
+    // Once-a-day feedback nudge, at the point the server is actually up. Needs
+    // both streams to be terminals, so a container or systemd start -- how this
+    // runs in production -- prints nothing. The log line above remains the
+    // operator-facing signal.
+    datazoo::ShowBannerStandalone(kBanner);
+    CROW_LOG_INFO << datazoo::FeedbackLine(kBanner);
     
     // Print config service token prominently if enabled
     if (config_service_enabled) {

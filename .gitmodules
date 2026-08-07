@@ -4,3 +4,6 @@
 [submodule "third_party/posthog-telemetry"]
 	path = third_party/posthog-telemetry
 	url = git@github.com:DataZooDE/posthog-telemetry.git
+[submodule "third_party/datazoo-banner"]
+	path = third_party/datazoo-banner
+	url = https://github.com/DataZooDE/duckdb-extension-banner.git

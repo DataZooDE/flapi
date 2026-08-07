@@ -234,6 +234,16 @@ set(DUCKDB_SRC_INCLUDE "${CMAKE_SOURCE_DIR}/duckdb/src/include")
 set(DUCKDB_THIRD_PARTY "${CMAKE_SOURCE_DIR}/duckdb/third_party")
 add_subdirectory(third_party/posthog-telemetry)
 
+# Feedback banner (header-only). Telemetry ON so a printed banner counts as a
+# banner_shown event through the instance configured above; the include dir is
+# carried explicitly because posthog_telemetry is linked without exporting its
+# headers to every consumer here.
+set(DATAZOO_BANNER_TELEMETRY ON CACHE BOOL "" FORCE)
+set(DATAZOO_BANNER_TELEMETRY_INCLUDE_DIR
+    ${CMAKE_SOURCE_DIR}/third_party/posthog-telemetry/include CACHE PATH "" FORCE)
+add_subdirectory(third_party/datazoo-banner)
+include_directories(${CMAKE_SOURCE_DIR}/third_party/datazoo-banner/include)
+
 # Include directories
 find_path(JWT_CPP_INCLUDE_DIRS "jwt-cpp/base.h")
 include_directories(

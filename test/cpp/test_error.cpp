@@ -78,6 +78,19 @@ TEST_CASE("Error::toJson", "[error]") {
         REQUIRE(json_str.find("Database") != std::string::npos);
         REQUIRE(json_str.find("Query failed") != std::string::npos);
     }
+
+    SECTION("Errors carry a report_issue link") {
+        // A structured field rather than text appended to `message`: this payload
+        // is parsed by clients, so the link has to be additive and ignorable.
+        // Concatenating it into the message would change what consumers read.
+        auto err = Error::Database("Query failed");
+        std::string json_str = err.toJson().dump();
+
+        REQUIRE(json_str.find("report_issue") != std::string::npos);
+        REQUIRE(json_str.find("github.com/DataZooDE/flapi/issues") != std::string::npos);
+        // The message itself must be untouched.
+        REQUIRE(json_str.find("\"Query failed\"") != std::string::npos);
+    }
 }
 
 TEST_CASE("Error::toHttpResponse", "[error]") {
