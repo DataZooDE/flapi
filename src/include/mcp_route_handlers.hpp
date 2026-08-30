@@ -2,7 +2,9 @@
 
 #define CROW_ENABLE_COMPRESSION
 #include <crow.h>
+#include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <fstream>
 #include <iterator>
 #include "crow/middlewares/cors.h"
@@ -119,8 +121,14 @@ private:
     crow::json::wvalue endpointToMCPPromptDefinition(const EndpointConfig& endpoint) const;
 
     // Resource reading functionality
-    std::optional<EndpointConfig> findResourceByURI(const std::string& uri) const;
-    crow::json::wvalue readResourceContent(const EndpointConfig& resource_config) const;
+    MCPResponse handleResourcesTemplatesListRequest(const MCPRequest& request, const crow::request& http_req) const;
+    // Resolve a resources/read URI to its endpoint. Tries an exact static match
+    // (flapi://<name>) first, then any resource whose uri-template matches,
+    // binding the template's {var} path segments into `bound_params`.
+    std::optional<EndpointConfig> findResourceByURI(const std::string& uri,
+                                                    std::map<std::string, std::string>& bound_params) const;
+    crow::json::wvalue readResourceContent(const EndpointConfig& resource_config,
+                                           const std::map<std::string, std::string>& params) const;
 
     // Prompt functionality
     MCPResponse handlePromptsListRequest(const MCPRequest& request, const crow::request& http_req) const;
@@ -174,11 +182,25 @@ private:
                                     std::string& out_value,
                                     MCPResponse& response) const;
 
+    // Applies cursor-based pagination to a list result. When mcp.page-size is 0
+    // (default) the whole list is returned and out_next_cursor is left empty —
+    // exactly the pre-pagination behaviour. Otherwise it decodes params.cursor
+    // (base64 {offset,gen}; a stale generation or malformed cursor sets
+    // response.error and returns false), slices one page, and sets
+    // out_next_cursor when more items remain. `total` is the full item count.
+    bool applyPagination(const MCPRequest& request, size_t total,
+                         size_t& out_offset, size_t& out_count,
+                         std::string& out_next_cursor, MCPResponse& response) const;
+
     // Server state
     MCPServerInfo server_info_;
     MCPServerCapabilities capabilities_;
     std::vector<crow::json::wvalue> tool_definitions_;
     std::vector<crow::json::wvalue> resource_definitions_;
+    // Bumped on every refreshMCPEntities(); embedded in pagination cursors so a
+    // cursor minted before a config reload is rejected rather than silently
+    // paging over a changed list.
+    std::atomic<uint64_t> entity_generation_{0};
     mutable std::mutex state_mutex_;
 
     // Dependencies

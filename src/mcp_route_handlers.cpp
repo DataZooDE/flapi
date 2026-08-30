@@ -96,6 +96,59 @@ std::optional<std::string> MCPRouteHandlers::authorizeMCPEntity(
     return decision.reason;
 }
 
+bool MCPRouteHandlers::applyPagination(const MCPRequest& request, size_t total,
+                                       size_t& out_offset, size_t& out_count,
+                                       std::string& out_next_cursor, MCPResponse& response) const {
+    out_offset = 0;
+    out_count = total;
+    out_next_cursor.clear();
+
+    const int page_size = config_manager_->getMCPConfig().page_size;
+    const uint64_t gen = entity_generation_.load(std::memory_order_relaxed);
+
+    // Decode an incoming cursor if present. The cursor is base64 of
+    // {"offset":N,"gen":G}; a mismatched generation or malformed cursor is a
+    // client error (-32602) so it cannot page over a list that changed.
+    size_t offset = 0;
+    auto params = crow::json::load(request.params.dump());
+    if (params && params.has("cursor") && params["cursor"].t() == crow::json::type::String) {
+        std::string decoded = crow::utility::base64decode(params["cursor"].s());
+        auto cur = crow::json::load(decoded);
+        if (!cur || !cur.has("offset") || !cur.has("gen")) {
+            response.error = formatJsonRpcError(-32602, "Invalid pagination cursor");
+            return false;
+        }
+        if (static_cast<uint64_t>(cur["gen"].u()) != gen) {
+            response.error = formatJsonRpcError(-32602,
+                "Pagination cursor is stale (the list changed); restart from the first page");
+            return false;
+        }
+        offset = static_cast<size_t>(cur["offset"].u());
+    }
+
+    if (offset > total) {
+        offset = total;
+    }
+    out_offset = offset;
+
+    // page_size <= 0 disables pagination: one page with everything, no cursor.
+    if (page_size <= 0) {
+        out_count = total - offset;
+        return true;
+    }
+
+    const size_t remaining = total - offset;
+    out_count = std::min(remaining, static_cast<size_t>(page_size));
+    const size_t next_offset = offset + out_count;
+    if (next_offset < total) {
+        crow::json::wvalue cur;
+        cur["offset"] = static_cast<uint64_t>(next_offset);
+        cur["gen"] = static_cast<uint64_t>(gen);
+        out_next_cursor = crow::utility::base64encode(cur.dump(), cur.dump().size());
+    }
+    return true;
+}
+
 std::string MCPRouteHandlers::buildResourceMetadataUrl(const crow::request& http_req) const {
     // Prefer an explicit canonical URI; else derive the origin from forwarded/
     // Host headers so the URL is correct behind a reverse proxy.
@@ -419,6 +472,9 @@ void MCPRouteHandlers::registerRoutes(crow::App<crow::CORSHandler, FlapiCorsMidd
 void MCPRouteHandlers::refreshMCPEntities() {
     try {
         discoverMCPEntities();
+        // Invalidate outstanding pagination cursors: a cursor minted against the
+        // previous list must not silently page over a changed one.
+        entity_generation_.fetch_add(1, std::memory_order_relaxed);
         CROW_LOG_INFO << "MCP entities refreshed: " << tool_definitions_.size() << " tools, " << resource_definitions_.size() << " resources";
     } catch (const std::exception& e) {
         CROW_LOG_WARNING << "Failed to refresh MCP entities: " << e.what();
@@ -767,6 +823,8 @@ MCPResponse MCPRouteHandlers::handleMessage(const MCPRequest& request, const cro
             response = handleResourcesListRequest(request, http_req);
         } else if (request.method == "resources/read") {
             response = handleResourcesReadRequest(request, http_req);
+        } else if (request.method == "resources/templates/list") {
+            response = handleResourcesTemplatesListRequest(request, http_req);
         } else if (request.method == "prompts/list") {
             response = handlePromptsListRequest(request, http_req);
         } else if (request.method == "prompts/get") {
@@ -893,14 +951,23 @@ MCPResponse MCPRouteHandlers::handleToolsListRequest(const MCPRequest& request, 
         auto tool_definitions = getToolDefinitionsFromConfig();
         CROW_LOG_DEBUG << "Tools list request: found " << tool_definitions.size() << " tools";
 
+        size_t offset = 0, count = tool_definitions.size();
+        std::string next_cursor;
+        if (!applyPagination(request, tool_definitions.size(), offset, count, next_cursor, response)) {
+            return response;
+        }
+
         crow::json::wvalue result;
         crow::json::wvalue tools_array = crow::json::wvalue::list();
 
-        for (size_t i = 0; i < tool_definitions.size(); ++i) {
-            tools_array[i] = crow::json::wvalue(tool_definitions[i]);
+        for (size_t i = 0; i < count; ++i) {
+            tools_array[i] = crow::json::wvalue(tool_definitions[offset + i]);
         }
 
         result["tools"] = std::move(tools_array);
+        if (!next_cursor.empty()) {
+            result["nextCursor"] = next_cursor;
+        }
 
         response.result = result.dump();
         CROW_LOG_DEBUG << "Tools list response: " << response.result;
@@ -1061,18 +1128,67 @@ MCPResponse MCPRouteHandlers::handleResourcesListRequest(const MCPRequest& reque
     try {
         auto resource_definitions = getResourceDefinitionsFromConfig();
 
+        size_t offset = 0, count = resource_definitions.size();
+        std::string next_cursor;
+        if (!applyPagination(request, resource_definitions.size(), offset, count, next_cursor, response)) {
+            return response;
+        }
+
         crow::json::wvalue result;
         crow::json::wvalue resources_array = crow::json::wvalue::list();
 
-        for (size_t i = 0; i < resource_definitions.size(); ++i) {
-            resources_array[i] = crow::json::wvalue(resource_definitions[i]);
+        for (size_t i = 0; i < count; ++i) {
+            resources_array[i] = crow::json::wvalue(resource_definitions[offset + i]);
         }
 
         result["resources"] = std::move(resources_array);
+        if (!next_cursor.empty()) {
+            result["nextCursor"] = next_cursor;
+        }
 
         response.result = result.dump();
     } catch (const std::exception& e) {
         response.error = formatJsonRpcError(-32603, "Resources list error: " + std::string(e.what()));
+    }
+
+    return response;
+}
+
+MCPResponse MCPRouteHandlers::handleResourcesTemplatesListRequest(const MCPRequest& request, const crow::request& http_req) const {
+    auto response = initResponse(request);
+
+    try {
+        // Collect resources that declare a uri-template.
+        std::vector<crow::json::wvalue> templates;
+        for (const auto& endpoint : config_manager_->getEndpoints()) {
+            if (endpoint.isMCPResource() && !endpoint.mcp_resource->uri_template.empty()) {
+                crow::json::wvalue t;
+                t["uriTemplate"] = endpoint.mcp_resource->uri_template;
+                t["name"] = endpoint.mcp_resource->name;
+                t["description"] = endpoint.mcp_resource->description;
+                t["mimeType"] = endpoint.mcp_resource->mime_type;
+                templates.push_back(std::move(t));
+            }
+        }
+
+        size_t offset = 0, count = templates.size();
+        std::string next_cursor;
+        if (!applyPagination(request, templates.size(), offset, count, next_cursor, response)) {
+            return response;
+        }
+
+        crow::json::wvalue result;
+        crow::json::wvalue arr = crow::json::wvalue::list();
+        for (size_t i = 0; i < count; ++i) {
+            arr[i] = crow::json::wvalue(templates[offset + i]);
+        }
+        result["resourceTemplates"] = std::move(arr);
+        if (!next_cursor.empty()) {
+            result["nextCursor"] = next_cursor;
+        }
+        response.result = result.dump();
+    } catch (const std::exception& e) {
+        response.error = formatJsonRpcError(-32603, "Resource templates list error: " + std::string(e.what()));
     }
 
     return response;
@@ -1090,8 +1206,9 @@ MCPResponse MCPRouteHandlers::handleResourcesReadRequest(const MCPRequest& reque
         }
         CROW_LOG_DEBUG << "Resource read request: " << resource_uri;
 
-        // Find the resource configuration by URI
-        auto resource_config = findResourceByURI(resource_uri);
+        // Find the resource configuration by URI (exact or uri-template match).
+        std::map<std::string, std::string> bound_params;
+        auto resource_config = findResourceByURI(resource_uri, bound_params);
         if (!resource_config) {
             response.error = formatJsonRpcError(-32602, "Resource not found: " + resource_uri);
             return response;
@@ -1117,9 +1234,9 @@ MCPResponse MCPRouteHandlers::handleResourcesReadRequest(const MCPRequest& reque
 
         CROW_LOG_DEBUG << "Reading resource: " << resource_config->mcp_resource->name;
 
-        // Read the resource content
+        // Read the resource content (binding any uri-template path params).
         try {
-            crow::json::wvalue result = readResourceContent(*resource_config);
+            crow::json::wvalue result = readResourceContent(*resource_config, bound_params);
             response.result = result.dump();
         } catch (const std::exception& e) {
             response.error = formatJsonRpcError(-32603, "Resource read error: " + std::string(e.what()));
@@ -1131,39 +1248,114 @@ MCPResponse MCPRouteHandlers::handleResourcesReadRequest(const MCPRequest& reque
     return response;
 }
 
+namespace {
+
+// Match a concrete URI against a `flapi://.../{var}/...` template. On success,
+// fills `out` with each {var} -> the corresponding path segment and returns
+// true. Only simple single-segment {var} expansion is supported (no reserved
+// expansion, no query templates). A segment bound to a var must be non-empty
+// and contain no '/'.
+bool matchUriTemplate(const std::string& tmpl, const std::string& uri,
+                      std::map<std::string, std::string>& out) {
+    size_t ti = 0, ui = 0;
+    std::map<std::string, std::string> bound;
+    while (ti < tmpl.size()) {
+        if (tmpl[ti] == '{') {
+            size_t close = tmpl.find('}', ti);
+            if (close == std::string::npos) {
+                return false;
+            }
+            std::string var = tmpl.substr(ti + 1, close - ti - 1);
+            // The variable captures up to the next literal char in the template
+            // (or end of string).
+            char delim = (close + 1 < tmpl.size()) ? tmpl[close + 1] : '\0';
+            size_t seg_end = (delim == '\0') ? uri.size() : uri.find(delim, ui);
+            if (seg_end == std::string::npos) {
+                seg_end = uri.size();
+            }
+            std::string value = uri.substr(ui, seg_end - ui);
+            if (value.empty() || value.find('/') != std::string::npos) {
+                return false;
+            }
+            bound[var] = value;
+            ui = seg_end;
+            ti = close + 1;
+        } else {
+            if (ui >= uri.size() || uri[ui] != tmpl[ti]) {
+                return false;
+            }
+            ++ti;
+            ++ui;
+        }
+    }
+    if (ui != uri.size()) {
+        return false;
+    }
+    out = std::move(bound);
+    return true;
+}
+
+} // namespace
+
 // Resource functionality implementation
-std::optional<EndpointConfig> MCPRouteHandlers::findResourceByURI(const std::string& uri) const {
-    // For now, use a simple URI scheme: flapi://resource_name
-    // TODO: Make this more sophisticated with proper URI parsing
+std::optional<EndpointConfig> MCPRouteHandlers::findResourceByURI(
+    const std::string& uri, std::map<std::string, std::string>& bound_params) const {
+    bound_params.clear();
     if (uri.find("flapi://") != 0) {
         return std::nullopt;
     }
 
-    std::string resource_name = uri.substr(8); // Remove "flapi://" prefix
-
-    // Find the resource configuration by name
     const auto& endpoints = config_manager_->getEndpoints();
+
+    // 1) Exact static match: flapi://<name>.
+    std::string resource_name = uri.substr(8);
     for (const auto& endpoint : endpoints) {
-        if (endpoint.isMCPResource() && endpoint.mcp_resource->name == resource_name) {
+        if (endpoint.isMCPResource() && endpoint.mcp_resource->uri_template.empty()
+            && endpoint.mcp_resource->name == resource_name) {
             return endpoint;
+        }
+    }
+
+    // 2) Templated match: bind {var} path segments into params.
+    for (const auto& endpoint : endpoints) {
+        if (endpoint.isMCPResource() && !endpoint.mcp_resource->uri_template.empty()) {
+            std::map<std::string, std::string> bound;
+            if (matchUriTemplate(endpoint.mcp_resource->uri_template, uri, bound)) {
+                bound_params = std::move(bound);
+                return endpoint;
+            }
         }
     }
 
     return std::nullopt;
 }
 
-crow::json::wvalue MCPRouteHandlers::readResourceContent(const EndpointConfig& resource_config) const {
+crow::json::wvalue MCPRouteHandlers::readResourceContent(
+    const EndpointConfig& resource_config, const std::map<std::string, std::string>& params) const {
     crow::json::wvalue result;
+
+    // The reported URI is the template (with bound values substituted) when the
+    // resource is parameterised, else the static flapi://<name>.
+    std::string reported_uri = "flapi://" + resource_config.mcp_resource->name;
+    if (!resource_config.mcp_resource->uri_template.empty()) {
+        reported_uri = resource_config.mcp_resource->uri_template;
+        for (const auto& [k, v] : params) {
+            std::string placeholder = "{" + k + "}";
+            size_t pos;
+            while ((pos = reported_uri.find(placeholder)) != std::string::npos) {
+                reported_uri.replace(pos, placeholder.size(), v);
+            }
+        }
+    }
 
     // Execute the resource's template to get the content
     try {
         // For MCP resources, we need to execute the SQL template using the database manager
         if (db_manager_) {
-            // Prepare empty parameters for resource reading (resources don't take input parameters)
-            std::map<std::string, std::string> params;
-
-            // Execute the query using the same method as tools
-            auto query_result = db_manager_->executeQuery(resource_config, params, false);
+            // Execute the query using the same method as tools, binding any
+            // params extracted from a URI template.
+            std::map<std::string, std::string> query_params = params;
+            auto query_result = db_manager_->executeQuery(resource_config, query_params, false);
 
             // Check if the query result structure has the data we need
             if (query_result.data.size() > 0) {
@@ -1179,7 +1371,7 @@ crow::json::wvalue MCPRouteHandlers::readResourceContent(const EndpointConfig& r
 
                 // Convert the result to MCP resource content format
                 crow::json::wvalue content_item;
-                content_item["uri"] = "flapi://" + resource_config.mcp_resource->name;
+                content_item["uri"] = reported_uri;
                 content_item["mimeType"] = resource_config.mcp_resource->mime_type;
                 content_item["text"] = result_text;
 
@@ -1193,7 +1385,7 @@ crow::json::wvalue MCPRouteHandlers::readResourceContent(const EndpointConfig& r
         } else {
             // Fallback: return a simple resource representation
             crow::json::wvalue content_item;
-            content_item["uri"] = "flapi://" + resource_config.mcp_resource->name;
+            content_item["uri"] = reported_uri;
             content_item["mimeType"] = resource_config.mcp_resource->mime_type;
             content_item["text"] = "Resource content for: " + resource_config.mcp_resource->name + " (database not available)";
 
@@ -1216,21 +1408,31 @@ MCPResponse MCPRouteHandlers::handlePromptsListRequest(const MCPRequest& request
     // NOTE: http_req is available here for authentication when needed
 
     try {
-        crow::json::wvalue result;
-        crow::json::wvalue prompts_array = crow::json::wvalue::list();
-
-        // Find all prompt endpoints
+        // Collect all prompt definitions first so pagination has a stable count.
+        std::vector<crow::json::wvalue> prompt_defs;
         const auto& endpoints = config_manager_->getEndpoints();
-        int prompt_index = 0;
-
         for (const auto& endpoint : endpoints) {
             if (endpoint.isMCPPrompt()) {
-                crow::json::wvalue prompt_def = endpointToMCPPromptDefinition(endpoint);
-                prompts_array[prompt_index++] = std::move(prompt_def);
+                prompt_defs.push_back(endpointToMCPPromptDefinition(endpoint));
             }
         }
 
+        size_t offset = 0, count = prompt_defs.size();
+        std::string next_cursor;
+        if (!applyPagination(request, prompt_defs.size(), offset, count, next_cursor, response)) {
+            return response;
+        }
+
+        crow::json::wvalue result;
+        crow::json::wvalue prompts_array = crow::json::wvalue::list();
+        for (size_t i = 0; i < count; ++i) {
+            prompts_array[i] = crow::json::wvalue(prompt_defs[offset + i]);
+        }
+
         result["prompts"] = std::move(prompts_array);
+        if (!next_cursor.empty()) {
+            result["nextCursor"] = next_cursor;
+        }
         response.result = result.dump();
     } catch (const std::exception& e) {
         response.error = formatJsonRpcError(-32603, "Prompts list error: " + std::string(e.what()));
@@ -1559,7 +1761,11 @@ MCPResponse MCPRouteHandlers::handleCompletionCompleteRequest(const MCPRequest& 
         completion["total"] = total_count;
         completion["hasMore"] = has_more;
 
-        response.result = completion.dump();
+        // The spec wraps the payload under a "completion" key:
+        // { "completion": { "values": [...], "total": N, "hasMore": bool } }.
+        crow::json::wvalue result;
+        result["completion"] = std::move(completion);
+        response.result = result.dump();
         CROW_LOG_DEBUG << "Completion result: " << response.result;
 
     } catch (const std::exception& e) {

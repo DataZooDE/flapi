@@ -349,6 +349,7 @@ void ConfigManager::parseMCPConfig() {
     mcp_config.enabled = safeGet<bool>(mcp, "enabled", "mcp.enabled", true);
     mcp_config.port = safeGet<int>(mcp, "port", "mcp.port", 8081);
     mcp_config.strict_descriptions = safeGet<bool>(mcp, "strict-descriptions", "mcp.strict-descriptions", false);
+    mcp_config.page_size = safeGet<int>(mcp, "page-size", "mcp.page-size", 0);
 
     CROW_LOG_DEBUG << "MCP Enabled: " << (mcp_config.enabled ? "true" : "false");
     CROW_LOG_DEBUG << "MCP Port: " << mcp_config.port;

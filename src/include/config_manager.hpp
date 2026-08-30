@@ -218,6 +218,14 @@ struct EndpointConfig {
         // std::nullopt denies by default under mcp.auth.enabled; an explicit
         // empty vector denies all; with MCP auth disabled the check is skipped.
         std::optional<std::vector<std::string>> allowed_roles;
+
+        // Optional RFC 6570 (simple {var} expansion) URI template, e.g.
+        // "flapi://customers/{id}". When set, the resource is a parameterised
+        // template: it appears in resources/templates/list, and resources/read
+        // binds the path variables into request params (validated like any
+        // other field) before executing. When empty the resource is a static
+        // "flapi://<name>" URI.
+        std::string uri_template;
     };
 
     struct MCPPromptInfo {
@@ -423,6 +431,12 @@ struct MCPConfig {
     // phrases, oversize). When false (default) the scanner warns at parse
     // time but loading still succeeds. See W2.3 in issue #24.
     bool strict_descriptions = false;
+
+    // Page size for tools/list, resources/list, prompts/list. 0 (the default)
+    // disables pagination entirely — every item is returned in one page and no
+    // nextCursor is emitted, exactly as before. A positive value opts into
+    // cursor-based paging.
+    int page_size = 0;
 };
 
 struct DuckDBConfig {

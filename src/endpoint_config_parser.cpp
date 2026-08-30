@@ -231,6 +231,7 @@ void EndpointConfigParser::parseMcpResourceFields(
     resource_info.name = config_manager_->safeGet<std::string>(mcp_resource_node, "name", "mcp-resource.name");
     resource_info.description = config_manager_->safeGet<std::string>(mcp_resource_node, "description", "mcp-resource.description");
     resource_info.mime_type = config_manager_->safeGet<std::string>(mcp_resource_node, "mime-type", "mcp-resource.mime-type", "application/json");
+    resource_info.uri_template = config_manager_->safeGet<std::string>(mcp_resource_node, "uri-template", "mcp-resource.uri-template", "");
 
     // Per-resource RBAC (mirrors mcp-tool.allowed-roles). Absent → nullopt
     // (deny-by-default under mcp.auth.enabled, transparent under demo mode).
