@@ -266,6 +266,14 @@ MCPRouteHandlers::MCPRouteHandlers(std::shared_ptr<ConfigManager> config_manager
         tool_handler_ = nullptr;
     }
 
+    // Initialize the Tasks worker pool (MCP 2026-07-28 Tasks extension).
+    {
+        const auto& mcp_cfg = config_manager->getMCPConfig();
+        task_manager_ = std::make_unique<MCPTaskManager>(
+            static_cast<size_t>(mcp_cfg.tasks_workers > 0 ? mcp_cfg.tasks_workers : 1),
+            static_cast<size_t>(mcp_cfg.tasks_queue_depth > 0 ? mcp_cfg.tasks_queue_depth : 32));
+    }
+
     // Initialize MCP auth handler
     try {
         auth_handler_ = std::make_unique<MCPAuthHandler>(config_manager);
@@ -771,7 +779,12 @@ crow::response MCPRouteHandlers::createJsonRpcResponse(const MCPRequest& request
         // the server identity under _meta; cacheable results additionally carry
         // ttlMs + cacheScope so clients can cache the (config-stable) lists.
         crow::json::wvalue result = crow::json::load(mcp_response.result);
-        result["resultType"] = "complete";
+        // A tools/call that returned a task handle is resultType "task"; every
+        // other result is "complete".
+        auto parsed_for_type = crow::json::load(mcp_response.result);
+        const bool is_task = parsed_for_type && parsed_for_type.has("task")
+            && request.method == "tools/call";
+        result["resultType"] = is_task ? "task" : "complete";
         result["_meta"][flapi::mcp::constants::META_SERVER_INFO]["name"] = server_info_.name;
         result["_meta"][flapi::mcp::constants::META_SERVER_INFO]["version"] = server_info_.version;
 
@@ -999,6 +1012,10 @@ MCPResponse MCPRouteHandlers::handleMessage(const MCPRequest& request, const cro
                              + request.method + "\"}";
         } else if (request.method == "server/discover") {
             response = handleServerDiscoverRequest(request, http_req);
+        } else if (request.method == "tasks/get") {
+            response = handleTasksGetRequest(request, http_req);
+        } else if (request.method == "tasks/cancel") {
+            response = handleTasksCancelRequest(request, http_req);
         } else if (request.method == "initialize") {
             response = handleInitializeRequest(request, http_req);
         } else if (request.method == "tools/list") {
@@ -1069,6 +1086,103 @@ MCPResponse MCPRouteHandlers::handleServerDiscoverRequest(const MCPRequest& requ
         response.error = formatJsonRpcError(-32603, "server/discover error: " + std::string(e.what()));
     }
 
+    return response;
+}
+
+bool MCPRouteHandlers::clientSupportsTasks(const MCPRequest& request) {
+    for (const auto& ext : request.meta_extensions) {
+        if (ext == flapi::mcp::constants::EXTENSION_TASKS) {
+            return true;
+        }
+    }
+    return false;
+}
+
+crow::json::wvalue MCPRouteHandlers::taskToJson(const MCPTaskManager::Task& task) const {
+    crow::json::wvalue t;
+    t["taskId"] = task.task_id;
+    switch (task.status) {
+        case MCPTaskManager::Status::Working:   t["status"] = "working"; break;
+        case MCPTaskManager::Status::Completed: t["status"] = "completed"; break;
+        case MCPTaskManager::Status::Failed:    t["status"] = "failed"; break;
+        case MCPTaskManager::Status::Cancelled: t["status"] = "cancelled"; break;
+    }
+    t["pollIntervalMs"] = static_cast<int64_t>(task.poll_interval_ms);
+    t["ttlMs"] = static_cast<int64_t>(task.ttl_ms);
+    return t;
+}
+
+MCPResponse MCPRouteHandlers::handleTasksGetRequest(const MCPRequest& request, const crow::request& http_req) const {
+    auto response = initResponse(request);
+    try {
+        std::string task_id;
+        if (!extractRequiredStringParam(request.params, "taskId", task_id, response)) {
+            return response;
+        }
+        std::string principal;
+        if (auth_handler_) {
+            auto ac = auth_handler_->authenticate(http_req);
+            if (ac && !ac->username.empty()) {
+                principal = ac->username;
+            }
+        }
+        if (principal.empty()) {
+            principal = "anonymous";
+        }
+
+        MCPTaskManager::Task task;
+        bool found = false;
+        if (!task_manager_ || !task_manager_->get(task_id, principal, task, found)) {
+            // Not found and not-authorized are both reported as not found so a
+            // task id cannot be probed across principals.
+            response.error = formatJsonRpcError(-32602, "Task not found: " + task_id);
+            return response;
+        }
+
+        crow::json::wvalue result;
+        result["task"] = taskToJson(task);
+        if (task.status == MCPTaskManager::Status::Completed) {
+            result["result"] = crow::json::load(task.result_json);
+        } else if (task.status == MCPTaskManager::Status::Failed) {
+            result["error"] = task.error_message;
+        }
+        response.result = result.dump();
+    } catch (const std::exception& e) {
+        response.error = formatJsonRpcError(-32603, "tasks/get error: " + std::string(e.what()));
+    }
+    return response;
+}
+
+MCPResponse MCPRouteHandlers::handleTasksCancelRequest(const MCPRequest& request, const crow::request& http_req) const {
+    auto response = initResponse(request);
+    try {
+        std::string task_id;
+        if (!extractRequiredStringParam(request.params, "taskId", task_id, response)) {
+            return response;
+        }
+        std::string principal;
+        if (auth_handler_) {
+            auto ac = auth_handler_->authenticate(http_req);
+            if (ac && !ac->username.empty()) {
+                principal = ac->username;
+            }
+        }
+        if (principal.empty()) {
+            principal = "anonymous";
+        }
+
+        const bool ok = task_manager_ && task_manager_->cancel(task_id, principal);
+        if (!ok) {
+            response.error = formatJsonRpcError(-32602, "Task not found: " + task_id);
+            return response;
+        }
+        crow::json::wvalue result;
+        result["taskId"] = task_id;
+        result["status"] = "cancelling";
+        response.result = result.dump();
+    } catch (const std::exception& e) {
+        response.error = formatJsonRpcError(-32603, "tasks/cancel error: " + std::string(e.what()));
+    }
     return response;
 }
 
@@ -1285,6 +1399,88 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                             tool_request.context[MCPToolCallRequest::kRolesContextKey] = roles_csv;
                         }
                     }
+                }
+
+                // MCP 2026-07-28 Tasks: run the tool as a durable task when it is
+                // configured async (or async-after) AND the client declared the
+                // tasks capability. A client that cannot poll never sees a task —
+                // it falls through to the synchronous path below.
+                const EndpointConfig* ep = nullptr;
+                for (const auto& e : config_manager_->getEndpoints()) {
+                    if (e.isMCPTool() && e.mcp_tool->name == tool_name) {
+                        ep = &e;
+                        break;
+                    }
+                }
+                const bool tool_async = ep && ep->mcp_tool
+                    && (ep->mcp_tool->async || ep->mcp_tool->async_after_ms > 0);
+                if (request.modern_era && clientSupportsTasks(request) && tool_async
+                    && task_manager_ && tool_handler_) {
+                    const auto& mcp_cfg = config_manager_->getMCPConfig();
+                    std::string principal = "anonymous";
+                    auto pit = tool_request.context.find("auth.username");
+                    if (pit != tool_request.context.end() && !pit->second.empty()) {
+                        principal = pit->second;
+                    }
+                    // The work runs the tool and serializes the same envelope a
+                    // synchronous call would (content + structuredContent, or an
+                    // isError text block on failure).
+                    MCPToolHandler* handler = tool_handler_.get();
+                    auto work = [handler, tool_request](const std::atomic<bool>&) -> std::string {
+                        auto r = handler->executeTool(tool_request);
+                        mcp::ContentResponse cr;
+                        if (r.success) {
+                            cr.addText(r.result);
+                            auto rows = crow::json::load(r.result);
+                            if (rows) {
+                                crow::json::wvalue sc;
+                                sc["rows"] = crow::json::wvalue(rows);
+                                if (rows.t() == crow::json::type::List) {
+                                    sc["row_count"] = static_cast<int64_t>(rows.size());
+                                }
+                                cr.setStructuredContent(std::move(sc));
+                            }
+                        } else {
+                            cr.addText(r.error_message);
+                            cr.setError(true);
+                        }
+                        return cr.toJson().dump();
+                    };
+
+                    std::string task_id = task_manager_->submit(
+                        tool_name, principal,
+                        mcp_cfg.tasks_default_ttl_ms, mcp_cfg.tasks_poll_interval_ms, work);
+                    if (task_id.empty()) {
+                        response.error = formatJsonRpcError(-32603,
+                            "Task queue is full; retry shortly");
+                        return response;
+                    }
+
+                    // async-after: give the work a synchronous grace period; if it
+                    // finishes in time, return the result inline, else hand back a
+                    // task. Pure `async` returns the task immediately.
+                    if (!ep->mcp_tool->async && ep->mcp_tool->async_after_ms > 0) {
+                        const auto deadline = std::chrono::steady_clock::now()
+                            + std::chrono::milliseconds(ep->mcp_tool->async_after_ms);
+                        while (std::chrono::steady_clock::now() < deadline) {
+                            MCPTaskManager::Task t;
+                            bool found = false;
+                            if (task_manager_->get(task_id, principal, t, found)
+                                && t.status == MCPTaskManager::Status::Completed) {
+                                response.result = t.result_json;
+                                return response;
+                            }
+                            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                        }
+                    }
+
+                    crow::json::wvalue task_result;
+                    MCPTaskManager::Task t;
+                    bool found = false;
+                    task_manager_->get(task_id, principal, t, found);
+                    task_result["task"] = taskToJson(t);
+                    response.result = task_result.dump();
+                    return response;
                 }
 
                 auto result = tool_handler_->executeTool(tool_request);

@@ -29,6 +29,7 @@ add_executable(flapi_tests
     mcp_content_types_test.cpp
     mcp_description_scanner_test.cpp
     mcp_header_validation_test.cpp
+    mcp_task_manager_test.cpp
     mcp_dry_run_test.cpp
     mcp_prompt_handler_test.cpp
     mcp_response_shaper_test.cpp

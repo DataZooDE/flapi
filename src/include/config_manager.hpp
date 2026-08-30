@@ -214,6 +214,14 @@ struct EndpointConfig {
         // the tool ungated; otherwise `max` calls are permitted per
         // `interval` seconds, scoped to (tool_name, principal).
         RateLimitConfig rate_limit;
+
+        // MCP 2026-07-28 Tasks extension. `async: true` runs this tool as a
+        // durable task (returns a taskId immediately) for clients that declare
+        // the tasks capability. `async_after_ms > 0` runs synchronously but
+        // degrades to a task if the call outruns that budget. Both default off,
+        // so a tool stays fully synchronous unless opted in.
+        bool async = false;
+        int async_after_ms = 0;
     };
 
     struct MCPResourceInfo {
@@ -444,6 +452,12 @@ struct MCPConfig {
     // nextCursor is emitted, exactly as before. A positive value opts into
     // cursor-based paging.
     int page_size = 0;
+
+    // MCP 2026-07-28 Tasks extension worker pool.
+    int tasks_workers = 2;         // concurrent background workers
+    int tasks_queue_depth = 32;    // max queued tasks before backpressure
+    int tasks_default_ttl_ms = 3600000;   // terminal-task retention (1h)
+    int tasks_poll_interval_ms = 1000;     // suggested client poll interval
 };
 
 struct DuckDBConfig {

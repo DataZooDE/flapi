@@ -350,6 +350,13 @@ void ConfigManager::parseMCPConfig() {
     mcp_config.port = safeGet<int>(mcp, "port", "mcp.port", 8081);
     mcp_config.strict_descriptions = safeGet<bool>(mcp, "strict-descriptions", "mcp.strict-descriptions", false);
     mcp_config.page_size = safeGet<int>(mcp, "page-size", "mcp.page-size", 0);
+    if (mcp["tasks"]) {
+        auto tasks = mcp["tasks"];
+        mcp_config.tasks_workers = safeGet<int>(tasks, "workers", "mcp.tasks.workers", 2);
+        mcp_config.tasks_queue_depth = safeGet<int>(tasks, "queue-depth", "mcp.tasks.queue-depth", 32);
+        mcp_config.tasks_default_ttl_ms = safeGet<int>(tasks, "default-ttl-ms", "mcp.tasks.default-ttl-ms", 3600000);
+        mcp_config.tasks_poll_interval_ms = safeGet<int>(tasks, "poll-interval-ms", "mcp.tasks.poll-interval-ms", 1000);
+    }
 
     CROW_LOG_DEBUG << "MCP Enabled: " << (mcp_config.enabled ? "true" : "false");
     CROW_LOG_DEBUG << "MCP Port: " << mcp_config.port;

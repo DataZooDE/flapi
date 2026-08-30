@@ -20,6 +20,7 @@
 #include "mcp_client_capabilities.hpp"
 #include "mcp_content_types.hpp"
 #include "mcp_auth_handler.hpp"
+#include "mcp_task_manager.hpp"
 #include "rate_limit_middleware.hpp"
 #include "auth_middleware.hpp"
 #include "config_tool_adapter.hpp"
@@ -224,7 +225,17 @@ private:
     std::unique_ptr<MCPToolHandler> tool_handler_;
     std::unique_ptr<MCPAuthHandler> auth_handler_;
     std::unique_ptr<ConfigToolAdapter> config_tool_adapter_;
+    std::unique_ptr<MCPTaskManager> task_manager_;
     int port_ = 8080;
+
+    // Tasks extension handlers (modern era only).
+    MCPResponse handleTasksGetRequest(const MCPRequest& request, const crow::request& http_req) const;
+    MCPResponse handleTasksCancelRequest(const MCPRequest& request, const crow::request& http_req) const;
+    // True when the modern client declared the io.modelcontextprotocol/tasks
+    // extension; a task is never surfaced to a client that cannot poll it.
+    static bool clientSupportsTasks(const MCPRequest& request);
+    // Serialize a task snapshot into the MCP task result object.
+    crow::json::wvalue taskToJson(const MCPTaskManager::Task& task) const;
 };
 
 } // namespace flapi
