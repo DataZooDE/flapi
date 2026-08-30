@@ -859,7 +859,11 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                     crow::json::wvalue mcp_result = content_response.toJson();
                     response.result = mcp_result.dump();
                 } else {
-                    response.error = formatJsonRpcError(-32603, "Tool execution failed: " + config_result.error_message);
+                    // Config-tool execution failure is model-actionable → isError.
+                    mcp::ContentResponse content_response;
+                    content_response.addText("Tool execution failed: " + config_result.error_message);
+                    content_response.setError(true);
+                    response.result = content_response.toJson().dump();
                 }
             } else {
                 response.error = formatJsonRpcError(-32603, "Tool execution failed: Config tools not available");
@@ -897,13 +901,48 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                 auto result = tool_handler_->executeTool(tool_request);
 
                 if (result.success) {
-                    // Convert result to MCP format using ContentResponse
+                    // Convert result to MCP format using ContentResponse. The
+                    // serialized rows are also attached as structuredContent so
+                    // a client gets machine-readable JSON without re-parsing the
+                    // text block.
                     mcp::ContentResponse content_response;
                     content_response.addText(result.result);
+
+                    auto parsed_rows = crow::json::load(result.result);
+                    if (parsed_rows) {
+                        crow::json::wvalue structured;
+                        structured["rows"] = crow::json::wvalue(parsed_rows);
+                        if (parsed_rows.t() == crow::json::type::List) {
+                            structured["row_count"] = static_cast<int64_t>(parsed_rows.size());
+                        }
+                        content_response.setStructuredContent(std::move(structured));
+                    }
+
                     crow::json::wvalue mcp_result = content_response.toJson();
                     response.result = mcp_result.dump();
+                } else if (result.failure_kind == MCPToolExecutionResult::FailureKind::NotFound) {
+                    // Unknown tool is a protocol-level error the model cannot fix.
+                    response.error = formatJsonRpcError(-32602, result.error_message);
+                } else if (result.failure_kind == MCPToolExecutionResult::FailureKind::PermissionDenied) {
+                    // RBAC denial stays a protocol error (becomes HTTP 403 in a
+                    // later commit); not something the model self-corrects.
+                    response.error = formatJsonRpcError(-32001, result.error_message);
                 } else {
-                    response.error = formatJsonRpcError(-32603, "Tool execution failed: " + result.error_message);
+                    // Tool-execution failures the model CAN act on (bad
+                    // arguments, a SQL/runtime error, a rate limit) are returned
+                    // as a normal result with isError:true, per the MCP spec, so
+                    // the error text reaches the model instead of an opaque
+                    // protocol failure.
+                    mcp::ContentResponse content_response;
+                    std::string message = result.error_message;
+                    auto rl = result.metadata.find("retry_after_seconds");
+                    if (rl != result.metadata.end()) {
+                        message += " (retry_after_seconds=" + rl->second + ")";
+                    }
+                    content_response.addText(message);
+                    content_response.setError(true);
+                    crow::json::wvalue mcp_result = content_response.toJson();
+                    response.result = mcp_result.dump();
                 }
             } else {
                 response.error = formatJsonRpcError(-32601, "Tool handler not available");

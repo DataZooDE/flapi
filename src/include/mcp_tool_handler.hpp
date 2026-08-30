@@ -17,7 +17,21 @@
 namespace flapi {
 
 struct MCPToolExecutionResult {
+    // Classifies a failure so the transport layer can choose between a JSON-RPC
+    // protocol error (things the model cannot fix — bad tool name, denied
+    // access) and a tool result with `isError: true` (things the model can
+    // self-correct — bad arguments, a SQL/runtime error, a rate limit).
+    enum class FailureKind {
+        None,
+        NotFound,          // unknown tool            -> JSON-RPC -32602
+        PermissionDenied,  // RBAC denial             -> JSON-RPC error (403 later)
+        RateLimited,       // per-tool rate limit hit -> isError result
+        InvalidArguments,  // validation failed       -> isError result
+        ExecutionError,    // SQL/runtime failure     -> isError result
+    };
+
     bool success = false;
+    FailureKind failure_kind = FailureKind::None;
     std::string result;
     std::string error_message;
     std::unordered_map<std::string, std::string> metadata;
@@ -45,8 +59,12 @@ public:
     // only); the real work lives in executeToolImpl.
     MCPToolExecutionResult executeTool(const MCPToolCallRequest& request);
 
-    // Tool validation
+    // Tool validation. The overload with `error_out` joins the per-field
+    // validator messages (field: reason; ...) so the caller can surface them to
+    // the model in an isError result instead of a generic "invalid arguments".
     bool validateToolArguments(const std::string& tool_name, const crow::json::wvalue& arguments) const;
+    bool validateToolArguments(const std::string& tool_name, const crow::json::wvalue& arguments,
+                               std::string& error_out) const;
 
     // Tool discovery
     std::vector<std::string> getAvailableTools() const;
@@ -78,7 +96,10 @@ QueryResult executeQueryWithEndpoint(const EndpointConfig& endpoint_config,
     std::map<std::string, std::string> convertJsonToParams(const crow::json::wvalue& json_obj) const;
 
     // Error handling
-    MCPToolExecutionResult createErrorResult(const std::string& error_message) const;
+    MCPToolExecutionResult createErrorResult(
+        const std::string& error_message,
+        MCPToolExecutionResult::FailureKind kind =
+            MCPToolExecutionResult::FailureKind::ExecutionError) const;
     MCPToolExecutionResult createSuccessResult(const std::string& result,
                                              const std::unordered_map<std::string, std::string>& metadata) const;
 

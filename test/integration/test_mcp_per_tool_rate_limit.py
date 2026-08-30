@@ -228,11 +228,19 @@ def _tools_call(base_url: str, token: str, sid: str, tool: str) -> requests.Resp
 
 
 def _is_rate_limited(body: dict) -> bool:
+    # A rate-limited tool call is now returned as a tool result with
+    # isError:true (so the model can see it and back off), not a JSON-RPC error.
+    # Accept both shapes for robustness.
     err = body.get("error", "")
-    if isinstance(err, str):
-        return "Rate limit exceeded" in err
-    if isinstance(err, dict):
-        return "Rate limit exceeded" in err.get("message", "")
+    if isinstance(err, str) and "Rate limit exceeded" in err:
+        return True
+    if isinstance(err, dict) and "Rate limit exceeded" in err.get("message", ""):
+        return True
+    result = body.get("result")
+    if isinstance(result, dict) and result.get("isError"):
+        for block in result.get("content", []):
+            if isinstance(block, dict) and "Rate limit exceeded" in block.get("text", ""):
+                return True
     return False
 
 
