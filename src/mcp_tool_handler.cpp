@@ -5,6 +5,7 @@
 
 #include "mcp_dry_run.hpp"
 #include "mcp_response_shaper.hpp"
+#include "mcp_schema_builder.hpp"
 #include "flapi_telemetry.hpp"
 
 namespace flapi {
@@ -301,29 +302,9 @@ crow::json::wvalue MCPToolHandler::getToolDefinition(const std::string& tool_nam
     crow::json::wvalue tool_def;
     tool_def["name"] = endpoint_config->mcp_tool->name;
     tool_def["description"] = endpoint_config->mcp_tool->description;
-    tool_def["inputSchema"]["type"] = "object";
-
-    // Build schema from request fields
-    crow::json::wvalue properties;
-    std::vector<std::string> required_fields;
-
-    for (const auto& field : endpoint_config->request_fields) {
-        crow::json::wvalue prop;
-        prop["type"] = "string"; // Default type, could be enhanced based on validators
-        prop["description"] = field.description;
-
-        if (field.required) {
-            required_fields.push_back(field.fieldName);
-        }
-
-        properties[field.fieldName] = std::move(prop);
-    }
-
-    tool_def["inputSchema"]["properties"] = std::move(properties);
-
-    if (!required_fields.empty()) {
-        tool_def["inputSchema"]["required"] = required_fields;
-    }
+    // Typed input schema from the field validators (shared with the route
+    // handler's tool-list path via MCPSchemaBuilder).
+    tool_def["inputSchema"] = MCPSchemaBuilder::buildInputSchema(endpoint_config->request_fields);
 
     return tool_def;
 }

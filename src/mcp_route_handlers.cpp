@@ -2,6 +2,7 @@
 #include "json_utils.hpp"
 #include "arrow_metrics.hpp"
 #include "mcp_authorization_policy.hpp"
+#include "mcp_schema_builder.hpp"
 #include <iostream>
 #include <sstream>
 #include <optional>
@@ -639,26 +640,11 @@ crow::json::wvalue MCPRouteHandlers::endpointToMCPToolDefinition(const EndpointC
     tool_def["name"] = endpoint.mcp_tool->name;
     tool_def["description"] = endpoint.mcp_tool->description;
 
-    // Build input schema from request fields
-    tool_def["inputSchema"]["type"] = "object";
-    tool_def["inputSchema"]["properties"] = crow::json::wvalue();
-
-    std::vector<std::string> required_fields;
-    for (const auto& field : endpoint.request_fields) {
-        crow::json::wvalue prop;
-        prop["type"] = "string"; // Default type, could be enhanced based on validators
-        prop["description"] = field.description;
-
-        if (field.required) {
-            required_fields.push_back(field.fieldName);
-        }
-
-        tool_def["inputSchema"]["properties"][field.fieldName] = std::move(prop);
-    }
-
-    if (!required_fields.empty()) {
-        tool_def["inputSchema"]["required"] = required_fields;
-    }
+    // Build a typed input schema from the request-field validators (int/date/
+    // uuid/enum/... with min/max/regex) rather than typing every parameter as a
+    // bare string. The validator metadata already drives prepared-statement
+    // binding; projecting it lets the model call the tool correctly first time.
+    tool_def["inputSchema"] = MCPSchemaBuilder::buildInputSchema(endpoint.request_fields);
 
     return tool_def;
 }
