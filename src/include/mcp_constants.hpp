@@ -51,6 +51,5 @@ constexpr const char* METHOD_COMPLETION_COMPLETE = "completion/complete";
 constexpr const char* CAPABILITY_TOOLS = "tools";
 constexpr const char* CAPABILITY_RESOURCES = "resources";
 constexpr const char* CAPABILITY_PROMPTS = "prompts";
-constexpr const char* CAPABILITY_SAMPLING = "sampling";
 
 } // namespace flapi::mcp::constants

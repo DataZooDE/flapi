@@ -384,7 +384,7 @@ struct MCPServerConfig {
     std::string server_name = "flapi-mcp-server";
     std::string server_version = "0.1.0";
     std::string protocol_version = "2024-11-05";
-    std::vector<std::string> capabilities = {"tools", "resources", "prompts", "sampling"};
+    std::vector<std::string> capabilities = {"tools", "resources", "prompts"};
     bool stdio_transport = false; // Use HTTP transport by default
     int mcp_port = 8081; // Different port from REST API
     std::string mcp_base_path = "/mcp";

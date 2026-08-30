@@ -273,8 +273,10 @@ class TestMCPBasicFunctionality:
             capabilities = result["capabilities"]
             assert "tools" in capabilities
             assert "resources" in capabilities
-            assert capabilities["tools"]["listChanged"] is True
-            assert capabilities["resources"]["listChanged"] is True
+            # flAPI has no server->client notification transport, so it honestly
+            # advertises listChanged: false (it never emits list_changed).
+            assert capabilities["tools"]["listChanged"] is False
+            assert capabilities["resources"]["listChanged"] is False
         else:
             # If it's a different response format, just check it's valid
             assert "content" in result or "isError" in result

@@ -12,7 +12,16 @@ namespace flapi {
 // Core JSON-RPC types
 struct MCPRequest {
     std::string jsonrpc = "2.0";
+    // Human-readable id (unquoted string, number text, or "" for null/absent).
+    // Kept for logging and for MCPResponse.id round-tripping.
     std::string id;
+    // JSON-RPC id handling. `id_present == false` means the request carried no
+    // `id` member at all — i.e. it is a notification and MUST NOT be answered.
+    // `id_raw` is the verbatim JSON token of the id ("42", "\"abc\"", "null"),
+    // echoed back losslessly (crow preserves int64/uint64) instead of being
+    // re-parsed through std::stod, which mangled large integer ids.
+    bool id_present = false;
+    std::string id_raw;
     std::string method;
     crow::json::wvalue params;
 };
@@ -85,19 +94,11 @@ struct MCPClientCapabilities {
 };
 
 // Streaming response for SSE support
-struct MCPStreamingResponse {
-    std::string content_type;
-    std::string content;
-    bool is_complete = false;
-    std::unordered_map<std::string, std::string> metadata;
-};
-
 // Server capabilities (enhanced)
 struct MCPServerCapabilities {
     std::vector<std::string> tools;
     std::vector<std::string> resources;
     std::vector<std::string> prompts;
-    std::vector<std::string> sampling;
     std::vector<std::string> logging;
 
     MCPServerCapabilities() = default;

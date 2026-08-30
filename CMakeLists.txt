@@ -305,13 +305,10 @@ add_library(flapi-lib STATIC
     src/sql_parameter_classifier.cpp
     src/sql_template_processor.cpp
     src/sql_utils.cpp
-    src/mcp_server.cpp
     src/mcp_tool_handler.cpp
     src/mcp_tool_rate_limiter.cpp
     src/mcp_route_handlers.cpp
     src/mcp_session_manager.cpp
-    src/mcp_error_builder.cpp
-    src/mcp_request_validator.cpp
     src/mcp_client_capabilities.cpp
     src/mcp_schema_builder.cpp
     src/config_tool_adapter.cpp

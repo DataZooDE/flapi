@@ -178,6 +178,17 @@ void MCPRouteHandlers::registerRoutes(crow::App<crow::CORSHandler, FlapiCorsMidd
 
                 CROW_LOG_DEBUG << "MCP request: method=" << mcp_request->method << ", id=" << mcp_request->id;
 
+                // JSON-RPC notification: a request object with no `id` member.
+                // The receiver MUST NOT return a response (previously flAPI
+                // replied with a spurious -32601 and id:null). Acknowledge at the
+                // transport level with 202 and no body. notifications/initialized
+                // and notifications/cancelled are no-ops for this server.
+                if (!mcp_request->id_present) {
+                    CROW_LOG_DEBUG << "MCP notification (no id), method=" << mcp_request->method
+                                   << " — acknowledged without a response body";
+                    return crow::response(202);
+                }
+
                 // Layer 1 (protocol) authorization.
                 //
                 // SECURITY: authentication and method authorization are derived
@@ -379,20 +390,22 @@ MCPRequest MCPRouteHandlers::extractRequestFields(const crow::json::wvalue& json
         mcp_req.method = method_value.dump();
     }
 
-    // Handle id field which can be string, number, or null
-    auto id_value = json_request["id"];
-    if (JsonUtils::isString(id_value)) {
-        // Extract string value without quotes
-        mcp_req.id = JsonUtils::extractString(id_value);
-    } else if (JsonUtils::isNumber(id_value)) {
-        // Convert number to string using dump()
-        mcp_req.id = id_value.dump();
-    } else if (JsonUtils::isNull(id_value)) {
-        // Use empty string for null id
-        mcp_req.id = "";
-    } else {
-        // Fallback for other types - convert to string representation using dump
-        mcp_req.id = id_value.dump();
+    // Handle id field which can be string, number, or null — and may be absent
+    // entirely (a JSON-RPC notification, which must not be answered).
+    mcp_req.id_present = json_request.count("id") > 0;
+    if (mcp_req.id_present) {
+        auto id_value = json_request["id"];
+        // Verbatim JSON token, echoed back losslessly.
+        mcp_req.id_raw = id_value.dump();
+        if (JsonUtils::isString(id_value)) {
+            mcp_req.id = JsonUtils::extractString(id_value);
+        } else if (JsonUtils::isNumber(id_value)) {
+            mcp_req.id = id_value.dump();
+        } else if (JsonUtils::isNull(id_value)) {
+            mcp_req.id = "";
+        } else {
+            mcp_req.id = id_value.dump();
+        }
     }
 
     return mcp_req;
@@ -440,23 +453,13 @@ crow::response MCPRouteHandlers::createJsonRpcResponse(const MCPRequest& request
     crow::json::wvalue response_json;
     response_json["jsonrpc"] = "2.0";
 
-    // Handle id field in response - can be string, number, or null
-    if (request.id.empty()) {
-        response_json["id"] = nullptr;  // JSON null for empty/null id
+    // Echo the id verbatim from the request's raw JSON token so string/number/
+    // null are preserved exactly and large integers are not mangled. An absent
+    // id (notification) is handled upstream and never reaches here.
+    if (request.id_present && !request.id_raw.empty()) {
+        response_json["id"] = crow::json::load(request.id_raw);
     } else {
-        // Try to parse as number first, fallback to string
-        try {
-            if (request.id.find_first_not_of("0123456789.-") == std::string::npos) {
-                // Looks like a number
-                response_json["id"] = std::stod(request.id);
-            } else {
-                // Treat as string
-                response_json["id"] = request.id;
-            }
-        } catch (const std::exception&) {
-            // Fallback to string
-            response_json["id"] = request.id;
-        }
+        response_json["id"] = nullptr;
     }
 
     if (!mcp_response.error.empty()) {
@@ -480,20 +483,13 @@ crow::response MCPRouteHandlers::createJsonRpcErrorResponse(const std::string& i
     crow::json::wvalue response_json;
     response_json["jsonrpc"] = "2.0";
 
-    // Handle id field in error response - can be string, number, or null
+    // Transport-level errors (parse/internal) cannot know the request id, so
+    // callers pass an empty id and the spec-correct echo is null. A non-empty id
+    // here is treated as a plain string (never re-parsed via std::stod).
     if (id.empty()) {
-        response_json["id"] = nullptr;  // JSON null for empty/null id
+        response_json["id"] = nullptr;
     } else {
-        // Try to parse as number first, fallback to string
-        try {
-            if (id.find_first_not_of("0123456789.-") == std::string::npos) {
-                response_json["id"] = std::stod(id);
-            } else {
-                response_json["id"] = id;
-            }
-        } catch (const std::exception&) {
-            response_json["id"] = id;
-        }
+        response_json["id"] = id;
     }
 
     response_json["error"] = std::move(error_json);
@@ -761,13 +757,18 @@ MCPResponse MCPRouteHandlers::handleInitializeRequest(const MCPRequest& request,
         crow::json::wvalue result;
         result["protocolVersion"] = negotiated_version;
         result["capabilities"] = crow::json::wvalue();
+        // listChanged is advertised as false: flAPI has no server→client
+        // notification transport (no SSE/GET stream), so it never emits
+        // notifications/tools/list_changed et al. Advertising true while never
+        // emitting misleads clients into caching-with-invalidation they will
+        // never receive. Honest capability = false.
         result["capabilities"]["tools"] = crow::json::wvalue();
-        result["capabilities"]["tools"]["listChanged"] = true;
+        result["capabilities"]["tools"]["listChanged"] = false;
         result["capabilities"]["resources"] = crow::json::wvalue();
         result["capabilities"]["resources"]["subscribe"] = false;
-        result["capabilities"]["resources"]["listChanged"] = true;
+        result["capabilities"]["resources"]["listChanged"] = false;
         result["capabilities"]["prompts"] = crow::json::wvalue();
-        result["capabilities"]["prompts"]["listChanged"] = true;
+        result["capabilities"]["prompts"]["listChanged"] = false;
         result["capabilities"]["logging"] = crow::json::wvalue::object();  // NEW in 2025-11-25; must serialize as {} — null fails strict client schema validation (#100)
         result["serverInfo"]["name"] = server_info_.name;
         result["serverInfo"]["version"] = server_info_.version;
