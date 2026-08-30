@@ -85,15 +85,15 @@ public:
     /**
      * Default constructor: creates an uninitialized result.
      */
-    DuckDBResult() noexcept : has_result_(false) {}
+    DuckDBResult() noexcept : result_{}, has_result_(false) {}
 
     /**
-     * Destructor: automatically destroys the result if initialized.
+     * Destructor: always destroys the result. duckdb_query populates the
+     * struct even on failure (error data must be freed), and
+     * duckdb_destroy_result is safe on a zero-initialized struct.
      */
     ~DuckDBResult() {
-        if (has_result_) {
-            duckdb_destroy_result(&result_);
-        }
+        duckdb_destroy_result(&result_);
     }
 
     // Delete copy constructor and assignment operator
@@ -104,11 +104,9 @@ public:
      * Move constructor: transfers ownership.
      */
     DuckDBResult(DuckDBResult&& other) noexcept
-        : has_result_(other.has_result_) {
-        if (other.has_result_) {
-            result_ = other.result_;
-            other.has_result_ = false;
-        }
+        : result_(other.result_), has_result_(other.has_result_) {
+        other.result_ = {};
+        other.has_result_ = false;
     }
 
     /**
@@ -116,14 +114,11 @@ public:
      */
     DuckDBResult& operator=(DuckDBResult&& other) noexcept {
         if (this != &other) {
-            if (has_result_) {
-                duckdb_destroy_result(&result_);
-            }
+            duckdb_destroy_result(&result_);
+            result_ = other.result_;
             has_result_ = other.has_result_;
-            if (other.has_result_) {
-                result_ = other.result_;
-                other.has_result_ = false;
-            }
+            other.result_ = {};
+            other.has_result_ = false;
         }
         return *this;
     }
@@ -153,10 +148,8 @@ public:
      * Reset the result state (manually destroy if initialized and mark as uninitialized).
      */
     void reset() {
-        if (has_result_) {
-            duckdb_destroy_result(&result_);
-            has_result_ = false;
-        }
+        duckdb_destroy_result(&result_);
+        has_result_ = false;
     }
 
 private:
