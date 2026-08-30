@@ -131,5 +131,16 @@ TEST_CASE("MCPSchemaBuilder: default value is projected", "[mcp][schema]") {
     REQUIRE(s["properties"]["limit"]["default"].s() == "100");
 }
 
+TEST_CASE("MCPSchemaBuilder: mcp-header becomes x-mcp-header annotation", "[mcp][schema]") {
+    RequestFieldConfig f = makeField("tenant", "string");
+    f.mcp_header = "Tenant";
+    auto s = parse(MCPSchemaBuilder::buildInputSchema({f}));
+    REQUIRE(s["properties"]["tenant"]["x-mcp-header"].s() == "Tenant");
+
+    // No annotation emitted when mcp-header is unset.
+    auto s2 = parse(MCPSchemaBuilder::buildInputSchema({makeField("plain", "string")}));
+    REQUIRE_FALSE(s2["properties"]["plain"].has("x-mcp-header"));
+}
+
 } // namespace test
 } // namespace flapi

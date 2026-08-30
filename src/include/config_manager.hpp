@@ -130,6 +130,13 @@ struct RequestFieldConfig {
     bool required = false;
     std::string defaultValue;
     std::vector<ValidatorConfig> validators;
+
+    // MCP 2026-07-28 x-mcp-header: when set, this parameter is mirrored by the
+    // client into an `Mcp-Param-<name>` HTTP header so an edge proxy can route
+    // and rate-limit on it without parsing the body. The value is the header
+    // suffix (e.g. "Tenant" -> Mcp-Param-Tenant). Never annotate a secret — the
+    // value is visible to every intermediary.
+    std::string mcp_header;
 };
 
 struct CacheConfig {
@@ -685,6 +692,10 @@ protected:
     void parseEndpointConfig(const std::filesystem::path& config_file);
     void parseEndpointRequestFields(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
     void parseEndpointValidators(const YAML::Node& req, RequestFieldConfig& field);
+    // Enforces the x-mcp-header (request[].mcp-header) constraints at load time:
+    // valid token characters, case-insensitively unique, never a secret name.
+    // Throws on violation so a bad annotation fails the config load.
+    void validateMcpHeaderAnnotations(const EndpointConfig& endpoint) const;
     void parseEndpointConnection(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
     void parseEndpointRateLimit(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
     void parseEndpointAuth(const YAML::Node& endpoint_config, EndpointConfig& endpoint);

@@ -119,6 +119,11 @@ crow::json::wvalue MCPSchemaBuilder::buildInputSchema(const std::vector<RequestF
         if (!field.defaultValue.empty()) {
             prop["default"] = field.defaultValue;
         }
+        // MCP 2026-07-28 x-mcp-header annotation: tells the client to mirror this
+        // parameter into an Mcp-Param-<name> header for edge routing.
+        if (!field.mcp_header.empty()) {
+            prop["x-mcp-header"] = field.mcp_header;
+        }
 
         if (field.required) {
             required_fields.push_back(field.fieldName);

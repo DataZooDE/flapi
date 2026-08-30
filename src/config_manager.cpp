@@ -577,9 +577,50 @@ void ConfigManager::parseEndpointRequestFields(const YAML::Node& endpoint_config
                 }
             }
             
+            field.mcp_header = safeGet<std::string>(req, "mcp-header", "request.mcp-header", "");
+
             parseEndpointValidators(req, field);
-            
+
             endpoint.request_fields.push_back(field);
+        }
+    }
+
+    validateMcpHeaderAnnotations(endpoint);
+}
+
+void ConfigManager::validateMcpHeaderAnnotations(const EndpointConfig& endpoint) const {
+    // Enforce the x-mcp-header constraints at config load: a bad annotation
+    // makes clients hide the tool, so fail loudly. Header names must be valid
+    // RFC 9110 tokens, unique case-insensitively, and never mirror a secret.
+    static const std::vector<std::string> kSecretMarkers = {
+        "token", "secret", "password", "passwd", "pwd", "key", "credential", "auth"};
+    std::set<std::string> seen_lower;
+    for (const auto& field : endpoint.request_fields) {
+        if (field.mcp_header.empty()) {
+            continue;
+        }
+        const std::string& h = field.mcp_header;
+        // RFC 9110 token characters (a reasonable subset).
+        for (char c : h) {
+            if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_')) {
+                throw std::runtime_error("mcp-header '" + h + "' on field '" + field.fieldName +
+                    "' contains an invalid character; use letters, digits, '-' or '_'.");
+            }
+        }
+        std::string lower;
+        for (char c : h) {
+            lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        if (!seen_lower.insert(lower).second) {
+            throw std::runtime_error("Duplicate mcp-header '" + h +
+                "' (case-insensitive) in endpoint request fields.");
+        }
+        for (const auto& marker : kSecretMarkers) {
+            if (lower.find(marker) != std::string::npos) {
+                throw std::runtime_error("mcp-header '" + h + "' on field '" + field.fieldName +
+                    "' looks like a secret; header values are visible to every intermediary "
+                    "and must never mirror credentials.");
+            }
         }
     }
 }
