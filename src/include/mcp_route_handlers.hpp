@@ -145,6 +145,11 @@ private:
     // Ping functionality
     MCPResponse handlePingRequest(const MCPRequest& request, const crow::request& http_req) const;
 
+    // MCP 2026-07-28 discovery: returns supportedVersions, capabilities,
+    // instructions and serverInfo statelessly (the modern replacement for
+    // initialize). Must be reachable without a session.
+    MCPResponse handleServerDiscoverRequest(const MCPRequest& request, const crow::request& http_req) const;
+
     // ========== Helper functions for reducing code duplication ==========
 
     // Creates a JSON-RPC error string: {"code":<code>,"message":"<message>"}

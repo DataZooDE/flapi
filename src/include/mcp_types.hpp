@@ -24,6 +24,17 @@ struct MCPRequest {
     std::string id_raw;
     std::string method;
     crow::json::wvalue params;
+
+    // MCP 2026-07-28 per-request preamble. `modern_era` is true when the
+    // request carries params._meta["io.modelcontextprotocol/protocolVersion"];
+    // it selects the stateless modern path (server/discover, resultType,
+    // ttlMs/cacheScope, no sessions) while its absence keeps the legacy
+    // initialize+session path byte-compatible.
+    bool modern_era = false;
+    std::string meta_protocol_version;   // required in modern era
+    std::string meta_log_level;          // optional per-request log level
+    std::vector<std::string> meta_extensions;  // client-declared extension ids
+    bool meta_has_client_capabilities = false; // required in modern era
 };
 
 struct MCPResponse {

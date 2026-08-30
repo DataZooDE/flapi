@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <string>
 #include <chrono>
 
@@ -12,10 +13,34 @@ constexpr int DEFAULT_SESSION_TIMEOUT_MINUTES = 30;
 
 // MCP Protocol Version Constants
 constexpr const char* MCP_LATEST_PROTOCOL_VERSION = "2025-11-25";
+constexpr const char* MCP_PROTOCOL_VERSION_2026_07_28 = "2026-07-28";
 constexpr const char* MCP_PROTOCOL_VERSION_2025_11_25 = "2025-11-25";
 constexpr const char* MCP_PROTOCOL_VERSION_2025_06_18 = "2025-06-18";
 constexpr const char* MCP_PROTOCOL_VERSION_2025_03_26 = "2025-03-26";
 constexpr const char* MCP_PROTOCOL_VERSION_2024_11_05 = "2024-11-05";
+
+// Every protocol version this server supports, newest first. Advertised by
+// server/discover and used to validate a modern client's requested version.
+constexpr std::array<const char*, 5> MCP_SUPPORTED_VERSIONS = {
+    MCP_PROTOCOL_VERSION_2026_07_28,
+    MCP_PROTOCOL_VERSION_2025_11_25,
+    MCP_PROTOCOL_VERSION_2025_06_18,
+    MCP_PROTOCOL_VERSION_2025_03_26,
+    MCP_PROTOCOL_VERSION_2024_11_05,
+};
+
+// MCP 2026-07-28 per-request _meta keys (reverse-DNS namespaced).
+constexpr const char* META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion";
+constexpr const char* META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities";
+constexpr const char* META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo";
+constexpr const char* META_LOG_LEVEL = "io.modelcontextprotocol/logLevel";
+constexpr const char* META_SERVER_INFO = "io.modelcontextprotocol/serverInfo";
+constexpr const char* EXTENSION_TASKS = "io.modelcontextprotocol/tasks";
+
+// MCP 2026-07-28 error codes (the -32000..-32019 legacy range is avoided).
+constexpr int HEADER_MISMATCH = -32020;
+constexpr int MISSING_REQUIRED_CLIENT_CAPABILITY = -32021;
+constexpr int UNSUPPORTED_PROTOCOL_VERSION = -32022;
 
 // HTTP Status Codes
 constexpr int HTTP_OK = 200;

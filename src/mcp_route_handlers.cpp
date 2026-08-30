@@ -287,6 +287,48 @@ void MCPRouteHandlers::registerRoutes(crow::App<crow::CORSHandler, FlapiCorsMidd
                     return crow::response(202);
                 }
 
+                // MCP 2026-07-28 modern-era preamble validation. Legacy requests
+                // (no _meta protocolVersion) skip this entirely and keep the
+                // initialize+session path.
+                if (mcp_request->modern_era) {
+                    // Unknown/unsupported requested version → -32022 with the
+                    // supported list, HTTP 400.
+                    bool supported = false;
+                    for (const auto* v : flapi::mcp::constants::MCP_SUPPORTED_VERSIONS) {
+                        if (mcp_request->meta_protocol_version == v) {
+                            supported = true;
+                            break;
+                        }
+                    }
+                    if (!supported) {
+                        crow::json::wvalue data;
+                        crow::json::wvalue sv = crow::json::wvalue::list();
+                        size_t i = 0;
+                        for (const auto* v : flapi::mcp::constants::MCP_SUPPORTED_VERSIONS) {
+                            sv[i++] = std::string(v);
+                        }
+                        data["supported"] = std::move(sv);
+                        MCPResponse mcp_response;
+                        mcp_response.id = mcp_request->id;
+                        crow::json::wvalue err;
+                        err["code"] = flapi::mcp::constants::UNSUPPORTED_PROTOCOL_VERSION;
+                        err["message"] = "Unsupported protocol version: " + mcp_request->meta_protocol_version;
+                        err["data"] = std::move(data);
+                        mcp_response.error = err.dump();
+                        mcp_response.http_status = 400;
+                        return createJsonRpcResponse(*mcp_request, mcp_response, std::nullopt);
+                    }
+                    // clientCapabilities is required in the modern preamble.
+                    if (!mcp_request->meta_has_client_capabilities) {
+                        MCPResponse mcp_response;
+                        mcp_response.id = mcp_request->id;
+                        mcp_response.error = formatJsonRpcError(
+                            -32602, "Missing required _meta clientCapabilities");
+                        mcp_response.http_status = 400;
+                        return createJsonRpcResponse(*mcp_request, mcp_response, std::nullopt);
+                    }
+                }
+
                 // Layer 1 (protocol) authorization.
                 //
                 // SECURITY: authentication and method authorization are derived
@@ -300,8 +342,12 @@ void MCPRouteHandlers::registerRoutes(crow::App<crow::CORSHandler, FlapiCorsMidd
                 if (auth_handler_) {
                     auth_context = auth_handler_->authenticate(req);
 
-                    if (mcp_request->method == "initialize") {
-                        if (auth_handler_->methodRequiresAuth("initialize") && !auth_context) {
+                    // server/discover is the modern entry point (the analogue of
+                    // initialize) and must be publicly reachable so a client can
+                    // discover how to authenticate.
+                    if (mcp_request->method == "initialize" || mcp_request->method == "server/discover") {
+                        if (mcp_request->method == "initialize"
+                            && auth_handler_->methodRequiresAuth("initialize") && !auth_context) {
                             CROW_LOG_WARNING << "MCP initialize: authentication required but failed";
                             MCPResponse mcp_response;
                             mcp_response.id = mcp_request->id;
@@ -328,8 +374,12 @@ void MCPRouteHandlers::registerRoutes(crow::App<crow::CORSHandler, FlapiCorsMidd
                 // Session lifecycle (legacy shim only): mint a session for legacy
                 // clients that expect an `Mcp-Session-Id` back, and keep an
                 // existing one's activity fresh. The session no longer gates
-                // authorization — that happened above, unconditionally.
-                if (session_manager_) {
+                // authorization — that happened above, unconditionally. The
+                // modern (2026-07-28) path is stateless: it never mints or echoes
+                // a session and ignores any inbound Mcp-Session-Id.
+                if (mcp_request->modern_era) {
+                    session_id = std::nullopt;
+                } else if (session_manager_) {
                     if (!session_id) {
                         session_id = session_manager_->createSession("", auth_context);
                         CROW_LOG_INFO << "Created new session: " << session_id.value();
@@ -412,6 +462,16 @@ void MCPRouteHandlers::registerRoutes(crow::App<crow::CORSHandler, FlapiCorsMidd
             health["arrow_total_requests"] = arrowMetrics.counters.totalRequests.load();
 
             return crow::response(200, health);
+        });
+
+    // GET on the MCP endpoint would be the legacy SSE stream, which flAPI does
+    // not implement; the 2026-07-28 transport also removed it. Respond 405.
+    CROW_ROUTE(app, "/mcp/jsonrpc")
+        .methods("GET"_method)
+        ([]() -> crow::response {
+            crow::response resp(405);
+            resp.set_header("Allow", "POST, DELETE");
+            return resp;
         });
 
     // MCP session cleanup endpoint (DELETE request to close session)
@@ -554,6 +614,37 @@ MCPRequest MCPRouteHandlers::extractRequestFields(const crow::json::wvalue& json
         }
     }
 
+    // MCP 2026-07-28 per-request preamble under params._meta. Its presence (the
+    // protocolVersion key specifically) selects the modern stateless path.
+    if (json_request.count("params") > 0) {
+        auto params_rv = crow::json::load(mcp_req.params.dump());
+        if (params_rv && params_rv.has("_meta")) {
+            auto meta = params_rv["_meta"];
+            namespace k = flapi::mcp::constants;
+            if (meta.has(k::META_PROTOCOL_VERSION)
+                && meta[k::META_PROTOCOL_VERSION].t() == crow::json::type::String) {
+                mcp_req.modern_era = true;
+                mcp_req.meta_protocol_version = meta[k::META_PROTOCOL_VERSION].s();
+            }
+            mcp_req.meta_has_client_capabilities = meta.has(k::META_CLIENT_CAPABILITIES);
+            if (meta.has(k::META_LOG_LEVEL)
+                && meta[k::META_LOG_LEVEL].t() == crow::json::type::String) {
+                mcp_req.meta_log_level = meta[k::META_LOG_LEVEL].s();
+            }
+            // Client-declared extensions live under clientCapabilities.extensions
+            // as an object keyed by extension id.
+            if (meta.has(k::META_CLIENT_CAPABILITIES)
+                && meta[k::META_CLIENT_CAPABILITIES].t() == crow::json::type::Object) {
+                auto caps = meta[k::META_CLIENT_CAPABILITIES];
+                if (caps.has("extensions") && caps["extensions"].t() == crow::json::type::Object) {
+                    for (const auto& key : caps["extensions"].keys()) {
+                        mcp_req.meta_extensions.push_back(key);
+                    }
+                }
+            }
+        }
+    }
+
     return mcp_req;
 }
 
@@ -610,6 +701,26 @@ crow::response MCPRouteHandlers::createJsonRpcResponse(const MCPRequest& request
 
     if (!mcp_response.error.empty()) {
         response_json["error"] = crow::json::load(mcp_response.error);
+    } else if (request.modern_era) {
+        // MCP 2026-07-28 result envelope: every result carries a resultType and
+        // the server identity under _meta; cacheable results additionally carry
+        // ttlMs + cacheScope so clients can cache the (config-stable) lists.
+        crow::json::wvalue result = crow::json::load(mcp_response.result);
+        result["resultType"] = "complete";
+        result["_meta"][flapi::mcp::constants::META_SERVER_INFO]["name"] = server_info_.name;
+        result["_meta"][flapi::mcp::constants::META_SERVER_INFO]["version"] = server_info_.version;
+
+        const std::string& m = request.method;
+        if (m == "server/discover") {
+            result["ttlMs"] = 3600000;      // 1h — discovery changes only on reload
+            result["cacheScope"] = "public";
+        } else if (m == "tools/list" || m == "prompts/list" || m == "resources/list"
+                   || m == "resources/templates/list" || m == "resources/read") {
+            result["ttlMs"] = 300000;       // 5m
+            // Lists may be role-filtered per caller in future; default private.
+            result["cacheScope"] = "private";
+        }
+        response_json["result"] = std::move(result);
     } else {
         response_json["result"] = crow::json::load(mcp_response.result);
     }
@@ -813,7 +924,17 @@ MCPResponse MCPRouteHandlers::handleMessage(const MCPRequest& request, const cro
     CROW_LOG_DEBUG << "handleMessage called with method: '" << request.method << "'";
 
     try {
-        if (request.method == "initialize") {
+        // Methods removed in 2026-07-28: initialize (replaced by server/discover
+        // + per-request _meta), ping and logging/setLevel (log level is per-
+        // request _meta now). Reject them on the modern path; keep them on legacy.
+        const bool modern = request.modern_era;
+        if (modern && (request.method == "initialize" || request.method == "ping"
+                       || request.method == "logging/setLevel")) {
+            response.error = "{\"code\":-32601,\"message\":\"Method not available on the 2026-07-28 path: "
+                             + request.method + "\"}";
+        } else if (request.method == "server/discover") {
+            response = handleServerDiscoverRequest(request, http_req);
+        } else if (request.method == "initialize") {
             response = handleInitializeRequest(request, http_req);
         } else if (request.method == "tools/list") {
             response = handleToolsListRequest(request, http_req);
@@ -841,6 +962,46 @@ MCPResponse MCPRouteHandlers::handleMessage(const MCPRequest& request, const cro
     } catch (const std::exception& e) {
         CROW_LOG_ERROR << "Error handling MCP method '" << request.method << "': " << e.what();
         response.error = "{\"code\":-32603,\"message\":\"Internal error: " + std::string(e.what()) + "\"}";
+    }
+
+    return response;
+}
+
+MCPResponse MCPRouteHandlers::handleServerDiscoverRequest(const MCPRequest& request, const crow::request& http_req) const {
+    MCPResponse response;
+    response.id = request.id;
+
+    try {
+        crow::json::wvalue result;
+
+        crow::json::wvalue versions = crow::json::wvalue::list();
+        size_t i = 0;
+        for (const auto* v : flapi::mcp::constants::MCP_SUPPORTED_VERSIONS) {
+            versions[i++] = std::string(v);
+        }
+        result["supportedVersions"] = std::move(versions);
+
+        // Honest capabilities: no listChanged transport; advertise the Tasks
+        // extension so clients can opt into asynchronous tool execution.
+        result["capabilities"]["tools"]["listChanged"] = false;
+        result["capabilities"]["resources"]["subscribe"] = false;
+        result["capabilities"]["resources"]["listChanged"] = false;
+        result["capabilities"]["prompts"]["listChanged"] = false;
+        result["capabilities"]["completions"] = crow::json::wvalue::object();
+        result["capabilities"]["extensions"][flapi::mcp::constants::EXTENSION_TASKS] =
+            crow::json::wvalue::object();
+
+        std::string instructions = config_manager_->loadMCPInstructions();
+        if (!instructions.empty()) {
+            result["instructions"] = instructions;
+        }
+
+        result["_meta"][flapi::mcp::constants::META_SERVER_INFO]["name"] = server_info_.name;
+        result["_meta"][flapi::mcp::constants::META_SERVER_INFO]["version"] = server_info_.version;
+
+        response.result = result.dump();
+    } catch (const std::exception& e) {
+        response.error = formatJsonRpcError(-32603, "server/discover error: " + std::string(e.what()));
     }
 
     return response;
