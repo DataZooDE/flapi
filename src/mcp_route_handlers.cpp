@@ -96,6 +96,51 @@ std::optional<std::string> MCPRouteHandlers::authorizeMCPEntity(
     return decision.reason;
 }
 
+std::string MCPRouteHandlers::buildResourceMetadataUrl(const crow::request& http_req) const {
+    // Prefer an explicit canonical URI; else derive the origin from forwarded/
+    // Host headers so the URL is correct behind a reverse proxy.
+    const auto& auth = config_manager_->getMCPConfig().auth;
+    std::string origin;
+    if (!auth.canonical_resource_uri.empty()) {
+        origin = auth.canonical_resource_uri;
+        // Strip any path so we can append the well-known path cleanly.
+        auto scheme_end = origin.find("://");
+        auto path_start = origin.find('/', scheme_end == std::string::npos ? 0 : scheme_end + 3);
+        if (path_start != std::string::npos) {
+            origin = origin.substr(0, path_start);
+        }
+    } else {
+        std::string scheme = http_req.get_header_value("X-Forwarded-Proto");
+        if (scheme.empty()) {
+            scheme = "http";
+        }
+        std::string host = http_req.get_header_value("X-Forwarded-Host");
+        if (host.empty()) {
+            host = http_req.get_header_value("Host");
+        }
+        if (host.empty()) {
+            host = "localhost:" + std::to_string(port_);
+        }
+        origin = scheme + "://" + host;
+    }
+    return origin + "/.well-known/oauth-protected-resource";
+}
+
+std::string MCPRouteHandlers::buildWwwAuthenticate(const crow::request& http_req, bool insufficient_scope) const {
+    std::string value = "Bearer";
+    const auto& auth = config_manager_->getMCPConfig().auth;
+    // Point clients at the metadata document only when there is an OAuth/OIDC
+    // authorization server to discover.
+    if (auth.type == "oidc" && auth.oidc.has_value()) {
+        value += " resource_metadata=\"" + buildResourceMetadataUrl(http_req) + "\"";
+    }
+    if (insufficient_scope) {
+        value += (value == "Bearer" ? " " : ", ");
+        value += "error=\"insufficient_scope\"";
+    }
+    return value;
+}
+
 // ========== End helper functions ==========
 
 MCPRouteHandlers::MCPRouteHandlers(std::shared_ptr<ConfigManager> config_manager,
@@ -207,15 +252,22 @@ void MCPRouteHandlers::registerRoutes(crow::App<crow::CORSHandler, FlapiCorsMidd
                             CROW_LOG_WARNING << "MCP initialize: authentication required but failed";
                             MCPResponse mcp_response;
                             mcp_response.id = mcp_request->id;
-                            mcp_response.error = "{\"code\":-32001,\"message\":\"Authentication required for initialize\"}";
+                            mcp_response.error = "{\"code\":-32000,\"message\":\"Authentication required for initialize\"}";
+                            mcp_response.http_status = 401;
+                            mcp_response.www_authenticate = buildWwwAuthenticate(req, /*insufficient_scope=*/false);
                             return createJsonRpcResponse(*mcp_request, mcp_response, session_id);
                         }
                     } else if (!auth_handler_->authorizeMethod(mcp_request->method, auth_context)) {
                         CROW_LOG_WARNING << "MCP method " << mcp_request->method << " requires authentication";
                         MCPResponse mcp_response;
                         mcp_response.id = mcp_request->id;
-                        mcp_response.error = "{\"code\":-32001,\"message\":\"Authentication required for method: " +
+                        mcp_response.error = "{\"code\":-32000,\"message\":\"Authentication required for method: " +
                                            mcp_request->method + "\"}";
+                        // RFC 9728 / RFC 6750: an authentication challenge is HTTP
+                        // 401 with a WWW-Authenticate header so an OAuth client can
+                        // discover the authorization server and start its flow.
+                        mcp_response.http_status = 401;
+                        mcp_response.www_authenticate = buildWwwAuthenticate(req, /*insufficient_scope=*/false);
                         return createJsonRpcResponse(*mcp_request, mcp_response, session_id);
                     }
                 }
@@ -243,6 +295,44 @@ void MCPRouteHandlers::registerRoutes(crow::App<crow::CORSHandler, FlapiCorsMidd
                 CROW_LOG_ERROR << "Error handling MCP request: " << e.what();
                 return createJsonRpcErrorResponse("", -32603, "Internal JSON-RPC error: " + std::string(e.what()), std::nullopt);
             }
+        });
+
+    // RFC 9728 OAuth 2.0 Protected Resource Metadata. Lets a standard OAuth
+    // client (Claude, VS Code, Goose, ...) discover which authorization server
+    // guards this MCP endpoint and begin the browser OAuth flow, instead of
+    // needing a bearer token handed over out of band. Only meaningful when an
+    // OIDC authorization server is configured.
+    CROW_ROUTE(app, "/.well-known/oauth-protected-resource")
+        .methods("GET"_method)
+        ([this](const crow::request& req) -> crow::response {
+            const auto& auth = config_manager_->getMCPConfig().auth;
+            if (!(auth.type == "oidc" && auth.oidc.has_value())) {
+                // No discoverable authorization server; nothing to advertise.
+                return crow::response(404);
+            }
+            crow::json::wvalue doc;
+            doc["resource"] = auth.canonical_resource_uri.empty()
+                ? (std::string(req.get_header_value("X-Forwarded-Proto").empty() ? "http" : req.get_header_value("X-Forwarded-Proto"))
+                   + "://"
+                   + (req.get_header_value("Host").empty() ? ("localhost:" + std::to_string(port_)) : req.get_header_value("Host"))
+                   + "/mcp/jsonrpc")
+                : auth.canonical_resource_uri;
+            crow::json::wvalue servers = crow::json::wvalue::list();
+            servers[0] = auth.oidc->issuer_url;
+            doc["authorization_servers"] = std::move(servers);
+            crow::json::wvalue methods = crow::json::wvalue::list();
+            methods[0] = "header";
+            doc["bearer_methods_supported"] = std::move(methods);
+            if (!auth.scopes_supported.empty()) {
+                crow::json::wvalue scopes = crow::json::wvalue::list();
+                for (size_t i = 0; i < auth.scopes_supported.size(); ++i) {
+                    scopes[i] = auth.scopes_supported[i];
+                }
+                doc["scopes_supported"] = std::move(scopes);
+            }
+            auto resp = crow::response(200, doc.dump());
+            resp.set_header("Content-Type", "application/json");
+            return resp;
         });
 
     // Health check endpoint
@@ -468,8 +558,11 @@ crow::response MCPRouteHandlers::createJsonRpcResponse(const MCPRequest& request
         response_json["result"] = crow::json::load(mcp_response.result);
     }
 
-    auto response = crow::response(200, response_json.dump());
+    auto response = crow::response(mcp_response.http_status, response_json.dump());
     response.set_header("Content-Type", "application/json");
+    if (!mcp_response.www_authenticate.empty()) {
+        response.set_header("WWW-Authenticate", mcp_response.www_authenticate);
+    }
     addSessionHeaderToResponse(response, session_id);
     return response;
 }
@@ -705,7 +798,9 @@ MCPResponse MCPRouteHandlers::handleInitializeRequest(const MCPRequest& request,
         auth_context = auth_handler_->authenticate(http_req);
         if (!auth_context) {
             CROW_LOG_WARNING << "MCP initialize: authentication required but failed";
-            response.error = "{\"code\":-32001,\"message\":\"Authentication required for initialize\"}";
+            response.error = "{\"code\":-32000,\"message\":\"Authentication required for initialize\"}";
+            response.http_status = 401;
+            response.www_authenticate = buildWwwAuthenticate(http_req, /*insufficient_scope=*/false);
             return response;
         }
         CROW_LOG_INFO << "MCP initialize: authenticated as " << auth_context->username;
@@ -925,9 +1020,11 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                     // Unknown tool is a protocol-level error the model cannot fix.
                     response.error = formatJsonRpcError(-32602, result.error_message);
                 } else if (result.failure_kind == MCPToolExecutionResult::FailureKind::PermissionDenied) {
-                    // RBAC denial stays a protocol error (becomes HTTP 403 in a
-                    // later commit); not something the model self-corrects.
-                    response.error = formatJsonRpcError(-32001, result.error_message);
+                    // RBAC denial: the caller authenticated (Layer 1) but lacks
+                    // the tool's role → HTTP 403 insufficient_scope (RFC 6750).
+                    response.error = formatJsonRpcError(-32000, result.error_message);
+                    response.http_status = 403;
+                    response.www_authenticate = buildWwwAuthenticate(http_req, /*insufficient_scope=*/true);
                 } else {
                     // Tool-execution failures the model CAN act on (bad
                     // arguments, a SQL/runtime error, a rate limit) are returned
@@ -1009,7 +1106,12 @@ MCPResponse MCPRouteHandlers::handleResourcesReadRequest(const MCPRequest& reque
                 "Resource '" + resource_config->mcp_resource->name + "'")) {
             CROW_LOG_WARNING << "MCP resources/read denied for '"
                              << resource_config->mcp_resource->name << "': " << *denial;
-            response.error = formatJsonRpcError(-32001, "Permission denied: " + *denial);
+            // The caller already passed Layer-1 authentication to reach here, so
+            // a role denial is an authorization failure: HTTP 403 with
+            // error="insufficient_scope" (RFC 6750).
+            response.error = formatJsonRpcError(-32000, "Permission denied: " + *denial);
+            response.http_status = 403;
+            response.www_authenticate = buildWwwAuthenticate(http_req, /*insufficient_scope=*/true);
             return response;
         }
 
@@ -1163,7 +1265,12 @@ MCPResponse MCPRouteHandlers::handlePromptsGetRequest(const MCPRequest& request,
                 "Prompt '" + prompt_config->mcp_prompt->name + "'")) {
             CROW_LOG_WARNING << "MCP prompts/get denied for '"
                              << prompt_config->mcp_prompt->name << "': " << *denial;
-            response.error = formatJsonRpcError(-32001, "Permission denied: " + *denial);
+            // The caller already passed Layer-1 authentication to reach here, so
+            // a role denial is an authorization failure: HTTP 403 with
+            // error="insufficient_scope" (RFC 6750).
+            response.error = formatJsonRpcError(-32000, "Permission denied: " + *denial);
+            response.http_status = 403;
+            response.www_authenticate = buildWwwAuthenticate(http_req, /*insufficient_scope=*/true);
             return response;
         }
 

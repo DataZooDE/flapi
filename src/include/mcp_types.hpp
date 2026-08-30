@@ -31,6 +31,13 @@ struct MCPResponse {
     std::string id;
     std::string result;
     std::string error;
+    // HTTP status to send with this JSON-RPC response. Defaults to 200. Auth
+    // challenges use 401 (RFC 9728 / RFC 6750) and authorization denials use
+    // 403 so standard OAuth clients can discover how to authenticate.
+    int http_status = 200;
+    // When non-empty, sent as the `WWW-Authenticate` response header (e.g.
+    // `Bearer resource_metadata="https://.../.well-known/oauth-protected-resource"`).
+    std::string www_authenticate;
 };
 
 // Session management

@@ -156,6 +156,17 @@ private:
         const std::optional<std::vector<std::string>>& allowed_roles,
         const std::string& entity_label) const;
 
+    // RFC 9728: the absolute URL of this server's protected-resource metadata
+    // document, derived from the forwarded/Host headers (or the configured
+    // canonical resource URI). Used in the WWW-Authenticate challenge.
+    std::string buildResourceMetadataUrl(const crow::request& http_req) const;
+
+    // The `WWW-Authenticate` header value for an auth challenge. When
+    // `insufficient_scope` is true it is a 403 authorization failure
+    // (`error="insufficient_scope"`); otherwise a 401 authentication challenge.
+    // Includes `resource_metadata="<url>"` only when OIDC is configured.
+    std::string buildWwwAuthenticate(const crow::request& http_req, bool insufficient_scope) const;
+
     // Validate a required string parameter exists and extract it
     // Returns true if valid, false if error (sets response.error)
     bool extractRequiredStringParam(const crow::json::wvalue& params,

@@ -360,6 +360,16 @@ void ConfigManager::parseMCPConfig() {
         mcp_config.auth.enabled = safeGet<bool>(auth, "enabled", "mcp.auth.enabled", false);
         mcp_config.auth.type = safeGet<std::string>(auth, "type", "mcp.auth.type", "bearer");
 
+        // RFC 9728 protected-resource metadata (optional; derived at runtime
+        // from the request host when canonical-resource-uri is unset).
+        mcp_config.auth.canonical_resource_uri =
+            safeGet<std::string>(auth, "canonical-resource-uri", "mcp.auth.canonical-resource-uri", "");
+        if (auth["scopes-supported"]) {
+            for (const auto& scope : auth["scopes-supported"]) {
+                mcp_config.auth.scopes_supported.push_back(scope.as<std::string>());
+            }
+        }
+
         CROW_LOG_DEBUG << "MCP Auth Enabled: " << (mcp_config.auth.enabled ? "true" : "false");
         CROW_LOG_DEBUG << "MCP Auth Type: " << mcp_config.auth.type;
 

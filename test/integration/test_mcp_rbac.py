@@ -257,7 +257,8 @@ class TestPerToolRbac:
         sid = _open_session(rbac_server, token)
 
         r = _mcp_tools_call(rbac_server, token, "analyst_only_tool", session_id=sid)
-        assert r.status_code == 200, r.text
+        # RBAC denial for an authenticated caller is HTTP 403 insufficient_scope.
+        assert r.status_code == 403, r.text
         body = r.json()
         assert "error" in body, f"Expected denial, got success: {body}"
         assert "Permission denied" in r.text
@@ -278,7 +279,7 @@ class TestPerToolRbac:
         sid = _open_session(rbac_server, token)
 
         r = _mcp_tools_call(rbac_server, token, "admin_only_tool", session_id=sid)
-        assert r.status_code == 200, r.text
+        assert r.status_code == 403, r.text
         body = r.json()
         assert "error" in body, body
         assert "Permission denied" in r.text
@@ -290,7 +291,7 @@ class TestPerToolRbac:
 
         for tool in ("admin_only_tool", "analyst_only_tool"):
             r = _mcp_tools_call(rbac_server, token, tool, session_id=sid)
-            assert r.status_code == 200, r.text
+            assert r.status_code == 403, r.text
             body = r.json()
             assert "error" in body, f"{tool} unexpectedly allowed: {body}"
             assert "Permission denied" in r.text

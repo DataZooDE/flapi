@@ -303,3 +303,24 @@ class TestMcpAuthMatrix:
         body = r.json()
         assert "error" not in body, f"admin tool call should succeed: {body}"
         assert "admin-result" in r.text
+
+    # ---- C5: HTTP status + WWW-Authenticate (RFC 9728 / RFC 6750) ----
+
+    def test_unauthenticated_gets_401_with_www_authenticate(self, auth_server):
+        r = _post(auth_server, *READ_SECRET)
+        assert r.status_code == 401, r.text
+        assert r.headers.get("WWW-Authenticate", "").startswith("Bearer")
+
+    def test_authenticated_wrong_role_gets_403_insufficient_scope(self, auth_server):
+        # gated_data requires 'reader'; an 'admin' token is authenticated but
+        # lacks the role -> 403 insufficient_scope.
+        token = _make_jwt(roles=["admin"])
+        r = _post(auth_server, *READ_GATED, token=token)
+        assert r.status_code == 403, r.text
+        assert "insufficient_scope" in r.headers.get("WWW-Authenticate", "")
+
+    def test_well_known_metadata_absent_without_oidc(self, auth_server):
+        # This fixture uses bearer auth (no OIDC authorization server), so the
+        # protected-resource metadata document is not served.
+        r = requests.get(f"{auth_server}/.well-known/oauth-protected-resource", timeout=10)
+        assert r.status_code == 404

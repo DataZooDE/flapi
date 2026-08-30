@@ -402,6 +402,13 @@ struct MCPAuthConfig {
     std::string jwt_issuer = "flapi";
     std::optional<OIDCConfig> oidc;  // NEW: OIDC configuration
     std::unordered_map<std::string, MCPMethodAuthConfig> methods;
+
+    // RFC 9728 protected-resource metadata. `canonical_resource_uri` is the
+    // audience the MCP endpoint identifies as; when empty it is derived at
+    // runtime from the request host + the MCP path. `scopes_supported` is
+    // advertised in the metadata document (optional).
+    std::string canonical_resource_uri;
+    std::vector<std::string> scopes_supported;
 };
 
 struct MCPConfig {
