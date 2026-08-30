@@ -93,9 +93,25 @@ mcp:
         log.close()
 
 
-def _post(base, method, params, id_="x"):
+def _mirror_headers(method, params):
+    """Build the required MCP 2026-07-28 mirrored headers for a modern request."""
+    h = {"Content-Type": "application/json"}
+    meta = params.get("_meta", {})
+    if PV in meta:
+        h["MCP-Protocol-Version"] = meta[PV]
+    h["Mcp-Method"] = method
+    if method in ("tools/call", "prompts/get") and "name" in params:
+        h["Mcp-Name"] = params["name"]
+    elif method == "resources/read" and "uri" in params:
+        h["Mcp-Name"] = params["uri"]
+    return h
+
+
+def _post(base, method, params, id_="x", headers=None):
+    if headers is None:
+        headers = _mirror_headers(method, params)
     return requests.post(f"{base}/mcp/jsonrpc",
-                         headers={"Content-Type": "application/json"},
+                         headers=headers,
                          json={"jsonrpc": "2.0", "id": id_, "method": method, "params": params},
                          timeout=10)
 
@@ -146,11 +162,37 @@ class TestModernEra:
         assert r.status_code == 405
 
     def test_modern_ignores_inbound_session_header(self, server):
-        r = requests.post(f"{server}/mcp/jsonrpc",
-                          headers={"Content-Type": "application/json", "Mcp-Session-Id": "abc"},
+        headers = _mirror_headers("tools/list", {"_meta": MODERN_META})
+        headers["Mcp-Session-Id"] = "abc"
+        r = requests.post(f"{server}/mcp/jsonrpc", headers=headers,
                           json={"jsonrpc": "2.0", "id": 1, "method": "tools/list",
                                 "params": {"_meta": MODERN_META}}, timeout=10)
         assert "Mcp-Session-Id" not in r.headers
+
+    # ---- C8: mirrored header validation ----
+
+    def test_missing_protocol_version_header_is_32020(self, server):
+        # No mirrored headers at all -> HeaderMismatch.
+        r = requests.post(f"{server}/mcp/jsonrpc",
+                          headers={"Content-Type": "application/json"},
+                          json={"jsonrpc": "2.0", "id": 1, "method": "tools/list",
+                                "params": {"_meta": MODERN_META}}, timeout=10)
+        assert r.status_code == 400
+        assert r.json()["error"]["code"] == -32020
+
+    def test_mismatched_method_header_is_32020(self, server):
+        headers = _mirror_headers("tools/list", {"_meta": MODERN_META})
+        headers["Mcp-Method"] = "tools/call"  # lie about the method
+        r = requests.post(f"{server}/mcp/jsonrpc", headers=headers,
+                          json={"jsonrpc": "2.0", "id": 1, "method": "tools/list",
+                                "params": {"_meta": MODERN_META}}, timeout=10)
+        assert r.status_code == 400
+        assert r.json()["error"]["code"] == -32020
+
+    def test_correct_mirrored_headers_accepted(self, server):
+        r = _post(server, "tools/list", {"_meta": MODERN_META})
+        assert r.status_code == 200
+        assert "error" not in r.json()
 
     # ---- legacy coexistence ----
 

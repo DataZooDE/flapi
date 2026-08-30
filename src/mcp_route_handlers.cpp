@@ -3,6 +3,7 @@
 #include "arrow_metrics.hpp"
 #include "mcp_authorization_policy.hpp"
 #include "mcp_schema_builder.hpp"
+#include "mcp_header_validation.hpp"
 #include <iostream>
 #include <sstream>
 #include <optional>
@@ -147,6 +148,54 @@ bool MCPRouteHandlers::applyPagination(const MCPRequest& request, size_t total,
         out_next_cursor = crow::utility::base64encode(cur.dump(), cur.dump().size());
     }
     return true;
+}
+
+std::optional<std::string> MCPRouteHandlers::validateMirroredHeaders(
+    const crow::request& http_req, const MCPRequest& request) const {
+    // MCP-Protocol-Version must be present and equal the _meta version.
+    std::string proto = http_req.get_header_value("MCP-Protocol-Version");
+    if (proto.empty()) {
+        return std::string("Missing required MCP-Protocol-Version header");
+    }
+    if (!mcp::headerMatches(proto, request.meta_protocol_version)) {
+        return std::string("MCP-Protocol-Version header does not match _meta protocolVersion");
+    }
+
+    // Mcp-Method must be present and equal the JSON-RPC method.
+    std::string method_hdr = http_req.get_header_value("Mcp-Method");
+    if (method_hdr.empty()) {
+        return std::string("Missing required Mcp-Method header");
+    }
+    if (!mcp::headerMatches(method_hdr, request.method)) {
+        return std::string("Mcp-Method header does not match the request method");
+    }
+
+    // Mcp-Name mirrors the primary target for name/uri-bearing methods.
+    std::string expected_name;
+    bool name_required = false;
+    auto params = crow::json::load(request.params.dump());
+    if (request.method == "tools/call" || request.method == "prompts/get") {
+        name_required = true;
+        if (params && params.has("name") && params["name"].t() == crow::json::type::String) {
+            expected_name = params["name"].s();
+        }
+    } else if (request.method == "resources/read") {
+        name_required = true;
+        if (params && params.has("uri") && params["uri"].t() == crow::json::type::String) {
+            expected_name = params["uri"].s();
+        }
+    }
+    if (name_required) {
+        std::string name_hdr = http_req.get_header_value("Mcp-Name");
+        if (name_hdr.empty()) {
+            return std::string("Missing required Mcp-Name header");
+        }
+        if (!mcp::headerMatches(name_hdr, expected_name)) {
+            return std::string("Mcp-Name header does not match the request target");
+        }
+    }
+
+    return std::nullopt;
 }
 
 std::string MCPRouteHandlers::buildResourceMetadataUrl(const crow::request& http_req) const {
@@ -324,6 +373,22 @@ void MCPRouteHandlers::registerRoutes(crow::App<crow::CORSHandler, FlapiCorsMidd
                         mcp_response.id = mcp_request->id;
                         mcp_response.error = formatJsonRpcError(
                             -32602, "Missing required _meta clientCapabilities");
+                        mcp_response.http_status = 400;
+                        return createJsonRpcResponse(*mcp_request, mcp_response, std::nullopt);
+                    }
+
+                    // Mirrored-header validation. The modern transport requires
+                    // MCP-Protocol-Version, Mcp-Method and (for name/uri-bearing
+                    // methods) Mcp-Name to mirror the body so an edge proxy can
+                    // route without parsing it. A mismatch or a missing required
+                    // header is -32020 HeaderMismatch / HTTP 400.
+                    if (auto mismatch = validateMirroredHeaders(req, *mcp_request)) {
+                        MCPResponse mcp_response;
+                        mcp_response.id = mcp_request->id;
+                        crow::json::wvalue err;
+                        err["code"] = flapi::mcp::constants::HEADER_MISMATCH;
+                        err["message"] = *mismatch;
+                        mcp_response.error = err.dump();
                         mcp_response.http_status = 400;
                         return createJsonRpcResponse(*mcp_request, mcp_response, std::nullopt);
                     }

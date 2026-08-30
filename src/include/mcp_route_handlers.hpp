@@ -169,6 +169,14 @@ private:
         const std::optional<std::vector<std::string>>& allowed_roles,
         const std::string& entity_label) const;
 
+    // MCP 2026-07-28 mirrored-header validation (modern era only). Checks the
+    // MCP-Protocol-Version / Mcp-Method / Mcp-Name headers against the request
+    // body (with base64-sentinel decoding and numeric equality). Returns a
+    // human-readable mismatch reason, or std::nullopt when all present/required
+    // headers agree with the body.
+    std::optional<std::string> validateMirroredHeaders(const crow::request& http_req,
+                                                       const MCPRequest& request) const;
+
     // RFC 9728: the absolute URL of this server's protected-resource metadata
     // document, derived from the forwarded/Host headers (or the configured
     // canonical resource URI). Used in the WWW-Authenticate challenge.

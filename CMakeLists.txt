@@ -311,6 +311,7 @@ add_library(flapi-lib STATIC
     src/mcp_session_manager.cpp
     src/mcp_client_capabilities.cpp
     src/mcp_schema_builder.cpp
+    src/mcp_header_validation.cpp
     src/config_tool_adapter.cpp
     src/mcp_content_types.cpp
     src/mcp_auth_handler.cpp
