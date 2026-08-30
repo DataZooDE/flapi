@@ -1,6 +1,7 @@
 #include "mcp_route_handlers.hpp"
 #include "json_utils.hpp"
 #include "arrow_metrics.hpp"
+#include "mcp_authorization_policy.hpp"
 #include <iostream>
 #include <sstream>
 #include <optional>
@@ -63,6 +64,35 @@ bool MCPRouteHandlers::extractRequiredStringParam(const crow::json::wvalue& para
     }
 
     return true;
+}
+
+std::optional<std::string> MCPRouteHandlers::authorizeMCPEntity(
+    const crow::request& http_req,
+    const std::optional<std::vector<std::string>>& allowed_roles,
+    const std::string& entity_label) const
+{
+    const bool mcp_auth_enabled = config_manager_ && config_manager_->getMCPConfig().auth.enabled;
+
+    // Demo mode (auth disabled): the startup auditor already warns; keep the
+    // open-by-default behaviour so first-run experiences are unaffected.
+    if (!mcp_auth_enabled) {
+        return std::nullopt;
+    }
+
+    std::vector<std::string> user_roles;
+    if (auth_handler_) {
+        auto auth_context = auth_handler_->authenticate(http_req);
+        if (auth_context) {
+            user_roles = auth_context->roles;
+        }
+    }
+
+    MCPAuthorizationPolicy policy;
+    auto decision = policy.authorizeRoles(allowed_roles, entity_label, user_roles, mcp_auth_enabled);
+    if (decision.allowed) {
+        return std::nullopt;
+    }
+    return decision.reason;
 }
 
 // ========== End helper functions ==========
@@ -147,55 +177,48 @@ void MCPRouteHandlers::registerRoutes(crow::App<crow::CORSHandler, FlapiCorsMidd
 
                 CROW_LOG_DEBUG << "MCP request: method=" << mcp_request->method << ", id=" << mcp_request->id;
 
-                // For initialize requests, perform Layer 1 (protocol) auth BEFORE creating session
+                // Layer 1 (protocol) authorization.
+                //
+                // SECURITY: authentication and method authorization are derived
+                // from the HTTP request on EVERY call and are independent of any
+                // session header. A prior version only ran authorizeMethod inside
+                // the "session header present" branch, so a client that simply
+                // omitted `Mcp-Session-Id` bypassed the check entirely and could
+                // reach resources/read, tools/call, etc. unauthenticated. Sessions
+                // are now a legacy echo only — never an authorization carrier.
                 std::optional<MCPSession::AuthContext> auth_context;
-                if (mcp_request->method == "initialize") {
-                    if (auth_handler_ && auth_handler_->methodRequiresAuth("initialize")) {
-                        auth_context = auth_handler_->authenticate(req);
-                        if (!auth_context) {
+                if (auth_handler_) {
+                    auth_context = auth_handler_->authenticate(req);
+
+                    if (mcp_request->method == "initialize") {
+                        if (auth_handler_->methodRequiresAuth("initialize") && !auth_context) {
                             CROW_LOG_WARNING << "MCP initialize: authentication required but failed";
                             MCPResponse mcp_response;
                             mcp_response.id = mcp_request->id;
                             mcp_response.error = "{\"code\":-32001,\"message\":\"Authentication required for initialize\"}";
-                            return createJsonRpcResponse(*mcp_request, mcp_response, std::nullopt);
+                            return createJsonRpcResponse(*mcp_request, mcp_response, session_id);
                         }
+                    } else if (!auth_handler_->authorizeMethod(mcp_request->method, auth_context)) {
+                        CROW_LOG_WARNING << "MCP method " << mcp_request->method << " requires authentication";
+                        MCPResponse mcp_response;
+                        mcp_response.id = mcp_request->id;
+                        mcp_response.error = "{\"code\":-32001,\"message\":\"Authentication required for method: " +
+                                           mcp_request->method + "\"}";
+                        return createJsonRpcResponse(*mcp_request, mcp_response, session_id);
                     }
                 }
 
-                // Create or reuse session
-                if (!session_id && session_manager_) {
-                    // New session: create with auth context (if authenticated)
-                    session_id = session_manager_->createSession("", auth_context);
-                    CROW_LOG_INFO << "Created new session: " << session_id.value();
-                } else if (session_id) {
-                    CROW_LOG_DEBUG << "Session ID extracted from request: " << session_id.value();
-                    // Update activity timestamp for existing session
-                    if (session_manager_) {
-                        session_manager_->updateSessionActivity(session_id.value());
-                    }
-
-                    // For non-initialize methods on existing session: check session auth
-                    if (mcp_request->method != "initialize") {
-                        auto session = session_manager_->getSession(session_id.value());
-                        if (session) {
-                            auth_context = session->auth_context;
-                        }
-
-                        // Check method authorization (Layer 1: Protocol auth)
-                        if (auth_handler_ && !auth_handler_->authorizeMethod(mcp_request->method, auth_context)) {
-                            CROW_LOG_WARNING << "MCP method " << mcp_request->method << " requires authentication";
-                            MCPResponse mcp_response;
-                            mcp_response.id = mcp_request->id;
-                            mcp_response.error = "{\"code\":-32001,\"message\":\"Authentication required for method: " +
-                                               mcp_request->method + "\"}";
-                            return createJsonRpcResponse(*mcp_request, mcp_response, session_id);
-                        }
-                    }
-                } else {
-                    // New session without auth (should not happen for non-initialize, but handle gracefully)
-                    if (session_manager_) {
+                // Session lifecycle (legacy shim only): mint a session for legacy
+                // clients that expect an `Mcp-Session-Id` back, and keep an
+                // existing one's activity fresh. The session no longer gates
+                // authorization — that happened above, unconditionally.
+                if (session_manager_) {
+                    if (!session_id) {
                         session_id = session_manager_->createSession("", auth_context);
                         CROW_LOG_INFO << "Created new session: " << session_id.value();
+                    } else {
+                        CROW_LOG_DEBUG << "Session ID extracted from request: " << session_id.value();
+                        session_manager_->updateSessionActivity(session_id.value());
                     }
                 }
 
@@ -951,6 +974,19 @@ MCPResponse MCPRouteHandlers::handleResourcesReadRequest(const MCPRequest& reque
             return response;
         }
 
+        // Layer-2 per-resource RBAC. Without this, resources/read executed the
+        // query with no authorization behind the Layer-1 method check — so an
+        // anonymous caller who reached this handler could read any resource's
+        // full result. Runs before executing the query.
+        if (auto denial = authorizeMCPEntity(
+                http_req, resource_config->mcp_resource->allowed_roles,
+                "Resource '" + resource_config->mcp_resource->name + "'")) {
+            CROW_LOG_WARNING << "MCP resources/read denied for '"
+                             << resource_config->mcp_resource->name << "': " << *denial;
+            response.error = formatJsonRpcError(-32001, "Permission denied: " + *denial);
+            return response;
+        }
+
         CROW_LOG_DEBUG << "Reading resource: " << resource_config->mcp_resource->name;
 
         // Read the resource content
@@ -1092,6 +1128,16 @@ MCPResponse MCPRouteHandlers::handlePromptsGetRequest(const MCPRequest& request,
         auto prompt_config = findPromptByName(prompt_name);
         if (!prompt_config) {
             response.error = formatJsonRpcError(-32602, "Prompt not found: " + prompt_name);
+            return response;
+        }
+
+        // Layer-2 per-prompt RBAC (see handleResourcesReadRequest for rationale).
+        if (auto denial = authorizeMCPEntity(
+                http_req, prompt_config->mcp_prompt->allowed_roles,
+                "Prompt '" + prompt_config->mcp_prompt->name + "'")) {
+            CROW_LOG_WARNING << "MCP prompts/get denied for '"
+                             << prompt_config->mcp_prompt->name << "': " << *denial;
+            response.error = formatJsonRpcError(-32001, "Permission denied: " + *denial);
             return response;
         }
 

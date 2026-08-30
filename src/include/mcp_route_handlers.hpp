@@ -145,6 +145,17 @@ private:
     // Initialize an MCPResponse with the request's ID
     static MCPResponse initResponse(const MCPRequest& request);
 
+    // Layer-2 per-entity RBAC for resources and prompts (mirrors the per-tool
+    // policy applied inside MCPToolHandler). Derives the caller's roles from the
+    // HTTP request and applies MCPAuthorizationPolicy against the entity's
+    // allowed-roles. Returns std::nullopt when access is allowed, or a
+    // human-readable denial reason when it is not. `entity_label` is used only
+    // in the reason string (e.g. "Resource 'customer_schema'").
+    std::optional<std::string> authorizeMCPEntity(
+        const crow::request& http_req,
+        const std::optional<std::vector<std::string>>& allowed_roles,
+        const std::string& entity_label) const;
+
     // Validate a required string parameter exists and extract it
     // Returns true if valid, false if error (sets response.error)
     bool extractRequiredStringParam(const crow::json::wvalue& params,

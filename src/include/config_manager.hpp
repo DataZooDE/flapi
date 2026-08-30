@@ -213,6 +213,11 @@ struct EndpointConfig {
         std::string name;
         std::string description;
         std::string mime_type = "application/json";
+
+        // Per-resource RBAC. Same semantics as MCPToolInfo::allowed_roles:
+        // std::nullopt denies by default under mcp.auth.enabled; an explicit
+        // empty vector denies all; with MCP auth disabled the check is skipped.
+        std::optional<std::vector<std::string>> allowed_roles;
     };
 
     struct MCPPromptInfo {
@@ -220,6 +225,9 @@ struct EndpointConfig {
         std::string description;
         std::string template_content;
         std::vector<std::string> arguments;
+
+        // Per-prompt RBAC. See MCPResourceInfo::allowed_roles.
+        std::optional<std::vector<std::string>> allowed_roles;
     };
 
     std::optional<MCPToolInfo> mcp_tool;
