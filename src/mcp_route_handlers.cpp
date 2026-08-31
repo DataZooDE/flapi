@@ -951,23 +951,37 @@ void MCPRouteHandlers::discoverMCPEntitiesImpl() {
     const auto& endpoints = config_manager_->getEndpoints();
     CROW_LOG_INFO << "Found " << endpoints.size() << " total endpoints in config manager";
 
-    if (endpoints.empty()) {
-        CROW_LOG_WARNING << "No endpoints found in config manager - tool discovery will be empty";
-        return;
-    }
-
     for (const auto& endpoint : endpoints) {
-        CROW_LOG_DEBUG << "Checking endpoint: REST=" << endpoint.isRESTEndpoint()
-                       << ", MCPTool=" << endpoint.isMCPTool()
-                       << ", MCPResource=" << endpoint.isMCPResource();
-
         if (endpoint.isMCPTool()) {
-            CROW_LOG_INFO << "Adding MCP tool: " << (endpoint.mcp_tool ? endpoint.mcp_tool->name : "null");
+            CROW_LOG_DEBUG << "Adding MCP tool: " << (endpoint.mcp_tool ? endpoint.mcp_tool->name : "null");
             tool_definitions_.push_back(endpointToMCPToolDefinition(endpoint));
         }
         if (endpoint.isMCPResource()) {
-            CROW_LOG_INFO << "Adding MCP resource: " << (endpoint.mcp_resource ? endpoint.mcp_resource->name : "null");
+            CROW_LOG_DEBUG << "Adding MCP resource: " << (endpoint.mcp_resource ? endpoint.mcp_resource->name : "null");
             resource_definitions_.push_back(endpointToMCPResourceDefinition(endpoint));
+        }
+    }
+
+    // Add the flapi_* config-service tools (independent of endpoints).
+    if (config_tool_adapter_) {
+        try {
+            auto config_tools = config_tool_adapter_->getRegisteredTools();
+            for (const auto& tool : config_tools) {
+                std::string tool_json = "{\"name\":\"";
+                tool_json += tool.name + "\",\"description\":\"";
+                tool_json += tool.description + "\",";
+                tool_json += "\"inputSchema\":" + tool.input_schema.dump() + ",";
+                tool_json += "\"outputSchema\":" + tool.output_schema.dump() + "}";
+                auto tool_def = crow::json::load(tool_json);
+                if (tool_def) {
+                    tool_definitions_.push_back(std::move(tool_def));
+                } else {
+                    CROW_LOG_WARNING << "Failed to parse JSON for config tool: " << tool.name;
+                }
+            }
+            CROW_LOG_INFO << "Loaded " << config_tools.size() << " config tools";
+        } catch (const std::exception& e) {
+            CROW_LOG_WARNING << "Failed to load config tools: " << e.what();
         }
     }
 
@@ -1397,11 +1411,10 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                     crow::json::wvalue mcp_result = content_response.toJson();
                     response.result = mcp_result.dump();
                 } else {
-                    // Config-tool execution failure is model-actionable → isError.
-                    mcp::ContentResponse content_response;
-                    content_response.addText("Tool execution failed: " + config_result.error_message);
-                    content_response.setError(true);
-                    response.result = content_response.toJson().dump();
+                    // Config-service (flapi_*) tools are management operations;
+                    // their failures stay JSON-RPC errors (isError is reserved for
+                    // data/endpoint tool execution the model can self-correct).
+                    response.error = formatJsonRpcError(-32603, "Tool execution failed: " + config_result.error_message);
                 }
             } else {
                 response.error = formatJsonRpcError(-32603, "Tool execution failed: Config tools not available");
