@@ -209,3 +209,12 @@ class TestModernEra:
     def test_legacy_ping_still_works(self, server):
         r = _post(server, "ping", {})
         assert "error" not in r.json()
+
+    @pytest.mark.parametrize("method", ["server/discover", "tasks/get", "tasks/cancel"])
+    def test_modern_only_methods_are_not_found_on_legacy_path(self, server, method):
+        # A legacy request (no _meta) must see modern-only methods as -32601,
+        # not receive task data or a modern error.
+        r = requests.post(f"{server}/mcp/jsonrpc", headers={"Content-Type": "application/json"},
+                          json={"jsonrpc": "2.0", "id": 1, "method": method,
+                                "params": {"taskId": "x"}}, timeout=10)
+        assert r.json()["error"]["code"] == -32601

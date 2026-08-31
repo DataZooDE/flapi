@@ -97,7 +97,10 @@ void MCPTaskManager::recoverTasks() {
             "error_message='server restarted while task was running' "
             "WHERE status='working'");
         auto rows = sql_exec_("SELECT task_id, tool_name, principal, status, ttl_ms, "
-                              "poll_interval_ms, result_json, error_message FROM flapi_mcp_tasks");
+                              "poll_interval_ms, result_json, error_message, updated_at_ms "
+                              "FROM flapi_mcp_tasks");
+        const auto now_wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
         std::lock_guard<std::mutex> lock(mu_);
         for (const auto& r : rows) {
             auto entry = std::make_shared<Entry>();
@@ -109,7 +112,15 @@ void MCPTaskManager::recoverTasks() {
             entry->task.tool_name = get("tool_name");
             entry->task.principal = get("principal");
             entry->task.status = statusFromString(get("status"));
-            entry->task.created_at = std::chrono::steady_clock::now();
+            // Reconstruct created_at so the recovered task keeps its ORIGINAL age
+            // (steady_clock can't be persisted, so age it by wall-clock elapsed
+            // since the last persisted update) — otherwise recovery would reset
+            // every task's TTL window.
+            const int64_t updated_ms = std::atoll(get("updated_at_ms").c_str());
+            const int64_t elapsed_ms = (updated_ms > 0 && now_wall_ms > updated_ms)
+                ? (now_wall_ms - updated_ms) : 0;
+            entry->task.created_at = std::chrono::steady_clock::now()
+                - std::chrono::milliseconds(elapsed_ms);
             entry->task.ttl_ms = std::atoll(get("ttl_ms").c_str());
             entry->task.poll_interval_ms = std::atoll(get("poll_interval_ms").c_str());
             entry->task.result_json = get("result_json");
@@ -132,7 +143,8 @@ MCPTaskManager::~MCPTaskManager() {
 }
 
 std::string MCPTaskManager::newTaskId() {
-    static std::mt19937_64 rng{std::random_device{}()};
+    // thread_local so concurrent submit() calls never race on the RNG.
+    thread_local std::mt19937_64 rng{std::random_device{}()};
     std::uniform_int_distribution<uint64_t> dist;
     std::ostringstream oss;
     oss << std::hex << std::setw(16) << std::setfill('0') << dist(rng)
@@ -241,12 +253,24 @@ bool MCPTaskManager::get(const std::string& task_id, const std::string& principa
         found = false;
         return false;
     }
+    const auto& t = it->second->task;
+    // Enforce TTL on read too (not only during submit's sweep): a terminal task
+    // past its TTL must not keep returning potentially sensitive results on an
+    // otherwise idle server.
+    if (t.ttl_ms > 0 && t.status != Status::Working) {
+        const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - t.created_at).count();
+        if (age > t.ttl_ms) {
+            found = false;
+            return false;
+        }
+    }
     found = true;
     // A taskId is a name, not a capability: re-check ownership on every poll.
-    if (it->second->task.principal != principal) {
+    if (t.principal != principal) {
         return false;
     }
-    out = it->second->task;
+    out = t;
     return true;
 }
 

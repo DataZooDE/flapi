@@ -1025,10 +1025,16 @@ MCPResponse MCPRouteHandlers::handleMessage(const MCPRequest& request, const cro
         // + per-request _meta), ping and logging/setLevel (log level is per-
         // request _meta now). Reject them on the modern path; keep them on legacy.
         const bool modern = request.modern_era;
-        if (modern && (request.method == "initialize" || request.method == "ping"
-                       || request.method == "logging/setLevel")) {
-            response.error = "{\"code\":-32601,\"message\":\"Method not available on the 2026-07-28 path: "
-                             + request.method + "\"}";
+        // Methods that exist only on one era. Modern-only methods (server/discover
+        // and the tasks extension) return -32601 on the legacy path so a legacy
+        // client sees a normal "method not found"; legacy-only methods
+        // (initialize, ping, logging/setLevel) return -32601 on the modern path.
+        const bool is_modern_only = request.method == "server/discover"
+            || request.method == "tasks/get" || request.method == "tasks/cancel";
+        const bool is_legacy_only = request.method == "initialize"
+            || request.method == "ping" || request.method == "logging/setLevel";
+        if ((modern && is_legacy_only) || (!modern && is_modern_only)) {
+            response.error = "{\"code\":-32601,\"message\":\"Method not found: " + request.method + "\"}";
         } else if (request.method == "server/discover") {
             response = handleServerDiscoverRequest(request, http_req);
         } else if (request.method == "tasks/get") {
