@@ -7,7 +7,7 @@ flAPI is a powerful service that automatically generates read-only APIs for data
 ## ⚡ Features
 
 - **Automatic API Generation**: Create APIs for your datasets without coding
-- **MCP (Model Context Protocol) Support**: Declarative creation of AI tools alongside REST endpoints — with **per-tool RBAC** (`allowed-roles`), **shadow/dry-run** (`_dryRun: true`), **response shaping** (`max-rows` / `redact-columns` / `sample`), **per-tool rate limit**, and a **tool-description hygiene scanner** for prompt-injection attempts
+- **MCP (Model Context Protocol) Support**: Declarative AI tools alongside REST endpoints, speaking the latest **MCP `2026-07-28`** revision (dual-era: modern *and* legacy clients) — with the **Tasks extension** for long-running queries, **typed schemas + structured results**, **OAuth discovery**, **per-tool RBAC**, **shadow/dry-run**, **response shaping**, **rate limiting**, and a **prompt-injection hygiene scanner**
 - **Multiple Data Sources**: Connect to [BigQuery](https://github.com/hafenkran/duckdb-bigquery), SAP ERP & BW (via [ERPL](https://github.com/datazoode/erpl)), Parquet, [Iceberg](https://github.com/duckdb/duckdb_iceberg), [Postgres](https://github.com/duckdb/postgres_scanner), [MySQL](https://github.com/duckdb/duckdb_mysql), and more
 - **SQL Templates**: Mustache-like syntax. Typed `{{ params.X }}` references on `int`/`double`/`boolean`/`date`/`time`/`uuid`/`enum`/`email`/`string` fields are bound as **DuckDB prepared statements** — SQL injection is structurally impossible for those sites
 - **Caching**: DuckLake-backed cache with full refresh and incremental sync
@@ -133,13 +133,16 @@ flAPI now supports the **Model Context Protocol (MCP)** in a **unified configura
 
 ### Key Features
 
+- **MCP `2026-07-28` (dual-era)**: serves the latest stateless MCP revision (`server/discover`, per-request metadata, cacheable results, OAuth discovery via RFC 9728) **alongside** the legacy `initialize`/session protocol — existing clients keep working unchanged
+- **Long-running tools (Tasks extension)**: mark a tool `async` and slow queries return a task handle immediately instead of blocking the connection; the durable task store survives a restart, with `tasks/get` / `tasks/cancel` and per-caller isolation
+- **Typed, structured tool contracts**: tool parameters advertise real types and constraints (int ranges, dates, uuid, enum, …), results carry machine-readable `structuredContent`, an `outputSchema` is learned after first use, and failures return actionable `isError` results the model can self-correct from
 - **Unified Configuration**: Single YAML files can define REST endpoints, MCP tools, and MCP resources
 - **Automatic Detection**: Configuration type is determined by presence of `url-path` (REST), `mcp-tool` (MCP tool), or `mcp-resource` (MCP resource)
 - **Shared Components**: MCP tools and resources use the same SQL templates, parameter validation, authentication, and caching as REST endpoints
-- **Concurrent Servers**: REST API (port 8080) and MCP server (port 8081) run simultaneously
-- **Declarative Definition**: Define everything using YAML configuration with SQL templatestocol
-- **Tool Discovery**: Automatic tool discovery and schema generation
-- **Security Integration**: Reuse existing authentication, rate limiting, and caching features
+- **Security Integration**: method authorization enforced on every request, per-tool/resource/prompt RBAC (`allowed-roles`), shadow/dry-run (`_dryRun`), response shaping, per-tool rate limiting, and a tool-description hygiene scanner
+- **Tool Discovery**: automatic tool discovery, pagination, resource templates (`flapi://customers/{id}`), and `x-mcp-header` for per-tenant edge routing
+
+See [docs/MCP_REFERENCE.md](docs/MCP_REFERENCE.md) — the dual-era model and all new capabilities are documented in §11.
 
 ### MCP Endpoints
 
