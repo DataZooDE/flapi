@@ -101,18 +101,12 @@ private:
     MCPResponse dispatchMCPRequest(const MCPRequest& request, const crow::request& http_req) const;
 
 
-    // Tool and resource discovery from unified configuration
-    void discoverMCPEntities();
-    std::vector<crow::json::wvalue> getToolDefinitions() const;
-    std::vector<crow::json::wvalue> getResourceDefinitions() const;
-
-    // Tool and resource discovery (const versions)
-    void discoverMCPEntities() const;
+    // Tool and resource discovery from unified configuration. A single
+    // implementation (discoverMCPEntitiesImpl) populates tool_definitions_ /
+    // resource_definitions_; callers read them via the *FromConfig accessors.
+    void discoverMCPEntitiesImpl();
     std::vector<crow::json::wvalue> getToolDefinitionsFromConfig() const;
     std::vector<crow::json::wvalue> getResourceDefinitionsFromConfig() const;
-
-    // Implementation methods (internal)
-    void discoverMCPEntitiesImpl();
     std::vector<crow::json::wvalue> getToolDefinitionsImpl() const;
     std::vector<crow::json::wvalue> getResourceDefinitionsImpl() const;
 
@@ -216,6 +210,17 @@ private:
     // paging over a changed list.
     std::atomic<uint64_t> entity_generation_{0};
     mutable std::mutex state_mutex_;
+
+    // Per-tool outputSchema learned from the first successful tools/call result
+    // (flAPI cannot know a parameterised query's result columns statically, so
+    // the schema is derived from real data and cached, then merged into
+    // tools/list). Cleared on refreshMCPEntities().
+    mutable std::mutex output_schema_mu_;
+    mutable std::unordered_map<std::string, std::string> output_schema_cache_;
+    // Infer and cache an outputSchema (JSON Schema string) for `tool_name` from
+    // the serialized row array `rows_json`, if not already cached.
+    void cacheOutputSchemaFromRows(const std::string& tool_name, const std::string& rows_json) const;
+    std::string getCachedOutputSchema(const std::string& tool_name) const;
 
     // Dependencies
     std::shared_ptr<ConfigManager> config_manager_;

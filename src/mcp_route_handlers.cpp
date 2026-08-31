@@ -295,7 +295,7 @@ MCPRouteHandlers::MCPRouteHandlers(std::shared_ptr<ConfigManager> config_manager
     // Discover MCP entities from unified configuration
     // Note: This might fail if endpoints are not yet loaded. We'll retry later if needed.
     try {
-        discoverMCPEntities();
+        discoverMCPEntitiesImpl();
         CROW_LOG_DEBUG << "MCP entities discovered successfully: " << tool_definitions_.size() << " tools, " << resource_definitions_.size() << " resources";
     } catch (const std::exception& e) {
         CROW_LOG_WARNING << "Failed to discover MCP entities during construction: " << e.what();
@@ -602,9 +602,69 @@ void MCPRouteHandlers::registerRoutes(crow::App<crow::CORSHandler, FlapiCorsMidd
     CROW_LOG_INFO << "MCP routes registered with application";
 }
 
+void MCPRouteHandlers::cacheOutputSchemaFromRows(const std::string& tool_name,
+                                                const std::string& rows_json) const {
+    {
+        std::lock_guard<std::mutex> lock(output_schema_mu_);
+        if (output_schema_cache_.count(tool_name)) {
+            return;  // already learned
+        }
+    }
+    auto rows = crow::json::load(rows_json);
+    if (!rows || rows.t() != crow::json::type::List || rows.size() == 0) {
+        return;
+    }
+    auto first = rows[0];
+    if (first.t() != crow::json::type::Object) {
+        return;
+    }
+
+    // Infer a JSON Schema for one row from the first row's value types, then the
+    // full result shape as {rows: array<row>, row_count: integer}.
+    crow::json::wvalue row_props = crow::json::wvalue::object();
+    for (const auto& key : first.keys()) {
+        crow::json::wvalue col;
+        switch (first[key].t()) {
+            case crow::json::type::Number: {
+                // Distinguish integer from fractional where possible.
+                double d = first[key].d();
+                col["type"] = (d == static_cast<double>(static_cast<int64_t>(d))) ? "integer" : "number";
+                break;
+            }
+            case crow::json::type::True:
+            case crow::json::type::False:  col["type"] = "boolean"; break;
+            case crow::json::type::String: col["type"] = "string"; break;
+            case crow::json::type::List:   col["type"] = "array"; break;
+            case crow::json::type::Object: col["type"] = "object"; break;
+            default: break;  // null/unknown: leave type unset
+        }
+        row_props[key] = std::move(col);
+    }
+
+    crow::json::wvalue schema;
+    schema["type"] = "object";
+    schema["properties"]["rows"]["type"] = "array";
+    schema["properties"]["rows"]["items"]["type"] = "object";
+    schema["properties"]["rows"]["items"]["properties"] = std::move(row_props);
+    schema["properties"]["row_count"]["type"] = "integer";
+
+    std::lock_guard<std::mutex> lock(output_schema_mu_);
+    output_schema_cache_.emplace(tool_name, schema.dump());
+}
+
+std::string MCPRouteHandlers::getCachedOutputSchema(const std::string& tool_name) const {
+    std::lock_guard<std::mutex> lock(output_schema_mu_);
+    auto it = output_schema_cache_.find(tool_name);
+    return it == output_schema_cache_.end() ? std::string() : it->second;
+}
+
 void MCPRouteHandlers::refreshMCPEntities() {
     try {
-        discoverMCPEntities();
+        discoverMCPEntitiesImpl();
+        {
+            std::lock_guard<std::mutex> lock(output_schema_mu_);
+            output_schema_cache_.clear();  // schemas may change with the config
+        }
         // Invalidate outstanding pagination cursors: a cursor minted against the
         // previous list must not silently page over a changed one.
         entity_generation_.fetch_add(1, std::memory_order_relaxed);
@@ -838,11 +898,6 @@ crow::response MCPRouteHandlers::createJsonRpcErrorResponse(const std::string& i
     return response;
 }
 
-void MCPRouteHandlers::discoverMCPEntities() const {
-    // Create non-const copy to call the implementation
-    const_cast<MCPRouteHandlers*>(this)->discoverMCPEntitiesImpl();
-}
-
 std::vector<crow::json::wvalue> MCPRouteHandlers::getToolDefinitionsFromConfig() const {
     auto tools = getToolDefinitionsImpl();
     CROW_LOG_DEBUG << "getToolDefinitionsFromConfig returning " << tools.size() << " tools";
@@ -853,75 +908,6 @@ std::vector<crow::json::wvalue> MCPRouteHandlers::getResourceDefinitionsFromConf
     return getResourceDefinitionsImpl();
 }
 
-void MCPRouteHandlers::discoverMCPEntities() {
-    CROW_LOG_INFO << "Starting MCP entity discovery...";
-    std::lock_guard<std::mutex> lock(state_mutex_);
-
-    tool_definitions_.clear();
-    resource_definitions_.clear();
-
-    const auto& endpoints = config_manager_->getEndpoints();
-    CROW_LOG_DEBUG << "Found " << endpoints.size() << " total endpoints";
-
-    for (const auto& endpoint : endpoints) {
-        //CROW_LOG_DEBUG << "Checking endpoint: REST=" << endpoint.isRESTEndpoint()
-        //               << ", MCPTool=" << endpoint.isMCPTool()
-        //               << ", MCPResource=" << endpoint.isMCPResource();
-
-        if (endpoint.isMCPTool()) {
-            CROW_LOG_DEBUG << "Adding MCP tool: " << (endpoint.mcp_tool ? endpoint.mcp_tool->name : "null");
-            tool_definitions_.push_back(endpointToMCPToolDefinition(endpoint));
-        }
-        if (endpoint.isMCPResource()) {
-            CROW_LOG_DEBUG << "Adding MCP resource: " << (endpoint.mcp_resource ? endpoint.mcp_resource->name : "null");
-            resource_definitions_.push_back(endpointToMCPResourceDefinition(endpoint));
-        }
-    }
-
-    // Add config tools if ConfigToolAdapter is available
-    if (config_tool_adapter_) {
-        try {
-            auto config_tools = config_tool_adapter_->getRegisteredTools();
-            CROW_LOG_DEBUG << "Adding " << config_tools.size() << " config tools";
-            for (const auto& tool : config_tools) {
-                // Build JSON representation of the config tool
-                // We manually construct the JSON to avoid wvalue copy issues
-                std::string tool_json = "{\"name\":\"";
-                tool_json += tool.name + "\",\"description\":\"";
-                tool_json += tool.description + "\",";
-                tool_json += "\"inputSchema\":" + tool.input_schema.dump() + ",";
-                tool_json += "\"outputSchema\":" + tool.output_schema.dump() + "}";
-
-                // Parse the constructed JSON back to wvalue
-                auto tool_def = crow::json::load(tool_json);
-                if (tool_def) {
-                    tool_definitions_.push_back(std::move(tool_def));
-                    CROW_LOG_DEBUG << "Added config tool: " << tool.name;
-                } else {
-                    CROW_LOG_WARNING << "Failed to parse JSON for config tool: " << tool.name;
-                }
-            }
-            CROW_LOG_INFO << "Successfully loaded " << config_tools.size() << " config tools";
-        } catch (const std::exception& e) {
-            CROW_LOG_WARNING << "Failed to load config tools: " << e.what();
-        }
-    }
-
-    CROW_LOG_INFO << "Discovered " << tool_definitions_.size() << " MCP tools and "
-                   << resource_definitions_.size() << " MCP resources";
-}
-
-std::vector<crow::json::wvalue> MCPRouteHandlers::getToolDefinitions() const {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    return tool_definitions_;
-}
-
-std::vector<crow::json::wvalue> MCPRouteHandlers::getResourceDefinitions() const {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    return resource_definitions_;
-}
-
-// Implementation methods for const access
 void MCPRouteHandlers::discoverMCPEntitiesImpl() {
     CROW_LOG_DEBUG << "Starting MCP entity discovery...";
     std::lock_guard<std::mutex> lock(state_mutex_);
@@ -1301,7 +1287,17 @@ MCPResponse MCPRouteHandlers::handleToolsListRequest(const MCPRequest& request, 
         crow::json::wvalue tools_array = crow::json::wvalue::list();
 
         for (size_t i = 0; i < count; ++i) {
-            tools_array[i] = crow::json::wvalue(tool_definitions[offset + i]);
+            auto def = crow::json::load(tool_definitions[offset + i].dump());
+            crow::json::wvalue tool_def(def);
+            // Attach a learned outputSchema when this tool has been called at
+            // least once (endpoint tools only; config tools carry their own).
+            if (def && def.has("name") && !def.has("outputSchema")) {
+                std::string schema = getCachedOutputSchema(def["name"].s());
+                if (!schema.empty()) {
+                    tool_def["outputSchema"] = crow::json::load(schema);
+                }
+            }
+            tools_array[i] = std::move(tool_def);
         }
 
         result["tools"] = std::move(tools_array);
@@ -1502,6 +1498,9 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                         }
                         content_response.setStructuredContent(std::move(structured));
                     }
+                    // Learn this tool's outputSchema from the real result columns
+                    // so a subsequent tools/list can advertise it.
+                    cacheOutputSchemaFromRows(tool_name, result.result);
 
                     crow::json::wvalue mcp_result = content_response.toJson();
                     response.result = mcp_result.dump();
