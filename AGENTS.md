@@ -1357,18 +1357,22 @@ The binary is statically linked with all dependencies and can be deployed to any
 
 ### PyPI Wheels
 
-Both `flapi` (server) and `flapii` (CLI) are distributed as platform-specific Python wheels, installable via pip:
+Both the `flapi` server and the `flapii` CLI ship inside a **single** PyPI
+package, `flapi-io`. Installing it provides both console commands:
 
 ```bash
-pip install flapi-io    # SQL-to-API server
-pip install flapii      # CLI client
+pip install flapi-io    # installs both `flapi` (server) and `flapii` (CLI)
 ```
 
-Wheels are built automatically during release using [bin-to-wheel](https://github.com/DataZooDE/bin-to-wheel).
+The `flapi_io` wheel bundles both binaries (`flapi_io/bin/flapi` and
+`flapi_io/bin/flapii`) and declares console-script entry points for each
+(`flapi = flapi_io:main_flapi`, `flapii = flapi_io:main_flapii`). Wheels are
+built automatically during release using
+[bin-to-wheel](https://github.com/DataZooDE/bin-to-wheel).
 
-**Package names on PyPI:**
-- `flapi-io` — the server ("flapi" was taken on PyPI)
-- `flapii` — the TypeScript CLI client
+**Package name on PyPI:**
+- `flapi-io` — the only published package ("flapi" was taken on PyPI); carries
+  both the server and the CLI. There is **no** separate `flapii` PyPI package.
 
 ## Release Process
 
@@ -1391,12 +1395,12 @@ Versioning: `v*` tags (e.g., `v0.5.0`). Tag push triggers the full release pipel
 
 1. Ensure all CI builds pass on `main` (`gh run list`)
 2. Tag and push: `git tag v{version} && git push origin v{version}`
-3. `.github/workflows/release.yaml` triggers on `v*` tag push:
-   - Downloads build artifacts (4 flapi + 4 flapii binaries)
+3. `.github/workflows/build.yaml` triggers on `v*` tag push (there is no separate `release.yaml`):
+   - Downloads build artifacts (4 flapi server + 4 flapii CLI binaries)
    - Creates archive assets (`.tar.gz` for Unix, `.zip` for Windows)
-   - Builds 8 Python wheels via `bin-to-wheel` (4 flapi-io + 4 flapii)
-   - Creates GitHub Release with all archives and wheels
-   - Publishes wheels to PyPI via trusted publishing (OIDC)
+   - Builds **4** `flapi_io` Python wheels via `bin-to-wheel`, each bundling both the flapi and flapii binaries for that platform
+   - Creates the GitHub Release with the archives and wheels
+   - Publishes the `flapi-io` wheels to PyPI via trusted publishing (OIDC)
 
 ### PyPI Trusted Publishing Setup
 
@@ -1404,14 +1408,13 @@ Uses OIDC trusted publishing — no API tokens needed. Configuration:
 
 | Package | GitHub Environment | PyPI Pending Publisher |
 |---------|-------------------|----------------------|
-| `flapi-io` | `pypi-flapi-io` | DataZooDE/flapi, release.yaml, pypi-flapi-io |
-| `flapii` | `pypi-flapii` | DataZooDE/flapi, release.yaml, pypi-flapii |
+| `flapi-io` | `pypi-flapi-io` | DataZooDE/flapi, build.yaml, pypi-flapi-io |
 
-Each package needs a separate GitHub environment because PyPI requires unique `(owner, repo, workflow, environment)` tuples for trusted publishers.
+Only `flapi-io` is published (it carries both the server and the CLI), so a single trusted-publisher environment is needed.
 
 ### Wheel Output
 
-Each release produces 8 wheels:
+Each release produces **4** `flapi_io` wheels (one per platform), each bundling both the `flapi` and `flapii` binaries:
 
 | Package | Platform | Wheel platform tag |
 |---------|----------|--------------------|
@@ -1419,10 +1422,6 @@ Each release produces 8 wheels:
 | `flapi-io` | Linux ARM64 | `manylinux_2_17_aarch64` |
 | `flapi-io` | macOS ARM64 | `macosx_11_0_arm64` |
 | `flapi-io` | Windows x64 | `win_amd64` |
-| `flapii` | Linux x86_64 | `manylinux_2_17_x86_64` |
-| `flapii` | Linux ARM64 | `manylinux_2_17_aarch64` |
-| `flapii` | macOS ARM64 | `macosx_11_0_arm64` |
-| `flapii` | Windows x64 | `win_amd64` |
 
 ### flapii Build Process
 
