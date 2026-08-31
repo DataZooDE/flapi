@@ -1,10 +1,16 @@
 # flAPI - MCP Protocol Reference
 
 **Version:** 1.0.0
-**Protocol Version:** 2025-11-25
+**Protocol Versions:** 2026-07-28 (modern, stateless) and 2024-11-05 … 2025-11-25 (legacy) — flAPI is a **dual-era** server
 **flAPI Version:** >= 1.0.0
 
 This document provides a comprehensive reference for flAPI's MCP (Model Context Protocol) implementation, covering protocol details, configuration, and usage.
+
+> **Dual-era at a glance.** flAPI serves the modern **MCP 2026-07-28** stateless
+> path and the legacy `initialize` + session path from the same endpoint. A
+> request is treated as *modern* when it carries
+> `params._meta["io.modelcontextprotocol/protocolVersion"]`; otherwise it takes
+> the legacy path, which is unchanged. See [§11](#11-mcp-2026-07-28-dual-era).
 
 ---
 
@@ -1582,6 +1588,155 @@ class AuthenticatedMCPClient(FlapiMCPClient):
 
         # ... rest of implementation
 ```
+
+---
+
+## 11. MCP 2026-07-28 (dual-era)
+
+flAPI serves the **MCP 2026-07-28** revision alongside the legacy protocol from
+the same `/mcp/jsonrpc` endpoint. There is no separate port or path, and legacy
+clients are unaffected.
+
+### 11.1 Era selection
+
+A request is **modern** when its `params._meta` contains
+`io.modelcontextprotocol/protocolVersion`. Modern requests are stateless and
+follow the rules below; every other request is **legacy** and behaves exactly
+as documented in §§3–10.
+
+Modern preamble (`params._meta`):
+
+| Key | Required | Notes |
+|---|---|---|
+| `io.modelcontextprotocol/protocolVersion` | yes | must be one flAPI supports, else `-32022` + `data.supported`, HTTP 400 |
+| `io.modelcontextprotocol/clientCapabilities` | yes | missing → `-32602`, HTTP 400; `extensions` object declares e.g. the tasks extension |
+| `io.modelcontextprotocol/clientInfo` | no | informational |
+| `io.modelcontextprotocol/logLevel` | no | per-request log level |
+
+### 11.2 server/discover
+
+The modern replacement for `initialize`. Publicly reachable (no auth) so a
+client can discover how to authenticate. Returns `supportedVersions`,
+`capabilities` (including `extensions.io.modelcontextprotocol/tasks`),
+`instructions`, and `_meta.serverInfo`, with `ttlMs: 3600000` / `cacheScope: public`.
+
+### 11.3 Result envelope
+
+Every modern result carries `resultType` (`"complete"`, or `"task"` for an async
+`tools/call`) and `_meta.io.modelcontextprotocol/serverInfo`. Cacheable results
+(`server/discover`, the `*_list` methods, `resources/read`) also carry `ttlMs`
+and `cacheScope` (`public` for discovery, `private` for lists).
+
+### 11.4 Mirrored headers
+
+Modern Streamable-HTTP POSTs MUST mirror the request into headers so an edge
+proxy can route without parsing the body:
+
+- `MCP-Protocol-Version` — equals the `_meta` protocol version
+- `Mcp-Method` — equals the JSON-RPC method
+- `Mcp-Name` — `params.name` (tools/call, prompts/get) or `params.uri` (resources/read)
+
+Values may be base64-sentinel encoded (`=?base64?<b64>?=`) for non-ASCII, and
+integers compare numerically. A missing required header or a mismatch is
+`-32020` HeaderMismatch, HTTP 400. Legacy requests are exempt.
+
+### 11.5 Statelessness and removed methods
+
+On the modern path flAPI never mints or echoes `Mcp-Session-Id` and ignores any
+inbound one. `ping` and `logging/setLevel` are removed (`-32601`); `GET`
+`/mcp/jsonrpc` returns `405`. The legacy path keeps sessions, `ping`,
+`logging/setLevel` and `initialize`.
+
+### 11.6 OAuth discovery (RFC 9728)
+
+When `mcp.auth.type: oidc` is configured, flAPI serves
+`GET /.well-known/oauth-protected-resource` advertising the authorization server
+(the OIDC issuer). Authentication failures return HTTP `401` with
+`WWW-Authenticate: Bearer[ resource_metadata="…"]`; authorization (role) denials
+return HTTP `403` with `error="insufficient_scope"`.
+
+```yaml
+mcp:
+  auth:
+    type: oidc
+    canonical-resource-uri: https://api.example.com/mcp/jsonrpc  # optional; else derived from Host
+    scopes-supported: [mcp.read, mcp.write]                      # optional
+    oidc:
+      issuer-url: https://accounts.example.com
+```
+
+### 11.7 Tasks extension (long-running tools)
+
+A tool can run as a durable task so multi-minute queries do not block the
+request connection. A task is used only when the request is modern **and** the
+client declared `io.modelcontextprotocol/tasks` in `clientCapabilities.extensions`
+**and** the tool opts in; otherwise the call is synchronous (legacy clients
+never see a task).
+
+```yaml
+mcp-tool:
+  name: sap_revenue_by_region
+  description: Revenue by region
+  async: true              # return a taskId immediately
+  # async-after-ms: 5000   # or: run synchronously, degrade to a task after 5s
+```
+
+Flow: `tools/call` returns `resultType: "task"` with `{ task: { taskId, status,
+pollIntervalMs, ttlMs } }`. The client polls `tasks/get` (`{taskId}`) until
+`status` is `completed` (the tool result is under `result`), `failed` (`error`),
+or `cancelled`. `tasks/cancel` (`{taskId}`) requests cancellation. A `taskId` is
+scoped to its creating principal — `tasks/get`/`tasks/cancel` re-check ownership.
+A task result stops being returned once it is past `ttlMs`.
+
+> **Cancellation is cooperative.** `tasks/cancel` cancels a task that has not
+> started yet and marks a running one for cancellation, but it cannot interrupt a
+> SQL statement already executing — that query runs to completion (and, for a
+> write tool, may commit) before the task is marked `cancelled`. Interrupting an
+> in-flight query (via `duckdb_interrupt`) is a planned follow-up. `server/discover`
+> and the `tasks/*` methods are modern-only; a legacy request sees `-32601`.
+
+```yaml
+mcp:
+  tasks:
+    workers: 2              # concurrent background workers
+    queue-depth: 32         # max queued tasks before backpressure
+    default-ttl-ms: 3600000 # terminal-task retention
+    poll-interval-ms: 1000  # suggested client poll interval
+```
+
+> **Durability:** tasks are persisted to a `flapi_mcp_tasks` table in the
+> configured DuckDB and recovered on startup, so they survive a restart when
+> `duckdb.db_path` is a **file** (with an in-memory database the table is
+> recreated empty each start). A task left `working` by a crash is recovered as
+> `failed` (its query did not survive the process).
+
+### 11.8 x-mcp-header (parameter mirroring)
+
+A request field can be annotated so the client mirrors it into an
+`Mcp-Param-<name>` header for edge routing/rate-limiting:
+
+```yaml
+request:
+  - field-name: tenant
+    field-in: query
+    mcp-header: Tenant     # emitted as "x-mcp-header": "Tenant" in the tool schema
+```
+
+Header names must be valid tokens, unique per endpoint (case-insensitive), and
+must never mirror a secret (the config load fails otherwise) — header values are
+visible to every intermediary.
+
+### 11.9 Other conformance notes
+
+- **Pagination:** `mcp.page-size` (default 0 = off) enables opaque `cursor` /
+  `nextCursor` on the list methods; a cursor minted before a config reload is
+  rejected with `-32602`.
+- **Notifications:** a JSON-RPC request with no `id` gets HTTP 202 and no body.
+- **`listChanged`** is advertised as `false` (flAPI has no notification transport).
+- **`completion/complete`** results are wrapped under a `completion` key.
+- **Resource templates:** `mcp-resource.uri-template` (e.g. `flapi://customers/{id}`)
+  exposes a resource in `resources/templates/list` and binds path variables on
+  `resources/read`.
 
 ---
 

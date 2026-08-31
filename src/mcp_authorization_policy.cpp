@@ -45,6 +45,18 @@ MCPAuthorizationPolicy::Decision MCPAuthorizationPolicy::authorize(
         return {true, {}};
     }
 
+    return authorizeRoles(tool.mcp_tool->allowed_roles,
+                          "Tool '" + tool.mcp_tool->name + "'",
+                          user_roles,
+                          mcp_auth_enabled);
+}
+
+MCPAuthorizationPolicy::Decision MCPAuthorizationPolicy::authorizeRoles(
+    const std::optional<std::vector<std::string>>& allowed_roles,
+    const std::string& entity_label,
+    const std::vector<std::string>& user_roles,
+    bool mcp_auth_enabled) const
+{
     // When the server has MCP auth turned off, the operator has opted into
     // the open-by-default demo mode. The startup auditor warns about this;
     // honour it here so first-run experiences keep working.
@@ -52,25 +64,23 @@ MCPAuthorizationPolicy::Decision MCPAuthorizationPolicy::authorize(
         return {true, {}};
     }
 
-    const auto& allowed = tool.mcp_tool->allowed_roles;
-    if (!allowed.has_value()) {
+    if (!allowed_roles.has_value()) {
         return {
             false,
-            "Tool '" + tool.mcp_tool->name + "' has no mcp-tool.allowed-roles "
-            "configured while mcp.auth.enabled is true. Add allowed-roles to "
-            "the endpoint config to expose this tool, or disable mcp.auth to "
-            "allow anonymous access."
+            entity_label + " has no allowed-roles configured while "
+            "mcp.auth.enabled is true. Add allowed-roles to the endpoint "
+            "config to expose it, or disable mcp.auth to allow anonymous access."
         };
     }
 
-    if (anyRoleMatches(user_roles, *allowed)) {
+    if (anyRoleMatches(user_roles, *allowed_roles)) {
         return {true, {}};
     }
 
     return {
         false,
-        "Tool '" + tool.mcp_tool->name + "' requires one of [" +
-        formatRoleList(*allowed) + "]; caller has [" +
+        entity_label + " requires one of [" +
+        formatRoleList(*allowed_roles) + "]; caller has [" +
         formatRoleList(user_roles) + "]."
     };
 }

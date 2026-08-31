@@ -183,6 +183,20 @@ public:
     void addImage(const std::string& base64_data, const std::string& mime_type);
 
     /**
+     * Mark this tool result as an execution error (isError: true). Used for
+     * failures the model can act on (bad arguments, a SQL/runtime error, a rate
+     * limit) — as opposed to JSON-RPC protocol errors it cannot.
+     */
+    void setError(bool is_error);
+
+    /**
+     * Attach a structuredContent payload alongside the text content blocks.
+     * For a data API this carries the rows as real JSON so a client need not
+     * re-parse the text block.
+     */
+    void setStructuredContent(crow::json::wvalue structured);
+
+    /**
      * Get the JSON response object
      */
     crow::json::wvalue toJson() const;
@@ -190,6 +204,9 @@ public:
 private:
     crow::json::wvalue content_array_;
     size_t content_count_ = 0;
+    bool is_error_ = false;
+    bool has_structured_ = false;
+    crow::json::wvalue structured_content_;
 };
 
 } // namespace flapi::mcp

@@ -242,9 +242,24 @@ void ContentResponse::addImage(const std::string& base64_data, const std::string
     addContent(ContentBuilder::createImageContent(base64_data, mime_type));
 }
 
+void ContentResponse::setError(bool is_error) {
+    is_error_ = is_error;
+}
+
+void ContentResponse::setStructuredContent(crow::json::wvalue structured) {
+    structured_content_ = std::move(structured);
+    has_structured_ = true;
+}
+
 crow::json::wvalue ContentResponse::toJson() const {
     crow::json::wvalue result;
     result["content"] = crow::json::wvalue(content_array_);
+    if (has_structured_) {
+        result["structuredContent"] = crow::json::wvalue(structured_content_);
+    }
+    if (is_error_) {
+        result["isError"] = true;
+    }
     return result;
 }
 

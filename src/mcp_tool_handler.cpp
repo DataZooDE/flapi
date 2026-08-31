@@ -5,6 +5,7 @@
 
 #include "mcp_dry_run.hpp"
 #include "mcp_response_shaper.hpp"
+#include "mcp_schema_builder.hpp"
 #include "flapi_telemetry.hpp"
 
 namespace flapi {
@@ -73,7 +74,8 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
         const EndpointConfig* endpoint_config = getEndpointConfigByToolName(request.tool_name);
         if (!endpoint_config) {
             emit_audit("error:tool_not_found", -1);
-            return createErrorResult("Tool not found: " + request.tool_name);
+            return createErrorResult("Tool not found: " + request.tool_name,
+                                     MCPToolExecutionResult::FailureKind::NotFound);
         }
 
         // Per-tool RBAC check (W2.1). Runs before argument validation so a
@@ -86,7 +88,8 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
             if (!decision.allowed) {
                 CROW_LOG_WARNING << "MCP tool call denied for '" << request.tool_name
                                  << "': " << decision.reason;
-                return createErrorResult("Permission denied: " + decision.reason);
+                return createErrorResult("Permission denied: " + decision.reason,
+                                         MCPToolExecutionResult::FailureKind::PermissionDenied);
             }
         }
 
@@ -110,6 +113,7 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
                 metadata["retry_after_seconds"] = std::to_string(decision.retry_after_seconds);
                 MCPToolExecutionResult result;
                 result.success = false;
+                result.failure_kind = MCPToolExecutionResult::FailureKind::RateLimited;
                 result.error_message = "Rate limit exceeded for tool '" + request.tool_name +
                                        "'. Retry after " +
                                        std::to_string(decision.retry_after_seconds) +
@@ -132,9 +136,13 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
         const bool is_dry_run = MCPDryRun::extractFlag(effective_arguments);
 
         // Validate arguments (post-strip).
-        if (!validateToolArguments(request.tool_name, effective_arguments)) {
+        std::string validation_error;
+        if (!validateToolArguments(request.tool_name, effective_arguments, validation_error)) {
             emit_audit("error:invalid_arguments", -1);
-            return createErrorResult("Invalid arguments for tool: " + request.tool_name);
+            return createErrorResult(validation_error.empty()
+                                         ? ("Invalid arguments for tool: " + request.tool_name)
+                                         : validation_error,
+                                     MCPToolExecutionResult::FailureKind::InvalidArguments);
         }
 
         // Prepare parameters for SQL template
@@ -235,7 +243,8 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
         }
     } catch (const std::exception& e) {
         emit_audit("error:exception", -1);
-        return createErrorResult("Tool execution error: " + std::string(e.what()));
+        return createErrorResult("Tool execution error: " + std::string(e.what()),
+                                 MCPToolExecutionResult::FailureKind::ExecutionError);
     }
 }
 
@@ -252,8 +261,15 @@ const EndpointConfig* MCPToolHandler::getEndpointConfigByToolName(const std::str
 }
 
 bool MCPToolHandler::validateToolArguments(const std::string& tool_name, const crow::json::wvalue& arguments) const {
+    std::string ignored;
+    return validateToolArguments(tool_name, arguments, ignored);
+}
+
+bool MCPToolHandler::validateToolArguments(const std::string& tool_name, const crow::json::wvalue& arguments,
+                                           std::string& error_out) const {
     const EndpointConfig* endpoint_config = getEndpointConfigByToolName(tool_name);
     if (!endpoint_config) {
+        error_out = "Tool not found: " + tool_name;
         return false;
     }
 
@@ -270,9 +286,17 @@ bool MCPToolHandler::validateToolArguments(const std::string& tool_name, const c
 
     if (!errors.empty()) {
         CROW_LOG_WARNING << "Tool argument validation failed for " << tool_name << ":";
-        for (const auto& error : errors) {
-            CROW_LOG_WARNING << "  - " << error.fieldName << ": " << error.errorMessage;
+        std::ostringstream joined;
+        for (size_t i = 0; i < errors.size(); ++i) {
+            CROW_LOG_WARNING << "  - " << errors[i].fieldName << ": " << errors[i].errorMessage;
+            if (i > 0) {
+                joined << "; ";
+            }
+            joined << errors[i].fieldName << ": " << errors[i].errorMessage;
         }
+        // Surface the actionable per-field messages so a model can self-correct
+        // rather than seeing a generic "invalid arguments".
+        error_out = "Invalid arguments for tool '" + tool_name + "': " + joined.str();
         return false;
     }
 
@@ -301,29 +325,9 @@ crow::json::wvalue MCPToolHandler::getToolDefinition(const std::string& tool_nam
     crow::json::wvalue tool_def;
     tool_def["name"] = endpoint_config->mcp_tool->name;
     tool_def["description"] = endpoint_config->mcp_tool->description;
-    tool_def["inputSchema"]["type"] = "object";
-
-    // Build schema from request fields
-    crow::json::wvalue properties;
-    std::vector<std::string> required_fields;
-
-    for (const auto& field : endpoint_config->request_fields) {
-        crow::json::wvalue prop;
-        prop["type"] = "string"; // Default type, could be enhanced based on validators
-        prop["description"] = field.description;
-
-        if (field.required) {
-            required_fields.push_back(field.fieldName);
-        }
-
-        properties[field.fieldName] = std::move(prop);
-    }
-
-    tool_def["inputSchema"]["properties"] = std::move(properties);
-
-    if (!required_fields.empty()) {
-        tool_def["inputSchema"]["required"] = required_fields;
-    }
+    // Typed input schema from the field validators (shared with the route
+    // handler's tool-list path via MCPSchemaBuilder).
+    tool_def["inputSchema"] = MCPSchemaBuilder::buildInputSchema(endpoint_config->request_fields);
 
     return tool_def;
 }
@@ -412,9 +416,12 @@ std::string MCPToolHandler::convertJsonValueToString(const crow::json::wvalue& v
     }
 }
 
-MCPToolExecutionResult MCPToolHandler::createErrorResult(const std::string& error_message) const {
+MCPToolExecutionResult MCPToolHandler::createErrorResult(
+    const std::string& error_message,
+    MCPToolExecutionResult::FailureKind kind) const {
     MCPToolExecutionResult result;
     result.success = false;
+    result.failure_kind = kind;
     result.error_message = error_message;
     return result;
 }

@@ -12,9 +12,29 @@ namespace flapi {
 // Core JSON-RPC types
 struct MCPRequest {
     std::string jsonrpc = "2.0";
+    // Human-readable id (unquoted string, number text, or "" for null/absent).
+    // Kept for logging and for MCPResponse.id round-tripping.
     std::string id;
+    // JSON-RPC id handling. `id_present == false` means the request carried no
+    // `id` member at all — i.e. it is a notification and MUST NOT be answered.
+    // `id_raw` is the verbatim JSON token of the id ("42", "\"abc\"", "null"),
+    // echoed back losslessly (crow preserves int64/uint64) instead of being
+    // re-parsed through std::stod, which mangled large integer ids.
+    bool id_present = false;
+    std::string id_raw;
     std::string method;
     crow::json::wvalue params;
+
+    // MCP 2026-07-28 per-request preamble. `modern_era` is true when the
+    // request carries params._meta["io.modelcontextprotocol/protocolVersion"];
+    // it selects the stateless modern path (server/discover, resultType,
+    // ttlMs/cacheScope, no sessions) while its absence keeps the legacy
+    // initialize+session path byte-compatible.
+    bool modern_era = false;
+    std::string meta_protocol_version;   // required in modern era
+    std::string meta_log_level;          // optional per-request log level
+    std::vector<std::string> meta_extensions;  // client-declared extension ids
+    bool meta_has_client_capabilities = false; // required in modern era
 };
 
 struct MCPResponse {
@@ -22,6 +42,13 @@ struct MCPResponse {
     std::string id;
     std::string result;
     std::string error;
+    // HTTP status to send with this JSON-RPC response. Defaults to 200. Auth
+    // challenges use 401 (RFC 9728 / RFC 6750) and authorization denials use
+    // 403 so standard OAuth clients can discover how to authenticate.
+    int http_status = 200;
+    // When non-empty, sent as the `WWW-Authenticate` response header (e.g.
+    // `Bearer resource_metadata="https://.../.well-known/oauth-protected-resource"`).
+    std::string www_authenticate;
 };
 
 // Session management
@@ -85,19 +112,11 @@ struct MCPClientCapabilities {
 };
 
 // Streaming response for SSE support
-struct MCPStreamingResponse {
-    std::string content_type;
-    std::string content;
-    bool is_complete = false;
-    std::unordered_map<std::string, std::string> metadata;
-};
-
 // Server capabilities (enhanced)
 struct MCPServerCapabilities {
     std::vector<std::string> tools;
     std::vector<std::string> resources;
     std::vector<std::string> prompts;
-    std::vector<std::string> sampling;
     std::vector<std::string> logging;
 
     MCPServerCapabilities() = default;

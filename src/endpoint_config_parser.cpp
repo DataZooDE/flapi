@@ -219,6 +219,11 @@ void EndpointConfigParser::parseMcpToolFields(
         tool_info.rate_limit.interval = config_manager_->safeGet<int>(rl, "interval", "mcp-tool.rate-limit.interval", 60);
     }
 
+    // MCP 2026-07-28 Tasks: async / async-after (a duration in ms, or a plain
+    // integer of milliseconds).
+    tool_info.async = config_manager_->safeGet<bool>(mcp_tool_node, "async", "mcp-tool.async", false);
+    tool_info.async_after_ms = config_manager_->safeGet<int>(mcp_tool_node, "async-after-ms", "mcp-tool.async-after-ms", 0);
+
     config.mcp_tool = tool_info;
 }
 
@@ -231,6 +236,18 @@ void EndpointConfigParser::parseMcpResourceFields(
     resource_info.name = config_manager_->safeGet<std::string>(mcp_resource_node, "name", "mcp-resource.name");
     resource_info.description = config_manager_->safeGet<std::string>(mcp_resource_node, "description", "mcp-resource.description");
     resource_info.mime_type = config_manager_->safeGet<std::string>(mcp_resource_node, "mime-type", "mcp-resource.mime-type", "application/json");
+    resource_info.uri_template = config_manager_->safeGet<std::string>(mcp_resource_node, "uri-template", "mcp-resource.uri-template", "");
+
+    // Per-resource RBAC (mirrors mcp-tool.allowed-roles). Absent → nullopt
+    // (deny-by-default under mcp.auth.enabled, transparent under demo mode).
+    if (mcp_resource_node["allowed-roles"].IsDefined()) {
+        std::vector<std::string> roles;
+        for (const auto& role_node : mcp_resource_node["allowed-roles"]) {
+            roles.push_back(role_node.as<std::string>());
+        }
+        resource_info.allowed_roles = std::move(roles);
+    }
+
     config.mcp_resource = resource_info;
 }
 
@@ -294,6 +311,16 @@ void EndpointConfigParser::parseMcpPromptFields(
             }
         }
         
+        // Per-prompt RBAC (mirrors mcp-tool.allowed-roles). Absent → nullopt
+        // (deny-by-default under mcp.auth.enabled, transparent under demo mode).
+        if (mcp_prompt_node["allowed-roles"].IsDefined()) {
+            std::vector<std::string> roles;
+            for (const auto& role_node : mcp_prompt_node["allowed-roles"]) {
+                roles.push_back(role_node.as<std::string>());
+            }
+            prompt_info.allowed_roles = std::move(roles);
+        }
+
         config.mcp_prompt = prompt_info;
     } catch (const std::exception& e) {
         result.success = false;

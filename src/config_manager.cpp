@@ -349,6 +349,20 @@ void ConfigManager::parseMCPConfig() {
     mcp_config.enabled = safeGet<bool>(mcp, "enabled", "mcp.enabled", true);
     mcp_config.port = safeGet<int>(mcp, "port", "mcp.port", 8081);
     mcp_config.strict_descriptions = safeGet<bool>(mcp, "strict-descriptions", "mcp.strict-descriptions", false);
+    mcp_config.page_size = safeGet<int>(mcp, "page-size", "mcp.page-size", 0);
+    if (mcp["tasks"]) {
+        auto tasks = mcp["tasks"];
+        mcp_config.tasks_workers = safeGet<int>(tasks, "workers", "mcp.tasks.workers", 2);
+        mcp_config.tasks_queue_depth = safeGet<int>(tasks, "queue-depth", "mcp.tasks.queue-depth", 32);
+        mcp_config.tasks_default_ttl_ms = safeGet<int>(tasks, "default-ttl-ms", "mcp.tasks.default-ttl-ms", 3600000);
+        // A non-positive TTL would disable expiry entirely and let the task store
+        // grow without bound; clamp to the default so tasks are always reaped.
+        if (mcp_config.tasks_default_ttl_ms <= 0) {
+            CROW_LOG_WARNING << "mcp.tasks.default-ttl-ms must be positive; using 3600000";
+            mcp_config.tasks_default_ttl_ms = 3600000;
+        }
+        mcp_config.tasks_poll_interval_ms = safeGet<int>(tasks, "poll-interval-ms", "mcp.tasks.poll-interval-ms", 1000);
+    }
 
     CROW_LOG_DEBUG << "MCP Enabled: " << (mcp_config.enabled ? "true" : "false");
     CROW_LOG_DEBUG << "MCP Port: " << mcp_config.port;
@@ -359,6 +373,16 @@ void ConfigManager::parseMCPConfig() {
         auto auth = mcp["auth"];
         mcp_config.auth.enabled = safeGet<bool>(auth, "enabled", "mcp.auth.enabled", false);
         mcp_config.auth.type = safeGet<std::string>(auth, "type", "mcp.auth.type", "bearer");
+
+        // RFC 9728 protected-resource metadata (optional; derived at runtime
+        // from the request host when canonical-resource-uri is unset).
+        mcp_config.auth.canonical_resource_uri =
+            safeGet<std::string>(auth, "canonical-resource-uri", "mcp.auth.canonical-resource-uri", "");
+        if (auth["scopes-supported"]) {
+            for (const auto& scope : auth["scopes-supported"]) {
+                mcp_config.auth.scopes_supported.push_back(scope.as<std::string>());
+            }
+        }
 
         CROW_LOG_DEBUG << "MCP Auth Enabled: " << (mcp_config.auth.enabled ? "true" : "false");
         CROW_LOG_DEBUG << "MCP Auth Type: " << mcp_config.auth.type;
@@ -566,9 +590,57 @@ void ConfigManager::parseEndpointRequestFields(const YAML::Node& endpoint_config
                 }
             }
             
+            field.mcp_header = safeGet<std::string>(req, "mcp-header", "request.mcp-header", "");
+
             parseEndpointValidators(req, field);
-            
+
             endpoint.request_fields.push_back(field);
+        }
+    }
+
+    validateMcpHeaderAnnotations(endpoint);
+}
+
+void ConfigManager::validateMcpHeaderAnnotations(const EndpointConfig& endpoint) const {
+    // Enforce the x-mcp-header constraints at config load: a bad annotation
+    // makes clients hide the tool, so fail loudly. Header names must be valid
+    // RFC 9110 tokens, unique case-insensitively, and never mirror a secret.
+    static const std::vector<std::string> kSecretMarkers = {
+        "token", "secret", "password", "passwd", "pwd", "key", "credential", "auth"};
+    std::set<std::string> seen_lower;
+    for (const auto& field : endpoint.request_fields) {
+        if (field.mcp_header.empty()) {
+            continue;
+        }
+        const std::string& h = field.mcp_header;
+        // RFC 9110 token characters (a reasonable subset).
+        for (char c : h) {
+            if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_')) {
+                throw std::runtime_error("mcp-header '" + h + "' on field '" + field.fieldName +
+                    "' contains an invalid character; use letters, digits, '-' or '_'.");
+            }
+        }
+        std::string lower;
+        for (char c : h) {
+            lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        if (!seen_lower.insert(lower).second) {
+            throw std::runtime_error("Duplicate mcp-header '" + h +
+                "' (case-insensitive) in endpoint request fields.");
+        }
+        // A parameter is a secret risk if EITHER the header name OR the mirrored
+        // field's own name looks like a credential — mirroring a field called
+        // `api_key` into a header named `Tenant` still exposes the secret.
+        std::string field_lower;
+        for (char c : field.fieldName) {
+            field_lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        for (const auto& marker : kSecretMarkers) {
+            if (lower.find(marker) != std::string::npos || field_lower.find(marker) != std::string::npos) {
+                throw std::runtime_error("mcp-header on field '" + field.fieldName +
+                    "' (header '" + h + "') looks like a secret; header values are visible to "
+                    "every intermediary and must never mirror credentials.");
+            }
         }
     }
 }

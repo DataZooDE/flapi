@@ -130,6 +130,13 @@ struct RequestFieldConfig {
     bool required = false;
     std::string defaultValue;
     std::vector<ValidatorConfig> validators;
+
+    // MCP 2026-07-28 x-mcp-header: when set, this parameter is mirrored by the
+    // client into an `Mcp-Param-<name>` HTTP header so an edge proxy can route
+    // and rate-limit on it without parsing the body. The value is the header
+    // suffix (e.g. "Tenant" -> Mcp-Param-Tenant). Never annotate a secret — the
+    // value is visible to every intermediary.
+    std::string mcp_header;
 };
 
 struct CacheConfig {
@@ -207,12 +214,33 @@ struct EndpointConfig {
         // the tool ungated; otherwise `max` calls are permitted per
         // `interval` seconds, scoped to (tool_name, principal).
         RateLimitConfig rate_limit;
+
+        // MCP 2026-07-28 Tasks extension. `async: true` runs this tool as a
+        // durable task (returns a taskId immediately) for clients that declare
+        // the tasks capability. `async_after_ms > 0` runs synchronously but
+        // degrades to a task if the call outruns that budget. Both default off,
+        // so a tool stays fully synchronous unless opted in.
+        bool async = false;
+        int async_after_ms = 0;
     };
 
     struct MCPResourceInfo {
         std::string name;
         std::string description;
         std::string mime_type = "application/json";
+
+        // Per-resource RBAC. Same semantics as MCPToolInfo::allowed_roles:
+        // std::nullopt denies by default under mcp.auth.enabled; an explicit
+        // empty vector denies all; with MCP auth disabled the check is skipped.
+        std::optional<std::vector<std::string>> allowed_roles;
+
+        // Optional RFC 6570 (simple {var} expansion) URI template, e.g.
+        // "flapi://customers/{id}". When set, the resource is a parameterised
+        // template: it appears in resources/templates/list, and resources/read
+        // binds the path variables into request params (validated like any
+        // other field) before executing. When empty the resource is a static
+        // "flapi://<name>" URI.
+        std::string uri_template;
     };
 
     struct MCPPromptInfo {
@@ -220,6 +248,9 @@ struct EndpointConfig {
         std::string description;
         std::string template_content;
         std::vector<std::string> arguments;
+
+        // Per-prompt RBAC. See MCPResourceInfo::allowed_roles.
+        std::optional<std::vector<std::string>> allowed_roles;
     };
 
     std::optional<MCPToolInfo> mcp_tool;
@@ -376,7 +407,7 @@ struct MCPServerConfig {
     std::string server_name = "flapi-mcp-server";
     std::string server_version = "0.1.0";
     std::string protocol_version = "2024-11-05";
-    std::vector<std::string> capabilities = {"tools", "resources", "prompts", "sampling"};
+    std::vector<std::string> capabilities = {"tools", "resources", "prompts"};
     bool stdio_transport = false; // Use HTTP transport by default
     int mcp_port = 8081; // Different port from REST API
     std::string mcp_base_path = "/mcp";
@@ -394,6 +425,13 @@ struct MCPAuthConfig {
     std::string jwt_issuer = "flapi";
     std::optional<OIDCConfig> oidc;  // NEW: OIDC configuration
     std::unordered_map<std::string, MCPMethodAuthConfig> methods;
+
+    // RFC 9728 protected-resource metadata. `canonical_resource_uri` is the
+    // audience the MCP endpoint identifies as; when empty it is derived at
+    // runtime from the request host + the MCP path. `scopes_supported` is
+    // advertised in the metadata document (optional).
+    std::string canonical_resource_uri;
+    std::vector<std::string> scopes_supported;
 };
 
 struct MCPConfig {
@@ -408,6 +446,18 @@ struct MCPConfig {
     // phrases, oversize). When false (default) the scanner warns at parse
     // time but loading still succeeds. See W2.3 in issue #24.
     bool strict_descriptions = false;
+
+    // Page size for tools/list, resources/list, prompts/list. 0 (the default)
+    // disables pagination entirely — every item is returned in one page and no
+    // nextCursor is emitted, exactly as before. A positive value opts into
+    // cursor-based paging.
+    int page_size = 0;
+
+    // MCP 2026-07-28 Tasks extension worker pool.
+    int tasks_workers = 2;         // concurrent background workers
+    int tasks_queue_depth = 32;    // max queued tasks before backpressure
+    int tasks_default_ttl_ms = 3600000;   // terminal-task retention (1h)
+    int tasks_poll_interval_ms = 1000;     // suggested client poll interval
 };
 
 struct DuckDBConfig {
@@ -656,6 +706,10 @@ protected:
     void parseEndpointConfig(const std::filesystem::path& config_file);
     void parseEndpointRequestFields(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
     void parseEndpointValidators(const YAML::Node& req, RequestFieldConfig& field);
+    // Enforces the x-mcp-header (request[].mcp-header) constraints at load time:
+    // valid token characters, case-insensitively unique, never a secret name.
+    // Throws on violation so a bad annotation fails the config load.
+    void validateMcpHeaderAnnotations(const EndpointConfig& endpoint) const;
     void parseEndpointConnection(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
     void parseEndpointRateLimit(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
     void parseEndpointAuth(const YAML::Node& endpoint_config, EndpointConfig& endpoint);
