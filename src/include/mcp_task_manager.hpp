@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -45,7 +46,16 @@ public:
     // It should honour `cancelled` cooperatively where possible.
     using Work = std::function<std::string(const std::atomic<bool>& cancelled)>;
 
-    MCPTaskManager(size_t workers, size_t queue_depth);
+    // Optional durability: a callback that runs a SQL statement and returns its
+    // rows (each a column->string map). When provided, tasks are persisted to a
+    // `flapi_mcp_tasks` table on creation and on every terminal transition, and
+    // recovered on construction (a task left `working` by a crash is marked
+    // `failed`). Durability is real only when the underlying DuckDB is
+    // file-backed (duckdb.db_path); with an in-memory database the table is
+    // recreated empty each start. A null exec disables persistence entirely.
+    using SqlExec = std::function<std::vector<std::map<std::string, std::string>>(const std::string&)>;
+
+    MCPTaskManager(size_t workers, size_t queue_depth, SqlExec sql_exec = nullptr);
     ~MCPTaskManager();
 
     // Submit work; returns the new task_id, or empty string if the queue is
@@ -76,6 +86,11 @@ private:
     void sweepExpiredLocked();
     static std::string newTaskId();
 
+    // Persistence helpers (no-ops when sql_exec_ is null).
+    void persistTask(const Task& t);
+    void recoverTasks();
+
+    SqlExec sql_exec_;
     size_t queue_depth_;
     mutable std::mutex mu_;
     std::condition_variable cv_;

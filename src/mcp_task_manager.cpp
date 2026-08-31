@@ -6,13 +6,124 @@
 
 namespace flapi {
 
-MCPTaskManager::MCPTaskManager(size_t workers, size_t queue_depth)
-    : queue_depth_(queue_depth) {
+MCPTaskManager::MCPTaskManager(size_t workers, size_t queue_depth, SqlExec sql_exec)
+    : sql_exec_(std::move(sql_exec)), queue_depth_(queue_depth) {
     if (workers == 0) {
         workers = 1;
     }
+    recoverTasks();  // no-op without persistence
     for (size_t i = 0; i < workers; ++i) {
         workers_.emplace_back([this] { workerLoop(); });
+    }
+}
+
+namespace {
+// DuckDB single-quote escaping for string literals.
+std::string sqlLit(const std::string& s) {
+    std::string out = "'";
+    for (char c : s) {
+        if (c == '\'') {
+            out += "''";
+        } else {
+            out += c;
+        }
+    }
+    out += "'";
+    return out;
+}
+
+std::string statusToString(MCPTaskManager::Status s) {
+    switch (s) {
+        case MCPTaskManager::Status::Working:   return "working";
+        case MCPTaskManager::Status::Completed: return "completed";
+        case MCPTaskManager::Status::Failed:    return "failed";
+        case MCPTaskManager::Status::Cancelled: return "cancelled";
+    }
+    return "working";
+}
+
+MCPTaskManager::Status statusFromString(const std::string& s) {
+    if (s == "completed") {
+        return MCPTaskManager::Status::Completed;
+    }
+    if (s == "failed") {
+        return MCPTaskManager::Status::Failed;
+    }
+    if (s == "cancelled") {
+        return MCPTaskManager::Status::Cancelled;
+    }
+    return MCPTaskManager::Status::Working;
+}
+} // namespace
+
+void MCPTaskManager::persistTask(const Task& t) {
+    if (!sql_exec_) {
+        return;
+    }
+    try {
+        // Upsert the task row. created_at is stored as epoch millis so recovery
+        // can reconstruct the steady-clock offset approximately (TTL uses it
+        // only for terminal-task reaping, so wall-clock is acceptable here).
+        const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        std::string sql =
+            "INSERT OR REPLACE INTO flapi_mcp_tasks "
+            "(task_id, tool_name, principal, status, updated_at_ms, ttl_ms, "
+            " poll_interval_ms, result_json, error_message) VALUES ("
+            + sqlLit(t.task_id) + "," + sqlLit(t.tool_name) + "," + sqlLit(t.principal) + ","
+            + sqlLit(statusToString(t.status)) + "," + std::to_string(now_ms) + ","
+            + std::to_string(t.ttl_ms) + "," + std::to_string(t.poll_interval_ms) + ","
+            + sqlLit(t.result_json) + "," + sqlLit(t.error_message) + ")";
+        sql_exec_(sql);
+    } catch (const std::exception& e) {
+        // Persistence is best-effort; a DB hiccup must not break task execution.
+        // (Durability is lost for this write, but the in-memory task is intact.)
+    }
+}
+
+void MCPTaskManager::recoverTasks() {
+    if (!sql_exec_) {
+        return;
+    }
+    try {
+        sql_exec_(
+            "CREATE TABLE IF NOT EXISTS flapi_mcp_tasks ("
+            "task_id VARCHAR PRIMARY KEY, tool_name VARCHAR, principal VARCHAR, "
+            "status VARCHAR, updated_at_ms BIGINT, ttl_ms BIGINT, "
+            "poll_interval_ms BIGINT, result_json VARCHAR, error_message VARCHAR)");
+        // Any task still 'working' was interrupted by the previous process exit.
+        sql_exec_(
+            "UPDATE flapi_mcp_tasks SET status='failed', "
+            "error_message='server restarted while task was running' "
+            "WHERE status='working'");
+        auto rows = sql_exec_("SELECT task_id, tool_name, principal, status, ttl_ms, "
+                              "poll_interval_ms, result_json, error_message FROM flapi_mcp_tasks");
+        std::lock_guard<std::mutex> lock(mu_);
+        for (const auto& r : rows) {
+            auto entry = std::make_shared<Entry>();
+            auto get = [&r](const char* k) -> std::string {
+                auto it = r.find(k);
+                return it == r.end() ? std::string() : it->second;
+            };
+            entry->task.task_id = get("task_id");
+            entry->task.tool_name = get("tool_name");
+            entry->task.principal = get("principal");
+            entry->task.status = statusFromString(get("status"));
+            entry->task.created_at = std::chrono::steady_clock::now();
+            entry->task.ttl_ms = std::atoll(get("ttl_ms").c_str());
+            entry->task.poll_interval_ms = std::atoll(get("poll_interval_ms").c_str());
+            entry->task.result_json = get("result_json");
+            entry->task.error_message = get("error_message");
+            if (!entry->task.task_id.empty()) {
+                // Recovered tasks are terminal (working ones were failed above);
+                // they are queryable via tasks/get but not re-run.
+                tasks_[entry->task.task_id] = entry;
+            }
+        }
+    } catch (const std::exception& e) {
+        // If recovery fails (e.g. schema drift or the DB is not ready), continue
+        // with an empty store — task durability is best-effort.
+        fprintf(stderr, "[flapi] MCP task recovery skipped: %s\n", e.what());
     }
 }
 
@@ -68,6 +179,7 @@ std::string MCPTaskManager::submit(const std::string& tool_name, const std::stri
         tasks_[entry->task.task_id] = entry;
         queue_.push_back(entry);
     }
+    persistTask(entry->task);  // durable record before we return the id
     cv_.notify_one();
     return entry->task.task_id;
 }
@@ -87,10 +199,13 @@ void MCPTaskManager::workerLoop() {
 
         // Skip work already cancelled before it started.
         if (entry->cancelled.load()) {
-            std::unique_lock<std::mutex> lock(mu_);
-            if (entry->task.status == Status::Working) {
-                entry->task.status = Status::Cancelled;
+            {
+                std::unique_lock<std::mutex> lock(mu_);
+                if (entry->task.status == Status::Working) {
+                    entry->task.status = Status::Cancelled;
+                }
             }
+            persistTask(entry->task);
             continue;
         }
 
@@ -102,16 +217,19 @@ void MCPTaskManager::workerLoop() {
             error = e.what();
         }
 
-        std::unique_lock<std::mutex> lock(mu_);
-        if (entry->cancelled.load()) {
-            entry->task.status = Status::Cancelled;
-        } else if (!error.empty()) {
-            entry->task.status = Status::Failed;
-            entry->task.error_message = error;
-        } else {
-            entry->task.status = Status::Completed;
-            entry->task.result_json = std::move(result);
+        {
+            std::unique_lock<std::mutex> lock(mu_);
+            if (entry->cancelled.load()) {
+                entry->task.status = Status::Cancelled;
+            } else if (!error.empty()) {
+                entry->task.status = Status::Failed;
+                entry->task.error_message = error;
+            } else {
+                entry->task.status = Status::Completed;
+                entry->task.result_json = std::move(result);
+            }
         }
+        persistTask(entry->task);  // durable terminal state
     }
 }
 

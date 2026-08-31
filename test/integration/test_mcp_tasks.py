@@ -165,3 +165,90 @@ class TestTasks:
         body = c.json()
         assert "error" not in body, body
         assert body["result"]["taskId"] == task_id
+
+
+def _wait_status(base, task_id, want, tries=40):
+    for _ in range(tries):
+        g = _get(base, META_TASKS, task_id).json().get("result", {})
+        if g.get("task", {}).get("status") == want:
+            return g
+        time.sleep(0.25)
+    return None
+
+
+@pytest.mark.standalone_server
+class TestTasksDurability:
+    """A task persists to a file-backed DuckDB and survives a server restart."""
+
+    def _boot(self, binary, tmp, port):
+        log = open(os.path.join(tmp, f"server-{port}-{time.time()}.log"), "w")
+        proc = subprocess.Popen([binary, "-c", os.path.join(tmp, "flapi.yaml"), "--no-telemetry"],
+                                cwd=tmp, stdout=log, stderr=subprocess.STDOUT)
+        base = f"http://127.0.0.1:{port}"
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                raise RuntimeError("flapi exited early")
+            try:
+                if requests.get(f"{base}/mcp/health", timeout=1).status_code < 500:
+                    return proc, base, log
+            except requests.exceptions.RequestException:
+                time.sleep(0.5)
+        raise RuntimeError("flapi did not become healthy")
+
+    def test_task_survives_restart(self):
+        binary = _flapi_binary()
+        port = _free_port()
+        tmp = tempfile.mkdtemp(prefix="flapi_taskdur_")
+        sqls = os.path.join(tmp, "sqls")
+        os.makedirs(sqls)
+        with open(os.path.join(tmp, "flapi.yaml"), "w") as f:
+            f.write(f"""
+project-name: mcp-taskdur-test
+project-description: task durability
+http-port: {port}
+template:
+  path: ./sqls
+connections:
+  inmem:
+    properties:
+      database: ':memory:'
+duckdb:
+  db_path: {os.path.join(tmp, 'flapi.db')}
+  access_mode: READ_WRITE
+  threads: 1
+mcp:
+  enabled: true
+""")
+        with open(os.path.join(sqls, "rep.sql"), "w") as f:
+            f.write("SELECT 7 AS answer\n")
+        with open(os.path.join(sqls, "rep.yaml"), "w") as f:
+            f.write("template-source: rep.sql\nconnection: [inmem]\nmcp-tool: {name: report, description: r, async: true}\n")
+
+        # Boot 1: create a task, wait for it to complete (and persist).
+        proc, base, log = self._boot(binary, tmp, port)
+        try:
+            r = _call(base, META_TASKS)
+            task_id = r.json()["result"]["task"]["taskId"]
+            assert _wait_status(base, task_id, "completed") is not None
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            log.close()
+
+        # Boot 2 (same db_path): the task is recovered and still queryable.
+        proc, base, log = self._boot(binary, tmp, port)
+        try:
+            g = _get(base, META_TASKS, task_id).json()["result"]
+            assert g["task"]["status"] == "completed"
+            assert "7" in g["result"]["content"][0]["text"]
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            log.close()

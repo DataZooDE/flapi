@@ -266,12 +266,45 @@ MCPRouteHandlers::MCPRouteHandlers(std::shared_ptr<ConfigManager> config_manager
         tool_handler_ = nullptr;
     }
 
-    // Initialize the Tasks worker pool (MCP 2026-07-28 Tasks extension).
+    // Initialize the Tasks worker pool (MCP 2026-07-28 Tasks extension). When a
+    // database manager is available, back the task store with a DuckDB table so
+    // tasks survive a restart (durable only when duckdb.db_path is file-backed).
     {
         const auto& mcp_cfg = config_manager->getMCPConfig();
+        MCPTaskManager::SqlExec sql_exec = nullptr;
+        if (db_manager) {
+            auto dbm = db_manager;
+            sql_exec = [dbm](const std::string& sql)
+                -> std::vector<std::map<std::string, std::string>> {
+                // executeQuery(string) returns rows only in `.data` (a JSON
+                // array of objects); convert them to column->string maps.
+                std::vector<std::map<std::string, std::string>> out;
+                // with_pagination=false: never wrap DDL/DML (CREATE/INSERT/UPDATE)
+                // or the recovery SELECT in a pagination subquery.
+                auto qr = dbm->executeQuery(sql, {}, /*with_pagination=*/false);
+                auto rows = crow::json::load(qr.data.dump());
+                if (rows && rows.t() == crow::json::type::List) {
+                    for (const auto& row : rows) {
+                        if (row.t() != crow::json::type::Object) {
+                            continue;
+                        }
+                        std::map<std::string, std::string> m;
+                        for (const auto& key : row.keys()) {
+                            const auto& v = row[key];
+                            m[key] = (v.t() == crow::json::type::String)
+                                ? std::string(v.s())
+                                : crow::json::wvalue(v).dump();
+                        }
+                        out.push_back(std::move(m));
+                    }
+                }
+                return out;
+            };
+        }
         task_manager_ = std::make_unique<MCPTaskManager>(
             static_cast<size_t>(mcp_cfg.tasks_workers > 0 ? mcp_cfg.tasks_workers : 1),
-            static_cast<size_t>(mcp_cfg.tasks_queue_depth > 0 ? mcp_cfg.tasks_queue_depth : 32));
+            static_cast<size_t>(mcp_cfg.tasks_queue_depth > 0 ? mcp_cfg.tasks_queue_depth : 32),
+            std::move(sql_exec));
     }
 
     // Initialize MCP auth handler

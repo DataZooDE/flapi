@@ -1696,9 +1696,11 @@ mcp:
     poll-interval-ms: 1000  # suggested client poll interval
 ```
 
-> **Durability:** the task store is currently in-memory; tasks do not survive a
-> process restart. A DuckLake-backed restart-durable store is a planned
-> follow-up.
+> **Durability:** tasks are persisted to a `flapi_mcp_tasks` table in the
+> configured DuckDB and recovered on startup, so they survive a restart when
+> `duckdb.db_path` is a **file** (with an in-memory database the table is
+> recreated empty each start). A task left `working` by a crash is recovered as
+> `failed` (its query did not survive the process).
 
 ### 11.8 x-mcp-header (parameter mirroring)
 
