@@ -5,6 +5,9 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include "query_executor.hpp"
 #include <cstdlib>
+#include <atomic>
+#include <chrono>
+#include <thread>
 
 using namespace std;
 
@@ -719,6 +722,43 @@ TEST_CASE("QueryExecutor::executeWithBindings - prepared path", "[query_executor
             executor.executeWithBindings("SELEKT ? FROM nowhere", b, v, "test"),
             Catch::Matchers::ContainsSubstring("Prepare failed"));
     }
+
+    duckdb_close(&database);
+}
+
+TEST_CASE("QueryExecutor::interrupt stops an in-flight query", "[query_executor][tasks]") {
+    // Foundation for preemptive task cancellation (issue #111): a long query
+    // running on one thread must be interruptible from another.
+    duckdb_database database;
+    REQUIRE(duckdb_open(NULL, &database) == DuckDBSuccess);
+
+    QueryExecutor executor(database);
+    std::atomic<bool> finished{false};
+    std::atomic<bool> threw{false};
+
+    const auto start = std::chrono::steady_clock::now();
+    std::thread runner([&]{
+        try {
+            // A count over a huge range takes many seconds unbudged; the
+            // interrupt below must cut it short.
+            executor.execute("SELECT count(*) FROM range(100000000000)");
+        } catch (const std::exception&) {
+            threw.store(true);
+        }
+        finished.store(true);
+    });
+
+    // Let the query get going, then interrupt from this thread.
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    executor.interrupt();
+
+    runner.join();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+
+    REQUIRE(finished.load());
+    REQUIRE(threw.load());          // interrupted query surfaces as an exception
+    REQUIRE(elapsed < 5000);        // stopped promptly, not after the full scan
 
     duckdb_close(&database);
 }

@@ -115,6 +115,13 @@ public:
     
     crow::json::wvalue toJson() const;
 
+    // Interrupt an in-flight query on this executor's connection from another
+    // thread. Used by the MCP Tasks extension (issue #111) to make tasks/cancel
+    // and graceful shutdown preemptive: the running duckdb_query returns an
+    // error, which execute() then surfaces as a thrown exception. Safe to call
+    // concurrently with execute(); a no-op if there is no live connection.
+    void interrupt() { if (conn) { duckdb_interrupt(conn); } }
+
     // Make these public since they're used directly in DatabaseManager
     duckdb_connection conn;
     mutable duckdb_result result;
