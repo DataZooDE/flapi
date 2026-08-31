@@ -355,6 +355,12 @@ void ConfigManager::parseMCPConfig() {
         mcp_config.tasks_workers = safeGet<int>(tasks, "workers", "mcp.tasks.workers", 2);
         mcp_config.tasks_queue_depth = safeGet<int>(tasks, "queue-depth", "mcp.tasks.queue-depth", 32);
         mcp_config.tasks_default_ttl_ms = safeGet<int>(tasks, "default-ttl-ms", "mcp.tasks.default-ttl-ms", 3600000);
+        // A non-positive TTL would disable expiry entirely and let the task store
+        // grow without bound; clamp to the default so tasks are always reaped.
+        if (mcp_config.tasks_default_ttl_ms <= 0) {
+            CROW_LOG_WARNING << "mcp.tasks.default-ttl-ms must be positive; using 3600000";
+            mcp_config.tasks_default_ttl_ms = 3600000;
+        }
         mcp_config.tasks_poll_interval_ms = safeGet<int>(tasks, "poll-interval-ms", "mcp.tasks.poll-interval-ms", 1000);
     }
 
@@ -622,11 +628,18 @@ void ConfigManager::validateMcpHeaderAnnotations(const EndpointConfig& endpoint)
             throw std::runtime_error("Duplicate mcp-header '" + h +
                 "' (case-insensitive) in endpoint request fields.");
         }
+        // A parameter is a secret risk if EITHER the header name OR the mirrored
+        // field's own name looks like a credential — mirroring a field called
+        // `api_key` into a header named `Tenant` still exposes the secret.
+        std::string field_lower;
+        for (char c : field.fieldName) {
+            field_lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
         for (const auto& marker : kSecretMarkers) {
-            if (lower.find(marker) != std::string::npos) {
-                throw std::runtime_error("mcp-header '" + h + "' on field '" + field.fieldName +
-                    "' looks like a secret; header values are visible to every intermediary "
-                    "and must never mirror credentials.");
+            if (lower.find(marker) != std::string::npos || field_lower.find(marker) != std::string::npos) {
+                throw std::runtime_error("mcp-header on field '" + field.fieldName +
+                    "' (header '" + h + "') looks like a secret; header values are visible to "
+                    "every intermediary and must never mirror credentials.");
             }
         }
     }

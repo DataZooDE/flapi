@@ -188,10 +188,16 @@ std::string MCPTaskManager::submit(const std::string& tool_name, const std::stri
         if (queue_.size() >= queue_depth_) {
             return "";  // backpressure
         }
+    }
+    // Persist the initial `working` row BEFORE the task becomes visible to a
+    // worker. Otherwise a worker could dequeue, finish, and persist the terminal
+    // state before this initial persist runs — clobbering it back to `working`.
+    persistTask(entry->task);
+    {
+        std::unique_lock<std::mutex> lock(mu_);
         tasks_[entry->task.task_id] = entry;
         queue_.push_back(entry);
     }
-    persistTask(entry->task);  // durable record before we return the id
     cv_.notify_one();
     return entry->task.task_id;
 }

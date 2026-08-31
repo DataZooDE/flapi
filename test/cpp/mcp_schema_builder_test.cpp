@@ -98,6 +98,23 @@ TEST_CASE("MCPSchemaBuilder: numeric min/max become minimum/maximum", "[mcp][sch
     REQUIRE(s["properties"]["n"]["maximum"].i() == 100);
 }
 
+TEST_CASE("MCPSchemaBuilder: an explicit bound of 0 is preserved (not treated as unset)", "[mcp][schema]") {
+    // Regression: 0 was mistaken for "unset" and dropped from the schema.
+    RequestFieldConfig f;
+    f.fieldName = "n";
+    ValidatorConfig v;
+    v.type = "int";
+    v.min = 0;
+    v.max = 0;
+    f.validators.push_back(v);
+
+    auto s = parse(MCPSchemaBuilder::buildInputSchema({f}));
+    REQUIRE(s["properties"]["n"].has("minimum"));
+    REQUIRE(s["properties"]["n"]["minimum"].i() == 0);
+    REQUIRE(s["properties"]["n"].has("maximum"));
+    REQUIRE(s["properties"]["n"]["maximum"].i() == 0);
+}
+
 TEST_CASE("MCPSchemaBuilder: string min/max become length bounds; regex becomes pattern", "[mcp][schema]") {
     RequestFieldConfig f;
     f.fieldName = "s";

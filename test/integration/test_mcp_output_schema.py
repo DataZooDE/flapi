@@ -102,7 +102,9 @@ class TestOutputSchema:
         t = _rpc(server, "tools/list", {})["result"]["tools"][0]
         assert "outputSchema" in t
         cols = t["outputSchema"]["properties"]["rows"]["items"]["properties"]
-        assert cols["id"]["type"] == "integer"
+        # JSON numbers are typed as "number" (not guessed "integer" from one row's
+        # runtime value), so an integer-looking column and a fractional one agree.
+        assert cols["id"]["type"] == "number"
         assert cols["name"]["type"] == "string"
         assert cols["active"]["type"] == "boolean"
         assert cols["score"]["type"] == "number"

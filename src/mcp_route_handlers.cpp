@@ -108,15 +108,27 @@ bool MCPRouteHandlers::applyPagination(const MCPRequest& request, size_t total,
     const uint64_t gen = entity_generation_.load(std::memory_order_relaxed);
 
     // Decode an incoming cursor if present. The cursor is base64 of
-    // {"offset":N,"gen":G}; a mismatched generation or malformed cursor is a
-    // client error (-32602) so it cannot page over a list that changed.
+    // {"kind":<method>,"offset":N,"gen":G}. A mismatched generation, a cursor
+    // minted for a different list method, a malformed cursor, or out-of-range
+    // fields are all a client error (-32602) — never silently paged over.
     size_t offset = 0;
     auto params = crow::json::load(request.params.dump());
     if (params && params.has("cursor") && params["cursor"].t() == crow::json::type::String) {
         std::string decoded = crow::utility::base64decode(params["cursor"].s());
         auto cur = crow::json::load(decoded);
-        if (!cur || !cur.has("offset") || !cur.has("gen")) {
+        // offset and gen must be present, non-negative integers; kind must match
+        // the current method so a tools/list cursor can't page resources/list.
+        const bool well_formed = cur
+            && cur.has("offset") && cur["offset"].t() == crow::json::type::Number
+            && cur.has("gen") && cur["gen"].t() == crow::json::type::Number
+            && cur.has("kind") && cur["kind"].t() == crow::json::type::String;
+        if (!well_formed || cur["offset"].i() < 0 || cur["gen"].i() < 0) {
             response.error = formatJsonRpcError(-32602, "Invalid pagination cursor");
+            return false;
+        }
+        if (std::string(cur["kind"].s()) != request.method) {
+            response.error = formatJsonRpcError(-32602,
+                "Pagination cursor was issued for a different list method");
             return false;
         }
         if (static_cast<uint64_t>(cur["gen"].u()) != gen) {
@@ -143,6 +155,7 @@ bool MCPRouteHandlers::applyPagination(const MCPRequest& request, size_t total,
     const size_t next_offset = offset + out_count;
     if (next_offset < total) {
         crow::json::wvalue cur;
+        cur["kind"] = request.method;
         cur["offset"] = static_cast<uint64_t>(next_offset);
         cur["gen"] = static_cast<uint64_t>(gen);
         out_next_cursor = crow::utility::base64encode(cur.dump(), cur.dump().size());
@@ -658,12 +671,13 @@ void MCPRouteHandlers::cacheOutputSchemaFromRows(const std::string& tool_name,
     for (const auto& key : first.keys()) {
         crow::json::wvalue col;
         switch (first[key].t()) {
-            case crow::json::type::Number: {
-                // Distinguish integer from fractional where possible.
-                double d = first[key].d();
-                col["type"] = (d == static_cast<double>(static_cast<int64_t>(d))) ? "integer" : "number";
+            case crow::json::type::Number:
+                // Type numbers as "number" rather than guessing "integer" from a
+                // single row's runtime value: a first row of 3.0 must not advertise
+                // "integer" and then be violated by a later 3.14. "number" accepts
+                // both.
+                col["type"] = "number";
                 break;
-            }
             case crow::json::type::True:
             case crow::json::type::False:  col["type"] = "boolean"; break;
             case crow::json::type::String: col["type"] = "string"; break;
@@ -1465,6 +1479,23 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                 if (request.modern_era && clientSupportsTasks(request) && tool_async
                     && task_manager_ && tool_handler_) {
                     const auto& mcp_cfg = config_manager_->getMCPConfig();
+                    // RBAC BEFORE submitting: otherwise a denied-but-authenticated
+                    // caller would still get a taskId and consume a queue slot, and
+                    // the error surface would differ from the synchronous 403. Run
+                    // the same per-tool policy the sync path applies inside
+                    // executeTool, up front.
+                    {
+                        const bool mcp_auth_enabled = mcp_cfg.auth.enabled;
+                        const auto user_roles = MCPToolHandler::parseRolesFromContext(tool_request.context);
+                        MCPAuthorizationPolicy policy;
+                        auto decision = policy.authorize(*ep, user_roles, mcp_auth_enabled);
+                        if (!decision.allowed) {
+                            response.error = formatJsonRpcError(-32000, "Permission denied: " + decision.reason);
+                            response.http_status = 403;
+                            response.www_authenticate = buildWwwAuthenticate(http_req, /*insufficient_scope=*/true);
+                            return response;
+                        }
+                    }
                     std::string principal = "anonymous";
                     auto pit = tool_request.context.find("auth.username");
                     if (pit != tool_request.context.end() && !pit->second.empty()) {
@@ -1514,9 +1545,16 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                             MCPTaskManager::Task t;
                             bool found = false;
                             if (task_manager_->get(task_id, principal, t, found)
-                                && t.status == MCPTaskManager::Status::Completed) {
-                                response.result = t.result_json;
-                                return response;
+                                && t.status != MCPTaskManager::Status::Working) {
+                                // Reached a terminal state within the grace window:
+                                // return the result inline if completed, otherwise
+                                // stop waiting and hand back the task (whose status
+                                // is failed/cancelled) so the client polls it.
+                                if (t.status == MCPTaskManager::Status::Completed) {
+                                    response.result = t.result_json;
+                                    return response;
+                                }
+                                break;
                             }
                             std::this_thread::sleep_for(std::chrono::milliseconds(10));
                         }

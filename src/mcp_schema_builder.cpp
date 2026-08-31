@@ -15,8 +15,11 @@ namespace {
 constexpr int kIntUnsetMin = std::numeric_limits<int>::min();
 constexpr int kIntUnsetMax = std::numeric_limits<int>::max();
 
-bool hasLowerBound(int min) { return min != 0 && min != kIntUnsetMin; }
-bool hasUpperBound(int max) { return max != 0 && max != kIntUnsetMax; }
+// A numeric bound is "set" iff it differs from the unset sentinel. Note we must
+// NOT treat 0 as unset here: `min: 0` / `max: 0` are legitimate, meaningful
+// bounds and must appear in the schema.
+bool hasLowerBound(int min) { return min != kIntUnsetMin; }
+bool hasUpperBound(int max) { return max != kIntUnsetMax; }
 
 // Apply a single validator's constraints onto a property object. Called once
 // per validator on a field; later validators refine the same object, so the

@@ -45,6 +45,8 @@ TEST_CASE("numericEquals: integer/decimal/whitespace equivalence", "[mcp][header
     REQUIRE_FALSE(numericEquals("42", "43"));
     REQUIRE_FALSE(numericEquals("abc", "abc"));   // non-numeric -> not numeric-equal
     REQUIRE_FALSE(numericEquals("42x", "42"));     // trailing garbage
+    // Overflow must not collapse distinct values to +inf and compare equal.
+    REQUIRE_FALSE(numericEquals("1e309", "2e309"));
 }
 
 TEST_CASE("headerMatches: exact, numeric, and sentinel paths", "[mcp][headers]") {

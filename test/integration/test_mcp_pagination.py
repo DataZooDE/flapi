@@ -154,6 +154,22 @@ class TestPaginationAndTemplates:
         assert "error" in body
         assert body["error"]["code"] == -32602
 
+    def test_cursor_from_one_list_rejected_by_another(self, server_paged):
+        # A nextCursor minted for tools/list must not be accepted by another list
+        # method (it is bound to its issuing method).
+        r = _rpc(server_paged, "tools/list", {})["result"]
+        cursor = r["nextCursor"]
+        body = _rpc(server_paged, "resources/list", {"cursor": cursor})
+        assert "error" in body
+        assert body["error"]["code"] == -32602
+
+    def test_malformed_cursor_is_rejected(self, server_paged):
+        import base64
+        bad = base64.b64encode(b"not json at all").decode()
+        body = _rpc(server_paged, "tools/list", {"cursor": bad})
+        assert "error" in body
+        assert body["error"]["code"] == -32602
+
     def test_completion_result_is_wrapped(self, server_unpaged):
         # Completion result must be wrapped under a "completion" key.
         body = _rpc(server_unpaged, "completion/complete",

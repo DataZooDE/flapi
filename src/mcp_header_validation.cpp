@@ -1,6 +1,8 @@
 #include "mcp_header_validation.hpp"
 
 #include <cctype>
+#include <cerrno>
+#include <cmath>
 #include <cstdlib>
 
 #include <crow/utility.h>
@@ -30,8 +32,14 @@ bool parseNumber(const std::string& in, double& out) {
     }
     const char* begin = s.c_str();
     char* end = nullptr;
+    errno = 0;
     out = std::strtod(begin, &end);
-    return end == begin + s.size();
+    // Reject trailing garbage, and overflow/inf/nan (so "1e309" and "2e309" do
+    // not both become +inf and compare equal).
+    if (end != begin + s.size() || errno == ERANGE || !std::isfinite(out)) {
+        return false;
+    }
+    return true;
 }
 
 } // namespace
