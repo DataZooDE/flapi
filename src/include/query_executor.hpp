@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <string>
 #include <map>
+#include <thread>
 #include <vector>
 
 #include "prepared_template_rewriter.hpp"
@@ -21,6 +22,18 @@ class BadRequestError : public std::runtime_error {
 public:
     explicit BadRequestError(const std::string& msg) : std::runtime_error(msg) {}
 };
+
+class QueryExecutor;
+
+// Active-query registry (issue #111). A QueryExecutor registers itself under the
+// thread running its query for the duration of that query; another thread can
+// then interrupt whatever query is running on a given thread by its id. This
+// lets the MCP Tasks worker make tasks/cancel and shutdown preemptive without
+// threading an executor handle through the whole tool-execution pipeline. All
+// operations are mutex-guarded, and interrupt() only touches a live executor.
+void registerActiveExecutor(std::thread::id tid, QueryExecutor* exec);
+void unregisterActiveExecutor(std::thread::id tid);
+void interruptActiveExecutor(std::thread::id tid);
 
 } // namespace flapi
 

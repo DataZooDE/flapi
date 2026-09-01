@@ -12,7 +12,51 @@
 // duckdb::Vector*, so dropping to Vector::GetValue() is a safe round-trip.
 #include "duckdb.hpp"
 
+#include <mutex>
+#include <unordered_map>
+
 namespace flapi {
+
+namespace {
+// thread::id -> the QueryExecutor currently running a query on that thread.
+std::mutex& activeExecMutex() {
+    static std::mutex m;
+    return m;
+}
+std::unordered_map<std::thread::id, QueryExecutor*>& activeExecMap() {
+    static std::unordered_map<std::thread::id, QueryExecutor*> m;
+    return m;
+}
+} // namespace
+
+void registerActiveExecutor(std::thread::id tid, QueryExecutor* exec) {
+    std::lock_guard<std::mutex> lock(activeExecMutex());
+    activeExecMap()[tid] = exec;
+}
+void unregisterActiveExecutor(std::thread::id tid) {
+    std::lock_guard<std::mutex> lock(activeExecMutex());
+    activeExecMap().erase(tid);
+}
+void interruptActiveExecutor(std::thread::id tid) {
+    // Hold the lock across interrupt() so the executor cannot be unregistered
+    // and destroyed between the lookup and the duckdb_interrupt call.
+    std::lock_guard<std::mutex> lock(activeExecMutex());
+    auto it = activeExecMap().find(tid);
+    if (it != activeExecMap().end() && it->second) {
+        it->second->interrupt();
+    }
+}
+
+namespace {
+// RAII: publish `exec` under the current thread for the duration of a query.
+struct ActiveExecGuard {
+    std::thread::id tid;
+    explicit ActiveExecGuard(QueryExecutor* exec) : tid(std::this_thread::get_id()) {
+        registerActiveExecutor(tid, exec);
+    }
+    ~ActiveExecGuard() { unregisterActiveExecutor(tid); }
+};
+} // namespace
 
 QueryExecutor::QueryExecutor(duckdb_database db) : has_result(false) {
     if (duckdb_connect(db, &conn) == DuckDBError) {
@@ -34,7 +78,14 @@ void QueryExecutor::execute(const std::string& query, const std::string& context
         has_result = false;
     }
     
-    if (duckdb_query(conn, query.c_str(), &result) == DuckDBError) {
+    duckdb_state qstate;
+    {
+        // Publish this executor for the running thread so another thread can
+        // interrupt it (issue #111); unpublished the moment the query returns.
+        ActiveExecGuard guard(this);
+        qstate = duckdb_query(conn, query.c_str(), &result);
+    }
+    if (qstate == DuckDBError) {
         std::string error_message = duckdb_result_error(&result);
         std::string context_msg = context.empty() ? "" : " during " + context;
         duckdb_destroy_result(&result);
@@ -49,7 +100,12 @@ void QueryExecutor::executePrepared(duckdb_prepared_statement stmt, const std::s
         has_result = false;
     }
 
-    if (duckdb_execute_prepared(stmt, &result) == DuckDBError) {
+    duckdb_state pstate;
+    {
+        ActiveExecGuard guard(this);
+        pstate = duckdb_execute_prepared(stmt, &result);
+    }
+    if (pstate == DuckDBError) {
         std::string error_message = duckdb_result_error(&result);
         std::string context_msg = context.empty() ? "" : " during " + context;
         duckdb_destroy_result(&result);
