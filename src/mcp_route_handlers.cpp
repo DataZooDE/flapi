@@ -4,7 +4,9 @@
 #include "mcp_authorization_policy.hpp"
 #include "mcp_schema_builder.hpp"
 #include "mcp_header_validation.hpp"
+#include "query_executor.hpp"
 #include <iostream>
+#include <thread>
 #include <sstream>
 #include <optional>
 
@@ -1505,7 +1507,16 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                     // synchronous call would (content + structuredContent, or an
                     // isError text block on failure).
                     MCPToolHandler* handler = tool_handler_.get();
-                    auto work = [handler, tool_request](const std::atomic<bool>&) -> std::string {
+                    auto work = [handler, tool_request](
+                                    const std::atomic<bool>&,
+                                    const MCPTaskManager::SetInterrupt& set_interrupt) -> std::string {
+                        // Publish a preemptive-cancel hook: tasks/cancel and
+                        // shutdown interrupt the DuckDB query running on THIS
+                        // worker thread (the executor self-registers under this
+                        // id for the duration of its query — see issue #111).
+                        set_interrupt([tid = std::this_thread::get_id()]() {
+                            interruptActiveExecutor(tid);
+                        });
                         auto r = handler->executeTool(tool_request);
                         mcp::ContentResponse cr;
                         if (r.success) {

@@ -69,6 +69,12 @@ mcp:
         f.write("SELECT 7 AS answer\n")
     with open(os.path.join(sqls, "rep.yaml"), "w") as f:
         f.write("template-source: rep.sql\nconnection: [inmem]\nmcp-tool: {name: report, description: r, async: true}\n")
+    # A deliberately long-running query, used to prove tasks/cancel is preemptive
+    # (interrupts the in-flight DuckDB query) rather than merely cooperative.
+    with open(os.path.join(sqls, "slow.sql"), "w") as f:
+        f.write("SELECT count(*) AS n FROM range(100000000000)\n")
+    with open(os.path.join(sqls, "slow.yaml"), "w") as f:
+        f.write("template-source: slow.sql\nconnection: [inmem]\nmcp-tool: {name: slow, description: s, async: true}\n")
 
     log = open(os.path.join(tmp, "server.log"), "w")
     proc = subprocess.Popen([binary, "-c", os.path.join(tmp, "flapi.yaml"), "--no-telemetry"],
@@ -165,6 +171,27 @@ class TestTasks:
         body = c.json()
         assert "error" not in body, body
         assert body["result"]["taskId"] == task_id
+
+    def test_tasks_cancel_preempts_long_query(self, server):
+        # Submit a query that would run for many minutes, then cancel it. With
+        # preemptive cancellation (issue #111) the in-flight DuckDB query is
+        # interrupted, so the task reaches `cancelled` in seconds rather than
+        # hanging until the query finishes on its own.
+        r = _call(server, META_TASKS, name="slow")
+        result = r.json()["result"]
+        assert result["resultType"] == "task", result
+        task_id = result["task"]["taskId"]
+
+        # Let the worker actually start the query before cancelling.
+        time.sleep(0.5)
+        c = requests.post(f"{server}/mcp/jsonrpc", headers=_headers("tasks/cancel"),
+                          json={"jsonrpc": "2.0", "id": 3, "method": "tasks/cancel",
+                                "params": {"taskId": task_id, "_meta": META_TASKS}}, timeout=10)
+        assert "error" not in c.json(), c.text
+
+        # Must transition to cancelled quickly — proof the query was interrupted.
+        cancelled = _wait_status(server, task_id, "cancelled", tries=20)
+        assert cancelled is not None, "long query was not cancelled preemptively"
 
 
 def _wait_status(base, task_id, want, tries=40):

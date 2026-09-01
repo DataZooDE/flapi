@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <string>
 #include <map>
+#include <thread>
 #include <vector>
 
 #include "prepared_template_rewriter.hpp"
@@ -21,6 +22,18 @@ class BadRequestError : public std::runtime_error {
 public:
     explicit BadRequestError(const std::string& msg) : std::runtime_error(msg) {}
 };
+
+class QueryExecutor;
+
+// Active-query registry (issue #111). A QueryExecutor registers itself under the
+// thread running its query for the duration of that query; another thread can
+// then interrupt whatever query is running on a given thread by its id. This
+// lets the MCP Tasks worker make tasks/cancel and shutdown preemptive without
+// threading an executor handle through the whole tool-execution pipeline. All
+// operations are mutex-guarded, and interrupt() only touches a live executor.
+void registerActiveExecutor(std::thread::id tid, QueryExecutor* exec);
+void unregisterActiveExecutor(std::thread::id tid);
+void interruptActiveExecutor(std::thread::id tid);
 
 } // namespace flapi
 
@@ -114,6 +127,13 @@ public:
     idx_t columnCount() const { return has_result ? duckdb_column_count(&result) : 0; }
     
     crow::json::wvalue toJson() const;
+
+    // Interrupt an in-flight query on this executor's connection from another
+    // thread. Used by the MCP Tasks extension (issue #111) to make tasks/cancel
+    // and graceful shutdown preemptive: the running duckdb_query returns an
+    // error, which execute() then surfaces as a thrown exception. Safe to call
+    // concurrently with execute(); a no-op if there is no live connection.
+    void interrupt() { if (conn) { duckdb_interrupt(conn); } }
 
     // Make these public since they're used directly in DatabaseManager
     duckdb_connection conn;

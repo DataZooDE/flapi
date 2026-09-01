@@ -30,7 +30,9 @@ bool waitFor(MCPTaskManager& m, const std::string& id, const std::string& princi
 TEST_CASE("MCPTaskManager: a submitted task runs and completes", "[mcp][tasks]") {
     MCPTaskManager m(2, 16);
     auto id = m.submit("tool", "alice", 60000, 100,
-                       [](const std::atomic<bool>&) { return std::string("{\"ok\":true}"); });
+                       [](const std::atomic<bool>&, const MCPTaskManager::SetInterrupt&) {
+                           return std::string("{\"ok\":true}");
+                       });
     REQUIRE_FALSE(id.empty());
     REQUIRE(waitFor(m, id, "alice", Status::Completed));
 
@@ -43,7 +45,9 @@ TEST_CASE("MCPTaskManager: a submitted task runs and completes", "[mcp][tasks]")
 TEST_CASE("MCPTaskManager: a throwing work marks the task failed", "[mcp][tasks]") {
     MCPTaskManager m(1, 16);
     auto id = m.submit("tool", "alice", 60000, 100,
-                       [](const std::atomic<bool>&) -> std::string { throw std::runtime_error("boom"); });
+                       [](const std::atomic<bool>&, const MCPTaskManager::SetInterrupt&) -> std::string {
+                           throw std::runtime_error("boom");
+                       });
     REQUIRE(waitFor(m, id, "alice", Status::Failed));
     MCPTaskManager::Task t;
     bool found = false;
@@ -54,7 +58,9 @@ TEST_CASE("MCPTaskManager: a throwing work marks the task failed", "[mcp][tasks]
 TEST_CASE("MCPTaskManager: get re-checks principal ownership", "[mcp][tasks]") {
     MCPTaskManager m(1, 16);
     auto id = m.submit("tool", "alice", 60000, 100,
-                       [](const std::atomic<bool>&) { return std::string("{}"); });
+                       [](const std::atomic<bool>&, const MCPTaskManager::SetInterrupt&) {
+                           return std::string("{}");
+                       });
     REQUIRE(waitFor(m, id, "alice", Status::Completed));
 
     MCPTaskManager::Task t;
@@ -72,7 +78,7 @@ TEST_CASE("MCPTaskManager: cancel is honoured and cross-principal cancel is refu
     std::atomic<bool> release{false};
     // Work blocks until cancelled or released so we can cancel it mid-flight.
     auto id = m.submit("tool", "alice", 60000, 100,
-                       [&release](const std::atomic<bool>& cancelled) {
+                       [&release](const std::atomic<bool>& cancelled, const MCPTaskManager::SetInterrupt&) {
                            for (int i = 0; i < 200; ++i) {
                                if (cancelled.load() || release.load()) break;
                                std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -85,12 +91,35 @@ TEST_CASE("MCPTaskManager: cancel is honoured and cross-principal cancel is refu
     REQUIRE(waitFor(m, id, "alice", Status::Cancelled, 3000));
 }
 
+TEST_CASE("MCPTaskManager: cancel fires the preemptive interrupt hook", "[mcp][tasks]") {
+    MCPTaskManager m(1, 16);
+    std::atomic<bool> interrupted{false};
+    // The work publishes an interrupt hook, then blocks on it — proving cancel()
+    // reaches a running task preemptively rather than waiting for cooperative
+    // polling. (In production the hook interrupts the DuckDB query.)
+    auto id = m.submit("tool", "alice", 60000, 100,
+                       [&interrupted](const std::atomic<bool>&,
+                                      const MCPTaskManager::SetInterrupt& set_interrupt) {
+                           set_interrupt([&interrupted]() { interrupted.store(true); });
+                           for (int i = 0; i < 400; ++i) {
+                               if (interrupted.load()) { break; }
+                               std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                           }
+                           return std::string("{}");
+                       });
+    // Give the worker time to start and register the hook.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    REQUIRE(m.cancel(id, "alice"));
+    REQUIRE(waitFor(m, id, "alice", Status::Cancelled, 3000));
+    REQUIRE(interrupted.load());
+}
+
 TEST_CASE("MCPTaskManager: queue backpressure returns an empty id", "[mcp][tasks]") {
     // One worker, queue depth 1. Fill the worker with a blocking task, then the
     // queue with one, so a third submit is rejected.
     MCPTaskManager m(1, 1);
     std::atomic<bool> release{false};
-    auto blocker = [&release](const std::atomic<bool>& cancelled) {
+    auto blocker = [&release](const std::atomic<bool>& cancelled, const MCPTaskManager::SetInterrupt&) {
         while (!release.load() && !cancelled.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }

@@ -227,16 +227,26 @@ void MCPTaskManager::workerLoop() {
             continue;
         }
 
+        // Let the work publish a preemptive-cancel hook (e.g. an interrupt of the
+        // DuckDB query it is about to run). Stored under mu_ so cancel()/shutdown()
+        // on another thread see a consistent value.
+        auto set_interrupt = [this, entry](std::function<void()> fn) {
+            std::lock_guard<std::mutex> lock(mu_);
+            entry->interrupt = std::move(fn);
+        };
+
         std::string result;
         std::string error;
         try {
-            result = entry->work(entry->cancelled);
+            result = entry->work(entry->cancelled, set_interrupt);
         } catch (const std::exception& e) {
             error = e.what();
         }
 
         {
             std::unique_lock<std::mutex> lock(mu_);
+            // The query has returned; a late cancel() must not fire a stale hook.
+            entry->interrupt = nullptr;
             if (entry->cancelled.load()) {
                 entry->task.status = Status::Cancelled;
             } else if (!error.empty()) {
@@ -287,11 +297,11 @@ bool MCPTaskManager::cancel(const std::string& task_id, const std::string& princ
         return false;
     }
     it->second->cancelled.store(true);
-    // If it has not started yet, mark it cancelled immediately; a running task
-    // is marked cancelled by the worker when its work returns.
-    if (it->second->task.status == Status::Working) {
-        // Leave running tasks Working until the worker observes cancellation;
-        // queued-but-not-started tasks are flipped by the worker's pre-check.
+    // Preemptively interrupt a running query if the task published a hook;
+    // otherwise the worker flips a queued task on its pre-check, and a running
+    // task without a hook is caught cooperatively when its work returns.
+    if (it->second->interrupt) {
+        it->second->interrupt();
     }
     return true;
 }
@@ -303,9 +313,14 @@ void MCPTaskManager::shutdown() {
             return;
         }
         stopping_ = true;
-        // Signal cancellation to everything so in-flight work can bail out.
+        // Signal cancellation to everything so in-flight work can bail out, and
+        // preemptively interrupt any running query so shutdown does not block on
+        // a multi-minute task finishing on its own.
         for (auto& [id, entry] : tasks_) {
             entry->cancelled.store(true);
+            if (entry->interrupt) {
+                entry->interrupt();
+            }
         }
     }
     cv_.notify_all();
