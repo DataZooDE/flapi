@@ -1,0 +1,42 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "name": "io.github.datazoode/flapi",
+  "description": "Turns SQL templates + YAML into REST endpoints and MCP tools from one config. Single binary with embedded DuckDB (Parquet, Postgres, BigQuery, S3 and 50+ sources), per-tool RBAC, typed params bound as prepared statements, DuckLake caching.",
+  "repository": {
+    "url": "https://github.com/DataZooDE/flapi",
+    "source": "github"
+  },
+  "version": "26.07.13",
+  "websiteUrl": "https://github.com/DataZooDE/flapi",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "flapi-io",
+      "version": "26.07.13",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "streamable-http",
+        "url": "http://localhost:8080/mcp/jsonrpc"
+      },
+      "packageArguments": [
+        {
+          "type": "named",
+          "name": "-c",
+          "description": "Path to the flapi.yaml configuration file defining connections, endpoints and MCP tools",
+          "format": "string",
+          "isRequired": true,
+          "valueHint": "flapi.yaml"
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "FLAPI_PORT",
+          "description": "HTTP port for the unified REST + MCP server (default 8080)",
+          "isRequired": false,
+          "format": "number"
+        }
+      ]
+    }
+  ]
+}

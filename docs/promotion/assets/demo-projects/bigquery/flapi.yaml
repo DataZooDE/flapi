@@ -1,0 +1,16 @@
+project-name: babynames-api
+project-description: US baby names served from BigQuery public data
+
+template:
+  path: './sqls'
+
+connections:
+  bigquery:
+    init: |
+      INSTALL 'bigquery' FROM community;
+      LOAD 'bigquery';
+    properties:
+      project_id: 't-agentspace-customer'
+
+duckdb:
+  db_path: ':memory:'
