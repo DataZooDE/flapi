@@ -5,7 +5,8 @@ name: PyPI downloads → PostHog
 # deterministic event UUID, so missed or doubled cron runs are harmless.
 on:
   schedule:
-    - cron: "0 6 * * *"   # UTC; pypistats has yesterday's numbers by then
+    - cron: "0 3 * * *"   # ~05:00-05:40 Berlin (CEST); data visible before 6am
+    - cron: "0 6 * * *"   # catch-up in case pypistats had not published yet at 03:00 UTC
   workflow_dispatch:
     inputs:
       lookback_days:
