@@ -14,6 +14,10 @@
 #include <optional>
 #include <atomic>
 #include <future>
+// crow must be parsed with its real access specifiers: including it under the
+// hack below changes crow::response's layout in this TU only, so a default-
+// constructed response disagrees with the one request_handler.cpp sees.
+#include <crow.h>
 #define private public
 #include "../../src/include/cache_manager.hpp"
 #include "../../src/include/query_executor.hpp"

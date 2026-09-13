@@ -17,6 +17,15 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 - Concurrent refreshes for the same DuckLake cache table are suppressed so scheduler refreshes do
   not collide with startup warmup.
 
+### Build correctness
+
+- `CROW_ENABLE_COMPRESSION` is now defined once for every translation unit via CMake instead of by
+  three headers. The macro adds a member to `crow::response`, so a translation unit that reached
+  `<crow.h>` through a different include order saw a different layout — an ODR violation that made
+  `response::is_completed()` read an unrelated byte across the library/test boundary.
+- The unit tests that use the `#define private public` access hack now include `<crow.h>` before it,
+  so crow is never parsed with rewritten access specifiers.
+
 ## v26.05.18 — Prepared-statement coverage swept across every code path
 
 Follow-up to v26.05.17. After v26.05.17 shipped, an internal audit found that the prepared-statement path was only wired into the GET endpoint executor — POST/PUT/PATCH writes and the Arrow-streaming endpoint still rendered Mustache templates as strings. This release closes that gap.

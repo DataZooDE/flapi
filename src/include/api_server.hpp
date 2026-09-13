@@ -1,6 +1,5 @@
 #pragma once
 
-#define CROW_ENABLE_COMPRESSION
 #include <crow.h>
 #include "crow/middlewares/cors.h"
 #include "crow/compression.h"

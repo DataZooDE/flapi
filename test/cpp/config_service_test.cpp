@@ -9,6 +9,10 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+// crow must be parsed with its real access specifiers: including it under the
+// hack below changes crow::response's layout in this TU only, so a default-
+// constructed response disagrees with the one request_handler.cpp sees.
+#include <crow.h>
 #define private public
 #include "database_manager.hpp"
 #undef private

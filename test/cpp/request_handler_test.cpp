@@ -12,11 +12,14 @@
 #include <mutex>
 #include <thread>
 #include <optional>
+// crow must be parsed with its real access specifiers and with the same
+// CROW_ENABLE_COMPRESSION setting as every other TU, or crow::response's
+// layout differs between this TU and libflapi-lib.
+#include <crow.h>
 #define private public
 #include "../../src/include/request_handler.hpp"
 #undef private
 #include "../../src/include/config_manager.hpp"
-#include <crow.h>
 
 #include "test_utils.hpp"
 #define private public
