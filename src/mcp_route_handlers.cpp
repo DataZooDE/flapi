@@ -1614,6 +1614,9 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                     response.error = formatJsonRpcError(-32000, result.error_message);
                     response.http_status = 403;
                     response.www_authenticate = buildWwwAuthenticate(http_req, /*insufficient_scope=*/true);
+                } else if (result.failure_kind == MCPToolExecutionResult::FailureKind::ServiceUnavailable) {
+                    response.error = formatJsonRpcError(-32000, result.error_message);
+                    response.http_status = 503;
                 } else {
                     // Tool-execution failures the model CAN act on (bad
                     // arguments, a SQL/runtime error, a rate limit) are returned
@@ -1755,6 +1758,15 @@ MCPResponse MCPRouteHandlers::handleResourcesReadRequest(const MCPRequest& reque
         }
 
         CROW_LOG_DEBUG << "Reading resource: " << resource_config->mcp_resource->name;
+
+        if (auto cache_manager = db_manager_->getCacheManager()) {
+            if (auto readiness = cache_manager->readinessBlock(config_manager_, *resource_config)) {
+                auto body = CacheManager::readinessBlockJson(*readiness);
+                response.error = formatJsonRpcError(-32000, body.dump());
+                response.http_status = 503;
+                return response;
+            }
+        }
 
         // Read the resource content (binding any uri-template path params).
         try {
@@ -2299,4 +2311,3 @@ MCPResponse MCPRouteHandlers::handleCompletionCompleteRequest(const MCPRequest& 
 }
 
 } // namespace flapi
-

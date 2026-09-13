@@ -147,26 +147,32 @@ def find_free_port():
 def wait_for_server_healthy(base_url, max_retries=30, retry_interval=1.0):
     """Wait for server to be healthy with proper health checks.
 
-    Uses exponential backoff and validates HTTP connectivity.
+    Uses exponential backoff and waits for the readiness endpoint to report OK.
     Returns True if server is healthy, raises Exception otherwise.
     """
     import requests
-    from requests.exceptions import ConnectionError, Timeout
+    from requests.exceptions import ConnectionError, Timeout, RequestException
+
+    health_url = f"{base_url.rstrip('/')}/health"
 
     for attempt in range(max_retries):
         try:
-            # Try the root endpoint or a known endpoint
-            response = requests.get(base_url, timeout=5)
-            if response.status_code in [200, 401, 403, 404]:
-                # Any HTTP response means server is up
-                print(f"Server healthy at {base_url} (status {response.status_code})")
+            response = requests.get(health_url, timeout=5)
+            if response.status_code == 200:
+                print(f"Server healthy at {health_url}")
                 return True
-        except (ConnectionError, Timeout) as e:
             if attempt < max_retries - 1:
-                print(f"Waiting for server (attempt {attempt + 1}/{max_retries}): {e}")
+                print(
+                    f"Waiting for server readiness (attempt {attempt + 1}/{max_retries}): "
+                    f"status {response.status_code}"
+                )
+                time.sleep(retry_interval)
+        except (ConnectionError, Timeout, RequestException) as e:
+            if attempt < max_retries - 1:
+                print(f"Waiting for server readiness (attempt {attempt + 1}/{max_retries}): {e}")
                 time.sleep(retry_interval)
 
-    raise Exception(f"Server at {base_url} failed health check after {max_retries} attempts")
+    raise Exception(f"Server at {health_url} failed health check after {max_retries} attempts")
 
 TEST_JWT_SECRET = "test-jwt-secret-key-for-integration-tests"
 TEST_JWT_ISSUER = "flapi-test"

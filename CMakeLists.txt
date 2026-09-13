@@ -137,6 +137,11 @@ set(CROW_ENABLE_COMPRESSION ON)
 # OpenSSL is already a required dependency; turning this on has no runtime
 # cost when `enforce-https.enabled` is false.
 add_compile_definitions(CROW_ENABLE_SSL)
+# CROW_ENABLE_COMPRESSION changes crow::response's layout. It must be defined
+# for every translation unit, not per-header, or TUs that reach <crow.h> by a
+# different include order disagree about the layout (an ODR violation that
+# silently corrupts response state across the lib/test boundary).
+add_compile_definitions(CROW_ENABLE_COMPRESSION)
 
 # Compiler flags
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

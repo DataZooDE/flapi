@@ -123,6 +123,14 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
             }
         }
 
+        if (auto cache_manager = db_manager->getCacheManager()) {
+            if (auto readiness = cache_manager->readinessBlock(config_manager, *endpoint_config)) {
+                auto body = CacheManager::readinessBlockJson(*readiness);
+                return createErrorResult(body.dump(),
+                                         MCPToolExecutionResult::FailureKind::ServiceUnavailable);
+            }
+        }
+
         // W2.2 dry-run: peel `_dryRun` off the arguments before validation so
         // the reserved key never reaches the unknown-parameter check. A copy
         // of the arguments is made because MCPToolCallRequest is const here.

@@ -27,6 +27,7 @@ struct MCPToolExecutionResult {
         PermissionDenied,  // RBAC denial             -> JSON-RPC error (403 later)
         RateLimited,       // per-tool rate limit hit -> isError result
         InvalidArguments,  // validation failed       -> isError result
+        ServiceUnavailable,// cache not ready         -> JSON-RPC 503
         ExecutionError,    // SQL/runtime failure     -> isError result
     };
 

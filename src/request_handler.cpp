@@ -29,6 +29,19 @@ void RequestHandler::handleRequest(const crow::request& req, crow::response& res
 
     CROW_LOG_DEBUG << "Handling request ["<< crow::method_name(req.method) << "]: " << endpoint.urlPath;
 
+    if (auto cache_manager = db_manager->getCacheManager()) {
+        if (auto readiness = cache_manager->readinessBlock(config_manager, endpoint)) {
+            auto block_response = CacheManager::readinessBlockResponse(*readiness);
+            res.code = block_response.code;
+            for (const auto& header : block_response.headers) {
+                res.set_header(header.first, header.second);
+            }
+            res.write(block_response.body);
+            res.end();
+            return;
+        }
+    }
+
     switch (req.method) {
         case crow::HTTPMethod::Get:
             handleGetRequest(req, res, endpoint, pathParams, authParams);

@@ -5,12 +5,18 @@
 #include <regex>
 #include <ctime>
 #include <cstdlib>
+#include <exception>
+#include <tuple>
 
 #include "cache_manager.hpp"
 #include "database_manager.hpp"
 #include "database_manager_cache_adapter.hpp"
 
 namespace flapi {
+
+bool CacheManager::CacheKey::operator<(const CacheKey& other) const {
+    return std::tie(catalog, schema, table) < std::tie(other.catalog, other.schema, other.table);
+}
 
 CacheManager::CacheManager(std::shared_ptr<DatabaseManager> db_manager)
     : db_adapter_(std::make_shared<DatabaseManagerCacheAdapter>(db_manager)),
@@ -22,6 +28,7 @@ CacheManager::CacheManager(std::shared_ptr<ICacheDatabaseAdapter> db_adapter)
 
 void CacheManager::warmUpCaches(std::shared_ptr<ConfigManager> config_manager) {
     CROW_LOG_INFO << "Warming up endpoint caches, this might take some time...";
+    initializeReadiness(config_manager);
     
     // Initialize audit tables first
     initializeAuditTables(config_manager);
@@ -33,10 +40,38 @@ void CacheManager::warmUpCaches(std::shared_ptr<ConfigManager> config_manager) {
     {
         // Warmup: refresh caches only for endpoints with cache enabled and a table defined
         if (endpoint.cache.enabled && !endpoint.cache.table.empty()) {
-            refreshCache(config_manager, endpoint, params);
+            markCacheStarting(config_manager, endpoint);
+            try {
+                if (refreshCache(config_manager, endpoint, params)) {
+                    markCacheReady(config_manager, endpoint);
+                } else {
+                    while (getEndpointReadiness(config_manager, endpoint).state == ReadinessState::Starting) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    }
+                }
+            } catch (const std::exception& ex) {
+                CROW_LOG_ERROR << "Cache warmup failed for " << endpoint.cache.table << ": " << ex.what();
+                markCacheFailed(config_manager, endpoint, ex.what());
+            } catch (...) {
+                CROW_LOG_ERROR << "Cache warmup failed for " << endpoint.cache.table << ": unknown error";
+                markCacheFailed(config_manager, endpoint, "unknown error");
+            }
         }
     }
     CROW_LOG_INFO << "Finished warming up endpoint caches! Let's go!";
+}
+
+std::thread CacheManager::warmUpCachesAsync(std::shared_ptr<ConfigManager> config_manager) {
+    initializeReadiness(config_manager);
+    return std::thread([this, config_manager]() {
+        try {
+            warmUpCaches(config_manager);
+        } catch (const std::exception& ex) {
+            CROW_LOG_ERROR << "Unexpected cache warmup failure: " << ex.what();
+        } catch (...) {
+            CROW_LOG_ERROR << "Unexpected cache warmup failure: unknown error";
+        }
+    });
 }
 
 bool CacheManager::shouldRefreshCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint) {
@@ -55,8 +90,145 @@ bool CacheManager::shouldRefreshCache(std::shared_ptr<ConfigManager> config_mana
         return false;
     }
 
-void CacheManager::refreshCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
-    refreshDuckLakeCache(config_manager, endpoint, params);
+bool CacheManager::refreshCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
+    const CacheKey key = cacheKeyForEndpoint(config_manager, endpoint);
+    if (!enterRefresh(key)) {
+        CROW_LOG_INFO << "Skipping duplicate in-flight cache refresh for " << key.schema << "." << key.table;
+        return false;
+    }
+
+    try {
+        refreshDuckLakeCache(config_manager, endpoint, params);
+        markCacheReady(config_manager, endpoint);
+        leaveRefresh(key);
+        return true;
+    } catch (const std::exception& ex) {
+        markCacheFailed(config_manager, endpoint, ex.what());
+        leaveRefresh(key);
+        throw;
+    } catch (...) {
+        markCacheFailed(config_manager, endpoint, "unknown error");
+        leaveRefresh(key);
+        throw;
+    }
+}
+
+CacheManager::CacheKey CacheManager::cacheKeyForEndpoint(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint) {
+    const auto& ducklakeConfig = config_manager->getDuckLakeConfig();
+    const auto& cacheConfig = endpoint.cache;
+    return CacheKey{
+        ducklakeConfig.alias,
+        cacheConfig.schema.empty() ? "main" : cacheConfig.schema,
+        cacheConfig.table
+    };
+}
+
+void CacheManager::initializeReadiness(std::shared_ptr<ConfigManager> config_manager) {
+    std::lock_guard<std::mutex> lock(readiness_mutex_);
+    readiness_.clear();
+    for (const auto& endpoint : config_manager->getEndpoints()) {
+        if (!endpoint.cache.enabled || endpoint.cache.table.empty()) {
+            continue;
+        }
+        const CacheKey key = cacheKeyForEndpoint(config_manager, endpoint);
+        readiness_[key] = CacheReadiness{ReadinessState::Starting, key.catalog, key.schema, key.table, ""};
+    }
+}
+
+void CacheManager::markCacheStarting(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint) {
+    const CacheKey key = cacheKeyForEndpoint(config_manager, endpoint);
+    std::lock_guard<std::mutex> lock(readiness_mutex_);
+    readiness_[key] = CacheReadiness{ReadinessState::Starting, key.catalog, key.schema, key.table, ""};
+}
+
+void CacheManager::markCacheReady(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint) {
+    const CacheKey key = cacheKeyForEndpoint(config_manager, endpoint);
+    std::lock_guard<std::mutex> lock(readiness_mutex_);
+    readiness_[key] = CacheReadiness{ReadinessState::Ready, key.catalog, key.schema, key.table, ""};
+}
+
+void CacheManager::markCacheFailed(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::string& error) {
+    const CacheKey key = cacheKeyForEndpoint(config_manager, endpoint);
+    std::lock_guard<std::mutex> lock(readiness_mutex_);
+    readiness_[key] = CacheReadiness{ReadinessState::Failed, key.catalog, key.schema, key.table, error};
+}
+
+CacheManager::CacheReadiness CacheManager::getReadinessForKey(const CacheKey& key) const {
+    std::lock_guard<std::mutex> lock(readiness_mutex_);
+    auto it = readiness_.find(key);
+    if (it == readiness_.end()) {
+        return CacheReadiness{ReadinessState::Ready, key.catalog, key.schema, key.table, ""};
+    }
+    return it->second;
+}
+
+CacheManager::CacheReadiness CacheManager::getEndpointReadiness(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint) const {
+    if (!endpoint.cache.enabled || endpoint.cache.table.empty()) {
+        return CacheReadiness{ReadinessState::Ready, "", "", "", ""};
+    }
+    return getReadinessForKey(cacheKeyForEndpoint(config_manager, endpoint));
+}
+
+std::optional<CacheManager::CacheReadiness> CacheManager::readinessBlock(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint) const {
+    if (!endpoint.cache.enabled || endpoint.cache.table.empty()) {
+        return std::nullopt;
+    }
+
+    auto readiness = getEndpointReadiness(config_manager, endpoint);
+    if (readiness.state == ReadinessState::Ready) {
+        return std::nullopt;
+    }
+    return readiness;
+}
+
+crow::json::wvalue CacheManager::readinessBlockJson(const CacheReadiness& readiness) {
+    crow::json::wvalue errorResponse;
+    errorResponse["error"] = "cache_warming";
+    errorResponse["table"] = readiness.table;
+    if (readiness.state == ReadinessState::Failed) {
+        errorResponse["message"] = "Cache for this endpoint failed to build";
+        errorResponse["detail"] = readiness.error;
+    } else {
+        errorResponse["message"] = "Cache for this endpoint is still being built";
+    }
+    return errorResponse;
+}
+
+crow::response CacheManager::readinessBlockResponse(const CacheReadiness& readiness) {
+    auto body = readinessBlockJson(readiness);
+    crow::response response(503);
+    response.set_header("Content-Type", "application/json");
+    response.set_header("Retry-After", "5");
+    response.write(body.dump());
+    return response;
+}
+
+CacheManager::CacheReadinessSummary CacheManager::getReadinessSummary() const {
+    std::lock_guard<std::mutex> lock(readiness_mutex_);
+    CacheReadinessSummary summary;
+    summary.total = static_cast<int>(readiness_.size());
+    for (const auto& [key, readiness] : readiness_) {
+        if (readiness.state == ReadinessState::Ready) {
+            ++summary.ready;
+        } else if (readiness.state == ReadinessState::Failed) {
+            ++summary.failed;
+            summary.failed_caches.push_back(readiness);
+        } else {
+            summary.pending_caches.push_back(readiness);
+        }
+    }
+    return summary;
+}
+
+bool CacheManager::enterRefresh(const CacheKey& key) {
+    std::lock_guard<std::mutex> lock(inflight_mutex_);
+    auto [it, inserted] = inflight_refreshes_.insert(key);
+    return inserted;
+}
+
+void CacheManager::leaveRefresh(const CacheKey& key) {
+    std::lock_guard<std::mutex> lock(inflight_mutex_);
+    inflight_refreshes_.erase(key);
 }
 
 void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string> params) {

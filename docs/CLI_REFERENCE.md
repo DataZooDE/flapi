@@ -31,8 +31,9 @@ This document provides a complete reference for the `flapi` server executable's 
    - [Development Mode](#development-mode)
    - [Production Mode](#production-mode)
    - [CI/CD Validation](#cicd-validation)
-6. [Signal Handling](#6-signal-handling)
-7. [Exit Codes](#7-exit-codes)
+6. [Runtime Health Endpoints](#6-runtime-health-endpoints)
+7. [Signal Handling](#7-signal-handling)
+8. [Exit Codes](#8-exit-codes)
 - [Related Documentation](#related-documentation)
 
 ---
@@ -636,6 +637,15 @@ See [Configuration Reference - Environment Variables](./CONFIG_REFERENCE.md#10-e
   --log-level warning
 ```
 
+For platforms with short startup health-check windows, point the platform liveness check at:
+
+```text
+/health/live
+```
+
+Use `/health` when the platform should wait until cache warmup is complete before marking the
+deployment ready for traffic.
+
 ### CI/CD Validation
 
 ```bash
@@ -654,7 +664,50 @@ fi
 
 ---
 
-## 6. Signal Handling
+## 6. Runtime Health Endpoints
+
+flAPI always registers two unauthenticated health endpoints. They do not require
+`--config-service`.
+
+| Endpoint | Purpose | Response |
+|----------|---------|----------|
+| `GET /health/live` | Liveness: process is up and the listener is accepting connections | `200 {"status":"live"}` |
+| `GET /health` | Readiness: cache-enabled endpoints are ready to serve | `200` when ready, `503` while starting or degraded |
+
+During cache warmup, `/health/live` returns `200` as soon as the server is listening, while
+`/health` returns:
+
+```json
+{
+  "status": "starting",
+  "caches": {"total": 4, "ready": 1, "failed": 0},
+  "pending": [{"schema": "cache", "table": "customers_cache"}],
+  "uptime_s": 7
+}
+```
+
+If a cache warmup fails, `/health` returns `503` with `"status": "degraded"` and a `failed` list
+including the table name and error.
+
+Requests to a cached data endpoint while its cache is starting or failed return `503 Service
+Unavailable` with `Retry-After: 5` and a JSON body containing `"error": "cache_warming"`. flAPI
+does not serve partial or empty results from a half-built cache.
+
+**AWS App Runner example:**
+
+```yaml
+HealthCheckConfiguration:
+  Protocol: HTTP
+  Path: /health/live
+  Interval: 5
+  Timeout: 2
+  HealthyThreshold: 1
+  UnhealthyThreshold: 5
+```
+
+---
+
+## 7. Signal Handling
 
 | Signal | Behavior |
 |--------|----------|
@@ -679,7 +732,7 @@ On receiving a shutdown signal, the server:
 
 ---
 
-## 7. Exit Codes
+## 8. Exit Codes
 
 | Code | Description |
 |------|-------------|

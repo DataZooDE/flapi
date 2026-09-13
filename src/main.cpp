@@ -650,6 +650,11 @@ int main(int argc, char* argv[])
 
     CROW_LOG_INFO << "flAPI unified server started - REST API and MCP on port " << config_manager->getHttpPort();
 
+    std::thread warmup_thread;
+    if (auto cache_manager = DatabaseManager::getInstance()->getCacheManager()) {
+        warmup_thread = cache_manager->warmUpCachesAsync(config_manager);
+    }
+
     // Once-a-day feedback nudge, at the point the server is actually up. Needs
     // both streams to be terminals, so a container or systemd start -- how this
     // runs in production -- prints nothing. The log line above remains the
@@ -675,6 +680,10 @@ int main(int argc, char* argv[])
 
     // Wait for server to finish
     unified_server_thread.join();
+
+    if (warmup_thread.joinable()) {
+        warmup_thread.join();
+    }
 
     // Drain buffered telemetry on clean exit; the signal path already flushed.
     if (!should_exit) {
