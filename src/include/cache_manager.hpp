@@ -62,6 +62,9 @@ public:
     void markCacheReady(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint);
     void markCacheFailed(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::string& error);
     CacheReadiness getEndpointReadiness(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint) const;
+    std::optional<CacheReadiness> readinessBlock(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint) const;
+    static crow::json::wvalue readinessBlockJson(const CacheReadiness& readiness);
+    static crow::response readinessBlockResponse(const CacheReadiness& readiness);
     CacheReadinessSummary getReadinessSummary() const;
 
     // Audit functionality

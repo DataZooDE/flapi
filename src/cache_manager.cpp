@@ -44,6 +44,10 @@ void CacheManager::warmUpCaches(std::shared_ptr<ConfigManager> config_manager) {
             try {
                 if (refreshCache(config_manager, endpoint, params)) {
                     markCacheReady(config_manager, endpoint);
+                } else {
+                    while (getEndpointReadiness(config_manager, endpoint).state == ReadinessState::Starting) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    }
                 }
             } catch (const std::exception& ex) {
                 CROW_LOG_ERROR << "Cache warmup failed for " << endpoint.cache.table << ": " << ex.what();
@@ -98,7 +102,12 @@ bool CacheManager::refreshCache(std::shared_ptr<ConfigManager> config_manager, c
         markCacheReady(config_manager, endpoint);
         leaveRefresh(key);
         return true;
+    } catch (const std::exception& ex) {
+        markCacheFailed(config_manager, endpoint, ex.what());
+        leaveRefresh(key);
+        throw;
     } catch (...) {
+        markCacheFailed(config_manager, endpoint, "unknown error");
         leaveRefresh(key);
         throw;
     }
@@ -158,6 +167,40 @@ CacheManager::CacheReadiness CacheManager::getEndpointReadiness(std::shared_ptr<
         return CacheReadiness{ReadinessState::Ready, "", "", "", ""};
     }
     return getReadinessForKey(cacheKeyForEndpoint(config_manager, endpoint));
+}
+
+std::optional<CacheManager::CacheReadiness> CacheManager::readinessBlock(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint) const {
+    if (!endpoint.cache.enabled || endpoint.cache.table.empty()) {
+        return std::nullopt;
+    }
+
+    auto readiness = getEndpointReadiness(config_manager, endpoint);
+    if (readiness.state == ReadinessState::Ready) {
+        return std::nullopt;
+    }
+    return readiness;
+}
+
+crow::json::wvalue CacheManager::readinessBlockJson(const CacheReadiness& readiness) {
+    crow::json::wvalue errorResponse;
+    errorResponse["error"] = "cache_warming";
+    errorResponse["table"] = readiness.table;
+    if (readiness.state == ReadinessState::Failed) {
+        errorResponse["message"] = "Cache for this endpoint failed to build";
+        errorResponse["detail"] = readiness.error;
+    } else {
+        errorResponse["message"] = "Cache for this endpoint is still being built";
+    }
+    return errorResponse;
+}
+
+crow::response CacheManager::readinessBlockResponse(const CacheReadiness& readiness) {
+    auto body = readinessBlockJson(readiness);
+    crow::response response(503);
+    response.set_header("Content-Type", "application/json");
+    response.set_header("Retry-After", "5");
+    response.write(body.dump());
+    return response;
 }
 
 CacheManager::CacheReadinessSummary CacheManager::getReadinessSummary() const {

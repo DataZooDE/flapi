@@ -29,6 +29,19 @@ void RequestHandler::handleRequest(const crow::request& req, crow::response& res
 
     CROW_LOG_DEBUG << "Handling request ["<< crow::method_name(req.method) << "]: " << endpoint.urlPath;
 
+    if (auto cache_manager = db_manager->getCacheManager()) {
+        if (auto readiness = cache_manager->readinessBlock(config_manager, endpoint)) {
+            auto block_response = CacheManager::readinessBlockResponse(*readiness);
+            res.code = block_response.code;
+            for (const auto& header : block_response.headers) {
+                res.set_header(header.first, header.second);
+            }
+            res.write(block_response.body);
+            res.end();
+            return;
+        }
+    }
+
     switch (req.method) {
         case crow::HTTPMethod::Get:
             handleGetRequest(req, res, endpoint, pathParams, authParams);
@@ -209,30 +222,6 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
             res.write(errorResponse.dump());
             res.end();
             return;
-        }
-
-        if (endpoint.cache.enabled && !endpoint.cache.table.empty()) {
-            auto cache_manager = db_manager->getCacheManager();
-            if (cache_manager) {
-                auto readiness = cache_manager->getEndpointReadiness(config_manager, endpoint);
-                if (readiness.state != CacheManager::ReadinessState::Ready) {
-                    crow::json::wvalue errorResponse;
-                    errorResponse["error"] = "cache_warming";
-                    errorResponse["table"] = readiness.table;
-                    if (readiness.state == CacheManager::ReadinessState::Failed) {
-                        errorResponse["message"] = "Cache for this endpoint failed to build";
-                        errorResponse["detail"] = readiness.error;
-                    } else {
-                        errorResponse["message"] = "Cache for this endpoint is still being built";
-                    }
-                    res.code = 503;
-                    res.set_header("Content-Type", "application/json");
-                    res.set_header("Retry-After", "5");
-                    res.write(errorResponse.dump());
-                    res.end();
-                    return;
-                }
-            }
         }
 
         // Parse pagination parameters

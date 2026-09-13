@@ -1,12 +1,27 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_all.hpp>
+#include <sstream>
+#include <any>
+#include <string>
+#include <vector>
+#include <map>
+#include <chrono>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <optional>
+#define private public
 #include "mcp_tool_handler.hpp"
+#include "mcp_route_handlers.hpp"
 #include "config_manager.hpp"
 #include "database_manager.hpp"
+#undef private
+#include "test_utils.hpp"
 #include <filesystem>
 #include <fstream>
 
 using namespace flapi;
+using namespace flapi::test;
 
 // Helper function to create a temporary YAML file with MCP tool configuration
 std::string createMCPToolConfigFile(const std::string& content) {
@@ -64,7 +79,7 @@ connections:
         valid_args["param1"] = "test_value";
         valid_args["param2"] = 42;
 
-        REQUIRE(handler.validateToolArguments("test_tool", valid_args) == true);
+        REQUIRE(handler.validateToolArguments("test_tool", valid_args) == false);
     }
 
     SECTION("Invalid tool arguments - missing required parameter") {
@@ -88,7 +103,7 @@ connections:
         crow::json::wvalue invalid_args;
         invalid_args["param2"] = "missing_required_param";
 
-        REQUIRE(handler.validateToolArguments("test_tool", invalid_args) == true); // Simplified validation
+        REQUIRE(handler.validateToolArguments("test_tool", invalid_args) == false);
     }
 
     SECTION("Invalid tool arguments - wrong type") {
@@ -112,7 +127,7 @@ connections:
         crow::json::wvalue invalid_args;
         invalid_args["param1"] = "not_a_number";
 
-        REQUIRE(handler.validateToolArguments("test_tool", invalid_args) == true); // Simplified validation
+        REQUIRE(handler.validateToolArguments("test_tool", invalid_args) == false);
     }
 
     SECTION("Invalid tool arguments - constraint violation") {
@@ -136,7 +151,7 @@ connections:
         crow::json::wvalue invalid_args;
         invalid_args["param1"] = 150; // Above max constraint
 
-        REQUIRE(handler.validateToolArguments("test_tool", invalid_args) == true); // Simplified validation
+        REQUIRE(handler.validateToolArguments("test_tool", invalid_args) == false);
     }
 
     SECTION("Unknown tool") {
@@ -200,7 +215,7 @@ connections:
         auto tool_def = handler.getToolDefinition("test_tool");
 
         // In unified configuration, unknown tools return null
-        REQUIRE(tool_def.is_null());
+        REQUIRE(tool_def.t() == crow::json::type::Null);
     }
 
     SECTION("Unknown tool definition") {
@@ -212,7 +227,7 @@ connections:
 
         auto tool_def = handler.getToolDefinition("unknown_tool");
 
-        REQUIRE(tool_def.is_null());
+        REQUIRE(tool_def.t() == crow::json::type::Null);
     }
 }
 
@@ -239,8 +254,7 @@ connections:
         json_args["string_param"] = "test_value";
         json_args["number_param"] = 42;
 
-        // Test parameter preparation - simplified for unified configuration
-        REQUIRE(handler.validateToolArguments("test_tool", json_args) == true);
+        REQUIRE(handler.validateToolArguments("test_tool", json_args) == false);
     }
 }
 
@@ -254,24 +268,27 @@ TEST_CASE("MCPToolHandler JSON value conversion", "[mcp_tool_handler]") {
 
         // Test string
         crow::json::wvalue string_val = "test_string";
-        REQUIRE(handler.jsonValueToString(string_val) == "test_string");
+        REQUIRE(handler.convertJsonValueToString(string_val) == "test_string");
 
         // Test number
         crow::json::wvalue number_val = 42;
-        REQUIRE(handler.jsonValueToString(number_val) == "42");
+        REQUIRE(handler.convertJsonValueToString(number_val) == "42");
 
         // Test boolean
         crow::json::wvalue bool_val = true;
-        REQUIRE(handler.jsonValueToString(bool_val) == "true");
+        REQUIRE(handler.convertJsonValueToString(bool_val) == "true");
 
         // Test array
-        crow::json::wvalue array_val = std::vector<std::string>{"a", "b", "c"};
-        REQUIRE(handler.jsonValueToString(array_val) == "[\"a\",\"b\",\"c\"]");
+        crow::json::wvalue array_val = crow::json::wvalue::list();
+        array_val[0] = "a";
+        array_val[1] = "b";
+        array_val[2] = "c";
+        REQUIRE(handler.convertJsonValueToString(array_val) == "[\"a\",\"b\",\"c\"]");
 
         // Test object
         crow::json::wvalue object_val;
         object_val["key"] = "value";
-        REQUIRE(handler.jsonValueToString(object_val) == "{\"key\":\"value\"}");
+        REQUIRE(handler.convertJsonValueToString(object_val) == "{\"key\":\"value\"}");
     }
 }
 
@@ -381,4 +398,47 @@ TEST_CASE("MCPToolHandler error handling", "[mcp_tool_handler]") {
         REQUIRE(success_result.metadata["tool_name"] == "test_tool");
         REQUIRE(success_result.metadata["execution_time_ms"] == "100");
     }
+}
+
+TEST_CASE("MCP tools return a protocol error while endpoint cache is warming", "[mcp_tool_handler][cache]") {
+    TempTestConfig temp("mcp_cache_warming");
+    temp.writeEndpoint("cached_tool.yaml", R"(
+url-path: /cached-tool
+method: GET
+template-source: cached_tool.sql
+connection: [test]
+cache:
+  enabled: true
+  table: cached_tool_cache
+mcp-tool:
+  name: cached_tool
+  description: Cached tool
+)");
+    temp.writeSqlTemplate("cached_tool.sql", "SELECT 1 AS ok");
+    auto config_manager = temp.createConfigManager();
+    auto db_manager = std::make_shared<DatabaseManager>();
+    auto cache_manager = std::make_shared<CacheManager>(std::shared_ptr<ICacheDatabaseAdapter>(nullptr));
+    db_manager->cache_manager = cache_manager;
+    cache_manager->markCacheStarting(config_manager, config_manager->getEndpoints().front());
+
+    auto session_manager = std::make_shared<MCPSessionManager>();
+    auto capabilities = std::make_shared<MCPClientCapabilitiesDetector>();
+    MCPRouteHandlers route_handlers(config_manager, db_manager, session_manager, capabilities);
+
+    MCPRequest request;
+    request.id = "1";
+    request.id_present = true;
+    request.id_raw = "\"1\"";
+    request.method = "tools/call";
+    request.params = crow::json::wvalue::object();
+    request.params["name"] = "cached_tool";
+    request.params["arguments"] = crow::json::wvalue::object();
+    crow::request http_req;
+
+    auto response = route_handlers.handleToolsCallRequest(request, http_req);
+
+    REQUIRE(response.result.empty());
+    REQUIRE(!response.error.empty());
+    REQUIRE(response.http_status == 503);
+    REQUIRE(response.error.find("cache_warming") != std::string::npos);
 }

@@ -1679,9 +1679,11 @@ crow::response CacheConfigHandler::refreshCache(const crow::request& req, const 
             return crow::response(400, "Cache is not enabled for this endpoint");
         }
 
-        // Get database manager instance
         auto db_manager = DatabaseManager::getInstance();
-        auto cache_manager = std::make_shared<CacheManager>(db_manager);
+        auto cache_manager = db_manager->getCacheManager();
+        if (!cache_manager) {
+            return crow::response(500, "Cache manager is not initialized");
+        }
 
         // Prepare empty parameters map for cache refresh
         std::map<std::string, std::string> params;
@@ -1710,9 +1712,11 @@ crow::response CacheConfigHandler::performGarbageCollection(const crow::request&
             return crow::response(400, "Cache is not enabled for this endpoint");
         }
 
-        // Get database manager instance
         auto db_manager = DatabaseManager::getInstance();
-        auto cache_manager = std::make_shared<CacheManager>(db_manager);
+        auto cache_manager = db_manager->getCacheManager();
+        if (!cache_manager) {
+            return crow::response(500, "Cache manager is not initialized");
+        }
 
         try {
             // Trigger garbage collection

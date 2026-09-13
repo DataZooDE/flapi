@@ -109,6 +109,55 @@ TEST_CASE("RequestHandler returns 503 while endpoint cache is warming", "[reques
     REQUIRE(std::string(body["error"].s()) == "cache_warming");
 }
 
+TEST_CASE("RequestHandler blocks write and delete methods while endpoint cache is warming", "[request_handler][cache]") {
+    TempTestConfig temp("cache_warming_write_delete");
+    auto config_manager = temp.createConfigManager();
+    auto db_manager = std::make_shared<DatabaseManager>();
+    auto cache_manager = std::make_shared<CacheManager>(std::shared_ptr<ICacheDatabaseAdapter>(nullptr));
+    db_manager->cache_manager = cache_manager;
+
+    EndpointConfig endpoint;
+    endpoint.urlPath = "/cached";
+    endpoint.cache.enabled = true;
+    endpoint.cache.table = "cached_table";
+    endpoint.operation.type = OperationConfig::Write;
+    endpoint.operation.validate_before_write = false;
+    cache_manager->markCacheStarting(config_manager, endpoint);
+
+    RequestHandler handler(db_manager, config_manager);
+
+    SECTION("POST") {
+        crow::request req;
+        req.method = crow::HTTPMethod::Post;
+        req.url = "/cached";
+        req.body = "{}";
+        crow::response res;
+
+        handler.handleRequest(req, res, endpoint, {}, {});
+
+        REQUIRE(res.code == 503);
+        REQUIRE(res.get_header_value("Retry-After") == "5");
+        auto body = crow::json::load(res.body);
+        REQUIRE(body);
+        REQUIRE(std::string(body["error"].s()) == "cache_warming");
+    }
+
+    SECTION("DELETE") {
+        crow::request req;
+        req.method = crow::HTTPMethod::Delete;
+        req.url = "/cached";
+        crow::response res;
+
+        handler.handleRequest(req, res, endpoint, {}, {});
+
+        REQUIRE(res.code == 503);
+        REQUIRE(res.get_header_value("Retry-After") == "5");
+        auto body = crow::json::load(res.body);
+        REQUIRE(body);
+        REQUIRE(std::string(body["error"].s()) == "cache_warming");
+    }
+}
+
 namespace {
 
 EndpointConfig createWriteEndpoint() {
