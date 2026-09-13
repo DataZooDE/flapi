@@ -19,9 +19,95 @@
 #include <crow.h>
 
 #include "test_utils.hpp"
+#define private public
+#include "../../src/include/api_server.hpp"
+#undef private
 
 using namespace flapi;
 using namespace flapi::test;
+
+TEST_CASE("GET /health/live returns 200 without cache configuration", "[health]") {
+    TempTestConfig temp("health_live");
+    auto config_manager = temp.createConfigManager();
+    auto db_manager = std::make_shared<DatabaseManager>();
+    APIServer server(config_manager, db_manager);
+
+    crow::response res = server.getLiveHealth();
+
+    REQUIRE(res.code == 200);
+    auto body = crow::json::load(res.body);
+    REQUIRE(body);
+    REQUIRE(std::string(body["status"].s()) == "live");
+}
+
+TEST_CASE("GET /health reports cache readiness counts", "[health]") {
+    TempTestConfig temp("health_counts");
+    temp.writeEndpoint("one.yaml", R"(
+url-path: /one
+method: GET
+template-source: one.sql
+connection: [test]
+cache:
+  enabled: true
+  table: cache_one
+)");
+    temp.writeSqlTemplate("one.sql", "SELECT 1");
+    temp.writeEndpoint("two.yaml", R"(
+url-path: /two
+method: GET
+template-source: two.sql
+connection: [test]
+cache:
+  enabled: true
+  table: cache_two
+)");
+    temp.writeSqlTemplate("two.sql", "SELECT 2");
+    auto config_manager = temp.createConfigManager();
+    auto db_manager = std::make_shared<DatabaseManager>();
+    auto cache_manager = std::make_shared<CacheManager>(std::shared_ptr<ICacheDatabaseAdapter>(nullptr));
+    cache_manager->initializeReadiness(config_manager);
+    cache_manager->markCacheReady(config_manager, config_manager->getEndpoints().front());
+    db_manager->cache_manager = cache_manager;
+    APIServer server(config_manager, db_manager);
+
+    crow::response res = server.getHealth();
+
+    REQUIRE(res.code == 503);
+    auto body = crow::json::load(res.body);
+    REQUIRE(body);
+    REQUIRE(std::string(body["status"].s()) == "starting");
+    REQUIRE(static_cast<int>(body["caches"]["total"].i()) == 2);
+    REQUIRE(static_cast<int>(body["caches"]["ready"].i()) == 1);
+}
+
+TEST_CASE("RequestHandler returns 503 while endpoint cache is warming", "[request_handler][cache]") {
+    TempTestConfig temp("cache_warming_request");
+    auto config_manager = temp.createConfigManager();
+    auto db_manager = std::make_shared<DatabaseManager>();
+    auto cache_manager = std::make_shared<CacheManager>(std::shared_ptr<ICacheDatabaseAdapter>(nullptr));
+    db_manager->cache_manager = cache_manager;
+
+    EndpointConfig endpoint;
+    endpoint.urlPath = "/cached";
+    endpoint.method = "GET";
+    endpoint.cache.enabled = true;
+    endpoint.cache.table = "cached_table";
+    cache_manager->markCacheStarting(config_manager, endpoint);
+
+    RequestHandler handler(db_manager, config_manager);
+    crow::request req;
+    req.method = crow::HTTPMethod::Get;
+    req.url = "/cached";
+    crow::response res;
+
+    handler.handleRequest(req, res, endpoint, {}, {});
+
+    REQUIRE(res.code == 503);
+    REQUIRE(res.get_header_value("Retry-After") == "5");
+    auto body = crow::json::load(res.body);
+    REQUIRE(body);
+    REQUIRE(std::string(body["error"].s()) == "cache_warming");
+}
 
 namespace {
 

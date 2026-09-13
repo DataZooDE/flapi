@@ -211,6 +211,30 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
             return;
         }
 
+        if (endpoint.cache.enabled && !endpoint.cache.table.empty()) {
+            auto cache_manager = db_manager->getCacheManager();
+            if (cache_manager) {
+                auto readiness = cache_manager->getEndpointReadiness(config_manager, endpoint);
+                if (readiness.state != CacheManager::ReadinessState::Ready) {
+                    crow::json::wvalue errorResponse;
+                    errorResponse["error"] = "cache_warming";
+                    errorResponse["table"] = readiness.table;
+                    if (readiness.state == CacheManager::ReadinessState::Failed) {
+                        errorResponse["message"] = "Cache for this endpoint failed to build";
+                        errorResponse["detail"] = readiness.error;
+                    } else {
+                        errorResponse["message"] = "Cache for this endpoint is still being built";
+                    }
+                    res.code = 503;
+                    res.set_header("Content-Type", "application/json");
+                    res.set_header("Retry-After", "5");
+                    res.write(errorResponse.dump());
+                    res.end();
+                    return;
+                }
+            }
+        }
+
         // Parse pagination parameters
         int64_t offset = 0;
         int64_t limit = 100;

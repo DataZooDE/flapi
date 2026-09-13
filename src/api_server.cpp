@@ -20,7 +20,7 @@ APIServer::APIServer(std::shared_ptr<ConfigManager> cm,
                      std::shared_ptr<DatabaseManager> db_manager, 
                      bool config_service_enabled,
                      const std::string& config_service_token)
-    : configManager(cm), dbManager(db_manager), openAPIDocGenerator(std::make_shared<OpenAPIDocGenerator>(cm, db_manager)), requestHandler(dbManager, cm)
+    : configManager(cm), dbManager(db_manager), openAPIDocGenerator(std::make_shared<OpenAPIDocGenerator>(cm, db_manager)), requestHandler(dbManager, cm), startedAt(std::chrono::steady_clock::now())
 {
     // Initialize MCP session manager
     mcpSessionManager = std::make_shared<MCPSessionManager>();
@@ -98,6 +98,18 @@ void APIServer::setupRoutes() {
     )";
         return crow::response(200, "text/plain", logo);
     });
+
+    CROW_ROUTE(app, "/health/live")
+        .methods("GET"_method)
+        ([this]() {
+            return getLiveHealth();
+        });
+
+    CROW_ROUTE(app, "/health")
+        .methods("GET"_method)
+        ([this]() {
+            return getHealth();
+        });
 
     configService->setDocGenerator(openAPIDocGenerator);
     configService->registerRoutes(app);
@@ -292,6 +304,59 @@ crow::response APIServer::refreshConfig() {
         CROW_LOG_ERROR << "Failed to refresh configuration: " << e.what();
         return crow::response(500, std::string("Failed to refresh configuration: ") + e.what());
     }
+}
+
+crow::response APIServer::getLiveHealth() {
+    crow::json::wvalue health;
+    health["status"] = "live";
+    return crow::response(200, health);
+}
+
+crow::response APIServer::getHealth() {
+    crow::json::wvalue health;
+    const auto uptime = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - startedAt);
+    health["uptime_s"] = static_cast<int64_t>(uptime.count());
+
+    CacheManager::CacheReadinessSummary summary;
+    auto cache_manager = getCacheManager();
+    if (cache_manager) {
+        summary = cache_manager->getReadinessSummary();
+    }
+
+    health["caches"]["total"] = summary.total;
+    health["caches"]["ready"] = summary.ready;
+    health["caches"]["failed"] = summary.failed;
+
+    if (summary.failed > 0) {
+        health["status"] = "degraded";
+        std::vector<crow::json::wvalue> failed;
+        for (const auto& cache : summary.failed_caches) {
+            crow::json::wvalue item;
+            item["table"] = cache.table;
+            item["schema"] = cache.schema;
+            item["error"] = cache.error;
+            failed.push_back(std::move(item));
+        }
+        health["failed"] = std::move(failed);
+        return crow::response(503, health);
+    }
+
+    if (summary.ready < summary.total) {
+        health["status"] = "starting";
+        std::vector<crow::json::wvalue> pending;
+        for (const auto& cache : summary.pending_caches) {
+            crow::json::wvalue item;
+            item["table"] = cache.table;
+            item["schema"] = cache.schema;
+            pending.push_back(std::move(item));
+        }
+        health["pending"] = std::move(pending);
+        return crow::response(503, health);
+    }
+
+    health["status"] = "ready";
+    return crow::response(200, health);
 }
 
 crow::response APIServer::generateOpenAPIDoc() {

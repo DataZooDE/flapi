@@ -167,7 +167,7 @@ void DatabaseManager::initializeDBManagerFromConfig(std::shared_ptr<ConfigManage
         sql_processor = std::make_shared<SQLTemplateProcessor>(config_manager);
 
         cache_manager = std::make_unique<CacheManager>(shared_from_this());
-        cache_manager->warmUpCaches(config_manager);
+        cache_manager->initializeReadiness(config_manager);
     }
 }
 

@@ -41,6 +41,8 @@ public:
 
     crow::response getConfig();
     crow::response refreshConfig();
+    crow::response getLiveHealth();
+    crow::response getHealth();
     
     void run(int port = 8080);
     void stop();
@@ -69,6 +71,7 @@ private:
     std::shared_ptr<MCPSessionManager> mcpSessionManager;
     std::shared_ptr<MCPClientCapabilitiesDetector> mcpCapabilitiesDetector;
     RequestHandler requestHandler;
+    std::chrono::steady_clock::time_point startedAt;
 };
 
 } // namespace flapi

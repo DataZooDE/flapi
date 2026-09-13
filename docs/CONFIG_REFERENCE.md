@@ -1164,7 +1164,34 @@ cache:
   schedule: 5m
 ```
 
-### 6.2 Refresh Modes
+### 6.2 Cache Readiness During Warmup
+
+At startup, flAPI opens the HTTP listener before cache warmup finishes. Cache-enabled endpoints are
+not allowed to serve until their configured cache table is fully built.
+
+While a cache is still building, requests to that endpoint return:
+
+```http
+503 Service Unavailable
+Retry-After: 5
+Content-Type: application/json
+```
+
+```json
+{
+  "error": "cache_warming",
+  "message": "Cache for this endpoint is still being built",
+  "table": "customers_cache"
+}
+```
+
+If warmup fails, the endpoint continues to return `503` and includes the failure detail. This is
+intentional: a cached endpoint must never return `200` with empty or partial results from a
+half-built cache.
+
+Endpoints without a `cache:` block are not gated by cache readiness.
+
+### 6.3 Refresh Modes
 
 **Full Refresh (Default):**
 
@@ -1217,7 +1244,7 @@ cache:
     type: timestamp
 ```
 
-### 6.3 Retention Policies
+### 6.4 Retention Policies
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -1244,7 +1271,7 @@ cache:
   delete-handling: soft
 ```
 
-### 6.4 Cache Template Variables
+### 6.5 Cache Template Variables
 
 Special variables available in cache-enabled SQL templates:
 

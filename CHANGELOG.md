@@ -2,6 +2,21 @@
 
 All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (the date the binary set was cut). Earlier history is in the git log.
 
+## Unreleased
+
+### Health checks during cache warmup
+
+- The HTTP listener now opens before cache warmup completes, so platforms can connect during long
+  startup cache builds.
+- Added always-on `GET /health/live` for liveness and `GET /health` for readiness. `/health`
+  returns `503` while caches are still starting or degraded.
+- Cache-enabled data endpoints now return `503` with `Retry-After: 5` while their cache is starting
+  or failed, instead of risking a `200` response from a half-built cache.
+- Cache warmup failures are captured per endpoint and surfaced in health output; warmup continues
+  to later caches.
+- Concurrent refreshes for the same DuckLake cache table are suppressed so scheduler refreshes do
+  not collide with startup warmup.
+
 ## v26.05.18 — Prepared-statement coverage swept across every code path
 
 Follow-up to v26.05.17. After v26.05.17 shipped, an internal audit found that the prepared-statement path was only wired into the GET endpoint executor — POST/PUT/PATCH writes and the Arrow-streaming endpoint still rendered Mustache templates as strings. This release closes that gap.

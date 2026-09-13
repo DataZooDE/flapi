@@ -12,6 +12,7 @@
 #include <mutex>
 #include <thread>
 #include <optional>
+#include <atomic>
 #define private public
 #include "../../src/include/cache_manager.hpp"
 #include "../../src/include/query_executor.hpp"
@@ -307,4 +308,153 @@ TEST_CASE("CacheManager recordSyncEvent does not throw", "[cache_manager]") {
         REQUIRE_NOTHROW(cache_manager.recordSyncEvent(
             config_manager, endpoint, "full", "success", "Test message"));
     }
+}
+
+TEST_CASE("CacheManager readiness transitions are tracked by table", "[cache_manager][readiness]") {
+    TempTestConfig temp("cache_readiness");
+    temp.writeEndpoint("cached.yaml", R"(
+url-path: /cached
+method: GET
+template-source: cached.sql
+connection: [test]
+cache:
+  enabled: true
+  table: cached_table
+)");
+    temp.writeSqlTemplate("cached.sql", "SELECT 1");
+    auto config_manager = temp.createConfigManager();
+    const auto endpoint = config_manager->getEndpoints().front();
+
+    CacheManager cache_manager(std::shared_ptr<ICacheDatabaseAdapter>(nullptr));
+    cache_manager.initializeReadiness(config_manager);
+
+    auto starting = cache_manager.getEndpointReadiness(config_manager, endpoint);
+    REQUIRE(starting.state == CacheManager::ReadinessState::Starting);
+
+    cache_manager.markCacheReady(config_manager, endpoint);
+    auto ready = cache_manager.getEndpointReadiness(config_manager, endpoint);
+    REQUIRE(ready.state == CacheManager::ReadinessState::Ready);
+
+    cache_manager.markCacheFailed(config_manager, endpoint, "boom");
+    auto failed = cache_manager.getEndpointReadiness(config_manager, endpoint);
+    REQUIRE(failed.state == CacheManager::ReadinessState::Failed);
+    REQUIRE(failed.error == "boom");
+
+    EndpointConfig uncached;
+    auto unknown = cache_manager.getEndpointReadiness(config_manager, uncached);
+    REQUIRE(unknown.state == CacheManager::ReadinessState::Ready);
+}
+
+class SelectiveThrowCacheAdapter : public RecordingCacheAdapter {
+public:
+    std::vector<std::string> refreshed_tables;
+
+    std::string renderCacheTemplate(const EndpointConfig& endpoint,
+                                    const CacheConfig& cacheConfig,
+                                    std::map<std::string, std::string>& params) override {
+        refreshed_tables.push_back(cacheConfig.table);
+        if (cacheConfig.table == "first_cache") {
+            throw std::runtime_error("first failed");
+        }
+        return RecordingCacheAdapter::renderCacheTemplate(endpoint, cacheConfig, params);
+    }
+};
+
+TEST_CASE("CacheManager warmUpCaches records failures and continues", "[cache_manager][warmup]") {
+    TempTestConfig temp("cache_warmup_failure");
+    temp.writeEndpoint("first.yaml", R"(
+url-path: /first
+method: GET
+template-source: first.sql
+connection: [test]
+cache:
+  enabled: true
+  table: first_cache
+)");
+    temp.writeSqlTemplate("first.sql", "SELECT 1");
+    temp.writeEndpoint("second.yaml", R"(
+url-path: /second
+method: GET
+template-source: second.sql
+connection: [test]
+cache:
+  enabled: true
+  table: second_cache
+)");
+    temp.writeSqlTemplate("second.sql", "SELECT 2");
+    auto config_manager = temp.createConfigManager();
+    auto adapter = std::make_shared<SelectiveThrowCacheAdapter>();
+    CacheManager cache_manager(adapter);
+
+    REQUIRE_NOTHROW(cache_manager.warmUpCaches(config_manager));
+
+    bool saw_failed = false;
+    bool saw_ready = false;
+    for (const auto& endpoint : config_manager->getEndpoints()) {
+        auto readiness = cache_manager.getEndpointReadiness(config_manager, endpoint);
+        if (endpoint.cache.table == "first_cache") {
+            saw_failed = true;
+            REQUIRE(readiness.state == CacheManager::ReadinessState::Failed);
+            REQUIRE(readiness.error == "first failed");
+        }
+        if (endpoint.cache.table == "second_cache") {
+            saw_ready = true;
+            REQUIRE(readiness.state == CacheManager::ReadinessState::Ready);
+        }
+    }
+    REQUIRE(saw_failed);
+    REQUIRE(saw_ready);
+    REQUIRE(adapter->refreshed_tables.size() == 2);
+}
+
+class SlowCountingCacheAdapter : public RecordingCacheAdapter {
+public:
+    std::atomic<int> refresh_count{0};
+    std::mutex mutex;
+
+    void executeDuckLakeQuery(const std::string& query,
+                              const std::map<std::string, std::string>& params) override {
+        ++refresh_count;
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        std::lock_guard<std::mutex> lock(mutex);
+        RecordingCacheAdapter::executeDuckLakeQuery(query, params);
+    }
+
+    QueryResult executeDuckLakeQueryWithResult(const std::string& query) override {
+        std::lock_guard<std::mutex> lock(mutex);
+        return RecordingCacheAdapter::executeDuckLakeQueryWithResult(query);
+    }
+};
+
+TEST_CASE("CacheManager suppresses duplicate in-flight refreshes per table", "[cache_manager][inflight]") {
+    TempTestConfig temp("cache_inflight");
+    auto config_manager = temp.createConfigManager();
+    auto adapter = std::make_shared<SlowCountingCacheAdapter>();
+    CacheManager cache_manager(adapter);
+
+    EndpointConfig one;
+    one.urlPath = "/one";
+    one.cache.enabled = true;
+    one.cache.table = "same_cache";
+    one.cache.schema = "main";
+    std::map<std::string, std::string> params1;
+    std::map<std::string, std::string> params2;
+
+    std::thread first([&]() { cache_manager.refreshCache(config_manager, one, params1); });
+    std::thread second([&]() { cache_manager.refreshCache(config_manager, one, params2); });
+    first.join();
+    second.join();
+
+    REQUIRE(adapter->refresh_count.load() == 1);
+
+    EndpointConfig two = one;
+    two.cache.table = "other_cache";
+    std::map<std::string, std::string> params3;
+    std::map<std::string, std::string> params4;
+    std::thread third([&]() { cache_manager.refreshCache(config_manager, one, params3); });
+    std::thread fourth([&]() { cache_manager.refreshCache(config_manager, two, params4); });
+    third.join();
+    fourth.join();
+
+    REQUIRE(adapter->refresh_count.load() == 3);
 }
