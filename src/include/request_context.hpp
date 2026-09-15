@@ -68,6 +68,11 @@ struct RequestContext {
     // trace model uses for the same reason.
     bool audit_suppressed = false;
 
+    // Where the trace context came from: "none", "header", "meta", or
+    // "meta_over_header" when _meta and the HTTP header disagreed. Recorded so a
+    // surprising parent is diagnosable rather than mysterious. Static storage.
+    const char* trace_context_source = "none";
+
     // ---- accessors --------------------------------------------------------
     std::string_view requestIdView() const { return viewOf(request_id); }
     std::string_view traceIdView() const { return viewOf(trace_id); }

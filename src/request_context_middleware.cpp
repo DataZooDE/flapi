@@ -2,6 +2,7 @@
 
 #include "audit_logger.hpp"
 #include "config_manager.hpp"
+#include "trace_context.hpp"
 
 namespace flapi {
 
@@ -82,6 +83,18 @@ void RequestContextMiddleware::before_handle(crow::request& req, crow::response&
     // does no resolution at all today. The handler writes the template back into
     // this context once it knows it.
     // route_template already defaults to "<unmatched>".
+
+    // W3C trace context from the HTTP headers. MCP requests may override this
+    // from params._meta once the JSON-RPC body is parsed (SEP-414 precedence).
+    const auto header_ids = parseTraceparent(req.get_header_value("traceparent"),
+                                             req.get_header_value("tracestate"),
+                                             req.get_header_value("baggage"));
+    if (header_ids.valid()) {
+        ctx.rc.setTraceId(header_ids.trace_id);
+        ctx.rc.setSpanId(header_ids.span_id);
+        ctx.rc.sampled = header_ids.sampled();
+        ctx.rc.trace_context_source = contextSourceName(ContextSource::Header);
+    }
 
     RequestContextScope::activate(&ctx.rc);
 

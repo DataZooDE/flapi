@@ -1,5 +1,6 @@
 #include "mcp_route_handlers.hpp"
 #include "request_context.hpp"
+#include "trace_context.hpp"
 #include "json_utils.hpp"
 #include "arrow_metrics.hpp"
 #include "mcp_authorization_policy.hpp"
@@ -385,6 +386,28 @@ void MCPRouteHandlers::registerRoutes(flapi::FlapiApp& app, int port) {
 
                 // Parse and validate the request EARLY to determine if it's initialize
                 auto mcp_request = parseMCPRequest(req);
+
+                // SEP-414 precedence: params._meta beats the HTTP header. Over a
+                // proxy or gateway the HTTP hop may be the gateway's own span
+                // while _meta carries the agent's, so preferring _meta keeps this
+                // span attached to the trace the user actually cares about. The
+                // middleware already applied the header, so only override here.
+                if (mcp_request && mcp_request->meta_trace_context.valid()) {
+                    if (auto* rc = RequestContextScope::current()) {
+                        SpanContextIds header_ids;
+                        if (rc->hasTrace()) {
+                            header_ids.trace_id = std::string(rc->traceIdView());
+                            header_ids.span_id = std::string(rc->spanIdView());
+                        }
+                        const auto resolved =
+                            resolvePrecedence(mcp_request->meta_trace_context, header_ids);
+                        rc->setTraceId(resolved.ids.trace_id);
+                        rc->setSpanId(resolved.ids.span_id);
+                        rc->sampled = resolved.ids.sampled();
+                        rc->trace_context_source = contextSourceName(resolved.source);
+                    }
+                }
+
                 if (!mcp_request) {
                     CROW_LOG_ERROR << "Failed to parse MCP request";
                     return createJsonRpcErrorResponse("", -32700, "Parse error: Invalid JSON", session_id);
@@ -820,6 +843,30 @@ MCPRequest MCPRouteHandlers::extractRequestFields(const crow::json::wvalue& json
                 mcp_req.meta_protocol_version = meta[k::META_PROTOCOL_VERSION].s();
             }
             mcp_req.meta_has_client_capabilities = meta.has(k::META_CLIENT_CAPABILITIES);
+
+            // SEP-414 (Final): traceparent / tracestate / baggage live in _meta
+            // UNPREFIXED - a documented exception to MCP's reverse-DNS convention,
+            // made so implementations do not invent
+            // io.modelcontextprotocol.traceparent and break correlation with
+            // every other tracing system. Do NOT move these into mcp_constants.hpp
+            // alongside the namespaced keys; see the comment in trace_context.hpp.
+            //
+            // flAPI advertised revision 2026-07-28 while discarding this, so every
+            // conforming client's trace context was dropped on the floor and every
+            // flAPI call was a hole in its caller's trace.
+            if (meta.has(sep414::kTraceparent)
+                && meta[sep414::kTraceparent].t() == crow::json::type::String) {
+                const std::string tracestate =
+                    (meta.has(sep414::kTracestate)
+                     && meta[sep414::kTracestate].t() == crow::json::type::String)
+                        ? meta[sep414::kTracestate].s() : std::string{};
+                const std::string baggage =
+                    (meta.has(sep414::kBaggage)
+                     && meta[sep414::kBaggage].t() == crow::json::type::String)
+                        ? meta[sep414::kBaggage].s() : std::string{};
+                mcp_req.meta_trace_context =
+                    parseTraceparent(std::string(meta[sep414::kTraceparent].s()), tracestate, baggage);
+            }
             if (meta.has(k::META_LOG_LEVEL)
                 && meta[k::META_LOG_LEVEL].t() == crow::json::type::String) {
                 mcp_req.meta_log_level = meta[k::META_LOG_LEVEL].s();
