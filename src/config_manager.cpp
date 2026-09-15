@@ -111,6 +111,10 @@ void ConfigManager::parseMainConfig() {
         server_name = safeGet<std::string>(config, "server-name", "server-name", "localhost");
         http_port = safeGet<int>(config, "http-port", "http-port", 8080);
         http_host = safeGet<std::string>(config, "http-host", "http-host", "0.0.0.0");
+        // Top-level and kebab-case, matching http-port / http-host. The `server:`
+        // block that three example files used was never parsed by anything.
+        log_level = safeGet<std::string>(config, "log-level", "log-level", "info");
+        log_format = safeGet<std::string>(config, "log-format", "log-format", "text");
 
         CROW_LOG_DEBUG << "Project Name: " << project_name;
         CROW_LOG_DEBUG << "Server Name: " << server_name;

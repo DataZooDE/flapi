@@ -648,6 +648,11 @@ public:
                                               const std::string& path,
                                               const std::string& httpMethod);
     const TemplateConfig& getTemplateConfig() const;
+
+    // Log verbosity and shape. Precedence is CLI > environment > config > default,
+    // resolved in main.cpp - an operator who passed --log-level meant it.
+    const std::string& getLogLevel() const { return log_level; }
+    const std::string& getLogFormat() const { return log_format; }
     std::string getBasePath() const;
     std::string getDuckDBPath() const;
     ExtendedYamlParser& getYamlParser() { return yaml_parser; }
@@ -712,6 +717,8 @@ protected:
     std::filesystem::path config_file;
     YAML::Node config;
     std::string project_name;
+    std::string log_level = "info";
+    std::string log_format = "text";
     std::string project_description;
     std::string cache_schema = "flapi";
     std::string server_name;

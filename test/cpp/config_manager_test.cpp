@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_all.hpp>
 #include "config_manager.hpp"
+#include "test_utils.hpp"
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
@@ -650,4 +651,55 @@ auth:
     }
 
     fs::remove_all(temp_template_dir);
+}
+// --- Issue 2: log-level / log-format are real config keys -------------------
+//
+// examples/flapi-{s3,gcs,azure}.yaml shipped a `server:` block with port, host
+// and log_level. flAPI parses none of it - the canonical keys are top-level
+// `http-port` and `http-host` - so all three files advertised a configuration
+// shape that silently did nothing.
+
+TEST_CASE("log-level is read from configuration", "[config][logging]") {
+    const std::string yaml = R"(
+project-name: log-level-test
+project-description: log level
+template:
+  path: ./sqls
+log-level: warning
+)";
+    flapi::test::TempTestConfig temp(yaml, "flapi_logcfg");
+    auto mgr_ptr = temp.createConfigManager();
+    auto& mgr = *mgr_ptr;
+
+    REQUIRE(mgr.getLogLevel() == "warning");
+}
+
+TEST_CASE("log-level defaults to info when absent", "[config][logging]") {
+    const std::string yaml = R"(
+project-name: log-level-default
+project-description: log level default
+template:
+  path: ./sqls
+)";
+    flapi::test::TempTestConfig temp(yaml, "flapi_logcfg");
+    auto mgr_ptr = temp.createConfigManager();
+    auto& mgr = *mgr_ptr;
+
+    REQUIRE(mgr.getLogLevel() == "info");
+    REQUIRE(mgr.getLogFormat() == "text");
+}
+
+TEST_CASE("log-format is read from configuration", "[config][logging]") {
+    const std::string yaml = R"(
+project-name: log-format-test
+project-description: log format
+template:
+  path: ./sqls
+log-format: json
+)";
+    flapi::test::TempTestConfig temp(yaml, "flapi_logcfg");
+    auto mgr_ptr = temp.createConfigManager();
+    auto& mgr = *mgr_ptr;
+
+    REQUIRE(mgr.getLogFormat() == "json");
 }

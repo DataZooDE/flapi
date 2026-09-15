@@ -362,6 +362,7 @@ add_library(flapi-lib STATIC
     src/caching_file_provider.cpp
     src/credential_manager.cpp
     src/flapi_telemetry.cpp
+    src/flapi_log_handler.cpp
     src/request_context.cpp
     src/request_context_middleware.cpp
 )

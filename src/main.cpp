@@ -22,6 +22,7 @@
 #include "auth_middleware.hpp"
 #include "bundle_locator.hpp"
 #include "config_manager.hpp"
+#include "flapi_log_handler.hpp"
 #include "database_manager.hpp"
 #include "duckdb_embed_fs.hpp"
 #include "pack.hpp"
@@ -557,11 +558,35 @@ int main(int argc, char* argv[])
         CROW_LOG_INFO << "Generated config service token (no token was provided)";
     }
 
+    // Apply the CLI/env level now so configuration loading itself is logged at
+    // the requested verbosity; the config file can lower it further below.
     set_log_level(log_level);
 
     detectAndRegisterEmbeddedBundle();
 
     auto config_manager = initializeConfig(config_file);
+
+    // Precedence: CLI > environment > config file > default. An operator who
+    // passed --log-level meant it, but absent that the config file must be
+    // honoured - three example files shipped a log level that did nothing.
+    const bool log_level_from_cli_or_env =
+        program.is_used("--log-level") ||
+        (std::getenv("FLAPI_LOG_LEVEL") != nullptr && *std::getenv("FLAPI_LOG_LEVEL") != '\0');
+    if (!log_level_from_cli_or_env && config_manager) {
+        const std::string& configured = config_manager->getLogLevel();
+        if (!configured.empty() && configured != log_level) {
+            log_level = configured;
+            set_log_level(log_level);
+        }
+    }
+
+    // Install the correlating log handler. Every existing CROW_LOG_* call site -
+    // and every future one - gains the request id without being touched.
+    static flapi::FlapiLogHandler log_handler(
+        config_manager && config_manager->getLogFormat() == "json"
+            ? flapi::FlapiLogHandler::Format::Json
+            : flapi::FlapiLogHandler::Format::Text);
+    crow::logger::setHandler(&log_handler);
 
     // Surface configuration-level security warnings (plaintext passwords, MCP without auth, etc.)
     // Runs in both --validate-config mode and normal server start; never aborts startup.

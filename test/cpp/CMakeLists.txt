@@ -74,6 +74,7 @@ add_executable(flapi_tests
     test_flapi_telemetry.cpp
     test_alloc_budget.cpp
     test_request_context.cpp
+    test_flapi_log_handler.cpp
     test_endpoint_snapshot.cpp
     test_route_translator_perf.cpp
 )
