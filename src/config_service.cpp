@@ -7,6 +7,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "config_service.hpp"
+#include "flapi_tracing.hpp"
 #include "json_utils.hpp"
 #include "path_utils.hpp"
 #include "database_manager.hpp"
@@ -544,6 +545,60 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             }
         });
     
+    // Metrics endpoint.
+    //
+    // This has been published in the OpenAPI document since
+    // open_api_doc_generator.cpp:563 with no route behind it - a documented
+    // endpoint that 404s. Implemented rather than deleted because the tracing
+    // drop/export counters need a surface anyway: NFR-4 requires that an
+    // unreachable collector be observable as dropped spans rather than as silent
+    // data loss.
+    //
+    // Bearer-gated like its siblings: it reports internal operational state.
+    CROW_ROUTE(app, "/api/v1/_config/metrics")
+        .methods("GET"_method)
+        ([this](const crow::request& req) {
+            if (!validateToken(req)) {
+                return crow::response(401, R"({"error":"Unauthorized"})");
+            }
+
+            crow::json::wvalue metrics;
+
+            // Tracing. Exported vs dropped is the signal that matters: a
+            // collector that is down must show up here rather than as a trace
+            // that quietly has holes in it.
+            metrics["tracing"]["enabled"] = Tracing().isEnabled();
+            metrics["tracing"]["spans_exported"] =
+                static_cast<std::int64_t>(Tracing().spansExported());
+            metrics["tracing"]["spans_dropped"] =
+                static_cast<std::int64_t>(Tracing().spansDropped());
+
+            // Arrow IPC serialization counters, which already existed but were
+            // only reachable through /mcp/health.
+            const auto& arrow = ArrowMetrics::instance();
+            metrics["arrow"]["total_requests"] =
+                static_cast<std::int64_t>(arrow.counters.totalRequests.load());
+            metrics["arrow"]["successful_requests"] =
+                static_cast<std::int64_t>(arrow.counters.successfulRequests.load());
+            metrics["arrow"]["failed_requests"] =
+                static_cast<std::int64_t>(arrow.counters.failedRequests.load());
+            metrics["arrow"]["total_rows"] =
+                static_cast<std::int64_t>(arrow.counters.totalRows.load());
+            metrics["arrow"]["active_streams"] =
+                static_cast<std::int64_t>(arrow.gauges.activeStreams.load());
+
+            // Endpoint inventory, pinned so a concurrent config change cannot
+            // race the read.
+            if (config_manager) {
+                metrics["endpoints"]["count"] =
+                    static_cast<std::int64_t>(config_manager->endpointsSnapshot()->size());
+            }
+
+            crow::response res(200, metrics.dump());
+            res.set_header("Content-Type", "application/json");
+            return res;
+        });
+
     // Health check endpoint (no authentication required)
     CROW_ROUTE(app, "/api/v1/_config/health")
         .methods("GET"_method)
