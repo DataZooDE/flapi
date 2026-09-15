@@ -17,6 +17,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "audit_logger.hpp"
+#include "trace_capture_policy.hpp"
 #include "tracing_config.hpp"
 #include "route_translator.hpp"
 #include "extended_yaml_parser.hpp"
@@ -210,6 +211,10 @@ struct EndpointConfig {
         struct ResponseShape {
             std::optional<std::size_t> max_rows;
             std::vector<std::string> redact_columns;
+            // Per-endpoint tracing capture override (mcp-tool.tracing.capture).
+            // Optional so "unset" is distinguishable from "set to the global
+            // default"; a global `off` still wins, whatever this says.
+            std::optional<CaptureTier> tracing_capture;
             bool sample = false;
         } response;
 
@@ -668,6 +673,11 @@ public:
     // Log verbosity and shape. Precedence is CLI > environment > config > default,
     // resolved in main.cpp - an operator who passed --log-level meant it.
     const TracingConfig& getTracingConfig() const { return tracing_config; }
+
+    // Built once from the tracing config and the EXISTING audit.redact_keys, so
+    // an operator configures redaction in one place rather than two lists that
+    // silently diverge.
+    const CapturePolicy& getCapturePolicy() const;
     const std::string& getLogLevel() const { return log_level; }
     const std::string& getLogFormat() const { return log_format; }
     std::string getBasePath() const;
@@ -735,6 +745,7 @@ protected:
     YAML::Node config;
     std::string project_name;
     TracingConfig tracing_config;
+    mutable std::unique_ptr<CapturePolicy> capture_policy_;
     std::string log_level = "info";
     std::string log_format = "text";
     std::string project_description;

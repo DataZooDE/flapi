@@ -1,4 +1,7 @@
 #include "include/http_client.hpp"
+#include "include/flapi_tracing.hpp"
+#include "include/trace_context.hpp"
+#include "include/trace_semconv.hpp"
 #include <crow/logging.h>
 #include <curl/curl.h>
 #include <sstream>
@@ -94,6 +97,47 @@ void HTTPClient::setVerifySSL(bool verify) {
     verify_ssl_ = verify;
 }
 
+
+namespace {
+
+// Outbound CLIENT spans, so flAPI stops being a trace terminator for what it
+// calls.
+//
+// These matter out of all proportion to their volume: a slow or flapping identity
+// provider presents to the user as "flAPI is slow" or "flAPI rejects my token",
+// and with no client span there is nothing in the trace to contradict that. A
+// JWKS refresh stalling inside a request is exactly the latency that otherwise
+// gets misattributed to the database.
+flapi::SpanScope startClientSpan(const std::string& method_name, const std::string& url) {
+    flapi::SpanScope span = flapi::Tracing().startSpan(method_name.c_str(),
+                                                      flapi::SpanKind::Client);
+    if (!span) {
+        return span;
+    }
+    span.setAttr(flapi::semconv::http::kRequestMethod, method_name);
+
+    // url.full with the QUERY STRING STRIPPED. An IdP URL can carry parameters,
+    // and a query string is never safe to export. Host and path only.
+    std::string_view trimmed(url);
+    if (const auto q = trimmed.find('?'); q != std::string_view::npos) {
+        trimmed = trimmed.substr(0, q);
+    }
+    span.setAttr("url.full", trimmed);
+
+    // server.address without scheme or path, so the attribute stays bounded.
+    std::string_view host = trimmed;
+    if (const auto scheme = host.find("://"); scheme != std::string_view::npos) {
+        host.remove_prefix(scheme + 3);
+    }
+    if (const auto slash = host.find('/'); slash != std::string_view::npos) {
+        host = host.substr(0, slash);
+    }
+    span.setAttr(flapi::semconv::net::kServerAddress, host);
+    return span;
+}
+
+}  // namespace
+
 std::optional<HTTPClient::Response> HTTPClient::performRequest(
     Method method,
     const std::string& url,
@@ -105,6 +149,9 @@ std::optional<HTTPClient::Response> HTTPClient::performRequest(
         CROW_LOG_ERROR << "Failed to initialize CURL";
         return std::nullopt;
     }
+
+    const std::string method_name = (method == Method::GET) ? "GET" : "POST";
+    SpanScope span = startClientSpan(method_name, url);
 
     Response response;
     response.status_code = 0;
@@ -141,6 +188,16 @@ std::optional<HTTPClient::Response> HTTPClient::performRequest(
             std::string header_str = header.first + ": " + header.second;
             header_list = curl_slist_append(header_list, header_str.c_str());
         }
+        // Propagate context OUTWARD. flAPI should not be a trace terminator for
+        // the services it calls: an IdP that is itself instrumented can then join
+        // the same trace instead of starting a disconnected one.
+        if (span) {
+            const auto ids = span.ids();
+            if (ids.valid()) {
+                const std::string traceparent = "traceparent: " + formatTraceparent(ids);
+                header_list = curl_slist_append(header_list, traceparent.c_str());
+            }
+        }
         if (header_list) {
             curl_easy_setopt(curl, CURLOPT_HTTPHEADER, header_list);
         }
@@ -166,6 +223,9 @@ std::optional<HTTPClient::Response> HTTPClient::performRequest(
         // Check for errors
         if (res != CURLE_OK) {
             CROW_LOG_ERROR << "HTTP request failed: " << curl_easy_strerror(res) << " (URL: " << url << ")";
+            // Enumerated, not curl's message: that string can contain the URL
+            // including its query string.
+            span.setError("connection_error");
             curl_easy_cleanup(curl);
             return std::nullopt;
         }
@@ -179,6 +239,13 @@ std::optional<HTTPClient::Response> HTTPClient::performRequest(
                        << " " << url << " → " << response.status_code;
 
         curl_easy_cleanup(curl);
+        if (span) {
+            span.setAttr(semconv::http::kResponseStatus,
+                         static_cast<std::int64_t>(response.status_code));
+            if (response.status_code >= 400) {
+                span.setError(response.status_code >= 500 ? "server_error" : "client_error");
+            }
+        }
         return response;
 
     } catch (const std::exception& e) {

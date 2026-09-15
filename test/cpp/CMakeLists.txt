@@ -77,6 +77,8 @@ add_executable(flapi_tests
     test_request_context.cpp
     test_trace_context.cpp
     test_trace_scope.cpp
+    test_trace_capture_policy.cpp
+    test_http_client_tracing.cpp
     test_flapi_log_handler.cpp
     test_endpoint_snapshot.cpp
     test_route_translator_perf.cpp

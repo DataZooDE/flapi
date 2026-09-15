@@ -316,6 +316,20 @@ void ConfigManager::parseAuditConfig() {
     audit_logger_ = std::make_shared<AuditLogger>(audit_config);
 }
 
+const CapturePolicy& ConfigManager::getCapturePolicy() const {
+    if (!capture_policy_) {
+        // Reuses audit.redact_keys deliberately: operators already configure that
+        // list, and a second one would diverge the moment somebody added a key to
+        // only one of them - leaking whatever they forgot to add twice.
+        capture_policy_ = std::make_unique<CapturePolicy>(
+            tracing_config.capture,
+            audit_config.redact_keys,
+            tracing_config.payload_max_value_bytes,
+            tracing_config.payload_max_documents);
+    }
+    return *capture_policy_;
+}
+
 void ConfigManager::parseTracingConfig() {
     CROW_LOG_INFO << "Parsing tracing configuration";
     if (!config["tracing"]) {
