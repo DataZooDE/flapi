@@ -41,3 +41,8 @@ dev_rfc.log.ai/
 .beads/beads.db-shm
 .beads/beads.db-wal
 .crew/
+
+# vcpkg manifest-mode install tree (built artifacts, not sources)
+vcpkg_installed/
+# Issue -1 link-spike build output; the spike source itself is tracked
+spike/build/

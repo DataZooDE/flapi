@@ -58,9 +58,9 @@ clock, privacy-preserving by default.
 |---|---|
 | **D1** | Scope is all of HLD P0–P4, sequenced as the issues in §7. |
 | **D2** | Consolidation = shared `RequestContext` + fix the three drift bugs. PostHog, audit and `arrow_metrics` keep their own pipelines. |
-| **D3** | **Do not bump vcpkg.** Target what the pinned baseline provides. |
+| **D3** | **Do not bump vcpkg.** The pinned baseline stays for all 38 other packages. `opentelemetry-cpp` alone is overridden by a **vcpkg overlay port** (`ports/opentelemetry-cpp`, pinned 1.24.0), selected declaratively through `vcpkg-configuration.json` so every platform and CI job picks it up with no environment plumbing. **Forced by measurement, not preference** — see below. |
 | **D4** | agent-crew reviews at the cadence in §8.3, not once. |
-| **D5** | **The exporter architecture is a single binding choice made at the issue -1 spike** (F10). Either opentelemetry-cpp stays (and we hand-roll only the *file* exporter) or it is dropped entirely for a libcurl-only OTLP pipeline. **Both must not ship.** Note that a custom `SpanExporter` layered on the SDK does **not** remove abseil — the vcpkg port depends on `abseil` and `nlohmann-json` unconditionally and forces `-DWITH_ABSEIL=ON`; only dropping the SDK removes them. |
+| **D5** | **SETTLED by the issue -1 spike: keep opentelemetry-cpp.** It builds, links beside static DuckDB with **zero** duplicate symbols, and costs **+4.71 MiB (+6.9 %)**. The libcurl-only alternative is closed; both architectures must never ship. Because the 1.24.0 overlay provides `otlp-file`, flAPI does **not** hand-roll a file exporter — **issue 6 shrinks to configuration plus tests.** |
 
 ### D3 in detail — verified
 
@@ -68,8 +68,14 @@ CI pins vcpkg to tag `2024.11.16` (`.github/docker/linux_*/Dockerfile:57`); `vcp
 `builtin-baseline: b2cb0da…`. At that baseline `opentelemetry-cpp = 1.17.0#1`, features
 `[elasticsearch, etw, geneva, otlp-grpc, otlp-http, prometheus, user-events, zipkin]`.
 
-- **No `otlp-file` feature** — the OTLP File exporter postdates 1.17.0. The air-gapped topology
-  (HLD §10.4) needs a flAPI-owned OTLP-JSON `SpanExporter` (issue 6).
+- **1.17.0 does not compile at all on this project's toolchain.** It uses `uint8_t` and friends
+  without including `<cstdint>` in 136 headers; modern libstdc++ stopped providing it
+  transitively. It fails at `api/include/opentelemetry/logs/severity.h:20` on local GCC 16 **and
+  on GCC 13 inside `ubuntu:24.04`**, which is exactly what the CI Docker image builds with. This
+  is what forces the overlay port — the pinned version is not merely inconvenient, it is
+  unusable.
+- **No `otlp-file` feature** — the OTLP File exporter postdates 1.17.0. The 1.24.0 overlay has
+  it, so the air-gapped topology needs no flAPI-owned exporter after all.
 - **No `sdk/configuration` auto-config module** — `OTEL_TRACES_SAMPLER`,
   `OTEL_TRACES_SAMPLER_ARG` and `OTEL_SDK_DISABLED` are resolved by hand.
   `OtlpHttpExporterOptions` *does* read `OTEL_EXPORTER_OTLP_*` natively, so construct it with its
@@ -348,16 +354,28 @@ pass.
 
 Each row names the failing test **first**. Ordering corrected per F7/F8/F9.
 
-### Issue -1 — SPIKE: link `opentelemetry-cpp` 1.17.0 alongside static DuckDB *(abort gate)*
+### Issue -1 — SPIKE: link `opentelemetry-cpp` alongside static DuckDB — **DONE, PROCEED**
 
-Promoted ahead of everything (F9): it decides whether the epic is viable and settles D5, and it
-is roughly an afternoon. No red test — a go/no-go.
+Full results in [`spike/README.md`](../../spike/README.md); spike source kept as the
+re-run check for future port upgrades.
 
-`vcpkg install opentelemetry-cpp[otlp-http]` at the pinned baseline; one throwaway TU building a
-`TracerProvider` + OTLP HTTP exporter; link on x64-linux and arm64-osx (then the other two);
-**record the binary-size delta as a number**; `nm -C --defined-only` duplicate-symbol diff against
-`duckdb_static`; a Debug ASan+UBSan run; a `flapi pack` round-trip. Output: the binding D5 choice,
-with measured sizes for both architectures, and the answer to open question 3.
+| Gate | Result |
+|---|---|
+| 1.17.0 at the pinned baseline | ❌ **does not compile**, on CI's GCC 13 as well as locally |
+| 1.24.0 via overlay port | ✅ clean, and ships `otlp-file` |
+| Link under `-Wl,--no-undefined` + static DuckDB | ✅ |
+| Duplicate strong symbols vs `libduckdb_static.a` | ✅ **0** |
+| Binary size | **+4,906,272 B = +4.71 MiB, +6.9 %** |
+| `flapi pack` round-trip | ✅ |
+| `FLAPI_WITH_TRACING=OFF` | ✅ 0 otel symbols, within 36 KB of baseline |
+| Runtime (provider, both exporters, W3C extract+inject, samplers) | ✅ |
+
+**Remaining spike work, carried into issue 5:** the other three targets
+(arm64-linux cross — where protobuf's host `protoc` is the usual failure point —
+x64-windows-static, arm64-osx), and a Debug ASan+UBSan run. Also found: with
+`FLAPI_WITH_TRACING=OFF` vcpkg still *installs* otel because the manifest dependency is
+unconditional. Make it a **vcpkg manifest feature** so the OFF leg is genuinely otel-free
+and does not pay protobuf/abseil build time in CI.
 
 ### Issue 0 — A working load harness, a baseline, and a profile
 

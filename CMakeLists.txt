@@ -143,6 +143,17 @@ add_compile_definitions(CROW_ENABLE_SSL)
 # silently corrupts response state across the lib/test boundary).
 add_compile_definitions(CROW_ENABLE_COMPRESSION)
 
+# FLAPI_WITH_TRACING changes the layout of flapi::SpanScope, which is embedded in
+# TracingMiddleware::context and therefore in the Crow middleware tuple instantiated
+# across several TUs. Like CROW_ENABLE_COMPRESSION above, it must be global and
+# defined before any add_subdirectory(), never target-scoped.
+option(FLAPI_WITH_TRACING "Build with OpenTelemetry tracing support" ON)
+if(FLAPI_WITH_TRACING)
+    add_compile_definitions(FLAPI_WITH_TRACING=1)
+else()
+    add_compile_definitions(FLAPI_WITH_TRACING=0)
+endif()
+
 # Compiler flags
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     # Disable unused parameter warnings but keep other warnings
@@ -197,6 +208,9 @@ find_package(argparse CONFIG REQUIRED)
 find_package(fmt CONFIG REQUIRED)
 find_package(CURL CONFIG REQUIRED)
 find_package(LibArchive REQUIRED)
+if(FLAPI_WITH_TRACING)
+    find_package(opentelemetry-cpp CONFIG REQUIRED)
+endif()
 
 include(FetchContent)
 FetchContent_Declare(
@@ -365,6 +379,18 @@ target_link_libraries(flapi-lib PUBLIC
     $<IF:$<TARGET_EXISTS:lz4::lz4>,lz4::lz4,lz4::lz4_shared>
     posthog_telemetry
 )
+
+# opentelemetry-cpp is linked PRIVATE - the one exception to the PUBLIC block above.
+# Its headers must never reach src/include/*, so nothing downstream needs them and
+# protobuf/abseil stay out of the test binary's link surface.
+if(FLAPI_WITH_TRACING)
+    target_link_libraries(flapi-lib PRIVATE
+        opentelemetry-cpp::trace
+        opentelemetry-cpp::resources
+        opentelemetry-cpp::otlp_http_exporter
+        opentelemetry-cpp::otlp_file_exporter
+    )
+endif()
 
 target_compile_definitions(flapi-lib PRIVATE
     FLAPI_VERSION="${FLAPI_VERSION_STR}"
