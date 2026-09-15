@@ -40,3 +40,4 @@ dev_rfc.log.ai/
 .beads/beads.db
 .beads/beads.db-shm
 .beads/beads.db-wal
+.crew/
