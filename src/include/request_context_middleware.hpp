@@ -6,8 +6,12 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
+#include <string>
 
 #include "request_context.hpp"
+#include "trace_scope.hpp"
+#include "tracing_config.hpp"
 
 namespace flapi {
 
@@ -47,6 +51,7 @@ class RequestContextMiddleware {
 public:
     struct context {
         RequestContext rc;       // by value: no allocation, no refcount atomics
+        SpanScope span;          // inert and allocation-free when tracing is off
         bool started = false;    // before_handle actually ran for THIS request
         bool finished = false;   // guards the idempotent completion path
     };
@@ -61,6 +66,10 @@ private:
     void finish(crow::response& res, context& ctx);
 
     std::shared_ptr<ConfigManager> config_manager_;
+    // Copied at bootstrap so the hot path touches no shared_ptr and no config
+    // lookup. Route exclusion is matched against the raw path.
+    std::vector<std::string> excluded_routes_;
+    bool tracing_configured_ = false;
     // Resolved once at bootstrap: getAuditLogger() initialises lazily without
     // synchronisation, and this middleware runs on every Crow worker.
     std::shared_ptr<AuditLogger> audit_logger_;

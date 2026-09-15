@@ -23,6 +23,7 @@ SpanScope& SpanScope::operator=(SpanScope&& other) noexcept {
 }
 
 void SpanScope::setAttr(const char*, std::string_view) noexcept {}
+void SpanScope::setAttr(const char*, const char*) noexcept {}
 void SpanScope::setAttr(const char*, std::int64_t) noexcept {}
 void SpanScope::setAttr(const char*, double) noexcept {}
 void SpanScope::setAttr(const char*, bool) noexcept {}
@@ -30,6 +31,7 @@ void SpanScope::addEvent(const char*) noexcept {}
 void SpanScope::addLink(const SpanContextIds&) noexcept {}
 void SpanScope::setError(const char*) noexcept {}
 void SpanScope::end() noexcept {}
+void SpanScope::updateName(std::string_view) noexcept {}
 
 SpanContextIds SpanScope::ids() const noexcept { return {}; }
 

@@ -45,6 +45,11 @@ public:
     explicit operator bool() const noexcept { return impl_ != nullptr; }
 
     void setAttr(const char* key, std::string_view value) noexcept;
+    // Without this overload a `const char*` argument binds to the bool overload -
+    // C++ prefers pointer-to-bool over a user-defined conversion to string_view -
+    // and every string literal silently exports as `true`. Caught by a test
+    // asserting flapi.auth.kind == "basic" and getting True.
+    void setAttr(const char* key, const char* value) noexcept;
     void setAttr(const char* key, std::int64_t value) noexcept;
     void setAttr(const char* key, double value) noexcept;
     void setAttr(const char* key, bool value) noexcept;
@@ -54,6 +59,11 @@ public:
     // attribute: it is the most reliable way to leak customer data into a trace.
     void setError(const char* error_type) noexcept;
     void end() noexcept;
+
+    // http.route is not known until the handler has resolved it, so the span
+    // opens named for the method alone and is renamed at completion. Delaying the
+    // span until the route is known would lose every middleware rejection.
+    void updateName(std::string_view name) noexcept;
 
     SpanContextIds ids() const noexcept;
 

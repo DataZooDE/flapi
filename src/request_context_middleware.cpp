@@ -3,6 +3,8 @@
 #include "audit_logger.hpp"
 #include "config_manager.hpp"
 #include "trace_context.hpp"
+#include "flapi_tracing.hpp"
+#include "trace_semconv.hpp"
 
 namespace flapi {
 
@@ -65,6 +67,44 @@ void emitAuditLine(const std::shared_ptr<AuditLogger>& logger, const RequestCont
 
 }  // namespace
 
+namespace {
+
+// Route exclusion matches the RAW path, deliberately: at before_handle time Crow
+// has not resolved a route yet, and resolving one here would add a third O(N)
+// scan per request - taxing /health, which resolves nothing today. All the
+// default exclusions are literals, so raw-path matching is exact for them.
+// The query string is ignored so `/health?x=1` cannot smuggle a probe into the
+// trace.
+bool isExcludedRoute(const std::vector<std::string>& excluded, std::string_view raw_path) {
+    const auto query = raw_path.find('?');
+    const auto path = query == std::string_view::npos ? raw_path : raw_path.substr(0, query);
+    for (const auto& candidate : excluded) {
+        if (path == candidate) { return true; }
+    }
+    return false;
+}
+
+const char* errorTypeFor(int status_code) {
+    // Enumerated, never a free-form message: an exception string is the most
+    // reliable way to leak customer data into a trace.
+    switch (status_code) {
+        case 400: return "bad_request";
+        case 401: return "unauthenticated";
+        case 403: return "permission_denied";
+        case 404: return "not_found";
+        case 405: return "method_not_allowed";
+        case 413: return "payload_too_large";
+        case 429: return "rate_limited";
+        case 503: return "service_unavailable";
+        default:  break;
+    }
+    if (status_code >= 500) { return "internal_error"; }
+    if (status_code >= 400) { return "client_error"; }
+    return nullptr;
+}
+
+}  // namespace
+
 void RequestContextMiddleware::setConfigManager(std::shared_ptr<ConfigManager> config_manager) {
     config_manager_ = std::move(config_manager);
     // Resolve the logger once at bootstrap. getAuditLogger() initialises lazily
@@ -72,6 +112,10 @@ void RequestContextMiddleware::setConfigManager(std::shared_ptr<ConfigManager> c
     // startup path - keeps every Crow worker off that race, and keeps the hot
     // path free of shared_ptr refcount traffic when audit is disabled.
     audit_logger_ = config_manager_ ? config_manager_->getAuditLogger() : nullptr;
+    if (config_manager_) {
+        excluded_routes_ = config_manager_->getTracingConfig().exclude_routes;
+        tracing_configured_ = config_manager_->getTracingConfig().enabled;
+    }
 }
 
 void RequestContextMiddleware::before_handle(crow::request& req, crow::response& res, context& ctx) {
@@ -104,6 +148,44 @@ void RequestContextMiddleware::before_handle(crow::request& req, crow::response&
 
     RequestContextScope::activate(&ctx.rc);
 
+    // The HTTP SERVER span. Started here - in the FIRST middleware - because Crow
+    // runs before_handle in declaration order, so this is the only position that
+    // brackets rate limiting and auth and therefore sees the 401/403/429
+    // rejections operators most often ask about. A span started in the request
+    // handler would miss every one of them, plus every static route and every
+    // 404, since those never reach handleDynamicRequest at all.
+    //
+    // The name is provisional: http.route is not known until the handler resolves
+    // it, so the span opens as "METHOD" and is renamed at completion. Delaying the
+    // span to learn the route would defeat the entire point.
+    if (!isExcludedRoute(excluded_routes_, ctx.rc.raw_path)) {
+        ExtractedContext parent;
+        parent.ids = header_ids;
+        parent.source = header_ids.valid() ? ContextSource::Header : ContextSource::None;
+
+        ctx.span = Tracing().startServerSpan(ctx.rc.http_method, parent);
+        if (ctx.span) {
+            const auto ids = ctx.span.ids();
+            if (ids.valid()) {
+                // Stamp back, so the audit line and every log line emitted during
+                // this request carry the SAME ids as the span.
+                ctx.rc.setTraceId(ids.trace_id);
+                ctx.rc.setSpanId(ids.span_id);
+                ctx.rc.sampled = ids.sampled();
+            }
+            ctx.span.setAttr(semconv::http::kRequestMethod, ctx.rc.http_method);
+            ctx.span.setAttr(semconv::net::kProtocolName, "http");
+            ctx.span.setAttr(semconv::flapix::kHasQuery,
+                             ctx.rc.raw_path.find('?') != std::string_view::npos);
+            if (const auto ua = req.get_header_value("User-Agent"); !ua.empty()) {
+                ctx.span.setAttr(semconv::kUserAgent, std::string_view(ua).substr(0, 256));
+            }
+            if (ctx.rc.trace_context_source != nullptr) {
+                ctx.span.setAttr(semconv::flapix::kContextSource, ctx.rc.trace_context_source);
+            }
+        }
+    }
+
     // Always server-minted; an inbound X-Request-Id is never honoured, or a
     // client could forge collisions and inject into log lines.
     res.set_header("X-Request-Id", std::string(ctx.rc.requestIdView()));
@@ -135,6 +217,42 @@ void RequestContextMiddleware::finish(crow::response& res, context& ctx) {
     } clear_guard;
 
     try {
+        if (ctx.span) {
+            // http.route is only known now. It is ALWAYS a template or a fixed
+            // literal - never a filled path (NFR-5) - and unmatched paths all
+            // collapse to one bucket so a scanner cannot mint a thousand span
+            // names and metric series.
+            const std::string_view route = ctx.rc.route_template.empty()
+                                               ? std::string_view(semconv::kUnmatchedRoute)
+                                               : ctx.rc.route_template;
+            // "GET /customers/{id}" - the name a trace consumer looks for.
+            std::string span_name(ctx.rc.http_method);
+            span_name += ' ';
+            span_name.append(route);
+            ctx.span.updateName(span_name);
+
+            ctx.span.setAttr(semconv::http::kRoute, route);
+            ctx.span.setAttr(semconv::url::kPath, route);   // template only
+            ctx.span.setAttr(semconv::http::kResponseStatus,
+                             static_cast<std::int64_t>(ctx.rc.status_code));
+            ctx.span.setAttr(semconv::flapix::kAuthKind, ctx.rc.auth_kind);
+            ctx.span.setAttr(semconv::http::kResponseBodySize,
+                             static_cast<std::int64_t>(res.body.size()));
+            if (ctx.rc.row_count >= 0) {
+                ctx.span.setAttr(semconv::db::kReturnedRows, ctx.rc.row_count);
+            }
+            if (!ctx.rc.mcp_method.empty()) {
+                ctx.span.setAttr(semconv::mcp::kMethodName, ctx.rc.mcp_method);
+            }
+            if (!ctx.rc.mcp_tool.empty()) {
+                ctx.span.setAttr(semconv::genai::kToolName, ctx.rc.mcp_tool);
+                ctx.span.setAttr(semconv::genai::kOperationName, semconv::genai::kExecuteTool);
+            }
+            if (const char* error_type = errorTypeFor(ctx.rc.status_code)) {
+                ctx.span.setError(error_type);
+            }
+            ctx.span.end();
+        }
         emitAuditLine(audit_logger_, ctx.rc);
     } catch (...) {
         instrumentation_failures_.fetch_add(1, std::memory_order_relaxed);

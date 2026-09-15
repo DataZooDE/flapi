@@ -40,6 +40,12 @@ void SpanScope::setAttr(const char* key, std::string_view value) noexcept {
     impl_->span->SetAttribute(key, otel::nostd::string_view(value.data(), value.size()));
 }
 
+void SpanScope::setAttr(const char* key, const char* value) noexcept {
+    if (impl_ != nullptr && value != nullptr) {
+        impl_->span->SetAttribute(key, otel::nostd::string_view(value));
+    }
+}
+
 void SpanScope::setAttr(const char* key, std::int64_t value) noexcept {
     if (impl_ != nullptr) { impl_->span->SetAttribute(key, value); }
 }
@@ -74,6 +80,12 @@ void SpanScope::end() noexcept {
     impl_->span->End();
     delete impl_;
     impl_ = nullptr;
+}
+
+void SpanScope::updateName(std::string_view name) noexcept {
+    if (impl_ != nullptr) {
+        impl_->span->UpdateName(otel::nostd::string_view(name.data(), name.size()));
+    }
 }
 
 SpanContextIds SpanScope::ids() const noexcept {

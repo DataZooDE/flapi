@@ -17,6 +17,7 @@ PROFILE=full
 OUT=""
 RUNS=1
 BUILD_TYPE="${FLAPI_BUILD_TYPE:-release}"
+TRACING=off
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -24,6 +25,9 @@ while [ $# -gt 0 ]; do
         --out) OUT="$2"; shift 2 ;;
         --runs) RUNS="$2"; shift 2 ;;
         --build-type) BUILD_TYPE="$2"; shift 2 ;;
+        # NFR-2: the cost of tracing when it is actually ON. Uses the file
+        # exporter so the measurement is of flAPI, not of a collector's latency.
+        --tracing) TRACING="$2"; shift 2 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
@@ -55,6 +59,20 @@ run_once() {
     # mutating the repo's checked-in example data.
     cp -r "$REPO/examples" "$tmp/examples"
     rm -rf "$tmp/examples/data/cache" "$tmp/examples/data/cache.ducklake"* 2>/dev/null || true
+
+    if [ "$TRACING" != "off" ]; then
+        cat >> "$tmp/examples/flapi.yaml" <<TRACEEOF
+
+tracing:
+  enabled: true
+  exporter: otlp_file
+  capture: $TRACING
+  file:
+    path: $tmp/traces.jsonl
+  sample:
+    type: always_on
+TRACEEOF
+    fi
 
     DATAZOO_DISABLE_TELEMETRY=1 \
         "$FLAPI" -c "$tmp/examples/flapi.yaml" -p "$port" --log-level warning \
