@@ -41,6 +41,7 @@ class TestSpanCoverage:
         r = requests.get(f"{server.base_url}/open", timeout=10)
         assert r.status_code == 200
 
+        server.wait_for_server_span()
         servers = [s for s in server.spans() if s.is_server]
         assert len(servers) == 1, f"expected exactly one SERVER span, got {servers}"
 

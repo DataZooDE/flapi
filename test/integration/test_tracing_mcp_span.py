@@ -48,6 +48,7 @@ class TestMcpSingleSpan:
                  {"name": "lookup_tool", "arguments": {}})
         assert r.status_code == 200, r.text
 
+        server.wait_for_server_span()
         servers = [s for s in server.spans() if s.is_server]
         assert len(servers) == 1, (
             f"an MCP call must be ONE span carrying both http.* and mcp.*, "
@@ -57,7 +58,7 @@ class TestMcpSingleSpan:
     def test_the_span_carries_both_attribute_sets(self, server):
         _rpc(server.base_url, "tools/call", {"name": "lookup_tool", "arguments": {}})
 
-        span = next(s for s in server.spans() if s.is_server)
+        span = server.wait_for_server_span()
         # HTTP half - Stable conventions, useful to an operator with no agent.
         assert span.attributes["http.request.method"] == "POST"
         assert span.attributes["http.response.status_code"] == 200
@@ -68,14 +69,14 @@ class TestMcpSingleSpan:
 
     def test_the_span_is_named_by_the_mcp_convention(self, server):
         _rpc(server.base_url, "tools/call", {"name": "lookup_tool", "arguments": {}})
-        span = next(s for s in server.spans() if s.is_server)
+        span = server.wait_for_server_span()
         assert span.name == "tools/call lookup_tool", (
             f"the name a trace consumer looks for is the MCP one, got {span.name!r}"
         )
 
     def test_a_non_tool_method_is_named_by_its_method(self, server):
         _rpc(server.base_url, "tools/list")
-        span = next(s for s in server.spans() if s.is_server)
+        span = server.wait_for_server_span()
         assert span.name == "tools/list"
         assert span.attributes.get("mcp.method.name") == "tools/list"
 
@@ -84,7 +85,7 @@ class TestMcpSingleSpan:
         _rpc(server.base_url, "tools/call",
              {"name": "lookup_tool", "arguments": {}, "_meta": {"traceparent": TRACEPARENT}})
 
-        span = next(s for s in server.spans() if s.is_server)
+        span = server.wait_for_server_span()
         assert span.trace_id == "4bf92f3577b34da6a3ce929d0e0e4736"
         assert span.parent_span_id == "00f067aa0ba902b7"
 
@@ -94,7 +95,7 @@ class TestMcpSingleSpan:
              {"name": "lookup_tool", "arguments": {}, "_meta": {"traceparent": TRACEPARENT}},
              headers={"traceparent": other})
 
-        span = next(s for s in server.spans() if s.is_server)
+        span = server.wait_for_server_span()
         assert span.trace_id == "4bf92f3577b34da6a3ce929d0e0e4736", (
             "params._meta must take precedence: over a gateway the HTTP hop may "
             "carry the gateway's own span while _meta carries the agent's"
@@ -114,7 +115,7 @@ class TestMcpSingleSpan:
     def test_an_unknown_tool_records_an_enumerated_error(self, server):
         _rpc(server.base_url, "tools/call", {"name": "no_such_tool", "arguments": {}})
 
-        span = next(s for s in server.spans() if s.is_server)
+        span = server.wait_for_server_span()
         error = span.attributes.get("error.type")
         if error is not None:
             # Enumerated only - never a free-form message, which is the most

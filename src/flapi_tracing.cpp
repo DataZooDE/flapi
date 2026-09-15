@@ -138,6 +138,21 @@ private:
             otlp::OtlpFileExporterOptions options;
             otlp::OtlpFileClientFileSystemOptions fs;
             fs.file_pattern = config.file_path.empty() ? "traces.jsonl" : config.file_path;
+
+            // The exporter's defaults buffer for 30 SECONDS or 256 records. For
+            // the air-gapped topology that means losing up to half a minute of
+            // spans on a crash - and in on_response mode it would contradict the
+            // mode's entire promise, which is that the span is durable before the
+            // response returns. Flush per record there; keep a short interval
+            // otherwise so a low-traffic deployment does not sit on spans.
+            if (config.flush.mode == "on_response") {
+                fs.flush_count = 1;
+                fs.flush_interval = std::chrono::microseconds(0);
+            } else {
+                fs.flush_interval =
+                    std::chrono::microseconds(config.flush.timeout_ms * 1000LL);
+            }
+
             options.backend_options = fs;
             exporter = otlp::OtlpFileExporterFactory::Create(options);
         } else if (config.exporter == "otlp_http") {

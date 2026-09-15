@@ -1,4 +1,6 @@
 #include "query_executor.hpp"
+#include "flapi_tracing.hpp"
+#include "trace_semconv.hpp"
 #include "duckdb_raii.hpp"
 #include "prepared_value_converter.hpp"
 #include <crow.h>
@@ -72,12 +74,45 @@ QueryExecutor::~QueryExecutor() {
     duckdb_disconnect(&conn);
 }
 
+
+namespace {
+
+// The DuckDB boundary is the only honest one flAPI has.
+//
+// DuckDB extensions (BigQuery, Iceberg, Postgres scanners, cloud object storage)
+// do their own network I/O through their own stacks, which flAPI cannot see. So a
+// 20-second Iceberg scan is one flat span here, and the documentation says so
+// rather than leaving users to wonder.
+//
+// db.query.text is NOT emitted: at the metadata tier it is only safe when every
+// parameter site is a prepared binding, and deciding that per call is a payload-
+// tier concern. Default off, per the plan's open question 1.
+flapi::SpanScope startDbSpan(const std::string& context, const std::string& sql) {
+    flapi::SpanScope span = flapi::Tracing().startSpan(
+        context.empty() ? "duckdb.query" : context.c_str(), flapi::SpanKind::Client);
+    if (span) {
+        span.setAttr(flapi::semconv::db::kSystemName, flapi::semconv::db::kDuckDB);
+        // The leading SQL keyword only - a bounded value, never the statement.
+        const auto first = sql.find_first_not_of(" \t\r\n");
+        if (first != std::string::npos) {
+            const auto end = sql.find_first_of(" \t\r\n(", first);
+            span.setAttr(flapi::semconv::db::kOperationName,
+                         sql.substr(first, end == std::string::npos ? 8 : end - first));
+        }
+    }
+    return span;
+}
+
+}  // namespace
+
 void QueryExecutor::execute(const std::string& query, const std::string& context) {
     if (has_result) {
         duckdb_destroy_result(&result);
         has_result = false;
     }
     
+    SpanScope span = startDbSpan(context, query);
+
     duckdb_state qstate;
     {
         // Publish this executor for the running thread so another thread can
@@ -89,9 +124,16 @@ void QueryExecutor::execute(const std::string& query, const std::string& context
         std::string error_message = duckdb_result_error(&result);
         std::string context_msg = context.empty() ? "" : " during " + context;
         duckdb_destroy_result(&result);
+        // Enumerated, never the DuckDB message: that string routinely contains
+        // fragments of the failing SQL, i.e. customer data.
+        span.setError("query_failed");
         throw std::runtime_error("Query execution failed" + context_msg + ": " + error_message);
     }
     has_result = true;
+    if (span) {
+        span.setAttr(semconv::db::kReturnedRows,
+                     static_cast<std::int64_t>(duckdb_row_count(&result)));
+    }
 }
 
 void QueryExecutor::executePrepared(duckdb_prepared_statement stmt, const std::string& context) {

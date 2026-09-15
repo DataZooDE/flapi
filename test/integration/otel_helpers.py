@@ -76,7 +76,14 @@ def _attr_value(value: Dict[str, Any]) -> Any:
 
 
 def spans_from_file(path: str) -> List[Span]:
-    """Flatten an OTLP-JSON trace file into a list of spans."""
+    """Flatten an OTLP-JSON trace file into a list of spans.
+
+    Partial trailing lines are skipped rather than raising: the exporter appends
+    incrementally, so a read that races a write sees a truncated record. That
+    matters more than it sounds - the SERVER span ends LAST, so it is exactly the
+    record most likely to be half-written when a test looks. Use
+    `TracedServer.wait_for_spans` rather than reading once and hoping.
+    """
     if not os.path.exists(path):
         return []
     out: List[Span] = []
@@ -232,6 +239,30 @@ class TracedServer:
 
     def spans(self) -> List[Span]:
         return spans_from_file(self.traces_path)
+
+    def wait_for_spans(self, predicate, timeout: float = 5.0, message: str = "") -> List[Span]:
+        """Poll until `predicate(spans)` holds, then return the spans.
+
+        The file exporter appends as spans end, so "read immediately after the
+        response" is a race: the response is written before the server span is
+        exported, and the last line may be mid-write. Polling makes the tests
+        deterministic instead of usually-passing.
+        """
+        deadline = time.time() + timeout
+        spans: List[Span] = []
+        while time.time() < deadline:
+            spans = self.spans()
+            if predicate(spans):
+                return spans
+            time.sleep(0.05)
+        pytest.fail(message or f"condition not met within {timeout}s; saw "
+                               f"{[(s.name, s.kind) for s in spans]}")
+
+    def wait_for_server_span(self, timeout: float = 5.0) -> Span:
+        spans = self.wait_for_spans(
+            lambda ss: any(s.is_server for s in ss), timeout,
+            "no SERVER span was exported")
+        return next(s for s in spans if s.is_server)
 
     def raw_traces(self) -> str:
         return raw_text(self.traces_path)

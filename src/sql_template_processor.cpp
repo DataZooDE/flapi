@@ -1,4 +1,6 @@
 #include "sql_template_processor.hpp"
+#include "flapi_tracing.hpp"
+#include "trace_semconv.hpp"
 #include "vfs_adapter.hpp"
 #include <stdexcept>
 #include <filesystem>
@@ -20,6 +22,14 @@ PreparedQueryRender SQLTemplateProcessor::loadAndProcessTemplatePrepared(
     const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
     PreparedQueryRender out;
 
+    // No context parameter is threaded here, deliberately. OpenTelemetry keeps a
+    // thread-local active-span stack and the middleware's SpanScope holds the
+    // corresponding Scope, so this child attaches to the server span by itself.
+    // Adding a parameter would have touched every caller - the cache manager, the
+    // heartbeat worker, mcp_dry_run, the config service warmup - and every
+    // existing test, for no behavioural gain.
+    SpanScope span = Tracing().startSpan("flapi.render_template", SpanKind::Internal);
+
     const std::string templatePath = getFullTemplatePath(endpoint.templateSource);
     CROW_LOG_DEBUG << "Prepared template path: " << templatePath;
     const std::string templateContent = loadTemplateContent(templatePath);
@@ -37,6 +47,25 @@ PreparedQueryRender SQLTemplateProcessor::loadAndProcessTemplatePrepared(
 
     out.sql = processTemplate(rewrite.rewritten_template, ctx);
     out.bindings = std::move(rewrite.bindings);
+
+    if (span) {
+        // Config-relative, never absolute. endpoint.templateSource is resolved to
+        // an absolute path at config-load time, and an absolute path discloses the
+        // server's filesystem layout while telling a trace consumer nothing they
+        // can use. TELEMETRY.md already excludes file paths for the same reason.
+        std::string_view relative(endpoint.templateSource);
+        if (const auto slash = relative.find_last_of('/'); slash != std::string_view::npos) {
+            relative.remove_prefix(slash + 1);
+        }
+        span.setAttr(semconv::flapix::kTemplatePath, relative);
+        span.setAttr(semconv::flapix::kTemplateBytes,
+                     static_cast<std::int64_t>(templateContent.size()));
+        // The prepared-vs-interpolated split is a SECURITY-relevant signal and
+        // uniquely flAPI's to report: an interpolated site is one where a value is
+        // substituted into SQL text rather than bound as a parameter.
+        span.setAttr(semconv::flapix::kPreparedCount,
+                     static_cast<std::int64_t>(out.bindings.size()));
+    }
     return out;
 }
 
