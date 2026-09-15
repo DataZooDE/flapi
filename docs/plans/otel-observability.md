@@ -487,25 +487,47 @@ Overlay only when `openinference: true` **and** tier is `payload`; no `CHAIN` on
 So the hot path is unmeasured, the load suite is off, and a known performance defect is parked in
 the exact code path this epic modifies. Issue 0 fixes all four; DoD rule 4 stops it recurring.
 
-### 8.2 Gates
+### 8.2 Gates — budgets set from measurement (issue 0a, done)
 
-**Proxy gates (per issue, DoD rule 2).** Allocation count, `perf stat` instruction count, Catch2
-microbenchmark. These are where a sub-1% claim is meaningful.
+Measured at `1b655a0`, 5 runs, dedicated local machine (a shared CI runner will
+be worse). Full method and data in [`test/load/README.md`](../../test/load/README.md).
 
-**Wall-clock load gates (per phase boundary).** Budget = **max(stated target, 2 × the p99
-variance measured in issue 0a)**. A budget under the noise floor is not a gate (F11).
-
-| Gate | Configuration | Target (subject to 0a) |
+| Statistic of `flapi_health_duration` | Median | Spread |
 |---|---|---|
-| NFR-1 | tracing off, `FLAPI_WITH_TRACING=ON` | proxy: no allocation beyond §3.2's bound on the probe path; wall-clock: within noise |
-| After issue 1 | `RequestContext` landed, tracing + audit off | the most at-risk gate; proxy-gated primarily |
-| Issue 1, audit on | REST audit, buffered vs unbuffered | numbers recorded (see §9.2) |
-| NFR-2 | tracing on, `capture: metadata`, `otlp_http` | p99 ≤ +2% |
-| P2 inner spans | 5–6 spans/request | p99 ≤ +2% cumulative; **export-queue drop rate 0** at sustained load |
-| **`on_response`** | file/stdout exporter only | its own row; latency is coupled by design — state the number (F7) |
-| NFR-4 | collector refusing / 5xx / hanging / **slow** | p99 and error rate unchanged beyond `flush.timeout_ms`; drop counter moves; **RSS bounded** |
-| P3 payload tier | `capture: payload`, overlay on | RSS under the stated ceiling (§7 issue 14) |
-| Build | binary size | the number from issue -1, against the budget in §10 |
+| **`med` (the gate)** | **0.200 ms** | **6.7 %** |
+| `avg` | 0.216 ms | 20.9 % |
+| `p(95)` | 0.277 ms | 23.3 % |
+| `p(99)` | 0.350 ms | 195.6 % |
+| aggregate `http_req_waiting.p(99)` | 6.92 ms | 11.0 % |
+| `flapi_arrow_duration.p(99)` | 1354 ms | 63.4 % |
+
+**The crew's F11 was right, and the correction is sharper than "loosen the
+budget".** The plan's ±0.5 % and ±2 % figures are below the noise of the
+*aggregate* p99 — but on the **median TTFB of the cheap routes** the noise is
+6.7 %, and that is where a fixed per-request cost shows up proportionally
+largest. So the gate moves metric, not just threshold.
+
+**What wall-clock can resolve:** a per-request regression of roughly **tens of
+microseconds** on a 200 µs request. **What it cannot:** single-digit
+microseconds. NFR-1 is therefore carried by the **proxy gate**
+(`test/cpp/test_alloc_budget.cpp`, deterministic allocation counts), never by
+the load harness.
+
+| Gate | Configuration | Budget |
+|---|---|---|
+| **NFR-1 (proxy)** | tracing off | **allocation count unchanged** on the probe path — deterministic, the real gate |
+| NFR-1 (wall-clock) | tracing off | health + unmatched TTFB median ≤ **+15 %** (≈2× noise); coarse net |
+| After issue 1 | `RequestContext` landed, tracing + audit off | same; the most at-risk gate |
+| Issue 1, audit on | REST audit, buffered vs not | numbers recorded (§9.2) |
+| NFR-2 | tracing on, `capture: metadata`, `otlp_http` | sensitive TTFB medians ≤ **+15 %**; read ≤ **+25 %** |
+| P2 inner spans | 5–6 spans/request | as above, plus **export-queue drop rate 0** at sustained load |
+| `on_response` | file/stdout exporter only | its own row; latency coupled by design (F7) |
+| NFR-4 | collector refusing / 5xx / hanging / slow | TTFB medians and error rate unchanged beyond `flush.timeout_ms`; **RSS bounded** |
+| P3 payload tier | `capture: payload`, overlay on | RSS under the stated ceiling (issue 14) |
+| Build | binary size | **+4.71 MiB measured**; budget still open (§10.1) |
+
+RSS is the noisiest signal (~29 % spread), so it is a coarse net at +35 %, not a
+precise gate.
 
 ### 8.3 agent-crew cadence
 

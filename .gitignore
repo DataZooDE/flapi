@@ -46,3 +46,6 @@ dev_rfc.log.ai/
 vcpkg_installed/
 # Issue -1 link-spike build output; the spike source itself is tracked
 spike/build/
+
+# Stray DuckDB artifact written by the ERPL extension during example/load runs
+erpl-rev.duckdb
