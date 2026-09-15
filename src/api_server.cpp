@@ -219,7 +219,7 @@ void APIServer::handleDynamicRequest(const crow::request& req, crow::response& r
     std::string path = req.url;
     // Match endpoint by both path and HTTP method
     std::string method = crow::method_name(req.method);
-    const auto& endpoint = configManager->getEndpointForPathAndMethod(path, method);
+    const auto endpoint = configManager->getEndpointForPathAndMethod(path, method);
 
     // Emit one rest_endpoint_served with the ROUTE TEMPLATE (never the filled
     // path), status class, duration, and whether the endpoint is cache-backed.

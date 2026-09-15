@@ -689,7 +689,7 @@ AuditLogHandler::AuditLogHandler(std::shared_ptr<ConfigManager> config_manager)
 
 crow::response AuditLogHandler::getCacheAuditLog(const std::string& path) {
     try {
-        const auto* endpoint = config_manager_->getEndpointForPath(path);
+        const auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -905,7 +905,7 @@ crow::response EndpointConfigHandler::deleteEndpointBySlug(const crow::request& 
 // Legacy path-based method (kept for backward compatibility)
 crow::response EndpointConfigHandler::getEndpointConfig(const crow::request& req, const std::string& path) {
     try {
-        const auto* endpoint = config_manager_->getEndpointForPath(path);
+        const auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -1019,7 +1019,7 @@ crow::response EndpointConfigHandler::reloadEndpointConfig(const crow::request& 
 
 crow::response EndpointConfigHandler::getEndpointParameters(const crow::request& req, const std::string& path) {
     try {
-        const auto* endpoint = config_manager_->getEndpointForPath(path);
+        const auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -1136,7 +1136,7 @@ crow::response EndpointConfigHandler::findEndpointsByTemplate(const crow::reques
 crow::response TemplateHandler::getEndpointTemplate(const crow::request& req, const std::string& path) {
     try {
         // Find the endpoint
-        auto* endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -1167,7 +1167,7 @@ crow::response TemplateHandler::updateEndpointTemplate(const crow::request& req,
         }
 
         // Find the endpoint
-        auto* endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -1203,7 +1203,7 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
         bool validate_only = url_params.get("validate_only") != nullptr;
 
         // Find the endpoint
-        auto* endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -1408,7 +1408,7 @@ crow::response TemplateHandler::testTemplate(const crow::request& req, const std
         }
 
         // Find the endpoint
-        auto* endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -1494,7 +1494,7 @@ crow::response TemplateHandler::testTemplateBySlug(const crow::request& req, con
 
 crow::response CacheConfigHandler::getCacheConfig(const crow::request& req, const std::string& path) {
     try {
-        auto* endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -1552,7 +1552,7 @@ crow::response CacheConfigHandler::updateCacheConfig(const crow::request& req, c
             return crow::response(400, "Invalid JSON");
         }
 
-        auto* endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -1610,7 +1610,7 @@ crow::response CacheConfigHandler::updateCacheConfig(const crow::request& req, c
 
 crow::response TemplateHandler::getCacheTemplate(const crow::request& req, const std::string& path) {
     try {
-        auto* endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -1642,7 +1642,7 @@ crow::response TemplateHandler::updateCacheTemplate(const crow::request& req, co
             return crow::response(400, "Invalid JSON: missing 'template' field");
         }
 
-        auto* endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -1670,7 +1670,7 @@ crow::response TemplateHandler::updateCacheTemplate(const crow::request& req, co
 crow::response CacheConfigHandler::refreshCache(const crow::request& req, const std::string& path) {
     try {
         // Find the endpoint
-        auto* endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -1703,7 +1703,7 @@ crow::response CacheConfigHandler::refreshCache(const crow::request& req, const 
 crow::response CacheConfigHandler::performGarbageCollection(const crow::request& req, const std::string& path) {
     try {
         // Find the endpoint
-        auto* endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }

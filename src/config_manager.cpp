@@ -56,10 +56,9 @@ ConfigManager::ConfigManager(const std::filesystem::path& config_file)
 // Destructor defined here to handle unique_ptr cleanup with complete types
 ConfigManager::~ConfigManager() = default;
 
-// Move constructor - defined here with complete types
+// Move constructor / assignment. Defaultable again thanks to MovableMutex;
+// see the comment on that type in the header.
 ConfigManager::ConfigManager(ConfigManager&&) noexcept = default;
-
-// Move assignment operator - defined here with complete types
 ConfigManager& ConfigManager::operator=(ConfigManager&&) noexcept = default;
 
 // Main configuration loading and parsing methods
@@ -81,12 +80,14 @@ void ConfigManager::loadConfig() {
 
         // Propagate global OIDC config to endpoints that have type:oidc but no local oidc block
         if (global_auth_config.oidc) {
-            for (auto& ep : endpoints) {
-                if (ep.auth.type == "oidc" && !ep.auth.oidc) {
-                    ep.auth.oidc = global_auth_config.oidc;
-                    CROW_LOG_DEBUG << "Propagated global OIDC config to endpoint: " << ep.urlPath;
+            mutateEndpointsVoid([&](std::vector<EndpointConfig>& eps) {
+                for (auto& ep : eps) {
+                    if (ep.auth.type == "oidc" && !ep.auth.oidc) {
+                        ep.auth.oidc = global_auth_config.oidc;
+                        CROW_LOG_DEBUG << "Propagated global OIDC config to endpoint: " << ep.urlPath;
+                    }
                 }
-            }
+            });
         }
 
         CROW_LOG_INFO << "Configuration loaded successfully";
@@ -462,7 +463,7 @@ void ConfigManager::parseMCPConfig() {
 // Endpoint configuration methods
 void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& template_path) {
     CROW_LOG_INFO << "Loading endpoint configs recursively from: " << template_path;
-    endpoints.clear();
+    mutateEndpointsVoid([](std::vector<EndpointConfig>& eps) { eps.clear(); });
 
     size_t total_yaml_files = 0;
     size_t loaded_endpoints = 0;
@@ -494,9 +495,9 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
                 continue;
             }
             total_yaml_files++;
-            size_t endpoints_before = endpoints.size();
+            size_t endpoints_before = endpoints_snapshot->size();
             loadEndpointConfig(name);
-            if (endpoints.size() > endpoints_before) {
+            if (endpoints_snapshot->size() > endpoints_before) {
                 loaded_endpoints++;
             }
         }
@@ -506,9 +507,9 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
                 auto extension = entry.path().extension();
                 if (extension == ".yaml" || extension == ".yml") {
                     total_yaml_files++;
-                    size_t endpoints_before = endpoints.size();
+                    size_t endpoints_before = endpoints_snapshot->size();
                     loadEndpointConfig(entry.path().string());
-                    if (endpoints.size() > endpoints_before) {
+                    if (endpoints_snapshot->size() > endpoints_before) {
                         loaded_endpoints++;
                     }
                 }
@@ -559,7 +560,7 @@ void ConfigManager::loadEndpointConfig(const std::string& config_file) {
         }
         
         // Add to endpoints list
-        endpoints.push_back(endpoint);
+        mutateEndpointsVoid([&](std::vector<EndpointConfig>& eps) { eps.push_back(endpoint); });
 
         // Log configuration summary
         CROW_LOG_DEBUG << "\t\tConfiguration loaded: " << endpoint.getShortDescription();
@@ -1336,7 +1337,49 @@ bool ConfigManager::isHttpsEnforced() const { return https_config.enabled; }
 const HttpsConfig& ConfigManager::getHttpsConfig() const { return https_config; }
 bool ConfigManager::isAuthEnabled() const { return auth_enabled; }
 std::optional<OIDCConfig> ConfigManager::getGlobalOIDCConfig() const { return global_auth_config.oidc; }
-const std::vector<EndpointConfig>& ConfigManager::getEndpoints() const { return endpoints; }
+const std::vector<EndpointConfig>& ConfigManager::getEndpoints() const {
+    // Legacy accessor. The reference is only safe until the next mutation;
+    // prefer endpointsSnapshot() anywhere a pointer or reference outlives the
+    // immediate expression.
+    std::lock_guard<MovableMutex> guard(endpoints_mutex);
+    return *endpoints_snapshot;
+}
+
+std::shared_ptr<const std::vector<EndpointConfig>> ConfigManager::endpointsSnapshot() const {
+    std::lock_guard<MovableMutex> guard(endpoints_mutex);
+    return endpoints_snapshot;
+}
+
+const EndpointConfig* ConfigManager::findEndpoint(const std::vector<EndpointConfig>& endpoints,
+                                                  const std::string& path) {
+    for (const auto& endpoint : endpoints) {
+        if (endpoint.matchesPath(path)) {
+            return &endpoint;
+        }
+    }
+    return nullptr;
+}
+
+const EndpointConfig* ConfigManager::findEndpoint(const std::vector<EndpointConfig>& endpoints,
+                                                  const std::string& path,
+                                                  const std::string& httpMethod) {
+    // Mirrors getEndpointForPathAndMethod exactly: case-insensitive, empty
+    // endpoint method means GET.
+    std::string methodUpper = httpMethod;
+    std::transform(methodUpper.begin(), methodUpper.end(), methodUpper.begin(), ::toupper);
+
+    for (const auto& endpoint : endpoints) {
+        if (!endpoint.matchesPath(path)) {
+            continue;
+        }
+        std::string endpointMethod = endpoint.method.empty() ? "GET" : endpoint.method;
+        std::transform(endpointMethod.begin(), endpointMethod.end(), endpointMethod.begin(), ::toupper);
+        if (endpointMethod == methodUpper) {
+            return &endpoint;
+        }
+    }
+    return nullptr;
+}
 std::string ConfigManager::getBasePath() const { return base_path.string(); }
 
 std::string ConfigManager::loadMCPInstructions() const {
@@ -1457,7 +1500,7 @@ crow::json::wvalue ConfigManager::getFlapiConfig() const {
 
 crow::json::wvalue ConfigManager::getEndpointsConfig() const {
     crow::json::wvalue endpointsJson;
-    for (const auto& endpoint : endpoints) {
+    for (const auto& endpoint : *endpoints_snapshot) {
         endpointsJson[endpoint.urlPath] = serializeEndpointConfig(endpoint, EndpointJsonStyle::CamelCase);
     }
     return endpointsJson;
@@ -1762,7 +1805,7 @@ void ConfigManager::refreshConfig() {
 }
 
 void ConfigManager::addEndpoint(const EndpointConfig& endpoint) {
-    endpoints.push_back(endpoint);
+    mutateEndpointsVoid([&](std::vector<EndpointConfig>& eps) { eps.push_back(endpoint); });
     // Also add to repository for unified access
     if (endpoint_repository) {
         endpoint_repository->addEndpoint(endpoint);
@@ -1770,15 +1813,18 @@ void ConfigManager::addEndpoint(const EndpointConfig& endpoint) {
 }
 
 bool ConfigManager::removeEndpointByPath(const std::string& path) {
-    auto before = endpoints.size();
-    endpoints.erase(
-        std::remove_if(endpoints.begin(), endpoints.end(), [&](const EndpointConfig& endpoint) {
-            return endpoint.matchesPath(path);
-        }),
-        endpoints.end());
+    auto before = endpoints_snapshot->size();
+    mutateEndpointsVoid([&](std::vector<EndpointConfig>& eps) {
+        eps.erase(
+            std::remove_if(eps.begin(), eps.end(), [&](const EndpointConfig& endpoint) {
+                return endpoint.matchesPath(path);
+            }),
+            eps.end());
+    });
+    auto after = endpoints_snapshot->size();
 
     // Also remove from repository
-    if (endpoint_repository && before != endpoints.size()) {
+    if (endpoint_repository && before != after) {
         if (auto endpoint = getEndpointForPath(path)) {
             if (endpoint->isRESTEndpoint()) {
                 endpoint_repository->removeRestEndpoint(endpoint->urlPath, endpoint->method);
@@ -1792,68 +1838,52 @@ bool ConfigManager::removeEndpointByPath(const std::string& path) {
         }
     }
 
-    return before != endpoints.size();
+    return before != after;
 }
 
 bool ConfigManager::replaceEndpoint(const EndpointConfig& endpoint) {
-    for (auto& candidate : endpoints) {
-        if (endpoint.isSameEndpoint(candidate)) {
-            candidate = endpoint;
-
-            // Also update in repository
-            if (endpoint_repository) {
-                if (endpoint.isRESTEndpoint()) {
-                    endpoint_repository->removeRestEndpoint(endpoint.urlPath, endpoint.method);
-                    endpoint_repository->addEndpoint(endpoint);
-                } else if (endpoint.isMCPTool()) {
-                    endpoint_repository->removeMCPEndpoint(endpoint.mcp_tool->name);
-                    endpoint_repository->addEndpoint(endpoint);
-                } else if (endpoint.isMCPResource()) {
-                    endpoint_repository->removeMCPEndpoint(endpoint.mcp_resource->name);
-                    endpoint_repository->addEndpoint(endpoint);
-                } else if (endpoint.isMCPPrompt()) {
-                    endpoint_repository->removeMCPEndpoint(endpoint.mcp_prompt->name);
-                    endpoint_repository->addEndpoint(endpoint);
-                }
+    // The repository update is deliberately kept OUT of the copy-modify-swap
+    // lambda: that lambda may be retried or run under the endpoints mutex, and
+    // endpoint_repository has its own locking. Decide inside, act outside.
+    const bool replaced = mutateEndpoints([&](std::vector<EndpointConfig>& eps) -> bool {
+        for (auto& candidate : eps) {
+            if (endpoint.isSameEndpoint(candidate)) {
+                candidate = endpoint;
+                return true;
             }
+        }
+        return false;
+    });
 
-            return true;
+    if (replaced && endpoint_repository) {
+        if (endpoint.isRESTEndpoint()) {
+            endpoint_repository->removeRestEndpoint(endpoint.urlPath, endpoint.method);
+            endpoint_repository->addEndpoint(endpoint);
+        } else if (endpoint.isMCPTool()) {
+            endpoint_repository->removeMCPEndpoint(endpoint.mcp_tool->name);
+            endpoint_repository->addEndpoint(endpoint);
+        } else if (endpoint.isMCPResource()) {
+            endpoint_repository->removeMCPEndpoint(endpoint.mcp_resource->name);
+            endpoint_repository->addEndpoint(endpoint);
+        } else if (endpoint.isMCPPrompt()) {
+            endpoint_repository->removeMCPEndpoint(endpoint.mcp_prompt->name);
+            endpoint_repository->addEndpoint(endpoint);
         }
     }
-    return false;
-}
 
-const EndpointConfig* ConfigManager::getEndpointForPath(const std::string& path) const {
-    // First try to find exact match (no method filtering)
-    for (const auto& endpoint : endpoints) {
-        if (endpoint.matchesPath(path)) {
-            return &endpoint;
-        }
-    }
-    return nullptr;
-}
-
-const EndpointConfig* ConfigManager::getEndpointForPathAndMethod(const std::string& path, const std::string& httpMethod) const {
-    std::string methodUpper = httpMethod;
-    std::transform(methodUpper.begin(), methodUpper.end(), methodUpper.begin(), ::toupper);
-    
-    for (const auto& endpoint : endpoints) {
-        if (!endpoint.matchesPath(path)) {
-            continue;
-        }
-        
-        // Match HTTP method
-        std::string endpointMethod = endpoint.method.empty() ? "GET" : endpoint.method;
-        std::transform(endpointMethod.begin(), endpointMethod.end(), endpointMethod.begin(), ::toupper);
-        
-        if (endpointMethod == methodUpper) {
-            return &endpoint;
-        }
-    }
-    return nullptr;
+    return replaced;
 }
 
 
+ConfigManager::EndpointRef ConfigManager::getEndpointForPath(const std::string& path) const {
+    auto snapshot = endpointsSnapshot();
+    return EndpointRef(snapshot, findEndpoint(*snapshot, path));
+}
+
+ConfigManager::EndpointRef ConfigManager::getEndpointForPathAndMethod(const std::string& path, const std::string& httpMethod) const {
+    auto snapshot = endpointsSnapshot();
+    return EndpointRef(snapshot, findEndpoint(*snapshot, path, httpMethod));
+}
 
 // YAML Serialization
 std::string ConfigManager::serializeEndpointConfigToYaml(const EndpointConfig& config) const {
@@ -2164,12 +2194,16 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfigFile(const 
 // Reload endpoint from disk (after external edit)
 // Note: This method modifies the endpoints vector. Ensure proper synchronization if called from multiple threads.
 bool ConfigManager::reloadEndpointConfig(const std::string& slug_or_path) {
+    // Pin the table for the read phase: `it` must stay valid across the parse
+    // below, which can take a while and runs concurrently with other requests.
+    auto snapshot = endpointsSnapshot();
+
     // Try to find existing endpoint by URL path or MCP name
-    auto it = std::find_if(endpoints.begin(), endpoints.end(), [&](const EndpointConfig& ep) {
+    auto it = std::find_if(snapshot->begin(), snapshot->end(), [&](const EndpointConfig& ep) {
         return ep.getName() == slug_or_path || ep.matchesPath(slug_or_path);
     });
     
-    if (it == endpoints.end()) {
+    if (it == snapshot->end()) {
         CROW_LOG_WARNING << "Endpoint not found for reload: " << slug_or_path;
         return false;
     }
@@ -2227,8 +2261,20 @@ bool ConfigManager::reloadEndpointConfig(const std::string& slug_or_path) {
             return false;
         }
         
-        // Replace the existing endpoint with the reloaded configuration
-        *it = parse_result.config;
+        // Publish the reloaded configuration through copy-modify-swap. Matching
+        // by name again rather than by index: the table may have been mutated by
+        // another thread while this file was being parsed.
+        const std::string target_name = it->getName();
+        mutateEndpointsVoid([&](std::vector<EndpointConfig>& eps) {
+            for (auto& ep : eps) {
+                if (ep.getName() == target_name) {
+                    ep = parse_result.config;
+                    return;
+                }
+            }
+            // Gone since we looked - treat the reload as an addition.
+            eps.push_back(parse_result.config);
+        });
         
         CROW_LOG_INFO << "Reloaded endpoint configuration from: " << yaml_file;
         

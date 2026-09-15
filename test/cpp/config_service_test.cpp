@@ -95,7 +95,7 @@ TEST_CASE("ConfigService: manual cache refresh updates shared readiness state", 
     auto config_mgr = std::make_shared<ConfigManager>(config_path);
     config_mgr->loadConfig();
     config_mgr->loadEndpointConfig(endpoint_path);
-    auto* endpoint = config_mgr->getEndpointForPath("/test");
+    auto endpoint = config_mgr->getEndpointForPath("/test");
     REQUIRE(endpoint != nullptr);
 
     auto db_manager = DatabaseManager::getInstance();

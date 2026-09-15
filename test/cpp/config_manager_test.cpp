@@ -284,13 +284,13 @@ connection:
     mgr.loadEndpointConfig(endpoint_file);
 
     SECTION("Match existing endpoint") {
-        const auto* found_endpoint = mgr.getEndpointForPath("/users/42");
+        const auto found_endpoint = mgr.getEndpointForPath("/users/42");
         REQUIRE(found_endpoint != nullptr);
         REQUIRE(found_endpoint->urlPath == "/users/:id");
     }
 
     SECTION("No match for non-existent endpoint") {
-        const auto* found_endpoint = mgr.getEndpointForPath("/non-existent");
+        const auto found_endpoint = mgr.getEndpointForPath("/non-existent");
         REQUIRE(found_endpoint == nullptr);
     }
 
@@ -417,7 +417,7 @@ TEST_CASE("ConfigManager replace and remove endpoints", "[config_manager]") {
         replacement.templateSource = "updated.sql";
 
         REQUIRE(mgr.replaceEndpoint(replacement));
-        const auto* found = mgr.getEndpointForPath("/rest");
+        const auto found = mgr.getEndpointForPath("/rest");
         REQUIRE(found != nullptr);
         REQUIRE(found->templateSource == "updated.sql");
     }

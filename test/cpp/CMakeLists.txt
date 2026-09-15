@@ -73,6 +73,7 @@ add_executable(flapi_tests
     test_vfs_azure.cpp
     test_flapi_telemetry.cpp
     test_alloc_budget.cpp
+    test_endpoint_snapshot.cpp
     test_route_translator_perf.cpp
 )
 

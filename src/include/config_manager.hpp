@@ -3,6 +3,8 @@
 #include <crow.h>
 #include <chrono>
 #include <filesystem>
+#include <memory>
+#include <mutex>
 #include <iostream>
 #include <optional>
 #include <regex>
@@ -588,9 +590,63 @@ public:
     bool isHttpsEnforced() const;
     bool isAuthEnabled() const;
     std::optional<OIDCConfig> getGlobalOIDCConfig() const;
-    const EndpointConfig* getEndpointForPath(const std::string& path) const;
-    const EndpointConfig* getEndpointForPathAndMethod(const std::string& path, const std::string& httpMethod) const;
+    // A found endpoint plus the snapshot that keeps it alive.
+    //
+    // getEndpointForPath* used to hand out a raw pointer into a vector that
+    // addEndpoint / removeEndpointByPath mutate on other threads, so the pointer
+    // could dangle at any moment. Returning the snapshot alongside the pointer
+    // makes the lifetime automatic: hold the EndpointRef for as long as you use
+    // the endpoint.
+    //
+    // Declare call sites as `auto ep = ...` (NOT `const auto* ep = ...`): taking
+    // a raw pointer out of the ref drops the pin and reintroduces the bug.
+    class EndpointRef {
+    public:
+        EndpointRef() = default;
+        EndpointRef(std::shared_ptr<const std::vector<EndpointConfig>> snapshot,
+                    const EndpointConfig* endpoint)
+            : snapshot_(std::move(snapshot)), endpoint_(endpoint) {}
+
+        const EndpointConfig* get() const { return endpoint_; }
+        const EndpointConfig* operator->() const { return endpoint_; }
+        const EndpointConfig& operator*() const { return *endpoint_; }
+        explicit operator bool() const { return endpoint_ != nullptr; }
+
+        friend bool operator==(const EndpointRef& r, std::nullptr_t) { return r.endpoint_ == nullptr; }
+        friend bool operator!=(const EndpointRef& r, std::nullptr_t) { return r.endpoint_ != nullptr; }
+        friend bool operator==(std::nullptr_t, const EndpointRef& r) { return r.endpoint_ == nullptr; }
+        friend bool operator!=(std::nullptr_t, const EndpointRef& r) { return r.endpoint_ != nullptr; }
+
+    private:
+        std::shared_ptr<const std::vector<EndpointConfig>> snapshot_;
+        const EndpointConfig* endpoint_ = nullptr;
+    };
+
+    EndpointRef getEndpointForPath(const std::string& path) const;
+    EndpointRef getEndpointForPathAndMethod(const std::string& path, const std::string& httpMethod) const;
     const std::vector<EndpointConfig>& getEndpoints() const;
+
+    // --- Endpoint snapshots (copy-on-write) -------------------------------
+    //
+    // The endpoint table is mutated at runtime by addEndpoint /
+    // removeEndpointByPath, reachable from the config service and the MCP config
+    // tools on request threads. Any raw pointer into it - which is what
+    // getEndpointForPath* returns - dangles the moment a push_back reallocates.
+    //
+    // Pin a snapshot for as long as you intend to use pointers derived from it:
+    //
+    //     auto snap = cm.endpointsSnapshot();
+    //     const EndpointConfig* ep = ConfigManager::findEndpoint(*snap, path, method);
+    //     // `ep` stays valid while `snap` is alive, whatever other threads do.
+    //
+    // Mutations copy the vector, modify the copy, and swap the pointer, so a
+    // snapshot already handed out is never written to.
+    std::shared_ptr<const std::vector<EndpointConfig>> endpointsSnapshot() const;
+    static const EndpointConfig* findEndpoint(const std::vector<EndpointConfig>& endpoints,
+                                              const std::string& path);
+    static const EndpointConfig* findEndpoint(const std::vector<EndpointConfig>& endpoints,
+                                              const std::string& path,
+                                              const std::string& httpMethod);
     const TemplateConfig& getTemplateConfig() const;
     std::string getBasePath() const;
     std::string getDuckDBPath() const;
@@ -665,7 +721,48 @@ protected:
     RateLimitConfig rate_limit_config;
     bool auth_enabled;
     AuthConfig global_auth_config;
-    std::vector<EndpointConfig> endpoints;
+    // Copy-on-write; never mutated in place once published. Guarded by
+    // endpoints_mutex for writers; readers take the shared_ptr under the same
+    // mutex and then need no lock at all. See endpointsSnapshot().
+    std::shared_ptr<const std::vector<EndpointConfig>> endpoints_snapshot{
+        std::make_shared<const std::vector<EndpointConfig>>()};
+    // std::mutex is not movable, but ConfigManager is (config_manager_test.cpp
+    // move-assigns one). Moving must not carry lock state: a freshly constructed
+    // mutex is the correct result, because moving an object other threads are
+    // using is not supported in the first place. Satisfies BasicLockable, so
+    // std::lock_guard works unchanged.
+    struct MovableMutex {
+        MovableMutex() = default;
+        MovableMutex(MovableMutex&&) noexcept {}
+        MovableMutex& operator=(MovableMutex&&) noexcept { return *this; }
+        MovableMutex(const MovableMutex&) = delete;
+        MovableMutex& operator=(const MovableMutex&) = delete;
+        void lock() { m.lock(); }
+        void unlock() { m.unlock(); }
+        bool try_lock() { return m.try_lock(); }
+    private:
+        std::mutex m;
+    };
+    mutable MovableMutex endpoints_mutex;
+
+    // Copy the current table, let `mutate` modify the copy, then publish it.
+    // Every writer must go through here; nothing mutates a published vector.
+    template <typename Fn>
+    auto mutateEndpoints(Fn&& mutate) -> decltype(mutate(std::declval<std::vector<EndpointConfig>&>())) {
+        std::lock_guard<MovableMutex> guard(endpoints_mutex);
+        auto next = std::make_shared<std::vector<EndpointConfig>>(*endpoints_snapshot);
+        auto result = mutate(*next);
+        endpoints_snapshot = std::shared_ptr<const std::vector<EndpointConfig>>(std::move(next));
+        return result;
+    }
+
+    template <typename Fn>
+    void mutateEndpointsVoid(Fn&& mutate) {
+        std::lock_guard<MovableMutex> guard(endpoints_mutex);
+        auto next = std::make_shared<std::vector<EndpointConfig>>(*endpoints_snapshot);
+        mutate(*next);
+        endpoints_snapshot = std::shared_ptr<const std::vector<EndpointConfig>>(std::move(next));
+    }
     std::filesystem::path base_path;
     DuckDBConfig duckdb_config;
     TemplateConfig template_config;
