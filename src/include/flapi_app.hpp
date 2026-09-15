@@ -7,6 +7,7 @@
 #include "auth_middleware.hpp"
 #include "cors_middleware.hpp"
 #include "rate_limit_middleware.hpp"
+#include "request_context_middleware.hpp"
 
 namespace flapi {
 
@@ -28,6 +29,9 @@ namespace flapi {
 // gets its turn to set `Access-Control-Allow-Origin` BEFORE Crow's
 // CORSHandler does. Crow uses `set_header_no_override`, so the origin we
 // choose dynamically wins.
-using FlapiApp = crow::App<crow::CORSHandler, FlapiCorsMiddleware, RateLimitMiddleware, AuthMiddleware>;
+// RequestContextMiddleware is FIRST, deliberately: Crow runs before_handle in
+// declaration order, so only first position brackets rate limiting and auth and
+// therefore sees the 401/403/429 rejections an operator most often asks about.
+using FlapiApp = crow::App<RequestContextMiddleware, crow::CORSHandler, FlapiCorsMiddleware, RateLimitMiddleware, AuthMiddleware>;
 
 }  // namespace flapi

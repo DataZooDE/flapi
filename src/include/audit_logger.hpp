@@ -19,6 +19,10 @@ struct AuditConfig {
 struct AuditEvent {
     std::string timestamp;                // auto-filled if empty
     std::string request_id;               // auto-filled if empty
+    // W3C ids, empty when tracing is inactive. Emitted only when non-empty, so
+    // the audit schema is unchanged for operators who never enable tracing.
+    std::string trace_id;                 // 32 hex chars
+    std::string span_id;                  // 16 hex chars
     std::string principal = "anonymous";  // username, or "anonymous" when unauthenticated
     std::string method;                   // "GET", "POST", "tools/call", etc.
     std::string target;                   // url path or tool name
@@ -47,6 +51,10 @@ public:
     bool isEnabled() const { return config_.enabled; }
     const AuditConfig& config() const { return config_; }
 
+    // Exposed for tests: asserting on the exact serialized line is the only way
+    // to prove a field is absent rather than merely empty.
+    std::string serialiseEventForTest(const AuditEvent& event) const { return serialiseEvent(event); }
+
 private:
     AuditConfig config_;
     std::mutex write_mutex_;
@@ -57,5 +65,14 @@ private:
     static std::string generateRequestId();
     std::string serialiseEvent(const AuditEvent& event) const;
 };
+
+// Build an audit event from the request context, so the audit line, the log
+// lines and the trace all carry one identity and one latency. Callers override
+// the few fields the context cannot know (an MCP tool name, say).
+//
+// Keeping AuditLogger::generateRequestId as a fallback: the audit log must keep
+// working when no context is ambient.
+struct RequestContext;
+AuditEvent auditEventFrom(const RequestContext& rc);
 
 } // namespace flapi

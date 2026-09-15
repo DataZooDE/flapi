@@ -362,6 +362,8 @@ add_library(flapi-lib STATIC
     src/caching_file_provider.cpp
     src/credential_manager.cpp
     src/flapi_telemetry.cpp
+    src/request_context.cpp
+    src/request_context_middleware.cpp
 )
 
 # Ensure web_ui is built before flapi-lib

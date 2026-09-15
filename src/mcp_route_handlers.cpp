@@ -1,4 +1,5 @@
 #include "mcp_route_handlers.hpp"
+#include "request_context.hpp"
 #include "json_utils.hpp"
 #include "arrow_metrics.hpp"
 #include "mcp_authorization_policy.hpp"
@@ -368,6 +369,16 @@ void MCPRouteHandlers::registerRoutes(flapi::FlapiApp& app, int port) {
         ([this](const crow::request& req) -> crow::response {
             try {
                 CROW_LOG_DEBUG << "MCP JSON-RPC route handler called";
+
+                // MCP audits at the TOOL level (MCPToolHandler::executeToolImpl),
+                // not at the transport level: one JSON-RPC call per HTTP POST, and
+                // a tools/call line naming the tool is far more useful than a
+                // "POST /mcp/jsonrpc" line. Suppress the HTTP-level line here so
+                // adding REST audit coverage does not silently expand MCP's audit
+                // scope to protocol handshakes like initialize and tools/list.
+                if (auto* rc = RequestContextScope::current()) {
+                    rc->audit_suppressed = true;
+                }
 
                 // Extract session ID from request (if present)
                 auto session_id = extractSessionIdFromRequest(req);

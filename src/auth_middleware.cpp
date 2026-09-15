@@ -16,6 +16,20 @@
 #include "duckdb/main/secret/secret_manager.hpp"
 
 #include "auth_middleware.hpp"
+#include "request_context_middleware.hpp"
+
+namespace {
+// RequestContext::auth_kind is a const char* into STATIC storage, because it is
+// read in after_handle - long after the EndpointRef pinning the endpoint's
+// strings has gone out of scope here. Mapping to literals keeps it valid and
+// keeps the value a bounded enumeration rather than free-form config text.
+const char* staticAuthKind(const std::string& configured) {
+    if (configured == "basic")  { return "basic"; }
+    if (configured == "bearer") { return "bearer"; }
+    if (configured == "oidc")   { return "oidc"; }
+    return "none";
+}
+}  // namespace
 #include "password_hasher.hpp"
 #include "database_manager.hpp"
 #include "flapi_telemetry.hpp"
@@ -162,6 +176,15 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
         CROW_LOG_DEBUG << "No Authorization header found";
         res.code = 401;
         res.set_header("WWW-Authenticate", "Basic realm=\"flAPI\"");
+        // res.end() inside before_handle makes Crow skip after_handle
+        // (crow/http_connection.h:207), so RequestContextMiddleware would never
+        // complete this request. Finish it explicitly, or the 401 is missing from
+        // the audit log and the ambient context is left set on a pooled thread.
+        if (auto* rc = RequestContextScope::current()) {
+            rc->auth_kind = "basic";
+            rc->principal = "anonymous";
+        }
+        RequestContextMiddleware::finishActiveRequest(401);
         res.end();
         flapi::GlobalTelemetry().authEnforced(auth_kind, /*allow=*/false);
         return;
@@ -181,9 +204,19 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
     if (!ctx.authenticated) {
         CROW_LOG_DEBUG << "Authentication failed";
         res.code = 401;
+        // Same as above: after_handle will not run for this response.
+        if (auto* rc = RequestContextScope::current()) {
+            rc->auth_kind = staticAuthKind(endpoint->auth.type);
+            rc->principal = ctx.username.empty() ? "anonymous" : ctx.username;
+        }
+        RequestContextMiddleware::finishActiveRequest(401);
         res.end();
     } else {
         CROW_LOG_DEBUG << "Authentication successful for user: " << ctx.username;
+        if (auto* rc = RequestContextScope::current()) {
+            rc->auth_kind = staticAuthKind(endpoint->auth.type);
+            rc->principal = ctx.username;
+        }
     }
     flapi::GlobalTelemetry().authEnforced(auth_kind, ctx.authenticated);
 }

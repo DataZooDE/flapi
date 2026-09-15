@@ -1,6 +1,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "api_server.hpp"
+#include "request_context.hpp"
 #include "auth_middleware.hpp"
 #include "database_manager.hpp"
 #include "flapi_telemetry.hpp"
@@ -77,6 +78,7 @@ APIServer::~APIServer() {
 void APIServer::createApp() 
 {
     // Configure middlewares
+    app.get_middleware<RequestContextMiddleware>().setConfigManager(configManager);
     app.get_middleware<RateLimitMiddleware>().setConfig(configManager);
     app.get_middleware<AuthMiddleware>().initialize(configManager);
 }
@@ -220,6 +222,16 @@ void APIServer::handleDynamicRequest(const crow::request& req, crow::response& r
     // Match endpoint by both path and HTTP method
     std::string method = crow::method_name(req.method);
     const auto endpoint = configManager->getEndpointForPathAndMethod(path, method);
+
+    // The middleware deliberately does not resolve routes (that would be a third
+    // O(N) scan per request, and would tax /health, which resolves nothing
+    // today). The handler already knows the template, so it writes it back.
+    if (auto* rc = RequestContextScope::current(); rc != nullptr && endpoint != nullptr) {
+        // Copy, not a view: `endpoint` is pinned only for this function, while
+        // route_template is read later in after_handle.
+        rc->route_template_storage = endpoint->urlPath;
+        rc->route_template = rc->route_template_storage;
+    }
 
     // Emit one rest_endpoint_served with the ROUTE TEMPLATE (never the filled
     // path), status class, duration, and whether the endpoint is cache-backed.

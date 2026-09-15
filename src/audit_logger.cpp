@@ -1,4 +1,5 @@
 #include "audit_logger.hpp"
+#include "request_context.hpp"
 
 #include <chrono>
 #include <crow/json.h>
@@ -98,6 +99,14 @@ std::string AuditLogger::serialiseEvent(const AuditEvent& event) const {
     crow::json::wvalue line;
     line["timestamp"] = event.timestamp;
     line["request_id"] = event.request_id;
+    // Emitted only when tracing is active, so the audit schema is byte-identical
+    // for operators who never turn tracing on.
+    if (!event.trace_id.empty()) {
+        line["trace_id"] = event.trace_id;
+    }
+    if (!event.span_id.empty()) {
+        line["span_id"] = event.span_id;
+    }
     line["principal"] = event.principal;
     line["method"] = event.method;
     line["target"] = event.target;
@@ -115,6 +124,34 @@ std::string AuditLogger::serialiseEvent(const AuditEvent& event) const {
     }
     line["params"] = std::move(params);
     return line.dump();
+}
+
+AuditEvent auditEventFrom(const RequestContext& rc) {
+    AuditEvent ev;
+    ev.request_id = std::string(rc.requestIdView());
+    ev.trace_id = std::string(rc.traceIdView());
+    ev.span_id = std::string(rc.spanIdView());
+    ev.principal = rc.principal;
+    ev.method = rc.http_method;
+    ev.target = std::string(rc.route_template);
+    ev.row_count = rc.row_count;
+    ev.latency_ms = rc.elapsedMs();
+
+    // One mapping, so REST and MCP audit lines classify outcomes identically.
+    if (rc.status_code >= 200 && rc.status_code < 300) {
+        ev.status = "success";
+    } else if (rc.status_code == 401 || rc.status_code == 403) {
+        ev.status = "denied";
+    } else if (rc.status_code == 429) {
+        ev.status = "rate_limited";
+    } else if (rc.status_code != 0) {
+        ev.status = "error:" + std::to_string(rc.status_code);
+    }
+
+    for (const auto& [key, value] : rc.audit_params) {
+        ev.params[key] = value;
+    }
+    return ev;
 }
 
 } // namespace flapi
