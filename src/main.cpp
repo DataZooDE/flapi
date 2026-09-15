@@ -23,6 +23,7 @@
 #include "bundle_locator.hpp"
 #include "config_manager.hpp"
 #include "flapi_log_handler.hpp"
+#include "flapi_tracing.hpp"
 #include "database_manager.hpp"
 #include "duckdb_embed_fs.hpp"
 #include "pack.hpp"
@@ -329,6 +330,10 @@ void signal_handler(int signal) {
         should_exit = true;
         // Drain buffered telemetry before exit: the library's at-exit handler
         // discards in-flight events by design, so a server must flush explicitly.
+        // Flush spans before the process dies. On a platform with a short
+        // SIGTERM grace (Cloud Run, App Runner) this is the difference between
+        // having the trace of the request that killed you and not.
+        flapi::Tracing().forceFlush(std::chrono::milliseconds(2000));
         flapi::GlobalTelemetry().flush();
         if (api_server) {
             api_server->stop();
@@ -577,6 +582,36 @@ int main(int argc, char* argv[])
         if (!configured.empty() && configured != log_level) {
             log_level = configured;
             set_log_level(log_level);
+        }
+    }
+
+    // Tracing lifecycle. configure() is a no-op unless an operator explicitly
+    // enabled it: an injected OTEL_EXPORTER_OTLP_ENDPOINT is a platform default,
+    // not consent to ship data off the machine (BR-6).
+    //
+    // The guard shuts the provider down deterministically at scope exit. A
+    // BatchSpanProcessor owns an export thread, and letting static destruction
+    // race it is an intermittent crash at exit - which is why Tracing(), unlike
+    // GlobalTelemetry(), is not a leaked singleton.
+    flapi::TracingGuard tracing_guard;
+    if (config_manager) {
+        const auto& tracing_config = config_manager->getTracingConfig();
+#if !FLAPI_WITH_TRACING
+        if (tracing_config.enabled) {
+            CROW_LOG_WARNING << "tracing.enabled is set, but this binary was built "
+                                "with FLAPI_WITH_TRACING=OFF - no spans will be produced";
+        }
+#endif
+        flapi::Tracing().configure(tracing_config);
+        if (flapi::Tracing().isEnabled()) {
+            CROW_LOG_INFO << "Tracing enabled: exporter=" << tracing_config.exporter
+                          << " capture=" << flapi::captureTierName(tracing_config.capture);
+            if (tracing_config.capture == flapi::CaptureTier::Payload) {
+                // Payload capture exports customer data. An operator must not be
+                // able to reach that without seeing it said out loud.
+                CROW_LOG_WARNING << "Tracing capture tier is PAYLOAD: argument values and "
+                                    "result rows will be exported. Ensure this is intended.";
+            }
         }
     }
 

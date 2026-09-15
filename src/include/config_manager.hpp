@@ -17,6 +17,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "audit_logger.hpp"
+#include "tracing_config.hpp"
 #include "route_translator.hpp"
 #include "extended_yaml_parser.hpp"
 #include "path_utils.hpp"
@@ -666,6 +667,7 @@ public:
 
     // Log verbosity and shape. Precedence is CLI > environment > config > default,
     // resolved in main.cpp - an operator who passed --log-level meant it.
+    const TracingConfig& getTracingConfig() const { return tracing_config; }
     const std::string& getLogLevel() const { return log_level; }
     const std::string& getLogFormat() const { return log_format; }
     std::string getBasePath() const;
@@ -732,6 +734,7 @@ protected:
     std::filesystem::path config_file;
     YAML::Node config;
     std::string project_name;
+    TracingConfig tracing_config;
     std::string log_level = "info";
     std::string log_format = "text";
     std::string project_description;
@@ -821,6 +824,7 @@ protected:
     void parseDuckLakeConfig();
     void parseMCPConfig();
     void parseAuditConfig();
+    void parseTracingConfig();
     void parseStorageConfig();
     void parseEndpointConfig(const std::filesystem::path& config_file);
     void parseEndpointRequestFields(const YAML::Node& endpoint_config, EndpointConfig& endpoint);

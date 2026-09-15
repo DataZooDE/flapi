@@ -130,6 +130,7 @@ void ConfigManager::parseMainConfig() {
         parseDuckLakeConfig();
         parseMCPConfig();
         parseAuditConfig();
+        parseTracingConfig();
         parseStorageConfig();
         parseTemplateConfig();
         parseGlobalHeartbeatConfig();
@@ -313,6 +314,72 @@ void ConfigManager::parseAuditConfig() {
     // Construct here, on the single-threaded configuration path, so that
     // getAuditLogger() is a plain read for every request thread.
     audit_logger_ = std::make_shared<AuditLogger>(audit_config);
+}
+
+void ConfigManager::parseTracingConfig() {
+    CROW_LOG_INFO << "Parsing tracing configuration";
+    if (!config["tracing"]) {
+        return;   // BR-6: absent means off, and off means no provider at all
+    }
+    const auto& node = config["tracing"];
+
+    tracing_config.enabled = node["enabled"] ? node["enabled"].as<bool>() : false;
+    if (node["service_name"])      { tracing_config.service_name = node["service_name"].as<std::string>(); }
+    if (node["service_namespace"]) { tracing_config.service_namespace = node["service_namespace"].as<std::string>(); }
+    if (node["exporter"])          { tracing_config.exporter = node["exporter"].as<std::string>(); }
+    // std::optional, deliberately: "absent from YAML" must stay distinguishable
+    // from "set to the default", or a YAML default silently beats an operator's
+    // injected OTEL_EXPORTER_OTLP_ENDPOINT and Kubernetes auto-configuration does
+    // nothing at all.
+    if (node["endpoint"])          { tracing_config.endpoint = node["endpoint"].as<std::string>(); }
+    if (node["protocol"])          { tracing_config.protocol = node["protocol"].as<std::string>(); }
+    if (node["timeout_ms"])        { tracing_config.timeout_ms = node["timeout_ms"].as<int>(); }
+    if (node["capture"])           { tracing_config.capture = parseCaptureTier(node["capture"].as<std::string>()); }
+    if (node["openinference"])     { tracing_config.openinference = node["openinference"].as<bool>(); }
+    if (node["metrics"])           { tracing_config.metrics = node["metrics"].as<bool>(); }
+    if (node["client_spans"])      { tracing_config.client_spans = node["client_spans"].as<bool>(); }
+
+    if (node["headers"] && node["headers"].IsMap()) {
+        for (const auto& entry : node["headers"]) {
+            tracing_config.headers[entry.first.as<std::string>()] = entry.second.as<std::string>();
+        }
+    }
+    if (node["resource_attributes"] && node["resource_attributes"].IsMap()) {
+        for (const auto& entry : node["resource_attributes"]) {
+            tracing_config.resource_attributes[entry.first.as<std::string>()] =
+                entry.second.as<std::string>();
+        }
+    }
+    if (node["exclude_routes"] && node["exclude_routes"].IsSequence()) {
+        tracing_config.exclude_routes.clear();
+        for (const auto& entry : node["exclude_routes"]) {
+            tracing_config.exclude_routes.push_back(entry.as<std::string>());
+        }
+    }
+    if (const auto& s = node["sample"]) {
+        if (s["type"])  { tracing_config.sample.type = s["type"].as<std::string>(); }
+        if (s["ratio"]) { tracing_config.sample.ratio = s["ratio"].as<double>(); }
+    }
+    if (const auto& f = node["flush"]) {
+        if (f["mode"])           { tracing_config.flush.mode = f["mode"].as<std::string>(); }
+        if (f["timeout_ms"])     { tracing_config.flush.timeout_ms = f["timeout_ms"].as<int>(); }
+        if (f["max_queue_size"]) { tracing_config.flush.max_queue_size = f["max_queue_size"].as<int>(); }
+    }
+    if (const auto& file = node["file"]) {
+        if (file["path"]) { tracing_config.file_path = file["path"].as<std::string>(); }
+    }
+    if (const auto& payload = node["payload"]) {
+        if (payload["max_value_bytes"]) {
+            tracing_config.payload_max_value_bytes = payload["max_value_bytes"].as<std::size_t>();
+        }
+        if (payload["max_documents"]) {
+            tracing_config.payload_max_documents = payload["max_documents"].as<std::size_t>();
+        }
+    }
+
+    CROW_LOG_DEBUG << "Tracing enabled: " << (tracing_config.enabled ? "true" : "false")
+                   << ", exporter: " << tracing_config.exporter
+                   << ", capture: " << captureTierName(tracing_config.capture);
 }
 
 void ConfigManager::parseStorageConfig() {

@@ -161,11 +161,20 @@ add_compile_definitions(CROW_ENABLE_COMPRESSION)
 # across several TUs. Like CROW_ENABLE_COMPRESSION above, it must be global and
 # defined before any add_subdirectory(), never target-scoped.
 option(FLAPI_WITH_TRACING "Build with OpenTelemetry tracing support" ON)
+# The value travels in a GENERATED header rather than only as a -D, so a target
+# that forgets the define gets a compile error on the missing header instead of a
+# silently different SpanScope layout. The global define stays as well, because
+# the header is included from headers that some TUs reach indirectly.
 if(FLAPI_WITH_TRACING)
     add_compile_definitions(FLAPI_WITH_TRACING=1)
 else()
     add_compile_definitions(FLAPI_WITH_TRACING=0)
 endif()
+configure_file(
+    "${CMAKE_SOURCE_DIR}/src/include/flapi_build_config.hpp.in"
+    "${CMAKE_BINARY_DIR}/generated/flapi_build_config.hpp"
+    @ONLY)
+include_directories("${CMAKE_BINARY_DIR}/generated")
 
 # Compiler flags
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -366,6 +375,7 @@ add_library(flapi-lib STATIC
     src/request_context.cpp
     src/time_utils.cpp
     src/trace_context.cpp
+    src/tracing_config.cpp
     src/request_context_middleware.cpp
 )
 
@@ -397,6 +407,15 @@ target_link_libraries(flapi-lib PUBLIC
     $<IF:$<TARGET_EXISTS:lz4::lz4>,lz4::lz4,lz4::lz4_shared>
     posthog_telemetry
 )
+
+# Exactly one of each twin is compiled. Both define the same versioned-namespace
+# anchor symbol, so a mixed build fails to link rather than disagreeing silently
+# about SpanScope's layout.
+if(FLAPI_WITH_TRACING)
+    target_sources(flapi-lib PRIVATE src/trace_scope.cpp src/flapi_tracing.cpp)
+else()
+    target_sources(flapi-lib PRIVATE src/trace_scope_off.cpp src/flapi_tracing_off.cpp)
+endif()
 
 # opentelemetry-cpp is linked PRIVATE - the one exception to the PUBLIC block above.
 # Its headers must never reach src/include/*, so nothing downstream needs them and

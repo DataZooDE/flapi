@@ -1,0 +1,10 @@
+#pragma once
+
+// Generated from flapi_build_config.hpp.in - do not edit.
+//
+// Build configuration travels in a generated header rather than an ad-hoc -D on
+// some targets and not others. FLAPI_WITH_TRACING changes the layout of
+// flapi::SpanScope, which is embedded in the Crow middleware tuple instantiated
+// across several translation units, so a per-target define would be an ODR
+// violation of exactly the kind CROW_ENABLE_COMPRESSION was made global to avoid.
+#cmakedefine01 FLAPI_WITH_TRACING

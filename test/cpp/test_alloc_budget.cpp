@@ -19,39 +19,10 @@
 #include <string>
 #include <vector>
 
-namespace {
+#include "alloc_counter.hpp"
 
-std::atomic<std::size_t> g_alloc_count{0};
-std::atomic<bool> g_counting{false};
-
-// C++14 permits the compiler to elide a new/delete pair whose result is unused,
-// and at -O3 it does. Every allocation under test must therefore be laundered
-// through an optimisation barrier, or the instrument measures nothing.
-template <typename T>
-inline void doNotOptimise(T& value) {
-    asm volatile("" : "+m"(value) : : "memory");
-}
-
-struct AllocCounter {
-    AllocCounter() { g_alloc_count.store(0); g_counting.store(true); }
-    ~AllocCounter() { g_counting.store(false); }
-    std::size_t count() const { return g_alloc_count.load(); }
-};
-
-}  // namespace
-
-// Replacing global operator new is the only portable way to count allocations
-// without a sanitizer or an allocator shim. Kept in this TU only.
-void* operator new(std::size_t size) {
-    if (g_counting.load(std::memory_order_relaxed)) {
-        g_alloc_count.fetch_add(1, std::memory_order_relaxed);
-    }
-    void* p = std::malloc(size ? size : 1);
-    if (!p) { throw std::bad_alloc(); }
-    return p;
-}
-void operator delete(void* p) noexcept { std::free(p); }
-void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+using flapi::test::AllocCounter;
+using flapi::test::doNotOptimise;
 
 TEST_CASE("alloc counter observes allocations", "[perf][alloc]") {
     // Guards the instrument itself: a counter that silently stops counting - or an

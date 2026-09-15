@@ -414,6 +414,7 @@ vscode-dev:
 check-invariants:
 	@./scripts/check_crow_app_alias.sh
 	@./scripts/check_cxx_standard_uniform.sh build/release
+	@./scripts/check_tracing_abi_guard.sh build/release/libflapi-lib.a
 
 .PHONY: check-invariants
 

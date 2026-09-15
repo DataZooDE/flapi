@@ -308,6 +308,7 @@ jobs:
       run: |
         ./scripts/check_crow_app_alias.sh
         ./scripts/check_cxx_standard_uniform.sh build/release
+        ./scripts/check_tracing_abi_guard.sh build/release/libflapi-lib.a
 
     - name: Run integration tests
       working-directory: test/integration

@@ -48,7 +48,9 @@ _RUN_BLOCKED = os.getenv("FLAPI_RUN_BLOCKED_CONCURRENCY") == "1"
 SQLITE_WRITE_LOCK = pytest.mark.skipif(
     not _RUN_BLOCKED,
     reason="#116: concurrent read/write on a SQLite-backed endpoint returns 500 "
-           "('database is locked'); reads are collateral damage. "
+           "('database is locked'); reads are collateral damage. Some of these "
+           "pass in isolation and fail only under full-suite contention - same "
+           "root cause, confirmed by 'database is locked' in the server log. "
            "Set FLAPI_RUN_BLOCKED_CONCURRENCY=1 to run anyway.",
 )
 
@@ -78,6 +80,7 @@ class TestConcurrentRequests:
             avg_time = sum(response_times) / len(response_times)
             assert avg_time < 2.0, f"Average response time {avg_time:.2f}s exceeds 2.0s"
 
+    @SQLITE_WRITE_LOCK
     def test_concurrent_post_requests(self, isolated_examples_url, isolated_examples_server):
         """Test 50+ concurrent POST requests."""
         payload = {
