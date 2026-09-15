@@ -86,7 +86,12 @@ namespace {
 // So peek for just that one key here. The cost falls only on POSTs to the MCP
 // endpoint, and the handler re-parses the body anyway today.
 SpanContextIds metaTraceContextFromBody(const crow::request& req) {
-    if (req.body.empty() || req.body.size() > 1024 * 1024) {
+    // Bounded at 64 KiB, not 1 MiB. This parse happens in the FIRST middleware -
+    // before auth and before the rate limiter - so an unauthenticated client can
+    // drive it. A conforming MCP request carrying a traceparent is far below this;
+    // anything larger is not worth parsing ahead of the rate limiter.
+    static constexpr std::size_t kMaxPeekBytes = 64 * 1024;
+    if (req.body.empty() || req.body.size() > kMaxPeekBytes) {
         return {};
     }
     const auto doc = crow::json::load(req.body);
@@ -112,7 +117,11 @@ SpanContextIds metaTraceContextFromBody(const crow::request& req) {
 }
 
 bool isMcpEndpoint(std::string_view raw_path) {
-    return raw_path.rfind("/mcp/jsonrpc", 0) == 0;
+    // Exact match on the path, ignoring any query string: a prefix match would
+    // also catch /mcp/jsonrpc-something-else.
+    const auto query = raw_path.find('?');
+    const auto path = query == std::string_view::npos ? raw_path : raw_path.substr(0, query);
+    return path == "/mcp/jsonrpc";
 }
 
 bool isExcludedRoute(const std::vector<std::string>& excluded, std::string_view raw_path) {
@@ -183,6 +192,14 @@ void RequestContextMiddleware::before_handle(crow::request& req, crow::response&
     // gateway the HTTP hop may be the gateway's own span while _meta carries the
     // agent's, so preferring _meta keeps flAPI attached to the trace the user
     // actually cares about.
+    // Parsed whenever the request is an MCP call, NOT only when tracing is
+    // enabled. Correlation is the P0 feature that works with no exporter at all:
+    // the ids flow into the audit log and the application log so an agent trace
+    // can be joined to a flAPI audit line. Gating this on tracing.enabled broke
+    // exactly that, and the SEP-414 correlation tests caught it.
+    //
+    // The cost is bounded and narrow: only POSTs to /mcp/jsonrpc, only bodies
+    // under 64 KiB.
     const auto meta_ids = isMcpEndpoint(ctx.rc.raw_path) ? metaTraceContextFromBody(req)
                                                          : SpanContextIds{};
     const auto resolved = resolvePrecedence(meta_ids, header_ids);
@@ -231,7 +248,15 @@ void RequestContextMiddleware::before_handle(crow::request& req, crow::response&
 
     // Always server-minted; an inbound X-Request-Id is never honoured, or a
     // client could forge collisions and inject into log lines.
-    res.set_header("X-Request-Id", std::string(ctx.rc.requestIdView()));
+    //
+    // Wrapped because instrumentation must never fail a request: set_header
+    // allocates, and an exception escaping before_handle would both break the
+    // request and leave the ambient pointer set on a pooled worker.
+    try {
+        res.set_header("X-Request-Id", std::string(ctx.rc.requestIdView()));
+    } catch (...) {
+        instrumentation_failures_.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 void RequestContextMiddleware::after_handle(crow::request&, crow::response& res, context& ctx) {

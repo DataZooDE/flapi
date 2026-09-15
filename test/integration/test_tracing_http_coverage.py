@@ -108,6 +108,22 @@ class TestCardinality:
             f"every unmatched path must collapse to one route label, got {routes}"
         )
 
+    def test_a_multi_segment_unmatched_path_is_traced(self, server):
+        # flAPI's catch-all is Crow's single-segment /<path>, so a multi-segment
+        # path does NOT match any rule. Crow then completes it from handle_url()
+        # without ever calling handle() - which means before_handle never runs and
+        # the request would be invisible: no span, no audit line, no X-Request-Id.
+        # An attacker enumerating endpoints is exactly who uses multi-segment
+        # paths.
+        r = requests.get(f"{server.base_url}/deep/not/a/route", timeout=10)
+        assert r.status_code == 404
+
+        spans = find_spans(server.spans(), attrs={"http.response.status_code": 404})
+        assert spans, (
+            "a multi-segment unmatched path must still be traced; it does not "
+            "match the single-segment catch-all, so it takes Crow's no-rule path"
+        )
+
     def test_a_filled_path_never_appears_in_a_span(self, server):
         # NFR-5 and the no-leak contract: a filled path on a data API is a filter
         # over customer data.

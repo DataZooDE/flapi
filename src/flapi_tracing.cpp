@@ -1,6 +1,8 @@
 // The FLAPI_WITH_TRACING=ON tracing facade: provider lifecycle, sampler,
 // exporter selection and the single active() gate.
 #include "flapi_tracing.hpp"
+
+#include <crow/logging.h>
 #include "trace_scope_internal.hpp"
 
 #if FLAPI_WITH_TRACING
@@ -32,7 +34,47 @@ namespace otlp = opentelemetry::exporter::otlp;
 
 namespace {
 
-std::atomic<std::uint64_t> g_spans_started{0};
+std::atomic<std::uint64_t> g_spans_exported{0};
+std::atomic<std::uint64_t> g_spans_dropped{0};
+
+// Counts what actually left the process.
+//
+// The previous version returned a hardcoded 0 for drops and reported spans
+// STARTED as spans exported, which meant /api/v1/_config/metrics showed rising
+// exports and zero drops against a collector that was refusing every connection -
+// fabricated values under a comment promising the opposite. NFR-4's whole point
+// is that silent data loss becomes visible.
+class CountingSpanExporter final : public tsdk::SpanExporter {
+public:
+    explicit CountingSpanExporter(std::unique_ptr<tsdk::SpanExporter> inner)
+        : inner_(std::move(inner)) {}
+
+    std::unique_ptr<tsdk::Recordable> MakeRecordable() noexcept override {
+        return inner_->MakeRecordable();
+    }
+
+    opentelemetry::sdk::common::ExportResult Export(
+        const opentelemetry::nostd::span<std::unique_ptr<tsdk::Recordable>>& spans) noexcept override {
+        const auto count = static_cast<std::uint64_t>(spans.size());
+        const auto result = inner_->Export(spans);
+        if (result == opentelemetry::sdk::common::ExportResult::kSuccess) {
+            g_spans_exported.fetch_add(count, std::memory_order_relaxed);
+        } else {
+            g_spans_dropped.fetch_add(count, std::memory_order_relaxed);
+        }
+        return result;
+    }
+
+    bool ForceFlush(std::chrono::microseconds timeout) noexcept override {
+        return inner_->ForceFlush(timeout);
+    }
+    bool Shutdown(std::chrono::microseconds timeout) noexcept override {
+        return inner_->Shutdown(timeout);
+    }
+
+private:
+    std::unique_ptr<tsdk::SpanExporter> inner_;
+};
 
 // OTel's own trace ids are opaque; flAPI builds a parent SpanContext from the
 // extracted W3C ids so an inbound traceparent actually parents the server span.
@@ -95,7 +137,6 @@ public:
         auto span = tracer_->StartSpan(name, {}, options);
         if (!span) { return {}; }
 
-        g_spans_started.fetch_add(1, std::memory_order_relaxed);
         return SpanScope(new SpanScope::Impl(span));
     }
 
@@ -111,9 +152,11 @@ public:
         provider_.reset();
     }
 
-    std::uint64_t spansDropped() const override { return 0; }
+    std::uint64_t spansDropped() const override {
+        return g_spans_dropped.load(std::memory_order_relaxed);
+    }
     std::uint64_t spansExported() const override {
-        return g_spans_started.load(std::memory_order_relaxed);
+        return g_spans_exported.load(std::memory_order_relaxed);
     }
 
 private:
@@ -170,13 +213,27 @@ private:
             return nullptr;   // "none"
         }
 
+        // Wrap for counting before any processor sees it.
+        exporter = std::make_unique<CountingSpanExporter>(std::move(exporter));
+
         if (config.flush.mode == "on_response") {
             // Every span is exported as it ends. Correct on a request-billed,
             // scale-to-zero platform where a background thread may never be
-            // scheduled after the response - and restricted to the file exporter,
-            // because doing this over the network puts a round-trip on the
-            // request thread.
-            return tsdk::SimpleSpanProcessorFactory::Create(std::move(exporter));
+            // scheduled after the response.
+            //
+            // ENFORCED, not merely documented: over the network this would put a
+            // synchronous HTTP round-trip on the Crow worker, so a hanging
+            // collector would block each worker for timeout_ms and deplete the
+            // pool - an availability failure caused by a third party flAPI does
+            // not control. The earlier version only said file-only in a comment.
+            if (config.exporter == "otlp_file") {
+                return tsdk::SimpleSpanProcessorFactory::Create(std::move(exporter));
+            }
+            CROW_LOG_WARNING
+                << "tracing.flush.mode=on_response is only supported with "
+                   "exporter=otlp_file; falling back to batch export. Exporting "
+                   "synchronously over the network would put a collector round-trip "
+                   "on every request thread.";
         }
 
         tsdk::BatchSpanProcessorOptions batch;
@@ -225,6 +282,15 @@ void FlapiTracing::configure(const TracingConfig& config) {
     if (config.capture == CaptureTier::Off) {
         enabled_ = false;
         return;
+    }
+    if (config.capture == CaptureTier::Payload) {
+        // The payload tier is not implemented yet (plan issue 14). Say so loudly
+        // rather than silently behaving as metadata: an operator who configured
+        // payload capture has made a deliberate data-protection decision and must
+        // not be left believing it took effect - in either direction.
+        CROW_LOG_WARNING
+            << "tracing.capture=payload is not implemented yet; behaving as "
+               "'metadata'. No argument values or result rows are exported.";
     }
 
     backend_ = std::make_unique<OtelTracingBackend>(config);

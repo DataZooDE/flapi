@@ -112,6 +112,29 @@ class TestMcpSingleSpan:
             "invariant that the single-span model depends on"
         )
 
+    def test_an_attacker_cannot_inject_into_the_span_name(self, server):
+        # parseMCPRequest falls back to dumping the raw JSON when `method` is not
+        # a string, so a non-string method would otherwise put attacker-controlled
+        # content straight into a span NAME and mcp.method.name - unbounded
+        # cardinality and content injection at once. Span names and metric
+        # dimensions must come from a closed set.
+        marker = "INJECT3D"
+        requests.post(f"{server.base_url}/mcp/jsonrpc",
+                      json={"jsonrpc": "2.0", "id": 1,
+                            "method": {"evil": marker}, "params": {}},
+                      timeout=15)
+        requests.post(f"{server.base_url}/mcp/jsonrpc",
+                      json={"jsonrpc": "2.0", "id": 2,
+                            "method": "not/a/real/method", "params": {}},
+                      timeout=15)
+
+        blob = server.raw_traces()
+        assert marker not in blob, "attacker JSON reached an exported span"
+        assert "not/a/real/method" not in blob, (
+            "an unrecognised method must collapse to one bucket, or a scanner "
+            "mints unbounded span names and metric series"
+        )
+
     def test_an_unknown_tool_records_an_enumerated_error(self, server):
         _rpc(server.base_url, "tools/call", {"name": "no_such_tool", "arguments": {}})
 

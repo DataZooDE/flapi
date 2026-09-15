@@ -1,6 +1,8 @@
 #include "mcp_route_handlers.hpp"
 #include "request_context.hpp"
 #include "trace_context.hpp"
+
+#include <unordered_set>
 #include "json_utils.hpp"
 #include "arrow_metrics.hpp"
 #include "mcp_authorization_policy.hpp"
@@ -358,6 +360,30 @@ MCPRouteHandlers::MCPRouteHandlers(std::shared_ptr<ConfigManager> config_manager
     CROW_LOG_INFO << "Transport type: Streamable HTTP, URL ready to paste into MCP inspector tool";
 }
 
+namespace {
+
+// A closed set of MCP method names, for anything that becomes a span name or a
+// metric dimension. Everything outside it collapses to one bucket.
+const char* knownMcpMethodOrUnknown(const std::string& method) {
+    static const std::unordered_set<std::string> kKnown{
+        "initialize", "initialized", "ping", "shutdown",
+        "server/discover",
+        "tools/list", "tools/call",
+        "resources/list", "resources/read", "resources/templates/list",
+        "resources/subscribe", "resources/unsubscribe",
+        "prompts/list", "prompts/get",
+        "logging/setLevel",
+        "completion/complete",
+        "tasks/get", "tasks/list", "tasks/cancel", "tasks/result",
+        "notifications/initialized", "notifications/cancelled",
+        "notifications/progress", "notifications/roots/list_changed",
+        "sampling/createMessage", "roots/list", "elicitation/create",
+    };
+    return kKnown.count(method) > 0 ? method.c_str() : "<unknown>";
+}
+
+}  // namespace
+
 void MCPRouteHandlers::registerRoutes(flapi::FlapiApp& app, int port) {
     port_ = port; // Update port if provided
 
@@ -398,7 +424,14 @@ void MCPRouteHandlers::registerRoutes(flapi::FlapiApp& app, int port) {
                 // which is knowable solely after the body is parsed.
                 if (mcp_request) {
                     if (auto* rc = RequestContextScope::current()) {
-                        rc->mcp_method = mcp_request->method;
+                        // Whitelisted, NOT taken verbatim. parseMCPRequest falls
+                        // back to method_value.dump() for a non-string method
+                        // (:806), so `{"method": {...}}` would otherwise put
+                        // attacker-controlled JSON straight into a span NAME and
+                        // into mcp.method.name - unbounded cardinality and a
+                        // content-injection vector in one. Span names and metric
+                        // dimensions must come from a closed set.
+                        rc->mcp_method = knownMcpMethodOrUnknown(mcp_request->method);
                     }
                 }
 
