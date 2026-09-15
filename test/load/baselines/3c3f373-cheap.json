@@ -1,0 +1,270 @@
+{
+  "runs": 5,
+  "per_run": [
+    {
+      "http_req_waiting": {
+        "avg": 1.338937678143713,
+        "med": 0.119471,
+        "p(95)": 4.430660599999998,
+        "p(99)": 6.119886059999998,
+        "max": 15.241451
+      },
+      "http_req_duration": {
+        "avg": 44.813313165793446,
+        "med": 43.280022,
+        "p(95)": 49.819840299999996,
+        "p(99)": 49.94877518,
+        "max": 59.664533
+      },
+      "flapi_read_duration": {
+        "avg": 4.059029897466825,
+        "med": 3.854929,
+        "p(95)": 5.682812799999999,
+        "p(99)": 7.483303360000006,
+        "max": 15.241451
+      },
+      "flapi_health_duration": {
+        "avg": 0.11381754495412838,
+        "med": 0.104823,
+        "p(95)": 0.14755904999999997,
+        "p(99)": 0.19540607999999904,
+        "max": 2.86774
+      },
+      "flapi_unmatched_duration": {
+        "avg": 0.1177218685258966,
+        "med": 0.102604,
+        "p(95)": 0.141508,
+        "p(99)": 0.19101904000000003,
+        "max": 3.005591
+      },
+      "throughput_rps": 88.93640675301444,
+      "iterations": 2672,
+      "error_rate": 0,
+      "server_peak_rss_kib": 599396
+    },
+    {
+      "http_req_waiting": {
+        "avg": 1.3517555551387856,
+        "med": 0.121881,
+        "p(95)": 4.5806465,
+        "p(99)": 6.348467399999991,
+        "max": 11.298646
+      },
+      "http_req_duration": {
+        "avg": 44.890091743435924,
+        "med": 43.288438,
+        "p(95)": 49.83152575,
+        "p(99)": 49.967968150000004,
+        "max": 53.275665
+      },
+      "flapi_read_duration": {
+        "avg": 4.108145923821041,
+        "med": 3.871361,
+        "p(95)": 5.876942399999997,
+        "p(99)": 7.3522422800000005,
+        "max": 11.298646
+      },
+      "flapi_health_duration": {
+        "avg": 0.10989137748344376,
+        "med": 0.106733,
+        "p(95)": 0.143141,
+        "p(99)": 0.18176596000000012,
+        "max": 0.930261
+      },
+      "flapi_unmatched_duration": {
+        "avg": 0.11533049232736571,
+        "med": 0.10466349999999999,
+        "p(95)": 0.14158194999999993,
+        "p(99)": 0.23803373999999825,
+        "max": 3.088348
+      },
+      "throughput_rps": 88.81052846885551,
+      "iterations": 2666,
+      "error_rate": 0,
+      "server_peak_rss_kib": 595196
+    },
+    {
+      "http_req_waiting": {
+        "avg": 1.3476258071883165,
+        "med": 0.120328,
+        "p(95)": 4.580439,
+        "p(99)": 6.261121500000004,
+        "max": 12.835385
+      },
+      "http_req_duration": {
+        "avg": 44.83146537514031,
+        "med": 43.281951,
+        "p(95)": 49.837078500000004,
+        "p(99)": 49.952324700000005,
+        "max": 56.104111
+      },
+      "flapi_read_duration": {
+        "avg": 4.080113955528846,
+        "med": 3.8499600000000003,
+        "p(95)": 5.7674787,
+        "p(99)": 7.111411849999997,
+        "max": 12.835385
+      },
+      "flapi_health_duration": {
+        "avg": 0.11148146484374992,
+        "med": 0.106376,
+        "p(95)": 0.14394949999999998,
+        "p(99)": 0.1997076399999997,
+        "max": 1.178141
+      },
+      "flapi_unmatched_duration": {
+        "avg": 0.11128429447852778,
+        "med": 0.104187,
+        "p(95)": 0.1383853,
+        "p(99)": 0.18121610000000019,
+        "max": 2.749577
+      },
+      "throughput_rps": 88.92436495707238,
+      "iterations": 2671,
+      "error_rate": 0,
+      "server_peak_rss_kib": 578904
+    },
+    {
+      "http_req_waiting": {
+        "avg": 1.23600766080778,
+        "med": 0.117056,
+        "p(95)": 4.3527952,
+        "p(99)": 5.812276809999999,
+        "max": 9.766284
+      },
+      "http_req_duration": {
+        "avg": 44.76429418362004,
+        "med": 43.275884500000004,
+        "p(95)": 49.80444935,
+        "p(99)": 49.94711501,
+        "max": 53.270766
+      },
+      "flapi_read_duration": {
+        "avg": 4.00387808549223,
+        "med": 3.8050305,
+        "p(95)": 5.586997349999999,
+        "p(99)": 7.468787479999991,
+        "max": 9.766284
+      },
+      "flapi_health_duration": {
+        "avg": 0.1131875691202872,
+        "med": 0.10413249999999999,
+        "p(95)": 0.14557599999999998,
+        "p(99)": 0.1856651399999993,
+        "max": 3.461986
+      },
+      "flapi_unmatched_duration": {
+        "avg": 0.11167468401015218,
+        "med": 0.103215,
+        "p(95)": 0.1434258,
+        "p(99)": 0.20147638999999998,
+        "max": 3.203836
+      },
+      "throughput_rps": 89.05679797162203,
+      "iterations": 2674,
+      "error_rate": 0,
+      "server_peak_rss_kib": 588244
+    },
+    {
+      "http_req_waiting": {
+        "avg": 1.2812178688647469,
+        "med": 0.120048,
+        "p(95)": 4.6027976,
+        "p(99)": 6.216475640000004,
+        "max": 13.706325
+      },
+      "http_req_duration": {
+        "avg": 44.86110029823896,
+        "med": 43.279065,
+        "p(95)": 49.830400600000004,
+        "p(99)": 49.95849532,
+        "max": 59.106917
+      },
+      "flapi_read_duration": {
+        "avg": 4.095820025608199,
+        "med": 3.859229,
+        "p(95)": 5.915983,
+        "p(99)": 6.8677794,
+        "max": 13.706325
+      },
+      "flapi_health_duration": {
+        "avg": 0.11762075068243856,
+        "med": 0.106522,
+        "p(95)": 0.14788799999999996,
+        "p(99)": 0.27650137999999996,
+        "max": 2.47682
+      },
+      "flapi_unmatched_duration": {
+        "avg": 0.11593136501901134,
+        "med": 0.105961,
+        "p(95)": 0.14769739999999976,
+        "p(99)": 0.20952036000000007,
+        "max": 2.782089
+      },
+      "throughput_rps": 88.84696373881133,
+      "iterations": 2669,
+      "error_rate": 0,
+      "server_peak_rss_kib": 585920
+    }
+  ],
+  "median": {
+    "http_req_waiting.avg": 1.338937678143713,
+    "http_req_waiting.med": 0.120048,
+    "http_req_waiting.p(95)": 4.580439,
+    "http_req_waiting.p(99)": 6.216475640000004,
+    "http_req_waiting.max": 12.835385,
+    "http_req_duration.avg": 44.83146537514031,
+    "http_req_duration.med": 43.280022,
+    "http_req_duration.p(95)": 49.830400600000004,
+    "http_req_duration.p(99)": 49.952324700000005,
+    "http_req_duration.max": 56.104111,
+    "flapi_read_duration.avg": 4.080113955528846,
+    "flapi_read_duration.med": 3.854929,
+    "flapi_read_duration.p(95)": 5.7674787,
+    "flapi_read_duration.p(99)": 7.3522422800000005,
+    "flapi_read_duration.max": 12.835385,
+    "flapi_health_duration.avg": 0.1131875691202872,
+    "flapi_health_duration.med": 0.106376,
+    "flapi_health_duration.p(95)": 0.14557599999999998,
+    "flapi_health_duration.p(99)": 0.19540607999999904,
+    "flapi_health_duration.max": 2.47682,
+    "flapi_unmatched_duration.avg": 0.11533049232736571,
+    "flapi_unmatched_duration.med": 0.104187,
+    "flapi_unmatched_duration.p(95)": 0.14158194999999993,
+    "flapi_unmatched_duration.p(99)": 0.20147638999999998,
+    "flapi_unmatched_duration.max": 3.005591,
+    "throughput_rps": 88.92436495707238,
+    "error_rate": 0,
+    "server_peak_rss_kib": 588244
+  },
+  "spread_pct": {
+    "http_req_waiting.avg": 8.64,
+    "http_req_waiting.med": 4.02,
+    "http_req_waiting.p(95)": 5.46,
+    "http_req_waiting.p(99)": 8.63,
+    "http_req_waiting.max": 42.66,
+    "http_req_duration.avg": 0.28,
+    "http_req_duration.med": 0.03,
+    "http_req_duration.p(95)": 0.07,
+    "http_req_duration.p(99)": 0.04,
+    "http_req_duration.max": 11.4,
+    "flapi_read_duration.avg": 2.56,
+    "flapi_read_duration.med": 1.72,
+    "flapi_read_duration.p(95)": 5.7,
+    "flapi_read_duration.p(99)": 8.37,
+    "flapi_read_duration.max": 42.66,
+    "flapi_health_duration.avg": 6.83,
+    "flapi_health_duration.med": 2.44,
+    "flapi_health_duration.p(95)": 3.26,
+    "flapi_health_duration.p(99)": 48.48,
+    "flapi_health_duration.max": 102.22,
+    "flapi_unmatched_duration.avg": 5.58,
+    "flapi_unmatched_duration.med": 3.22,
+    "flapi_unmatched_duration.p(95)": 6.58,
+    "flapi_unmatched_duration.p(99)": 28.2,
+    "flapi_unmatched_duration.max": 15.11,
+    "throughput_rps": 0.28,
+    "error_rate": 0.0,
+    "server_peak_rss_kib": 3.48
+  }
+}
