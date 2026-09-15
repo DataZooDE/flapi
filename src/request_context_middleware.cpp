@@ -6,6 +6,8 @@
 #include "flapi_tracing.hpp"
 #include "trace_semconv.hpp"
 
+#include <crow/json.h>
+
 namespace flapi {
 
 namespace {
@@ -75,6 +77,44 @@ namespace {
 // default exclusions are literals, so raw-path matching is exact for them.
 // The query string is ignored so `/health?x=1` cannot smuggle a probe into the
 // trace.
+// An OpenTelemetry span's parent is fixed at creation, but SEP-414 puts the
+// agent's traceparent inside the JSON-RPC BODY - which the MCP handler does not
+// parse until well after before_handle. Waiting for it would mean creating the
+// span late and losing every middleware rejection, which is the whole reason the
+// span lives in the first middleware.
+//
+// So peek for just that one key here. The cost falls only on POSTs to the MCP
+// endpoint, and the handler re-parses the body anyway today.
+SpanContextIds metaTraceContextFromBody(const crow::request& req) {
+    if (req.body.empty() || req.body.size() > 1024 * 1024) {
+        return {};
+    }
+    const auto doc = crow::json::load(req.body);
+    if (!doc || !doc.has("params")) {
+        return {};
+    }
+    const auto& params = doc["params"];
+    if (params.t() != crow::json::type::Object || !params.has("_meta")) {
+        return {};
+    }
+    const auto& meta = params["_meta"];
+    if (meta.t() != crow::json::type::Object || !meta.has(sep414::kTraceparent)) {
+        return {};
+    }
+    if (meta[sep414::kTraceparent].t() != crow::json::type::String) {
+        return {};
+    }
+    const auto raw = meta[sep414::kTraceparent].s();
+    if (raw.size() > 256) {
+        return {};   // bounded before copying
+    }
+    return parseTraceparent(std::string(raw));
+}
+
+bool isMcpEndpoint(std::string_view raw_path) {
+    return raw_path.rfind("/mcp/jsonrpc", 0) == 0;
+}
+
 bool isExcludedRoute(const std::vector<std::string>& excluded, std::string_view raw_path) {
     const auto query = raw_path.find('?');
     const auto path = query == std::string_view::npos ? raw_path : raw_path.substr(0, query);
@@ -139,12 +179,19 @@ void RequestContextMiddleware::before_handle(crow::request& req, crow::response&
     const auto header_ids = parseTraceparent(req.get_header_value("traceparent"),
                                              req.get_header_value("tracestate"),
                                              req.get_header_value("baggage"));
-    if (header_ids.valid()) {
-        ctx.rc.setTraceId(header_ids.trace_id);
-        ctx.rc.setSpanId(header_ids.span_id);
-        ctx.rc.sampled = header_ids.sampled();
-        ctx.rc.trace_context_source = contextSourceName(ContextSource::Header);
+    // SEP-414 precedence: params._meta beats the HTTP header. Over a proxy or
+    // gateway the HTTP hop may be the gateway's own span while _meta carries the
+    // agent's, so preferring _meta keeps flAPI attached to the trace the user
+    // actually cares about.
+    const auto meta_ids = isMcpEndpoint(ctx.rc.raw_path) ? metaTraceContextFromBody(req)
+                                                         : SpanContextIds{};
+    const auto resolved = resolvePrecedence(meta_ids, header_ids);
+    if (resolved.ids.valid()) {
+        ctx.rc.setTraceId(resolved.ids.trace_id);
+        ctx.rc.setSpanId(resolved.ids.span_id);
+        ctx.rc.sampled = resolved.ids.sampled();
     }
+    ctx.rc.trace_context_source = contextSourceName(resolved.source);
 
     RequestContextScope::activate(&ctx.rc);
 
@@ -159,11 +206,7 @@ void RequestContextMiddleware::before_handle(crow::request& req, crow::response&
     // it, so the span opens as "METHOD" and is renamed at completion. Delaying the
     // span to learn the route would defeat the entire point.
     if (!isExcludedRoute(excluded_routes_, ctx.rc.raw_path)) {
-        ExtractedContext parent;
-        parent.ids = header_ids;
-        parent.source = header_ids.valid() ? ContextSource::Header : ContextSource::None;
-
-        ctx.span = Tracing().startServerSpan(ctx.rc.http_method, parent);
+        ctx.span = Tracing().startServerSpan(ctx.rc.http_method, resolved);
         if (ctx.span) {
             const auto ids = ctx.span.ids();
             if (ids.valid()) {
@@ -225,10 +268,27 @@ void RequestContextMiddleware::finish(crow::response& res, context& ctx) {
             const std::string_view route = ctx.rc.route_template.empty()
                                                ? std::string_view(semconv::kUnmatchedRoute)
                                                : ctx.rc.route_template;
-            // "GET /customers/{id}" - the name a trace consumer looks for.
-            std::string span_name(ctx.rc.http_method);
-            span_name += ' ';
-            span_name.append(route);
+            // An MCP call is ONE span carrying both attribute sets, named by the
+            // MCP convention - "tools/call query_customers" is what a consumer of
+            // the trace looks for, not "POST /mcp/jsonrpc".
+            //
+            // This is correct only because flAPI's transport is strictly one
+            // JSON-RPC call per HTTP request: there is no batch handling, and the
+            // legacy GET/SSE stream is deliberately not implemented (GET returns
+            // 405). If EITHER changes, this collapses and the model must become an
+            // HTTP SERVER parent with one MCP SERVER child per call.
+            std::string span_name;
+            if (!ctx.rc.mcp_method.empty()) {
+                span_name = ctx.rc.mcp_method;
+                if (!ctx.rc.mcp_tool.empty()) {
+                    span_name += ' ';
+                    span_name += ctx.rc.mcp_tool;
+                }
+            } else {
+                span_name = ctx.rc.http_method;
+                span_name += ' ';
+                span_name.append(route);
+            }
             ctx.span.updateName(span_name);
 
             ctx.span.setAttr(semconv::http::kRoute, route);

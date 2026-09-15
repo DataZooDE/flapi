@@ -392,24 +392,13 @@ void MCPRouteHandlers::registerRoutes(flapi::FlapiApp& app, int port) {
                 // Parse and validate the request EARLY to determine if it's initialize
                 auto mcp_request = parseMCPRequest(req);
 
-                // SEP-414 precedence: params._meta beats the HTTP header. Over a
-                // proxy or gateway the HTTP hop may be the gateway's own span
-                // while _meta carries the agent's, so preferring _meta keeps this
-                // span attached to the trace the user actually cares about. The
-                // middleware already applied the header, so only override here.
-                if (mcp_request && mcp_request->meta_trace_context.valid()) {
+                // The middleware already resolved trace context (including the
+                // SEP-414 _meta precedence, which it must do before the span is
+                // created). Here we only record what the span should be NAMED,
+                // which is knowable solely after the body is parsed.
+                if (mcp_request) {
                     if (auto* rc = RequestContextScope::current()) {
-                        SpanContextIds header_ids;
-                        if (rc->hasTrace()) {
-                            header_ids.trace_id = std::string(rc->traceIdView());
-                            header_ids.span_id = std::string(rc->spanIdView());
-                        }
-                        const auto resolved =
-                            resolvePrecedence(mcp_request->meta_trace_context, header_ids);
-                        rc->setTraceId(resolved.ids.trace_id);
-                        rc->setSpanId(resolved.ids.span_id);
-                        rc->sampled = resolved.ids.sampled();
-                        rc->trace_context_source = contextSourceName(resolved.source);
+                        rc->mcp_method = mcp_request->method;
                     }
                 }
 
@@ -1514,6 +1503,12 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
             if (tool_handler_) {
                 MCPToolCallRequest tool_request;
                 tool_request.tool_name = tool_name;
+                // Registered tool name only - never an argument value. It is a
+                // bounded set (the configured endpoints), so it is safe as a span
+                // attribute and as a metric dimension.
+                if (auto* rc = RequestContextScope::current()) {
+                    rc->mcp_tool = tool_name;
+                }
                 tool_request.arguments = crow::json::wvalue(arguments);
 
                 // Plumb authenticated caller's identity into the tool request:
