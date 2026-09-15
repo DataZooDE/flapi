@@ -182,6 +182,7 @@ The main configuration file defines global settings, connections, and server beh
 | `server-name` | string | `"localhost"` | Server hostname for generated URLs |
 | `http-port` | integer | `8080` | HTTP server port (overridable via `--port` / `FLAPI_PORT`) |
 | `log-level` | string | `info` | Log verbosity: `debug`, `info`, `warning`, `error`. Overridable via `--log-level` / `FLAPI_LOG_LEVEL`. **Top-level key — a `server:` block is not parsed.** |
+| `tracing` | map | disabled | OpenTelemetry tracing. Off by default; see [OBSERVABILITY.md](OBSERVABILITY.md). |
 | `log-format` | string | `text` | `text` for human-readable lines, `json` for one JSON object per line. Both carry `request_id` (and `trace_id` once tracing is enabled) for lines emitted while serving a request. |
 | `http-host` | string | `"0.0.0.0"` | Bind address (overridable via `--host` / `FLAPI_HOST`); use `127.0.0.1` to restrict to loopback |
 

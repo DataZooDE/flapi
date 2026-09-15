@@ -109,6 +109,30 @@ duckdb:
   max_memory: 8GB
   default_order: DESC
 
+# OpenTelemetry tracing (disabled by default)
+#
+# Off unless you turn it on, and even then flAPI exports NO customer data: the
+# default `metadata` tier carries structure and shape only - route templates,
+# parameter names, row counts, durations - never values. Payload capture is a
+# per-endpoint opt-in. See docs/OBSERVABILITY.md.
+#
+# tracing:
+#   enabled: true
+#   exporter: otlp_http          # otlp_http | otlp_file | none
+#   endpoint: http://localhost:4318
+#   capture: metadata            # off | metadata | payload
+#   # Air-gapped: write OTLP-JSON to a file and open no outbound connection.
+#   # exporter: otlp_file
+#   # file:
+#   #   path: /var/lib/flapi/traces.jsonl
+#   # Serverless (Cloud Run / App Runner): the instance is throttled after the
+#   # response, so a background export thread may never run.
+#   # flush:
+#   #   mode: on_response
+#   sample:
+#     type: parentbased_traceidratio
+#     ratio: 1.0
+
 # DuckLake configuration (for advanced caching with snapshots and time-travel)
 ducklake:
   enabled: true
