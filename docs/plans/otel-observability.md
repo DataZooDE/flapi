@@ -59,7 +59,7 @@ clock, privacy-preserving by default.
 | **D1** | Scope is all of HLD P0–P4, sequenced as the issues in §7. |
 | **D2** | Consolidation = shared `RequestContext` + fix the three drift bugs. PostHog, audit and `arrow_metrics` keep their own pipelines. |
 | **D3** | **Do not bump vcpkg.** The pinned baseline stays for all 38 other packages. `opentelemetry-cpp` alone is overridden by a **vcpkg overlay port** (`ports/opentelemetry-cpp`, pinned 1.24.0), selected declaratively through `vcpkg-configuration.json` so every platform and CI job picks it up with no environment plumbing. **Forced by measurement, not preference** — see below. |
-| **D4** | agent-crew reviews at the cadence in §8.3, not once. |
+| **D4** | agent-crew reviews at **phase boundaries** (P0-P4) plus issue 8's security invariant — §8.3. Ratified by JR 2026-09-15. |
 | **D5** | **SETTLED by the issue -1 spike: keep opentelemetry-cpp.** It builds, links beside static DuckDB with **zero** duplicate symbols, and costs **+4.71 MiB (+6.9 %)**. The libcurl-only alternative is closed; both architectures must never ship. Because the 1.24.0 overlay provides `otlp-file`, flAPI does **not** hand-roll a file exporter — **issue 6 shrinks to configuration plus tests.** |
 
 ### D3 in detail — verified
@@ -369,6 +369,7 @@ re-run check for future port upgrades.
 | `flapi pack` round-trip | ✅ |
 | `FLAPI_WITH_TRACING=OFF` | ✅ 0 otel symbols, within 36 KB of baseline |
 | Runtime (provider, both exporters, W3C extract+inject, samplers) | ✅ |
+| C++ standard | ⚠️ **forced the project to C++20** — abseil (via otel) exports `cxx_std_20`, which raised `flapi-lib` alone and split the ABI against `flapi_tests` and `main.cpp`. It built green and segfaulted at runtime. Fixed project-wide; guarded by `scripts/check_cxx_standard_uniform.sh`. |
 
 **Remaining spike work, carried into issue 5:** the other three targets
 (arm64-linux cross — where protobuf's host `protoc` is the usual failure point —
@@ -511,8 +512,7 @@ variance measured in issue 0a)**. A budget under the noise floor is not a gate (
 | When | Focus | Blocking? |
 |---|---|---|
 | ~~On this plan~~ | **done** — v2 is the result (`REQUEST_CHANGES`, 12 high) | — |
-| After issue -1 | the go/no-go and the D5 binding choice | yes |
-| After issue 0 | the harness, the baseline, the `xfail` profile | yes |
+| ~~After issue -1~~ | **waived by JR** — the spike produced measured facts, not judgement calls | — |
 | End of each phase (P0, P1, P2, P3, P4) | the accumulated diff | yes |
 | Issue 8 | the no-leak invariant and capture tiers, as a security review | yes |
 | Any high-severity finding | re-review after the fix | yes |

@@ -128,7 +128,20 @@ string(REGEX REPLACE "^v" "" FLAPI_VERSION_STR "${FLAPI_VERSION_STR}")
 message(STATUS "flAPI version (FLAPI_VERSION): ${FLAPI_VERSION_STR}")
 
 # Basic settings
-set(CMAKE_CXX_STANDARD 17)
+# C++20, project-wide and deliberately.
+#
+# opentelemetry-cpp pulls in abseil, and abseil's exported targets carry
+# INTERFACE_COMPILE_FEATURES "cxx_std_20" (ABSL_PROPAGATE_CXX_STD) because the
+# vcpkg abseil binaries are themselves built as C++20. Linking otel PRIVATE into
+# flapi-lib therefore raised *only* flapi-lib to C++20 while flapi_tests stayed
+# at C++17 - a silent ABI mismatch across the lib/test boundary that corrupted
+# struct layouts (it segfaulted auth_middleware_test reading EndpointConfig).
+#
+# Consuming C++20-built abseil from C++17 translation units is the underlying
+# hazard, so the fix is one standard everywhere rather than suppressing the
+# propagation. DuckDB is unaffected: flAPI talks to it through its C API, and it
+# sets its own standard in duckdb/CMakeLists.txt.
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
 set(THREADS_PREFER_PTHREAD_FLAG TRUE)

@@ -31,7 +31,29 @@ cmake --build spike/build && ./spike/build/otel_link_spike     # prints "SPIKE O
 | Binary size | 71,432,664 → 76,338,936 = **+4.71 MiB, +6.9 %** |
 | `flapi pack` / `info` / `unpack` round-trip | ✅ 67 entries |
 | `FLAPI_WITH_TRACING=OFF` | ✅ builds, runs, **0** otel symbols, within 36 KB of the pre-otel baseline |
-| C++17 | ✅ (otel's config propagates gnu++20; flAPI pins 17 and it compiles) |
+| C++ standard | ⚠️ **forced flAPI to C++20 project-wide** — see below |
+
+## The one thing that bit us
+
+opentelemetry-cpp pulls in **abseil**, and abseil's exported targets carry
+`INTERFACE_COMPILE_FEATURES "cxx_std_20"` (`ABSL_PROPAGATE_CXX_STD`), because the
+vcpkg abseil binaries are themselves built as C++20.
+
+Linking otel **PRIVATE** into `flapi-lib` therefore raised *only* `flapi-lib` to
+C++20. `flapi_tests` and even the `flapi` executable (`src/main.cpp`) kept
+compiling at C++17. The build stayed green and `ctest` then **segfaulted** in
+`auth_middleware_test` while copying `endpoint->auth.type`: the two halves
+disagreed about struct layout.
+
+Nothing warns about this. It is the same hazard class as the
+`CROW_ENABLE_COMPRESSION` ODR bug fixed in `d2b9e74`, with the trigger buried two
+dependency levels down.
+
+The fix is one standard everywhere (`CMAKE_CXX_STANDARD 20`) rather than
+suppressing the propagation, because consuming C++20-built abseil from C++17
+translation units is the underlying problem. DuckDB is unaffected — flAPI uses
+its C API. `scripts/check_cxx_standard_uniform.sh` now fails the build if the
+standard ever splits again.
 
 **Verdict: PROCEED, keeping the SDK.** Decision D5 in
 `docs/plans/otel-observability.md` is settled: opentelemetry-cpp stays, and

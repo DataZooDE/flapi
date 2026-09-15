@@ -11,6 +11,7 @@
 
 #include "config_manager.hpp"
 #include "cors_middleware.hpp"
+#include "flapi_app.hpp"
 #include "database_manager.hpp"
 #include "mcp_tool_handler.hpp"
 #include "mcp_types.hpp"
@@ -46,7 +47,7 @@ public:
      * @param app The Crow application to register routes with
      * @param port The port number for the MCP server
      */
-    void registerRoutes(crow::App<crow::CORSHandler, FlapiCorsMiddleware, RateLimitMiddleware, AuthMiddleware>& app, int port = 8080);
+    void registerRoutes(flapi::FlapiApp& app, int port = 8080);
 
     /**
      * Refresh MCP entities from the configuration.
