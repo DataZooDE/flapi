@@ -742,13 +742,13 @@ ConfigToolResult ConfigToolAdapter::executeListEndpoints(const crow::json::wvalu
         }
 
         // Get all configured endpoints
-        const auto& endpoints = config_manager_->getEndpoints();
+        const auto endpoints = config_manager_->getEndpoints();   // pinned snapshot
 
         // Build endpoint list efficiently
         std::vector<crow::json::wvalue> endpoint_items;
-        endpoint_items.reserve(endpoints.size());
+        endpoint_items.reserve(endpoints->size());
 
-        for (const auto& ep : endpoints) {
+        for (const auto& ep : *endpoints) {
             crow::json::wvalue endpoint_info;
             endpoint_info["name"] = ep.getName();
             endpoint_info["path"] = ep.urlPath;
@@ -758,14 +758,14 @@ ConfigToolResult ConfigToolAdapter::executeListEndpoints(const crow::json::wvalu
         }
 
         crow::json::wvalue result;
-        result["count"] = static_cast<int>(endpoints.size());
+        result["count"] = static_cast<int>(endpoints->size());
         auto endpoints_list = crow::json::wvalue::list();
         for (auto& item : endpoint_items) {
             endpoints_list.emplace_back(std::move(item));
         }
         result["endpoints"] = std::move(endpoints_list);
 
-        CROW_LOG_INFO << "flapi_list_endpoints: returned " << endpoints.size() << " endpoints";
+        CROW_LOG_INFO << "flapi_list_endpoints: returned " << endpoints->size() << " endpoints";
         return createSuccessResult(result.dump());
     } catch (const std::exception& e) {
         CROW_LOG_ERROR << "flapi_list_endpoints failed: " << e.what();

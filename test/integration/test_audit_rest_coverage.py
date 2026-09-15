@@ -219,6 +219,18 @@ class TestRestAuditCoverage:
         assert events[-1]["status"] == "denied"
         assert events[-1]["request_id"].startswith("req-")
 
+    def test_401_produces_exactly_one_audit_line(self, audit_rest_server):
+        # Counting matters. Crow runs after_handle for EVERY middleware during the
+        # short-circuit unwind (crow/middleware.h:151-155), so a design that also
+        # completes the request explicitly on the 401 path emits twice. Asserting
+        # "at least one" hides that; assert exactly one.
+        before = len(_audit_lines(audit_rest_server["audit_path"]))
+        r = requests.get(f"{audit_rest_server['base_url']}/guarded", timeout=10)
+        assert r.status_code == 401
+
+        new = _audit_lines(audit_rest_server["audit_path"])[before:]
+        assert len(new) == 1, f"a 401 must produce exactly one audit line, got {len(new)}: {new}"
+
     def test_successful_auth_records_the_principal(self, audit_rest_server):
         r = requests.get(f"{audit_rest_server['base_url']}/guarded",
                          auth=("alice", "correct-horse"), timeout=10)

@@ -598,16 +598,23 @@ public:
     // makes the lifetime automatic: hold the EndpointRef for as long as you use
     // the endpoint.
     //
-    // Declare call sites as `auto ep = ...` (NOT `const auto* ep = ...`): taking
-    // a raw pointer out of the ref drops the pin and reintroduces the bug.
-    class EndpointRef {
+    // Bind with `auto ep = ...`. Note that `const auto* ep = ...` does not
+    // compile - there is no implicit pointer conversion - so the real hazard is
+    // calling .get() on a temporary and letting the pointer outlive the pin.
+    // That overload is deleted below, which makes it a compile error too.
+    class [[nodiscard]] EndpointRef {
     public:
         EndpointRef() = default;
         EndpointRef(std::shared_ptr<const std::vector<EndpointConfig>> snapshot,
                     const EndpointConfig* endpoint)
             : snapshot_(std::move(snapshot)), endpoint_(endpoint) {}
 
-        const EndpointConfig* get() const { return endpoint_; }
+        const EndpointConfig* get() const & { return endpoint_; }
+        // Deleted on rvalues: `cm.getEndpointForPath(p).get()` would return a
+        // pointer into a snapshot released at the end of the full expression -
+        // exactly the use-after-free the snapshot exists to prevent. Bind the ref
+        // to a named variable first.
+        const EndpointConfig* get() const && = delete;
         const EndpointConfig* operator->() const { return endpoint_; }
         const EndpointConfig& operator*() const { return *endpoint_; }
         explicit operator bool() const { return endpoint_ != nullptr; }
@@ -624,7 +631,15 @@ public:
 
     EndpointRef getEndpointForPath(const std::string& path) const;
     EndpointRef getEndpointForPathAndMethod(const std::string& path, const std::string& httpMethod) const;
-    const std::vector<EndpointConfig>& getEndpoints() const;
+    // Returns a PINNED snapshot, not a reference.
+    //
+    // This used to return `const std::vector<EndpointConfig>&` into the live
+    // snapshot and release the lock on the way out. Under copy-on-write that is
+    // strictly worse than the raw-vector bug it replaced: a concurrent swap can
+    // drop the last reference and DESTROY the vector the caller is iterating,
+    // rather than merely reallocating its buffer. Returning the shared_ptr makes
+    // the caller an owner for as long as it holds it.
+    std::shared_ptr<const std::vector<EndpointConfig>> getEndpoints() const;
 
     // --- Endpoint snapshots (copy-on-write) -------------------------------
     //
@@ -670,7 +685,7 @@ public:
     // Process-wide audit sink. Initialised lazily on first access from the
     // current AuditConfig; shared across REST and MCP handlers so every
     // request lands in the same JSONL stream.
-    std::shared_ptr<AuditLogger> getAuditLogger();
+    std::shared_ptr<AuditLogger> getAuditLogger() const;
     bool isTelemetryEnabled() const { return telemetry_enabled; }
     double getTelemetrySampleRate() const { return telemetry_sample_rate; }
     const AuthConfig& getGlobalAuthConfig() const { return global_auth_config; }
@@ -780,7 +795,7 @@ protected:
     MCPConfig mcp_config;
     StorageConfig storage_config;
     AuditConfig audit_config;
-    std::shared_ptr<AuditLogger> audit_logger_;
+    std::shared_ptr<AuditLogger> audit_logger_;   // built in parseAuditConfig()
     bool telemetry_enabled = true;
     double telemetry_sample_rate = 1.0;
     ExtendedYamlParser yaml_parser;

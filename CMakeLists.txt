@@ -364,6 +364,7 @@ add_library(flapi-lib STATIC
     src/flapi_telemetry.cpp
     src/flapi_log_handler.cpp
     src/request_context.cpp
+    src/time_utils.cpp
     src/trace_context.cpp
     src/request_context_middleware.cpp
 )

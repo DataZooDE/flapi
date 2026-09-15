@@ -406,6 +406,17 @@ vscode-dev:
 	@npm --prefix cli/vscode-extension install --no-fund
 	@npm --prefix cli/vscode-extension run dev
 
+# ------------------------------------------------------------------ guards
+# Invariants that a compiler cannot express. Both encode failures this codebase
+# has actually hit: two crow::App spellings silently producing a second,
+# unconfigured middleware tuple, and a split C++ standard that segfaulted a test
+# while the build stayed green.
+check-invariants:
+	@./scripts/check_crow_app_alias.sh
+	@./scripts/check_cxx_standard_uniform.sh build/release
+
+.PHONY: check-invariants
+
 # ---------------------------------------------------------------- load testing
 # See test/load/README.md for what these gates can and cannot resolve.
 K6_BIN ?= k6

@@ -423,7 +423,7 @@ mcp-tool:
     auto db_manager = std::make_shared<DatabaseManager>();
     auto cache_manager = std::make_shared<CacheManager>(std::shared_ptr<ICacheDatabaseAdapter>(nullptr));
     db_manager->cache_manager = cache_manager;
-    cache_manager->markCacheStarting(config_manager, config_manager->getEndpoints().front());
+    cache_manager->markCacheStarting(config_manager, config_manager->getEndpoints()->front());
 
     auto session_manager = std::make_shared<MCPSessionManager>();
     auto capabilities = std::make_shared<MCPClientCapabilitiesDetector>();

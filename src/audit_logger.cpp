@@ -1,5 +1,6 @@
 #include "audit_logger.hpp"
 #include "request_context.hpp"
+#include "time_utils.hpp"
 
 #include <chrono>
 #include <crow/json.h>
@@ -72,22 +73,8 @@ void AuditLogger::log(AuditEvent event) {
     sink_stream_->flush();
 }
 
-std::string AuditLogger::nowIso8601() {
-    const auto now = std::chrono::system_clock::now();
-    const auto now_t = std::chrono::system_clock::to_time_t(now);
-    const auto micros = std::chrono::duration_cast<std::chrono::microseconds>(
-                            now.time_since_epoch()).count() % 1'000'000;
-    std::tm tm_buf{};
-#ifdef _WIN32
-    gmtime_s(&tm_buf, &now_t);
-#else
-    gmtime_r(&now_t, &tm_buf);
-#endif
-    std::ostringstream oss;
-    oss << std::put_time(&tm_buf, "%Y-%m-%dT%H:%M:%S")
-        << '.' << std::setfill('0') << std::setw(6) << micros << 'Z';
-    return oss.str();
-}
+std::string AuditLogger::nowIso8601() { return nowIso8601Utc(); }
+
 
 std::string AuditLogger::generateRequestId() {
     // 16 hex chars — short enough for logs, wide enough to avoid collisions

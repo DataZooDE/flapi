@@ -304,6 +304,11 @@ jobs:
         uv venv
         uv pip install -e .
 
+    - name: Check codebase invariants
+      run: |
+        ./scripts/check_crow_app_alias.sh
+        ./scripts/check_cxx_standard_uniform.sh build/release
+
     - name: Run integration tests
       working-directory: test/integration
       timeout-minutes: 20

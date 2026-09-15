@@ -191,9 +191,9 @@ cache:
         std::string endpoint_file = createTempYamlFile(endpoint_yaml, "endpoint_config.yaml");
         mgr.loadEndpointConfig(endpoint_file);
 
-        const auto& endpoints = mgr.getEndpoints();
-        REQUIRE(endpoints.size() == 1);
-        const auto& endpoint = endpoints[0];
+        const auto endpoints = mgr.getEndpoints();   // pinned snapshot
+        REQUIRE(endpoints->size() == 1);
+        const auto& endpoint = (*endpoints)[0];
 
         REQUIRE(endpoint.urlPath == "/test");
         // Template source is resolved relative to endpoint config file's directory
@@ -571,9 +571,9 @@ connections:
     mgr.loadConfig();
 
     SECTION("endpoint with oidc block has oidc config populated") {
-        const auto& endpoints = mgr.getEndpoints();
-        REQUIRE(endpoints.size() == 1);
-        const auto& ep = endpoints[0];
+        const auto endpoints = mgr.getEndpoints();   // pinned snapshot
+        REQUIRE(endpoints->size() == 1);
+        const auto& ep = (*endpoints)[0];
 
         REQUIRE(ep.auth.enabled == true);
         REQUIRE(ep.auth.type == "oidc");
@@ -640,9 +640,9 @@ auth:
     }
 
     SECTION("endpoint without local oidc block inherits global config") {
-        const auto& endpoints = mgr.getEndpoints();
-        REQUIRE(endpoints.size() == 1);
-        const auto& ep = endpoints[0];
+        const auto endpoints = mgr.getEndpoints();   // pinned snapshot
+        REQUIRE(endpoints->size() == 1);
+        const auto& ep = (*endpoints)[0];
 
         REQUIRE(ep.auth.type == "oidc");
         REQUIRE(ep.auth.oidc.has_value());

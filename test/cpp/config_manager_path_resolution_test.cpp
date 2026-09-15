@@ -100,9 +100,9 @@ TEST_CASE("Path Resolution: Initial load with relative paths", "[config_manager]
     
     // Get the loaded endpoint
     auto endpoints = manager.getEndpoints();
-    REQUIRE(endpoints.size() == 1);
+    REQUIRE(endpoints->size() == 1);
     
-    const auto& endpoint = endpoints[0];
+    const auto& endpoint = (*endpoints)[0];
     
     // Verify template source path is resolved to absolute
     INFO("Template source: " << endpoint.templateSource);
@@ -130,9 +130,9 @@ TEST_CASE("Path Resolution: Initial load with absolute paths", "[config_manager]
     
     // Get the loaded endpoint
     auto endpoints = manager.getEndpoints();
-    REQUIRE(endpoints.size() == 1);
+    REQUIRE(endpoints->size() == 1);
     
-    const auto& endpoint = endpoints[0];
+    const auto& endpoint = (*endpoints)[0];
     
     // Verify template source path remains absolute
     REQUIRE(endpoint.templateSource == fixture.template_file.string());
@@ -154,10 +154,10 @@ TEST_CASE("Path Resolution: Reload with relative paths", "[config_manager][path_
     manager.loadConfig();
     
     auto endpoints_before = manager.getEndpoints();
-    REQUIRE(endpoints_before.size() == 1);
+    REQUIRE(endpoints_before->size() == 1);
     
-    std::string template_before = endpoints_before[0].templateSource;
-    std::string cache_template_before = endpoints_before[0].cache.template_file.value();
+    std::string template_before = (*endpoints_before)[0].templateSource;
+    std::string cache_template_before = (*endpoints_before)[0].cache.template_file.value();
     
     // Modify the endpoint YAML (simulate external edit)
     fs::path endpoint_yaml = fixture.endpoint_dir / "endpoint.yaml";
@@ -180,9 +180,9 @@ TEST_CASE("Path Resolution: Reload with relative paths", "[config_manager][path_
     
     // Get the reloaded endpoint
     auto endpoints_after = manager.getEndpoints();
-    REQUIRE(endpoints_after.size() == 1);
+    REQUIRE(endpoints_after->size() == 1);
     
-    const auto& endpoint = endpoints_after[0];
+    const auto& endpoint = (*endpoints_after)[0];
     
     // Verify paths are still resolved correctly after reload
     INFO("Template after reload: " << endpoint.templateSource);
@@ -250,9 +250,9 @@ TEST_CASE("Path Resolution: Consistency between load, reload, and validation", "
     // 1. Initial load
     manager.loadConfig();
     auto endpoints_load = manager.getEndpoints();
-    REQUIRE(endpoints_load.size() == 1);
-    std::string template_after_load = endpoints_load[0].templateSource;
-    std::string cache_template_after_load = endpoints_load[0].cache.template_file.value();
+    REQUIRE(endpoints_load->size() == 1);
+    std::string template_after_load = (*endpoints_load)[0].templateSource;
+    std::string cache_template_after_load = (*endpoints_load)[0].cache.template_file.value();
     
     // 2. Validation
     fs::path endpoint_yaml = fixture.endpoint_dir / "endpoint.yaml";
@@ -267,9 +267,9 @@ TEST_CASE("Path Resolution: Consistency between load, reload, and validation", "
     bool reload_success = manager.reloadEndpointConfig("/test");
     REQUIRE(reload_success);
     auto endpoints_reload = manager.getEndpoints();
-    REQUIRE(endpoints_reload.size() == 1);
-    std::string template_after_reload = endpoints_reload[0].templateSource;
-    std::string cache_template_after_reload = endpoints_reload[0].cache.template_file.value();
+    REQUIRE(endpoints_reload->size() == 1);
+    std::string template_after_reload = (*endpoints_reload)[0].templateSource;
+    std::string cache_template_after_reload = (*endpoints_reload)[0].cache.template_file.value();
     
     // All three operations should result in the same resolved paths
     INFO("Template after load: " << template_after_load);
@@ -308,13 +308,13 @@ TEST_CASE("Path Resolution: Nested directory structure", "[config_manager][path_
     manager.loadConfig();
     
     auto endpoints = manager.getEndpoints();
-    REQUIRE(endpoints.size() == 1);
+    REQUIRE(endpoints->size() == 1);
     
     // Verify nested path is resolved correctly
-    INFO("Template source: " << endpoints[0].templateSource);
+    INFO("Template source: " << (*endpoints)[0].templateSource);
     INFO("Expected: " << nested_template.string());
-    REQUIRE(endpoints[0].templateSource == nested_template.string());
-    REQUIRE(fs::exists(endpoints[0].templateSource));
+    REQUIRE((*endpoints)[0].templateSource == nested_template.string());
+    REQUIRE(fs::exists((*endpoints)[0].templateSource));
 }
 
 TEST_CASE("Path Resolution: Missing file detection", "[config_manager][path_resolution]") {
@@ -327,10 +327,10 @@ TEST_CASE("Path Resolution: Missing file detection", "[config_manager][path_reso
     manager.loadConfig();
     
     auto endpoints = manager.getEndpoints();
-    REQUIRE(endpoints.size() == 1);
+    REQUIRE(endpoints->size() == 1);
     
     // Path should still be resolved (to absolute), even if file doesn't exist
-    std::string resolved_path = endpoints[0].templateSource;
+    std::string resolved_path = (*endpoints)[0].templateSource;
     INFO("Resolved path: " << resolved_path);
     REQUIRE(fs::path(resolved_path).is_absolute());
     REQUIRE_FALSE(fs::exists(resolved_path));

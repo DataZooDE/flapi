@@ -273,12 +273,14 @@ void ConfigManager::parseDuckLakeConfig() {
 }
 
 // Storage configuration methods
-std::shared_ptr<AuditLogger> ConfigManager::getAuditLogger() {
-    // Eagerly built once at the end of parseAuditConfig(); the AuditLogger
-    // itself owns the write mutex so this method is a simple accessor.
-    if (!audit_logger_) {
-        audit_logger_ = std::make_shared<AuditLogger>(audit_config);
-    }
+std::shared_ptr<AuditLogger> ConfigManager::getAuditLogger() const {
+    // Built eagerly at the end of parseAuditConfig() - the comment here used to
+    // claim that while the code below it initialised lazily. That was harmless
+    // while the only caller was MCPToolHandler's constructor on the bootstrap
+    // thread, but RequestContextMiddleware now reaches it from every Crow worker,
+    // and a first concurrent burst could construct two AuditLogger objects, each
+    // with its own write mutex over the same stream - interleaving lines and
+    // defeating the atomic-whole-line guarantee. A plain read cannot race.
     return audit_logger_;
 }
 
@@ -307,6 +309,10 @@ void ConfigManager::parseAuditConfig() {
     if (!audit_config.path.empty()) {
         CROW_LOG_DEBUG << "Audit path: " << audit_config.path;
     }
+
+    // Construct here, on the single-threaded configuration path, so that
+    // getAuditLogger() is a plain read for every request thread.
+    audit_logger_ = std::make_shared<AuditLogger>(audit_config);
 }
 
 void ConfigManager::parseStorageConfig() {
@@ -499,9 +505,9 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
                 continue;
             }
             total_yaml_files++;
-            size_t endpoints_before = endpoints_snapshot->size();
+            size_t endpoints_before = endpointsSnapshot()->size();
             loadEndpointConfig(name);
-            if (endpoints_snapshot->size() > endpoints_before) {
+            if (endpointsSnapshot()->size() > endpoints_before) {
                 loaded_endpoints++;
             }
         }
@@ -511,9 +517,9 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
                 auto extension = entry.path().extension();
                 if (extension == ".yaml" || extension == ".yml") {
                     total_yaml_files++;
-                    size_t endpoints_before = endpoints_snapshot->size();
+                    size_t endpoints_before = endpointsSnapshot()->size();
                     loadEndpointConfig(entry.path().string());
-                    if (endpoints_snapshot->size() > endpoints_before) {
+                    if (endpointsSnapshot()->size() > endpoints_before) {
                         loaded_endpoints++;
                     }
                 }
@@ -1341,12 +1347,8 @@ bool ConfigManager::isHttpsEnforced() const { return https_config.enabled; }
 const HttpsConfig& ConfigManager::getHttpsConfig() const { return https_config; }
 bool ConfigManager::isAuthEnabled() const { return auth_enabled; }
 std::optional<OIDCConfig> ConfigManager::getGlobalOIDCConfig() const { return global_auth_config.oidc; }
-const std::vector<EndpointConfig>& ConfigManager::getEndpoints() const {
-    // Legacy accessor. The reference is only safe until the next mutation;
-    // prefer endpointsSnapshot() anywhere a pointer or reference outlives the
-    // immediate expression.
-    std::lock_guard<MovableMutex> guard(endpoints_mutex);
-    return *endpoints_snapshot;
+std::shared_ptr<const std::vector<EndpointConfig>> ConfigManager::getEndpoints() const {
+    return endpointsSnapshot();
 }
 
 std::shared_ptr<const std::vector<EndpointConfig>> ConfigManager::endpointsSnapshot() const {
@@ -1504,7 +1506,10 @@ crow::json::wvalue ConfigManager::getFlapiConfig() const {
 
 crow::json::wvalue ConfigManager::getEndpointsConfig() const {
     crow::json::wvalue endpointsJson;
-    for (const auto& endpoint : *endpoints_snapshot) {
+    // Pin the snapshot: this is reachable from the config service on a request
+    // thread, concurrently with a writer swapping the table.
+    const auto snapshot = endpointsSnapshot();
+    for (const auto& endpoint : *snapshot) {
         endpointsJson[endpoint.urlPath] = serializeEndpointConfig(endpoint, EndpointJsonStyle::CamelCase);
     }
     return endpointsJson;
@@ -1817,32 +1822,46 @@ void ConfigManager::addEndpoint(const EndpointConfig& endpoint) {
 }
 
 bool ConfigManager::removeEndpointByPath(const std::string& path) {
-    auto before = endpoints_snapshot->size();
-    mutateEndpointsVoid([&](std::vector<EndpointConfig>& eps) {
-        eps.erase(
-            std::remove_if(eps.begin(), eps.end(), [&](const EndpointConfig& endpoint) {
-                return endpoint.matchesPath(path);
-            }),
-            eps.end());
-    });
-    auto after = endpoints_snapshot->size();
+    // Two bugs lived here.
+    //
+    // 1. `before` and `after` were read from endpoints_snapshot WITHOUT the
+    //    mutex the writer takes, so a concurrent addEndpoint could make this
+    //    report a removal that never happened (and TSan would flag the race).
+    // 2. The repository cleanup below called getEndpointForPath(path) AFTER the
+    //    erase, so the lookup always returned null and the branch never ran -
+    //    leaving endpoint_repository permanently stale for every removal.
+    //
+    // Both are fixed by deciding inside the mutation, under the lock, and
+    // carrying the removed endpoints out by value.
+    const auto removed = mutateEndpoints(
+        [&](std::vector<EndpointConfig>& eps) -> std::vector<EndpointConfig> {
+            std::vector<EndpointConfig> taken;
+            auto it = std::stable_partition(eps.begin(), eps.end(),
+                                            [&](const EndpointConfig& endpoint) {
+                                                return !endpoint.matchesPath(path);
+                                            });
+            taken.assign(std::make_move_iterator(it), std::make_move_iterator(eps.end()));
+            eps.erase(it, eps.end());
+            return taken;
+        });
 
-    // Also remove from repository
-    if (endpoint_repository && before != after) {
-        if (auto endpoint = getEndpointForPath(path)) {
-            if (endpoint->isRESTEndpoint()) {
-                endpoint_repository->removeRestEndpoint(endpoint->urlPath, endpoint->method);
-            } else if (endpoint->isMCPTool()) {
-                endpoint_repository->removeMCPEndpoint(endpoint->mcp_tool->name);
-            } else if (endpoint->isMCPResource()) {
-                endpoint_repository->removeMCPEndpoint(endpoint->mcp_resource->name);
-            } else if (endpoint->isMCPPrompt()) {
-                endpoint_repository->removeMCPEndpoint(endpoint->mcp_prompt->name);
+    // Repository updates happen outside the lock: endpoint_repository has its own
+    // locking, and holding two locks in an unspecified order invites a deadlock.
+    if (endpoint_repository) {
+        for (const auto& endpoint : removed) {
+            if (endpoint.isRESTEndpoint()) {
+                endpoint_repository->removeRestEndpoint(endpoint.urlPath, endpoint.method);
+            } else if (endpoint.isMCPTool()) {
+                endpoint_repository->removeMCPEndpoint(endpoint.mcp_tool->name);
+            } else if (endpoint.isMCPResource()) {
+                endpoint_repository->removeMCPEndpoint(endpoint.mcp_resource->name);
+            } else if (endpoint.isMCPPrompt()) {
+                endpoint_repository->removeMCPEndpoint(endpoint.mcp_prompt->name);
             }
         }
     }
 
-    return before != after;
+    return !removed.empty();
 }
 
 bool ConfigManager::replaceEndpoint(const EndpointConfig& endpoint) {

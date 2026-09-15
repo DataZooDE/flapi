@@ -60,7 +60,7 @@ static std::string deriveAuthKind(const ConfigManager& cfg) {
             return t;
         }
     }
-    for (const auto& endpoint : cfg.getEndpoints()) {
+    for (const auto& endpoint : *cfg.getEndpoints()) {
         if (endpoint.auth.enabled) {
             std::string t = normalize(endpoint.auth.type);
             if (!t.empty()) {
@@ -210,13 +210,13 @@ void printValidationSummary(bool all_valid, int errors_count, int warnings_count
 int validateConfiguration(std::shared_ptr<ConfigManager> config_manager, const std::string& config_file) {
     std::cout << "Validating configuration file: " << config_file << std::endl;
     std::cout << "✓ Configuration file loaded successfully" << std::endl;
-    std::cout << "✓ Parsed " << config_manager->getEndpoints().size() << " endpoint(s)" << std::endl;
+    std::cout << "✓ Parsed " << config_manager->getEndpoints()->size() << " endpoint(s)" << std::endl;
     
     bool all_valid = true;
     int warnings_count = 0;
     int errors_count = 0;
     
-    for (const auto& endpoint : config_manager->getEndpoints()) {
+    for (const auto& endpoint : *config_manager->getEndpoints()) {
         auto result = config_manager->validateEndpointConfig(endpoint);
         std::string endpoint_name = getEndpointName(endpoint);
         
@@ -664,7 +664,7 @@ int main(int argc, char* argv[])
             telemetry.associateAccount(lic);
         }
         telemetry.serverStarted(
-            static_cast<int>(config_manager->getEndpoints().size()),
+            static_cast<int>(config_manager->getEndpoints()->size()),
             deriveAuthKind(*config_manager));
     }
 

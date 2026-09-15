@@ -40,7 +40,7 @@ YAML::Node OpenAPIDocGenerator::generateDoc(flapi::FlapiApp& app)
     // Paths
     // Group endpoints by URL path to merge multiple HTTP methods for the same path
     std::map<std::string, std::vector<EndpointConfig>> endpointsByPath;
-    for (const auto& endpoint : configManager->getEndpoints()) {
+    for (const auto& endpoint : *configManager->getEndpoints()) {
         endpointsByPath[endpoint.urlPath].push_back(endpoint);
     }
     

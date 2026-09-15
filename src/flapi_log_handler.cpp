@@ -9,22 +9,10 @@
 #include <crow/json.h>
 
 #include "request_context.hpp"
+#include "time_utils.hpp"
 
 namespace flapi {
 
-namespace {
-
-std::string nowIso8601() {
-    const auto now = std::chrono::system_clock::now();
-    const auto secs = std::chrono::system_clock::to_time_t(now);
-    std::tm tm{};
-    gmtime_r(&secs, &tm);
-    std::ostringstream out;
-    out << std::put_time(&tm, "%Y-%m-%dT%H:%M:%SZ");
-    return out.str();
-}
-
-}  // namespace
 
 FlapiLogHandler::FlapiLogHandler(Format format) : format_(format) {}
 
@@ -46,7 +34,7 @@ std::string FlapiLogHandler::format(const std::string& message, crow::LogLevel l
         // crow::json::wvalue handles escaping, so a message containing a newline
         // or a quote cannot split or corrupt the record.
         crow::json::wvalue line;
-        line["timestamp"] = nowIso8601();
+        line["timestamp"] = nowIso8601Utc();
         line["level"] = levelName(level);
         line["message"] = message;
         if (rc != nullptr) {
@@ -62,7 +50,7 @@ std::string FlapiLogHandler::format(const std::string& message, crow::LogLevel l
     std::string out;
     out.reserve(message.size() + 96);
     out += "(";
-    out += nowIso8601();
+    out += nowIso8601Utc();
     out += ") [";
     out += levelName(level);
     out += "] ";

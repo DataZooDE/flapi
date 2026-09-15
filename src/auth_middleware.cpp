@@ -123,7 +123,7 @@ void AuthMiddleware::initialize(std::shared_ptr<ConfigManager> config_manager) {
 }
 
 void AuthMiddleware::initializeAwsSecretsManager() {
-    for (const auto& endpoint : config_manager->getEndpoints()) {
+    for (const auto& endpoint : *config_manager->getEndpoints()) {
         if (!endpoint.auth.from_aws_secretmanager || !endpoint.auth.enabled) {
             continue;
         }
@@ -176,15 +176,15 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
         CROW_LOG_DEBUG << "No Authorization header found";
         res.code = 401;
         res.set_header("WWW-Authenticate", "Basic realm=\"flAPI\"");
-        // res.end() inside before_handle makes Crow skip after_handle
-        // (crow/http_connection.h:207), so RequestContextMiddleware would never
-        // complete this request. Finish it explicitly, or the 401 is missing from
-        // the audit log and the ambient context is left set on a pooled thread.
+        // Record the outcome for the audit line. Completion itself is NOT done
+        // here: Crow runs every middleware's after_handle during the
+        // short-circuit unwind (crow/middleware.h:151-155), so
+        // RequestContextMiddleware::after_handle still runs for this 401.
+        // Completing here as well emitted the line twice.
         if (auto* rc = RequestContextScope::current()) {
             rc->auth_kind = "basic";
             rc->principal = "anonymous";
         }
-        RequestContextMiddleware::finishActiveRequest(401);
         res.end();
         flapi::GlobalTelemetry().authEnforced(auth_kind, /*allow=*/false);
         return;
@@ -204,12 +204,11 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
     if (!ctx.authenticated) {
         CROW_LOG_DEBUG << "Authentication failed";
         res.code = 401;
-        // Same as above: after_handle will not run for this response.
+        // As above: record only. after_handle still runs for this response.
         if (auto* rc = RequestContextScope::current()) {
             rc->auth_kind = staticAuthKind(endpoint->auth.type);
             rc->principal = ctx.username.empty() ? "anonymous" : ctx.username;
         }
-        RequestContextMiddleware::finishActiveRequest(401);
         res.end();
     } else {
         CROW_LOG_DEBUG << "Authentication successful for user: " << ctx.username;

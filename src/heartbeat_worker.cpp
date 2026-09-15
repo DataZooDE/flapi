@@ -28,7 +28,7 @@ void HeartbeatWorker::workerLoop() {
     while (running) {
         if (config_manager->getGlobalHeartbeatConfig().enabled) 
         {    
-            for (const auto& endpoint : config_manager->getEndpoints()) {
+            for (const auto& endpoint : *config_manager->getEndpoints()) {
                 if (!running) break; // Check if we should exit
                 if (endpoint.heartbeat.enabled) {
                     performHeartbeat(endpoint);
@@ -62,7 +62,7 @@ void HeartbeatWorker::performDuckLakeScheduledTasks() {
     // Check if it's time to run scheduled cache refreshes
     auto now = std::chrono::system_clock::now();
     
-    for (const auto& endpoint : config_manager->getEndpoints()) {
+    for (const auto& endpoint : *config_manager->getEndpoints()) {
         if (!endpoint.cache.enabled || endpoint.cache.table.empty()) {
             continue;
         }
@@ -131,7 +131,7 @@ void HeartbeatWorker::performDuckLakeCompaction() {
         auto db_manager = api_server.getDatabaseManager();
         
         // Run compaction on all cached tables
-        for (const auto& endpoint : config_manager->getEndpoints()) {
+        for (const auto& endpoint : *config_manager->getEndpoints()) {
             if (!endpoint.cache.enabled || endpoint.cache.table.empty()) {
                 continue;
             }

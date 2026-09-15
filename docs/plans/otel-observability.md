@@ -147,60 +147,54 @@ readings were broken.
 - `SpanScope` is **strict RAII**: the destructor ends the span; `end()` releases `Impl` and is a
   no-op afterwards. Without this, a `BadRequestError` thrown between `startSpan` and `end()`
   leaks the OTel `trace::Scope` push and mis-parents the *next* request on that pooled worker.
-#### The Crow finding that changes §6.1.1 — **answered, and the HLD is wrong**
+#### Crow's actual after_handle behaviour — **corrected twice; this is the verified version**
 
-Read from the pinned Crow (`crow/http_connection.h`):
+An earlier revision of this plan asserted that Crow does **not** call
+`after_handle` when a middleware completes the response in `before_handle`,
+citing `http_connection.h:207`. **That was wrong**, and the P0 crew review caught
+it by reading the source rather than accepting the premise.
+
+The authority is `crow/middleware.h:149-160`:
 
 ```cpp
-need_to_call_after_handlers_ = false;                    // :183
-if (!is_invalid_request) {
-    middleware_call_helper<...>(...);                    // :192  before_handle chain
-    if (!res.completed_) {
-        need_to_call_after_handlers_ = true;             // :201  set only if NOT short-circuited
-        handler_->handle(...);
-    } else {
-        complete_request();                              // :207  after_handlers SKIPPED
-    }
+before_handler_call<CurrentMW, ...>(...);
+if (res.is_completed()) {
+    after_handler_call<CurrentMW, ...>(...);   // this middleware's after_handle
+    return true;                               // ...and each OUTER frame runs its own
 }
 ```
 
-**`after_handle` does not run when a middleware completes the response in
-`before_handle`.** `AuthMiddleware` does exactly that on its 401 paths
-(`auth_middleware.cpp:163-167`, `:181-184` call `res.end()`).
+So on a short circuit Crow runs the completing middleware's `after_handle` and
+then unwinds, running every **outer** middleware's too. `RequestContextMiddleware`
+is index 0, so its `after_handle` always runs. The `:207` skip is the *second*
+pass, skipped precisely **because** the unwind already ran them — reading only
+that line leads to the opposite, wrong conclusion.
 
-So the HLD's §6.1.1 claim — that a leftmost middleware "wraps the entire chain
-including middleware rejections" — **is false for 401**, which is one of the two
-failures BR-21 exists to capture. A span started in `before_handle` and ended in
-`after_handle` would, on every 401, leak the span and leave a stale TLS pointer.
+| Path | `after_handle` runs? |
+|---|---|
+| normal request | yes |
+| 401 from `AuthMiddleware` (`res.end()` in `before_handle`) | **yes**, via the unwind |
+| 429 from `RateLimitMiddleware` | yes |
+| 404 unmatched | yes — but see below |
+| handler throws | yes |
 
-Three related facts, all verified:
+**The cost of getting this wrong was real:** P0 shipped an explicit
+`finishActiveRequest()` on the 401 path *in addition* to `after_handle`, so every
+401 was audited **twice**. The integration test asserted only "at least one line"
+and was blind to it. Both are fixed; the test now asserts exactly one.
 
-| Path | `after_handle` runs? | Why |
-|---|---|---|
-| normal request | yes | `need_to_call_after_handlers_ = true` before the handler |
-| **401 from `AuthMiddleware`** | **no** | `res.end()` in `before_handle` takes the `:207` branch |
-| 429 from `RateLimitMiddleware` | yes | it sets `res.code` but deliberately does *not* call `res.end()` |
-| 404 unmatched | yes | `handle_url()` sets the flag at `:117` |
+**Contract:**
 
-And the middleware context is **not** a per-request destructor hook either: it is
-reset at `:143`, i.e. at the start of the *next* request on that connection. On a
-keep-alive connection that is arbitrarily later, so a context destructor cannot
-carry span timing.
-
-**Contract, replacing the HLD's:**
-
-1. The tracing middleware stays leftmost and starts the span in `before_handle`.
-2. `after_handle` ends the span **and is idempotent** — it may find the span
-   already ended.
-3. Any middleware that completes a response inside `before_handle` MUST end the
-   span first. In practice that is `AuthMiddleware`'s two 401 paths; they call a
-   `finishActiveRequest(res.code)` helper before `res.end()`.
-4. Issue 7.2's regression test therefore has real teeth: **a handler-level
-   implementation fails it, and so does a naive leftmost-middleware
-   implementation that trusts `after_handle`.** Assert exactly one ended span
-   for a 401, with `http.response.status_code = 401`.
-5. `before_handle` sets the ambient context unconditionally, so a stale TLS
-   pointer can never be read by a later request on the same pooled thread.
+1. Completion happens in `after_handle` and nowhere else.
+2. `after_handle` can run when `before_handle` did **not**: an unmatched route is
+   completed from `handle_url()` (`http_connection.h:110-119`) without `handle()`
+   ever running, and the middleware context is reset inside `handle()`, not
+   `handle_url()` (`:143`). A `started` flag on the context guards this;
+   otherwise that path audits a default-constructed context whose latency is the
+   *connection's* age.
+3. Instrumentation catches internally and clears the ambient pointer through a
+   scope guard, so a throwing emitter can neither fail the request nor strand a
+   stale pointer on a pooled worker.
 
 **How it reaches each consumer:**
 

@@ -328,7 +328,7 @@ cache:
 )");
     temp.writeSqlTemplate("cached.sql", "SELECT 1");
     auto config_manager = temp.createConfigManager();
-    const auto endpoint = config_manager->getEndpoints().front();
+    const auto endpoint = config_manager->getEndpoints()->front();
 
     CacheManager cache_manager(std::shared_ptr<ICacheDatabaseAdapter>(nullptr));
     cache_manager.initializeReadiness(config_manager);
@@ -395,7 +395,7 @@ cache:
 
     bool saw_failed = false;
     bool saw_ready = false;
-    for (const auto& endpoint : config_manager->getEndpoints()) {
+    for (const auto& endpoint : *config_manager->getEndpoints()) {
         auto readiness = cache_manager.getEndpointReadiness(config_manager, endpoint);
         if (endpoint.cache.table == "first_cache") {
             saw_failed = true;
@@ -502,7 +502,7 @@ cache:
 )");
     temp.writeSqlTemplate("cached.sql", "SELECT 1");
     auto config_manager = temp.createConfigManager();
-    const auto endpoint = config_manager->getEndpoints().front();
+    const auto endpoint = config_manager->getEndpoints()->front();
 
     std::promise<void> release_refresh;
     auto release_future = release_refresh.get_future().share();

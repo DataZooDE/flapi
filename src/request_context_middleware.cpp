@@ -8,11 +8,6 @@ namespace flapi {
 
 namespace {
 
-// Set by setConfigManager so the static finishActiveRequest - which has no
-// instance to reach through - can still emit an audit line. Written once during
-// server bootstrap, read on request threads.
-std::shared_ptr<ConfigManager>* g_config_manager = nullptr;
-
 // crow::method_name returns std::string by value, which would allocate on every
 // request. RequestContext stores a const char* into static storage instead, so
 // map the enum ourselves. Unknown verbs collapse to "_OTHER", matching HTTP
@@ -43,17 +38,25 @@ bool isProbeRoute(std::string_view path) {
     return path == "/health" || path == "/health/live" || path == "/mcp/health";
 }
 
-void emitAuditLine(const RequestContext& rc) {
-    if (rc.audit_suppressed) {
+// A denial is never suppressed.
+//
+// MCP suppresses the HTTP-level line because it audits at the tool level, but a
+// request rejected BEFORE the tool handler runs - Layer-1 authentication or
+// authorization, or a transport rate limit - reaches no tool-level emitter. Left
+// suppressed, those produce no audit record whatsoever, which is the worst
+// failure mode an audit log has: silence on exactly the events a reviewer is
+// looking for.
+bool isDenial(int status_code) {
+    return status_code == 401 || status_code == 403 || status_code == 429;
+}
+
+void emitAuditLine(const std::shared_ptr<AuditLogger>& logger, const RequestContext& rc) {
+    if (rc.audit_suppressed && !isDenial(rc.status_code)) {
         return;   // a richer emitter already logged this operation
     }
     if (isProbeRoute(rc.raw_path)) {
         return;
     }
-    if (!g_config_manager || !*g_config_manager) {
-        return;
-    }
-    auto logger = (*g_config_manager)->getAuditLogger();
     if (!logger || !logger->isEnabled()) {
         return;
     }
@@ -64,12 +67,15 @@ void emitAuditLine(const RequestContext& rc) {
 
 void RequestContextMiddleware::setConfigManager(std::shared_ptr<ConfigManager> config_manager) {
     config_manager_ = std::move(config_manager);
-    static std::shared_ptr<ConfigManager> holder;
-    holder = config_manager_;
-    g_config_manager = &holder;
+    // Resolve the logger once at bootstrap. getAuditLogger() initialises lazily
+    // and is not synchronised, so resolving it here - on the single-threaded
+    // startup path - keeps every Crow worker off that race, and keeps the hot
+    // path free of shared_ptr refcount traffic when audit is disabled.
+    audit_logger_ = config_manager_ ? config_manager_->getAuditLogger() : nullptr;
 }
 
 void RequestContextMiddleware::before_handle(crow::request& req, crow::response& res, context& ctx) {
+    ctx.started = true;
     ctx.finished = false;
     ctx.rc = RequestContext{};
     ctx.rc.t0 = std::chrono::steady_clock::now();
@@ -108,24 +114,32 @@ void RequestContextMiddleware::after_handle(crow::request&, crow::response& res,
 }
 
 void RequestContextMiddleware::finish(crow::response& res, context& ctx) {
-    if (ctx.finished) {
-        return;   // idempotent: a middleware may have completed this already
-    }
-    ctx.finished = true;
-
-    ctx.rc.status_code = res.code;
-    emitAuditLine(ctx.rc);
-    RequestContextScope::clear();
-}
-
-void RequestContextMiddleware::finishActiveRequest(int status_code) {
-    RequestContext* rc = RequestContextScope::current();
-    if (rc == nullptr) {
+    // Crow can call after_handle when before_handle never ran for this request:
+    // handle_url() short-circuits an unmatched route by setting
+    // need_to_call_after_handlers_ and calling complete_request() directly,
+    // WITHOUT running handle() - and ctx_ is reset inside handle(), not
+    // handle_url() (crow/http_connection.h:110-119, :143). Without this guard
+    // that path audits a default-constructed context: an empty request id, no
+    // method, and a latency equal to the connection's age.
+    if (!ctx.started || ctx.finished) {
         return;
     }
-    rc->status_code = status_code;
-    emitAuditLine(*rc);
-    RequestContextScope::clear();
+    ctx.finished = true;
+    ctx.rc.status_code = res.code;
+
+    // Instrumentation must never fail a request, and must never leave the
+    // ambient pointer set on a pooled worker. Clearing happens whatever the
+    // emitter does; the emitter's failures are counted, not propagated.
+    struct ClearGuard {
+        ~ClearGuard() { RequestContextScope::clear(); }
+    } clear_guard;
+
+    try {
+        emitAuditLine(audit_logger_, ctx.rc);
+    } catch (...) {
+        instrumentation_failures_.fetch_add(1, std::memory_order_relaxed);
+    }
 }
+
 
 }  // namespace flapi

@@ -561,7 +561,7 @@ void ConfigService::registerRoutes(FlapiApp& app) {
 
             // Endpoints count
             if (config_manager) {
-                health["endpoints"]["count"] = static_cast<int>(config_manager->getEndpoints().size());
+                health["endpoints"]["count"] = static_cast<int>(config_manager->getEndpoints()->size());
             }
 
             // Arrow IPC status
@@ -838,8 +838,8 @@ crow::response EndpointConfigHandler::createEndpoint(const crow::request& req) {
 
 // Helper method to find endpoint by slug (centralized slug logic)
 const EndpointConfig* findEndpointBySlug(std::shared_ptr<ConfigManager> config_manager, const std::string& slug) {
-    const auto& endpoints = config_manager->getEndpoints();
-    for (const auto& endpoint : endpoints) {
+    const auto endpoints = config_manager->getEndpoints();   // pinned snapshot
+    for (const auto& endpoint : *endpoints) {
         if (endpoint.getSlug() == slug) {
             return &endpoint;
         }
@@ -1087,10 +1087,10 @@ crow::response EndpointConfigHandler::findEndpointsByTemplate(const crow::reques
         auto normalized_template = std::filesystem::path(template_path).lexically_normal();
         
         // Search through all endpoints
-        const auto& endpoints = config_manager_->getEndpoints();
+        const auto endpoints = config_manager_->getEndpoints();   // pinned snapshot
         size_t idx = 0;
         
-        for (const auto& endpoint : endpoints) {
+        for (const auto& endpoint : *endpoints) {
             // Normalize endpoint's template path
             auto endpoint_template = std::filesystem::path(endpoint.templateSource).lexically_normal();
             

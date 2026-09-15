@@ -70,7 +70,7 @@ std::string SecurityAuditor::classifyPassword(const std::string& password) {
 std::vector<SecurityWarning> SecurityAuditor::audit(const ConfigManager& config) const {
     std::vector<SecurityWarning> warnings;
 
-    for (const auto& endpoint : config.getEndpoints()) {
+    for (const auto& endpoint : *config.getEndpoints()) {
         scanUsers(endpoint.auth.users, "endpoint " + endpoint.getIdentifier(), warnings);
     }
 
@@ -79,7 +79,7 @@ std::vector<SecurityWarning> SecurityAuditor::audit(const ConfigManager& config)
 
     if (mcp.enabled && !mcp.auth.enabled) {
         const bool any_mcp_tool = std::any_of(
-            config.getEndpoints().begin(), config.getEndpoints().end(),
+            config.getEndpoints()->begin(), config.getEndpoints()->end(),
             [](const EndpointConfig& e) { return e.isMCPTool(); });
         if (any_mcp_tool) {
             warnings.push_back({

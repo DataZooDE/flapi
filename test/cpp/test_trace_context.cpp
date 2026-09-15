@@ -53,12 +53,59 @@ TEST_CASE("malformed traceparents are rejected", "[trace_context]") {
         "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-ZZ",         // non-hex flags
         "00-00000000000000000000000000000000-00f067aa0ba902b7-01",         // all-zero trace id
         "00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01",         // all-zero span id
-        "00-4BF92F3577B34DA6A3CE929D0E0E4736-00f067aa0ba902b7-01",         // uppercase is invalid
     };
     for (const char* s : bad) {
         INFO("input: " << s);
         REQUIRE_FALSE(parseTraceparent(s).valid());
     }
+}
+
+TEST_CASE("uppercase hex is normalised rather than rejected", "[trace_context]") {
+    // W3C requires lowercase on the wire, but tolerant parsers accept uppercase
+    // and some propagators emit it. Rejecting it would silently start a NEW root
+    // trace against a conforming upstream - the exact failure this epic removes.
+    const auto ids = parseTraceparent("00-4BF92F3577B34DA6A3CE929D0E0E4736-00F067AA0BA902B7-01");
+    REQUIRE(ids.valid());
+    REQUIRE(ids.trace_id == "4bf92f3577b34da6a3ce929d0e0e4736");
+    REQUIRE(ids.span_id == "00f067aa0ba902b7");
+}
+
+TEST_CASE("surrounding whitespace is tolerated", "[trace_context]") {
+    const auto ids = parseTraceparent("  00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\t");
+    REQUIRE(ids.valid());
+    REQUIRE(ids.trace_id == "4bf92f3577b34da6a3ce929d0e0e4736");
+}
+
+TEST_CASE("tracestate is truncated at a list-member boundary", "[trace_context]") {
+    // A raw substr can cut inside a key or value; propagating "...,vendorX=abc12"
+    // makes the NEXT hop reject the whole header, breaking the trace beyond flAPI
+    // rather than merely shortening it. W3C 3.3.1 says drop whole members.
+    const std::string tp = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+
+    std::string oversized;
+    while (oversized.size() < kMaxTracestateBytes + 64) {
+        oversized += "vendor" + std::to_string(oversized.size()) + "=somevalue,";
+    }
+    oversized.pop_back();
+
+    const auto ids = parseTraceparent(tp, oversized);
+    REQUIRE(ids.valid());
+    REQUIRE(ids.tracestate.size() <= kMaxTracestateBytes);
+    if (!ids.tracestate.empty()) {
+        // Whatever survived must be whole members: no trailing comma, and every
+        // member still has its '='.
+        REQUIRE(ids.tracestate.back() != ',');
+        REQUIRE(ids.tracestate.find('=') != std::string::npos);
+    }
+}
+
+TEST_CASE("control characters are rejected from tracestate and baggage", "[trace_context][security]") {
+    // These values reach exporters and outbound headers, where a CR/LF is a
+    // response-splitting primitive.
+    const std::string tp = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    REQUIRE(parseTraceparent(tp, "vendor=va\r\nInjected: yes").tracestate.empty());
+    REQUIRE(parseTraceparent(tp, "", "key=va\nlue").baggage.empty());
+    REQUIRE(parseTraceparent(tp, "vendor=ok").tracestate == "vendor=ok");
 }
 
 TEST_CASE("a future version with extra fields is accepted forward-compatibly", "[trace_context]") {

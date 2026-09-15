@@ -36,7 +36,7 @@ void CacheManager::warmUpCaches(std::shared_ptr<ConfigManager> config_manager) {
     const auto& cache_schema = config_manager->getCacheSchema();
 
     std::map<std::string, std::string> params;
-    for (auto &endpoint : config_manager->getEndpoints()) 
+    for (auto &endpoint : *config_manager->getEndpoints()) 
     {
         // Warmup: refresh caches only for endpoints with cache enabled and a table defined
         if (endpoint.cache.enabled && !endpoint.cache.table.empty()) {
@@ -126,7 +126,7 @@ CacheManager::CacheKey CacheManager::cacheKeyForEndpoint(std::shared_ptr<ConfigM
 void CacheManager::initializeReadiness(std::shared_ptr<ConfigManager> config_manager) {
     std::lock_guard<std::mutex> lock(readiness_mutex_);
     readiness_.clear();
-    for (const auto& endpoint : config_manager->getEndpoints()) {
+    for (const auto& endpoint : *config_manager->getEndpoints()) {
         if (!endpoint.cache.enabled || endpoint.cache.table.empty()) {
             continue;
         }
