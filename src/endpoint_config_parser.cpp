@@ -1,4 +1,5 @@
 #include "endpoint_config_parser.hpp"
+#include "tracing_config.hpp"
 #include <crow/logging.h>
 #include <algorithm>
 #include <cctype>
@@ -209,6 +210,19 @@ void EndpointConfigParser::parseMcpToolFields(
         }
         if (auto sample = response_node["sample"]; sample.IsDefined()) {
             tool_info.response.sample = sample.as<bool>();
+        }
+    }
+
+    // Per-endpoint tracing capture override. Declared alongside the response
+    // block because the redaction it governs reuses response.redact-columns.
+    //
+    // std::optional, so "unset" stays distinguishable from "set to the global
+    // default" - a global `capture: off` must still win over an endpoint that
+    // asks for payload.
+    if (auto tracing_node = mcp_tool_node["tracing"]; tracing_node.IsDefined()) {
+        if (auto capture = tracing_node["capture"]; capture.IsDefined()) {
+            tool_info.response.tracing_capture =
+                parseCaptureTier(capture.as<std::string>(), CaptureTier::Metadata);
         }
     }
 

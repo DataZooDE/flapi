@@ -11,6 +11,7 @@
 
 #include "request_context.hpp"
 #include "trace_scope.hpp"
+#include "trace_capture_policy.hpp"
 #include "tracing_config.hpp"
 
 namespace flapi {
@@ -70,6 +71,9 @@ private:
     // lookup. Route exclusion is matched against the raw path.
     std::vector<std::string> excluded_routes_;
     bool tracing_configured_ = false;
+    // Copied at bootstrap; the policy itself is immutable after construction.
+    const CapturePolicy* capture_policy_ = nullptr;
+    bool openinference_ = false;
     // Resolved once at bootstrap: getAuditLogger() initialises lazily without
     // synchronisation, and this middleware runs on every Crow worker.
     std::shared_ptr<AuditLogger> audit_logger_;

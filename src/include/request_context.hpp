@@ -4,7 +4,10 @@
 #include <chrono>
 #include <cstdint>
 #include <string>
+#include <optional>
 #include <string_view>
+
+#include "tracing_config.hpp"
 #include <utility>
 #include <vector>
 
@@ -72,6 +75,11 @@ struct RequestContext {
     // "meta_over_header" when _meta and the HTTP header disagreed. Recorded so a
     // surprising parent is diagnosable rather than mysterious. Static storage.
     const char* trace_context_source = "none";
+
+    // Per-endpoint capture override, written by the handler once the endpoint is
+    // resolved. Optional so "unset" stays distinguishable from "set to the
+    // global default"; a global `off` wins over it regardless.
+    std::optional<CaptureTier> endpoint_capture;
 
     // ---- accessors --------------------------------------------------------
     std::string_view requestIdView() const { return viewOf(request_id); }

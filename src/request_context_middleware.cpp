@@ -162,8 +162,11 @@ void RequestContextMiddleware::setConfigManager(std::shared_ptr<ConfigManager> c
     // path free of shared_ptr refcount traffic when audit is disabled.
     audit_logger_ = config_manager_ ? config_manager_->getAuditLogger() : nullptr;
     if (config_manager_) {
-        excluded_routes_ = config_manager_->getTracingConfig().exclude_routes;
-        tracing_configured_ = config_manager_->getTracingConfig().enabled;
+        const auto& tracing = config_manager_->getTracingConfig();
+        excluded_routes_ = tracing.exclude_routes;
+        tracing_configured_ = tracing.enabled;
+        openinference_ = tracing.openinference;
+        capture_policy_ = &config_manager_->getCapturePolicy();
     }
 }
 
@@ -333,6 +336,53 @@ void RequestContextMiddleware::finish(crow::response& res, context& ctx) {
                 ctx.span.setAttr(semconv::genai::kToolName, ctx.rc.mcp_tool);
                 ctx.span.setAttr(semconv::genai::kOperationName, semconv::genai::kExecuteTool);
             }
+            // --- Payload tier ------------------------------------------------
+            //
+            // Values are captured ONLY here, and only when the effective tier is
+            // payload. Everything above this point is structure and shape.
+            //
+            // Note what is still excluded even here: the filled path and query
+            // string (a query string on a data API is by definition a filter over
+            // customer data), and every credential-shaped key - both enforced by
+            // CapturePolicy rather than by remembering to omit them.
+            if (capture_policy_ != nullptr
+                && capture_policy_->capturesValues(ctx.rc.endpoint_capture)
+                && !ctx.rc.audit_params.empty()) {
+                std::string rendered;
+                rendered.reserve(128);
+                rendered += '{';
+                for (const auto& [key, value] : ctx.rc.audit_params) {
+                    if (rendered.size() > 1) { rendered += ','; }
+                    rendered += '"';
+                    rendered += key;
+                    rendered += "\":\"";
+                    // Redact FIRST, clamp SECOND - clamping first can truncate
+                    // mid-value and leave a partial secret behind.
+                    rendered += capture_policy_->redactAndClamp(key, value);
+                    rendered += '"';
+                }
+                rendered += '}';
+                ctx.span.setAttr("gen_ai.tool.call.arguments", rendered);
+
+                if (openinference_) {
+                    ctx.span.setAttr("input.value", rendered);
+                    ctx.span.setAttr("input.mime_type", "application/json");
+                }
+            }
+
+            // --- OpenInference overlay ---------------------------------------
+            //
+            // Attributes on the SAME span: no extra spans, no second exporter. A
+            // REST request is deliberately NOT marked as a CHAIN - that would
+            // mis-model flAPI as an agent rather than as a tool an agent calls.
+            if (openinference_ && !ctx.rc.mcp_tool.empty()) {
+                ctx.span.setAttr("openinference.span.kind", "TOOL");
+                ctx.span.setAttr("tool.name", ctx.rc.mcp_tool);
+                if (!ctx.rc.mcp_session_id.empty()) {
+                    ctx.span.setAttr("session.id", ctx.rc.mcp_session_id);
+                }
+            }
+
             if (const char* error_type = errorTypeFor(ctx.rc.status_code)) {
                 ctx.span.setError(error_type);
             }

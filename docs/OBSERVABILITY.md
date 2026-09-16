@@ -99,42 +99,44 @@ and of near-zero diagnostic value once green. Override with `exclude_routes`.
 |---|---|---|
 | `off` | nothing; no provider is constructed | — |
 | **`metadata`** (default) | span structure, timings, route templates, tool names, parameter **names** and types, row and column counts, byte counts, cache-backing, enumerated error kinds | any argument value, any result row, any filled path or query string, any header, any credential |
-| `payload` | *not implemented yet* — see below | credentials and headers — excluded at **every** tier |
+| `payload` | metadata **plus** the values of **declared** request fields | credentials, headers, filled paths and query strings — excluded at **every** tier |
 
-**What is true today:** the payload tier is **not implemented**. flAPI captures
-no argument values and no result rows at any setting. Configuring
-`capture: payload` logs a warning at startup and behaves as `metadata`; it does
-not silently start exporting data, and it does not silently do nothing either.
+Four properties are enforced by tests, not asserted in prose. Each has a test
+that fails if the property stops holding:
 
-So the guarantee currently in force is stronger than redaction: **no values are
-captured at all.** That IS enforced end to end — an integration test plants
-sentinels in a query string, a path segment, an `Authorization` header and a
-request body and asserts none appears anywhere in the raw exported bytes,
-including span names and status messages.
+1. **A global `capture: off` beats any per-endpoint opt-in.** One lever is
+   guaranteed to stop export, whatever an endpoint says.
+2. **Credential-shaped keys are redacted at every tier**, regardless of your
+   configuration — `Authorization`, `Cookie`, `password`, `api_key`,
+   `access_token`, `client_secret`, `private_key`, `connection_string` and
+   similar. This does not depend on your redact list being complete.
+3. **Filled paths and query strings are never exported, at any tier.** A query
+   string on a data API is by definition a filter over customer data.
+4. **The payload tier genuinely captures**, which is what makes the three
+   exclusions above meaningful rather than vacuous. There is a test asserting a
+   declared parameter value *does* appear — without it, the exclusion tests would
+   pass simply because nothing is captured.
 
-The redaction machinery below is built and unit-tested, but is not yet on any
-value path because there are no values to redact. It will be wired up with the
-payload tier.
+Only the values of **declared request fields** are captured. An arbitrary query
+parameter a caller appends is not part of the endpoint's contract and is not
+exported. Redaction reuses your existing `audit.redact_keys`, so you configure it
+once, and redaction happens *before* clamping so a truncated value cannot leave a
+partial secret behind.
 
-### Planned, not yet available
+### Per-endpoint opt-in
 
 ```yaml
-# NOT YET IMPLEMENTED - accepted and warned about, behaves as metadata
 mcp-tool:
   name: customer_lookup
   response:
-    redact_columns: [email, tax_id]   # existing; will be reused by tracing
+    redact-columns: [email, tax_id]
   tracing:
-    capture: payload
+    capture: payload        # or `off`, to exclude a sensitive endpoint
 ```
 
-When the payload tier lands, flAPI becomes a processor exporting personal data to
-a third destination, with DPA/AVV implications you need to have considered. The
-design that will govern it: a global `capture: off` beats any per-endpoint
-opt-in; redaction reuses your existing `audit.redact_keys` so it is configured
-once; and a fixed set of credential-shaped keys (`Authorization`, `Cookie`,
-`password`, `api_key`, `access_token`, `client_secret`, `private_key`,
-`connection_string`) is redacted regardless of configuration.
+At the payload tier flAPI becomes a processor exporting personal data to a third
+destination, with DPA/AVV implications you need to have considered. flAPI logs a
+warning at startup saying exactly that, deliberately.
 
 ## 5. Deployment
 

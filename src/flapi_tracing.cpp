@@ -284,13 +284,13 @@ void FlapiTracing::configure(const TracingConfig& config) {
         return;
     }
     if (config.capture == CaptureTier::Payload) {
-        // The payload tier is not implemented yet (plan issue 14). Say so loudly
-        // rather than silently behaving as metadata: an operator who configured
-        // payload capture has made a deliberate data-protection decision and must
-        // not be left believing it took effect - in either direction.
+        // Payload capture exports customer data to a third destination. An
+        // operator must not be able to reach that without seeing it said out
+        // loud, and a reviewer reading the startup log must be able to see it too.
         CROW_LOG_WARNING
-            << "tracing.capture=payload is not implemented yet; behaving as "
-               "'metadata'. No argument values or result rows are exported.";
+            << "tracing.capture=payload: declared parameter VALUES will be "
+               "exported to the configured tracing backend. Credentials and "
+               "filled paths are still excluded. Confirm this is intended.";
     }
 
     backend_ = std::make_unique<OtelTracingBackend>(config);

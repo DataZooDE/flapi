@@ -231,6 +231,24 @@ void APIServer::handleDynamicRequest(const crow::request& req, crow::response& r
         // route_template is read later in after_handle.
         rc->route_template_storage = endpoint->urlPath;
         rc->route_template = rc->route_template_storage;
+
+        // Per-endpoint capture override, so the middleware can resolve the
+        // effective tier. A global `capture: off` still wins over it.
+        if (endpoint->mcp_tool) {
+            rc->endpoint_capture = endpoint->mcp_tool->response.tracing_capture;
+        }
+
+        // Declared request fields only - never the raw query string. A field the
+        // endpoint declares is part of its contract; an arbitrary query parameter
+        // is not, and exporting one would leak whatever a caller appended.
+        // Values are still redacted and clamped downstream, and are emitted ONLY
+        // at the payload tier.
+        for (const auto& field : endpoint->request_fields) {
+            const auto value = req.url_params.get(field.fieldName);
+            if (value != nullptr) {
+                rc->audit_params.emplace_back(field.fieldName, value);
+            }
+        }
     }
 
     // Emit one rest_endpoint_served with the ROUTE TEMPLATE (never the filled
