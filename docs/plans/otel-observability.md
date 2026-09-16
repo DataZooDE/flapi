@@ -3,6 +3,9 @@
 **Spec:** `/home/jr/Projects/tmp/research/2026-09-15-flapi-otel-openinference/` (FINDINGS → BRD → HLD)
 **Baseline:** HEAD `d2b9e74`.
 **Branch:** `feat/otel-observability` (epic), one feature branch per issue.
+**Status:** P0–P4 implemented on `feat/otel-observability`. See §11 for what
+shipped, what changed along the way, and what is deliberately deferred.
+
 **Revision:** v2 — revised after the agent-crew pre-implementation review
 (`REQUEST_CHANGES`, 12 high-severity findings; run
 `.crew/runs/20260915_144839_review_*/result.md`). Findings referenced as `F<n>`.
@@ -667,3 +670,64 @@ Three in-process HTTP stacks become two-and-a-bit (OTLP reuses the already-linke
 6. **OSS vs enterprise for the OpenInference overlay.** *(Recommend: OSS.)*
 
 [sep414]: https://modelcontextprotocol.io/seps/414-request-meta
+
+---
+
+## 11. Outcome
+
+### Shipped
+
+| Phase | Delivered |
+|---|---|
+| Prereqs | Copy-on-write endpoint table (fixed a live use-after-free), pre-compiled route regexes (12× faster matching), C++20 project-wide, k6 load harness with measured gates, allocation proxy gate |
+| P0 | Shared `RequestContext`, REST audit coverage, log correlation across ~658 sites with zero call-site churn, SEP-414 + HTTP trace-context ingestion |
+| P1 | `SpanScope` and the OFF twin with a verified link guard, the tracing facade, HTTP SERVER spans over the whole route inventory, the MCP single-span contract, `/api/v1/_config/metrics` |
+| P2 | Inner spans (render, DuckDB), outbound CLIENT spans with context injection |
+| P3 | Capture tiers with redaction reuse, payload tier, OpenInference overlay |
+| P4 | `X-Trace-Id` on responses, the background-thread root-span contract |
+
+**Three drift bugs closed:** the audit log now genuinely covers REST,
+`server.log_level` is a real key (the `server:` block in three examples was never
+parsed *at all*), and `/api/v1/_config/metrics` exists.
+
+### What the measurements actually said
+
+- **Tracing off:** no regression; ~19% *faster* than the pre-epic baseline, because
+  the route pre-compilation prerequisite outweighed everything added.
+- **Tracing on (metadata):** ~16 µs per request; unmeasurable on a realistic query.
+- **Binary:** +4.9 MiB against a `FLAPI_WITH_TRACING=OFF` build.
+- **Suites:** 749 unit (both build modes), 634 integration.
+
+### Where the plan was wrong
+
+Worth recording, because each cost real time:
+
+1. **The Crow contract was inverted.** The plan asserted `after_handle` does not
+   run when a middleware short-circuits, citing `http_connection.h:207`. The
+   authority is `middleware.h:149-160`, and it does run. Acting on the wrong
+   version shipped a **double audit line on every 401** that the test suite could
+   not see, because the test asserted "at least one".
+2. **opentelemetry-cpp 1.17.0 is unusable**, not merely limited: it does not
+   compile on the project's own CI toolchain. Forced a vcpkg overlay port, which
+   also removed the need for a hand-rolled file exporter.
+3. **The OFF-twin guard was decorative.** An all-inline twin emits no symbols, so
+   the promised link error could never fire.
+4. **NFR-2's "≤2%" is below this harness's noise floor** on sub-millisecond
+   routes. The gate moved metric (median TTFB on cheap routes, ~0.6% spread)
+   rather than threshold.
+5. **Documented guarantees outran the code.** `CapturePolicy` was fully
+   unit-tested and had zero production callers while the docs called its
+   properties enforced.
+
+### Deferred, with reasons
+
+- **MCP Tasks span links (issue 15).** Needs persisted `SpanContext` columns on
+  `flapi_mcp_tasks` to survive restart. The background-thread contract it depends
+  on is in place and tested.
+- **`mcp.server.operation.duration` / `http.server.request.duration` histograms.**
+  The counters surface through `/api/v1/_config/metrics`; the semconv histograms
+  are not wired.
+- **Phoenix/Jaeger `docker compose` recipes.** The topologies are documented in
+  `docs/OBSERVABILITY.md`; the compose files are not written.
+- **#116** — concurrent read/write on a SQLite-backed endpoint returns 500s.
+  Found here, filed separately, deliberately not fixed inside this epic.
