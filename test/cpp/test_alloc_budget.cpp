@@ -52,31 +52,38 @@ TEST_CASE("alloc counter is quiet when nothing allocates", "[perf][alloc]") {
 
 TEST_CASE("a W3C trace id cannot live in a std::string for free", "[perf][alloc]") {
     // The measurement behind RequestContext storing trace/span ids as std::array
-    // rather than std::string. libstdc++'s small-string buffer is 15 bytes; a W3C
-    // trace id is 32 hex characters and a span id 16, so std::string allocates on
-    // EVERY traced request for values whose length is fixed by the spec.
-    std::size_t short_allocs = 0, trace_allocs = 0, span_allocs = 0;
-    {
+    // rather than std::string.
+    //
+    // The small-string buffer differs by standard library - 15 bytes on
+    // libstdc++, 22 on libc++ - so this MEASURES the threshold rather than
+    // assuming it. An earlier version hardcoded libstdc++'s and failed on macOS,
+    // where a 16-char span id fits in SSO.
+    //
+    // What holds everywhere: a 32-character W3C trace id exceeds both buffers, so
+    // std::string would allocate on EVERY traced request for a value whose length
+    // is fixed by the spec.
+    auto allocationsFor = [](std::size_t length) {
         AllocCounter c;
-        std::string tiny(8, 'a');           // inside SSO
-        doNotOptimise(tiny);
-        short_allocs = c.count();
+        std::string s(length, 'a');
+        doNotOptimise(s);
+        return c.count();
+    };
+
+    // Find this library's SSO capacity empirically.
+    std::size_t sso_capacity = 0;
+    for (std::size_t n = 1; n <= 64; ++n) {
+        if (allocationsFor(n) > 0) { break; }
+        sso_capacity = n;
     }
-    {
-        AllocCounter c;
-        std::string trace_id(32, 'a');      // a W3C trace id
-        doNotOptimise(trace_id);
-        trace_allocs = c.count();
-    }
-    {
-        AllocCounter c;
-        std::string span_id(16, 'a');       // a W3C span id
-        doNotOptimise(span_id);
-        span_allocs = c.count();
-    }
-    INFO("8 chars: " << short_allocs << "  32 chars: " << trace_allocs
-         << "  16 chars: " << span_allocs);
-    REQUIRE(short_allocs == 0);
-    REQUIRE(trace_allocs >= 1);
-    REQUIRE(span_allocs >= 1);
+    INFO("measured SSO capacity: " << sso_capacity << " bytes");
+
+    // Both known implementations sit in this range; a wildly different value
+    // means the measurement itself is broken.
+    REQUIRE(sso_capacity >= 15);
+    REQUIRE(sso_capacity < 32);
+
+    // Therefore a 32-char trace id always allocates...
+    REQUIRE(allocationsFor(32) >= 1);
+    // ...and a short string never does.
+    REQUIRE(allocationsFor(8) == 0);
 }

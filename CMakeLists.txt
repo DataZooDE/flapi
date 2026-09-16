@@ -268,7 +268,24 @@ if (WIN32)
     set(DUCKDB_EXPLICIT_PLATFORM "windows_amd64")
 endif()
 
+# DuckDB is built at C++17, NOT flAPI's C++20.
+#
+# flAPI needs C++20 because abseil (via opentelemetry-cpp) exports cxx_std_20 and
+# a split standard across flAPI's own targets is an ABI mismatch. DuckDB has no
+# such requirement, and forcing it to C++20 breaks the MSVC build:
+# duckdb/src/common/exception.cpp:51 guards std::uncaught_exception() with
+# `#if __cplusplus >= 201703L`, but MSVC reports __cplusplus as 199711L unless
+# /Zc:__cplusplus is passed - so MSVC always takes the else branch, and C++20
+# REMOVED std::uncaught_exception(). It compiled at C++17 (deprecated but
+# present) and fails at C++20.
+#
+# Safe to differ because flAPI talks to DuckDB through its C API (duckdb.h), so
+# there is no C++ ABI surface between them. add_subdirectory gets its own scope,
+# so restoring the value afterwards keeps flAPI's own targets at C++20.
+set(FLAPI_CXX_STANDARD ${CMAKE_CXX_STANDARD})
+set(CMAKE_CXX_STANDARD 17)
 add_subdirectory(duckdb EXCLUDE_FROM_ALL)
+set(CMAKE_CXX_STANDARD ${FLAPI_CXX_STANDARD})
 
 # Expose DuckDB paths for posthog-telemetry submodule
 set(DUCKDB_SRC_INCLUDE "${CMAKE_SOURCE_DIR}/duckdb/src/include")
