@@ -75,6 +75,7 @@ add_executable(flapi_tests
     alloc_counter.cpp
     test_alloc_budget.cpp
     test_request_context.cpp
+    test_background_span_contract.cpp
     test_trace_context.cpp
     test_trace_scope.cpp
     test_trace_capture_policy.cpp

@@ -171,7 +171,23 @@ overrides this to flush per record under `flush.mode: on_response`, and on
 `flush.timeout_ms` otherwise, so a crash does not silently cost you the last
 half-minute of spans.
 
-## 6. Correlation
+## 6. Getting an id out of a failed request
+
+Every response carries `X-Request-Id`. A traced response also carries
+`X-Trace-Id`, and it is the **caller's** trace id when the caller supplied one,
+so both sides can join on the same value.
+
+```
+$ curl -i https://flapi.example/customers/42
+HTTP/1.1 500 Internal Server Error
+X-Request-Id: req-9f2c1a7b8e4d5063
+X-Trace-Id:   4bf92f3577b34da6a3ce929d0e0e4736
+```
+
+Quote either in a support request. `X-Request-Id` works with tracing disabled;
+`X-Trace-Id` appears only when a span was produced.
+
+## 7. Correlation
 
 `trace_id` and `span_id` appear in the audit log and in application log lines
 emitted while serving a request, so a trace can be joined to an audit entry and
@@ -186,7 +202,7 @@ audit:
   path: /var/log/flapi/audit.jsonl
 ```
 
-## 7. Cost
+## 8. Cost
 
 Measured on the reference load mix (see `test/load/README.md`):
 
@@ -199,7 +215,7 @@ Measured on the reference load mix (see `test/load/README.md`):
 A tracing-free build is supported: `cmake -DFLAPI_WITH_TRACING=OFF`. The facade
 compiles to no-ops and no OpenTelemetry symbol is linked.
 
-## 8. Environment variables
+## 9. Environment variables
 
 flAPI honours the standard `OTEL_*` variables, so Kubernetes OTel Operator
 injection works. Precedence is **explicit flAPI YAML > `OTEL_*` > defaults**.

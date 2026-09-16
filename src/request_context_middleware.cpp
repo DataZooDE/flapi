@@ -387,6 +387,17 @@ void RequestContextMiddleware::finish(crow::response& res, context& ctx) {
                 ctx.span.setError(error_type);
             }
             ctx.span.end();
+
+            // Hand the trace id back to the caller.
+            //
+            // The operator-facing payoff of the whole epic: a user hitting an
+            // error quotes ONE id and support goes straight to the trace and the
+            // audit line, instead of reconstructing the request from two unjoined
+            // logs. Exposed on every traced response, not only errors, because an
+            // error is not the only reason to ask what happened.
+            if (ctx.rc.hasTrace()) {
+                res.set_header("X-Trace-Id", std::string(ctx.rc.traceIdView()));
+            }
         }
         emitAuditLine(audit_logger_, ctx.rc);
     } catch (...) {
