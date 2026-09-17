@@ -14,31 +14,40 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **DuckDB-powered**: Access 50+ data sources (BigQuery, Postgres, S3, Snowflake, etc.)
 
 **Key Characteristics:**
-- Written in modern C++17 with zero runtime dependencies (single-binary deployment)
-- ~13,400 lines of C++ code across 54 files
+- Written in modern C++20 with zero runtime dependencies (single-binary deployment)
 - Supports Linux (x86/ARM64), macOS (Intel/Apple Silicon), and Windows
 - Declarative API philosophy: logic lives in YAML/SQL, not compiled code
 - Single binary deployment with built-in DuckDB 1.5.5
 
 ## Architecture Documentation
 
-For detailed architecture and design documentation, see:
+**Start at [docs/README.md](docs/README.md)** — the task-first documentation index.
+
+Architecture and design (the "how it works" tree):
 
 - **[docs/spec/ARCHITECTURE.md](docs/spec/ARCHITECTURE.md)** - System architecture overview with component diagrams
 - **[docs/spec/DESIGN_DECISIONS.md](docs/spec/DESIGN_DECISIONS.md)** - Rationale for key design choices
 - **[docs/spec/REQUEST_LIFECYCLE.md](docs/spec/REQUEST_LIFECYCLE.md)** - End-to-end request flow with sequence diagrams
 - **[docs/spec/components/](docs/spec/components/)** - Component-level documentation:
-  - [config-system.md](docs/spec/components/config-system.md) - Configuration management
+  - [config-system.md](docs/spec/components/config-system.md) - Configuration, copy-on-write endpoints
   - [query-execution.md](docs/spec/components/query-execution.md) - SQL templates and DuckDB
   - [caching.md](docs/spec/components/caching.md) - DuckLake caching system
-  - [mcp-protocol.md](docs/spec/components/mcp-protocol.md) - MCP server implementation
-  - [security.md](docs/spec/components/security.md) - Auth and validation
+  - [mcp-protocol.md](docs/spec/components/mcp-protocol.md) - MCP server, SEP-414 trace context
+  - [security.md](docs/spec/components/security.md) - Auth, validation, telemetry egress
+  - [observability.md](docs/spec/components/observability.md) - Request identity, spans, capture tiers
 
-Reference documentation (API/configuration):
+Task-first guides (`docs/guides/`): getting-started, rest-endpoints, mcp-tools,
+caching, authentication, cloud-storage, yaml-includes, self-packaging.
+
+Reference:
 - [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md) - Configuration file format
 - [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md) - CLI commands
 - [docs/MCP_REFERENCE.md](docs/MCP_REFERENCE.md) - MCP protocol details
 - [docs/CONFIG_SERVICE_API_REFERENCE.md](docs/CONFIG_SERVICE_API_REFERENCE.md) - Runtime configuration API
+- [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md) - Tracing, audit, log correlation
+
+`docs/archive/` holds completed plans and shipped design notes. **Not maintained
+— never cite it as current behaviour.**
 
 ## Building and Development
 
@@ -1190,7 +1199,14 @@ Common extensions:
 ### CMake Build Configuration
 
 **Key Features:**
-- C++17 standard requirement
+- **C++20 project-wide, with one deliberate exception**: DuckDB's subdirectory is
+  built at C++17. abseil (via opentelemetry-cpp) exports `cxx_std_20`, and mixing
+  standards across the link produced a real segfault; but C++20 removed
+  `std::uncaught_exception()`, which DuckDB calls behind a `__cplusplus` guard
+  that MSVC defeats. `CMakeLists.txt` saves and restores `CMAKE_CXX_STANDARD`
+  around `add_subdirectory(duckdb)`. **Do not "simplify" this** — see
+  `docs/spec/DESIGN_DECISIONS.md § 10c`. `scripts/check_cxx_standard_uniform.sh`
+  guards the rest.
 - vcpkg integration for consistent dependency management
 - Platform-specific configurations (Windows, macOS, Linux/ARM64)
 - Cross-compilation support
@@ -1700,6 +1716,8 @@ After making code changes, update the relevant documentation:
 | Cache system changes | `docs/spec/components/caching.md` |
 | MCP implementation changes | `docs/spec/components/mcp-protocol.md` |
 | Auth/security changes | `docs/spec/components/security.md` |
+| Tracing/audit/logging changes | `docs/OBSERVABILITY.md`, `docs/spec/components/observability.md` |
+| A new user-facing capability | a guide in `docs/guides/`, linked from `docs/README.md` |
 
 ### Documentation Checklist
 
@@ -1707,6 +1725,9 @@ Before completing work that modifies code:
 
 - [ ] If architecture changed → update `docs/spec/ARCHITECTURE.md`
 - [ ] If new design decision → add to `docs/spec/DESIGN_DECISIONS.md`
+- [ ] **Every config key you document, grep for a *reader* in `src/`, not just a
+      parser.** Three keys once shipped documented and parsed but never read;
+      operators could set them and nothing happened.
 - [ ] If request flow changed → update `docs/spec/REQUEST_LIFECYCLE.md`
 - [ ] If component internals changed → update relevant `docs/spec/components/*.md`
 - [ ] If user-facing API changed → update relevant reference doc in `docs/`

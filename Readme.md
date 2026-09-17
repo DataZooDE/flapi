@@ -13,7 +13,7 @@ flAPI is a powerful service that automatically generates read-only APIs for data
 - **Caching**: DuckLake-backed cache with full refresh and incremental sync
 - **Production security**: PBKDF2-SHA256 password hashing, config-driven CORS allowlist, per-user rate limiting, JSONL request audit log, TLS termination, startup config auditor — all opt-in via single-line YAML so `flapii project init` demos stay simple
 - **Easy deployment**: Deploy flAPI with a single binary file
-- **[Self-packaging](#-self-packaging-single-binary-deploy)**: Fold an entire flapi config tree (YAMLs + SQL templates + small data files) into the binary itself via `flapi pack`. `scp flapi-prod user@host` becomes the whole deploy. Reproducible (`SOURCE_DATE_EPOCH`), notarisable on macOS via a reserved Mach-O segment, with a secret deny list (`*.env`, `secrets/*`, `*.pem`, `*.key`) enforced at pack time.
+- **[Self-packaging](docs/guides/self-packaging.md)**: Fold an entire flapi config tree (YAMLs + SQL templates + small data files) into the binary itself via `flapi pack`. `scp flapi-prod user@host` becomes the whole deploy. Reproducible (`SOURCE_DATE_EPOCH`), notarisable on macOS via a reserved Mach-O segment, with a secret deny list (`*.env`, `secrets/*`, `*.pem`, `*.key`) enforced at pack time.
 - **Privacy-respecting telemetry**: Anonymous startup/shutdown analytics with easy opt-out via `--no-telemetry` flag, `FLAPI_NO_TELEMETRY` env var, or `flapi.yaml`
 
 ## 📦 Install
@@ -46,7 +46,7 @@ The easiest way to get started with flAPI is to use the pre-built docker image.
 ```
 
 
-The image is pretty small and mainly contains the flAPI binary which is statically linked against [DuckDB v1.5.5](https://github.com/duckdb/duckdb/releases/tag/v1.5.5). Details about the docker image can be found in the [Dockerfile](./docker/development/Dockerfile).
+The image is pretty small and mainly contains the flAPI binary which is statically linked against [DuckDB v1.5.5](https://github.com/duckdb/duckdb/releases/tag/v1.5.5). Details about the docker image can be found in the [Dockerfile](https://github.com/DataZooDE/flapi/tree/main/docker).
 
 #### 2. Run flAPI:
 Once you have downloaded the binary, you can run flAPI by executing the following command:
@@ -230,507 +230,22 @@ curl -X POST http://localhost:8081/mcp/jsonrpc \
   -d '{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "get_customers", "arguments": {"id": "123"}}}'
 ```
 
-## 🎓 Example
-
-Here's a simple example of how to create an API endpoint using flAPI:
-
-### 1. Create a basic flAPI configuration
-flAPI uses the popular [YAML](https://yaml.org/) format to configure the API endpoints. A basic configuration file looks like this:
-
-```yaml
-project_name: example-flapi-project
-project_description: An example flAPI project demonstrating various configuration options
-template:
-  path: './sqls'            # The path where SQL templates and API endpoint configurations are stored
-  environment-whitelist:    # Optional: List of regular expressions for whitelisting envvars which are available in the templates
-    - '^FLAPI_.*'
-
-duckdb:                     # Configuration of the DuckDB embedded into flAPI
-  db_path: ./flapi_cache.db # Optional: remove or comment out for in-memory database, we use this store also as cache
-  access_mode: READ_WRITE   # See the https://duckdb.org/docs/configuration/overview) for more details
-  threads: 8
-  max_memory: 8GB
-  default_order: DESC
-
-connections:                # A YAML map of database connection configurations, a API endpoint needs to reference one of these connections
-   bigquery-lakehouse: 
-                            # SQL commands to initialize the connection (e.g., e.g. installing, loading and configuring the BQ a DuckDB extension)
-      init: |
-         INSTALL 'bigquery' FROM 'http://storage.googleapis.com/hafenkran';
-         LOAD 'bigquery';
-      properties:           # A YAML map of connection-specific properties (accessible in templates via {{ context.conn.property_name }})
-         project_id: 'my-project-id'
-
-   customers-parquet: 
-      properties:
-         path: './data/customers.parquet'
-
-heartbeat:
-  enabled: true            # The eartbeat worker is a background thread which can can be used to periodically trigger endpionts
-  worker-interval: 10      # The interval in seconds at which the heartbeat worker will trigger endpoints
-
-enforce-https:
-  enabled: false           # Whether to force HTTPS for the API connections, we strongly recommend to use a reverse proxy to do SSL termination
-  # ssl-cert-file: './ssl/cert.pem'
-  # ssl-key-file: './ssl/key.pem'
-
-```
-
-After that ensure that the template path (`./sqls` in this example) exists.
-
-### 1. Define your API endpoint (`./sqls/customers.yaml`):
-Each endpoint is at least defined by a YAML file and a corresponding SQL template in the template path. For our example we will create the file `./sqls/customers.yaml`:
-
-```yaml
-url-path: /customers/      # The URL path at which the endpoint will be available
-
-request:                  # The request configuration for the endpoint, this defines the parameters that can be used in the query
-  - field-name: id
-    field-in: query       # The location of the parameter, other options are 'path', 'query' and 'body'
-    description: Customer ID # A description of the parameter, this is used in the auto-generated API documentation
-    required: false       # Whether the parameter is required
-    validators:           # A list of validators that will be applied to the parameter
-      - type: int
-        min: 1
-        max: 1000000
-        preventSqlInjection: true
-
-template-source: customers.sql # The path to the SQL template that will be used to generate the endpoint
-connection: 
-  - customers-parquet          # The connection that will be used to execute the query
-
-rate-limit:
-  enabled: true           # Whether rate limiting is enabled for the endpoint
-  max: 100                # The maximum number of requests per interval
-  interval: 60            # The interval in seconds
-  
-auth:
-  enabled: true           # Whether authentication is enabled for the endpoint
-  type: basic             # The type of authentication, other options are 'basic' and 'bearer'
-  users:                  # The users that are allowed to access the endpoint
-    - username: admin
-      password: secret
-      roles: [admin]
-    - username: user
-      password: password
-      roles: [read]
-
-heartbeat:
-  enabled: true           # Whether the heartbeat worker if enabled will trigger the endpoint periodically
-  params:                 # A YAML map of parameters that will be passed by the heartbeat worker to the endpoint
-    id: 123
-
-```
-There are many more configuration options available, see the [full documentation](link-to-your-docs) for more details.
-
-### 2. Configure the endpoints SQL template (`./sqls/customers.sql`):
-After the creation of the YAML endpoint configuration we need to connect the SQL template which connects the enpoint to the data connection.
-The template files use the [Mustache templating language](https://mustache.github.io/) to dynamically generate the SQL query. 
-
-```sql
-SELECT * FROM '{{{conn.path}}}'
-WHERE 1=1
-{{#params.id}}
-  AND c_custkey = {{{ params.id }}}
-{{/params.id}}
-```
-
-The above template uses the `path` parameter defined in the connection configuration to directly query a local parquet file. If the id parameter is 
-provided, it will be used to filter the results.
-
-### 3. Send a request:
-To test the endpoint and see if everything worked, we can use curl. We should also provide the correct basic auth credentials (`admin:secret` in this case). To make the JSON result easier to read, we pipe the output to [`jq`](https://jqlang.github.io/jq/).
-
-```bash
-> curl -X GET -u admin:secret "http://localhost:8080/customers?id=123" | jq .
-
-{
-  "next": "",
-  "total_count": 1,
-  "data": [
-    {
-      "c_mktsegment": "BUILDING",
-      "c_acctbal": 5897.82999999999992724,
-      "c_phone": "15-817-151-1168",
-      "c_address": "YsOnaaER8MkvK5cpf4VSlq",
-      "c_nationkey": 5,
-      "c_name": "Customer#000000123",
-      "c_comment": "ependencies. regular, ironic requests are fluffily regu",
-      "c_custkey": 123
-    }
-  ]
-}
-
-```
-
-## ⁉️ DuckLake-backed caching (current implementation)
-flAPI uses the DuckDB DuckLake extension to provide modern, snapshot-based caching. You write the SQL to define the cached table, and flAPI manages schemas, snapshots, retention, scheduling, and audit logs.
-
-### Quick start: Full refresh cache
-1) Configure DuckLake globally (alias is `cache` by default):
-```yaml
-ducklake:
-  enabled: true
-  alias: cache
-  metadata-path: ./examples/data/cache.ducklake
-  data-path: ./examples/data/cache.ducklake
-  data-inlining-row-limit: 10  # Enable data inlining for small changes (optional)
-  retention:
-    max-snapshot-age: 14d
-  compaction:
-    enabled: false
-  scheduler:
-    enabled: true
-```
-
-2) Add cache block to your endpoint (no `primary-key`/`cursor` → full refresh):
-```yaml
-url-path: /publicis
-template-source: publicis.sql
-connection: [bigquery-lakehouse]
-
-cache:
-  enabled: true
-  table: publicis_cache
-  schema: analytics
-  schedule: 5m
-  retention:
-    max_snapshot_age: 14d
-  template_file: publicis/publicis_cache.sql
-```
-
-3) Write the cache SQL template (CTAS):
-```sql
--- publicis/publicis_cache.sql
-CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS
-SELECT
-  p.country,
-  p.product_category,
-  p.campaign_type,
-  p.channel,
-  sum(p.clicks) AS clicks
-FROM bigquery_scan('{{{conn.project_id}}}.landing__publicis.kaercher_union_all') AS p
-GROUP BY 1, 2, 3, 4;
-```
-
-4) Query from the cache in your main SQL:
-```sql
--- publicis.sql
-SELECT
-  p.country,
-  p.product_category,
-  p.campaign_type,
-  p.channel,
-  p.clicks
-FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS p
-WHERE 1=1
-```
-
-Notes:
-- The cache schema (`cache.analytics`) is created automatically if missing.
-- Regular GET requests never refresh the cache. Refreshes happen on warmup, on schedule, or via the manual API.
-- **Data Inlining**: When `data-inlining-row-limit` is configured, small cache changes (≤ specified row limit) are written directly to DuckLake metadata instead of creating separate Parquet files. This improves performance for small incremental updates.
-
-#### Data inlining (optional, for small changes)
-
-DuckLake supports writing very small inserts directly into the metadata catalog instead of creating a Parquet file for every micro-batch. This is called "Data Inlining" and can significantly speed up small, frequent updates.
-
-- **Enable globally**: configure once under the top-level `ducklake` block:
-
-  ```yaml
-  ducklake:
-    enabled: true
-    alias: cache
-    metadata_path: ./examples/data/cache.ducklake
-    data_path: ./examples/data/cache.ducklake
-    data_inlining_row_limit: 10  # inline inserts up to 10 rows
-  ```
-
-- **Behavior**:
-  - Inserts with rows ≤ `data-inlining-row-limit` are inlined into the catalog metadata.
-  - Larger inserts automatically fall back to normal Parquet file writes.
-  - Inlining applies to all caches (global setting), no per-endpoint toggle.
-
-- **Manual flush (optional)**: you can flush inlined data to Parquet files at any time using DuckLake’s function. Assuming your DuckLake alias is `cache`:
-
-  ```sql
-  -- Flush all inlined data in the catalog
-  CALL ducklake_flush_inlined_data('cache');
-
-  -- Flush only a specific schema
-  CALL ducklake_flush_inlined_data('cache', schema_name => 'analytics');
-
-  -- Flush only a specific table (default schema "main")
-  CALL ducklake_flush_inlined_data('cache', table_name => 'events_cache');
-
-  -- Flush a specific table in a specific schema
-  CALL ducklake_flush_inlined_data('cache', schema_name => 'analytics', table_name => 'events_cache');
-  ```
-
-- **Notes**:
-  - This feature is provided by DuckLake and is currently marked experimental upstream. See the DuckLake docs for details: [Data Inlining](https://ducklake.select/docs/stable/duckdb/advanced_features/data_inlining.html).
-  - If you don’t set `data_inlining_row_limit`, flAPI won’t enable inlining and DuckLake will use regular Parquet writes.
-
-### Advanced: Incremental append and merge
-The engine infers sync mode from your YAML:
-- No `primary-key`, no `cursor` → full refresh (CTAS)
-- With `cursor` only → incremental append
-- With `primary-key` + `cursor` → incremental merge (upsert)
-
-Example YAMLs:
-```yaml
-# Incremental append
-cache:
-  enabled: true
-  table: events_cache
-  schema: analytics
-  schedule: 10m
-  cursor:
-    column: created_at
-    type: timestamp
-  template-file: events/events_cache.sql
-
-# Incremental merge (upsert)
-cache:
-  enabled: true
-  table: customers_cache
-  schema: analytics
-  schedule: 15m
-  primary-key: [id]
-  cursor:
-    column: updated_at
-    type: timestamp
-  template_file: customers/customers_cache.sql
-```
-
-Cache template variables available to your SQL:
-- `{{cache.catalog}}`, `{{cache.schema}}`, `{{cache.table}}`, `{{cache.schedule}}`
-- `{{cache.snapshotId}}`, `{{cache.snapshotTimestamp}}` (current)
-- `{{cache.previousSnapshotId}}`, `{{cache.previousSnapshotTimestamp}}` (previous)
-- `{{cache.cursorColumn}}`, `{{cache.cursorType}}`
-- `{{cache.primaryKeys}}`
-- `{{params.cacheMode}}` is available with values `full`, `append`, or `merge`
-
-Incremental append example:
-```sql
--- events/events_cache.sql
-INSERT INTO {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
-SELECT *
-FROM source_events
-WHERE {{#cache.previousSnapshotTimestamp}} event_time > TIMESTAMP '{{cache.previousSnapshotTimestamp}}' {{/cache.previousSnapshotTimestamp}}
-```
-
-Incremental merge example:
-```sql
--- customers/customers_cache.sql
-MERGE INTO {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS t
-USING (
-  SELECT * FROM source_customers
-  WHERE {{#cache.previousSnapshotTimestamp}} updated_at > TIMESTAMP '{{cache.previousSnapshotTimestamp}}' {{/cache.previousSnapshotTimestamp}}
-) AS s
-ON t.id = s.id
-WHEN MATCHED THEN UPDATE SET
-  name = s.name,
-  email = s.email,
-  updated_at = s.updated_at
-WHEN NOT MATCHED THEN INSERT (*) VALUES (s.*);
-```
-
-### When does the cache refresh?
-- Startup warmup: flAPI refreshes caches for endpoints with cache enabled.
-- Scheduled refresh: controlled by `cache.schedule` on each endpoint (e.g., `5m`).
-- Manual refresh: call the refresh API (see below).
-- Regular GET requests do not refresh the cache.
-
-### Audit, retention, compaction, and control APIs
-flAPI maintains an audit table inside DuckLake at `cache.audit.sync_events` and provides control endpoints:
-
-- Manual refresh:
-```bash
-curl -X POST "http://localhost:8080/api/v1/_config/endpoints/publicis/cache/refresh"
-```
-
-- Audit logs (endpoint-specific and global):
-```bash
-curl "http://localhost:8080/api/v1/_config/endpoints/publicis/cache/audit"
-curl "http://localhost:8080/api/v1/_config/cache/audit"
-```
-
-- Garbage collection (retention):
-Retention can be configured per endpoint under `cache.retention`:
-```yaml
-cache:
-  retention:
-    max-snapshot-age: 7d     # time-based retention
-    # keep-last-snapshots: 3 # version-based retention (subject to DuckLake support)
-```
-The system applies retention after each refresh and you can also trigger GC manually:
-```bash
-curl -X POST "http://localhost:8080/api/v1/_config/endpoints/publicis/cache/gc"
-```
-
-- Compaction:
-If enabled in global `ducklake.scheduler`, periodic file merging is performed via DuckLake `ducklake_merge_adjacent_files`.
-
-### Template authoring guide (reference)
-Use these variables inside your cache templates and main queries:
-
-- Identification
-  - `{{cache.catalog}}` → usually `cache`
-  - `{{cache.schema}}` → e.g., `analytics` (auto-created if missing)
-  - `{{cache.table}}` → your cache table name
-
-- Mode and scheduling
-  - `{{params.cacheMode}}` → `full` | `append` | `merge`
-  - `{{cache.schedule}}` → if set in YAML
-
-- Snapshots
-  - `{{cache.snapshotId}}`, `{{cache.snapshotTimestamp}}`
-  - `{{cache.previousSnapshotId}}`, `{{cache.previousSnapshotTimestamp}}`
-
-- Incremental hints
-  - `{{cache.cursorColumn}}`, `{{cache.cursorType}}`
-  - `{{cache.primaryKeys}}` → comma-separated list, e.g., `id,tenant_id`
-
-Authoring tips:
-- Full refresh: use `CREATE OR REPLACE TABLE ... AS SELECT ...`.
-- Append: `INSERT INTO cache.table SELECT ... WHERE event_time > previousSnapshotTimestamp`.
-- Merge: `MERGE INTO cache.table USING (SELECT ...) ON pk ...`.
-- Do not create schemas in templates; flAPI does that automatically.
-
-### Troubleshooting
-- Cache refresh happens on every request: by design this is disabled. Ensure you’re not calling the manual refresh endpoint from a client and that your logs show scheduled or warmup refreshes only.
-- Schema not found: verify `cache.schema` is set; flAPI will auto-create it.
-- Retention errors: use time-based `max-snapshot-age` first. Version-based retention depends on DuckLake support.
-
-## 🧩 YAML includes and environment variables
-flAPI extends plain YAML with lightweight include and environment-variable features so you can keep configurations modular and environment-aware.
-
-### Environment variables
-- Write environment variables as `{{env.VAR_NAME}}` anywhere in your YAML.
-- Only variables that match the whitelist in your root config are substituted:
-  ```yaml
-  template:
-    path: './sqls'
-    environment-whitelist:
-      - '^FLAPI_.*'     # allow all variables starting with FLAPI_
-      - '^PROJECT_.*'   # optional additional prefixes
-  ```
-- If the whitelist is empty or omitted, all environment variables are allowed.
-
-Examples:
-```yaml
-# Substitute inside strings
-project-name: "${{env.PROJECT_NAME}}"
-
-# Build include paths dynamically
-template:
-  path: "{{env.CONFIG_DIR}}/sqls"
-```
-
-### Include syntax
-You can splice content from another YAML file directly into the current document.
-
-- Basic include: `{{include from path/to/file.yaml}}`
-- Section include: `{{include:top_level_key from path/to/file.yaml}}` includes only that key
-- Conditional include: append `if <condition>` to either form
-
-Conditions supported:
-- `true` or `false`
-- `env.VAR_NAME` (include if the variable exists and is non-empty)
-- `!env.VAR_NAME` (include if the variable is missing or empty)
-
-Examples:
-```yaml
-# Include another YAML file relative to this file
-{{include from common/settings.yaml}}
-
-# Include only a section (top-level key) from a file
-{{include:connections from shared/connections.yaml}}
-
-# Conditional include based on an environment variable
-{{include from overrides/dev.yaml if env.FLAPI_ENV}}
-
-# Use env var in the include path
-{{include from {{env.CONFIG_DIR}}/secrets.yaml}}
-```
-
-Resolution rules and behavior:
-- Paths are resolved relative to the current file first; absolute paths are supported.
-- Includes inside YAML comments are ignored (e.g., lines starting with `#`).
-- Includes are expanded before the YAML is parsed.
-- Includes do not recurse: include directives within included files are not processed further.
-- Circular includes are guarded against within a single expansion pass; avoid cycles.
-
-Tips:
-- Prefer section includes (`{{include:...}}`) to avoid unintentionally overwriting unrelated keys.
-- Keep shared blocks in small files (e.g., `connections.yaml`, `auth.yaml`) and include them where needed.
-
-
-
-## 📦 Self-packaging (single-binary deploy)
-
-The same `flapi` binary that serves the API can fold an entire
-config tree into itself, producing one self-contained executable
-deployable via `scp`.
-
-```bash
-# Pack a config tree into a new bundled binary
-flapi pack --in ./examples --out flapi-prod
-
-# Inspect what's bundled
-./flapi-prod info
-
-# Extract the bundle for debugging
-./flapi-prod unpack --to /tmp/extracted
-
-# Run it — serves the bundled config from any cwd
-cd /tmp && ./flapi-prod
-```
-
-**How it works:** a ZIP archive is appended after the executable on
-Linux/Windows (or written into a pre-allocated `__FLAPI/__bundle`
-Mach-O segment on macOS, then re-`codesign`-ed so the result is
-notarisable). At startup, flAPI reverse-scans for the bundle (or
-probes the segment on macOS) and registers an
-`EmbeddedArchiveFileProvider` plus an `embed://` DuckDB
-filesystem so config / SQL templates / `read_csv()` calls all
-resolve to the in-memory bundle. If no bundle is present
-(unbundled binary, truncated tail), all paths fall back to the
-local filesystem unchanged — existing operators see no behaviour
-change.
-
-**Secrets stay out of the bundle.** `flapi pack` refuses files
-matching `*.env`, `secrets/*`, `*.pem`, `*.key` by default. The
-override (`--allow-secrets`) is for testing only. Credentials
-come from the environment at runtime (`AWS_*`, `GOOGLE_*`,
-`AZURE_*`, `FLAPI_CONFIG_SERVICE_TOKEN`, `{{env.VAR}}` YAML
-interpolation).
-
-**Reproducible builds.** Set `SOURCE_DATE_EPOCH` before
-`flapi pack` and the output is byte-identical across runs:
-
-```bash
-SOURCE_DATE_EPOCH=1700000000 flapi pack --in examples --out a
-SOURCE_DATE_EPOCH=1700000000 flapi pack --in examples --out b
-sha256sum a b   # identical
-```
-
-**12-factor env vars.** `FLAPI_CONFIG` falls back for `-c` /
-`--config`; `FLAPI_LOG_LEVEL` falls back for `--log-level`. CLI
-flag wins over env var wins over built-in default. Invalid log
-levels exit non-zero with a single-line error.
-
-**macOS notes.** The reserved-segment size is 16 MiB by default
-(knob `FLAPI_RESERVED_BUNDLE_MIB` at CMake configure time);
-oversized bundles exit non-zero with a corrective error. A
-`--macos-append` flag is available for local debugging — it uses
-the Linux/Windows append-after-EOF layout but the result is
-intentionally not notarisable.
-
-See [docs/CLI_REFERENCE.md §3](docs/CLI_REFERENCE.md#3-self-packaging-subcommands)
-and [docs/spec/DESIGN_DECISIONS.md §9](docs/spec/DESIGN_DECISIONS.md#9-self-packaging-via-appended-zip)
-for full reference + rationale.
+## 🎓 Learn by doing
+
+The guides below are task-shaped — each one gets you to a working result, then
+links to the reference and to the implementation notes.
+
+| I want to… | Guide |
+|---|---|
+| Serve my first endpoint | [Getting started](docs/guides/getting-started.md) |
+| Add validation, filters, pagination | [Building a REST endpoint](docs/guides/rest-endpoints.md) |
+| Let an AI agent call it | [Exposing an endpoint as an MCP tool](docs/guides/mcp-tools.md) |
+| Make a slow query fast | [Caching an expensive query](docs/guides/caching.md) |
+| Require a token, restrict by role | [Requiring authentication](docs/guides/authentication.md) |
+| Read from S3, GCS or Azure | [Reading from cloud storage](docs/guides/cloud-storage.md) |
+| Stop copy-pasting config blocks | [Reusing config and reading the environment](docs/guides/yaml-includes.md) |
+| Deploy one self-contained binary | [Shipping one self-contained binary](docs/guides/self-packaging.md) |
+| Trace requests and keep an audit trail | [Observability](docs/OBSERVABILITY.md) |
 
 ## 🏭 Building from source
 The source code of flAPI is written in C++ and closely resembles the [DuckDB build process](https://duckdb.org/docs/dev/building/overview). A good documentation of the build process is the GitHub action in [`build.yaml`](.github/workflows/build.yaml). In essecence a few prerequisites need to be met:
@@ -753,15 +268,16 @@ The build process will download and build DuckDB v1.1.2 and install the vcpkg pa
 
 ## 📚 Documentation
 
-For more detailed information, check out our [full documentation](docs/):
+**Start at the [documentation index](docs/README.md)** — it routes you from what
+you are trying to do to the right page.
 
-- **[Reference Documentation Map](docs/REFERENCE_MAP.md)** - Quick navigation guide for all docs
-- **[Configuration Reference](docs/CONFIG_REFERENCE.md)** - Complete flapi.yaml configuration options
-- **[MCP Reference](docs/MCP_REFERENCE.md)** - Model Context Protocol specification and implementation
-- **[Config Service API Reference](docs/CONFIG_SERVICE_API_REFERENCE.md)** - REST API for runtime configuration
-- **[CLI Reference](docs/CLI_REFERENCE.md)** - Server executable command-line options
-- **[Cloud Storage Guide](docs/CLOUD_STORAGE_GUIDE.md)** - Using cloud storage backends (S3, GCS, Azure)
-- **[Architecture & Design](docs/spec/)** - System architecture, design decisions, and component documentation
+- **[Guides](docs/guides/)** — task-first walkthroughs
+- **[Configuration Reference](docs/CONFIG_REFERENCE.md)** — every `flapi.yaml` and endpoint key
+- **[CLI Reference](docs/CLI_REFERENCE.md)** — server flags and subcommands
+- **[MCP Reference](docs/MCP_REFERENCE.md)** — the MCP protocol as flAPI implements it
+- **[Config Service API](docs/CONFIG_SERVICE_API_REFERENCE.md)** — runtime configuration over REST
+- **[Observability](docs/OBSERVABILITY.md)** — tracing, audit and log correlation
+- **[Architecture & design](docs/spec/)** — how it works inside, and why
 
 ### MCP Registry
 
@@ -792,7 +308,7 @@ See [CLI Reference](docs/CLI_REFERENCE.md#disable-telemetry---no-telemetry) and 
 
 ## 🤝 Contributing
 
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for more details.
+We welcome contributions! Please see our [open an issue](https://github.com/DataZooDE/flapi/issues) or a pull request for more details.
 
 ## 📄 License
 
@@ -821,7 +337,7 @@ See the [LICENSE](./LICENSE) file for the full text.
 
 ## 🙋‍♀️ Support
 
-If you have any questions or need help, please [open an issue](https://github.com/yourusername/flapi/issues) or join our [community chat](link-to-your-chat).
+If you have any questions or need help, please [open an issue](https://github.com/DataZooDE/flapi/issues).
 
 ---
 

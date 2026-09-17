@@ -373,4 +373,4 @@ template-source: https://other-server.com/templates/customers.sql
 - **[Reference Documentation Map](./REFERENCE_MAP.md)** - Navigation guide for all reference docs
 - **[Configuration Reference](./CONFIG_REFERENCE.md)** - Configuration file format (§ 2.11 for VFS configuration)
 - **[CLI Reference](./CLI_REFERENCE.md)** - Server command-line options including `--config`
-- **[Technical Design](./features/flapi-10-fs-abstraction.md)** - VFS abstraction implementation details
+- **[Technical Design](./archive/flapi-10-fs-abstraction.md)** - VFS abstraction implementation details

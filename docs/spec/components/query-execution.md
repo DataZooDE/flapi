@@ -317,6 +317,31 @@ WriteResult executeWriteInTransaction(const EndpointConfig& endpoint,
 }
 ```
 
+## Instrumentation
+
+Two inner spans are emitted when tracing is enabled, parented by OpenTelemetry's
+thread-local active-span stack — which is why no signature in this component
+changed to carry a span around.
+
+| Span | Kind | Emitted from |
+|---|---|---|
+| `flapi.render_template` | INTERNAL | `src/sql_template_processor.cpp` |
+| `duckdb.query` | CLIENT | `src/query_executor.cpp` (`startDbSpan`) |
+
+Attributes are structural only: the template's **basename** and size, the count
+of bound parameters, the SQL **verb** in `db.operation.name`, and rows returned.
+The rendered SQL itself is not exported.
+
+> **Known gap.** `startDbSpan` is called only from `QueryExecutor::execute`, the
+> unprepared path. Endpoints with typed request fields go through
+> `executeWithBindings` → `executePrepared`, which is not instrumented — so most
+> endpoints currently produce no `duckdb.query` span. The time is still inside
+> the parent span's duration; it is just not attributed. Tracked as a follow-up.
+
+This thread-local parenting works only within one thread. Background work —
+cache refresh, warmup, heartbeat, MCP tasks — must start **root** spans, because
+the ambient context there is either absent or stale from an unrelated request.
+
 ## Source Files
 
 | File | Purpose |

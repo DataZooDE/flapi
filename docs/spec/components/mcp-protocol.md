@@ -425,12 +425,72 @@ mcp:
 | -32001 | Authentication error | Auth failed |
 | -32002 | Tool not found | Unknown tool name |
 
+## Trace context (SEP-414)
+
+MCP revision `2026-07-28` reserves the **unprefixed** keys `traceparent`,
+`tracestate` and `baggage` inside `params._meta`. flAPI honours them.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "customer_lookup",
+    "arguments": { "id": 42 },
+    "_meta": {
+      "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    }
+  }
+}
+```
+
+Three things about this are worth knowing:
+
+1. **`_meta` beats the HTTP `traceparent` header.** Over a gateway the HTTP hop
+   carries the *gateway's* span, while `_meta` carries the agent's — and the
+   agent's is the one an operator is trying to follow. Disagreement is recorded
+   as `flapi.trace.context_source = meta_over_header`.
+2. **It is parsed even when tracing is disabled**, because correlating an MCP
+   call into the audit and application logs is useful on its own.
+3. **The keys are deliberately unprefixed**, unlike flAPI's other `_meta` keys
+   (`protocolVersion`, `clientCapabilities`, `logLevel`). Their constants live in
+   `trace_context.hpp` rather than `mcp_constants.hpp` specifically so that
+   nobody "fixes" them into the reverse-DNS block.
+
+Parsing is strict and bounded: version `ff` rejected, all-zero ids rejected,
+`traceparent` capped at 256 bytes, `tracestate` and `baggage` clamped at list
+member boundaries. The middleware peeks the body for `_meta` **before** auth
+runs, so that peek is bounded at 64 KiB.
+
+flAPI also enforces that the `MCP-Protocol-Version` header matches
+`_meta.protocolVersion` when both are present.
+
+## Observability contracts
+
+**One call, one span.** A `tools/call` produces a single SERVER span named
+`tools/call <tool>`, carrying both the `http.*` and the `mcp.*`/`gen_ai.*`
+attribute sets — not a `POST /mcp/jsonrpc` span with a child. This holds only
+because there is strictly one JSON-RPC call per HTTP request; batching or SSE
+would break it, and both are currently rejected.
+
+**One call, one audit line.** The tool handler sets `audit_suppressed` so the
+HTTP middleware does not also write one and report the same work twice under two
+names. Denials (401, 403, 429) are never suppressed.
+
+**Caller-supplied names are bounded before they can become span names.** The
+method goes through `knownMcpMethodOrUnknown()`; the tool name is recorded only
+after it resolves against the configured endpoints, and unknown tools collapse to
+`<unknown_tool>`. Without this a caller could mint unbounded span names and place
+arbitrary content into the export at the default capture tier.
+
 ## Source Files
 
 | File | Purpose |
 |------|---------|
 | `src/mcp_route_handlers.cpp` | Main request handling |
 | `src/mcp_tool_handler.cpp` | Tool execution |
+| `src/trace_context.cpp` | W3C / SEP-414 parsing |
+| `src/request_context_middleware.cpp` | Span and audit emission |
 | `src/mcp_session_manager.cpp` | Session state |
 | `src/mcp_auth_handler.cpp` | Authentication |
 | `src/mcp_client_capabilities.cpp` | Client detection |
@@ -442,3 +502,4 @@ mcp:
 - [DESIGN_DECISIONS.md](../DESIGN_DECISIONS.md#7-json-rpc-for-mcp-transport) - Why JSON-RPC
 - [DESIGN_DECISIONS.md](../DESIGN_DECISIONS.md#3-unified-restmcp-configuration) - Unified config
 - [../../MCP_REFERENCE.md](../../MCP_REFERENCE.md) - MCP API reference
+- [observability.md](./observability.md) - Trace context and span contracts

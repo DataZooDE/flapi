@@ -728,7 +728,7 @@ On receiving a shutdown signal, the server:
 - **Windows:** Creates minidump file (`crash_dump_<PID>.dmp`) for debugging
 - **Unix/Linux:** Logs error details before exit
 
-> **Implementation:** `src/main.cpp` | **Tests:** *None - see [TEST_TODO.md](./TEST_TODO.md)*
+> **Implementation:** `src/main.cpp` | **Tests:** *None*
 
 ---
 
@@ -747,7 +747,7 @@ On receiving a shutdown signal, the server:
 echo $?  # 0 = valid, 1 = invalid
 ```
 
-> **Implementation:** `src/main.cpp` | **Tests:** *None - see [TEST_TODO.md](./TEST_TODO.md)*
+> **Implementation:** `src/main.cpp` | **Tests:** *None*
 
 ---
 

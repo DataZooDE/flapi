@@ -556,7 +556,7 @@ heartbeat:
   worker-interval: 10
 ```
 
-> **Implementation:** `src/heartbeat_worker.cpp` | **Tests:** *None - see [TEST_TODO.md](./TEST_TODO.md)*
+> **Implementation:** `src/heartbeat_worker.cpp` | **Tests:** *None*
 
 ### 2.11 Storage Configuration (VFS)
 

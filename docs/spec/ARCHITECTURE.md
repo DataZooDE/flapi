@@ -20,9 +20,17 @@ graph TB
     end
 
     subgraph "Middleware Layer"
-        CORS[CORS Handler]
+        ReqCtx[RequestContextMiddleware<br/>identity · span · audit]
+        CORS[CORS Handlers]
         RateLimit[Rate Limit Middleware]
         Auth[Auth Middleware]
+    end
+
+    subgraph "Observability"
+        Tracing[FlapiTracing / SpanScope]
+        Capture[CapturePolicy / redaction]
+        AuditLog[AuditLogger]
+        LogHandler[FlapiLogHandler]
     end
 
     subgraph "Request Processing"
@@ -53,7 +61,11 @@ graph TB
     MCP --> MCPServer
     CLI --> APIServer
 
-    APIServer --> CORS --> RateLimit --> Auth
+    APIServer --> ReqCtx --> CORS --> RateLimit --> Auth
+    ReqCtx --> Tracing
+    ReqCtx --> Capture
+    ReqCtx --> AuditLog
+    ReqCtx --> LogHandler
     MCPServer --> MCPRouteHandlers
 
     Auth --> RequestHandler
@@ -125,7 +137,7 @@ Storage and external data access:
 | **ConfigLoader** | `src/config_loader.cpp` | YAML parsing and endpoint discovery |
 | **ConfigValidator** | `src/config_validator.cpp` | Configuration validation rules |
 | **ConfigSerializer** | `src/config_serializer.cpp` | JSON/YAML serialization of configs |
-| **EndpointRepository** | `src/endpoint_repository.cpp` | Endpoint storage and lookup |
+| **EndpointRepository** | `src/endpoint_repository.cpp` | Endpoint storage and lookup, behind a copy-on-write snapshot |
 | **DatabaseManager** | `src/database_manager.cpp` | DuckDB connection management, query execution |
 | **QueryExecutor** | `src/query_executor.cpp` | Template rendering and SQL execution |
 | **SQLTemplateProcessor** | `src/sql_template_processor.cpp` | Mustache template processing |
@@ -138,6 +150,30 @@ Storage and external data access:
 | **MCPSessionManager** | `src/mcp_session_manager.cpp` | MCP session state |
 | **AuthMiddleware** | `src/auth_middleware.cpp` | JWT/Basic/OIDC authentication |
 | **RateLimitMiddleware** | `src/rate_limit_middleware.cpp` | Request rate limiting |
+| **FlapiApp** | `src/include/flapi_app.hpp` | The single spelling of the Crow middleware tuple (CI-guarded) |
+
+### Observability
+
+One request identity shared by traces, the audit log and application logs. See
+[components/observability.md](./components/observability.md).
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| **RequestContext** | `src/request_context.cpp` | Per-request identity, one clock, thread-local scope |
+| **RequestContextMiddleware** | `src/request_context_middleware.cpp` | Leftmost middleware: id, SERVER span, audit line |
+| **FlapiTracing** | `src/flapi_tracing.cpp` (+ `_off.cpp`) | Provider lifecycle, exporters, counters |
+| **SpanScope** | `src/trace_scope.cpp` (+ `_off.cpp`) | Opaque, pointer-sized RAII span handle |
+| **TraceContext** | `src/trace_context.cpp` | W3C `traceparent` parsing, SEP-414 precedence |
+| **CapturePolicy** | `src/trace_capture_policy.cpp` | Capture tiers, redact-then-clamp |
+| **Redaction** | `src/redaction.cpp` | Credential-key stems, shared with the audit log |
+| **TracingConfig** | `src/tracing_config.cpp` | The boot-only `tracing:` block |
+| **FlapiLogHandler** | `src/flapi_log_handler.cpp` | Stamps ids onto every log line |
+| **AuditLogger** | `src/audit_logger.cpp` | Audit JSONL records |
+| **Semantic conventions** | `src/include/trace_semconv.hpp` | Attribute keys, one pinned revision |
+
+`opentelemetry-cpp` links **PRIVATE**, and no header under `src/include/`
+includes an OpenTelemetry header. `FLAPI_WITH_TRACING=OFF` swaps in no-op twins;
+request ids, log correlation and audit coverage survive it.
 
 ### Self-Packaging (optional)
 
@@ -162,24 +198,32 @@ artifact serve the API _and_ produce new bundled artifacts via
 
 ```
 1. HTTP Request arrives at APIServer (Crow)
-2. Middleware chain executes: CORS → RateLimit → Auth
-3. RequestHandler extracts parameters from query/path/body/header
-4. RequestValidator applies validation rules
-5. ConfigManager provides endpoint configuration
-6. SQLTemplateProcessor expands Mustache template with params
-7. DatabaseManager/QueryExecutor executes query on DuckDB
-8. Results serialized to JSON and returned
+2. RequestContextMiddleware mints the request id, starts the clock and the
+   SERVER span, and makes the context ambient
+3. Rest of the chain executes: CORS → FlapiCors → RateLimit → Auth
+4. ConfigManager resolves the endpoint, returning a pinned EndpointRef
+5. RequestHandler extracts parameters from query/path/body/header
+6. RequestValidator applies validation rules
+7. SQLTemplateProcessor expands Mustache template with params
+8. DatabaseManager/QueryExecutor executes query on DuckDB
+9. Results serialized to JSON and returned
+10. The chain unwinds through RequestContextMiddleware, which writes the audit
+    line, closes the span and sets X-Request-Id / X-Trace-Id — this happens on
+    short-circuited requests (401, 429) too
 ```
 
 ### MCP Request Flow
 
 ```
-1. JSON-RPC request arrives at MCP endpoint
-2. MCPRouteHandlers parses request and extracts method
+1. JSON-RPC request arrives at MCP endpoint, through the same middleware chain
+   as REST — trace context from params._meta is resolved before the handler runs
+2. MCPRouteHandlers parses request and extracts method (whitelisted before it can
+   become a span name)
 3. Request dispatched to appropriate handler (tools/list, tools/call, etc.)
 4. MCPToolHandler maps MCP tool call to endpoint configuration
 5. Same execution path as REST: template → DuckDB → response
-6. Results wrapped in MCP response format
+6. Results wrapped in MCP response format, as ONE span and ONE audit line for the
+   whole call rather than one per protocol layer
 ```
 
 For detailed request flows with sequence diagrams, see [REQUEST_LIFECYCLE.md](./REQUEST_LIFECYCLE.md).

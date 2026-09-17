@@ -469,7 +469,7 @@ Health check for active sessions.
 
 Returns an empty object on success.
 
-> **Implementation:** `src/mcp_route_handlers.cpp` | **Tests:** *None - see [TEST_TODO.md](./TEST_TODO.md)*
+> **Implementation:** `src/mcp_route_handlers.cpp` | **Tests:** *None*
 
 ---
 
@@ -739,7 +739,7 @@ Lists all available MCP prompts.
 }
 ```
 
-> **Implementation:** `src/mcp_route_handlers.cpp` | **Tests:** *None - see [TEST_TODO.md](./TEST_TODO.md)*
+> **Implementation:** `src/mcp_route_handlers.cpp` | **Tests:** *None*
 
 ---
 
@@ -789,7 +789,7 @@ Retrieves a prompt with template arguments substituted.
 }
 ```
 
-> **Implementation:** `src/mcp_route_handlers.cpp` | **Tests:** *None - see [TEST_TODO.md](./TEST_TODO.md)*
+> **Implementation:** `src/mcp_route_handlers.cpp` | **Tests:** *None*
 
 ---
 
@@ -1203,7 +1203,7 @@ Arguments are passed in the `prompts/get` request and substituted into the templ
 }
 ```
 
-> **Implementation:** `src/mcp_route_handlers.cpp` | **Tests:** *None - see [TEST_TODO.md](./TEST_TODO.md)*
+> **Implementation:** `src/mcp_route_handlers.cpp` | **Tests:** *None*
 
 ---
 
@@ -1408,7 +1408,7 @@ flAPI automatically detects MIME types from file extensions:
 | `.xml` | `application/xml` |
 | (unknown) | `application/octet-stream` |
 
-> **Implementation:** `src/mcp_content_types.cpp` | **Tests:** *Image/audio/binary not tested - see [TEST_TODO.md](./TEST_TODO.md)*
+> **Implementation:** `src/mcp_content_types.cpp` | **Tests:** *Image/audio/binary not tested*
 
 ---
 

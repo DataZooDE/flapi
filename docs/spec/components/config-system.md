@@ -56,11 +56,41 @@ class ConfigManager {
 public:
     // Unified API
     void loadConfig();
-    const EndpointConfig* getEndpointForPath(const std::string& path) const;
+    EndpointRef getEndpointForPath(const std::string& path) const;
     ValidationResult validateEndpointConfig(const EndpointConfig& config) const;
     crow::json::wvalue serializeEndpointConfig(const EndpointConfig& config) const;
 };
 ```
+
+### Copy-on-write endpoint table
+
+Endpoint lookups do **not** return a raw pointer into a live `std::vector`. They
+return an `EndpointRef`: a pinned `shared_ptr` to an immutable snapshot, plus a
+pointer into it.
+
+```cpp
+// A reload clones, mutates and publishes a new snapshot. Readers holding the
+// previous one keep seeing a consistent table until they release it.
+std::shared_ptr<const std::vector<EndpointConfig>> endpoints_snapshot;
+```
+
+This fixed a real use-after-free: the vector was cleared and re-`push_back`-ed at
+runtime by `refreshConfig` and the config-service routes, with no lock against
+in-flight requests, while handlers held raw pointers into it.
+
+> **`EndpointRef` is `[[nodiscard]]` and must be bound to a named variable.**
+> Used as a temporary, the snapshot releases at the end of the full expression
+> and the pointer dangles — reintroducing exactly the bug it exists to prevent.
+>
+> ```cpp
+> const auto endpoint = cfg->getEndpointForPathAndMethod(path, method);  // good
+> auto* p = cfg->getEndpointForPathAndMethod(path, method).get();        // dangles
+> ```
+
+It is also the precondition that makes `RequestContext`'s `string_view` fields
+safe to hold for the life of a request. See
+[observability.md](./observability.md).
+
 
 ## Delegated Classes
 
@@ -197,7 +227,34 @@ template:
   environment-whitelist:
     - DB_.*
     - API_KEY
+log-level: info          # read from YAML; CLI > env > YAML > default
+log-format: json
+audit:
+  enabled: true
+  sink: file
+  path: /var/log/flapi/audit.jsonl
+  redact: [password, tax_id]
+tracing:                 # see below - parsed once, at startup
+  enabled: false
 ```
+
+#### The `tracing:` block
+
+Parsed by `ConfigManager::parseTracingConfig()` into `TracingConfig`
+(`src/include/tracing_config.hpp`). Every key is **boot-only**: the provider,
+capture policy and middleware snapshots are all taken once at startup, so a
+reload does not affect them.
+
+Optional fields are held as `std::optional` on purpose. A YAML *default* must not
+be indistinguishable from an operator's explicit setting, or the exporter would
+silently overwrite an injected `OTEL_EXPORTER_OTLP_ENDPOINT` and Kubernetes
+auto-instrumentation would break.
+
+The full key list, defaults and semantics live in
+[../../OBSERVABILITY.md § 2](../../OBSERVABILITY.md#2-turning-tracing-on).
+
+Per-endpoint, `mcp-tool.tracing.capture` overrides the global tier in either
+direction — except that a global `off` always wins.
 
 ### Endpoint Configuration (sqls/*.yaml)
 
@@ -306,9 +363,12 @@ template:
 | `src/endpoint_repository.cpp` | Endpoint storage |
 | `src/config_validator.cpp` | Validation rules |
 | `src/config_serializer.cpp` | Serialization |
-| `src/include/config_manager.hpp` | Struct definitions |
+| `src/include/config_manager.hpp` | Struct definitions, `EndpointRef`, snapshot |
+| `src/tracing_config.cpp` | The boot-only `tracing:` block |
 
 ## Related Documentation
 
 - [DESIGN_DECISIONS.md](../DESIGN_DECISIONS.md#2-facade-pattern-for-configmanager) - Why facade pattern
-- [../CONFIG_REFERENCE.md](../../CONFIG_REFERENCE.md) - Configuration options
+- [../../CONFIG_REFERENCE.md](../../CONFIG_REFERENCE.md) - Configuration options
+- [DESIGN_DECISIONS.md](../DESIGN_DECISIONS.md#10e-copy-on-write-endpoint-table) - Why copy-on-write
+- [observability.md](./observability.md) - What depends on the pinned snapshot
