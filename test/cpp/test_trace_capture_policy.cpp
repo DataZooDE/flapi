@@ -20,7 +20,7 @@ namespace {
 CapturePolicy makePolicy(CaptureTier global,
                          std::unordered_set<std::string> redact_keys = {},
                          std::size_t max_bytes = 64) {
-    return CapturePolicy(global, std::move(redact_keys), max_bytes, 50);
+    return CapturePolicy(global, std::move(redact_keys), max_bytes);
 }
 
 }  // namespace
@@ -57,7 +57,7 @@ TEST_CASE("values are captured only at the payload tier", "[capture_policy][secu
 TEST_CASE("redaction happens BEFORE clamping", "[capture_policy][security]") {
     // Order of operations matters: clamping first can truncate mid-value and
     // leave a partial secret in the span. A partial secret is still a secret.
-    CapturePolicy policy(CaptureTier::Payload, {"password"}, /*max_bytes=*/20, 50);
+    CapturePolicy policy(CaptureTier::Payload, {"password"}, /*max_bytes=*/20);
 
     const std::string redacted = policy.redactAndClamp("password", "hunter2-and-a-very-long-tail");
     REQUIRE(redacted.find("hunter2") == std::string::npos);
@@ -67,7 +67,7 @@ TEST_CASE("redaction happens BEFORE clamping", "[capture_policy][security]") {
 TEST_CASE("clamping is UTF-8 safe", "[capture_policy]") {
     // Truncating mid-sequence produces invalid UTF-8, which a backend may reject
     // outright - losing the whole span rather than one attribute.
-    CapturePolicy policy(CaptureTier::Payload, {}, /*max_bytes=*/5, 50);
+    CapturePolicy policy(CaptureTier::Payload, {}, /*max_bytes=*/5);
     const std::string clamped = policy.redactAndClamp("note", "caf\xC3\xA9 \xE5\x8C\x97\xE4\xBA\xAC");
 
     REQUIRE(clamped.size() <= 5);
@@ -89,7 +89,7 @@ TEST_CASE("the redact key list is reused, not reinvented", "[capture_policy][sec
     // audit.redact_keys already exists and operators already configure it. A
     // second, separate list would silently diverge and leak whatever the operator
     // forgot to add twice.
-    CapturePolicy policy(CaptureTier::Payload, {"token", "secret"}, 1024, 50);
+    CapturePolicy policy(CaptureTier::Payload, {"token", "secret"}, 1024);
     REQUIRE(policy.redactAndClamp("token", "abc") == "<redacted>");
     REQUIRE(policy.redactAndClamp("secret", "abc") == "<redacted>");
     REQUIRE(policy.redactAndClamp("harmless", "abc") == "abc");
@@ -99,7 +99,7 @@ TEST_CASE("redaction is case-insensitive on the key", "[capture_policy][security
     // A query parameter named "Token" must not slip past a list containing
     // "token": HTTP parameter names are not reliably normalised, and the failure
     // mode is a leaked credential.
-    CapturePolicy policy(CaptureTier::Payload, {"token"}, 1024, 50);
+    CapturePolicy policy(CaptureTier::Payload, {"token"}, 1024);
     REQUIRE(policy.redactAndClamp("Token", "abc") == "<redacted>");
     REQUIRE(policy.redactAndClamp("TOKEN", "abc") == "<redacted>");
 }
@@ -109,7 +109,7 @@ TEST_CASE("credential-shaped keys are always redacted", "[capture_policy][securi
     // an operator should not have to remember to list them. The plan's invariant
     // is that Authorization headers, bearer tokens, passwords and connection
     // strings never appear - that cannot depend on configuration.
-    CapturePolicy policy(CaptureTier::Payload, {}, 1024, 50);
+    CapturePolicy policy(CaptureTier::Payload, {}, 1024);
     for (const char* key : {"authorization", "Authorization", "password", "passwd",
                             "api_key", "apikey", "access_token", "refresh_token",
                             "client_secret", "private_key", "connection_string"}) {
@@ -124,21 +124,9 @@ TEST_CASE("db.query.text is withheld unless every site is a prepared binding",
     // parameterised SQL contains placeholders rather than values - genuinely safe.
     // That is NOT true for interpolated sites, where a value is substituted into
     // the SQL text itself.
-    CapturePolicy policy(CaptureTier::Metadata, {}, 1024, 50);
+    CapturePolicy policy(CaptureTier::Metadata, {}, 1024);
     REQUIRE_FALSE(policy.allowQueryText(/*interpolated=*/0, /*opt_in=*/false));
     REQUIRE(policy.allowQueryText(/*interpolated=*/0, /*opt_in=*/true));
     REQUIRE_FALSE(policy.allowQueryText(/*interpolated=*/1, /*opt_in=*/true));
 }
 
-TEST_CASE("the document cap is bounded in BYTES as well as count",
-          "[capture_policy][security]") {
-    // Capping only the count is not a bound: fifty rows of a wide table is
-    // megabytes held in the export queue per span - a memory-exhaustion vector an
-    // operator can reach by enabling a documented feature.
-    CapturePolicy policy(CaptureTier::Payload, {}, /*max_bytes=*/32, /*max_documents=*/50);
-    REQUIRE(policy.maxDocuments() == 50);
-    REQUIRE(policy.maxValueBytes() == 32);
-
-    std::size_t budget = policy.maxValueBytes() * policy.maxDocuments();
-    REQUIRE(budget > 0);
-}

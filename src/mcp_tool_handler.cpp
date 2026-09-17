@@ -280,6 +280,10 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
     }
 }
 
+bool MCPToolHandler::isKnownTool(const std::string& tool_name) const {
+    return getEndpointConfigByToolName(tool_name) != nullptr;
+}
+
 const EndpointConfig* MCPToolHandler::getEndpointConfigByToolName(const std::string& tool_name) const {
     const auto endpoints = config_manager->getEndpoints();   // pinned snapshot
 

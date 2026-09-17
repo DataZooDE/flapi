@@ -294,3 +294,53 @@ TEST_CASE("a serialized audit line carries trace ids only when present", "[audit
     const std::string line_without = logger.serialiseEventForTest(without);
     REQUIRE(line_without.find("trace_id") == std::string::npos);
 }
+
+TEST_CASE("AuditLogger: credential-shaped params are masked even when the "
+          "operator never listed them",
+          "[audit][security]") {
+    // docs/OBSERVABILITY.md §4 promises credential-shaped keys are redacted
+    // "regardless of your configuration". The audit log is written even with
+    // tracing compiled out, so that promise has to hold here, not only on the
+    // span path. Before this test, a declared `password` request field was
+    // written to audit.jsonl in cleartext.
+    flapi::AuditConfig cfg;
+    cfg.enabled = true;
+    cfg.sink = "null";
+    cfg.redact_keys = {};        // operator listed NOTHING
+
+    flapi::AuditLogger logger(cfg);
+
+    flapi::AuditEvent ev;
+    ev.request_id = "req-0";
+    ev.params = {
+        {"password", "hunter2"},
+        {"Token", "eyJhbGciOi"},
+        {"x-api-key", "sk-live-9911"},
+        {"customer_id", "42"},     // ordinary field: must survive
+    };
+
+    const std::string line = logger.serialiseEventForTest(ev);
+    INFO(line);
+    REQUIRE(line.find("hunter2") == std::string::npos);
+    REQUIRE(line.find("eyJhbGciOi") == std::string::npos);
+    REQUIRE(line.find("sk-live-9911") == std::string::npos);
+    REQUIRE(line.find("42") != std::string::npos);
+}
+
+TEST_CASE("AuditLogger: the operator redact list is case-insensitive",
+          "[audit][security]") {
+    flapi::AuditConfig cfg;
+    cfg.enabled = true;
+    cfg.sink = "null";
+    cfg.redact_keys = {"tax_id"};
+
+    flapi::AuditLogger logger(cfg);
+
+    flapi::AuditEvent ev;
+    ev.request_id = "req-0";
+    ev.params = {{"Tax_Id", "DE123456789"}};
+
+    const std::string line = logger.serialiseEventForTest(ev);
+    INFO(line);
+    REQUIRE(line.find("DE123456789") == std::string::npos);
+}

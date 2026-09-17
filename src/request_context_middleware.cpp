@@ -348,20 +348,39 @@ void RequestContextMiddleware::finish(crow::response& res, context& ctx) {
             if (capture_policy_ != nullptr
                 && capture_policy_->capturesValues(ctx.rc.endpoint_capture)
                 && !ctx.rc.audit_params.empty()) {
-                std::string rendered;
-                rendered.reserve(128);
-                rendered += '{';
+                // Built through crow::json, never by concatenation. A value
+                // containing a quote or a backslash would otherwise forge
+                // fields into an attribute we label application/json, and
+                // OpenInference consumers parse it.
+                //
+                // Bounded twice: each value by max_value_bytes in
+                // redactAndClamp, and the object as a whole by the two limits
+                // below. Without the second bound a wide endpoint can hold
+                // fields x 8 KiB per span, x2 with the overlay, across a queue
+                // of max_queue_size spans.
+                constexpr std::size_t kMaxPayloadFields = 64;
+                const std::size_t total_budget = capture_policy_->maxValueBytes() * 8;
+
+                crow::json::wvalue payload = crow::json::wvalue::object();
+                std::size_t used = 0;
+                std::size_t taken = 0;
+                bool truncated = false;
                 for (const auto& [key, value] : ctx.rc.audit_params) {
-                    if (rendered.size() > 1) { rendered += ','; }
-                    rendered += '"';
-                    rendered += key;
-                    rendered += "\":\"";
+                    if (taken >= kMaxPayloadFields || used >= total_budget) {
+                        truncated = true;
+                        break;
+                    }
                     // Redact FIRST, clamp SECOND - clamping first can truncate
                     // mid-value and leave a partial secret behind.
-                    rendered += capture_policy_->redactAndClamp(key, value);
-                    rendered += '"';
+                    std::string clamped = capture_policy_->redactAndClamp(key, value);
+                    used += key.size() + clamped.size();
+                    payload[key] = std::move(clamped);
+                    ++taken;
                 }
-                rendered += '}';
+                if (truncated) {
+                    payload["flapi.truncated"] = true;
+                }
+                const std::string rendered = payload.dump();
                 ctx.span.setAttr("gen_ai.tool.call.arguments", rendered);
 
                 if (openinference_) {

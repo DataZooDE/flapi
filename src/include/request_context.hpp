@@ -62,7 +62,12 @@ struct RequestContext {
     std::string mcp_method, mcp_tool, mcp_session_id;
     std::int64_t row_count = -1;
     int status_code = 0;
-    std::vector<std::pair<std::string, std::string>> audit_params;  // already redacted
+    // RAW declared-field values. NOT redacted here: both consumers redact at
+    // their own sink (AuditLogger via redaction.hpp, spans via CapturePolicy),
+    // because they have different rules and only the sink knows the tier. The
+    // previous comment claimed these were pre-redacted, and that untruth is how
+    // cleartext credentials reached audit.jsonl.
+    std::vector<std::pair<std::string, std::string>> audit_params;
 
     // Set by a richer emitter (the MCP tool handler) to tell the HTTP middleware
     // not to also write a line. An MCP tools/call is ONE operation: auditing both

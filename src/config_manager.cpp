@@ -318,14 +318,13 @@ void ConfigManager::parseAuditConfig() {
 
 const CapturePolicy& ConfigManager::getCapturePolicy() const {
     if (!capture_policy_) {
-        // Reuses audit.redact_keys deliberately: operators already configure that
-        // list, and a second one would diverge the moment somebody added a key to
-        // only one of them - leaking whatever they forgot to add twice.
+        // Reuses the audit.redact list deliberately: operators already configure
+        // that list, and a second one would diverge the moment somebody added a key
+        // to only one of them - leaking whatever they forgot to add twice.
         capture_policy_ = std::make_unique<CapturePolicy>(
             tracing_config.capture,
             audit_config.redact_keys,
-            tracing_config.payload_max_value_bytes,
-            tracing_config.payload_max_documents);
+            tracing_config.payload_max_value_bytes);
     }
     return *capture_policy_;
 }
@@ -350,8 +349,6 @@ void ConfigManager::parseTracingConfig() {
     if (node["timeout_ms"])        { tracing_config.timeout_ms = node["timeout_ms"].as<int>(); }
     if (node["capture"])           { tracing_config.capture = parseCaptureTier(node["capture"].as<std::string>()); }
     if (node["openinference"])     { tracing_config.openinference = node["openinference"].as<bool>(); }
-    if (node["metrics"])           { tracing_config.metrics = node["metrics"].as<bool>(); }
-    if (node["client_spans"])      { tracing_config.client_spans = node["client_spans"].as<bool>(); }
 
     if (node["headers"] && node["headers"].IsMap()) {
         for (const auto& entry : node["headers"]) {
@@ -385,9 +382,6 @@ void ConfigManager::parseTracingConfig() {
     if (const auto& payload = node["payload"]) {
         if (payload["max_value_bytes"]) {
             tracing_config.payload_max_value_bytes = payload["max_value_bytes"].as<std::size_t>();
-        }
-        if (payload["max_documents"]) {
-            tracing_config.payload_max_documents = payload["max_documents"].as<std::size_t>();
         }
     }
 

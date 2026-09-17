@@ -1,7 +1,9 @@
 #include "audit_logger.hpp"
+#include "redaction.hpp"
 #include "request_context.hpp"
 #include "time_utils.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <crow/json.h>
 #include <ctime>
@@ -103,11 +105,19 @@ std::string AuditLogger::serialiseEvent(const AuditEvent& event) const {
 
     crow::json::wvalue params = crow::json::wvalue::object();
     for (const auto& [key, value] : event.params) {
-        if (config_.redact_keys.count(key) > 0) {
+        // Two independent reasons to mask, and the credential check comes first
+        // because it must not depend on the operator's list being complete. The
+        // audit log is written even when tracing is compiled out, so this is the
+        // only redaction a `FLAPI_WITH_TRACING=OFF` build performs.
+        if (isCredentialKey(key)) {
             params[key] = "<redacted>";
-        } else {
-            params[key] = value;
+            continue;
         }
+        const std::string normalised = normaliseKey(key);
+        const bool listed = std::any_of(
+            config_.redact_keys.begin(), config_.redact_keys.end(),
+            [&normalised](const std::string& k) { return normaliseKey(k) == normalised; });
+        params[key] = listed ? "<redacted>" : value;
     }
     line["params"] = std::move(params);
     return line.dump();

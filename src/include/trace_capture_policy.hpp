@@ -24,8 +24,7 @@ class CapturePolicy {
 public:
     CapturePolicy(CaptureTier global,
                   std::unordered_set<std::string> redact_keys,
-                  std::size_t max_value_bytes,
-                  std::size_t max_documents);
+                  std::size_t max_value_bytes);
 
     // A per-endpoint setting may move the tier in EITHER direction, but a global
     // `off` always wins. That gives an operator one lever guaranteed to stop
@@ -49,7 +48,6 @@ public:
     bool allowQueryText(int interpolated_count, bool opt_in) const;
 
     std::size_t maxValueBytes() const { return max_value_bytes_; }
-    std::size_t maxDocuments() const { return max_documents_; }
 
 private:
     bool isAlwaysRedacted(std::string_view key) const;
@@ -57,7 +55,6 @@ private:
     CaptureTier global_;
     std::unordered_set<std::string> redact_keys_;   // lowercased on construction
     std::size_t max_value_bytes_;
-    std::size_t max_documents_;
 };
 
 }  // namespace flapi

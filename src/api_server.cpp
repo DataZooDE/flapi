@@ -244,6 +244,12 @@ void APIServer::handleDynamicRequest(const crow::request& req, crow::response& r
         // Values are still redacted and clamped downstream, and are emitted ONLY
         // at the payload tier.
         for (const auto& field : endpoint->request_fields) {
+            // Query fields only. A field declared as `field-in: body` or
+            // `header` is not in the query string, and reading it from there
+            // would attribute an unrelated caller-supplied value to its name.
+            if (!field.fieldIn.empty() && field.fieldIn != "query") {
+                continue;
+            }
             const auto value = req.url_params.get(field.fieldName);
             if (value != nullptr) {
                 rc->audit_params.emplace_back(field.fieldName, value);

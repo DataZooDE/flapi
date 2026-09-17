@@ -144,3 +144,17 @@ class TestMcpSingleSpan:
             # Enumerated only - never a free-form message, which is the most
             # reliable way to leak customer data into a trace.
             assert " " not in str(error), f"error.type must be enumerated, got {error!r}"
+
+    def test_an_unknown_tool_name_never_reaches_the_export(self, server):
+        # The tool name is caller-controlled until the lookup succeeds. It is
+        # appended to the SPAN NAME at the default metadata tier, so an
+        # unvalidated name is both a content leak and an unbounded-cardinality
+        # vector - the same bug the method whitelist fixed for `method`.
+        marker = "SECRET_CUSTOMER_9f2c1a7b"
+        _rpc(server.base_url, "tools/call", {"name": marker, "arguments": {}})
+
+        server.wait_for_server_span()
+        blob = server.raw_traces()
+        assert marker not in blob, (
+            "a caller-supplied tool name reached an exported span"
+        )

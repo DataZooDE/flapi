@@ -1,5 +1,7 @@
 #include "trace_capture_policy.hpp"
 
+#include "redaction.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -7,24 +9,6 @@
 namespace flapi {
 
 namespace {
-
-std::string toLower(std::string_view s) {
-    std::string out(s);
-    std::transform(out.begin(), out.end(), out.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return out;
-}
-
-// Never legitimate span content at ANY tier, and an operator must not have to
-// remember to list them. The plan's invariant - Authorization headers, bearer
-// tokens, passwords, connection strings and credential-manager material never
-// appear - cannot be allowed to depend on configuration being complete.
-constexpr std::array<std::string_view, 14> kAlwaysRedacted{{
-    "authorization", "proxy-authorization", "cookie", "set-cookie",
-    "password", "passwd", "secret", "client_secret",
-    "api_key", "apikey", "access_token", "refresh_token",
-    "private_key", "connection_string",
-}};
 
 // Truncate on a UTF-8 character boundary, never mid-sequence.
 std::size_t utf8SafeLength(std::string_view s, std::size_t max_bytes) {
@@ -44,15 +28,14 @@ std::size_t utf8SafeLength(std::string_view s, std::size_t max_bytes) {
 
 CapturePolicy::CapturePolicy(CaptureTier global,
                              std::unordered_set<std::string> redact_keys,
-                             std::size_t max_value_bytes,
-                             std::size_t max_documents)
-    : global_(global), max_value_bytes_(max_value_bytes), max_documents_(max_documents) {
+                             std::size_t max_value_bytes)
+    : global_(global), max_value_bytes_(max_value_bytes) {
     // Lowercase once, so matching is case-insensitive without per-call work.
     // A parameter named "Token" must not slip past a list containing "token":
     // HTTP parameter names are not reliably normalised and the failure mode is a
     // leaked credential.
     for (const auto& key : redact_keys) {
-        redact_keys_.insert(toLower(key));
+        redact_keys_.insert(normaliseKey(key));
     }
 }
 
@@ -63,14 +46,16 @@ CaptureTier CapturePolicy::effectiveTier(const std::optional<CaptureTier>& endpo
     return endpoint.value_or(global_);
 }
 
+// Shared with the audit log via redaction.hpp, deliberately: a credential list
+// that exists in two places diverges, and the half that is forgotten is the one
+// that leaks. See src/redaction.cpp for the stems and why they are matched as
+// substrings rather than by equality.
 bool CapturePolicy::isAlwaysRedacted(std::string_view key) const {
-    const auto lowered = toLower(key);
-    return std::find(kAlwaysRedacted.begin(), kAlwaysRedacted.end(), lowered)
-           != kAlwaysRedacted.end();
+    return isCredentialKey(key);
 }
 
 std::string CapturePolicy::redactAndClamp(std::string_view key, std::string_view value) const {
-    if (isAlwaysRedacted(key) || redact_keys_.count(toLower(key)) > 0) {
+    if (isAlwaysRedacted(key) || redact_keys_.count(normaliseKey(key)) > 0) {
         return "<redacted>";
     }
     return std::string(value.substr(0, utf8SafeLength(value, max_value_bytes_)));

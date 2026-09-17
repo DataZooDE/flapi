@@ -38,8 +38,6 @@ struct TracingConfig {
 
     CaptureTier capture = CaptureTier::Metadata;
     bool openinference = false;
-    bool metrics = true;
-    bool client_spans = true;
 
     // Probes are the highest-volume route in a Kubernetes deployment and are of
     // near-zero diagnostic value once green. They still count toward the duration
@@ -53,7 +51,6 @@ struct TracingConfig {
     std::map<std::string, std::string> resource_attributes;
 
     std::size_t payload_max_value_bytes = 8192;
-    std::size_t payload_max_documents = 50;
 };
 
 CaptureTier parseCaptureTier(const std::string& value, CaptureTier fallback = CaptureTier::Metadata);

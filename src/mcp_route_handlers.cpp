@@ -1536,11 +1536,17 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
             if (tool_handler_) {
                 MCPToolCallRequest tool_request;
                 tool_request.tool_name = tool_name;
-                // Registered tool name only - never an argument value. It is a
-                // bounded set (the configured endpoints), so it is safe as a span
-                // attribute and as a metric dimension.
+                // Record the name ONLY once it has been resolved against the
+                // configured endpoints. Until then it is caller-controlled, and
+                // it is appended to the span name and exported as
+                // gen_ai.tool.name at the DEFAULT capture tier - so an
+                // unvalidated name is both leaked content and an unbounded
+                // metric dimension. Unknown names collapse to one bucket, the
+                // same treatment knownMcpMethodOrUnknown() gives `method`.
                 if (auto* rc = RequestContextScope::current()) {
-                    rc->mcp_tool = tool_name;
+                    rc->mcp_tool = tool_handler_->isKnownTool(tool_name)
+                                       ? tool_name
+                                       : std::string("<unknown_tool>");
                 }
                 tool_request.arguments = crow::json::wvalue(arguments);
 
