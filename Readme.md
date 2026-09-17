@@ -255,7 +255,7 @@ In essecence a few prerequisites need to be met:
 - Checkout the repository and submodules: `git clone --recurse-submodules https://github.com/datazoode/flapi.git`
 - Build the project: `make release`
 
-The build process will download and build DuckDB v1.1.2 and install the vcpkg package manager. We depend on the following vcpkg ports:
+The build process will download and build DuckDB v1.5.5 and install the vcpkg package manager. We depend on the following vcpkg ports:
 
 - [`argparse`](https://github.com/p-ranav/argparse) - Command line argument parser
 - [`crow`](https://github.com/CrowCpp/Crow) - Our REST-Web framework and JSON handling
@@ -308,7 +308,7 @@ See [CLI Reference](docs/CLI_REFERENCE.md#disable-telemetry---no-telemetry) and 
 
 ## 🤝 Contributing
 
-We welcome contributions! Please see our [open an issue](https://github.com/DataZooDE/flapi/issues) or a pull request for more details.
+We welcome contributions. [Open an issue](https://github.com/DataZooDE/flapi/issues) to discuss a change, or send a pull request.
 
 ## 📄 License
 

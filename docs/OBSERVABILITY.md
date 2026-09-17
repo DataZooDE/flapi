@@ -52,7 +52,7 @@ That is the minimum. Everything below has a working default.
 | `flush.mode` | `batch` | `batch` or `on_response`. `on_response` requires `exporter: otlp_file`. See §5. |
 | `flush.timeout_ms` | `2000` | Batch interval / flush timeout. |
 | `flush.max_queue_size` | `2048` | Queue bound, in **spans** — not requests. |
-| `file.path` | `traces.jsonl` | For `exporter: otlp_file`. Relative to the working directory. |
+| `file.path` | `traces.jsonl` | For `exporter: otlp_file`. Relative to the working directory. The SDK treats it as a strftime-style pattern, so `%` sequences are expanded — avoid them unless you want rotation. |
 | `resource_attributes` | `{}` | e.g. `deployment.environment`. |
 | `payload.max_value_bytes` | `8192` | Per-value clamp at the payload tier. |
 
@@ -102,7 +102,8 @@ and of near-zero diagnostic value once green.
 
 To change the set, give `exclude_routes` the **complete** list you want — your
 list replaces the defaults, it does not extend them, and each entry must match a
-request path exactly.
+request path exactly, trailing slash included. `/health` does not match
+`/health/`.
 
 Note that `/doc` and `/doc.yaml` are excluded from *tracing* but still produce an
 audit line; the health probes produce neither.
@@ -112,7 +113,7 @@ audit line; the health probes produce neither.
 | Tier | Exports | Never exports |
 |---|---|---|
 | `off` | nothing; no provider is constructed | — |
-| **`metadata`** (default) | span structure and timings, route templates, HTTP method and status, tool and MCP method names, the SQL verb, rows returned, response byte count, template basename and size, the count of bound parameters, enumerated error kinds | any argument value, any result row, any filled path or query string, any header value, any credential |
+| **`metadata`** (default) | span structure and timings, route templates, HTTP method and status, whether a query string was present, `User-Agent` (see below), the auth kind, trace-context provenance, tool and MCP method names, the SQL verb, rows returned, response byte count, template basename and size, the count of bound parameters, enumerated error kinds | any argument value, any result row, any filled path or query string, any other header value, any credential |
 | `payload` | metadata **plus** the values of **declared** request fields | credentials, headers, filled paths and query strings — excluded at **every** tier |
 
 Four properties are enforced by tests, not asserted in prose. Each has a test
@@ -131,6 +132,17 @@ that fails if the property stops holding:
    declared parameter value *does* appear — without it, the exclusion tests would
    pass simply because nothing is captured.
 
+> **One header is exported: `User-Agent`**, as `user_agent.original`, clamped to
+> 256 bytes. It is caller-controlled, so treat it as untrusted text in whatever
+> consumes your traces. It is the single exception to "no header values" — it
+> carries no credential and is what tells you a spike came from one broken
+> client. Nothing else, `Authorization` and `Cookie` included, is ever read into
+> a span.
+>
+> With `openinference: true` the MCP **session id** is also exported, as
+> `session.id`. It identifies a conversation; if that is sensitive in your
+> deployment, leave the overlay off.
+
 Only the values of **declared request fields** are captured. An arbitrary query
 parameter a caller appends is not part of the endpoint's contract and is not
 exported. Redaction reuses your existing **`audit.redact`** list, so you configure
@@ -142,10 +154,30 @@ audit:
   redact: [password, tax_id, ssn]   # applied to spans as well as audit lines
 ```
 
-**Match your redact entries exactly.** Both the built-in credential list and your
-`audit.redact` entries are compared as whole, lower-cased key names — not as
-substrings. `api_key` is redacted; `x-api-key` and `user_api_key` are *not*,
-unless you list them too.
+**The two lists match differently, on purpose.**
+
+| List | Match | Effect |
+|---|---|---|
+| Built-in credential stems | **Substring** of the normalised key | `api_key`, `x-api-key`, `user_api_key` and `auth_token` are all redacted. You cannot forget one. |
+| Your `audit.redact` entries | **Whole** normalised key | `tax_id` redacts `tax_id` and `Tax-Id`, but **not** `customer_tax_id`. |
+
+"Normalised" means lower-cased with `-` and `_` removed, so case and separator
+style never matter for either list.
+
+The built-in list is a substring match because it must hold regardless of your
+configuration; your list is a whole-key match because you chose those names and
+silently redacting everything containing them would be surprising. If you want a
+prefix or suffix family redacted, list each member.
+
+Two consequences worth knowing:
+
+- Field names containing `token` are redacted — **except** the LLM counters
+  (`max_tokens`, `input_tokens`, `output_tokens`, `token_count`, `tokens_used`),
+  which are exempted by exact name because this is an MCP/LLM tool surface and
+  redacting them would gut the payload tier for its main workload.
+- Short stems (`pin`, `sid`, `sig`, `otp`) are deliberately *not* in the built-in
+  list. As substrings they would redact `design`, `signal` and half of an
+  ordinary data API. Add them to `audit.redact` if your schema needs them.
 
 ### Per-endpoint opt-in
 
@@ -196,7 +228,8 @@ tracing:
 
 With `exporter: otlp_file`, and the PostHog telemetry disabled per
 [TELEMETRY.md](../TELEMETRY.md), **flAPI opens no outbound network connection for
-observability.** Log rotation is your existing tooling's job; flAPI does not
+observability.** (Authentication is separate: if you configure OIDC, JWKS
+fetches still dial out.) Log rotation is your existing tooling's job; flAPI does not
 implement it.
 
 Note that the file exporter's own default is to buffer for 30 seconds. flAPI
@@ -254,10 +287,18 @@ curl -s -H "Authorization: Bearer $FLAPI_CONFIG_SERVICE_TOKEN" \
 }
 ```
 
-`spans_dropped` rising means the export queue is saturating — the collector is
-slow, unreachable, or `flush.max_queue_size` is too small for your span rate.
-`spans_exported` flat at zero with `enabled: true` means the exporter is
-misconfigured. Both counters are cumulative since startup.
+`spans_dropped` counts **failed export batches** — a collector that is
+unreachable, erroring, or timing out.
+
+> **A flat `spans_dropped` does not prove nothing was lost.** Spans discarded
+> because the batch queue was already full are dropped *before* export is
+> attempted, and are not counted here. If `spans_exported` is lower than your
+> request rate implies while `spans_dropped` stays at zero, suspect
+> `flush.max_queue_size` rather than the collector.
+
+`spans_exported` flat at zero with `enabled: true` usually means the exporter is
+misconfigured — though `exporter: none` also reports `enabled: true` and exports
+nothing, by design. Both counters are cumulative since startup.
 
 See [CONFIG_SERVICE_API_REFERENCE.md](./CONFIG_SERVICE_API_REFERENCE.md) for the
 full route reference.
@@ -279,20 +320,25 @@ compiles to no-ops and no OpenTelemetry symbol is linked.
 
 ## 10. Environment variables
 
-Configuration is YAML-first. Only two environment paths affect tracing:
+Configuration is YAML-first, but the OTLP/HTTP exporter is constructed from
+opentelemetry-cpp's own defaults, which read the environment. flAPI then
+overrides only what your YAML sets.
 
 | Variable | Effect |
 |---|---|
-| `OTEL_SDK_DISABLED` | Set to the exact string `true`, disables tracing even when `tracing.enabled: true`. Always wins. Other values, including `TRUE` and `1`, are ignored. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS` | Used as the OTLP/HTTP exporter's defaults **only when** the corresponding `endpoint` / `headers` keys are absent from YAML. Setting them in YAML wins. |
+| `OTEL_SDK_DISABLED` | Exactly `true` disables tracing even with `tracing.enabled: true`. Always wins. Other values, including `TRUE` and `1`, are ignored. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Used unless YAML sets `endpoint`. |
+| `OTEL_EXPORTER_OTLP_HEADERS`, `..._TRACES_HEADERS` | Merged in. A header you also set in YAML is **replaced** by the YAML value, not sent twice. |
+| `OTEL_EXPORTER_OTLP_PROTOCOL`, `..._TRACES_PROTOCOL` | Read by the SDK. flAPI overrides it only when YAML sets `protocol: http/json` — so an env protocol otherwise wins. |
+| `OTEL_EXPORTER_OTLP_CERTIFICATE`, `..._CLIENT_KEY`, `..._CLIENT_CERTIFICATE`, `..._COMPRESSION`, and the SDK's retry knobs | Honoured by the SDK; flAPI does not touch them. |
 
-**Everything else is YAML-only.** `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`,
-`OTEL_TRACES_SAMPLER`, `OTEL_TRACES_EXPORTER`, `OTEL_EXPORTER_OTLP_TIMEOUT` and the
-`OTEL_BSP_*` batch knobs have **no effect** — sampler, resource attributes,
-service name, exporter selection and flush behaviour are built from the `tracing:`
-block, and `timeout_ms` always overwrites the exporter timeout. If you rely on
-Kubernetes OTel Operator injection, set the equivalents in `tracing:` explicitly;
-do not assume the injected environment is being read.
+**These have no effect:** `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`,
+`OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG`, `OTEL_TRACES_EXPORTER`, the
+`OTEL_BSP_*` batch knobs, and `OTEL_EXPORTER_OTLP_TIMEOUT` (`timeout_ms` always
+overwrites it). Service name, resource attributes, sampler, exporter selection
+and flush behaviour come from the `tracing:` block only. If you rely on
+Kubernetes OTel Operator injection, set those in YAML explicitly rather than
+assuming the injected environment is read.
 
 **One deliberate divergence:** an `OTEL_EXPORTER_OTLP_ENDPOINT` in the
 environment does **not** by itself enable tracing. A platform-wide environment

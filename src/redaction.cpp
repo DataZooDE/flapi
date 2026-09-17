@@ -14,14 +14,30 @@ namespace {
 //   - "signature",     not "sig"   -> `design` is not a credential
 //   - "apikey",        not "key"   -> `sort_key`, `primary_key` survive
 //
-// Deliberate accepted false positive: anything containing "token", such as
-// `tokenizer_version`. Missing `auth_token` costs a leaked bearer token;
-// redacting a version string costs nothing that matters.
-constexpr std::array<std::string_view, 16> kCredentialStems{{
-    "password", "passwd", "pwd", "secret",
-    "token", "apikey", "authorization", "cookie",
-    "credential", "privatekey", "connectionstring", "signature",
-    "bearer", "jwt", "accesskey", "clientsecret",
+// Short stems (pin, sid, sig, otp) are deliberately absent: matched as
+// substrings they would redact half the ordinary fields in a data API, and a
+// denylist that redacts everything teaches operators to turn it off.
+constexpr std::array<std::string_view, 27> kCredentialStems{{
+    "password", "passwd", "pwd", "passphrase", "passcode",
+    "secret", "token", "apikey", "authorization", "cookie",
+    "credential", "privatekey", "privkey", "connectionstring", "connstr",
+    "signature", "bearer", "jwt", "accesskey", "clientsecret",
+    "authkey", "sessionid", "dsn", "databaseurl", "hmac",
+    "subscriptionkey", "functionskey",
+}};
+
+// Exceptions, matched on the WHOLE normalised key rather than as substrings.
+//
+// These contain a credential stem but are not credentials. They matter because
+// flAPI is an MCP/LLM tool surface: `max_tokens` and `token_count` are ordinary
+// fields here, far more common than any credential called "token count", and
+// redacting them would gut the payload tier for exactly the workload it exists
+// to observe. Over-redaction is the safe direction for a denylist, but it is
+// not free.
+constexpr std::array<std::string_view, 8> kNotCredentials{{
+    "maxtokens", "mintokens", "inputtokens", "outputtokens",
+    "tokencount", "tokensused", "totaltokens",
+    "secretary",
 }};
 
 }  // namespace
@@ -41,6 +57,12 @@ std::string normaliseKey(std::string_view key) {
 bool isCredentialKey(std::string_view key) {
     const std::string normalised = normaliseKey(key);
     if (normalised.empty()) {
+        return false;
+    }
+    // Exceptions are whole-key, so an attacker cannot smuggle a credential past
+    // the denylist by naming it `my_max_tokens`.
+    if (std::find(kNotCredentials.begin(), kNotCredentials.end(), normalised)
+        != kNotCredentials.end()) {
         return false;
     }
     return std::any_of(kCredentialStems.begin(), kCredentialStems.end(),

@@ -564,24 +564,18 @@ void OpenAPIDocGenerator::addConfigServicePaths(YAML::Node& paths) {
     {
         YAML::Node operation = createOperation(
             "Get System Metrics",
-            "Returns detailed performance and usage metrics for the Flapi server. "
-            "Metrics include: request counts per endpoint, average response times, "
-            "cache hit/miss rates, database query performance, rate limit statistics, "
-            "authentication success/failure rates, and resource utilization. "
-            "Use this for performance monitoring and optimization.",
+            "Returns runtime counters: tracing span export (enabled, spans_exported, "
+            "spans_dropped), Arrow streaming (total/successful/failed requests, "
+            "total_rows, active_streams), and the loaded endpoint count. Counters are "
+            "cumulative since process start. Requires the config-service token.",
             "Audit"
         );
-        
-        YAML::Node params = operation["parameters"];
-        addParameter(params, "format", "query", "string", false,
-            "Response format: 'json' (default) or 'prometheus' for Prometheus scraping");
-        operation["parameters"] = params;
-        
+
         YAML::Node responses = operation["responses"];
         addResponse(responses, "200",
-            "Successful response with system metrics");
-        addResponse(responses, "500",
-            "Internal server error");
+            "Runtime counters for tracing, Arrow streaming and endpoint count");
+        addResponse(responses, "401",
+            "Missing or invalid config-service token");
         operation["responses"] = responses;
         
         paths["/api/v1/_config/metrics"]["get"] = operation;

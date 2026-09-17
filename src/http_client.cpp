@@ -116,16 +116,28 @@ flapi::SpanScope startClientSpan(const std::string& method_name, const std::stri
     }
     span.setAttr(flapi::semconv::http::kRequestMethod, method_name);
 
-    // url.full with the QUERY STRING STRIPPED. An IdP URL can carry parameters,
-    // and a query string is never safe to export. Host and path only.
+    // url.full with the QUERY STRING, FRAGMENT and USERINFO stripped. An IdP URL
+    // can carry parameters, a fragment can carry an implicit-flow token, and
+    // userinfo is by definition a credential. Scheme, host and path only.
     std::string_view trimmed(url);
-    if (const auto q = trimmed.find('?'); q != std::string_view::npos) {
+    if (const auto q = trimmed.find_first_of("?#"); q != std::string_view::npos) {
         trimmed = trimmed.substr(0, q);
     }
-    span.setAttr("url.full", trimmed);
+    std::string sanitised(trimmed);
+    if (const auto scheme = sanitised.find("://"); scheme != std::string::npos) {
+        const auto host_start = scheme + 3;
+        const auto path_start = sanitised.find('/', host_start);
+        const auto at = sanitised.rfind('@', path_start == std::string::npos
+                                                ? std::string::npos
+                                                : path_start);
+        if (at != std::string::npos && at > host_start) {
+            sanitised.erase(host_start, at - host_start + 1);
+        }
+    }
+    span.setAttr("url.full", sanitised);
 
     // server.address without scheme or path, so the attribute stays bounded.
-    std::string_view host = trimmed;
+    std::string_view host(sanitised);
     if (const auto scheme = host.find("://"); scheme != std::string_view::npos) {
         host.remove_prefix(scheme + 3);
     }

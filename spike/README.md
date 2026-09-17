@@ -56,6 +56,6 @@ its C API. `scripts/check_cxx_standard_uniform.sh` now fails the build if the
 standard ever splits again.
 
 **Verdict: PROCEED, keeping the SDK.** Decision D5 in
-`docs/plans/otel-observability.md` is settled: opentelemetry-cpp stays, and
+`docs/archive/otel-observability.md` is settled: opentelemetry-cpp stays, and
 because 1.24.0 provides `otlp-file`, flAPI does **not** need to hand-roll a file
 exporter — issue 6 shrinks to configuration plus tests.

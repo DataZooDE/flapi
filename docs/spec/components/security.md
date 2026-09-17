@@ -367,10 +367,19 @@ either way.
 | Not exported | Why |
 |---|---|
 | The filled path and the query string | A query string on a data API is by definition a filter over customer data. Only the route *template* is exported. |
-| Header values | Including, obviously, `Authorization`. |
+| Header values, with one exception | `Authorization`, `Cookie` and everything else are never read into a span. The exception is `User-Agent`, exported as `user_agent.original` clamped to 256 bytes — caller-controlled, so untrusted text downstream, but credential-free and diagnostically useful (`src/request_context_middleware.cpp`). |
 | Exception messages | Error status is an enumerated `error.type`. A free-form message is the most reliable way to leak a row value into a trace. |
 | Unmatched paths | They collapse to a single `<unmatched>` bucket, so a scanner hitting a thousand URLs produces one label — a cardinality *and* a cost control. |
 | Caller-supplied MCP method and tool names | Both are whitelisted or resolved before they can become a span name. |
+
+**The two denylists match differently, deliberately.** The built-in credential
+stems are matched as **substrings** of the normalised key, so an operator cannot
+forget a variant (`x-api-key`, `auth_token`, `user_password` are all caught). The
+operator's `audit.redact` entries are matched on the **whole** normalised key,
+because those names were chosen deliberately and silently redacting every field
+containing them would surprise. A short exact-match exception set keeps LLM token
+counters (`max_tokens`, `token_count`) readable, since this is an MCP tool
+surface.
 
 **Redaction** (`src/redaction.cpp`) applies two denylists. The credential stems
 are unconditional — they do not depend on the operator's list being complete —

@@ -303,7 +303,8 @@ validators:
 
 **Security Strategy (Defense in Depth):**
 1. **Validators**: First line (whitelist validation)
-2. **Triple braces**: Second line (string escaping)
+2. **Quoting discipline in the template**: triple braces inside single-quoted
+   SQL literals. Note this is NOT escaping — see the security note in §3.
 3. Never trust user input even with both layers
 
 ### 5. DuckLake Caching
@@ -373,8 +374,9 @@ connection: [data-source-name]     # From connections in flapi.yaml
 # Caching (optional)
 cache:
   enabled: true
-  ttl: 3600                        # Seconds
-  refresh: full                    # full or incremental
+  schedule: 6h                     # how often to refresh
+  # Mode is INFERRED: no primary-key/cursor = full refresh;
+  # cursor only = append; primary-key + cursor = merge.
   table: customers_cache           # Cache table name
 
 # MCP tool definition (optional)
@@ -397,12 +399,12 @@ auth:
 ```sql
 SELECT * FROM read_parquet('{{ context.conn.path }}')
 WHERE 1=1
-{{#if params.id}}
+{{#params.id}}
   AND customer_id = {{ params.id }}
-{{/if}}
-{{#if params.status}}
-  AND status = '{{ params.status }}'
-{{/if}}
+{{/params.id}}
+{{#params.status}}
+  AND status = '{{{ params.status }}}'
+{{/params.status}}
 ```
 
 Template variables available:
@@ -704,8 +706,8 @@ make integration-test-ci           # Full suite with server management
 ```yaml
 cache:
   enabled: true
-  ttl: 3600                        # Cache validity in seconds
-  refresh: full                    # full = REPLACE, incremental = APPEND/MERGE
+  schedule: 6h                     # how often to refresh
+  # Mode is INFERRED from primary-key/cursor - there is no `refresh:` key.
   table: cache_table_name          # Where to store cached results
   refresh_query: |                 # Optional: custom refresh query
     SELECT * FROM external_source
@@ -754,25 +756,31 @@ duckdb:
     - name: json
     - name: postgres
 
-# Server settings
-server:
-  port: 8080                        # REST API port
-  mcp_port: 8081                    # MCP server port
-  host: 0.0.0.0
-  log_level: info                   # debug, info, warn, error
+# Logging (top level, not nested under `server:`)
+log-level: info                     # debug, info, warn, error
+log-format: text                    # text | json
 
-# Global auth configuration (optional)
-auth:
-  default_required: true
-  jwt_secret: ${JWT_SECRET}         # Environment variable substitution
-  allowed_roles: [admin, user]
+# MCP server (its own top-level block)
+mcp:
+  enabled: true
+  port: 8081
 
-# Global rate limiting (optional)
+# Global rate limiting (optional). Note the underscore here and the HYPHEN
+# in the per-endpoint `rate-limit:` block - they genuinely differ.
 rate_limit:
   enabled: true
-  requests_per_minute: 100
-  burst_size: 10
+  max: 100                          # requests per interval
+  interval: 60                      # seconds
+
+# Tracing (optional, off by default, read once at startup)
+tracing:
+  enabled: false
 ```
+
+> **Do not trust this snippet over the code.** It is illustrative; the
+> authoritative key list is [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md),
+> and the parser in `src/config_manager.cpp` is the ground truth. Before
+> documenting any key, grep for a *reader* of it, not just a parser.
 
 ### Environment Variables
 
@@ -1072,8 +1080,7 @@ flapii endpoints create --file my-endpoint.yaml
 ```yaml
 cache:
   enabled: true
-  ttl: 3600
-  refresh: full
+  schedule: 6h
   table: my_endpoint_cache
 ```
 
@@ -1341,7 +1348,7 @@ Configure with cron expressions or interval schedules.
 
 ### Cache Strategy
 
-- Use full refresh (`refresh: full`) for small, frequently-accessed datasets
+- Use full refresh (declare neither `primary-key` nor `cursor`) for small datasets
 - Use incremental refresh (`refresh: incremental`) for large append-only data
 - Set appropriate TTL based on data freshness requirements
 - Monitor cache hit rates in logs

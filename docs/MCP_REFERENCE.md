@@ -1907,7 +1907,7 @@ LIMIT {{#params.limit}}{{ params.limit }}{{/params.limit}}{{^params.limit}}25{{/
 
 ## Related Documentation
 
-- **[Reference Documentation Map](./REFERENCE_MAP.md)** - Navigation guide for all reference docs
+- **[Documentation index](./README.md)** - Start here; organised by what you are trying to do
 - **[Configuration Reference](./CONFIG_REFERENCE.md)** - Configuration file options (including MCP § 2.6)
 - **[CLI Reference](./CLI_REFERENCE.md)** - Server executable command-line options
 - **[Config Service API Reference](./CONFIG_SERVICE_API_REFERENCE.md)** - Runtime configuration REST API

@@ -674,7 +674,7 @@ public:
     // resolved in main.cpp - an operator who passed --log-level meant it.
     const TracingConfig& getTracingConfig() const { return tracing_config; }
 
-    // Built once from the tracing config and the EXISTING audit.redact_keys, so
+    // Built once from the tracing config and the EXISTING audit.redact (stored as AuditConfig::redact_keys), so
     // an operator configures redaction in one place rather than two lists that
     // silently diverge.
     const CapturePolicy& getCapturePolicy() const;

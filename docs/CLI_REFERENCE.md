@@ -753,7 +753,7 @@ echo $?  # 0 = valid, 1 = invalid
 
 ## Related Documentation
 
-- **[Reference Documentation Map](./REFERENCE_MAP.md)** - Navigation guide for all reference docs
+- **[Documentation index](./README.md)** - Start here; organised by what you are trying to do
 - **[Configuration Reference](./CONFIG_REFERENCE.md)** - Configuration file options and format
 - **[Config Service API Reference](./CONFIG_SERVICE_API_REFERENCE.md)** - Runtime configuration REST API and CLI client
 - **[MCP Reference](./MCP_REFERENCE.md)** - Model Context Protocol specification

@@ -26,7 +26,7 @@ New to flAPI? Start with [Getting started](./guides/getting-started.md).
 | Write a SQL template safely | [guides/rest-endpoints.md#writing-the-sql-template](./guides/rest-endpoints.md#writing-the-sql-template) · [CONFIG_REFERENCE.md § 9](./CONFIG_REFERENCE.md) |
 | Validate incoming parameters | [CONFIG_REFERENCE.md § 5](./CONFIG_REFERENCE.md) |
 | Reuse config across endpoints, or read secrets from the environment | [guides/yaml-includes.md](./guides/yaml-includes.md) |
-| Read from S3, GCS or Azure | [guides/cloud-storage.md](./guides/cloud-storage.md) · [CLOUD_STORAGE_GUIDE.md](./CLOUD_STORAGE_GUIDE.md) |
+| Read from S3, GCS or Azure | [guides/cloud-storage.md](./guides/cloud-storage.md) |
 
 ### Expose it to an AI agent
 
@@ -85,7 +85,7 @@ for.
 | [CONFIG_SERVICE_API_REFERENCE.md](./CONFIG_SERVICE_API_REFERENCE.md) | The runtime configuration REST API and `flapii` |
 | [MCP_CONFIG_TOOLS_API.md](./MCP_CONFIG_TOOLS_API.md) | The MCP configuration tools |
 | [MCP_CONFIG_INTEGRATION.md](./MCP_CONFIG_INTEGRATION.md) | How those tools are wired together |
-| [CLOUD_STORAGE_GUIDE.md](./CLOUD_STORAGE_GUIDE.md) | S3 / GCS / Azure setup and authentication |
+| [CLOUD_STORAGE_GUIDE.md](./CLOUD_STORAGE_GUIDE.md) | S3 / GCS / Azure in depth: every provider, auth and failure mode |
 | [OBSERVABILITY.md](./OBSERVABILITY.md) | Tracing, audit and log correlation |
 
 ---

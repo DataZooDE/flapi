@@ -2,6 +2,8 @@
 
 #include "redaction.hpp"
 
+#include <string>
+
 using namespace flapi;
 
 // The guarantee documented in docs/OBSERVABILITY.md §4 is that credential-shaped
@@ -18,6 +20,11 @@ TEST_CASE("credential keys are matched regardless of case and separators",
         "authorization-token",        "client-secret", "pwd",
         "jwt",        "Bearer",       "access-key",   "signature",
         "connection-string",          "private-key",  "Set-Cookie",
+        // Found missing by the documentation crew review.
+        "passphrase", "passcode",     "session_id",   "jsessionid",
+        "auth_key",   "dsn",          "database_url", "conn_str",
+        "privkey",    "hmac",         "subscription_key",
+        "x-functions-key",            "csrf_token",   "xsrf-token",
     };
     for (const auto* key : leaky) {
         INFO("key = " << key);
@@ -32,17 +39,17 @@ TEST_CASE("ordinary field names are not redacted", "[redaction][security]") {
     const char* ordinary[] = {
         "author",   "authors",   "design",    "signal",   "customer_id",
         "email",    "country",   "price",     "passenger_count",
-        "tokenizer_version",  // deliberately arguable; see note below
+        "sort_key", "primary_key",           "session_count",
+        // LLM token counters. This product IS an MCP/LLM tool surface, so these
+        // field names are far more likely than a credential called "token
+        // count", and redacting them would gut the payload tier for exactly the
+        // workload it exists to observe.
+        "max_tokens", "input_tokens", "output_tokens", "token_count",
+        "tokens_used",
+        "secretary",
     };
     for (const auto* key : ordinary) {
         INFO("key = " << key);
-        if (std::string(key) == "tokenizer_version") {
-            // Contains the "token" stem. We accept this false positive: the
-            // alternative is missing `auth_token`, and a redacted version string
-            // is a far cheaper mistake than a leaked bearer token.
-            REQUIRE(isCredentialKey(key));
-            continue;
-        }
         REQUIRE_FALSE(isCredentialKey(key));
     }
 }

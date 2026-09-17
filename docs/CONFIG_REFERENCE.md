@@ -1883,7 +1883,7 @@ flAPI supports both hyphenated and camelCase naming for backward compatibility:
 
 ## Related Documentation
 
-- **[Reference Documentation Map](./REFERENCE_MAP.md)** - Navigation guide for all reference docs
+- **[Documentation index](./README.md)** - Start here; organised by what you are trying to do
 - **[CLI Reference](./CLI_REFERENCE.md)** - Server executable command-line options
 - **[Config Service API Reference](./CONFIG_SERVICE_API_REFERENCE.md)** - Runtime configuration REST API and CLI client
 - **[MCP Reference](./MCP_REFERENCE.md)** - Model Context Protocol specification and implementation

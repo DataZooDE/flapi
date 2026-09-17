@@ -130,11 +130,16 @@ get **503 with `Retry-After`** rather than an empty result set.
 
 ## Operating it
 
+`flapii` talks to the running server's config service, so start flAPI with
+`--config-service` and export `FLAPI_CONFIG_SERVICE_TOKEN` first — see
+[CONFIG_SERVICE_API_REFERENCE](../CONFIG_SERVICE_API_REFERENCE.md).
+
 ```bash
 flapii cache get /customers        # current configuration and state
 flapii cache list                  # all caches
 flapii cache refresh /customers    # force a refresh now
-flapii cache gc                    # apply retention
+flapii cache audit /customers      # snapshot history
+flapii cache gc /customers         # apply retention (path is required)
 ```
 
 ## How it works

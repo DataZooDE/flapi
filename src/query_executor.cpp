@@ -7,6 +7,9 @@
 #include <fmt/core.h>
 #include <sstream>
 #include <stdexcept>
+#include <algorithm>
+#include <array>
+#include <cctype>
 
 // The C++ API is used as a universal fallback for exotic column types
 // (BIGNUM/VARINT, GEOMETRY, VARIANT, ...) that have no dedicated C-API
@@ -87,18 +90,50 @@ namespace {
 // db.query.text is NOT emitted: at the metadata tier it is only safe when every
 // parameter site is a prepared binding, and deciding that per call is a payload-
 // tier concern. Default off, per the plan's open question 1.
+
+// Skip whitespace, `-- line comments` and /* block comments */ to the first real
+// token, then accept it only if it is a known statement verb.
+std::string sqlOperationName(const std::string& sql) {
+    std::size_t i = 0;
+    while (i < sql.size()) {
+        if (std::isspace(static_cast<unsigned char>(sql[i]))) {
+            ++i;
+        } else if (sql.compare(i, 2, "--") == 0) {
+            const auto nl = sql.find('\n', i);
+            if (nl == std::string::npos) { return "OTHER"; }
+            i = nl + 1;
+        } else if (sql.compare(i, 2, "/*") == 0) {
+            const auto close = sql.find("*/", i + 2);
+            if (close == std::string::npos) { return "OTHER"; }
+            i = close + 2;
+        } else {
+            break;
+        }
+    }
+    const auto end = sql.find_first_of(" \t\r\n(;", i);
+    std::string verb = sql.substr(i, end == std::string::npos ? std::string::npos : end - i);
+    for (auto& c : verb) { c = static_cast<char>(std::toupper(static_cast<unsigned char>(c))); }
+
+    static const std::array<std::string_view, 16> kVerbs{{
+        "SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "CREATE", "DROP",
+        "ALTER", "ATTACH", "DETACH", "COPY", "PRAGMA", "SET", "CALL",
+        "EXPLAIN", "WITH",
+    }};
+    return std::find(kVerbs.begin(), kVerbs.end(), verb) != kVerbs.end()
+               ? verb
+               : std::string("OTHER");
+}
+
 flapi::SpanScope startDbSpan(const std::string& context, const std::string& sql) {
     flapi::SpanScope span = flapi::Tracing().startSpan(
         context.empty() ? "duckdb.query" : context.c_str(), flapi::SpanKind::Client);
     if (span) {
         span.setAttr(flapi::semconv::db::kSystemName, flapi::semconv::db::kDuckDB);
-        // The leading SQL keyword only - a bounded value, never the statement.
-        const auto first = sql.find_first_not_of(" \t\r\n");
-        if (first != std::string::npos) {
-            const auto end = sql.find_first_of(" \t\r\n(", first);
-            span.setAttr(flapi::semconv::db::kOperationName,
-                         sql.substr(first, end == std::string::npos ? 8 : end - first));
-        }
+        // An ALLOWLISTED verb, never a slice of the statement. Taking the first
+        // token was not bounded in practice: a template opening with a comment
+        // exported "--", and a token with no whitespace terminator exported up
+        // to eight characters of rendered SQL - which can be caller data.
+        span.setAttr(flapi::semconv::db::kOperationName, sqlOperationName(sql));
     }
     return span;
 }

@@ -205,7 +205,13 @@ private:
                 options.content_type = otlp::HttpRequestContentType::kJson;
             }
             options.timeout = std::chrono::milliseconds(config.timeout_ms);
+            // http_headers is a MULTIMAP and the constructor already populated it
+            // from OTEL_EXPORTER_OTLP_HEADERS. Inserting without erasing first
+            // merges rather than overrides: an Authorization set both in the
+            // environment and in YAML would be sent twice, with two different
+            // credentials. Explicit YAML wins.
             for (const auto& [key, value] : config.headers) {
+                options.http_headers.erase(key);
                 options.http_headers.insert({key, value});
             }
             exporter = otlp::OtlpHttpExporterFactory::Create(options);

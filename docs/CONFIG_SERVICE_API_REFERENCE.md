@@ -1582,7 +1582,7 @@ Slugs identify endpoints in API paths. The format depends on endpoint type:
 
 ## Related Documentation
 
-- **[Reference Documentation Map](./REFERENCE_MAP.md)** - Navigation guide for all reference docs
+- **[Documentation index](./README.md)** - Start here; organised by what you are trying to do
 - **[Configuration Reference](./CONFIG_REFERENCE.md)** - Configuration file options and format
 - **[CLI Reference](./CLI_REFERENCE.md)** - Server executable command-line options
 - **[MCP Reference](./MCP_REFERENCE.md)** - Model Context Protocol specification

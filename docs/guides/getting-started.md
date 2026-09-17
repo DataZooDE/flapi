@@ -108,6 +108,16 @@ curl 'http://localhost:8080/customers?id=123'
 Open <http://localhost:8080/doc> for a Swagger UI generated from your config, and
 <http://localhost:8080/doc.yaml> for the raw OpenAPI document.
 
+> **Want to use the `flapii` CLI too?** It talks to the server's configuration
+> service, which is off by default. Start with it enabled:
+>
+> ```bash
+> export FLAPI_CONFIG_SERVICE_TOKEN=dev-token
+> flapi -c ./flapi.yaml --config-service
+> ```
+>
+> See [CONFIG_SERVICE_API_REFERENCE](../CONFIG_SERVICE_API_REFERENCE.md).
+
 ## Where to go next
 
 | You want to… | Read |

@@ -105,6 +105,10 @@ validators:
 
 ## Testing it
 
+The `flapii` commands below talk to a running server's config service. Start
+flAPI with `--config-service` and export `FLAPI_CONFIG_SERVICE_TOKEN`, or they
+will fail to connect.
+
 ```bash
 # Render the template without running it
 flapii templates expand /customers --params '{"id":"123"}'

@@ -71,3 +71,9 @@ for full reference + rationale.
 
 - [spec/DESIGN_DECISIONS.md § 9](../spec/DESIGN_DECISIONS.md#9-self-packaging-via-appended-zip) — the appended-ZIP design and why it was chosen
 - [CLI_REFERENCE § 3](../CLI_REFERENCE.md#3-self-packaging-subcommands) — every subcommand and flag
+
+> **The secret deny list matches filenames, not content.** `*.env`, `secrets/*`,
+> `*.pem` and `*.key` are refused by name, case-sensitively — but a credential
+> written inline in a `flapi.yaml` is packed like any other text. Keep secrets in
+> environment variables and reference them with `${VAR}`; see
+> [reusing config and reading the environment](./yaml-includes.md).

@@ -697,4 +697,4 @@ For integration guidance, see [MCP Configuration Integration Guide](./MCP_CONFIG
 - **[MCP Reference](./MCP_REFERENCE.md)** - MCP protocol details and error codes
 - **[MCP Configuration Integration Guide](./MCP_CONFIG_INTEGRATION.md)** - Integration architecture and flows
 - **[Config Service API Reference](./CONFIG_SERVICE_API_REFERENCE.md)** - REST API and CLI client
-- **[Reference Documentation Map](./REFERENCE_MAP.md)** - Navigation guide for all reference docs
+- **[Documentation index](./README.md)** - Start here; organised by what you are trying to do
