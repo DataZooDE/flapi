@@ -78,7 +78,10 @@ class TestMcpSingleSpan:
                  {"name": "typed_tool", "arguments": {"id": 7}})
         assert r.status_code == 200, r.text
 
-        parent = server.wait_for_server_span()
+        # Scoped by span name: the module fixture is shared across tests, so an
+        # unscoped lookup can return an earlier test's SERVER span and the
+        # descendant walk then succeeds on its DB span instead of this one.
+        parent = server.wait_for_server_span(name="tools/call typed_tool")
         spans = server.spans()
         frontier, db = {parent.span_id}, []
         while frontier:

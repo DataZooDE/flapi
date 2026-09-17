@@ -347,23 +347,37 @@ the database span (`flapi.db.*`). Three things shape the implementation:
 - **The settings are connection-scoped.** `enable_profiling` and
   `custom_profiling_settings` are `SetLocal` only — there is no global setter, so
   they cannot be applied at `duckdb_open`. Since `QueryExecutor` opens a
-  connection per query, each query pays one extra `SET`. Measured at ~142 µs,
-  which is nearly all of the feature's cost.
-- **One statement, not two.** `custom_profiling_settings` sets
-  `enable_profiler = true` itself, so a separate `PRAGMA enable_profiling` would
-  be a second needless round trip.
-- **`ProfilingInfo::Expand` is why there are two tiers.** Requesting `CPU_TIME`
-  silently also enables `OPERATOR_TIMING`, and `CUMULATIVE_ROWS_SCANNED` enables
-  `OPERATOR_ROWS_SCANNED`. `summary` therefore uses only query-level metrics that
-  do not expand. In practice the difference is small (~29 µs) — the tiers are
-  worth keeping for *what* they report, not for a large cost gap.
+  connection per query, each query pays a `SET`. Measured at ~106 µs, which is
+  nearly all of the feature's cost. Pooling connections would make it close to
+  free.
+- **Two statements in one round trip, and the order matters.**
+  `custom_profiling_settings` turns the profiler on but leaves
+  `emit_profiler_output` at its default of **true**, so DuckDB renders and prints
+  a ~1 KB query tree to stderr for every profiled query — a synchronous write on
+  the request thread, and operator detail landing in a log that never passes
+  through the capture tiers. `SET enable_profiling='no_output'` is sent first to
+  clear that; the second statement then replaces the metric set. An integration
+  test asserts the log stays clean.
+- **The two tiers are a verbosity knob, not a cost knob.** `ProfilingInfo::Expand`
+  means requesting `CPU_TIME` also enables `OPERATOR_TIMING` internally, so the
+  original expectation was that `summary` would be measurably cheaper. Measured
+  interleaved, it is not: the two are indistinguishable (`detailed` even measures
+  slightly lower, i.e. within noise). The tiers are worth keeping because
+  attribute count has a real cost in a trace backend, not because one is faster.
 
 Metrics are read through a fixed allowlist in `src/query_executor.cpp`. The code
 must never iterate `duckdb_profiling_info_get_metrics()`: `QUERY_NAME` is the SQL
 text and `EXTRA_INFO` is the rendered filter predicate. Each
 `duckdb_profiling_info_get_value` result is owned by the caller and released by
 `DuckDBValue` (`src/include/duckdb_raii.hpp`); the `duckdb_profiling_info` node
-itself is owned by the connection and has no destructor.
+itself is owned by the connection and has no destructor. Each read is wrapped in
+try/catch so a future DuckDB changing a metric's type cannot fail a request, and
+a failed `SET` latches process-wide so it warns once rather than once per query.
+
+`db.operation.name` on the prepared path comes from
+`duckdb_prepared_statement_type` on the handle rather than from the SQL text —
+exact rather than a leading-token guess, correct for the startup init statements
+that have no text at the call site, and structurally incapable of exporting SQL.
 
 This thread-local parenting works only within one thread. Background work —
 cache refresh, warmup, heartbeat, MCP tasks — must start **root** spans, because

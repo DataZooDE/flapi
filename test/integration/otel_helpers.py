@@ -263,7 +263,8 @@ class TracedServer:
                                f"{[(s.name, s.kind) for s in spans]}")
 
     def wait_for_server_span(self, timeout: float = 5.0,
-                             route: Optional[str] = None) -> Span:
+                             route: Optional[str] = None,
+                             name: Optional[str] = None) -> Span:
         """The SERVER span, optionally for one route.
 
         Pass `route` whenever an assertion is about a specific request: the
@@ -272,13 +273,22 @@ class TracedServer:
         never caused.
         """
         def matches(s: Span) -> bool:
-            return s.is_server and (route is None
-                                    or s.attributes.get("http.route") == route)
+            if not s.is_server:
+                return False
+            if route is not None and s.attributes.get("http.route") != route:
+                return False
+            # MCP spans carry http.route "<unmatched>" - the route is not an
+            # endpoint - so the span NAME (`tools/call <tool>`) is what
+            # identifies them.
+            if name is not None and s.name != name:
+                return False
+            return True
 
         spans = self.wait_for_spans(
             lambda ss: any(matches(s) for s in ss), timeout,
-            f"no SERVER span was exported"
-            + (f" for route {route}" if route else ""))
+            "no SERVER span was exported"
+            + (f" for route {route}" if route else "")
+            + (f" named {name!r}" if name else ""))
         return next(s for s in spans if matches(s))
 
     def raw_traces(self) -> str:

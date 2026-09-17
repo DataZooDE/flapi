@@ -67,7 +67,6 @@ constexpr const char* kResultBytes      = "flapi.db.result_set_bytes";
 constexpr const char* kBytesRead        = "flapi.db.bytes_read";
 constexpr const char* kCpuTimeMs        = "flapi.db.cpu_time_ms";        // detailed only
 constexpr const char* kRowsScanned      = "flapi.db.rows_scanned";       // detailed only
-constexpr const char* kPeakMemoryBytes  = "flapi.db.peak_memory_bytes";  // detailed only
 }  // namespace dbprof
 
 namespace db {

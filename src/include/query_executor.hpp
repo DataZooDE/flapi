@@ -110,12 +110,9 @@ public:
     ~QueryExecutor();
     
     void execute(const std::string& query, const std::string& context = "");
-    // `sql_for_verb` is the statement text, used ONLY to derive the allowlisted
-    // db.operation.name for the span. The prepared handle does not carry it, and
-    // without it every prepared query reported OTHER. It is never exported.
-    void executePrepared(duckdb_prepared_statement stmt,
-                         const std::string& context = "",
-                         const std::string& sql_for_verb = "");
+    // The span's db.operation.name comes from duckdb_prepared_statement_type on
+    // the handle, so no SQL text is passed in and none can reach a span.
+    void executePrepared(duckdb_prepared_statement stmt, const std::string& context = "");
 
     // W3.1 PR B: prepare a query that contains `?` placeholders, bind
     // each according to `bindings` (typed conversion via

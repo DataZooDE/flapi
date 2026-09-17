@@ -124,34 +124,41 @@ tracing:
 | `flapi.db.bytes_read` | summary | Bytes read from storage |
 | `flapi.db.cpu_time_ms` | detailed | CPU across all threads |
 | `flapi.db.rows_scanned` | detailed | Rows scanned, cumulative |
-| `flapi.db.peak_memory_bytes` | detailed | Peak buffer memory |
+
+DuckDB's `SYSTEM_PEAK_BUFFER_MEMORY` is deliberately **not** exported: it is a
+database-wide figure, not this query's, and on a concurrent workload it would
+read as if one query had used all of it.
 
 A metric DuckDB does not report is **omitted**, never exported as `0` — a
 fabricated zero reads as "instant" on every dashboard.
 
 ### What it costs
 
-Measured on a trivial query, so this is close to the worst case — the overhead is
-fixed per query while real queries are longer:
+Measured on a trivial query, interleaved round-robin across the three
+configurations so machine drift hits each equally (n=400 each, median of the
+database span):
 
 | | Database span, median | Δ |
 |---|---|---|
-| `off` | 257 µs | — |
-| `summary` | 398 µs | **+142 µs** |
-| `detailed` | 427 µs | +170 µs |
+| `off` | 253 µs | — |
+| `summary` | 359 µs | **+106 µs** |
+| `detailed` | 336 µs | +83 µs |
 
-**Nearly all of that is one round trip, not the measurement.** DuckDB's profiling
-settings are connection-scoped (`SetLocal`, with no global setter) and flAPI opens
-a connection per query, so each query pays one extra `SET` statement. That is why
-`detailed` costs only ~29 µs more than `summary`: collecting the extra metrics is
-cheap compared to switching profiling on.
+**The two tiers cost the same.** `detailed` measuring *lower* than `summary` is
+not a real saving — it is the measurement telling you the difference is below its
+own noise. Choose a tier by what you want to see, never to save time.
 
-So choose the tier by **what you want to see**, not to save time. And note the
-overhead is per *query*: on a request doing real work it is not measurable, but on
-a trivial one it is half the database time.
+Nearly all of the ~100 µs is switching profiling on, not measuring: DuckDB's
+profiling settings are connection-scoped (`SetLocal`, no global setter) and flAPI
+opens a connection per query, so every query pays a `SET`. If connections were
+pooled this would be close to free — they are not, today.
 
-It is off by default, and only applies to requests that are actually sampled — a
-1% sampling ratio pays 1% of this cost, not all of it.
+Note the overhead is per *query*, and fixed. On a request doing real work it does
+not show; on a trivial one it is a third of the database time. A paginated
+endpoint runs two queries and pays it twice.
+
+It is off by default, and applies only to requests that are actually sampled — a
+1% sampling ratio pays 1% of this, not all of it.
 
 ### What is never exported
 

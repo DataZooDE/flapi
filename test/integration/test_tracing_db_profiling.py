@@ -24,7 +24,8 @@ from otel_helpers import traced_server
 
 pytestmark = pytest.mark.standalone_server
 
-SENTINEL = 40477
+# Decimal-only digits that cannot appear inside a hex trace/span id.
+SENTINEL = 99899
 
 ENDPOINTS = {
     "typed.yaml": (
@@ -37,6 +38,17 @@ ENDPOINTS = {
         "    validators:\n      - type: int\n        min: 1\n"
     ),
     "typed.sql": "SELECT {{ params.id }} AS id\n",
+    # A FILTERED endpoint. The sentinel test needs a WHERE clause: without a
+    # predicate there is no EXTRA_INFO for DuckDB to render, so a leak test over
+    # an unfiltered query would pass even if EXTRA_INFO were exported verbatim.
+    "filtered.yaml": (
+        "url-path: /filtered\nmethod: GET\n"
+        "template-source: filtered.sql\nconnection: [inmem]\n"
+        "request:\n"
+        "  - field-name: id\n    field-in: query\n    required: true\n"
+        "    validators:\n      - type: int\n        min: 1\n"
+    ),
+    "filtered.sql": "SELECT r.range AS v FROM range(200000) r WHERE r.range = {{ params.id }}\n",
 }
 
 
@@ -82,33 +94,63 @@ class TestDbProfiling:
             )
             assert attrs["flapi.db.latency_ms"] >= 0
 
-    def test_an_absent_metric_is_omitted_not_reported_as_zero(self):
-        # A fabricated measurement is worse than a missing one: zero latency
-        # reads as "instant" on every dashboard.
+    def test_each_tier_exports_exactly_its_documented_keys(self):
+        # The previous version of this test asserted every value "is not None",
+        # which OTLP guarantees anyway - it could never fail. The tier table in
+        # the docs is only true if this holds.
+        detailed_only = {"flapi.db.cpu_time_ms", "flapi.db.rows_scanned"}
+        summary_keys = {"flapi.db.latency_ms", "flapi.db.blocked_thread_time_ms",
+                        "flapi.db.result_set_bytes", "flapi.db.bytes_read"}
+
         for server in _server("summary"):
             requests.get(f"{server.base_url}/typed?id=1", timeout=10)
             parent = server.wait_for_server_span(route="/typed")
-            attrs = _db_spans(server, parent)[0].attributes
-            for key, value in attrs.items():
-                if key.startswith("flapi.db."):
-                    assert value is not None
+            got = {k for k in _db_spans(server, parent)[0].attributes
+                   if k.startswith("flapi.db.")}
+            assert got == summary_keys, f"summary exported {got}"
 
-    def test_profiling_never_exports_the_sql_or_a_parameter_value(self):
-        # The whole-file assertion, deliberately: it is stronger than checking
-        # named attributes and survives DuckDB adding metrics we did not expect.
         for server in _server("detailed"):
-            r = requests.get(f"{server.base_url}/typed?id={SENTINEL}", timeout=10)
-            assert r.status_code == 200, r.text
-            server.wait_for_server_span(route="/typed")
+            requests.get(f"{server.base_url}/typed?id=1", timeout=10)
+            parent = server.wait_for_server_span(route="/typed")
+            attrs = _db_spans(server, parent)[0].attributes
+            got = {k for k in attrs if k.startswith("flapi.db.")}
+            assert got == summary_keys | detailed_only, f"detailed exported {got}"
+            for k in got:
+                assert isinstance(attrs[k], (int, float)), f"{k} is not numeric"
 
-            blob = server.raw_traces()
-            assert str(SENTINEL) not in blob, (
-                "a bound parameter value reached the trace via profiling "
-                "metrics - EXTRA_INFO carries rendered filter predicates"
+    def test_profiling_never_exports_a_filter_predicate_or_its_value(self):
+        # Driven through a FILTERED query on purpose: EXTRA_INFO is, per
+        # operator, expression->GetName() - the rendered predicate. On the
+        # prepared path that can carry the bound value. A query with no WHERE
+        # clause has no predicate to leak, so testing with one would prove
+        # nothing.
+        for server in _server("detailed"):
+            r = requests.get(f"{server.base_url}/filtered?id={SENTINEL}", timeout=15)
+            assert r.status_code == 200, r.text
+            server.wait_for_server_span(route="/filtered")
+
+            assert str(SENTINEL) not in server.raw_traces(), (
+                "a bound parameter value reached the trace via profiling metrics"
             )
-            assert "SELECT" not in blob.replace('"SELECT"', ""), (
-                "the SQL text reached the trace; QUERY_NAME must never be "
-                "requested"
+            # And not via the log either: DuckDB will happily print its query
+            # tree to stderr when profiling is on, which bypasses the capture
+            # tiers entirely.
+            assert str(SENTINEL) not in server.log(), (
+                "a bound parameter value reached the server log"
+            )
+
+    def test_profiling_does_not_dump_a_query_tree_to_the_log(self):
+        # custom_profiling_settings enables the profiler but leaves
+        # emit_profiler_output at its default of true, so DuckDB renders and
+        # prints a ~1 KB tree per query - a synchronous stderr write on the
+        # request thread, and log volume proportional to QPS.
+        for server in _server("summary"):
+            for _ in range(5):
+                requests.get(f"{server.base_url}/typed?id=1", timeout=10)
+            server.wait_for_server_span(route="/typed")
+            assert "Query Profiling Information" not in server.log(), (
+                "DuckDB is printing its query profile to stderr on every "
+                "profiled query"
             )
 
     def test_an_mcp_tool_call_is_profiled_the_same_way(self):
@@ -122,7 +164,7 @@ class TestDbProfiling:
                 timeout=15)
             assert r.status_code == 200, r.text
 
-            parent = server.wait_for_server_span()
+            parent = server.wait_for_server_span(name="tools/call typed_tool")
             db = _db_spans(server, parent)
             assert db, "an MCP tools/call produced no DB span"
             assert "flapi.db.latency_ms" in db[0].attributes
