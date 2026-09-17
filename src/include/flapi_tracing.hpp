@@ -54,11 +54,18 @@ public:
     std::uint64_t spansDropped() const;
     std::uint64_t spansExported() const;
 
+    // How much DuckDB execution profiling the operator asked for. Read on the
+    // query path, so it is a plain value read - no lock, no allocation. Stays
+    // Off unless tracing is actually active, so a disabled build or a disabled
+    // config can never make the query path pay for profiling.
+    DbProfiling dbProfiling() const { return db_profiling_; }
+
 private:
     bool active() const;
 
     std::unique_ptr<ITracingBackend> backend_;
     bool enabled_ = false;      // BR-6: off until an operator turns it on
+    DbProfiling db_profiling_ = DbProfiling::Off;
 };
 
 // Process-wide accessor. Not leaked; see the note above.

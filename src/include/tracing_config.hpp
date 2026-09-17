@@ -15,6 +15,17 @@ namespace flapi {
 // does nothing.
 enum class CaptureTier { Off, Metadata, Payload };
 
+// How much DuckDB execution profiling to attach to the database span.
+//
+// The two levels are NOT just a volume knob. DuckDB's ProfilingInfo::Expand
+// turns CPU_TIME into per-operator timing collection internally, so `Detailed`
+// makes DuckDB do measurably more work per query; `Summary` deliberately uses
+// only query-level metrics that do not expand.
+//
+// Off by default: profiling settings are connection-scoped and flAPI opens a
+// connection per query, so this costs a round trip per query.
+enum class DbProfiling { Off, Summary, Detailed };
+
 struct TracingSampleConfig {
     std::string type = "parentbased_traceidratio";   // always_on | always_off | parentbased_traceidratio
     double ratio = 1.0;
@@ -28,6 +39,7 @@ struct TracingFlushConfig {
 
 struct TracingConfig {
     bool enabled = false;                // BR-6: off by default, always
+    DbProfiling db_profiling = DbProfiling::Off;
     std::string service_name = "flapi";
     std::string service_namespace;
     std::string exporter = "otlp_http";  // otlp_http | otlp_file | none
@@ -52,6 +64,9 @@ struct TracingConfig {
 
     std::size_t payload_max_value_bytes = 8192;
 };
+
+DbProfiling parseDbProfiling(const std::string& value, DbProfiling fallback = DbProfiling::Off);
+const char* dbProfilingName(DbProfiling level);
 
 CaptureTier parseCaptureTier(const std::string& value, CaptureTier fallback = CaptureTier::Metadata);
 const char* captureTierName(CaptureTier tier);

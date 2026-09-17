@@ -249,6 +249,17 @@ signal path force-flushes with a fixed 2 s budget.
 scope: it counts export *failures*, so spans dropped by the batch queue before
 `Export()` is reached are not currently counted.
 
+## Execution profiling
+
+`tracing.db_profiling` (`off` | `summary` | `detailed`) attaches DuckDB's
+execution metrics to the database span. Gated on the span **recording**, not
+merely existing, so an unsampled request pays nothing — otherwise a 1% sampling
+ratio would still pay 100% of the cost.
+
+See [query-execution.md](./query-execution.md) for the connection-scoping
+constraint, the allowlist, and why `QUERY_NAME` and `EXTRA_INFO` are never
+requested.
+
 ## Log correlation
 
 `src/flapi_log_handler.cpp` implements `crow::ILogHandler`. It reads the ambient

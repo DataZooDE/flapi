@@ -33,6 +33,8 @@ void SpanScope::setError(const char*) noexcept {}
 void SpanScope::end() noexcept {}
 void SpanScope::updateName(std::string_view) noexcept {}
 
+bool SpanScope::recording() const noexcept { return false; }
+
 SpanContextIds SpanScope::ids() const noexcept { return {}; }
 
 }  // inline namespace

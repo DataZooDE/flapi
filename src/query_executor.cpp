@@ -2,6 +2,7 @@
 #include "flapi_tracing.hpp"
 #include "trace_semconv.hpp"
 #include "duckdb_raii.hpp"
+#include "tracing_config.hpp"
 #include "prepared_value_converter.hpp"
 #include <crow.h>
 #include <fmt/core.h>
@@ -140,6 +141,117 @@ flapi::SpanScope startDbSpan(const std::string& context, const std::string& sql)
 
 }  // namespace
 
+
+namespace {
+
+// The ALLOWLIST. flAPI asks DuckDB for exactly these and reads back exactly
+// these. Two metrics are deliberately absent and must stay absent:
+//
+//   QUERY_NAME  - the SQL text itself.
+//   EXTRA_INFO  - per operator, this is expression->GetName(), i.e. the
+//                 rendered filter predicate. On the prepared path that can
+//                 carry bound parameter values, so exporting it would leak
+//                 customer data at the default capture tier.
+//
+// Never iterate duckdb_profiling_info_get_metrics() and export what comes back:
+// that re-leaks the moment DuckDB adds a metric.
+struct ProfMetric {
+    const char* duckdb_key;
+    const char* attribute;
+    bool is_double;
+    bool detailed_only;
+};
+
+constexpr std::array<ProfMetric, 7> kProfMetrics{{
+    // Summary: query-level only. None of these trigger ProfilingInfo::Expand,
+    // so DuckDB does not switch on per-operator collection for them.
+    {"LATENCY",                   flapi::semconv::dbprof::kLatencyMs,       true,  false},
+    {"BLOCKED_THREAD_TIME",       flapi::semconv::dbprof::kBlockedMs,       true,  false},
+    {"RESULT_SET_SIZE",           flapi::semconv::dbprof::kResultBytes,     false, false},
+    {"TOTAL_BYTES_READ",          flapi::semconv::dbprof::kBytesRead,       false, false},
+    // Detailed: CPU_TIME expands to OPERATOR_TIMING and CUMULATIVE_ROWS_SCANNED
+    // to OPERATOR_ROWS_SCANNED inside DuckDB, so these cost real work per query.
+    {"CPU_TIME",                  flapi::semconv::dbprof::kCpuTimeMs,       true,  true},
+    {"CUMULATIVE_ROWS_SCANNED",   flapi::semconv::dbprof::kRowsScanned,     false, true},
+    {"SYSTEM_PEAK_BUFFER_MEMORY", flapi::semconv::dbprof::kPeakMemoryBytes, false, true},
+}};
+
+}  // namespace
+
+void QueryExecutor::enableProfilingIfRequested(const SpanScope& span) {
+    if (profiling_enabled_) {
+        return;
+    }
+    const flapi::DbProfiling level = flapi::Tracing().dbProfiling();
+    if (level == flapi::DbProfiling::Off) {
+        return;
+    }
+    // Gated on the span RECORDING, not merely existing. Otherwise a 1% sampling
+    // ratio still pays 100% of the profiling cost, which is the opposite of what
+    // sampling is for.
+    if (!span || !span.recording()) {
+        return;
+    }
+
+    const bool detailed = level == flapi::DbProfiling::Detailed;
+    std::string json = "{";
+    for (const auto& m : kProfMetrics) {
+        if (m.detailed_only && !detailed) {
+            continue;
+        }
+        if (json.size() > 1) { json += ","; }
+        json += "\"";
+        json += m.duckdb_key;
+        json += "\":\"true\"";
+    }
+    json += "}";
+
+    // ONE statement, not two: custom_profiling_settings sets enable_profiler
+    // itself (duckdb/src/main/settings/custom_settings.cpp), so a separate
+    // `PRAGMA enable_profiling` would be a second needless round trip.
+    const std::string stmt = "SET custom_profiling_settings='" + json + "'";
+    duckdb_result r;
+    if (duckdb_query(conn, stmt.c_str(), &r) == DuckDBSuccess) {
+        profiling_enabled_ = true;
+    } else {
+        // Never fail a request for instrumentation. A DuckDB build without these
+        // settings simply produces no profiling attributes.
+        CROW_LOG_WARNING << "could not enable DuckDB profiling; "
+                            "db_profiling attributes will be absent";
+    }
+    duckdb_destroy_result(&r);
+}
+
+void QueryExecutor::attachProfilingMetrics(SpanScope& span) const {
+    if (!profiling_enabled_ || !span) {
+        return;
+    }
+    duckdb_profiling_info info = duckdb_get_profiling_info(conn);
+    if (info == nullptr) {
+        return;   // profiling not active on this connection
+    }
+    const bool detailed = flapi::Tracing().dbProfiling() == flapi::DbProfiling::Detailed;
+
+    for (const auto& m : kProfMetrics) {
+        if (m.detailed_only && !detailed) {
+            continue;
+        }
+        DuckDBValue value(duckdb_profiling_info_get_value(info, m.duckdb_key));
+        if (!value) {
+            // Absent, not zero. A fabricated measurement is worse than a missing
+            // one: zero latency reads as "instant" on every dashboard.
+            continue;
+        }
+        if (m.is_double) {
+            const double seconds = duckdb_get_double(value.get());
+            span.setAttr(m.attribute, seconds * 1000.0);
+        } else {
+            span.setAttr(m.attribute, static_cast<std::int64_t>(duckdb_get_uint64(value.get())));
+        }
+    }
+    // `info` is owned by the connection - there is no duckdb_destroy_profiling_info.
+}
+
 void QueryExecutor::execute(const std::string& query, const std::string& context) {
     if (has_result) {
         duckdb_destroy_result(&result);
@@ -147,6 +259,7 @@ void QueryExecutor::execute(const std::string& query, const std::string& context
     }
     
     SpanScope span = startDbSpan(context, query);
+    enableProfilingIfRequested(span);
 
     duckdb_state qstate;
     {
@@ -168,14 +281,24 @@ void QueryExecutor::execute(const std::string& query, const std::string& context
     if (span) {
         span.setAttr(semconv::db::kReturnedRows,
                      static_cast<std::int64_t>(duckdb_row_count(&result)));
+        attachProfilingMetrics(span);
     }
 }
 
-void QueryExecutor::executePrepared(duckdb_prepared_statement stmt, const std::string& context) {
+void QueryExecutor::executePrepared(duckdb_prepared_statement stmt,
+                                    const std::string& context,
+                                    const std::string& sql_for_verb) {
     if (has_result) {
         duckdb_destroy_result(&result);
         has_result = false;
     }
+
+    // The span lives HERE, not in executeWithBindings, because this is the one
+    // choke point both callers pass through - executeWithBindings delegates to
+    // it, and DatabaseManager calls it directly for extracted init statements.
+    // Spanning in both places would double-count every typed endpoint.
+    SpanScope span = startDbSpan(context, sql_for_verb);
+    enableProfilingIfRequested(span);
 
     duckdb_state pstate;
     {
@@ -186,9 +309,17 @@ void QueryExecutor::executePrepared(duckdb_prepared_statement stmt, const std::s
         std::string error_message = duckdb_result_error(&result);
         std::string context_msg = context.empty() ? "" : " during " + context;
         duckdb_destroy_result(&result);
+        // Enumerated, never the DuckDB message: it routinely contains fragments
+        // of the failing SQL, i.e. customer data.
+        span.setError("query_failed");
         throw std::runtime_error("Prepared statement execution failed" + context_msg + ": " + error_message);
     }
     has_result = true;
+    if (span) {
+        span.setAttr(semconv::db::kReturnedRows,
+                     static_cast<std::int64_t>(duckdb_row_count(&result)));
+        attachProfilingMetrics(span);
+    }
 }
 
 namespace {
@@ -281,7 +412,7 @@ void QueryExecutor::executeWithBindings(const std::string& sql,
             // DuckDB parameter indexes are 1-based.
             bindOne(stmt, spec.position + 1, outcome.value, spec);
         }
-        executePrepared(stmt, context);
+        executePrepared(stmt, context, sql);
     } catch (...) {
         duckdb_destroy_prepare(&stmt);
         throw;

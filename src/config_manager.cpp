@@ -349,6 +349,7 @@ void ConfigManager::parseTracingConfig() {
     if (node["timeout_ms"])        { tracing_config.timeout_ms = node["timeout_ms"].as<int>(); }
     if (node["capture"])           { tracing_config.capture = parseCaptureTier(node["capture"].as<std::string>()); }
     if (node["openinference"])     { tracing_config.openinference = node["openinference"].as<bool>(); }
+    if (node["db_profiling"])      { tracing_config.db_profiling = parseDbProfiling(node["db_profiling"].as<std::string>()); }
 
     if (node["headers"] && node["headers"].IsMap()) {
         for (const auto& entry : node["headers"]) {

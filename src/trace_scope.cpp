@@ -88,6 +88,17 @@ void SpanScope::updateName(std::string_view name) noexcept {
     }
 }
 
+bool SpanScope::recording() const noexcept {
+    if (impl_ == nullptr || !impl_->span) {
+        return false;
+    }
+    try {
+        return impl_->span->IsRecording();
+    } catch (...) {
+        return false;
+    }
+}
+
 SpanContextIds SpanScope::ids() const noexcept {
     SpanContextIds out;
     if (impl_ == nullptr) { return out; }

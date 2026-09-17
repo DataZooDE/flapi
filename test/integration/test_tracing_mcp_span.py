@@ -26,6 +26,20 @@ ENDPOINTS = {
         "mcp-tool:\n  name: lookup_tool\n  description: Look something up\n"
     ),
     "lookup.sql": "SELECT 1 AS n\n",
+    # A TYPED tool: its template references a typed field, so a tools/call is
+    # rewritten onto executeWithBindings -> executePrepared. Agents reach the
+    # database through exactly the same path REST does, and it was equally
+    # unspanned.
+    "typed.yaml": (
+        "url-path: /typed\nmethod: GET\n"
+        "template-source: typed.sql\nconnection: [inmem]\n"
+        "mcp-tool:\n  name: typed_tool\n  description: Look up by id\n"
+        "request:\n"
+        "  - field-name: id\n    field-in: query\n    required: true\n"
+        "    description: The id to look up\n"
+        "    validators:\n      - type: int\n        min: 1\n"
+    ),
+    "typed.sql": "SELECT {{ params.id }} AS id\n",
 }
 
 TRACEPARENT = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
@@ -54,6 +68,27 @@ class TestMcpSingleSpan:
             f"an MCP call must be ONE span carrying both http.* and mcp.*, "
             f"not nested HTTP and MCP spans; got {[s.name for s in servers]}"
         )
+
+    def test_a_typed_tool_call_produces_a_database_span(self, server):
+        # The MCP half of the prepared-path gap. A real tools/call over JSON-RPC,
+        # no mocks: an agent asking a typed tool for data must leave the same
+        # database evidence a REST caller does, or agent traffic is the half of
+        # the workload nobody can debug.
+        r = _rpc(server.base_url, "tools/call",
+                 {"name": "typed_tool", "arguments": {"id": 7}})
+        assert r.status_code == 200, r.text
+
+        parent = server.wait_for_server_span()
+        spans = server.spans()
+        frontier, db = {parent.span_id}, []
+        while frontier:
+            kids = [s for s in spans if s.parent_span_id in frontier]
+            db += [s for s in kids if s.attributes.get("db.system.name") == "duckdb"]
+            frontier = {s.span_id for s in kids}
+
+        assert db, "an MCP tools/call on the prepared path produced no DuckDB span"
+        assert db[0].kind == 3
+        assert db[0].attributes.get("db.operation.name") == "SELECT"
 
     def test_the_span_carries_both_attribute_sets(self, server):
         _rpc(server.base_url, "tools/call", {"name": "lookup_tool", "arguments": {}})

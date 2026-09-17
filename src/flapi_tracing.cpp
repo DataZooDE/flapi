@@ -301,6 +301,14 @@ void FlapiTracing::configure(const TracingConfig& config) {
 
     backend_ = std::make_unique<OtelTracingBackend>(config);
     enabled_ = true;
+    // Only now, so that a config asking for profiling while tracing is disabled
+    // (or OTEL_SDK_DISABLED is set) never makes the query path pay for it.
+    db_profiling_ = config.db_profiling;
+    if (db_profiling_ != DbProfiling::Off) {
+        CROW_LOG_INFO << "tracing.db_profiling=" << dbProfilingName(db_profiling_)
+                      << ": DuckDB execution profiling is enabled per connection, "
+                         "which costs one extra round trip per query.";
+    }
 }
 
 bool FlapiTracing::active() const { return enabled_ && backend_ != nullptr; }

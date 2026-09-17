@@ -65,6 +65,11 @@ public:
     // span until the route is known would lose every middleware rejection.
     void updateName(std::string_view name) noexcept;
 
+    // True only when the span will actually be exported. Distinct from
+    // operator bool(): a span object exists for an unsampled request too, and
+    // work done only to fill its attributes must not be paid for then.
+    bool recording() const noexcept;
+
     SpanContextIds ids() const noexcept;
 
     struct Impl;

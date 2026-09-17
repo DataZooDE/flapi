@@ -46,6 +46,7 @@ That is the minimum. Everything below has a working default.
 | `timeout_ms` | `10000` | Export timeout. |
 | `capture` | `metadata` | See §4. |
 | `openinference` | `false` | OpenInference attribute overlay. |
+| `db_profiling` | `off` | `off`, `summary` or `detailed`. DuckDB execution metrics on the database span. Costs a round trip per query — see §4. |
 | `exclude_routes` | probes + docs | Routes that produce no span. An explicit list **replaces** the defaults rather than adding to them, and each entry is matched as an exact path, not a prefix or glob. |
 | `sample.type` | `parentbased_traceidratio` | `always_on`, `always_off`, `parentbased_traceidratio`. |
 | `sample.ratio` | `1.0` | Sampling ratio. |
@@ -77,12 +78,9 @@ Children of that span:
 | `duckdb.query` | CLIENT | DuckDB execution, rows returned, SQL verb in `db.operation.name` |
 | outbound `GET`/`POST` | CLIENT | flAPI's own OIDC / JWKS calls |
 
-> **Known gap.** The DuckDB span is currently produced only on the unprepared
-> query path. Any endpoint with typed request fields runs through the prepared
-> path (`QueryExecutor::executeWithBindings` → `executePrepared`), which emits no
-> span today, so most endpoints show template rendering and the server span but
-> no database child. Tracked as a follow-up; the timing is still contained in the
-> parent span's duration.
+Both query paths are covered: the unprepared path and the prepared path that any
+endpoint with typed request fields takes. A paginated endpoint produces a
+separate span for its count query, so the two costs are visible apart.
 
 An MCP `tools/call` is **one** span carrying both the `http.*` and the
 `mcp.*`/`gen_ai.*` attribute sets, named `tools/call <tool>`.
@@ -108,7 +106,63 @@ request path exactly, trailing slash included. `/health` does not match
 Note that `/doc` and `/doc.yaml` are excluded from *tracing* but still produce an
 audit line; the health probes produce neither.
 
-## 4. Data protection
+## 4. Seeing inside a slow query
+
+`db_profiling` attaches DuckDB's own execution metrics — the numbers behind
+`EXPLAIN ANALYZE` — to the database span.
+
+```yaml
+tracing:
+  db_profiling: summary     # off (default) | summary | detailed
+```
+
+| Attribute | Tier | Meaning |
+|---|---|---|
+| `flapi.db.latency_ms` | summary | Query execution time as DuckDB measures it |
+| `flapi.db.blocked_thread_time_ms` | summary | Time blocked rather than working — contention |
+| `flapi.db.result_set_bytes` | summary | Materialised result size |
+| `flapi.db.bytes_read` | summary | Bytes read from storage |
+| `flapi.db.cpu_time_ms` | detailed | CPU across all threads |
+| `flapi.db.rows_scanned` | detailed | Rows scanned, cumulative |
+| `flapi.db.peak_memory_bytes` | detailed | Peak buffer memory |
+
+A metric DuckDB does not report is **omitted**, never exported as `0` — a
+fabricated zero reads as "instant" on every dashboard.
+
+### What it costs
+
+Measured on a trivial query, so this is close to the worst case — the overhead is
+fixed per query while real queries are longer:
+
+| | Database span, median | Δ |
+|---|---|---|
+| `off` | 257 µs | — |
+| `summary` | 398 µs | **+142 µs** |
+| `detailed` | 427 µs | +170 µs |
+
+**Nearly all of that is one round trip, not the measurement.** DuckDB's profiling
+settings are connection-scoped (`SetLocal`, with no global setter) and flAPI opens
+a connection per query, so each query pays one extra `SET` statement. That is why
+`detailed` costs only ~29 µs more than `summary`: collecting the extra metrics is
+cheap compared to switching profiling on.
+
+So choose the tier by **what you want to see**, not to save time. And note the
+overhead is per *query*: on a request doing real work it is not measurable, but on
+a trivial one it is half the database time.
+
+It is off by default, and only applies to requests that are actually sampled — a
+1% sampling ratio pays 1% of this cost, not all of it.
+
+### What is never exported
+
+DuckDB can also report `QUERY_NAME` (the SQL text) and `EXTRA_INFO` (per operator,
+the rendered filter predicate — which on the prepared path carries bound parameter
+values). **flAPI requests neither.** It asks DuckDB for a fixed allowlist and reads
+back only those keys, rather than exporting whatever the metric map contains, so a
+future DuckDB metric cannot leak through. A test asserts a bound parameter value
+never appears in the exported trace with `detailed` enabled.
+
+## 5. Data protection
 
 | Tier | Exports | Never exports |
 |---|---|---|
@@ -194,7 +248,7 @@ At the payload tier flAPI becomes a processor exporting personal data to a third
 destination, with DPA/AVV implications you need to have considered. flAPI logs a
 warning at startup saying exactly that, deliberately.
 
-## 5. Deployment
+## 6. Deployment
 
 ### Kubernetes / on-prem
 
@@ -237,7 +291,7 @@ overrides this to flush per record under `flush.mode: on_response`, and on
 `flush.timeout_ms` otherwise, so a crash does not silently cost you the last
 half-minute of spans.
 
-## 6. Getting an id out of a failed request
+## 7. Getting an id out of a failed request
 
 Every response carries `X-Request-Id`. A traced response also carries
 `X-Trace-Id`, and it is the **caller's** trace id when the caller supplied one,
@@ -253,7 +307,7 @@ X-Trace-Id:   4bf92f3577b34da6a3ce929d0e0e4736
 Quote either in a support request. `X-Request-Id` works with tracing disabled;
 `X-Trace-Id` appears only when a span was produced.
 
-## 7. Correlation
+## 8. Correlation
 
 `trace_id` and `span_id` appear in the audit log and in application log lines
 emitted while serving a request, so a trace can be joined to an audit entry and
@@ -268,7 +322,7 @@ audit:
   path: /var/log/flapi/audit.jsonl
 ```
 
-## 8. Checking that export is actually working
+## 9. Checking that export is actually working
 
 `GET /api/v1/_config/metrics` reports whether spans are reaching the collector.
 It requires the config-service token.
@@ -303,7 +357,7 @@ nothing, by design. Both counters are cumulative since startup.
 See [CONFIG_SERVICE_API_REFERENCE.md](./CONFIG_SERVICE_API_REFERENCE.md) for the
 full route reference.
 
-## 9. Cost
+## 10. Cost
 
 Measured on the reference load mix (see `test/load/README.md`); the recorded
 runs are in `test/load/baselines/`. Re-measure on your own hardware before
@@ -318,7 +372,7 @@ relying on these:
 A tracing-free build is supported: `cmake -DFLAPI_WITH_TRACING=OFF`. The facade
 compiles to no-ops and no OpenTelemetry symbol is linked.
 
-## 10. Environment variables
+## 11. Environment variables
 
 Configuration is YAML-first, but the OTLP/HTTP exporter is constructed from
 opentelemetry-cpp's own defaults, which read the environment. flAPI then

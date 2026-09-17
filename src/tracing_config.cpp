@@ -23,4 +23,23 @@ const char* captureTierName(CaptureTier tier) {
     return "metadata";
 }
 
+DbProfiling parseDbProfiling(const std::string& value, DbProfiling fallback) {
+    std::string lowered = value;
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (lowered == "off")      { return DbProfiling::Off; }
+    if (lowered == "summary")  { return DbProfiling::Summary; }
+    if (lowered == "detailed") { return DbProfiling::Detailed; }
+    return fallback;
+}
+
+const char* dbProfilingName(DbProfiling level) {
+    switch (level) {
+        case DbProfiling::Off:      return "off";
+        case DbProfiling::Summary:  return "summary";
+        case DbProfiling::Detailed: return "detailed";
+    }
+    return "off";
+}
+
 }  // namespace flapi

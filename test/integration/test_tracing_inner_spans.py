@@ -28,12 +28,37 @@ ENDPOINTS = {
         "    validators:\n      - type: int\n        min: 1\n"
     ),
     "items.sql": "SELECT 1 AS n\n",
+    # /items has a typed validator but its SQL never references the param, so the
+    # rewriter produces an empty binding plan and the request falls back to the
+    # UNPREPARED path. This second endpoint references it, which is what actually
+    # routes a request through executeWithBindings -> executePrepared.
+    "typed.yaml": (
+        "url-path: /typed\nmethod: GET\n"
+        "template-source: typed.sql\nconnection: [inmem]\n"
+        "mcp-tool:\n  name: typed_lookup\n  description: Look up by id\n"
+        "request:\n"
+        "  - field-name: id\n    field-in: query\n    required: true\n"
+        "    description: The id to look up\n"
+        "    validators:\n      - type: int\n        min: 1\n"
+    ),
+    "typed.sql": "SELECT {{ params.id }} AS id\n",
 }
 
 
 @pytest.fixture
 def server():
     yield from traced_server(endpoints=ENDPOINTS)
+
+
+def _descendants(spans, parent):
+    """Every span transitively under `parent`, so an assertion cannot be
+    satisfied by an unrelated background query elsewhere in the file."""
+    out, frontier = [], {parent.span_id}
+    while frontier:
+        kids = [s for s in spans if s.parent_span_id in frontier]
+        out.extend(kids)
+        frontier = {s.span_id for s in kids}
+    return out
 
 
 class TestInnerSpans:
@@ -84,6 +109,53 @@ class TestInnerSpans:
         span = db_spans[0]
         assert span.kind == 3, "a database call is a CLIENT span"
         assert "db.operation.name" in span.attributes
+
+    def test_a_typed_endpoint_also_produces_a_database_span(self, server):
+        # The regression this exists for: startDbSpan was called only from
+        # QueryExecutor::execute, the UNPREPARED path. Any endpoint whose
+        # template references a typed request field is rewritten onto
+        # executeWithBindings -> executePrepared, which emitted no span at all -
+        # so most real endpoints showed template rendering and a server span, but
+        # no database child. The time was inside the parent's duration and simply
+        # unattributed, which is the one thing an inner span exists to prevent.
+        r = requests.get(f"{server.base_url}/typed?id=7", timeout=10)
+        assert r.status_code == 200, r.text
+
+        parent = server.wait_for_server_span(route="/typed")
+        spans = server.spans()
+        # Scoped to THIS request's tree on purpose. Background cache warmup also
+        # runs DuckDB queries through the unprepared path, so a search over every
+        # span in the file would pass without the request having produced one.
+        db_spans = [s for s in _descendants(spans, parent)
+                    if s.attributes.get("db.system.name") == "duckdb"]
+        assert db_spans, (
+            "an endpoint on the PREPARED path produced no DuckDB span; "
+            "the database boundary is invisible for every typed endpoint"
+        )
+        span = db_spans[0]
+        assert span.kind == 3, "a database call is a CLIENT span"
+        assert span.attributes.get("db.operation.name") == "SELECT"
+
+    def test_both_query_paths_agree_on_the_operation_name(self, server):
+        # Two execution paths must not drift into reporting the same statement
+        # differently - that is how a dashboard ends up double-counting.
+        requests.get(f"{server.base_url}/items", timeout=10)
+        unprepared = server.wait_for_server_span(route="/items")
+        requests.get(f"{server.base_url}/typed?id=7", timeout=10)
+        prepared = server.wait_for_server_span(route="/typed")
+
+        spans = server.spans()
+
+        def verb_under(parent):
+            return {s.attributes.get("db.operation.name")
+                    for s in _descendants(spans, parent)
+                    if s.attributes.get("db.system.name") == "duckdb"}
+
+        assert verb_under(unprepared) == {"SELECT"}
+        assert verb_under(prepared) == {"SELECT"}, (
+            "the two execution paths report the same statement differently, "
+            "which is how a dashboard ends up double-counting"
+        )
 
     def test_the_cache_attribute_claims_only_what_flapi_knows(self, server):
         # TELEMETRY.md already documents that flAPI has no per-request cache

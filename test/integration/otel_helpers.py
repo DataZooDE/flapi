@@ -152,17 +152,17 @@ class TracedServer:
     """A flapi server with tracing enabled and the file exporter configured."""
 
     def __init__(self, extra_config: str = "", endpoints: Optional[Dict[str, str]] = None,
-                 tracing_block: Optional[str] = None):
+                 tracing_block: Optional[str] = None, tracing_extra: str = ""):
         self.tmp = tempfile.mkdtemp(prefix="flapi_otel_")
         self.traces_path = os.path.join(self.tmp, "traces.jsonl")
         self.port = free_port()
         self.base_url = f"http://127.0.0.1:{self.port}"
         self.log_path = os.path.join(self.tmp, "server.log")
-        self._write_config(extra_config, endpoints or {}, tracing_block)
+        self._write_config(extra_config, endpoints or {}, tracing_block, tracing_extra)
         self.proc: Optional[subprocess.Popen] = None
 
     def _write_config(self, extra_config: str, endpoints: Dict[str, str],
-                      tracing_block: Optional[str]) -> None:
+                      tracing_block: Optional[str], tracing_extra: str = "") -> None:
         sqls = os.path.join(self.tmp, "sqls")
         os.makedirs(sqls, exist_ok=True)
 
@@ -174,6 +174,10 @@ class TracedServer:
             f"  file:\n    path: {self.traces_path}\n"
             "  flush:\n    mode: on_response\n"
             "  sample:\n    type: always_on\n"
+            # Extra keys under `tracing:`, already indented by the caller. Lets a
+            # test add one knob without restating the whole block and having to
+            # thread self.traces_path through a placeholder rewrite.
+            + tracing_extra
         )
 
         with open(os.path.join(self.tmp, "flapi.yaml"), "w") as f:
@@ -258,11 +262,24 @@ class TracedServer:
         pytest.fail(message or f"condition not met within {timeout}s; saw "
                                f"{[(s.name, s.kind) for s in spans]}")
 
-    def wait_for_server_span(self, timeout: float = 5.0) -> Span:
+    def wait_for_server_span(self, timeout: float = 5.0,
+                             route: Optional[str] = None) -> Span:
+        """The SERVER span, optionally for one route.
+
+        Pass `route` whenever an assertion is about a specific request: the
+        trace file also contains background work (cache warmup runs real DuckDB
+        queries), so an unscoped search can be satisfied by a span the test
+        never caused.
+        """
+        def matches(s: Span) -> bool:
+            return s.is_server and (route is None
+                                    or s.attributes.get("http.route") == route)
+
         spans = self.wait_for_spans(
-            lambda ss: any(s.is_server for s in ss), timeout,
-            "no SERVER span was exported")
-        return next(s for s in spans if s.is_server)
+            lambda ss: any(matches(s) for s in ss), timeout,
+            f"no SERVER span was exported"
+            + (f" for route {route}" if route else ""))
+        return next(s for s in spans if matches(s))
 
     def raw_traces(self) -> str:
         return raw_text(self.traces_path)

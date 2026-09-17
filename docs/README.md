@@ -57,8 +57,9 @@ New to flAPI? Start with [Getting started](./guides/getting-started.md).
 | Goal | Start here |
 |---|---|
 | Trace requests, find a slow one, join logs to traces | [OBSERVABILITY.md](./OBSERVABILITY.md) |
-| Get an id out of a failed request | [OBSERVABILITY.md § 6](./OBSERVABILITY.md#6-getting-an-id-out-of-a-failed-request) |
-| Check that span export is working | [OBSERVABILITY.md § 8](./OBSERVABILITY.md#8-checking-that-export-is-actually-working) |
+| See where the time went inside a query | [OBSERVABILITY.md § 4](./OBSERVABILITY.md#4-seeing-inside-a-slow-query) |
+| Get an id out of a failed request | [OBSERVABILITY.md § 7](./OBSERVABILITY.md#7-getting-an-id-out-of-a-failed-request) |
+| Check that span export is working | [OBSERVABILITY.md § 9](./OBSERVABILITY.md#9-checking-that-export-is-actually-working) |
 | Keep an audit trail | [OBSERVABILITY.md § 7](./OBSERVABILITY.md#7-correlation) · [CONFIG_REFERENCE.md](./CONFIG_REFERENCE.md) |
 | Change configuration at runtime | [CONFIG_SERVICE_API_REFERENCE.md](./CONFIG_SERVICE_API_REFERENCE.md) |
 | Understand what product telemetry flAPI sends, and turn it off | [../TELEMETRY.md](../TELEMETRY.md) |
@@ -68,7 +69,7 @@ New to flAPI? Start with [Getting started](./guides/getting-started.md).
 | Goal | Start here |
 |---|---|
 | Ship one self-contained binary | [guides/self-packaging.md](./guides/self-packaging.md) |
-| Run in Kubernetes, serverless or air-gapped | [OBSERVABILITY.md § 5](./OBSERVABILITY.md#5-deployment) |
+| Run in Kubernetes, serverless or air-gapped | [OBSERVABILITY.md § 6](./OBSERVABILITY.md#6-deployment) |
 
 ---
 

@@ -51,6 +51,25 @@ inline constexpr auto kToolName      = "gen_ai.tool.name";
 inline constexpr auto kExecuteTool   = "execute_tool";
 }  // namespace genai
 
+
+// DuckDB execution profiling (tracing.db_profiling). flapi.* rather than db.*:
+// these are DuckDB's own metrics, not stable OpenTelemetry semantic conventions,
+// and must not be mistaken for them.
+//
+// This list is an ALLOWLIST and the implementation reads only these keys. It
+// must never iterate DuckDB's metric map: QUERY_NAME is the SQL text and
+// EXTRA_INFO is the rendered filter predicate, which on the prepared path
+// carries bound parameter values.
+namespace dbprof {
+constexpr const char* kLatencyMs        = "flapi.db.latency_ms";
+constexpr const char* kBlockedMs        = "flapi.db.blocked_thread_time_ms";
+constexpr const char* kResultBytes      = "flapi.db.result_set_bytes";
+constexpr const char* kBytesRead        = "flapi.db.bytes_read";
+constexpr const char* kCpuTimeMs        = "flapi.db.cpu_time_ms";        // detailed only
+constexpr const char* kRowsScanned      = "flapi.db.rows_scanned";       // detailed only
+constexpr const char* kPeakMemoryBytes  = "flapi.db.peak_memory_bytes";  // detailed only
+}  // namespace dbprof
+
 namespace db {
 inline constexpr auto kSystemName     = "db.system.name";
 inline constexpr auto kOperationName  = "db.operation.name";
