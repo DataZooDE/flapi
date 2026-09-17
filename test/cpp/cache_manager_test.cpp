@@ -417,6 +417,19 @@ public:
     std::atomic<int> refresh_count{0};
     std::mutex mutex;
 
+    // RecordingCacheAdapter push_backs into shared vectors, so EVERY override
+    // that reaches the base must hold the lock. renderCacheTemplate did not, and
+    // the second half of this test refreshes two DIFFERENT tables concurrently -
+    // so both threads rendered at once, raced on the same vectors, and corrupted
+    // the heap. It surfaced as an intermittent SIGABRT (~7% of runs locally),
+    // and the thread lambdas do not catch, so the abort took the process with it.
+    std::string renderCacheTemplate(const EndpointConfig& endpoint,
+                                    const CacheConfig& cacheConfig,
+                                    std::map<std::string, std::string>& params) override {
+        std::lock_guard<std::mutex> lock(mutex);
+        return RecordingCacheAdapter::renderCacheTemplate(endpoint, cacheConfig, params);
+    }
+
     void executeDuckLakeQuery(const std::string& query,
                               const std::map<std::string, std::string>& params) override {
         ++refresh_count;
@@ -445,22 +458,38 @@ TEST_CASE("CacheManager suppresses duplicate in-flight refreshes per table", "[c
     std::map<std::string, std::string> params1;
     std::map<std::string, std::string> params2;
 
-    std::thread first([&]() { cache_manager.refreshCache(config_manager, one, params1); });
-    std::thread second([&]() { cache_manager.refreshCache(config_manager, one, params2); });
+    // refreshCache rethrows, and an exception escaping a std::thread lambda is
+    // std::terminate - an abort with no diagnostic instead of a readable failure.
+    // Capture it so a future regression says what went wrong.
+    std::mutex err_mutex;
+    std::vector<std::string> errors;
+    auto run = [&](const EndpointConfig& ep, std::map<std::string, std::string>& p) {
+        try {
+            cache_manager.refreshCache(config_manager, ep, p);
+        } catch (const std::exception& ex) {
+            std::lock_guard<std::mutex> lock(err_mutex);
+            errors.emplace_back(ex.what());
+        }
+    };
+
+    std::thread first([&]() { run(one, params1); });
+    std::thread second([&]() { run(one, params2); });
     first.join();
     second.join();
 
+    REQUIRE(errors.empty());
     REQUIRE(adapter->refresh_count.load() == 1);
 
     EndpointConfig two = one;
     two.cache.table = "other_cache";
     std::map<std::string, std::string> params3;
     std::map<std::string, std::string> params4;
-    std::thread third([&]() { cache_manager.refreshCache(config_manager, one, params3); });
-    std::thread fourth([&]() { cache_manager.refreshCache(config_manager, two, params4); });
+    std::thread third([&]() { run(one, params3); });
+    std::thread fourth([&]() { run(two, params4); });
     third.join();
     fourth.join();
 
+    REQUIRE(errors.empty());
     REQUIRE(adapter->refresh_count.load() == 3);
 }
 
