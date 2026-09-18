@@ -570,6 +570,8 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             metrics["tracing"]["enabled"] = Tracing().isEnabled();
             metrics["tracing"]["spans_exported"] =
                 static_cast<std::int64_t>(Tracing().spansExported());
+            metrics["tracing"]["spans_submitted"] =
+                static_cast<std::int64_t>(Tracing().spansSubmitted());
             metrics["tracing"]["spans_dropped"] =
                 static_cast<std::int64_t>(Tracing().spansDropped());
             // Only ever non-zero with tracing.flush.blocking_timeout_ms set. A

@@ -333,7 +333,9 @@ void signal_handler(int signal) {
         // Flush spans before the process dies. On a platform with a short
         // SIGTERM grace (Cloud Run, App Runner) this is the difference between
         // having the trace of the request that killed you and not.
-        flapi::Tracing().forceFlush(std::chrono::milliseconds(2000));
+        // flush.timeout_ms, not a hardcoded 2s: an operator who tunes the flush
+        // budget expects it to apply to the path that matters most here.
+        flapi::Tracing().forceFlush(flapi::Tracing().shutdownFlushBudget());
         flapi::GlobalTelemetry().flush();
         if (api_server) {
             api_server->stop();

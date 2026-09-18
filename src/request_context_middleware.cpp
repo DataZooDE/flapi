@@ -293,8 +293,23 @@ void RequestContextMiddleware::finish(crow::response& res, context& ctx) {
             // literal - never a filled path (NFR-5) - and unmatched paths all
             // collapse to one bucket so a scanner cannot mint a thousand span
             // names and metric series.
-            const std::string_view route = ctx.rc.route_template.empty()
-                                               ? std::string_view(semconv::kUnmatchedRoute)
+            // MCP requests are not endpoint-resolved, so route_template is
+            // never filled for them. Reporting "<unmatched>" was bounded but
+            // uninformative: it put every agent call in the same bucket as a
+            // scanner's 404s. The transport path is a fixed literal, so it is
+            // safe as a label and it is what a consumer filtering by route
+            // actually wants.
+            // MCP first: its requests are never endpoint-resolved, so
+            // route_template still holds its default. Reporting "<unmatched>"
+            // was bounded but uninformative - it put every agent call in the
+            // same bucket as a scanner's 404s. The transport path is a fixed
+            // literal, so it is safe as a label and it is what a consumer
+            // filtering by route actually wants.
+            //
+            // route_template DEFAULTS to "<unmatched>" rather than being empty,
+            // so testing it for emptiness here would be dead code.
+            const std::string_view route =
+                isMcpEndpoint(ctx.rc.raw_path) ? std::string_view(semconv::kMcpRoute)
                                                : ctx.rc.route_template;
             // An MCP call is ONE span carrying both attribute sets, named by the
             // MCP convention - "tools/call query_customers" is what a consumer of

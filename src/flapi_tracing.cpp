@@ -36,14 +36,21 @@ namespace {
 
 std::atomic<std::uint64_t> g_spans_exported{0};
 std::atomic<std::uint64_t> g_spans_dropped{0};
+std::atomic<std::uint64_t> g_spans_submitted{0};
 
-// Counts what actually left the process.
+// Counts export batches by the result the exporter REPORTS.
 //
-// The previous version returned a hardcoded 0 for drops and reported spans
-// STARTED as spans exported, which meant /api/v1/_config/metrics showed rising
-// exports and zero drops against a collector that was refusing every connection -
-// fabricated values under a comment promising the opposite. NFR-4's whole point
-// is that silent data loss becomes visible.
+// Read the caveat before trusting spans_dropped with otlp_http.
+// OtlpHttpExporter::Export computes the real result, logs a failure, and then
+// returns kSuccess unconditionally on both its sync and async branches
+// (otlp_http_exporter.cc:193 and :206). So a collector answering 503 to every
+// batch is indistinguishable here from one accepting them: verified
+// empirically - collector received 0 spans, this counter said 38 exported, 0
+// dropped, while the SDK logged "Export 18 trace span(s) error: 1".
+//
+// No wrapper at this layer can fix that; the result is discarded above us. That
+// is why spans_submitted exists: submitted minus exported is the only number
+// that does not depend on the SDK telling the truth about its own HTTP status.
 class CountingSpanExporter final : public tsdk::SpanExporter {
 public:
     explicit CountingSpanExporter(std::unique_ptr<tsdk::SpanExporter> inner)
@@ -74,6 +81,45 @@ public:
 
 private:
     std::unique_ptr<tsdk::SpanExporter> inner_;
+};
+
+// Counts what was HANDED to the processor.
+//
+// BatchSpanProcessor::OnEnd drops silently when its queue is full - it logs a
+// warning and returns void (batch_span_processor.cc:92), so neither the
+// exporter nor a wrapper can observe the drop. spans_dropped therefore counts
+// only FAILED EXPORT BATCHES, and a flat value has never proved that nothing
+// was lost.
+//
+// Counting submissions closes that hole honestly rather than inventing a drop
+// number: submitted - exported - dropped is what is either still queued or
+// gone, and in steady state it is the loss. That is a figure an operator can
+// act on, and it does not pretend to a precision the SDK does not offer.
+class CountingSpanProcessor final : public tsdk::SpanProcessor {
+public:
+    explicit CountingSpanProcessor(std::unique_ptr<tsdk::SpanProcessor> inner)
+        : inner_(std::move(inner)) {}
+
+    std::unique_ptr<tsdk::Recordable> MakeRecordable() noexcept override {
+        return inner_->MakeRecordable();
+    }
+    void OnStart(tsdk::Recordable& span,
+                 const opentelemetry::trace::SpanContext& parent) noexcept override {
+        inner_->OnStart(span, parent);
+    }
+    void OnEnd(std::unique_ptr<tsdk::Recordable>&& span) noexcept override {
+        g_spans_submitted.fetch_add(1, std::memory_order_relaxed);
+        inner_->OnEnd(std::move(span));
+    }
+    bool ForceFlush(std::chrono::microseconds timeout) noexcept override {
+        return inner_->ForceFlush(timeout);
+    }
+    bool Shutdown(std::chrono::microseconds timeout) noexcept override {
+        return inner_->Shutdown(timeout);
+    }
+
+private:
+    std::unique_ptr<tsdk::SpanProcessor> inner_;
 };
 
 // OTel's own trace ids are opaque; flAPI builds a parent SpanContext from the
@@ -107,6 +153,9 @@ class OtelTracingBackend : public ITracingBackend {
 public:
     explicit OtelTracingBackend(const TracingConfig& config) {
         auto processor = makeProcessor(config);
+        if (processor) {
+            processor = std::make_unique<CountingSpanProcessor>(std::move(processor));
+        }
         if (!processor) {
             return;   // exporter: none - the facade stays inert
         }
@@ -319,6 +368,7 @@ void FlapiTracing::configure(const TracingConfig& config) {
     // Only now, so that a config asking for profiling while tracing is disabled
     // (or OTEL_SDK_DISABLED is set) never makes the query path pay for it.
     db_profiling_ = config.db_profiling;
+    shutdown_flush_ = std::chrono::milliseconds(config.flush.timeout_ms);
     // Only a NETWORK exporter needs the middleware to flush per request; the
     // file exporter already uses a SimpleSpanProcessor and has nothing buffered.
     if (config.flush.mode == "on_response" && config.exporter != "otlp_file"
@@ -358,6 +408,10 @@ std::atomic<std::uint64_t> g_flush_timeouts{0};
 
 void FlapiTracing::noteFlushTimeout() {
     g_flush_timeouts.fetch_add(1, std::memory_order_relaxed);
+}
+
+std::uint64_t FlapiTracing::spansSubmitted() const {
+    return g_spans_submitted.load(std::memory_order_relaxed);
 }
 
 std::uint64_t FlapiTracing::flushTimeouts() const {

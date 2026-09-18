@@ -29,6 +29,7 @@ bool FlapiTracing::forceFlush(std::chrono::milliseconds) { return true; }
 void FlapiTracing::shutdown() {}
 std::uint64_t FlapiTracing::spansDropped() const { return 0; }
 std::uint64_t FlapiTracing::spansExported() const { return 0; }
+std::uint64_t FlapiTracing::spansSubmitted() const { return 0; }
 // blockingFlush() is inline in the header and returns an empty optional here,
 // because configure() is a no-op in this build - so the middleware's flush is
 // compiled in but never taken. These two only need to link.

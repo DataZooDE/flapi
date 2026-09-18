@@ -385,16 +385,25 @@ curl -s -H "Authorization: Bearer $FLAPI_CONFIG_SERVICE_TOKEN" \
 
 ```json
 {
-  "tracing": { "enabled": true, "spans_exported": 10482, "spans_dropped": 0,
-               "spans_flush_timeouts": 0 },
+  "tracing": { "enabled": true, "spans_submitted": 10482, "spans_exported": 10482,
+               "spans_dropped": 0, "spans_flush_timeouts": 0 },
   "arrow":   { "total_requests": 12, "successful_requests": 12, "failed_requests": 0,
                "total_rows": 48210, "active_streams": 0 },
   "endpoints": { "count": 18 }
 }
 ```
 
-`spans_dropped` counts **failed export batches** — a collector that is
-unreachable, erroring, or timing out.
+`spans_submitted` counts spans handed to the exporter. **It is the number to
+watch**: `spans_submitted - spans_exported` is what did not get out.
+
+`spans_dropped` counts export batches the SDK reported as failed — which, with
+`otlp_http`, is fewer than you would expect. `OtlpHttpExporter::Export` computes
+the real result, logs the failure, then returns success anyway
+(`otlp_http_exporter.cc:193`, `:206`), so a collector answering 503 to every
+batch looks identical to a healthy one from this counter's point of view. We
+verified that: against a collector rejecting everything, the counters read
+`exported: 38, dropped: 0` while the SDK logged `Export 18 trace span(s)
+error: 1`. Watch the flAPI log for `[OTLP TRACE HTTP Exporter] ERROR` as well.
 
 > **A flat `spans_dropped` does not prove nothing was lost.** Spans discarded
 > because the batch queue was already full are dropped *before* export is
