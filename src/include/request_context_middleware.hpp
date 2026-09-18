@@ -9,6 +9,7 @@
 #include <vector>
 #include <string>
 
+#include "in_flight_registry.hpp"
 #include "request_context.hpp"
 #include "trace_scope.hpp"
 #include "trace_capture_policy.hpp"
@@ -55,6 +56,10 @@ public:
         SpanScope span;          // inert and allocation-free when tracing is off
         bool started = false;    // before_handle actually ran for THIS request
         bool finished = false;   // guards the idempotent completion path
+        // Stall-detection slot, released in finish() whatever the outcome. A
+        // handle rather than a thread-local so a response completed on another
+        // thread still releases it.
+        std::size_t in_flight_slot = static_cast<std::size_t>(-1);
     };
 
     void before_handle(crow::request& req, crow::response& res, context& ctx);

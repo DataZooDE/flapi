@@ -7,6 +7,7 @@
 #include "caching_file_provider.hpp"
 #include "vfs_adapter.hpp"
 #include "path_validator.hpp"
+#include <cctype>
 #include <stdexcept>
 #include <filesystem>
 #include <yaml-cpp/yaml.h>
@@ -114,6 +115,11 @@ void ConfigManager::parseMainConfig() {
         // Top-level and kebab-case, matching http-port / http-host. The `server:`
         // block that three example files used was never parsed by anything.
         log_level = safeGet<std::string>(config, "log-level", "log-level", "info");
+        stall_timeout_s = safeGet<int>(config, "stall-timeout-s", "stall-timeout-s", 60);
+        if (stall_timeout_s < 0) {
+            throw std::runtime_error("stall-timeout-s must be 0 (disabled) or positive; got "
+                                     + std::to_string(stall_timeout_s));
+        }
         log_format = safeGet<std::string>(config, "log-format", "log-format", "text");
 
         CROW_LOG_DEBUG << "Project Name: " << project_name;
@@ -1046,6 +1052,54 @@ void ConfigManager::parseEndpointHeartbeat(const YAML::Node& endpoint_config, En
 }
 
 // Connection configuration methods
+
+namespace {
+
+// Lowercased with runs of whitespace collapsed to a single space, so the scan
+// below is not defeated by formatting. Connection `init` blocks are typically
+// multi-line YAML literals.
+std::string normaliseSql(const std::string& sql) {
+    std::string out;
+    out.reserve(sql.size());
+    bool in_space = false;
+    for (const char c : sql) {
+        if (std::isspace(static_cast<unsigned char>(c))) {
+            in_space = true;
+            continue;
+        }
+        if (in_space && !out.empty()) {
+            out.push_back(' ');
+        }
+        in_space = false;
+        out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+    return out;
+}
+
+// True when `init` attaches a SQLite database. Deliberately narrow: a false
+// positive costs throughput on a connection that did not need it, so we match
+// the documented DuckDB spelling rather than guessing from file extensions.
+bool attachesSqlite(const std::string& init) {
+    const std::string sql = normaliseSql(init);
+    if (sql.find("attach") == std::string::npos) {
+        return false;
+    }
+    return sql.find("type sqlite") != std::string::npos ||
+           sql.find("type 'sqlite'") != std::string::npos ||
+           sql.find("type \"sqlite\"") != std::string::npos;
+}
+
+}  // namespace
+
+bool ConnectionConfig::serialisesAccess() const {
+    // An explicit setting always wins - both ways. An operator who has measured
+    // their own backend should not have to argue with our heuristic.
+    if (serialize_access.has_value()) {
+        return *serialize_access;
+    }
+    return attachesSqlite(init);
+}
+
 void ConfigManager::parseConnections() {
     CROW_LOG_INFO << "Parsing connections";
     if (config["connections"]) {
@@ -1058,6 +1112,12 @@ void ConfigManager::parseConnections() {
             conn_config.init = safeGet<std::string>(connection.second, "init", "connections." + name + ".init", "");
             conn_config.log_queries = safeGet<bool>(connection.second, "log-queries", "connections." + name + ".log-queries", false);
             conn_config.log_parameters = safeGet<bool>(connection.second, "log-parameters", "connections." + name + ".log-parameters", false);
+
+            if (connection.second["serialize-access"]) {
+                conn_config.serialize_access =
+                    safeGet<bool>(connection.second, "serialize-access",
+                                  "connections." + name + ".serialize-access", false);
+            }
             
             CROW_LOG_DEBUG << "Connection " << name << ": log_queries=" << conn_config.log_queries 
                            << ", log_parameters=" << conn_config.log_parameters;

@@ -80,6 +80,7 @@ add_executable(flapi_tests
     test_trace_scope.cpp
     test_trace_capture_policy.cpp
     test_redaction.cpp
+    test_in_flight_registry.cpp
     test_http_client_tracing.cpp
     test_flapi_log_handler.cpp
     test_endpoint_snapshot.cpp

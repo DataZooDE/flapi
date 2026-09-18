@@ -1,6 +1,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "api_server.hpp"
+#include "in_flight_registry.hpp"
 #include "request_context.hpp"
 #include "auth_middleware.hpp"
 #include "database_manager.hpp"
@@ -363,6 +364,27 @@ crow::response APIServer::getHealth() {
     health["caches"]["total"] = summary.total;
     health["caches"]["ready"] = summary.ready;
     health["caches"]["failed"] = summary.failed;
+
+    // A stalled request is checked BEFORE cache state, because it is the more
+    // serious condition: caches degrade loudly, a wedged backend does not.
+    //
+    // This measures the symptom rather than probing the resource. A probe would
+    // have to touch each connection, and a probe against a wedged one blocks
+    // forever - leaking a thread per health check. Request age costs nothing
+    // and catches any stall, whatever caused it.
+    const int stall_timeout_s = configManager ? configManager->getStallTimeoutSeconds() : 0;
+    const auto oldest = InFlightRegistry::oldestAge(std::chrono::steady_clock::now());
+    health["requests"]["in_flight"] = static_cast<int64_t>(InFlightRegistry::inFlight());
+    health["requests"]["oldest_ms"] = static_cast<int64_t>(oldest.count());
+
+    if (stall_timeout_s > 0 && oldest >= std::chrono::seconds(stall_timeout_s)) {
+        health["status"] = "stalled";
+        health["stalled_after_s"] = stall_timeout_s;
+        // Deliberately blunt: a request outliving this budget means something
+        // downstream stopped answering, and the instance should be taken out of
+        // rotation rather than handed more traffic it cannot serve.
+        return crow::response(503, health);
+    }
 
     if (summary.failed > 0) {
         health["status"] = "degraded";

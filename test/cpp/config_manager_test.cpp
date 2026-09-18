@@ -703,3 +703,72 @@ log-format: json
 
     REQUIRE(mgr.getLogFormat() == "json");
 }
+
+// --- #116: which connections must have their access serialised -------------
+//
+// A concurrent read and write against a DuckDB SQLite attachment deadlock each
+// other, so flAPI serialises every query on such a connection. The heuristic
+// has to stay narrow in both directions: a miss reintroduces the deadlock, a
+// false positive silently halves the throughput of a connection that was fine.
+
+TEST_CASE("a SQLite attachment is detected as needing serialised access",
+          "[config][serialize-access]") {
+    flapi::ConnectionConfig conn;
+
+    SECTION("the canonical spelling") {
+        conn.init = "INSTALL sqlite;\nLOAD sqlite;\n"
+                    "ATTACH '/data/shop.sqlite' AS shop (TYPE sqlite);";
+        REQUIRE(conn.serialisesAccess());
+    }
+
+    SECTION("quoted type, and formatting that spans lines") {
+        conn.init = "ATTACH IF NOT EXISTS '/data/shop.db' AS shop\n"
+                    "    (\n      TYPE   'sqlite'\n    );";
+        REQUIRE(conn.serialisesAccess());
+    }
+
+    SECTION("lowercase") {
+        conn.init = "attach '/data/shop.db' as shop (type sqlite);";
+        REQUIRE(conn.serialisesAccess());
+    }
+}
+
+TEST_CASE("connections that do not attach SQLite are left alone",
+          "[config][serialize-access]") {
+    flapi::ConnectionConfig conn;
+
+    SECTION("no init at all - the common parquet case") {
+        REQUIRE_FALSE(conn.serialisesAccess());
+    }
+
+    SECTION("a different backend") {
+        conn.init = "ATTACH 'dbname=app' AS pg (TYPE postgres);";
+        REQUIRE_FALSE(conn.serialisesAccess());
+    }
+
+    SECTION("loading the extension without attaching anything") {
+        // Installing sqlite does not by itself put a wedgeable attachment in
+        // the way, and paying for serialisation here would be pure loss.
+        conn.init = "INSTALL sqlite; LOAD sqlite;";
+        REQUIRE_FALSE(conn.serialisesAccess());
+    }
+}
+
+TEST_CASE("an explicit setting overrides the heuristic both ways",
+          "[config][serialize-access]") {
+    // An operator who has measured their own backend should not have to argue
+    // with our guess - in either direction.
+    SECTION("forced on for a backend we do not recognise") {
+        flapi::ConnectionConfig conn;
+        conn.init = "ATTACH 'something' AS x (TYPE exotic);";
+        conn.serialize_access = true;
+        REQUIRE(conn.serialisesAccess());
+    }
+
+    SECTION("forced off for one we do") {
+        flapi::ConnectionConfig conn;
+        conn.init = "ATTACH '/data/shop.sqlite' AS shop (TYPE sqlite);";
+        conn.serialize_access = false;
+        REQUIRE_FALSE(conn.serialisesAccess());
+    }
+}

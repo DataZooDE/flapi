@@ -405,8 +405,48 @@ auto retryOnLockContention(Fn&& fn, const char* what) -> decltype(fn()) {
 
 }  // namespace
 
+DatabaseManager::AccessLocks DatabaseManager::lockSerialisedAccess(const EndpointConfig& endpoint) {
+    AccessLocks locks;
+    if (!config_manager) {
+        return locks;
+    }
+
+    // Sorted, so every caller acquires the same connections in the same order.
+    std::vector<std::string> names;
+    const auto& connections = config_manager->getConnections();
+    for (const auto& name : endpoint.connection) {
+        const auto it = connections.find(name);
+        if (it != connections.end() && it->second.serialisesAccess()) {
+            names.push_back(name);
+        }
+    }
+    if (names.empty()) {
+        return locks;
+    }
+    std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
+
+    for (const auto& name : names) {
+        std::mutex* m = nullptr;
+        {
+            std::lock_guard<std::mutex> guard(access_mutexes_guard);
+            auto& slot = access_mutexes[name];
+            if (!slot) {
+                slot = std::make_unique<std::mutex>();
+            }
+            m = slot.get();
+        }
+        locks.emplace_back(*m);
+    }
+    return locks;
+}
+
 QueryResult DatabaseManager::executeQuery(const EndpointConfig& endpoint, std::map<std::string, std::string>& params, bool with_pagination)
 {
+    // #116: a read concurrent with a write wedges a SQLite attachment for good,
+    // so on those connections a read waits its turn like a write does.
+    const auto access = lockSerialisedAccess(endpoint);
+
     // Reads are collateral damage in SQLite lock contention: a single writer
     // blocks them, and failing a GET because some unrelated POST held a lock is
     // the least defensible outcome of the lot.
@@ -460,6 +500,7 @@ std::string DatabaseManager::renderCacheTemplate(const EndpointConfig& endpoint,
 }
 
 std::unique_ptr<QueryExecutor> DatabaseManager::executeQueryRaw(const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
+    const auto access = lockSerialisedAccess(endpoint);
     cache_manager->addQueryCacheParamsIfNecessary(config_manager, endpoint, params);
 
     // W3.1 PR B: Arrow-streaming endpoint also takes the prepared path
@@ -593,6 +634,7 @@ QueryResult DatabaseManager::executeQuery(const std::string& query,
 }
 
 WriteResult DatabaseManager::executeWrite(const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
+    const auto access = lockSerialisedAccess(endpoint);
     auto executor = createQueryExecutor();
     return executeWrite(executor, endpoint, params);
 }
@@ -707,6 +749,7 @@ WriteResult DatabaseManager::executeWrite(QueryExecutor& executor, const Endpoin
 
 
 WriteResult DatabaseManager::executeWriteInTransaction(const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
+    const auto access = lockSerialisedAccess(endpoint);
     return retryOnLockContention([&]() -> WriteResult {
         WriteResult result;
 

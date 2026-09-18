@@ -184,6 +184,7 @@ The main configuration file defines global settings, connections, and server beh
 | `log-level` | string | `info` | Log verbosity: `debug`, `info`, `warning`, `error`. Overridable via `--log-level` / `FLAPI_LOG_LEVEL`. **Top-level key — a `server:` block is not parsed.** |
 | `tracing` | map | disabled | OpenTelemetry tracing. Off by default; see [OBSERVABILITY.md](OBSERVABILITY.md). |
 | `log-format` | string | `text` | `text` for human-readable lines, `json` for one JSON object per line. Both carry `request_id` (and `trace_id` once tracing is enabled) for lines emitted while serving a request. |
+| `stall-timeout-s` | int | `60` | Readiness (`GET /health`) returns `503` when a request has been in flight longer than this. `0` disables it. Guards against a backend that stops answering without failing — a wedged connection leaves the process, DuckDB and every other connection healthy, so a `SELECT 1` probe passes while the endpoint is dead. Raise it if you serve deliberately long synchronous queries; the usual answer to those is the MCP Tasks extension. |
 | `http-host` | string | `"0.0.0.0"` | Bind address (overridable via `--host` / `FLAPI_HOST`); use `127.0.0.1` to restrict to loopback |
 
 **Example:**
@@ -236,6 +237,7 @@ Connections define data sources accessible in SQL templates.
 | `connections.<name>.log-queries` | boolean | `false` | Log SQL queries to this connection |
 | `connections.<name>.log-parameters` | boolean | `false` | Log parameter values |
 | `connections.<name>.allow` | string | - | Access control list |
+| `connections.<name>.serialize-access` | boolean | auto | Run one query at a time on this connection. Auto-detected for SQLite attachments; see below |
 | `connections.<name>.properties` | object | - | Custom key-value properties accessible in templates |
 
 **Example:**
@@ -272,6 +274,37 @@ connections:
 **Notes:**
 - Connection properties are accessible in templates as `{{ conn.property_name }}`
 - The `init` SQL runs once when the connection is first used
+
+**Serialised access (`serialize-access`)**
+
+A read and a write issued at the same moment against a DuckDB **SQLite
+attachment** deadlock each other. Two requests are enough, and the attachment
+can stop answering for good while the process, DuckDB, the health endpoint and
+every other connection stay perfectly healthy — so the instance keeps accepting
+traffic it can no longer serve (#116).
+
+flAPI therefore runs **one query at a time** on any connection whose `init`
+contains an `ATTACH ... (TYPE sqlite)`. Nothing else is affected: parquet,
+BigQuery, Postgres and DuckLake traffic still runs fully in parallel.
+
+The cost is real — concurrent requests to a SQLite-backed endpoint queue rather
+than overlap — so set it yourself when the detection is wrong in either
+direction:
+
+```yaml
+connections:
+  # An exotic backend with the same problem
+  my-backend:
+    serialize-access: true
+
+  # A SQLite attachment you have measured and want to run in parallel anyway
+  read-only-snapshot:
+    serialize-access: false
+    init: |
+      ATTACH '/data/snapshot.sqlite' AS snap (TYPE sqlite);
+```
+
+An explicit value always wins over the detection.
 - Use environment variable substitution for sensitive values
 
 > **Implementation:** `src/config_manager.cpp`, `src/database_manager.cpp` | **Tests:** `test/cpp/config_manager_test.cpp`

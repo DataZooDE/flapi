@@ -36,8 +36,28 @@ struct ConnectionConfig {
     bool log_parameters = false;
     std::string allow;
 
+    // Serialise ALL access to this connection - reads included.
+    //
+    // A concurrent read and write against a DuckDB SQLite attachment deadlock
+    // each other: two requests are enough, and the attachment then never
+    // answers again, while the process, DuckDB and every other connection stay
+    // healthy (#116). Serialising only the writes does not help - the pair that
+    // wedges is a reader and a writer.
+    //
+    // Auto-detected from an `ATTACH ... (TYPE sqlite)` in `init`, and settable
+    // explicitly for a backend we do not recognise, or to opt out of the
+    // serialisation for one we do:
+    //
+    //   connections:
+    //     mydb:
+    //       serialize-access: true
+    std::optional<bool> serialize_access;
+
     const std::string& getInit() const { return init; }
     void setInit(const std::string& initSql) { init = initSql; }
+
+    /// True when every query on this connection must be serialised.
+    bool serialisesAccess() const;
 };
 
 struct HeartbeatConfig {
@@ -679,6 +699,7 @@ public:
     // silently diverge.
     const CapturePolicy& getCapturePolicy() const;
     const std::string& getLogLevel() const { return log_level; }
+    int getStallTimeoutSeconds() const { return stall_timeout_s; }
     const std::string& getLogFormat() const { return log_format; }
     std::string getBasePath() const;
     std::string getDuckDBPath() const;
@@ -747,6 +768,16 @@ protected:
     TracingConfig tracing_config;
     mutable std::unique_ptr<CapturePolicy> capture_policy_;
     std::string log_level = "info";
+    // Readiness fails when a request has been in flight longer than this, in
+    // seconds. 0 disables the check.
+    //
+    // Guards against a backend that stops answering without failing: a wedged
+    // SQLite attachment leaves DuckDB, the HTTP server and every other
+    // connection healthy, so a `SELECT 1` probe passes while the endpoint is
+    // dead (#116). The default is deliberately high - flAPI's answer to a
+    // genuinely long query is the MCP Tasks extension, so a SYNCHRONOUS request
+    // still running after this long is pathological rather than merely slow.
+    int stall_timeout_s = 60;
     std::string log_format = "text";
     std::string project_description;
     std::string cache_schema = "flapi";
