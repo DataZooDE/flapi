@@ -374,8 +374,34 @@ void ConfigManager::parseTracingConfig() {
     }
     if (const auto& f = node["flush"]) {
         if (f["mode"])           { tracing_config.flush.mode = f["mode"].as<std::string>(); }
-        if (f["timeout_ms"])     { tracing_config.flush.timeout_ms = f["timeout_ms"].as<int>(); }
+        if (f["timeout_ms"]) {
+            const int ms = f["timeout_ms"].as<int>();
+            // Range-checked because this value is now the SIGTERM force-flush
+            // budget as well as the batch interval. 0 makes ForceFlush treat the
+            // timeout as unbounded - an indefinite wait inside a signal handler -
+            // and also spins the batch worker with a zero schedule delay. A very
+            // large value overruns the platform's shutdown grace and earns a
+            // SIGKILL, which is strictly worse than the 2s it replaced.
+            if (ms < 1 || ms > 60000) {
+                throw std::runtime_error(
+                    "tracing.flush.timeout_ms must be between 1 and 60000 ms; got "
+                    + std::to_string(ms));
+            }
+            tracing_config.flush.timeout_ms = ms;
+        }
         if (f["max_queue_size"]) { tracing_config.flush.max_queue_size = f["max_queue_size"].as<int>(); }
+        if (f["blocking_timeout_ms"]) {
+            const int ms = f["blocking_timeout_ms"].as<int>();
+            // Capped hard. This value lands directly in every caller's latency,
+            // so an operator must not be able to set 30s and discover it in
+            // production.
+            if (ms <= 0 || ms > 1000) {
+                throw std::runtime_error(
+                    "tracing.flush.blocking_timeout_ms must be between 1 and 1000 ms; got "
+                    + std::to_string(ms));
+            }
+            tracing_config.flush.blocking_timeout_ms = ms;
+        }
     }
     if (const auto& file = node["file"]) {
         if (file["path"]) { tracing_config.file_path = file["path"].as<std::string>(); }

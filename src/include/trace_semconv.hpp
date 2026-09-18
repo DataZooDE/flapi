@@ -103,6 +103,9 @@ inline constexpr auto kHasQuery        = "flapi.url.has_query";
 // Every unmatched path collapses here. Attacker-controlled URLs must never mint
 // distinct span names or metric series: that is both a cardinality blow-up and a
 // cost-amplification vector against whoever pays for ingest.
+// MCP requests are not endpoint-resolved; this is their transport path, a fixed
+// literal and therefore safe as a bounded route label.
+inline constexpr auto kMcpRoute = "/mcp/jsonrpc";
 inline constexpr auto kUnmatchedRoute = "<unmatched>";
 
 }  // namespace flapi::semconv

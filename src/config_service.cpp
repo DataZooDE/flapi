@@ -570,8 +570,16 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             metrics["tracing"]["enabled"] = Tracing().isEnabled();
             metrics["tracing"]["spans_exported"] =
                 static_cast<std::int64_t>(Tracing().spansExported());
+            metrics["tracing"]["spans_submitted"] =
+                static_cast<std::int64_t>(Tracing().spansSubmitted());
             metrics["tracing"]["spans_dropped"] =
                 static_cast<std::int64_t>(Tracing().spansDropped());
+            // Only ever non-zero with tracing.flush.blocking_timeout_ms set. A
+            // rising value means the collector is costing callers latency AND
+            // still losing spans - the worst of both, and a signal to raise the
+            // budget or stop blocking.
+            metrics["tracing"]["spans_flush_timeouts"] =
+                static_cast<std::int64_t>(Tracing().flushTimeouts());
 
             // Arrow IPC serialization counters, which already existed but were
             // only reachable through /mcp/health.

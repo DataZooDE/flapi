@@ -8,6 +8,7 @@
 #include "flapi_build_config.hpp"
 #include "trace_context.hpp"
 #include "trace_scope.hpp"
+#include <optional>
 #include "tracing_config.hpp"
 
 namespace flapi {
@@ -53,6 +54,9 @@ public:
 
     std::uint64_t spansDropped() const;
     std::uint64_t spansExported() const;
+    // Spans handed to the processor. The SDK drops silently on a full queue, so
+    // submitted - exported - dropped is the only honest view of loss.
+    std::uint64_t spansSubmitted() const;
 
     // How much DuckDB execution profiling the operator asked for. Read on the
     // query path, so it is a plain value read - no lock, no allocation. Stays
@@ -60,12 +64,30 @@ public:
     // config can never make the query path pay for profiling.
     DbProfiling dbProfiling() const { return db_profiling_; }
 
+    // Set only when an operator opted a NETWORK exporter into per-request
+    // export with an explicit budget. Empty otherwise, which is the common case
+    // and costs the request path a single pointer-sized check.
+    std::optional<std::chrono::milliseconds> blockingFlush() const { return blocking_flush_; }
+
+    // Budget for the shutdown force-flush. Was hardcoded at 2s, which meant an
+    // operator who tuned flush.timeout_ms had no effect on the path that
+    // matters most on a platform with a short SIGTERM grace.
+    std::chrono::milliseconds shutdownFlushBudget() const { return shutdown_flush_; }
+
+    // Requests whose span export did not finish inside the budget. Surfaced by
+    // GET /api/v1/_config/metrics: a rising value means the collector is costing
+    // callers latency AND still losing spans, which is the worst of both.
+    std::uint64_t flushTimeouts() const;
+    static void noteFlushTimeout();
+
 private:
     bool active() const;
 
     std::unique_ptr<ITracingBackend> backend_;
     bool enabled_ = false;      // BR-6: off until an operator turns it on
     DbProfiling db_profiling_ = DbProfiling::Off;
+    std::optional<std::chrono::milliseconds> blocking_flush_;
+    std::chrono::milliseconds shutdown_flush_{2000};
 };
 
 // Process-wide accessor. Not leaked; see the note above.

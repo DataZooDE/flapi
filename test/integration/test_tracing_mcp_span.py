@@ -69,6 +69,20 @@ class TestMcpSingleSpan:
             f"not nested HTTP and MCP spans; got {[s.name for s in servers]}"
         )
 
+    def test_the_mcp_span_carries_a_real_route_label(self, server):
+        # It used to be "<unmatched>": MCP requests are not endpoint-resolved, so
+        # the route template was never filled in. Bounded, but uninformative -
+        # and it meant a trace consumer filtering by http.route saw every MCP
+        # call in the same bucket as a 404 from a vulnerability scanner.
+        _rpc(server.base_url, "tools/call",
+             {"name": "lookup_tool", "arguments": {}})
+
+        span = server.wait_for_server_span(name="tools/call lookup_tool")
+        route = span.attributes.get("http.route")
+        assert route == "/mcp/jsonrpc", (
+            f"expected the MCP transport route, got {route!r}"
+        )
+
     def test_a_typed_tool_call_produces_a_database_span(self, server):
         # The MCP half of the prepared-path gap. A real tools/call over JSON-RPC,
         # no mocks: an agent asking a typed tool for data must leave the same

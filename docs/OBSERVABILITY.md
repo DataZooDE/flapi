@@ -26,7 +26,7 @@ that request. A support report quoting the header is enough to find the request.
 tracing:
   enabled: true                 # off by default; nothing else turns it on
   exporter: otlp_http           # otlp_http | otlp_file | none
-  endpoint: http://localhost:4318
+  endpoint: http://localhost:4318/v1/traces
   capture: metadata             # off | metadata | payload
 ```
 
@@ -40,7 +40,7 @@ That is the minimum. Everything below has a working default.
 | `service_name` | `flapi` | `service.name` resource attribute. |
 | `service_namespace` | — | `service.namespace`. |
 | `exporter` | `otlp_http` | `otlp_http`, `otlp_file`, or `none`. Any unrecognised value behaves as `none`. |
-| `endpoint` | SDK default | OTLP/HTTP base URL. Applies to `otlp_http` only. |
+| `endpoint` | SDK default | The **full** OTLP/HTTP trace URL, e.g. `http://host:4318/v1/traces`. An overridden URL is used verbatim — `/v1/traces` is **not** appended — so a base URL posts to `/` and a real collector rejects it. Applies to `otlp_http` only. |
 | `protocol` | unset | Only the exact string `http/json` changes anything (it switches the content type). Any other value, including `http/protobuf`, is ignored. |
 | `headers` | `{}` | Extra headers, e.g. auth for a SaaS backend. Applies to `otlp_http` only. |
 | `timeout_ms` | `10000` | Export timeout. |
@@ -50,9 +50,10 @@ That is the minimum. Everything below has a working default.
 | `exclude_routes` | probes + docs | Routes that produce no span. An explicit list **replaces** the defaults rather than adding to them, and each entry is matched as an exact path, not a prefix or glob. |
 | `sample.type` | `parentbased_traceidratio` | `always_on`, `always_off`, `parentbased_traceidratio`. |
 | `sample.ratio` | `1.0` | Sampling ratio. |
-| `flush.mode` | `batch` | `batch` or `on_response`. `on_response` requires `exporter: otlp_file`. See §5. |
+| `flush.mode` | `batch` | `batch` or `on_response`. With `otlp_http`, `on_response` additionally requires `flush.blocking_timeout_ms`. See §6. |
 | `flush.timeout_ms` | `2000` | Batch interval / flush timeout. |
 | `flush.max_queue_size` | `2048` | Queue bound, in **spans** — not requests. |
+| `flush.blocking_timeout_ms` | — | Opt-in for request-billed scale-to-zero. Caps how long a request may block exporting its spans. 1–1000; rejected at startup outside that. |
 | `file.path` | `traces.jsonl` | For `exporter: otlp_file`. Relative to the working directory. The SDK treats it as a strftime-style pattern, so `%` sequences are expanded — avoid them unless you want rotation. |
 | `resource_attributes` | `{}` | e.g. `deployment.environment`. |
 | `payload.max_value_bytes` | `8192` | Per-value clamp at the payload tier. |
@@ -268,12 +269,55 @@ With CPU allocated only during request processing, the instance is throttled
 after the response is sent, so a background export thread may never be scheduled
 and spans are lost.
 
-**Allocate CPU always.** That is the only remedy that works with an OTLP/HTTP
-collector. `flush.mode: on_response` is *not* an alternative here: it is honoured
-only with `exporter: otlp_file`, and with `otlp_http` flAPI logs a warning and
-falls back to batch export. Flushing a network export on the request thread would
-couple your p99 to the collector's availability, which is why it is refused
-rather than supported.
+There are two remedies, and they trade money against latency.
+
+**Either allocate CPU always.** The export thread then runs normally and nothing
+below applies. It costs more, and it defeats the point of scale-to-zero billing.
+
+**Or block the request while its spans are exported:**
+
+```yaml
+tracing:
+  exporter: otlp_http
+  flush:
+    mode: on_response
+    blocking_timeout_ms: 300     # required; 1-1000
+```
+
+Without `blocking_timeout_ms` this combination keeps falling back to batch
+export, with a warning. There is deliberately no default: there is no safe
+universal answer to how much latency you will trade for telemetry, so you have
+to say.
+
+**What it costs.** Measured against a local collector, added to the request:
+
+| Collector | Budget | Added latency |
+|---|---|---|
+| Healthy | 300 ms | **~3 ms** (p50 and p99) |
+| Slow (150 ms) | 300 ms | +150 ms — only what it actually takes |
+| Hanging | 300 ms | +300 ms exactly |
+| Hanging | 100 ms | +100 ms exactly |
+
+The budget bounds the request precisely, and a merely-slow collector costs only
+its own latency rather than the whole budget. Measured from concurrency 1 to 40,
+the added cost **does not grow with concurrency** — the flush does not serialise
+across workers.
+
+The export is one round trip per request, not one per span: the processor is
+still a `BatchSpanProcessor` and the request force-flushes it once, so a
+request's whole span tree leaves together, sweeping out anything buffered by
+concurrent or background work at the same time.
+
+**The failure mode to understand.** Against a *hanging* collector every worker
+blocks for the full budget, so throughput degrades to roughly
+`workers / blocking_timeout_ms` — about 40 req/s at 8 workers and 300 ms. Watch
+`spans_flush_timeouts` in [§9](#9-checking-that-export-is-actually-working): a
+rising value means the collector is costing your callers latency *and* still
+losing spans, which is the worst of both and a reason to stop blocking.
+
+This is for request-billed scale-to-zero specifically. On a long-lived
+deployment, leave it off — you would be coupling your p99 to a third party's
+availability for no benefit, since the background export thread runs fine there.
 
 `SIGTERM` force-flushes on shutdown, with a fixed 2 s budget (not
 `flush.timeout_ms`).
@@ -341,15 +385,36 @@ curl -s -H "Authorization: Bearer $FLAPI_CONFIG_SERVICE_TOKEN" \
 
 ```json
 {
-  "tracing": { "enabled": true, "spans_exported": 10482, "spans_dropped": 0 },
+  "tracing": { "enabled": true, "spans_submitted": 10482, "spans_exported": 10482,
+               "spans_dropped": 0, "spans_flush_timeouts": 0 },
   "arrow":   { "total_requests": 12, "successful_requests": 12, "failed_requests": 0,
                "total_rows": 48210, "active_streams": 0 },
   "endpoints": { "count": 18 }
 }
 ```
 
-`spans_dropped` counts **failed export batches** — a collector that is
-unreachable, erroring, or timing out.
+`spans_submitted` counts spans handed to the processor. `spans_submitted -
+spans_exported` is what is **queued or lost to a full queue** — it does *not*
+reveal HTTP failures, because `spans_exported` derives from the same result the
+OTLP/HTTP exporter hardcodes to success (below).
+
+`spans_dropped` counts export batches the SDK reported as failed — which, with
+`otlp_http`, is fewer than you would expect. `OtlpHttpExporter::Export` computes
+the real result, logs the failure, then returns success anyway
+(`otlp_http_exporter.cc:193`, `:206`), so a collector answering 503 to every
+batch looks identical to a healthy one from **every** counter's point of view.
+We verified that: against a collector rejecting everything, the counters read
+`submitted: 38, exported: 38, dropped: 0` while zero spans arrived and the SDK
+logged `Export 18 trace span(s) error: 1`.
+
+**For `otlp_http`, the flAPI log is the only reliable signal of export failure.**
+Alert on `[OTLP TRACE HTTP Exporter] ERROR`. The counters will not tell you.
+
+:::caution The most common cause of "no spans arrive"
+`endpoint` must be the **full trace URL**. `http://localhost:4318` posts to `/`,
+which a real collector 404s — and because the exporter discards its own result,
+every counter still reads healthy. Use `http://localhost:4318/v1/traces`.
+:::
 
 > **A flat `spans_dropped` does not prove nothing was lost.** Spans discarded
 > because the batch queue was already full are dropped *before* export is

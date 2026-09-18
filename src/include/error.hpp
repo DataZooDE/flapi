@@ -44,6 +44,14 @@ struct Error {
         return Error{ErrorCategory::NotFound, msg, details, 404};
     }
 
+    // Transient backend contention - a single-writer backend (SQLite) held a
+    // lock longer than flAPI was willing to wait. Retryable, so 503 with
+    // Retry-After rather than 500: the request was not wrong, it arrived at a
+    // bad moment, and a client that retries will very likely succeed.
+    static Error Unavailable(const std::string& msg, const std::string& details = "") {
+        return Error{ErrorCategory::Database, msg, details, 503};
+    }
+
     static Error Internal(const std::string& msg, const std::string& details = "") {
         return Error{ErrorCategory::Internal, msg, details, 500};
     }

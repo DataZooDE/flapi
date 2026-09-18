@@ -22,6 +22,7 @@
 #include <opentelemetry/sdk/trace/tracer_provider_factory.h>
 #include <opentelemetry/trace/provider.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdlib>
 #include <utility>
@@ -36,14 +37,26 @@ namespace {
 
 std::atomic<std::uint64_t> g_spans_exported{0};
 std::atomic<std::uint64_t> g_spans_dropped{0};
+std::atomic<std::uint64_t> g_spans_submitted{0};
 
-// Counts what actually left the process.
+// Counts export batches by the result the exporter REPORTS.
 //
-// The previous version returned a hardcoded 0 for drops and reported spans
-// STARTED as spans exported, which meant /api/v1/_config/metrics showed rising
-// exports and zero drops against a collector that was refusing every connection -
-// fabricated values under a comment promising the opposite. NFR-4's whole point
-// is that silent data loss becomes visible.
+// Read the caveat before trusting spans_dropped with otlp_http.
+// OtlpHttpExporter::Export computes the real result, logs a failure, and then
+// returns kSuccess unconditionally on both its sync and async branches
+// (otlp_http_exporter.cc:193 and :206). So a collector answering 503 to every
+// batch is indistinguishable here from one accepting them: verified
+// empirically - collector received 0 spans, this counter said 38 exported, 0
+// dropped, while the SDK logged "Export 18 trace span(s) error: 1".
+//
+// No wrapper at this layer can fix that; the result is discarded above us.
+//
+// spans_submitted closes a DIFFERENT hole - queue-full drops - and it must not
+// be oversold. Both spans_exported and spans_dropped derive from the same
+// ExportResult that otlp_http hardcodes to success, so submitted minus exported
+// reveals queue drops and spans still in flight, NOT HTTP failures. Against a
+// refusing collector all three counters look healthy. For otlp_http the flAPI
+// log ("[OTLP TRACE HTTP Exporter] ERROR") is the only source of truth.
 class CountingSpanExporter final : public tsdk::SpanExporter {
 public:
     explicit CountingSpanExporter(std::unique_ptr<tsdk::SpanExporter> inner)
@@ -74,6 +87,45 @@ public:
 
 private:
     std::unique_ptr<tsdk::SpanExporter> inner_;
+};
+
+// Counts what was HANDED to the processor.
+//
+// BatchSpanProcessor::OnEnd drops silently when its queue is full - it logs a
+// warning and returns void (batch_span_processor.cc:92), so neither the
+// exporter nor a wrapper can observe the drop. spans_dropped therefore counts
+// only FAILED EXPORT BATCHES, and a flat value has never proved that nothing
+// was lost.
+//
+// Counting submissions closes that hole honestly rather than inventing a drop
+// number: submitted - exported - dropped is what is either still queued or
+// gone, and in steady state it is the loss. That is a figure an operator can
+// act on, and it does not pretend to a precision the SDK does not offer.
+class CountingSpanProcessor final : public tsdk::SpanProcessor {
+public:
+    explicit CountingSpanProcessor(std::unique_ptr<tsdk::SpanProcessor> inner)
+        : inner_(std::move(inner)) {}
+
+    std::unique_ptr<tsdk::Recordable> MakeRecordable() noexcept override {
+        return inner_->MakeRecordable();
+    }
+    void OnStart(tsdk::Recordable& span,
+                 const opentelemetry::trace::SpanContext& parent) noexcept override {
+        inner_->OnStart(span, parent);
+    }
+    void OnEnd(std::unique_ptr<tsdk::Recordable>&& span) noexcept override {
+        g_spans_submitted.fetch_add(1, std::memory_order_relaxed);
+        inner_->OnEnd(std::move(span));
+    }
+    bool ForceFlush(std::chrono::microseconds timeout) noexcept override {
+        return inner_->ForceFlush(timeout);
+    }
+    bool Shutdown(std::chrono::microseconds timeout) noexcept override {
+        return inner_->Shutdown(timeout);
+    }
+
+private:
+    std::unique_ptr<tsdk::SpanProcessor> inner_;
 };
 
 // OTel's own trace ids are opaque; flAPI builds a parent SpanContext from the
@@ -107,6 +159,9 @@ class OtelTracingBackend : public ITracingBackend {
 public:
     explicit OtelTracingBackend(const TracingConfig& config) {
         auto processor = makeProcessor(config);
+        if (processor) {
+            processor = std::make_unique<CountingSpanProcessor>(std::move(processor));
+        }
         if (!processor) {
             return;   // exporter: none - the facade stays inert
         }
@@ -204,7 +259,27 @@ private:
             if (config.protocol && *config.protocol == "http/json") {
                 options.content_type = otlp::HttpRequestContentType::kJson;
             }
-            options.timeout = std::chrono::milliseconds(config.timeout_ms);
+            // F2: the request budget bounds the CALLER's wait, not the export
+            // pipeline. With ENABLE_ASYNC_EXPORT undefined (this build) the
+            // single BatchSpanProcessor worker sits inside one synchronous HTTP
+            // call for options.timeout - 10s by default. A 300ms request budget
+            // would then return ~33 requests, each paying 300ms, while the
+            // pipeline stayed wedged and none of their spans left. Clamp it.
+            //
+            // Written as a comparison rather than std::min because <windows.h>
+            // defines min/max as MACROS, so `std::min(` expands to `std::(` and
+            // MSVC reports "illegal token on right side of '::'". The usual
+            // workaround is (std::min)(...), which is easy to lose in a later
+            // edit; a plain comparison cannot regress.
+            auto http_timeout = std::chrono::milliseconds(config.timeout_ms);
+            if (config.flush.blocking_timeout_ms) {
+                const auto budget =
+                    std::chrono::milliseconds(*config.flush.blocking_timeout_ms);
+                if (budget < http_timeout) {
+                    http_timeout = budget;
+                }
+            }
+            options.timeout = http_timeout;
             // http_headers is a MULTIMAP and the constructor already populated it
             // from OTEL_EXPORTER_OTLP_HEADERS. Inserting without erasing first
             // merges rather than overrides: an Authorization set both in the
@@ -235,11 +310,26 @@ private:
             if (config.exporter == "otlp_file") {
                 return tsdk::SimpleSpanProcessorFactory::Create(std::move(exporter));
             }
-            CROW_LOG_WARNING
-                << "tracing.flush.mode=on_response is only supported with "
-                   "exporter=otlp_file; falling back to batch export. Exporting "
-                   "synchronously over the network would put a collector round-trip "
-                   "on every request thread.";
+            if (config.flush.blocking_timeout_ms) {
+                // Opted in, with a stated latency budget. Note this still falls
+                // through to a BatchSpanProcessor rather than a Simple one: the
+                // middleware force-flushes it once per request, so a request's
+                // ~4 spans leave in ONE round trip. SimpleSpanProcessor would
+                // export per span, which over the network is four.
+                CROW_LOG_WARNING
+                    << "tracing.flush.mode=on_response with a network exporter: every "
+                       "request will block up to " << *config.flush.blocking_timeout_ms
+                    << "ms exporting its spans. Intended for request-billed "
+                       "scale-to-zero platforms; on a long-lived deployment this "
+                       "couples your latency to the collector's availability.";
+            } else {
+                CROW_LOG_WARNING
+                    << "tracing.flush.mode=on_response is only supported with "
+                       "exporter=otlp_file, or with an explicit "
+                       "tracing.flush.blocking_timeout_ms; falling back to batch "
+                       "export. Exporting synchronously over the network would put a "
+                       "collector round-trip on every request thread.";
+            }
         }
 
         tsdk::BatchSpanProcessorOptions batch;
@@ -304,6 +394,13 @@ void FlapiTracing::configure(const TracingConfig& config) {
     // Only now, so that a config asking for profiling while tracing is disabled
     // (or OTEL_SDK_DISABLED is set) never makes the query path pay for it.
     db_profiling_ = config.db_profiling;
+    shutdown_flush_ = std::chrono::milliseconds(config.flush.timeout_ms);
+    // Only a NETWORK exporter needs the middleware to flush per request; the
+    // file exporter already uses a SimpleSpanProcessor and has nothing buffered.
+    if (config.flush.mode == "on_response" && config.exporter != "otlp_file"
+        && config.flush.blocking_timeout_ms) {
+        blocking_flush_ = std::chrono::milliseconds(*config.flush.blocking_timeout_ms);
+    }
     if (db_profiling_ != DbProfiling::Off) {
         CROW_LOG_INFO << "tracing.db_profiling=" << dbProfilingName(db_profiling_)
                       << ": DuckDB execution profiling is enabled per connection, "
@@ -329,6 +426,24 @@ bool FlapiTracing::forceFlush(std::chrono::milliseconds timeout) {
     return active() ? backend_->forceFlush(timeout) : true;
 }
 
+namespace {
+// Process-wide: the middleware has no per-instance state to hang this on, and a
+// counter that resets per request would be useless.
+std::atomic<std::uint64_t> g_flush_timeouts{0};
+}  // namespace
+
+void FlapiTracing::noteFlushTimeout() {
+    g_flush_timeouts.fetch_add(1, std::memory_order_relaxed);
+}
+
+std::uint64_t FlapiTracing::spansSubmitted() const {
+    return g_spans_submitted.load(std::memory_order_relaxed);
+}
+
+std::uint64_t FlapiTracing::flushTimeouts() const {
+    return g_flush_timeouts.load(std::memory_order_relaxed);
+}
+
 void FlapiTracing::shutdown() {
     if (backend_) { backend_->shutdown(); }
     enabled_ = false;
@@ -350,7 +465,10 @@ TracingGuard::~TracingGuard() {
     // Deterministic, before static destruction reaches the provider. A
     // BatchSpanProcessor owns a thread; letting it race teardown is an
     // intermittent crash at exit.
-    Tracing().forceFlush(std::chrono::milliseconds(2000));
+    // The configured budget here too, not a hardcoded 2s: this drain covers
+    // spans produced after the handler ran, and leaving it fixed would deliver
+    // the configurable shutdown flush only half the time.
+    Tracing().forceFlush(Tracing().shutdownFlushBudget());
     Tracing().shutdown();
 }
 
