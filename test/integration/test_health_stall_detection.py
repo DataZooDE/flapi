@@ -111,42 +111,81 @@ class TestStallDetection:
         # The contract. A request outliving the budget takes the instance out of
         # rotation, so an orchestrator replaces it instead of routing more
         # traffic at something that cannot answer.
+        #
+        # Polled from a thread at 50ms rather than 200ms between blocking calls:
+        # the window is only as wide as the slow query outlives the budget, and
+        # a sampler that is slower than the window turns a real contract into a
+        # coin flip. Every sample is kept so a failure can say what readiness
+        # actually reported instead of only that it never said "stalled".
         with _Server(stall_timeout_s=1) as s:
             done = threading.Event()
+            elapsed = {}
+            samples = []
+            saw_stalled = None
 
             def slow():
+                started = time.time()
                 try:
-                    requests.get(f"{s.base_url}/slow", timeout=120)
+                    r = requests.get(f"{s.base_url}/slow", timeout=120)
+                    elapsed["code"] = r.status_code
+                    elapsed["body"] = r.text[:300]
+                except Exception as e:                      # noqa: BLE001
+                    elapsed["code"] = f"error: {e}"
                 finally:
+                    elapsed["s"] = time.time() - started
                     done.set()
 
-            worker = threading.Thread(target=slow, daemon=True)
-            worker.start()
-            try:
-                # Wait for readiness to notice, rather than assuming a timing.
-                deadline = time.time() + 30
-                saw_stalled = None
+            def poll():
+                nonlocal saw_stalled
+                deadline = time.time() + 60
                 while time.time() < deadline and not done.is_set():
-                    r = requests.get(f"{s.base_url}/health", timeout=10)
-                    if r.status_code == 503 and r.json().get("status") == "stalled":
-                        saw_stalled = r.json()
-                        break
-                    time.sleep(0.2)
+                    try:
+                        r = requests.get(f"{s.base_url}/health", timeout=10)
+                        body = r.json()
+                    except Exception as e:                  # noqa: BLE001
+                        samples.append(("error", str(e)))
+                        continue
+                    samples.append((r.status_code, body.get("status"),
+                                    body.get("requests")))
+                    if r.status_code == 503 and body.get("status") == "stalled":
+                        saw_stalled = body
+                        return
+                    time.sleep(0.05)
 
-                assert saw_stalled is not None, (
-                    "readiness never reported a stall while a request was "
-                    "running well past the budget"
-                )
-                assert saw_stalled["requests"]["in_flight"] >= 1
-                assert saw_stalled["requests"]["oldest_ms"] >= 1000
-                assert saw_stalled["stalled_after_s"] == 1
+            poller = threading.Thread(target=poll, daemon=True)
+            worker = threading.Thread(target=slow, daemon=True)
+            poller.start()
+            worker.start()
+            done.wait(timeout=120)
+            poller.join(timeout=15)
 
-                # Liveness must NOT fail: the process is fine, and killing it
-                # rather than draining it would turn a stall into an outage.
-                live = requests.get(f"{s.base_url}/health/live", timeout=10)
-                assert live.status_code == 200
-            finally:
-                done.wait(timeout=120)
+            took = elapsed.get("s")
+            # Separate the two ways this can fail. If the "slow" query was not
+            # slow, the fixture is wrong and there was no stall to detect -
+            # saying so is very different from saying readiness missed one.
+            assert took is not None and took > 2.0, (
+                f"the fixture's slow query returned in {took}s (status "
+                f"{elapsed.get('code')}, body {elapsed.get('body')!r}), so it "
+                f"never outlived the 1s budget - there was no stall to detect. "
+                f"Make it do more work, or fix whatever made it fail fast, "
+                f"rather than relaxing the assertion below."
+            )
+            assert saw_stalled is not None, (
+                f"readiness never reported a stall while a request ran for "
+                f"{took:.1f}s against a 1s budget (slow request returned "
+                f"{elapsed.get('code')}). Health said: "
+                f"{samples[:20]} ... {samples[-5:]} "
+                f"({len(samples)} samples)\n"
+                f"server log tail:\n{open(s.log_path).read()[-3000:]}"
+            )
+            assert saw_stalled["requests"]["in_flight"] >= 1
+            assert saw_stalled["requests"]["oldest_ms"] >= 1000
+            assert saw_stalled["stalled_after_s"] == 1
+
+            # Liveness must NOT fail: the process is fine, and killing it
+            # rather than draining it would turn a stall into an outage.
+            live = requests.get(f"{s.base_url}/health/live", timeout=10)
+            assert live.status_code == 200
 
     def test_readiness_recovers_once_the_request_finishes(self):
         # A latched health check is as useless as one that never fires.
