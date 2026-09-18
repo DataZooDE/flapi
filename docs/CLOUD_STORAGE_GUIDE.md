@@ -1,6 +1,11 @@
 # Cloud Storage Guide
 
-This guide explains how to use flAPI with cloud storage backends (S3, GCS, Azure, HTTPS) for configuration files and SQL templates.
+This is the **in-depth reference** for cloud storage: every provider, its
+authentication, and its failure modes.
+
+> If you just want to read data from a bucket, start with
+> [guides/cloud-storage.md](./guides/cloud-storage.md) — it is two pages and
+> links back here for the detail.
 
 ## Overview
 
@@ -370,7 +375,7 @@ template-source: https://other-server.com/templates/customers.sql
 
 ## Related Documentation
 
-- **[Reference Documentation Map](./REFERENCE_MAP.md)** - Navigation guide for all reference docs
+- **[Documentation index](./README.md)** - Start here; organised by what you are trying to do
 - **[Configuration Reference](./CONFIG_REFERENCE.md)** - Configuration file format (§ 2.11 for VFS configuration)
 - **[CLI Reference](./CLI_REFERENCE.md)** - Server command-line options including `--config`
-- **[Technical Design](./features/flapi-10-fs-abstraction.md)** - VFS abstraction implementation details
+- **[Technical Design](./archive/flapi-10-fs-abstraction.md)** - VFS abstraction implementation details *(historical design note, not maintained)*

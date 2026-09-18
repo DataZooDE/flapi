@@ -7,6 +7,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "config_service.hpp"
+#include "flapi_tracing.hpp"
 #include "json_utils.hpp"
 #include "path_utils.hpp"
 #include "database_manager.hpp"
@@ -544,6 +545,60 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             }
         });
     
+    // Metrics endpoint.
+    //
+    // This has been published in the OpenAPI document since
+    // open_api_doc_generator.cpp:563 with no route behind it - a documented
+    // endpoint that 404s. Implemented rather than deleted because the tracing
+    // drop/export counters need a surface anyway: NFR-4 requires that an
+    // unreachable collector be observable as dropped spans rather than as silent
+    // data loss.
+    //
+    // Bearer-gated like its siblings: it reports internal operational state.
+    CROW_ROUTE(app, "/api/v1/_config/metrics")
+        .methods("GET"_method)
+        ([this](const crow::request& req) {
+            if (!validateToken(req)) {
+                return crow::response(401, R"({"error":"Unauthorized"})");
+            }
+
+            crow::json::wvalue metrics;
+
+            // Tracing. Exported vs dropped is the signal that matters: a
+            // collector that is down must show up here rather than as a trace
+            // that quietly has holes in it.
+            metrics["tracing"]["enabled"] = Tracing().isEnabled();
+            metrics["tracing"]["spans_exported"] =
+                static_cast<std::int64_t>(Tracing().spansExported());
+            metrics["tracing"]["spans_dropped"] =
+                static_cast<std::int64_t>(Tracing().spansDropped());
+
+            // Arrow IPC serialization counters, which already existed but were
+            // only reachable through /mcp/health.
+            const auto& arrow = ArrowMetrics::instance();
+            metrics["arrow"]["total_requests"] =
+                static_cast<std::int64_t>(arrow.counters.totalRequests.load());
+            metrics["arrow"]["successful_requests"] =
+                static_cast<std::int64_t>(arrow.counters.successfulRequests.load());
+            metrics["arrow"]["failed_requests"] =
+                static_cast<std::int64_t>(arrow.counters.failedRequests.load());
+            metrics["arrow"]["total_rows"] =
+                static_cast<std::int64_t>(arrow.counters.totalRows.load());
+            metrics["arrow"]["active_streams"] =
+                static_cast<std::int64_t>(arrow.gauges.activeStreams.load());
+
+            // Endpoint inventory, pinned so a concurrent config change cannot
+            // race the read.
+            if (config_manager) {
+                metrics["endpoints"]["count"] =
+                    static_cast<std::int64_t>(config_manager->endpointsSnapshot()->size());
+            }
+
+            crow::response res(200, metrics.dump());
+            res.set_header("Content-Type", "application/json");
+            return res;
+        });
+
     // Health check endpoint (no authentication required)
     CROW_ROUTE(app, "/api/v1/_config/health")
         .methods("GET"_method)
@@ -561,7 +616,7 @@ void ConfigService::registerRoutes(FlapiApp& app) {
 
             // Endpoints count
             if (config_manager) {
-                health["endpoints"]["count"] = static_cast<int>(config_manager->getEndpoints().size());
+                health["endpoints"]["count"] = static_cast<int>(config_manager->getEndpoints()->size());
             }
 
             // Arrow IPC status
@@ -689,7 +744,7 @@ AuditLogHandler::AuditLogHandler(std::shared_ptr<ConfigManager> config_manager)
 
 crow::response AuditLogHandler::getCacheAuditLog(const std::string& path) {
     try {
-        const auto* endpoint = config_manager_->getEndpointForPath(path);
+        const auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -838,8 +893,8 @@ crow::response EndpointConfigHandler::createEndpoint(const crow::request& req) {
 
 // Helper method to find endpoint by slug (centralized slug logic)
 const EndpointConfig* findEndpointBySlug(std::shared_ptr<ConfigManager> config_manager, const std::string& slug) {
-    const auto& endpoints = config_manager->getEndpoints();
-    for (const auto& endpoint : endpoints) {
+    const auto endpoints = config_manager->getEndpoints();   // pinned snapshot
+    for (const auto& endpoint : *endpoints) {
         if (endpoint.getSlug() == slug) {
             return &endpoint;
         }
@@ -905,7 +960,7 @@ crow::response EndpointConfigHandler::deleteEndpointBySlug(const crow::request& 
 // Legacy path-based method (kept for backward compatibility)
 crow::response EndpointConfigHandler::getEndpointConfig(const crow::request& req, const std::string& path) {
     try {
-        const auto* endpoint = config_manager_->getEndpointForPath(path);
+        const auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -1019,7 +1074,7 @@ crow::response EndpointConfigHandler::reloadEndpointConfig(const crow::request& 
 
 crow::response EndpointConfigHandler::getEndpointParameters(const crow::request& req, const std::string& path) {
     try {
-        const auto* endpoint = config_manager_->getEndpointForPath(path);
+        const auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -1087,10 +1142,10 @@ crow::response EndpointConfigHandler::findEndpointsByTemplate(const crow::reques
         auto normalized_template = std::filesystem::path(template_path).lexically_normal();
         
         // Search through all endpoints
-        const auto& endpoints = config_manager_->getEndpoints();
+        const auto endpoints = config_manager_->getEndpoints();   // pinned snapshot
         size_t idx = 0;
         
-        for (const auto& endpoint : endpoints) {
+        for (const auto& endpoint : *endpoints) {
             // Normalize endpoint's template path
             auto endpoint_template = std::filesystem::path(endpoint.templateSource).lexically_normal();
             
@@ -1136,7 +1191,7 @@ crow::response EndpointConfigHandler::findEndpointsByTemplate(const crow::reques
 crow::response TemplateHandler::getEndpointTemplate(const crow::request& req, const std::string& path) {
     try {
         // Find the endpoint
-        auto* endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -1167,7 +1222,7 @@ crow::response TemplateHandler::updateEndpointTemplate(const crow::request& req,
         }
 
         // Find the endpoint
-        auto* endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -1203,7 +1258,7 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
         bool validate_only = url_params.get("validate_only") != nullptr;
 
         // Find the endpoint
-        auto* endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -1408,7 +1463,7 @@ crow::response TemplateHandler::testTemplate(const crow::request& req, const std
         }
 
         // Find the endpoint
-        auto* endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -1494,7 +1549,7 @@ crow::response TemplateHandler::testTemplateBySlug(const crow::request& req, con
 
 crow::response CacheConfigHandler::getCacheConfig(const crow::request& req, const std::string& path) {
     try {
-        auto* endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -1552,7 +1607,7 @@ crow::response CacheConfigHandler::updateCacheConfig(const crow::request& req, c
             return crow::response(400, "Invalid JSON");
         }
 
-        auto* endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -1610,7 +1665,7 @@ crow::response CacheConfigHandler::updateCacheConfig(const crow::request& req, c
 
 crow::response TemplateHandler::getCacheTemplate(const crow::request& req, const std::string& path) {
     try {
-        auto* endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -1642,7 +1697,7 @@ crow::response TemplateHandler::updateCacheTemplate(const crow::request& req, co
             return crow::response(400, "Invalid JSON: missing 'template' field");
         }
 
-        auto* endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -1670,7 +1725,7 @@ crow::response TemplateHandler::updateCacheTemplate(const crow::request& req, co
 crow::response CacheConfigHandler::refreshCache(const crow::request& req, const std::string& path) {
     try {
         // Find the endpoint
-        auto* endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -1703,7 +1758,7 @@ crow::response CacheConfigHandler::refreshCache(const crow::request& req, const 
 crow::response CacheConfigHandler::performGarbageCollection(const crow::request& req, const std::string& path) {
     try {
         // Find the endpoint
-        auto* endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }

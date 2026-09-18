@@ -838,6 +838,56 @@ Authorization: Bearer <token>
 
 ### 2.6 Server Administration
 
+#### GET /api/v1/_config/metrics
+
+Get runtime counters for span export, Arrow streaming and endpoint count.
+
+**Request:**
+```http
+GET /api/v1/_config/metrics HTTP/1.1
+Authorization: Bearer <token>
+```
+
+**Response (200):**
+```json
+{
+  "tracing": {
+    "enabled": true,
+    "spans_exported": 10482,
+    "spans_dropped": 0
+  },
+  "arrow": {
+    "total_requests": 12,
+    "successful_requests": 12,
+    "failed_requests": 0,
+    "total_rows": 48210,
+    "active_streams": 0
+  },
+  "endpoints": {
+    "count": 18
+  }
+}
+```
+
+**Response (401):**
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+All counters are cumulative since process start. `endpoints.count` is present only
+when a configuration is loaded.
+
+`spans_dropped` counts failed export batches. A rising value means the collector
+is slow or unreachable. Note its scope: spans discarded because the batch queue
+was already full are dropped before export is attempted and are **not** counted
+here.
+
+> **Implementation:** `src/config_service.cpp` | **Tests:** `test/integration/test_config_service_metrics.py`
+
+---
+
 #### GET /api/v1/_config/log-level
 
 Get the current log level.
@@ -886,7 +936,7 @@ Content-Type: application/json
 
 **CLI:** `flapii config log-level set debug`
 
-> **Implementation:** `src/config_service.cpp` | **Tests:** `test/integration/test_mcp_methods.py` (GET only), *PUT not tested - see [TEST_TODO.md](./TEST_TODO.md)*
+> **Implementation:** `src/config_service.cpp` | **Tests:** `test/integration/test_mcp_methods.py` (GET only), *PUT not tested*
 
 ---
 
@@ -943,7 +993,7 @@ GET /api/v1/doc.yaml HTTP/1.1
 
 **Note:** This endpoint does not require authentication.
 
-> **Implementation:** `src/config_service.cpp` | **Tests:** `test/cpp/config_service_filesystem_test.cpp`, *OpenAPI endpoint not tested - see [TEST_TODO.md](./TEST_TODO.md)*
+> **Implementation:** `src/config_service.cpp` | **Tests:** `test/cpp/config_service_filesystem_test.cpp`, *OpenAPI endpoint not tested*
 
 ---
 
@@ -1532,7 +1582,7 @@ Slugs identify endpoints in API paths. The format depends on endpoint type:
 
 ## Related Documentation
 
-- **[Reference Documentation Map](./REFERENCE_MAP.md)** - Navigation guide for all reference docs
+- **[Documentation index](./README.md)** - Start here; organised by what you are trying to do
 - **[Configuration Reference](./CONFIG_REFERENCE.md)** - Configuration file options and format
 - **[CLI Reference](./CLI_REFERENCE.md)** - Server executable command-line options
 - **[MCP Reference](./MCP_REFERENCE.md)** - Model Context Protocol specification

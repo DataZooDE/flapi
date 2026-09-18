@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "audit_logger.hpp"
+#include "request_context.hpp"
 
 namespace flapi {
 namespace test {
@@ -217,3 +218,129 @@ TEST_CASE("AuditLogger: null sink is honoured (no I/O)",
 
 } // namespace test
 } // namespace flapi
+
+// --- Issue 1: correlation between the audit log and the request context -----
+
+TEST_CASE("auditEventFrom carries the request context's identity", "[audit][request_context]") {
+    flapi::RequestContext rc;
+    flapi::RequestContext::mintRequestId(rc.request_id);
+    rc.setTraceId("4bf92f3577b34da6a3ce929d0e0e4736");
+    rc.setSpanId("00f067aa0ba902b7");
+    rc.principal = "alice";
+    rc.http_method = "GET";
+    rc.route_template = "/customers/{id}";
+    rc.row_count = 7;
+    rc.status_code = 200;
+    rc.t0 = std::chrono::steady_clock::now() - std::chrono::milliseconds(12);
+
+    const flapi::AuditEvent ev = flapi::auditEventFrom(rc);
+
+    REQUIRE(ev.request_id == std::string(rc.requestIdView()));
+    REQUIRE(ev.trace_id == "4bf92f3577b34da6a3ce929d0e0e4736");
+    REQUIRE(ev.span_id == "00f067aa0ba902b7");
+    REQUIRE(ev.principal == "alice");
+    REQUIRE(ev.method == "GET");
+    REQUIRE(ev.target == "/customers/{id}");
+    REQUIRE(ev.row_count == 7);
+    REQUIRE(ev.latency_ms >= 10);
+    REQUIRE(ev.status == "success");
+}
+
+TEST_CASE("auditEventFrom leaves trace ids empty when tracing is inactive", "[audit][request_context]") {
+    flapi::RequestContext rc;
+    flapi::RequestContext::mintRequestId(rc.request_id);
+    rc.status_code = 401;
+
+    const flapi::AuditEvent ev = flapi::auditEventFrom(rc);
+
+    REQUIRE(ev.trace_id.empty());
+    REQUIRE(ev.span_id.empty());
+    REQUIRE_FALSE(ev.request_id.empty());   // request id works with tracing off
+    REQUIRE(ev.status == "denied");
+}
+
+TEST_CASE("auditEventFrom maps status codes to audit status", "[audit][request_context]") {
+    auto statusFor = [](int code) {
+        flapi::RequestContext rc;
+        flapi::RequestContext::mintRequestId(rc.request_id);
+        rc.status_code = code;
+        return flapi::auditEventFrom(rc).status;
+    };
+    REQUIRE(statusFor(200) == "success");
+    REQUIRE(statusFor(201) == "success");
+    REQUIRE(statusFor(401) == "denied");
+    REQUIRE(statusFor(403) == "denied");
+    REQUIRE(statusFor(429) == "rate_limited");
+    REQUIRE(statusFor(404) == "error:404");
+    REQUIRE(statusFor(500) == "error:500");
+}
+
+TEST_CASE("a serialized audit line carries trace ids only when present", "[audit][request_context]") {
+    std::ostringstream out;
+    flapi::AuditConfig cfg;
+    cfg.enabled = true;
+    cfg.sink = "null";
+    flapi::AuditLogger logger(cfg);
+
+    flapi::AuditEvent with;
+    with.request_id = "req-0123456789abcdef";
+    with.trace_id = "4bf92f3577b34da6a3ce929d0e0e4736";
+    with.span_id = "00f067aa0ba902b7";
+    const std::string line_with = logger.serialiseEventForTest(with);
+    REQUIRE(line_with.find("\"trace_id\":\"4bf92f3577b34da6a3ce929d0e0e4736\"") != std::string::npos);
+
+    flapi::AuditEvent without;
+    without.request_id = "req-0123456789abcdef";
+    const std::string line_without = logger.serialiseEventForTest(without);
+    REQUIRE(line_without.find("trace_id") == std::string::npos);
+}
+
+TEST_CASE("AuditLogger: credential-shaped params are masked even when the "
+          "operator never listed them",
+          "[audit][security]") {
+    // docs/OBSERVABILITY.md §4 promises credential-shaped keys are redacted
+    // "regardless of your configuration". The audit log is written even with
+    // tracing compiled out, so that promise has to hold here, not only on the
+    // span path. Before this test, a declared `password` request field was
+    // written to audit.jsonl in cleartext.
+    flapi::AuditConfig cfg;
+    cfg.enabled = true;
+    cfg.sink = "null";
+    cfg.redact_keys = {};        // operator listed NOTHING
+
+    flapi::AuditLogger logger(cfg);
+
+    flapi::AuditEvent ev;
+    ev.request_id = "req-0";
+    ev.params = {
+        {"password", "hunter2"},
+        {"Token", "eyJhbGciOi"},
+        {"x-api-key", "sk-live-9911"},
+        {"customer_id", "42"},     // ordinary field: must survive
+    };
+
+    const std::string line = logger.serialiseEventForTest(ev);
+    INFO(line);
+    REQUIRE(line.find("hunter2") == std::string::npos);
+    REQUIRE(line.find("eyJhbGciOi") == std::string::npos);
+    REQUIRE(line.find("sk-live-9911") == std::string::npos);
+    REQUIRE(line.find("42") != std::string::npos);
+}
+
+TEST_CASE("AuditLogger: the operator redact list is case-insensitive",
+          "[audit][security]") {
+    flapi::AuditConfig cfg;
+    cfg.enabled = true;
+    cfg.sink = "null";
+    cfg.redact_keys = {"tax_id"};
+
+    flapi::AuditLogger logger(cfg);
+
+    flapi::AuditEvent ev;
+    ev.request_id = "req-0";
+    ev.params = {{"Tax_Id", "DE123456789"}};
+
+    const std::string line = logger.serialiseEventForTest(ev);
+    INFO(line);
+    REQUIRE(line.find("DE123456789") == std::string::npos);
+}

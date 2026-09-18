@@ -1,4 +1,5 @@
 #include "mcp_tool_handler.hpp"
+#include "request_context.hpp"
 #include <chrono>
 #include <sstream>
 #include <algorithm>
@@ -37,7 +38,20 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
         if (!audit_logger || !audit_logger->isEnabled()) {
             return;
         }
+        // One audit line per operation. An MCP tools/call arrives as an HTTP POST,
+        // and RequestContextMiddleware would otherwise log that too - reporting
+        // the same work twice, once named "POST /mcp/jsonrpc" and once named for
+        // the tool. This line is the richer of the two, so it wins and the HTTP
+        // one is suppressed. Same reasoning as the trace model's single-span
+        // contract for MCP.
         AuditEvent ev;
+        if (auto* rc = RequestContextScope::current()) {
+            rc->audit_suppressed = true;
+            // Carry the identity across so the two subsystems still agree.
+            ev.request_id = std::string(rc->requestIdView());
+            ev.trace_id = std::string(rc->traceIdView());
+            ev.span_id = std::string(rc->spanIdView());
+        }
         ev.method = "tools/call";
         ev.target = request.tool_name;
         ev.status = status;
@@ -88,6 +102,11 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
             if (!decision.allowed) {
                 CROW_LOG_WARNING << "MCP tool call denied for '" << request.tool_name
                                  << "': " << decision.reason;
+                // A denied call is exactly what an audit log exists to record.
+                // This used to return without auditing, and because the
+                // HTTP-level line is suppressed for MCP, a denial left NO audit
+                // record at all.
+                emit_audit("denied", -1);
                 return createErrorResult("Permission denied: " + decision.reason,
                                          MCPToolExecutionResult::FailureKind::PermissionDenied);
             }
@@ -114,6 +133,7 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
                 MCPToolExecutionResult result;
                 result.success = false;
                 result.failure_kind = MCPToolExecutionResult::FailureKind::RateLimited;
+                emit_audit("rate_limited", -1);
                 result.error_message = "Rate limit exceeded for tool '" + request.tool_name +
                                        "'. Retry after " +
                                        std::to_string(decision.retry_after_seconds) +
@@ -126,6 +146,7 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
         if (auto cache_manager = db_manager->getCacheManager()) {
             if (auto readiness = cache_manager->readinessBlock(config_manager, *endpoint_config)) {
                 auto body = CacheManager::readinessBlockJson(*readiness);
+                emit_audit("error:service_unavailable", -1);
                 return createErrorResult(body.dump(),
                                          MCPToolExecutionResult::FailureKind::ServiceUnavailable);
             }
@@ -167,6 +188,9 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
             std::unordered_map<std::string, std::string> metadata;
             metadata["tool_name"] = request.tool_name;
             metadata["dry_run"] = "true";
+            // A dry run is still a call that happened, by a principal, against a
+            // named tool; it belongs in the record.
+            emit_audit("dry_run", -1);
             metadata["execution_time_ms"] = "0";
 
             return createSuccessResult(payload, metadata);
@@ -256,10 +280,14 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
     }
 }
 
-const EndpointConfig* MCPToolHandler::getEndpointConfigByToolName(const std::string& tool_name) const {
-    const auto& endpoints = config_manager->getEndpoints();
+bool MCPToolHandler::isKnownTool(const std::string& tool_name) const {
+    return getEndpointConfigByToolName(tool_name) != nullptr;
+}
 
-    for (const auto& endpoint : endpoints) {
+const EndpointConfig* MCPToolHandler::getEndpointConfigByToolName(const std::string& tool_name) const {
+    const auto endpoints = config_manager->getEndpoints();   // pinned snapshot
+
+    for (const auto& endpoint : *endpoints) {
         if (endpoint.isMCPTool() && endpoint.mcp_tool->name == tool_name) {
             return &endpoint;
         }
@@ -312,10 +340,10 @@ bool MCPToolHandler::validateToolArguments(const std::string& tool_name, const c
 }
 
 std::vector<std::string> MCPToolHandler::getAvailableTools() const {
-    const auto& endpoints = config_manager->getEndpoints();
+    const auto endpoints = config_manager->getEndpoints();   // pinned snapshot
     std::vector<std::string> tool_names;
 
-    for (const auto& endpoint : endpoints) {
+    for (const auto& endpoint : *endpoints) {
         if (endpoint.isMCPTool()) {
             tool_names.push_back(endpoint.mcp_tool->name);
         }

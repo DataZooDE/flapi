@@ -347,7 +347,73 @@ Request arrives
   - Prevents injection in SQL
     ↓
 [Query Execution]
+    ↓
+[Layer 5: Telemetry Egress]
+  - Redact credential-shaped keys, then clamp
+  - Export route templates, never filled paths or query strings
+  - Enumerated error types, never exception messages
+  - Values only at the payload tier, only from declared fields
 ```
+
+### Layer 5: Telemetry egress
+
+The first four layers guard what reaches the database. This one guards what
+leaves the process — to a collector, to a trace file, or into `audit.jsonl`. It
+applies whether or not tracing is enabled, because the audit log is written
+either way.
+
+**Never exported, at any tier:**
+
+| Not exported | Why |
+|---|---|
+| The filled path and the query string | A query string on a data API is by definition a filter over customer data. Only the route *template* is exported. |
+| Header values, with one exception | `Authorization`, `Cookie` and everything else are never read into a span. The exception is `User-Agent`, exported as `user_agent.original` clamped to 256 bytes — caller-controlled, so untrusted text downstream, but credential-free and diagnostically useful (`src/request_context_middleware.cpp`). |
+| Exception messages | Error status is an enumerated `error.type`. A free-form message is the most reliable way to leak a row value into a trace. |
+| Unmatched paths | They collapse to a single `<unmatched>` bucket, so a scanner hitting a thousand URLs produces one label — a cardinality *and* a cost control. |
+| Caller-supplied MCP method and tool names | Both are whitelisted or resolved before they can become a span name. |
+
+**The two denylists match differently, deliberately.** The built-in credential
+stems are matched as **substrings** of the normalised key, so an operator cannot
+forget a variant (`x-api-key`, `auth_token`, `user_password` are all caught). The
+operator's `audit.redact` entries are matched on the **whole** normalised key,
+because those names were chosen deliberately and silently redacting every field
+containing them would surprise. A short exact-match exception set keeps LLM token
+counters (`max_tokens`, `token_count`) readable, since this is an MCP tool
+surface.
+
+**Redaction** (`src/redaction.cpp`) applies two denylists. The credential stems
+are unconditional — they do not depend on the operator's list being complete —
+and the operator's `audit.redact` list is reused rather than duplicated, because
+two lists diverge and the forgotten half is the one that leaks.
+
+Matching is a **substring test over a normalised key** (lower-cased, `-` and `_`
+removed), not equality. Equality was the original design and it let `Token`,
+`x-api-key` and `user_password` straight through. Stems are chosen long enough
+not to swallow ordinary field names — `authorization` rather than `auth`, so a
+field named `author` survives.
+
+**Redact first, clamp second.** Clamping first can truncate mid-value and leave a
+partial secret behind; a partial secret is still a secret. Truncation walks back
+over UTF-8 continuation bytes so it never splits a character.
+
+**Request ids are always server-minted.** An inbound `X-Request-Id` is never
+honoured, so a caller cannot choose their own id, collide with another caller's,
+or inject formatting into a log line.
+
+**The `_meta` body peek runs before auth.** It is in the first middleware, so it
+is deliberately bounded at 64 KiB rather than the full body limit — an
+unauthenticated caller reaches it.
+
+**Denials are never audit-suppressed.** MCP tool calls suppress the HTTP-level
+audit line to avoid double-counting, but 401, 403 and 429 are exempt. Silence on
+exactly the events a reviewer is looking for is the worst available default.
+
+At the `payload` tier flAPI becomes a processor exporting personal data to a
+third destination, with DPA/AVV implications. It is off by default and logs a
+warning at startup when enabled.
+
+See [observability.md](./observability.md) for the mechanism and
+[../../OBSERVABILITY.md](../../OBSERVABILITY.md) for configuration.
 
 ## Rate Limiting
 
@@ -462,8 +528,14 @@ for the broader rationale and
 | `src/request_validator.cpp` | Input validation |
 | `src/rate_limit_middleware.cpp` | Rate limiting |
 | `src/pack.cpp` (`IsSecretExcluded`) | Default secret deny list for `flapi pack` |
+| `src/redaction.cpp` | Credential-key stems, shared by audit and spans |
+| `src/trace_capture_policy.cpp` | Capture tiers, redact-then-clamp |
+| `src/request_context_middleware.cpp` | Telemetry egress enforcement |
+| `src/audit_logger.cpp` | Audit records and their redaction |
 
 ## Related Documentation
 
 - [DESIGN_DECISIONS.md](../DESIGN_DECISIONS.md#8-defense-in-depth-security) - Security philosophy
 - [../../CONFIG_REFERENCE.md](../../CONFIG_REFERENCE.md) - Auth configuration options
+- [observability.md](./observability.md) - How telemetry egress is enforced
+- [../../OBSERVABILITY.md](../../OBSERVABILITY.md) - Capture tiers and redaction config

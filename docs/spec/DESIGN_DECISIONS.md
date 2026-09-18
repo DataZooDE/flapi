@@ -200,17 +200,35 @@ cache:
 - Authentication, rate limiting, CORS are orthogonal to business logic
 - Middleware pattern allows clean composition
 - Each middleware can short-circuit the chain
+- `before_handle` runs in declaration order and `after_handle` in reverse, and
+  **`after_handle` still runs on a short-circuit** — Crow unwinds through every
+  outer middleware. This is load-bearing twice over: it is how CORS headers reach
+  a 401 response, and how the audit line and server span are still emitted for a
+  request rejected before the handler.
 
 **Implementation:**
 ```cpp
-// src/api_server.cpp - middleware registration
-crow::App<crow::CORSHandler, RateLimitMiddleware, AuthMiddleware> app;
+// src/include/flapi_app.hpp - the ONE spelling of the app type
+using FlapiApp = crow::App<RequestContextMiddleware,
+                           crow::CORSHandler,
+                           FlapiCorsMiddleware,
+                           RateLimitMiddleware,
+                           AuthMiddleware>;
 ```
 
+**Spell the alias, never `crow::App<...>`.** Two literal spellings produce two
+*distinct, valid* `crow::App` instantiations — a second middleware tuple,
+default-constructed and never configured. It presents as "MCP spans are missing",
+which is a long way from the cause. `scripts/check_crow_app_alias.sh` fails the
+build on a bare `crow::App<`.
+
 **Middleware order:**
-1. `CORSHandler` - CORS headers (runs first)
-2. `RateLimitMiddleware` - Request rate limiting
-3. `AuthMiddleware` - JWT/Basic/OIDC authentication
+1. `RequestContextMiddleware` — request identity, SERVER span, audit line. Leftmost
+   so that requests rejected later are still observed.
+2. `crow::CORSHandler` — CORS headers
+3. `FlapiCorsMiddleware` — flAPI's origin handling
+4. `RateLimitMiddleware` — request rate limiting
+5. `AuthMiddleware` — JWT/Basic/OIDC authentication
 
 **Tradeoffs:**
 - (+) Separation of concerns
@@ -218,8 +236,12 @@ crow::App<crow::CORSHandler, RateLimitMiddleware, AuthMiddleware> app;
 - (+) Easy to add/remove middleware
 - (-) Order matters and can cause bugs
 - (-) Debugging middleware interactions is harder
+- (-) The unwind-on-short-circuit contract is easy to get backwards. Getting it
+  backwards once produced a duplicate audit line on every 401, past a test that
+  asserted "at least one" line and was therefore blind to it.
 
-**Source files:** `src/auth_middleware.cpp`, `src/rate_limit_middleware.cpp`
+**Source files:** `src/include/flapi_app.hpp`, `src/request_context_middleware.cpp`,
+`src/cors_middleware.cpp`, `src/auth_middleware.cpp`, `src/rate_limit_middleware.cpp`
 
 ---
 
@@ -416,6 +438,199 @@ four supported platforms (#49 / `.github/workflows/build.yaml`).
 
 ---
 
+## 10. OpenTelemetry Observability
+
+**Decision:** Emit W3C-correlated OpenTelemetry traces for every request, sharing
+one request identity with the audit log and the application log, off by default.
+
+**Rationale:**
+- flAPI advertises MCP revision `2026-07-28`, which via SEP-414 reserves
+  `traceparent`/`tracestate`/`baggage` in `params._meta`. flAPI parsed `_meta` and
+  *discarded* the trace context conforming clients already sent. That is a
+  conformance defect, not a feature request.
+- As an ordinary HTTP service flAPI was invisible: no server spans, no RED
+  metrics, no way to answer "which request was slow".
+- Four uncorrelated mechanisms (PostHog telemetry, audit JSONL, Crow logs, Arrow
+  metrics) and three separate clocks timed overlapping work with no shared id.
+
+**Tradeoffs:**
+- (+) One span tree, joinable to audit and logs by a shared id
+- (+) flAPI stops being a trace terminator for the services it calls
+- (-) +4.9 MiB binary, and protobuf/abseil in the link
+- (-) A second consent model to explain alongside product telemetry
+
+**Source files:** `src/flapi_tracing.cpp`, `src/trace_scope.cpp`,
+`src/request_context_middleware.cpp`, `src/trace_context.cpp`,
+`src/trace_capture_policy.cpp`, `src/redaction.cpp`
+
+**Tests:** `test/cpp/test_trace_*.cpp`, `test/integration/test_tracing_*.py`
+
+---
+
+### 10a. Use the OpenTelemetry C++ SDK, not a hand-rolled OTLP client
+
+**Decision:** Depend on `opentelemetry-cpp` rather than writing OTLP over the
+already-linked libcurl.
+
+**Rationale:**
+- The wire format is the easy part. `BatchSpanProcessor`, retry and backoff,
+  samplers, W3C propagators and the Recordable model are what a hand-rolled
+  pipeline gets wrong, quietly, under load.
+- A custom `SpanExporter` layered on the SDK would *not* have removed abseil: the
+  vcpkg port depends on it unconditionally. Only dropping the SDK removes it, and
+  that trade was not worth the correctness risk.
+
+**Tradeoffs:**
+- (+) Sampling, batching and retry are somebody else's tested code
+- (-) protobuf + abseil enter a link that also contains static DuckDB
+- (-) abseil's exported `cxx_std_20` requirement drove decision 10c
+
+---
+
+### 10b. Pin opentelemetry-cpp 1.24.0 through a vcpkg overlay port
+
+**Decision:** Carry `ports/opentelemetry-cpp/` in-repo rather than bumping the
+vcpkg baseline.
+
+**Rationale:**
+- The pinned baseline offers 1.17.0, which **does not compile**: 136 of its
+  headers use fixed-width integer types without including `<cstdint>`. Verified
+  failing on GCC 13 in the CI image, not only on a newer local toolchain.
+- 1.24.0 also provides the `otlp-file` feature, which is what makes the
+  air-gapped topology a shipped feature rather than a flAPI-specific exporter we
+  would have had to write and maintain.
+- An overlay port changes one dependency. Moving the baseline changes all of them,
+  in a release that was not asking for it.
+
+**Implementation:**
+```json
+// vcpkg-configuration.json
+{ "overlay-ports": ["./ports"] }
+```
+
+**Tradeoffs:**
+- (+) One dependency moves; the rest of the baseline is untouched
+- (+) `otlp-file` without a bespoke exporter
+- (-) An in-repo port to maintain, with a pinned SHA512 and a patch
+
+---
+
+### 10c. C++20 project-wide, with DuckDB pinned to C++17
+
+**Decision:** Build flAPI at C++20 and DuckDB's subdirectory at C++17, saving and
+restoring `CMAKE_CXX_STANDARD` around it.
+
+**Rationale:**
+- abseil sets `ABSL_PROPAGATE_CXX_STD`, exporting
+  `INTERFACE_COMPILE_FEATURES "cxx_std_20"`. That raised **only** `flapi-lib`,
+  while tests and `main` stayed at C++17 — and consuming C++20-built abseil from
+  C++17 is an ABI split. It presented as a **segfault** in `auth_middleware_test`
+  reading `endpoint->auth.type`, not as a compile error. One standard everywhere
+  was the fix; `scripts/check_cxx_standard_uniform.sh` guards it.
+- But C++20 removed `std::uncaught_exception()`, which DuckDB calls at
+  `src/common/exception.cpp:55` behind `#if __cplusplus >= 201703L`. MSVC reports
+  `__cplusplus` as `199711L` without `/Zc:__cplusplus`, so the guard passes and
+  the call does not compile. Windows CI broke on exactly this.
+
+**Implementation:**
+```cmake
+# CMakeLists.txt - DuckDB is built at C++17, NOT flAPI's C++20
+set(FLAPI_CXX_STANDARD ${CMAKE_CXX_STANDARD})
+set(CMAKE_CXX_STANDARD 17)
+add_subdirectory(duckdb EXCLUDE_FROM_ALL)
+set(CMAKE_CXX_STANDARD ${FLAPI_CXX_STANDARD})
+```
+
+**Why-not the alternatives:**
+- *Pass `/Zc:__cplusplus` to DuckDB on MSVC* — keeps one standard everywhere,
+  which is genuinely tidier. Rejected for now only because it changes DuckDB's
+  own compilation on one platform; worth revisiting.
+- *Stay at C++17 and suppress abseil's propagation* — puts back the exact ABI
+  split that segfaulted.
+
+**Tradeoffs:**
+- (+) Windows builds; abseil's requirement is satisfied uniformly for flAPI
+- (-) Two standards in one binary. flAPI does reach DuckDB's **C++** API — it
+  includes `duckdb.hpp` and subclasses `duckdb::FileSystem` for `embed://` — so
+  this boundary carries real vtables, not just C calls. It is believed safe
+  because standard-library layouts are stable across `-std` levels and DuckDB's
+  headers contain no `__cplusplus`-gated members, but it is a boundary that has
+  already produced one segfault in this epic. The `embed://` tests that cross it
+  run on all platforms deliberately.
+
+---
+
+### 10d. No OpenTelemetry type in any header
+
+**Decision:** `SpanScope` is an opaque, pointer-sized handle; `opentelemetry-cpp`
+links `PRIVATE`.
+
+**Rationale:**
+- `otlp-http` drags in protobuf and abseil. Letting those into a header that
+  `config_manager.hpp` includes recompiles ~80 translation units plus the test
+  binary, and grows the `-Wl,--no-undefined` link surface.
+- `PRIVATE` is the sole exception to that CMake block's `PUBLIC` convention, and
+  is what makes the quarantine real rather than a convention.
+
+**Implementation:**
+```cpp
+// src/include/trace_scope.hpp
+class SpanScope {
+    struct Impl; Impl* impl_ = nullptr;   // sizeof == sizeof(void*)
+};
+```
+
+**Tradeoffs:**
+- (+) One TU rebuilds when the OTel version changes, not eighty
+- (+) `FLAPI_WITH_TRACING=OFF` becomes a real build, not a wish
+- (-) An extra indirection, and a hand-written twin to keep in step
+- (-) `setAttr` needs an explicit `const char*` overload; without it every string
+  literal binds to the `bool` overload and exports as `true`
+
+---
+
+### 10e. Copy-on-write endpoint table
+
+**Decision:** Hold endpoints as `shared_ptr<const vector<EndpointConfig>>`, swapped
+atomically on reload; readers pin a snapshot through `EndpointRef`.
+
+**Rationale:**
+- This fixed a **real use-after-free**. `getEndpointForPathAndMethod` returned a
+  raw pointer into a `std::vector` that `refreshConfig` and the config-service
+  routes cleared and re-`push_back`-ed with no lock against in-flight requests.
+- Tracing would have widened that window from inside one handler to across
+  `before_handle → handler → after_handle`, so it had to be fixed first, not
+  alongside.
+- It is also the precondition that makes `RequestContext`'s `string_view` fields
+  safe.
+
+**Tradeoffs:**
+- (+) Readers never observe a mutating table; reload needs no reader lock
+- (+) A reload costs one vector copy, on a path that is not hot
+- (-) `EndpointRef` is `[[nodiscard]]` and **must be bound to a named variable**.
+  Used as a temporary, the snapshot releases at the end of the full expression
+  and the pointer dangles — the very bug it exists to prevent.
+
+---
+
+### 10f. The `tracing:` block is boot-only
+
+**Decision:** Tracing configuration is read once at startup and never re-read.
+
+**Rationale:**
+- The provider owns a processor thread and an exporter; swapping them under live
+  traffic is a source of races for no real operator benefit.
+- `getAuditLogger()` already ignored reloads, so boot-only matches the neighbouring
+  behaviour instead of inventing a second rule.
+- `ConfigManager::refreshConfig()` throws `Not implemented` today in any case.
+
+**Tradeoffs:**
+- (+) No lifecycle races on the provider, policy or middleware snapshots
+- (-) Changing an exporter endpoint needs a restart, and the docs must say so
+  plainly or operators will assume otherwise
+
+---
+
 ## Summary
 
 These design decisions prioritize:
@@ -425,5 +640,6 @@ These design decisions prioritize:
 4. **Maintainability** - Clear separation of concerns
 5. **Performance** - Caching and efficient query execution
 6. **Deployability** - One artifact ships everything (#9 self-packaging)
+7. **Observability** - One request identity across traces, audit and logs (#10)
 
 For implementation details, see the [component documentation](./components/).

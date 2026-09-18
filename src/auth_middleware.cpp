@@ -16,6 +16,20 @@
 #include "duckdb/main/secret/secret_manager.hpp"
 
 #include "auth_middleware.hpp"
+#include "request_context_middleware.hpp"
+
+namespace {
+// RequestContext::auth_kind is a const char* into STATIC storage, because it is
+// read in after_handle - long after the EndpointRef pinning the endpoint's
+// strings has gone out of scope here. Mapping to literals keeps it valid and
+// keeps the value a bounded enumeration rather than free-form config text.
+const char* staticAuthKind(const std::string& configured) {
+    if (configured == "basic")  { return "basic"; }
+    if (configured == "bearer") { return "bearer"; }
+    if (configured == "oidc")   { return "oidc"; }
+    return "none";
+}
+}  // namespace
 #include "password_hasher.hpp"
 #include "database_manager.hpp"
 #include "flapi_telemetry.hpp"
@@ -109,7 +123,7 @@ void AuthMiddleware::initialize(std::shared_ptr<ConfigManager> config_manager) {
 }
 
 void AuthMiddleware::initializeAwsSecretsManager() {
-    for (const auto& endpoint : config_manager->getEndpoints()) {
+    for (const auto& endpoint : *config_manager->getEndpoints()) {
         if (!endpoint.auth.from_aws_secretmanager || !endpoint.auth.enabled) {
             continue;
         }
@@ -144,7 +158,7 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
     // Skip if response already completed (e.g., by rate limit middleware)
     if (res.is_completed()) return;
 
-    const auto* endpoint = config_manager->getEndpointForPathAndMethod(
+    const auto endpoint = config_manager->getEndpointForPathAndMethod(
         req.url,
         crow::method_name(req.method)
     );
@@ -162,6 +176,15 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
         CROW_LOG_DEBUG << "No Authorization header found";
         res.code = 401;
         res.set_header("WWW-Authenticate", "Basic realm=\"flAPI\"");
+        // Record the outcome for the audit line. Completion itself is NOT done
+        // here: Crow runs every middleware's after_handle during the
+        // short-circuit unwind (crow/middleware.h:151-155), so
+        // RequestContextMiddleware::after_handle still runs for this 401.
+        // Completing here as well emitted the line twice.
+        if (auto* rc = RequestContextScope::current()) {
+            rc->auth_kind = "basic";
+            rc->principal = "anonymous";
+        }
         res.end();
         flapi::GlobalTelemetry().authEnforced(auth_kind, /*allow=*/false);
         return;
@@ -181,9 +204,18 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
     if (!ctx.authenticated) {
         CROW_LOG_DEBUG << "Authentication failed";
         res.code = 401;
+        // As above: record only. after_handle still runs for this response.
+        if (auto* rc = RequestContextScope::current()) {
+            rc->auth_kind = staticAuthKind(endpoint->auth.type);
+            rc->principal = ctx.username.empty() ? "anonymous" : ctx.username;
+        }
         res.end();
     } else {
         CROW_LOG_DEBUG << "Authentication successful for user: " << ctx.username;
+        if (auto* rc = RequestContextScope::current()) {
+            rc->auth_kind = staticAuthKind(endpoint->auth.type);
+            rc->principal = ctx.username;
+        }
     }
     flapi::GlobalTelemetry().authEnforced(auth_kind, ctx.authenticated);
 }

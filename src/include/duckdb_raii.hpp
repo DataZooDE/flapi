@@ -157,4 +157,45 @@ private:
     bool has_result_;
 };
 
+
+/**
+ * RAII wrapper for a duckdb_value.
+ *
+ * duckdb_profiling_info_get_value returns a value that MUST be released with
+ * duckdb_destroy_value. Profiling reads several metrics per query, on the hot
+ * path, so a hand-managed release at each call site is a leak waiting for the
+ * first early return.
+ */
+class DuckDBValue {
+public:
+    DuckDBValue() = default;
+    explicit DuckDBValue(duckdb_value v) : value_(v) {}
+    ~DuckDBValue() { reset(); }
+
+    DuckDBValue(const DuckDBValue&) = delete;
+    DuckDBValue& operator=(const DuckDBValue&) = delete;
+
+    DuckDBValue(DuckDBValue&& other) noexcept : value_(other.value_) { other.value_ = nullptr; }
+    DuckDBValue& operator=(DuckDBValue&& other) noexcept {
+        if (this != &other) {
+            reset();
+            value_ = other.value_;
+            other.value_ = nullptr;
+        }
+        return *this;
+    }
+
+    explicit operator bool() const { return value_ != nullptr; }
+    duckdb_value get() const { return value_; }
+
+private:
+    void reset() {
+        if (value_ != nullptr) {
+            duckdb_destroy_value(&value_);
+            value_ = nullptr;
+        }
+    }
+    duckdb_value value_ = nullptr;
+};
+
 } // namespace flapi

@@ -340,6 +340,17 @@ sequenceDiagram
     end
 ```
 
+## Readiness during warmup
+
+There is **no per-request cache hit/miss check**. The cache is a materialised
+DuckLake table that the endpoint's template queries directly; a cached endpoint
+runs the same SQL path as any other.
+
+What does happen per request is a readiness check. While a cache table is still
+warming, `CacheManager::readinessBlock` short-circuits
+`RequestHandler::handleRequest` with a 503 and a `Retry-After` header, rather
+than serving an empty table as though it were an empty result.
+
 ## Source Files
 
 | File | Purpose |

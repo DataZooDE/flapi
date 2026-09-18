@@ -1,6 +1,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "api_server.hpp"
+#include "request_context.hpp"
 #include "auth_middleware.hpp"
 #include "database_manager.hpp"
 #include "flapi_telemetry.hpp"
@@ -77,6 +78,7 @@ APIServer::~APIServer() {
 void APIServer::createApp() 
 {
     // Configure middlewares
+    app.get_middleware<RequestContextMiddleware>().setConfigManager(configManager);
     app.get_middleware<RateLimitMiddleware>().setConfig(configManager);
     app.get_middleware<AuthMiddleware>().initialize(configManager);
 }
@@ -219,7 +221,41 @@ void APIServer::handleDynamicRequest(const crow::request& req, crow::response& r
     std::string path = req.url;
     // Match endpoint by both path and HTTP method
     std::string method = crow::method_name(req.method);
-    const auto& endpoint = configManager->getEndpointForPathAndMethod(path, method);
+    const auto endpoint = configManager->getEndpointForPathAndMethod(path, method);
+
+    // The middleware deliberately does not resolve routes (that would be a third
+    // O(N) scan per request, and would tax /health, which resolves nothing
+    // today). The handler already knows the template, so it writes it back.
+    if (auto* rc = RequestContextScope::current(); rc != nullptr && endpoint != nullptr) {
+        // Copy, not a view: `endpoint` is pinned only for this function, while
+        // route_template is read later in after_handle.
+        rc->route_template_storage = endpoint->urlPath;
+        rc->route_template = rc->route_template_storage;
+
+        // Per-endpoint capture override, so the middleware can resolve the
+        // effective tier. A global `capture: off` still wins over it.
+        if (endpoint->mcp_tool) {
+            rc->endpoint_capture = endpoint->mcp_tool->response.tracing_capture;
+        }
+
+        // Declared request fields only - never the raw query string. A field the
+        // endpoint declares is part of its contract; an arbitrary query parameter
+        // is not, and exporting one would leak whatever a caller appended.
+        // Values are still redacted and clamped downstream, and are emitted ONLY
+        // at the payload tier.
+        for (const auto& field : endpoint->request_fields) {
+            // Query fields only. A field declared as `field-in: body` or
+            // `header` is not in the query string, and reading it from there
+            // would attribute an unrelated caller-supplied value to its name.
+            if (!field.fieldIn.empty() && field.fieldIn != "query") {
+                continue;
+            }
+            const auto value = req.url_params.get(field.fieldName);
+            if (value != nullptr) {
+                rc->audit_params.emplace_back(field.fieldName, value);
+            }
+        }
+    }
 
     // Emit one rest_endpoint_served with the ROUTE TEMPLATE (never the filled
     // path), status class, duration, and whether the endpoint is cache-backed.

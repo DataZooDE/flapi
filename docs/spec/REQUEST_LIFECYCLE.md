@@ -10,7 +10,8 @@ This document describes the end-to-end flow of requests through flAPI for both R
 sequenceDiagram
     participant Client
     participant Crow as APIServer (Crow)
-    participant CORS as CORSHandler
+    participant RCM as RequestContextMiddleware
+    participant CORS as CORSHandler + FlapiCors
     participant RL as RateLimitMiddleware
     participant Auth as AuthMiddleware
     participant RH as RequestHandler
@@ -23,31 +24,39 @@ sequenceDiagram
     participant DuckDB
 
     Client->>Crow: HTTP GET /customers?id=123
-    Crow->>CORS: before_handle()
+    Crow->>RCM: before_handle()
+    RCM-->>RCM: mint X-Request-Id, start the clock,<br/>parse traceparent, start SERVER span
+    RCM->>CORS: before_handle()
     CORS->>RL: before_handle()
     RL-->>RL: Check rate limit
     alt Rate limit exceeded
-        RL-->>Client: 429 Too Many Requests
+        RL-->>RCM: 429, short-circuit
+        Note over RCM: after_handle STILL runs on the unwind:<br/>audit line, span close, headers
+        RCM-->>Client: 429 Too Many Requests
     end
     RL->>Auth: before_handle()
     Auth-->>Auth: Validate JWT/Basic/OIDC
+    Auth-->>RCM: record auth_kind / principal
     alt Auth failed
-        Auth-->>Client: 401 Unauthorized
+        Auth-->>RCM: 401, short-circuit
+        RCM-->>Client: 401 Unauthorized
     end
-    Auth->>RH: handle_request()
+    Auth->>Crow: handleDynamicRequest()
 
-    RH->>CM: getEndpointForPathAndMethod("/customers", "GET")
-    CM-->>RH: EndpointConfig
+    Crow->>CM: getEndpointForPathAndMethod("/customers", "GET")
+    CM-->>Crow: EndpointRef (pinned COW snapshot)
+    Crow-->>RCM: route_template, capture tier, declared params
+    Crow->>RH: handleRequest()
+
+    RH->>Cache: readinessBlock(endpoint)
+    alt Cache still warming
+        Cache-->>Client: 503 + Retry-After
+    end
 
     RH->>RH: Extract params from query/path/body/header
     RH->>RV: validateParams(params, endpoint.request_fields)
     alt Validation failed
         RV-->>Client: 400 Bad Request
-    end
-
-    RH->>Cache: isCacheEnabled(endpoint) && getCachedResult()
-    alt Cache hit
-        Cache-->>Client: 200 OK (cached)
     end
 
     RH->>STP: processTemplate(endpoint, params)
@@ -62,8 +71,17 @@ sequenceDiagram
 
     RH->>Cache: updateCache(endpoint, result)
     RH->>RH: Format JSON response
-    RH-->>Client: 200 OK (JSON)
+    RH-->>RCM: response
+    RCM-->>RCM: after_handle: status, row count,<br/>audit line, close span,<br/>X-Request-Id + X-Trace-Id
+    RCM-->>Client: 200 OK (JSON)
 ```
+
+> **The unwind is the point.** `after_handle` runs in reverse declaration order
+> **and it runs on a short-circuit too** — Crow unwinds through every outer
+> middleware. That is why a 401 or 429 still produces an audit line, a closed
+> span and an `X-Request-Id`, even though it never reached the handler. Getting
+> this backwards once produced a duplicate audit line on every 401.
+> See `crow/middleware.h` for the authority.
 
 ### REST Request Processing Steps
 
@@ -81,20 +99,47 @@ CROW_ROUTE(app, "/api/<path>")
 
 #### 2. Middleware Processing
 
+The chain is declared once, in `src/include/flapi_app.hpp`. Spelling
+`crow::App<...>` anywhere else creates a second, unconfigured middleware tuple;
+CI rejects it.
+
+**RequestContextMiddleware** (`src/request_context_middleware.cpp`) — leftmost:
+- Mints `X-Request-Id`. **Always server-minted**; an inbound header is never
+  honoured, so a caller cannot choose their own id or collide with another's.
+- Starts the single `steady_clock` reading that times the whole request.
+- Parses `traceparent` from the HTTP header, and for `POST /mcp/jsonrpc` peeks
+  the body (bounded at 64 KiB, since this runs *before* auth) for SEP-414
+  `params._meta`. `_meta` wins on disagreement.
+- Starts the HTTP SERVER span, on **every** route — including ones rejected
+  later. Instrumenting the handler instead would miss 401, 403, 429, preflights
+  and 404s entirely.
+- In `after_handle`: records status and row count, writes the audit line, closes
+  the span, sets `X-Request-Id` and (when traced) `X-Trace-Id`.
+
+Everything except the span survives `FLAPI_WITH_TRACING=OFF`: the request id, log
+correlation and REST audit coverage are not tracing features.
+
 **CORS Handler** (built-in Crow middleware):
 - Adds CORS headers for cross-origin requests
 - Handles preflight OPTIONS requests
+
+**FlapiCorsMiddleware** (`src/cors_middleware.cpp`):
+- flAPI's own origin selection, layered on Crow's handler
 
 **Rate Limit Middleware** (`src/rate_limit_middleware.cpp`):
 - Tracks request counts per client IP
 - Returns 429 if rate limit exceeded
 - Configurable via `rate_limit` in `flapi.yaml`
+- A 429 is audited and traced like any other outcome, via the unwind above
 
 **Auth Middleware** (`src/auth_middleware.cpp`):
 - Extracts credentials from `Authorization` header
 - Validates JWT tokens, Basic auth, or OIDC tokens
 - Sets `auth_context` for downstream handlers
-- Returns 401 if authentication fails
+- Records `auth_kind` and `principal` on the ambient `RequestContext`
+- Returns 401 if authentication fails — and deliberately does **not** complete
+  the request itself. The unwind reaches `RequestContextMiddleware`, which writes
+  the single audit line. Completing it here emitted two.
 
 #### 3. Parameter Extraction (request_handler.cpp)
 
@@ -141,12 +186,19 @@ Validation failure returns 400 with details:
 }
 ```
 
-#### 5. Cache Check (cache_manager.cpp)
+#### 5. Cache readiness (cache_manager.cpp)
 
-If caching is enabled for the endpoint:
-1. Check if cached result exists and is valid (within TTL)
-2. Return cached result if available
-3. Continue to query execution if cache miss
+**There is no per-request cache hit/miss check.** The "cache" is a materialised
+DuckLake table that the endpoint's template queries directly, refreshed on a
+schedule by `HeartbeatWorker`. A cached endpoint runs the same SQL path as any
+other; it simply reads a table that is already populated. Earlier revisions of
+this document described a per-request hit/miss branch that never existed.
+
+What *does* happen per request is a **readiness check**: if the cache table for
+this endpoint is still warming, `RequestHandler::handleRequest` short-circuits
+with a 503 and a `Retry-After` header rather than serving an empty table.
+
+See [components/caching.md](./components/caching.md) for the refresh lifecycle.
 
 #### 6. Template Processing (sql_template_processor.cpp)
 
@@ -175,6 +227,11 @@ WHERE 1=1
 3. Convert result to QueryResult struct
 4. Return connection to pool
 
+Template rendering emits a `flapi.render_template` INTERNAL span, parented by the
+ambient active-span stack with no signature changes. A DuckDB CLIENT span is
+emitted on the **unprepared** path only; endpoints with typed request fields run
+through `executeWithBindings` → `executePrepared`, which is not yet instrumented.
+
 #### 8. Response Serialization
 
 Results are serialized to JSON and returned:
@@ -189,6 +246,10 @@ Results are serialized to JSON and returned:
   }
 }
 ```
+
+Every response also carries `X-Request-Id`, and `X-Trace-Id` when a span was
+produced. `X-Trace-Id` is the **caller's** trace id when they supplied a valid
+`traceparent`, so both sides join on one value.
 
 ---
 
@@ -210,6 +271,7 @@ sequenceDiagram
     participant DuckDB
 
     Client->>MRH: POST /mcp (JSON-RPC)
+    Note over MRH: The Crow middleware chain runs FIRST.<br/>Trace context from params._meta is already<br/>resolved before this handler is reached.
     Note over Client,MRH: {"jsonrpc":"2.0","method":"tools/call","params":{...},"id":1}
 
     MRH->>MRH: parseMCPRequest()
@@ -265,6 +327,9 @@ sequenceDiagram
 #### 1. JSON-RPC Parsing (mcp_route_handlers.cpp)
 
 ```cpp
+// Note: MCPRequest also carries meta_trace_context, populated from params._meta
+// per SEP-414 (unprefixed traceparent / tracestate / baggage), parsed even when
+// tracing is disabled so correlation ids still reach the audit and app logs.
 std::optional<MCPRequest> parseMCPRequest(const crow::request& req) {
     auto json = crow::json::load(req.body);
     MCPRequest request;
@@ -284,6 +349,17 @@ std::optional<MCPRequest> parseMCPRequest(const crow::request& req) {
 
 #### 3. Method Dispatch
 
+The method name is passed through `knownMcpMethodOrUnknown()` before it is used
+as a span name or metric dimension. A caller-supplied method would otherwise mint
+unbounded span names and place attacker-controlled JSON into the export. The tool
+name in `tools/call` is gated the same way: it is recorded only once it resolves
+against the configured endpoints, and unknown names collapse to
+`<unknown_tool>`.
+
+flAPI also enforces that the `MCP-Protocol-Version` header matches
+`_meta.protocolVersion` when both are present.
+
+
 Request is routed to appropriate handler based on `method`:
 
 ```cpp
@@ -300,6 +376,19 @@ MCPResponse dispatchMCPRequest(const MCPRequest& request) {
 ```
 
 #### 4. Tool Execution (mcp_tool_handler.cpp)
+
+**One MCP call is one span and one audit line.** The span is named
+`tools/call <tool>` and carries both the `http.*` and the `mcp.*`/`gen_ai.*`
+attribute sets, rather than a generic `POST /mcp/jsonrpc` span plus a child. The
+tool handler sets `audit_suppressed` so the HTTP middleware does not also write a
+line and report the same work twice under two names.
+
+Denials are the exception: 401, 403 and 429 are **never** suppressed. Silence on
+exactly the events a reviewer is looking for is the worst possible default.
+
+This contract assumes strictly one JSON-RPC call per HTTP request. Batching or
+SSE would break it, and both are currently rejected.
+
 
 For `tools/call`:
 1. Look up endpoint by MCP tool name
@@ -419,6 +508,14 @@ cache:
 | Template | `src/sql_template_processor.cpp` | `src/sql_template_processor.cpp` |
 | Execution | `src/query_executor.cpp` | `src/query_executor.cpp` |
 | Cache | `src/cache_manager.cpp` | `src/cache_manager.cpp` |
+| Request identity | `src/request_context_middleware.cpp`, `src/request_context.cpp` | same |
+| Trace context | `src/trace_context.cpp` | `src/trace_context.cpp` + `src/mcp_route_handlers.cpp` |
+| Spans | `src/trace_scope.cpp`, `src/flapi_tracing.cpp` | same |
+| Audit | `src/audit_logger.cpp` | `src/audit_logger.cpp` + `src/mcp_tool_handler.cpp` |
+
+`Config lookup` returns a `ConfigManager::EndpointRef` — a pinned copy-on-write
+snapshot. It must be bound to a **named variable**; used as a temporary the
+snapshot releases at the end of the full expression and the pointer dangles.
 
 ---
 
@@ -433,7 +530,12 @@ cache:
 | 403 | Authorization denied (insufficient roles) |
 | 404 | Endpoint not found |
 | 429 | Rate limit exceeded |
+| 503 | Cache still warming (`Retry-After` set) |
 | 500 | Query execution error, server error |
+
+Whatever the outcome, the span records an **enumerated** `error.type` — never a
+free-form exception message, which is the most reliable way to leak customer data
+into a trace. The same applies to the audit line's `status` field.
 
 ### JSON-RPC Error Codes (MCP)
 
@@ -455,3 +557,5 @@ cache:
 - [components/config-system.md](./components/config-system.md) - Configuration loading
 - [components/query-execution.md](./components/query-execution.md) - SQL execution details
 - [components/security.md](./components/security.md) - Auth and validation
+- [components/observability.md](./components/observability.md) - Request identity, spans, capture tiers
+- [components/caching.md](./components/caching.md) - Cache refresh and readiness

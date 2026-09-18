@@ -1,4 +1,8 @@
 #include "mcp_route_handlers.hpp"
+#include "request_context.hpp"
+#include "trace_context.hpp"
+
+#include <unordered_set>
 #include "json_utils.hpp"
 #include "arrow_metrics.hpp"
 #include "mcp_authorization_policy.hpp"
@@ -356,7 +360,31 @@ MCPRouteHandlers::MCPRouteHandlers(std::shared_ptr<ConfigManager> config_manager
     CROW_LOG_INFO << "Transport type: Streamable HTTP, URL ready to paste into MCP inspector tool";
 }
 
-void MCPRouteHandlers::registerRoutes(crow::App<crow::CORSHandler, FlapiCorsMiddleware, RateLimitMiddleware, AuthMiddleware>& app, int port) {
+namespace {
+
+// A closed set of MCP method names, for anything that becomes a span name or a
+// metric dimension. Everything outside it collapses to one bucket.
+const char* knownMcpMethodOrUnknown(const std::string& method) {
+    static const std::unordered_set<std::string> kKnown{
+        "initialize", "initialized", "ping", "shutdown",
+        "server/discover",
+        "tools/list", "tools/call",
+        "resources/list", "resources/read", "resources/templates/list",
+        "resources/subscribe", "resources/unsubscribe",
+        "prompts/list", "prompts/get",
+        "logging/setLevel",
+        "completion/complete",
+        "tasks/get", "tasks/list", "tasks/cancel", "tasks/result",
+        "notifications/initialized", "notifications/cancelled",
+        "notifications/progress", "notifications/roots/list_changed",
+        "sampling/createMessage", "roots/list", "elicitation/create",
+    };
+    return kKnown.count(method) > 0 ? method.c_str() : "<unknown>";
+}
+
+}  // namespace
+
+void MCPRouteHandlers::registerRoutes(flapi::FlapiApp& app, int port) {
     port_ = port; // Update port if provided
 
     CROW_LOG_INFO << "Registering MCP routes with application...";
@@ -369,11 +397,44 @@ void MCPRouteHandlers::registerRoutes(crow::App<crow::CORSHandler, FlapiCorsMidd
             try {
                 CROW_LOG_DEBUG << "MCP JSON-RPC route handler called";
 
+                // MCP audits at the TOOL level (MCPToolHandler::executeToolImpl):
+                // one JSON-RPC call per HTTP POST, and a line naming the tool is
+                // far more useful than a "POST /mcp/jsonrpc" line. Suppressing the
+                // HTTP-level line here also keeps protocol chatter (initialize,
+                // tools/list) out of the audit log, which is the behaviour MCP has
+                // always had.
+                //
+                // Suppression NEVER applies to a denial. RequestContextMiddleware
+                // overrides it for 401/403/429, because a request rejected before
+                // the tool handler runs would otherwise produce no audit record at
+                // all - precisely the event the log exists to capture.
+                if (auto* rc = RequestContextScope::current()) {
+                    rc->audit_suppressed = true;
+                }
+
                 // Extract session ID from request (if present)
                 auto session_id = extractSessionIdFromRequest(req);
 
                 // Parse and validate the request EARLY to determine if it's initialize
                 auto mcp_request = parseMCPRequest(req);
+
+                // The middleware already resolved trace context (including the
+                // SEP-414 _meta precedence, which it must do before the span is
+                // created). Here we only record what the span should be NAMED,
+                // which is knowable solely after the body is parsed.
+                if (mcp_request) {
+                    if (auto* rc = RequestContextScope::current()) {
+                        // Whitelisted, NOT taken verbatim. parseMCPRequest falls
+                        // back to method_value.dump() for a non-string method
+                        // (:806), so `{"method": {...}}` would otherwise put
+                        // attacker-controlled JSON straight into a span NAME and
+                        // into mcp.method.name - unbounded cardinality and a
+                        // content-injection vector in one. Span names and metric
+                        // dimensions must come from a closed set.
+                        rc->mcp_method = knownMcpMethodOrUnknown(mcp_request->method);
+                    }
+                }
+
                 if (!mcp_request) {
                     CROW_LOG_ERROR << "Failed to parse MCP request";
                     return createJsonRpcErrorResponse("", -32700, "Parse error: Invalid JSON", session_id);
@@ -809,6 +870,41 @@ MCPRequest MCPRouteHandlers::extractRequestFields(const crow::json::wvalue& json
                 mcp_req.meta_protocol_version = meta[k::META_PROTOCOL_VERSION].s();
             }
             mcp_req.meta_has_client_capabilities = meta.has(k::META_CLIENT_CAPABILITIES);
+
+            // SEP-414 (Final): traceparent / tracestate / baggage live in _meta
+            // UNPREFIXED - a documented exception to MCP's reverse-DNS convention,
+            // made so implementations do not invent
+            // io.modelcontextprotocol.traceparent and break correlation with
+            // every other tracing system. Do NOT move these into mcp_constants.hpp
+            // alongside the namespaced keys; see the comment in trace_context.hpp.
+            //
+            // flAPI advertised revision 2026-07-28 while discarding this, so every
+            // conforming client's trace context was dropped on the floor and every
+            // flAPI call was a hole in its caller's trace.
+            if (meta.has(sep414::kTraceparent)
+                && meta[sep414::kTraceparent].t() == crow::json::type::String) {
+                // Bounded before copying, for the same reason as traceparent
+                // below. The parser clamps again; this stops the allocation.
+                const auto boundedMeta = [&](const char* key, std::size_t limit) {
+                    if (!meta.has(key) || meta[key].t() != crow::json::type::String) {
+                        return std::string{};
+                    }
+                    const auto value = meta[key].s();
+                    return value.size() <= limit ? std::string(value) : std::string{};
+                };
+                const std::string tracestate = boundedMeta(sep414::kTracestate, kMaxTracestateBytes * 2);
+                const std::string baggage = boundedMeta(sep414::kBaggage, kMaxBaggageBytes * 2);
+                // Length-check BEFORE materialising: crow's r_string -> std::string
+                // conversion copies, so a hostile 10 MB _meta.traceparent would
+                // allocate 10 MB per request before the parser ever rejected it.
+                // A valid traceparent is 55 bytes; the parser's own upper bound is
+                // 256 for forward-compatible versions.
+                const auto raw = meta[sep414::kTraceparent].s();
+                if (raw.size() <= 256) {
+                    mcp_req.meta_trace_context =
+                        parseTraceparent(std::string(raw), tracestate, baggage);
+                }
+            }
             if (meta.has(k::META_LOG_LEVEL)
                 && meta[k::META_LOG_LEVEL].t() == crow::json::type::String) {
                 mcp_req.meta_log_level = meta[k::META_LOG_LEVEL].s();
@@ -964,10 +1060,10 @@ void MCPRouteHandlers::discoverMCPEntitiesImpl() {
     tool_definitions_.clear();
     resource_definitions_.clear();
 
-    const auto& endpoints = config_manager_->getEndpoints();
-    CROW_LOG_INFO << "Found " << endpoints.size() << " total endpoints in config manager";
+    const auto endpoints = config_manager_->getEndpoints();   // pinned snapshot
+    CROW_LOG_INFO << "Found " << endpoints->size() << " total endpoints in config manager";
 
-    for (const auto& endpoint : endpoints) {
+    for (const auto& endpoint : *endpoints) {
         if (endpoint.isMCPTool()) {
             CROW_LOG_DEBUG << "Adding MCP tool: " << (endpoint.mcp_tool ? endpoint.mcp_tool->name : "null");
             tool_definitions_.push_back(endpointToMCPToolDefinition(endpoint));
@@ -1440,6 +1536,18 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
             if (tool_handler_) {
                 MCPToolCallRequest tool_request;
                 tool_request.tool_name = tool_name;
+                // Record the name ONLY once it has been resolved against the
+                // configured endpoints. Until then it is caller-controlled, and
+                // it is appended to the span name and exported as
+                // gen_ai.tool.name at the DEFAULT capture tier - so an
+                // unvalidated name is both leaked content and an unbounded
+                // metric dimension. Unknown names collapse to one bucket, the
+                // same treatment knownMcpMethodOrUnknown() gives `method`.
+                if (auto* rc = RequestContextScope::current()) {
+                    rc->mcp_tool = tool_handler_->isKnownTool(tool_name)
+                                       ? tool_name
+                                       : std::string("<unknown_tool>");
+                }
                 tool_request.arguments = crow::json::wvalue(arguments);
 
                 // Plumb authenticated caller's identity into the tool request:
@@ -1470,7 +1578,7 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                 // tasks capability. A client that cannot poll never sees a task —
                 // it falls through to the synchronous path below.
                 const EndpointConfig* ep = nullptr;
-                for (const auto& e : config_manager_->getEndpoints()) {
+                for (const auto& e : *config_manager_->getEndpoints()) {
                     if (e.isMCPTool() && e.mcp_tool->name == tool_name) {
                         ep = &e;
                         break;
@@ -1685,7 +1793,7 @@ MCPResponse MCPRouteHandlers::handleResourcesTemplatesListRequest(const MCPReque
     try {
         // Collect resources that declare a uri-template.
         std::vector<crow::json::wvalue> templates;
-        for (const auto& endpoint : config_manager_->getEndpoints()) {
+        for (const auto& endpoint : *config_manager_->getEndpoints()) {
             if (endpoint.isMCPResource() && !endpoint.mcp_resource->uri_template.empty()) {
                 crow::json::wvalue t;
                 t["uriTemplate"] = endpoint.mcp_resource->uri_template;
@@ -1839,11 +1947,11 @@ std::optional<EndpointConfig> MCPRouteHandlers::findResourceByURI(
         return std::nullopt;
     }
 
-    const auto& endpoints = config_manager_->getEndpoints();
+    const auto endpoints = config_manager_->getEndpoints();   // pinned snapshot
 
     // 1) Exact static match: flapi://<name>.
     std::string resource_name = uri.substr(8);
-    for (const auto& endpoint : endpoints) {
+    for (const auto& endpoint : *endpoints) {
         if (endpoint.isMCPResource() && endpoint.mcp_resource->uri_template.empty()
             && endpoint.mcp_resource->name == resource_name) {
             return endpoint;
@@ -1851,7 +1959,7 @@ std::optional<EndpointConfig> MCPRouteHandlers::findResourceByURI(
     }
 
     // 2) Templated match: bind {var} path segments into params.
-    for (const auto& endpoint : endpoints) {
+    for (const auto& endpoint : *endpoints) {
         if (endpoint.isMCPResource() && !endpoint.mcp_resource->uri_template.empty()) {
             std::map<std::string, std::string> bound;
             if (matchUriTemplate(endpoint.mcp_resource->uri_template, uri, bound)) {
@@ -1944,8 +2052,8 @@ MCPResponse MCPRouteHandlers::handlePromptsListRequest(const MCPRequest& request
     try {
         // Collect all prompt definitions first so pagination has a stable count.
         std::vector<crow::json::wvalue> prompt_defs;
-        const auto& endpoints = config_manager_->getEndpoints();
-        for (const auto& endpoint : endpoints) {
+        const auto endpoints = config_manager_->getEndpoints();   // pinned snapshot
+        for (const auto& endpoint : *endpoints) {
             if (endpoint.isMCPPrompt()) {
                 prompt_defs.push_back(endpointToMCPPromptDefinition(endpoint));
             }
@@ -2027,8 +2135,8 @@ MCPResponse MCPRouteHandlers::handlePromptsGetRequest(const MCPRequest& request,
 }
 
 std::optional<EndpointConfig> MCPRouteHandlers::findPromptByName(const std::string& name) const {
-    const auto& endpoints = config_manager_->getEndpoints();
-    for (const auto& endpoint : endpoints) {
+    const auto endpoints = config_manager_->getEndpoints();   // pinned snapshot
+    for (const auto& endpoint : *endpoints) {
         if (endpoint.isMCPPrompt() && endpoint.mcp_prompt->name == name) {
             return endpoint;
         }
@@ -2236,7 +2344,7 @@ MCPResponse MCPRouteHandlers::handleCompletionCompleteRequest(const MCPRequest& 
         // Find the tool/prompt by reference name
         std::optional<EndpointConfig> endpoint;
         auto endpoints = config_manager_->getEndpoints();
-        for (const auto& ep : endpoints) {
+        for (const auto& ep : *endpoints) {
             if ((ep.isMCPTool() && ep.mcp_tool && ep.mcp_tool->name == ref_str) ||
                 (ep.isMCPPrompt() && ep.mcp_prompt && ep.mcp_prompt->name == ref_str)) {
                 endpoint = ep;

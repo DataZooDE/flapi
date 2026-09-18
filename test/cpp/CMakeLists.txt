@@ -72,6 +72,18 @@ add_executable(flapi_tests
     test_vfs_gcs.cpp
     test_vfs_azure.cpp
     test_flapi_telemetry.cpp
+    alloc_counter.cpp
+    test_alloc_budget.cpp
+    test_request_context.cpp
+    test_background_span_contract.cpp
+    test_trace_context.cpp
+    test_trace_scope.cpp
+    test_trace_capture_policy.cpp
+    test_redaction.cpp
+    test_http_client_tracing.cpp
+    test_flapi_log_handler.cpp
+    test_endpoint_snapshot.cpp
+    test_route_translator_perf.cpp
 )
 
 target_include_directories(flapi_tests PRIVATE 

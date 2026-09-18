@@ -592,8 +592,7 @@ def flapi_mcp_client(flapi_server, flapi_base_url):
 # to verify that the examples actually work.
 
 
-@pytest.fixture(scope="session")
-def examples_server():
+def _examples_server_impl():
     """Start flapi server with examples configuration.
 
     Reuses the same infrastructure as flapi_server but points to examples/flapi-test.yaml.
@@ -739,6 +738,37 @@ def examples_server():
             print(f"Warning: Failed to clean up temp directory {temp_dir}: {e}")
 
 
+
+@pytest.fixture(scope="session")
+def examples_server():
+    """Session-wide examples server (the default; shared by most modules)."""
+    gen = _examples_server_impl()
+    server = next(gen)
+    try:
+        yield server
+    finally:
+        for _ in gen:
+            pass
+
+
+@pytest.fixture(scope="module")
+def isolated_examples_server():
+    """A private examples server for a single module.
+
+    Same setup as `examples_server`, but module-scoped so a module that MUTATES
+    example data cannot poison the rest of the session. test_load_testing.py
+    needs this: it inserts ~100 products concurrently, which otherwise breaks the
+    northwind CRUD and write-operation tavern tests that assert on table state.
+    """
+    gen = _examples_server_impl()
+    server = next(gen)
+    try:
+        yield server
+    finally:
+        for _ in gen:
+            pass
+
+
 @pytest.fixture
 def examples_url(examples_server):
     """Provide base URL for examples server."""
@@ -776,3 +806,9 @@ def wait_for_examples(examples_server):
             time.sleep(1)
 
     raise Exception(f"Examples server failed to start on port {port}") 
+
+
+@pytest.fixture(scope="module")
+def isolated_examples_url(isolated_examples_server):
+    """Base URL of the module-private examples server."""
+    return f"http://localhost:{isolated_examples_server.port}"

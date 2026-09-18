@@ -3,6 +3,8 @@
 #include <crow.h>
 #include <chrono>
 #include <filesystem>
+#include <memory>
+#include <mutex>
 #include <iostream>
 #include <optional>
 #include <regex>
@@ -15,6 +17,8 @@
 #include <yaml-cpp/yaml.h>
 
 #include "audit_logger.hpp"
+#include "trace_capture_policy.hpp"
+#include "tracing_config.hpp"
 #include "route_translator.hpp"
 #include "extended_yaml_parser.hpp"
 #include "path_utils.hpp"
@@ -207,6 +211,10 @@ struct EndpointConfig {
         struct ResponseShape {
             std::optional<std::size_t> max_rows;
             std::vector<std::string> redact_columns;
+            // Per-endpoint tracing capture override (mcp-tool.tracing.capture).
+            // Optional so "unset" is distinguishable from "set to the global
+            // default"; a global `off` still wins, whatever this says.
+            std::optional<CaptureTier> tracing_capture;
             bool sample = false;
         } response;
 
@@ -588,10 +596,90 @@ public:
     bool isHttpsEnforced() const;
     bool isAuthEnabled() const;
     std::optional<OIDCConfig> getGlobalOIDCConfig() const;
-    const EndpointConfig* getEndpointForPath(const std::string& path) const;
-    const EndpointConfig* getEndpointForPathAndMethod(const std::string& path, const std::string& httpMethod) const;
-    const std::vector<EndpointConfig>& getEndpoints() const;
+    // A found endpoint plus the snapshot that keeps it alive.
+    //
+    // getEndpointForPath* used to hand out a raw pointer into a vector that
+    // addEndpoint / removeEndpointByPath mutate on other threads, so the pointer
+    // could dangle at any moment. Returning the snapshot alongside the pointer
+    // makes the lifetime automatic: hold the EndpointRef for as long as you use
+    // the endpoint.
+    //
+    // Bind with `auto ep = ...`. Note that `const auto* ep = ...` does not
+    // compile - there is no implicit pointer conversion - so the real hazard is
+    // calling .get() on a temporary and letting the pointer outlive the pin.
+    // That overload is deleted below, which makes it a compile error too.
+    class [[nodiscard]] EndpointRef {
+    public:
+        EndpointRef() = default;
+        EndpointRef(std::shared_ptr<const std::vector<EndpointConfig>> snapshot,
+                    const EndpointConfig* endpoint)
+            : snapshot_(std::move(snapshot)), endpoint_(endpoint) {}
+
+        const EndpointConfig* get() const & { return endpoint_; }
+        // Deleted on rvalues: `cm.getEndpointForPath(p).get()` would return a
+        // pointer into a snapshot released at the end of the full expression -
+        // exactly the use-after-free the snapshot exists to prevent. Bind the ref
+        // to a named variable first.
+        const EndpointConfig* get() const && = delete;
+        const EndpointConfig* operator->() const { return endpoint_; }
+        const EndpointConfig& operator*() const { return *endpoint_; }
+        explicit operator bool() const { return endpoint_ != nullptr; }
+
+        friend bool operator==(const EndpointRef& r, std::nullptr_t) { return r.endpoint_ == nullptr; }
+        friend bool operator!=(const EndpointRef& r, std::nullptr_t) { return r.endpoint_ != nullptr; }
+        friend bool operator==(std::nullptr_t, const EndpointRef& r) { return r.endpoint_ == nullptr; }
+        friend bool operator!=(std::nullptr_t, const EndpointRef& r) { return r.endpoint_ != nullptr; }
+
+    private:
+        std::shared_ptr<const std::vector<EndpointConfig>> snapshot_;
+        const EndpointConfig* endpoint_ = nullptr;
+    };
+
+    EndpointRef getEndpointForPath(const std::string& path) const;
+    EndpointRef getEndpointForPathAndMethod(const std::string& path, const std::string& httpMethod) const;
+    // Returns a PINNED snapshot, not a reference.
+    //
+    // This used to return `const std::vector<EndpointConfig>&` into the live
+    // snapshot and release the lock on the way out. Under copy-on-write that is
+    // strictly worse than the raw-vector bug it replaced: a concurrent swap can
+    // drop the last reference and DESTROY the vector the caller is iterating,
+    // rather than merely reallocating its buffer. Returning the shared_ptr makes
+    // the caller an owner for as long as it holds it.
+    std::shared_ptr<const std::vector<EndpointConfig>> getEndpoints() const;
+
+    // --- Endpoint snapshots (copy-on-write) -------------------------------
+    //
+    // The endpoint table is mutated at runtime by addEndpoint /
+    // removeEndpointByPath, reachable from the config service and the MCP config
+    // tools on request threads. Any raw pointer into it - which is what
+    // getEndpointForPath* returns - dangles the moment a push_back reallocates.
+    //
+    // Pin a snapshot for as long as you intend to use pointers derived from it:
+    //
+    //     auto snap = cm.endpointsSnapshot();
+    //     const EndpointConfig* ep = ConfigManager::findEndpoint(*snap, path, method);
+    //     // `ep` stays valid while `snap` is alive, whatever other threads do.
+    //
+    // Mutations copy the vector, modify the copy, and swap the pointer, so a
+    // snapshot already handed out is never written to.
+    std::shared_ptr<const std::vector<EndpointConfig>> endpointsSnapshot() const;
+    static const EndpointConfig* findEndpoint(const std::vector<EndpointConfig>& endpoints,
+                                              const std::string& path);
+    static const EndpointConfig* findEndpoint(const std::vector<EndpointConfig>& endpoints,
+                                              const std::string& path,
+                                              const std::string& httpMethod);
     const TemplateConfig& getTemplateConfig() const;
+
+    // Log verbosity and shape. Precedence is CLI > environment > config > default,
+    // resolved in main.cpp - an operator who passed --log-level meant it.
+    const TracingConfig& getTracingConfig() const { return tracing_config; }
+
+    // Built once from the tracing config and the EXISTING audit.redact (stored as AuditConfig::redact_keys), so
+    // an operator configures redaction in one place rather than two lists that
+    // silently diverge.
+    const CapturePolicy& getCapturePolicy() const;
+    const std::string& getLogLevel() const { return log_level; }
+    const std::string& getLogFormat() const { return log_format; }
     std::string getBasePath() const;
     std::string getDuckDBPath() const;
     ExtendedYamlParser& getYamlParser() { return yaml_parser; }
@@ -609,7 +697,7 @@ public:
     // Process-wide audit sink. Initialised lazily on first access from the
     // current AuditConfig; shared across REST and MCP handlers so every
     // request lands in the same JSONL stream.
-    std::shared_ptr<AuditLogger> getAuditLogger();
+    std::shared_ptr<AuditLogger> getAuditLogger() const;
     bool isTelemetryEnabled() const { return telemetry_enabled; }
     double getTelemetrySampleRate() const { return telemetry_sample_rate; }
     const AuthConfig& getGlobalAuthConfig() const { return global_auth_config; }
@@ -656,6 +744,10 @@ protected:
     std::filesystem::path config_file;
     YAML::Node config;
     std::string project_name;
+    TracingConfig tracing_config;
+    mutable std::unique_ptr<CapturePolicy> capture_policy_;
+    std::string log_level = "info";
+    std::string log_format = "text";
     std::string project_description;
     std::string cache_schema = "flapi";
     std::string server_name;
@@ -665,7 +757,48 @@ protected:
     RateLimitConfig rate_limit_config;
     bool auth_enabled;
     AuthConfig global_auth_config;
-    std::vector<EndpointConfig> endpoints;
+    // Copy-on-write; never mutated in place once published. Guarded by
+    // endpoints_mutex for writers; readers take the shared_ptr under the same
+    // mutex and then need no lock at all. See endpointsSnapshot().
+    std::shared_ptr<const std::vector<EndpointConfig>> endpoints_snapshot{
+        std::make_shared<const std::vector<EndpointConfig>>()};
+    // std::mutex is not movable, but ConfigManager is (config_manager_test.cpp
+    // move-assigns one). Moving must not carry lock state: a freshly constructed
+    // mutex is the correct result, because moving an object other threads are
+    // using is not supported in the first place. Satisfies BasicLockable, so
+    // std::lock_guard works unchanged.
+    struct MovableMutex {
+        MovableMutex() = default;
+        MovableMutex(MovableMutex&&) noexcept {}
+        MovableMutex& operator=(MovableMutex&&) noexcept { return *this; }
+        MovableMutex(const MovableMutex&) = delete;
+        MovableMutex& operator=(const MovableMutex&) = delete;
+        void lock() { m.lock(); }
+        void unlock() { m.unlock(); }
+        bool try_lock() { return m.try_lock(); }
+    private:
+        std::mutex m;
+    };
+    mutable MovableMutex endpoints_mutex;
+
+    // Copy the current table, let `mutate` modify the copy, then publish it.
+    // Every writer must go through here; nothing mutates a published vector.
+    template <typename Fn>
+    auto mutateEndpoints(Fn&& mutate) -> decltype(mutate(std::declval<std::vector<EndpointConfig>&>())) {
+        std::lock_guard<MovableMutex> guard(endpoints_mutex);
+        auto next = std::make_shared<std::vector<EndpointConfig>>(*endpoints_snapshot);
+        auto result = mutate(*next);
+        endpoints_snapshot = std::shared_ptr<const std::vector<EndpointConfig>>(std::move(next));
+        return result;
+    }
+
+    template <typename Fn>
+    void mutateEndpointsVoid(Fn&& mutate) {
+        std::lock_guard<MovableMutex> guard(endpoints_mutex);
+        auto next = std::make_shared<std::vector<EndpointConfig>>(*endpoints_snapshot);
+        mutate(*next);
+        endpoints_snapshot = std::shared_ptr<const std::vector<EndpointConfig>>(std::move(next));
+    }
     std::filesystem::path base_path;
     DuckDBConfig duckdb_config;
     TemplateConfig template_config;
@@ -676,7 +809,7 @@ protected:
     MCPConfig mcp_config;
     StorageConfig storage_config;
     AuditConfig audit_config;
-    std::shared_ptr<AuditLogger> audit_logger_;
+    std::shared_ptr<AuditLogger> audit_logger_;   // built in parseAuditConfig()
     bool telemetry_enabled = true;
     double telemetry_sample_rate = 1.0;
     ExtendedYamlParser yaml_parser;
@@ -702,6 +835,7 @@ protected:
     void parseDuckLakeConfig();
     void parseMCPConfig();
     void parseAuditConfig();
+    void parseTracingConfig();
     void parseStorageConfig();
     void parseEndpointConfig(const std::filesystem::path& config_file);
     void parseEndpointRequestFields(const YAML::Node& endpoint_config, EndpointConfig& endpoint);

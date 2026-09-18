@@ -71,6 +71,12 @@ public:
     std::vector<std::string> getAvailableTools() const;
     crow::json::wvalue getToolDefinition(const std::string& tool_name) const;
 
+    // True only for a tool in the configured endpoint set. Callers must gate
+    // any use of a caller-supplied tool name on this: the name reaches the span
+    // name and gen_ai.tool.name at the DEFAULT capture tier, so an unvalidated
+    // one is both exported content and an unbounded metric dimension.
+    bool isKnownTool(const std::string& tool_name) const;
+
     // Parse `context[kRolesContextKey]` (comma-separated) into a role list.
     // Public so callers preparing an `MCPToolCallRequest` (and unit tests)
     // can use the same parsing rules as `executeTool` itself.

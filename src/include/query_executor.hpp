@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "prepared_template_rewriter.hpp"
+#include "trace_scope.hpp"
 
 namespace flapi {
 
@@ -109,6 +110,8 @@ public:
     ~QueryExecutor();
     
     void execute(const std::string& query, const std::string& context = "");
+    // The span's db.operation.name comes from duckdb_prepared_statement_type on
+    // the handle, so no SQL text is passed in and none can reach a span.
     void executePrepared(duckdb_prepared_statement stmt, const std::string& context = "");
 
     // W3.1 PR B: prepare a query that contains `?` placeholders, bind
@@ -137,6 +140,14 @@ public:
 
     // Make these public since they're used directly in DatabaseManager
     duckdb_connection conn;
+
+    // DuckDB profiling is CONNECTION-scoped (enable_profiling and
+    // custom_profiling_settings are SetLocal only - there is no global setter),
+    // and flAPI opens a connection per query. Enabled lazily, at most once per
+    // executor, and only when a recording span will actually carry the result.
+    bool profiling_enabled_ = false;
+    void enableProfilingIfRequested(const SpanScope& span);
+    void attachProfilingMetrics(SpanScope& span) const;
     mutable duckdb_result result;
     bool has_result;
 };

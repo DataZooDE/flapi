@@ -153,7 +153,7 @@ should not bake in.
 | `FLAPI_CONFIG` | startup | Path to `flapi.yaml` (fallback for `-c`) | CLI > env > `flapi.yaml` default |
 | `FLAPI_PORT` | startup | HTTP server port (fallback for `-p` / `--port`) | CLI > env > `http-port` config > `8080`; invalid values exit non-zero |
 | `FLAPI_HOST` | startup | Bind address (fallback for `--host`) | CLI > env > `http-host` config > `0.0.0.0` |
-| `FLAPI_LOG_LEVEL` | startup | Log verbosity (fallback for `--log-level`) | CLI > env > `info` default; invalid values exit non-zero |
+| `FLAPI_LOG_LEVEL` | startup | Log verbosity (fallback for `--log-level`) | CLI > env > `log-level` config > `info` default; invalid values exit non-zero |
 | `FLAPI_CONFIG_SERVICE_TOKEN` | startup | Bearer token for the management API (fallback for `--config-service-token`) | CLI > env > auto-generate |
 | `FLAPI_NO_TELEMETRY` | startup | Disable PostHog telemetry (fallback for `--no-telemetry`) | CLI > env > config-file > enabled |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` | startup, query time | S3 credentials (DuckDB `httpfs`) | env only |
@@ -181,6 +181,9 @@ The main configuration file defines global settings, connections, and server beh
 | `project-description` | string | - | Project description |
 | `server-name` | string | `"localhost"` | Server hostname for generated URLs |
 | `http-port` | integer | `8080` | HTTP server port (overridable via `--port` / `FLAPI_PORT`) |
+| `log-level` | string | `info` | Log verbosity: `debug`, `info`, `warning`, `error`. Overridable via `--log-level` / `FLAPI_LOG_LEVEL`. **Top-level key — a `server:` block is not parsed.** |
+| `tracing` | map | disabled | OpenTelemetry tracing. Off by default; see [OBSERVABILITY.md](OBSERVABILITY.md). |
+| `log-format` | string | `text` | `text` for human-readable lines, `json` for one JSON object per line. Both carry `request_id` (and `trace_id` once tracing is enabled) for lines emitted while serving a request. |
 | `http-host` | string | `"0.0.0.0"` | Bind address (overridable via `--host` / `FLAPI_HOST`); use `127.0.0.1` to restrict to loopback |
 
 **Example:**
@@ -553,7 +556,7 @@ heartbeat:
   worker-interval: 10
 ```
 
-> **Implementation:** `src/heartbeat_worker.cpp` | **Tests:** *None - see [TEST_TODO.md](./TEST_TODO.md)*
+> **Implementation:** `src/heartbeat_worker.cpp` | **Tests:** *None*
 
 ### 2.11 Storage Configuration (VFS)
 
@@ -1880,7 +1883,7 @@ flAPI supports both hyphenated and camelCase naming for backward compatibility:
 
 ## Related Documentation
 
-- **[Reference Documentation Map](./REFERENCE_MAP.md)** - Navigation guide for all reference docs
+- **[Documentation index](./README.md)** - Start here; organised by what you are trying to do
 - **[CLI Reference](./CLI_REFERENCE.md)** - Server executable command-line options
 - **[Config Service API Reference](./CONFIG_SERVICE_API_REFERENCE.md)** - Runtime configuration REST API and CLI client
 - **[MCP Reference](./MCP_REFERENCE.md)** - Model Context Protocol specification and implementation

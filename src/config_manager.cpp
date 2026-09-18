@@ -56,10 +56,9 @@ ConfigManager::ConfigManager(const std::filesystem::path& config_file)
 // Destructor defined here to handle unique_ptr cleanup with complete types
 ConfigManager::~ConfigManager() = default;
 
-// Move constructor - defined here with complete types
+// Move constructor / assignment. Defaultable again thanks to MovableMutex;
+// see the comment on that type in the header.
 ConfigManager::ConfigManager(ConfigManager&&) noexcept = default;
-
-// Move assignment operator - defined here with complete types
 ConfigManager& ConfigManager::operator=(ConfigManager&&) noexcept = default;
 
 // Main configuration loading and parsing methods
@@ -81,12 +80,14 @@ void ConfigManager::loadConfig() {
 
         // Propagate global OIDC config to endpoints that have type:oidc but no local oidc block
         if (global_auth_config.oidc) {
-            for (auto& ep : endpoints) {
-                if (ep.auth.type == "oidc" && !ep.auth.oidc) {
-                    ep.auth.oidc = global_auth_config.oidc;
-                    CROW_LOG_DEBUG << "Propagated global OIDC config to endpoint: " << ep.urlPath;
+            mutateEndpointsVoid([&](std::vector<EndpointConfig>& eps) {
+                for (auto& ep : eps) {
+                    if (ep.auth.type == "oidc" && !ep.auth.oidc) {
+                        ep.auth.oidc = global_auth_config.oidc;
+                        CROW_LOG_DEBUG << "Propagated global OIDC config to endpoint: " << ep.urlPath;
+                    }
                 }
-            }
+            });
         }
 
         CROW_LOG_INFO << "Configuration loaded successfully";
@@ -110,6 +111,10 @@ void ConfigManager::parseMainConfig() {
         server_name = safeGet<std::string>(config, "server-name", "server-name", "localhost");
         http_port = safeGet<int>(config, "http-port", "http-port", 8080);
         http_host = safeGet<std::string>(config, "http-host", "http-host", "0.0.0.0");
+        // Top-level and kebab-case, matching http-port / http-host. The `server:`
+        // block that three example files used was never parsed by anything.
+        log_level = safeGet<std::string>(config, "log-level", "log-level", "info");
+        log_format = safeGet<std::string>(config, "log-format", "log-format", "text");
 
         CROW_LOG_DEBUG << "Project Name: " << project_name;
         CROW_LOG_DEBUG << "Server Name: " << server_name;
@@ -125,6 +130,7 @@ void ConfigManager::parseMainConfig() {
         parseDuckLakeConfig();
         parseMCPConfig();
         parseAuditConfig();
+        parseTracingConfig();
         parseStorageConfig();
         parseTemplateConfig();
         parseGlobalHeartbeatConfig();
@@ -268,12 +274,14 @@ void ConfigManager::parseDuckLakeConfig() {
 }
 
 // Storage configuration methods
-std::shared_ptr<AuditLogger> ConfigManager::getAuditLogger() {
-    // Eagerly built once at the end of parseAuditConfig(); the AuditLogger
-    // itself owns the write mutex so this method is a simple accessor.
-    if (!audit_logger_) {
-        audit_logger_ = std::make_shared<AuditLogger>(audit_config);
-    }
+std::shared_ptr<AuditLogger> ConfigManager::getAuditLogger() const {
+    // Built eagerly at the end of parseAuditConfig() - the comment here used to
+    // claim that while the code below it initialised lazily. That was harmless
+    // while the only caller was MCPToolHandler's constructor on the bootstrap
+    // thread, but RequestContextMiddleware now reaches it from every Crow worker,
+    // and a first concurrent burst could construct two AuditLogger objects, each
+    // with its own write mutex over the same stream - interleaving lines and
+    // defeating the atomic-whole-line guarantee. A plain read cannot race.
     return audit_logger_;
 }
 
@@ -302,6 +310,85 @@ void ConfigManager::parseAuditConfig() {
     if (!audit_config.path.empty()) {
         CROW_LOG_DEBUG << "Audit path: " << audit_config.path;
     }
+
+    // Construct here, on the single-threaded configuration path, so that
+    // getAuditLogger() is a plain read for every request thread.
+    audit_logger_ = std::make_shared<AuditLogger>(audit_config);
+}
+
+const CapturePolicy& ConfigManager::getCapturePolicy() const {
+    if (!capture_policy_) {
+        // Reuses the audit.redact list deliberately: operators already configure
+        // that list, and a second one would diverge the moment somebody added a key
+        // to only one of them - leaking whatever they forgot to add twice.
+        capture_policy_ = std::make_unique<CapturePolicy>(
+            tracing_config.capture,
+            audit_config.redact_keys,
+            tracing_config.payload_max_value_bytes);
+    }
+    return *capture_policy_;
+}
+
+void ConfigManager::parseTracingConfig() {
+    CROW_LOG_INFO << "Parsing tracing configuration";
+    if (!config["tracing"]) {
+        return;   // BR-6: absent means off, and off means no provider at all
+    }
+    const auto& node = config["tracing"];
+
+    tracing_config.enabled = node["enabled"] ? node["enabled"].as<bool>() : false;
+    if (node["service_name"])      { tracing_config.service_name = node["service_name"].as<std::string>(); }
+    if (node["service_namespace"]) { tracing_config.service_namespace = node["service_namespace"].as<std::string>(); }
+    if (node["exporter"])          { tracing_config.exporter = node["exporter"].as<std::string>(); }
+    // std::optional, deliberately: "absent from YAML" must stay distinguishable
+    // from "set to the default", or a YAML default silently beats an operator's
+    // injected OTEL_EXPORTER_OTLP_ENDPOINT and Kubernetes auto-configuration does
+    // nothing at all.
+    if (node["endpoint"])          { tracing_config.endpoint = node["endpoint"].as<std::string>(); }
+    if (node["protocol"])          { tracing_config.protocol = node["protocol"].as<std::string>(); }
+    if (node["timeout_ms"])        { tracing_config.timeout_ms = node["timeout_ms"].as<int>(); }
+    if (node["capture"])           { tracing_config.capture = parseCaptureTier(node["capture"].as<std::string>()); }
+    if (node["openinference"])     { tracing_config.openinference = node["openinference"].as<bool>(); }
+    if (node["db_profiling"])      { tracing_config.db_profiling = parseDbProfiling(node["db_profiling"].as<std::string>()); }
+
+    if (node["headers"] && node["headers"].IsMap()) {
+        for (const auto& entry : node["headers"]) {
+            tracing_config.headers[entry.first.as<std::string>()] = entry.second.as<std::string>();
+        }
+    }
+    if (node["resource_attributes"] && node["resource_attributes"].IsMap()) {
+        for (const auto& entry : node["resource_attributes"]) {
+            tracing_config.resource_attributes[entry.first.as<std::string>()] =
+                entry.second.as<std::string>();
+        }
+    }
+    if (node["exclude_routes"] && node["exclude_routes"].IsSequence()) {
+        tracing_config.exclude_routes.clear();
+        for (const auto& entry : node["exclude_routes"]) {
+            tracing_config.exclude_routes.push_back(entry.as<std::string>());
+        }
+    }
+    if (const auto& s = node["sample"]) {
+        if (s["type"])  { tracing_config.sample.type = s["type"].as<std::string>(); }
+        if (s["ratio"]) { tracing_config.sample.ratio = s["ratio"].as<double>(); }
+    }
+    if (const auto& f = node["flush"]) {
+        if (f["mode"])           { tracing_config.flush.mode = f["mode"].as<std::string>(); }
+        if (f["timeout_ms"])     { tracing_config.flush.timeout_ms = f["timeout_ms"].as<int>(); }
+        if (f["max_queue_size"]) { tracing_config.flush.max_queue_size = f["max_queue_size"].as<int>(); }
+    }
+    if (const auto& file = node["file"]) {
+        if (file["path"]) { tracing_config.file_path = file["path"].as<std::string>(); }
+    }
+    if (const auto& payload = node["payload"]) {
+        if (payload["max_value_bytes"]) {
+            tracing_config.payload_max_value_bytes = payload["max_value_bytes"].as<std::size_t>();
+        }
+    }
+
+    CROW_LOG_DEBUG << "Tracing enabled: " << (tracing_config.enabled ? "true" : "false")
+                   << ", exporter: " << tracing_config.exporter
+                   << ", capture: " << captureTierName(tracing_config.capture);
 }
 
 void ConfigManager::parseStorageConfig() {
@@ -462,7 +549,7 @@ void ConfigManager::parseMCPConfig() {
 // Endpoint configuration methods
 void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& template_path) {
     CROW_LOG_INFO << "Loading endpoint configs recursively from: " << template_path;
-    endpoints.clear();
+    mutateEndpointsVoid([](std::vector<EndpointConfig>& eps) { eps.clear(); });
 
     size_t total_yaml_files = 0;
     size_t loaded_endpoints = 0;
@@ -494,9 +581,9 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
                 continue;
             }
             total_yaml_files++;
-            size_t endpoints_before = endpoints.size();
+            size_t endpoints_before = endpointsSnapshot()->size();
             loadEndpointConfig(name);
-            if (endpoints.size() > endpoints_before) {
+            if (endpointsSnapshot()->size() > endpoints_before) {
                 loaded_endpoints++;
             }
         }
@@ -506,9 +593,9 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
                 auto extension = entry.path().extension();
                 if (extension == ".yaml" || extension == ".yml") {
                     total_yaml_files++;
-                    size_t endpoints_before = endpoints.size();
+                    size_t endpoints_before = endpointsSnapshot()->size();
                     loadEndpointConfig(entry.path().string());
-                    if (endpoints.size() > endpoints_before) {
+                    if (endpointsSnapshot()->size() > endpoints_before) {
                         loaded_endpoints++;
                     }
                 }
@@ -559,7 +646,7 @@ void ConfigManager::loadEndpointConfig(const std::string& config_file) {
         }
         
         // Add to endpoints list
-        endpoints.push_back(endpoint);
+        mutateEndpointsVoid([&](std::vector<EndpointConfig>& eps) { eps.push_back(endpoint); });
 
         // Log configuration summary
         CROW_LOG_DEBUG << "\t\tConfiguration loaded: " << endpoint.getShortDescription();
@@ -1336,7 +1423,45 @@ bool ConfigManager::isHttpsEnforced() const { return https_config.enabled; }
 const HttpsConfig& ConfigManager::getHttpsConfig() const { return https_config; }
 bool ConfigManager::isAuthEnabled() const { return auth_enabled; }
 std::optional<OIDCConfig> ConfigManager::getGlobalOIDCConfig() const { return global_auth_config.oidc; }
-const std::vector<EndpointConfig>& ConfigManager::getEndpoints() const { return endpoints; }
+std::shared_ptr<const std::vector<EndpointConfig>> ConfigManager::getEndpoints() const {
+    return endpointsSnapshot();
+}
+
+std::shared_ptr<const std::vector<EndpointConfig>> ConfigManager::endpointsSnapshot() const {
+    std::lock_guard<MovableMutex> guard(endpoints_mutex);
+    return endpoints_snapshot;
+}
+
+const EndpointConfig* ConfigManager::findEndpoint(const std::vector<EndpointConfig>& endpoints,
+                                                  const std::string& path) {
+    for (const auto& endpoint : endpoints) {
+        if (endpoint.matchesPath(path)) {
+            return &endpoint;
+        }
+    }
+    return nullptr;
+}
+
+const EndpointConfig* ConfigManager::findEndpoint(const std::vector<EndpointConfig>& endpoints,
+                                                  const std::string& path,
+                                                  const std::string& httpMethod) {
+    // Mirrors getEndpointForPathAndMethod exactly: case-insensitive, empty
+    // endpoint method means GET.
+    std::string methodUpper = httpMethod;
+    std::transform(methodUpper.begin(), methodUpper.end(), methodUpper.begin(), ::toupper);
+
+    for (const auto& endpoint : endpoints) {
+        if (!endpoint.matchesPath(path)) {
+            continue;
+        }
+        std::string endpointMethod = endpoint.method.empty() ? "GET" : endpoint.method;
+        std::transform(endpointMethod.begin(), endpointMethod.end(), endpointMethod.begin(), ::toupper);
+        if (endpointMethod == methodUpper) {
+            return &endpoint;
+        }
+    }
+    return nullptr;
+}
 std::string ConfigManager::getBasePath() const { return base_path.string(); }
 
 std::string ConfigManager::loadMCPInstructions() const {
@@ -1457,7 +1582,10 @@ crow::json::wvalue ConfigManager::getFlapiConfig() const {
 
 crow::json::wvalue ConfigManager::getEndpointsConfig() const {
     crow::json::wvalue endpointsJson;
-    for (const auto& endpoint : endpoints) {
+    // Pin the snapshot: this is reachable from the config service on a request
+    // thread, concurrently with a writer swapping the table.
+    const auto snapshot = endpointsSnapshot();
+    for (const auto& endpoint : *snapshot) {
         endpointsJson[endpoint.urlPath] = serializeEndpointConfig(endpoint, EndpointJsonStyle::CamelCase);
     }
     return endpointsJson;
@@ -1762,7 +1890,7 @@ void ConfigManager::refreshConfig() {
 }
 
 void ConfigManager::addEndpoint(const EndpointConfig& endpoint) {
-    endpoints.push_back(endpoint);
+    mutateEndpointsVoid([&](std::vector<EndpointConfig>& eps) { eps.push_back(endpoint); });
     // Also add to repository for unified access
     if (endpoint_repository) {
         endpoint_repository->addEndpoint(endpoint);
@@ -1770,90 +1898,91 @@ void ConfigManager::addEndpoint(const EndpointConfig& endpoint) {
 }
 
 bool ConfigManager::removeEndpointByPath(const std::string& path) {
-    auto before = endpoints.size();
-    endpoints.erase(
-        std::remove_if(endpoints.begin(), endpoints.end(), [&](const EndpointConfig& endpoint) {
-            return endpoint.matchesPath(path);
-        }),
-        endpoints.end());
+    // Two bugs lived here.
+    //
+    // 1. `before` and `after` were read from endpoints_snapshot WITHOUT the
+    //    mutex the writer takes, so a concurrent addEndpoint could make this
+    //    report a removal that never happened (and TSan would flag the race).
+    // 2. The repository cleanup below called getEndpointForPath(path) AFTER the
+    //    erase, so the lookup always returned null and the branch never ran -
+    //    leaving endpoint_repository permanently stale for every removal.
+    //
+    // Both are fixed by deciding inside the mutation, under the lock, and
+    // carrying the removed endpoints out by value.
+    const auto removed = mutateEndpoints(
+        [&](std::vector<EndpointConfig>& eps) -> std::vector<EndpointConfig> {
+            std::vector<EndpointConfig> taken;
+            auto it = std::stable_partition(eps.begin(), eps.end(),
+                                            [&](const EndpointConfig& endpoint) {
+                                                return !endpoint.matchesPath(path);
+                                            });
+            taken.assign(std::make_move_iterator(it), std::make_move_iterator(eps.end()));
+            eps.erase(it, eps.end());
+            return taken;
+        });
 
-    // Also remove from repository
-    if (endpoint_repository && before != endpoints.size()) {
-        if (auto endpoint = getEndpointForPath(path)) {
-            if (endpoint->isRESTEndpoint()) {
-                endpoint_repository->removeRestEndpoint(endpoint->urlPath, endpoint->method);
-            } else if (endpoint->isMCPTool()) {
-                endpoint_repository->removeMCPEndpoint(endpoint->mcp_tool->name);
-            } else if (endpoint->isMCPResource()) {
-                endpoint_repository->removeMCPEndpoint(endpoint->mcp_resource->name);
-            } else if (endpoint->isMCPPrompt()) {
-                endpoint_repository->removeMCPEndpoint(endpoint->mcp_prompt->name);
+    // Repository updates happen outside the lock: endpoint_repository has its own
+    // locking, and holding two locks in an unspecified order invites a deadlock.
+    if (endpoint_repository) {
+        for (const auto& endpoint : removed) {
+            if (endpoint.isRESTEndpoint()) {
+                endpoint_repository->removeRestEndpoint(endpoint.urlPath, endpoint.method);
+            } else if (endpoint.isMCPTool()) {
+                endpoint_repository->removeMCPEndpoint(endpoint.mcp_tool->name);
+            } else if (endpoint.isMCPResource()) {
+                endpoint_repository->removeMCPEndpoint(endpoint.mcp_resource->name);
+            } else if (endpoint.isMCPPrompt()) {
+                endpoint_repository->removeMCPEndpoint(endpoint.mcp_prompt->name);
             }
         }
     }
 
-    return before != endpoints.size();
+    return !removed.empty();
 }
 
 bool ConfigManager::replaceEndpoint(const EndpointConfig& endpoint) {
-    for (auto& candidate : endpoints) {
-        if (endpoint.isSameEndpoint(candidate)) {
-            candidate = endpoint;
-
-            // Also update in repository
-            if (endpoint_repository) {
-                if (endpoint.isRESTEndpoint()) {
-                    endpoint_repository->removeRestEndpoint(endpoint.urlPath, endpoint.method);
-                    endpoint_repository->addEndpoint(endpoint);
-                } else if (endpoint.isMCPTool()) {
-                    endpoint_repository->removeMCPEndpoint(endpoint.mcp_tool->name);
-                    endpoint_repository->addEndpoint(endpoint);
-                } else if (endpoint.isMCPResource()) {
-                    endpoint_repository->removeMCPEndpoint(endpoint.mcp_resource->name);
-                    endpoint_repository->addEndpoint(endpoint);
-                } else if (endpoint.isMCPPrompt()) {
-                    endpoint_repository->removeMCPEndpoint(endpoint.mcp_prompt->name);
-                    endpoint_repository->addEndpoint(endpoint);
-                }
+    // The repository update is deliberately kept OUT of the copy-modify-swap
+    // lambda: that lambda may be retried or run under the endpoints mutex, and
+    // endpoint_repository has its own locking. Decide inside, act outside.
+    const bool replaced = mutateEndpoints([&](std::vector<EndpointConfig>& eps) -> bool {
+        for (auto& candidate : eps) {
+            if (endpoint.isSameEndpoint(candidate)) {
+                candidate = endpoint;
+                return true;
             }
+        }
+        return false;
+    });
 
-            return true;
+    if (replaced && endpoint_repository) {
+        if (endpoint.isRESTEndpoint()) {
+            endpoint_repository->removeRestEndpoint(endpoint.urlPath, endpoint.method);
+            endpoint_repository->addEndpoint(endpoint);
+        } else if (endpoint.isMCPTool()) {
+            endpoint_repository->removeMCPEndpoint(endpoint.mcp_tool->name);
+            endpoint_repository->addEndpoint(endpoint);
+        } else if (endpoint.isMCPResource()) {
+            endpoint_repository->removeMCPEndpoint(endpoint.mcp_resource->name);
+            endpoint_repository->addEndpoint(endpoint);
+        } else if (endpoint.isMCPPrompt()) {
+            endpoint_repository->removeMCPEndpoint(endpoint.mcp_prompt->name);
+            endpoint_repository->addEndpoint(endpoint);
         }
     }
-    return false;
-}
 
-const EndpointConfig* ConfigManager::getEndpointForPath(const std::string& path) const {
-    // First try to find exact match (no method filtering)
-    for (const auto& endpoint : endpoints) {
-        if (endpoint.matchesPath(path)) {
-            return &endpoint;
-        }
-    }
-    return nullptr;
-}
-
-const EndpointConfig* ConfigManager::getEndpointForPathAndMethod(const std::string& path, const std::string& httpMethod) const {
-    std::string methodUpper = httpMethod;
-    std::transform(methodUpper.begin(), methodUpper.end(), methodUpper.begin(), ::toupper);
-    
-    for (const auto& endpoint : endpoints) {
-        if (!endpoint.matchesPath(path)) {
-            continue;
-        }
-        
-        // Match HTTP method
-        std::string endpointMethod = endpoint.method.empty() ? "GET" : endpoint.method;
-        std::transform(endpointMethod.begin(), endpointMethod.end(), endpointMethod.begin(), ::toupper);
-        
-        if (endpointMethod == methodUpper) {
-            return &endpoint;
-        }
-    }
-    return nullptr;
+    return replaced;
 }
 
 
+ConfigManager::EndpointRef ConfigManager::getEndpointForPath(const std::string& path) const {
+    auto snapshot = endpointsSnapshot();
+    return EndpointRef(snapshot, findEndpoint(*snapshot, path));
+}
+
+ConfigManager::EndpointRef ConfigManager::getEndpointForPathAndMethod(const std::string& path, const std::string& httpMethod) const {
+    auto snapshot = endpointsSnapshot();
+    return EndpointRef(snapshot, findEndpoint(*snapshot, path, httpMethod));
+}
 
 // YAML Serialization
 std::string ConfigManager::serializeEndpointConfigToYaml(const EndpointConfig& config) const {
@@ -2164,12 +2293,16 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfigFile(const 
 // Reload endpoint from disk (after external edit)
 // Note: This method modifies the endpoints vector. Ensure proper synchronization if called from multiple threads.
 bool ConfigManager::reloadEndpointConfig(const std::string& slug_or_path) {
+    // Pin the table for the read phase: `it` must stay valid across the parse
+    // below, which can take a while and runs concurrently with other requests.
+    auto snapshot = endpointsSnapshot();
+
     // Try to find existing endpoint by URL path or MCP name
-    auto it = std::find_if(endpoints.begin(), endpoints.end(), [&](const EndpointConfig& ep) {
+    auto it = std::find_if(snapshot->begin(), snapshot->end(), [&](const EndpointConfig& ep) {
         return ep.getName() == slug_or_path || ep.matchesPath(slug_or_path);
     });
     
-    if (it == endpoints.end()) {
+    if (it == snapshot->end()) {
         CROW_LOG_WARNING << "Endpoint not found for reload: " << slug_or_path;
         return false;
     }
@@ -2227,8 +2360,20 @@ bool ConfigManager::reloadEndpointConfig(const std::string& slug_or_path) {
             return false;
         }
         
-        // Replace the existing endpoint with the reloaded configuration
-        *it = parse_result.config;
+        // Publish the reloaded configuration through copy-modify-swap. Matching
+        // by name again rather than by index: the table may have been mutated by
+        // another thread while this file was being parsed.
+        const std::string target_name = it->getName();
+        mutateEndpointsVoid([&](std::vector<EndpointConfig>& eps) {
+            for (auto& ep : eps) {
+                if (ep.getName() == target_name) {
+                    ep = parse_result.config;
+                    return;
+                }
+            }
+            // Gone since we looked - treat the reload as an addition.
+            eps.push_back(parse_result.config);
+        });
         
         CROW_LOG_INFO << "Reloaded endpoint configuration from: " << yaml_file;
         

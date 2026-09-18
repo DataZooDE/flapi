@@ -1,5 +1,7 @@
 #pragma once
 
+#include "trace_context.hpp"
+
 #include <crow.h>
 #include <string>
 #include <vector>
@@ -33,6 +35,9 @@ struct MCPRequest {
     bool modern_era = false;
     std::string meta_protocol_version;   // required in modern era
     std::string meta_log_level;          // optional per-request log level
+    // W3C trace context from params._meta per SEP-414. Invalid when the client
+    // sent none or sent something malformed; either way the request proceeds.
+    SpanContextIds meta_trace_context;
     std::vector<std::string> meta_extensions;  // client-declared extension ids
     bool meta_has_client_capabilities = false; // required in modern era
 };

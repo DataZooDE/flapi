@@ -469,7 +469,7 @@ Health check for active sessions.
 
 Returns an empty object on success.
 
-> **Implementation:** `src/mcp_route_handlers.cpp` | **Tests:** *None - see [TEST_TODO.md](./TEST_TODO.md)*
+> **Implementation:** `src/mcp_route_handlers.cpp` | **Tests:** *None*
 
 ---
 
@@ -739,7 +739,7 @@ Lists all available MCP prompts.
 }
 ```
 
-> **Implementation:** `src/mcp_route_handlers.cpp` | **Tests:** *None - see [TEST_TODO.md](./TEST_TODO.md)*
+> **Implementation:** `src/mcp_route_handlers.cpp` | **Tests:** *None*
 
 ---
 
@@ -789,7 +789,7 @@ Retrieves a prompt with template arguments substituted.
 }
 ```
 
-> **Implementation:** `src/mcp_route_handlers.cpp` | **Tests:** *None - see [TEST_TODO.md](./TEST_TODO.md)*
+> **Implementation:** `src/mcp_route_handlers.cpp` | **Tests:** *None*
 
 ---
 
@@ -1203,7 +1203,7 @@ Arguments are passed in the `prompts/get` request and substituted into the templ
 }
 ```
 
-> **Implementation:** `src/mcp_route_handlers.cpp` | **Tests:** *None - see [TEST_TODO.md](./TEST_TODO.md)*
+> **Implementation:** `src/mcp_route_handlers.cpp` | **Tests:** *None*
 
 ---
 
@@ -1408,7 +1408,7 @@ flAPI automatically detects MIME types from file extensions:
 | `.xml` | `application/xml` |
 | (unknown) | `application/octet-stream` |
 
-> **Implementation:** `src/mcp_content_types.cpp` | **Tests:** *Image/audio/binary not tested - see [TEST_TODO.md](./TEST_TODO.md)*
+> **Implementation:** `src/mcp_content_types.cpp` | **Tests:** *Image/audio/binary not tested*
 
 ---
 
@@ -1907,7 +1907,7 @@ LIMIT {{#params.limit}}{{ params.limit }}{{/params.limit}}{{^params.limit}}25{{/
 
 ## Related Documentation
 
-- **[Reference Documentation Map](./REFERENCE_MAP.md)** - Navigation guide for all reference docs
+- **[Documentation index](./README.md)** - Start here; organised by what you are trying to do
 - **[Configuration Reference](./CONFIG_REFERENCE.md)** - Configuration file options (including MCP § 2.6)
 - **[CLI Reference](./CLI_REFERENCE.md)** - Server executable command-line options
 - **[Config Service API Reference](./CONFIG_SERVICE_API_REFERENCE.md)** - Runtime configuration REST API

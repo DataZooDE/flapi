@@ -69,7 +69,7 @@ cache:
     auto db_manager = std::make_shared<DatabaseManager>();
     auto cache_manager = std::make_shared<CacheManager>(std::shared_ptr<ICacheDatabaseAdapter>(nullptr));
     cache_manager->initializeReadiness(config_manager);
-    cache_manager->markCacheReady(config_manager, config_manager->getEndpoints().front());
+    cache_manager->markCacheReady(config_manager, config_manager->getEndpoints()->front());
     db_manager->cache_manager = cache_manager;
     APIServer server(config_manager, db_manager);
 

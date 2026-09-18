@@ -149,10 +149,10 @@ TEST_CASE("EndpointConfig: getSlug() for REST endpoints", "[slug][endpoint_confi
     auto config_manager = std::make_shared<ConfigManager>(fs::path(config_file));
     config_manager->loadConfig();
     
-    const auto& endpoints = config_manager->getEndpoints();
-    REQUIRE(endpoints.size() == 1);
+    const auto endpoints = config_manager->getEndpoints();   // pinned snapshot
+    REQUIRE(endpoints->size() == 1);
     
-    const auto& endpoint = endpoints[0];
+    const auto& endpoint = (*endpoints)[0];
     REQUIRE(endpoint.urlPath == "/customers/");
     REQUIRE(endpoint.getSlug() == "customers-slash");
 }
@@ -167,10 +167,10 @@ TEST_CASE("EndpointConfig: getSlug() for MCP tool", "[slug][endpoint_config]") {
     auto config_manager = std::make_shared<ConfigManager>(fs::path(config_file));
     config_manager->loadConfig();
     
-    const auto& endpoints = config_manager->getEndpoints();
-    REQUIRE(endpoints.size() == 1);
+    const auto endpoints = config_manager->getEndpoints();   // pinned snapshot
+    REQUIRE(endpoints->size() == 1);
     
-    const auto& endpoint = endpoints[0];
+    const auto& endpoint = (*endpoints)[0];
     REQUIRE(endpoint.mcp_tool.has_value());
     REQUIRE(endpoint.mcp_tool->name == "customer_lookup");
     REQUIRE(endpoint.getSlug() == "customer_lookup");  // MCP names used as-is
@@ -186,10 +186,10 @@ TEST_CASE("EndpointConfig: getSlug() for MCP resource", "[slug][endpoint_config]
     auto config_manager = std::make_shared<ConfigManager>(fs::path(config_file));
     config_manager->loadConfig();
     
-    const auto& endpoints = config_manager->getEndpoints();
-    REQUIRE(endpoints.size() == 1);
+    const auto endpoints = config_manager->getEndpoints();   // pinned snapshot
+    REQUIRE(endpoints->size() == 1);
     
-    const auto& endpoint = endpoints[0];
+    const auto& endpoint = (*endpoints)[0];
     REQUIRE(endpoint.mcp_resource.has_value());
     REQUIRE(endpoint.mcp_resource->name == "data_resource");
     REQUIRE(endpoint.getSlug() == "data_resource");  // MCP names used as-is
@@ -207,8 +207,8 @@ TEST_CASE("EndpointConfig: getSlug() consistency - multiple REST endpoints", "[s
     auto config_manager = std::make_shared<ConfigManager>(fs::path(config_file));
     config_manager->loadConfig();
     
-    const auto& endpoints = config_manager->getEndpoints();
-    REQUIRE(endpoints.size() == 3);
+    const auto endpoints = config_manager->getEndpoints();   // pinned snapshot
+    REQUIRE(endpoints->size() == 3);
     
     // Verify each endpoint has correct slug
     std::map<std::string, std::string> expected_slugs = {
@@ -217,7 +217,7 @@ TEST_CASE("EndpointConfig: getSlug() consistency - multiple REST endpoints", "[s
         {"/root", "root"}
     };
     
-    for (const auto& endpoint : endpoints) {
+    for (const auto& endpoint : *endpoints) {
         auto it = expected_slugs.find(endpoint.urlPath);
         REQUIRE(it != expected_slugs.end());
         REQUIRE(endpoint.getSlug() == it->second);
@@ -468,9 +468,9 @@ TEST_CASE("Integration: End-to-end slug workflow - REST", "[slug][integration]")
     config_manager->loadConfig();
     
     // 1. Find slug from endpoint
-    const auto& endpoints = config_manager->getEndpoints();
-    REQUIRE(endpoints.size() == 1);
-    std::string slug = endpoints[0].getSlug();
+    const auto endpoints = config_manager->getEndpoints();   // pinned snapshot
+    REQUIRE(endpoints->size() == 1);
+    std::string slug = (*endpoints)[0].getSlug();
     REQUIRE(slug == "api-customers-slash");
     
     // 2. Use slug to get config
@@ -497,9 +497,9 @@ TEST_CASE("Integration: End-to-end slug workflow - MCP", "[slug][integration]") 
     config_manager->loadConfig();
     
     // 1. Find slug from endpoint
-    const auto& endpoints = config_manager->getEndpoints();
-    REQUIRE(endpoints.size() == 1);
-    std::string slug = endpoints[0].getSlug();
+    const auto endpoints = config_manager->getEndpoints();   // pinned snapshot
+    REQUIRE(endpoints->size() == 1);
+    std::string slug = (*endpoints)[0].getSlug();
     REQUIRE(slug == "data_fetcher");  // MCP name used as-is
     
     // 2. Use slug to get config

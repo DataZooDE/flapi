@@ -13,7 +13,7 @@ void RateLimitMiddleware::setConfig(std::shared_ptr<ConfigManager> config_manage
 void RateLimitMiddleware::before_handle(crow::request& req, crow::response& res, context& ctx) {
     if (!config_manager) return;
 
-    const auto& endpoint = config_manager->getEndpointForPath(req.url);
+    const auto endpoint = config_manager->getEndpointForPath(req.url);
     if (!endpoint || !endpoint->rate_limit.enabled) {
         return;
     }

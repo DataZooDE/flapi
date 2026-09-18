@@ -128,7 +128,20 @@ string(REGEX REPLACE "^v" "" FLAPI_VERSION_STR "${FLAPI_VERSION_STR}")
 message(STATUS "flAPI version (FLAPI_VERSION): ${FLAPI_VERSION_STR}")
 
 # Basic settings
-set(CMAKE_CXX_STANDARD 17)
+# C++20, project-wide and deliberately.
+#
+# opentelemetry-cpp pulls in abseil, and abseil's exported targets carry
+# INTERFACE_COMPILE_FEATURES "cxx_std_20" (ABSL_PROPAGATE_CXX_STD) because the
+# vcpkg abseil binaries are themselves built as C++20. Linking otel PRIVATE into
+# flapi-lib therefore raised *only* flapi-lib to C++20 while flapi_tests stayed
+# at C++17 - a silent ABI mismatch across the lib/test boundary that corrupted
+# struct layouts (it segfaulted auth_middleware_test reading EndpointConfig).
+#
+# Consuming C++20-built abseil from C++17 translation units is the underlying
+# hazard, so the fix is one standard everywhere rather than suppressing the
+# propagation. DuckDB is unaffected: flAPI talks to it through its C API, and it
+# sets its own standard in duckdb/CMakeLists.txt.
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
 set(THREADS_PREFER_PTHREAD_FLAG TRUE)
@@ -142,6 +155,26 @@ add_compile_definitions(CROW_ENABLE_SSL)
 # different include order disagree about the layout (an ODR violation that
 # silently corrupts response state across the lib/test boundary).
 add_compile_definitions(CROW_ENABLE_COMPRESSION)
+
+# FLAPI_WITH_TRACING changes the layout of flapi::SpanScope, which is embedded in
+# TracingMiddleware::context and therefore in the Crow middleware tuple instantiated
+# across several TUs. Like CROW_ENABLE_COMPRESSION above, it must be global and
+# defined before any add_subdirectory(), never target-scoped.
+option(FLAPI_WITH_TRACING "Build with OpenTelemetry tracing support" ON)
+# The value travels in a GENERATED header rather than only as a -D, so a target
+# that forgets the define gets a compile error on the missing header instead of a
+# silently different SpanScope layout. The global define stays as well, because
+# the header is included from headers that some TUs reach indirectly.
+if(FLAPI_WITH_TRACING)
+    add_compile_definitions(FLAPI_WITH_TRACING=1)
+else()
+    add_compile_definitions(FLAPI_WITH_TRACING=0)
+endif()
+configure_file(
+    "${CMAKE_SOURCE_DIR}/src/include/flapi_build_config.hpp.in"
+    "${CMAKE_BINARY_DIR}/generated/flapi_build_config.hpp"
+    @ONLY)
+include_directories("${CMAKE_BINARY_DIR}/generated")
 
 # Compiler flags
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -197,6 +230,9 @@ find_package(argparse CONFIG REQUIRED)
 find_package(fmt CONFIG REQUIRED)
 find_package(CURL CONFIG REQUIRED)
 find_package(LibArchive REQUIRED)
+if(FLAPI_WITH_TRACING)
+    find_package(opentelemetry-cpp CONFIG REQUIRED)
+endif()
 
 include(FetchContent)
 FetchContent_Declare(
@@ -232,7 +268,24 @@ if (WIN32)
     set(DUCKDB_EXPLICIT_PLATFORM "windows_amd64")
 endif()
 
+# DuckDB is built at C++17, NOT flAPI's C++20.
+#
+# flAPI needs C++20 because abseil (via opentelemetry-cpp) exports cxx_std_20 and
+# a split standard across flAPI's own targets is an ABI mismatch. DuckDB has no
+# such requirement, and forcing it to C++20 breaks the MSVC build:
+# duckdb/src/common/exception.cpp:51 guards std::uncaught_exception() with
+# `#if __cplusplus >= 201703L`, but MSVC reports __cplusplus as 199711L unless
+# /Zc:__cplusplus is passed - so MSVC always takes the else branch, and C++20
+# REMOVED std::uncaught_exception(). It compiled at C++17 (deprecated but
+# present) and fails at C++20.
+#
+# Safe to differ because flAPI talks to DuckDB through its C API (duckdb.h), so
+# there is no C++ ABI surface between them. add_subdirectory gets its own scope,
+# so restoring the value afterwards keeps flAPI's own targets at C++20.
+set(FLAPI_CXX_STANDARD ${CMAKE_CXX_STANDARD})
+set(CMAKE_CXX_STANDARD 17)
 add_subdirectory(duckdb EXCLUDE_FROM_ALL)
+set(CMAKE_CXX_STANDARD ${FLAPI_CXX_STANDARD})
 
 # Expose DuckDB paths for posthog-telemetry submodule
 set(DUCKDB_SRC_INCLUDE "${CMAKE_SOURCE_DIR}/duckdb/src/include")
@@ -335,6 +388,14 @@ add_library(flapi-lib STATIC
     src/caching_file_provider.cpp
     src/credential_manager.cpp
     src/flapi_telemetry.cpp
+    src/flapi_log_handler.cpp
+    src/request_context.cpp
+    src/time_utils.cpp
+    src/trace_context.cpp
+    src/trace_capture_policy.cpp
+    src/redaction.cpp
+    src/tracing_config.cpp
+    src/request_context_middleware.cpp
 )
 
 # Ensure web_ui is built before flapi-lib
@@ -365,6 +426,27 @@ target_link_libraries(flapi-lib PUBLIC
     $<IF:$<TARGET_EXISTS:lz4::lz4>,lz4::lz4,lz4::lz4_shared>
     posthog_telemetry
 )
+
+# Exactly one of each twin is compiled. Both define the same versioned-namespace
+# anchor symbol, so a mixed build fails to link rather than disagreeing silently
+# about SpanScope's layout.
+if(FLAPI_WITH_TRACING)
+    target_sources(flapi-lib PRIVATE src/trace_scope.cpp src/flapi_tracing.cpp)
+else()
+    target_sources(flapi-lib PRIVATE src/trace_scope_off.cpp src/flapi_tracing_off.cpp)
+endif()
+
+# opentelemetry-cpp is linked PRIVATE - the one exception to the PUBLIC block above.
+# Its headers must never reach src/include/*, so nothing downstream needs them and
+# protobuf/abseil stay out of the test binary's link surface.
+if(FLAPI_WITH_TRACING)
+    target_link_libraries(flapi-lib PRIVATE
+        opentelemetry-cpp::trace
+        opentelemetry-cpp::resources
+        opentelemetry-cpp::otlp_http_exporter
+        opentelemetry-cpp::otlp_file_exporter
+    )
+endif()
 
 target_compile_definitions(flapi-lib PRIVATE
     FLAPI_VERSION="${FLAPI_VERSION_STR}"

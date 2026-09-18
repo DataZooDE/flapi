@@ -47,6 +47,7 @@ markers = [
     "slow: slow tests that should be skipped in quick runs",
     "mcp: MCP protocol tests",
     "manual: tests requiring manual intervention or setup",
+    "concurrency: concurrency-correctness tests (not the performance gate; see test/load/)",
 ]
 filterwarnings = [
     "ignore::pytest.PytestDeprecationWarning:attr.*:",

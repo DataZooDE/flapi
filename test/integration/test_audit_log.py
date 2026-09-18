@@ -289,3 +289,30 @@ class TestAuditLog:
         assert ev["status"].startswith("error:"), ev
         assert ev["principal"] == "bob"
         assert ev["target"] == "customer_lookup"
+
+    def test_an_mcp_denial_is_audited(self, audit_server):
+        """A denial must leave a record - it is the event the log exists for.
+
+        MCP audits at the tool level and suppresses the HTTP-level line, so any
+        path that rejects a request BEFORE the tool handler runs - Layer-1
+        authentication or authorization - used to produce NO audit record at all.
+        That is the worst failure mode an audit log has: silence on exactly the
+        events a reviewer goes looking for.
+        """
+        token = _make_jwt(sub="mallory", roles=["nobody"])
+
+        before = len(_read_audit_lines(audit_server["audit_path"]))
+        r = requests.post(
+            f"{audit_server['base_url']}/mcp/jsonrpc",
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                  "params": {"name": "customer_lookup", "arguments": {"id": 1}}},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=15,
+        )
+        assert r.status_code in (401, 403), f"expected a denial, got {r.status_code}: {r.text}"
+
+        new = _read_audit_lines(audit_server["audit_path"])[before:]
+        assert len(new) >= 1, (
+            "an MCP denial must be audited; suppression must never swallow one"
+        )
+        assert new[-1]["status"] == "denied", new[-1]

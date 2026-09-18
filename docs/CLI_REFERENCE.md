@@ -728,7 +728,7 @@ On receiving a shutdown signal, the server:
 - **Windows:** Creates minidump file (`crash_dump_<PID>.dmp`) for debugging
 - **Unix/Linux:** Logs error details before exit
 
-> **Implementation:** `src/main.cpp` | **Tests:** *None - see [TEST_TODO.md](./TEST_TODO.md)*
+> **Implementation:** `src/main.cpp` | **Tests:** *None*
 
 ---
 
@@ -747,13 +747,13 @@ On receiving a shutdown signal, the server:
 echo $?  # 0 = valid, 1 = invalid
 ```
 
-> **Implementation:** `src/main.cpp` | **Tests:** *None - see [TEST_TODO.md](./TEST_TODO.md)*
+> **Implementation:** `src/main.cpp` | **Tests:** *None*
 
 ---
 
 ## Related Documentation
 
-- **[Reference Documentation Map](./REFERENCE_MAP.md)** - Navigation guide for all reference docs
+- **[Documentation index](./README.md)** - Start here; organised by what you are trying to do
 - **[Configuration Reference](./CONFIG_REFERENCE.md)** - Configuration file options and format
 - **[Config Service API Reference](./CONFIG_SERVICE_API_REFERENCE.md)** - Runtime configuration REST API and CLI client
 - **[MCP Reference](./MCP_REFERENCE.md)** - Model Context Protocol specification

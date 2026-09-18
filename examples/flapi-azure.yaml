@@ -64,10 +64,11 @@ duckdb:
   max_memory: 2GB
 
 # Server settings
-server:
-  port: 8080
-  host: 0.0.0.0
-  log_level: info
+# Server settings. These are top-level keys, not a `server:` block -
+# a `server:` section is not parsed by flAPI.
+http-port: 8080
+http-host: 0.0.0.0
+log-level: info
 
 # Environment variable whitelist
 environment-whitelist:

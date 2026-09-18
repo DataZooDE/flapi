@@ -405,3 +405,46 @@ vscode-dev:
 	@npm --prefix cli/shared run build -- --watch
 	@npm --prefix cli/vscode-extension install --no-fund
 	@npm --prefix cli/vscode-extension run dev
+
+# ------------------------------------------------------------------ guards
+# Invariants that a compiler cannot express. Both encode failures this codebase
+# has actually hit: two crow::App spellings silently producing a second,
+# unconfigured middleware tuple, and a split C++ standard that segfaulted a test
+# while the build stayed green.
+check-invariants:
+	@./scripts/check_crow_app_alias.sh
+	@./scripts/check_cxx_standard_uniform.sh build/release
+	@./scripts/check_tracing_abi_guard.sh build/release/libflapi-lib.a
+
+.PHONY: check-invariants
+
+# ---------------------------------------------------------------- load testing
+# See test/load/README.md for what these gates can and cannot resolve.
+K6_BIN ?= k6
+LOAD_SHA := $(shell git rev-parse --short HEAD)
+
+load-test: release
+	@K6_BIN=$(K6_BIN) FLAPI_BUILD_TYPE=release ./test/load/run_load.sh --profile cheap --runs 3 --out test/load/last-run.json
+	@python3 test/load/compare.py \
+		--baseline $(shell ls -t test/load/baselines/*-cheap.json 2>/dev/null | head -1) \
+		--current test/load/last-run.json
+
+load-test-full: release
+	@K6_BIN=$(K6_BIN) FLAPI_BUILD_TYPE=release ./test/load/run_load.sh --profile full --runs 3 --out test/load/last-run-full.json
+	@python3 test/load/compare.py \
+		--baseline $(shell ls -t test/load/baselines/*-full.json 2>/dev/null | head -1) \
+		--current test/load/last-run-full.json
+
+# Records a NEW baseline at the current commit. Do this deliberately - a baseline
+# captured after a regression lands silently blesses that regression.
+load-baseline: release
+	@K6_BIN=$(K6_BIN) FLAPI_BUILD_TYPE=release ./test/load/run_load.sh --profile cheap --runs 5 --out test/load/baselines/$(LOAD_SHA)-cheap.json
+	@K6_BIN=$(K6_BIN) FLAPI_BUILD_TYPE=release ./test/load/run_load.sh --profile full  --runs 3 --out test/load/baselines/$(LOAD_SHA)-full.json
+	@echo "baselines recorded for $(LOAD_SHA)"
+
+# The proxy gate: deterministic allocation counts, for costs the wall-clock
+# harness cannot resolve.
+perf-proxy: release
+	@./build/release/test/cpp/flapi_tests "[perf]"
+
+.PHONY: load-test load-test-full load-baseline perf-proxy

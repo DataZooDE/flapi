@@ -305,7 +305,7 @@ TEST_CASE("PreparedValueConverter: Varchar passes raw through", "[prepared_value
     }
 
     SECTION("UTF-8 multibyte preserved") {
-        auto v = okValue(SqlParameterType::Varchar, u8"café 北京");
-        REQUIRE(v.varchar == u8"café 北京");
+        auto v = okValue(SqlParameterType::Varchar, "café 北京");
+        REQUIRE(v.varchar == "café 北京");
     }
 }

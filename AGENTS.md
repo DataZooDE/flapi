@@ -14,31 +14,40 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **DuckDB-powered**: Access 50+ data sources (BigQuery, Postgres, S3, Snowflake, etc.)
 
 **Key Characteristics:**
-- Written in modern C++17 with zero runtime dependencies (single-binary deployment)
-- ~13,400 lines of C++ code across 54 files
+- Written in modern C++20 with zero runtime dependencies (single-binary deployment)
 - Supports Linux (x86/ARM64), macOS (Intel/Apple Silicon), and Windows
 - Declarative API philosophy: logic lives in YAML/SQL, not compiled code
 - Single binary deployment with built-in DuckDB 1.5.5
 
 ## Architecture Documentation
 
-For detailed architecture and design documentation, see:
+**Start at [docs/README.md](docs/README.md)** — the task-first documentation index.
+
+Architecture and design (the "how it works" tree):
 
 - **[docs/spec/ARCHITECTURE.md](docs/spec/ARCHITECTURE.md)** - System architecture overview with component diagrams
 - **[docs/spec/DESIGN_DECISIONS.md](docs/spec/DESIGN_DECISIONS.md)** - Rationale for key design choices
 - **[docs/spec/REQUEST_LIFECYCLE.md](docs/spec/REQUEST_LIFECYCLE.md)** - End-to-end request flow with sequence diagrams
 - **[docs/spec/components/](docs/spec/components/)** - Component-level documentation:
-  - [config-system.md](docs/spec/components/config-system.md) - Configuration management
+  - [config-system.md](docs/spec/components/config-system.md) - Configuration, copy-on-write endpoints
   - [query-execution.md](docs/spec/components/query-execution.md) - SQL templates and DuckDB
   - [caching.md](docs/spec/components/caching.md) - DuckLake caching system
-  - [mcp-protocol.md](docs/spec/components/mcp-protocol.md) - MCP server implementation
-  - [security.md](docs/spec/components/security.md) - Auth and validation
+  - [mcp-protocol.md](docs/spec/components/mcp-protocol.md) - MCP server, SEP-414 trace context
+  - [security.md](docs/spec/components/security.md) - Auth, validation, telemetry egress
+  - [observability.md](docs/spec/components/observability.md) - Request identity, spans, capture tiers
 
-Reference documentation (API/configuration):
+Task-first guides (`docs/guides/`): getting-started, rest-endpoints, mcp-tools,
+caching, authentication, cloud-storage, yaml-includes, self-packaging.
+
+Reference:
 - [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md) - Configuration file format
 - [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md) - CLI commands
 - [docs/MCP_REFERENCE.md](docs/MCP_REFERENCE.md) - MCP protocol details
 - [docs/CONFIG_SERVICE_API_REFERENCE.md](docs/CONFIG_SERVICE_API_REFERENCE.md) - Runtime configuration API
+- [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md) - Tracing, audit, log correlation
+
+`docs/archive/` holds completed plans and shipped design notes. **Not maintained
+— never cite it as current behaviour.**
 
 ## Building and Development
 
@@ -294,7 +303,8 @@ validators:
 
 **Security Strategy (Defense in Depth):**
 1. **Validators**: First line (whitelist validation)
-2. **Triple braces**: Second line (string escaping)
+2. **Quoting discipline in the template**: triple braces inside single-quoted
+   SQL literals. Note this is NOT escaping — see the security note in §3.
 3. Never trust user input even with both layers
 
 ### 5. DuckLake Caching
@@ -364,8 +374,9 @@ connection: [data-source-name]     # From connections in flapi.yaml
 # Caching (optional)
 cache:
   enabled: true
-  ttl: 3600                        # Seconds
-  refresh: full                    # full or incremental
+  schedule: 6h                     # how often to refresh
+  # Mode is INFERRED: no primary-key/cursor = full refresh;
+  # cursor only = append; primary-key + cursor = merge.
   table: customers_cache           # Cache table name
 
 # MCP tool definition (optional)
@@ -388,12 +399,12 @@ auth:
 ```sql
 SELECT * FROM read_parquet('{{ context.conn.path }}')
 WHERE 1=1
-{{#if params.id}}
+{{#params.id}}
   AND customer_id = {{ params.id }}
-{{/if}}
-{{#if params.status}}
-  AND status = '{{ params.status }}'
-{{/if}}
+{{/params.id}}
+{{#params.status}}
+  AND status = '{{{ params.status }}}'
+{{/params.status}}
 ```
 
 Template variables available:
@@ -695,8 +706,8 @@ make integration-test-ci           # Full suite with server management
 ```yaml
 cache:
   enabled: true
-  ttl: 3600                        # Cache validity in seconds
-  refresh: full                    # full = REPLACE, incremental = APPEND/MERGE
+  schedule: 6h                     # how often to refresh
+  # Mode is INFERRED from primary-key/cursor - there is no `refresh:` key.
   table: cache_table_name          # Where to store cached results
   refresh_query: |                 # Optional: custom refresh query
     SELECT * FROM external_source
@@ -745,25 +756,31 @@ duckdb:
     - name: json
     - name: postgres
 
-# Server settings
-server:
-  port: 8080                        # REST API port
-  mcp_port: 8081                    # MCP server port
-  host: 0.0.0.0
-  log_level: info                   # debug, info, warn, error
+# Logging (top level, not nested under `server:`)
+log-level: info                     # debug, info, warn, error
+log-format: text                    # text | json
 
-# Global auth configuration (optional)
-auth:
-  default_required: true
-  jwt_secret: ${JWT_SECRET}         # Environment variable substitution
-  allowed_roles: [admin, user]
+# MCP server (its own top-level block)
+mcp:
+  enabled: true
+  port: 8081
 
-# Global rate limiting (optional)
+# Global rate limiting (optional). Note the underscore here and the HYPHEN
+# in the per-endpoint `rate-limit:` block - they genuinely differ.
 rate_limit:
   enabled: true
-  requests_per_minute: 100
-  burst_size: 10
+  max: 100                          # requests per interval
+  interval: 60                      # seconds
+
+# Tracing (optional, off by default, read once at startup)
+tracing:
+  enabled: false
 ```
+
+> **Do not trust this snippet over the code.** It is illustrative; the
+> authoritative key list is [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md),
+> and the parser in `src/config_manager.cpp` is the ground truth. Before
+> documenting any key, grep for a *reader* of it, not just a parser.
 
 ### Environment Variables
 
@@ -1063,8 +1080,7 @@ flapii endpoints create --file my-endpoint.yaml
 ```yaml
 cache:
   enabled: true
-  ttl: 3600
-  refresh: full
+  schedule: 6h
   table: my_endpoint_cache
 ```
 
@@ -1190,7 +1206,14 @@ Common extensions:
 ### CMake Build Configuration
 
 **Key Features:**
-- C++17 standard requirement
+- **C++20 project-wide, with one deliberate exception**: DuckDB's subdirectory is
+  built at C++17. abseil (via opentelemetry-cpp) exports `cxx_std_20`, and mixing
+  standards across the link produced a real segfault; but C++20 removed
+  `std::uncaught_exception()`, which DuckDB calls behind a `__cplusplus` guard
+  that MSVC defeats. `CMakeLists.txt` saves and restores `CMAKE_CXX_STANDARD`
+  around `add_subdirectory(duckdb)`. **Do not "simplify" this** — see
+  `docs/spec/DESIGN_DECISIONS.md § 10c`. `scripts/check_cxx_standard_uniform.sh`
+  guards the rest.
 - vcpkg integration for consistent dependency management
 - Platform-specific configurations (Windows, macOS, Linux/ARM64)
 - Cross-compilation support
@@ -1325,7 +1348,7 @@ Configure with cron expressions or interval schedules.
 
 ### Cache Strategy
 
-- Use full refresh (`refresh: full`) for small, frequently-accessed datasets
+- Use full refresh (declare neither `primary-key` nor `cursor`) for small datasets
 - Use incremental refresh (`refresh: incremental`) for large append-only data
 - Set appropriate TTL based on data freshness requirements
 - Monitor cache hit rates in logs
@@ -1700,6 +1723,8 @@ After making code changes, update the relevant documentation:
 | Cache system changes | `docs/spec/components/caching.md` |
 | MCP implementation changes | `docs/spec/components/mcp-protocol.md` |
 | Auth/security changes | `docs/spec/components/security.md` |
+| Tracing/audit/logging changes | `docs/OBSERVABILITY.md`, `docs/spec/components/observability.md` |
+| A new user-facing capability | a guide in `docs/guides/`, linked from `docs/README.md` |
 
 ### Documentation Checklist
 
@@ -1707,6 +1732,9 @@ Before completing work that modifies code:
 
 - [ ] If architecture changed → update `docs/spec/ARCHITECTURE.md`
 - [ ] If new design decision → add to `docs/spec/DESIGN_DECISIONS.md`
+- [ ] **Every config key you document, grep for a *reader* in `src/`, not just a
+      parser.** Three keys once shipped documented and parsed but never read;
+      operators could set them and nothing happened.
 - [ ] If request flow changed → update `docs/spec/REQUEST_LIFECYCLE.md`
 - [ ] If component internals changed → update relevant `docs/spec/components/*.md`
 - [ ] If user-facing API changed → update relevant reference doc in `docs/`

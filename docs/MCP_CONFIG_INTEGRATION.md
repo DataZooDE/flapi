@@ -700,7 +700,7 @@ Typical tool execution latency:
 ## Related Documentation
 
 **Reference Docs:**
-- **[Reference Documentation Map](./REFERENCE_MAP.md)** - Navigation guide for all reference docs
+- **[Documentation index](./README.md)** - Start here; organised by what you are trying to do
 - **[MCP Configuration Tools API Reference](./MCP_CONFIG_TOOLS_API.md)** - Complete 20-tool reference
 - **[MCP Reference](./MCP_REFERENCE.md)** - MCP protocol specification and error codes
 - **[Configuration Reference](./CONFIG_REFERENCE.md)** - Configuration file options

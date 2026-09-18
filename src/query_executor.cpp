@@ -1,10 +1,17 @@
 #include "query_executor.hpp"
+#include "flapi_tracing.hpp"
+#include "trace_semconv.hpp"
 #include "duckdb_raii.hpp"
+#include "tracing_config.hpp"
+#include <atomic>
 #include "prepared_value_converter.hpp"
 #include <crow.h>
 #include <fmt/core.h>
 #include <sstream>
 #include <stdexcept>
+#include <algorithm>
+#include <array>
+#include <cctype>
 
 // The C++ API is used as a universal fallback for exotic column types
 // (BIGNUM/VARINT, GEOMETRY, VARIANT, ...) that have no dedicated C-API
@@ -72,12 +79,255 @@ QueryExecutor::~QueryExecutor() {
     duckdb_disconnect(&conn);
 }
 
+
+namespace {
+
+// The DuckDB boundary is the only honest one flAPI has.
+//
+// DuckDB extensions (BigQuery, Iceberg, Postgres scanners, cloud object storage)
+// do their own network I/O through their own stacks, which flAPI cannot see. So a
+// 20-second Iceberg scan is one flat span here, and the documentation says so
+// rather than leaving users to wonder.
+//
+// db.query.text is NOT emitted: at the metadata tier it is only safe when every
+// parameter site is a prepared binding, and deciding that per call is a payload-
+// tier concern. Default off, per the plan's open question 1.
+
+// Skip whitespace, `-- line comments` and /* block comments */ to the first real
+// token, then accept it only if it is a known statement verb.
+std::string sqlOperationName(const std::string& sql) {
+    std::size_t i = 0;
+    while (i < sql.size()) {
+        if (std::isspace(static_cast<unsigned char>(sql[i]))) {
+            ++i;
+        } else if (sql.compare(i, 2, "--") == 0) {
+            const auto nl = sql.find('\n', i);
+            if (nl == std::string::npos) { return "OTHER"; }
+            i = nl + 1;
+        } else if (sql.compare(i, 2, "/*") == 0) {
+            const auto close = sql.find("*/", i + 2);
+            if (close == std::string::npos) { return "OTHER"; }
+            i = close + 2;
+        } else {
+            break;
+        }
+    }
+    const auto end = sql.find_first_of(" \t\r\n(;", i);
+    std::string verb = sql.substr(i, end == std::string::npos ? std::string::npos : end - i);
+    for (auto& c : verb) { c = static_cast<char>(std::toupper(static_cast<unsigned char>(c))); }
+
+    static const std::array<std::string_view, 16> kVerbs{{
+        "SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "CREATE", "DROP",
+        "ALTER", "ATTACH", "DETACH", "COPY", "PRAGMA", "SET", "CALL",
+        "EXPLAIN", "WITH",
+    }};
+    return std::find(kVerbs.begin(), kVerbs.end(), verb) != kVerbs.end()
+               ? verb
+               : std::string("OTHER");
+}
+
+
+// The verb from the PREPARED HANDLE, not from the statement text. Strictly
+// better than parsing the SQL: no text is passed in, so the SQL cannot reach a
+// span even by accident; it is exact rather than a leading-token guess; and it
+// works for the extracted init statements at startup, which have no text at the
+// call site and were otherwise all labelled OTHER.
+const char* preparedVerb(duckdb_prepared_statement stmt) {
+    switch (duckdb_prepared_statement_type(stmt)) {
+        case DUCKDB_STATEMENT_TYPE_SELECT:       return "SELECT";
+        case DUCKDB_STATEMENT_TYPE_INSERT:       return "INSERT";
+        case DUCKDB_STATEMENT_TYPE_UPDATE:       return "UPDATE";
+        case DUCKDB_STATEMENT_TYPE_DELETE:       return "DELETE";
+        case DUCKDB_STATEMENT_TYPE_MERGE_INTO:   return "MERGE";
+        case DUCKDB_STATEMENT_TYPE_CREATE:
+        case DUCKDB_STATEMENT_TYPE_CREATE_FUNC:  return "CREATE";
+        case DUCKDB_STATEMENT_TYPE_DROP:         return "DROP";
+        case DUCKDB_STATEMENT_TYPE_ALTER:        return "ALTER";
+        case DUCKDB_STATEMENT_TYPE_ATTACH:       return "ATTACH";
+        case DUCKDB_STATEMENT_TYPE_DETACH:       return "DETACH";
+        case DUCKDB_STATEMENT_TYPE_COPY:         return "COPY";
+        case DUCKDB_STATEMENT_TYPE_PRAGMA:       return "PRAGMA";
+        case DUCKDB_STATEMENT_TYPE_SET:
+        case DUCKDB_STATEMENT_TYPE_VARIABLE_SET: return "SET";
+        case DUCKDB_STATEMENT_TYPE_CALL:         return "CALL";
+        case DUCKDB_STATEMENT_TYPE_EXPLAIN:      return "EXPLAIN";
+        case DUCKDB_STATEMENT_TYPE_TRANSACTION:  return "TRANSACTION";
+        case DUCKDB_STATEMENT_TYPE_VACUUM:       return "VACUUM";
+        case DUCKDB_STATEMENT_TYPE_LOAD:         return "LOAD";
+        default:                                 return "OTHER";
+    }
+}
+
+flapi::SpanScope startDbSpanWithVerb(const std::string& context, const char* verb) {
+    flapi::SpanScope span = flapi::Tracing().startSpan(
+        context.empty() ? "duckdb.query" : context.c_str(), flapi::SpanKind::Client);
+    if (span) {
+        span.setAttr(flapi::semconv::db::kSystemName, flapi::semconv::db::kDuckDB);
+        span.setAttr(flapi::semconv::db::kOperationName, verb);
+    }
+    return span;
+}
+
+flapi::SpanScope startDbSpan(const std::string& context, const std::string& sql) {
+    flapi::SpanScope span = flapi::Tracing().startSpan(
+        context.empty() ? "duckdb.query" : context.c_str(), flapi::SpanKind::Client);
+    if (span) {
+        span.setAttr(flapi::semconv::db::kSystemName, flapi::semconv::db::kDuckDB);
+        // An ALLOWLISTED verb, never a slice of the statement. Taking the first
+        // token was not bounded in practice: a template opening with a comment
+        // exported "--", and a token with no whitespace terminator exported up
+        // to eight characters of rendered SQL - which can be caller data.
+        span.setAttr(flapi::semconv::db::kOperationName, sqlOperationName(sql));
+    }
+    return span;
+}
+
+}  // namespace
+
+
+namespace {
+
+// The ALLOWLIST. flAPI asks DuckDB for exactly these and reads back exactly
+// these. Two metrics are deliberately absent and must stay absent:
+//
+//   QUERY_NAME  - the SQL text itself.
+//   EXTRA_INFO  - per operator, this is expression->GetName(), i.e. the
+//                 rendered filter predicate. On the prepared path that can
+//                 carry bound parameter values, so exporting it would leak
+//                 customer data at the default capture tier.
+//
+// Never iterate duckdb_profiling_info_get_metrics() and export what comes back:
+// that re-leaks the moment DuckDB adds a metric.
+struct ProfMetric {
+    const char* duckdb_key;
+    const char* attribute;
+    bool is_double;
+    bool detailed_only;
+};
+
+constexpr std::array<ProfMetric, 6> kProfMetrics{{
+    // Summary: query-level only. None of these trigger ProfilingInfo::Expand,
+    // so DuckDB does not switch on per-operator collection for them.
+    {"LATENCY",                   flapi::semconv::dbprof::kLatencyMs,       true,  false},
+    {"BLOCKED_THREAD_TIME",       flapi::semconv::dbprof::kBlockedMs,       true,  false},
+    {"RESULT_SET_SIZE",           flapi::semconv::dbprof::kResultBytes,     false, false},
+    {"TOTAL_BYTES_READ",          flapi::semconv::dbprof::kBytesRead,       false, false},
+    // Detailed: CPU_TIME expands to OPERATOR_TIMING and CUMULATIVE_ROWS_SCANNED
+    // to OPERATOR_ROWS_SCANNED inside DuckDB, so these cost real work per query.
+    {"CPU_TIME",                  flapi::semconv::dbprof::kCpuTimeMs,       true,  true},
+    {"CUMULATIVE_ROWS_SCANNED",   flapi::semconv::dbprof::kRowsScanned,     false, true},
+}};
+
+}  // namespace
+
+// A new QueryExecutor - and a new connection - per query means a failing SET
+// would otherwise be retried, and warned about, on every sampled query. Latch it
+// once for the process.
+static std::atomic<bool> g_profiling_unsupported{false};
+
+void QueryExecutor::enableProfilingIfRequested(const SpanScope& span) {
+    if (profiling_enabled_ || g_profiling_unsupported.load(std::memory_order_relaxed)) {
+        return;
+    }
+    const flapi::DbProfiling level = flapi::Tracing().dbProfiling();
+    if (level == flapi::DbProfiling::Off) {
+        return;
+    }
+    // Gated on the span RECORDING, not merely existing. Otherwise a 1% sampling
+    // ratio still pays 100% of the profiling cost, which is the opposite of what
+    // sampling is for.
+    if (!span || !span.recording()) {
+        return;
+    }
+
+    const bool detailed = level == flapi::DbProfiling::Detailed;
+    std::string json = "{";
+    for (const auto& m : kProfMetrics) {
+        if (m.detailed_only && !detailed) {
+            continue;
+        }
+        if (json.size() > 1) { json += ","; }
+        json += "\"";
+        json += m.duckdb_key;
+        json += "\":\"true\"";
+    }
+    json += "}";
+
+    // `no_output` FIRST, then the metric set.
+    //
+    // custom_profiling_settings turns the profiler on but leaves
+    // emit_profiler_output at its default of true (client_config.hpp), so
+    // DuckDB renders and prints a ~1 KB query tree to stderr for EVERY profiled
+    // query: a synchronous write on the request thread, log volume proportional
+    // to QPS, and operator detail landing in a log that never passes through the
+    // capture tiers. `SET enable_profiling='no_output'` clears that flag; the
+    // second statement then replaces the metric set without re-enabling output.
+    //
+    // Both go in one duckdb_query call, so this is still one round trip.
+    const std::string stmt =
+        "SET enable_profiling='no_output'; "
+        "SET custom_profiling_settings='" + json + "'";
+    duckdb_result r;
+    if (duckdb_query(conn, stmt.c_str(), &r) == DuckDBSuccess) {
+        profiling_enabled_ = true;
+    } else {
+        // Never fail a request for instrumentation. A DuckDB build without these
+        // settings simply produces no profiling attributes - said once, not once
+        // per query.
+        if (!g_profiling_unsupported.exchange(true, std::memory_order_relaxed)) {
+            CROW_LOG_WARNING << "could not enable DuckDB profiling; "
+                                "db_profiling attributes will be absent";
+        }
+    }
+    duckdb_destroy_result(&r);
+}
+
+void QueryExecutor::attachProfilingMetrics(SpanScope& span) const {
+    if (!profiling_enabled_ || !span) {
+        return;
+    }
+    duckdb_profiling_info info = duckdb_get_profiling_info(conn);
+    if (info == nullptr) {
+        return;   // profiling not active on this connection
+    }
+    const bool detailed = flapi::Tracing().dbProfiling() == flapi::DbProfiling::Detailed;
+
+    for (const auto& m : kProfMetrics) {
+        if (m.detailed_only && !detailed) {
+            continue;
+        }
+        DuckDBValue value(duckdb_profiling_info_get_value(info, m.duckdb_key));
+        if (!value) {
+            // Absent, not zero. A fabricated measurement is worse than a missing
+            // one: zero latency reads as "instant" on every dashboard.
+            continue;
+        }
+        // Never let a metric read fail a request: a future DuckDB could change
+        // a metric's type, and duckdb_get_* on a mismatched value is not
+        // something to find out about in production.
+        try {
+            if (m.is_double) {
+                span.setAttr(m.attribute, duckdb_get_double(value.get()) * 1000.0);
+            } else {
+                span.setAttr(m.attribute,
+                             static_cast<std::int64_t>(duckdb_get_uint64(value.get())));
+            }
+        } catch (...) {
+            // skip this metric
+        }
+    }
+    // `info` is owned by the connection - there is no duckdb_destroy_profiling_info.
+}
+
 void QueryExecutor::execute(const std::string& query, const std::string& context) {
     if (has_result) {
         duckdb_destroy_result(&result);
         has_result = false;
     }
     
+    SpanScope span = startDbSpan(context, query);
+    enableProfilingIfRequested(span);
+
     duckdb_state qstate;
     {
         // Publish this executor for the running thread so another thread can
@@ -89,16 +339,32 @@ void QueryExecutor::execute(const std::string& query, const std::string& context
         std::string error_message = duckdb_result_error(&result);
         std::string context_msg = context.empty() ? "" : " during " + context;
         duckdb_destroy_result(&result);
+        // Enumerated, never the DuckDB message: that string routinely contains
+        // fragments of the failing SQL, i.e. customer data.
+        span.setError("query_failed");
         throw std::runtime_error("Query execution failed" + context_msg + ": " + error_message);
     }
     has_result = true;
+    if (span) {
+        span.setAttr(semconv::db::kReturnedRows,
+                     static_cast<std::int64_t>(duckdb_row_count(&result)));
+        attachProfilingMetrics(span);
+    }
 }
 
-void QueryExecutor::executePrepared(duckdb_prepared_statement stmt, const std::string& context) {
+void QueryExecutor::executePrepared(duckdb_prepared_statement stmt,
+                                    const std::string& context) {
     if (has_result) {
         duckdb_destroy_result(&result);
         has_result = false;
     }
+
+    // The span lives HERE, not in executeWithBindings, because this is the one
+    // choke point both callers pass through - executeWithBindings delegates to
+    // it, and DatabaseManager calls it directly for extracted init statements.
+    // Spanning in both places would double-count every typed endpoint.
+    SpanScope span = startDbSpanWithVerb(context, preparedVerb(stmt));
+    enableProfilingIfRequested(span);
 
     duckdb_state pstate;
     {
@@ -109,9 +375,17 @@ void QueryExecutor::executePrepared(duckdb_prepared_statement stmt, const std::s
         std::string error_message = duckdb_result_error(&result);
         std::string context_msg = context.empty() ? "" : " during " + context;
         duckdb_destroy_result(&result);
+        // Enumerated, never the DuckDB message: it routinely contains fragments
+        // of the failing SQL, i.e. customer data.
+        span.setError("query_failed");
         throw std::runtime_error("Prepared statement execution failed" + context_msg + ": " + error_message);
     }
     has_result = true;
+    if (span) {
+        span.setAttr(semconv::db::kReturnedRows,
+                     static_cast<std::int64_t>(duckdb_row_count(&result)));
+        attachProfilingMetrics(span);
+    }
 }
 
 namespace {

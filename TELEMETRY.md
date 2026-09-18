@@ -97,3 +97,18 @@ property to 512 bytes as a backstop:
 - `auth_enforced`: `src/auth_middleware.cpp` (`before_handle`).
 - Tests (incl. a no-leak assertion against the real transport):
   `test/cpp/test_flapi_telemetry.cpp`.
+
+---
+
+## Not to be confused with tracing
+
+This document describes **PostHog product analytics**: what flAPI reports back to
+DataZoo about its own usage.
+
+**OpenTelemetry tracing** is a separate subsystem with a separate purpose
+(diagnosing your own requests), a separate consent model (off by default, and
+configured per deployment rather than per product), and a separate destination
+(your collector, not ours). See [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md).
+
+Neither implies the other. Disabling telemetry does not disable tracing, and
+enabling tracing sends nothing to DataZoo.

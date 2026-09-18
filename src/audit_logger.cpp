@@ -1,5 +1,9 @@
 #include "audit_logger.hpp"
+#include "redaction.hpp"
+#include "request_context.hpp"
+#include "time_utils.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <crow/json.h>
 #include <ctime>
@@ -71,22 +75,8 @@ void AuditLogger::log(AuditEvent event) {
     sink_stream_->flush();
 }
 
-std::string AuditLogger::nowIso8601() {
-    const auto now = std::chrono::system_clock::now();
-    const auto now_t = std::chrono::system_clock::to_time_t(now);
-    const auto micros = std::chrono::duration_cast<std::chrono::microseconds>(
-                            now.time_since_epoch()).count() % 1'000'000;
-    std::tm tm_buf{};
-#ifdef _WIN32
-    gmtime_s(&tm_buf, &now_t);
-#else
-    gmtime_r(&now_t, &tm_buf);
-#endif
-    std::ostringstream oss;
-    oss << std::put_time(&tm_buf, "%Y-%m-%dT%H:%M:%S")
-        << '.' << std::setfill('0') << std::setw(6) << micros << 'Z';
-    return oss.str();
-}
+std::string AuditLogger::nowIso8601() { return nowIso8601Utc(); }
+
 
 std::string AuditLogger::generateRequestId() {
     // 16 hex chars — short enough for logs, wide enough to avoid collisions
@@ -98,6 +88,14 @@ std::string AuditLogger::serialiseEvent(const AuditEvent& event) const {
     crow::json::wvalue line;
     line["timestamp"] = event.timestamp;
     line["request_id"] = event.request_id;
+    // Emitted only when tracing is active, so the audit schema is byte-identical
+    // for operators who never turn tracing on.
+    if (!event.trace_id.empty()) {
+        line["trace_id"] = event.trace_id;
+    }
+    if (!event.span_id.empty()) {
+        line["span_id"] = event.span_id;
+    }
     line["principal"] = event.principal;
     line["method"] = event.method;
     line["target"] = event.target;
@@ -107,14 +105,50 @@ std::string AuditLogger::serialiseEvent(const AuditEvent& event) const {
 
     crow::json::wvalue params = crow::json::wvalue::object();
     for (const auto& [key, value] : event.params) {
-        if (config_.redact_keys.count(key) > 0) {
+        // Two independent reasons to mask, and the credential check comes first
+        // because it must not depend on the operator's list being complete. The
+        // audit log is written even when tracing is compiled out, so this is the
+        // only redaction a `FLAPI_WITH_TRACING=OFF` build performs.
+        if (isCredentialKey(key)) {
             params[key] = "<redacted>";
-        } else {
-            params[key] = value;
+            continue;
         }
+        const std::string normalised = normaliseKey(key);
+        const bool listed = std::any_of(
+            config_.redact_keys.begin(), config_.redact_keys.end(),
+            [&normalised](const std::string& k) { return normaliseKey(k) == normalised; });
+        params[key] = listed ? "<redacted>" : value;
     }
     line["params"] = std::move(params);
     return line.dump();
+}
+
+AuditEvent auditEventFrom(const RequestContext& rc) {
+    AuditEvent ev;
+    ev.request_id = std::string(rc.requestIdView());
+    ev.trace_id = std::string(rc.traceIdView());
+    ev.span_id = std::string(rc.spanIdView());
+    ev.principal = rc.principal;
+    ev.method = rc.http_method;
+    ev.target = std::string(rc.route_template);
+    ev.row_count = rc.row_count;
+    ev.latency_ms = rc.elapsedMs();
+
+    // One mapping, so REST and MCP audit lines classify outcomes identically.
+    if (rc.status_code >= 200 && rc.status_code < 300) {
+        ev.status = "success";
+    } else if (rc.status_code == 401 || rc.status_code == 403) {
+        ev.status = "denied";
+    } else if (rc.status_code == 429) {
+        ev.status = "rate_limited";
+    } else if (rc.status_code != 0) {
+        ev.status = "error:" + std::to_string(rc.status_code);
+    }
+
+    for (const auto& [key, value] : rc.audit_params) {
+        ev.params[key] = value;
+    }
+    return ev;
 }
 
 } // namespace flapi
