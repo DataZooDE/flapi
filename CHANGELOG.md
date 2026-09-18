@@ -2,6 +2,61 @@
 
 All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (the date the binary set was cut). Earlier history is in the git log.
 
+## v26.09.19 — Blocking span export for scale-to-zero, and a documentation correction
+
+### Fixed: `tracing.endpoint` must be the full trace URL
+
+The examples published with v26.09.18 used `endpoint: http://localhost:4318`. **That does not
+work.** opentelemetry-cpp uses an overridden URL verbatim and does not append `/v1/traces`, so
+flAPI posted to `/` and any real collector rejected it — silently, because
+`OtlpHttpExporter::Export` discards its own result and reports success regardless. Anyone who
+copied the documented configuration got no traces and no signal that anything was wrong.
+
+Use `endpoint: http://localhost:4318/v1/traces`.
+
+### Added: opt-in blocking span export
+
+For request-billed, scale-to-zero platforms (Cloud Run, App Runner), where CPU is throttled the
+moment the response is sent and the background export thread may never be scheduled:
+
+```yaml
+tracing:
+  flush:
+    mode: on_response
+    blocking_timeout_ms: 300     # required for otlp_http; 1-1000
+```
+
+Off unless you set the budget — there is no safe default for how much latency you will trade for
+telemetry. Adds ~3 ms against a healthy collector, is bounded exactly at the budget against a
+hanging one, and does not grow with concurrency. Against a hanging collector throughput degrades
+to roughly `workers / blocking_timeout_ms`.
+
+### Added
+
+- **`spans_submitted`** in `GET /api/v1/_config/metrics`. `spans_dropped` cannot detect a
+  rejecting collector — the SDK drops silently on a full queue and reports export failures as
+  success — so `submitted - exported` is the honest view of queue loss. For `otlp_http`, the flAPI
+  log (`[OTLP TRACE HTTP Exporter] ERROR`) remains the only reliable failure signal.
+
+### Fixed
+
+- **MCP spans reported `http.route: <unmatched>`**, putting every agent call in the same bucket as
+  a vulnerability scanner's 404s. Now `/mcp/jsonrpc`.
+- **The `SIGTERM` force-flush budget was hardcoded at 2 s**, so tuning `flush.timeout_ms` had no
+  effect on the path that matters most under a short shutdown grace. Now configurable and
+  range-checked.
+- **SQLite lock contention** (partial fix for #116): lock errors are retried with bounded backoff
+  on both read and write paths, and exhausted retries return `503` with `Retry-After` rather than
+  `500` — contention is not a fault in the request. The rollback path no longer runs `ROLLBACK`
+  when no transaction is active, which had compounded every real error with a spurious one.
+
+### Known limitation
+
+Concurrent mixed read/write traffic against a **SQLite-backed** endpoint can still wedge that
+attachment permanently, while `/health/live` continues to return 200 and other connections keep
+serving. A restart clears it and no data is lost. Root-caused and tracked in
+[#116](https://github.com/DataZooDE/flapi/issues/116).
+
 ## v26.09.18 — OpenTelemetry observability, and health checks during cache warmup
 
 ### Observability and tracing
