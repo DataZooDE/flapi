@@ -97,6 +97,68 @@ exports no customer data unless an endpoint is explicitly opted in. See
 - The unit tests that use the `#define private public` access hack now include `<crow.h>` before it,
   so crow is never parsed with rewritten access specifiers.
 
+## v26.08.31 — MCP 2026-07-28 dual-era support and the Tasks extension
+
+- **MCP revision `2026-07-28`, served dual-era.** The modern stateless path and the legacy
+  `initialize`/session path are served from the same endpoint, chosen per request by whether the
+  client sent the modern `_meta` block. Existing clients keep working unchanged; newer ones get the
+  stateless path automatically. flAPI had never really trusted the session — every `tools/call`
+  already re-authenticated from the HTTP request — so dropping it lost nothing and made the server
+  genuinely stateless behind a load balancer.
+- **Tasks extension** for long-running analytical queries: a query that would outlive a proxy or
+  client timeout becomes a durable, pollable task rather than a dropped connection.
+- Typed tool schemas and structured results, OAuth discovery, per-tool RBAC, shadow/dry-run,
+  response shaping, per-tool rate limiting, and a prompt-injection hygiene scanner.
+- Cursor pagination, parameterised resource templates (`flapi://customers/{id}`), and
+  `x-mcp-header` for per-tenant edge routing.
+- Closed a gap where method authorization could be skipped by omitting the session header.
+- **DuckDB bumped to v1.5.5.**
+
+## v26.08.07 — Feedback banner and issue links on errors
+
+- An interactive start prints a small banner once a day pointing at the issue tracker; under a
+  container or systemd there is no terminal, so it never prints and the startup log line carries
+  the pointer instead. Silence it with `DATAZOO_NO_BANNER=1`.
+- Every JSON error response carries a `report_issue` link, so a user hitting a problem has
+  somewhere to send it without hunting for the repository.
+
+## v26.07.17 — Self-packaging, 12-factor configuration, and REST type coverage
+
+### Self-packaging (single-binary deploy)
+
+- `flapi pack` folds a whole config tree — YAML, SQL templates, small data files — into the binary
+  itself, so `scp flapi-prod user@host` becomes the deploy. `info` inspects a bundle and `unpack`
+  extracts it.
+- A ZIP is appended after the executable, or on macOS written into a reserved `__FLAPI/__bundle`
+  Mach-O segment allocated at link time, so the output stays **notarisable**. Fat/universal macOS
+  binaries supported.
+- `EmbeddedArchiveFileProvider` serves config and templates from the bundle, and an
+  `embed://` DuckDB filesystem lets `read_csv('embed://data/cities.csv')` reach the same bytes from
+  SQL.
+- Reproducible: set `SOURCE_DATE_EPOCH` and the output is bit-identical across runs.
+- Secrets are refused at pack time by default (`*.env`, `secrets/*`, `*.pem`, `*.key`).
+
+### Configuration
+
+- 12-factor environment variables: `FLAPI_CONFIG`, `FLAPI_LOG_LEVEL`, `FLAPI_PORT`, `FLAPI_HOST`.
+- The baked-in version is derived from the git tag rather than hardcoded.
+
+### REST serialization correctness
+
+A sweep of DuckDB types that were previously serialized wrongly or not at all (#89):
+
+- Native `LIST`/`STRUCT`/`ARRAY`/`UNION` columns serialized per row.
+- `MAP` columns as `{key: value}` rather than a positional pair array.
+- `UUID`, `HUGEINT`, `BLOB` and `BIT` corrected.
+- `VARINT`/`BIGNUM`, `GEOMETRY` and `VARIANT` now serialized rather than dropped.
+
+### Other
+
+- Client parity restored between the `flapii` CLI, the VS Code extension and the server (#75–#77).
+- PostHog telemetry moved to the shared schema v2.
+- Wheel license metadata corrected to BUSL-1.1, and the MCP registry marker added.
+- MCP logging capability emitted as an empty object rather than `null`.
+
 ## v26.05.18 — Prepared-statement coverage swept across every code path
 
 Follow-up to v26.05.17. After v26.05.17 shipped, an internal audit found that the prepared-statement path was only wired into the GET endpoint executor — POST/PUT/PATCH writes and the Arrow-streaming endpoint still rendered Mustache templates as strings. This release closes that gap.
