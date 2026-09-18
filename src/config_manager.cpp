@@ -376,6 +376,18 @@ void ConfigManager::parseTracingConfig() {
         if (f["mode"])           { tracing_config.flush.mode = f["mode"].as<std::string>(); }
         if (f["timeout_ms"])     { tracing_config.flush.timeout_ms = f["timeout_ms"].as<int>(); }
         if (f["max_queue_size"]) { tracing_config.flush.max_queue_size = f["max_queue_size"].as<int>(); }
+        if (f["blocking_timeout_ms"]) {
+            const int ms = f["blocking_timeout_ms"].as<int>();
+            // Capped hard. This value lands directly in every caller's latency,
+            // so an operator must not be able to set 30s and discover it in
+            // production.
+            if (ms <= 0 || ms > 1000) {
+                throw std::runtime_error(
+                    "tracing.flush.blocking_timeout_ms must be between 1 and 1000 ms; got "
+                    + std::to_string(ms));
+            }
+            tracing_config.flush.blocking_timeout_ms = ms;
+        }
     }
     if (const auto& file = node["file"]) {
         if (file["path"]) { tracing_config.file_path = file["path"].as<std::string>(); }

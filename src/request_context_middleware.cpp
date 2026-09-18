@@ -422,6 +422,32 @@ void RequestContextMiddleware::finish(crow::response& res, context& ctx) {
     } catch (...) {
         instrumentation_failures_.fetch_add(1, std::memory_order_relaxed);
     }
+
+    // --- Blocking export, for request-billed scale-to-zero platforms --------
+    //
+    // Opt-in only (tracing.flush.blocking_timeout_ms), and deliberately LAST:
+    // the span is already ended above, so this flush carries it.
+    //
+    // This runs BEFORE the response reaches the socket. Crow's
+    // complete_request() calls the after-handlers, then compresses, then writes
+    // (crow/http_connection.h:218-254), so the cost is in the caller's latency
+    // by construction. That is not an oversight - on a platform that throttles
+    // CPU the instant the response is sent, before-the-response is the ONLY
+    // window where the export is guaranteed to be scheduled.
+    //
+    // One ForceFlush per request, not per span: the processor is still a
+    // BatchSpanProcessor, so a request's whole span tree leaves in a single
+    // round trip, and any spans left buffered by concurrent or background work
+    // are swept out with it.
+    if (const auto budget = Tracing().blockingFlush()) {
+        try {
+            if (!Tracing().forceFlush(*budget)) {
+                FlapiTracing::noteFlushTimeout();
+            }
+        } catch (...) {
+            instrumentation_failures_.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
 }
 
 

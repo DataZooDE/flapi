@@ -35,6 +35,16 @@ struct TracingFlushConfig {
     std::string mode = "batch";          // batch | on_response
     int timeout_ms = 2000;
     int max_queue_size = 2048;
+
+    // Opt-in for request-billed, scale-to-zero platforms (Cloud Run, App
+    // Runner). With `mode: on_response` and a NETWORK exporter, this is the
+    // hard cap on how long a request may block while its spans are exported.
+    //
+    // Deliberately no default. There is no safe universal answer to "how much
+    // latency will you trade for telemetry", and a defaulted one would be
+    // adopted by accident. Absent it, on_response keeps falling back to batch
+    // for otlp_http, which is the safe behaviour for a long-lived deployment.
+    std::optional<int> blocking_timeout_ms;
 };
 
 struct TracingConfig {

@@ -236,9 +236,33 @@ Error status is always an **enumerated** `error.type`, never an exception messag
 | `otlp_http` | `BatchSpanProcessor` | Retry and backoff from the SDK |
 | `otlp_file` | Batch, or per-record under `flush.mode: on_response` | The air-gapped topology |
 
-`flush.mode: on_response` is accepted **only** for the file exporter. Flushing a
-network export on the request thread would couple p99 latency to the collector's
-availability, so it is refused with a warning and falls back to batch.
+`flush.mode: on_response` behaves differently per exporter:
+
+- **`otlp_file`** — a `SimpleSpanProcessor`, exporting each span as it ends.
+  Cheap, because the destination is a local file descriptor.
+- **`otlp_http`** — refused by default, because flushing a network export on the
+  request thread couples p99 latency to the collector's availability. Enabled
+  only by an explicit `flush.blocking_timeout_ms`, for request-billed
+  scale-to-zero platforms where the alternative is losing the spans entirely.
+
+The network case deliberately keeps a **`BatchSpanProcessor`** and force-flushes
+it once from `RequestContextMiddleware::finish()`, rather than switching to a
+`SimpleSpanProcessor`. A request produces ~4 spans, so per-span export would be
+four HTTP round trips; one force-flush is one, and it sweeps out spans left by
+concurrent and background work at the same time.
+
+The flush runs **before the response reaches the socket** — Crow's
+`complete_request()` calls the after-handlers, then compresses, then writes
+(`crow/http_connection.h:218-254`). That is not incidental: on a platform that
+throttles CPU the moment the response is sent, before-the-response is the only
+window where the export is guaranteed to be scheduled. The latency is the price
+of the topology, and the mandatory budget is how the operator states what they
+will pay.
+
+Measured: ~3 ms added against a healthy local collector, bounded exactly at the
+budget against a hanging one, and flat from concurrency 1 to 40 — the flush does
+not serialise across workers. `spans_flush_timeouts` counts requests whose
+export did not finish inside the budget.
 
 `Tracing()` is a function-local static, not a leaked singleton, because it owns a
 processor thread. A `TracingGuard` in `main()` shuts it down before exit, and the

@@ -235,11 +235,26 @@ private:
             if (config.exporter == "otlp_file") {
                 return tsdk::SimpleSpanProcessorFactory::Create(std::move(exporter));
             }
-            CROW_LOG_WARNING
-                << "tracing.flush.mode=on_response is only supported with "
-                   "exporter=otlp_file; falling back to batch export. Exporting "
-                   "synchronously over the network would put a collector round-trip "
-                   "on every request thread.";
+            if (config.flush.blocking_timeout_ms) {
+                // Opted in, with a stated latency budget. Note this still falls
+                // through to a BatchSpanProcessor rather than a Simple one: the
+                // middleware force-flushes it once per request, so a request's
+                // ~4 spans leave in ONE round trip. SimpleSpanProcessor would
+                // export per span, which over the network is four.
+                CROW_LOG_WARNING
+                    << "tracing.flush.mode=on_response with a network exporter: every "
+                       "request will block up to " << *config.flush.blocking_timeout_ms
+                    << "ms exporting its spans. Intended for request-billed "
+                       "scale-to-zero platforms; on a long-lived deployment this "
+                       "couples your latency to the collector's availability.";
+            } else {
+                CROW_LOG_WARNING
+                    << "tracing.flush.mode=on_response is only supported with "
+                       "exporter=otlp_file, or with an explicit "
+                       "tracing.flush.blocking_timeout_ms; falling back to batch "
+                       "export. Exporting synchronously over the network would put a "
+                       "collector round-trip on every request thread.";
+            }
         }
 
         tsdk::BatchSpanProcessorOptions batch;
@@ -304,6 +319,12 @@ void FlapiTracing::configure(const TracingConfig& config) {
     // Only now, so that a config asking for profiling while tracing is disabled
     // (or OTEL_SDK_DISABLED is set) never makes the query path pay for it.
     db_profiling_ = config.db_profiling;
+    // Only a NETWORK exporter needs the middleware to flush per request; the
+    // file exporter already uses a SimpleSpanProcessor and has nothing buffered.
+    if (config.flush.mode == "on_response" && config.exporter != "otlp_file"
+        && config.flush.blocking_timeout_ms) {
+        blocking_flush_ = std::chrono::milliseconds(*config.flush.blocking_timeout_ms);
+    }
     if (db_profiling_ != DbProfiling::Off) {
         CROW_LOG_INFO << "tracing.db_profiling=" << dbProfilingName(db_profiling_)
                       << ": DuckDB execution profiling is enabled per connection, "
@@ -327,6 +348,20 @@ SpanScope FlapiTracing::startServerSpan(const std::string& name, const Extracted
 
 bool FlapiTracing::forceFlush(std::chrono::milliseconds timeout) {
     return active() ? backend_->forceFlush(timeout) : true;
+}
+
+namespace {
+// Process-wide: the middleware has no per-instance state to hang this on, and a
+// counter that resets per request would be useless.
+std::atomic<std::uint64_t> g_flush_timeouts{0};
+}  // namespace
+
+void FlapiTracing::noteFlushTimeout() {
+    g_flush_timeouts.fetch_add(1, std::memory_order_relaxed);
+}
+
+std::uint64_t FlapiTracing::flushTimeouts() const {
+    return g_flush_timeouts.load(std::memory_order_relaxed);
 }
 
 void FlapiTracing::shutdown() {

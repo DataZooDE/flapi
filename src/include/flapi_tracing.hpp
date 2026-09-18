@@ -8,6 +8,7 @@
 #include "flapi_build_config.hpp"
 #include "trace_context.hpp"
 #include "trace_scope.hpp"
+#include <optional>
 #include "tracing_config.hpp"
 
 namespace flapi {
@@ -60,12 +61,24 @@ public:
     // config can never make the query path pay for profiling.
     DbProfiling dbProfiling() const { return db_profiling_; }
 
+    // Set only when an operator opted a NETWORK exporter into per-request
+    // export with an explicit budget. Empty otherwise, which is the common case
+    // and costs the request path a single pointer-sized check.
+    std::optional<std::chrono::milliseconds> blockingFlush() const { return blocking_flush_; }
+
+    // Requests whose span export did not finish inside the budget. Surfaced by
+    // GET /api/v1/_config/metrics: a rising value means the collector is costing
+    // callers latency AND still losing spans, which is the worst of both.
+    std::uint64_t flushTimeouts() const;
+    static void noteFlushTimeout();
+
 private:
     bool active() const;
 
     std::unique_ptr<ITracingBackend> backend_;
     bool enabled_ = false;      // BR-6: off until an operator turns it on
     DbProfiling db_profiling_ = DbProfiling::Off;
+    std::optional<std::chrono::milliseconds> blocking_flush_;
 };
 
 // Process-wide accessor. Not leaked; see the note above.
