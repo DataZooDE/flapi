@@ -237,6 +237,7 @@ Connections define data sources accessible in SQL templates.
 | `connections.<name>.log-queries` | boolean | `false` | Log SQL queries to this connection |
 | `connections.<name>.log-parameters` | boolean | `false` | Log parameter values |
 | `connections.<name>.allow` | string | - | Access control list |
+| `connections.<name>.serialize-access` | boolean | auto | Run one query at a time on this connection. Auto-detected for SQLite attachments; see below |
 | `connections.<name>.properties` | object | - | Custom key-value properties accessible in templates |
 
 **Example:**
@@ -273,6 +274,37 @@ connections:
 **Notes:**
 - Connection properties are accessible in templates as `{{ conn.property_name }}`
 - The `init` SQL runs once when the connection is first used
+
+**Serialised access (`serialize-access`)**
+
+A read and a write issued at the same moment against a DuckDB **SQLite
+attachment** deadlock each other. Two requests are enough, and the attachment
+can stop answering for good while the process, DuckDB, the health endpoint and
+every other connection stay perfectly healthy — so the instance keeps accepting
+traffic it can no longer serve (#116).
+
+flAPI therefore runs **one query at a time** on any connection whose `init`
+contains an `ATTACH ... (TYPE sqlite)`. Nothing else is affected: parquet,
+BigQuery, Postgres and DuckLake traffic still runs fully in parallel.
+
+The cost is real — concurrent requests to a SQLite-backed endpoint queue rather
+than overlap — so set it yourself when the detection is wrong in either
+direction:
+
+```yaml
+connections:
+  # An exotic backend with the same problem
+  my-backend:
+    serialize-access: true
+
+  # A SQLite attachment you have measured and want to run in parallel anyway
+  read-only-snapshot:
+    serialize-access: false
+    init: |
+      ATTACH '/data/snapshot.sqlite' AS snap (TYPE sqlite);
+```
+
+An explicit value always wins over the detection.
 - Use environment variable substitution for sensitive values
 
 > **Implementation:** `src/config_manager.cpp`, `src/database_manager.cpp` | **Tests:** `test/cpp/config_manager_test.cpp`

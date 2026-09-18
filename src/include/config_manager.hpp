@@ -36,8 +36,28 @@ struct ConnectionConfig {
     bool log_parameters = false;
     std::string allow;
 
+    // Serialise ALL access to this connection - reads included.
+    //
+    // A concurrent read and write against a DuckDB SQLite attachment deadlock
+    // each other: two requests are enough, and the attachment then never
+    // answers again, while the process, DuckDB and every other connection stay
+    // healthy (#116). Serialising only the writes does not help - the pair that
+    // wedges is a reader and a writer.
+    //
+    // Auto-detected from an `ATTACH ... (TYPE sqlite)` in `init`, and settable
+    // explicitly for a backend we do not recognise, or to opt out of the
+    // serialisation for one we do:
+    //
+    //   connections:
+    //     mydb:
+    //       serialize-access: true
+    std::optional<bool> serialize_access;
+
     const std::string& getInit() const { return init; }
     void setInit(const std::string& initSql) { init = initSql; }
+
+    /// True when every query on this connection must be serialised.
+    bool serialisesAccess() const;
 };
 
 struct HeartbeatConfig {

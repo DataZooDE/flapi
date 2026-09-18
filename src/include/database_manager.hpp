@@ -6,6 +6,7 @@
 #include <vector>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 
 #include "duckdb/main/secret/secret_manager.hpp"
 
@@ -117,6 +118,18 @@ private:
     
     // Internal helper for write operations (used by executeWriteInTransaction)
     WriteResult executeWrite(QueryExecutor& executor, const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
+
+    // #116: a concurrent read and write against a DuckDB SQLite attachment
+    // deadlock each other, and the attachment never answers again. One mutex
+    // per connection that needs it, so parquet / BigQuery / DuckLake traffic
+    // keeps running in parallel and only the affected backend pays.
+    // Locked in sorted name order, so an endpoint naming two serialised
+    // connections cannot deadlock against one naming them the other way round.
+    using AccessLocks = std::vector<std::unique_lock<std::mutex>>;
+    AccessLocks lockSerialisedAccess(const EndpointConfig& endpoint);
+
+    std::mutex access_mutexes_guard;
+    std::unordered_map<std::string, std::unique_ptr<std::mutex>> access_mutexes;
 
     duckdb_database db; // Database handle
     std::mutex db_mutex; // Mutex for thread safety
