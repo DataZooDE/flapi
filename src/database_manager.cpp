@@ -11,6 +11,8 @@
 #include "sql_template_processor.hpp"
 #include "sql_utils.hpp"
 #include "database_manager.hpp"
+#include <chrono>
+#include <thread>
 #include "duckdb_raii.hpp"
 
 namespace flapi {
@@ -356,7 +358,64 @@ duckdb_connection DatabaseManager::getConnection() {
     return conn; // Return the connection handle
 }
 
+// SQLite permits a single writer, and DuckDB's sqlite_scanner surfaces that as
+// "database is locked". It is TRANSIENT and retryable - which is the whole
+// point: a 500 tells a client its request was wrong, when in fact it only
+// arrived at a bad moment. DuckDB 1.5.5 exposes no sqlite_busy_timeout setting
+// to push the wait down to the driver, so flAPI waits it out itself.
+bool isLockContentionMessage(const std::string& message) {
+    static constexpr std::string_view kNeedles[] = {
+        "database is locked",
+        "database table is locked",
+        "SQLITE_BUSY",
+    };
+    for (const auto needle : kNeedles) {
+        if (message.find(needle) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+namespace {
+
+// Bounded retry with backoff. Deliberately short: the caller is a live HTTP
+// request, so waiting longer trades one problem for another. If the lock
+// outlives the budget the error propagates and the handler maps it to 503 with
+// Retry-After - the honest answer is "try again", not "you broke something".
+template <typename Fn>
+auto retryOnLockContention(Fn&& fn, const char* what) -> decltype(fn()) {
+    constexpr int kMaxAttempts = 5;
+    auto delay = std::chrono::milliseconds(10);
+    for (int attempt = 1;; ++attempt) {
+        try {
+            return fn();
+        } catch (const std::exception& e) {
+            if (attempt >= kMaxAttempts || !isLockContentionMessage(e.what())) {
+                throw;
+            }
+            CROW_LOG_DEBUG << "lock contention on " << what << ", attempt "
+                           << attempt << " of " << kMaxAttempts
+                           << "; retrying in " << delay.count() << "ms";
+            std::this_thread::sleep_for(delay);
+            delay *= 2;
+        }
+    }
+}
+
+}  // namespace
+
 QueryResult DatabaseManager::executeQuery(const EndpointConfig& endpoint, std::map<std::string, std::string>& params, bool with_pagination)
+{
+    // Reads are collateral damage in SQLite lock contention: a single writer
+    // blocks them, and failing a GET because some unrelated POST held a lock is
+    // the least defensible outcome of the lot.
+    return retryOnLockContention([&]() -> QueryResult {
+        return executeQueryOnce(endpoint, params, with_pagination);
+    }, "query");
+}
+
+QueryResult DatabaseManager::executeQueryOnce(const EndpointConfig& endpoint, std::map<std::string, std::string>& params, bool with_pagination)
 {
     cache_manager->addQueryCacheParamsIfNecessary(config_manager, endpoint, params);
 
@@ -646,33 +705,47 @@ WriteResult DatabaseManager::executeWrite(QueryExecutor& executor, const Endpoin
     return result;
 }
 
+
 WriteResult DatabaseManager::executeWriteInTransaction(const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
-    WriteResult result;
-    
-    auto executor = createQueryExecutor();
-    
-    try {
-        // Begin transaction
-        executor.execute("BEGIN TRANSACTION", "begin transaction");
-        
-        // Execute the write operation using the same executor (same connection)
-        result = executeWrite(executor, endpoint, params);
-        
-        // Commit transaction
-        executor.execute("COMMIT", "commit transaction");
-        
-    } catch (const std::exception& e) {
-        // Rollback on error
+    return retryOnLockContention([&]() -> WriteResult {
+        WriteResult result;
+
+        auto executor = createQueryExecutor();
+
+        // Tracked so the rollback only runs when there is something to roll
+        // back. BEGIN itself can fail - on a locked SQLite database it
+        // routinely does - and rolling back then produced "cannot rollback - no
+        // transaction is active", compounding every real error with a spurious
+        // one and burying the actual cause in the log.
+        bool in_transaction = false;
+
         try {
-            executor.execute("ROLLBACK", "rollback transaction");
-        } catch (const std::exception& rollback_error) {
-            CROW_LOG_ERROR << "Failed to rollback transaction: " << rollback_error.what();
+            executor.execute("BEGIN TRANSACTION", "begin transaction");
+            in_transaction = true;
+
+            // Same executor, so the same connection carries the transaction.
+            result = executeWrite(executor, endpoint, params);
+
+            executor.execute("COMMIT", "commit transaction");
+            in_transaction = false;
+
+        } catch (const std::exception& e) {
+            if (in_transaction) {
+                try {
+                    executor.execute("ROLLBACK", "rollback transaction");
+                } catch (const std::exception& rollback_error) {
+                    // A failed COMMIT may already have aborted the transaction,
+                    // so this is not necessarily a problem - log it without
+                    // drowning out the original error below.
+                    CROW_LOG_WARNING << "rollback after a failed write did not succeed: "
+                                     << rollback_error.what();
+                }
+            }
+            throw;
         }
-        // Re-throw the original error
-        throw;
-    }
-    
-    return result;
+
+        return result;
+    }, "write transaction");
 }
 
 YAML::Node DatabaseManager::describeSelectQuery(const EndpointConfig& endpoint) {

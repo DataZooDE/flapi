@@ -17,6 +17,11 @@
 
 namespace flapi {
 
+// True when a backend error is transient lock contention rather than a fault in
+// the request. Exposed so the HTTP and MCP layers can map it to 503 instead of
+// 500 without duplicating the string matching.
+bool isLockContentionMessage(const std::string& message);
+
 struct ColumnInfo {
     std::string name;
     std::string type;
@@ -69,6 +74,11 @@ public:
     // Write operation methods
     WriteResult executeWrite(const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
     WriteResult executeWriteInTransaction(const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
+
+private:
+    // The single-attempt body; executeQuery wraps it in lock-contention retry.
+    QueryResult executeQueryOnce(const EndpointConfig& endpoint, std::map<std::string, std::string>& params, bool with_pagination);
+public:
     
     YAML::Node describeSelectQuery(const EndpointConfig& endpoint);
 

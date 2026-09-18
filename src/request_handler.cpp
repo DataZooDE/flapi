@@ -157,6 +157,22 @@ void RequestHandler::handleWriteRequest(const crow::request& req, crow::response
         res.end();
         return;
     } catch (const std::exception& e) {
+        // Lock contention is transient, not a fault in the request. flAPI has
+        // already retried with backoff; if the lock outlived that budget the
+        // honest answer is "try again", which is 503 + Retry-After. Returning
+        // 500 told clients their request was wrong and discouraged the retry
+        // that would have worked.
+        if (isLockContentionMessage(e.what())) {
+            CROW_LOG_WARNING << "write contended on a locked backend: " << e.what();
+            res.code = 503;
+            res.set_header("Retry-After", "1");
+            res.set_header("Content-Type", "application/json");
+            crow::json::wvalue body;
+            body["error"] = "The database is busy; retry shortly.";
+            res.write(body.dump());
+            res.end();
+            return;
+        }
         CROW_LOG_ERROR << "Error handling write request: " << e.what();
         res.code = 500;
         res.body = std::string("Internal Server Error: ") + e.what();
@@ -356,6 +372,20 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
         res.end();
         return;
     } catch (const std::exception& e) {
+        // Reads are collateral damage in single-writer contention - a GET
+        // failing because an unrelated POST held a lock is the least defensible
+        // outcome of the lot. Same treatment as the write path.
+        if (isLockContentionMessage(e.what())) {
+            CROW_LOG_WARNING << "read contended on a locked backend: " << e.what();
+            res.code = 503;
+            res.set_header("Retry-After", "1");
+            res.set_header("Content-Type", "application/json");
+            crow::json::wvalue body;
+            body["error"] = "The database is busy; retry shortly.";
+            res.write(body.dump());
+            res.end();
+            return;
+        }
         CROW_LOG_ERROR << "Error handling request: " << e.what();
         res.code = 500;
         res.body = std::string("Internal Server Error: ") + e.what();

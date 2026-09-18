@@ -265,11 +265,19 @@ private:
             // call for options.timeout - 10s by default. A 300ms request budget
             // would then return ~33 requests, each paying 300ms, while the
             // pipeline stayed wedged and none of their spans left. Clamp it.
+            //
+            // Written as a comparison rather than std::min because <windows.h>
+            // defines min/max as MACROS, so `std::min(` expands to `std::(` and
+            // MSVC reports "illegal token on right side of '::'". The usual
+            // workaround is (std::min)(...), which is easy to lose in a later
+            // edit; a plain comparison cannot regress.
             auto http_timeout = std::chrono::milliseconds(config.timeout_ms);
             if (config.flush.blocking_timeout_ms) {
-                http_timeout = std::min(
-                    http_timeout,
-                    std::chrono::milliseconds(*config.flush.blocking_timeout_ms));
+                const auto budget =
+                    std::chrono::milliseconds(*config.flush.blocking_timeout_ms);
+                if (budget < http_timeout) {
+                    http_timeout = budget;
+                }
             }
             options.timeout = http_timeout;
             // http_headers is a MULTIMAP and the constructor already populated it
