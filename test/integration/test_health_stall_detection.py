@@ -41,14 +41,19 @@ class _Server:
 
         # sum(i*i), not count(*): DuckDB knows range(N) has N rows and folds
         # count(*) to a constant, so the "slow" query returned in 0.35s and no
-        # stall ever happened. This does ~2s of real work.
-        # Slow enough to outlive a 1s stall budget, bounded so the test cannot
-        # hang if something goes wrong.
+        # stall ever happened.
+        #
+        # The size is set by the SLOWEST machine's budget and the FASTEST
+        # machine's window. 400M took 2.6s here but 1.53s on CI, leaving only
+        # ~0.5s in which readiness could be caught reporting a stall - narrow
+        # enough that the test failed there and passed here, twice. 1.2B takes
+        # ~7s here and ~4.5s on CI, so the window is seconds wide either way.
+        # Still bounded, so the test cannot hang if something goes wrong.
         with open(os.path.join(sqls, "slow.yaml"), "w") as f:
             f.write("url-path: /slow\nmethod: GET\n"
                     "template-source: slow.sql\nconnection: [inmem]\n")
         with open(os.path.join(sqls, "slow.sql"), "w") as f:
-            f.write("SELECT sum(i*i) AS s FROM range(0, 400000000) t(i)\n")
+            f.write("SELECT sum(i*i) AS s FROM range(0, 1200000000) t(i)\n")
         with open(os.path.join(sqls, "fast.yaml"), "w") as f:
             f.write("url-path: /fast\nmethod: GET\n"
                     "template-source: fast.sql\nconnection: [inmem]\n")
@@ -163,6 +168,8 @@ class TestStallDetection:
             # Separate the two ways this can fail. If the "slow" query was not
             # slow, the fixture is wrong and there was no stall to detect -
             # saying so is very different from saying readiness missed one.
+            # Demands the fixture leave at least a second of window past the
+            # 1s budget, rather than merely outliving it by a hair.
             assert took is not None and took > 2.0, (
                 f"the fixture's slow query returned in {took}s (status "
                 f"{elapsed.get('code')}, body {elapsed.get('body')!r}), so it "
