@@ -22,6 +22,7 @@
 #include <opentelemetry/sdk/trace/tracer_provider_factory.h>
 #include <opentelemetry/trace/provider.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdlib>
 #include <utility>
@@ -48,9 +49,14 @@ std::atomic<std::uint64_t> g_spans_submitted{0};
 // empirically - collector received 0 spans, this counter said 38 exported, 0
 // dropped, while the SDK logged "Export 18 trace span(s) error: 1".
 //
-// No wrapper at this layer can fix that; the result is discarded above us. That
-// is why spans_submitted exists: submitted minus exported is the only number
-// that does not depend on the SDK telling the truth about its own HTTP status.
+// No wrapper at this layer can fix that; the result is discarded above us.
+//
+// spans_submitted closes a DIFFERENT hole - queue-full drops - and it must not
+// be oversold. Both spans_exported and spans_dropped derive from the same
+// ExportResult that otlp_http hardcodes to success, so submitted minus exported
+// reveals queue drops and spans still in flight, NOT HTTP failures. Against a
+// refusing collector all three counters look healthy. For otlp_http the flAPI
+// log ("[OTLP TRACE HTTP Exporter] ERROR") is the only source of truth.
 class CountingSpanExporter final : public tsdk::SpanExporter {
 public:
     explicit CountingSpanExporter(std::unique_ptr<tsdk::SpanExporter> inner)
@@ -253,7 +259,19 @@ private:
             if (config.protocol && *config.protocol == "http/json") {
                 options.content_type = otlp::HttpRequestContentType::kJson;
             }
-            options.timeout = std::chrono::milliseconds(config.timeout_ms);
+            // F2: the request budget bounds the CALLER's wait, not the export
+            // pipeline. With ENABLE_ASYNC_EXPORT undefined (this build) the
+            // single BatchSpanProcessor worker sits inside one synchronous HTTP
+            // call for options.timeout - 10s by default. A 300ms request budget
+            // would then return ~33 requests, each paying 300ms, while the
+            // pipeline stayed wedged and none of their spans left. Clamp it.
+            auto http_timeout = std::chrono::milliseconds(config.timeout_ms);
+            if (config.flush.blocking_timeout_ms) {
+                http_timeout = std::min(
+                    http_timeout,
+                    std::chrono::milliseconds(*config.flush.blocking_timeout_ms));
+            }
+            options.timeout = http_timeout;
             // http_headers is a MULTIMAP and the constructor already populated it
             // from OTEL_EXPORTER_OTLP_HEADERS. Inserting without erasing first
             // merges rather than overrides: an Authorization set both in the
@@ -439,7 +457,10 @@ TracingGuard::~TracingGuard() {
     // Deterministic, before static destruction reaches the provider. A
     // BatchSpanProcessor owns a thread; letting it race teardown is an
     // intermittent crash at exit.
-    Tracing().forceFlush(std::chrono::milliseconds(2000));
+    // The configured budget here too, not a hardcoded 2s: this drain covers
+    // spans produced after the handler ran, and leaving it fixed would deliver
+    // the configurable shutdown flush only half the time.
+    Tracing().forceFlush(Tracing().shutdownFlushBudget());
     Tracing().shutdown();
 }
 

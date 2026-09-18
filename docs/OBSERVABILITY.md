@@ -26,7 +26,7 @@ that request. A support report quoting the header is enough to find the request.
 tracing:
   enabled: true                 # off by default; nothing else turns it on
   exporter: otlp_http           # otlp_http | otlp_file | none
-  endpoint: http://localhost:4318
+  endpoint: http://localhost:4318/v1/traces
   capture: metadata             # off | metadata | payload
 ```
 
@@ -40,7 +40,7 @@ That is the minimum. Everything below has a working default.
 | `service_name` | `flapi` | `service.name` resource attribute. |
 | `service_namespace` | — | `service.namespace`. |
 | `exporter` | `otlp_http` | `otlp_http`, `otlp_file`, or `none`. Any unrecognised value behaves as `none`. |
-| `endpoint` | SDK default | OTLP/HTTP base URL. Applies to `otlp_http` only. |
+| `endpoint` | SDK default | The **full** OTLP/HTTP trace URL, e.g. `http://host:4318/v1/traces`. An overridden URL is used verbatim — `/v1/traces` is **not** appended — so a base URL posts to `/` and a real collector rejects it. Applies to `otlp_http` only. |
 | `protocol` | unset | Only the exact string `http/json` changes anything (it switches the content type). Any other value, including `http/protobuf`, is ignored. |
 | `headers` | `{}` | Extra headers, e.g. auth for a SaaS backend. Applies to `otlp_http` only. |
 | `timeout_ms` | `10000` | Export timeout. |
@@ -393,17 +393,28 @@ curl -s -H "Authorization: Bearer $FLAPI_CONFIG_SERVICE_TOKEN" \
 }
 ```
 
-`spans_submitted` counts spans handed to the exporter. **It is the number to
-watch**: `spans_submitted - spans_exported` is what did not get out.
+`spans_submitted` counts spans handed to the processor. `spans_submitted -
+spans_exported` is what is **queued or lost to a full queue** — it does *not*
+reveal HTTP failures, because `spans_exported` derives from the same result the
+OTLP/HTTP exporter hardcodes to success (below).
 
 `spans_dropped` counts export batches the SDK reported as failed — which, with
 `otlp_http`, is fewer than you would expect. `OtlpHttpExporter::Export` computes
 the real result, logs the failure, then returns success anyway
 (`otlp_http_exporter.cc:193`, `:206`), so a collector answering 503 to every
-batch looks identical to a healthy one from this counter's point of view. We
-verified that: against a collector rejecting everything, the counters read
-`exported: 38, dropped: 0` while the SDK logged `Export 18 trace span(s)
-error: 1`. Watch the flAPI log for `[OTLP TRACE HTTP Exporter] ERROR` as well.
+batch looks identical to a healthy one from **every** counter's point of view.
+We verified that: against a collector rejecting everything, the counters read
+`submitted: 38, exported: 38, dropped: 0` while zero spans arrived and the SDK
+logged `Export 18 trace span(s) error: 1`.
+
+**For `otlp_http`, the flAPI log is the only reliable signal of export failure.**
+Alert on `[OTLP TRACE HTTP Exporter] ERROR`. The counters will not tell you.
+
+:::caution The most common cause of "no spans arrive"
+`endpoint` must be the **full trace URL**. `http://localhost:4318` posts to `/`,
+which a real collector 404s — and because the exporter discards its own result,
+every counter still reads healthy. Use `http://localhost:4318/v1/traces`.
+:::
 
 > **A flat `spans_dropped` does not prove nothing was lost.** Spans discarded
 > because the batch queue was already full are dropped *before* export is

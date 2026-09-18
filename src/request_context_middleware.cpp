@@ -287,8 +287,14 @@ void RequestContextMiddleware::finish(crow::response& res, context& ctx) {
         ~ClearGuard() { RequestContextScope::clear(); }
     } clear_guard;
 
+    // F1: only a request that actually produced an exportable span should pay
+    // the blocking budget. Captured before end() because the scope is released
+    // there.
+    bool had_recorded_span = false;
+
     try {
         if (ctx.span) {
+            had_recorded_span = ctx.span.recording();
             // http.route is only known now. It is ALWAYS a template or a fixed
             // literal - never a filled path (NFR-5) - and unmatched paths all
             // collapse to one bucket so a scanner cannot mint a thousand span
@@ -454,13 +460,23 @@ void RequestContextMiddleware::finish(crow::response& res, context& ctx) {
     // BatchSpanProcessor, so a request's whole span tree leaves in a single
     // round trip, and any spans left buffered by concurrent or background work
     // are swept out with it.
-    if (const auto budget = Tracing().blockingFlush()) {
-        try {
-            if (!Tracing().forceFlush(*budget)) {
-                FlapiTracing::noteFlushTimeout();
+    //
+    // Gated on this request having RECORDED a span. finish() is reached for
+    // excluded routes too - exclusion skips span creation, not the context - so
+    // an ungated flush would make /health/live wait the full budget against a
+    // wedged collector. On a platform with a tight liveness timeout that is a
+    // restart of a healthy instance, caused entirely by instrumentation. It
+    // would also turn spans_flush_timeouts into a count of probes rather than
+    // of lost traces.
+    if (had_recorded_span) {
+        if (const auto budget = Tracing().blockingFlush()) {
+            try {
+                if (!Tracing().forceFlush(*budget)) {
+                    FlapiTracing::noteFlushTimeout();
+                }
+            } catch (...) {
+                instrumentation_failures_.fetch_add(1, std::memory_order_relaxed);
             }
-        } catch (...) {
-            instrumentation_failures_.fetch_add(1, std::memory_order_relaxed);
         }
     }
 }

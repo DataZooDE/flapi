@@ -65,6 +65,9 @@ class TestBlockingFlush:
                     "collector - on a throttled instance those spans are lost"
                 )
                 assert any(s.is_server for s in got)
+                assert collector.bad_paths() == [], (
+                    f"spans were posted to the wrong path: {collector.bad_paths()}"
+                )
 
     def test_a_request_exports_in_one_round_trip(self):
         # A request produces ~4 spans (server + render + two duckdb, the second
@@ -114,9 +117,13 @@ class TestBlockingFlush:
 
 
 class TestBlockingFlushSafety:
-    def test_a_hanging_collector_does_not_hang_the_request(self):
+    def test_a_hanging_collector_bounds_the_request_at_the_budget(self):
         # The reason this is opt-in and capped. A third party flAPI does not
         # control must never be able to hold a worker indefinitely.
+        #
+        # Bounded on BOTH sides. An upper bound alone passed with the feature
+        # deleted - of course a request is fast when it never flushes. The lower
+        # bound is what proves the flush actually happened and actually waited.
         budget_ms = 300
         with OtlpCollector(mode="hang") as collector:
             block = collector_tracing_block(collector.endpoint,
@@ -127,18 +134,52 @@ class TestBlockingFlushSafety:
                 elapsed_ms = (time.monotonic() - started) * 1000
 
                 assert r.status_code == 200, "instrumentation must never fail a request"
+                assert collector.saw_a_hanging_request(), (
+                    "the collector was never contacted - nothing was flushed, so "
+                    "this test would pass with the feature removed"
+                )
+                assert elapsed_ms >= budget_ms * 0.8, (
+                    f"request returned in {elapsed_ms:.0f}ms against a HANGING "
+                    f"collector with a {budget_ms}ms budget - it cannot have waited"
+                )
                 assert elapsed_ms < budget_ms * 3, (
-                    f"request took {elapsed_ms:.0f}ms against a hanging collector "
-                    f"with a {budget_ms}ms budget - the timeout is not bounding it"
+                    f"request took {elapsed_ms:.0f}ms with a {budget_ms}ms budget "
+                    f"- the timeout is not bounding it"
                 )
 
     def test_a_refusing_collector_is_invisible_to_the_caller(self):
+        # As above: assert the collector was actually reached, or this passes
+        # with the feature deleted.
         with OtlpCollector(mode="refuse") as collector:
             block = collector_tracing_block(collector.endpoint, blocking_timeout_ms=300)
             for server in traced_server(endpoints=ENDPOINTS, tracing_block=block):
                 r = requests.get(f"{server.base_url}/typed?id=1", timeout=15)
                 assert r.status_code == 200
                 assert r.json() is not None
+                assert "[OTLP TRACE HTTP Exporter] ERROR" in server.log(), (
+                    "the exporter never reported a failure, so nothing was "
+                    "flushed - the test would pass without the feature"
+                )
+
+    def test_an_excluded_route_does_not_pay_the_budget(self):
+        # finish() is reached for excluded routes too - exclusion skips span
+        # creation, not the context. An ungated flush made /health/live wait the
+        # full budget against a wedged collector, which on a platform with a
+        # tight liveness timeout restarts a healthy instance.
+        budget_ms = 400
+        with OtlpCollector(mode="hang") as collector:
+            block = collector_tracing_block(collector.endpoint,
+                                            blocking_timeout_ms=budget_ms)
+            for server in traced_server(endpoints=ENDPOINTS, tracing_block=block):
+                started = time.monotonic()
+                r = requests.get(f"{server.base_url}/health/live", timeout=15)
+                elapsed_ms = (time.monotonic() - started) * 1000
+
+                assert r.status_code == 200
+                assert elapsed_ms < budget_ms * 0.5, (
+                    f"an excluded health probe took {elapsed_ms:.0f}ms against a "
+                    f"wedged collector - probes must not pay the flush budget"
+                )
 
     def test_without_the_opt_in_it_still_falls_back_to_batch(self):
         # Pins the DEFAULT. on_response + otlp_http without an explicit latency
@@ -159,7 +200,8 @@ class TestBlockingFlushSafety:
 
 
 class TestBlockingFlushConfig:
-    def _start_with(self, blocking_value: str):
+    def _start_with(self, blocking_value: str, timeout_value: str = "2000",
+                    wait: float = 60):
         """Start the real binary with a given blocking_timeout_ms and see what it does."""
         tmp = tempfile.mkdtemp(prefix="flapi_cfgchk_")
         sqls = os.path.join(tmp, "sqls")
@@ -182,13 +224,18 @@ class TestBlockingFlushConfig:
                 "  exporter: otlp_http\n"
                 "  flush:\n"
                 "    mode: on_response\n"
+                f"    timeout_ms: {timeout_value}\n"
                 f"    blocking_timeout_ms: {blocking_value}\n")
-        proc = subprocess.run(
-            [flapi_binary(), "-c", os.path.join(tmp, "flapi.yaml"), "-p", str(port),
-             "--log-level", "warning"],
-            capture_output=True, text=True, timeout=60,
-            env={**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"})
-        return proc
+        # A REJECTED config exits immediately; an accepted one runs until the
+        # timeout, which is how the boundary cases below assert acceptance.
+        try:
+            return subprocess.run(
+                [flapi_binary(), "-c", os.path.join(tmp, "flapi.yaml"), "-p", str(port),
+                 "--log-level", "warning"],
+                capture_output=True, text=True, timeout=wait,
+                env={**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"})
+        except subprocess.TimeoutExpired as exc:
+            return exc
 
     @pytest.mark.parametrize("value", ["0", "-1", "1001", "30000"])
     def test_an_out_of_range_budget_is_refused_at_startup(self, value):
@@ -201,3 +248,32 @@ class TestBlockingFlushConfig:
         )
         combined = proc.stdout + proc.stderr
         assert "blocking_timeout_ms must be between 1 and 1000" in combined, combined[-800:]
+
+    @pytest.mark.parametrize("value", ["0", "-1", "60001"])
+    def test_an_out_of_range_flush_timeout_is_refused(self, value):
+        # flush.timeout_ms is now the SIGTERM force-flush budget as well as the
+        # batch interval. 0 makes ForceFlush wait indefinitely inside a signal
+        # handler and spins the batch worker; a huge value overruns the
+        # platform's shutdown grace and earns a SIGKILL - strictly worse than
+        # the hardcoded 2s it replaced.
+        proc = self._start_with("300", timeout_value=value)
+        assert proc.returncode != 0, f"flush.timeout_ms={value} was accepted"
+        combined = proc.stdout + proc.stderr
+        assert "timeout_ms must be between 1 and 60000" in combined, combined[-600:]
+
+    @pytest.mark.parametrize("value", ["1", "1000"])
+    def test_the_accepted_boundaries_start_cleanly(self, value):
+        # The other half of a range check. Without this, narrowing the accepted
+        # range by mistake would go unnoticed - every rejection test would still
+        # pass.
+        result = self._start_with(value, wait=8)
+
+        def _text(v):
+            if v is None:
+                return ""
+            return v.decode(errors="replace") if isinstance(v, bytes) else v
+
+        combined = _text(result.stdout) + _text(result.stderr)
+        assert "blocking_timeout_ms must be between" not in combined, (
+            f"boundary value {value} was rejected: {combined[-400:]}"
+        )

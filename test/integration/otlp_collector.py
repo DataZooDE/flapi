@@ -29,6 +29,17 @@ from otel_helpers import Span, free_port, _attr_value
 class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler's interface
         collector: "OtlpCollector" = self.server.collector  # type: ignore[attr-defined]
+
+        # Path-strict, like a real collector. Accepting any path would let a
+        # regression in the exporter's URL construction ship green - the fixture
+        # would happily record spans posted to the wrong endpoint.
+        if self.path.split("?")[0] != "/v1/traces":
+            collector._record_bad_path(self.path)
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length) if length else b""
 
@@ -64,7 +75,12 @@ class OtlpCollector:
 
     def __init__(self, mode: str = "ok", slow_ms: int = 0):
         self.port = free_port()
-        self.endpoint = f"http://127.0.0.1:{self.port}"
+        self.base_url = f"http://127.0.0.1:{self.port}"
+        # The FULL trace URL, which is what tracing.endpoint must be set to.
+        # opentelemetry-cpp uses an overridden url verbatim - it does not append
+        # /v1/traces - so a base URL posts to "/" and a real collector 404s it.
+        # Silently, because the exporter discards its own failure result.
+        self.endpoint = f"{self.base_url}/v1/traces"
         self._mode = (mode, slow_ms)
         self._lock = threading.Lock()
         self._spans: List[Span] = []
@@ -72,6 +88,7 @@ class OtlpCollector:
         self._raw: List[str] = []
         self._stopping = threading.Event()
         self._hanging = threading.Event()
+        self._bad_paths: List[str] = []
         self._server: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
 
@@ -151,6 +168,15 @@ class OtlpCollector:
     def raw(self) -> str:
         with self._lock:
             return "\n".join(self._raw)
+
+    def _record_bad_path(self, path: str) -> None:
+        with self._lock:
+            self._bad_paths.append(path)
+
+    def bad_paths(self) -> List[str]:
+        """Requests that arrived on a path a real collector would 404."""
+        with self._lock:
+            return list(self._bad_paths)
 
     def saw_a_hanging_request(self) -> bool:
         return self._hanging.is_set()

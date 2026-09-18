@@ -119,7 +119,7 @@ duckdb:
 # tracing:
 #   enabled: true
 #   exporter: otlp_http          # otlp_http | otlp_file | none
-#   endpoint: http://localhost:4318
+#   endpoint: http://localhost:4318/v1/traces   # the FULL trace URL, not a base URL
 #   capture: metadata            # off | metadata | payload
 #   # Air-gapped: write OTLP-JSON to a file and open no outbound connection.
 #   # exporter: otlp_file
