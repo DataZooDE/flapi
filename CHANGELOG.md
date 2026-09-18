@@ -2,7 +2,78 @@
 
 All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (the date the binary set was cut). Earlier history is in the git log.
 
-## Unreleased
+## v26.09.18 — OpenTelemetry observability, and health checks during cache warmup
+
+### Observability and tracing
+
+flAPI now emits OpenTelemetry traces for every request, correlated with the audit log and the
+application log through one shared request identity. **Off by default**, and when enabled it
+exports no customer data unless an endpoint is explicitly opted in. See
+[docs/OBSERVABILITY.md](docs/OBSERVABILITY.md).
+
+- **MCP trace context (SEP-414).** flAPI now honours the unprefixed `traceparent`, `tracestate` and
+  `baggage` keys inside `params._meta`, so a tool call joins the agent's existing trace instead of
+  starting a disconnected one. `_meta` wins over the HTTP header: behind a gateway the HTTP hop
+  carries the gateway's span, not the agent's. Parsed even when tracing is disabled, so the ids
+  still reach the audit and application logs. This closes a conformance gap — flAPI advertised MCP
+  `2026-07-28` while discarding the trace context conforming clients already sent.
+- **One SERVER span per request on every route**, created in the first middleware. A
+  handler-level span would miss every 401, 403, 429, CORS preflight and 404 — the requests most
+  likely to be complained about.
+- **Inner spans** for template rendering, DuckDB execution (both the plain and prepared paths) and
+  flAPI's own outbound OIDC/JWKS calls.
+- **`X-Request-Id` on every response**, always server-minted; an inbound one is never honoured.
+  The same id appears in the audit log and in every application log line for that request, with
+  `trace_id`/`span_id` alongside when tracing is on. `X-Trace-Id` is returned when a span exists.
+- **REST audit coverage.** The audit log previously covered MCP only, while the documentation
+  claimed otherwise. It now covers every request on every route, including ones rejected before the
+  handler; denials are never suppressed.
+- **`server.log_level` is now read** from YAML, with precedence CLI > env > YAML > default. It had
+  appeared in three example configs without being honoured.
+- **`GET /api/v1/_config/metrics`** implemented, bearer-gated. It had been in the OpenAPI document
+  with no route behind it.
+- **Capture tiers** (`off` / `metadata` / `payload`, default `metadata`), with a global `off`
+  beating any per-endpoint opt-in. Filled paths, query strings, header values and credentials are
+  never exported at any tier, and error status is an enumerated `error.type` rather than an
+  exception message. Redaction is shared between the audit log and the span path so the two cannot
+  drift; built-in credential stems match as substrings, the operator's `audit.redact` list matches
+  whole keys.
+- **DuckDB execution profiling** (`tracing.db_profiling: off | summary | detailed`) attaches the
+  metrics behind `EXPLAIN ANALYZE` to the database span, read through DuckDB's C API. A fixed
+  allowlist: `QUERY_NAME` is the SQL text and `EXTRA_INFO` is the rendered filter predicate, so
+  neither is ever requested. Gated on the span actually recording, so a 1% sampling ratio pays 1%
+  of the cost.
+- **`FLAPI_WITH_TRACING=OFF`** builds no-op twins and links no OpenTelemetry symbol. Request ids,
+  log correlation, REST audit coverage and the metrics route all still work — they are not tracing
+  features. A mixed-macro build fails to link rather than corrupting silently.
+
+### Correctness fixes made along the way
+
+- **Copy-on-write endpoint table.** `getEndpointForPathAndMethod` returned a raw pointer into a
+  `std::vector` that config reload and the config-service routes cleared and re-`push_back`-ed with
+  no lock against in-flight requests — a use-after-free. Reads now pin an immutable snapshot
+  through `EndpointRef`.
+- **Route regexes are compiled once** at config load instead of on every call.
+- **One `FlapiApp` alias** for the Crow middleware tuple, enforced by CI. A second literal
+  `crow::App<...>` spelling silently creates a second, unconfigured middleware tuple.
+
+### Build
+
+- `opentelemetry-cpp` 1.24.0 via an in-repo vcpkg overlay port. The pinned baseline's 1.17.0 does
+  not compile — 136 of its headers use fixed-width integer types without including `<cstdint>`.
+- **The project now builds at C++20**, because abseil (via opentelemetry-cpp) exports a
+  `cxx_std_20` requirement. The bundled DuckDB is deliberately built at C++17 inside the same
+  binary: C++20 removed `std::uncaught_exception()`, which DuckDB still calls behind a
+  `__cplusplus` guard that MSVC defeats. CMake saves and restores `CMAKE_CXX_STANDARD` around it.
+- `opentelemetry-cpp` links `PRIVATE`, and no header under `src/include/` includes an
+  OpenTelemetry header, so protobuf and abseil stay out of ~80 translation units.
+
+### Documentation
+
+- Restructured around tasks: a new index at [docs/README.md](docs/README.md), eight guides under
+  `docs/guides/`, and the `docs/spec/` tree brought back in line with the code.
+- Roughly 15,000 lines of unlinked material that contradicted the live reference were removed;
+  completed plans and shipped design notes moved to `docs/archive/`.
 
 ### Health checks during cache warmup
 
