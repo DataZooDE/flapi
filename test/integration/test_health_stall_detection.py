@@ -73,7 +73,7 @@ class _Server:
     def start(self):
         self.proc = subprocess.Popen(
             [flapi_binary(), "-c", os.path.join(self.tmp, "flapi.yaml"),
-             "-p", str(self.port), "--log-level", "warning"],
+             "-p", str(self.port), "--log-level", "info"],
             stdout=open(self.log_path, "w"), stderr=subprocess.STDOUT, cwd=self.tmp,
             env={**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"},
             preexec_fn=os.setsid)
@@ -120,56 +120,93 @@ class TestStallDetection:
         # Polled from a thread at 50ms rather than 200ms between blocking calls:
         # the window is only as wide as the slow query outlives the budget, and
         # a sampler that is slower than the window turns a real contract into a
-        # coin flip. Every sample is kept so a failure can say what readiness
-        # actually reported instead of only that it never said "stalled".
+        # coin flip.
+        #
+        # Readiness is polled by SEVERAL samplers, not one, because a single
+        # one is not enough to observe the contract: flAPI runs a handler on
+        # the Crow io thread that owns its connection, so a slow synchronous
+        # query blocks every other connection landing on that same thread.
+        # Measured here - of 40 health requests issued during a stall, 39
+        # returned in under a millisecond and one waited 5.1s for the query to
+        # finish. With one sampler, drawing that thread ends the observation;
+        # the odds are ~1/threads, which is why this passed on a 32-core
+        # machine and failed on CI. Filed as #120 - readiness being blockable
+        # by the very stall it reports is a real limitation, not a test
+        # artifact, and the workaround below lives in the test, not the
+        # product.
+        #
+        # Every sample is timestamped and liveness is sampled alongside, so a
+        # failure distinguishes a slot released early, a blocked probe, and a
+        # budget never applied, instead of only saying "no stall was reported".
         with _Server(stall_timeout_s=1) as s:
             done = threading.Event()
             elapsed = {}
-            samples = []
+            readiness = []
+            liveness = []
             saw_stalled = None
+            t0 = time.time()
 
             def slow():
                 started = time.time()
                 try:
                     r = requests.get(f"{s.base_url}/slow", timeout=120)
                     elapsed["code"] = r.status_code
-                    elapsed["body"] = r.text[:300]
+                    elapsed["body"] = r.text[:200]
                 except Exception as e:                      # noqa: BLE001
                     elapsed["code"] = f"error: {e}"
                 finally:
                     elapsed["s"] = time.time() - started
                     done.set()
 
-            def poll():
+            def sample(url, into, want_stall):
                 nonlocal saw_stalled
-                deadline = time.time() + 60
+                deadline = time.time() + 90
                 while time.time() < deadline and not done.is_set():
+                    sent = time.time() - t0
                     try:
-                        r = requests.get(f"{s.base_url}/health", timeout=10)
+                        # Short, and retried on a NEW connection. A probe that
+                        # draws the blocked io thread must be abandoned rather
+                        # than waited out - waiting out is what ends the
+                        # observation. This is also what a real orchestrator
+                        # does with a readiness probe that does not answer.
+                        r = requests.get(url, timeout=1.0)
                         body = r.json()
                     except Exception as e:                  # noqa: BLE001
-                        samples.append(("error", str(e)))
+                        into.append((round(sent, 2), "error", str(e)[:80]))
+                        time.sleep(0.05)
                         continue
-                    samples.append((r.status_code, body.get("status"),
-                                    body.get("requests")))
-                    if r.status_code == 503 and body.get("status") == "stalled":
+                    into.append((round(sent, 2), round(time.time() - t0, 2),
+                                 r.status_code, body.get("status"),
+                                 body.get("requests")))
+                    if want_stall and r.status_code == 503 \
+                            and body.get("status") == "stalled":
                         saw_stalled = body
                         return
                     time.sleep(0.05)
 
-            poller = threading.Thread(target=poll, daemon=True)
-            worker = threading.Thread(target=slow, daemon=True)
-            poller.start()
-            worker.start()
-            done.wait(timeout=120)
-            poller.join(timeout=15)
+            threads = [
+                threading.Thread(target=sample,
+                                 args=(f"{s.base_url}/health", readiness, True),
+                                 daemon=True)
+                for _ in range(4)
+            ] + [
+                threading.Thread(target=sample,
+                                 args=(f"{s.base_url}/health/live", liveness, False),
+                                 daemon=True),
+                threading.Thread(target=slow, daemon=True),
+            ]
+            for t in threads:
+                t.start()
+            done.wait(timeout=180)
+            for t in threads[:-1]:
+                t.join(timeout=20)
 
             took = elapsed.get("s")
-            # Separate the two ways this can fail. If the "slow" query was not
-            # slow, the fixture is wrong and there was no stall to detect -
-            # saying so is very different from saying readiness missed one.
-            # Demands the fixture leave at least a second of window past the
-            # 1s budget, rather than merely outliving it by a hair.
+            # Separate the ways this can fail. If the "slow" query was not slow,
+            # the fixture is wrong and there was no stall to detect - saying so
+            # is very different from saying readiness missed one. This demands
+            # at least a second of window past the 1s budget, rather than the
+            # query merely outliving it by a hair.
             assert took is not None and took > 2.0, (
                 f"the fixture's slow query returned in {took}s (status "
                 f"{elapsed.get('code')}, body {elapsed.get('body')!r}), so it "
@@ -180,9 +217,11 @@ class TestStallDetection:
             assert saw_stalled is not None, (
                 f"readiness never reported a stall while a request ran for "
                 f"{took:.1f}s against a 1s budget (slow request returned "
-                f"{elapsed.get('code')}). Health said: "
-                f"{samples[:20]} ... {samples[-5:]} "
-                f"({len(samples)} samples)\n"
+                f"{elapsed.get('code')}).\n"
+                f"readiness ({len(readiness)} samples, each "
+                f"(sent_at, returned_at, code, status, requests)):\n"
+                f"  {readiness}\n"
+                f"liveness ({len(liveness)} samples):\n  {liveness}\n"
                 f"server log tail:\n{open(s.log_path).read()[-3000:]}"
             )
             assert saw_stalled["requests"]["in_flight"] >= 1
