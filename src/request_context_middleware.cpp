@@ -1,4 +1,5 @@
 #include "request_context_middleware.hpp"
+#include "in_flight_registry.hpp"
 
 #include "audit_logger.hpp"
 #include "config_manager.hpp"
@@ -179,6 +180,14 @@ void RequestContextMiddleware::before_handle(crow::request& req, crow::response&
 
     ctx.rc.http_method = staticMethodName(req.method);
     ctx.rc.raw_path = req.url;
+
+    // Tracked for stall detection - but NOT the probes themselves. /health runs
+    // through this middleware, so counting it would make it observe itself:
+    // in_flight never reads zero, and a slow health check could eventually
+    // report ITSELF as the stall. Probes are not work.
+    if (!isProbeRoute(ctx.rc.raw_path)) {
+        ctx.in_flight_slot = InFlightRegistry::begin(ctx.rc.t0);
+    }
     // Route resolution deliberately does NOT happen here. AuthMiddleware and
     // handleDynamicRequest already resolve the endpoint, and resolving a third
     // time would add a full O(N) scan to every request - including /health, which
@@ -284,8 +293,15 @@ void RequestContextMiddleware::finish(crow::response& res, context& ctx) {
     // ambient pointer set on a pooled worker. Clearing happens whatever the
     // emitter does; the emitter's failures are counted, not propagated.
     struct ClearGuard {
-        ~ClearGuard() { RequestContextScope::clear(); }
-    } clear_guard;
+        std::size_t slot;
+        ~ClearGuard() {
+            RequestContextScope::clear();
+            // Whatever the emitter does, this request is no longer in flight.
+            // Missing it would latch a stale age forever - a health check that
+            // never clears is as useless as one that never fires.
+            InFlightRegistry::end(slot);
+        }
+    } clear_guard{ctx.in_flight_slot};
 
     // F1: only a request that actually produced an exportable span should pay
     // the blocking budget. Captured before end() because the scope is released

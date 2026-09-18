@@ -679,6 +679,7 @@ public:
     // silently diverge.
     const CapturePolicy& getCapturePolicy() const;
     const std::string& getLogLevel() const { return log_level; }
+    int getStallTimeoutSeconds() const { return stall_timeout_s; }
     const std::string& getLogFormat() const { return log_format; }
     std::string getBasePath() const;
     std::string getDuckDBPath() const;
@@ -747,6 +748,16 @@ protected:
     TracingConfig tracing_config;
     mutable std::unique_ptr<CapturePolicy> capture_policy_;
     std::string log_level = "info";
+    // Readiness fails when a request has been in flight longer than this, in
+    // seconds. 0 disables the check.
+    //
+    // Guards against a backend that stops answering without failing: a wedged
+    // SQLite attachment leaves DuckDB, the HTTP server and every other
+    // connection healthy, so a `SELECT 1` probe passes while the endpoint is
+    // dead (#116). The default is deliberately high - flAPI's answer to a
+    // genuinely long query is the MCP Tasks extension, so a SYNCHRONOUS request
+    // still running after this long is pathological rather than merely slow.
+    int stall_timeout_s = 60;
     std::string log_format = "text";
     std::string project_description;
     std::string cache_schema = "flapi";

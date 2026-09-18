@@ -114,6 +114,11 @@ void ConfigManager::parseMainConfig() {
         // Top-level and kebab-case, matching http-port / http-host. The `server:`
         // block that three example files used was never parsed by anything.
         log_level = safeGet<std::string>(config, "log-level", "log-level", "info");
+        stall_timeout_s = safeGet<int>(config, "stall-timeout-s", "stall-timeout-s", 60);
+        if (stall_timeout_s < 0) {
+            throw std::runtime_error("stall-timeout-s must be 0 (disabled) or positive; got "
+                                     + std::to_string(stall_timeout_s));
+        }
         log_format = safeGet<std::string>(config, "log-format", "log-format", "text");
 
         CROW_LOG_DEBUG << "Project Name: " << project_name;
