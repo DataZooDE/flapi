@@ -843,11 +843,35 @@ void DatabaseManager::refreshSecretsTable(const std::string& secret_table, const
     auto executor = createQueryExecutor();
 
     auto create_table_stmt = "CREATE OR REPLACE TABLE " + secret_table + "(j JSON)";
-    auto insert_stmt = "INSERT INTO " + secret_table + " VALUES ('" + secret_json + "')";
+    // The secret document is bound, not interpolated. It comes from the secrets
+    // manager rather than from a request, but it is still data: a single
+    // apostrophe in any username or password terminated the literal and the
+    // INSERT failed to parse, and a secret crafted by whoever can write to the
+    // store executed SQL here - inside a DuckDB that reaches the filesystem and
+    // every configured cloud backend.
+    auto insert_stmt = "INSERT INTO " + secret_table + " VALUES (?)";
 
     try {
         executor.execute(create_table_stmt, "create table");
-        executor.execute(insert_stmt, "insert data");
+
+        duckdb_prepared_statement stmt = nullptr;
+        if (duckdb_prepare(executor.conn, insert_stmt.c_str(), &stmt) == DuckDBError) {
+            const char* err = duckdb_prepare_error(stmt);
+            std::string detail = err ? err : "(no detail)";
+            duckdb_destroy_prepare(&stmt);
+            throw std::runtime_error("prepare failed: " + detail);
+        }
+        if (duckdb_bind_varchar_length(stmt, 1, secret_json.data(), secret_json.size()) == DuckDBError) {
+            duckdb_destroy_prepare(&stmt);
+            throw std::runtime_error("bind failed");
+        }
+        try {
+            executor.executePrepared(stmt, "insert data");
+        } catch (...) {
+            duckdb_destroy_prepare(&stmt);
+            throw;
+        }
+        duckdb_destroy_prepare(&stmt);
     } catch (const std::exception& e) {
         throw std::runtime_error("Failed to refresh JSON table '" + secret_table + "': " + e.what());
     }
@@ -856,15 +880,45 @@ void DatabaseManager::refreshSecretsTable(const std::string& secret_table, const
 std::optional<std::tuple<std::string, std::vector<std::string>>> DatabaseManager::findUserInSecretsTable(const std::string& secret_table, 
                                                                                                          const std::string& username) 
 {
+    // The username arrives base64-decoded from an `Authorization: Basic`
+    // header and is therefore fully attacker-controlled on an UNauthenticated
+    // request. It used to be concatenated into this query, which made the
+    // header an injection point into the query that decides authentication -
+    // and the query returns the stored password AND the role list, both of
+    // which the caller then trusts. Controlling the result set therefore meant
+    // choosing your own password hash and your own roles: auth bypass plus
+    // privilege escalation, not just data disclosure.
+    //
+    // Bound as a parameter. `secret_table` stays interpolated because it is a
+    // table identifier - it cannot be bound - but it comes from the config
+    // file, not from the request.
     std::stringstream query;
 
     query << "SELECT y->>'username' AS username, y->>'password' AS password, CAST(json_extract_string(y, '$.roles[*]') AS varchar[]) AS roles "
           << "FROM (SELECT unnest(cast(j.auth as JSON[])) AS y FROM " << secret_table << ") AS x "
-          << "WHERE y->>'username' = '" << username << "' "
+          << "WHERE y->>'username' = ? "
           << "LIMIT 1";
 
     auto executor = createQueryExecutor();
-    executor.execute(query.str());
+
+    duckdb_prepared_statement stmt = nullptr;
+    if (duckdb_prepare(executor.conn, query.str().c_str(), &stmt) == DuckDBError) {
+        const char* err = duckdb_prepare_error(stmt);
+        std::string detail = err ? err : "(no detail)";
+        duckdb_destroy_prepare(&stmt);
+        throw std::runtime_error("Failed to prepare secrets lookup: " + detail);
+    }
+    if (duckdb_bind_varchar_length(stmt, 1, username.data(), username.size()) == DuckDBError) {
+        duckdb_destroy_prepare(&stmt);
+        throw std::runtime_error("Failed to bind username for secrets lookup");
+    }
+    try {
+        executor.executePrepared(stmt, "secrets lookup");
+    } catch (...) {
+        duckdb_destroy_prepare(&stmt);
+        throw;
+    }
+    duckdb_destroy_prepare(&stmt);
 
     while(true) 
     {

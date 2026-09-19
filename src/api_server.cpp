@@ -118,9 +118,26 @@ void APIServer::setupRoutes() {
     configService->setDocGenerator(openAPIDocGenerator);
     configService->registerRoutes(app);
 
+    // /config returns the whole configuration: every endpoint, and every
+    // connection's `init` SQL and properties. It was served to anyone who
+    // could reach the port - no token, and registered even when the config
+    // service was switched off - so a default deployment disclosed its own
+    // credentials on request. Verified against a running server: a password in
+    // connections.*.properties came back in the body of an unauthenticated GET.
+    //
+    // It now requires the same token as every other configuration route.
+    // Properties are redacted at the source as well (config_manager.cpp), but
+    // redaction alone is not enough here: a credential can sit inside the
+    // `init` SQL - the shipped SAP example puts a PASSWD literal there - and
+    // no key-name predicate can find it.
     CROW_ROUTE(app, "/config")
         .methods("GET"_method)
         ([this](const crow::request& req, crow::response& res) {
+            if (!configService || !configService->validateToken(req)) {
+                res = crow::response(401, "Unauthorized: configuration access requires the config-service token");
+                res.end();
+                return;
+            }
             res = getConfig();
             res.end();
         });
@@ -128,6 +145,11 @@ void APIServer::setupRoutes() {
     CROW_ROUTE(app, "/config")
         .methods("DELETE"_method)
         ([this](const crow::request& req, crow::response& res) {
+            if (!configService || !configService->validateToken(req)) {
+                res = crow::response(401, "Unauthorized: configuration access requires the config-service token");
+                res.end();
+                return;
+            }
             CROW_LOG_INFO << "Config refresh requested";
             res = refreshConfig();
             res.end();
