@@ -1,4 +1,5 @@
 #include "config_manager.hpp"
+#include "redaction.hpp"
 #include "endpoint_config_parser.hpp"
 #include "config_loader.hpp"
 #include "endpoint_repository.hpp"
@@ -1600,9 +1601,18 @@ crow::json::wvalue ConfigManager::getFlapiConfig() const {
         connJson["log-parameters"] = conn.log_parameters;
         connJson["allow"] = conn.allow;
 
+        // connections.*.properties carries passwords, API keys and connection
+        // strings. This projection is reachable from GET /config, which was
+        // served unauthenticated, so the credentials went to anyone who could
+        // reach the port. Redacted at the source rather than at the route, so
+        // a future caller of getFlapiConfig() cannot reintroduce the leak by
+        // forgetting to filter.
+        //
+        // Same predicate as the audit log and the span path, so a key that is
+        // hidden in a trace is hidden here too.
         crow::json::wvalue propertiesJson;
         for (const auto& [key, value] : conn.properties) {
-            propertiesJson[key] = value;
+            propertiesJson[key] = isCredentialKey(key) ? std::string("<redacted>") : value;
         }
         connJson["properties"] = std::move(propertiesJson);
         connectionsJson[name] = std::move(connJson);
