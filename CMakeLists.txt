@@ -378,7 +378,6 @@ add_library(flapi-lib STATIC
     src/oidc_provider_presets.cpp
     src/http_client.cpp
     src/config_token_utils.cpp
-    src/error.cpp
     src/type_converter.cpp
     src/vfs_adapter.cpp
     src/path_validator.cpp

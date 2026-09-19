@@ -847,7 +847,6 @@ protected:
     std::unique_ptr<ConfigLoader> config_loader;
     std::unique_ptr<EndpointRepository> endpoint_repository;
 
-    void parseConfig();
 
     std::string getFullCacheSourcePath(const EndpointConfig& endpoint) const;
     
@@ -884,7 +883,6 @@ protected:
 
     std::string makePathRelativeToBasePathIfNecessary(const std::string& value) const;
 
-    void validateConfig();
     void validateEndpointConfig(const YAML::Node& endpoint_config, const std::string& file_path);
     template<typename T>
     T getValueOrThrow(const YAML::Node& node, const std::string& key, const std::string& yamlPath) const;
