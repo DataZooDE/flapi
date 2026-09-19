@@ -75,7 +75,10 @@ struct MCPSession {
 
         // OIDC-specific fields
         std::string bound_token_jti;  // Bind token ID to session (prevent hijacking)
-        std::chrono::steady_clock::time_point token_expires_at;  // Token expiration time
+        // system_clock: this is the OIDC `exp` instant, not a monotonic
+        // stamp. See OIDCTokenClaims - the same mismatch made both this
+        // check and isTokenExpired() permanently false.
+        std::chrono::system_clock::time_point token_expires_at;  // Token expiration time
         std::string refresh_token;    // For token refresh (optional)
 
         // Check if OIDC token needs refresh (within 5 minutes of expiration)
@@ -83,7 +86,7 @@ struct MCPSession {
             if (auth_type != "oidc") {
                 return false;
             }
-            auto now = std::chrono::steady_clock::now();
+            auto now = std::chrono::system_clock::now();
             auto refresh_threshold = token_expires_at - std::chrono::minutes(5);
             return now >= refresh_threshold;
         }
@@ -93,7 +96,7 @@ struct MCPSession {
             if (auth_type != "oidc") {
                 return false;
             }
-            return std::chrono::steady_clock::now() >= token_expires_at;
+            return std::chrono::system_clock::now() >= token_expires_at;
         }
     };
     std::optional<AuthContext> auth_context;

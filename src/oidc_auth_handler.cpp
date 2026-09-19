@@ -135,7 +135,7 @@ std::optional<OIDCTokenClaims> OIDCAuthHandler::validateToken(const std::string&
     if (payload.has("exp")) {
         try {
             uint64_t exp_seconds = (uint64_t)payload["exp"].i();
-            claims.expires_at = std::chrono::steady_clock::time_point(
+            claims.expires_at = std::chrono::system_clock::time_point(
                 std::chrono::seconds(exp_seconds)
             );
         } catch (...) {
@@ -154,7 +154,7 @@ std::optional<OIDCTokenClaims> OIDCAuthHandler::validateToken(const std::string&
     if (payload.has("iat")) {
         try {
             uint64_t iat_seconds = (uint64_t)payload["iat"].i();
-            claims.issued_at = std::chrono::steady_clock::time_point(
+            claims.issued_at = std::chrono::system_clock::time_point(
                 std::chrono::seconds(iat_seconds)
             );
         } catch (...) {
@@ -208,7 +208,8 @@ std::optional<OIDCProviderMetadata> OIDCAuthHandler::getProviderMetadata() {
 }
 
 bool OIDCAuthHandler::isTokenExpired(const OIDCTokenClaims& claims) const {
-    auto now = std::chrono::steady_clock::now();
+    // system_clock, to match the epoch `exp` is expressed in.
+    auto now = std::chrono::system_clock::now();
     auto skew = std::chrono::seconds(config_.clock_skew_seconds);
     return now > (claims.expires_at + skew);
 }

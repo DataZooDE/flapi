@@ -24,8 +24,13 @@ struct OIDCTokenClaims {
     std::string name;                 // 'name' claim if available
     std::vector<std::string> roles;   // Extracted from roles/groups claims
     std::vector<std::string> groups;  // Group memberships
-    std::chrono::steady_clock::time_point issued_at;  // 'iat' claim
-    std::chrono::steady_clock::time_point expires_at; // 'exp' claim
+    // system_clock, NOT steady_clock. `iat` and `exp` are Unix epoch seconds -
+    // absolute instants on the wall clock. steady_clock's epoch is arbitrary
+    // (time since boot on Linux), so storing an epoch value in one produced a
+    // time_point roughly 57 years after boot, and every comparison against
+    // steady_clock::now() was false. Expiry silently never fired.
+    std::chrono::system_clock::time_point issued_at;  // 'iat' claim
+    std::chrono::system_clock::time_point expires_at; // 'exp' claim
     std::string jti;                  // JWT ID - unique token identifier
 };
 
