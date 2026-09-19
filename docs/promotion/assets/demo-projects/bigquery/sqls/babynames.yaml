@@ -1,0 +1,25 @@
+mcp-tool:
+  name: top_baby_names
+  description: Most popular US baby names for a state, from BigQuery public data
+
+request:
+  - field-name: state
+    field-in: query
+    description: Two-letter US state code, e.g. TX
+    required: true
+    validators:
+      - type: string
+        pattern: '^[A-Z]{2}$'
+
+  - field-name: top
+    field-in: query
+    description: How many names to return
+    required: false
+    validators:
+      - type: int
+        min: 1
+        max: 50
+
+template-source: babynames.sql
+connection:
+  - bigquery

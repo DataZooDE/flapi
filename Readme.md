@@ -2,6 +2,8 @@
 
 flAPI is a powerful service that automatically generates read-only APIs for datasets by utilizing SQL templates. Built on top of [DuckDB](https://duckdb.org/) and leveraging its SQL engine and extension ecosystem, flAPI offers a seamless way to connect to various data sources and expose them as RESTful APIs.
 
+![flAPI demo: one SQL template served as a REST endpoint and an MCP tool](docs/promotion/assets/flapi-demo.gif)
+
 ![overview of flAPI](https://i.imgur.com/m7UVZlR.png)
 
 ## ⚡ Features
