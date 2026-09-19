@@ -1,3 +1,4 @@
+#include <thread>
 #include <yaml-cpp/yaml.h>
 
 #include "api_server.hpp"
@@ -427,6 +428,18 @@ crow::response APIServer::generateOpenAPIDoc() {
     return crow::response(200, ss.str());
 }
 
+std::uint16_t APIServer::serverThreadCount(unsigned hardware_concurrency) {
+    // 8 total -> 7 io threads. Enough that a single stuck query leaves the
+    // instance answering, small enough to be unremarkable on a 1-vCPU
+    // container. Crow clamps anything below 2 itself.
+    constexpr unsigned kFloor = 8;
+    const unsigned threads = hardware_concurrency > kFloor ? hardware_concurrency : kFloor;
+    // Crow takes a uint16_t; a machine reporting more cores than that is not
+    // a reason to wrap around to nothing.
+    constexpr unsigned kMax = 64;
+    return static_cast<std::uint16_t>(threads < kMax ? threads : kMax);
+}
+
 void APIServer::run(int port) {
     if (port > 0) {
         configManager->setHttpPort(port);
@@ -441,7 +454,7 @@ void APIServer::run(int port) {
         app.bindaddr(bind_host)
            .port(configManager->getHttpPort())
            .server_name("flAPI")
-           .multithreaded()
+           .concurrency(serverThreadCount(std::thread::hardware_concurrency()))
            .use_compression(crow::compression::GZIP)
            .ssl_file(https.ssl_cert_file, https.ssl_key_file)
            .run();
@@ -450,7 +463,7 @@ void APIServer::run(int port) {
         app.bindaddr(bind_host)
            .port(configManager->getHttpPort())
            .server_name("flAPI")
-           .multithreaded()
+           .concurrency(serverThreadCount(std::thread::hardware_concurrency()))
            .use_compression(crow::compression::GZIP)
            .run();
     }

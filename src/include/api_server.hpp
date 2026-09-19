@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include <crow.h>
 #include "crow/middlewares/cors.h"
 #include "crow/compression.h"
@@ -39,6 +41,22 @@ public:
     crow::response getHealth();
     
     void run(int port = 8080);
+
+    /// How many threads to hand Crow.
+    ///
+    /// Crow runs a request handler on the io thread that owns its connection
+    /// and dedicates one thread to accepting, so `concurrency` threads give
+    /// `concurrency - 1` io threads. On a 1- or 2-vCPU container -
+    /// Cloud Run's default - `hardware_concurrency()` therefore leaves a
+    /// SINGLE io thread, and one slow synchronous query blocks every other
+    /// connection on the instance, `/health` included (#120).
+    ///
+    /// io threads spend nearly all their time waiting on sockets, so
+    /// over-providing them costs thread stacks rather than CPU. The floor
+    /// makes head-of-line blocking improbable on a small instance instead of
+    /// certain. It does not make it impossible - that needs handlers off the
+    /// io threads, which is what #120 tracks.
+    static std::uint16_t serverThreadCount(unsigned hardware_concurrency);
     void stop();
 
     void requestForEndpoint(const EndpointConfig& endpoint, const std::unordered_map<std::string, std::string>& pathParams = {});
