@@ -54,9 +54,6 @@ add_executable(flapi_tests
     test_json_utils.cpp
     test_config_loader.cpp
     test_endpoint_repository.cpp
-    test_config_validator.cpp
-    test_config_serializer.cpp
-    test_error.cpp
     test_type_converter.cpp
     test_arrow_integration.cpp
     test_content_negotiation.cpp

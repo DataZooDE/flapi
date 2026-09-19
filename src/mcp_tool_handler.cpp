@@ -373,12 +373,16 @@ std::map<std::string, std::string> MCPToolHandler::prepareParameters(const Endpo
     // Convert JSON arguments to parameter map
     std::map<std::string, std::string> params = convertJsonToParams(arguments);
 
-    // Add any additional parameters from endpoint request fields that have defaults
-    for (const auto& field : endpoint_config.request_fields) {
-        if (field.defaultValue.empty() && params.find(field.fieldName) == params.end()) {
-            // No default and no provided value - could add validation here
-        }
-    }
+    // There was a loop here that read as "apply default values", with an
+    // inverted condition (defaultValue.EMPTY) and an empty body - so it applied
+    // nothing. Deleting it is behaviour-preserving; it did nothing.
+    //
+    // What it did do was hide a real divergence: request_handler.cpp applies
+    // `default-value` when a param is absent, and this path does not, so the
+    // same endpoint behaves differently over REST and over MCP. Closing that is
+    // an observable behaviour change, not a refactor - tracked in #124. The
+    // loop is removed rather than left, because code that reads as implemented
+    // and is not is worse than either fixing it or admitting the gap.
 
     return params;
 }

@@ -4,7 +4,6 @@
 
 namespace flapi {
 
-const std::string PathUtils::SLASH_REPLACEMENT = "-slash-";
 const std::string PathUtils::EMPTY_REPLACEMENT = "empty";
 
 std::string PathUtils::pathToSlug(const std::string& path) {

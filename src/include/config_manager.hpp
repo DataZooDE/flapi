@@ -572,8 +572,6 @@ struct StorageConfig {
 class EndpointConfigParser;
 class ConfigLoader;
 class EndpointRepository;
-class ConfigValidator;
-class ConfigSerializer;
 class IFileProvider;
 
 class ConfigManager {
@@ -848,10 +846,7 @@ protected:
     // Extracted classes for delegation (Facade pattern)
     std::unique_ptr<ConfigLoader> config_loader;
     std::unique_ptr<EndpointRepository> endpoint_repository;
-    std::unique_ptr<ConfigValidator> config_validator;
-    std::unique_ptr<ConfigSerializer> config_serializer;
 
-    void parseConfig();
 
     std::string getFullCacheSourcePath(const EndpointConfig& endpoint) const;
     
@@ -888,7 +883,6 @@ protected:
 
     std::string makePathRelativeToBasePathIfNecessary(const std::string& value) const;
 
-    void validateConfig();
     void validateEndpointConfig(const YAML::Node& endpoint_config, const std::string& file_path);
     template<typename T>
     T getValueOrThrow(const YAML::Node& node, const std::string& key, const std::string& yamlPath) const;
