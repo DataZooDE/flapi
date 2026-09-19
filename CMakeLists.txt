@@ -330,8 +330,6 @@ add_library(flapi-lib STATIC
     src/duckdb_embed_fs.cpp
     src/config_loader.cpp
     src/endpoint_repository.cpp
-    src/config_validator.cpp
-    src/config_serializer.cpp
     src/config_manager.cpp
     src/config_service.cpp
     src/cors_middleware.cpp

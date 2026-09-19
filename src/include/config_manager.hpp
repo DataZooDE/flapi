@@ -572,8 +572,6 @@ struct StorageConfig {
 class EndpointConfigParser;
 class ConfigLoader;
 class EndpointRepository;
-class ConfigValidator;
-class ConfigSerializer;
 class IFileProvider;
 
 class ConfigManager {
@@ -848,8 +846,6 @@ protected:
     // Extracted classes for delegation (Facade pattern)
     std::unique_ptr<ConfigLoader> config_loader;
     std::unique_ptr<EndpointRepository> endpoint_repository;
-    std::unique_ptr<ConfigValidator> config_validator;
-    std::unique_ptr<ConfigSerializer> config_serializer;
 
     void parseConfig();
 

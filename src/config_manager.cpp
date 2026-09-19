@@ -2,8 +2,6 @@
 #include "endpoint_config_parser.hpp"
 #include "config_loader.hpp"
 #include "endpoint_repository.hpp"
-#include "config_validator.hpp"
-#include "config_serializer.hpp"
 #include "caching_file_provider.hpp"
 #include "vfs_adapter.hpp"
 #include "path_validator.hpp"
@@ -49,9 +47,7 @@ ConfigManager::ConfigManager(const std::filesystem::path& config_file)
       auth_enabled(false),
       yaml_parser(),
       config_loader(std::make_unique<ConfigLoader>(config_file.string())),
-      endpoint_repository(std::make_unique<EndpointRepository>()),
-      config_validator(std::make_unique<ConfigValidator>()),
-      config_serializer(std::make_unique<ConfigSerializer>())
+      endpoint_repository(std::make_unique<EndpointRepository>())
 {}
 
 // Destructor defined here to handle unique_ptr cleanup with complete types
