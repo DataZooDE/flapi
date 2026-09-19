@@ -187,6 +187,21 @@ The main configuration file defines global settings, connections, and server beh
 | `stall-timeout-s` | int | `60` | Readiness (`GET /health`) returns `503` when a request has been in flight longer than this. `0` disables it. Guards against a backend that stops answering without failing — a wedged connection leaves the process, DuckDB and every other connection healthy, so a `SELECT 1` probe passes while the endpoint is dead. Raise it if you serve deliberately long synchronous queries; the usual answer to those is the MCP Tasks extension. |
 | `http-host` | string | `"0.0.0.0"` | Bind address (overridable via `--host` / `FLAPI_HOST`); use `127.0.0.1` to restrict to loopback |
 
+
+> **How many connections flAPI serves in parallel.** flAPI runs a request
+> handler on the server thread that owns its connection, and uses
+> `max(CPU cores, 8)` threads (capped at 64) — not one per core. The floor
+> matters on small instances: a slow *synchronous* query occupies its thread
+> for the whole query, and other connections landing on that thread wait
+> behind it. Measured with one ~5s query in flight and 40 concurrent
+> `GET /health` probes: with a single server thread **all 40 waited out the
+> query and none reported the stall**; with seven, 35 of 40 answered
+> `503 stalled` immediately. The floor makes that unlikely rather than
+> impossible — see
+> [#120](https://github.com/DataZooDE/flapi/issues/120). It is not
+> configurable, and it is unrelated to `duckdb.threads`, which sets query
+> parallelism inside DuckDB.
+
 **Example:**
 
 ```yaml
