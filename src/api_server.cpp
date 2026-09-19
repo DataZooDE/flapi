@@ -36,7 +36,7 @@ APIServer::APIServer(std::shared_ptr<ConfigManager> cm,
     std::unique_ptr<ConfigToolAdapter> config_tool_adapter;
     if (config_service_enabled) {
         try {
-            config_tool_adapter = std::make_unique<ConfigToolAdapter>(cm, db_manager);
+            config_tool_adapter = std::make_unique<ConfigToolAdapter>(cm, db_manager, config_service_token);
             CROW_LOG_INFO << "ConfigToolAdapter initialized - config MCP tools available";
         } catch (const std::exception& e) {
             CROW_LOG_WARNING << "Failed to initialize ConfigToolAdapter: " << e.what();
