@@ -54,13 +54,26 @@ void RateLimitMiddleware::before_handle(crow::request& req, crow::response& res,
         int64_t retry_after = std::chrono::duration_cast<std::chrono::seconds>(
             duration_until_reset).count();
 
-        // Set 429 response - don't call end() as Crow handles that
         res.code = 429;
         res.set_header("Content-Type", "text/plain");
         res.set_header("Retry-After", std::to_string(std::max(int64_t(1), retry_after)));
         res.set_header("Connection", "close");
         res.body = "Rate limit exceeded. Try again later.";
-        // Don't call res.end() - let Crow's middleware chain handle completion
+
+        // end() is what stops the request, and it is not optional. Crow's
+        // middleware chain short-circuits on res.is_completed()
+        // (crow/middleware.h:151), and only end() sets that flag. Without it
+        // the previous code set a 429 and then let the request continue: auth
+        // ran, the SQL executed, and the result set was APPENDED to the 429
+        // body. Measured on a 2-request limit:
+        //
+        //   request 3: 429
+        //   Rate limit exceeded. Try again later.{"data":[{"marker":"leaked-row"}]}
+        //
+        // So the limiter relabelled the response while doing all the work it
+        // was meant to prevent - no protection against load, and it handed
+        // back the very data it had just refused.
+        res.end();
         return;
     }
 }
