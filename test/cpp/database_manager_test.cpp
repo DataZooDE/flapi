@@ -403,3 +403,62 @@ TEST_CASE_METHOD(TestFixture, "DatabaseManager cache behavior: no action when di
     // Should not throw when trying to invalidate disabled cache
     REQUIRE_NOTHROW(db_manager->invalidateCache(endpoint));
 } 
+// The Basic-auth username reaches this query. It arrives base64-decoded from an
+// `Authorization` header on an UNAUTHENTICATED request, so it is entirely
+// attacker-controlled, and it used to be concatenated straight into the SQL.
+//
+// That made the header an injection point into the query that decides
+// authentication - and the query returns the stored password AND the role list,
+// both of which AuthMiddleware::authenticateAwsSecrets then trusts
+// (auth_middleware.cpp:276-283). Controlling the result meant choosing your own
+// password and your own roles: auth bypass plus privilege escalation.
+TEST_CASE_METHOD(TestFixture, "secrets lookup does not interpret the username as SQL",
+                 "[database_manager][security][auth]") {
+    const std::string table = "test_secrets";
+    db_manager->refreshSecretsTable(
+        table,
+        R"({"auth":[{"username":"alice","password":"alice-secret","roles":["reader"]}]})");
+
+    SECTION("an honest username still resolves") {
+        auto found = db_manager->findUserInSecretsTable(table, "alice");
+        REQUIRE(found.has_value());
+        auto [password, roles] = found.value();
+        REQUIRE(password == "alice-secret");
+        REQUIRE(roles.size() == 1);
+        REQUIRE(roles[0] == "reader");
+    }
+
+    SECTION("a tautology does not match anyone") {
+        // Concatenated, this closed the literal and made the WHERE always true,
+        // returning alice's row - and with it her password hash and roles - to
+        // a caller who never knew her name.
+        auto found = db_manager->findUserInSecretsTable(table, "' OR '1'='1");
+        REQUIRE_FALSE(found.has_value());
+    }
+
+    SECTION("a comment-terminated injection does not match anyone") {
+        auto found = db_manager->findUserInSecretsTable(table, "x' OR 1=1 --");
+        REQUIRE_FALSE(found.has_value());
+    }
+
+    SECTION("a UNION cannot fabricate a user with chosen password and roles") {
+        // The dangerous shape: not reading data, but MANUFACTURING the row that
+        // authentication is decided from.
+        auto found = db_manager->findUserInSecretsTable(
+            table,
+            "x' UNION SELECT 'admin', 'chosen-password', ['admin'] --");
+        REQUIRE_FALSE(found.has_value());
+    }
+
+    SECTION("a quote in a username is data, not syntax") {
+        // The flip side of escaping: a legitimate name containing an
+        // apostrophe must not break the query either.
+        db_manager->refreshSecretsTable(
+            table,
+            R"({"auth":[{"username":"o'brien","password":"pw","roles":["reader"]}]})");
+        auto found = db_manager->findUserInSecretsTable(table, "o'brien");
+        REQUIRE(found.has_value());
+        auto [password, roles] = found.value();
+        REQUIRE(password == "pw");
+    }
+}
