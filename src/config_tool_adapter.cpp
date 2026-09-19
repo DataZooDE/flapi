@@ -1,4 +1,6 @@
 #include "config_tool_adapter.hpp"
+
+#include <openssl/crypto.h>
 #include "config_service.hpp"
 #include "json_utils.hpp"
 
@@ -9,8 +11,10 @@
 namespace flapi {
 
 ConfigToolAdapter::ConfigToolAdapter(std::shared_ptr<ConfigManager> config_manager,
-                                     std::shared_ptr<DatabaseManager> db_manager)
-    : config_manager_(config_manager), db_manager_(db_manager) {
+                                     std::shared_ptr<DatabaseManager> db_manager,
+                                     std::string expected_auth_token)
+    : expected_auth_token_(std::move(expected_auth_token)),
+      config_manager_(config_manager), db_manager_(db_manager) {
     // Validate that required managers are provided
     if (!config_manager_) {
         CROW_LOG_ERROR << "ConfigToolAdapter: ConfigManager is null";
@@ -340,8 +344,18 @@ ConfigToolResult ConfigToolAdapter::executeTool(const std::string& tool_name,
             return createErrorResult(-32001, "Authentication required for tool: " + tool_name);
         }
 
-        // Validate token format and structure
+        // Format first - a cheap, non-secret-dependent reject for obviously
+        // malformed input.
         std::string token_error = validateAuthToken(auth_token);
+        if (token_error.empty() && !tokenMatchesConfigured(auth_token)) {
+            // This is the check that was missing. validateAuthToken only ever
+            // inspected the SHAPE of the token - its length, its character set
+            // and its scheme name - and returned success for anything
+            // well-formed. The configured config-service token was never
+            // compared, so `Authorization: Bearer anything-at-all` satisfied
+            // every tool declared auth_required.
+            token_error = "Invalid authentication token";
+        }
         if (!token_error.empty()) {
             CROW_LOG_WARNING << "Tool execution denied - auth validation failed for " << tool_name << ": " << token_error;
             return createErrorResult(-32001, "Authentication validation failed: " + token_error);
@@ -644,14 +658,23 @@ ConfigToolResult ConfigToolAdapter::executeUpdateTemplate(const crow::json::wval
             return createErrorResult(-32603, "Endpoint not found: " + endpoint);
         }
 
-        // Return success
-        crow::json::wvalue result;
-        result["endpoint"] = endpoint;
-        result["message"] = "Template updated successfully";
-        result["content_length"] = static_cast<int>(content.length());
-
-        CROW_LOG_INFO << "flapi_update_template: updated template for endpoint " << endpoint;
-        return createSuccessResult(result.dump());
+        // This tool has never written anything. It validated that the
+        // endpoint existed and then reported success, quoting the length of
+        // the content it discarded - so an operator updating a template over
+        // MCP was told it worked while the file on disk was untouched.
+        //
+        // Say so instead. Reporting success for work not done is worse than
+        // either implementing it or refusing: it is the one outcome the
+        // caller cannot detect. The REST route
+        // PUT /api/v1/_config/endpoints/{slug}/template does perform the
+        // write and is the supported path until this is implemented.
+        (void)content;
+        CROW_LOG_WARNING << "flapi_update_template is not implemented; refusing rather than "
+                            "reporting success for endpoint " << endpoint;
+        return createErrorResult(
+            -32601,
+            "flapi_update_template is not implemented. Use "
+            "PUT /api/v1/_config/endpoints/{slug}/template instead.");
     } catch (const std::exception& e) {
         CROW_LOG_ERROR << "flapi_update_template failed: " << e.what();
         return createErrorResult(-32603, "Failed to update template: " + std::string(e.what()));
@@ -1444,6 +1467,32 @@ std::string ConfigToolAdapter::isValidEndpointPath(const std::string& path) {
     }
 
     return "";  // Path is valid
+}
+
+bool ConfigToolAdapter::tokenMatchesConfigured(const std::string& auth_token) const {
+    // Fail closed: a tool marked auth_required with no configured secret has
+    // nothing to authenticate against, and waving it through is how the
+    // original defect behaved.
+    if (expected_auth_token_.empty()) {
+        return false;
+    }
+
+    // Accept both "<scheme> <token>" and a bare token, matching what
+    // validateAuthToken permits.
+    std::string presented = auth_token;
+    const size_t space_pos = auth_token.find(' ');
+    if (space_pos != std::string::npos) {
+        presented = auth_token.substr(space_pos + 1);
+    }
+
+    // Constant time, so the comparison cannot be turned into an oracle that
+    // reveals the token a character at a time. Length is compared first and
+    // that does leak the length; CRYPTO_memcmp needs equal sizes.
+    if (presented.size() != expected_auth_token_.size()) {
+        return false;
+    }
+    return CRYPTO_memcmp(presented.data(), expected_auth_token_.data(),
+                         presented.size()) == 0;
 }
 
 std::string ConfigToolAdapter::validateAuthToken(const std::string& auth_token) {

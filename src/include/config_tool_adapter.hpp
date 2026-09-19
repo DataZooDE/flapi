@@ -63,7 +63,8 @@ public:
      * @param db_manager Shared access to database
      */
     ConfigToolAdapter(std::shared_ptr<ConfigManager> config_manager,
-                      std::shared_ptr<DatabaseManager> db_manager);
+                      std::shared_ptr<DatabaseManager> db_manager,
+                      std::string expected_auth_token = {});
 
     /**
      * Get all registered config tools
@@ -108,6 +109,13 @@ public:
 private:
     // Tool handler type: function that takes arguments and returns result
     using ToolHandler = std::function<ConfigToolResult(const crow::json::wvalue&)>;
+
+    // The config-service token this adapter must see before running a tool
+    // that mutates configuration. Empty means no token was configured, in
+    // which case every auth-required tool is refused rather than waved
+    // through - failing closed is the only safe reading of "protected tool,
+    // no secret to check against".
+    std::string expected_auth_token_;
 
     std::shared_ptr<ConfigManager> config_manager_;
     std::shared_ptr<DatabaseManager> db_manager_;
@@ -183,6 +191,10 @@ private:
      * - Basic auth: "Basic <base64-encoded-credentials>"
      * - API tokens: "Token <token-value>"
      */
+    /// True when `auth_token` carries the configured config-service token.
+    /// Constant-time; fails closed when no token is configured.
+    bool tokenMatchesConfigured(const std::string& auth_token) const;
+
     std::string validateAuthToken(const std::string& auth_token);
 };
 
