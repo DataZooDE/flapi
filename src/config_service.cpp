@@ -899,21 +899,33 @@ crow::response EndpointConfigHandler::createEndpoint(const crow::request& req) {
     }
 }
 
-// Helper method to find endpoint by slug (centralized slug logic)
-const EndpointConfig* findEndpointBySlug(std::shared_ptr<ConfigManager> config_manager, const std::string& slug) {
-    const auto endpoints = config_manager->getEndpoints();   // pinned snapshot
+// Helper method to find endpoint by slug (centralized slug logic).
+//
+// Returns an EndpointRef, not a raw pointer. The snapshot is copy-on-write: an
+// addEndpoint / removeEndpointByPath / replaceEndpoint on another thread
+// releases the vector, so a pointer into it outlives its owner the moment the
+// local pin goes out of scope. This function used to return exactly that -
+// `const auto endpoints = ...` pinned the snapshot for the duration of the LOOP
+// and handed the caller a pointer into a vector nobody was holding any more.
+//
+// ConfigManager::EndpointRef exists for this and carries the pin with the
+// pointer; getEndpointForPath already returns one. Bind it with `const auto`,
+// never `const auto*` - the missing pointer conversion is deliberate, and the
+// rvalue `.get()` overload is deleted, so the mistake is a compile error.
+ConfigManager::EndpointRef findEndpointBySlug(std::shared_ptr<ConfigManager> config_manager, const std::string& slug) {
+    auto endpoints = config_manager->getEndpoints();   // pinned snapshot
     for (const auto& endpoint : *endpoints) {
         if (endpoint.getSlug() == slug) {
-            return &endpoint;
+            return ConfigManager::EndpointRef(std::move(endpoints), &endpoint);
         }
     }
-    return nullptr;
+    return {};
 }
 
 // New slug-based methods (centralized, works for both REST and MCP)
 crow::response EndpointConfigHandler::getEndpointConfigBySlug(const crow::request& req, const std::string& slug) {
     try {
-        const auto* endpoint = findEndpointBySlug(config_manager_, slug);
+        const auto endpoint = findEndpointBySlug(config_manager_, slug);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -949,7 +961,7 @@ crow::response EndpointConfigHandler::updateEndpointConfigBySlug(const crow::req
 
 crow::response EndpointConfigHandler::deleteEndpointBySlug(const crow::request& req, const std::string& slug) {
     try {
-        const auto* endpoint = findEndpointBySlug(config_manager_, slug);
+        const auto endpoint = findEndpointBySlug(config_manager_, slug);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -1524,7 +1536,7 @@ crow::response TemplateHandler::testTemplate(const crow::request& req, const std
 
 // Slug-based wrapper methods for TemplateHandler
 crow::response TemplateHandler::getEndpointTemplateBySlug(const crow::request& req, const std::string& slug) {
-    const auto* endpoint = findEndpointBySlug(config_manager_, slug);
+    const auto endpoint = findEndpointBySlug(config_manager_, slug);
     if (!endpoint) {
         return crow::response(404, "Endpoint not found");
     }
@@ -1532,7 +1544,7 @@ crow::response TemplateHandler::getEndpointTemplateBySlug(const crow::request& r
 }
 
 crow::response TemplateHandler::updateEndpointTemplateBySlug(const crow::request& req, const std::string& slug) {
-    const auto* endpoint = findEndpointBySlug(config_manager_, slug);
+    const auto endpoint = findEndpointBySlug(config_manager_, slug);
     if (!endpoint) {
         return crow::response(404, "Endpoint not found");
     }
@@ -1540,7 +1552,7 @@ crow::response TemplateHandler::updateEndpointTemplateBySlug(const crow::request
 }
 
 crow::response TemplateHandler::expandTemplateBySlug(const crow::request& req, const std::string& slug) {
-    const auto* endpoint = findEndpointBySlug(config_manager_, slug);
+    const auto endpoint = findEndpointBySlug(config_manager_, slug);
     if (!endpoint) {
         return crow::response(404, "Endpoint not found");
     }
@@ -1548,7 +1560,7 @@ crow::response TemplateHandler::expandTemplateBySlug(const crow::request& req, c
 }
 
 crow::response TemplateHandler::testTemplateBySlug(const crow::request& req, const std::string& slug) {
-    const auto* endpoint = findEndpointBySlug(config_manager_, slug);
+    const auto endpoint = findEndpointBySlug(config_manager_, slug);
     if (!endpoint) {
         return crow::response(404, "Endpoint not found");
     }
@@ -1620,11 +1632,17 @@ crow::response CacheConfigHandler::updateCacheConfig(const crow::request& req, c
             return crow::response(404, "Endpoint not found");
         }
 
-        auto& cache = const_cast<CacheConfig&>(endpoint->cache);
+        // Edit a COPY and install it atomically. The previous version
+        // const_cast away the constness of the snapshot and wrote through it,
+        // so a reader iterating the same snapshot could observe a half-applied
+        // cache config - table updated, schema not yet - and the write bypassed
+        // the copy-on-write discipline the snapshot exists to provide.
+        EndpointConfig updated = *endpoint;
+        CacheConfig& cache = updated.cache;
         bool enabled = json["enabled"].b();
         if (enabled) {
-            auto table_key = json.has("table") ? json["table"].s() : endpoint->cache.table;
-            auto schema_key = json.has("schema") ? json["schema"].s() : endpoint->cache.schema;
+            auto table_key = json.has("table") ? json["table"].s() : updated.cache.table;
+            auto schema_key = json.has("schema") ? json["schema"].s() : updated.cache.schema;
             cache.enabled = true;
             cache.table = table_key;
             cache.schema = schema_key;
@@ -1663,6 +1681,10 @@ crow::response CacheConfigHandler::updateCacheConfig(const crow::request& req, c
         }
         if (json.has("template-file")) {
             cache.template_file = json["template-file"].s();
+        }
+
+        if (!config_manager_->replaceEndpoint(updated)) {
+            return crow::response(404, "Endpoint not found");
         }
 
         return crow::response(200);

@@ -113,3 +113,52 @@ TEST_CASE("ConfigService: manual cache refresh updates shared readiness state", 
     auto readiness = shared_cache_manager->getEndpointReadiness(config_mgr, *endpoint);
     REQUIRE(readiness.state == CacheManager::ReadinessState::Ready);
 }
+
+TEST_CASE("ConfigService: a cache-config update installs a new snapshot",
+          "[config_service][cache][snapshot]") {
+    // updateCacheConfig used to `const_cast` the constness off the endpoint it
+    // had just looked up and write through it. That wrote into a copy-on-write
+    // snapshot other threads were iterating, so a reader could observe a
+    // half-applied config - table updated, schema not yet - and it bypassed the
+    // discipline documented at config_manager.hpp:631 entirely.
+    //
+    // It now edits a copy and installs it with replaceEndpoint. The observable
+    // result is the same, which is what this pins: the update takes effect, and
+    // a snapshot taken BEFORE it is unchanged by it.
+    //
+    // There was no coverage of this handler's update path at all - the tavern
+    // suite exercises GET on .../cache and never PUT - so this is new ground
+    // rather than a rewritten assertion.
+    auto [config_path, endpoint_path] = createTestConfig(true);
+
+    auto config_mgr = std::make_shared<ConfigManager>(config_path);
+    config_mgr->loadConfig();
+    config_mgr->loadEndpointConfig(endpoint_path);
+
+    const auto before = config_mgr->endpointsSnapshot();
+    const EndpointConfig* pinned = ConfigManager::findEndpoint(*before, "/test", "GET");
+    REQUIRE(pinned != nullptr);
+    const std::string schema_before = pinned->cache.schema;
+
+    crow::request req;
+    req.body = R"({"enabled":true,"table":"t_after","schema":"s_after","schedule":"12h"})";
+
+    CacheConfigHandler handler(config_mgr);
+    auto response = handler.updateCacheConfig(req, "/test");
+    REQUIRE(response.code == crow::status::OK);
+
+    SECTION("the update is visible through a fresh lookup") {
+        auto updated = config_mgr->getEndpointForPath("/test");
+        REQUIRE(updated != nullptr);
+        REQUIRE(updated->cache.table == "t_after");
+        REQUIRE(updated->cache.schema == "s_after");
+        REQUIRE(updated->cache.schedule.has_value());
+        REQUIRE(updated->cache.schedule.value() == "12h");
+    }
+
+    SECTION("a snapshot taken before the update is untouched by it") {
+        // This is the property the const_cast violated.
+        REQUIRE(pinned->cache.schema == schema_before);
+        REQUIRE(pinned->cache.table != "t_after");
+    }
+}
