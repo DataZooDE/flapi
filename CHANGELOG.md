@@ -2,6 +2,62 @@
 
 All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (the date the binary set was cut). Earlier history is in the git log.
 
+## v26.09.20 — SQLite attachments no longer wedge, and readiness notices a stalled request
+
+### Fixed: a concurrent read and write wedged a SQLite attachment
+
+A `GET` issued at the same moment as a `POST` against a DuckDB SQLite attachment deadlocked the
+two against each other. **Two requests were enough**, and it reproduced every time. The
+attachment could then stop answering for good while the process, DuckDB, `/health/live` and every
+other connection stayed perfectly healthy — so the instance kept accepting traffic it could no
+longer serve, with nothing in the logs to say why.
+
+Serialising only the writes does not help: the pair that wedges is a reader and a writer. flAPI
+now runs **one query at a time** on any connection whose `init` contains an
+`ATTACH ... (TYPE sqlite)`. Nothing else is affected — parquet, BigQuery, Postgres and DuckLake
+traffic still runs fully in parallel, because the lock is per connection and only taken for
+connections that need it.
+
+Measured: 19 of 20 concurrent read+write pairs failed before, 20 of 20 pass now.
+
+The cost is real — concurrent requests to a SQLite-backed endpoint queue rather than overlap — so
+you can override the detection in either direction:
+
+```yaml
+connections:
+  my-backend:
+    serialize-access: true      # an unrecognised backend with the same problem
+
+  read-only-snapshot:
+    serialize-access: false     # a SQLite attachment you have measured and want parallel
+```
+
+### Added: readiness fails while a request is stalled
+
+```yaml
+stall-timeout-s: 60   # 0 disables
+```
+
+`GET /health` returns `503 {"status":"stalled"}` once the oldest in-flight request outlives the
+budget, with `requests.in_flight` and `requests.oldest_ms` in the body. This measures the symptom
+rather than probing each backend — a probe against a wedged connection blocks too, leaking a
+thread per health check — so it catches any stall, whatever caused it.
+
+The default is deliberately high: flAPI's answer to a genuinely long query is the MCP Tasks
+extension, so a *synchronous* request still running after a minute is pathological rather than
+slow. **Liveness deliberately still passes** — the process is fine, and killing it rather than
+draining it turns a stall into an outage.
+
+### Known limitation
+
+A handler runs on the Crow io thread that owns its connection, so a slow synchronous query blocks
+other connections landing on that thread — `GET /health` included. Readiness can therefore be
+blocked by the very stall it reports: with one ~5 s query in flight, 39 of 40 health requests
+answered `503 stalled` in under a millisecond and one waited out the query. A hung probe is still
+treated as a failed probe by Kubernetes and Cloud Run, so the instance does leave rotation — but
+by timeout rather than by the documented response. Tracked in
+[#120](https://github.com/DataZooDE/flapi/issues/120).
+
 ## v26.09.19 — Blocking span export for scale-to-zero, and a documentation correction
 
 ### Fixed: `tracing.endpoint` must be the full trace URL
