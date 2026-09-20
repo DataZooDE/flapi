@@ -349,6 +349,26 @@ bool AuthMiddleware::authenticateBearer(const std::string& auth_header, const En
         return false;
     }
 
+    // An empty HMAC key is not a weak secret, it is no secret: anyone can sign
+    // a token with the empty key and it verifies. This is reachable by
+    // accident rather than by misconfiguration in the usual sense -
+    // `jwt-secret: '{{env.API_JWT_SECRET}}'` resolves to "" when the variable
+    // is unset, silently, and the endpoint then accepts a token claiming any
+    // subject and any roles.
+    //
+    // Measured before this guard: a token forged with an empty key and
+    // roles ["admin"] was accepted with 200 and returned the protected rows.
+    //
+    // Fail closed. The startup auditor also reports this, but the runtime
+    // must not depend on anyone having read the warning.
+    if (endpoint.auth.jwt_secret.empty()) {
+        CROW_LOG_ERROR << "Refusing bearer authentication for "
+                       << endpoint.getIdentifier()
+                       << ": jwt-secret is empty, so any token would verify. "
+                          "Check that the environment variable it interpolates is set.";
+        return false;
+    }
+
     std::string token = auth_header.substr(7);
 
     try {
