@@ -91,6 +91,11 @@ private:
     const EndpointConfig* getEndpointConfigByToolName(const std::string& tool_name) const;
 
     // Tool execution helpers
+    /// Fill in `default:` values for arguments the caller omitted, before
+    /// validation runs - matching the order the REST path uses.
+    void applyDefaultArguments(const EndpointConfig& endpoint_config,
+                               crow::json::wvalue& arguments) const;
+
     std::map<std::string, std::string> prepareParameters(const EndpointConfig& endpoint_config,
                                                         const crow::json::wvalue& arguments) const;
 QueryResult executeQueryWithEndpoint(const EndpointConfig& endpoint_config,

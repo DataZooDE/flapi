@@ -28,7 +28,18 @@ void RateLimitMiddleware::before_handle(crow::request& req, crow::response& res,
     // deployment-wide limiting got none, with no warning - measured: a global
     // limit of 2 let requests 3 and 4 straight through with no 429 at all
     // (#127).
-    const RateLimitConfig& limit = endpoint->rate_limit.enabled
+    // An endpoint that DECLARED a rate-limit block owns the decision, including
+    // `enabled: false` - that is an opt-out, and inheriting the global limit
+    // there would do the opposite of what the config says. The global block
+    // applies only to endpoints that never mentioned it.
+    // `enabled` implies ownership even without `declared`, so a RateLimitConfig
+    // built in code - as the unit tests and any future caller do - behaves
+    // correctly without having to know about the flag. Relying on `declared`
+    // alone would make this a two-field invariant that is silently wrong when
+    // only one is set.
+    const bool endpoint_owns_the_decision =
+        endpoint->rate_limit.declared || endpoint->rate_limit.enabled;
+    const RateLimitConfig& limit = endpoint_owns_the_decision
                                        ? endpoint->rate_limit
                                        : config_manager->getRateLimitConfig();
     if (!limit.enabled) {

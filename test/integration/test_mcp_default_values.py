@@ -27,17 +27,19 @@ pytestmark = pytest.mark.standalone_server
 
 
 class _Server:
-    def __init__(self):
+    def __init__(self, required_with_default: bool = False):
+        self.required_with_default = required_with_default
         self.tmp = tempfile.mkdtemp(prefix="flapi_mcpdefaults_")
         self.port = free_port()
         self.base_url = f"http://127.0.0.1:{self.port}"
         self.log_path = os.path.join(self.tmp, "server.log")
         sqls = os.path.join(self.tmp, "sqls")
         os.makedirs(sqls, exist_ok=True)
+        required = "true" if self.required_with_default else "false"
         with open(os.path.join(sqls, "l.yaml"), "w") as f:
             f.write("url-path: /l\nmethod: GET\n"
                     "request:\n  - field-name: lim\n    field-in: query\n"
-                    "    required: false\n    default: \"3\"\n"
+                    f"    required: {required}\n    default: \"3\"\n"
                     "template-source: l.sql\nconnection: [inmem]\n"
                     "mcp-tool:\n  name: limited\n  description: Uses a default.\n")
         with open(os.path.join(sqls, "l.sql"), "w") as f:
@@ -114,3 +116,12 @@ class TestMcpDefaultValues:
         with _Server() as s:
             assert len(s.mcp_rows(lim="7")) == 7
             assert s.mcp_rows(lim="7") == s.rest_rows(lim="7")
+
+    def test_a_required_field_with_a_default_passes_validation_on_both(self):
+        # Defaults must be applied BEFORE validation, which is the order the
+        # REST path uses. Applying them afterwards leaves a second asymmetry in
+        # place of the one #124 fixed: a required field carrying a `default:`
+        # would pass over REST and fail validation over MCP.
+        with _Server(required_with_default=True) as s:
+            assert len(s.mcp_rows()) == 3
+            assert s.mcp_rows() == s.rest_rows()

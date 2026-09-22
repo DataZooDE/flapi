@@ -164,6 +164,13 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
         }
         const bool is_dry_run = MCPDryRun::extractFlag(effective_arguments);
 
+        // Defaults go in BEFORE validation, which is the order the REST path
+        // uses (combineParameters fills defaults, then RequestValidator runs).
+        // Applying them afterwards would leave a second asymmetry in place of
+        // the one #124 fixed: a required field carrying a `default:` would
+        // pass validation over REST and fail it over MCP.
+        applyDefaultArguments(*endpoint_config, effective_arguments);
+
         // Validate arguments (post-strip).
         std::string validation_error;
         if (!validateToolArguments(request.tool_name, effective_arguments, validation_error)) {
@@ -381,13 +388,29 @@ crow::json::wvalue MCPToolHandler::getToolDefinition(const std::string& tool_nam
     return tool_def;
 }
 
+void MCPToolHandler::applyDefaultArguments(const EndpointConfig& endpoint_config,
+                                          crow::json::wvalue& arguments) const {
+    auto present = crow::json::load(arguments.dump());
+    for (const auto& field : endpoint_config.request_fields) {
+        if (field.defaultValue.empty()) {
+            continue;
+        }
+        if (present && present.has(field.fieldName)) {
+            continue;
+        }
+        arguments[field.fieldName] = field.defaultValue;
+    }
+}
+
 std::map<std::string, std::string> MCPToolHandler::prepareParameters(const EndpointConfig& endpoint_config,
                                                                     const crow::json::wvalue& arguments) const {
     // Convert JSON arguments to parameter map
     std::map<std::string, std::string> params = convertJsonToParams(arguments);
 
-    // Apply `default-value` for parameters the caller omitted, matching the
-    // REST path exactly (request_handler.cpp).
+    // Defaults are applied earlier, in executeTool, so that validation sees
+    // them - see applyDefaultArguments. This loop stays because prepareParameters
+    // is also reached on paths that did not go through executeTool, and applying
+    // a default twice is idempotent.
     //
     // There was a loop here that READ as this, with an inverted condition
     // (defaultValue.empty()) and an empty body, so it applied nothing. The
