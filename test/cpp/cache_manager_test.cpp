@@ -124,14 +124,27 @@ public:
         }
     }
 
+    // Snapshot ids the next ducklake_snapshots() query should report, newest
+    // first. Empty means "no snapshots", which is the common state early in a
+    // cache's life.
+    std::vector<std::int64_t> snapshot_ids;
+
     QueryResult executeDuckLakeQueryWithResult(const std::string& query) override {
         executed_queries.push_back(query);
         if (throw_on_snapshot_query) {
             throw std::runtime_error(exception_message);
         }
-        // Return empty result
         QueryResult result;
-        result.data = crow::json::wvalue(crow::json::wvalue::list());
+        std::vector<crow::json::wvalue> rows;
+        if (query.find("ducklake_snapshots") != std::string::npos) {
+            for (const auto id : snapshot_ids) {
+                crow::json::wvalue row;
+                row["snapshot_id"] = static_cast<double>(id);
+                row["snapshot_time"] = "2026-01-01 00:00:00";
+                rows.push_back(std::move(row));
+            }
+        }
+        result.data = crow::json::wvalue(std::move(rows));
         return result;
     }
 };
@@ -239,21 +252,49 @@ TEST_CASE("CacheManager refreshDuckLakeCache retention SQL generation", "[cache_
     endpoint.cache.table = "test_cache";
     endpoint.cache.schema = "main";
 
-    SECTION("keep_last_snapshots generates versions-based expiry") {
-        endpoint.cache.retention.keep_last_snapshots = 5;
+    SECTION("keep_last_snapshots expires the snapshots beyond the newest N") {
+        // This section previously asserted only that the SQL contained "5",
+        // which the old implementation satisfied by emitting
+        //   versions => ARRAY[0:5]
+        // That is not DuckDB syntax - `SELECT ARRAY[0:10]` is a parser error -
+        // so the CALL failed every time and the failure was swallowed at
+        // WARNING level. The test passed while count-based retention had never
+        // once run. It is rewritten here rather than kept, because what it
+        // pinned was the defect.
+        endpoint.cache.retention.keep_last_snapshots = 2;
+        adapter->snapshot_ids = {50, 40, 30, 20, 10};   // newest first
         std::map<std::string, std::string> params;
         cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
 
-        // Should have executed expire snapshots call
-        bool found_expire = false;
+        std::string expire;
         for (const auto& query : adapter->executed_queries) {
-            if (query.find("ducklake_expire_snapshots") != std::string::npos &&
-                query.find("versions") != std::string::npos) {
-                found_expire = true;
-                REQUIRE(query.find("5") != std::string::npos);
+            if (query.find("ducklake_expire_snapshots") != std::string::npos) {
+                expire = query;
             }
         }
-        REQUIRE(found_expire);
+        REQUIRE_FALSE(expire.empty());
+        REQUIRE(expire.find("versions") != std::string::npos);
+        // The two newest are KEPT; everything older is named explicitly.
+        REQUIRE(expire.find("50") == std::string::npos);
+        REQUIRE(expire.find("40") == std::string::npos);
+        REQUIRE(expire.find("30") != std::string::npos);
+        REQUIRE(expire.find("20") != std::string::npos);
+        REQUIRE(expire.find("10") != std::string::npos);
+        // And the list syntax is one DuckDB actually parses.
+        REQUIRE(expire.find("ARRAY[0:") == std::string::npos);
+    }
+
+    SECTION("keep_last_snapshots expires nothing when there is nothing to expire") {
+        // Fewer snapshots than the retention count is the normal early state.
+        // Emitting a CALL with an empty version list would be an error.
+        endpoint.cache.retention.keep_last_snapshots = 5;
+        adapter->snapshot_ids = {20, 10};
+        std::map<std::string, std::string> params;
+        cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
+
+        for (const auto& query : adapter->executed_queries) {
+            REQUIRE(query.find("ducklake_expire_snapshots") == std::string::npos);
+        }
     }
 
     SECTION("max_snapshot_age generates time-based expiry") {
