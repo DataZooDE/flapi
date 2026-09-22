@@ -292,8 +292,23 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
             std::string timestampExpr = "CAST(CURRENT_TIMESTAMP AS TIMESTAMP) - INTERVAL '" + timeInterval + "'";
             expireSql = "CALL ducklake_expire_snapshots('" + catalog + "', older_than => " + timestampExpr + ")";
         } else {
-            // Use versions parameter for count-based expiry
-            expireSql = "CALL ducklake_expire_snapshots('" + catalog + "', versions => ARRAY[0:" + std::to_string(cacheConfig.retention.keep_last_snapshots.value()) + "])";
+            // Count-based expiry: keep the newest N snapshots, expire the rest.
+            //
+            // This used to emit `versions => ARRAY[0:N]`, which is not DuckDB
+            // syntax at all - `SELECT ARRAY[0:10]` is a parser error - so the
+            // CALL failed every time. The failure was caught and logged at
+            // WARNING, so count-based retention has never run: an operator who
+            // set `keep-last-snapshots` believed old snapshots were being
+            // pruned while they accumulated without bound.
+            //
+            // `versions` takes an explicit list of snapshot ids, so the newest
+            // N have to be resolved first. Nothing to expire is the common
+            // case early in a cache's life and is not an error.
+            expireSql = buildCountBasedExpireSql(
+                catalog, cacheConfig.retention.keep_last_snapshots.value());
+        }
+        if (expireSql.empty()) {
+            return;   // nothing old enough to expire yet
         }
         try {
             db_adapter_->executeDuckLakeQuery(expireSql, params);
@@ -301,6 +316,48 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
             CROW_LOG_WARNING << "Failed to expire DuckLake snapshots for " << schema << "." << table << ": " << ex.what();
         }
     }
+}
+
+std::string CacheManager::buildCountBasedExpireSql(const std::string& catalog,
+                                                   std::size_t keep_last) {
+    if (keep_last == 0) {
+        return {};   // keeping nothing is not a retention policy; refuse it
+    }
+
+    std::vector<std::int64_t> expire_ids;
+    try {
+        const std::string query =
+            "SELECT snapshot_id FROM ducklake_snapshots('" + catalog + "') ORDER BY snapshot_id DESC";
+        auto result = db_adapter_->executeDuckLakeQueryWithResult(query);
+        auto rows = crow::json::load(result.data.dump());
+        if (!(rows && rows.t() == crow::json::type::List)) {
+            return {};
+        }
+        for (std::size_t i = keep_last; i < rows.size(); ++i) {
+            const auto& row = rows[i];
+            if (row.has("snapshot_id") && row["snapshot_id"].t() == crow::json::type::Number) {
+                expire_ids.push_back(static_cast<std::int64_t>(row["snapshot_id"].d()));
+            }
+        }
+    } catch (const std::exception& ex) {
+        CROW_LOG_WARNING << "Could not list DuckLake snapshots for count-based retention: " << ex.what();
+        return {};
+    }
+
+    if (expire_ids.empty()) {
+        return {};
+    }
+
+    std::ostringstream sql;
+    sql << "CALL ducklake_expire_snapshots('" << catalog << "', versions => [";
+    for (std::size_t i = 0; i < expire_ids.size(); ++i) {
+        if (i > 0) {
+            sql << ", ";
+        }
+        sql << expire_ids[i];
+    }
+    sql << "])";
+    return sql.str();
 }
 
 std::string CacheManager::determineCacheMode(const CacheConfig& cacheConfig) {
@@ -333,8 +390,33 @@ CacheManager::SnapshotInfo CacheManager::fetchSnapshotInfo(const std::string& ca
         params["schema"] = schema;
         params["table"] = table;
 
-        // Get all snapshots and derive current/previous from the highest versions
-        std::string snapshotsQuery = "SELECT snapshot_id, snapshot_time FROM ducklake_snapshots('" + catalog + "') ORDER BY snapshot_id DESC LIMIT 2";
+        // Snapshots THAT TOUCHED THIS TABLE, newest first.
+        //
+        // This used to be the newest two snapshots in the CATALOG, which is a
+        // silent data-loss bug as soon as more than one endpoint is cached:
+        // every cache shares one DuckLake catalog, so another table's refresh
+        // becomes this table's "previous snapshot". Its timestamp is newer
+        // than this table's real previous refresh, and
+        // {{cache.previousSnapshotTimestamp}} drives the incremental WHERE
+        // clause - so every row changed between this table's last refresh and
+        // the other table's is skipped. The refresh reports success.
+        //
+        // Demonstrated on a real DuckLake catalog with two cached tables a and
+        // b, refreshed a, b, a: the snapshots touching `a` are [4, 2], but the
+        // catalog-wide query returned [4, 3] - and 3 is b's.
+        //
+        // `changes` is a MAP(VARCHAR, VARCHAR[]) that names tables by id for
+        // row changes and by `schema.table` for creates, so both forms are
+        // matched. A NULL table id (table not in the catalog yet) makes
+        // list_contains NULL, which the OR handles.
+        const std::string table_id_expr =
+            "(SELECT CAST(table_id AS VARCHAR) FROM ducklake_table_info('" + catalog +
+            "') WHERE table_name = '" + table + "' LIMIT 1)";
+        std::string snapshotsQuery =
+            "SELECT snapshot_id, snapshot_time FROM ducklake_snapshots('" + catalog + "') "
+            "WHERE list_contains(flatten(map_values(changes)), " + table_id_expr + ") "
+            "   OR list_contains(flatten(map_values(changes)), '" + schema + "." + table + "') "
+            "ORDER BY snapshot_id DESC LIMIT 2";
         try {
             auto snapshots = db_adapter_->executeDuckLakeQueryWithResult(snapshotsQuery);
             auto snapshotsJson = crow::json::load(snapshots.data.dump());

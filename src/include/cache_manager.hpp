@@ -81,6 +81,11 @@ private:
     };
 
     SnapshotInfo fetchSnapshotInfo(const std::string& catalog, const std::string& schema, const std::string& table);
+    /// SQL to expire every snapshot beyond the newest `keep_last`, or an empty
+    /// string when there is nothing to expire. Resolves the ids first because
+    /// `versions` takes an explicit list.
+    std::string buildCountBasedExpireSql(const std::string& catalog, std::size_t keep_last);
+
     static std::string determineCacheMode(const CacheConfig& cacheConfig);
 
     struct CacheKey {
