@@ -805,6 +805,7 @@ void ConfigManager::parseEndpointConnection(const YAML::Node& endpoint_config, E
 void ConfigManager::parseEndpointRateLimit(const YAML::Node& endpoint_config, EndpointConfig& endpoint) {
     if (endpoint_config["rate-limit"]) {
         auto rate_limit_node = endpoint_config["rate-limit"];
+        endpoint.rate_limit.declared = true;
         endpoint.rate_limit.enabled = safeGet<bool>(rate_limit_node, "enabled", "rate-limit.enabled", false);
         endpoint.rate_limit.max = safeGet<int>(rate_limit_node, "max", "rate-limit.max", 100);
         endpoint.rate_limit.interval = safeGet<int>(rate_limit_node, "interval", "rate-limit.interval", 60);

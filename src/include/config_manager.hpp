@@ -66,6 +66,12 @@ struct HeartbeatConfig {
 };
 
 struct RateLimitConfig {
+    // True once an endpoint actually declared a `rate-limit:` block. Needed to
+    // tell "did not mention it" from "explicitly switched it off": both leave
+    // `enabled` false, and the global block applies only to the former. Without
+    // this, `rate-limit: {enabled: false}` would silently inherit the global
+    // limit - the opposite of what it says.
+    bool declared = false;
     bool enabled = false;
     int max = 100;
     int interval = 60;

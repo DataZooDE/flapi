@@ -31,7 +31,12 @@ MARKER = "rate-limit-marker-row"
 
 
 class _Server:
-    def __init__(self, max_requests: int):
+    def __init__(self, max_requests: int = None, global_limit: int = None,
+                 endpoint_declared_disabled: bool = False):
+        """max_requests: per-endpoint limit (None = declare no block at all).
+        global_limit: global rate_limit block (None = none).
+        endpoint_declared_disabled: emit `rate-limit: {enabled: false}`.
+        """
         self.tmp = tempfile.mkdtemp(prefix="flapi_ratelimit_")
         self.port = free_port()
         self.base_url = f"http://127.0.0.1:{self.port}"
@@ -39,22 +44,30 @@ class _Server:
         sqls = os.path.join(self.tmp, "sqls")
         os.makedirs(sqls, exist_ok=True)
 
+        endpoint_block = ""
+        if endpoint_declared_disabled:
+            endpoint_block = "rate-limit:\n  enabled: false\n"
+        elif max_requests is not None:
+            endpoint_block = ("rate-limit:\n  enabled: true\n"
+                              f"  max: {max_requests}\n  interval: 60\n")
         with open(os.path.join(sqls, "q.yaml"), "w") as f:
-            f.write(
-                "url-path: /q\nmethod: GET\n"
-                "template-source: q.sql\nconnection: [inmem]\n"
-                "rate-limit:\n  enabled: true\n"
-                f"  max: {max_requests}\n  interval: 60\n")
+            f.write("url-path: /q\nmethod: GET\n"
+                    "template-source: q.sql\nconnection: [inmem]\n" + endpoint_block)
         with open(os.path.join(sqls, "q.sql"), "w") as f:
             f.write(f"SELECT 42 AS answer, '{MARKER}' AS marker\n")
 
+        global_block = ""
+        if global_limit is not None:
+            global_block = ("rate_limit:\n  enabled: true\n"
+                            f"  max: {global_limit}\n  interval: 60\n")
         with open(os.path.join(self.tmp, "flapi.yaml"), "w") as f:
             f.write(
                 "project-name: ratelimit-test\n"
                 "project-description: the limiter must stop the request\n"
                 f"http-port: {self.port}\n"
                 "template:\n  path: ./sqls\n"
-                "connections:\n  inmem:\n    properties:\n      database: ':memory:'\n")
+                "connections:\n  inmem:\n    properties:\n      database: ':memory:'\n"
+                + global_block)
         self.proc = None
 
     def start(self):
@@ -136,3 +149,42 @@ class TestRateLimitEnforcement:
             assert r.headers.get("Retry-After") is not None
             assert int(r.headers["Retry-After"]) >= 1
             assert r.headers.get("X-RateLimit-Limit") == "1"
+
+
+class TestGlobalRateLimit:
+    """The global `rate_limit:` block must limit, without overriding an endpoint (#127).
+
+    It was parsed into ConfigManager::rate_limit_config and read by nobody,
+    while CONFIG_REFERENCE documented four keys under it and called them
+    global. Measured before the fix: a global limit of 2 let requests 3 and 4
+    straight through with no 429 at all.
+    """
+
+    def test_a_global_limit_applies_to_an_endpoint_without_its_own(self):
+        with _Server(max_requests=None, global_limit=2) as s:
+            for _ in range(2):
+                assert requests.get(f"{s.base_url}/q", timeout=10).status_code == 200
+            r = requests.get(f"{s.base_url}/q", timeout=10)
+            assert r.status_code == 429, r.text
+            assert MARKER not in r.text
+
+    def test_a_per_endpoint_limit_overrides_a_global_one(self):
+        # Both blocks present and DIFFERENT, which is the only way to observe
+        # precedence. An earlier version of this test configured no global
+        # block at all and therefore tested nothing.
+        with _Server(max_requests=5, global_limit=1) as s:
+            for i in range(5):
+                assert requests.get(f"{s.base_url}/q", timeout=10).status_code == 200, (
+                    f"request {i + 1} was refused, so the global limit of 1 won "
+                    f"over the endpoint's 5")
+            assert requests.get(f"{s.base_url}/q", timeout=10).status_code == 429
+
+    def test_an_endpoint_can_opt_out_of_the_global_limit(self):
+        # `rate-limit: {enabled: false}` must mean what it says. Both that and
+        # "no block at all" leave RateLimitConfig::enabled false, so without a
+        # `declared` flag the opt-out silently inherited the global limit -
+        # the opposite of the config.
+        with _Server(endpoint_declared_disabled=True, global_limit=1) as s:
+            for i in range(6):
+                assert requests.get(f"{s.base_url}/q", timeout=10).status_code == 200, (
+                    f"request {i + 1} was rate limited despite an explicit opt-out")

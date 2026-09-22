@@ -14,7 +14,35 @@ void RateLimitMiddleware::before_handle(crow::request& req, crow::response& res,
     if (!config_manager) return;
 
     const auto endpoint = config_manager->getEndpointForPath(req.url);
-    if (!endpoint || !endpoint->rate_limit.enabled) {
+    if (!endpoint) {
+        return;
+    }
+
+    // Per-endpoint `rate-limit:` wins; the global `rate_limit:` block applies
+    // to endpoints that declare none.
+    //
+    // The global block used to apply to NOTHING. It was parsed into
+    // ConfigManager::rate_limit_config and read by no one, while
+    // docs/CONFIG_REFERENCE documented four keys under it and described them
+    // as enabling rate limiting "globally". An operator who configured
+    // deployment-wide limiting got none, with no warning - measured: a global
+    // limit of 2 let requests 3 and 4 straight through with no 429 at all
+    // (#127).
+    // An endpoint that DECLARED a rate-limit block owns the decision, including
+    // `enabled: false` - that is an opt-out, and inheriting the global limit
+    // there would do the opposite of what the config says. The global block
+    // applies only to endpoints that never mentioned it.
+    // `enabled` implies ownership even without `declared`, so a RateLimitConfig
+    // built in code - as the unit tests and any future caller do - behaves
+    // correctly without having to know about the flag. Relying on `declared`
+    // alone would make this a two-field invariant that is silently wrong when
+    // only one is set.
+    const bool endpoint_owns_the_decision =
+        endpoint->rate_limit.declared || endpoint->rate_limit.enabled;
+    const RateLimitConfig& limit = endpoint_owns_the_decision
+                                       ? endpoint->rate_limit
+                                       : config_manager->getRateLimitConfig();
+    if (!limit.enabled) {
         return;
     }
 
@@ -26,14 +54,13 @@ void RateLimitMiddleware::before_handle(crow::request& req, crow::response& res,
     if (it != req.headers.end()) {
         auth_header = it->second;
     }
-    const auto strategy = RateLimitKeyStrategyUtils::parse(endpoint->rate_limit.key_strategy);
+    const auto strategy = RateLimitKeyStrategyUtils::parse(limit.key_strategy);
     RateLimitKeyBuilder key_builder;
     std::string rate_key = key_builder.buildKey(strategy, client_ip, auth_header, req.url);
 
     {
         std::lock_guard<std::mutex> lock(mutex);
-        updateRateLimit(rate_key, endpoint->rate_limit.max,
-                        endpoint->rate_limit.interval, ctx);
+        updateRateLimit(rate_key, limit.max, limit.interval, ctx);
     }
 
     // Convert steady_clock to system_clock for proper Unix timestamp
@@ -45,7 +72,7 @@ void RateLimitMiddleware::before_handle(crow::request& req, crow::response& res,
         reset_system.time_since_epoch()).count();
 
     // Always add rate limit headers (even on 429 - per RFC 6585)
-    res.add_header("X-RateLimit-Limit", std::to_string(endpoint->rate_limit.max));
+    res.add_header("X-RateLimit-Limit", std::to_string(limit.max));
     res.add_header("X-RateLimit-Remaining", std::to_string(std::max(0, ctx.remaining)));
     res.add_header("X-RateLimit-Reset", std::to_string(reset_seconds));
 

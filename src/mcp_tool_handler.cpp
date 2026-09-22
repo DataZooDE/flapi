@@ -164,6 +164,13 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
         }
         const bool is_dry_run = MCPDryRun::extractFlag(effective_arguments);
 
+        // Defaults go in BEFORE validation, which is the order the REST path
+        // uses (combineParameters fills defaults, then RequestValidator runs).
+        // Applying them afterwards would leave a second asymmetry in place of
+        // the one #124 fixed: a required field carrying a `default:` would
+        // pass validation over REST and fail it over MCP.
+        applyDefaultArguments(*endpoint_config, effective_arguments);
+
         // Validate arguments (post-strip).
         std::string validation_error;
         if (!validateToolArguments(request.tool_name, effective_arguments, validation_error)) {
@@ -381,21 +388,41 @@ crow::json::wvalue MCPToolHandler::getToolDefinition(const std::string& tool_nam
     return tool_def;
 }
 
+void MCPToolHandler::applyDefaultArguments(const EndpointConfig& endpoint_config,
+                                          crow::json::wvalue& arguments) const {
+    auto present = crow::json::load(arguments.dump());
+    for (const auto& field : endpoint_config.request_fields) {
+        if (field.defaultValue.empty()) {
+            continue;
+        }
+        if (present && present.has(field.fieldName)) {
+            continue;
+        }
+        arguments[field.fieldName] = field.defaultValue;
+    }
+}
+
 std::map<std::string, std::string> MCPToolHandler::prepareParameters(const EndpointConfig& endpoint_config,
                                                                     const crow::json::wvalue& arguments) const {
     // Convert JSON arguments to parameter map
     std::map<std::string, std::string> params = convertJsonToParams(arguments);
 
-    // There was a loop here that read as "apply default values", with an
-    // inverted condition (defaultValue.EMPTY) and an empty body - so it applied
-    // nothing. Deleting it is behaviour-preserving; it did nothing.
+    // Defaults are applied earlier, in executeTool, so that validation sees
+    // them - see applyDefaultArguments. This loop stays because prepareParameters
+    // is also reached on paths that did not go through executeTool, and applying
+    // a default twice is idempotent.
     //
-    // What it did do was hide a real divergence: request_handler.cpp applies
-    // `default-value` when a param is absent, and this path does not, so the
-    // same endpoint behaves differently over REST and over MCP. Closing that is
-    // an observable behaviour change, not a refactor - tracked in #124. The
-    // loop is removed rather than left, because code that reads as implemented
-    // and is not is worse than either fixing it or admitting the gap.
+    // There was a loop here that READ as this, with an inverted condition
+    // (defaultValue.empty()) and an empty body, so it applied nothing. The
+    // same endpoint therefore behaved differently over REST and over MCP: a
+    // template writing `LIMIT {{ params.limit }}` with `default-value: 100`
+    // rendered `LIMIT 100` over REST and `LIMIT ` over MCP - a template error
+    // or an unbounded query, depending on the SQL (#124).
+    for (const auto& field : endpoint_config.request_fields) {
+        if (!field.defaultValue.empty() && params.find(field.fieldName) == params.end()) {
+            params[field.fieldName] = field.defaultValue;
+        }
+    }
 
     return params;
 }
