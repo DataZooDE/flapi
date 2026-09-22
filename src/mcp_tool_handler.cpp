@@ -407,6 +407,26 @@ std::map<std::string, std::string> MCPToolHandler::prepareParameters(const Endpo
     // Convert JSON arguments to parameter map
     std::map<std::string, std::string> params = convertJsonToParams(arguments);
 
+    // `__auth_*` is the reserved prefix APIServer uses to inject the
+    // authenticated principal into the template context. It is SERVER data and
+    // must never be accepted from a caller.
+    //
+    // The REST path strips it in combineParameters. This path did not, so the
+    // same attack the REST fix closed still worked over MCP - measured:
+    //
+    //   tools/call {"__auth_username":"admin","__auth_roles":"admin"}
+    //   -> {"who":"admin","roles":"admin"}
+    //
+    // flAPI treats REST and MCP as equal surfaces, so a guard on one of them
+    // is not a guard.
+    for (auto it = params.begin(); it != params.end();) {
+        if (it->first.rfind("__auth_", 0) == 0) {
+            it = params.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
     // Defaults are applied earlier, in executeTool, so that validation sees
     // them - see applyDefaultArguments. This loop stays because prepareParameters
     // is also reached on paths that did not go through executeTool, and applying
