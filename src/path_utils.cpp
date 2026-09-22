@@ -1,82 +1,91 @@
 #include "path_utils.hpp"
-#include <algorithm>
-#include <regex>
+
+#include <cctype>
+#include <string>
 
 namespace flapi {
 
+// A URL path is addressed in the config service as
+// /api/v1/_config/endpoints/{slug}, so the slug has to survive a round trip.
+// The previous codec did not: it replaced every internal '/' with '-', every
+// non-alphanumeric with '-', collapsed runs of '-' and stripped the edges, so
+// "/a-b" and "/a/b" both became "a-b" and both decoded to "/a/b". An endpoint
+// whose URL contained a hyphen - entirely ordinary - was addressed as, and
+// rewritten to, a different endpoint (#123).
+//
+// This encoding is injective, verified exhaustively over every path up to
+// length 5 drawn from "/-%2Dab" (19,608 paths, no collisions, no round-trip
+// failures):
+//
+//   '/'  ->  '-'        so the common case stays readable: /sap/functions
+//                       becomes -sap-functions
+//   '-'  ->  "%2D"      a literal hyphen is escaped, which is what makes a
+//   '%'  ->  "%25"      '-' in a slug unambiguously mean '/'
+//   ""   ->  "empty"    unambiguous because every non-empty path begins with
+//                       '/' and therefore encodes to a leading '-'
+//
+// Two earlier attempts failed on exactly one point, worth recording so the
+// next person does not repeat them: a one-character escape for '/' cannot
+// coexist with a two-character escape for the literal, because the shorter is
+// a prefix of the longer. "//x" and "_x" both produced "__x".
 const std::string PathUtils::EMPTY_REPLACEMENT = "empty";
+
+namespace {
+
+bool matchesEscape(const std::string& s, std::size_t i, const char* escape) {
+    // Case-insensitive on the hex digit, since percent-encoding conventionally is.
+    if (i + 2 >= s.size() + 0 && i + 3 > s.size()) {
+        return false;
+    }
+    return s[i] == escape[0] &&
+           std::toupper(static_cast<unsigned char>(s[i + 1])) ==
+               std::toupper(static_cast<unsigned char>(escape[1])) &&
+           std::toupper(static_cast<unsigned char>(s[i + 2])) ==
+               std::toupper(static_cast<unsigned char>(escape[2]));
+}
+
+}  // namespace
 
 std::string PathUtils::pathToSlug(const std::string& path) {
     if (path.empty()) {
         return EMPTY_REPLACEMENT;
     }
-    
-    std::string slug = path;
-    
-    // Remove leading slash if present
-    if (slug.front() == '/') {
-        slug = slug.substr(1);
+
+    std::string slug;
+    slug.reserve(path.size() + 8);
+    for (const char c : path) {
+        switch (c) {
+            case '/': slug += '-';     break;
+            case '-': slug += "%2D";   break;
+            case '%': slug += "%25";   break;
+            default:  slug += c;       break;
+        }
     }
-    
-    // Handle trailing slash
-    bool hasTrailingSlash = false;
-    if (!slug.empty() && slug.back() == '/') {
-        hasTrailingSlash = true;
-        slug = slug.substr(0, slug.length() - 1);
-    }
-    
-    // Replace internal slashes with our replacement
-    std::replace(slug.begin(), slug.end(), '/', '-');
-    
-    // Replace any remaining special characters with hyphens
-    slug = std::regex_replace(slug, std::regex("[^a-zA-Z0-9\\-_]"), "-");
-    
-    // Remove multiple consecutive hyphens
-    slug = std::regex_replace(slug, std::regex("-+"), "-");
-    
-    // Remove leading/trailing hyphens
-    if (!slug.empty() && slug.front() == '-') {
-        slug = slug.substr(1);
-    }
-    if (!slug.empty() && slug.back() == '-') {
-        slug = slug.substr(0, slug.length() - 1);
-    }
-    
-    // Add trailing slash indicator
-    if (hasTrailingSlash) {
-        slug += "-slash";
-    }
-    
-    return slug.empty() ? EMPTY_REPLACEMENT : slug;
+    return slug;
 }
 
 std::string PathUtils::slugToPath(const std::string& slug) {
     if (slug == EMPTY_REPLACEMENT) {
         return "";
     }
-    
-    std::string path = slug;
-    
-    // Check for trailing slash indicator
-    bool hasTrailingSlash = false;
-    if (path.length() >= 6 && path.substr(path.length() - 6) == "-slash") {
-        hasTrailingSlash = true;
-        path = path.substr(0, path.length() - 6);
+
+    std::string path;
+    path.reserve(slug.size());
+    for (std::size_t i = 0; i < slug.size();) {
+        if (slug[i] == '-') {
+            path += '/';
+            i += 1;
+        } else if (i + 3 <= slug.size() && matchesEscape(slug, i, "%2D")) {
+            path += '-';
+            i += 3;
+        } else if (i + 3 <= slug.size() && matchesEscape(slug, i, "%25")) {
+            path += '%';
+            i += 3;
+        } else {
+            path += slug[i];
+            i += 1;
+        }
     }
-    
-    // Replace hyphens back to slashes (but be careful about our special replacements)
-    std::replace(path.begin(), path.end(), '-', '/');
-    
-    // Add leading slash
-    if (!path.empty()) {
-        path = "/" + path;
-    }
-    
-    // Add trailing slash if needed
-    if (hasTrailingSlash) {
-        path += "/";
-    }
-    
     return path;
 }
 
