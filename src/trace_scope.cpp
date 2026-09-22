@@ -23,6 +23,26 @@ SpanScope::~SpanScope() {
     end();
 }
 
+SpanScope::Activation::~Activation() {
+    delete impl_;
+}
+
+SpanScope::Activation& SpanScope::Activation::operator=(Activation&& other) noexcept {
+    if (this != &other) {
+        delete impl_;
+        impl_ = other.impl_;
+        other.impl_ = nullptr;
+    }
+    return *this;
+}
+
+SpanScope::Activation SpanScope::activateOnThisThread() const noexcept {
+    if (impl_ == nullptr) {
+        return Activation{};
+    }
+    return Activation(new Activation::Impl(impl_->span));
+}
+
 SpanScope& SpanScope::operator=(SpanScope&& other) noexcept {
     if (this != &other) {
         end();

@@ -1,0 +1,69 @@
+Expose a keepalive handle so a response can be completed from another thread.
+
+Crow already supports deferred completion: while a response is incomplete the
+read loop stops and records need_to_start_read_after_complete_, so no second
+request can land on that connection. What it does not offer is a way to keep
+the connection alive across that window.
+
+prepare_buffers() begins by clearing the two lambdas that own the connection:
+
+    res.complete_request_handler_ = nullptr;
+    res.is_alive_helper_          = nullptr;
+    if (!adaptor_.is_open()) ...
+
+From the original io callback that is safe, because do_read's lambda still
+holds `self` on the stack. From a completion posted after that callback has
+returned, those two lambdas are the only owners - so clearing them destroys
+`this`, and every line after is a use-after-free.
+
+This adds a public std::shared_ptr<void> on crow::response, set alongside the
+existing completion handler and cleared alongside it, which a handler can
+capture to hold the connection open across an offload. Synchronous handlers
+are unaffected: they never touch it, and the member is reset on the same line
+as the references it sits with, so it introduces no cycle of its own.
+
+Not yet submitted upstream (https://github.com/CrowCpp/crow).
+
+--- a/include/crow/http_response.h	2026-09-22 13:10:03.946998309 +0200
++++ b/include/crow/http_response.h	2026-09-22 13:10:03.961646627 +0200
+@@ -261,6 +261,21 @@
+             end();
+         }
+ 
++        /// A strong reference to the connection serving this response.
++        ///
++        /// Capture this in any completion that runs after the originating io
++        /// callback has returned - completing the response from a worker
++        /// thread, for example. Without it, prepare_buffers() clears
++        /// complete_request_handler_ and is_alive_helper_, which by then are
++        /// the connection's only owners, and destroys it before it has
++        /// finished using itself.
++        ///
++        /// Empty for a response not attached to a connection. Cleared in
++        /// prepare_buffers() along with the other self-references, so it does
++        /// not keep the connection alive on its own; a completion that
++        /// captured a copy keeps it alive for exactly as long as it needs to.
++        std::shared_ptr<void> connection_keepalive;
++
+         /// Check if the connection is still alive (usually by checking the socket status).
+         bool is_alive()
+         {
+
+--- a/include/crow/http_connection.h	2026-09-22 13:10:03.948143308 +0200
++++ b/include/crow/http_connection.h	2026-09-22 13:10:03.961773046 +0200
+@@ -195,6 +195,7 @@
+                 if (!res.completed_)
+                 {
+                     auto self = this->shared_from_this();
++                    res.connection_keepalive = self;
+                     res.complete_request_handler_ = [self] {
+                         self->complete_request();
+                     };
+@@ -289,6 +290,7 @@
+         {
+             res.complete_request_handler_ = nullptr;
+             res.is_alive_helper_ = nullptr;
++            res.connection_keepalive.reset();
+ 
+             if (!adaptor_.is_open())
+             {

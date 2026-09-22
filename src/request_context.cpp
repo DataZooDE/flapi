@@ -49,4 +49,10 @@ void RequestContextScope::clear() noexcept {
     t_current = nullptr;
 }
 
+void RequestContextScope::clearIf(const RequestContext* expected) noexcept {
+    if (t_current == expected) {
+        t_current = nullptr;
+    }
+}
+
 }  // namespace flapi

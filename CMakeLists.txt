@@ -391,6 +391,7 @@ add_library(flapi-lib STATIC
     src/trace_context.cpp
     src/trace_capture_policy.cpp
     src/redaction.cpp
+    src/handler_pool.cpp
     src/in_flight_registry.cpp
     src/tracing_config.cpp
     src/request_context_middleware.cpp

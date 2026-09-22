@@ -180,3 +180,40 @@ TEST_CASE("a slug lookup carries its pin", "[endpoints][snapshot][slug]") {
         REQUIRE(findEndpointBySlug(cm_ptr, "no-such-slug") == nullptr);
     }
 }
+
+// ---------------------------------------------------------------------------
+// #120: clearing the ambient context must not strip another request's
+// ---------------------------------------------------------------------------
+
+#include "request_context.hpp"
+
+TEST_CASE("clearIf only clears the context it owns", "[request_context][gh120]") {
+    // finish() runs on the io thread. Once a handler can be offloaded, that
+    // thread may have picked up a DIFFERENT request by the time the completion
+    // posts back - and an unconditional clear would strip the newcomer of its
+    // context, so its audit line would carry no request id and its log lines
+    // would lose correlation. Silently, in both cases.
+    RequestContext mine;
+    RequestContext theirs;
+
+    RequestContextScope::activate(&mine);
+    REQUIRE(RequestContextScope::current() == &mine);
+
+    SECTION("clearing my own context clears it") {
+        RequestContextScope::clearIf(&mine);
+        REQUIRE(RequestContextScope::current() == nullptr);
+    }
+
+    SECTION("clearing mine leaves someone else's alone") {
+        RequestContextScope::activate(&theirs);   // the thread moved on
+        RequestContextScope::clearIf(&mine);      // my completion lands late
+        REQUIRE(RequestContextScope::current() == &theirs);
+    }
+
+    SECTION("clearing a null owner is harmless") {
+        RequestContextScope::clearIf(nullptr);
+        REQUIRE(RequestContextScope::current() == &mine);
+    }
+
+    RequestContextScope::clear();
+}

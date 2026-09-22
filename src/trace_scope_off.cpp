@@ -16,6 +16,18 @@ inline namespace tracing_off_v1 {
 
 SpanScope::~SpanScope() = default;
 
+SpanScope::Activation::~Activation() = default;
+
+SpanScope::Activation& SpanScope::Activation::operator=(Activation&& other) noexcept {
+    impl_ = other.impl_;
+    other.impl_ = nullptr;
+    return *this;
+}
+
+SpanScope::Activation SpanScope::activateOnThisThread() const noexcept {
+    return Activation{};
+}
+
 SpanScope& SpanScope::operator=(SpanScope&& other) noexcept {
     impl_ = other.impl_;
     other.impl_ = nullptr;

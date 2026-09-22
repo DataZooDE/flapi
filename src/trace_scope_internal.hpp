@@ -28,6 +28,15 @@ struct SpanScope::Impl {
         : span(s), scope(s) {}
 };
 
+// A second activation of an already-started span, for a different thread.
+// Only the Scope: the span itself is owned by the SpanScope this came from,
+// and must not be ended twice.
+struct SpanScope::Activation::Impl {
+    opentelemetry::trace::Scope scope;
+    explicit Impl(opentelemetry::nostd::shared_ptr<opentelemetry::trace::Span> s)
+        : scope(s) {}
+};
+
 }  // inline namespace
 }  // namespace flapi
 

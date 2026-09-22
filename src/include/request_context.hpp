@@ -154,6 +154,17 @@ public:
     static void activate(RequestContext* rc) noexcept;
     static void clear() noexcept;
 
+    /// Clear only if `expected` is what is currently ambient.
+    ///
+    /// Plain clear() nulls whatever this thread holds, which is right while a
+    /// request owns its thread end to end. It stops being right the moment a
+    /// handler is moved off the io thread (#120): the completion runs back on
+    /// the io thread, which by then may be serving a different request, and an
+    /// unconditional clear would strip that request of its context - so its
+    /// audit line would carry no request id and its log lines would lose
+    /// correlation, silently.
+    static void clearIf(const RequestContext* expected) noexcept;
+
 private:
     RequestContext* previous_ = nullptr;
 };
