@@ -8,6 +8,7 @@
 
 #include "auth_middleware.hpp"
 #include "flapi_app.hpp"
+#include "handler_pool.hpp"
 #include "config_manager.hpp"
 #include "cors_middleware.hpp"
 #include "database_manager.hpp"
@@ -57,6 +58,11 @@ public:
     /// certain. It does not make it impossible - that needs handlers off the
     /// io threads, which is what #120 tracks.
     static std::uint16_t serverThreadCount(unsigned hardware_concurrency);
+
+    /// Worker threads that run request handlers off Crow's io threads (#120).
+    /// Null when the offload is disabled, in which case handlers run inline as
+    /// before.
+    std::unique_ptr<HandlerPool> handlerPool;
     void stop();
 
     void requestForEndpoint(const EndpointConfig& endpoint, const std::unordered_map<std::string, std::string>& pathParams = {});
