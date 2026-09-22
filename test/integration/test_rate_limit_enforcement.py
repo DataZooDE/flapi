@@ -31,7 +31,8 @@ MARKER = "rate-limit-marker-row"
 
 
 class _Server:
-    def __init__(self, max_requests: int):
+    def __init__(self, max_requests: int, global_limit: bool = False):
+        self.global_limit = global_limit
         self.tmp = tempfile.mkdtemp(prefix="flapi_ratelimit_")
         self.port = free_port()
         self.base_url = f"http://127.0.0.1:{self.port}"
@@ -44,7 +45,10 @@ class _Server:
                 "url-path: /q\nmethod: GET\n"
                 "template-source: q.sql\nconnection: [inmem]\n"
                 "rate-limit:\n  enabled: true\n"
-                f"  max: {max_requests}\n  interval: 60\n")
+                f"  max: {max_requests}\n  interval: 60\n"
+                if not global_limit else
+                "url-path: /q\nmethod: GET\n"
+                "template-source: q.sql\nconnection: [inmem]\n")
         with open(os.path.join(sqls, "q.sql"), "w") as f:
             f.write(f"SELECT 42 AS answer, '{MARKER}' AS marker\n")
 
@@ -54,7 +58,9 @@ class _Server:
                 "project-description: the limiter must stop the request\n"
                 f"http-port: {self.port}\n"
                 "template:\n  path: ./sqls\n"
-                "connections:\n  inmem:\n    properties:\n      database: ':memory:'\n")
+                "connections:\n  inmem:\n    properties:\n      database: ':memory:'\n"
+                + ("rate_limit:\n  enabled: true\n"
+                   f"  max: {max_requests}\n  interval: 60\n" if global_limit else ""))
         self.proc = None
 
     def start(self):
@@ -136,3 +142,30 @@ class TestRateLimitEnforcement:
             assert r.headers.get("Retry-After") is not None
             assert int(r.headers["Retry-After"]) >= 1
             assert r.headers.get("X-RateLimit-Limit") == "1"
+
+
+class TestGlobalRateLimit:
+    """The global `rate_limit:` block must actually limit (#127).
+
+    It was parsed into ConfigManager::rate_limit_config and read by nobody,
+    while CONFIG_REFERENCE documented four keys under it and described them as
+    enabling rate limiting "globally". Measured before the fix: a global limit
+    of 2 let requests 3 and 4 straight through with no 429 at all - an operator
+    configuring deployment-wide limiting got none, silently.
+    """
+
+    def test_a_global_limit_applies_to_an_endpoint_without_its_own(self):
+        with _Server(max_requests=2, global_limit=True) as s:
+            for _ in range(2):
+                assert requests.get(f"{s.base_url}/q", timeout=10).status_code == 200
+            r = requests.get(f"{s.base_url}/q", timeout=10)
+            assert r.status_code == 429, r.text
+            assert MARKER not in r.text
+
+    def test_the_per_endpoint_limit_still_wins(self):
+        # Precedence must not invert: an endpoint that declares its own limit
+        # keeps it. Here the endpoint allows 5 and there is no global block.
+        with _Server(max_requests=5) as s:
+            for _ in range(5):
+                assert requests.get(f"{s.base_url}/q", timeout=10).status_code == 200
+            assert requests.get(f"{s.base_url}/q", timeout=10).status_code == 429

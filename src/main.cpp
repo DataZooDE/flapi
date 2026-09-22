@@ -571,7 +571,23 @@ int main(int argc, char* argv[])
 
     detectAndRegisterEmbeddedBundle();
 
-    auto config_manager = initializeConfig(config_file);
+    // A configuration error is a user error, not a crash. This used to be an
+    // uncaught throw: terminateHandler logged it and called std::abort(), so a
+    // typo in flapi.yaml raised SIGABRT, dumped core, and exited 134. In a
+    // container that is reported as a crash - indistinguishable from a real
+    // fault - and on a host with core dumps enabled every restart attempt
+    // wrote one, of a ~77 MB binary.
+    //
+    // terminateHandler stays for genuinely unexpected exceptions; that is what
+    // it is for. Startup config loading is not one of them (#126).
+    std::shared_ptr<ConfigManager> config_manager;
+    try {
+        config_manager = initializeConfig(config_file);
+    } catch (const std::exception& e) {
+        CROW_LOG_ERROR << "Configuration error: " << e.what();
+        CROW_LOG_ERROR << "flAPI cannot start until the configuration is valid.";
+        return 1;
+    }
 
     // Precedence: CLI > environment > config file > default. An operator who
     // passed --log-level meant it, but absent that the config file must be

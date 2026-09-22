@@ -386,16 +386,20 @@ std::map<std::string, std::string> MCPToolHandler::prepareParameters(const Endpo
     // Convert JSON arguments to parameter map
     std::map<std::string, std::string> params = convertJsonToParams(arguments);
 
-    // There was a loop here that read as "apply default values", with an
-    // inverted condition (defaultValue.EMPTY) and an empty body - so it applied
-    // nothing. Deleting it is behaviour-preserving; it did nothing.
+    // Apply `default-value` for parameters the caller omitted, matching the
+    // REST path exactly (request_handler.cpp).
     //
-    // What it did do was hide a real divergence: request_handler.cpp applies
-    // `default-value` when a param is absent, and this path does not, so the
-    // same endpoint behaves differently over REST and over MCP. Closing that is
-    // an observable behaviour change, not a refactor - tracked in #124. The
-    // loop is removed rather than left, because code that reads as implemented
-    // and is not is worse than either fixing it or admitting the gap.
+    // There was a loop here that READ as this, with an inverted condition
+    // (defaultValue.empty()) and an empty body, so it applied nothing. The
+    // same endpoint therefore behaved differently over REST and over MCP: a
+    // template writing `LIMIT {{ params.limit }}` with `default-value: 100`
+    // rendered `LIMIT 100` over REST and `LIMIT ` over MCP - a template error
+    // or an unbounded query, depending on the SQL (#124).
+    for (const auto& field : endpoint_config.request_fields) {
+        if (!field.defaultValue.empty() && params.find(field.fieldName) == params.end()) {
+            params[field.fieldName] = field.defaultValue;
+        }
+    }
 
     return params;
 }
