@@ -31,12 +31,12 @@ class TestDuckLakeAdvanced:
         """Test that DuckLake snapshots are properly managed"""
         # Trigger multiple cache refreshes to create snapshots
         for i in range(3):
-            response = requests.post(f"{api_config_url}/endpoints/test-cached-slash/cache/refresh", headers=auth_headers)
+            response = requests.post(f"{api_config_url}/endpoints/-test-cached-/cache/refresh", headers=auth_headers)
             assert response.status_code == 200
             time.sleep(1)  # Small delay between refreshes
 
         # Check audit log for snapshot information
-        audit_response = requests.get(f"{api_config_url}/endpoints/test-cached-slash/cache/audit", headers=auth_headers)
+        audit_response = requests.get(f"{api_config_url}/endpoints/-test-cached-/cache/audit", headers=auth_headers)
         assert audit_response.status_code == 200
 
         audit_data = audit_response.json()
@@ -53,7 +53,7 @@ class TestDuckLakeAdvanced:
         """Test that cache modes are correctly determined based on configuration"""
 
         # Test full refresh mode (no cursor, no primary key)
-        full_response = requests.get(f"{api_config_url}/endpoints/test-cached-slash/cache", headers=auth_headers)
+        full_response = requests.get(f"{api_config_url}/endpoints/-test-cached-/cache", headers=auth_headers)
         if full_response.status_code == 200:
             config = full_response.json()
             # Should be full mode - no cursor or primary key
@@ -61,7 +61,7 @@ class TestDuckLakeAdvanced:
             assert "primary-key" not in config or not config.get("primary-key")
 
         # Test append mode (cursor only)
-        append_response = requests.get(f"{api_config_url}/endpoints/test-append-slash/cache", headers=auth_headers)
+        append_response = requests.get(f"{api_config_url}/endpoints/-test-append-/cache", headers=auth_headers)
         if append_response.status_code == 200:
             config = append_response.json()
             # Should be append mode - cursor but no primary key
@@ -69,7 +69,7 @@ class TestDuckLakeAdvanced:
             assert "primary-key" not in config or not config.get("primary-key")
 
         # Test merge mode (cursor + primary key)
-        merge_response = requests.get(f"{api_config_url}/endpoints/test-merge-slash/cache", headers=auth_headers)
+        merge_response = requests.get(f"{api_config_url}/endpoints/-test-merge-/cache", headers=auth_headers)
         if merge_response.status_code == 200:
             config = merge_response.json()
             # Should be merge mode - both cursor and primary key
@@ -79,7 +79,7 @@ class TestDuckLakeAdvanced:
     def test_retention_policy_execution(self, api_config_url, auth_headers):
         """Test that retention policies are properly executed"""
         # Trigger cache refresh to create snapshots
-        response = requests.post(f"{api_config_url}/endpoints/test-cached-slash/cache/refresh", headers=auth_headers)
+        response = requests.post(f"{api_config_url}/endpoints/-test-cached-/cache/refresh", headers=auth_headers)
         assert response.status_code == 200
 
         # Check audit log for garbage collection events
@@ -102,7 +102,7 @@ class TestDuckLakeAdvanced:
     def test_scheduled_cache_refresh(self, api_config_url, auth_headers):
         """Test that scheduled cache refreshes work correctly"""
         # Get cache configuration to verify scheduling is enabled
-        response = requests.get(f"{api_config_url}/endpoints/test-cached-slash/cache", headers=auth_headers)
+        response = requests.get(f"{api_config_url}/endpoints/-test-cached-/cache", headers=auth_headers)
 
         if response.status_code == 200:
             config = response.json()
@@ -120,7 +120,7 @@ class TestDuckLakeAdvanced:
         """Test that DuckLake compaction is working"""
         # Trigger multiple cache operations to create files that can be compacted
         for i in range(5):
-            response = requests.post(f"{api_config_url}/endpoints/test-cached-slash/cache/refresh", headers=auth_headers)
+            response = requests.post(f"{api_config_url}/endpoints/-test-cached-/cache/refresh", headers=auth_headers)
             assert response.status_code == 200
             time.sleep(0.5)
 
@@ -140,11 +140,11 @@ class TestDuckLakeAdvanced:
     def test_cache_template_processing(self, api_config_url, auth_headers):
         """Test that cache templates are properly processed with DuckLake variables"""
         # Trigger cache refresh and check for success
-        response = requests.post(f"{api_config_url}/endpoints/test-cached-slash/cache/refresh", headers=auth_headers)
+        response = requests.post(f"{api_config_url}/endpoints/-test-cached-/cache/refresh", headers=auth_headers)
         assert response.status_code == 200
 
         # Check audit log for successful template processing
-        audit_response = requests.get(f"{api_config_url}/endpoints/test-cached-slash/cache/audit", headers=auth_headers)
+        audit_response = requests.get(f"{api_config_url}/endpoints/-test-cached-/cache/audit", headers=auth_headers)
         assert audit_response.status_code == 200
 
         audit_data = audit_response.json()
@@ -221,7 +221,7 @@ class TestDuckLakeAdvanced:
 
         def refresh_cache():
             try:
-                response = requests.post(f"{api_config_url}/endpoints/test-cached-slash/cache/refresh", headers=auth_headers)
+                response = requests.post(f"{api_config_url}/endpoints/-test-cached-/cache/refresh", headers=auth_headers)
                 results.put(("refresh", response.status_code))
             except Exception as e:
                 results.put(("refresh", f"error: {e}"))
@@ -252,7 +252,7 @@ class TestDuckLakeAdvanced:
         """Test cache performance characteristics"""
         # Measure time for cache refresh
         start_time = time.time()
-        response = requests.post(f"{api_config_url}/endpoints/test-cached-slash/cache/refresh", headers=auth_headers)
+        response = requests.post(f"{api_config_url}/endpoints/-test-cached-/cache/refresh", headers=auth_headers)
         end_time = time.time()
 
         assert response.status_code == 200
@@ -263,7 +263,7 @@ class TestDuckLakeAdvanced:
 
         # Subsequent refreshes should be faster (cached templates, etc.)
         start_time = time.time()
-        response = requests.post(f"{api_config_url}/endpoints/test-cached-slash/cache/refresh", headers=auth_headers)
+        response = requests.post(f"{api_config_url}/endpoints/-test-cached-/cache/refresh", headers=auth_headers)
         end_time = time.time()
 
         assert response.status_code == 200

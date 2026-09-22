@@ -86,6 +86,21 @@ std::string PathUtils::slugToPath(const std::string& slug) {
             i += 1;
         }
     }
+
+    // Tolerate an identifier that is already a path. The config service also
+    // accepts a percent-encoded url-path in this position - the tavern suite
+    // addresses endpoints as "northwind%2Fproducts%2F" - which arrives here
+    // url-decoded as "northwind/products/" and contains nothing this codec
+    // encodes. The old decoder prepended the leading slash unconditionally,
+    // because it stripped one when encoding; this one encodes the leading '/'
+    // as '-', so a slug produced by pathToSlug already decodes with it.
+    //
+    // Adding it only when absent keeps both callers working and cannot
+    // collide: every slug from pathToSlug for a non-empty path starts with
+    // '-', hence decodes to a leading '/'.
+    if (!path.empty() && path.front() != '/') {
+        path.insert(path.begin(), '/');
+    }
     return path;
 }
 

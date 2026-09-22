@@ -9,7 +9,7 @@ stages:
   # Test 1: Full Refresh Mode (no cursor, no primary key)
   - name: Test full refresh cache mode
     request:
-      url: "{base_url}/api/v1/_config/endpoints/test-cached-slash/cache"
+      url: "{base_url}/api/v1/_config/endpoints/-test-cached-/cache"
       method: GET
       headers:
         X-Config-Token: "test-token"
@@ -26,7 +26,7 @@ stages:
   # Test 2: Incremental Append Mode (cursor only)
   - name: Test incremental append cache mode
     request:
-      url: "{base_url}/api/v1/_config/endpoints/test-append-slash/cache"
+      url: "{base_url}/api/v1/_config/endpoints/-test-append-/cache"
       method: GET
       headers:
         X-Config-Token: "test-token"
@@ -43,7 +43,7 @@ stages:
   # Test 3: Incremental Merge Mode (cursor + primary key)
   - name: Test incremental merge cache mode
     request:
-      url: "{base_url}/api/v1/_config/endpoints/test-merge-slash/cache"
+      url: "{base_url}/api/v1/_config/endpoints/-test-merge-/cache"
       method: GET
       headers:
         X-Config-Token: "test-token"
@@ -60,7 +60,7 @@ stages:
   # Test 4: Cache refresh for full mode
   - name: Test full refresh cache refresh
     request:
-      url: "{base_url}/api/v1/_config/endpoints/test-cached-slash/cache/refresh"
+      url: "{base_url}/api/v1/_config/endpoints/-test-cached-/cache/refresh"
       method: POST
       headers:
         X-Config-Token: "test-token"
@@ -82,7 +82,7 @@ stages:
   # Test 6: Test garbage collection
   - name: Test garbage collection endpoint
     request:
-      url: "{base_url}/api/v1/_config/endpoints/test-cached-slash/cache/gc"
+      url: "{base_url}/api/v1/_config/endpoints/-test-cached-/cache/gc"
       method: POST
       headers:
         X-Config-Token: "test-token"
@@ -115,7 +115,7 @@ stages:
   # Test 8: Test error handling for invalid cache configurations
   - name: Test invalid cache configuration handling
     request:
-      url: "{base_url}/api/v1/_config/endpoints/test-invalid-slash/cache"
+      url: "{base_url}/api/v1/_config/endpoints/-test-invalid-/cache"
       method: GET
       headers:
         X-Config-Token: "test-token"
@@ -126,7 +126,7 @@ stages:
   # Test 9: Verify endpoint-specific audit log
   - name: Test endpoint-specific audit log
     request:
-      url: "{base_url}/api/v1/_config/endpoints/test-cached-slash/cache/audit"
+      url: "{base_url}/api/v1/_config/endpoints/-test-cached-/cache/audit"
       method: GET
       headers:
         X-Config-Token: "test-token"
