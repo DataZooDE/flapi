@@ -98,21 +98,36 @@ public:
 
 } // namespace
 
+// NOTE ON THE EXPECTATIONS IN THIS FILE (#123)
+//
+// The slug codec changed, so the literal slugs here changed with it. The old
+// encoding was not injective: it mapped every internal '/' to '-', every
+// non-alphanumeric to '-', collapsed runs and stripped the edges, so "/a-b"
+// and "/a/b" both became "a-b" and both decoded to "/a/b" - an endpoint whose
+// URL contained a hyphen was addressed as, and rewritten to, a different one.
+// "/" and "" likewise both became "empty".
+//
+// These assertions were therefore pinning the defect, not the contract. They
+// are updated rather than kept. What they test - round trips, lookup by slug,
+// uniqueness across endpoints - is unchanged.
+
 // ============================================================================
 // PathUtils Tests
 // ============================================================================
 
 TEST_CASE("PathUtils: Path to slug conversion - simple paths", "[slug][path_utils]") {
-    REQUIRE(PathUtils::pathToSlug("/customers/") == "customers-slash");
-    REQUIRE(PathUtils::pathToSlug("/api/v1/data/") == "api-v1-data-slash");
-    REQUIRE(PathUtils::pathToSlug("/sap/functions") == "sap-functions");
-    REQUIRE(PathUtils::pathToSlug("/") == "empty");  // Root path becomes "empty"
+    REQUIRE(PathUtils::pathToSlug("/customers/") == "-customers-");
+    REQUIRE(PathUtils::pathToSlug("/api/v1/data/") == "-api-v1-data-");
+    REQUIRE(PathUtils::pathToSlug("/sap/functions") == "-sap-functions");
+    // "/" and "" used to BOTH encode to "empty" - a collision, and one of
+    // the reasons the codec was not injective. They are now distinct.
+    REQUIRE(PathUtils::pathToSlug("/") == "-");
 }
 
 TEST_CASE("PathUtils: Path to slug conversion - edge cases", "[slug][path_utils]") {
     REQUIRE(PathUtils::pathToSlug("") == "empty");  // Empty string becomes "empty"
-    REQUIRE(PathUtils::pathToSlug("/single") == "single");
-    REQUIRE(PathUtils::pathToSlug("/multiple/nested/path/") == "multiple-nested-path-slash");
+    REQUIRE(PathUtils::pathToSlug("/single") == "-single");
+    REQUIRE(PathUtils::pathToSlug("/multiple/nested/path/") == "-multiple-nested-path-");
 }
 
 TEST_CASE("PathUtils: Slug to path conversion - round trip", "[slug][path_utils]") {
@@ -131,7 +146,7 @@ TEST_CASE("PathUtils: Slug to path conversion - round trip", "[slug][path_utils]
     }
     
     // Special case: "/" and "" both become "empty" and reconstruct to ""
-    REQUIRE(PathUtils::pathToSlug("/") == "empty");
+    REQUIRE(PathUtils::pathToSlug("/") == "-");
     REQUIRE(PathUtils::slugToPath("empty") == "");
 }
 
@@ -154,7 +169,7 @@ TEST_CASE("EndpointConfig: getSlug() for REST endpoints", "[slug][endpoint_confi
     
     const auto& endpoint = (*endpoints)[0];
     REQUIRE(endpoint.urlPath == "/customers/");
-    REQUIRE(endpoint.getSlug() == "customers-slash");
+    REQUIRE(endpoint.getSlug() == "-customers-");
 }
 
 TEST_CASE("EndpointConfig: getSlug() for MCP tool", "[slug][endpoint_config]") {
@@ -212,9 +227,9 @@ TEST_CASE("EndpointConfig: getSlug() consistency - multiple REST endpoints", "[s
     
     // Verify each endpoint has correct slug
     std::map<std::string, std::string> expected_slugs = {
-        {"/api/v1/customers/", "api-v1-customers-slash"},
-        {"/api/v2/products", "api-v2-products"},
-        {"/root", "root"}
+        {"/api/v1/customers/", "-api-v1-customers-"},
+        {"/api/v2/products", "-api-v2-products"},
+        {"/root", "-root"}
     };
     
     for (const auto& endpoint : *endpoints) {
@@ -241,7 +256,7 @@ TEST_CASE("ConfigService: Slug-based endpoint lookup - REST", "[slug][config_ser
     EndpointConfigHandler handler(config_manager);
     
     crow::request req;
-    auto response = handler.getEndpointConfigBySlug(req, "customers-slash");
+    auto response = handler.getEndpointConfigBySlug(req, "-customers-");
     
     REQUIRE(response.code == 200);
     
@@ -306,7 +321,7 @@ TEST_CASE("ConfigService: Slug-based vs path-based lookup consistency", "[slug][
     crow::request req;
     
     // Get via slug
-    auto slug_response = handler.getEndpointConfigBySlug(req, "api-v1-test-slash");
+    auto slug_response = handler.getEndpointConfigBySlug(req, "-api-v1-test-");
     REQUIRE(slug_response.code == 200);
     auto slug_json = crow::json::load(slug_response.body);
     
@@ -330,7 +345,7 @@ TEST_CASE("ConfigService: Slug uniqueness - REST and MCP can coexist", "[slug][c
     std::string template_path1 = fixture.createSqlTemplate("customers_rest");
     std::string template_path2 = fixture.createSqlTemplate("customers_mcp");
     
-    // Create REST endpoint with slug "customers-slash"
+    // Create REST endpoint with slug "-customers-"
     fixture.createRestEndpoint("customers-rest", "/customers/", template_path1);
     
     // Create MCP tool with name "customer_lookup" (different slug)
@@ -345,7 +360,7 @@ TEST_CASE("ConfigService: Slug uniqueness - REST and MCP can coexist", "[slug][c
     crow::request req;
     
     // Both endpoints should be accessible via their respective slugs
-    auto rest_response = handler.getEndpointConfigBySlug(req, "customers-slash");
+    auto rest_response = handler.getEndpointConfigBySlug(req, "-customers-");
     REQUIRE(rest_response.code == 200);
     auto rest_json = crow::json::load(rest_response.body);
     REQUIRE(rest_json["url-path"].s() == "/customers/");
@@ -374,12 +389,12 @@ TEST_CASE("ConfigService: Complex path slugging", "[slug][config_service]") {
     crow::request req;
     
     // Test complex slugs
-    auto response1 = handler.getEndpointConfigBySlug(req, "api-v1-customers-orders-slash");
+    auto response1 = handler.getEndpointConfigBySlug(req, "-api-v1-customers-orders-");
     REQUIRE(response1.code == 200);
     auto json1 = crow::json::load(response1.body);
     REQUIRE(json1["url-path"].s() == "/api/v1/customers/orders/");
     
-    auto response2 = handler.getEndpointConfigBySlug(req, "sap-erp-functions-materialize");
+    auto response2 = handler.getEndpointConfigBySlug(req, "-sap-erp-functions-materialize");
     REQUIRE(response2.code == 200);
     auto json2 = crow::json::load(response2.body);
     REQUIRE(json2["url-path"].s() == "/sap/erp/functions/materialize");
@@ -404,7 +419,7 @@ TEST_CASE("TemplateHandler: Slug-based template expand - REST endpoint", "[slug]
     crow::request req;
     req.body = R"({"parameters": {"id": {"value": "123"}}})";
     
-    auto response = handler.expandTemplateBySlug(req, "test-slash");
+    auto response = handler.expandTemplateBySlug(req, "-test-");
     
     REQUIRE(response.code == 200);
     auto json = crow::json::load(response.body);
@@ -471,7 +486,7 @@ TEST_CASE("Integration: End-to-end slug workflow - REST", "[slug][integration]")
     const auto endpoints = config_manager->getEndpoints();   // pinned snapshot
     REQUIRE(endpoints->size() == 1);
     std::string slug = (*endpoints)[0].getSlug();
-    REQUIRE(slug == "api-customers-slash");
+    REQUIRE(slug == "-api-customers-");
     
     // 2. Use slug to get config
     EndpointConfigHandler endpoint_handler(config_manager);
@@ -517,3 +532,57 @@ TEST_CASE("Integration: End-to-end slug workflow - MCP", "[slug][integration]") 
     REQUIRE(expand_response.code == 200);
 }
 
+
+// ============================================================================
+// #123 - the codec must be injective
+// ============================================================================
+
+TEST_CASE("a hyphen in a path is not confused with a slash", "[slug][path_utils][gh123]") {
+    // The defect. "/a-b" and "/a/b" both encoded to "a-b", so they shared a
+    // config-service URL - and slugToPath turned both back into "/a/b", so a
+    // GET -> PUT round trip through /api/v1/_config/endpoints/{slug} silently
+    // REWROTE "/order-items" to "/order/items".
+    REQUIRE(PathUtils::pathToSlug("/a-b") != PathUtils::pathToSlug("/a/b"));
+    REQUIRE(PathUtils::slugToPath(PathUtils::pathToSlug("/a-b")) == "/a-b");
+    REQUIRE(PathUtils::slugToPath(PathUtils::pathToSlug("/a/b")) == "/a/b");
+
+    // The realistic shape: hyphens in REST paths are entirely ordinary.
+    REQUIRE(PathUtils::slugToPath(PathUtils::pathToSlug("/order-items")) == "/order-items");
+    REQUIRE(PathUtils::pathToSlug("/order-items") != PathUtils::pathToSlug("/order/items"));
+}
+
+TEST_CASE("the root path and the empty path are distinct", "[slug][path_utils][gh123]") {
+    // Both used to encode to "empty".
+    REQUIRE(PathUtils::pathToSlug("/") != PathUtils::pathToSlug(""));
+    REQUIRE(PathUtils::slugToPath(PathUtils::pathToSlug("/")) == "/");
+    REQUIRE(PathUtils::slugToPath(PathUtils::pathToSlug("")) == "");
+}
+
+TEST_CASE("every path round-trips, including the awkward ones",
+          "[slug][path_utils][gh123]") {
+    const std::vector<std::string> paths = {
+        "/customers/", "/publicis", "/sap/functions", "/", "",
+        "/a-b", "/a/b", "//x", "/a%b", "/order-items", "/a/b-c/d",
+        "/%2D", "/trailing-", "/-leading", "/a--b",
+    };
+    for (const auto& path : paths) {
+        INFO("path: " << path);
+        REQUIRE(PathUtils::slugToPath(PathUtils::pathToSlug(path)) == path);
+    }
+}
+
+TEST_CASE("distinct paths get distinct slugs", "[slug][path_utils][gh123]") {
+    // Injectivity is the property that makes the slug a usable address at all.
+    const std::vector<std::string> paths = {
+        "/customers/", "/customers", "/a-b", "/a/b", "/", "",
+        "/order-items", "/order/items", "/a%b", "/a%2Db", "//x", "/-x",
+    };
+    std::map<std::string, std::string> seen;
+    for (const auto& path : paths) {
+        const auto slug = PathUtils::pathToSlug(path);
+        const auto existing = seen.find(slug);
+        INFO("slug " << slug << " for " << path);
+        REQUIRE(existing == seen.end());
+        seen[slug] = path;
+    }
+}
