@@ -425,10 +425,38 @@ std::string RequestHandler::createNextUrl(const crow::request& req, const QueryR
     return baseUrl + queryResult.next;
 }
 
+namespace {
+
+// `__auth_*` is the reserved prefix APIServer uses to inject the authenticated
+// principal into the template context (api_server.cpp:325). It is SERVER data,
+// and it must never be accepted from a caller.
+//
+// It used to be. RequestValidator whitelists the prefix so the injected keys
+// are not reported as unknown parameters, and combineParameters copied every
+// query parameter over the top of the defaults - so a client could send
+// `?__auth_username=admin&__auth_roles=admin&__auth_authenticated=true` and
+// have it land in `auth.*`. Measured on an endpoint with no auth configured:
+//
+//   {"who":"admin","roles":"admin","authed":"true"}
+//
+// Any template that filters rows on `{{ auth.username }}` or `{{ auth.roles }}`
+// - the documented multi-tenant pattern - was therefore letting the caller
+// choose who they were. On an endpoint WITH auth it was worse: the query
+// parameter overwrote the identity the middleware had just established.
+bool isReservedAuthKey(const std::string& key) {
+    static constexpr char kPrefix[] = "__auth_";
+    return key.rfind(kPrefix, 0) == 0;
+}
+
+}  // namespace
+
 std::map<std::string, std::string> RequestHandler::combineParameters(const crow::request& req, const std::map<std::string, std::string>& defaultParams, const std::map<std::string, std::string>& pathParams, const EndpointConfig& endpoint) {
     std::map<std::string, std::string> params = defaultParams;
 
     for (const auto& key : pathParams) {
+        if (isReservedAuthKey(key.first)) {
+            continue;
+        }
         params[key.first] = key.second;
     }
 
@@ -439,6 +467,9 @@ std::map<std::string, std::string> RequestHandler::combineParameters(const crow:
     }
 
     for (const auto& key : req.url_params.keys()) {
+        if (isReservedAuthKey(key)) {
+            continue;   // server-injected identity is not client input
+        }
         params[key] = req.url_params.get(key);
     }
     return params;
@@ -451,6 +482,9 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
 
     // Add path parameters first (lowest precedence for body params)
     for (const auto& [key, value] : pathParams) {
+        if (isReservedAuthKey(key)) {
+            continue;
+        }
         params[key] = value;
     }
 
@@ -553,6 +587,9 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
                     // This allows validation to detect unknown parameters later
                     for (const auto& key : bodyJson.keys()) {
                         std::string fieldName = key;
+                        if (isReservedAuthKey(fieldName)) {
+                            continue;   // identity comes from the middleware, not the body
+                        }
                         std::string value = jsonValueToString(fieldName);
                         params[fieldName] = value;
                     }
@@ -575,6 +612,9 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
     // Add query parameters (for backward compatibility and flexibility)
     // Only adds parameters not already set by body or endpoint defaults
     for (const auto& key : req.url_params.keys()) {
+        if (isReservedAuthKey(key)) {
+            continue;
+        }
         if (params.find(key) == params.end()) {
             params[key] = req.url_params.get(key);
         }

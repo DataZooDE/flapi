@@ -72,6 +72,45 @@ std::vector<SecurityWarning> SecurityAuditor::audit(const ConfigManager& config)
 
     for (const auto& endpoint : *config.getEndpoints()) {
         scanUsers(endpoint.auth.users, "endpoint " + endpoint.getIdentifier(), warnings);
+
+        // An empty HMAC key is not a weak secret, it is no secret: a token
+        // signed with the empty key verifies, so any caller can mint one
+        // claiming any subject and any roles. The usual way to arrive here is
+        // `jwt-secret: '{{env.API_JWT_SECRET}}'` with the variable unset,
+        // which resolves to "" without complaint - so the endpoint looks
+        // protected in the config and is not.
+        //
+        // The runtime refuses this independently (auth_middleware.cpp); this
+        // warning exists so an operator learns at startup rather than from an
+        // audit log entry after the fact.
+        if (endpoint.auth.enabled && endpoint.auth.type == "bearer" &&
+            endpoint.auth.jwt_secret.empty()) {
+            warnings.push_back({
+                "AUTH_EMPTY_JWT_SECRET",
+                "Endpoint declares bearer auth with an EMPTY jwt-secret, so every "
+                "token would verify. This usually means the environment variable "
+                "it interpolates is unset. Authentication is refused at runtime "
+                "until a secret is configured.",
+                "endpoint " + endpoint.getIdentifier()
+            });
+        }
+
+        // The dispatch in AuthMiddleware knows "basic", "bearer" and "oidc".
+        // Anything else matches no branch, so the endpoint denies every
+        // request - it fails closed, but silently, and a config that reads as
+        // protected is in fact unusable. `type: jwt` is the common case: it is
+        // what the shipped customer example uses.
+        if (endpoint.auth.enabled && !endpoint.auth.type.empty() &&
+            endpoint.auth.type != "basic" && endpoint.auth.type != "bearer" &&
+            endpoint.auth.type != "oidc") {
+            warnings.push_back({
+                "AUTH_UNKNOWN_TYPE",
+                "Endpoint declares auth type '" + endpoint.auth.type +
+                "', which is not one of basic, bearer or oidc. No authenticator "
+                "matches, so every request to this endpoint is refused with 401.",
+                "endpoint " + endpoint.getIdentifier()
+            });
+        }
     }
 
     const auto& mcp = config.getMCPConfig();

@@ -3,6 +3,7 @@
 #include <crow/json.h>
 #include <map>
 #include <string>
+#include <unordered_map>
 
 namespace flapi {
 
@@ -26,6 +27,16 @@ public:
     // Render the dry-run JSON payload returned to the agent in place of real
     // query results. Always emits a `parameters` object (possibly empty) so
     // callers don't need to special-case missing args.
+    /// Replace credential-valued connection properties wherever they appear
+    /// in `sql`. The rendered SQL is returned to the caller verbatim, and a
+    /// template that interpolates `{{{ conn.password }}}` therefore handed the
+    /// credential back in the dry-run payload - over MCP, which is
+    /// unauthenticated by default. Scrubbing by VALUE, not by key, because by
+    /// the time the SQL is rendered the key is gone.
+    static std::string scrubConnectionSecrets(
+        std::string sql,
+        const std::unordered_map<std::string, std::string>& connection_properties);
+
     static std::string formatResult(const std::string& tool_name,
                                     const std::string& rendered_sql,
                                     const std::map<std::string, std::string>& parameters);

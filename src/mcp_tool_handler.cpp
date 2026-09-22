@@ -183,6 +183,19 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
         // would have run.
         if (is_dry_run) {
             std::string rendered_sql = sql_processor->loadAndProcessTemplate(*endpoint_config, params);
+            // The rendered SQL goes back to the caller, and MCP is
+            // unauthenticated by default, so any credential a template
+            // interpolated from conn.* would leave with it.
+            if (config_manager && !endpoint_config->connection.empty()) {
+                const auto& connections = config_manager->getConnections();
+                for (const auto& conn_name : endpoint_config->connection) {
+                    const auto it = connections.find(conn_name);
+                    if (it != connections.end()) {
+                        rendered_sql = MCPDryRun::scrubConnectionSecrets(
+                            std::move(rendered_sql), it->second.properties);
+                    }
+                }
+            }
             std::string payload = MCPDryRun::formatResult(request.tool_name, rendered_sql, params);
 
             std::unordered_map<std::string, std::string> metadata;

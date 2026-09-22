@@ -1,5 +1,7 @@
 #include "mcp_dry_run.hpp"
 
+#include "redaction.hpp"
+
 namespace flapi {
 
 bool MCPDryRun::extractFlag(crow::json::wvalue& arguments) {
@@ -43,6 +45,25 @@ bool MCPDryRun::extractFlag(crow::json::wvalue& arguments) {
     }
     arguments = std::move(rebuilt);
     return flag_value;
+}
+
+std::string MCPDryRun::scrubConnectionSecrets(
+    std::string sql,
+    const std::unordered_map<std::string, std::string>& connection_properties) {
+    for (const auto& [key, value] : connection_properties) {
+        // Only credential-named properties, and only values long enough that
+        // replacing them cannot mangle unrelated SQL. A one-character
+        // "password" is not worth corrupting the output for.
+        if (value.size() < 4 || !isCredentialKey(key)) {
+            continue;
+        }
+        std::string::size_type pos = 0;
+        while ((pos = sql.find(value, pos)) != std::string::npos) {
+            sql.replace(pos, value.size(), "<redacted>");
+            pos += sizeof("<redacted>") - 1;
+        }
+    }
+    return sql;
 }
 
 std::string MCPDryRun::formatResult(const std::string& tool_name,

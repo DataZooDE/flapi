@@ -1,0 +1,141 @@
+"""A caller must not be able to declare its own identity.
+
+`__auth_*` is the reserved prefix APIServer uses to inject the authenticated
+principal into the template context (api_server.cpp:325), surfaced to templates
+as `auth.username`, `auth.roles`, `auth.email`, `auth.type` and
+`auth.authenticated`.
+
+RequestValidator whitelists the prefix so the injected keys are not reported as
+unknown parameters - and combineParameters then copied every query parameter
+over the top of the defaults. So the client could simply send them.
+
+Measured before the fix, on an endpoint with NO auth configured:
+
+    GET /a?__auth_username=admin&__auth_roles=admin&__auth_authenticated=true
+    -> {"who":"admin","roles":"admin","authed":"true"}
+
+Any template filtering rows on `{{ auth.username }}` or `{{ auth.roles }}` -
+the documented multi-tenant pattern - was letting the caller choose who they
+were. On an endpoint WITH auth it was worse: the query parameter overwrote the
+identity the middleware had just established.
+"""
+import json
+import os
+import subprocess
+import tempfile
+import time
+
+import pytest
+import requests
+
+from otel_helpers import flapi_binary, free_port
+
+pytestmark = pytest.mark.standalone_server
+
+SPOOF = {
+    "__auth_username": "admin",
+    "__auth_roles": "admin",
+    "__auth_email": "admin@example.com",
+    "__auth_type": "basic",
+    "__auth_authenticated": "true",
+}
+
+
+class _Server:
+    def __init__(self):
+        self.tmp = tempfile.mkdtemp(prefix="flapi_authspoof_")
+        self.port = free_port()
+        self.base_url = f"http://127.0.0.1:{self.port}"
+        self.log_path = os.path.join(self.tmp, "server.log")
+        sqls = os.path.join(self.tmp, "sqls")
+        os.makedirs(sqls, exist_ok=True)
+        with open(os.path.join(sqls, "who.yaml"), "w") as f:
+            f.write("url-path: /who\nmethod: GET\n"
+                    "template-source: who.sql\nconnection: [inmem]\n")
+        with open(os.path.join(sqls, "who.sql"), "w") as f:
+            f.write("SELECT '{{ auth.username }}' AS who, "
+                    "'{{ auth.roles }}' AS roles, "
+                    "'{{ auth.authenticated }}' AS authed\n")
+        with open(os.path.join(sqls, "w.yaml"), "w") as f:
+            f.write("url-path: /w\nmethod: POST\n"
+                    "operation:\n  type: write\n  returns-data: false\n  transaction: false\n"
+                    "template-source: w.sql\nconnection: [inmem]\n")
+        with open(os.path.join(sqls, "w.sql"), "w") as f:
+            f.write("CREATE TABLE IF NOT EXISTS seen AS SELECT '{{ auth.username }}' AS who\n")
+        with open(os.path.join(self.tmp, "flapi.yaml"), "w") as f:
+            f.write(
+                "project-name: auth-spoof\n"
+                "project-description: the caller must not set its own identity\n"
+                f"http-port: {self.port}\n"
+                "template:\n  path: ./sqls\n"
+                "connections:\n  inmem:\n    properties:\n      database: ':memory:'\n")
+        self.proc = None
+
+    def start(self):
+        self.proc = subprocess.Popen(
+            [flapi_binary(), "-c", os.path.join(self.tmp, "flapi.yaml"),
+             "-p", str(self.port), "--log-level", "warning"],
+            stdout=open(self.log_path, "w"), stderr=subprocess.STDOUT, cwd=self.tmp,
+            env={**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"},
+            preexec_fn=os.setsid)
+        deadline = time.time() + 90
+        while time.time() < deadline:
+            try:
+                if requests.get(f"{self.base_url}/health/live", timeout=2).status_code == 200:
+                    return self
+            except requests.RequestException:
+                pass
+            time.sleep(0.2)
+        pytest.fail(f"server did not start:\n{open(self.log_path).read()[-3000:]}")
+
+    def stop(self):
+        if self.proc:
+            import signal
+            try:
+                os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            self.proc.wait(timeout=30)
+
+    def __enter__(self):
+        return self.start()
+
+    def __exit__(self, *exc):
+        self.stop()
+
+
+class TestAuthContextSpoofing:
+    def test_query_parameters_cannot_set_the_auth_context(self):
+        # The measured attack, verbatim.
+        with _Server() as s:
+            r = requests.get(f"{s.base_url}/who", params=SPOOF, timeout=10)
+            assert r.status_code == 200, r.text
+            row = r.json()["data"][0]
+            assert row["who"] == "", row
+            assert row["roles"] == "", row
+            assert row["authed"] == "", row
+
+    def test_the_unauthenticated_context_is_empty_without_a_spoof(self):
+        # Baseline, so the test above cannot pass merely because the template
+        # renders nothing under all circumstances.
+        with _Server() as s:
+            r = requests.get(f"{s.base_url}/who", timeout=10)
+            row = r.json()["data"][0]
+            assert row == {"who": "", "roles": "", "authed": ""}
+
+    def test_a_json_body_cannot_set_the_auth_context(self):
+        # Write operations take parameters from the body, which is a second
+        # entry point into the same map.
+        with _Server() as s:
+            r = requests.post(f"{s.base_url}/w", json=dict(SPOOF), timeout=10)
+            assert r.status_code in (200, 201), r.text
+            check = requests.get(f"{s.base_url}/who", timeout=10)
+            assert check.json()["data"][0]["who"] == ""
+
+    def test_ordinary_parameters_still_work(self):
+        # The guard is prefix-scoped; it must not eat normal input.
+        with _Server() as s:
+            r = requests.get(f"{s.base_url}/who",
+                             params={"__auth_username": "admin", "limit": "1"}, timeout=10)
+            assert r.status_code == 200, r.text
+            assert r.json()["data"][0]["who"] == ""

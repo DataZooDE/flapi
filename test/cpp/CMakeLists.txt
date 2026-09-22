@@ -3,6 +3,8 @@ find_package(Catch2 3 REQUIRED)
 add_executable(flapi_tests
     main.cpp
     api_server_threads_test.cpp
+    security_auditor_jwt_test.cpp
+    oidc_token_expiry_test.cpp
     archive_io_test.cpp
     audit_logger_test.cpp
     bundle_locator_test.cpp
