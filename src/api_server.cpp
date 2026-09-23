@@ -1,7 +1,9 @@
+#include <cstdlib>
 #include <thread>
 #include <yaml-cpp/yaml.h>
 
 #include "api_server.hpp"
+#include "handler_pool.hpp"
 #include "in_flight_registry.hpp"
 #include "request_context.hpp"
 #include "auth_middleware.hpp"
@@ -27,6 +29,28 @@ APIServer::APIServer(std::shared_ptr<ConfigManager> cm,
 {
     // Initialize MCP session manager
     mcpSessionManager = std::make_shared<MCPSessionManager>();
+
+    // Handlers run off the io threads by default (#120). Sized from the
+    // hardware, with a floor so a small instance still has somewhere to put
+    // concurrent work, and a bounded queue so a slow backend sheds load
+    // instead of growing without limit.
+    //
+    // FLAPI_DISABLE_HANDLER_OFFLOAD=1 restores the inline path, as an escape
+    // hatch for a deployment that hits something this change did not
+    // anticipate.
+    {
+        const char* disabled = std::getenv("FLAPI_DISABLE_HANDLER_OFFLOAD");
+        if (disabled != nullptr && std::string(disabled) == "1") {
+            CROW_LOG_WARNING << "handler offload disabled; a slow query will block "
+                                "other connections on its io thread (#120)";
+        } else {
+            const unsigned hw = std::thread::hardware_concurrency();
+            const std::size_t pool_threads = hw > 4 ? hw : 4;
+            handlerPool = std::make_unique<HandlerPool>(pool_threads, pool_threads * 32);
+            CROW_LOG_INFO << "handler offload enabled with " << pool_threads
+                          << " worker threads";
+        }
+    }
 
     // Initialize MCP client capabilities detector
     mcpCapabilitiesDetector = std::make_shared<MCPClientCapabilitiesDetector>();
@@ -180,8 +204,124 @@ void APIServer::setupRoutes() {
     CROW_ROUTE(app, "/<path>")
         .methods("GET"_method, "POST"_method, "PUT"_method, "PATCH"_method, "DELETE"_method)
         ([this](const crow::request& req, crow::response& res, std::string path) {
-            handleDynamicRequest(req, res);
-            // Note: don't call res.end() here - handlers already call it
+            // Crow runs this on the io thread that owns the connection, so a
+            // slow synchronous query holds that thread for the whole query and
+            // every other connection assigned to it waits - GET /health
+            // included, which is how a stalled instance is supposed to report
+            // itself. Measured on one ~5s query with 40 concurrent probes and
+            // a single io thread: 40/40 blocked, 0/40 reported the stall
+            // (#120).
+            //
+            // The work therefore moves to a pool thread and only the
+            // completion is posted back to the owning io_service, which is the
+            // thread Crow expects to touch the connection's buffers.
+            if (!handlerPool) {
+                handleDynamicRequest(req, res);
+                return;
+            }
+
+            // Everything the worker needs to reconstitute this request's
+            // ambient state. Both are thread-local by design - see
+            // SpanScope::Activation and RequestContextScope - so neither
+            // survives the hop on its own.
+            auto* rc = RequestContextScope::current();
+            auto& mw = app.get_context<RequestContextMiddleware>(req);
+            // Holds the connection open across the offload. Without it,
+            // prepare_buffers() clears the connection's only remaining owners
+            // and destroys it before it finishes using itself.
+            auto keepalive = res.connection_keepalive;
+
+            // The response must be completed EXACTLY once, on every exit path.
+            // Making that a property of the code - remembering to post a
+            // completion in each branch - is how a non-std::exception escape
+            // left the connection hung: the read loop is paused and the
+            // deadline timer cancelled, so nothing else would ever finish it,
+            // finish() would never run, and the in-flight slot would never
+            // clear, leaving readiness stuck at 503 for the life of the
+            // process.
+            //
+            // So it is a property of the TYPE instead. Whatever happens to the
+            // job, this posts something.
+            struct Completer {
+                crow::response* res;
+                const crow::request* req;
+                std::shared_ptr<void> keepalive;
+                int code = 500;
+                std::string body = "Internal Server Error";
+                crow::ci_map headers;
+                bool armed = true;
+
+                void take(crow::response& from) {
+                    code = from.code;
+                    body = std::move(from.body);
+                    headers = std::move(from.headers);
+                }
+
+                ~Completer() {
+                    if (!armed) {
+                        return;
+                    }
+                    asio::post(*req->io_service,
+                               [res = res, keepalive = keepalive, code = code,
+                                body = std::move(body),
+                                headers = std::move(headers)]() mutable {
+                                   res->code = code;
+                                   res->body = std::move(body);
+                                   for (auto& header : headers) {
+                                       res->set_header(header.first, header.second);
+                                   }
+                                   res->end();
+                               });
+                }
+            };
+
+            // The io thread must stop claiming this request the moment the
+            // work leaves it. Crow logs "Request:" for the NEXT connection on
+            // this thread before that request's before_handle runs, so leaving
+            // t_current set here stamps the offloaded request's id and trace id
+            // onto another request's log lines - the exact correlation the
+            // release advertises.
+            const bool queued = handlerPool->submit(
+                [this, &req, &res, rc, &mw, keepalive]() mutable {
+                    Completer completer{&res, &req, keepalive};
+
+                    RequestContextScope::activate(rc);
+                    const auto span_activation = mw.span.activateOnThisThread();
+
+                    crow::response local;
+                    try {
+                        handleDynamicRequest(req, local);
+                        completer.take(local);
+                    } catch (const std::exception& e) {
+                        CROW_LOG_ERROR << "handler threw off the io thread: " << e.what();
+                    } catch (...) {
+                        CROW_LOG_ERROR << "handler threw a non-standard exception off the io thread";
+                    }
+
+                    RequestContextScope::clearIf(rc);
+                    // ~Completer posts the completion, whichever way we leave.
+                });
+
+            if (queued) {
+                RequestContextScope::clearIf(rc);
+                // Release the span's activation on THIS thread while it is
+                // still the innermost one, so the context stack detaches in
+                // LIFO order. The worker re-activates on its own thread; the
+                // span itself stays live and is ended in finish() as before.
+                mw.span.suspendActivation();
+            }
+
+            if (!queued) {
+                // The queue is full. Answering 503 here is the honest reply to
+                // more work than this instance can take; silently queueing it
+                // would eventually serve a client that stopped waiting.
+                CROW_LOG_WARNING << "handler pool is saturated; shedding a request";
+                res.code = 503;
+                res.set_header("Content-Type", "text/plain");
+                res.set_header("Retry-After", "1");
+                res.body = "Server is at capacity. Try again shortly.";
+                res.end();
+            }
         });
 
     CROW_LOG_INFO << "Routes set up completed";
@@ -451,6 +591,18 @@ crow::response APIServer::generateOpenAPIDoc() {
 }
 
 std::uint16_t APIServer::serverThreadCount(unsigned hardware_concurrency) {
+    // Test seam. A test for #120 has to be able to produce the condition the
+    // issue is about - a slow query monopolising the io thread a probe needs -
+    // and on a many-core machine the floor makes that vanishingly unlikely.
+    // Without this the test passes against the un-offloaded server too, which
+    // is exactly the trap the first version of it fell into.
+    if (const char* override_threads = std::getenv("FLAPI_IO_THREADS")) {
+        const int parsed = std::atoi(override_threads);
+        if (parsed >= 2 && parsed <= 64) {
+            return static_cast<std::uint16_t>(parsed);
+        }
+    }
+
     // 8 total -> 7 io threads. Enough that a single stuck query leaves the
     // instance answering, small enough to be unremarkable on a 1-vCPU
     // container. Crow clamps anything below 2 itself.
@@ -509,6 +661,19 @@ void APIServer::requestForEndpoint(const EndpointConfig& endpoint, const std::un
 
 void APIServer::stop() {
     heartbeatWorker->stop();
+
+    // Before app.stop(), not after. The pool's shutdown drains rather than
+    // drops, and that promise is only worth anything while the io_services
+    // those jobs post their completions into are still alive - after
+    // app.stop() no posted completion can run, so a "drained" job would
+    // finish its query and then have nowhere to deliver the response.
+    //
+    // submit() already refuses while stopping, so a request arriving during
+    // shutdown gets 503 rather than being queued into a closing server.
+    if (handlerPool) {
+        handlerPool->shutdown();
+    }
+
     app.stop();
 }
 

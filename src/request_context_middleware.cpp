@@ -294,14 +294,17 @@ void RequestContextMiddleware::finish(crow::response& res, context& ctx) {
     // emitter does; the emitter's failures are counted, not propagated.
     struct ClearGuard {
         std::size_t slot;
+        const RequestContext* owner;
         ~ClearGuard() {
-            RequestContextScope::clear();
+            // Only if it is still OURS. finish() can run on a thread that has
+            // since picked up another request - see clearIf.
+            RequestContextScope::clearIf(owner);
             // Whatever the emitter does, this request is no longer in flight.
             // Missing it would latch a stale age forever - a health check that
             // never clears is as useless as one that never fires.
             InFlightRegistry::end(slot);
         }
-    } clear_guard{ctx.in_flight_slot};
+    } clear_guard{ctx.in_flight_slot, &ctx.rc};
 
     // F1: only a request that actually produced an exportable span should pay
     // the blocking budget. Captured before end() because the scope is released
