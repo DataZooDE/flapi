@@ -206,17 +206,30 @@ class TestNoConfigToolFabricatesAResult:
     CLAIM_WORDS = ("triggered", "scheduled", "sample",
                    "will be processed", "has been queued")
 
+    # Tools that destroy the fixture they are called against. Run last, so
+    # the tools visited after them are not all answering "not found" - the
+    # first version of this sweep iterated an unordered_map-derived list and
+    # called flapi_delete_endpoint somewhere in the middle, so WHICH tools it
+    # really exercised varied per build.
+    DESTRUCTIVE = ("flapi_delete_endpoint",)
+
+    def _sweep_order(self, names):
+        ordinary = sorted(n for n in names if n not in self.DESTRUCTIVE)
+        return ordinary + [n for n in sorted(names) if n in self.DESTRUCTIVE]
+
     def test_no_advertised_tool_claims_work_without_doing_it(self):
         with _Server() as s:
-            listed = [t["name"] for t in s.list_tools()]
+            listed = self._sweep_order([t["name"] for t in s.list_tools()])
             assert listed, "tools/list returned nothing; the test proves nothing"
 
             offenders = []
+            answered = 0
             for name in listed:
                 got = s.call_tool(name, token=TOKEN, endpoint="/hello",
                                   content="SELECT 1", path="/hello")
                 if "result" not in got:
                     continue
+                answered += 1
                 blob = json.dumps(got["result"]).lower()
                 for word in self.CLAIM_WORDS:
                     if word in blob:
@@ -225,6 +238,11 @@ class TestNoConfigToolFabricatesAResult:
             assert not offenders, (
                 "tools advertised by tools/list claim deferred work:\n" +
                 "\n".join(f"  {n}: says {w!r} -> {b}" for n, w, b in offenders))
+            # A build where every tool errors would otherwise satisfy this
+            # sweep perfectly.
+            assert answered >= 8, (
+                f"only {answered} of {len(listed)} tools returned a result; "
+                "this sweep cannot judge tools that never answered")
 
     def test_a_tool_that_reports_success_actually_changed_something(self):
         # The word heuristic is a widening, not the contract. This is the
@@ -243,21 +261,21 @@ class TestNoConfigToolFabricatesAResult:
 
     def test_no_advertised_tool_returns_the_placeholder_sql(self):
         with _Server() as s:
-            for tool in s.list_tools():
-                got = s.call_tool(tool["name"], token=TOKEN, endpoint="/hello",
+            for name in self._sweep_order([t["name"] for t in s.list_tools()]):
+                got = s.call_tool(name, token=TOKEN, endpoint="/hello",
                                   content="SELECT 1", path="/hello")
                 assert "SELECT * FROM data WHERE 1=1" not in json.dumps(got), (
-                    f"{tool['name']} returned fabricated SQL: {got}")
+                    f"{name} returned fabricated SQL: {got}")
 
     def test_no_advertised_tool_invents_audit_records(self):
         # An invented audit row is the worst thing a tool can return: it is
         # the record someone consults to find out whether work happened.
         with _Server() as s:
-            for tool in s.list_tools():
-                got = s.call_tool(tool["name"], token=TOKEN, endpoint="/hello",
+            for name in self._sweep_order([t["name"] for t in s.list_tools()]):
+                got = s.call_tool(name, token=TOKEN, endpoint="/hello",
                                   content="SELECT 1", path="/hello")
                 assert "cache_status_checked" not in json.dumps(got), (
-                    f"{tool['name']} returned a manufactured audit entry: {got}")
+                    f"{name} returned a manufactured audit entry: {got}")
 
     def test_expand_template_returns_this_endpoints_sql(self):
         # The specific fabrication, pinned: the answer must come from the

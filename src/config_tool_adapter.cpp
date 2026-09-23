@@ -661,10 +661,15 @@ ConfigToolResult ConfigToolAdapter::executeGetTemplate(const crow::json::wvalue&
         return createErrorResult(-32602, error_msg);
     }
 
+    const auto resolved = config_manager_->getEndpointForPath(endpoint);
+    if (!resolved) {
+        return createErrorResult(-32602, "Endpoint not found: " + endpoint);
+    }
+
     TemplateHandler handler(config_manager_);
     return fromHandler("flapi_get_template",
                        handler.getEndpointTemplateBySlug(handlerRequest(),
-                                                         PathUtils::pathToSlug(endpoint)));
+                                                         resolved->getSlug()));
 }
 
 ConfigToolResult ConfigToolAdapter::executeUpdateTemplate(const crow::json::wvalue& args) {
@@ -679,7 +684,18 @@ ConfigToolResult ConfigToolAdapter::executeUpdateTemplate(const crow::json::wval
     if (!error_msg.empty()) {
         return createErrorResult(-32602, error_msg);
     }
-    const std::string slug = PathUtils::pathToSlug(endpoint);
+    // Resolved through getEndpointForPath, then asked for its own slug.
+    //
+    // pathToSlug(endpoint) alone made these three tools disagree with their
+    // siblings: getEndpointForPath pattern-matches path parameters, so
+    // flapi_get_template{"endpoint":"/orders/123"} resolves while
+    // flapi_expand_template with the same argument 404s, because
+    // findEndpointBySlug compares slugs exactly.
+    const auto resolved = config_manager_->getEndpointForPath(endpoint);
+    if (!resolved) {
+        return createErrorResult(-32602, "Endpoint not found: " + endpoint);
+    }
+    const std::string slug = resolved->getSlug();
     std::string content_error;
     const std::string content = extractStringParam(args, "content", true, content_error);
     if (!content_error.empty()) {
@@ -705,7 +721,18 @@ ConfigToolResult ConfigToolAdapter::executeExpandTemplate(const crow::json::wval
     if (!error_msg.empty()) {
         return createErrorResult(-32602, error_msg);
     }
-    const std::string slug = PathUtils::pathToSlug(endpoint);
+    // Resolved through getEndpointForPath, then asked for its own slug.
+    //
+    // pathToSlug(endpoint) alone made these three tools disagree with their
+    // siblings: getEndpointForPath pattern-matches path parameters, so
+    // flapi_get_template{"endpoint":"/orders/123"} resolves while
+    // flapi_expand_template with the same argument 404s, because
+    // findEndpointBySlug compares slugs exactly.
+    const auto resolved = config_manager_->getEndpointForPath(endpoint);
+    if (!resolved) {
+        return createErrorResult(-32602, "Endpoint not found: " + endpoint);
+    }
+    const std::string slug = resolved->getSlug();
 
     // The handler requires a `parameters` object; an absent one is an empty
     // parameter set, not an error.
@@ -744,7 +771,18 @@ ConfigToolResult ConfigToolAdapter::executeTestTemplate(const crow::json::wvalue
     if (!error_msg.empty()) {
         return createErrorResult(-32602, error_msg);
     }
-    const std::string slug = PathUtils::pathToSlug(endpoint);
+    // Resolved through getEndpointForPath, then asked for its own slug.
+    //
+    // pathToSlug(endpoint) alone made these three tools disagree with their
+    // siblings: getEndpointForPath pattern-matches path parameters, so
+    // flapi_get_template{"endpoint":"/orders/123"} resolves while
+    // flapi_expand_template with the same argument 404s, because
+    // findEndpointBySlug compares slugs exactly.
+    const auto resolved = config_manager_->getEndpointForPath(endpoint);
+    if (!resolved) {
+        return createErrorResult(-32602, "Endpoint not found: " + endpoint);
+    }
+    const std::string slug = resolved->getSlug();
 
     crow::json::wvalue payload;
     payload["parameters"] = crow::json::wvalue::object();

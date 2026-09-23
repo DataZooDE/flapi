@@ -106,9 +106,26 @@ private:
                                      const std::string& table,
                                      const std::string& cursor_column);
 
+    /// `strict` decides what an AMBIGUOUS table name means.
+    ///
+    /// Two schemas can hold the same table name, and ducklake_table_info()
+    /// exposes no schema name to tell them apart (verified on DuckDB 1.5.5:
+    /// two rows differing only in schema_id). For the destructive path -
+    /// snapshot expiry - that must resolve to nothing, because acting on a
+    /// guess deletes another endpoint's data. For the read-only watermark
+    /// lookup it must NOT: returning nothing there silently downgrades every
+    /// refresh to a full load, which is a different silent failure traded for
+    /// the first. Best-effort keeps the pre-existing behaviour on a path that
+    /// only ever read.
     std::vector<std::string> tableChangeKeys(const std::string& catalog,
                                              const std::string& schema,
-                                             const std::string& table);
+                                             const std::string& table,
+                                             bool strict);
+
+    /// The `changes` keys of every table that currently EXISTS in the
+    /// catalog. A key naming none of them is a dropped table's id, and must
+    /// not make a snapshot count as shared with a live one.
+    std::vector<std::string> liveTableChangeKeys(const std::string& catalog);
 
     /// SQL predicate selecting snapshots that touched the table named by
     /// `keys`. One definition, used by both fetchSnapshotInfo and

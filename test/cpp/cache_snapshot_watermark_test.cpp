@@ -886,3 +886,47 @@ TEST_CASE("an unavailable cursor watermark falls back to a full load, not to a t
         }
     }
 }
+
+TEST_CASE("a dropped and recreated cache table can still expire its snapshots",
+          "[cache][ducklake][retention]") {
+    // The exclusivity filter matched on "not one of THIS table's keys", so a
+    // recreated table's older snapshots - which still carry the previous
+    // incarnation's table id - looked like another table's data forever.
+    // Every refresh then reported "N snapshots are shared with another cached
+    // table", which was false and masked genuine sharing.
+    //
+    // Verified on DuckDB 1.5.5: after DROP+CREATE, ducklake_table_info lists
+    // one row for the live table while ducklake_snapshots keeps the old id in
+    // `changes`. The filter now asks "touched no other LIVE table".
+    TwoTableCatalog cat("flapi_retention_recreated");
+    CacheManager cache_manager(cat.adapter);
+
+    cat.sql("CREATE SCHEMA IF NOT EXISTS cache.s");
+    cat.sql("CREATE TABLE cache.s.a AS SELECT 1 AS i");
+    cat.sql("INSERT INTO cache.s.a VALUES (2)");
+    cat.sql("INSERT INTO cache.s.a VALUES (3)");
+    cat.sql("DROP TABLE cache.s.a");
+    cat.sql("CREATE TABLE cache.s.a AS SELECT 4 AS i");
+    for (int i = 5; i <= 8; ++i) {
+        cat.sql("INSERT INTO cache.s.a VALUES (" + std::to_string(i) + ")");
+    }
+
+    std::map<std::string, std::string> p;
+    auto total_before = cat.db->executeQuery(
+        "SELECT count(*) AS n FROM ducklake_snapshots('cache')", p, false);
+    const int64_t before =
+        static_cast<int64_t>(crow::json::load(total_before.data.dump())[0]["n"].d());
+
+    auto endpoint = cachedEndpoint("/a", "a");
+    endpoint.cache.retention.keep_last_snapshots = 2;
+    std::map<std::string, std::string> params;
+    cache_manager.refreshDuckLakeCache(cat.config, endpoint, params);
+
+    SECTION("snapshots are expired despite the earlier incarnation") {
+        auto total_after = cat.db->executeQuery(
+            "SELECT count(*) AS n FROM ducklake_snapshots('cache')", p, false);
+        const int64_t after =
+            static_cast<int64_t>(crow::json::load(total_after.data.dump())[0]["n"].d());
+        REQUIRE(after < before);
+    }
+}

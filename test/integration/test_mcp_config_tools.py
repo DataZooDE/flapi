@@ -274,6 +274,25 @@ class TestConfigTemplateTools:
         for name in self.FORMERLY_FABRICATED:
             assert name in listed, f"{name} is missing from tools/list"
 
+    def test_each_of_them_actually_answers(self, mcp_client):
+        # The floor the sweep below needs. Without it, a build where every
+        # tool 404s or 500s satisfies "returns none of the old fabrications"
+        # perfectly - which is the headline test for the headline change
+        # being unable to tell "implemented" from "always fails".
+        answered = 0
+        for name in self.FORMERLY_FABRICATED:
+            try:
+                result = mcp_client.call_tool(
+                    name, {"endpoint": "/customers/", "path": "/customers_cached/",
+                           "params": {}})
+            except Exception:
+                continue
+            if result is not None and not result.get("isError"):
+                answered += 1
+        assert answered >= 7, (
+            f"only {answered} of {len(self.FORMERLY_FABRICATED)} formerly "
+            "fabricating tools returned a real result")
+
     def test_none_of_them_returns_the_old_fabrication(self, mcp_client):
         # The literal strings each used to return. A tool that regressed to a
         # stub would produce one of these again.

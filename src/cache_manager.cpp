@@ -447,9 +447,32 @@ std::string CacheManager::quoteIdentifier(const std::string& name) {
     return out;
 }
 
+std::vector<std::string> CacheManager::liveTableChangeKeys(const std::string& catalog) {
+    std::vector<std::string> keys;
+    try {
+        const std::string query =
+            "SELECT CAST(table_id AS VARCHAR) AS table_id, table_name "
+            "FROM ducklake_table_info('" + escapeSqlLiteral(catalog) + "')";
+        auto result = db_adapter_->executeDuckLakeQueryWithResult(query);
+        auto rows = crow::json::load(result.data.dump());
+        if (rows && rows.t() == crow::json::type::List) {
+            for (std::size_t i = 0; i < rows.size(); ++i) {
+                if (rows[i].has("table_id") &&
+                    rows[i]["table_id"].t() == crow::json::type::String) {
+                    keys.push_back(rows[i]["table_id"].s());
+                }
+            }
+        }
+    } catch (const std::exception& ex) {
+        CROW_LOG_DEBUG << "Could not list DuckLake tables: " << ex.what();
+    }
+    return keys;
+}
+
 std::vector<std::string> CacheManager::tableChangeKeys(const std::string& catalog,
                                                        const std::string& schema,
-                                                       const std::string& table) {
+                                                       const std::string& table,
+                                                       bool strict) {
     // `changes` is a MAP(VARCHAR, VARCHAR[]) that names tables by id for row
     // changes and by `schema.table` for creates, so both forms count.
     std::vector<std::string> keys;
@@ -471,7 +494,7 @@ std::vector<std::string> CacheManager::tableChangeKeys(const std::string& catalo
         auto result = db_adapter_->executeDuckLakeQueryWithResult(query);
         auto rows = crow::json::load(result.data.dump());
         if (rows && rows.t() == crow::json::type::List) {
-            if (rows.size() > 1) {
+            if (rows.size() > 1 && strict) {
                 CROW_LOG_WARNING
                     << "DuckLake catalog '" << catalog << "' holds " << rows.size()
                     << " tables named '" << table << "' in different schemas, and "
@@ -481,7 +504,9 @@ std::vector<std::string> CacheManager::tableChangeKeys(const std::string& catalo
                        "snapshots; rename one of the cache tables to re-enable it.";
                 return {};
             }
-            if (rows.size() == 1 && rows[0].has("table_id") &&
+            // Best-effort takes the first match, which is what this did
+            // before it fed anything destructive.
+            if (rows.size() >= 1 && rows[0].has("table_id") &&
                 rows[0]["table_id"].t() == crow::json::type::String) {
                 keys.push_back(rows[0]["table_id"].s());
             }
@@ -542,7 +567,7 @@ CacheManager::ExpiryCandidates CacheManager::expirableSnapshotIds(
         // snapshot is left alone and this endpoint simply keeps more history
         // than asked. Retaining too much is recoverable; deleting another
         // endpoint's data is not.
-        const auto keys = tableChangeKeys(catalog, schema, table);
+        const auto keys = tableChangeKeys(catalog, schema, table, /*strict=*/true);
         if (keys.empty()) {
             // The table could not be identified unambiguously. Expiring on a
             // guess is destructive, so expire nothing - see tableChangeKeys.
@@ -560,15 +585,37 @@ CacheManager::ExpiryCandidates CacheManager::expirableSnapshotIds(
         // so creates name the table as `schema.table` and row changes by its
         // numeric id; both are in `keys`, and a schema-create snapshot is not
         // a candidate at all because it names neither.
-        std::ostringstream others;
-        others << "len(list_filter(flatten(map_values(changes)), x -> ";
-        for (std::size_t i = 0; i < keys.size(); ++i) {
-            if (i > 0) {
-                others << " AND ";
+        // "Touched no OTHER LIVE table." A change key that names neither this
+        // table nor any table currently in the catalog belongs to a dropped
+        // one - and a dropped table's snapshots are nobody's data to protect.
+        //
+        // Matching on "not one of our keys" alone made a dropped-and-recreated
+        // cache table permanently unexpirable: its older snapshots still carry
+        // the previous incarnation's table id, so every refresh reported
+        // "N snapshots are shared with another cached table", which was false
+        // and masked genuine sharing. Verified on DuckDB 1.5.5 that
+        // ducklake_table_info lists only the live table after DROP+CREATE
+        // while ducklake_snapshots keeps the old id.
+        std::vector<std::string> foreign_keys;
+        for (const auto& live : liveTableChangeKeys(catalog)) {
+            if (std::find(keys.begin(), keys.end(), live) == keys.end()) {
+                foreign_keys.push_back(live);
             }
-            others << "x <> '" << escapeSqlLiteral(keys[i]) << "'";
         }
-        others << ")) = 0";
+
+        std::ostringstream others;
+        if (foreign_keys.empty()) {
+            others << "true";   // no other live table exists to share with
+        } else {
+            others << "len(list_filter(flatten(map_values(changes)), x -> ";
+            for (std::size_t i = 0; i < foreign_keys.size(); ++i) {
+                if (i > 0) {
+                    others << " OR ";
+                }
+                others << "x = '" << escapeSqlLiteral(foreign_keys[i]) << "'";
+            }
+            others << ")) = 0";
+        }
 
         // Both predicates are SELECTed, not filtered on, so one query answers
         // every part of the decision:
@@ -729,7 +776,7 @@ CacheManager::SnapshotInfo CacheManager::fetchSnapshotInfo(const std::string& ca
         // list_contains NULL, which the OR handles.
         std::string snapshotsQuery =
             "SELECT snapshot_id, snapshot_time FROM ducklake_snapshots('" + escapeSqlLiteral(catalog) + "') "
-            "WHERE " + tableSnapshotPredicate(tableChangeKeys(catalog, schema, table)) + " "
+            "WHERE " + tableSnapshotPredicate(tableChangeKeys(catalog, schema, table, /*strict=*/false)) + " "
             "ORDER BY snapshot_id DESC LIMIT 2";
         try {
             auto snapshots = db_adapter_->executeDuckLakeQueryWithResult(snapshotsQuery);
