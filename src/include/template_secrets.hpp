@@ -63,6 +63,14 @@ public:
     /// SERVICE_ACCOUNT_JSON carries a secret past any stem list.
     void addEnv(const std::string& key, const std::string& value);
 
+    /// A connection property. Same treatment as a whitelisted environment
+    /// variable - both are server-configured, and a name like
+    /// `service_account_json` or `sas` carries a secret past any stem list -
+    /// except that a value which is plainly a path or a URI stays visible,
+    /// because `path` and `database` are the properties operators read a
+    /// preview to check.
+    void addConnectionProperty(const std::string& key, const std::string& value);
+
     bool withhold() const { return withhold_; }
     const std::vector<std::string>& values() const { return values_; }
 

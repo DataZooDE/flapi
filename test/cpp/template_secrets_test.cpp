@@ -129,3 +129,31 @@ TEST_CASE("publicErrorMessage scrubs, and withholds when it must", "[secrets]") 
     REQUIRE(withheld.find("abc'") == std::string::npos);
     REQUIRE(withheld.find("Binder Error") == std::string::npos);
 }
+
+TEST_CASE("a long neutrally-named connection property is scrubbed", "[secrets]") {
+    // Connection properties got only the credential-NAME heuristic while
+    // whitelisted env values got the stronger one, so a property called
+    // `service_account_json` or `sas` sailed past a stem list. Both are
+    // server-configured; both get the same rule.
+    TemplateSecrets secrets;
+    secrets.addConnectionProperty("service_account", std::string(40, 'k'));
+    REQUIRE(secrets.values().size() == 1);
+}
+
+TEST_CASE("a connection path or URI stays visible however long", "[secrets]") {
+    // `path` and `database` are exactly what an operator reads a preview to
+    // confirm, and redacting them makes the preview useless.
+    TemplateSecrets secrets;
+    secrets.addConnectionProperty("path", "/very/long/data/lake/prefix/with/many/segments.parquet");
+    secrets.addConnectionProperty("database", "postgresql://db.example.com:5432/analytics");
+    REQUIRE(secrets.values().empty());
+}
+
+TEST_CASE("a credential-named connection property is scrubbed whatever it looks like",
+          "[secrets]") {
+    // The location exemption widens what stays visible; it must not narrow
+    // what is redacted.
+    TemplateSecrets secrets;
+    secrets.addConnectionProperty("password", "/not/really/a/path/but/named/password");
+    REQUIRE(secrets.values().size() == 1);
+}

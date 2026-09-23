@@ -54,6 +54,27 @@ void TemplateSecrets::addEnv(const std::string& key, const std::string& value) {
     }
 }
 
+namespace {
+bool looksLikeLocation(const std::string& value) {
+    // A path or a URI: the thing an operator reads a preview to confirm.
+    if (value.find('/') != std::string::npos ||
+        value.find('\\') != std::string::npos) {
+        return true;
+    }
+    const auto scheme = value.find("://");
+    return scheme != std::string::npos && scheme < 12;
+}
+}  // namespace
+
+void TemplateSecrets::addConnectionProperty(const std::string& key,
+                                            const std::string& value) {
+    add(key, value);
+    if (value.size() >= kOpaqueEnvValue && !looksLikeLocation(value) &&
+        std::find(values_.begin(), values_.end(), value) == values_.end()) {
+        values_.push_back(value);
+    }
+}
+
 std::string TemplateSecrets::scrub(std::string text) const {
     for (const auto& value : values_) {
         std::string::size_type pos = 0;
@@ -74,7 +95,9 @@ TemplateSecrets collectTemplateSecrets(ConfigManager* config_manager,
         for (const auto& conn_name : endpoint.connection) {
             const auto it = connections.find(conn_name);
             if (it != connections.end()) {
-                secrets.addAll(it->second.properties);
+                for (const auto& [key, value] : it->second.properties) {
+                    secrets.addConnectionProperty(key, value);
+                }
             }
         }
 

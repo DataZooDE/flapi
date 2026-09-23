@@ -43,6 +43,9 @@ SPOOF = {
 
 class _Server:
     def __init__(self):
+        # Set to enable the config service, whose template routes are the
+        # third copy of the `__auth_*` invariant.
+        self.config_service_token = None
         self.tmp = tempfile.mkdtemp(prefix="flapi_authspoof_")
         self.port = free_port()
         self.base_url = f"http://127.0.0.1:{self.port}"
@@ -85,7 +88,10 @@ class _Server:
     def start(self):
         self.proc = subprocess.Popen(
             [flapi_binary(), "-c", os.path.join(self.tmp, "flapi.yaml"),
-             "-p", str(self.port), "--log-level", "warning"],
+             "-p", str(self.port), "--log-level", "warning"]
+            + (["--config-service", "--config-service-token",
+                self.config_service_token]
+               if getattr(self, "config_service_token", None) else []),
             stdout=open(self.log_path, "w"), stderr=subprocess.STDOUT, cwd=self.tmp,
             env={**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"},
             preexec_fn=os.setsid)
@@ -369,3 +375,50 @@ class TestAuthContextOnMcpResources:
             tool_row = tool["result"]["structuredContent"]["rows"][0]
             assert tool_row["who"] == "alice", tool_row
             assert "alice" in resource, resource
+
+
+class TestTheConfigServiceTemplateRoutesRejectASpoof:
+    """The third copy of the `__auth_*` invariant, and the only one that
+    EXECUTES what it renders.
+
+    REST strips the prefix in combineParameters and MCP in
+    applyMcpAuthContext. The config service's template/expand and
+    template/test routes pass caller-supplied `parameters` straight into
+    loadAndProcessTemplate - and template/test then runs the result. They were
+    the only copy without the guard, and the guard shipped with no test.
+    """
+
+    TOKEN = "config-token"
+
+    def _server(self):
+        s = _Server()
+        s.config_service_token = self.TOKEN
+        return s
+
+    def _post(self, server, suffix, parameters):
+        return requests.post(
+            f"{server.base_url}/api/v1/_config/endpoints/-who/{suffix}",
+            headers={"X-Config-Token": self.TOKEN,
+                     "Content-Type": "application/json"},
+            data=json.dumps({"parameters": parameters}), timeout=15)
+
+    def test_expand_ignores_a_spoofed_auth_context(self):
+        with self._server() as s:
+            r = self._post(s, "template/expand", dict(SPOOF))
+            assert r.status_code == 200, r.text
+            # who.sql renders `'{{ auth.username }}' AS who`; a spoof must
+            # leave it empty rather than naming the caller's choice.
+            assert "admin" not in r.text, r.text
+
+    def test_test_ignores_a_spoofed_auth_context(self):
+        # This one EXECUTES the rendered SQL.
+        with self._server() as s:
+            r = self._post(s, "template/test", dict(SPOOF))
+            assert r.status_code in (200, 400), r.text
+            assert "admin" not in r.text, r.text
+
+    def test_an_ordinary_parameter_still_reaches_the_template(self):
+        # The guard is prefix-scoped; it must not eat normal input.
+        with self._server() as s:
+            r = self._post(s, "template/expand", {"limit": "7"})
+            assert r.status_code == 200, r.text
