@@ -27,6 +27,24 @@ public:
     /// instead: neither leak it nor mangle the output around it.
     void add(const std::string& key, const std::string& value);
 
+    /// A value the CALLER supplied. Recorded so it is scrubbed out of a
+    /// rendered preview, but never allowed to set withhold().
+    ///
+    /// add() treats a too-short credential-shaped value as "cannot scrub
+    /// safely, suppress the whole output". Applying that to request params
+    /// handed every caller a denial-of-diagnostics switch: `?token=ab` blanked
+    /// every error the endpoint could produce - validation errors included -
+    /// on REST, tools/call and resources/read alike. A value the caller sent
+    /// is not a secret being kept FROM them.
+    void addCallerSupplied(const std::string& key, const std::string& value);
+
+    template <typename Map>
+    void addAllCallerSupplied(const Map& entries) {
+        for (const auto& entry : entries) {
+            addCallerSupplied(entry.first, entry.second);
+        }
+    }
+
     template <typename Map>
     void addAll(const Map& entries) {
         for (const auto& entry : entries) {

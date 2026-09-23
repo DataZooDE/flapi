@@ -31,6 +31,60 @@ ConfigToolAdapter::ConfigToolAdapter(std::shared_ptr<ConfigManager> config_manag
     CROW_LOG_INFO << "ConfigToolAdapter initialized with " << tools_.size() << " tools";
 }
 
+namespace {
+
+// The input schema an agent acts on.
+//
+// Every tool used to ship `{"type":"object","properties":{}}` while a separate
+// table imposed required arguments at call time - so tools/list declared no
+// parameters, an agent called with `{}`, and got -32602. Now that the tools do
+// real work that is a confidently wrong answer of its own, and it lets the
+// advertised schema drift from the validation that actually runs.
+struct SchemaField {
+    const char* name;
+    const char* type;
+    const char* description;
+    bool required;
+};
+
+const SchemaField kPath{"path", "string",
+                        "The endpoint's url-path, e.g. \"/customers/\".", true};
+const SchemaField kEndpoint{"endpoint", "string",
+                            "The endpoint's url-path, e.g. \"/customers/\".", true};
+const SchemaField kContent{"content", "string", "The full SQL template text.", true};
+const SchemaField kParams{"params", "object",
+                          "Template parameters, as a name/value object.", false};
+
+crow::json::wvalue build_basic_schema() {
+    crow::json::wvalue schema;
+    schema["type"] = "object";
+    schema["properties"] = crow::json::wvalue::object();
+    return schema;
+}
+
+crow::json::wvalue build_schema(std::initializer_list<SchemaField> fields) {
+    crow::json::wvalue schema;
+    schema["type"] = "object";
+    crow::json::wvalue properties = crow::json::wvalue::object();
+    crow::json::wvalue::list required;
+    for (const auto& field : fields) {
+        crow::json::wvalue property;
+        property["type"] = field.type;
+        property["description"] = field.description;
+        properties[field.name] = std::move(property);
+        if (field.required) {
+            required.push_back(std::string(field.name));
+        }
+    }
+    schema["properties"] = std::move(properties);
+    if (!required.empty()) {
+        schema["required"] = std::move(required);
+    }
+    return schema;
+}
+
+}  // namespace
+
 void ConfigToolAdapter::registerConfigTools() {
     registerDiscoveryTools();
     registerTemplateTools();
@@ -43,12 +97,6 @@ void ConfigToolAdapter::registerDiscoveryTools() {
     // These tools are read-only and provide introspection capabilities
 
     // Helper to build basic schema with empty properties object
-    auto build_basic_schema = []() {
-        crow::json::wvalue schema;
-        schema["type"] = "object";
-        schema["properties"] = crow::json::wvalue::object();
-        return schema;
-    };
 
     // flapi_get_project_config
     tools_["flapi_get_project_config"] = ConfigToolDef{
@@ -57,7 +105,32 @@ void ConfigToolAdapter::registerDiscoveryTools() {
         build_basic_schema(),
         build_basic_schema()
     };
-    tool_auth_required_["flapi_get_project_config"] = false;
+    // EVERY flapi_* tool requires the config-service token.
+    //
+    // These are the config service's own operations, and every equivalent
+    // REST route is behind validateToken. The MCP side used to mark twelve of
+    // them auth_required=false as "read-only discovery" - which was survivable
+    // only while their bodies returned hardcoded data. Once they were wired to
+    // the real handlers, that classification became three unauthenticated
+    // disclosures at once:
+    //
+    //   flapi_get_environment  -> the VALUES of every whitelisted environment
+    //                             variable, the same class TemplateSecrets
+    //                             exists to redact;
+    //   flapi_expand_template  -> the rendered SQL, i.e. whatever the template
+    //                             interpolated from conn.* and env.*, through
+    //                             a path needing no _dryRun flag;
+    //   flapi_test_template    -> EXECUTION of any endpoint's template with
+    //                             caller-supplied parameters, including
+    //                             endpoints behind an auth: block and
+    //                             endpoints not exposed as MCP tools at all.
+    //
+    // "Read-only" was never the right axis: reading a secret is a disclosure,
+    // and reading rows is what an endpoint's auth exists to control. Parity
+    // with the REST routes is the rule, and tokenMatchesConfigured fails
+    // closed - so with no config-service token configured these tools do
+    // nothing, which is correct: the config service is off.
+    tool_auth_required_["flapi_get_project_config"] = true;
     tool_handlers_["flapi_get_project_config"] = [this](const crow::json::wvalue& args) {
         return this->executeGetProjectConfig(args);
     };
@@ -69,7 +142,7 @@ void ConfigToolAdapter::registerDiscoveryTools() {
         build_basic_schema(),
         build_basic_schema()
     };
-    tool_auth_required_["flapi_get_environment"] = false;
+    tool_auth_required_["flapi_get_environment"] = true;
     tool_handlers_["flapi_get_environment"] = [this](const crow::json::wvalue& args) {
         return this->executeGetEnvironment(args);
     };
@@ -81,7 +154,7 @@ void ConfigToolAdapter::registerDiscoveryTools() {
         build_basic_schema(),
         build_basic_schema()
     };
-    tool_auth_required_["flapi_get_filesystem"] = false;
+    tool_auth_required_["flapi_get_filesystem"] = true;
     tool_handlers_["flapi_get_filesystem"] = [this](const crow::json::wvalue& args) {
         return this->executeGetFilesystem(args);
     };
@@ -93,7 +166,7 @@ void ConfigToolAdapter::registerDiscoveryTools() {
         build_basic_schema(),
         build_basic_schema()
     };
-    tool_auth_required_["flapi_get_schema"] = false;
+    tool_auth_required_["flapi_get_schema"] = true;
     tool_handlers_["flapi_get_schema"] = [this](const crow::json::wvalue& args) {
         return this->executeGetSchema(args);
     };
@@ -105,7 +178,7 @@ void ConfigToolAdapter::registerDiscoveryTools() {
         build_basic_schema(),
         build_basic_schema()
     };
-    tool_auth_required_["flapi_refresh_schema"] = false;
+    tool_auth_required_["flapi_refresh_schema"] = true;
     tool_handlers_["flapi_refresh_schema"] = [this](const crow::json::wvalue& args) {
         return this->executeRefreshSchema(args);
     };
@@ -115,21 +188,14 @@ void ConfigToolAdapter::registerTemplateTools() {
     // Phase 2: Template Management Tools Implementation
     // These tools provide SQL template lifecycle management
 
-    auto build_basic_schema = []() {
-        crow::json::wvalue schema;
-        schema["type"] = "object";
-        schema["properties"] = crow::json::wvalue::object();
-        return schema;
-    };
-
     // flapi_get_template - Get SQL template content for an endpoint
     tools_["flapi_get_template"] = ConfigToolDef{
         "flapi_get_template",
         "Retrieve the SQL template content for a specific endpoint",
-        build_basic_schema(),
+        build_schema({kEndpoint}),
         build_basic_schema()
     };
-    tool_auth_required_["flapi_get_template"] = false;  // Read-only
+    tool_auth_required_["flapi_get_template"] = true;
     tool_handlers_["flapi_get_template"] = [this](const crow::json::wvalue& args) {
         return this->executeGetTemplate(args);
     };
@@ -138,10 +204,10 @@ void ConfigToolAdapter::registerTemplateTools() {
     tools_["flapi_update_template"] = ConfigToolDef{
         "flapi_update_template",
         "Write or update the SQL template content for an endpoint",
-        build_basic_schema(),
+        build_schema({kEndpoint, kContent}),
         build_basic_schema()
     };
-    tool_auth_required_["flapi_update_template"] = true;  // Mutation - requires auth
+    tool_auth_required_["flapi_update_template"] = true;
     tool_handlers_["flapi_update_template"] = [this](const crow::json::wvalue& args) {
         return this->executeUpdateTemplate(args);
     };
@@ -150,10 +216,10 @@ void ConfigToolAdapter::registerTemplateTools() {
     tools_["flapi_expand_template"] = ConfigToolDef{
         "flapi_expand_template",
         "Expand a Mustache template by substituting parameters",
-        build_basic_schema(),
+        build_schema({kEndpoint, kParams}),
         build_basic_schema()
     };
-    tool_auth_required_["flapi_expand_template"] = false;  // Read-only
+    tool_auth_required_["flapi_expand_template"] = true;
     tool_handlers_["flapi_expand_template"] = [this](const crow::json::wvalue& args) {
         return this->executeExpandTemplate(args);
     };
@@ -162,10 +228,10 @@ void ConfigToolAdapter::registerTemplateTools() {
     tools_["flapi_test_template"] = ConfigToolDef{
         "flapi_test_template",
         "Execute a template against the database with sample parameters and return results",
-        build_basic_schema(),
+        build_schema({kEndpoint, kParams}),
         build_basic_schema()
     };
-    tool_auth_required_["flapi_test_template"] = false;  // Read-only (query execution)
+    tool_auth_required_["flapi_test_template"] = true;
     tool_handlers_["flapi_test_template"] = [this](const crow::json::wvalue& args) {
         return this->executeTestTemplate(args);
     };
@@ -175,13 +241,6 @@ void ConfigToolAdapter::registerEndpointTools() {
     // Phase 3: Endpoint Management Tools
     // Tools for creating, reading, updating, and deleting endpoints
 
-    auto build_basic_schema = []() {
-        crow::json::wvalue schema;
-        schema["type"] = "object";
-        schema["properties"] = crow::json::wvalue::object();
-        return schema;
-    };
-
     // flapi_list_endpoints - List all configured endpoints
     tools_["flapi_list_endpoints"] = ConfigToolDef{
         "flapi_list_endpoints",
@@ -189,7 +248,7 @@ void ConfigToolAdapter::registerEndpointTools() {
         build_basic_schema(),
         build_basic_schema()
     };
-    tool_auth_required_["flapi_list_endpoints"] = false;
+    tool_auth_required_["flapi_list_endpoints"] = true;
     tool_handlers_["flapi_list_endpoints"] = [this](const crow::json::wvalue& args) {
         return this->executeListEndpoints(args);
     };
@@ -198,10 +257,10 @@ void ConfigToolAdapter::registerEndpointTools() {
     tools_["flapi_get_endpoint"] = ConfigToolDef{
         "flapi_get_endpoint",
         "Get the complete configuration for a specific endpoint including validators, cache settings, and auth requirements",
-        build_basic_schema(),
+        build_schema({kPath}),
         build_basic_schema()
     };
-    tool_auth_required_["flapi_get_endpoint"] = false;
+    tool_auth_required_["flapi_get_endpoint"] = true;
     tool_handlers_["flapi_get_endpoint"] = [this](const crow::json::wvalue& args) {
         return this->executeGetEndpoint(args);
     };
@@ -210,7 +269,7 @@ void ConfigToolAdapter::registerEndpointTools() {
     tools_["flapi_create_endpoint"] = ConfigToolDef{
         "flapi_create_endpoint",
         "Create a new endpoint with the provided configuration. Returns the full endpoint configuration.",
-        build_basic_schema(),
+        build_schema({kPath}),
         build_basic_schema()
     };
     tool_auth_required_["flapi_create_endpoint"] = true;
@@ -222,7 +281,7 @@ void ConfigToolAdapter::registerEndpointTools() {
     tools_["flapi_update_endpoint"] = ConfigToolDef{
         "flapi_update_endpoint",
         "Update the configuration of an existing endpoint. Preserves any settings not explicitly changed.",
-        build_basic_schema(),
+        build_schema({kPath}),
         build_basic_schema()
     };
     tool_auth_required_["flapi_update_endpoint"] = true;
@@ -234,7 +293,7 @@ void ConfigToolAdapter::registerEndpointTools() {
     tools_["flapi_delete_endpoint"] = ConfigToolDef{
         "flapi_delete_endpoint",
         "Delete an endpoint by its path. The endpoint becomes unavailable for API calls immediately.",
-        build_basic_schema(),
+        build_schema({kPath}),
         build_basic_schema()
     };
     tool_auth_required_["flapi_delete_endpoint"] = true;
@@ -246,7 +305,7 @@ void ConfigToolAdapter::registerEndpointTools() {
     tools_["flapi_reload_endpoint"] = ConfigToolDef{
         "flapi_reload_endpoint",
         "Reload an endpoint configuration from disk without restarting the server. Useful after manual YAML edits.",
-        build_basic_schema(),
+        build_schema({kPath}),
         build_basic_schema()
     };
     tool_auth_required_["flapi_reload_endpoint"] = true;
@@ -259,21 +318,14 @@ void ConfigToolAdapter::registerCacheTools() {
     // Phase 4: Cache Management and Operations Tools
     // Tools for cache status monitoring, refresh, and garbage collection
 
-    auto build_basic_schema = []() {
-        crow::json::wvalue schema;
-        schema["type"] = "object";
-        schema["properties"] = crow::json::wvalue::object();
-        return schema;
-    };
-
     // flapi_get_cache_status - Get cache status for an endpoint
     tools_["flapi_get_cache_status"] = ConfigToolDef{
         "flapi_get_cache_status",
         "Get an endpoint's cache configuration: whether caching is enabled, the cache table and schema, the refresh schedule, cursor and retention policy. For refresh history use flapi_get_cache_audit.",
-        build_basic_schema(),
+        build_schema({kPath}),
         build_basic_schema()
     };
-    tool_auth_required_["flapi_get_cache_status"] = false;
+    tool_auth_required_["flapi_get_cache_status"] = true;
     tool_handlers_["flapi_get_cache_status"] = [this](const crow::json::wvalue& args) {
         return this->executeGetCacheStatus(args);
     };
@@ -282,7 +334,7 @@ void ConfigToolAdapter::registerCacheTools() {
     tools_["flapi_refresh_cache"] = ConfigToolDef{
         "flapi_refresh_cache",
         "Manually trigger a cache refresh for a specific endpoint, regardless of the schedule",
-        build_basic_schema(),
+        build_schema({kPath}),
         build_basic_schema()
     };
     tool_auth_required_["flapi_refresh_cache"] = true;
@@ -294,10 +346,10 @@ void ConfigToolAdapter::registerCacheTools() {
     tools_["flapi_get_cache_audit"] = ConfigToolDef{
         "flapi_get_cache_audit",
         "Retrieve the cache synchronization and refresh event log for an endpoint",
-        build_basic_schema(),
+        build_schema({kPath}),
         build_basic_schema()
     };
-    tool_auth_required_["flapi_get_cache_audit"] = false;
+    tool_auth_required_["flapi_get_cache_audit"] = true;
     tool_handlers_["flapi_get_cache_audit"] = [this](const crow::json::wvalue& args) {
         return this->executeGetCacheAudit(args);
     };
@@ -305,8 +357,8 @@ void ConfigToolAdapter::registerCacheTools() {
     // flapi_run_cache_gc - Trigger garbage collection
     tools_["flapi_run_cache_gc"] = ConfigToolDef{
         "flapi_run_cache_gc",
-        "Trigger garbage collection on cache tables to remove old snapshots per retention policy",
-        build_basic_schema(),
+        "Expire one endpoint's old cache snapshots according to its retention policy. `path` is required; there is no all-endpoints form.",
+        build_schema({kPath}),
         build_basic_schema()
     };
     tool_auth_required_["flapi_run_cache_gc"] = true;
@@ -473,7 +525,7 @@ std::string ConfigToolAdapter::validateArguments(const std::string& tool_name,
         {"flapi_get_cache_status", {"path"}},
         {"flapi_refresh_cache", {"path"}},
         {"flapi_get_cache_audit", {"path"}},
-        {"flapi_run_cache_gc", {}}  // path is optional
+        {"flapi_run_cache_gc", {"path"}}
     };
 
     // Find required parameters for this tool
@@ -1133,10 +1185,14 @@ ConfigToolResult ConfigToolAdapter::executeRunCacheGC(const crow::json::wvalue& 
     if (!config_manager_) {
         return createErrorResult(-32603, "Configuration service unavailable");
     }
+    // `path` is REQUIRED. The comment here used to say an absent path meant
+    // "every cached endpoint", but the handler's first act is
+    // getEndpointForPath(""), which matches nothing - so the documented
+    // no-argument form returned "Endpoint not found" and collected nothing.
+    // There is no all-caches GC route to delegate to; the REST route is
+    // POST /api/v1/_config/endpoints/{slug}/cache/gc, one endpoint at a time.
     std::string error_msg;
-    // `path` is optional here: the REST route collects one endpoint, and an
-    // absent path means "every cached endpoint".
-    const std::string endpoint_path = extractStringParam(args, "path", false, error_msg);
+    const std::string endpoint_path = extractStringParam(args, "path", true, error_msg);
     if (!error_msg.empty()) {
         return createErrorResult(-32602, error_msg);
     }

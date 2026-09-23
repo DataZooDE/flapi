@@ -678,6 +678,17 @@ std::uint16_t APIServer::serverThreadCount(unsigned hardware_concurrency) {
 }
 
 void APIServer::run(int port) {
+    // A shutdown requested before we ever bind must not be overtaken by the
+    // bind. stop() can run during startup - the signal supervisor is alive
+    // before the server is - and Crow's app.stop() is a no-op until run() has
+    // assigned its server, so without this check the process would go on to
+    // serve with an already-drained handler pool: 503 for every request, for
+    // the life of a process that no longer answers SIGTERM.
+    if (stop_requested_.load(std::memory_order_acquire)) {
+        CROW_LOG_INFO << "shutdown was requested during startup; not starting the server";
+        return;
+    }
+
     if (port > 0) {
         configManager->setHttpPort(port);
     }
@@ -748,12 +759,22 @@ void APIServer::stop() {
     // two cannot interleave, and so the second caller does not return while
     // the first is still draining.
     std::lock_guard<std::mutex> lock(stop_mutex_);
-    if (stopped_) {
-        return;
-    }
-    stopped_ = true;
 
-    heartbeatWorker->stop();
+    // Recorded BEFORE anything else, and never cleared: run() checks it and
+    // refuses to start.
+    //
+    // A latch that returned early here was worse than useless. Crow's
+    // app.stop() is a no-op until run() has assigned its server, so a SIGTERM
+    // arriving in the startup window drained the pool, set the latch, and did
+    // NOT stop anything - and then run() went on to serve with a shut-down
+    // handler pool, so every request got 503 forever while a second SIGTERM
+    // returned at the latch. The supervisor loop added for exactly this case
+    // could not help.
+    stop_requested_.store(true, std::memory_order_release);
+
+    if (!drained_) {
+        drained_ = true;
+        heartbeatWorker->stop();
 
     // Before app.stop(), not after. The pool's shutdown drains rather than
     // drops, and that promise is only worth anything while the io_services
@@ -763,10 +784,13 @@ void APIServer::stop() {
     //
     // submit() already refuses while stopping, so a request arriving during
     // shutdown gets 503 rather than being queued into a closing server.
-    if (handlerPool) {
-        handlerPool->shutdown();
+        if (handlerPool) {
+            handlerPool->shutdown();
+        }
     }
 
+    // Issued on EVERY call, not just the first: the first may have run before
+    // Crow had a server to stop.
     app.stop();
 }
 

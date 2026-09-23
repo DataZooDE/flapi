@@ -1903,7 +1903,13 @@ MCPResponse MCPRouteHandlers::handleResourcesReadRequest(const MCPRequest& reque
                                                           *resource_config, bound_params)));
         }
     } catch (const std::exception& e) {
-        response.error = formatJsonRpcError(-32603, "Resource read error: " + std::string(e.what()));
+        // The OUTER catch. Only the inner one was scrubbed, so anything
+        // thrown during URI-template binding or resource lookup bypassed it.
+        // There is no endpoint in scope here - the lookup may be what failed -
+        // so there are no secrets to enumerate, and the detail goes to the log.
+        CROW_LOG_ERROR << "Resource read error: " << e.what();
+        response.error = formatJsonRpcError(
+            -32603, "Resource read error: see the server log for details.");
     }
 
     return response;

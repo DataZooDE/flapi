@@ -34,6 +34,18 @@ void TemplateSecrets::add(const std::string& key, const std::string& value) {
     }
 }
 
+void TemplateSecrets::addCallerSupplied(const std::string& key, const std::string& value) {
+    if (value.empty() || !isCredentialKey(key)) {
+        return;
+    }
+    // Long enough to replace safely: scrub it. Too short: leave it, rather
+    // than suppressing the caller's own diagnostics over a value they chose.
+    if (value.size() >= kMinScrubbableSecret &&
+        std::find(values_.begin(), values_.end(), value) == values_.end()) {
+        values_.push_back(value);
+    }
+}
+
 void TemplateSecrets::addEnv(const std::string& key, const std::string& value) {
     add(key, value);
     if (value.size() >= kOpaqueEnvValue &&
@@ -78,7 +90,19 @@ TemplateSecrets collectTemplateSecrets(ConfigManager* config_manager,
             }
         }
     }
-    secrets.addAll(params);
+    // Params are caller-supplied: scrubbed, never a reason to withhold.
+    // A configured `default:` that the caller did not override is
+    // server-sourced, so those are added as server values first.
+    for (const auto& field : endpoint.request_fields) {
+        if (field.defaultValue.empty()) {
+            continue;
+        }
+        const auto it = params.find(field.fieldName);
+        if (it != params.end() && it->second == field.defaultValue) {
+            secrets.add(field.fieldName, field.defaultValue);
+        }
+    }
+    secrets.addAllCallerSupplied(params);
     return secrets;
 }
 

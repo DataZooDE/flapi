@@ -9,6 +9,8 @@
 #include "config_service.hpp"
 #include "flapi_tracing.hpp"
 #include "json_utils.hpp"
+#include "request_validator.hpp"
+#include "template_secrets.hpp"
 #include "path_utils.hpp"
 #include "database_manager.hpp"
 #include "cache_manager.hpp"
@@ -808,7 +810,20 @@ std::string AuditLogHandler::buildAuditQuery(const std::string& catalog,
         FROM )" << catalog << R"(.audit.sync_events)";
     
     if (!endpoint_filter.empty()) {
-        query << "\n        WHERE endpoint_path = '" << endpoint_filter << "'";
+        // Quote-doubled. The caller's endpoint path reaches here, and a
+        // parameterised endpoint like /orders/:id matches
+        // "/orders/x' OR '1'='1", so this was an injection point into the
+        // DuckLake audit query.
+        std::string escaped_filter;
+        escaped_filter.reserve(endpoint_filter.size());
+        for (const char c : endpoint_filter) {
+            if (c == '\'') {
+                escaped_filter += "''";
+            } else {
+                escaped_filter += c;
+            }
+        }
+        query << "\n        WHERE endpoint_path = '" << escaped_filter << "'";
     }
     
     query << R"(
@@ -1405,8 +1420,18 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
         // Normal template expansion
         std::string expanded = sql_processor->loadAndProcessTemplate(*endpoint, params);
 
+        // Scrubbed, like the MCP dry-run preview - this IS the same payload.
+        // A template interpolating `{{{ conn.password }}}` or
+        // `{{{ env.API_KEY }}}` hands the credential to whoever asked, through
+        // a route that needs no _dryRun flag. Where a value is too short to
+        // replace safely the expansion is withheld rather than mangled.
+        const auto secrets = collectTemplateSecrets(config_manager_.get(), *endpoint, params);
         crow::json::wvalue response;
-        response["expanded"] = expanded;
+        response["expanded"] = secrets.withhold()
+                                   ? std::string("<expansion withheld: a value this template "
+                                                 "interpolates is a credential too short to "
+                                                 "redact reliably>")
+                                   : secrets.scrub(expanded);
 
         // Include variable metadata if requested
         if (include_variables) {
@@ -1516,6 +1541,36 @@ crow::response TemplateHandler::testTemplate(const crow::request& req, const std
                 continue;
             }
             params[param.key()] = value;
+        }
+
+        // Run the endpoint's OWN validators before executing.
+        //
+        // This route executes the rendered template, and it used to copy
+        // `parameters` straight into the map - so it bypassed the
+        // RequestValidator layer that CLAUDE.md calls the first line of
+        // defence. A template of the documented shape
+        // `AND status = '{{{ params.status }}}'` would therefore execute
+        // whatever the caller put in `status`, while the same value sent to
+        // the endpoint itself would be rejected. A test route must not be a
+        // way around an endpoint's own constraints.
+        {
+            RequestValidator validator;
+            const auto errors =
+                validator.validateRequestParameters(endpoint->request_fields, params);
+            if (!errors.empty()) {
+                crow::json::wvalue body;
+                body["success"] = false;
+                body["error"] = "Parameter validation failed";
+                crow::json::wvalue::list details;
+                for (const auto& error : errors) {
+                    crow::json::wvalue detail;
+                    detail["field"] = error.fieldName;
+                    detail["message"] = error.errorMessage;
+                    details.push_back(std::move(detail));
+                }
+                body["validation_errors"] = std::move(details);
+                return crow::response(400, body.dump());
+            }
         }
 
         // Get database manager instance

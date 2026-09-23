@@ -90,7 +90,10 @@ private:
     std::unique_ptr<HandlerPool> handlerPool;
     /// stop() is reachable from the signal supervisor and from main.
     std::mutex stop_mutex_;
-    bool stopped_ = false;
+    /// Set by stop() and never cleared; run() refuses to start when it is set.
+    std::atomic<bool> stop_requested_{false};
+    /// The drain happens once; app.stop() is re-issued on every stop() call.
+    bool drained_ = false;
     std::shared_ptr<ConfigManager> configManager;
     std::shared_ptr<ConfigService> configService;
     std::shared_ptr<DatabaseManager> dbManager;

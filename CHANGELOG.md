@@ -119,6 +119,20 @@ endpoint's own SQL.
 `flapi_get_project_config` also reported version `1.0.0` for every build; it now returns the real
 project configuration.
 
+**Every `flapi_*` tool now requires the config-service token**, matching the REST route it
+delegates to. Twelve of them were classified "read-only discovery" and left unauthenticated, which
+was harmless only while their bodies returned hardcoded data — once they were wired to the real
+handlers, three of them became unauthenticated disclosures: `flapi_get_environment` returns
+environment *values*, `flapi_expand_template` returns rendered SQL, and `flapi_test_template`
+*executes* any endpoint's template. If you call these tools, send
+`Authorization: Bearer <config-service-token>`; with no config service configured they now decline,
+which is correct.
+
+`flapi_test_template` also runs the endpoint's own validators before executing, so it is no longer
+a way around the constraints the endpoint itself enforces. `flapi_run_cache_gc` requires `path` —
+its "all endpoints" form never worked — and every tool now declares its arguments in `tools/list`,
+so an agent can discover them instead of guessing and getting an error.
+
 ### Changed: one config-service name per endpoint
 
 The config service addresses an endpoint by a slug, and the encoding is now injective — `/a-b` and

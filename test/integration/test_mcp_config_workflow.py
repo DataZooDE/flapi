@@ -58,13 +58,18 @@ def assert_real(result, tool):
 class SimpleMCPClient:
     """Simple HTTP-based MCP client for testing FLAPI MCP server."""
 
-    def __init__(self, base_url: str):
+    # Every flapi_* config tool requires the config-service token, the same
+    # one its REST route requires; conftest starts the session server with
+    # --config-service-token test-token.
+    def __init__(self, base_url: str, token: str = "test-token"):
         self.base_url = base_url
         self.session = requests.Session()
         self.session.headers.update({
             'Content-Type': 'application/json',
             'Accept': 'application/json'
         })
+        if token:
+            self.session.headers['Authorization'] = 'Bearer ' + token
 
     def _make_request(self, method: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
         """Make a JSON-RPC request to the MCP server."""
@@ -261,24 +266,43 @@ class TestModifyEndpointWorkflow:
         4. Verify update
         """
         # Step 1: Get endpoint
-        try:
-            endpoint = mcp_client.call_tool("flapi_get_endpoint", {"path": "/customers/"})
-            assert endpoint is not None
+        endpoint = mcp_client.call_tool("flapi_get_endpoint", {"path": "/customers/"})
+        assert endpoint is not None
 
-            # Step 2-3: Update endpoint
+        try:
+            # Step 2-3: Update the endpoint.
+            #
+            # `path`, not `endpoint` - this used to pass `endpoint`, which is
+            # not the parameter name, and the try/except below swallowed the
+            # resulting error as "expected if endpoint doesn't exist". The
+            # workflow it claimed to test never ran.
+            #
+            # Against a throwaway endpoint, because this suite shares one
+            # session server and mutating /customers/ would leak into every
+            # test after it.
+            created = mcp_client.call_tool("flapi_create_endpoint", {
+                "path": "/workflow_tmp/",
+                "method": "GET",
+            })
+            assert created is not None
+
             updated = mcp_client.call_tool("flapi_update_endpoint", {
-                "endpoint": "/customers/",
-                "description": "Updated via MCP workflow"
+                "path": "/workflow_tmp/",
+                "description": "Updated via MCP workflow",
             })
             assert updated is not None
 
-            # Step 4: Verify (get again)
-            verified = mcp_client.call_tool("flapi_get_endpoint", {"path": "/customers/"})
-            assert verified is not None
+            # Step 4: verify the update is visible.
+            verified = str(mcp_client.call_tool("flapi_get_endpoint",
+                                                {"path": "/workflow_tmp/"}))
+            assert "workflow_tmp" in verified, verified
 
-        except Exception as e:
-            # Expected if endpoint doesn't exist or auth required for mutation
-            assert "not found" in str(e).lower() or "endpoint" in str(e).lower() or "authentication" in str(e).lower()
+        finally:
+            try:
+                mcp_client.call_tool("flapi_delete_endpoint",
+                                     {"path": "/workflow_tmp/"})
+            except Exception:
+                pass
 
 
 class TestCacheManagementWorkflow:
@@ -317,14 +341,9 @@ class TestCacheManagementWorkflow:
         # success entry - two fabrications reinforcing each other. Both now
         # delegate to the handlers the REST routes use.
         #
-        # flapi_refresh_cache is a mutation and requires a token, which this
-        # client does not carry; the refusal must be the AUTH one, never a
-        # fabricated success. test_mcp_config_tool_auth.py exercises the
-        # authenticated path.
-        with pytest.raises(Exception) as excinfo:
-            mcp_client.call_tool("flapi_refresh_cache", {"path": CACHED_ENDPOINT})
-        assert "Authentication required" in str(excinfo.value), str(excinfo.value)
-        assert "has been scheduled" not in str(excinfo.value)
+        assert_real(mcp_client.call_tool("flapi_refresh_cache",
+                                         {"path": CACHED_ENDPOINT}),
+                    "flapi_refresh_cache")
         time.sleep(0.2)
         assert_real(mcp_client.call_tool("flapi_get_cache_audit",
                                          {"path": CACHED_ENDPOINT}),
@@ -340,11 +359,9 @@ class TestCacheManagementWorkflow:
         status = mcp_client.call_tool("flapi_get_cache_status", {"path": CACHED_ENDPOINT})
         assert status is not None
 
-        # Also a mutation, also token-gated.
-        with pytest.raises(Exception) as excinfo:
-            mcp_client.call_tool("flapi_run_cache_gc", {"path": CACHED_ENDPOINT})
-        assert "Authentication required" in str(excinfo.value), str(excinfo.value)
-        assert "Garbage collection triggered" not in str(excinfo.value)
+        assert_real(mcp_client.call_tool("flapi_run_cache_gc",
+                                         {"path": CACHED_ENDPOINT}),
+                    "flapi_run_cache_gc")
 
         # Reading still works either side of the refusal.
         status_after = mcp_client.call_tool("flapi_get_cache_status", {"path": CACHED_ENDPOINT})

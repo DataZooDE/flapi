@@ -4,6 +4,7 @@ add_executable(flapi_tests
     main.cpp
     api_server_threads_test.cpp
     handler_pool_test.cpp
+    template_secrets_test.cpp
     cache_snapshot_watermark_test.cpp
     security_auditor_jwt_test.cpp
     oidc_token_expiry_test.cpp

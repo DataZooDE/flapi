@@ -23,13 +23,19 @@ load_dotenv()
 class SimpleMCPClient:
     """Simple HTTP-based MCP client for testing FLAPI MCP server."""
 
-    def __init__(self, base_url: str):
+    # Every flapi_* config tool requires the config-service token, the same
+    # one its REST route requires. conftest starts the session server with
+    # --config-service-token test-token. A client without it is exercised
+    # deliberately in TestConfigToolsRequireTheConfigServiceToken below.
+    def __init__(self, base_url: str, token: str = "test-token"):
         self.base_url = base_url
         self.session = requests.Session()
         self.session.headers.update({
             'Content-Type': 'application/json',
             'Accept': 'application/json'
         })
+        if token:
+            self.session.headers['Authorization'] = f'Bearer {token}'
 
     def _make_request(self, method: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
         """Make a JSON-RPC request to the MCP server."""
@@ -400,15 +406,30 @@ class TestConfigCacheTools:
             # Expected - cache may not be enabled for this endpoint
             assert "cache" in str(e).lower() or "not enabled" in str(e).lower()
 
-    def test_flapi_refresh_cache_valid(self, mcp_client):
-        """Test refreshing cache for valid endpoint"""
-        try:
-            result = mcp_client.call_tool("flapi_refresh_cache", {"path": "/customers/"})
-            # Should succeed or indicate cache not enabled
-            assert result is not None
-        except Exception as e:
-            # Expected - auth required for mutation
-            assert "authentication" in str(e).lower()
+    def test_flapi_refresh_cache_actually_refreshes(self, mcp_client):
+        """A refresh must happen, and the audit log must show it.
+
+        This used to be `try: assert result is not None / except: assert
+        "authentication" in str(e)`, which passed against a tool that reported
+        "Cache refresh has been scheduled" with nothing scheduled."""
+        before = str(mcp_client.call_tool("flapi_get_cache_audit",
+                                          {"path": "/customers_cached/"}))
+        result = mcp_client.call_tool("flapi_refresh_cache",
+                                      {"path": "/customers_cached/"})
+        assert result is not None
+        assert "has been scheduled" not in str(result)
+        after = str(mcp_client.call_tool("flapi_get_cache_audit",
+                                         {"path": "/customers_cached/"}))
+        assert after != before, (
+            "the refresh left no trace in the audit log:\n" + after)
+
+    def test_flapi_refresh_cache_on_an_uncached_endpoint_says_so(self, mcp_client):
+        # /customers/ has no cache in this configuration. The honest answer is
+        # an error naming that - never a phantom schedule.
+        with pytest.raises(Exception) as excinfo:
+            mcp_client.call_tool("flapi_refresh_cache", {"path": "/customers/"})
+        assert "ache" in str(excinfo.value), str(excinfo.value)
+        assert "has been scheduled" not in str(excinfo.value)
 
     def test_flapi_refresh_cache_invalid_endpoint(self, mcp_client):
         """Test refreshing cache for non-existent endpoint"""
@@ -435,14 +456,23 @@ class TestConfigCacheTools:
             # Expected - cache/endpoint may not exist or not be configured
             assert "cache" in str(e).lower() or "not found" in str(e).lower()
 
-    def test_flapi_run_cache_gc(self, mcp_client):
-        """Test running cache garbage collection"""
-        try:
-            result = mcp_client.call_tool("flapi_run_cache_gc", {})
-            assert result is not None
-        except Exception as e:
-            # Expected - auth required for mutation
-            assert "authentication" in str(e).lower()
+    def test_flapi_run_cache_gc_collects_for_an_endpoint(self, mcp_client):
+        result = mcp_client.call_tool("flapi_run_cache_gc",
+                                      {"path": "/customers_cached/"})
+        assert result is not None
+        assert "Garbage collection triggered" not in str(result)
+
+    def test_flapi_run_cache_gc_requires_a_path(self, mcp_client):
+        # It used to advertise an all-endpoints form that simply returned
+        # "Endpoint not found" and collected nothing - the handler's first act
+        # is getEndpointForPath(""), which matches no endpoint. `path` is
+        # required now, and says so.
+        with pytest.raises(Exception) as excinfo:
+            mcp_client.call_tool("flapi_run_cache_gc", {})
+        message = str(excinfo.value).lower()
+        assert "path" in message, message
+        assert "not found" not in message, (
+            "still pretending an all-endpoints form exists: " + message)
 
 
 class TestConfigToolsAuthentication:
@@ -573,3 +603,113 @@ class TestConfigToolsConcurrency:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+
+class TestConfigToolsRequireTheConfigServiceToken:
+    """Every flapi_* tool is the config service's own operation.
+
+    They used to be classified "read-only discovery" and left unauthenticated,
+    which was survivable only while their bodies returned hardcoded data. Once
+    they were wired to the real handlers that classification became three
+    unauthenticated disclosures at once: `flapi_get_environment` returns the
+    VALUES of whitelisted environment variables, `flapi_expand_template`
+    returns the rendered SQL (whatever the template interpolated from `conn.*`
+    and `env.*`), and `flapi_test_template` EXECUTES any endpoint's template -
+    including endpoints behind an `auth:` block and endpoints not exposed as
+    MCP tools at all.
+
+    Every equivalent REST route is behind the config-service token. These
+    assert the MCP side matches.
+    """
+
+    @pytest.fixture
+    def anonymous(self, flapi_base_url):
+        client = SimpleMCPClient(flapi_base_url, token=None)
+        client.initialize()
+        return client
+
+    def test_every_config_tool_refuses_without_a_token(self, anonymous, mcp_client):
+        listed = [t["name"] for t in mcp_client.list_tools()
+                  if t["name"].startswith("flapi_")]
+        assert listed, "no flapi_* tools advertised; this proves nothing"
+        for name in listed:
+            with pytest.raises(Exception) as excinfo:
+                anonymous.call_tool(name, {"endpoint": "/customers/",
+                                           "path": "/customers_cached/",
+                                           "params": {}})
+            assert "Authentication" in str(excinfo.value), f"{name}: {excinfo.value}"
+
+    def test_environment_values_are_not_readable_anonymously(self, anonymous):
+        with pytest.raises(Exception) as excinfo:
+            anonymous.call_tool("flapi_get_environment")
+        assert "Authentication" in str(excinfo.value), str(excinfo.value)
+
+    def test_templates_cannot_be_expanded_or_executed_anonymously(self, anonymous):
+        for name in ("flapi_expand_template", "flapi_test_template"):
+            with pytest.raises(Exception) as excinfo:
+                anonymous.call_tool(name, {"endpoint": "/customers/", "params": {}})
+            assert "Authentication" in str(excinfo.value), f"{name}: {excinfo.value}"
+
+    def test_the_token_still_gets_through(self, mcp_client):
+        # Otherwise this suite would pass with the gate stuck closed.
+        result = mcp_client.call_tool("flapi_get_project_config")
+        assert result is not None
+
+
+class TestEveryToolDeclaresItsArguments:
+    """tools/list is how an agent learns to call a tool.
+
+    Every flapi_* tool shipped `{"type":"object","properties":{}}` while a
+    separate table imposed required arguments at call time. An agent reading
+    the schema called with `{}` and got -32602. The existing
+    `test_config_tools_have_input_schema` passed on the empty schema, because
+    it only checked the key was present.
+    """
+
+    def test_a_tool_that_requires_an_argument_declares_it(self, mcp_client):
+        # Derived from the server, not from a list in this file.
+        needs_an_argument = {
+            "flapi_get_endpoint", "flapi_create_endpoint", "flapi_update_endpoint",
+            "flapi_delete_endpoint", "flapi_reload_endpoint",
+            "flapi_get_cache_status", "flapi_refresh_cache",
+            "flapi_get_cache_audit", "flapi_run_cache_gc",
+            "flapi_get_template", "flapi_update_template",
+            "flapi_expand_template", "flapi_test_template",
+        }
+        listed = {t["name"]: t for t in mcp_client.list_tools()}
+        missing = []
+        for name in sorted(needs_an_argument & set(listed)):
+            schema = listed[name].get("inputSchema") or {}
+            if not schema.get("required"):
+                missing.append(name)
+        assert not missing, (
+            "tools that reject a call with no arguments but declare none "
+            f"required: {missing}")
+
+    def test_the_declared_requirement_matches_what_is_enforced(self, mcp_client):
+        # Schema and validation drift is the reason to declare it once.
+        for tool in mcp_client.list_tools():
+            required = (tool.get("inputSchema") or {}).get("required") or []
+            if not required:
+                continue
+            # A tool rejection can arrive two ways: as a JSON-RPC error
+            # (config tools, via the adapter) or as a successful response
+            # carrying `isError: true` (endpoint tools, which is what the MCP
+            # spec prescribes). Both are rejections; only treating the first
+            # as one made this test read an endpoint tool's perfectly good
+            # validation error as acceptance.
+            try:
+                result = mcp_client.call_tool(tool["name"], {})
+                message = json.dumps(result).lower()
+                rejected = result.get("isError") is True
+            except Exception as exc:
+                message = str(exc).lower()
+                rejected = True
+
+            assert rejected, (
+                f"{tool['name']} declares {required} required but accepted a "
+                f"call with no arguments: {message}")
+            assert any(field.lower() in message for field in required), (
+                f"{tool['name']} declares {required} required but its "
+                f"rejection names none of them: {message}")
