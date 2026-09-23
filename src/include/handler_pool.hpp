@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <deque>
@@ -44,9 +45,19 @@ public:
     /// the job will never run.
     [[nodiscard]] bool submit(std::function<void()> job);
 
-    /// Stop accepting work and join every worker. Jobs already queued are
-    /// allowed to finish, so a connection waiting on one is not abandoned.
-    void shutdown();
+    /// Stop accepting work and join every worker.
+    ///
+    /// Queued jobs are allowed to finish, so a connection waiting on one is
+    /// not abandoned - but only for `drain_budget`. Past that the queue is
+    /// dropped and workers exit once their CURRENT job returns.
+    ///
+    /// The budget is what stops a single hung query from holding shutdown
+    /// open indefinitely: the platform's SIGTERM grace then expires and the
+    /// container is SIGKILLed mid-write, which is strictly worse than
+    /// abandoning a queue whose clients have almost certainly timed out.
+    /// A worker already inside a job cannot be interrupted, so this bounds
+    /// the QUEUE, not the job.
+    void shutdown(std::chrono::milliseconds drain_budget = std::chrono::seconds(5));
 
     std::size_t queued() const;
     std::size_t threads() const { return workers_.size(); }
@@ -63,6 +74,7 @@ private:
     std::vector<std::thread> workers_;
     std::size_t max_queued_;
     bool stopping_ = false;
+    std::chrono::steady_clock::time_point drain_deadline_{};
     std::atomic<std::uint64_t> rejected_{0};
 };
 

@@ -5,6 +5,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <csignal>
+#include <cerrno>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 #include <atomic>
 #include <thread>
 
@@ -323,24 +327,72 @@ LONG WINAPI windowsExceptionHandler(EXCEPTION_POINTERS* exceptionInfo) {
 #endif
 
 
-void signal_handler(int signal) {
-    if (signal == SIGINT || signal == SIGTERM) {
-        CROW_LOG_INFO << "Received " << (signal == SIGINT ? "SIGINT" : "SIGTERM")
-                      << ", shutting down...";
-        should_exit = true;
-        // Drain buffered telemetry before exit: the library's at-exit handler
-        // discards in-flight events by design, so a server must flush explicitly.
-        // Flush spans before the process dies. On a platform with a short
-        // SIGTERM grace (Cloud Run, App Runner) this is the difference between
-        // having the trace of the request that killed you and not.
-        // flush.timeout_ms, not a hardcoded 2s: an operator who tunes the flush
-        // budget expects it to apply to the path that matters most here.
-        flapi::Tracing().forceFlush(flapi::Tracing().shutdownFlushBudget());
-        flapi::GlobalTelemetry().flush();
-        if (api_server) {
-            api_server->stop();
-        }
+// The work a SIGTERM has to cause. NOT run in the signal handler - see below.
+static void performShutdown(int signal_number) {
+    CROW_LOG_INFO << "Received " << (signal_number == SIGINT ? "SIGINT" : "SIGTERM")
+                  << ", shutting down...";
+    // Drain buffered telemetry before exit: the library's at-exit handler
+    // discards in-flight events by design, so a server must flush explicitly.
+    // Flush spans before the process dies. On a platform with a short
+    // SIGTERM grace (Cloud Run, App Runner) this is the difference between
+    // having the trace of the request that killed you and not.
+    // flush.timeout_ms, not a hardcoded 2s: an operator who tunes the flush
+    // budget expects it to apply to the path that matters most here.
+    flapi::Tracing().forceFlush(flapi::Tracing().shutdownFlushBudget());
+    flapi::GlobalTelemetry().flush();
+    if (api_server) {
+        api_server->stop();
     }
+}
+
+#ifndef _WIN32
+// Self-pipe. The only thing a signal handler may touch here besides an
+// atomic: write(2) is async-signal-safe, everything performShutdown does is
+// not.
+//
+// It used to run performShutdown's work directly in the handler: logging,
+// two flushes that take locks and do I/O, and APIServer::stop(), which now
+// calls HandlerPool::shutdown() - a mutex plus a join of every worker. A
+// signal is delivered on whichever thread happens to be running, so SIGTERM
+// landing on a pool worker meant that worker joining ITSELF, and a signal
+// arriving while any thread held the pool mutex meant re-entering it. Either
+// hangs the process until the platform SIGKILLs it, mid-write.
+static int g_shutdown_pipe[2] = {-1, -1};
+
+static void shutdownSupervisor() {
+    for (;;) {
+        char byte = 0;
+        const ssize_t n = ::read(g_shutdown_pipe[0], &byte, 1);
+        if (n == 1) {
+            performShutdown(static_cast<int>(static_cast<unsigned char>(byte)));
+            return;
+        }
+        if (n < 0 && errno == EINTR) {
+            continue;   // interrupted by another signal; keep waiting
+        }
+        return;   // write end closed: clean exit, nothing to do
+    }
+}
+#endif
+
+void signal_handler(int signal) {
+    if (signal != SIGINT && signal != SIGTERM) {
+        return;
+    }
+    should_exit.store(true, std::memory_order_relaxed);
+#ifndef _WIN32
+    if (g_shutdown_pipe[1] >= 0) {
+        const char byte = static_cast<char>(signal);
+        // Nothing to do if this fails: the pipe is full, which means a
+        // shutdown is already pending.
+        const ssize_t written = ::write(g_shutdown_pipe[1], &byte, 1);
+        (void)written;
+    }
+#else
+    // Windows runs console handlers on a dedicated thread, so there is no
+    // self-join hazard and no async-signal-safety constraint to respect.
+    performShutdown(signal);
+#endif
 }
 
 // Identity for the feedback banner and the issue link on error payloads.
@@ -355,10 +407,22 @@ int main(int argc, char* argv[])
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 #else
+    if (::pipe(g_shutdown_pipe) != 0) {
+        g_shutdown_pipe[0] = g_shutdown_pipe[1] = -1;
+        CROW_LOG_ERROR << "could not create the shutdown pipe; SIGTERM will terminate "
+                          "the process without draining in-flight requests";
+    }
     struct sigaction sa;
     sa.sa_handler = signal_handler;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
+    // SA_RESTART: without it the signal makes every blocking syscall in every
+    // thread return EINTR at once, and code that does not check for it -
+    // inside DuckDB, asio and the C++ runtime - misreads a partial or failed
+    // operation as a real one. Measured: SIGTERM delivered to all threads
+    // aborted the process with "corrupted double-linked list" rather than
+    // shutting it down. The handler only sets a flag and writes a byte, so
+    // there is nothing here that needs an interrupted syscall to observe.
+    sa.sa_flags = SA_RESTART;
     sigaction(SIGINT, &sa, nullptr);
     sigaction(SIGTERM, &sa, nullptr);
 #endif
@@ -756,8 +820,40 @@ int main(int argc, char* argv[])
         std::cout << "\n";
     }
 
+    // The thread that actually performs a signalled shutdown. Started only
+    // once the server exists, so performShutdown never sees a half-built one.
+#ifndef _WIN32
+    std::thread shutdown_supervisor;
+    if (g_shutdown_pipe[0] >= 0) {
+        shutdown_supervisor = std::thread(shutdownSupervisor);
+    }
+#endif
+
     // Wait for server to finish
     unified_server_thread.join();
+
+    // Drain and join the handler pool HERE, not in ~APIServer. The destructor
+    // runs during static destruction, by which point QueryExecutor's
+    // function-local statics are gone - and a worker still inside a query
+    // reaches them and segfaults. stop() is idempotent, so this costs nothing
+    // on the signalled path where the supervisor already ran it.
+    if (api_server) {
+        api_server->stop();
+    }
+
+#ifndef _WIN32
+    if (shutdown_supervisor.joinable()) {
+        // On a clean exit no signal ever arrived, so wake the supervisor by
+        // closing the write end. On a signalled exit it is already running
+        // performShutdown, and joining waits for that to complete - the
+        // process must not exit out from under a drain in progress.
+        if (g_shutdown_pipe[1] >= 0) {
+            ::close(g_shutdown_pipe[1]);
+            g_shutdown_pipe[1] = -1;
+        }
+        shutdown_supervisor.join();
+    }
+#endif
 
     if (warmup_thread.joinable()) {
         warmup_thread.join();

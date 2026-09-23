@@ -629,6 +629,27 @@ void APIServer::run(int port) {
 
     const auto& https = configManager->getHttpsConfig();
     const std::string bind_host = configManager->getHttpHost();
+    // Crow installs its own asio signal_set for SIGINT/SIGTERM by default,
+    // and asio's signal_set REPLACES the sigaction main() installed. So on
+    // SIGTERM crow stopped its own io_services, run() returned, and main
+    // walked out through exit() - while flapi's handler never ran, the
+    // handler pool was never drained, and ~APIServer joined a worker during
+    // STATIC DESTRUCTION. That worker was still inside a query and reached
+    // QueryExecutor's function-local statics after they had been destroyed:
+    //
+    //   #0 flapi::unregisterActiveExecutor(std::thread::id)
+    //   #1 flapi::QueryExecutor::execute(...)
+    //   #8 flapi::HandlerPool::run()
+    //   -- main thread: exit() -> ~APIServer -> ~HandlerPool -> join()
+    //
+    // i.e. SIGTERM during any in-flight query segfaulted. Measured on a plain
+    // `kill -TERM` with one slow request running.
+    //
+    // flapi handles these signals itself, so crow must not: shutdown is
+    // ordered (pool drained, then io_services stopped) and happens while the
+    // process is still alive.
+    app.signal_clear();
+
     if (https.enabled) {
         CROW_LOG_INFO << "HTTPS enabled: serving TLS on " << bind_host << ":" << configManager->getHttpPort();
         CROW_LOG_DEBUG << "  cert: " << https.ssl_cert_file;

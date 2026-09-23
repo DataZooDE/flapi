@@ -193,27 +193,42 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
             std::string rendered_sql = sql_processor->loadAndProcessTemplate(*endpoint_config, params);
             // The rendered SQL goes back to the caller, and MCP is
             // unauthenticated by default, so any credential a template
-            // interpolated from conn.* would leave with it.
-            if (config_manager && !endpoint_config->connection.empty()) {
+            // interpolated leaves with it.
+            //
+            // This covered conn.* only. A template can interpolate three
+            // things, and the other two were unguarded:
+            //   - `{{{ env.API_KEY }}}`, the documented whitelisted-
+            //     environment-variable pattern; and
+            //   - `{{ params.token }}`, whose value can come from a request
+            //     field's configured `default:`.
+            // Both came back verbatim. Enumerating every source in one place
+            // is the fix; scrubbing one of them was the bug.
+            MCPDryRun::Secrets secrets;
+            if (config_manager) {
                 const auto& connections = config_manager->getConnections();
-                bool withhold = false;
                 for (const auto& conn_name : endpoint_config->connection) {
                     const auto it = connections.find(conn_name);
-                    if (it == connections.end()) {
-                        continue;
+                    if (it != connections.end()) {
+                        secrets.addAll(it->second.properties);
                     }
-                    if (MCPDryRun::hasUnscrubbableCredential(it->second.properties)) {
-                        withhold = true;
-                        break;
+                }
+
+                // Only the variables the template layer actually exposes -
+                // the same whitelist SQLTemplateProcessor applies, so this
+                // neither under- nor over-scrubs.
+                const auto& template_config = config_manager->getTemplateConfig();
+                for (const auto& [key, value] : sql_processor->getEnvironmentVariables()) {
+                    if (template_config.isEnvironmentVariableAllowed(key)) {
+                        secrets.add(key, value);
                     }
-                    rendered_sql = MCPDryRun::scrubConnectionSecrets(
-                        std::move(rendered_sql), it->second.properties);
                 }
-                if (withhold) {
-                    rendered_sql =
-                        "<preview withheld: this connection holds a credential too short "
-                        "to redact reliably, and returning the rendered SQL would disclose it>";
-                }
+            }
+            secrets.addAll(params);
+
+            if (secrets.withhold()) {
+                rendered_sql = MCPDryRun::withheldPreview();
+            } else {
+                rendered_sql = MCPDryRun::scrub(std::move(rendered_sql), secrets);
             }
             std::string payload = MCPDryRun::formatResult(request.tool_name, rendered_sql, params);
 
@@ -403,11 +418,15 @@ crow::json::wvalue MCPToolHandler::getToolDefinition(const std::string& tool_nam
 void MCPToolHandler::applyDefaultArguments(const EndpointConfig& endpoint_config,
                                           crow::json::wvalue& arguments) const {
     auto present = crow::json::load(arguments.dump());
+    // has() throws on anything that is not a container, so the type is
+    // checked rather than just the validity - see MCPDryRun::extractFlag.
+    const bool present_is_object =
+        present && present.t() == crow::json::type::Object;
     for (const auto& field : endpoint_config.request_fields) {
         if (field.defaultValue.empty()) {
             continue;
         }
-        if (present && present.has(field.fieldName)) {
+        if (present_is_object && present.has(field.fieldName)) {
             continue;
         }
         arguments[field.fieldName] = field.defaultValue;

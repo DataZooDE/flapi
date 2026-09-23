@@ -37,13 +37,14 @@ bool HandlerPool::submit(std::function<void()> job) {
     return true;
 }
 
-void HandlerPool::shutdown() {
+void HandlerPool::shutdown(std::chrono::milliseconds drain_budget) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (stopping_) {
             return;
         }
         stopping_ = true;
+        drain_deadline_ = std::chrono::steady_clock::now() + drain_budget;
     }
     cv_.notify_all();
     for (auto& worker : workers_) {
@@ -69,6 +70,17 @@ void HandlerPool::run() {
             // connection that is waiting for a response, and abandoning it
             // leaves the client hanging until its own timeout.
             if (jobs_.empty()) {
+                return;
+            }
+            // ...but not forever. Past the drain deadline the remaining queue
+            // is abandoned, so one slow job cannot keep the process alive
+            // until the platform SIGKILLs it mid-write.
+            if (stopping_ && std::chrono::steady_clock::now() >= drain_deadline_) {
+                const auto abandoned = jobs_.size();
+                jobs_.clear();
+                lock.unlock();
+                CROW_LOG_WARNING << "shutdown drain budget expired; abandoned "
+                                 << abandoned << " queued request(s)";
                 return;
             }
             job = std::move(jobs_.front());
