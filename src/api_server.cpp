@@ -280,6 +280,8 @@ void APIServer::setupRoutes() {
 #endif
                 bool skip_body = false;
                 bool manual_length_header = false;
+                // crow::response::file_info is deliberately NOT carried -
+                // see scripts/check_crow_response_fields.py's NOT_CARRIED.
                 bool armed = true;
 
                 void take(crow::response& from) {

@@ -30,41 +30,101 @@ CARRIED = {"code", "body", "headers", "compressed", "skip_body",
 EXPLICIT = {"compressed", "skip_body", "manual_length_header"}
 
 
-def find_header():
-    for path in (ROOT / "build").rglob("crow/http_response.h"):
-        return path
-    return None
+def find_headers():
+    """EVERY copy under build/, not an arbitrary one.
+
+    There are typically four - build/, build/release/, build/debug/,
+    build/tracing-off/ - and the first version returned whichever rglob
+    yielded first. A guard that inspects a copy the binary was not built from
+    is checking nothing, and it silently passed when a member was added to the
+    copy that mattered.
+    """
+    return sorted((ROOT / "build").rglob("crow/http_response.h"))
+
+
+# Data members crow::response has that the offload deliberately does NOT carry.
+# Empty today. A new member must be added here with a reason, or carried -
+# never silently ignored.
+NOT_CARRIED: dict[str, str] = {
+    # PRIVATE in crow::response, and settable only through
+    # set_static_file_info(), which flAPI never calls - the offloaded route
+    # serves query results, not files. It is unreachable rather than ignored:
+    # the Completer could not copy it even if it wanted to. If flAPI ever does
+    # serve a static file from an offloaded handler, that response needs
+    # different handling entirely (crow streams the file), not a field copy.
+    "file_info": "private in crow::response; only set_static_file_info() writes it, "
+                 "and flAPI never calls it",
+
+    # Added by flAPI's own crow overlay patch. It is the connection keepalive
+    # the offload relies on, and the REAL response already holds it - the
+    # worker's local response never has one, and copying it back would be
+    # meaningless. The Completer captures the keepalive separately, by value,
+    # which is what keeps the connection alive across the hop.
+    "connection_keepalive": "flAPI's own field; the Completer captures the keepalive "
+                            "directly rather than copying it off a local response",
+}
 
 
 def declared_fields(text):
-    """Data members of `struct response`, up to its first member function."""
+    """Data members of `struct response`, found by balancing braces.
+
+    The first version matched member declarations with one regex, so a member
+    whose declaration it did not match simply did not exist as far as the
+    guard was concerned - and the guard's whole purpose is to notice a member
+    it has not seen before. It now walks the struct body brace by brace and
+    treats anything it cannot classify as a finding rather than as absent.
+    """
     start = re.search(r"^\s*struct response\s*$", text, re.M)
     if not start:
         sys.exit("ERROR: could not find `struct response` in crow's header")
+
     body = text[start.end():]
-    # The first member function ends the data-member block.
-    end = re.search(r"^\s*(?:void|bool|const|static|response|~response)\s+\w+\s*\(",
-                    body, re.M)
-    if not end:
-        sys.exit("ERROR: could not find the end of crow::response's field block")
-    block = body[:end.start()]
+    open_brace = body.index("{")
+    depth = 0
+    end = None
+    for i, ch in enumerate(body[open_brace:], start=open_brace):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    if end is None:
+        sys.exit("ERROR: could not find the end of `struct response`")
+    block = body[open_brace + 1:end]
+
+    # Drop nested bodies (methods, nested types) so only declarations remain.
+    flattened, depth = [], 0
+    for ch in block:
+        if ch == "{":
+            depth += 1
+            continue
+        if ch == "}":
+            depth -= 1
+            continue
+        if depth == 0:
+            flattened.append(ch)
+    block = "".join(flattened)
 
     fields = []
-    decl = re.compile(r"^\s*(?!friend|template|using|typedef)"
-                      r"[A-Za-z_][\w:<>, ]*?\s+(\w+)\s*[{=;]")
-    for line in block.splitlines():
-        line = re.sub(r"///.*$|//.*$", "", line)
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        m = decl.match(line)
+    decl = re.compile(r"^\s*(?!friend|template|using|typedef|public|private|protected|return)"
+                      r"[A-Za-z_][\w:<>,\s*&]*?\s+(\w+)\s*(?:=[^;]*)?$")
+    for statement in block.split(";"):
+        statement = re.sub(r"///.*|//.*", "", statement)
+        statement = "\n".join(line for line in statement.splitlines()
+                               if not line.lstrip().startswith("#"))
+        if not statement.strip() or "(" in statement:
+            continue   # a function declaration, not a data member
+        m = decl.match(statement.strip("\n"))
         if m:
             fields.append(m.group(1))
     return fields
 
 
 def main():
-    header = find_header()
-    if header is None:
+    headers = find_headers()
+    if not headers:
         # NOT a skip. The first version returned 0 here, and the CI job that
         # ran it only downloads a prebuilt binary into build/ - it never
         # configures CMake, so no crow header existed and the guard protecting
@@ -75,21 +135,35 @@ def main():
             "This guard needs a configured build tree. Run it from the job "
             "that builds flapi, not one that only downloads the binary.")
 
-    fields = declared_fields(header.read_text())
-    # A guard that finds nothing passes vacuously. This one refuses to.
-    if len(fields) < 4:
-        sys.exit(f"ERROR: parsed only {fields} from {header}; the parser is "
-                 "broken, not the code. Fix this script rather than trusting it.")
+    # EVERY tree is checked, and each independently: a stale build directory
+    # may legitimately predate flAPI's crow overlay patch and so lack
+    # connection_keepalive. What must hold in each is that every field it
+    # declares is classified - carried, or an exception with a reason.
+    problems = []
+    seen_fields = set()
+    for header in headers:
+        fields = declared_fields(header.read_text())
+        # A guard that finds nothing passes vacuously. This one refuses to.
+        if len(fields) < 4:
+            sys.exit(f"ERROR: parsed only {fields} from {header}; the parser is "
+                     "broken, not the code. Fix this script rather than trusting it.")
+        seen_fields.update(fields)
+        for field in fields:
+            if field not in CARRIED and field not in NOT_CARRIED:
+                problems.append((header, field))
 
-    unknown = [f for f in fields if f not in CARRIED]
-    if unknown:
+    if problems:
+        detail = "\n".join(f"  {f}  (in {h})" for h, f in problems)
         sys.exit(
-            "ERROR: crow::response has data member(s) the offload does not "
-            f"carry: {', '.join(unknown)}\n\n"
+            "ERROR: crow::response has data member(s) the offload neither "
+            f"carries nor documents:\n{detail}\n\n"
             "Add them to Completer::take and its completion lambda in "
-            "src/api_server.cpp, then list them in CARRIED above.\n"
-            "A dropped field is a silent, runtime-only corruption - see the "
-            "Arrow/compressed case in this file's docstring.")
+            "src/api_server.cpp and list them in CARRIED, or add them to "
+            "NOT_CARRIED with the reason they cannot or need not make the "
+            "hop.\nA dropped field is a silent, runtime-only corruption - see "
+            "the Arrow/compressed case in this file's docstring.")
+
+    fields = sorted(seen_fields)
 
     source = (ROOT / "src" / "api_server.cpp").read_text()
     for field in sorted(EXPLICIT & set(fields)):
@@ -110,8 +184,10 @@ def main():
             sys.exit(f"ERROR: the offload's completion lambda no longer writes "
                      f"crow::response::{field} back onto the response")
 
-    print(f"OK: the offload carries every crow::response field "
-          f"({', '.join(fields)})")
+    carried = [f for f in fields if f in CARRIED]
+    excepted = [f for f in fields if f in NOT_CARRIED]
+    print(f"OK: the offload carries {', '.join(carried)}"
+          + (f"; documented exceptions: {', '.join(excepted)}" if excepted else ""))
     return 0
 
 
