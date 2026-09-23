@@ -633,9 +633,18 @@ TEST_CASE("slug and path are two explicit forms, not one tolerant decoder",
         REQUIRE(PathUtils::identifierToPath("x") != PathUtils::identifierToPath("-x"));
     }
 
-    SECTION("a path is taken as a path") {
-        REQUIRE(PathUtils::identifierToPath("northwind/products/") == "/northwind/products/");
-        REQUIRE(PathUtils::identifierToPath("/northwind/products/") == "/northwind/products/");
+    SECTION("there is no second, path-shaped name") {
+        // identifierToPath used to treat a '/'-bearing identifier as a
+        // percent-decoded url-path, and this section asserted that
+        // "northwind/products/" resolved to "/northwind/products/". It passed
+        // against an input the HTTP surface cannot deliver: the config-service
+        // routes are `<string>`, which matches ONE path segment, and Crow
+        // percent-decodes before matching - so `customers%2F` 404s before any
+        // decoding runs. The tavern case asserting otherwise never passed.
+        //
+        // One endpoint, one name. Anything containing '/' is not a slug and
+        // decodes as the literal characters it contains, not as a path.
+        REQUIRE(PathUtils::identifierToPath("northwind/products/") != "/northwind/products/");
     }
 }
 

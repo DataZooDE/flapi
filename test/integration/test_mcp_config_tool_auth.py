@@ -167,49 +167,105 @@ class TestMcpConfigToolAuth:
 class TestNoConfigToolFabricatesAResult:
     """No config tool may report work it did not do.
 
-    `flapi_update_template` was fixed to refuse. Its two siblings, 40 lines
-    away in the same file, were not: `flapi_expand_template` and
-    `flapi_test_template` both returned the hardcoded literal
+    `flapi_update_template` was fixed to refuse. Its two siblings 40 lines away
+    were not, and answered with a hardcoded `SELECT * FROM data WHERE 1=1` and
+    "Template expanded successfully" to unauthenticated callers.
 
-        {"expanded_sql": "SELECT * FROM data WHERE 1=1",
-         "status": "Template expanded successfully"}
+    The FIRST version of this class claimed to test the property "no tool
+    fabricates" and then iterated a literal three-name list. That is precisely
+    why four more fabricating tools - flapi_refresh_cache ("Cache refresh has
+    been scheduled", with no CacheManager reference anywhere in the adapter),
+    flapi_run_cache_gc, flapi_refresh_schema, and flapi_get_cache_audit, which
+    INVENTED audit rows under the comment "Add sample audit entry" - survived
+    that round untouched. A list of names cannot find the name you forgot.
 
-    Both are registered auth_required=false, so any unauthenticated MCP client
-    received a fabricated SQL string indistinguishable from a real expansion -
-    and `flapi_test_template` claimed a query had passed that it never ran.
-
-    These tests are written against the PROPERTY ("no tool fabricates"), not
-    against the two names, because fixing the instance and missing the siblings
-    is exactly how this got here.
+    So these tests enumerate tools/list and judge what comes back.
     """
 
-    UNIMPLEMENTED = ["flapi_update_template", "flapi_expand_template", "flapi_test_template"]
+    # Vocabulary that specifically denotes work DEFERRED or FAKED, not work
+    # done. Deliberately not a list of tool names.
+    #
+    # "successfully" is not here on purpose: flapi_create_endpoint,
+    # flapi_update_endpoint and flapi_delete_endpoint genuinely do their work
+    # and say so, and a heuristic that flags them teaches people to ignore it.
+    # "triggered"/"scheduled" are the tell of a stub promising a background
+    # job nothing enqueued; "sample"/"placeholder" of invented data.
+    CLAIM_WORDS = ("triggered", "scheduled", "sample", "placeholder",
+                   "will be processed", "has been queued")
 
-    def test_no_unimplemented_tool_is_advertised(self):
-        # tools/list is a contract: an agent that sees a tool will call it.
+    def test_no_advertised_tool_claims_work_without_doing_it(self):
+        with _Server() as s:
+            listed = [t["name"] for t in s.list_tools()]
+            assert listed, "tools/list returned nothing; the test proves nothing"
+
+            offenders = []
+            for name in listed:
+                got = s.call_tool(name, token=TOKEN, endpoint="/hello",
+                                  content="SELECT 1", path="/hello")
+                if "result" not in got:
+                    continue   # refused, which is the honest answer for a stub
+                blob = json.dumps(got["result"]).lower()
+                for word in self.CLAIM_WORDS:
+                    if word in blob:
+                        offenders.append((name, word, blob[:200]))
+                        break
+            assert not offenders, (
+                "tools advertised by tools/list claim completed work:\n" +
+                "\n".join(f"  {n}: says {w!r} -> {b}" for n, w, b in offenders))
+
+    def test_a_tool_that_reports_success_actually_changed_something(self):
+        # The word heuristic above is a widening, not the contract. This is
+        # the contract, spot-checked on a mutating tool: if it says it
+        # deleted the endpoint, the endpoint is gone.
+        with _Server() as s:
+            listed_before = s.call_tool("flapi_list_endpoints", token=TOKEN)
+            assert "/hello" in json.dumps(listed_before), listed_before
+
+            got = s.call_tool("flapi_delete_endpoint", token=TOKEN, path="/hello")
+            assert "result" in got, got
+
+            listed_after = s.call_tool("flapi_list_endpoints", token=TOKEN)
+            assert "/hello" not in json.dumps(listed_after), (
+                "flapi_delete_endpoint reported success and the endpoint is "
+                f"still listed: {listed_after}")
+
+    def test_no_advertised_tool_returns_the_placeholder_sql(self):
+        with _Server() as s:
+            for tool in s.list_tools():
+                got = s.call_tool(tool["name"], token=TOKEN, endpoint="/hello",
+                                  content="SELECT 1", path="/hello")
+                assert "SELECT * FROM data WHERE 1=1" not in json.dumps(got), (
+                    f"{tool['name']} returned fabricated SQL: {got}")
+
+    def test_no_advertised_tool_invents_audit_records(self):
+        # An invented audit row is the worst thing a stub can return: it is
+        # the record someone consults to find out whether the work happened.
+        with _Server() as s:
+            for tool in s.list_tools():
+                got = s.call_tool(tool["name"], token=TOKEN, endpoint="/hello",
+                                  content="SELECT 1", path="/hello")
+                if "result" not in got:
+                    continue
+                body = json.dumps(got["result"])
+                if "audit" in tool["name"] or "audit_log" in body:
+                    assert "cache_status_checked" not in body, (
+                        f"{tool['name']} returned a manufactured audit entry: {body}")
+
+    def test_the_known_unimplemented_tools_are_neither_advertised_nor_answered(self):
+        # The specific regressions, pinned by name as well - the enumeration
+        # above is the net, this is the record of what was caught in it.
+        known = ["flapi_update_template", "flapi_expand_template",
+                 "flapi_test_template", "flapi_refresh_cache",
+                 "flapi_run_cache_gc", "flapi_refresh_schema",
+                 "flapi_get_cache_audit"]
         with _Server() as s:
             listed = {t["name"] for t in s.list_tools()}
-            for name in self.UNIMPLEMENTED:
-                assert name not in listed, (
-                    f"{name} is advertised but has no implementation")
-
-    def test_every_unimplemented_tool_refuses(self):
-        with _Server() as s:
-            for name in self.UNIMPLEMENTED:
-                got = s.call_tool(name, token=TOKEN,
-                                  endpoint="/hello", content="SELECT 1")
+            for name in known:
+                assert name not in listed, f"{name} is advertised but is a stub"
+                got = s.call_tool(name, token=TOKEN, endpoint="/hello",
+                                  content="SELECT 1")
                 assert "error" in got, f"{name} claimed success: {got}"
                 assert "not implemented" in got["error"]["message"], got
-
-    def test_no_tool_returns_the_placeholder_sql(self):
-        # The literal itself, so a future stub reusing it is caught whatever
-        # it calls itself.
-        with _Server() as s:
-            for name in self.UNIMPLEMENTED:
-                got = s.call_tool(name, token=TOKEN,
-                                  endpoint="/hello", content="SELECT 1")
-                assert "SELECT * FROM data WHERE 1=1" not in json.dumps(got), (
-                    f"{name} returned fabricated SQL: {got}")
 
     def test_the_implemented_tools_are_still_advertised_and_work(self):
         # The guard must not swallow the working tools.
@@ -217,5 +273,6 @@ class TestNoConfigToolFabricatesAResult:
             listed = {t["name"] for t in s.list_tools()}
             assert "flapi_get_project_config" in listed, listed
             assert "flapi_get_template" in listed, listed
+            assert "flapi_list_endpoints" in listed, listed
             got = s.call_tool("flapi_get_project_config")
             assert "result" in got, got

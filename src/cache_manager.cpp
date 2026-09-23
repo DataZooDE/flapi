@@ -302,6 +302,26 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
             fetchCursorWatermark(catalog, schema, table, cacheConfig.cursor->column);
         if (!watermark.empty()) {
             params["previousSnapshotTimestamp"] = watermark;
+        } else {
+            // No watermark, and a cursor IS configured: ERASE it rather than
+            // fall back to the snapshot commit timestamp.
+            //
+            // The two values do not share a type. With `cursor: {column: seq,
+            // type: int}` over a created-but-empty cache table the fallback
+            // renders `WHERE seq > 2026-09-23 10:00:00.123` - a binder error
+            // on every subsequent refresh - and with a VARCHAR cursor it
+            // silently compares against a date string. With a timestamp cursor
+            // it renders `WHERE updated_at > '<table create time>'` and drops
+            // every source row older than the table, forever: exactly the
+            // silent loss this change exists to remove.
+            //
+            // Erasing makes `{{^cache.previousSnapshotTimestamp}}` render the
+            // full-load branch, which is always correct and merely slower.
+            params.erase("previousSnapshotTimestamp");
+            params.erase("previousSnapshotId");
+            CROW_LOG_INFO << "No cursor watermark for " << schema << "." << table
+                          << " (" << cacheConfig.cursor->column
+                          << "); this refresh loads the full source.";
         }
     }
 
@@ -328,30 +348,27 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
 
     // trigger retention expiry if requested
     if (cacheConfig.retention.keep_last_snapshots || cacheConfig.retention.max_snapshot_age) {
-        std::string expireSql;
+        // BOTH policies go through buildExpireSql, which expires explicit
+        // per-table version ids.
+        //
+        // The age branch used to emit
+        //   CALL ducklake_expire_snapshots(cat, older_than => <ts>)
+        // which has no per-table form: it acts on the whole CATALOG, and every
+        // cached endpoint shares one. So a single endpoint configuring
+        // `max-snapshot-age` destroyed every other endpoint's history and its
+        // incremental watermark - the same defect the count branch beside it
+        // had just been fixed for. Fixing one branch and leaving its sibling
+        // is the pattern this whole round exists to break.
+        std::string older_than_sql;
         if (cacheConfig.retention.max_snapshot_age) {
-            // Convert time interval to proper timestamp format
-            std::string timeInterval = cacheConfig.retention.max_snapshot_age.value();
-            std::string timestampExpr = "CAST(CURRENT_TIMESTAMP AS TIMESTAMP) - INTERVAL '" + timeInterval + "'";
-            expireSql = "CALL ducklake_expire_snapshots('" + catalog + "', older_than => " + timestampExpr + ")";
-        } else {
-            // Count-based expiry: keep the newest N snapshots, expire the rest.
-            //
-            // This used to emit `versions => ARRAY[0:N]`, which is not DuckDB
-            // syntax at all - `SELECT ARRAY[0:10]` is a parser error - so the
-            // CALL failed every time. The failure was caught and logged at
-            // WARNING, so count-based retention has never run: an operator who
-            // set `keep-last-snapshots` believed old snapshots were being
-            // pruned while they accumulated without bound.
-            //
-            // `versions` takes an explicit list of snapshot ids, so the newest
-            // N have to be resolved first. Nothing to expire is the common
-            // case early in a cache's life and is not an error.
-            expireSql = buildCountBasedExpireSql(
-                catalog, schema, table, cacheConfig.retention.keep_last_snapshots.value());
+            older_than_sql = "CAST(CURRENT_TIMESTAMP AS TIMESTAMP) - INTERVAL '" +
+                             escapeSqlLiteral(cacheConfig.retention.max_snapshot_age.value()) + "'";
         }
+        const std::string expireSql = buildExpireSql(
+            catalog, schema, table,
+            cacheConfig.retention.keep_last_snapshots, older_than_sql);
         if (expireSql.empty()) {
-            return;   // nothing old enough to expire yet
+            return;   // nothing this endpoint may expire yet
         }
         try {
             db_adapter_->executeDuckLakeQuery(expireSql, params);
@@ -370,14 +387,19 @@ std::string CacheManager::fetchCursorWatermark(const std::string& catalog,
     }
     try {
         const std::string query =
-            "SELECT CAST(max(" + cursor_column + ") AS VARCHAR) AS watermark FROM " +
-            catalog + "." + schema + "." + table;
+            "SELECT CAST(max(" + quoteIdentifier(cursor_column) + ") AS VARCHAR) AS watermark FROM " +
+            quoteIdentifier(catalog) + "." + quoteIdentifier(schema) + "." +
+            quoteIdentifier(table);
         auto result = db_adapter_->executeDuckLakeQueryWithResult(query);
         auto rows = crow::json::load(result.data.dump());
         if (rows && rows.t() == crow::json::type::List && rows.size() > 0 &&
             rows[0].has("watermark") &&
             rows[0]["watermark"].t() == crow::json::type::String) {
-            return rows[0]["watermark"].s();
+            // Escaped here, because the value comes from upstream data and is
+            // interpolated straight into the refresh template - a VARCHAR
+            // cursor value of `ab'c` would otherwise render
+            // `WHERE k > 'ab'c'`.
+            return escapeSqlLiteral(rows[0]["watermark"].s());
         }
     } catch (const std::exception& ex) {
         // Table not created yet, or the cursor column is not in it. The
@@ -388,6 +410,34 @@ std::string CacheManager::fetchCursorWatermark(const std::string& catalog,
     return {};
 }
 
+std::string CacheManager::escapeSqlLiteral(const std::string& value) {
+    // Doubling is the whole of SQL string escaping. These literals are built
+    // by us, but the values inside them - a cursor watermark, a table name, a
+    // configured interval - come from upstream data or user config.
+    std::string out;
+    out.reserve(value.size());
+    for (const char c : value) {
+        if (c == '\'') {
+            out += "''";
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+
+std::string CacheManager::quoteIdentifier(const std::string& name) {
+    std::string out = "\"";
+    for (const char c : name) {
+        if (c == '"') {
+            out += "\"\"";
+        }
+        out += c;
+    }
+    out += '"';
+    return out;
+}
+
 std::vector<std::string> CacheManager::tableChangeKeys(const std::string& catalog,
                                                        const std::string& schema,
                                                        const std::string& table) {
@@ -396,14 +446,36 @@ std::vector<std::string> CacheManager::tableChangeKeys(const std::string& catalo
     std::vector<std::string> keys;
     keys.push_back(schema + "." + table);
     try {
+        // ducklake_table_info() carries table_name and schema_id but NOT a
+        // schema NAME, so `WHERE table_name = 'orders' LIMIT 1` over a catalog
+        // holding s1.orders and s2.orders returns an arbitrary one of them.
+        // Verified on DuckDB 1.5.5: two rows differing only in schema_id.
+        //
+        // Survivable while this fed a read-only watermark query. It now feeds
+        // snapshot EXPIRY, where a wrong id means deleting another endpoint's
+        // data - so an ambiguous lookup resolves to NOTHING, and callers that
+        // would destroy data do nothing at all.
         const std::string query =
             "SELECT CAST(table_id AS VARCHAR) AS table_id FROM ducklake_table_info('" +
-            catalog + "') WHERE table_name = '" + table + "' LIMIT 1";
+            escapeSqlLiteral(catalog) + "') WHERE table_name = '" +
+            escapeSqlLiteral(table) + "'";
         auto result = db_adapter_->executeDuckLakeQueryWithResult(query);
         auto rows = crow::json::load(result.data.dump());
-        if (rows && rows.t() == crow::json::type::List && rows.size() > 0 &&
-            rows[0].has("table_id") && rows[0]["table_id"].t() == crow::json::type::String) {
-            keys.push_back(rows[0]["table_id"].s());
+        if (rows && rows.t() == crow::json::type::List) {
+            if (rows.size() > 1) {
+                CROW_LOG_WARNING
+                    << "DuckLake catalog '" << catalog << "' holds " << rows.size()
+                    << " tables named '" << table << "' in different schemas, and "
+                       "ducklake_table_info() exposes no schema name to tell them "
+                       "apart. Snapshot retention for " << schema << "." << table
+                    << " is disabled rather than risk expiring another table's "
+                       "snapshots; rename one of the cache tables to re-enable it.";
+                return {};
+            }
+            if (rows.size() == 1 && rows[0].has("table_id") &&
+                rows[0]["table_id"].t() == crow::json::type::String) {
+                keys.push_back(rows[0]["table_id"].s());
+            }
         }
     } catch (const std::exception& ex) {
         // Table not in the catalog yet on a first refresh; the name form alone
@@ -430,24 +502,22 @@ std::string CacheManager::tableSnapshotPredicate(const std::vector<std::string>&
     return out.str();
 }
 
-std::string CacheManager::buildCountBasedExpireSql(const std::string& catalog,
-                                                   const std::string& schema,
-                                                   const std::string& table,
-                                                   std::size_t keep_last) {
-    if (keep_last == 0) {
-        return {};   // keeping nothing is not a retention policy; refuse it
-    }
-
+std::vector<std::int64_t> CacheManager::expirableSnapshotIds(
+        const std::string& catalog,
+        const std::string& schema,
+        const std::string& table,
+        std::optional<std::size_t> keep_last,
+        const std::string& older_than_sql) {
     std::vector<std::int64_t> expire_ids;
     try {
         // Every cached endpoint shares ONE DuckLake catalog, so a
-        // catalog-wide snapshot list is every endpoint's history. This query
-        // used to be exactly that, while `keep-last-snapshots` is configured
-        // per endpoint: an endpoint with keep_last=2 refreshing for the third
-        // time called ducklake_expire_snapshots on every other endpoint's
-        // snapshots too, destroying their time-travel history and their
-        // incremental watermark. The existing test uses a single table, so it
-        // could not see it.
+        // catalog-wide snapshot list is every endpoint's history. Both expiry
+        // policies used to act catalog-wide - count-based via a bare
+        // `SELECT snapshot_id FROM ducklake_snapshots(cat)`, and age-based and
+        // manual GC via `ducklake_expire_snapshots(cat, older_than => ...)`,
+        // which has no per-table form at all. Retention is configured PER
+        // ENDPOINT, so any of them destroyed every other endpoint's
+        // time-travel history and its incremental watermark.
         //
         // Two restrictions, both needed:
         //   1. only snapshots that touched THIS table are candidates;
@@ -459,41 +529,91 @@ std::string CacheManager::buildCountBasedExpireSql(const std::string& catalog,
         // than asked. Retaining too much is recoverable; deleting another
         // endpoint's data is not.
         const auto keys = tableChangeKeys(catalog, schema, table);
+        if (keys.empty()) {
+            // The table could not be identified unambiguously. Expiring on a
+            // guess is destructive, so expire nothing - see tableChangeKeys.
+            return {};
+        }
 
         // "Touched nothing but this table": every entry in the snapshot's
         // change list is one of this table's keys. Built from resolved
         // literals - a subquery inside the lambda is a binder error.
+        //
+        // Measured shapes of `changes` on DuckDB 1.5.5 / DuckLake:
+        //   CREATE SCHEMA -> {schemas_created=[s1]}
+        //   CREATE TABLE  -> {tables_created=[s1.orders], inlined_insert=[3]}
+        //   INSERT        -> {inlined_insert=[3]}
+        // so creates name the table as `schema.table` and row changes by its
+        // numeric id; both are in `keys`, and a schema-create snapshot is not
+        // a candidate at all because it names neither.
         std::ostringstream others;
         others << "len(list_filter(flatten(map_values(changes)), x -> ";
         for (std::size_t i = 0; i < keys.size(); ++i) {
             if (i > 0) {
                 others << " AND ";
             }
-            others << "x <> '" << keys[i] << "'";
+            others << "x <> '" << escapeSqlLiteral(keys[i]) << "'";
         }
         others << ")) = 0";
 
-        const std::string query =
+        std::string query =
             "SELECT snapshot_id FROM ducklake_snapshots('" + catalog + "') "
-            "WHERE " + tableSnapshotPredicate(keys) + " AND " + others.str() + " "
-            "ORDER BY snapshot_id DESC";
+            "WHERE " + tableSnapshotPredicate(keys) + " AND " + others.str();
+        if (!older_than_sql.empty()) {
+            query += " AND snapshot_time < " + older_than_sql;
+        }
+        query += " ORDER BY snapshot_id DESC";
+
         auto result = db_adapter_->executeDuckLakeQueryWithResult(query);
         auto rows = crow::json::load(result.data.dump());
         if (!(rows && rows.t() == crow::json::type::List)) {
             return {};
         }
-        for (std::size_t i = keep_last; i < rows.size(); ++i) {
+        // keep_last retains the newest N of whatever matched; with an
+        // age-based policy alone every match is expirable.
+        const std::size_t skip = keep_last.value_or(0);
+        for (std::size_t i = skip; i < rows.size(); ++i) {
             const auto& row = rows[i];
             if (row.has("snapshot_id") && row["snapshot_id"].t() == crow::json::type::Number) {
                 expire_ids.push_back(static_cast<std::int64_t>(row["snapshot_id"].d()));
             }
         }
+
+        if (expire_ids.empty() && rows.size() > 0 && skip < rows.size()) {
+            CROW_LOG_DEBUG << "No expirable snapshots for " << schema << "." << table;
+        }
     } catch (const std::exception& ex) {
-        CROW_LOG_WARNING << "Could not list DuckLake snapshots for count-based retention: " << ex.what();
+        CROW_LOG_WARNING << "Could not list DuckLake snapshots for retention on "
+                         << schema << "." << table << ": " << ex.what();
         return {};
     }
+    return expire_ids;
+}
 
+std::string CacheManager::buildExpireSql(const std::string& catalog,
+                                         const std::string& schema,
+                                         const std::string& table,
+                                         std::optional<std::size_t> keep_last,
+                                         const std::string& older_than_sql) {
+    if (keep_last.has_value() && *keep_last == 0) {
+        return {};   // keeping nothing is not a retention policy; refuse it
+    }
+
+    const auto expire_ids =
+        expirableSnapshotIds(catalog, schema, table, keep_last, older_than_sql);
     if (expire_ids.empty()) {
+        // Distinguish "nothing old enough" from "everything is shared with
+        // another endpoint", which otherwise looks identical to a working
+        // policy that never fires.
+        const auto candidates =
+            expirableSnapshotIds(catalog, schema, table, std::nullopt, std::string());
+        if (!candidates.empty() && keep_last.has_value() &&
+            candidates.size() > *keep_last) {
+            CROW_LOG_INFO << "Retention for " << schema << "." << table
+                          << " expired nothing: the remaining snapshots are shared "
+                             "with another cached table and cannot be expired "
+                             "without discarding its data too.";
+        }
         return {};
     }
 
@@ -626,8 +746,27 @@ void CacheManager::performGarbageCollection(std::shared_ptr<ConfigManager> confi
     params["schema"] = cacheConfig.schema.empty() ? "main" : cacheConfig.schema;
     params["table"] = cacheConfig.table;
 
-    // Use a simple time-based expiry for garbage collection
-    std::string expireSql = "CALL ducklake_expire_snapshots('" + params["catalog"] + "', older_than => CAST(CURRENT_TIMESTAMP AS TIMESTAMP) - INTERVAL '1 day')";
+    // Manual GC obeys the endpoint's OWN retention policy, per table.
+    //
+    // It used to be
+    //   CALL ducklake_expire_snapshots(cat,
+    //        older_than => CURRENT_TIMESTAMP - INTERVAL '1 day')
+    // - catalog-wide, so one `flapii cache gc` destroyed every other
+    // endpoint's history and incremental watermark, against a HARDCODED
+    // one-day cutoff that ignored the configured `max-snapshot-age` entirely.
+    std::string older_than_sql;
+    if (cacheConfig.retention.max_snapshot_age) {
+        older_than_sql = "CAST(CURRENT_TIMESTAMP AS TIMESTAMP) - INTERVAL '" +
+                         escapeSqlLiteral(cacheConfig.retention.max_snapshot_age.value()) + "'";
+    }
+    const std::string expireSql = buildExpireSql(
+        params["catalog"], params["schema"], params["table"],
+        cacheConfig.retention.keep_last_snapshots, older_than_sql);
+    if (expireSql.empty()) {
+        recordSyncEvent(config_manager, endpoint, "garbage_collection", "success",
+                        "No snapshots eligible for expiry");
+        return;
+    }
     try {
         db_adapter_->executeDuckLakeQuery(expireSql, params);
         recordSyncEvent(config_manager, endpoint, "garbage_collection", "success", "Expired old snapshots");

@@ -105,6 +105,7 @@ void ConfigToolAdapter::registerDiscoveryTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_refresh_schema"] = false;
+    tool_unimplemented_["flapi_refresh_schema"] = "POST /api/v1/_schema/refresh";
     tool_handlers_["flapi_refresh_schema"] = [this](const crow::json::wvalue& args) {
         return this->executeRefreshSchema(args);
     };
@@ -288,6 +289,7 @@ void ConfigToolAdapter::registerCacheTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_refresh_cache"] = true;
+    tool_unimplemented_["flapi_refresh_cache"] = "POST /api/v1/_config/endpoints/{slug}/cache/refresh";
     tool_handlers_["flapi_refresh_cache"] = [this](const crow::json::wvalue& args) {
         return this->executeRefreshCache(args);
     };
@@ -300,6 +302,7 @@ void ConfigToolAdapter::registerCacheTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_get_cache_audit"] = false;
+    tool_unimplemented_["flapi_get_cache_audit"] = "GET /api/v1/_config/endpoints/{slug}/cache/audit";
     tool_handlers_["flapi_get_cache_audit"] = [this](const crow::json::wvalue& args) {
         return this->executeGetCacheAudit(args);
     };
@@ -312,6 +315,7 @@ void ConfigToolAdapter::registerCacheTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_run_cache_gc"] = true;
+    tool_unimplemented_["flapi_run_cache_gc"] = "POST /api/v1/_config/cache/gc";
     tool_handlers_["flapi_run_cache_gc"] = [this](const crow::json::wvalue& args) {
         return this->executeRunCacheGC(args);
     };
@@ -610,13 +614,16 @@ ConfigToolResult ConfigToolAdapter::executeRefreshSchema(const crow::json::wvalu
 
         auto handler = std::make_unique<SchemaHandler>(config_manager_);
 
-        crow::json::wvalue result;
-        result["status"] = "schema_refreshed";
-        result["timestamp"] = std::to_string(std::time(nullptr));
-        result["message"] = "Database schema cache has been refreshed";
-
-        CROW_LOG_INFO << "flapi_refresh_schema: schema cache refreshed";
-        return createSuccessResult(result.dump());
+        // Nothing was refreshed. The SchemaHandler constructed above was
+        // discarded without a call, and "schema_refreshed" was returned
+        // regardless. executeTool() now refuses every tool registered as
+        // unimplemented, so this body is unreachable - it refuses anyway,
+        // because the point is that no path fabricates a result.
+        CROW_LOG_WARNING << "flapi_refresh_schema is not implemented; refusing";
+        return createErrorResult(
+            -32601,
+            "flapi_refresh_schema is not implemented. Use "
+            "POST /api/v1/_schema/refresh instead.");
     } catch (const std::exception& e) {
         CROW_LOG_ERROR << "flapi_refresh_schema failed: " << e.what();
         return createErrorResult(-32603, "Failed to refresh schema: " + std::string(e.what()));
@@ -1262,15 +1269,17 @@ ConfigToolResult ConfigToolAdapter::executeRefreshCache(const crow::json::wvalue
         }
 
         // Trigger cache refresh
-        crow::json::wvalue result;
-        result["path"] = endpoint_path;
-        result["status"] = "Cache refresh triggered";
-        result["cache_table"] = ep->cache.table;
-        result["timestamp"] = std::to_string(std::time(nullptr));
-        result["message"] = "Cache refresh has been scheduled";
-
-        CROW_LOG_INFO << "flapi_refresh_cache: triggered cache refresh for " << endpoint_path;
-        return createSuccessResult(result.dump());
+        // No refresh was ever triggered or scheduled: this adapter holds no
+        // CacheManager reference at all (`grep -n CacheManager` on this file
+        // returns nothing). It validated the endpoint and reported
+        // "Cache refresh has been scheduled" - a mutation claiming work it
+        // never did, which a caller cannot detect.
+        CROW_LOG_WARNING << "flapi_refresh_cache is not implemented; refusing for "
+                         << endpoint_path;
+        return createErrorResult(
+            -32601,
+            "flapi_refresh_cache is not implemented. Use "
+            "POST /api/v1/_config/endpoints/{slug}/cache/refresh instead.");
     } catch (const std::exception& e) {
         CROW_LOG_ERROR << "flapi_refresh_cache failed: " << e.what();
         return createErrorResult(-32603, "Failed to refresh cache: " + std::string(e.what()));
@@ -1314,20 +1323,18 @@ ConfigToolResult ConfigToolAdapter::executeGetCacheAudit(const crow::json::wvalu
         result["path"] = endpoint_path;
         result["cache_table"] = ep->cache.table;
 
-        // Build audit log list
-        auto audit_log = crow::json::wvalue::list();
-        // Add sample audit entry
-        crow::json::wvalue entry;
-        entry["timestamp"] = std::to_string(std::time(nullptr));
-        entry["event"] = "cache_status_checked";
-        entry["status"] = "success";
-        audit_log.emplace_back(std::move(entry));
-
-        result["audit_log"] = std::move(audit_log);
-        result["message"] = "Cache audit log retrieved successfully";
-
-        CROW_LOG_INFO << "flapi_get_cache_audit: retrieved cache audit for " << endpoint_path;
-        return createSuccessResult(result.dump());
+        // The audit log was INVENTED: a single entry built from
+        // std::time(nullptr) under the comment "Add sample audit entry", and
+        // returned as "Cache audit log retrieved successfully". An agent
+        // asking for an audit log received manufactured audit records - a
+        // caller polling this to confirm a refresh saw a fabricated success.
+        // Of everything a stub can do, inventing audit rows is the worst.
+        CROW_LOG_WARNING << "flapi_get_cache_audit is not implemented; refusing for "
+                         << endpoint_path;
+        return createErrorResult(
+            -32601,
+            "flapi_get_cache_audit is not implemented. Use "
+            "GET /api/v1/_config/endpoints/{slug}/cache/audit instead.");
     } catch (const std::exception& e) {
         CROW_LOG_ERROR << "flapi_get_cache_audit failed: " << e.what();
         return createErrorResult(-32603, "Failed to get cache audit: " + std::string(e.what()));
@@ -1364,21 +1371,12 @@ ConfigToolResult ConfigToolAdapter::executeRunCacheGC(const crow::json::wvalue& 
             }
         }
 
-        // Trigger garbage collection
-        crow::json::wvalue result;
-        result["status"] = "Garbage collection triggered";
-        result["timestamp"] = std::to_string(std::time(nullptr));
-
-        if (!endpoint_path.empty()) {
-            result["path"] = endpoint_path;
-            result["message"] = "Cache garbage collection for endpoint scheduled";
-        } else {
-            result["scope"] = "all_caches";
-            result["message"] = "Global cache garbage collection has been scheduled";
-        }
-
-        CROW_LOG_INFO << "flapi_run_cache_gc: triggered cache garbage collection";
-        return createSuccessResult(result.dump());
+        // Nothing was collected; see flapi_refresh_cache above.
+        CROW_LOG_WARNING << "flapi_run_cache_gc is not implemented; refusing";
+        return createErrorResult(
+            -32601,
+            "flapi_run_cache_gc is not implemented. Use "
+            "POST /api/v1/_config/cache/gc instead.");
     } catch (const std::exception& e) {
         CROW_LOG_ERROR << "flapi_run_cache_gc failed: " << e.what();
         return createErrorResult(-32603, "Failed to run cache garbage collection: " + std::string(e.what()));

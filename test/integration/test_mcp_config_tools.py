@@ -138,25 +138,20 @@ class TestConfigDiscoveryTools:
         assert result is not None
         assert "content" in result or "tables" in str(result)
 
-    def test_flapi_refresh_schema(self, mcp_client):
-        """Test flapi_refresh_schema tool"""
-        result = mcp_client.call_tool("flapi_refresh_schema")
-
-        # Verify result structure
-        assert result is not None
-        assert "content" in result or "status" in str(result)
-
-        # If content is present, check for success status
-        if "content" in result and result["content"]:
-            content = json.loads(result["content"][0]["text"])
-            assert "status" in content
+    def test_flapi_refresh_schema_refuses_rather_than_pretending(self, mcp_client):
+        """It constructed a SchemaHandler, discarded it, and returned
+        "schema_refreshed". Nothing was ever refreshed."""
+        with pytest.raises(Exception) as excinfo:
+            mcp_client.call_tool("flapi_refresh_schema")
+        assert "not implemented" in str(excinfo.value), str(excinfo.value)
+        assert "schema_refreshed" not in str(excinfo.value)
 
 
 class TestConfigToolDiscovery:
     """Tests for tool discovery and metadata"""
 
     def test_config_tools_are_registered(self, mcp_client):
-        """Test that all Phase 1 config tools are registered"""
+        """Only tools with a working implementation are advertised."""
         tools = mcp_client.list_tools()
         tool_names = [tool["name"] for tool in tools]
 
@@ -165,7 +160,10 @@ class TestConfigToolDiscovery:
         assert "flapi_get_environment" in tool_names or any("environment" in name for name in tool_names)
         assert "flapi_get_filesystem" in tool_names or any("filesystem" in name for name in tool_names)
         assert "flapi_get_schema" in tool_names or any("schema" in name for name in tool_names)
-        assert "flapi_refresh_schema" in tool_names or any("refresh_schema" in name for name in tool_names)
+        # flapi_refresh_schema is deliberately NOT here: it is registered but
+        # unimplemented, so it is not advertised. It used to be asserted
+        # present, which pinned the stub in place.
+        assert "flapi_refresh_schema" not in tool_names
 
     def test_config_tools_have_descriptions(self, mcp_client):
         """Test that tools have proper descriptions"""
@@ -243,30 +241,45 @@ class TestConfigTemplateTools:
             # Expected: auth required or endpoint not found
             assert "authentication" in str(e).lower() or "not found" in str(e).lower()
 
-    def test_flapi_expand_template_basic(self, mcp_client):
-        """Test expanding a template with parameters"""
-        result = mcp_client.call_tool("flapi_expand_template", {
-            "endpoint": "/customers/",
-            "params": {}
-        })
-        assert result is not None
+    # flapi_expand_template and flapi_test_template are NOT implemented.
+    #
+    # They returned a hardcoded `SELECT * FROM data WHERE 1=1` with
+    # "Template expanded successfully" / "Template test passed". The three
+    # tests that used to live here asserted only `result is not None`, so they
+    # passed against that fabrication for as long as it shipped - a test that
+    # could not fail. They are replaced by the contract that actually holds:
+    # an unimplemented tool is not advertised, and refuses if called anyway.
 
-    def test_flapi_expand_template_with_params(self, mcp_client):
-        """Test expanding a template with actual parameters"""
-        result = mcp_client.call_tool("flapi_expand_template", {
-            "endpoint": "/customers/",
-            "params": {"limit": 10, "offset": 0}
-        })
-        assert result is not None
+    UNIMPLEMENTED = ("flapi_expand_template", "flapi_test_template",
+                     "flapi_refresh_schema", "flapi_refresh_cache",
+                     "flapi_run_cache_gc", "flapi_get_cache_audit",
+                     "flapi_update_template")
 
-    def test_flapi_test_template_execution(self, mcp_client):
-        """Test template execution validation"""
-        result = mcp_client.call_tool("flapi_test_template", {
-            "endpoint": "/customers/",
-            "params": {}
-        })
-        # Should either succeed or return test result
-        assert result is not None
+    def test_the_unimplemented_tools_are_not_advertised(self, mcp_client):
+        listed = {t["name"] for t in mcp_client.list_tools()}
+        assert listed, "tools/list returned nothing; this proves nothing"
+        for name in self.UNIMPLEMENTED:
+            assert name not in listed, f"{name} is advertised but is a stub"
+
+    def test_the_unimplemented_tools_refuse_rather_than_fabricating(self, mcp_client):
+        # call_tool raises on a JSON-RPC error, which a refusal is.
+        for name in self.UNIMPLEMENTED:
+            with pytest.raises(Exception) as excinfo:
+                mcp_client.call_tool(name, {"endpoint": "/customers/",
+                                            "content": "SELECT 1",
+                                            "params": {}})
+            message = str(excinfo.value)
+            # Either refusal is correct. This client sends no token, and the
+            # auth gate deliberately runs BEFORE the unimplemented check so an
+            # unauthenticated caller cannot use refusals to probe which tools
+            # exist - so a mutating stub answers "Authentication required".
+            assert ("not implemented" in message
+                    or "Authentication required" in message), f"{name}: {message}"
+            # The specific fabrications these used to return.
+            assert "SELECT * FROM data WHERE 1=1" not in message, message
+            assert "Template test passed" not in message, message
+            assert "has been scheduled" not in message, message
+            assert "cache_status_checked" not in message, message
 
 
 class TestConfigEndpointTools:
@@ -382,14 +395,17 @@ class TestConfigCacheTools:
         with pytest.raises(Exception):
             mcp_client.call_tool("flapi_refresh_cache", {"path": "/nonexistent"})
 
-    def test_flapi_get_cache_audit_history(self, mcp_client):
-        """Test retrieving cache audit history requires path"""
-        try:
-            result = mcp_client.call_tool("flapi_get_cache_audit", {})
-            assert result is not None
-        except Exception as e:
-            # Expected - path is required
-            assert "path" in str(e).lower() or "required" in str(e).lower()
+    def test_flapi_get_cache_audit_does_not_invent_audit_records(self, mcp_client):
+        """It built an entry from std::time(nullptr) under the comment
+        "Add sample audit entry" and returned it as a retrieved audit log.
+
+        An invented audit record is the worst thing a stub can return: it is
+        the record someone consults to find out whether the work happened."""
+        with pytest.raises(Exception) as excinfo:
+            mcp_client.call_tool("flapi_get_cache_audit", {"path": "/customers/"})
+        message = str(excinfo.value)
+        assert "not implemented" in message, message
+        assert "cache_status_checked" not in message, message
 
     def test_flapi_get_cache_audit_for_endpoint(self, mcp_client):
         """Test retrieving cache audit for specific endpoint"""
@@ -492,17 +508,12 @@ class TestConfigToolsLargeData:
 class TestConfigToolsConcurrency:
     """Tests for concurrent tool execution"""
 
-    def test_concurrent_schema_refreshes(self, mcp_client):
-        """Test concurrent schema refresh operations"""
-        # Run multiple concurrent schema refreshes
-        results = []
-        for i in range(3):
-            result = mcp_client.call_tool("flapi_refresh_schema")
-            results.append(result)
-
-        # All should complete
-        assert len(results) == 3
-        assert all(r is not None for r in results)
+    def test_concurrent_calls_to_an_unimplemented_tool_all_refuse(self, mcp_client):
+        """Concurrency around a refusal, since there is no refresh to race."""
+        for _ in range(3):
+            with pytest.raises(Exception) as excinfo:
+                mcp_client.call_tool("flapi_refresh_schema")
+            assert "not implemented" in str(excinfo.value)
 
     def test_concurrent_list_endpoints(self, mcp_client):
         """Test concurrent endpoint listing"""

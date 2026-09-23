@@ -297,21 +297,43 @@ TEST_CASE("CacheManager refreshDuckLakeCache retention SQL generation", "[cache_
         }
     }
 
-    SECTION("max_snapshot_age generates time-based expiry") {
+    SECTION("max_snapshot_age expires explicit per-table versions, never older_than") {
+        // This section used to REQUIRE an `older_than =>` call - it pinned the
+        // bug. ducklake_expire_snapshots(cat, older_than => ...) has no
+        // per-table form: it acts on the whole CATALOG, and every cached
+        // endpoint shares one. So a single endpoint configuring
+        // `max-snapshot-age` destroyed every other endpoint's history and its
+        // incremental watermark, exactly as the count-based branch beside it
+        // did before that branch was fixed.
+        //
+        // The age cutoff is now a predicate on the per-table candidate query,
+        // and the expiry itself names explicit snapshot ids.
         endpoint.cache.retention.max_snapshot_age = "7 days";
+        adapter->snapshot_ids = {30, 20, 10};
         std::map<std::string, std::string> params;
         cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
 
-        // Should have executed expire snapshots call with older_than
         bool found_expire = false;
         for (const auto& query : adapter->executed_queries) {
-            if (query.find("ducklake_expire_snapshots") != std::string::npos &&
-                query.find("older_than") != std::string::npos) {
+            if (query.find("ducklake_expire_snapshots") != std::string::npos) {
                 found_expire = true;
-                REQUIRE(query.find("7 days") != std::string::npos);
+                INFO("expire call: " << query);
+                REQUIRE(query.find("versions") != std::string::npos);
+                REQUIRE(query.find("older_than") == std::string::npos);
             }
         }
         REQUIRE(found_expire);
+
+        // ...and the configured age must still reach the candidate query,
+        // or the policy would silently expire everything.
+        bool age_applied = false;
+        for (const auto& query : adapter->executed_queries) {
+            if (query.find("ducklake_snapshots") != std::string::npos &&
+                query.find("7 days") != std::string::npos) {
+                age_applied = true;
+            }
+        }
+        REQUIRE(age_applied);
     }
 
     SECTION("No retention config means no expire call") {

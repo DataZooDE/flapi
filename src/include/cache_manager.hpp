@@ -84,6 +84,12 @@ private:
     /// SQL to expire every snapshot beyond the newest `keep_last`, or an empty
     /// string when there is nothing to expire. Resolves the ids first because
     /// `versions` takes an explicit list.
+    /// Double every `'` so a value is safe inside a SQL string literal.
+    static std::string escapeSqlLiteral(const std::string& value);
+
+    /// Quote a name as a SQL identifier.
+    static std::string quoteIdentifier(const std::string& name);
+
     /// The names by which `catalog`'s `changes` map refers to
     /// `schema`.`table`: its numeric table id (for row changes) and
     /// `schema.table` (for creates). Empty if neither can be resolved.
@@ -110,10 +116,31 @@ private:
     /// table's snapshots" and only one of them was per-table.
     static std::string tableSnapshotPredicate(const std::vector<std::string>& keys);
 
-    std::string buildCountBasedExpireSql(const std::string& catalog,
-                                         const std::string& schema,
-                                         const std::string& table,
-                                         std::size_t keep_last);
+    /// Snapshot ids of `schema`.`table` that this endpoint may expire.
+    ///
+    /// `keep_last` retains that many newest; `older_than_sql` (a SQL
+    /// expression) retains anything at or after it. Either may be empty.
+    /// Only snapshots that touched NOTHING BUT this table are returned - see
+    /// buildExpireSql.
+    std::vector<std::int64_t> expirableSnapshotIds(const std::string& catalog,
+                                                   const std::string& schema,
+                                                   const std::string& table,
+                                                   std::optional<std::size_t> keep_last,
+                                                   const std::string& older_than_sql);
+
+    /// `CALL ducklake_expire_snapshots(..., versions => [...])`, or empty when
+    /// there is nothing this endpoint may expire.
+    ///
+    /// EVERY expiry goes through here. ducklake_expire_snapshots with
+    /// `older_than =>` acts on the whole CATALOG, and every cached endpoint
+    /// shares one - so an age-based policy or a manual GC on one endpoint
+    /// destroyed every other endpoint's history and incremental watermark.
+    /// Expiring by explicit, per-table version ids is the only safe form.
+    std::string buildExpireSql(const std::string& catalog,
+                               const std::string& schema,
+                               const std::string& table,
+                               std::optional<std::size_t> keep_last,
+                               const std::string& older_than_sql);
 
     static std::string determineCacheMode(const CacheConfig& cacheConfig);
 
