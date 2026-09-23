@@ -8,6 +8,7 @@
 
 #include "auth_middleware.hpp"
 #include "flapi_app.hpp"
+#include "handler_pool.hpp"
 #include "config_manager.hpp"
 #include "cors_middleware.hpp"
 #include "database_manager.hpp"
@@ -57,6 +58,8 @@ public:
     /// certain. It does not make it impossible - that needs handlers off the
     /// io threads, which is what #120 tracks.
     static std::uint16_t serverThreadCount(unsigned hardware_concurrency);
+
+
     void stop();
 
     void requestForEndpoint(const EndpointConfig& endpoint, const std::unordered_map<std::string, std::string>& pathParams = {});
@@ -74,6 +77,23 @@ private:
     crow::response generateOpenAPIDoc();
     
     FlapiApp app;
+
+    // Worker threads that run request handlers off Crow's io threads (#120).
+    // Null when the offload is disabled, in which case handlers run inline.
+    //
+    // DECLARED AFTER `app` deliberately. Members are destroyed in reverse
+    // order, so this joins its workers before the io_contexts and connections
+    // they post completions into are torn down. Declared before `app`, a
+    // worker still mid-query when the process is stopping would post to a
+    // destroyed io_service and then drop a keepalive holding a connection
+    // whose socket belonged to it.
+    std::unique_ptr<HandlerPool> handlerPool;
+    /// stop() is reachable from the signal supervisor and from main.
+    std::mutex stop_mutex_;
+    /// Set by stop() and never cleared; run() refuses to start when it is set.
+    std::atomic<bool> stop_requested_{false};
+    /// The drain happens once; app.stop() is re-issued on every stop() call.
+    bool drained_ = false;
     std::shared_ptr<ConfigManager> configManager;
     std::shared_ptr<ConfigService> configService;
     std::shared_ptr<DatabaseManager> dbManager;

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { pathToSlug, slugToPath, buildEndpointUrl } from '../../src/lib/url';
+import { pathToSlug, slugToPath, buildEndpointUrl } from '@flapi/shared';
 
 // The same fixture the C++ suite reads. It exists because these two
 // implementations drifted: the CLI shipped '-slash-' while the server used

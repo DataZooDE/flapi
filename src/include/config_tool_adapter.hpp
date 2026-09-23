@@ -13,6 +13,8 @@
 
 namespace flapi {
 
+class TemplateSecrets;
+
 // Forward declarations
 class ConfigManager;
 class DatabaseManager;
@@ -27,6 +29,7 @@ struct ConfigToolDef {
     std::string description;
     crow::json::wvalue input_schema;
     crow::json::wvalue output_schema;
+
 };
 
 /**
@@ -122,6 +125,29 @@ private:
     std::unordered_map<std::string, ConfigToolDef> tools_;
     std::unordered_map<std::string, bool> tool_auth_required_;
     std::unordered_map<std::string, ToolHandler> tool_handlers_;
+
+/// Every registered tool must have a handler in tool_handlers_.
+    ///
+    /// There used to be a tool_unimplemented_ registry here, added when eleven
+    /// tools returned hardcoded or empty data while reporting success. They
+    /// were then wired to their real REST handlers, which emptied the registry
+    /// - leaving declared, guarded, never-populated machinery that no test
+    /// could reach. The invariant it encoded survives as the handler lookup in
+    /// getRegisteredTools(): a tool with no handler is not advertised.
+
+    /// Turn a config-service handler's crow::response into a tool result.
+    ///
+    /// Every one of these tools has a working REST handler that this adapter
+    /// was constructing and then discarding - which is how eleven of them
+    /// came to return hardcoded or empty data while reporting success.
+    /// Delegating means the MCP surface and the REST surface cannot disagree,
+    /// and the handlers' existing integration coverage applies to both.
+    static ConfigToolResult fromHandler(const std::string& tool_name,
+                                        const crow::response& response,
+                                        const TemplateSecrets* secrets = nullptr);
+
+    /// A request carrying `body` as its JSON body, for handlers that read one.
+    static crow::request handlerRequest(const std::string& body = "{}");
 
     // Tool registration
     void registerConfigTools();

@@ -151,6 +151,13 @@ std::optional<MCPSession::AuthContext> MCPAuthHandler::authenticateBearer(
         MCPSession::AuthContext ctx;
         ctx.authenticated = true;
         ctx.username = decoded.get_payload_claim("sub").as_string();
+        // Optional: not every bearer token carries one, and auth.email simply
+        // stays empty when it does not.
+        try {
+            ctx.email = decoded.get_payload_claim("email").as_string();
+        } catch (const std::exception&) {
+            // no email claim
+        }
         ctx.auth_type = "bearer";
         ctx.auth_time = std::chrono::steady_clock::now();
 
@@ -261,6 +268,7 @@ std::optional<MCPSession::AuthContext> MCPAuthHandler::authenticateOIDC(
     MCPSession::AuthContext ctx;
     ctx.authenticated = true;
     ctx.username = claims->username;
+    ctx.email = claims->email;
     ctx.roles = claims->roles;
     ctx.auth_type = "oidc";
     ctx.auth_time = std::chrono::steady_clock::now();

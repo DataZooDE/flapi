@@ -118,6 +118,25 @@ jobs:
           ${BUILD_IMAGE} \
           bash -c 'cd /build_dir && make clean && make release ${{ matrix.arch != 'arm64' && '&& make test' || '' }}'
 
+    # Runs HERE, where a configured build tree exists. It was in the
+    # integration-tests job, which only downloads the prebuilt binary and
+    # never configures CMake - so it found no crow header and passed
+    # vacuously on every run, while claiming to guard the offload against the
+    # field-drop that corrupted every Arrow response.
+    - name: Check codebase invariants that need a build tree
+      shell: bash
+      run: |
+        ./scripts/check_crow_response_fields.py
+        ./scripts/check_cxx_standard_uniform.sh build/release
+
+    # amd64 only: the guard reads mangled symbols with the runner's own `nm`,
+    # and the arm64 archive is cross-built. The property it checks is a
+    # source-structure one, identical on both.
+    - name: Check the tracing ODR guard
+      if: matrix.arch == 'amd64'
+      shell: bash
+      run: ./scripts/check_tracing_abi_guard.sh build/release/libflapi-lib.a
+
     - uses: actions/upload-artifact@v4
       with:
         name: flapi-linux-${{ matrix.arch }}
@@ -255,7 +274,21 @@ jobs:
 
     - name: Rewrite shared import to relative path
       run: |
-        sed -i "s|from '@flapi/shared'|from '../../shared/src/index'|" cli/src/lib/validation.ts
+        # Every importer, not a named one. This step listed only
+        # validation.ts; when url.ts started importing the slug codec from
+        # @flapi/shared the build broke, because bun --compile does not
+        # resolve the file: dependency. All importers live in cli/src/lib,
+        # so one relative path serves them all.
+        files=$(grep -rl "from '@flapi/shared'" cli/src)
+        test -n "$files" || { echo "no @flapi/shared importers found"; exit 1; }
+        echo "$files"
+        for f in $files; do
+          case "$f" in
+            cli/src/lib/*) ;;
+            *) echo "$f is outside cli/src/lib; ../../shared/src/index will not resolve"; exit 1 ;;
+          esac
+          sed -i "s|from '@flapi/shared'|from '../../shared/src/index'|" "$f"
+        done
 
     - name: Build standalone binary
       working-directory: cli
@@ -304,11 +337,14 @@ jobs:
         uv venv
         uv pip install -e .
 
+    # Source-only greps; they need no build tree. The two that DO need one
+    # (compile database, static library) moved to linux-build - this job
+    # downloads the flapi binary alone, so both were skipping and passing
+    # vacuously on every run, the same way the crow-field check did.
     - name: Check codebase invariants
       run: |
         ./scripts/check_crow_app_alias.sh
-        ./scripts/check_cxx_standard_uniform.sh build/release
-        ./scripts/check_tracing_abi_guard.sh build/release/libflapi-lib.a
+        ./scripts/check_auth_prefix_single_source.sh
 
     - name: Run integration tests
       working-directory: test/integration

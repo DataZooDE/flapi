@@ -4,6 +4,9 @@
 #include <map>
 #include <string>
 #include <unordered_map>
+#include <vector>
+
+#include "template_secrets.hpp"
 
 namespace flapi {
 
@@ -27,16 +30,14 @@ public:
     // Render the dry-run JSON payload returned to the agent in place of real
     // query results. Always emits a `parameters` object (possibly empty) so
     // callers don't need to special-case missing args.
-    /// Replace credential-valued connection properties wherever they appear
-    /// in `sql`. The rendered SQL is returned to the caller verbatim, and a
-    /// template that interpolates `{{{ conn.password }}}` therefore handed the
-    /// credential back in the dry-run payload - over MCP, which is
-    /// unauthenticated by default. Scrubbing by VALUE, not by key, because by
-    /// the time the SQL is rendered the key is gone.
-    static std::string scrubConnectionSecrets(
-        std::string sql,
-        const std::unordered_map<std::string, std::string>& connection_properties);
+    /// The message returned in place of the SQL when a secret cannot be
+    /// scrubbed safely.
+    static const char* withheldPreview();
 
+    /// `parameters` is echoed back to the caller, so a credential-valued
+    /// default is disclosed by the echo even when the SQL itself is clean.
+    /// Redacted by KEY here, which is exact - unlike the SQL, the key is
+    /// still available at this point.
     static std::string formatResult(const std::string& tool_name,
                                     const std::string& rendered_sql,
                                     const std::map<std::string, std::string>& parameters);

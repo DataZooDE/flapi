@@ -4,11 +4,14 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <map>
+#include <optional>
 #include <vector>
 
 #include "audit_logger.hpp"
 #include "config_manager.hpp"
 #include "database_manager.hpp"
+#include "mcp_types.hpp"
 #include "mcp_authorization_policy.hpp"
 #include "mcp_tool_rate_limiter.hpp"
 #include "sql_template_processor.hpp"
@@ -47,7 +50,36 @@ struct MCPToolCallRequest {
     // through to the tool handler as a comma-separated list. Kept as a
     // single string to keep the existing context map signature stable.
     static constexpr const char* kRolesContextKey = "auth.roles";
+    static constexpr const char* kUsernameContextKey = "auth.username";
+    static constexpr const char* kAuthTypeContextKey = "auth.type";
+    static constexpr const char* kEmailContextKey = "auth.email";
+
+    /// True once the caller has been authenticated. Set alongside the keys
+    /// above so a tool can distinguish "anonymous" from "authenticated with an
+    /// empty username" - the two render identically otherwise.
+    static constexpr const char* kAuthenticatedContextKey = "auth.authenticated";
 };
+
+/// Build the transport-neutral auth-context map from an authenticated MCP
+/// session. The one place the key names are chosen.
+std::unordered_map<std::string, std::string> mcpAuthContextFrom(
+    const std::optional<MCPSession::AuthContext>& auth);
+
+/// Strip caller-supplied `__auth_*` from `params`, then inject the identity
+/// the transport authenticated.
+///
+/// BOTH halves, in ONE function, because doing only one of them is a
+/// vulnerability either way: stripping without injecting leaves `auth.*`
+/// empty, so the documented `{{#auth.username}}WHERE tenant = ...{{/...}}`
+/// filter renders NOTHING and returns every tenant's rows; injecting without
+/// stripping lets the caller declare who it is.
+///
+/// And in one function because the first fix did this inline in
+/// MCPToolHandler::prepareParameters, which is tools/call only - resources/read
+/// passed its bound URI-template params straight to executeQuery, so the
+/// cross-tenant disclosure survived one protocol method over.
+void applyMcpAuthContext(std::map<std::string, std::string>& params,
+                         const std::unordered_map<std::string, std::string>& context);
 
 class MCPToolHandler {
 public:
@@ -96,8 +128,15 @@ private:
     void applyDefaultArguments(const EndpointConfig& endpoint_config,
                                crow::json::wvalue& arguments) const;
 
-    std::map<std::string, std::string> prepareParameters(const EndpointConfig& endpoint_config,
-                                                        const crow::json::wvalue& arguments) const;
+    /// `context` carries the identity the transport authenticated. It is
+    /// injected as `__auth_*` AFTER the caller's own `__auth_*` keys are
+    /// stripped, which is what makes `auth.username` and friends usable from
+    /// an MCP template at all. Passing an empty map yields the anonymous
+    /// context, which is what the unauthenticated MCP default produces.
+    std::map<std::string, std::string> prepareParameters(
+        const EndpointConfig& endpoint_config,
+        const crow::json::wvalue& arguments,
+        const std::unordered_map<std::string, std::string>& context = {}) const;
 QueryResult executeQueryWithEndpoint(const EndpointConfig& endpoint_config,
                                    std::map<std::string, std::string>& params) const;
     std::string formatResult(const QueryResult& query_result,

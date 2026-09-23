@@ -83,27 +83,27 @@ std::string PathUtils::slugToPath(const std::string& slug) {
 }
 
 bool PathUtils::looksLikePath(const std::string& identifier) {
-    // A slug never contains '/': the encoder maps every '/' to '-'. So an
-    // identifier containing one cannot be a slug, and is the percent-decoded
-    // url-path form that the config service also accepts.
-    //
-    // This is an explicit contract rather than a fallback. An earlier version
-    // made slugToPath prepend a leading '/' whenever the decode did not start
-    // with one, which made 'x' and '-x' both address '/x' - every endpoint had
-    // two names again, the exact ambiguity #123 set out to remove.
+    // A slug never contains '/': the encoder maps every '/' to '-'.
     return identifier.find('/') != std::string::npos;
 }
 
 std::string PathUtils::identifierToPath(const std::string& identifier) {
-    if (!looksLikePath(identifier)) {
-        return slugToPath(identifier);
-    }
-    // Already a path. Normalise only the leading slash, which a client may or
-    // may not have included.
-    if (identifier.empty() || identifier.front() == '/') {
-        return identifier;
-    }
-    return "/" + identifier;
+    // The config service accepts ONE name per endpoint: the slug.
+    //
+    // This used to fall back to treating a '/'-bearing identifier as a
+    // percent-decoded url-path, and a tavern case asserted that
+    // `GET /api/v1/_config/endpoints/customers%2F` resolved. It never did and
+    // never could: the routes are declared `<string>`, which matches a single
+    // path segment, and Crow percent-decodes before matching - so the decoded
+    // `customers/` matches no route and 404s before any of this runs. The
+    // unit test for the fallback passed against an input the HTTP surface
+    // cannot deliver.
+    //
+    // Rather than add a second reachable name - the exact ambiguity #123
+    // removed, where 'x' and '-x' both addressed '/x' - the fallback is gone.
+    // looksLikePath survives as the predicate that keeps the two forms
+    // distinguishable for callers that hold a path already.
+    return slugToPath(identifier);
 }
 
 } // namespace flapi

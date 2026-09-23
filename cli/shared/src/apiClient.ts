@@ -1,6 +1,6 @@
 import axios from 'axios';
 import type { AxiosInstance, AxiosRequestConfig, InternalAxiosRequestConfig } from 'axios';
-import { pathToSlug, slugToPath } from './lib/url';
+import { pathToSlug, slugToPath, buildEndpointUrl } from './lib/url';
 import type { ValidationResult, ReloadResult } from './lib/types';
 
 /**
@@ -239,8 +239,7 @@ export class FlapiApiClient {
    * Automatically converts path to slug
    */
   async getEndpointByPath(path: string): Promise<any> {
-    const slug = pathToSlug(path);
-    const response = await this.client.get(`/api/v1/_config/endpoints/${slug}`);
+    const response = await this.client.get(buildEndpointUrl(path));
     return response.data;
   }
 
@@ -256,9 +255,8 @@ export class FlapiApiClient {
    * Get parameter definitions for an endpoint
    */
   async getEndpointParameters(pathOrName: string): Promise<GetParametersResponse> {
-    const slug = pathToSlug(pathOrName);
     const response = await this.client.get<GetParametersResponse>(
-      `/api/v1/_config/endpoints/${slug}/parameters`
+      buildEndpointUrl(pathOrName, 'parameters')
     );
     return response.data;
   }
@@ -269,9 +267,8 @@ export class FlapiApiClient {
    * see src/config_service.cpp).
    */
   async testEndpoint(pathOrName: string, parameters: Record<string, any>): Promise<any> {
-    const slug = pathToSlug(pathOrName);
     const response = await this.client.post(
-      `/api/v1/_config/endpoints/${slug}/template/test`,
+      buildEndpointUrl(pathOrName, 'template/test'),
       { parameters }
     );
     return response.data;
@@ -329,9 +326,8 @@ export class FlapiApiClient {
    * Validate endpoint configuration
    */
   async validateEndpoint(pathOrName: string, yamlContent: string): Promise<any> {
-    const slug = pathToSlug(pathOrName);
     const response = await this.client.post(
-      `/api/v1/_config/endpoints/${slug}/validate`,
+      buildEndpointUrl(pathOrName, 'validate'),
       yamlContent,
       { headers: { 'Content-Type': 'text/plain' } }
     );
@@ -342,8 +338,7 @@ export class FlapiApiClient {
    * Reload endpoint configuration from disk
    */
   async reloadEndpoint(pathOrName: string): Promise<any> {
-    const slug = pathToSlug(pathOrName);
-    const response = await this.client.post(`/api/v1/_config/endpoints/${slug}/reload`);
+    const response = await this.client.post(buildEndpointUrl(pathOrName, 'reload'));
     return response.data;
   }
 

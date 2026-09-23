@@ -5,11 +5,89 @@
 #include <algorithm>
 
 #include "mcp_dry_run.hpp"
+#include "auth_params.hpp"
+#include "template_secrets.hpp"
 #include "mcp_response_shaper.hpp"
 #include "mcp_schema_builder.hpp"
 #include "flapi_telemetry.hpp"
 
 namespace flapi {
+
+std::unordered_map<std::string, std::string> mcpAuthContextFrom(
+        const std::optional<MCPSession::AuthContext>& auth) {
+    std::unordered_map<std::string, std::string> context;
+    if (!auth) {
+        return context;
+    }
+    // Set even when the username is empty, so an authenticated caller with a
+    // blank subject is distinguishable from an anonymous one - otherwise
+    // `{{#auth.authenticated}}` guards open up for everybody.
+    context[MCPToolCallRequest::kAuthenticatedContextKey] =
+        auth->authenticated ? "true" : "false";
+    if (!auth->auth_type.empty()) {
+        context[MCPToolCallRequest::kAuthTypeContextKey] = auth->auth_type;
+    }
+    if (!auth->username.empty()) {
+        context[MCPToolCallRequest::kUsernameContextKey] = auth->username;
+    }
+    if (!auth->email.empty()) {
+        context[MCPToolCallRequest::kEmailContextKey] = auth->email;
+    }
+    if (!auth->roles.empty()) {
+        std::string roles_csv;
+        for (std::size_t i = 0; i < auth->roles.size(); ++i) {
+            if (i > 0) {
+                roles_csv += ",";
+            }
+            roles_csv += auth->roles[i];
+        }
+        context[MCPToolCallRequest::kRolesContextKey] = roles_csv;
+    }
+    return context;
+}
+
+void applyMcpAuthContext(std::map<std::string, std::string>& params,
+                         const std::unordered_map<std::string, std::string>& context) {
+    // 1. `__auth_*` is SERVER data. It must never be accepted from a caller.
+    //
+    // The REST path strips it in combineParameters. MCP did not, so the same
+    // attack the REST fix closed still worked, measured:
+    //
+    //   tools/call {"__auth_username":"admin","__auth_roles":"admin"}
+    //   -> {"who":"admin","roles":"admin"}
+    stripReservedAuthParams(params);
+
+    // 2. ...and then inject the identity the transport actually authenticated.
+    //
+    // Stripping alone left `auth.*` unconditionally EMPTY over MCP, even for
+    // an authenticated caller, because nothing put the real principal back.
+    // Only the REST path injected. The documented multi-tenant template
+    //
+    //   {{#auth.username}}WHERE tenant = '{{ auth.username }}'{{/auth.username}}
+    //
+    // therefore rendered NO filter over MCP and returned every tenant's rows
+    // to any authenticated caller; the unconditional form rendered
+    // `WHERE tenant = ''` and returned none. Both silent.
+    //
+    // Keys mirror api_server.cpp exactly.
+    const auto get = [&context](const char* key) -> const std::string* {
+        const auto it = context.find(key);
+        return it == context.end() ? nullptr : &it->second;
+    };
+    const auto* authenticated = get(MCPToolCallRequest::kAuthenticatedContextKey);
+    if (authenticated == nullptr || *authenticated != "true") {
+        return;
+    }
+    const auto value = [&get](const char* key) -> std::string {
+        const auto* found = get(key);
+        return found != nullptr ? *found : std::string();
+    };
+    params["__auth_authenticated"] = "true";
+    params["__auth_username"] = value(MCPToolCallRequest::kUsernameContextKey);
+    params["__auth_roles"] = value(MCPToolCallRequest::kRolesContextKey);
+    params["__auth_type"] = value(MCPToolCallRequest::kAuthTypeContextKey);
+    params["__auth_email"] = value(MCPToolCallRequest::kEmailContextKey);
+}
 
 MCPToolExecutionResult MCPToolHandler::executeTool(const MCPToolCallRequest& request) {
     const auto t0 = std::chrono::steady_clock::now();
@@ -82,6 +160,15 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
         }
         audit_logger->log(std::move(ev));
     };
+
+    // Everything a response from this function could disclose, from any
+    // source. Declared OUT here, not inside the dry-run branch, because the
+    // ERROR path leaks the same values: DuckDB quotes the failing statement
+    // verbatim in its message ("LINE 1: SELECT 'hunter2' AS pw ..."), and that
+    // message went straight back to the caller. MCP is unauthenticated by
+    // default, so appending an unbindable column to a template and calling it
+    // WITHOUT _dryRun recovered every secret the preview path scrubs.
+    TemplateSecrets secrets;
 
     try {
         // Get the endpoint configuration by tool name
@@ -182,7 +269,15 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
         }
 
         // Prepare parameters for SQL template
-        std::map<std::string, std::string> params = prepareParameters(*endpoint_config, effective_arguments);
+        std::map<std::string, std::string> params =
+            prepareParameters(*endpoint_config, effective_arguments, request.context);
+
+        // Collected for EVERY path, not just the preview: see the
+        // declaration above. collectTemplateSecrets enumerates conn.*, the
+        // whitelisted env.* and params in one place, and REST and
+        // resources/read call the same function - scrubbing one path and
+        // calling it done is how this kept recurring.
+        secrets = collectTemplateSecrets(config_manager.get(), *endpoint_config, params);
 
         // W2.2 dry-run short-circuit: render the SQL via the existing template
         // processor and return it without touching the database. Write tools
@@ -192,16 +287,21 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
             std::string rendered_sql = sql_processor->loadAndProcessTemplate(*endpoint_config, params);
             // The rendered SQL goes back to the caller, and MCP is
             // unauthenticated by default, so any credential a template
-            // interpolated from conn.* would leave with it.
-            if (config_manager && !endpoint_config->connection.empty()) {
-                const auto& connections = config_manager->getConnections();
-                for (const auto& conn_name : endpoint_config->connection) {
-                    const auto it = connections.find(conn_name);
-                    if (it != connections.end()) {
-                        rendered_sql = MCPDryRun::scrubConnectionSecrets(
-                            std::move(rendered_sql), it->second.properties);
-                    }
-                }
+            // interpolated leaves with it.
+            //
+            // This covered conn.* only. A template can interpolate three
+            // things, and the other two were unguarded:
+            //   - `{{{ env.API_KEY }}}`, the documented whitelisted-
+            //     environment-variable pattern; and
+            //   - `{{ params.token }}`, whose value can come from a request
+            //     field's configured `default:`.
+            // Both came back verbatim. Enumerating every source in one place
+            // is the fix; scrubbing one of them was the bug.
+
+            if (secrets.withhold()) {
+                rendered_sql = MCPDryRun::withheldPreview();
+            } else {
+                rendered_sql = secrets.scrub(std::move(rendered_sql));
             }
             std::string payload = MCPDryRun::formatResult(request.tool_name, rendered_sql, params);
 
@@ -295,7 +395,22 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
         }
     } catch (const std::exception& e) {
         emit_audit("error:exception", -1);
-        return createErrorResult("Tool execution error: " + std::string(e.what()),
+        // Scrubbed with the same secret set as the preview. A database error
+        // quotes the statement that failed, so this is the same disclosure
+        // the dry-run path was fixed for - it just arrives via a different
+        // return. When a secret is too short to replace safely the message is
+        // withheld entirely rather than mangled.
+        // publicErrorMessage, not withheldPreview(): that wording describes a
+        // PREVIEW, and reusing it here meant any caller could suppress every
+        // diagnostic for a call - validation errors included - just by passing
+        // a short value under a credential-shaped name like `token`.
+        // Scrubbed before it is LOGGED as well as before it is returned:
+        // a DuckDB error quotes the failing statement, and logs are shipped
+        // and indexed.
+        const std::string public_detail =
+            publicErrorMessage("Tool execution error", e.what(), secrets);
+        CROW_LOG_ERROR << "for tool " << request.tool_name << ": " << public_detail;
+        return createErrorResult(public_detail,
                                  MCPToolExecutionResult::FailureKind::ExecutionError);
     }
 }
@@ -391,41 +506,32 @@ crow::json::wvalue MCPToolHandler::getToolDefinition(const std::string& tool_nam
 void MCPToolHandler::applyDefaultArguments(const EndpointConfig& endpoint_config,
                                           crow::json::wvalue& arguments) const {
     auto present = crow::json::load(arguments.dump());
+    // has() throws on anything that is not a container, so the type is
+    // checked rather than just the validity - see MCPDryRun::extractFlag.
+    const bool present_is_object =
+        present && present.t() == crow::json::type::Object;
     for (const auto& field : endpoint_config.request_fields) {
         if (field.defaultValue.empty()) {
             continue;
         }
-        if (present && present.has(field.fieldName)) {
+        if (present_is_object && present.has(field.fieldName)) {
             continue;
         }
         arguments[field.fieldName] = field.defaultValue;
     }
 }
 
-std::map<std::string, std::string> MCPToolHandler::prepareParameters(const EndpointConfig& endpoint_config,
-                                                                    const crow::json::wvalue& arguments) const {
+std::map<std::string, std::string> MCPToolHandler::prepareParameters(
+        const EndpointConfig& endpoint_config,
+        const crow::json::wvalue& arguments,
+        const std::unordered_map<std::string, std::string>& context) const {
     // Convert JSON arguments to parameter map
     std::map<std::string, std::string> params = convertJsonToParams(arguments);
 
-    // `__auth_*` is the reserved prefix APIServer uses to inject the
-    // authenticated principal into the template context. It is SERVER data and
-    // must never be accepted from a caller.
-    //
-    // The REST path strips it in combineParameters. This path did not, so the
-    // same attack the REST fix closed still worked over MCP - measured:
-    //
-    //   tools/call {"__auth_username":"admin","__auth_roles":"admin"}
-    //   -> {"who":"admin","roles":"admin"}
-    //
-    // flAPI treats REST and MCP as equal surfaces, so a guard on one of them
-    // is not a guard.
-    for (auto it = params.begin(); it != params.end();) {
-        if (it->first.rfind("__auth_", 0) == 0) {
-            it = params.erase(it);
-        } else {
-            ++it;
-        }
-    }
+    // Strip the caller's `__auth_*` and inject the authenticated identity.
+    // Both halves live in applyMcpAuthContext, which resources/read calls too
+    // - doing this inline here is what left that surface unprotected.
+    applyMcpAuthContext(params, context);
 
     // Defaults are applied earlier, in executeTool, so that validation sees
     // them - see applyDefaultArguments. This loop stays because prepareParameters

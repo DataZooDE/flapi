@@ -209,3 +209,41 @@ mcp-tool:
         assert result.returncode == 0
         combined = result.stderr + result.stdout
         assert "MCP_UNAUTHENTICATED_TOOLS" not in combined, combined
+
+
+
+class TestShortCredentialWarning:
+    """A secret under four characters cannot be scrubbed out of rendered SQL
+    without corrupting the text around it, so flAPI withholds error detail and
+    dry-run previews for endpoints using that connection - with nothing in the
+    response to explain why. The operator is told once, at startup."""
+
+    def test_a_credential_too_short_to_redact_is_reported(
+            self, flapi_binary, temp_config_dir):
+        _write_endpoint(temp_config_dir, "t",
+                        "url-path: /t\nmethod: GET\n"
+                        "template-source: t.sql\nconnection: [test]\n")
+        config = _write_main_config(temp_config_dir, {
+            "connections": {"test": {"properties": {"path": "./data.parquet",
+                                                    "password": "ab"}}},
+        })
+        result = _run_validate(flapi_binary, config)
+        output = result.stdout + result.stderr
+        assert "CREDENTIAL_TOO_SHORT_TO_REDACT" in output, output
+        assert "password" in output, output
+        # The warning names the key, never the value.
+        assert "'ab'" not in output, output
+
+    def test_an_ordinary_credential_produces_no_such_warning(
+            self, flapi_binary, temp_config_dir):
+        _write_endpoint(temp_config_dir, "t",
+                        "url-path: /t\nmethod: GET\n"
+                        "template-source: t.sql\nconnection: [test]\n")
+        config = _write_main_config(temp_config_dir, {
+            "connections": {"test": {"properties": {
+                "path": "./data.parquet",
+                "password": "a-perfectly-ordinary-secret"}}},
+        })
+        result = _run_validate(flapi_binary, config)
+        output = result.stdout + result.stderr
+        assert "CREDENTIAL_TOO_SHORT_TO_REDACT" not in output, output

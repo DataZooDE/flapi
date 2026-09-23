@@ -12,10 +12,22 @@
 # Usage: scripts/check_cxx_standard_uniform.sh [build-dir]   (default build/release)
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# See check_tracing_abi_guard.sh: a build dir given on the command line is a
+# claim that it holds a configured build, so a missing compile database there
+# is an error. Only the default may skip.
+explicit=0
+if [ $# -ge 1 ]; then
+    explicit=1
+fi
 BUILD_DIR="${1:-build/release}"
 CDB="$BUILD_DIR/compile_commands.json"
 
 if [ ! -f "$CDB" ]; then
+    if [ "$explicit" -eq 1 ]; then
+        echo "ERROR: $CDB not found; nothing was checked." >&2
+        echo "Configure with CMAKE_EXPORT_COMPILE_COMMANDS=ON." >&2
+        exit 1
+    fi
     echo "SKIP: $CDB not found (configure with CMAKE_EXPORT_COMPILE_COMMANDS=ON)"
     exit 0
 fi

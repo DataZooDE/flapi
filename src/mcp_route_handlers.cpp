@@ -1,4 +1,5 @@
 #include "mcp_route_handlers.hpp"
+#include "template_secrets.hpp"
 #include "request_context.hpp"
 #include "trace_context.hpp"
 
@@ -1079,17 +1080,17 @@ void MCPRouteHandlers::discoverMCPEntitiesImpl() {
         try {
             auto config_tools = config_tool_adapter_->getRegisteredTools();
             for (const auto& tool : config_tools) {
-                std::string tool_json = "{\"name\":\"";
-                tool_json += tool.name + "\",\"description\":\"";
-                tool_json += tool.description + "\",";
-                tool_json += "\"inputSchema\":" + tool.input_schema.dump() + ",";
-                tool_json += "\"outputSchema\":" + tool.output_schema.dump() + "}";
-                auto tool_def = crow::json::load(tool_json);
-                if (tool_def) {
-                    tool_definitions_.push_back(std::move(tool_def));
-                } else {
-                    CROW_LOG_WARNING << "Failed to parse JSON for config tool: " << tool.name;
-                }
+                // Built as JSON, not concatenated into a literal. A name or
+                // description containing a quote or backslash made
+                // crow::json::load fail and the tool vanish from tools/list -
+                // fail-open by omission, the same shape this release has
+                // been closing elsewhere.
+                crow::json::wvalue tool_def;
+                tool_def["name"] = tool.name;
+                tool_def["description"] = tool.description;
+                tool_def["inputSchema"] = crow::json::load(tool.input_schema.dump());
+                tool_def["outputSchema"] = crow::json::load(tool.output_schema.dump());
+                tool_definitions_.push_back(std::move(tool_def));
             }
             CROW_LOG_INFO << "Loaded " << config_tools.size() << " config tools";
         } catch (const std::exception& e) {
@@ -1555,22 +1556,8 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                 //  - username for W1.3 audit log and W2.5 per-tool rate-limit
                 //    principal keying
                 if (auth_handler_) {
-                    auto auth_context = auth_handler_->authenticate(http_req);
-                    if (auth_context) {
-                        if (!auth_context->username.empty()) {
-                            tool_request.context["auth.username"] = auth_context->username;
-                        }
-                        if (!auth_context->roles.empty()) {
-                            std::string roles_csv;
-                            for (size_t i = 0; i < auth_context->roles.size(); ++i) {
-                                if (i > 0) {
-                                    roles_csv += ",";
-                                }
-                                roles_csv += auth_context->roles[i];
-                            }
-                            tool_request.context[MCPToolCallRequest::kRolesContextKey] = roles_csv;
-                        }
-                    }
+                    tool_request.context =
+                        mcpAuthContextFrom(auth_handler_->authenticate(http_req));
                 }
 
                 // MCP 2026-07-28 Tasks: run the tool as a durable task when it is
@@ -1876,15 +1863,54 @@ MCPResponse MCPRouteHandlers::handleResourcesReadRequest(const MCPRequest& reque
             }
         }
 
+        // The identity, on this surface too.
+        //
+        // resources/read authenticated the caller and applied per-resource
+        // RBAC, and then passed `bound_params` straight into executeQuery with
+        // no `__auth_*` strip and no injection - so `auth.*` was
+        // unconditionally empty here. The documented
+        // `{{#auth.username}}WHERE tenant = '...'{{/auth.username}}` filter
+        // rendered NOTHING and returned every tenant's rows to any
+        // authenticated caller: the identical failure to the one fixed for
+        // tools/call, one protocol method over, because that fix was made
+        // inline in MCPToolHandler::prepareParameters instead of in a helper
+        // both surfaces call.
+        if (auth_handler_) {
+            applyMcpAuthContext(bound_params,
+                                mcpAuthContextFrom(auth_handler_->authenticate(http_req)));
+        } else {
+            applyMcpAuthContext(bound_params, {});
+        }
+
         // Read the resource content (binding any uri-template path params).
         try {
             crow::json::wvalue result = readResourceContent(*resource_config, bound_params);
             response.result = result.dump();
         } catch (const std::exception& e) {
-            response.error = formatJsonRpcError(-32603, "Resource read error: " + std::string(e.what()));
+            // Scrubbed like tools/call and REST. A database error quotes the
+            // statement that failed - the rendered template - so this
+            // returned whatever the template interpolated from conn.*, env.*
+            // or a credential-valued default, to an unauthenticated caller.
+            // The tools/call fix did not reach here because it was written
+            // inline rather than as a shared helper; the same mistake as the
+            // auth injection, in the same handler.
+            const std::string public_detail = publicErrorMessage(
+                "Resource read error", e.what(),
+                collectTemplateSecrets(config_manager_.get(), *resource_config,
+                                       bound_params));
+            // Scrubbed before logging too - see the REST and tools/call paths.
+            CROW_LOG_ERROR << "for resource "
+                           << resource_config->mcp_resource->name << ": " << public_detail;
+            response.error = formatJsonRpcError(-32603, public_detail);
         }
     } catch (const std::exception& e) {
-        response.error = formatJsonRpcError(-32603, "Resource read error: " + std::string(e.what()));
+        // The OUTER catch. Only the inner one was scrubbed, so anything
+        // thrown during URI-template binding or resource lookup bypassed it.
+        // There is no endpoint in scope here - the lookup may be what failed -
+        // so there are no secrets to enumerate, and the detail goes to the log.
+        CROW_LOG_ERROR << "Resource read error: " << e.what();
+        response.error = formatJsonRpcError(
+            -32603, "Resource read error: see the server log for details.");
     }
 
     return response;

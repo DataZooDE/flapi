@@ -2,7 +2,13 @@
 
 #include "redaction.hpp"
 
+#include <algorithm>
+
 namespace flapi {
+
+// Below this length a value cannot be replaced without risking unrelated text.
+constexpr std::size_t kMinScrubbableSecret = 4;
+
 
 bool MCPDryRun::extractFlag(crow::json::wvalue& arguments) {
     if (arguments.t() != crow::json::type::Object) {
@@ -34,7 +40,13 @@ bool MCPDryRun::extractFlag(crow::json::wvalue& arguments) {
 
     // Rebuild the wvalue without the reserved key so downstream validators
     // never observe `_dryRun` as an unknown parameter.
-    crow::json::wvalue rebuilt;
+    //
+    // Explicitly an OBJECT, even when nothing is left. A default-constructed
+    // wvalue is Null, and `{"_dryRun": true}` - the minimal dry-run call -
+    // strips to exactly that. applyDefaultArguments then calls has() on a
+    // null, which throws "value is not a container", so a dry run of any
+    // endpoint declaring a `default:` failed with an opaque error.
+    crow::json::wvalue rebuilt = crow::json::wvalue::object();
     if (parsed) {
         for (const auto& key : parsed.keys()) {
             if (key == kFlagKey) {
@@ -47,23 +59,12 @@ bool MCPDryRun::extractFlag(crow::json::wvalue& arguments) {
     return flag_value;
 }
 
-std::string MCPDryRun::scrubConnectionSecrets(
-    std::string sql,
-    const std::unordered_map<std::string, std::string>& connection_properties) {
-    for (const auto& [key, value] : connection_properties) {
-        // Only credential-named properties, and only values long enough that
-        // replacing them cannot mangle unrelated SQL. A one-character
-        // "password" is not worth corrupting the output for.
-        if (value.size() < 4 || !isCredentialKey(key)) {
-            continue;
-        }
-        std::string::size_type pos = 0;
-        while ((pos = sql.find(value, pos)) != std::string::npos) {
-            sql.replace(pos, value.size(), "<redacted>");
-            pos += sizeof("<redacted>") - 1;
-        }
-    }
-    return sql;
+
+
+const char* MCPDryRun::withheldPreview() {
+    return "<preview withheld: a value this template can interpolate is a credential "
+           "too short to redact reliably, and returning the rendered SQL would "
+           "disclose it>";
 }
 
 std::string MCPDryRun::formatResult(const std::string& tool_name,
@@ -76,7 +77,11 @@ std::string MCPDryRun::formatResult(const std::string& tool_name,
 
     crow::json::wvalue params_obj = crow::json::wvalue::object();
     for (const auto& [k, v] : parameters) {
-        params_obj[k] = v;
+        // A request field's configured `default:` is copied into params, so a
+        // credential-valued default was handed straight back to an
+        // unauthenticated _dryRun caller in this object - regardless of
+        // whether the SQL itself was scrubbed.
+        params_obj[k] = isCredentialKey(k) ? std::string("<redacted>") : v;
     }
     payload["parameters"] = std::move(params_obj);
 

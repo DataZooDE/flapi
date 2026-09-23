@@ -1,5 +1,7 @@
 #include "security_auditor.hpp"
 
+#include "redaction.hpp"
+
 #include <algorithm>
 #include <cctype>
 
@@ -128,6 +130,26 @@ std::vector<SecurityWarning> SecurityAuditor::audit(const ConfigManager& config)
                 "Enable mcp.auth.enabled and configure users or JWT before exposing this server.",
                 "mcp"
             });
+        }
+    }
+
+    // A credential too short to scrub makes the server withhold text rather
+    // than risk disclosing it - error messages and dry-run previews alike -
+    // and there is nothing in the response to say why. Say it once, at
+    // startup, naming the KEY and never the value.
+    for (const auto& [conn_name, conn] : config.getConnections()) {
+        for (const auto& [key, value] : conn.properties) {
+            if (!value.empty() && value.size() < 4 && isCredentialKey(key)) {
+                warnings.push_back({
+                    "CREDENTIAL_TOO_SHORT_TO_REDACT",
+                    "Connection property '" + key + "' holds a credential shorter than "
+                    "4 characters. Such a value cannot be redacted from rendered SQL "
+                    "without corrupting the text around it, so flAPI withholds error "
+                    "detail and dry-run previews for endpoints using this connection. "
+                    "Use a longer secret.",
+                    "connections." + conn_name
+                });
+            }
         }
     }
 

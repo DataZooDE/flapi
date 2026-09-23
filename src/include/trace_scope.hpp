@@ -72,6 +72,46 @@ public:
 
     SpanContextIds ids() const noexcept;
 
+    // Re-activate this span on the CURRENT thread.
+    //
+    // OpenTelemetry's active-span stack is thread-local, which is what lets
+    // flAPI's inner pipeline parent its spans without threading a parameter
+    // through DatabaseManager, SQLTemplateProcessor and QueryExecutor. The
+    // corollary is that work moved to another thread - a request handler run
+    // off Crow's io thread (#120) - starts with whatever that thread last had
+    // on top, so its inner spans would re-parent or become roots.
+    //
+    // Hold one of these for as long as the work runs on that thread. Inert
+    // when the span is, and a no-op in the FLAPI_WITH_TRACING=OFF twin.
+    class [[nodiscard]] Activation {
+    public:
+        Activation() noexcept = default;
+        ~Activation();
+        Activation(Activation&& other) noexcept : impl_(other.impl_) { other.impl_ = nullptr; }
+        Activation& operator=(Activation&& other) noexcept;
+        Activation(const Activation&) = delete;
+        Activation& operator=(const Activation&) = delete;
+
+        struct Impl;
+        explicit Activation(Impl* impl) noexcept : impl_(impl) {}
+
+    private:
+        Impl* impl_ = nullptr;
+    };
+
+    /// Activation for this span on the calling thread. Empty when the span is
+    /// inert or tracing is compiled out.
+    [[nodiscard]] Activation activateOnThisThread() const noexcept;
+
+    /// Release this span's activation on the CURRENT thread without ending the
+    /// span.
+    ///
+    /// Call it while this span is still the innermost active one - immediately
+    /// after handing work to another thread - so the underlying context stack
+    /// detaches in LIFO order. The span stays live and its attributes can
+    /// still be set; only the ambient parenting on this thread goes away.
+    void suspendActivation() noexcept;
+
     struct Impl;
     explicit SpanScope(Impl* impl) noexcept : impl_(impl) {}
 

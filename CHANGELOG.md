@@ -2,6 +2,176 @@
 
 All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (the date the binary set was cut). Earlier history is in the git log.
 
+## v26.09.23 — a slow query no longer blocks everything else, and `auth.*` works over MCP
+
+### Added: a slow query no longer blocks other requests
+
+Crow runs a request handler on the io thread that owns its connection, so one slow query held
+that thread for the whole query and every other connection assigned to it waited — including
+`GET /health/live`, which is how a stalled instance is supposed to report itself.
+
+Measured on one ~6.5s query with 40 concurrent probes and a single io thread:
+
+| | probes blocked | stall reported | worst probe |
+|---|---|---|---|
+| before | 40 / 40 | 0 / 40 | 5.04s |
+| after | 0 / 40 | 40 / 40 | 0.005s |
+
+Handlers now run on a bounded worker pool and the response is completed back on the connection's
+own thread. The queue is bounded on purpose: when it is full the request is answered `503` rather
+than queued behind work the client stopped waiting for. Set `FLAPI_DISABLE_HANDLER_OFFLOAD=1` to
+go back to the old behaviour.
+
+`SIGTERM` is now handled properly alongside it: in-flight requests are drained before the process
+exits, and queued-but-not-started work is abandoned after a bounded budget so a backlog cannot
+hold a container open. A query that is *already executing* is still waited for — flAPI does not
+cancel it — so a genuinely hung backend can still delay shutdown until your platform's grace
+period expires. Bounding that needs query cancellation and is not in this release.
+
+### Fixed: `auth.*` was empty in every MCP template
+
+The documented multi-tenant pattern
+
+```sql
+{{#auth.username}}WHERE tenant = '{{ auth.username }}'{{/auth.username}}
+```
+
+worked over REST and rendered **nothing** over MCP, because the MCP path never injected the
+authenticated caller's identity. In that conditional form the filter disappeared entirely and an
+authenticated caller received **every tenant's rows**; written unconditionally it compared against
+`''` and returned none. Both were silent.
+
+`auth.username`, `auth.roles`, `auth.type`, `auth.email` and `auth.authenticated` now render the
+same on REST, MCP `tools/call` and MCP `resources/read`. A caller still cannot declare its own
+identity — `__auth_*` sent as an argument is discarded on every surface.
+
+**If you have an MCP endpoint whose template filters on `auth.*`, its results will change.** That
+is the point: it was returning too much or too little before.
+
+### Fixed: cache retention destroyed other endpoints' history
+
+Every cached endpoint shares one DuckLake catalog, but `keep-last-snapshots` and
+`max-snapshot-age` are configured per endpoint — and the expiry ran catalog-wide. One endpoint
+reaching its retention limit expired **every other endpoint's snapshots**, discarding their
+time-travel history and resetting their incremental watermark. `flapii cache gc` did the same, and
+against a hardcoded one-day cutoff that ignored your configuration entirely.
+
+Retention now only expires snapshots belonging to its own cache table, and never one that another
+table shares — so an endpoint may keep more history than you asked for, and will say so in the
+log, rather than deleting a neighbour's data. It also always keeps the newest snapshot, which is
+where the incremental watermark is read from, and applies `keep-last-snapshots` across the table's
+whole history rather than across the already-expired subset when both keys are set.
+
+Retention is disabled, with a warning, for a cache table whose name is ambiguous — two schemas
+holding the same table name — because DuckLake's catalog exposes no schema name to tell them
+apart and expiring the wrong one would delete another endpoint's data.
+
+### Fixed: incremental refresh dropped rows written while it ran
+
+`{{cache.previousSnapshotTimestamp}}` was the instant the previous refresh *committed*. That
+refresh read your source earlier than that, so any row written in between was never read by it —
+and was then excluded by the next refresh too. On a continuously written source, **every refresh
+permanently dropped the rows written during its own execution**, and reported success.
+
+With a `cursor:` configured, the watermark is now `max(<cursor column>)` over the rows actually
+cached. Rows above it are exactly the rows not yet loaded.
+
+Two consequences worth knowing:
+
+- The value is the cursor's own type, not a timestamp. `WHERE updated_at > TIMESTAMP '{{...}}'`
+  stays right for a timestamp cursor; an integer or string cursor needs quoting to match.
+- `{{cache.snapshotTimestamp}}` is a *different* value (still the commit time) and must not be
+  used as a watermark.
+
+### Fixed: credentials came back from MCP dry runs and errors
+
+A `_dryRun` tool call returns the rendered SQL, and MCP is unauthenticated by default. Connection
+passwords, whitelisted environment variables (`{{{ env.API_KEY }}}`) and credential-valued request
+defaults were all returned verbatim — and so were the ones a database error quoted back, which is
+a path no `_dryRun` flag is needed to reach.
+
+All three sources are redacted now, in previews and in error messages, on **every** surface that
+returns one: REST responses, MCP `tools/call` and MCP `resources/read` all scrub the same set.
+(REST was leaking the same way, through the same mechanism, for any endpoint without an `auth:`
+block.) Where a value is too short to replace without corrupting the surrounding SQL, the preview
+is withheld and says so rather than being silently mangled.
+
+### Fixed: MCP config tools that reported success without doing anything
+
+Eleven `flapi_*` config tools returned confident results for work they never performed:
+
+| Tool | What it returned |
+|---|---|
+| `flapi_expand_template` | a hardcoded `SELECT * FROM data WHERE 1=1` |
+| `flapi_test_template` | "Template test passed", for a query it never ran |
+| `flapi_update_template` | success, with the file on disk untouched |
+| `flapi_refresh_cache` | "Cache refresh has been scheduled" — nothing was scheduled |
+| `flapi_run_cache_gc` | "Garbage collection triggered" |
+| `flapi_refresh_schema` | "schema_refreshed" |
+| `flapi_get_cache_audit` | **invented audit records** |
+| `flapi_get_cache_status` | three fields of static YAML, while promising snapshot history |
+| `flapi_get_environment` | an empty list, always |
+| `flapi_get_filesystem` | an empty tree |
+| `flapi_get_schema` | `"tables": null` |
+
+Every one of them had a working REST handler that the adapter was constructing and then
+discarding. They now call it, so the MCP and REST surfaces cannot disagree — an agent asking
+whether a cache refreshed gets the real answer, and one asking to expand a template gets that
+endpoint's own SQL.
+
+`flapi_get_project_config` also reported version `1.0.0` for every build; it now returns the real
+project configuration.
+
+**Every `flapi_*` tool now requires the config-service token**, matching the REST route it
+delegates to. Twelve of them were classified "read-only discovery" and left unauthenticated, which
+was harmless only while their bodies returned hardcoded data — once they were wired to the real
+handlers, three of them became unauthenticated disclosures: `flapi_get_environment` returns
+environment *values*, `flapi_expand_template` returns rendered SQL, and `flapi_test_template`
+*executes* any endpoint's template. If you call these tools, send
+`Authorization: Bearer <config-service-token>`; with no config service configured they now decline,
+which is correct.
+
+`flapi_test_template` also runs the endpoint's own validators before executing, so it is no longer
+a way around the constraints the endpoint itself enforces. `flapi_run_cache_gc` requires `path` —
+its "all endpoints" form never worked — and every tool now declares its arguments in `tools/list`,
+so an agent can discover them instead of guessing and getting an error.
+
+### Fixed: smaller disclosures on the same theme
+
+- **`GET /api/v1/_config/health` is the one config-service route without a token**, and it
+  published every storage backend's path and its raw error text. A path can carry an inline
+  credential or a signature. Unauthenticated callers now get status, scheme and latency; the
+  detail needs the token.
+- A **connection property literally named `pw`, `key`, `pass` or `sas`** is now recognised as a
+  credential. Recognition is whole-key, so `passenger_count`, `sort_key` and `keyword` are still
+  ordinary columns and are not redacted out of your SQL.
+- flAPI **warns at startup** (`CREDENTIAL_TOO_SHORT_TO_REDACT`) when a configured credential is
+  under four characters. Such a value cannot be scrubbed without corrupting the SQL around it, so
+  error detail and dry-run previews are withheld for every endpoint using that connection — with
+  nothing in the response to say why. Now you are told once, at startup, and can lengthen it.
+- The incremental **cursor watermark is validated against its declared type** before the next
+  refresh interpolates it into SQL. A cached value that does not look like its `cursor.type` makes
+  the refresh fall back to a full load and log why, rather than being pasted into a query.
+- Cache retention **fails closed**: if the catalog cannot be read, nothing is expired. It
+  previously proceeded on a partial answer.
+
+### Fixed: a failed start no longer hangs
+
+If flAPI could not bind its port — most often because something else already holds it — the
+process hung instead of exiting, and ignored `SIGTERM` from that state, so a supervisor had to
+`SIGKILL` it. It now exits promptly, non-zero, saying `the server could not start: bind: Address
+already in use`.
+
+### Changed: one config-service name per endpoint
+
+The config service addresses an endpoint by a slug, and the encoding is now injective — `/a-b` and
+`/a/b` no longer collide. `/customers/` is `-customers-`; a literal `-` is `~1` and a literal `~`
+is `~0`.
+
+**The CLI and the VSCode extension must be updated together with the server.** An older `flapii`
+sends the previous encoding and every config command will `404`. A percent-encoded url-path is no
+longer accepted as a second name for the same endpoint.
+
 ## v26.09.20 — SQLite attachments no longer wedge, and readiness notices a stalled request
 
 ### Fixed: a concurrent read and write wedged a SQLite attachment

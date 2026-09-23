@@ -175,7 +175,7 @@ WHEN NOT MATCHED THEN INSERT *
 | `{{cache.table}}` | Cache table name |
 | `{{cache.schema}}` | Cache schema name |
 | `{{cache.catalog}}` | Cache catalog (DuckLake alias) |
-| `{{cache.previousSnapshotTimestamp}}` | Last refresh timestamp |
+| `{{cache.previousSnapshotTimestamp}}` | Incremental watermark: `max(<cursor>)` over the cached rows when a `cursor:` is configured, else the last refresh's commit timestamp. See CONFIG_REFERENCE for why the commit timestamp alone loses rows. |
 | `{{cache.currentSnapshotTimestamp}}` | Current refresh timestamp |
 
 ## HeartbeatWorker

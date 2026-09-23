@@ -1,4 +1,6 @@
 #include "request_handler.hpp"
+#include "auth_params.hpp"
+#include "template_secrets.hpp"
 #include "json_utils.hpp"
 #include "content_negotiation.hpp"
 #include "arrow_serializer.hpp"
@@ -63,9 +65,12 @@ void RequestHandler::handleRequest(const crow::request& req, crow::response& res
 }
 
 void RequestHandler::handleWriteRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams, const std::map<std::string, std::string>& authParams) {
+    // Declared out here so the catch block can scrub the error with the
+    // secrets this request's template could interpolate.
+    std::map<std::string, std::string> params;
     try {
         // Extract parameters from body, path, query (body takes precedence)
-        auto params = combineWriteParameters(req, pathParams, endpoint);
+        params = combineWriteParameters(req, pathParams, endpoint);
         // Inject auth context as reserved params for template rendering
         for (const auto& [k, v] : authParams) {
             params[k] = v;
@@ -173,9 +178,24 @@ void RequestHandler::handleWriteRequest(const crow::request& req, crow::response
             res.end();
             return;
         }
-        CROW_LOG_ERROR << "Error handling write request: " << e.what();
+        // Scrubbed BEFORE it is logged, not just before it is returned.
+        // A DuckDB error quotes the failing statement, and logs are shipped,
+        // indexed and read by people who are not entitled to the
+        // credentials a template interpolated.
+        const auto secrets = collectTemplateSecrets(config_manager.get(), endpoint, params);
+        const std::string public_detail =
+            publicErrorMessage("Error handling write request", e.what(), secrets);
+        CROW_LOG_ERROR << public_detail;
         res.code = 500;
-        res.body = std::string("Internal Server Error: ") + e.what();
+        // A database error quotes the statement that failed, which IS the
+        // rendered template - so this returned whatever the template
+        // interpolated: `{{{conn.password}}}`, `{{{env.API_KEY}}}`, a
+        // credential-valued default. The MCP path was fixed for exactly this
+        // and justified by "MCP is unauthenticated by default"; REST auth is
+        // per-endpoint and equally optional, so an endpoint without an
+        // `auth:` block leaked the same secrets through the same mechanism.
+        // Same collector, same scrub, both surfaces.
+        res.body = publicErrorMessage("Internal Server Error", e.what(), secrets);
         res.end();
         return;
     }
@@ -203,8 +223,11 @@ void RequestHandler::handleDeleteRequest(const crow::request& req, crow::respons
 }
 
 void RequestHandler::handleGetRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams, const std::map<std::string, std::string>& authParams) {
+    // Declared out here so the catch block can scrub the error with the
+    // secrets this request's template could interpolate.
+    std::map<std::string, std::string> params;
     try {
-        auto params = combineParameters(req, defaultParams, pathParams, endpoint);
+        params = combineParameters(req, defaultParams, pathParams, endpoint);
         // Inject auth context as reserved params for template rendering
         for (const auto& [k, v] : authParams) {
             params[k] = v;
@@ -386,9 +409,24 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
             res.end();
             return;
         }
-        CROW_LOG_ERROR << "Error handling request: " << e.what();
+        // Scrubbed BEFORE it is logged, not just before it is returned.
+        // A DuckDB error quotes the failing statement, and logs are shipped,
+        // indexed and read by people who are not entitled to the
+        // credentials a template interpolated.
+        const auto secrets = collectTemplateSecrets(config_manager.get(), endpoint, params);
+        const std::string public_detail =
+            publicErrorMessage("Error handling request", e.what(), secrets);
+        CROW_LOG_ERROR << public_detail;
         res.code = 500;
-        res.body = std::string("Internal Server Error: ") + e.what();
+        // A database error quotes the statement that failed, which IS the
+        // rendered template - so this returned whatever the template
+        // interpolated: `{{{conn.password}}}`, `{{{env.API_KEY}}}`, a
+        // credential-valued default. The MCP path was fixed for exactly this
+        // and justified by "MCP is unauthenticated by default"; REST auth is
+        // per-endpoint and equally optional, so an endpoint without an
+        // `auth:` block leaked the same secrets through the same mechanism.
+        // Same collector, same scrub, both surfaces.
+        res.body = publicErrorMessage("Internal Server Error", e.what(), secrets);
         res.end();
         return;
     }
@@ -425,30 +463,8 @@ std::string RequestHandler::createNextUrl(const crow::request& req, const QueryR
     return baseUrl + queryResult.next;
 }
 
-namespace {
-
-// `__auth_*` is the reserved prefix APIServer uses to inject the authenticated
-// principal into the template context (api_server.cpp:325). It is SERVER data,
-// and it must never be accepted from a caller.
-//
-// It used to be. RequestValidator whitelists the prefix so the injected keys
-// are not reported as unknown parameters, and combineParameters copied every
-// query parameter over the top of the defaults - so a client could send
-// `?__auth_username=admin&__auth_roles=admin&__auth_authenticated=true` and
-// have it land in `auth.*`. Measured on an endpoint with no auth configured:
-//
-//   {"who":"admin","roles":"admin","authed":"true"}
-//
-// Any template that filters rows on `{{ auth.username }}` or `{{ auth.roles }}`
-// - the documented multi-tenant pattern - was therefore letting the caller
-// choose who they were. On an endpoint WITH auth it was worse: the query
-// parameter overwrote the identity the middleware had just established.
-bool isReservedAuthKey(const std::string& key) {
-    static constexpr char kPrefix[] = "__auth_";
-    return key.rfind(kPrefix, 0) == 0;
-}
-
-}  // namespace
+// The `__auth_*` rule lives in auth_params.hpp - see the comment there for
+// what a caller could do before it existed.
 
 std::map<std::string, std::string> RequestHandler::combineParameters(const crow::request& req, const std::map<std::string, std::string>& defaultParams, const std::map<std::string, std::string>& pathParams, const EndpointConfig& endpoint) {
     std::map<std::string, std::string> params = defaultParams;

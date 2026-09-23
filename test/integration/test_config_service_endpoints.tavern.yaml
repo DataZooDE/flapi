@@ -52,10 +52,12 @@ stages:
       json:
         url-path: "/json-demo/"
 
-  # The percent-encoded url-path form, which the config service also accepts.
-  # Kept as an explicit contract rather than as a tolerance inside the slug
-  # decoder.
-  - name: Get endpoint by percent-encoded path
+  # There is deliberately NO percent-encoded url-path form. A case here once
+  # asserted that `endpoints/customers%2F` resolved; it never passed, because
+  # the routes are `<string>` (one path segment) and Crow percent-decodes
+  # before matching, so the decoded `customers/` matches no route at all.
+  # One endpoint, one name: the slug. See #123.
+  - name: A percent-encoded path is not a second name for an endpoint
     request:
       url: "{base_url}/api/v1/_config/endpoints/customers%2F"
       method: GET
@@ -63,10 +65,7 @@ stages:
         X-Config-Token: "test-token"
         Authorization: "Bearer test-token"
     response:
-      status_code: 200
-      strict: false
-      json:
-        url-path: "/customers/"
+      status_code: 404
 
   - name: Get non-existent endpoint (404)
     request:

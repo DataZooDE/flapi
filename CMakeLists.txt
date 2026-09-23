@@ -360,6 +360,7 @@ add_library(flapi-lib STATIC
     src/selfpath.cpp
     src/sql_parameter_classifier.cpp
     src/sql_template_processor.cpp
+    src/template_secrets.cpp
     src/sql_utils.cpp
     src/mcp_tool_handler.cpp
     src/mcp_tool_rate_limiter.cpp
@@ -391,6 +392,7 @@ add_library(flapi-lib STATIC
     src/trace_context.cpp
     src/trace_capture_policy.cpp
     src/redaction.cpp
+    src/handler_pool.cpp
     src/in_flight_registry.cpp
     src/tracing_config.cpp
     src/request_context_middleware.cpp

@@ -33,7 +33,11 @@ TOKEN = "the-real-config-service-token"
 
 
 class _Server:
-    def __init__(self):
+    def __init__(self, config_service_token: str = TOKEN,
+                 cached_endpoint: bool = False):
+        # "" means --config-service with NO token, which must fail closed.
+        self.config_service_token = config_service_token
+        self.cached_endpoint = cached_endpoint
         self.tmp = tempfile.mkdtemp(prefix="flapi_mcptool_")
         self.port = free_port()
         self.base_url = f"http://127.0.0.1:{self.port}"
@@ -47,6 +51,14 @@ class _Server:
         self.template = os.path.join(sqls, "hello.sql")
         with open(self.template, "w") as f:
             f.write("SELECT 'original-template' AS v\n")
+        if cached_endpoint:
+            with open(os.path.join(sqls, "cached.yaml"), "w") as f:
+                f.write("url-path: /cached\nmethod: GET\n"
+                        "template-source: cached.sql\nconnection: [inmem]\n"
+                        "cache:\n  enabled: true\n  table: c_cache\n"
+                        "  schema: main\n  schedule: 1h\n")
+            with open(os.path.join(sqls, "cached.sql"), "w") as f:
+                f.write("SELECT 1 AS n\n")
         with open(os.path.join(self.tmp, "flapi.yaml"), "w") as f:
             f.write(
                 "project-name: mcp-tool-auth\n"
@@ -60,8 +72,10 @@ class _Server:
     def start(self):
         self.proc = subprocess.Popen(
             [flapi_binary(), "-c", os.path.join(self.tmp, "flapi.yaml"),
-             "-p", str(self.port), "--config-service",
-             "--config-service-token", TOKEN, "--log-level", "warning"],
+             "-p", str(self.port), "--config-service"]
+            + (["--config-service-token", self.config_service_token]
+               if self.config_service_token else [])
+            + ["--log-level", "warning"],
             stdout=open(self.log_path, "w"), stderr=subprocess.STDOUT, cwd=self.tmp,
             env={**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"},
             preexec_fn=os.setsid)
@@ -83,6 +97,16 @@ class _Server:
                 "params": {"name": name, "arguments": arguments}}
         return requests.post(f"{self.base_url}/mcp/jsonrpc", headers=headers,
                              data=json.dumps(body), timeout=15).json()
+
+    def list_tools(self, token=None):
+        headers = {"Content-Type": "application/json"}
+        if token is not None:
+            headers["Authorization"] = f"Bearer {token}"
+        body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+        r = requests.post(f"{self.base_url}/mcp/jsonrpc", headers=headers,
+                          data=json.dumps(body), timeout=15).json()
+        assert "result" in r, r
+        return r["result"]["tools"]
 
     def stop(self):
         if self.proc:
@@ -130,25 +154,334 @@ class TestMcpConfigToolAuth:
         # gate stuck closed, which is not the contract either.
         with _Server() as s:
             got = s.call_tool("flapi_update_template", token=TOKEN,
-                              endpoint="/hello", content="SELECT 1")
-            assert "error" in got
-            msg = got["error"]["message"]
-            assert "Invalid authentication token" not in msg
-            assert "not implemented" in msg
+                              endpoint="/hello", content="SELECT 1 AS v")
+            assert "result" in got, got
 
-    def test_update_template_does_not_claim_success_it_did_not_achieve(self):
-        # It used to report success and leave the file untouched.
+    def test_update_template_writes_what_it_says_it_wrote(self):
+        # This tool used to report success and leave the file on disk
+        # untouched - the one outcome a caller cannot detect. It now
+        # delegates to the same handler PUT .../template uses, so the
+        # assertion is the file itself.
         with _Server() as s:
             before = open(s.template).read()
             got = s.call_tool("flapi_update_template", token=TOKEN,
+                              endpoint="/hello", content="SELECT 'written' AS v")
+            assert "result" in got, got
+            after = open(s.template).read()
+            assert after != before, "reported success and wrote nothing"
+            assert "written" in after, after
+
+    def test_update_template_without_a_token_writes_nothing(self):
+        # The auth gate has to hold now that the tool actually mutates.
+        with _Server() as s:
+            before = open(s.template).read()
+            got = s.call_tool("flapi_update_template",
                               endpoint="/hello", content="SELECT 'pwned' AS v")
-            assert "result" not in got, (
-                f"claimed success without writing: {got}")
+            assert "error" in got, got
             assert open(s.template).read() == before
 
-    def test_an_unauthenticated_read_tool_still_works(self):
-        # Only the mutating tools require a token; this pins that the fix did
-        # not quietly close the read path too.
+    def test_even_a_read_tool_requires_the_token(self):
+        # This used to assert the opposite - that a read tool stayed
+        # anonymous - on the theory that reading is harmless. It is not: these
+        # tools read the project configuration, the environment, and the
+        # rendered SQL, and every equivalent REST route is token-gated. The
+        # config service is opt-in; MCP must not be a second, weaker door to
+        # the same handlers.
         with _Server() as s:
             got = s.call_tool("flapi_get_project_config")
+            assert "error" in got, got
+            assert "Authentication required" in got["error"]["message"], got
+
+
+class TestNoConfigToolFabricatesAResult:
+    """No config tool may report work it did not do.
+
+    Eleven of them did. `flapi_expand_template` and `flapi_test_template`
+    answered with a hardcoded `SELECT * FROM data WHERE 1=1` and "Template
+    test passed"; `flapi_refresh_cache` said a refresh "has been scheduled"
+    with nothing scheduled; `flapi_get_cache_audit` INVENTED audit rows;
+    `flapi_get_environment`, `flapi_get_filesystem` and `flapi_get_schema`
+    returned empty data as success; `flapi_get_project_config` reported
+    version "1.0.0" for every build.
+
+    Every one of them had a working REST handler that the adapter was
+    constructing and then discarding. They now delegate to it, so the MCP and
+    REST surfaces cannot disagree.
+
+    These tests enumerate tools/list rather than naming tools, because the
+    first version of this class was a literal three-name list and that is
+    exactly why eight more fabricating tools survived a review round.
+    """
+
+    # Vocabulary that denotes work DEFERRED or FAKED rather than done.
+    # "successfully" is deliberately absent: the endpoint tools genuinely do
+    # their work and say so, and a heuristic that flags them teaches people
+    # to ignore it.
+    CLAIM_WORDS = ("triggered", "scheduled", "sample",
+                   "will be processed", "has been queued")
+
+    # Tools that destroy the fixture they are called against. Run last, so
+    # the tools visited after them are not all answering "not found" - the
+    # first version of this sweep iterated an unordered_map-derived list and
+    # called flapi_delete_endpoint somewhere in the middle, so WHICH tools it
+    # really exercised varied per build.
+    DESTRUCTIVE = ("flapi_delete_endpoint",)
+
+    def _sweep_order(self, names):
+        ordinary = sorted(n for n in names if n not in self.DESTRUCTIVE)
+        return ordinary + [n for n in sorted(names) if n in self.DESTRUCTIVE]
+
+    def test_no_advertised_tool_claims_work_without_doing_it(self):
+        with _Server() as s:
+            listed = self._sweep_order([t["name"] for t in s.list_tools()])
+            assert listed, "tools/list returned nothing; the test proves nothing"
+
+            offenders = []
+            answered = 0
+            for name in listed:
+                got = s.call_tool(name, token=TOKEN, endpoint="/hello",
+                                  content="SELECT 1", path="/hello")
+                if "result" not in got:
+                    continue
+                answered += 1
+                blob = json.dumps(got["result"]).lower()
+                for word in self.CLAIM_WORDS:
+                    if word in blob:
+                        offenders.append((name, word, blob[:200]))
+                        break
+            assert not offenders, (
+                "tools advertised by tools/list claim deferred work:\n" +
+                "\n".join(f"  {n}: says {w!r} -> {b}" for n, w, b in offenders))
+            # A build where every tool errors would otherwise satisfy this
+            # sweep perfectly.
+            assert answered >= 8, (
+                f"only {answered} of {len(listed)} tools returned a result; "
+                "this sweep cannot judge tools that never answered")
+
+    def test_a_tool_that_reports_success_actually_changed_something(self):
+        # The word heuristic is a widening, not the contract. This is the
+        # contract, spot-checked on a mutating tool.
+        with _Server() as s:
+            listed_before = s.call_tool("flapi_list_endpoints", token=TOKEN)
+            assert "/hello" in json.dumps(listed_before), listed_before
+
+            got = s.call_tool("flapi_delete_endpoint", token=TOKEN, path="/hello")
             assert "result" in got, got
+
+            listed_after = s.call_tool("flapi_list_endpoints", token=TOKEN)
+            assert "/hello" not in json.dumps(listed_after), (
+                "flapi_delete_endpoint reported success and the endpoint is "
+                f"still listed: {listed_after}")
+
+    def test_no_advertised_tool_returns_the_placeholder_sql(self):
+        with _Server() as s:
+            for name in self._sweep_order([t["name"] for t in s.list_tools()]):
+                got = s.call_tool(name, token=TOKEN, endpoint="/hello",
+                                  content="SELECT 1", path="/hello")
+                assert "SELECT * FROM data WHERE 1=1" not in json.dumps(got), (
+                    f"{name} returned fabricated SQL: {got}")
+
+    def test_no_advertised_tool_invents_audit_records(self):
+        # An invented audit row is the worst thing a tool can return: it is
+        # the record someone consults to find out whether work happened.
+        with _Server() as s:
+            for name in self._sweep_order([t["name"] for t in s.list_tools()]):
+                got = s.call_tool(name, token=TOKEN, endpoint="/hello",
+                                  content="SELECT 1", path="/hello")
+                assert "cache_status_checked" not in json.dumps(got), (
+                    f"{name} returned a manufactured audit entry: {got}")
+
+    def test_expand_template_returns_this_endpoints_sql(self):
+        # The specific fabrication, pinned: the answer must come from the
+        # endpoint's own template, not from a constant.
+        with _Server() as s:
+            got = s.call_tool("flapi_expand_template", token=TOKEN,
+                              endpoint="/hello", params={})
+            blob = json.dumps(got)
+            assert "SELECT * FROM data WHERE 1=1" not in blob, blob
+            # hello.sql is `SELECT 'original-template' AS v` in this fixture.
+            assert "original-template" in blob, blob
+
+    def test_the_project_config_version_is_not_hardcoded(self):
+        with _Server() as s:
+            got = s.call_tool("flapi_get_project_config", token=TOKEN)
+            assert "result" in got, got
+            assert '"1.0.0"' not in json.dumps(got["result"]), (
+                "flapi_get_project_config still reports a hardcoded version")
+
+    def test_the_implemented_tools_are_advertised_and_work(self):
+        with _Server() as s:
+            listed = {t["name"] for t in s.list_tools()}
+            for name in ("flapi_get_project_config", "flapi_get_template",
+                         "flapi_list_endpoints", "flapi_expand_template",
+                         "flapi_get_schema", "flapi_get_environment"):
+                assert name in listed, (name, listed)
+            got = s.call_tool("flapi_get_project_config", token=TOKEN)
+            assert "result" in got, got
+
+
+class TestTheMutatingCacheToolsWithAToken:
+    """The authenticated path for the mutating tools.
+
+    A previous version of the sibling test accepted either "not implemented"
+    OR "Authentication required", and the client sent no token - so for
+    `flapi_update_template`, `flapi_refresh_cache` and `flapi_run_cache_gc`
+    it could only ever reach the auth branch. The behaviour of exactly the
+    tools where fabricated success was worst was untested.
+    """
+
+    def test_refresh_cache_with_a_token_does_not_report_a_phantom_schedule(self):
+        # There is no cache configured on /hello, so the honest answer is an
+        # error naming that - never "Cache refresh has been scheduled", which
+        # is what it used to say for any endpoint at all.
+        with _Server() as s:
+            got = s.call_tool("flapi_refresh_cache", token=TOKEN, path="/hello")
+            blob = json.dumps(got)
+            assert "has been scheduled" not in blob, blob
+            assert "Cache refresh triggered" not in blob, blob
+            # It reached the tool rather than stopping at the gate.
+            assert "Authentication required" not in blob, blob
+
+    def test_run_cache_gc_with_a_token_does_not_report_a_phantom_collection(self):
+        with _Server() as s:
+            got = s.call_tool("flapi_run_cache_gc", token=TOKEN, path="/hello")
+            blob = json.dumps(got)
+            assert "Garbage collection triggered" not in blob, blob
+            assert "Authentication required" not in blob, blob
+
+    def test_the_cache_tools_agree_with_the_rest_routes(self):
+        # The point of delegating: one implementation, so the two surfaces
+        # cannot answer differently.
+        #
+        # Against a CACHED endpoint. The first version used /hello, which has
+        # no cache in this fixture, so it always took the "both refuse" branch
+        # and its equality assertion - the whole point - was unreachable.
+        with _Server(cached_endpoint=True) as s:
+            mcp = s.call_tool("flapi_get_cache_status", token=TOKEN, path="/cached")
+            rest = requests.get(
+                f"{s.base_url}/api/v1/_config/endpoints/-cached/cache",
+                headers={"X-Config-Token": TOKEN}, timeout=10)
+            assert "result" in mcp, mcp
+            assert rest.status_code == 200, rest.text
+            mcp_body = mcp["result"]["content"][0]["text"]
+            assert json.loads(mcp_body) == rest.json(), (mcp_body, rest.text)
+
+    def test_the_two_surfaces_also_agree_when_there_is_no_cache(self):
+        # The property is AGREEMENT, not a particular answer. Both report
+        # `enabled: false` for an uncached endpoint, and asserting an error
+        # here would have been prescribing an answer neither surface gives.
+        with _Server() as s:
+            mcp = s.call_tool("flapi_get_cache_status", token=TOKEN, path="/hello")
+            rest = requests.get(
+                f"{s.base_url}/api/v1/_config/endpoints/-hello/cache",
+                headers={"X-Config-Token": TOKEN}, timeout=10)
+            if "result" in mcp:
+                assert rest.status_code == 200, rest.text
+                assert json.loads(mcp["result"]["content"][0]["text"]) == rest.json()
+                assert json.loads(
+                    mcp["result"]["content"][0]["text"]).get("enabled") is False
+            else:
+                assert rest.status_code >= 400, rest.text
+
+
+class TestEveryConfigToolRequiresTheToken:
+    """The round-4 blocker's fix, pinned as a property rather than by name.
+
+    Twelve tools were classified "read-only discovery" and left
+    unauthenticated; wiring them to the real handlers turned three of them
+    into unauthenticated disclosures. Pinning two tools by name does not stop
+    a thirteenth being added on the same "read-only is harmless" reasoning, or
+    one flag being flipped back.
+    """
+
+    def test_every_flapi_tool_declines_without_a_token(self):
+        with _Server() as s:
+            names = [t["name"] for t in s.list_tools()
+                     if t["name"].startswith("flapi_")]
+            assert names, "no flapi_* tools advertised; this proves nothing"
+            for name in sorted(names):
+                got = s.call_tool(name, endpoint="/hello", path="/hello",
+                                  content="SELECT 1", params={})
+                assert "error" in got, f"{name} answered without a token: {got}"
+                assert "Authentication required" in got["error"]["message"], (
+                    f"{name}: {got}")
+
+    def test_the_token_gets_every_one_of_them_past_the_gate(self):
+        # Otherwise the sweep above passes with the gate stuck shut.
+        #
+        # The assertion is precisely "no longer refused for AUTH". A tool may
+        # still fail for a domain reason here - /hello has no cache
+        # configured, and creating an endpoint that already exists is a
+        # conflict - and that is not what this test is about.
+        with _Server() as s:
+            names = [t["name"] for t in s.list_tools()
+                     if t["name"].startswith("flapi_")]
+            assert names, "no flapi_* tools advertised; this proves nothing"
+            still_refused = []
+            for name in sorted(names):
+                got = s.call_tool(name, token=TOKEN, endpoint="/hello",
+                                  path="/hello", content="SELECT 1", params={})
+                message = json.dumps(got)
+                if "Authentication" in message:
+                    still_refused.append((name, message[:160]))
+            assert not still_refused, (
+                "tools that refused a VALID token:\n" +
+                "\n".join(f"  {n}: {m}" for n, m in still_refused))
+
+
+class TestConfigToolsFailClosedWithNoConfiguredToken:
+    """`--config-service` with no token configured must not wave callers through.
+
+    tokenMatchesConfigured returns false when the expected token is empty -
+    fail closed - because the original defect was a shape-only check that
+    accepted `Authorization: Bearer anything-at-all`. Nothing tested that
+    branch.
+    """
+
+    def test_no_token_configured_means_no_tool_answers(self):
+        with _Server(config_service_token="") as s:
+            names = [t["name"] for t in s.list_tools()
+                     if t["name"].startswith("flapi_")]
+            if not names:
+                pytest.skip("config tools are not advertised in this mode")
+            for name in sorted(names):
+                for token in (None, "anything-at-all", TOKEN):
+                    got = s.call_tool(name, token=token, endpoint="/hello",
+                                      path="/hello", content="SELECT 1")
+                    assert "error" in got, (
+                        f"{name} answered with token={token!r} while no token "
+                        f"is configured: {got}")
+
+
+class TestTheRestConfigRoutesRejectBadTokens:
+    """`ConfigService::validateToken`, the REST twin of the MCP adapter's gate.
+
+    It compared `token == auth_token_` - not constant time, and TRUE when both
+    are empty. The empty case is not reachable through the CLI, because
+    main.cpp generates a secure token when --config-service is given without
+    one, so the explicit empty-token guard is defence in depth rather than a
+    closed hole. These tests cover what IS reachable: an empty or absent
+    bearer, and a token one character short.
+    """
+
+    def test_an_empty_or_absent_bearer_never_authenticates(self):
+        # config_service_token="" means the binary generates one, so the
+        # empty bearer below is being compared against a real secret.
+        with _Server(config_service_token="") as s:
+            for headers in ({"Authorization": "Bearer "},
+                            {"Authorization": "Bearer"},
+                            {"X-Config-Token": ""},
+                            {}):
+                r = requests.get(f"{s.base_url}/api/v1/_config/endpoints",
+                                 headers=headers, timeout=10)
+                assert r.status_code == 401, (headers, r.status_code, r.text[:200])
+
+    def test_a_wrong_token_is_refused_and_the_right_one_is_not(self):
+        with _Server() as s:
+            wrong = requests.get(f"{s.base_url}/api/v1/_config/endpoints",
+                                 headers={"X-Config-Token": TOKEN[:-1]}, timeout=10)
+            assert wrong.status_code == 401, wrong.text[:200]
+
+            right = requests.get(f"{s.base_url}/api/v1/_config/endpoints",
+                                 headers={"X-Config-Token": TOKEN}, timeout=10)
+            assert right.status_code == 200, right.text[:200]

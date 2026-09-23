@@ -1,4 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
+
+#include <algorithm>
 // Pre-include STL headers before the private-to-public hack
 // to prevent "redeclared with different access" GCC errors
 // when these headers are later included via crow/asio
@@ -129,6 +131,32 @@ public:
     // cache's life.
     std::vector<std::int64_t> snapshot_ids;
 
+    /// Snapshot ids that also touched ANOTHER table. The real query selects
+    /// this as an `exclusive` column, and a snapshot that is not exclusive is
+    /// retained however the policy is configured - expiring it would discard
+    /// the other table's data too. The mock has to model that column or every
+    /// row reads as shared and the retention tests pass on an empty expiry.
+    std::vector<std::int64_t> shared_snapshot_ids;
+
+    /// Snapshot ids that are NEWER than max_snapshot_age, i.e. not eligible
+    /// on age. The real query selects this as an `aged` column; without it
+    /// every row reads as aged and the combined-policy tests cannot
+    /// distinguish the two keys.
+    std::vector<std::int64_t> not_aged_snapshot_ids;
+
+    /// Make the live-table listing fail, as a transient catalog or
+    /// introspection error would.
+    bool fail_table_listing = false;
+
+    /// Omit the `aged` column, as a DuckLake version that does not produce it
+    /// would. "Absent" must not read as "old enough".
+    bool omit_aged_column = false;
+
+    /// Return a live-table row the code cannot read, as a DuckLake version
+    /// with different column names would. A partial listing must not read as
+    /// a complete one.
+    bool malformed_table_row = false;
+
     QueryResult executeDuckLakeQueryWithResult(const std::string& query) override {
         executed_queries.push_back(query);
         if (throw_on_snapshot_query) {
@@ -136,11 +164,46 @@ public:
         }
         QueryResult result;
         std::vector<crow::json::wvalue> rows;
-        if (query.find("ducklake_snapshots") != std::string::npos) {
+        // The two listings answer DIFFERENT shapes. Returning a table_id for
+        // duckdb_tables() made the name listing malformed, which the stricter
+        // fail-closed check correctly refuses - a faithful mock is the point.
+        if (query.find("duckdb_tables()") != std::string::npos) {
+            if (fail_table_listing) {
+                throw std::runtime_error("catalog unavailable");
+            }
+            QueryResult names;
+            std::vector<crow::json::wvalue> name_rows;
+            crow::json::wvalue name_row;
+            if (malformed_table_row) {
+                name_row["unexpected_column"] = std::string("main");
+            } else {
+                name_row["schema_name"] = std::string("main");
+                name_row["table_name"] = std::string("test_cache");
+            }
+            name_rows.push_back(std::move(name_row));
+            names.data = crow::json::wvalue(std::move(name_rows));
+            return names;
+        }
+        if (query.find("ducklake_table_info") != std::string::npos) {
+            if (fail_table_listing) {
+                throw std::runtime_error("catalog unavailable");
+            }
+            crow::json::wvalue row;
+            row["table_id"] = std::string("1");
+            rows.push_back(std::move(row));
+        } else if (query.find("ducklake_snapshots") != std::string::npos) {
             for (const auto id : snapshot_ids) {
                 crow::json::wvalue row;
                 row["snapshot_id"] = static_cast<double>(id);
                 row["snapshot_time"] = "2026-01-01 00:00:00";
+                row["exclusive"] = std::find(shared_snapshot_ids.begin(),
+                                             shared_snapshot_ids.end(), id)
+                                   == shared_snapshot_ids.end();
+                if (!omit_aged_column) {
+                    row["aged"] = std::find(not_aged_snapshot_ids.begin(),
+                                            not_aged_snapshot_ids.end(), id)
+                                  == not_aged_snapshot_ids.end();
+                }
                 rows.push_back(std::move(row));
             }
         }
@@ -297,21 +360,222 @@ TEST_CASE("CacheManager refreshDuckLakeCache retention SQL generation", "[cache_
         }
     }
 
-    SECTION("max_snapshot_age generates time-based expiry") {
+    SECTION("max_snapshot_age expires explicit per-table versions, never older_than") {
+        // This section used to REQUIRE an `older_than =>` call - it pinned the
+        // bug. ducklake_expire_snapshots(cat, older_than => ...) has no
+        // per-table form: it acts on the whole CATALOG, and every cached
+        // endpoint shares one. So a single endpoint configuring
+        // `max-snapshot-age` destroyed every other endpoint's history and its
+        // incremental watermark, exactly as the count-based branch beside it
+        // did before that branch was fixed.
+        //
+        // The age cutoff is now a predicate on the per-table candidate query,
+        // and the expiry itself names explicit snapshot ids.
         endpoint.cache.retention.max_snapshot_age = "7 days";
+        adapter->snapshot_ids = {30, 20, 10};
         std::map<std::string, std::string> params;
         cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
 
-        // Should have executed expire snapshots call with older_than
         bool found_expire = false;
         for (const auto& query : adapter->executed_queries) {
-            if (query.find("ducklake_expire_snapshots") != std::string::npos &&
-                query.find("older_than") != std::string::npos) {
+            if (query.find("ducklake_expire_snapshots") != std::string::npos) {
                 found_expire = true;
-                REQUIRE(query.find("7 days") != std::string::npos);
+                INFO("expire call: " << query);
+                REQUIRE(query.find("versions") != std::string::npos);
+                REQUIRE(query.find("older_than") == std::string::npos);
             }
         }
         REQUIRE(found_expire);
+
+        // ...and the configured age must still reach the candidate query,
+        // or the policy would silently expire everything.
+        bool age_applied = false;
+        for (const auto& query : adapter->executed_queries) {
+            if (query.find("ducklake_snapshots") != std::string::npos &&
+                query.find("7 days") != std::string::npos) {
+                age_applied = true;
+            }
+        }
+        REQUIRE(age_applied);
+    }
+
+    SECTION("snapshots shared with another table are never expired") {
+        // The conservative half of the per-table fix: a snapshot can carry
+        // changes for several tables, and ducklake_expire_snapshots discards
+        // all of them. Sharing therefore wins over the policy - this endpoint
+        // keeps more history than asked rather than deleting another
+        // endpoint's data.
+        endpoint.cache.retention.keep_last_snapshots = 1;
+        adapter->snapshot_ids = {30, 20, 10};
+        adapter->shared_snapshot_ids = {20, 10};   // everything beyond the newest
+        std::map<std::string, std::string> params;
+        cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
+
+        for (const auto& query : adapter->executed_queries) {
+            REQUIRE(query.find("ducklake_expire_snapshots") == std::string::npos);
+        }
+    }
+
+    SECTION("...but an unshared snapshot beside a shared one still is") {
+        // Otherwise the guard above would read as "retention never fires".
+        endpoint.cache.retention.keep_last_snapshots = 1;
+        adapter->snapshot_ids = {30, 20, 10};
+        adapter->shared_snapshot_ids = {20};
+        std::map<std::string, std::string> params;
+        cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
+
+        std::string expire;
+        for (const auto& query : adapter->executed_queries) {
+            if (query.find("ducklake_expire_snapshots") != std::string::npos) {
+                expire = query;
+            }
+        }
+        REQUIRE_FALSE(expire.empty());
+        INFO("expire call: " << expire);
+        REQUIRE(expire.find("10") != std::string::npos);   // unshared, expired
+        REQUIRE(expire.find("20") == std::string::npos);   // shared, retained
+        REQUIRE(expire.find("30") == std::string::npos);   // newest, kept
+    }
+
+    SECTION("keep_last ranks over the whole history, not the aged subset") {
+        // `keep-last-snapshots: 2` with `max-snapshot-age` - the pair the
+        // examples ship - used to keep "the newest 2 OF THE ALREADY-AGED set"
+        // plus everything newer, i.e. N more snapshots than either key asks
+        // for. The age predicate is now selected per row rather than filtered
+        // on, so the count ranks over the table's whole history.
+        //
+        // 50 and 40 are recent (not aged out); 30, 20, 10 are old.
+        endpoint.cache.retention.keep_last_snapshots = 2;
+        endpoint.cache.retention.max_snapshot_age = "7 days";
+        adapter->snapshot_ids = {50, 40, 30, 20, 10};
+        adapter->not_aged_snapshot_ids = {50, 40};
+        std::map<std::string, std::string> params;
+        cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
+
+        std::string expire;
+        for (const auto& query : adapter->executed_queries) {
+            if (query.find("ducklake_expire_snapshots") != std::string::npos) {
+                expire = query;
+            }
+        }
+        REQUIRE_FALSE(expire.empty());
+        INFO("expire call: " << expire);
+        // The newest two are kept by the count...
+        REQUIRE(expire.find("50") == std::string::npos);
+        REQUIRE(expire.find("40") == std::string::npos);
+        // ...and the rest are old enough to go.
+        REQUIRE(expire.find("30") != std::string::npos);
+        REQUIRE(expire.find("20") != std::string::npos);
+        REQUIRE(expire.find("10") != std::string::npos);
+    }
+
+    SECTION("a snapshot newer than max_snapshot_age is kept even beyond keep_last") {
+        // Both conditions must hold, so the age policy protects a recent
+        // snapshot that the count alone would have expired.
+        endpoint.cache.retention.keep_last_snapshots = 1;
+        endpoint.cache.retention.max_snapshot_age = "7 days";
+        adapter->snapshot_ids = {50, 40, 30};
+        adapter->not_aged_snapshot_ids = {50, 40};
+        std::map<std::string, std::string> params;
+        cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
+
+        std::string expire;
+        for (const auto& query : adapter->executed_queries) {
+            if (query.find("ducklake_expire_snapshots") != std::string::npos) {
+                expire = query;
+            }
+        }
+        REQUIRE_FALSE(expire.empty());
+        INFO("expire call: " << expire);
+        REQUIRE(expire.find("40") == std::string::npos);   // recent: kept
+        REQUIRE(expire.find("30") != std::string::npos);   // old and past the count
+    }
+
+    SECTION("keep_last of zero does not disable an accompanying age policy") {
+        // `keep-last-snapshots: 0` used to return early, silently turning off
+        // a configured max-snapshot-age alongside it.
+        endpoint.cache.retention.keep_last_snapshots = 0;
+        endpoint.cache.retention.max_snapshot_age = "7 days";
+        adapter->snapshot_ids = {30, 20, 10};
+        std::map<std::string, std::string> params;
+        cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
+
+        bool expired = false;
+        for (const auto& query : adapter->executed_queries) {
+            if (query.find("ducklake_expire_snapshots") != std::string::npos) {
+                expired = true;
+            }
+        }
+        REQUIRE(expired);
+    }
+
+    SECTION("the newest snapshot is never expired, even with age alone") {
+        // fetchSnapshotInfo reads the incremental watermark from the newest
+        // surviving snapshot, so expiring it loses the watermark.
+        endpoint.cache.retention.max_snapshot_age = "7 days";
+        adapter->snapshot_ids = {30, 20, 10};
+        std::map<std::string, std::string> params;
+        cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
+
+        for (const auto& query : adapter->executed_queries) {
+            if (query.find("ducklake_expire_snapshots") != std::string::npos) {
+                INFO("expire call: " << query);
+                REQUIRE(query.find("30") == std::string::npos);
+            }
+        }
+    }
+
+    SECTION("retention expires nothing when the catalog cannot be listed") {
+        // The exclusivity filter needs to know what ELSE is live before it can
+        // prove a snapshot is unshared. When that listing fails, an empty
+        // result used to read as "no other table exists", so every candidate
+        // was classed exclusive and named in the expire call - a transient
+        // introspection error could delete another endpoint's history.
+        //
+        // Expiry is destructive: it fails closed.
+        endpoint.cache.retention.keep_last_snapshots = 1;
+        adapter->snapshot_ids = {30, 20, 10};
+        adapter->fail_table_listing = true;
+        std::map<std::string, std::string> params;
+        cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
+
+        for (const auto& query : adapter->executed_queries) {
+            INFO("query: " << query);
+            REQUIRE(query.find("ducklake_expire_snapshots") == std::string::npos);
+        }
+    }
+
+    SECTION("retention expires nothing when the age column is missing") {
+        // Absent is not "old enough". The check read
+        // `!row.has("aged") || ...`, so a result without the column made every
+        // snapshot eligible - the same fail-open shape as the live-table
+        // listing, one loop away, on the same destructive path.
+        endpoint.cache.retention.keep_last_snapshots = 1;
+        adapter->snapshot_ids = {30, 20, 10};
+        adapter->omit_aged_column = true;
+        std::map<std::string, std::string> params;
+        cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
+
+        for (const auto& query : adapter->executed_queries) {
+            INFO("query: " << query);
+            REQUIRE(query.find("ducklake_expire_snapshots") == std::string::npos);
+        }
+    }
+
+    SECTION("retention expires nothing when a live-table row cannot be read") {
+        // Skipping an unreadable row and reporting success is the same
+        // fail-open one level down: a foreign table missing from the listing
+        // makes its shared snapshot look exclusive.
+        endpoint.cache.retention.keep_last_snapshots = 1;
+        adapter->snapshot_ids = {30, 20, 10};
+        adapter->malformed_table_row = true;
+        std::map<std::string, std::string> params;
+        cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
+
+        for (const auto& query : adapter->executed_queries) {
+            INFO("query: " << query);
+            REQUIRE(query.find("ducklake_expire_snapshots") == std::string::npos);
+        }
     }
 
     SECTION("No retention config means no expire call") {

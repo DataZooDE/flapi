@@ -1331,8 +1331,58 @@ Special variables available in cache-enabled SQL templates:
 | `{{cache.table}}` | Cache table name |
 | `{{cache.schema}}` | Cache schema name |
 | `{{cache.catalog}}` | DuckLake catalog alias |
-| `{{cache.previousSnapshotTimestamp}}` | Last refresh timestamp |
-| `{{cache.currentSnapshotTimestamp}}` | Current refresh timestamp |
+| `{{cache.previousSnapshotTimestamp}}` | The watermark for an incremental refresh. With a `cursor:` configured it is `max(<cursor column>)` over the rows actually cached; without one it falls back to the commit timestamp of this table's last completed refresh. |
+| `{{cache.snapshotTimestamp}}` | Commit time of this table's last completed refresh. **Not** the same value as `previousSnapshotTimestamp` when a `cursor:` is configured — see below. Do not use it as an incremental watermark. |
+| `{{cache.previousSnapshotId}}` | Snapshot id of that refresh. Absent — along with `previousSnapshotTimestamp` — when a `cursor:` is configured but no watermark can be read (a new or empty cache table), so a template guarded on either renders its full-load branch. |
+
+> `{{cache.currentSnapshotTimestamp}}` appeared in an earlier version of this
+> table and has never existed — the implemented name is
+> `{{cache.snapshotTimestamp}}`. A template using the old name renders an empty
+> string, which inside a `WHERE ... > TIMESTAMP '...'` is a SQL error rather
+> than a silent one.
+>
+> `previousSnapshotTimestamp` also used to carry the refresh *before* last, so
+> an append template re-read rows the previous refresh had already appended.
+> It is now the last completed refresh, as documented here.
+>
+> **With a `cursor:` it is derived from the data, not from snapshot metadata.**
+> A snapshot's timestamp is the instant a refresh *committed*, but that refresh
+> read the source at some earlier instant. A source row written in between was
+> never read by that refresh, and a `WHERE updated_at > '<commit time>'` filter
+> excludes it from the next one too — so on a continuously-written source every
+> refresh permanently dropped the rows written while it ran, and reported
+> success. `max(<cursor>)` over what is actually cached has no such window:
+> rows above it are exactly the rows not yet loaded. A row exactly at the
+> boundary may be re-read, which is idempotent under merge and a bounded,
+> visible duplicate under append — losing it is neither.
+
+> **Validated against `cursor.type` before it is used.** The watermark comes
+> from cached data, which comes from your source, and it is rendered into the
+> refresh template and executed — so a value that does not look like the
+> declared type is dropped and that refresh loads the full source (with a
+> warning). Declare the cursor's real type: `timestamp`/`date`/`time` and the
+> numeric types accept only the characters they are made of, and anything else
+> rejects quotes, semicolons, comment markers and newlines.
+>
+> **Note:** the value is rendered raw, so quote or cast it in the template as
+> its type requires — the `TIMESTAMP '...'` form in the example below is right
+> for a timestamp cursor only. Use the **triple**-brace form
+> `{{{cache.previousSnapshotTimestamp}}}` inside a quoted SQL literal: the
+> double-brace form HTML-escapes what it renders, which corrupts any value
+> containing a quote.
+>
+> **`{{cache.snapshotTimestamp}}` is a different value.** It is still the
+> snapshot commit time, so a template using it as a watermark keeps the
+> row-dropping behaviour described above. Use `previousSnapshotTimestamp`.
+>
+> **The comparison should match your mode.** The templates here use `>`, so a
+> row arriving later that carries *exactly* `max(<cursor>)` is not re-read —
+> it is skipped. That residual window is far narrower than the one closed
+> above (it needs a second row at the same cursor value, written after the
+> refresh read), but it is real. With `primary-key` set (merge mode) `>=` is
+> safe and closes it, because a re-read row collapses on the key. In append
+> mode `>=` duplicates instead, so either accept the window or give the cursor
+> a strictly increasing unique value.
 
 **Example Template:**
 

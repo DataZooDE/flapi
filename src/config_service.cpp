@@ -6,9 +6,15 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <openssl/crypto.h>
+
 #include "config_service.hpp"
 #include "flapi_tracing.hpp"
+#include "auth_params.hpp"
 #include "json_utils.hpp"
+#include "request_validator.hpp"
+#include "template_secrets.hpp"
+#include "redaction.hpp"
 #include "path_utils.hpp"
 #include "database_manager.hpp"
 #include "cache_manager.hpp"
@@ -236,23 +242,46 @@ bool ConfigService::validateToken(const crow::request& req) const {
     if (!enabled_) {
         return false;
     }
-    
+
+    // Fail closed with no configured secret.
+    //
+    // `token == auth_token_` with both empty returns TRUE, so an empty
+    // configured token would authenticate `Authorization: Bearer `. That is
+    // NOT reachable through the CLI - main.cpp generates a secure token when
+    // --config-service is given without one - so this is defence in depth
+    // rather than a closed hole: ConfigService can be constructed with an
+    // empty token programmatically, and its MCP twin tokenMatchesConfigured
+    // was written to fail closed for the same reason.
+    if (auth_token_.empty()) {
+        return false;
+    }
+
+    const auto matches = [this](const std::string& presented) {
+        // Constant time, so the comparison cannot be turned into an oracle
+        // that reveals the token a character at a time. Length is compared
+        // first and does leak the length; CRYPTO_memcmp needs equal sizes.
+        if (presented.size() != auth_token_.size()) {
+            return false;
+        }
+        return CRYPTO_memcmp(presented.data(), auth_token_.data(),
+                             presented.size()) == 0;
+    };
+
     // Check Authorization header: "Bearer <token>"
     auto auth_header = req.get_header_value("Authorization");
     if (!auth_header.empty()) {
         const std::string bearer_prefix = "Bearer ";
         if (auth_header.substr(0, bearer_prefix.length()) == bearer_prefix) {
-            std::string token = auth_header.substr(bearer_prefix.length());
-            return token == auth_token_;
+            return matches(auth_header.substr(bearer_prefix.length()));
         }
     }
-    
+
     // Also check X-Config-Token header for easier testing
     auto token_header = req.get_header_value("X-Config-Token");
     if (!token_header.empty()) {
-        return token_header == auth_token_;
+        return matches(token_header);
     }
-    
+
     return false;
 }
 
@@ -610,7 +639,7 @@ void ConfigService::registerRoutes(FlapiApp& app) {
     // Health check endpoint (no authentication required)
     CROW_ROUTE(app, "/api/v1/_config/health")
         .methods("GET"_method)
-        ([this](const crow::request& /* req */) {
+        ([this](const crow::request& req) {
             crow::json::wvalue health;
 
             // Server status
@@ -689,15 +718,29 @@ void ConfigService::registerRoutes(FlapiApp& app) {
                 storage["status"] = storage_health.healthy ? "healthy" : "unhealthy";
                 storage["total_latency_ms"] = storage_health.total_latency_ms;
 
+                // `path` and the raw `error` are withheld here.
+                //
+                // This is the only _config route without validateToken, and a
+                // storage path can carry inline credentials or a signature -
+                // which is exactly why DuckLake's metadata-path and data-path
+                // were added to the secret collector. An unauthenticated
+                // caller asking "is storage healthy?" needs the answer, not
+                // the location, and the full detail is a token away at
+                // GET /api/v1/_config/project.
+                const bool authenticated = validateToken(req);
                 crow::json::wvalue backends;
                 for (const auto& backend : storage_health.backends) {
                     crow::json::wvalue backend_info;
-                    backend_info["path"] = backend.path;
                     backend_info["accessible"] = backend.accessible;
                     backend_info["latency_ms"] = backend.latency_ms;
                     backend_info["scheme"] = backend.scheme;
-                    if (!backend.error.empty()) {
-                        backend_info["error"] = backend.error;
+                    if (authenticated) {
+                        backend_info["path"] = backend.path;
+                        if (!backend.error.empty()) {
+                            backend_info["error"] = backend.error;
+                        }
+                    } else if (!backend.error.empty()) {
+                        backend_info["error"] = "unavailable; authenticate for details";
                     }
                     backends[backend.name] = std::move(backend_info);
                 }
@@ -808,7 +851,20 @@ std::string AuditLogHandler::buildAuditQuery(const std::string& catalog,
         FROM )" << catalog << R"(.audit.sync_events)";
     
     if (!endpoint_filter.empty()) {
-        query << "\n        WHERE endpoint_path = '" << endpoint_filter << "'";
+        // Quote-doubled. The caller's endpoint path reaches here, and a
+        // parameterised endpoint like /orders/:id matches
+        // "/orders/x' OR '1'='1", so this was an injection point into the
+        // DuckLake audit query.
+        std::string escaped_filter;
+        escaped_filter.reserve(endpoint_filter.size());
+        for (const char c : endpoint_filter) {
+            if (c == '\'') {
+                escaped_filter += "''";
+            } else {
+                escaped_filter += c;
+            }
+        }
+        query << "\n        WHERE endpoint_path = '" << escaped_filter << "'";
     }
     
     query << R"(
@@ -856,14 +912,30 @@ crow::response ProjectConfigHandler::getEnvironmentVariables(const crow::request
             crow::json::wvalue var;
             var["name"] = var_name;
             
-            // Try to get actual value from environment
+            // Whether it is SET, not what it contains.
+            //
+            // This returned every whitelisted variable's value verbatim. It
+            // was written for a route behind the config-service token, and
+            // then an MCP tool was wired to it - at which point the same
+            // values TemplateSecrets exists to scrub out of previews and
+            // error messages were being handed over as the tool's whole
+            // purpose. The token is required again now, but a caller asking
+            // "is API_KEY configured?" never needed the key itself, and this
+            // is the only answer that is safe to give over any transport.
+            //
+            // A value whose name does not look like a credential is still
+            // shown, because that is the case operators actually debug with:
+            // a region, a bucket, a path.
             const char* env_value = std::getenv(var_name.c_str());
-            if (env_value) {
-                var["value"] = std::string(env_value);
-                var["available"] = true;
-            } else {
+            var["available"] = env_value != nullptr;
+            if (env_value == nullptr) {
                 var["value"] = "";
-                var["available"] = false;
+            } else if (isCredentialKey(var_name) ||
+                       std::string(env_value).size() >= 24) {
+                var["value"] = "<redacted>";
+                var["redacted"] = true;
+            } else {
+                var["value"] = std::string(env_value);
             }
             
             response["variables"][idx++] = std::move(var);
@@ -1288,6 +1360,11 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
         for (const auto& param : json["parameters"]) {
             // Convert all parameter values to strings using JsonUtils
             std::string value = JsonUtils::valueToString(param);
+            // See auth_params.hpp. These two routes were the copy without
+            // the guard, and template/test EXECUTES what it renders.
+            if (isReservedAuthKey(std::string(param.key()))) {
+                continue;
+            }
             params[param.key()] = value;
         }
 
@@ -1396,10 +1473,31 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
         // Normal template expansion
         std::string expanded = sql_processor->loadAndProcessTemplate(*endpoint, params);
 
+        // Scrubbed, like the MCP dry-run preview - this IS the same payload.
+        // A template interpolating `{{{ conn.password }}}` or
+        // `{{{ env.API_KEY }}}` hands the credential to whoever asked, through
+        // a route that needs no _dryRun flag. Where a value is too short to
+        // replace safely the expansion is withheld rather than mangled.
+        const auto secrets = collectTemplateSecrets(config_manager_.get(), *endpoint, params);
         crow::json::wvalue response;
-        response["expanded"] = expanded;
+        response["expanded"] = secrets.withhold()
+                                   ? std::string("<expansion withheld: a value this template "
+                                                 "interpolates is a credential too short to "
+                                                 "redact reliably>")
+                                   : secrets.scrub(expanded);
 
-        // Include variable metadata if requested
+        // Include variable metadata if requested.
+        //
+        // The same policy as `expanded` above. This block hands back the
+        // context's raw values - conn.* and env.* included - three lines
+        // after the scrub that exists to keep them out of the response, so
+        // `?include_variables=1` was a complete way around it. Each value now
+        // goes through the same TemplateSecrets scrub, which redacts a
+        // credential and leaves ordinary configuration visible.
+        const auto redact = [&secrets](const std::string& value) {
+            return secrets.withhold() ? std::string("<redacted>")
+                                      : secrets.scrub(value);
+        };
         if (include_variables) {
             // Create a copy of params for context creation (since it might be modified)
             std::map<std::string, std::string> context_params = params;
@@ -1419,7 +1517,7 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
                     for (const auto& key : context_json["params"].keys()) {
                         crow::json::wvalue var_info;
                         var_info["type"] = "string";
-                        var_info["value"] = context_json["params"][key].s();
+                        var_info["value"] = redact(context_json["params"][key].s());
                         var_info["source"] = "request";
                         request_vars[key] = std::move(var_info);
                     }
@@ -1432,7 +1530,7 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
                     for (const auto& key : context_json["conn"].keys()) {
                         crow::json::wvalue var_info;
                         var_info["type"] = "string";
-                        var_info["value"] = context_json["conn"][key].s();
+                        var_info["value"] = redact(context_json["conn"][key].s());
                         var_info["source"] = "connection";
                         conn_vars[key] = std::move(var_info);
                     }
@@ -1445,7 +1543,7 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
                     for (const auto& key : context_json["env"].keys()) {
                         crow::json::wvalue var_info;
                         var_info["type"] = "string";
-                        var_info["value"] = context_json["env"][key].s();
+                        var_info["value"] = redact(context_json["env"][key].s());
                         var_info["source"] = "environment";
                         env_vars[key] = std::move(var_info);
                     }
@@ -1458,7 +1556,7 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
                     for (const auto& key : context_json["cache"].keys()) {
                         crow::json::wvalue var_info;
                         var_info["type"] = "string";
-                        var_info["value"] = context_json["cache"][key].s();
+                        var_info["value"] = redact(context_json["cache"][key].s());
                         var_info["source"] = "cache";
                         cache_vars[key] = std::move(var_info);
                     }
@@ -1497,7 +1595,42 @@ crow::response TemplateHandler::testTemplate(const crow::request& req, const std
         for (const auto& param : json["parameters"]) {
             // Convert all parameter values to strings using JsonUtils
             std::string value = JsonUtils::valueToString(param);
+            // See auth_params.hpp. These two routes were the copy without
+            // the guard, and template/test EXECUTES what it renders.
+            if (isReservedAuthKey(std::string(param.key()))) {
+                continue;
+            }
             params[param.key()] = value;
+        }
+
+        // Run the endpoint's OWN validators before executing.
+        //
+        // This route executes the rendered template, and it used to copy
+        // `parameters` straight into the map - so it bypassed the
+        // RequestValidator layer that CLAUDE.md calls the first line of
+        // defence. A template of the documented shape
+        // `AND status = '{{{ params.status }}}'` would therefore execute
+        // whatever the caller put in `status`, while the same value sent to
+        // the endpoint itself would be rejected. A test route must not be a
+        // way around an endpoint's own constraints.
+        {
+            RequestValidator validator;
+            const auto errors =
+                validator.validateRequestParameters(endpoint->request_fields, params);
+            if (!errors.empty()) {
+                crow::json::wvalue body;
+                body["success"] = false;
+                body["error"] = "Parameter validation failed";
+                crow::json::wvalue::list details;
+                for (const auto& error : errors) {
+                    crow::json::wvalue detail;
+                    detail["field"] = error.fieldName;
+                    detail["message"] = error.errorMessage;
+                    details.push_back(std::move(detail));
+                }
+                body["validation_errors"] = std::move(details);
+                return crow::response(400, body.dump());
+            }
         }
 
         // Get database manager instance
@@ -1527,7 +1660,17 @@ crow::response TemplateHandler::testTemplate(const crow::request& req, const std
             return crow::response(200, response);
 
         } catch (const std::exception& e) {
-            return crow::response(400, std::string("SQL execution error: ") + e.what());
+            // Scrubbed. This is the one config-service route that EXECUTES
+            // the rendered template, so DuckDB's message quotes the statement
+            // verbatim - including whatever it interpolated from conn.* and
+            // env.*. expandTemplate 180 lines above already withholds or
+            // scrubs its output, and getEnvironmentVariables redacts at this
+            // same privilege level on the grounds that a token holder never
+            // needed the key itself; leaving this one raw made the policy
+            // inconsistent inside one file, on its most dangerous route.
+            return crow::response(400, publicErrorMessage(
+                "SQL execution error", e.what(),
+                collectTemplateSecrets(config_manager_.get(), *endpoint, params)));
         }
     } catch (const std::exception& e) {
         return crow::response(500, std::string("Internal server error: ") + e.what());

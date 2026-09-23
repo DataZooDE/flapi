@@ -5,6 +5,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <csignal>
+#include <cerrno>
+#ifndef _WIN32
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 #include <atomic>
 #include <thread>
 
@@ -41,7 +46,22 @@ using namespace flapi;
 
 // Add global variable for signal handling
 std::atomic<bool> should_exit(false);
+
+// Written by main, read by the shutdown supervisor thread. A std::shared_ptr
+// is not safe for concurrent read/write, and the supervisor now starts before
+// main builds the server - so both sides go through this mutex.
+static std::mutex api_server_mutex;
 std::shared_ptr<APIServer> api_server;
+
+static void setApiServer(std::shared_ptr<APIServer> server) {
+    std::lock_guard<std::mutex> lock(api_server_mutex);
+    api_server = std::move(server);
+}
+
+static std::shared_ptr<APIServer> getApiServer() {
+    std::lock_guard<std::mutex> lock(api_server_mutex);
+    return api_server;
+}
 
 // Derive a single, bounded auth_kind for the server_started envelope.
 // flapi auth is per-endpoint with an optional global block and a separate MCP
@@ -323,24 +343,127 @@ LONG WINAPI windowsExceptionHandler(EXCEPTION_POINTERS* exceptionInfo) {
 #endif
 
 
-void signal_handler(int signal) {
-    if (signal == SIGINT || signal == SIGTERM) {
-        CROW_LOG_INFO << "Received " << (signal == SIGINT ? "SIGINT" : "SIGTERM")
-                      << ", shutting down...";
-        should_exit = true;
-        // Drain buffered telemetry before exit: the library's at-exit handler
-        // discards in-flight events by design, so a server must flush explicitly.
-        // Flush spans before the process dies. On a platform with a short
-        // SIGTERM grace (Cloud Run, App Runner) this is the difference between
-        // having the trace of the request that killed you and not.
-        // flush.timeout_ms, not a hardcoded 2s: an operator who tunes the flush
-        // budget expects it to apply to the path that matters most here.
-        flapi::Tracing().forceFlush(flapi::Tracing().shutdownFlushBudget());
-        flapi::GlobalTelemetry().flush();
-        if (api_server) {
-            api_server->stop();
+// The work a SIGTERM has to cause. NOT run in the signal handler - see below.
+static void performShutdown(int signal_number) {
+    CROW_LOG_INFO << "Received " << (signal_number == SIGINT ? "SIGINT" : "SIGTERM")
+                  << ", shutting down...";
+    // May run before the server exists: the supervisor starts as soon as the
+    // handlers are installed, so that a SIGTERM arriving during config load
+    // or DB init is acted on rather than dropped. Everything below is
+    // null-tolerant; api_server is checked at the end.
+    // Drain buffered telemetry before exit: the library's at-exit handler
+    // discards in-flight events by design, so a server must flush explicitly.
+    // Flush spans before the process dies. On a platform with a short
+    // SIGTERM grace (Cloud Run, App Runner) this is the difference between
+    // having the trace of the request that killed you and not.
+    // flush.timeout_ms, not a hardcoded 2s: an operator who tunes the flush
+    // budget expects it to apply to the path that matters most here.
+    flapi::Tracing().forceFlush(flapi::Tracing().shutdownFlushBudget());
+    flapi::GlobalTelemetry().flush();
+    if (auto server = getApiServer()) {
+        server->stop();
+    }
+}
+
+#ifndef _WIN32
+// Self-pipe. The only thing a signal handler may touch here besides an
+// atomic: write(2) is async-signal-safe, everything performShutdown does is
+// not.
+//
+// It used to run performShutdown's work directly in the handler: logging,
+// two flushes that take locks and do I/O, and APIServer::stop(), which now
+// calls HandlerPool::shutdown() - a mutex plus a join of every worker. A
+// signal is delivered on whichever thread happens to be running, so SIGTERM
+// landing on a pool worker meant that worker joining ITSELF, and a signal
+// arriving while any thread held the pool mutex meant re-entering it. Either
+// hangs the process until the platform SIGKILLs it, mid-write.
+static int g_shutdown_pipe_read = -1;
+
+// Atomic, and set to -1 BEFORE the close. The handler tests it before
+// writing, so a plain int left a window in which a signal could write into an
+// fd number that teardown had already closed and something else had reopened.
+static std::atomic<int> g_shutdown_pipe_write{-1};
+
+// Creates the self-pipe with both ends close-on-exec.
+//
+// `pipe2` is a Linux extension. macOS has no such symbol, which is how this
+// first reached CI: the Linux and Windows builds were green and
+// osx-universal-build failed to compile main.cpp outright. The portable
+// spelling is `pipe` plus two `fcntl(F_SETFD)` calls; the only thing lost is
+// atomicity against a concurrent `fork` in another thread, and this runs at
+// the top of main() before any thread or child exists.
+//
+// Returns true and fills `fds` on success; on failure nothing is left open.
+static bool createCloexecPipe(int fds[2]) {
+#if defined(__linux__)
+    if (::pipe2(fds, O_CLOEXEC) == 0) {
+        return true;
+    }
+    fds[0] = fds[1] = -1;
+    return false;
+#else
+    if (::pipe(fds) != 0) {
+        fds[0] = fds[1] = -1;
+        return false;
+    }
+    for (int i = 0; i < 2; ++i) {
+        const int flags = ::fcntl(fds[i], F_GETFD, 0);
+        if (flags < 0 || ::fcntl(fds[i], F_SETFD, flags | FD_CLOEXEC) < 0) {
+            ::close(fds[0]);
+            ::close(fds[1]);
+            fds[0] = fds[1] = -1;
+            return false;
         }
     }
+    return true;
+#endif
+}
+
+static void shutdownSupervisor() {
+    // Loops. It used to return after the FIRST signal, which left a window:
+    // if that signal arrived before Crow had assigned its server (so
+    // app.stop() was a no-op), the process carried on serving with no
+    // supervisor left to read a second byte - terminable only by SIGKILL.
+    // It now keeps handling signals until the write end is closed, which is
+    // main's way of saying the process is leaving.
+    for (;;) {
+        char byte = 0;
+        const ssize_t n = ::read(g_shutdown_pipe_read, &byte, 1);
+        if (n == 1) {
+            performShutdown(static_cast<int>(static_cast<unsigned char>(byte)));
+            continue;
+        }
+        if (n < 0 && (errno == EINTR || errno == EAGAIN)) {
+            continue;   // interrupted, or a spurious wakeup; keep waiting
+        }
+        return;   // write end closed: clean exit, nothing more to do
+    }
+}
+#endif
+
+void signal_handler(int signal) {
+    if (signal != SIGINT && signal != SIGTERM) {
+        return;
+    }
+    should_exit.store(true, std::memory_order_relaxed);
+#ifndef _WIN32
+    // Read once into a local: the value must not be re-checked after the
+    // test, or teardown could close it in between.
+    const int fd = g_shutdown_pipe_write.load(std::memory_order_acquire);
+    if (fd >= 0) {
+        const char byte = static_cast<char>(signal);
+        // EAGAIN on a non-blocking pipe means the pipe is full, i.e. a
+        // shutdown is already pending and the supervisor has not drained it
+        // yet - nothing more to do. The write end is non-blocking precisely so
+        // this cannot block inside a signal handler.
+        const ssize_t written = ::write(fd, &byte, 1);
+        (void)written;
+    }
+#else
+    // Windows runs console handlers on a dedicated thread, so there is no
+    // self-join hazard and no async-signal-safety constraint to respect.
+    performShutdown(signal);
+#endif
 }
 
 // Identity for the feedback banner and the issue link on error payloads.
@@ -355,12 +478,86 @@ int main(int argc, char* argv[])
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 #else
+    // O_CLOEXEC on both ends: the fds must not leak into a subprocess, or a
+    // child holding the write end open defeats the close-the-write-end wakeup
+    // on a clean exit.
+    //
+    // O_NONBLOCK on the WRITE end only. write(2) in a signal handler must
+    // never block, and a full pipe simply means a shutdown is already pending.
+    // The READ end stays blocking: that is how the supervisor waits. Setting
+    // it non-blocking made read() return EAGAIN immediately, the supervisor
+    // treated that as "pipe closed" and exited during startup, and SIGTERM
+    // then did nothing at all - caught by the offload suite's termination
+    // tests going red.
+    int shutdown_pipe[2] = {-1, -1};
+    bool shutdown_pipe_ready = createCloexecPipe(shutdown_pipe);
+    if (shutdown_pipe_ready) {
+        const int flags = ::fcntl(shutdown_pipe[1], F_GETFL, 0);
+        if (flags < 0 || ::fcntl(shutdown_pipe[1], F_SETFL, flags | O_NONBLOCK) < 0) {
+            ::close(shutdown_pipe[0]);
+            ::close(shutdown_pipe[1]);
+            shutdown_pipe_ready = false;
+        } else {
+            g_shutdown_pipe_read = shutdown_pipe[0];
+            g_shutdown_pipe_write.store(shutdown_pipe[1], std::memory_order_release);
+        }
+    }
+    if (!shutdown_pipe_ready) {
+        shutdown_pipe[0] = shutdown_pipe[1] = -1;
+        CROW_LOG_ERROR << "could not create the shutdown pipe; SIGINT/SIGTERM keep "
+                          "their default disposition and will terminate the process "
+                          "immediately, without draining in-flight requests";
+    }
     struct sigaction sa;
     sa.sa_handler = signal_handler;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-    sigaction(SIGINT, &sa, nullptr);
-    sigaction(SIGTERM, &sa, nullptr);
+    // SA_RESTART: without it the signal makes every blocking syscall in every
+    // thread return EINTR at once, and code that does not check for it -
+    // inside DuckDB, asio and the C++ runtime - misreads a partial or failed
+    // operation as a real one. Measured: SIGTERM delivered to all threads
+    // aborted the process with "corrupted double-linked list" rather than
+    // shutting it down. The handler only sets a flag and writes a byte, so
+    // there is nothing here that needs an interrupted syscall to observe.
+    sa.sa_flags = SA_RESTART;
+    // Only install the handler if there is something for it to signal.
+    // Installing an inert handler would make the process IGNORE SIGTERM
+    // entirely - strictly worse than the in-handler shutdown this replaced,
+    // and worse than the default disposition.
+    // RAII, because main() returns from a dozen places - every CLI subcommand
+    // (`pack`, `unpack`, `info`), every argument-parsing error, and the server
+    // path itself. A joinable std::thread whose destructor runs calls
+    // std::terminate, so starting the supervisor early (which is what closes
+    // the SIGTERM-during-startup window) turned `flapi pack` into an abort.
+    // Caught by test_self_packaging.py and test_security_warnings.py.
+    struct SupervisorGuard {
+        std::thread thread;
+        ~SupervisorGuard() {
+            if (!thread.joinable()) {
+                return;
+            }
+            // Closing the write end wakes a supervisor still blocked in
+            // read(); one already running performShutdown is simply waited
+            // for, which is the point - the process must not exit out from
+            // under a drain in progress.
+            const int fd = g_shutdown_pipe_write.exchange(-1, std::memory_order_acq_rel);
+            if (fd >= 0) {
+                ::close(fd);
+            }
+            thread.join();
+        }
+    } supervisor_guard;
+    std::thread& shutdown_supervisor = supervisor_guard.thread;
+
+    if (shutdown_pipe_ready) {
+        sigaction(SIGINT, &sa, nullptr);
+        sigaction(SIGTERM, &sa, nullptr);
+        // Started HERE, not after the server is up. Between installing the
+        // handler and starting the supervisor, a signal writes a byte nobody
+        // reads - and the default disposition is already gone, so the process
+        // ignores SIGTERM until SIGKILL. Config load and DB init sit in that
+        // window and can take seconds.
+        shutdown_supervisor = std::thread(shutdownSupervisor);
+    }
 #endif
 
     static argparse::ArgumentParser program("flapi");
@@ -691,12 +888,23 @@ int main(int argc, char* argv[])
     verifyStorageHealth(config_manager);
 
     // Create unified API server with MCP support (always enabled in unified configuration)
-    api_server = std::make_shared<APIServer>(
+    setApiServer(std::make_shared<APIServer>(
         config_manager,
         DatabaseManager::getInstance(),
         config_service_enabled,
         config_service_token
-    );
+    ));
+
+    // A SIGTERM during config load or DB init - which can take seconds - has
+    // already been acted on by the supervisor, against a server that did not
+    // exist yet. Do not then bring one up and start serving.
+    if (should_exit.load(std::memory_order_relaxed)) {
+        CROW_LOG_INFO << "shutdown requested during startup; not starting the server";
+        if (auto server = getApiServer()) {
+            server->stop();
+        }
+        return 0;   // supervisor_guard winds the supervisor down
+    }
 
     // Initialize telemetry (this is a long-running server: install_kind="server",
     // one $session_id per uptime) and emit server_started. A single opt-out —
@@ -723,7 +931,18 @@ int main(int argc, char* argv[])
 
     // Start unified server
     std::thread unified_server_thread([config_manager, server = api_server]() {
-        server->run(config_manager->getHttpPort());
+        // Caught here. run() surfaces a startup failure as an exception -
+        // EADDRINUSE, an unresolvable bind address, a failed validate() - and
+        // an exception escaping a std::thread's function calls
+        // std::terminate, so the process died with SIGABRT without draining
+        // the handler pool or running stop() for ANY of them.
+        try {
+            server->run(config_manager->getHttpPort());
+        } catch (const std::exception& e) {
+            CROW_LOG_ERROR << "the server could not start: " << e.what();
+            should_exit.store(true, std::memory_order_relaxed);
+            server->stop();
+        }
     });
 
     CROW_LOG_INFO << "flAPI unified server started - REST API and MCP on port " << config_manager->getHttpPort();
@@ -758,6 +977,16 @@ int main(int argc, char* argv[])
 
     // Wait for server to finish
     unified_server_thread.join();
+
+    // Drain and join the handler pool HERE, not in ~APIServer. The destructor
+    // runs during static destruction, by which point QueryExecutor's
+    // function-local statics are gone - and a worker still inside a query
+    // reaches them and segfaults. stop() is idempotent, so this costs nothing
+    // on the signalled path where the supervisor already ran it.
+    if (auto server = getApiServer()) {
+        server->stop();
+    }
+
 
     if (warmup_thread.joinable()) {
         warmup_thread.join();

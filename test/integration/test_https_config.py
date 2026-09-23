@@ -23,13 +23,19 @@ class TestHttpsConfigValidation:
 
     @pytest.fixture
     def flapi_binary(self):
-        """Get path to flapi binary."""
-        # Try release first, then debug
+        """Get path to flapi binary.
+
+        Resolved from the repository root, not the cwd. Relative to the cwd
+        this never resolved - pytest runs from test/integration - so every
+        test in this file had been skipping since it was written.
+        """
+        repo_root = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", ".."))
         for build_type in ["release", "debug"]:
-            binary_path = f"build/{build_type}/flapi"
+            binary_path = os.path.join(repo_root, "build", build_type, "flapi")
             if os.path.exists(binary_path):
                 return binary_path
-        pytest.skip("flapi binary not found")
+        pytest.skip("flapi binary not found in build/release or build/debug")
 
     @pytest.fixture
     def fixtures_dir(self):
@@ -46,7 +52,14 @@ class TestHttpsConfigValidation:
             yield tmpdir
 
     def write_config(self, config_dir: str, config: dict) -> str:
-        """Write a config file and return its path."""
+        """Write a config file and return its path.
+
+        `project-description` is filled in when a case does not set it. Every
+        case here omitted it, so every config failed validation for that
+        reason instead of the HTTPS reason under test - which the negative
+        cases could not tell apart.
+        """
+        config = {"project-description": "https config test", **config}
         config_path = os.path.join(config_dir, "flapi.yaml")
         with open(config_path, "w") as f:
             yaml.dump(config, f)
@@ -198,6 +211,7 @@ class TestHttpsConfigValidation:
         with open(config_path, "w") as f:
             f.write("""
 project-name: test-project
+project-description: https config test
 http-port: 8080
 template:
   path: ./sqls

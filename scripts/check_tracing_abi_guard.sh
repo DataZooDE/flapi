@@ -17,8 +17,21 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# A caller that NAMES the library means it: a missing file is then an error,
+# not a skip. In the integration-tests CI job this script was handed
+# build/release/libflapi-lib.a in a tree holding only the downloaded flapi
+# binary - so it skipped, and reported success, on every run since it was
+# written. Only the default path may skip, for a developer who has not built.
+explicit=0
+if [ $# -ge 1 ]; then
+    explicit=1
+fi
 lib="${1:-build/release/libflapi-lib.a}"
 if [ ! -f "$lib" ]; then
+    if [ "$explicit" -eq 1 ]; then
+        echo "ERROR: $lib not found; nothing was checked." >&2
+        exit 1
+    fi
     echo "SKIP: $lib not found"
     exit 0
 fi
