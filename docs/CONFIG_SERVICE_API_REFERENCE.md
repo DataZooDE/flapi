@@ -1550,18 +1550,45 @@ Slugs identify endpoints in API paths. The format depends on endpoint type:
 | MCP Prompt | `prompt-{name}` | `prompt-analysis` |
 
 **Path Conversion Rules:**
-- Leading `/` removed
-- `/` becomes `-slash-`
-- Special characters become `-`
-- Empty path becomes `empty`
+
+| In the path | In the slug | Why |
+|---|---|---|
+| `/` | `-` | keeps the common case readable |
+| `-` | `~1` | so a `-` in a slug always means `/` |
+| `~` | `~0` | the escape character escapes itself |
+| *(empty path)* | `empty` | every non-empty path starts with `/`, so it encodes to a leading `-` |
+
+The encoding is **injective** — distinct paths always produce distinct slugs,
+and `slugToPath(pathToSlug(p)) == p` for every path. An earlier scheme was not:
+it mapped every `/` and every special character to `-`, so `/order-items` and
+`/order/items` shared one slug, and a `GET` → `PUT` round trip through this API
+silently rewrote the first into the second.
+
+The escape alphabet deliberately contains **no `%`**. Clients percent-encode
+the slug for transport, and RFC 3986 §6.2.2.2 permits any normaliser to decode
+an escaped unreserved character — so a `%`-based escape could be undone in
+transit by an ordinary proxy and reintroduce that collision.
 
 **Examples:**
 
 | URL Path | Slug |
 |----------|------|
-| `/customers` | `GET-customers` |
-| `/customers/` | `GET-customers-slash` |
-| `/api/v1/users` | `GET-api-slash-v1-slash-users` |
+| `/customers` | `-customers` |
+| `/customers/` | `-customers-` |
+| `/api/v1/users` | `-api-v1-users` |
+| `/order-items` | `-order~1items` |
+| `/` | `-` |
+
+**Two accepted forms.** This endpoint also accepts a percent-encoded url-path
+(`customers%2F`) in place of a slug. They are told apart by a property that
+cannot overlap: a slug never contains `/`, because every `/` is encoded as `-`.
+That is an explicit contract, not a fallback — making the slug decoder tolerate
+a bare path would give every endpoint two names again.
+
+**Clients must agree byte-for-byte.** `flapii` implements the same codec in
+`cli/src/lib/url.ts`, and both it and the server are tested against the shared
+fixture `test/fixtures/slug_codec.json`. That fixture exists because the two
+drifted once: the CLI shipped `-slash-` while the server used `-slash`.
 
 ---
 

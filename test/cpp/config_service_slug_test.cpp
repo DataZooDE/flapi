@@ -586,3 +586,101 @@ TEST_CASE("distinct paths get distinct slugs", "[slug][path_utils][gh123]") {
         seen[slug] = path;
     }
 }
+
+TEST_CASE("the slug alphabet survives the transport", "[slug][path_utils][gh123]") {
+    // The first fix for #123 escaped literals as "%2D" / "%25". That is
+    // injective on its own, but it collides with the transport's OWN
+    // percent-encoding: the CLI sends encodeURIComponent(slug), which turns
+    // "%2D" into "%252D", and RFC 3986 6.2.2.2 lets any normaliser decode
+    // "%2D" - an unreserved character - back to '-'. A proxy doing that turns
+    // "-order%2Ditems" into "-order-items", i.e. "/order/items", and #123's
+    // collision reappears behind ordinary infrastructure.
+    //
+    // The alphabet therefore contains no '%' at all.
+    REQUIRE(PathUtils::pathToSlug("/order-items").find('%') == std::string::npos);
+    REQUIRE(PathUtils::pathToSlug("/a~b").find('%') == std::string::npos);
+    REQUIRE(PathUtils::pathToSlug("/a-b/c-d").find('%') == std::string::npos);
+
+    // And a '-' in a slug still means '/', unambiguously.
+    REQUIRE(PathUtils::pathToSlug("/order-items") == "-order~1items");
+    REQUIRE(PathUtils::pathToSlug("/order/items") == "-order-items");
+    REQUIRE(PathUtils::slugToPath("-order~1items") == "/order-items");
+    REQUIRE(PathUtils::slugToPath("-order-items") == "/order/items");
+
+    // A literal tilde round-trips too, or the escape character itself would be
+    // the one value the codec could not carry.
+    REQUIRE(PathUtils::slugToPath(PathUtils::pathToSlug("/a~b")) == "/a~b");
+    REQUIRE(PathUtils::slugToPath(PathUtils::pathToSlug("/~1")) == "/~1");
+}
+
+TEST_CASE("slug and path are two explicit forms, not one tolerant decoder",
+          "[slug][path_utils][gh123]") {
+    // An earlier version made slugToPath prepend a leading '/' when the decode
+    // did not start with one, so that a percent-decoded url-path would also
+    // resolve. That made 'x' and '-x' BOTH address '/x' - every endpoint had
+    // two config-service names again, which is the ambiguity #123 removed.
+    //
+    // The two forms are now told apart by a property that cannot overlap: a
+    // slug never contains '/', because the encoder maps every '/' to '-'.
+    REQUIRE(PathUtils::looksLikePath("northwind/products/"));
+    REQUIRE_FALSE(PathUtils::looksLikePath("-northwind-products-"));
+
+    SECTION("a slug decodes as a slug") {
+        REQUIRE(PathUtils::identifierToPath("-customers-") == "/customers/");
+        // Strictly: no leading slash is invented for a slug that did not encode one.
+        REQUIRE(PathUtils::identifierToPath("x") == "x");
+        REQUIRE(PathUtils::identifierToPath("-x") == "/x");
+        REQUIRE(PathUtils::identifierToPath("x") != PathUtils::identifierToPath("-x"));
+    }
+
+    SECTION("a path is taken as a path") {
+        REQUIRE(PathUtils::identifierToPath("northwind/products/") == "/northwind/products/");
+        REQUIRE(PathUtils::identifierToPath("/northwind/products/") == "/northwind/products/");
+    }
+}
+
+TEST_CASE("the server agrees with the CLI on every shared case",
+          "[slug][path_utils][gh123][fixture]") {
+    // test/fixtures/slug_codec.json is read by BOTH this suite and
+    // cli/test/unit/url.spec.ts.
+    //
+    // It exists because the two implementations drifted unnoticed: the CLI
+    // shipped '-slash-' while the server used '-slash', and when the server's
+    // codec changed the CLI was not updated at all - so every `flapii`
+    // config command would have 404'd against the new server. Both binaries
+    // ship in the same flapi-io wheel, so the release would have broken its
+    // own client.
+    //
+    // A shared fixture is the cheapest thing that makes that drift a test
+    // failure instead of a support ticket.
+    const auto fixture_path =
+        std::filesystem::path(__FILE__).parent_path().parent_path() /
+        "fixtures" / "slug_codec.json";
+    INFO("fixture: " << fixture_path.string());
+    REQUIRE(std::filesystem::exists(fixture_path));
+
+    std::ifstream in(fixture_path);
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    auto doc = crow::json::load(buffer.str());
+    REQUIRE(doc);
+    REQUIRE(doc.has("cases"));
+
+    std::map<std::string, std::string> seen;
+    for (const auto& item : doc["cases"]) {
+        const std::string path = item["path"].s();
+        const std::string slug = item["slug"].s();
+        INFO("case: " << path << " <-> " << slug);
+
+        REQUIRE(PathUtils::pathToSlug(path) == slug);
+        REQUIRE(PathUtils::slugToPath(slug) == path);
+
+        // No '%' anywhere: the CLI percent-encodes the slug for transport.
+        REQUIRE(slug.find('%') == std::string::npos);
+
+        // And injective across the whole fixture.
+        const auto clash = seen.find(slug);
+        REQUIRE(clash == seen.end());
+        seen[slug] = path;
+    }
+}

@@ -19,25 +19,54 @@ stages:
     response:
       status_code: [200, 401]  # 401 if token is invalid, adjust as needed
 
-  - name: Get endpoint by slug - products get
+  # These two stages used to address `northwind/products/`, which does not
+  # exist in this configuration, and accepted [200, 404, 401] - so they
+  # asserted nothing at all, and were the stated justification for a
+  # slugToPath tolerance that made every endpoint addressable by two names.
+  # They now address real endpoints and expect one status each.
+  - name: Get endpoint by slug
     request:
-      url: "{base_url}/api/v1/_config/endpoints/northwind%2Fproducts%2F%3Aproduct_id"
+      url: "{base_url}/api/v1/_config/endpoints/-customers-"
       method: GET
       headers:
         X-Config-Token: "test-token"
         Authorization: "Bearer test-token"
     response:
-      status_code: [200, 404, 401]
+      status_code: 200
+      strict: false
+      json:
+        url-path: "/customers/"
 
-  - name: Get endpoint by slug - products list
+  # A hyphen in the path is the case #123 was about: it must survive the
+  # round trip instead of becoming a slash.
+  - name: Get endpoint by slug - hyphenated path
     request:
-      url: "{base_url}/api/v1/_config/endpoints/northwind%2Fproducts%2F"
+      url: "{base_url}/api/v1/_config/endpoints/-json~1demo-"
       method: GET
       headers:
         X-Config-Token: "test-token"
         Authorization: "Bearer test-token"
     response:
-      status_code: [200, 404, 401]
+      status_code: 200
+      strict: false
+      json:
+        url-path: "/json-demo/"
+
+  # The percent-encoded url-path form, which the config service also accepts.
+  # Kept as an explicit contract rather than as a tolerance inside the slug
+  # decoder.
+  - name: Get endpoint by percent-encoded path
+    request:
+      url: "{base_url}/api/v1/_config/endpoints/customers%2F"
+      method: GET
+      headers:
+        X-Config-Token: "test-token"
+        Authorization: "Bearer test-token"
+    response:
+      status_code: 200
+      strict: false
+      json:
+        url-path: "/customers/"
 
   - name: Get non-existent endpoint (404)
     request:
@@ -51,7 +80,7 @@ stages:
 
   - name: Get endpoint parameters
     request:
-      url: "{base_url}/api/v1/_config/endpoints/northwind%2Fproducts%2F/parameters"
+      url: "{base_url}/api/v1/_config/endpoints/-customers-/parameters"
       method: GET
       headers:
         X-Config-Token: "test-token"
@@ -61,7 +90,7 @@ stages:
 
   - name: Validate endpoint configuration
     request:
-      url: "{base_url}/api/v1/_config/endpoints/northwind%2Fproducts%2F/validate"
+      url: "{base_url}/api/v1/_config/endpoints/-customers-/validate"
       method: POST
       headers:
         X-Config-Token: "test-token"
@@ -73,7 +102,7 @@ stages:
 
   - name: Reload endpoint configuration
     request:
-      url: "{base_url}/api/v1/_config/endpoints/northwind%2Fproducts%2F/reload"
+      url: "{base_url}/api/v1/_config/endpoints/-customers-/reload"
       method: POST
       headers:
         X-Config-Token: "test-token"

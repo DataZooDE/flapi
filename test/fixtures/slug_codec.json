@@ -1,0 +1,98 @@
+{
+  "_comment": [
+    "Shared slug-codec fixture, consumed by the C++ suite (path_utils tests)",
+    "and the flapii CLI suite (cli/test/unit/url.test.ts).",
+    "",
+    "It exists because the two implementations drifted: the CLI shipped",
+    "'-slash-' while the server used '-slash', and after #123 changed the",
+    "codec the CLI was not updated at all - so every config command would",
+    "have 404'd against the new server, and both binaries ship in the same",
+    "flapi-io wheel.",
+    "",
+    "Encoding: '/'->'-', '-'->'~1', '~'->'~0', ''->'empty'. No '%', so",
+    "neither encodeURIComponent nor RFC 3986 normalisation can alter a slug",
+    "in transit."
+  ],
+  "cases": [
+    {
+      "path": "/customers/",
+      "slug": "-customers-"
+    },
+    {
+      "path": "/publicis",
+      "slug": "-publicis"
+    },
+    {
+      "path": "/sap/functions",
+      "slug": "-sap-functions"
+    },
+    {
+      "path": "/",
+      "slug": "-"
+    },
+    {
+      "path": "",
+      "slug": "empty"
+    },
+    {
+      "path": "/a-b",
+      "slug": "-a~1b"
+    },
+    {
+      "path": "/a/b",
+      "slug": "-a-b"
+    },
+    {
+      "path": "/order-items",
+      "slug": "-order~1items"
+    },
+    {
+      "path": "/order/items",
+      "slug": "-order-items"
+    },
+    {
+      "path": "//x",
+      "slug": "--x"
+    },
+    {
+      "path": "/a~b",
+      "slug": "-a~0b"
+    },
+    {
+      "path": "/~1",
+      "slug": "-~01"
+    },
+    {
+      "path": "/a-b/c-d",
+      "slug": "-a~1b-c~1d"
+    },
+    {
+      "path": "/test/cached/",
+      "slug": "-test-cached-"
+    },
+    {
+      "path": "/test/append/",
+      "slug": "-test-append-"
+    },
+    {
+      "path": "/test/merge/",
+      "slug": "-test-merge-"
+    },
+    {
+      "path": "/test/invalid/",
+      "slug": "-test-invalid-"
+    },
+    {
+      "path": "/northwind/products/",
+      "slug": "-northwind-products-"
+    },
+    {
+      "path": "/api/v1/customers/",
+      "slug": "-api-v1-customers-"
+    },
+    {
+      "path": "/deep/a-b/c~d/",
+      "slug": "-deep-a~1b-c~0d-"
+    }
+  ]
+}
