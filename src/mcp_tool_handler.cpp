@@ -195,12 +195,23 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
             // interpolated from conn.* would leave with it.
             if (config_manager && !endpoint_config->connection.empty()) {
                 const auto& connections = config_manager->getConnections();
+                bool withhold = false;
                 for (const auto& conn_name : endpoint_config->connection) {
                     const auto it = connections.find(conn_name);
-                    if (it != connections.end()) {
-                        rendered_sql = MCPDryRun::scrubConnectionSecrets(
-                            std::move(rendered_sql), it->second.properties);
+                    if (it == connections.end()) {
+                        continue;
                     }
+                    if (MCPDryRun::hasUnscrubbableCredential(it->second.properties)) {
+                        withhold = true;
+                        break;
+                    }
+                    rendered_sql = MCPDryRun::scrubConnectionSecrets(
+                        std::move(rendered_sql), it->second.properties);
+                }
+                if (withhold) {
+                    rendered_sql =
+                        "<preview withheld: this connection holds a credential too short "
+                        "to redact reliably, and returning the rendered SQL would disclose it>";
                 }
             }
             std::string payload = MCPDryRun::formatResult(request.tool_name, rendered_sql, params);

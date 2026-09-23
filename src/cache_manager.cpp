@@ -256,11 +256,27 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
     if (snapshot.current_snapshot_committed_at) {
         params["cacheSnapshotTimestamp"] = *snapshot.current_snapshot_committed_at;
     }
-    if (snapshot.previous_snapshot_id) {
-        params["previousSnapshotId"] = *snapshot.previous_snapshot_id;
+    // The watermark for an incremental refresh is the LAST COMPLETED refresh,
+    // which is the newest snapshot that exists right now - fetchSnapshotInfo
+    // runs before this refresh writes anything, so index 0 is already it.
+    //
+    // These used to carry index 1, i.e. two refreshes back, while
+    // CONFIG_REFERENCE documented previousSnapshotTimestamp as "Last refresh
+    // timestamp" and its example used it as
+    //     WHERE updated_at > TIMESTAMP '{{cache.previousSnapshotTimestamp}}'
+    // So an append template re-read every row the previous refresh had already
+    // appended - duplicates, silently - and a table's second-ever refresh had
+    // no previous at all, so the incremental section did not render and it
+    // reloaded everything.
+    //
+    // BEHAVIOUR CHANGE: incremental refreshes now load a narrower, correct
+    // window. Merge mode was masking this - duplicates collapse on the primary
+    // key - which is why it went unnoticed in append mode.
+    if (snapshot.current_snapshot_id) {
+        params["previousSnapshotId"] = *snapshot.current_snapshot_id;
     }
-    if (snapshot.previous_snapshot_committed_at) {
-        params["previousSnapshotTimestamp"] = *snapshot.previous_snapshot_committed_at;
+    if (snapshot.current_snapshot_committed_at) {
+        params["previousSnapshotTimestamp"] = *snapshot.current_snapshot_committed_at;
     }
     if (cacheConfig.schedule) {
         params["cacheSchedule"] = cacheConfig.schedule.value();

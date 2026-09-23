@@ -1331,8 +1331,19 @@ Special variables available in cache-enabled SQL templates:
 | `{{cache.table}}` | Cache table name |
 | `{{cache.schema}}` | Cache schema name |
 | `{{cache.catalog}}` | DuckLake catalog alias |
-| `{{cache.previousSnapshotTimestamp}}` | Last refresh timestamp |
-| `{{cache.currentSnapshotTimestamp}}` | Current refresh timestamp |
+| `{{cache.previousSnapshotTimestamp}}` | Timestamp of the last completed refresh of **this** cache table. The watermark for an incremental refresh. |
+| `{{cache.snapshotTimestamp}}` | Same instant, under the name the template context actually exposes. |
+| `{{cache.previousSnapshotId}}` | Snapshot id of that refresh. |
+
+> `{{cache.currentSnapshotTimestamp}}` appeared in an earlier version of this
+> table and has never existed — the implemented name is
+> `{{cache.snapshotTimestamp}}`. A template using the old name renders an empty
+> string, which inside a `WHERE ... > TIMESTAMP '...'` is a SQL error rather
+> than a silent one.
+>
+> `previousSnapshotTimestamp` also used to carry the refresh *before* last, so
+> an append template re-read rows the previous refresh had already appended.
+> It is now the last completed refresh, as documented here.
 
 **Example Template:**
 

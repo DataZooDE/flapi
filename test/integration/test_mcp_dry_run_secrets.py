@@ -27,11 +27,17 @@ from otel_helpers import flapi_binary, free_port
 pytestmark = pytest.mark.standalone_server
 
 SECRET = "CONNECTION-PASSWORD-LEAKED"
+# Short secrets: the scrub used to skip anything under four bytes, so a PIN
+# or a short token was returned verbatim. The long sentinel above could never
+# reach that branch.
+# A three-byte secret: under the length at which value-based scrubbing is
+# safe, so the preview must be withheld rather than scrubbed.
 NOT_SECRET = "/data/public/path.parquet"
 
 
 class _Server:
-    def __init__(self):
+    def __init__(self, short_secret: bool = False):
+        self.short_secret = short_secret
         self.tmp = tempfile.mkdtemp(prefix="flapi_dryrun_")
         self.port = free_port()
         self.base_url = f"http://127.0.0.1:{self.port}"
@@ -43,7 +49,8 @@ class _Server:
                     "template-source: t.sql\nconnection: [creds]\n"
                     "mcp-tool:\n  name: leaky\n  description: Embeds connection properties.\n")
         with open(os.path.join(sqls, "t.sql"), "w") as f:
-            f.write("SELECT '{{{ conn.password }}}' AS pw, '{{{ conn.path }}}' AS p\n")
+            f.write("SELECT '{{{ conn.password }}}' AS pw, '{{{ conn.path }}}' AS p, "
+                    "'{{{ conn.pin_password }}}' AS short\n")
         with open(os.path.join(self.tmp, "flapi.yaml"), "w") as f:
             f.write(
                 "project-name: dryrun-secrets\n"
@@ -53,7 +60,8 @@ class _Server:
                 "connections:\n  creds:\n    properties:\n"
                 "      database: ':memory:'\n"
                 f"      password: '{SECRET}'\n"
-                f"      path: '{NOT_SECRET}'\n"
+                + ("      pin_password: 'abc'\n" if self.short_secret else "")
+                + f"      path: '{NOT_SECRET}'\n"
                 "mcp:\n  enabled: true\n")
         self.proc = None
 
@@ -117,3 +125,23 @@ class TestDryRunSecrets:
             sql = s.dry_run()["rendered_sql"]
             assert sql.strip().upper().startswith("SELECT")
             assert "AS pw" in sql
+
+
+    def test_a_short_credential_withholds_the_preview(self):
+        # A value under four bytes cannot be replaced without corrupting
+        # unrelated SQL - measured: a one-byte secret rewrote the middle of a
+        # file path. The first version simply skipped those, so a short
+        # password or PIN came back verbatim to any unauthenticated _dryRun
+        # caller. Neither leaking nor mangling is acceptable, so the preview is
+        # withheld and the caller is told why.
+        with _Server(short_secret=True) as s:
+            sql = s.dry_run()["rendered_sql"]
+            assert "abc" not in sql, f"the 3-byte secret survived: {sql!r}"
+            assert "withheld" in sql, sql
+
+    def test_a_connection_without_short_credentials_still_gets_a_preview(self):
+        # Withholding must be the exception, or dry run stops being useful.
+        with _Server() as s:
+            sql = s.dry_run()["rendered_sql"]
+            assert "withheld" not in sql, sql
+            assert sql.strip().upper().startswith("SELECT")

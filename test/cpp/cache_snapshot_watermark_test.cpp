@@ -124,12 +124,13 @@ connections:
 
     std::map<std::string, std::string> p;
     db->executeQuery("CREATE SCHEMA IF NOT EXISTS cache.s", p, false);
-    // Table A is created and then refreshed again; table B moves in between.
-    // So the newest snapshot in the CATALOG belongs to A, and the second
-    // newest belongs to B - while A's own previous snapshot is older still.
+    // A moves twice, then B moves. So the newest snapshot in the CATALOG
+    // belongs to B, while A's own latest - the watermark A's next incremental
+    // refresh must use - is older. A catalog-wide lookup returns B's, which is
+    // NEWER than anything A wrote, so A would skip its own rows.
     db->executeQuery("CREATE TABLE cache.s.a AS SELECT 1 AS i", p, false);
-    db->executeQuery("CREATE TABLE cache.s.b AS SELECT 1 AS i", p, false);
     db->executeQuery("INSERT INTO cache.s.a VALUES (2)", p, false);
+    db->executeQuery("CREATE TABLE cache.s.b AS SELECT 1 AS i", p, false);
 
     auto snapshotIds = [&](const std::string& sql) {
         std::map<std::string, std::string> q;
@@ -153,14 +154,33 @@ connections:
     cache_manager.refreshDuckLakeCache(config_manager, cachedEndpoint("/a", "a"), params);
     REQUIRE(adapter->render_calls == 1);
 
-    SECTION("the chosen previous snapshot belongs to this table") {
+    SECTION("the watermark is this table's own latest snapshot") {
         const auto it = adapter->captured_params.find("previousSnapshotId");
         REQUIRE(it != adapter->captured_params.end());
         const int64_t chosen = std::stoll(it->second);
 
-        // The catalog-wide answer is table b's snapshot; a's own is older.
-        REQUIRE(chosen != catalog_wide[1]);
-        REQUIRE(chosen < catalog_wide[1]);
+        // Catalog-wide, the newest snapshot is b's. Using it as a's watermark
+        // would skip every row a wrote before b moved.
+        REQUIRE(chosen != catalog_wide[0]);
+        REQUIRE(chosen < catalog_wide[0]);
+
+        // And it is the LAST COMPLETED refresh of a, not the one before that.
+        // These used to carry index 1 - two refreshes back - so an append
+        // template re-read rows the previous refresh had already appended.
+        std::map<std::string, std::string> q;
+        auto own = db->executeQuery(
+            "SELECT snapshot_id FROM ducklake_snapshots('cache') "
+            "WHERE list_contains(flatten(map_values(changes)), "
+            "  (SELECT CAST(table_id AS VARCHAR) FROM ducklake_table_info('cache') "
+            "   WHERE table_name = 'a' LIMIT 1)) "
+            "   OR list_contains(flatten(map_values(changes)), 's.a') "
+            "ORDER BY snapshot_id DESC LIMIT 2", q, false);
+        auto rows = crow::json::load(own.data.dump());
+        REQUIRE(rows.size() == 2);
+        const int64_t a_latest = static_cast<int64_t>(rows[0]["snapshot_id"].d());
+        const int64_t a_previous = static_cast<int64_t>(rows[1]["snapshot_id"].d());
+        REQUIRE(chosen == a_latest);
+        REQUIRE(chosen != a_previous);
     }
 
     SECTION("the query CacheManager issued is scoped to the table") {

@@ -33,6 +33,11 @@ public:
     /// credential back in the dry-run payload - over MCP, which is
     /// unauthenticated by default. Scrubbing by VALUE, not by key, because by
     /// the time the SQL is rendered the key is gone.
+    /// True when a connection holds a credential too short to scrub by value.
+    /// The rendered SQL must then be withheld rather than returned.
+    static bool hasUnscrubbableCredential(
+        const std::unordered_map<std::string, std::string>& connection_properties);
+
     static std::string scrubConnectionSecrets(
         std::string sql,
         const std::unordered_map<std::string, std::string>& connection_properties);
