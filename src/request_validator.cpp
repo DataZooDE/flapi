@@ -1,4 +1,5 @@
 #include "request_validator.hpp"
+#include "auth_params.hpp"
 #include "config_manager.hpp"
 #include "sql_parameter_classifier.hpp"
 #include <crow.h>
@@ -371,9 +372,8 @@ std::vector<ValidationError> RequestValidator::validateRequestFields(
     // Check each parameter against known fields. The `__auth_*` prefix is
     // reserved for the auth-context injection performed by APIServer; those
     // keys are not user input and must not be flagged as unknown.
-    const std::string kAuthReservedPrefix = "__auth_";
     for (const auto& param : params) {
-        if (param.first.rfind(kAuthReservedPrefix, 0) == 0) {
+        if (isReservedAuthKey(param.first)) {
             continue;
         }
         if (knownFields.find(param.first) == knownFields.end()) {

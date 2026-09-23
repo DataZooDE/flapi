@@ -316,6 +316,7 @@ jobs:
     - name: Check codebase invariants
       run: |
         ./scripts/check_crow_app_alias.sh
+        ./scripts/check_auth_prefix_single_source.sh
         ./scripts/check_cxx_standard_uniform.sh build/release
         ./scripts/check_tracing_abi_guard.sh build/release/libflapi-lib.a
 

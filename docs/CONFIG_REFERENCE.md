@@ -1356,9 +1356,12 @@ Special variables available in cache-enabled SQL templates:
 > boundary may be re-read, which is idempotent under merge and a bounded,
 > visible duplicate under append — losing it is neither.
 
-> **Note:** the value is rendered raw. With an integer or a string cursor,
-> quote or cast it in the template as that type requires; the `TIMESTAMP '...'`
-> form in the example below is right for a timestamp cursor only.
+> **Note:** the value is rendered raw, so quote or cast it in the template as
+> its type requires — the `TIMESTAMP '...'` form in the example below is right
+> for a timestamp cursor only. Use the **triple**-brace form
+> `{{{cache.previousSnapshotTimestamp}}}` inside a quoted SQL literal: the
+> double-brace form HTML-escapes what it renders, which corrupts any value
+> containing a quote.
 >
 > **`{{cache.snapshotTimestamp}}` is a different value.** It is still the
 > snapshot commit time, so a template using it as a watermark keeps the

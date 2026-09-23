@@ -451,3 +451,37 @@ class TestConfigToolsFailClosedWithNoConfiguredToken:
                     assert "error" in got, (
                         f"{name} answered with token={token!r} while no token "
                         f"is configured: {got}")
+
+
+class TestTheRestConfigRoutesRejectBadTokens:
+    """`ConfigService::validateToken`, the REST twin of the MCP adapter's gate.
+
+    It compared `token == auth_token_` - not constant time, and TRUE when both
+    are empty. The empty case is not reachable through the CLI, because
+    main.cpp generates a secure token when --config-service is given without
+    one, so the explicit empty-token guard is defence in depth rather than a
+    closed hole. These tests cover what IS reachable: an empty or absent
+    bearer, and a token one character short.
+    """
+
+    def test_an_empty_or_absent_bearer_never_authenticates(self):
+        # config_service_token="" means the binary generates one, so the
+        # empty bearer below is being compared against a real secret.
+        with _Server(config_service_token="") as s:
+            for headers in ({"Authorization": "Bearer "},
+                            {"Authorization": "Bearer"},
+                            {"X-Config-Token": ""},
+                            {}):
+                r = requests.get(f"{s.base_url}/api/v1/_config/endpoints",
+                                 headers=headers, timeout=10)
+                assert r.status_code == 401, (headers, r.status_code, r.text[:200])
+
+    def test_a_wrong_token_is_refused_and_the_right_one_is_not(self):
+        with _Server() as s:
+            wrong = requests.get(f"{s.base_url}/api/v1/_config/endpoints",
+                                 headers={"X-Config-Token": TOKEN[:-1]}, timeout=10)
+            assert wrong.status_code == 401, wrong.text[:200]
+
+            right = requests.get(f"{s.base_url}/api/v1/_config/endpoints",
+                                 headers={"X-Config-Token": TOKEN}, timeout=10)
+            assert right.status_code == 200, right.text[:200]

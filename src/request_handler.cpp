@@ -1,4 +1,5 @@
 #include "request_handler.hpp"
+#include "auth_params.hpp"
 #include "template_secrets.hpp"
 #include "json_utils.hpp"
 #include "content_negotiation.hpp"
@@ -462,30 +463,8 @@ std::string RequestHandler::createNextUrl(const crow::request& req, const QueryR
     return baseUrl + queryResult.next;
 }
 
-namespace {
-
-// `__auth_*` is the reserved prefix APIServer uses to inject the authenticated
-// principal into the template context (api_server.cpp:325). It is SERVER data,
-// and it must never be accepted from a caller.
-//
-// It used to be. RequestValidator whitelists the prefix so the injected keys
-// are not reported as unknown parameters, and combineParameters copied every
-// query parameter over the top of the defaults - so a client could send
-// `?__auth_username=admin&__auth_roles=admin&__auth_authenticated=true` and
-// have it land in `auth.*`. Measured on an endpoint with no auth configured:
-//
-//   {"who":"admin","roles":"admin","authed":"true"}
-//
-// Any template that filters rows on `{{ auth.username }}` or `{{ auth.roles }}`
-// - the documented multi-tenant pattern - was therefore letting the caller
-// choose who they were. On an endpoint WITH auth it was worse: the query
-// parameter overwrote the identity the middleware had just established.
-bool isReservedAuthKey(const std::string& key) {
-    static constexpr char kPrefix[] = "__auth_";
-    return key.rfind(kPrefix, 0) == 0;
-}
-
-}  // namespace
+// The `__auth_*` rule lives in auth_params.hpp - see the comment there for
+// what a caller could do before it existed.
 
 std::map<std::string, std::string> RequestHandler::combineParameters(const crow::request& req, const std::map<std::string, std::string>& defaultParams, const std::map<std::string, std::string>& pathParams, const EndpointConfig& endpoint) {
     std::map<std::string, std::string> params = defaultParams;

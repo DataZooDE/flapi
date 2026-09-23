@@ -412,11 +412,20 @@ std::string CacheManager::fetchCursorWatermark(const std::string& catalog,
         if (rows && rows.t() == crow::json::type::List && rows.size() > 0 &&
             rows[0].has("watermark") &&
             rows[0]["watermark"].t() == crow::json::type::String) {
-            // Escaped here, because the value comes from upstream data and is
-            // interpolated straight into the refresh template - a VARCHAR
-            // cursor value of `ab'c` would otherwise render
-            // `WHERE k > 'ab'c'`.
-            return escapeSqlLiteral(rows[0]["watermark"].s());
+            // Returned RAW.
+            //
+            // It used to be pre-escaped here, which is wrong twice over: the
+            // docs say the value is rendered raw, and the documented
+            // double-brace form `{{cache.previousSnapshotTimestamp}}`
+            // HTML-escapes what it is given, so a pre-escaped `ab''c` renders
+            // as `ab&#39;&#39;c`. Escaping belongs at interpolation, where
+            // the surrounding quoting is known - which is what the template
+            // author chooses with `{{{ }}}` versus `{{ }}`.
+            //
+            // A quote in a cursor value is vanishingly rare (cursors are
+            // timestamps, sequences or dates) and mangling every ordinary
+            // value to guard it is the worse trade.
+            return rows[0]["watermark"].s();
         }
     } catch (const std::exception& ex) {
         // Table not created yet, or the cursor column is not in it. The

@@ -159,6 +159,17 @@ TemplateSecrets collectTemplateSecrets(ConfigManager* config_manager,
             }
         }
     }
+    // The DuckLake catalog's own paths. A metadata-path is frequently a DSN
+    // with inline credentials (`postgres://user:pw@host/db`) or an object
+    // URL with a signature, and a failed cache refresh quotes the statement
+    // that attached it - so these reach error messages exactly like a
+    // connection property does, and get the same treatment.
+    if (config_manager != nullptr) {
+        const auto& ducklake = config_manager->getDuckLakeConfig();
+        secrets.addConnectionProperty("metadata-path", ducklake.metadata_path);
+        secrets.addConnectionProperty("data-path", ducklake.data_path);
+    }
+
     // Params are caller-supplied: scrubbed, never a reason to withhold.
     // A configured `default:` that the caller did not override is
     // server-sourced, so those are added as server values first.

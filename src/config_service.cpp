@@ -6,8 +6,11 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <openssl/crypto.h>
+
 #include "config_service.hpp"
 #include "flapi_tracing.hpp"
+#include "auth_params.hpp"
 #include "json_utils.hpp"
 #include "request_validator.hpp"
 #include "template_secrets.hpp"
@@ -239,23 +242,46 @@ bool ConfigService::validateToken(const crow::request& req) const {
     if (!enabled_) {
         return false;
     }
-    
+
+    // Fail closed with no configured secret.
+    //
+    // `token == auth_token_` with both empty returns TRUE, so an empty
+    // configured token would authenticate `Authorization: Bearer `. That is
+    // NOT reachable through the CLI - main.cpp generates a secure token when
+    // --config-service is given without one - so this is defence in depth
+    // rather than a closed hole: ConfigService can be constructed with an
+    // empty token programmatically, and its MCP twin tokenMatchesConfigured
+    // was written to fail closed for the same reason.
+    if (auth_token_.empty()) {
+        return false;
+    }
+
+    const auto matches = [this](const std::string& presented) {
+        // Constant time, so the comparison cannot be turned into an oracle
+        // that reveals the token a character at a time. Length is compared
+        // first and does leak the length; CRYPTO_memcmp needs equal sizes.
+        if (presented.size() != auth_token_.size()) {
+            return false;
+        }
+        return CRYPTO_memcmp(presented.data(), auth_token_.data(),
+                             presented.size()) == 0;
+    };
+
     // Check Authorization header: "Bearer <token>"
     auto auth_header = req.get_header_value("Authorization");
     if (!auth_header.empty()) {
         const std::string bearer_prefix = "Bearer ";
         if (auth_header.substr(0, bearer_prefix.length()) == bearer_prefix) {
-            std::string token = auth_header.substr(bearer_prefix.length());
-            return token == auth_token_;
+            return matches(auth_header.substr(bearer_prefix.length()));
         }
     }
-    
+
     // Also check X-Config-Token header for easier testing
     auto token_header = req.get_header_value("X-Config-Token");
     if (!token_header.empty()) {
-        return token_header == auth_token_;
+        return matches(token_header);
     }
-    
+
     return false;
 }
 
@@ -1320,13 +1346,9 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
         for (const auto& param : json["parameters"]) {
             // Convert all parameter values to strings using JsonUtils
             std::string value = JsonUtils::valueToString(param);
-            // `__auth_*` is SERVER data: the identity the transport
-            // authenticated, injected for the template. A caller must never
-            // supply it. REST strips it in combineParameters and MCP in
-            // applyMcpAuthContext; these two config-service routes are the
-            // third copy of the same invariant and were the only ones without
-            // the guard - and template/test EXECUTES what it renders.
-            if (std::string(param.key()).rfind("__auth_", 0) == 0) {
+            // See auth_params.hpp. These two routes were the copy without
+            // the guard, and template/test EXECUTES what it renders.
+            if (isReservedAuthKey(std::string(param.key()))) {
                 continue;
             }
             params[param.key()] = value;
@@ -1559,13 +1581,9 @@ crow::response TemplateHandler::testTemplate(const crow::request& req, const std
         for (const auto& param : json["parameters"]) {
             // Convert all parameter values to strings using JsonUtils
             std::string value = JsonUtils::valueToString(param);
-            // `__auth_*` is SERVER data: the identity the transport
-            // authenticated, injected for the template. A caller must never
-            // supply it. REST strips it in combineParameters and MCP in
-            // applyMcpAuthContext; these two config-service routes are the
-            // third copy of the same invariant and were the only ones without
-            // the guard - and template/test EXECUTES what it renders.
-            if (std::string(param.key()).rfind("__auth_", 0) == 0) {
+            // See auth_params.hpp. These two routes were the copy without
+            // the guard, and template/test EXECUTES what it renders.
+            if (isReservedAuthKey(std::string(param.key()))) {
                 continue;
             }
             params[param.key()] = value;

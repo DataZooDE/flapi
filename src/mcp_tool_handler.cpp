@@ -5,6 +5,7 @@
 #include <algorithm>
 
 #include "mcp_dry_run.hpp"
+#include "auth_params.hpp"
 #include "template_secrets.hpp"
 #include "mcp_response_shaper.hpp"
 #include "mcp_schema_builder.hpp"
@@ -54,13 +55,7 @@ void applyMcpAuthContext(std::map<std::string, std::string>& params,
     //
     //   tools/call {"__auth_username":"admin","__auth_roles":"admin"}
     //   -> {"who":"admin","roles":"admin"}
-    for (auto it = params.begin(); it != params.end();) {
-        if (it->first.rfind("__auth_", 0) == 0) {
-            it = params.erase(it);
-        } else {
-            ++it;
-        }
-    }
+    stripReservedAuthParams(params);
 
     // 2. ...and then inject the identity the transport actually authenticated.
     //
