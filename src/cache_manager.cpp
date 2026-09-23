@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cctype>
 #include <sstream>
 #include <fstream>
 #include <stdexcept>
@@ -302,7 +303,8 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
     // a first refresh still renders its incremental section the same way.
     if (cacheConfig.hasCursor()) {
         const std::string watermark =
-            fetchCursorWatermark(catalog, schema, table, cacheConfig.cursor->column);
+            fetchCursorWatermark(catalog, schema, table, cacheConfig.cursor->column,
+                                 cacheConfig.cursor->type);
         if (!watermark.empty()) {
             params["previousSnapshotTimestamp"] = watermark;
         } else {
@@ -395,10 +397,47 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
     }
 }
 
+bool CacheManager::isPlausibleWatermark(const std::string& value,
+                                        const std::string& cursor_type) {
+    if (value.empty()) {
+        return false;
+    }
+
+    std::string type;
+    type.reserve(cursor_type.size());
+    for (const char c : cursor_type) {
+        type += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+
+    const auto all_of = [&value](const char* allowed) {
+        return value.find_first_not_of(allowed) == std::string::npos;
+    };
+
+    if (type == "timestamp" || type == "datetime" || type == "date" ||
+        type == "time" || type == "timestamptz") {
+        return all_of("0123456789:-+. TZ");
+    }
+    if (type == "int" || type == "integer" || type == "bigint" ||
+        type == "smallint" || type == "hugeint" || type == "long" ||
+        type == "double" || type == "decimal" || type == "numeric" ||
+        type == "float") {
+        return all_of("0123456789+-.eE");
+    }
+
+    // Anything else, `string` included: no character that can end a literal,
+    // start a statement, or open a comment.
+    if (value.find_first_of("'\"`;\n\r\\") != std::string::npos) {
+        return false;
+    }
+    return value.find("--") == std::string::npos &&
+           value.find("/*") == std::string::npos;
+}
+
 std::string CacheManager::fetchCursorWatermark(const std::string& catalog,
                                                const std::string& schema,
                                                const std::string& table,
-                                               const std::string& cursor_column) {
+                                               const std::string& cursor_column,
+                                               const std::string& cursor_type) {
     if (cursor_column.empty()) {
         return {};
     }
@@ -412,6 +451,19 @@ std::string CacheManager::fetchCursorWatermark(const std::string& catalog,
         if (rows && rows.t() == crow::json::type::List && rows.size() > 0 &&
             rows[0].has("watermark") &&
             rows[0]["watermark"].t() == crow::json::type::String) {
+            const std::string watermark = rows[0]["watermark"].s();
+            if (!isPlausibleWatermark(watermark, cursor_type)) {
+                // Dropped, not escaped. The caller then erases the watermark
+                // and the refresh takes its full-load branch, which is always
+                // correct and merely slower - see isPlausibleWatermark.
+                CROW_LOG_WARNING
+                    << "The cursor watermark read from " << schema << "." << table
+                    << " does not look like a " << cursor_type
+                    << "; it will not be interpolated into the refresh template and "
+                       "this refresh loads the full source.";
+                return {};
+            }
+
             // Returned RAW.
             //
             // It used to be pre-escaped here, which is wrong twice over: the
@@ -425,7 +477,7 @@ std::string CacheManager::fetchCursorWatermark(const std::string& catalog,
             // A quote in a cursor value is vanishingly rare (cursors are
             // timestamps, sequences or dates) and mangling every ordinary
             // value to guard it is the worse trade.
-            return rows[0]["watermark"].s();
+            return watermark;
         }
     } catch (const std::exception& ex) {
         // Table not created yet, or the cursor column is not in it. The

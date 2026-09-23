@@ -1356,6 +1356,14 @@ Special variables available in cache-enabled SQL templates:
 > boundary may be re-read, which is idempotent under merge and a bounded,
 > visible duplicate under append — losing it is neither.
 
+> **Validated against `cursor.type` before it is used.** The watermark comes
+> from cached data, which comes from your source, and it is rendered into the
+> refresh template and executed — so a value that does not look like the
+> declared type is dropped and that refresh loads the full source (with a
+> warning). Declare the cursor's real type: `timestamp`/`date`/`time` and the
+> numeric types accept only the characters they are made of, and anything else
+> rejects quotes, semicolons, comment markers and newlines.
+>
 > **Note:** the value is rendered raw, so quote or cast it in the template as
 > its type requires — the `TIMESTAMP '...'` form in the example below is right
 > for a timestamp cursor only. Use the **triple**-brace form
