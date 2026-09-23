@@ -140,13 +140,63 @@ TEST_CASE("a long neutrally-named connection property is scrubbed", "[secrets]")
     REQUIRE(secrets.values().size() == 1);
 }
 
-TEST_CASE("a connection path or URI stays visible however long", "[secrets]") {
+TEST_CASE("a credential-free path or URI stays visible however long", "[secrets]") {
     // `path` and `database` are exactly what an operator reads a preview to
     // confirm, and redacting them makes the preview useless.
     TemplateSecrets secrets;
     secrets.addConnectionProperty("path", "/very/long/data/lake/prefix/with/many/segments.parquet");
     secrets.addConnectionProperty("database", "postgresql://db.example.com:5432/analytics");
     REQUIRE(secrets.values().empty());
+}
+
+TEST_CASE("a URI carrying credentials is NOT treated as a location", "[secrets]") {
+    // The first version of the location exemption skipped any value
+    // containing '/' or '://', which is the shape the credentials cloud
+    // deployments actually use - and none of `database`, `url` or `endpoint`
+    // matches a credential stem, so all of these reached dry-run previews and
+    // error messages verbatim. A test even pinned it as desired.
+    SECTION("userinfo in the authority") {
+        TemplateSecrets secrets;
+        secrets.addConnectionProperty("database",
+                                      "postgresql://alice:hunter2@db.example.com/prod");
+        REQUIRE(secrets.values().size() == 1);
+    }
+
+    SECTION("an Azure SAS signature in the query string") {
+        TemplateSecrets secrets;
+        secrets.addConnectionProperty(
+            "url", "https://acct.blob.core.windows.net/c/f?sv=2021&sig=ABCDEF0123456789");
+        REQUIRE(secrets.values().size() == 1);
+    }
+
+    SECTION("a presigned S3 URL") {
+        TemplateSecrets secrets;
+        secrets.addConnectionProperty(
+            "endpoint",
+            "https://bucket.s3.amazonaws.com/key?X-Amz-Signature=deadbeefdeadbeefdead");
+        REQUIRE(secrets.values().size() == 1);
+    }
+}
+
+TEST_CASE("an overlapping secret is not partly disclosed", "[secrets]") {
+    // Replacement was insertion-ordered, so a short secret that is a prefix
+    // of a longer one consumed its start and left the tail in the output.
+    // Both insertion orders, because the bug only showed in one.
+    SECTION("short first") {
+        TemplateSecrets secrets;
+        secrets.add("access_key", "sk-live-");
+        secrets.add("password", "sk-live-supersecret");
+        const auto out = secrets.scrub("WHERE k = 'sk-live-supersecret'");
+        REQUIRE(out.find("supersecret") == std::string::npos);
+    }
+
+    SECTION("long first") {
+        TemplateSecrets secrets;
+        secrets.add("password", "sk-live-supersecret");
+        secrets.add("access_key", "sk-live-");
+        const auto out = secrets.scrub("WHERE k = 'sk-live-supersecret'");
+        REQUIRE(out.find("supersecret") == std::string::npos);
+    }
 }
 
 TEST_CASE("a credential-named connection property is scrubbed whatever it looks like",

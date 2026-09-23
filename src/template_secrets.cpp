@@ -55,28 +55,74 @@ void TemplateSecrets::addEnv(const std::string& key, const std::string& value) {
 }
 
 namespace {
-bool looksLikeLocation(const std::string& value) {
-    // A path or a URI: the thing an operator reads a preview to confirm.
-    if (value.find('/') != std::string::npos ||
-        value.find('\\') != std::string::npos) {
-        return true;
+
+/// True for a location that demonstrably carries no credential.
+///
+/// The first version exempted ANY value containing '/' or '://', which is
+/// precisely the shape the credentials cloud deployments actually use:
+///
+///   postgresql://alice:hunter2@db/prod          (userinfo)
+///   https://acct.blob.core.windows.net/c/f?sig=…  (SAS)
+///   https://bucket.s3.amazonaws.com/k?X-Amz-Signature=…  (presigned)
+///
+/// None of `database`, `url` or `endpoint` matches a credential stem, so the
+/// exemption let all three through to dry-run previews and error messages -
+/// re-opening the disclosure the opaque-value rule exists to close. A unit
+/// test even pinned it as desired behaviour.
+///
+/// The exemption is now the narrow case it was meant to be: a plain path, or
+/// a URI with no userinfo and no query string. Anything else is treated as a
+/// secret, because a secret is what it usually is.
+bool looksLikeCredentialFreeLocation(const std::string& value) {
+    if (value.find('?') != std::string::npos ||
+        value.find('#') != std::string::npos) {
+        return false;   // a query or fragment can carry a signature or token
     }
+
     const auto scheme = value.find("://");
-    return scheme != std::string::npos && scheme < 12;
+    if (scheme == std::string::npos) {
+        // A bare path. No authority, so no userinfo to hide a password in.
+        return value.find('/') != std::string::npos ||
+               value.find('\\') != std::string::npos;
+    }
+    if (scheme >= 12) {
+        return false;   // not a scheme, just a value that happens to contain "://"
+    }
+
+    const auto authority = scheme + 3;
+    const auto authority_end = value.find('/', authority);
+    const auto authority_part = value.substr(
+        authority, authority_end == std::string::npos ? std::string::npos
+                                                      : authority_end - authority);
+    if (authority_part.find('@') != std::string::npos) {
+        return false;   // user:password@host
+    }
+    return true;
 }
+
 }  // namespace
 
 void TemplateSecrets::addConnectionProperty(const std::string& key,
                                             const std::string& value) {
     add(key, value);
-    if (value.size() >= kOpaqueEnvValue && !looksLikeLocation(value) &&
+    if (value.size() >= kOpaqueEnvValue && !looksLikeCredentialFreeLocation(value) &&
         std::find(values_.begin(), values_.end(), value) == values_.end()) {
         values_.push_back(value);
     }
 }
 
 std::string TemplateSecrets::scrub(std::string text) const {
-    for (const auto& value : values_) {
+    // LONGEST first. Replacement was insertion-ordered, so a short secret
+    // that is a prefix of a longer one consumed its start and left the tail
+    // in the output: with `access_key=sk-live-` recorded before
+    // `password=sk-live-supersecret`, scrubbing produced
+    // `<redacted>supersecret`.
+    std::vector<std::string> ordered = values_;
+    std::sort(ordered.begin(), ordered.end(),
+              [](const std::string& a, const std::string& b) {
+                  return a.size() > b.size();
+              });
+    for (const auto& value : ordered) {
         std::string::size_type pos = 0;
         while ((pos = text.find(value, pos)) != std::string::npos) {
             text.replace(pos, value.size(), "<redacted>");

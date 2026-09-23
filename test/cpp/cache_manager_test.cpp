@@ -152,6 +152,11 @@ public:
     /// would. "Absent" must not read as "old enough".
     bool omit_aged_column = false;
 
+    /// Return a live-table row the code cannot read, as a DuckLake version
+    /// with different column names would. A partial listing must not read as
+    /// a complete one.
+    bool malformed_table_row = false;
+
     QueryResult executeDuckLakeQueryWithResult(const std::string& query) override {
         executed_queries.push_back(query);
         if (throw_on_snapshot_query) {
@@ -159,8 +164,27 @@ public:
         }
         QueryResult result;
         std::vector<crow::json::wvalue> rows;
-        if (query.find("ducklake_table_info") != std::string::npos ||
-            query.find("duckdb_tables()") != std::string::npos) {
+        // The two listings answer DIFFERENT shapes. Returning a table_id for
+        // duckdb_tables() made the name listing malformed, which the stricter
+        // fail-closed check correctly refuses - a faithful mock is the point.
+        if (query.find("duckdb_tables()") != std::string::npos) {
+            if (fail_table_listing) {
+                throw std::runtime_error("catalog unavailable");
+            }
+            QueryResult names;
+            std::vector<crow::json::wvalue> name_rows;
+            crow::json::wvalue name_row;
+            if (malformed_table_row) {
+                name_row["unexpected_column"] = std::string("main");
+            } else {
+                name_row["schema_name"] = std::string("main");
+                name_row["table_name"] = std::string("test_cache");
+            }
+            name_rows.push_back(std::move(name_row));
+            names.data = crow::json::wvalue(std::move(name_rows));
+            return names;
+        }
+        if (query.find("ducklake_table_info") != std::string::npos) {
             if (fail_table_listing) {
                 throw std::runtime_error("catalog unavailable");
             }
@@ -529,6 +553,22 @@ TEST_CASE("CacheManager refreshDuckLakeCache retention SQL generation", "[cache_
         endpoint.cache.retention.keep_last_snapshots = 1;
         adapter->snapshot_ids = {30, 20, 10};
         adapter->omit_aged_column = true;
+        std::map<std::string, std::string> params;
+        cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
+
+        for (const auto& query : adapter->executed_queries) {
+            INFO("query: " << query);
+            REQUIRE(query.find("ducklake_expire_snapshots") == std::string::npos);
+        }
+    }
+
+    SECTION("retention expires nothing when a live-table row cannot be read") {
+        // Skipping an unreadable row and reporting success is the same
+        // fail-open one level down: a foreign table missing from the listing
+        // makes its shared snapshot look exclusive.
+        endpoint.cache.retention.keep_last_snapshots = 1;
+        adapter->snapshot_ids = {30, 20, 10};
+        adapter->malformed_table_row = true;
         std::map<std::string, std::string> params;
         cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
 

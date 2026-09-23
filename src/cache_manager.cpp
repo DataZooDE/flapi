@@ -10,6 +10,7 @@
 #include <tuple>
 
 #include "cache_manager.hpp"
+#include "template_secrets.hpp"
 
 #include "database_manager.hpp"
 #include "database_manager_cache_adapter.hpp"
@@ -347,7 +348,18 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
         db_adapter_->executeDuckLakeQuery(rendered, params);
         recordSyncEvent(config_manager, endpoint, determineCacheMode(cacheConfig), "success", "Cache refreshed successfully");
     } catch (const std::exception& ex) {
-        recordSyncEvent(config_manager, endpoint, determineCacheMode(cacheConfig), "error", ex.what());
+        // Scrubbed before it is RECORDED. A failed refresh's DuckDB error
+        // quotes the rendered cache template, and this writes it into
+        // cache.audit.sync_events - i.e. into DuckLake Parquet files, often
+        // on object storage, where it is durable, backed up, time-travelled,
+        // and readable through GET .../cache/audit and flapi_get_cache_audit.
+        //
+        // Every other copy of the rendered statement is scrubbed on its way
+        // out; this was the one that persisted it AT REST, which is strictly
+        // worse than the log leak that was fixed alongside it.
+        const auto secrets = collectTemplateSecrets(config_manager.get(), endpoint, params);
+        recordSyncEvent(config_manager, endpoint, determineCacheMode(cacheConfig), "error",
+                        publicErrorMessage("Cache refresh failed", ex.what(), secrets));
         throw;
     }
 
@@ -469,10 +481,18 @@ std::optional<std::vector<std::string>> CacheManager::liveTableChangeKeys(
             return std::nullopt;
         }
         for (std::size_t i = 0; i < id_rows.size(); ++i) {
-            if (id_rows[i].has("table_id") &&
-                id_rows[i]["table_id"].t() == crow::json::type::String) {
-                keys.push_back(id_rows[i]["table_id"].s());
+            // A row we cannot read is a table we cannot account for, and an
+            // unaccounted-for table is exactly what the exclusivity filter
+            // needs to know about. Skipping it silently reported success on a
+            // partial listing - the same fail-open, one level down.
+            if (!(id_rows[i].has("table_id") &&
+                  id_rows[i]["table_id"].t() == crow::json::type::String)) {
+                CROW_LOG_WARNING << "ducklake_table_info returned a row without a "
+                                    "readable table_id; retention cannot prove a "
+                                    "snapshot is unshared and will expire nothing.";
+                return std::nullopt;
             }
+            keys.push_back(id_rows[i]["table_id"].s());
         }
 
         const std::string names_query =
@@ -484,12 +504,15 @@ std::optional<std::vector<std::string>> CacheManager::liveTableChangeKeys(
             return std::nullopt;
         }
         for (std::size_t i = 0; i < name_rows.size(); ++i) {
-            if (name_rows[i].has("schema_name") && name_rows[i].has("table_name") &&
-                name_rows[i]["schema_name"].t() == crow::json::type::String &&
-                name_rows[i]["table_name"].t() == crow::json::type::String) {
-                keys.push_back(std::string(name_rows[i]["schema_name"].s()) + "." +
-                               std::string(name_rows[i]["table_name"].s()));
+            if (!(name_rows[i].has("schema_name") && name_rows[i].has("table_name") &&
+                  name_rows[i]["schema_name"].t() == crow::json::type::String &&
+                  name_rows[i]["table_name"].t() == crow::json::type::String)) {
+                CROW_LOG_WARNING << "duckdb_tables() returned a row without a readable "
+                                    "schema/table name; retention will expire nothing.";
+                return std::nullopt;
             }
+            keys.push_back(std::string(name_rows[i]["schema_name"].s()) + "." +
+                           std::string(name_rows[i]["table_name"].s()));
         }
     } catch (const std::exception& ex) {
         CROW_LOG_WARNING << "Could not list the tables in DuckLake catalog '" << catalog
@@ -918,7 +941,11 @@ void CacheManager::performGarbageCollection(std::shared_ptr<ConfigManager> confi
         recordSyncEvent(config_manager, endpoint, "garbage_collection", "success", "Expired old snapshots");
     } catch (const std::exception& ex) {
         CROW_LOG_WARNING << "Failed to expire snapshots for " << params["schema"] << "." << params["table"] << ": " << ex.what();
-        recordSyncEvent(config_manager, endpoint, "garbage_collection", "error", ex.what());
+        // Same reasoning as the refresh path above: this is persisted.
+        std::map<std::string, std::string> no_params;
+        const auto secrets = collectTemplateSecrets(config_manager.get(), endpoint, no_params);
+        recordSyncEvent(config_manager, endpoint, "garbage_collection", "error",
+                        publicErrorMessage("Garbage collection failed", ex.what(), secrets));
     }
 }
 

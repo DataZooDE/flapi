@@ -754,14 +754,55 @@ void APIServer::run(int port) {
            .run_async();
     }
 
-    app.wait_for_server_start();
-    if (stop_requested_.load(std::memory_order_acquire)) {
-        CROW_LOG_INFO << "shutdown was requested while the server was starting; "
-                         "stopping immediately";
-        app.stop();
+    // Waiting for the start must never outlive the attempt to start.
+    //
+    // Crow constructs its Server - which BINDS in its member-initialiser list
+    // - and only then calls notify_server_start(). So EADDRINUSE, an
+    // unresolvable bind address, or a failed validate() throws before
+    // server_started_ is ever set, and wait_for_server_start() then blocks on
+    // a condition variable with no predicate and no deadline. Nothing wakes
+    // it: app.stop() is a no-op with no server, so not even SIGTERM recovers.
+    // Before run_async() this threw synchronously and the process died
+    // loudly, which is the right answer for a port already in use - so the
+    // startup rework must not turn that into a hang.
+    //
+    // Wait on BOTH: whichever resolves first decides.
+    std::promise<void> started_promise;
+    auto started = started_promise.get_future();
+    std::thread waiter([this, &started_promise] {
+        app.wait_for_server_start();
+        started_promise.set_value();
+    });
+
+    bool server_is_up = false;
+    while (true) {
+        if (started.wait_for(std::chrono::milliseconds(20)) == std::future_status::ready) {
+            server_is_up = true;
+            break;
+        }
+        if (serving.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+            break;   // run_async finished first: it threw, or it is already done
+        }
     }
 
-    serving.wait();
+    if (server_is_up) {
+        waiter.join();
+        if (stop_requested_.load(std::memory_order_acquire)) {
+            CROW_LOG_INFO << "shutdown was requested while the server was starting; "
+                             "stopping immediately";
+            app.stop();
+        }
+    } else {
+        // Crow never published a server, so notify_server_start() will never
+        // fire and the waiter cannot be joined. The process is about to leave
+        // through the exception below.
+        waiter.detach();
+    }
+
+    // .get(), not .wait(): a startup failure is an exception, and discarding
+    // it would turn "port already in use" into a silent, serverless process
+    // that answers nothing and cannot be stopped.
+    serving.get();
 }
 
 void APIServer::requestForEndpoint(const EndpointConfig& endpoint, const std::unordered_map<std::string, std::string>& pathParams) 
