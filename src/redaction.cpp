@@ -34,8 +34,11 @@ constexpr std::array<std::string_view, 28> kCredentialStems{{
 // exactly the over-redaction the ordinary-field-names test guards, and it
 // caught both. Matched on the whole normalised key instead, plus the
 // prefixed forms that actually occur.
-constexpr std::array<std::string_view, 6> kCredentialWholeKeys{{
+constexpr std::array<std::string_view, 8> kCredentialWholeKeys{{
     "pass", "userpass", "dbpass", "sas", "sastoken", "saskey",
+    // Whole-key so `pw_bucket` and `keyword` are unaffected. A DuckDB S3 or
+    // HTTP connection property is sometimes literally named `pw` or `key`.
+    "pw", "key",
 }};
 
 // Exceptions, matched on the WHOLE normalised key rather than as substrings.

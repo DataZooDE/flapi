@@ -754,58 +754,41 @@ void APIServer::run(int port) {
            .run_async();
     }
 
-    // Waiting for the start must never outlive the attempt to start.
+    // No waiter thread, and no unbounded wait.
     //
-    // Crow constructs its Server - which BINDS in its member-initialiser list
-    // - and only then calls notify_server_start(). So EADDRINUSE, an
-    // unresolvable bind address, or a failed validate() throws before
-    // server_started_ is ever set, and wait_for_server_start() then blocks on
-    // a condition variable with no predicate and no deadline. Nothing wakes
-    // it: app.stop() is a no-op with no server, so not even SIGTERM recovers.
-    // Before run_async() this threw synchronously and the process died
-    // loudly, which is the right answer for a port already in use - so the
-    // startup rework must not turn that into a hang.
+    // Two things can happen while crow starts, and both were mishandled:
     //
-    // Wait on BOTH: whichever resolves first decides.
-    // shared_ptr, captured BY VALUE: on the bind-failure path the waiter is
-    // detached while still blocked in wait_for_server_start(), and a promise
-    // that lived on this stack frame would be destroyed underneath it as the
-    // exception below unwinds.
-    auto started_promise = std::make_shared<std::promise<void>>();
-    auto started = started_promise->get_future();
-    std::thread waiter([this, started_promise] {
-        app.wait_for_server_start();
-        started_promise->set_value();
-    });
-
-    bool server_is_up = false;
-    while (true) {
-        if (started.wait_for(std::chrono::milliseconds(20)) == std::future_status::ready) {
-            server_is_up = true;
-            break;
-        }
-        if (serving.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
-            break;   // run_async finished first: it threw, or it is already done
-        }
-    }
-
-    if (server_is_up) {
-        waiter.join();
+    //  - it FAILS. Crow constructs its Server - which binds in its member
+    //    initialiser list - and only then publishes it, so EADDRINUSE throws
+    //    before wait_for_server_start() can ever return. Waiting on that
+    //    blocked forever on a condition variable nothing would signal;
+    //    app.stop() is a no-op with no server, so not even SIGTERM recovered.
+    //
+    //  - a STOP is requested first. app.stop() before crow publishes its
+    //    server does nothing, so the process went on to serve with an already
+    //    drained handler pool: 503 for every request, for the life of a
+    //    process that no longer answered SIGTERM.
+    //
+    // Watching wait_for_server_start() on a helper thread answered both and
+    // introduced a third: on the failure path that helper can never be woken
+    // (notify_server_start() is private to crow), so it was detached and left
+    // blocked on a condition variable that ~Crow then destroyed.
+    //
+    // Polling the future answers both with no extra thread. Re-issuing
+    // app.stop() each tick is harmless before crow publishes its server and
+    // effective from the moment it does, so a stop requested at any point
+    // during startup takes effect without anyone having to detect WHEN crow
+    // became stoppable.
+    while (serving.wait_for(std::chrono::milliseconds(20)) != std::future_status::ready) {
         if (stop_requested_.load(std::memory_order_acquire)) {
-            CROW_LOG_INFO << "shutdown was requested while the server was starting; "
-                             "stopping immediately";
             app.stop();
         }
-    } else {
-        // Crow never published a server, so notify_server_start() will never
-        // fire and the waiter cannot be joined. The process is about to leave
-        // through the exception below.
-        waiter.detach();
     }
 
     // .get(), not .wait(): a startup failure is an exception, and discarding
     // it would turn "port already in use" into a silent, serverless process
-    // that answers nothing and cannot be stopped.
+    // that answers nothing and cannot be stopped. main catches it, logs, and
+    // shuts down cleanly.
     serving.get();
 }
 

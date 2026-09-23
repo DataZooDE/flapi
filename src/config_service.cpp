@@ -639,7 +639,7 @@ void ConfigService::registerRoutes(FlapiApp& app) {
     // Health check endpoint (no authentication required)
     CROW_ROUTE(app, "/api/v1/_config/health")
         .methods("GET"_method)
-        ([this](const crow::request& /* req */) {
+        ([this](const crow::request& req) {
             crow::json::wvalue health;
 
             // Server status
@@ -718,15 +718,29 @@ void ConfigService::registerRoutes(FlapiApp& app) {
                 storage["status"] = storage_health.healthy ? "healthy" : "unhealthy";
                 storage["total_latency_ms"] = storage_health.total_latency_ms;
 
+                // `path` and the raw `error` are withheld here.
+                //
+                // This is the only _config route without validateToken, and a
+                // storage path can carry inline credentials or a signature -
+                // which is exactly why DuckLake's metadata-path and data-path
+                // were added to the secret collector. An unauthenticated
+                // caller asking "is storage healthy?" needs the answer, not
+                // the location, and the full detail is a token away at
+                // GET /api/v1/_config/project.
+                const bool authenticated = validateToken(req);
                 crow::json::wvalue backends;
                 for (const auto& backend : storage_health.backends) {
                     crow::json::wvalue backend_info;
-                    backend_info["path"] = backend.path;
                     backend_info["accessible"] = backend.accessible;
                     backend_info["latency_ms"] = backend.latency_ms;
                     backend_info["scheme"] = backend.scheme;
-                    if (!backend.error.empty()) {
-                        backend_info["error"] = backend.error;
+                    if (authenticated) {
+                        backend_info["path"] = backend.path;
+                        if (!backend.error.empty()) {
+                            backend_info["error"] = backend.error;
+                        }
+                    } else if (!backend.error.empty()) {
+                        backend_info["error"] = "unavailable; authenticate for details";
                     }
                     backends[backend.name] = std::move(backend_info);
                 }
@@ -1646,7 +1660,17 @@ crow::response TemplateHandler::testTemplate(const crow::request& req, const std
             return crow::response(200, response);
 
         } catch (const std::exception& e) {
-            return crow::response(400, std::string("SQL execution error: ") + e.what());
+            // Scrubbed. This is the one config-service route that EXECUTES
+            // the rendered template, so DuckDB's message quotes the statement
+            // verbatim - including whatever it interpolated from conn.* and
+            // env.*. expandTemplate 180 lines above already withholds or
+            // scrubs its output, and getEnvironmentVariables redacts at this
+            // same privilege level on the grounds that a token holder never
+            // needed the key itself; leaving this one raw made the policy
+            // inconsistent inside one file, on its most dangerous route.
+            return crow::response(400, publicErrorMessage(
+                "SQL execution error", e.what(),
+                collectTemplateSecrets(config_manager_.get(), *endpoint, params)));
         }
     } catch (const std::exception& e) {
         return crow::response(500, std::string("Internal server error: ") + e.what());

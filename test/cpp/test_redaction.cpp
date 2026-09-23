@@ -63,13 +63,19 @@ TEST_CASE("short credential names are matched whole, not as substrings",
     // caught. So they are matched on the whole normalised key.
     for (const char* key : {"pass", "user_pass", "db_pass",
                             "sas", "sas_token", "sas_key",
+                            "pw", "key",
                             "service_account", "service_account_json"}) {
         INFO("key = " << key);
         REQUIRE(isCredentialKey(key));
     }
 
     for (const char* key : {"passenger_count", "passengers", "compass",
-                            "sassafras", "passage"}) {
+                            "sassafras", "passage",
+                            // `pw` and `key` are whole-key, so these stay
+                            // visible - `sort_key` and `primary_key` are
+                            // ordinary data-API field names.
+                            "pw_bucket", "keyword", "sort_key", "primary_key",
+                            "monkey"}) {
         INFO("key = " << key);
         REQUIRE_FALSE(isCredentialKey(key));
     }

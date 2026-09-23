@@ -896,7 +896,18 @@ int main(int argc, char* argv[])
 
     // Start unified server
     std::thread unified_server_thread([config_manager, server = api_server]() {
-        server->run(config_manager->getHttpPort());
+        // Caught here. run() surfaces a startup failure as an exception -
+        // EADDRINUSE, an unresolvable bind address, a failed validate() - and
+        // an exception escaping a std::thread's function calls
+        // std::terminate, so the process died with SIGABRT without draining
+        // the handler pool or running stop() for ANY of them.
+        try {
+            server->run(config_manager->getHttpPort());
+        } catch (const std::exception& e) {
+            CROW_LOG_ERROR << "the server could not start: " << e.what();
+            should_exit.store(true, std::memory_order_relaxed);
+            server->stop();
+        }
     });
 
     CROW_LOG_INFO << "flAPI unified server started - REST API and MCP on port " << config_manager->getHttpPort();
