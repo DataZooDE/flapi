@@ -177,7 +177,14 @@ void RequestHandler::handleWriteRequest(const crow::request& req, crow::response
             res.end();
             return;
         }
-        CROW_LOG_ERROR << "Error handling write request: " << e.what();
+        // Scrubbed BEFORE it is logged, not just before it is returned.
+        // A DuckDB error quotes the failing statement, and logs are shipped,
+        // indexed and read by people who are not entitled to the
+        // credentials a template interpolated.
+        const auto secrets = collectTemplateSecrets(config_manager.get(), endpoint, params);
+        const std::string public_detail =
+            publicErrorMessage("Error handling write request", e.what(), secrets);
+        CROW_LOG_ERROR << public_detail;
         res.code = 500;
         // A database error quotes the statement that failed, which IS the
         // rendered template - so this returned whatever the template
@@ -187,9 +194,7 @@ void RequestHandler::handleWriteRequest(const crow::request& req, crow::response
         // per-endpoint and equally optional, so an endpoint without an
         // `auth:` block leaked the same secrets through the same mechanism.
         // Same collector, same scrub, both surfaces.
-        res.body = publicErrorMessage(
-            "Internal Server Error", e.what(),
-            collectTemplateSecrets(config_manager.get(), endpoint, params));
+        res.body = publicErrorMessage("Internal Server Error", e.what(), secrets);
         res.end();
         return;
     }
@@ -403,7 +408,14 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
             res.end();
             return;
         }
-        CROW_LOG_ERROR << "Error handling request: " << e.what();
+        // Scrubbed BEFORE it is logged, not just before it is returned.
+        // A DuckDB error quotes the failing statement, and logs are shipped,
+        // indexed and read by people who are not entitled to the
+        // credentials a template interpolated.
+        const auto secrets = collectTemplateSecrets(config_manager.get(), endpoint, params);
+        const std::string public_detail =
+            publicErrorMessage("Error handling request", e.what(), secrets);
+        CROW_LOG_ERROR << public_detail;
         res.code = 500;
         // A database error quotes the statement that failed, which IS the
         // rendered template - so this returned whatever the template
@@ -413,9 +425,7 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
         // per-endpoint and equally optional, so an endpoint without an
         // `auth:` block leaked the same secrets through the same mechanism.
         // Same collector, same scrub, both surfaces.
-        res.body = publicErrorMessage(
-            "Internal Server Error", e.what(),
-            collectTemplateSecrets(config_manager.get(), endpoint, params));
+        res.body = publicErrorMessage("Internal Server Error", e.what(), secrets);
         res.end();
         return;
     }

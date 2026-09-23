@@ -392,13 +392,14 @@ ConfigToolResult ConfigToolAdapter::fromHandler(const std::string& tool_name,
     std::string detail = response.body.empty()
                              ? ("Request failed with status " + std::to_string(response.code))
                              : response.body;
-    CROW_LOG_WARNING << tool_name << " failed: " << response.code << " " << detail;
+    // Scrubbed before logging as well as before returning.
     if (secrets != nullptr) {
         detail = secrets->withhold()
                      ? std::string("the server could not describe this failure without "
-                                   "risking disclosure; see the server log")
+                                   "risking disclosure")
                      : secrets->scrub(std::move(detail));
     }
+    CROW_LOG_WARNING << tool_name << " failed: " << response.code << " " << detail;
 
     // 404 is the caller naming something that does not exist - an invalid
     // params error, not a server error.

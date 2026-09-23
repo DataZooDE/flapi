@@ -1894,13 +1894,14 @@ MCPResponse MCPRouteHandlers::handleResourcesReadRequest(const MCPRequest& reque
             // The tools/call fix did not reach here because it was written
             // inline rather than as a shared helper; the same mistake as the
             // auth injection, in the same handler.
-            CROW_LOG_ERROR << "Resource read error for "
-                           << resource_config->mcp_resource->name << ": " << e.what();
-            response.error = formatJsonRpcError(
-                -32603,
-                publicErrorMessage("Resource read error", e.what(),
-                                   collectTemplateSecrets(config_manager_.get(),
-                                                          *resource_config, bound_params)));
+            const std::string public_detail = publicErrorMessage(
+                "Resource read error", e.what(),
+                collectTemplateSecrets(config_manager_.get(), *resource_config,
+                                       bound_params));
+            // Scrubbed before logging too - see the REST and tools/call paths.
+            CROW_LOG_ERROR << "for resource "
+                           << resource_config->mcp_resource->name << ": " << public_detail;
+            response.error = formatJsonRpcError(-32603, public_detail);
         }
     } catch (const std::exception& e) {
         // The OUTER catch. Only the inner one was scrubbed, so anything

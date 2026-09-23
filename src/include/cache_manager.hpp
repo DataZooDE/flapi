@@ -125,7 +125,13 @@ private:
     /// The `changes` keys of every table that currently EXISTS in the
     /// catalog. A key naming none of them is a dropped table's id, and must
     /// not make a snapshot count as shared with a live one.
-    std::vector<std::string> liveTableChangeKeys(const std::string& catalog);
+    ///
+    /// `std::nullopt` means the catalog could not be listed - NOT "there are
+    /// no other tables". Those two must never collapse: an empty list makes
+    /// the exclusivity filter accept every candidate, so failing open here
+    /// expires another endpoint's shared snapshot on any transient
+    /// introspection error. Expiry is destructive; it fails closed.
+    std::optional<std::vector<std::string>> liveTableChangeKeys(const std::string& catalog);
 
     /// SQL predicate selecting snapshots that touched the table named by
     /// `keys`. One definition, used by both fetchSnapshotInfo and

@@ -23,7 +23,10 @@ than queued behind work the client stopped waiting for. Set `FLAPI_DISABLE_HANDL
 go back to the old behaviour.
 
 `SIGTERM` is now handled properly alongside it: in-flight requests are drained before the process
-exits, under a bounded budget so one slow query cannot hold a container open until it is killed.
+exits, and queued-but-not-started work is abandoned after a bounded budget so a backlog cannot
+hold a container open. A query that is *already executing* is still waited for — flAPI does not
+cancel it — so a genuinely hung backend can still delay shutdown until your platform's grace
+period expires. Bounding that needs query cancellation and is not in this release.
 
 ### Fixed: `auth.*` was empty in every MCP template
 

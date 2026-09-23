@@ -447,24 +447,56 @@ std::string CacheManager::quoteIdentifier(const std::string& name) {
     return out;
 }
 
-std::vector<std::string> CacheManager::liveTableChangeKeys(const std::string& catalog) {
+std::optional<std::vector<std::string>> CacheManager::liveTableChangeKeys(
+        const std::string& catalog) {
     std::vector<std::string> keys;
     try {
-        const std::string query =
-            "SELECT CAST(table_id AS VARCHAR) AS table_id, table_name "
+        // BOTH forms. `changes` names a table by its numeric id for row
+        // changes and by `schema.table` for creates, so collecting only ids
+        // misses the qualified name - and a transaction that creates this
+        // table alongside another would then look exclusive, because the
+        // other table's create key was never in the foreign set.
+        //
+        // ducklake_table_info exposes schema_id rather than a schema name, so
+        // the qualified names come from duckdb_tables() over the attached
+        // catalog.
+        const std::string ids_query =
+            "SELECT CAST(table_id AS VARCHAR) AS table_id "
             "FROM ducklake_table_info('" + escapeSqlLiteral(catalog) + "')";
-        auto result = db_adapter_->executeDuckLakeQueryWithResult(query);
-        auto rows = crow::json::load(result.data.dump());
-        if (rows && rows.t() == crow::json::type::List) {
-            for (std::size_t i = 0; i < rows.size(); ++i) {
-                if (rows[i].has("table_id") &&
-                    rows[i]["table_id"].t() == crow::json::type::String) {
-                    keys.push_back(rows[i]["table_id"].s());
-                }
+        auto ids = db_adapter_->executeDuckLakeQueryWithResult(ids_query);
+        auto id_rows = crow::json::load(ids.data.dump());
+        if (!(id_rows && id_rows.t() == crow::json::type::List)) {
+            return std::nullopt;
+        }
+        for (std::size_t i = 0; i < id_rows.size(); ++i) {
+            if (id_rows[i].has("table_id") &&
+                id_rows[i]["table_id"].t() == crow::json::type::String) {
+                keys.push_back(id_rows[i]["table_id"].s());
+            }
+        }
+
+        const std::string names_query =
+            "SELECT schema_name, table_name FROM duckdb_tables() "
+            "WHERE database_name = '" + escapeSqlLiteral(catalog) + "'";
+        auto names = db_adapter_->executeDuckLakeQueryWithResult(names_query);
+        auto name_rows = crow::json::load(names.data.dump());
+        if (!(name_rows && name_rows.t() == crow::json::type::List)) {
+            return std::nullopt;
+        }
+        for (std::size_t i = 0; i < name_rows.size(); ++i) {
+            if (name_rows[i].has("schema_name") && name_rows[i].has("table_name") &&
+                name_rows[i]["schema_name"].t() == crow::json::type::String &&
+                name_rows[i]["table_name"].t() == crow::json::type::String) {
+                keys.push_back(std::string(name_rows[i]["schema_name"].s()) + "." +
+                               std::string(name_rows[i]["table_name"].s()));
             }
         }
     } catch (const std::exception& ex) {
-        CROW_LOG_DEBUG << "Could not list DuckLake tables: " << ex.what();
+        CROW_LOG_WARNING << "Could not list the tables in DuckLake catalog '" << catalog
+                         << "', so snapshot retention cannot prove a snapshot is not "
+                            "shared with another table and will expire nothing this "
+                            "cycle: " << ex.what();
+        return std::nullopt;
     }
     return keys;
 }
@@ -596,10 +628,18 @@ CacheManager::ExpiryCandidates CacheManager::expirableSnapshotIds(
         // and masked genuine sharing. Verified on DuckDB 1.5.5 that
         // ducklake_table_info lists only the live table after DROP+CREATE
         // while ducklake_snapshots keeps the old id.
+        const auto live = liveTableChangeKeys(catalog);
+        if (!live) {
+            // Could not establish what else is live, so nothing can be shown
+            // to be unshared. Expire nothing rather than guess: the warning
+            // is already logged above.
+            return out;
+        }
+
         std::vector<std::string> foreign_keys;
-        for (const auto& live : liveTableChangeKeys(catalog)) {
-            if (std::find(keys.begin(), keys.end(), live) == keys.end()) {
-                foreign_keys.push_back(live);
+        for (const auto& live_key : *live) {
+            if (std::find(keys.begin(), keys.end(), live_key) == keys.end()) {
+                foreign_keys.push_back(live_key);
             }
         }
 

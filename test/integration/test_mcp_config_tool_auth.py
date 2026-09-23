@@ -33,7 +33,9 @@ TOKEN = "the-real-config-service-token"
 
 
 class _Server:
-    def __init__(self):
+    def __init__(self, config_service_token: str = TOKEN):
+        # "" means --config-service with NO token, which must fail closed.
+        self.config_service_token = config_service_token
         self.tmp = tempfile.mkdtemp(prefix="flapi_mcptool_")
         self.port = free_port()
         self.base_url = f"http://127.0.0.1:{self.port}"
@@ -60,8 +62,10 @@ class _Server:
     def start(self):
         self.proc = subprocess.Popen(
             [flapi_binary(), "-c", os.path.join(self.tmp, "flapi.yaml"),
-             "-p", str(self.port), "--config-service",
-             "--config-service-token", TOKEN, "--log-level", "warning"],
+             "-p", str(self.port), "--config-service"]
+            + (["--config-service-token", self.config_service_token]
+               if self.config_service_token else [])
+            + ["--log-level", "warning"],
             stdout=open(self.log_path, "w"), stderr=subprocess.STDOUT, cwd=self.tmp,
             env={**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"},
             preexec_fn=os.setsid)
@@ -350,3 +354,72 @@ class TestTheMutatingCacheToolsWithAToken:
             else:
                 # Both must refuse, and for the same reason.
                 assert rest.status_code >= 400, rest.text
+
+
+class TestEveryConfigToolRequiresTheToken:
+    """The round-4 blocker's fix, pinned as a property rather than by name.
+
+    Twelve tools were classified "read-only discovery" and left
+    unauthenticated; wiring them to the real handlers turned three of them
+    into unauthenticated disclosures. Pinning two tools by name does not stop
+    a thirteenth being added on the same "read-only is harmless" reasoning, or
+    one flag being flipped back.
+    """
+
+    def test_every_flapi_tool_declines_without_a_token(self):
+        with _Server() as s:
+            names = [t["name"] for t in s.list_tools()
+                     if t["name"].startswith("flapi_")]
+            assert names, "no flapi_* tools advertised; this proves nothing"
+            for name in sorted(names):
+                got = s.call_tool(name, endpoint="/hello", path="/hello",
+                                  content="SELECT 1", params={})
+                assert "error" in got, f"{name} answered without a token: {got}"
+                assert "Authentication required" in got["error"]["message"], (
+                    f"{name}: {got}")
+
+    def test_the_token_gets_every_one_of_them_past_the_gate(self):
+        # Otherwise the sweep above passes with the gate stuck shut.
+        #
+        # The assertion is precisely "no longer refused for AUTH". A tool may
+        # still fail for a domain reason here - /hello has no cache
+        # configured, and creating an endpoint that already exists is a
+        # conflict - and that is not what this test is about.
+        with _Server() as s:
+            names = [t["name"] for t in s.list_tools()
+                     if t["name"].startswith("flapi_")]
+            assert names, "no flapi_* tools advertised; this proves nothing"
+            still_refused = []
+            for name in sorted(names):
+                got = s.call_tool(name, token=TOKEN, endpoint="/hello",
+                                  path="/hello", content="SELECT 1", params={})
+                message = json.dumps(got)
+                if "Authentication" in message:
+                    still_refused.append((name, message[:160]))
+            assert not still_refused, (
+                "tools that refused a VALID token:\n" +
+                "\n".join(f"  {n}: {m}" for n, m in still_refused))
+
+
+class TestConfigToolsFailClosedWithNoConfiguredToken:
+    """`--config-service` with no token configured must not wave callers through.
+
+    tokenMatchesConfigured returns false when the expected token is empty -
+    fail closed - because the original defect was a shape-only check that
+    accepted `Authorization: Bearer anything-at-all`. Nothing tested that
+    branch.
+    """
+
+    def test_no_token_configured_means_no_tool_answers(self):
+        with _Server(config_service_token="") as s:
+            names = [t["name"] for t in s.list_tools()
+                     if t["name"].startswith("flapi_")]
+            if not names:
+                pytest.skip("config tools are not advertised in this mode")
+            for name in sorted(names):
+                for token in (None, "anything-at-all", TOKEN):
+                    got = s.call_tool(name, token=token, endpoint="/hello",
+                                      path="/hello", content="SELECT 1")
+                    assert "error" in got, (
+                        f"{name} answered with token={token!r} while no token "
+                        f"is configured: {got}")

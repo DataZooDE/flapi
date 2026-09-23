@@ -144,6 +144,10 @@ public:
     /// distinguish the two keys.
     std::vector<std::int64_t> not_aged_snapshot_ids;
 
+    /// Make the live-table listing fail, as a transient catalog or
+    /// introspection error would.
+    bool fail_table_listing = false;
+
     QueryResult executeDuckLakeQueryWithResult(const std::string& query) override {
         executed_queries.push_back(query);
         if (throw_on_snapshot_query) {
@@ -151,7 +155,11 @@ public:
         }
         QueryResult result;
         std::vector<crow::json::wvalue> rows;
-        if (query.find("ducklake_table_info") != std::string::npos) {
+        if (query.find("ducklake_table_info") != std::string::npos ||
+            query.find("duckdb_tables()") != std::string::npos) {
+            if (fail_table_listing) {
+                throw std::runtime_error("catalog unavailable");
+            }
             crow::json::wvalue row;
             row["table_id"] = std::string("1");
             rows.push_back(std::move(row));
@@ -484,6 +492,26 @@ TEST_CASE("CacheManager refreshDuckLakeCache retention SQL generation", "[cache_
                 INFO("expire call: " << query);
                 REQUIRE(query.find("30") == std::string::npos);
             }
+        }
+    }
+
+    SECTION("retention expires nothing when the catalog cannot be listed") {
+        // The exclusivity filter needs to know what ELSE is live before it can
+        // prove a snapshot is unshared. When that listing fails, an empty
+        // result used to read as "no other table exists", so every candidate
+        // was classed exclusive and named in the expire call - a transient
+        // introspection error could delete another endpoint's history.
+        //
+        // Expiry is destructive: it fails closed.
+        endpoint.cache.retention.keep_last_snapshots = 1;
+        adapter->snapshot_ids = {30, 20, 10};
+        adapter->fail_table_listing = true;
+        std::map<std::string, std::string> params;
+        cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
+
+        for (const auto& query : adapter->executed_queries) {
+            INFO("query: " << query);
+            REQUIRE(query.find("ducklake_expire_snapshots") == std::string::npos);
         }
     }
 

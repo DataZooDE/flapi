@@ -409,10 +409,14 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
         // PREVIEW, and reusing it here meant any caller could suppress every
         // diagnostic for a call - validation errors included - just by passing
         // a short value under a credential-shaped name like `token`.
-        CROW_LOG_ERROR << "Tool execution error for " << request.tool_name << ": " << e.what();
-        return createErrorResult(
-            publicErrorMessage("Tool execution error", e.what(), secrets),
-            MCPToolExecutionResult::FailureKind::ExecutionError);
+        // Scrubbed before it is LOGGED as well as before it is returned:
+        // a DuckDB error quotes the failing statement, and logs are shipped
+        // and indexed.
+        const std::string public_detail =
+            publicErrorMessage("Tool execution error", e.what(), secrets);
+        CROW_LOG_ERROR << "for tool " << request.tool_name << ": " << public_detail;
+        return createErrorResult(public_detail,
+                                 MCPToolExecutionResult::FailureKind::ExecutionError);
     }
 }
 
