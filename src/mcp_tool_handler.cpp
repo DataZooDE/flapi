@@ -168,7 +168,7 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
     // message went straight back to the caller. MCP is unauthenticated by
     // default, so appending an unbindable column to a template and calling it
     // WITHOUT _dryRun recovered every secret the preview path scrubs.
-    MCPDryRun::Secrets secrets;
+    TemplateSecrets secrets;
 
     try {
         // Get the endpoint configuration by tool name
@@ -301,7 +301,7 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
             if (secrets.withhold()) {
                 rendered_sql = MCPDryRun::withheldPreview();
             } else {
-                rendered_sql = MCPDryRun::scrub(std::move(rendered_sql), secrets);
+                rendered_sql = secrets.scrub(std::move(rendered_sql));
             }
             std::string payload = MCPDryRun::formatResult(request.tool_name, rendered_sql, params);
 

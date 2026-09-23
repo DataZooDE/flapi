@@ -767,11 +767,15 @@ void APIServer::run(int port) {
     // startup rework must not turn that into a hang.
     //
     // Wait on BOTH: whichever resolves first decides.
-    std::promise<void> started_promise;
-    auto started = started_promise.get_future();
-    std::thread waiter([this, &started_promise] {
+    // shared_ptr, captured BY VALUE: on the bind-failure path the waiter is
+    // detached while still blocked in wait_for_server_start(), and a promise
+    // that lived on this stack frame would be destroyed underneath it as the
+    // exception below unwinds.
+    auto started_promise = std::make_shared<std::promise<void>>();
+    auto started = started_promise->get_future();
+    std::thread waiter([this, started_promise] {
         app.wait_for_server_start();
-        started_promise.set_value();
+        started_promise->set_value();
     });
 
     bool server_is_up = false;

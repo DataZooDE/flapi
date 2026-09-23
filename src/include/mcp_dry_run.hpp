@@ -30,34 +30,6 @@ public:
     // Render the dry-run JSON payload returned to the agent in place of real
     // query results. Always emits a `parameters` object (possibly empty) so
     // callers don't need to special-case missing args.
-    /// Replace credential-valued connection properties wherever they appear
-    /// in `sql`. The rendered SQL is returned to the caller verbatim, and a
-    /// template that interpolates `{{{ conn.password }}}` therefore handed the
-    /// credential back in the dry-run payload - over MCP, which is
-    /// unauthenticated by default. Scrubbing by VALUE, not by key, because by
-    /// the time the SQL is rendered the key is gone.
-    /// The secrets an endpoint's template can interpolate.
-    ///
-    /// Lives in template_secrets.hpp because it is no longer dry-run-only:
-    /// REST responses, MCP tools/call and MCP resources/read all have to
-    /// scrub the same set out of database error messages, which quote the
-    /// failing statement.
-    using Secrets = TemplateSecrets;
-
-    /// True when a connection holds a credential too short to scrub by value.
-    /// The rendered SQL must then be withheld rather than returned.
-    static bool hasUnscrubbableCredential(
-        const std::unordered_map<std::string, std::string>& connection_properties);
-
-    static std::string scrubConnectionSecrets(
-        std::string sql,
-        const std::unordered_map<std::string, std::string>& connection_properties);
-
-    /// Replace every value in `secrets` wherever it appears in `sql`.
-    static std::string scrub(std::string sql, const Secrets& secrets) {
-        return secrets.scrub(std::move(sql));
-    }
-
     /// The message returned in place of the SQL when a secret cannot be
     /// scrubbed safely.
     static const char* withheldPreview();

@@ -464,7 +464,7 @@ ConfigToolResult ConfigToolAdapter::executeTool(const std::string& tool_name,
     }
 
     // Check authentication if required
-    if (tool_auth_required_.at(tool_name)) {
+    if (isAuthenticationRequired(tool_name)) {
         if (auth_token.empty()) {
             return createErrorResult(-32001, "Authentication required for tool: " + tool_name);
         }
@@ -507,11 +507,25 @@ ConfigToolResult ConfigToolAdapter::executeTool(const std::string& tool_name,
 }
 
 bool ConfigToolAdapter::isAuthenticationRequired(const std::string& tool_name) const {
-    auto it = tool_auth_required_.find(tool_name);
-    if (it != tool_auth_required_.end()) {
-        return it->second;
+    // Fail CLOSED on an unknown tool.
+    //
+    // This returned false - commented "Default to no auth required for
+    // safety" - which is the opposite of safe: a tool registered without an
+    // auth decision, or a name that does not exist, was treated as public.
+    // Every flapi_* tool requires the config-service token, and a missing
+    // entry is a programming error, not a grant.
+    //
+    // executeTool uses the same rule below via requiresAuth(), so the two
+    // cannot disagree; it previously used .at(), which throws out of a scope
+    // no catch covers.
+    const auto it = tool_auth_required_.find(tool_name);
+    if (it == tool_auth_required_.end()) {
+        CROW_LOG_ERROR << "config tool '" << tool_name
+                       << "' has no auth decision registered; requiring "
+                          "authentication. This is a programming error.";
+        return true;
     }
-    return false;  // Default to no auth required for safety
+    return it->second;
 }
 
 std::string ConfigToolAdapter::validateArguments(const std::string& tool_name,

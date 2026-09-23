@@ -81,31 +81,30 @@ private:
     };
 
     SnapshotInfo fetchSnapshotInfo(const std::string& catalog, const std::string& schema, const std::string& table);
-    /// SQL to expire every snapshot beyond the newest `keep_last`, or an empty
-    /// string when there is nothing to expire. Resolves the ids first because
-    /// `versions` takes an explicit list.
     /// Double every `'` so a value is safe inside a SQL string literal.
     static std::string escapeSqlLiteral(const std::string& value);
 
     /// Quote a name as a SQL identifier.
     static std::string quoteIdentifier(const std::string& name);
 
-    /// The names by which `catalog`'s `changes` map refers to
-    /// `schema`.`table`: its numeric table id (for row changes) and
-    /// `schema.table` (for creates). Empty if neither can be resolved.
-    ///
-    /// Resolved as its own query rather than inlined as a correlated
-    /// subquery, because DuckDB refuses a subquery inside a lambda body
-    /// ("Binder Error: subqueries in lambda expressions are not supported")
-    /// and the exclusivity check below needs a lambda.
-    /// The largest cursor value actually present in the cache table, as a
-    /// string ready to interpolate. Empty when the table does not exist yet,
-    /// is empty, or the cursor column is absent.
+    /// The largest cursor value actually present in the cache table, returned
+    /// RAW - escaping belongs at interpolation, where the template author's
+    /// choice of `{{{ }}}` versus `{{ }}` decides the quoting. Empty when the
+    /// table does not exist yet, is empty, or the cursor column is absent.
     std::string fetchCursorWatermark(const std::string& catalog,
                                      const std::string& schema,
                                      const std::string& table,
                                      const std::string& cursor_column);
 
+    /// The names by which `catalog`'s `changes` map refers to
+    /// `schema`.`table`: its numeric table id (for row changes) and
+    /// `schema.table` (for creates).
+    ///
+    /// Resolved as its own query rather than inlined as a correlated
+    /// subquery, because DuckDB refuses a subquery inside a lambda body
+    /// ("Binder Error: subqueries in lambda expressions are not supported")
+    /// and the exclusivity check needs a lambda.
+    ///
     /// `strict` decides what an AMBIGUOUS table name means.
     ///
     /// Two schemas can hold the same table name, and ducklake_table_info()
@@ -134,9 +133,10 @@ private:
     std::optional<std::vector<std::string>> liveTableChangeKeys(const std::string& catalog);
 
     /// SQL predicate selecting snapshots that touched the table named by
-    /// `keys`. One definition, used by both fetchSnapshotInfo and
-    /// buildCountBasedExpireSql - they each had their own notion of "this
-    /// table's snapshots" and only one of them was per-table.
+    /// `keys`. ONE definition, used by both fetchSnapshotInfo and
+    /// expirableSnapshotIds - they each had their own notion of "this table's
+    /// snapshots" and only one of them was per-table, which is how retention
+    /// came to destroy other endpoints' history.
     static std::string tableSnapshotPredicate(const std::vector<std::string>& keys);
 
     /// Snapshot ids of `schema`.`table` that this endpoint may expire.
@@ -170,11 +170,13 @@ private:
     /// shares one - so an age-based policy or a manual GC on one endpoint
     /// destroyed every other endpoint's history and incremental watermark.
     /// Expiring by explicit, per-table version ids is the only safe form.
+    /// `keep_last` is taken BY VALUE because it is normalised inside: a
+    /// configured 0 is cleared when an age policy accompanies it.
     std::string buildExpireSql(const std::string& catalog,
                                const std::string& schema,
                                const std::string& table,
                                std::optional<std::size_t> keep_last,
-                               const std::string& older_than_sql);   // by value: normalised inside
+                               const std::string& older_than_sql);
 
     static std::string determineCacheMode(const CacheConfig& cacheConfig);
 
