@@ -1,4 +1,5 @@
 #include "request_handler.hpp"
+#include "template_secrets.hpp"
 #include "json_utils.hpp"
 #include "content_negotiation.hpp"
 #include "arrow_serializer.hpp"
@@ -63,9 +64,12 @@ void RequestHandler::handleRequest(const crow::request& req, crow::response& res
 }
 
 void RequestHandler::handleWriteRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams, const std::map<std::string, std::string>& authParams) {
+    // Declared out here so the catch block can scrub the error with the
+    // secrets this request's template could interpolate.
+    std::map<std::string, std::string> params;
     try {
         // Extract parameters from body, path, query (body takes precedence)
-        auto params = combineWriteParameters(req, pathParams, endpoint);
+        params = combineWriteParameters(req, pathParams, endpoint);
         // Inject auth context as reserved params for template rendering
         for (const auto& [k, v] : authParams) {
             params[k] = v;
@@ -175,7 +179,17 @@ void RequestHandler::handleWriteRequest(const crow::request& req, crow::response
         }
         CROW_LOG_ERROR << "Error handling write request: " << e.what();
         res.code = 500;
-        res.body = std::string("Internal Server Error: ") + e.what();
+        // A database error quotes the statement that failed, which IS the
+        // rendered template - so this returned whatever the template
+        // interpolated: `{{{conn.password}}}`, `{{{env.API_KEY}}}`, a
+        // credential-valued default. The MCP path was fixed for exactly this
+        // and justified by "MCP is unauthenticated by default"; REST auth is
+        // per-endpoint and equally optional, so an endpoint without an
+        // `auth:` block leaked the same secrets through the same mechanism.
+        // Same collector, same scrub, both surfaces.
+        res.body = publicErrorMessage(
+            "Internal Server Error", e.what(),
+            collectTemplateSecrets(config_manager.get(), endpoint, params));
         res.end();
         return;
     }
@@ -203,8 +217,11 @@ void RequestHandler::handleDeleteRequest(const crow::request& req, crow::respons
 }
 
 void RequestHandler::handleGetRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams, const std::map<std::string, std::string>& authParams) {
+    // Declared out here so the catch block can scrub the error with the
+    // secrets this request's template could interpolate.
+    std::map<std::string, std::string> params;
     try {
-        auto params = combineParameters(req, defaultParams, pathParams, endpoint);
+        params = combineParameters(req, defaultParams, pathParams, endpoint);
         // Inject auth context as reserved params for template rendering
         for (const auto& [k, v] : authParams) {
             params[k] = v;
@@ -388,7 +405,17 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
         }
         CROW_LOG_ERROR << "Error handling request: " << e.what();
         res.code = 500;
-        res.body = std::string("Internal Server Error: ") + e.what();
+        // A database error quotes the statement that failed, which IS the
+        // rendered template - so this returned whatever the template
+        // interpolated: `{{{conn.password}}}`, `{{{env.API_KEY}}}`, a
+        // credential-valued default. The MCP path was fixed for exactly this
+        // and justified by "MCP is unauthenticated by default"; REST auth is
+        // per-endpoint and equally optional, so an endpoint without an
+        // `auth:` block leaked the same secrets through the same mechanism.
+        // Same collector, same scrub, both surfaces.
+        res.body = publicErrorMessage(
+            "Internal Server Error", e.what(),
+            collectTemplateSecrets(config_manager.get(), endpoint, params));
         res.end();
         return;
     }

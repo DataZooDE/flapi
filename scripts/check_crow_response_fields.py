@@ -65,8 +65,15 @@ def declared_fields(text):
 def main():
     header = find_header()
     if header is None:
-        print("SKIP: crow/http_response.h not found (configure a build first)")
-        return 0
+        # NOT a skip. The first version returned 0 here, and the CI job that
+        # ran it only downloads a prebuilt binary into build/ - it never
+        # configures CMake, so no crow header existed and the guard protecting
+        # the Arrow corruption passed vacuously on every run. A guard that
+        # cannot find what it guards has failed, not passed.
+        sys.exit(
+            "ERROR: crow/http_response.h not found under build/.\n"
+            "This guard needs a configured build tree. Run it from the job "
+            "that builds flapi, not one that only downloads the binary.")
 
     fields = declared_fields(header.read_text())
     # A guard that finds nothing passes vacuously. This one refuses to.

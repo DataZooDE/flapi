@@ -377,20 +377,31 @@ static void performShutdown(int signal_number) {
 // landing on a pool worker meant that worker joining ITSELF, and a signal
 // arriving while any thread held the pool mutex meant re-entering it. Either
 // hangs the process until the platform SIGKILLs it, mid-write.
-static int g_shutdown_pipe[2] = {-1, -1};
+static int g_shutdown_pipe_read = -1;
+
+// Atomic, and set to -1 BEFORE the close. The handler tests it before
+// writing, so a plain int left a window in which a signal could write into an
+// fd number that teardown had already closed and something else had reopened.
+static std::atomic<int> g_shutdown_pipe_write{-1};
 
 static void shutdownSupervisor() {
+    // Loops. It used to return after the FIRST signal, which left a window:
+    // if that signal arrived before Crow had assigned its server (so
+    // app.stop() was a no-op), the process carried on serving with no
+    // supervisor left to read a second byte - terminable only by SIGKILL.
+    // It now keeps handling signals until the write end is closed, which is
+    // main's way of saying the process is leaving.
     for (;;) {
         char byte = 0;
-        const ssize_t n = ::read(g_shutdown_pipe[0], &byte, 1);
+        const ssize_t n = ::read(g_shutdown_pipe_read, &byte, 1);
         if (n == 1) {
             performShutdown(static_cast<int>(static_cast<unsigned char>(byte)));
-            return;
+            continue;
         }
         if (n < 0 && (errno == EINTR || errno == EAGAIN)) {
             continue;   // interrupted, or a spurious wakeup; keep waiting
         }
-        return;   // write end closed: clean exit, nothing to do
+        return;   // write end closed: clean exit, nothing more to do
     }
 }
 #endif
@@ -401,13 +412,16 @@ void signal_handler(int signal) {
     }
     should_exit.store(true, std::memory_order_relaxed);
 #ifndef _WIN32
-    if (g_shutdown_pipe[1] >= 0) {
+    // Read once into a local: the value must not be re-checked after the
+    // test, or teardown could close it in between.
+    const int fd = g_shutdown_pipe_write.load(std::memory_order_acquire);
+    if (fd >= 0) {
         const char byte = static_cast<char>(signal);
         // EAGAIN on a non-blocking pipe means the pipe is full, i.e. a
         // shutdown is already pending and the supervisor has not drained it
-        // yet - nothing more to do. The pipe is non-blocking precisely so this
-        // cannot block inside a signal handler.
-        const ssize_t written = ::write(g_shutdown_pipe[1], &byte, 1);
+        // yet - nothing more to do. The write end is non-blocking precisely so
+        // this cannot block inside a signal handler.
+        const ssize_t written = ::write(fd, &byte, 1);
         (void)written;
     }
 #else
@@ -440,17 +454,21 @@ int main(int argc, char* argv[])
     // treated that as "pipe closed" and exited during startup, and SIGTERM
     // then did nothing at all - caught by the offload suite's termination
     // tests going red.
-    bool shutdown_pipe_ready = ::pipe2(g_shutdown_pipe, O_CLOEXEC) == 0;
+    int shutdown_pipe[2] = {-1, -1};
+    bool shutdown_pipe_ready = ::pipe2(shutdown_pipe, O_CLOEXEC) == 0;
     if (shutdown_pipe_ready) {
-        const int flags = ::fcntl(g_shutdown_pipe[1], F_GETFL, 0);
-        if (flags < 0 || ::fcntl(g_shutdown_pipe[1], F_SETFL, flags | O_NONBLOCK) < 0) {
-            ::close(g_shutdown_pipe[0]);
-            ::close(g_shutdown_pipe[1]);
+        const int flags = ::fcntl(shutdown_pipe[1], F_GETFL, 0);
+        if (flags < 0 || ::fcntl(shutdown_pipe[1], F_SETFL, flags | O_NONBLOCK) < 0) {
+            ::close(shutdown_pipe[0]);
+            ::close(shutdown_pipe[1]);
             shutdown_pipe_ready = false;
+        } else {
+            g_shutdown_pipe_read = shutdown_pipe[0];
+            g_shutdown_pipe_write.store(shutdown_pipe[1], std::memory_order_release);
         }
     }
     if (!shutdown_pipe_ready) {
-        g_shutdown_pipe[0] = g_shutdown_pipe[1] = -1;
+        shutdown_pipe[0] = shutdown_pipe[1] = -1;
         CROW_LOG_ERROR << "could not create the shutdown pipe; SIGINT/SIGTERM keep "
                           "their default disposition and will terminate the process "
                           "immediately, without draining in-flight requests";
@@ -486,9 +504,9 @@ int main(int argc, char* argv[])
             // read(); one already running performShutdown is simply waited
             // for, which is the point - the process must not exit out from
             // under a drain in progress.
-            if (g_shutdown_pipe[1] >= 0) {
-                ::close(g_shutdown_pipe[1]);
-                g_shutdown_pipe[1] = -1;
+            const int fd = g_shutdown_pipe_write.exchange(-1, std::memory_order_acq_rel);
+            if (fd >= 0) {
+                ::close(fd);
             }
             thread.join();
         }

@@ -542,14 +542,15 @@ connections:
         // already. What is worth stating is the RELATION between the
         // watermark and the data that produced it, which is the thing the
         // commit-time version got wrong.
-        const std::int64_t watermark = std::stoll(it->second);
-        // 100 is the largest cursor value in the cache...
-        REQUIRE(watermark == 100);
-        // ...so a row written during the previous refresh (150, which is
-        // ABOVE everything cached but BELOW the commit instant) is still
-        // pending, and a row already cached (100) is not.
-        REQUIRE(150 > watermark);
-        REQUIRE_FALSE(100 > watermark);
+        // The property, against the DATA rather than against constants the
+        // test wrote: the watermark equals max(cursor) over what is actually
+        // cached. Re-derived from the table, so it fails if the product picks
+        // any other value - including the commit timestamp it used to use.
+        std::map<std::string, std::string> q;
+        auto r = db->executeQuery(
+            "SELECT CAST(max(updated_at) AS VARCHAR) AS m FROM cache.s.c", q, false);
+        auto rows = crow::json::load(r.data.dump());
+        REQUIRE(it->second == rows[0]["m"].s());
     }
 
     db->reset();
@@ -633,7 +634,9 @@ TEST_CASE("age-based retention does not touch another endpoint's snapshots",
         cat.sql("INSERT INTO cache.s.a VALUES (" + std::to_string(i) + ")");
         cat.sql("INSERT INTO cache.s.b VALUES (" + std::to_string(i) + ")");
     }
+    const int64_t a_before = cat.snapshotsOf("s", "a");
     const int64_t b_before = cat.snapshotsOf("s", "b");
+    REQUIRE(a_before > 2);
     REQUIRE(b_before > 2);
 
     auto endpoint_a = cachedEndpoint("/a", "a");
@@ -655,6 +658,23 @@ TEST_CASE("age-based retention does not touch another endpoint's snapshots",
         REQUIRE(expire.find("versions") != std::string::npos);
         INFO("expire call: " << expire);
         REQUIRE(expire.find("older_than") == std::string::npos);
+    }
+
+    SECTION("a's own snapshots ARE expired") {
+        // Without this the test passes when the expire CALL throws - the
+        // failure is caught and logged at WARNING - so it would assert only
+        // that b was unharmed by an expiry that never happened. The
+        // count-based sibling has this assertion; this one was written
+        // without it.
+        REQUIRE(cat.snapshotsOf("s", "a") < a_before);
+    }
+
+    SECTION("but a keeps its newest snapshot, so the watermark survives") {
+        // Age-based retention with no keep_last used to make every matching
+        // snapshot a candidate, the current one included - and
+        // fetchSnapshotInfo reads the incremental watermark from the newest
+        // surviving snapshot.
+        REQUIRE(cat.snapshotsOf("s", "a") >= 1);
     }
 
     SECTION("b's snapshots are untouched") {
@@ -760,7 +780,12 @@ TEST_CASE("a snapshot shared with another table is never expired",
                 expire = q;
             }
         }
-        if (!expire.empty()) {
+        // Not `if (!expire.empty())`: a run that expires nothing at all would
+        // satisfy every assertion below vacuously, which is the pattern this
+        // file exists to avoid. Either an expiry happened and must exclude
+        // b's snapshots, or the shared-snapshot guard held and there is
+        // nothing to expire - and the section above pins which.
+        {
             auto r = cat.db->executeQuery(
                 "SELECT snapshot_id FROM ducklake_snapshots('cache') "
                 "WHERE list_contains(flatten(map_values(changes)), "

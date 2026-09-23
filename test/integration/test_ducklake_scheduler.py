@@ -69,22 +69,21 @@ class TestDuckLakeScheduler:
         # Unconditional: this used to be `if status_code == 200`, which turned
         # a 404 from a stale slug into a silent pass.
         assert refresh_response.status_code == 200, refresh_response.text
-        if True:
-            # Wait a moment for audit entry to be created
-            time.sleep(1)
-            
-            # Check audit log
-            audit_response = requests.get(f"{api_config_url}/endpoints/{CUSTOMERS}/cache/audit", headers=auth_headers)
-            assert audit_response.status_code == 200
-            
-            audit_data = audit_response.json()
-            assert len(audit_data) > 0
-            
-            # Check that the most recent entry is from our refresh
-            latest_entry = audit_data[0]
-            assert latest_entry["endpoint_path"] == "/customers_cached/"
-            assert latest_entry["sync_type"] in ["full", "append", "merge"]
-            assert latest_entry["status"] in ["success", "error"]
+        # Wait a moment for audit entry to be created
+        time.sleep(1)
+        
+        # Check audit log
+        audit_response = requests.get(f"{api_config_url}/endpoints/{CUSTOMERS}/cache/audit", headers=auth_headers)
+        assert audit_response.status_code == 200
+        
+        audit_data = audit_response.json()
+        assert len(audit_data) > 0
+        
+        # Check that the most recent entry is from our refresh
+        latest_entry = audit_data[0]
+        assert latest_entry["endpoint_path"] == "/customers_cached/"
+        assert latest_entry["sync_type"] in ["full", "append", "merge"]
+        assert latest_entry["status"] in ["success", "error"]
     
     def test_audit_table_structure(self, api_config_url, auth_headers):
         """Test that audit table has the expected structure"""
@@ -114,9 +113,10 @@ class TestDuckLakeScheduler:
         # Try to get audit log for customers endpoint
         # If endpoint doesn't exist or doesn't have cache, accept 404
         response = requests.get(f"{api_config_url}/endpoints/{CUSTOMERS}/cache/audit", headers=auth_headers)
-        # The 404 escape hatch is gone: /customers/ IS cached in the examples
-        # config, so a 404 here means the slug is wrong, which is the failure
-        # this test existed to catch and silently swallowed instead.
+        # The 404 escape hatch is gone: /customers_cached/ IS cached in the
+        # configuration conftest launches, so a 404 here means the slug is
+        # wrong - the failure this test existed to catch and silently
+        # swallowed instead.
         assert response.status_code == 200, response.text
         
         audit_data = response.json()
@@ -130,17 +130,16 @@ class TestDuckLakeScheduler:
         # Test getting cache config
         response = requests.get(f"{api_config_url}/endpoints/{CUSTOMERS}/cache", headers=auth_headers)
         assert response.status_code == 200, response.text
-        if True:
-            config = response.json()
-            
-            # Validate DuckLake-specific fields
-            assert "enabled" in config
-            assert "table" in config
-            assert "schema" in config
-            
-            if config.get("enabled"):
-                assert config["table"] is not None
-                assert len(config["table"]) > 0
+        config = response.json()
+        
+        # Validate DuckLake-specific fields
+        assert "enabled" in config
+        assert "table" in config
+        assert "schema" in config
+        
+        if config.get("enabled"):
+            assert config["table"] is not None
+            assert len(config["table"]) > 0
     
     def test_scheduler_heartbeat_integration(self, base_url):
         """Test that heartbeat worker is running and processing scheduled tasks"""

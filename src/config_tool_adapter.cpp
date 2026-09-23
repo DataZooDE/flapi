@@ -3,6 +3,7 @@
 #include <openssl/crypto.h>
 #include "config_service.hpp"
 #include "json_utils.hpp"
+#include "path_utils.hpp"
 
 #include <stdexcept>
 #include <iostream>
@@ -105,7 +106,6 @@ void ConfigToolAdapter::registerDiscoveryTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_refresh_schema"] = false;
-    tool_unimplemented_["flapi_refresh_schema"] = "POST /api/v1/_schema/refresh";
     tool_handlers_["flapi_refresh_schema"] = [this](const crow::json::wvalue& args) {
         return this->executeRefreshSchema(args);
     };
@@ -141,7 +141,6 @@ void ConfigToolAdapter::registerTemplateTools() {
         build_basic_schema(),
         build_basic_schema()
     };
-    tool_unimplemented_["flapi_update_template"] = "PUT /api/v1/_config/endpoints/{slug}/template";
     tool_auth_required_["flapi_update_template"] = true;  // Mutation - requires auth
     tool_handlers_["flapi_update_template"] = [this](const crow::json::wvalue& args) {
         return this->executeUpdateTemplate(args);
@@ -154,7 +153,6 @@ void ConfigToolAdapter::registerTemplateTools() {
         build_basic_schema(),
         build_basic_schema()
     };
-    tool_unimplemented_["flapi_expand_template"] = "POST /api/v1/_config/endpoints/{slug}/template/expand";
     tool_auth_required_["flapi_expand_template"] = false;  // Read-only
     tool_handlers_["flapi_expand_template"] = [this](const crow::json::wvalue& args) {
         return this->executeExpandTemplate(args);
@@ -167,7 +165,6 @@ void ConfigToolAdapter::registerTemplateTools() {
         build_basic_schema(),
         build_basic_schema()
     };
-    tool_unimplemented_["flapi_test_template"] = "POST /api/v1/_config/endpoints/{slug}/template/expand";
     tool_auth_required_["flapi_test_template"] = false;  // Read-only (query execution)
     tool_handlers_["flapi_test_template"] = [this](const crow::json::wvalue& args) {
         return this->executeTestTemplate(args);
@@ -272,7 +269,7 @@ void ConfigToolAdapter::registerCacheTools() {
     // flapi_get_cache_status - Get cache status for an endpoint
     tools_["flapi_get_cache_status"] = ConfigToolDef{
         "flapi_get_cache_status",
-        "Get the current cache status for an endpoint including snapshot history and refresh timestamps",
+        "Get an endpoint's cache configuration: whether caching is enabled, the cache table and schema, the refresh schedule, cursor and retention policy. For refresh history use flapi_get_cache_audit.",
         build_basic_schema(),
         build_basic_schema()
     };
@@ -289,7 +286,6 @@ void ConfigToolAdapter::registerCacheTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_refresh_cache"] = true;
-    tool_unimplemented_["flapi_refresh_cache"] = "POST /api/v1/_config/endpoints/{slug}/cache/refresh";
     tool_handlers_["flapi_refresh_cache"] = [this](const crow::json::wvalue& args) {
         return this->executeRefreshCache(args);
     };
@@ -302,7 +298,6 @@ void ConfigToolAdapter::registerCacheTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_get_cache_audit"] = false;
-    tool_unimplemented_["flapi_get_cache_audit"] = "GET /api/v1/_config/endpoints/{slug}/cache/audit";
     tool_handlers_["flapi_get_cache_audit"] = [this](const crow::json::wvalue& args) {
         return this->executeGetCacheAudit(args);
     };
@@ -315,10 +310,30 @@ void ConfigToolAdapter::registerCacheTools() {
         build_basic_schema()
     };
     tool_auth_required_["flapi_run_cache_gc"] = true;
-    tool_unimplemented_["flapi_run_cache_gc"] = "POST /api/v1/_config/cache/gc";
     tool_handlers_["flapi_run_cache_gc"] = [this](const crow::json::wvalue& args) {
         return this->executeRunCacheGC(args);
     };
+}
+
+ConfigToolResult ConfigToolAdapter::fromHandler(const std::string& tool_name,
+                                                const crow::response& response) {
+    if (response.code >= 200 && response.code < 300) {
+        return ConfigToolResult{true, response.body, "", 0};
+    }
+    CROW_LOG_WARNING << tool_name << " failed: " << response.code << " " << response.body;
+    // 404 is the caller naming something that does not exist - an invalid
+    // params error, not a server error.
+    const int code = (response.code == 404 || response.code == 400) ? -32602 : -32603;
+    return ConfigToolResult{false, "", response.body.empty()
+                                        ? ("Request failed with status " + std::to_string(response.code))
+                                        : response.body,
+                            code};
+}
+
+crow::request ConfigToolAdapter::handlerRequest(const std::string& body) {
+    crow::request req;
+    req.body = body;
+    return req;
 }
 
 std::vector<ConfigToolDef> ConfigToolAdapter::getRegisteredTools() const {
@@ -494,140 +509,62 @@ std::string ConfigToolAdapter::validateArguments(const std::string& tool_name,
 // ============================================================================
 
 ConfigToolResult ConfigToolAdapter::executeGetProjectConfig(const crow::json::wvalue& args) {
-    try {
-        // Defensive check: ensure config manager is available
-        if (!config_manager_) {
-            CROW_LOG_ERROR << "flapi_get_project_config: ConfigManager is null";
-            return createErrorResult(-32603, "Configuration service unavailable");
-        }
-
-        // Delegate to ProjectConfigHandler
-        auto handler = std::make_unique<ProjectConfigHandler>(config_manager_);
-
-        // Create a minimal mock request (handlers extract from url_params)
-        // For now, we'll extract the data directly from config manager
-        crow::json::wvalue response;
-        response["project_name"] = config_manager_->getProjectName();
-        response["project_description"] = config_manager_->getProjectDescription();
-        response["base_path"] = config_manager_->getBasePath();
-
-        // Add version if available
-        response["version"] = "1.0.0";
-
-        CROW_LOG_INFO << "flapi_get_project_config: returned project config";
-        return createSuccessResult(response.dump());
-    } catch (const std::exception& e) {
-        CROW_LOG_ERROR << "flapi_get_project_config failed: " << e.what();
-        return createErrorResult(-32603, "Failed to get project config: " + std::string(e.what()));
+    // Delegated. The hand-rolled version reported version "1.0.0" for every
+    // build and omitted most of what its description promised.
+    if (!config_manager_) {
+        return createErrorResult(-32603, "Configuration service unavailable");
     }
+    ProjectConfigHandler handler(config_manager_);
+    return fromHandler("flapi_get_project_config",
+                       handler.getProjectConfig(handlerRequest()));
 }
 
 ConfigToolResult ConfigToolAdapter::executeGetEnvironment(const crow::json::wvalue& args) {
-    try {
-        // Defensive check: ensure config manager is available
-        if (!config_manager_) {
-            CROW_LOG_ERROR << "flapi_get_environment: ConfigManager is null";
-            return createErrorResult(-32603, "Configuration service unavailable");
-        }
-
-        auto handler = std::make_unique<ProjectConfigHandler>(config_manager_);
-
-        // Get environment variables from config manager
-        crow::json::wvalue env_vars;
-        env_vars["variables"] = crow::json::wvalue::list();
-
-        // Get the whitelist from config manager if available
-        // For now, return empty list - will be populated when getEnvironmentVariables is called
-        CROW_LOG_INFO << "flapi_get_environment: returned environment variables";
-        return createSuccessResult(env_vars.dump());
-    } catch (const std::exception& e) {
-        CROW_LOG_ERROR << "flapi_get_environment failed: " << e.what();
-        return createErrorResult(-32603, "Failed to get environment: " + std::string(e.what()));
+    // Delegated. This used to build `{"variables": []}` and log "returned
+    // environment variables" - an empty list indistinguishable from a
+    // deployment that whitelists nothing, returned as a success.
+    if (!config_manager_) {
+        return createErrorResult(-32603, "Configuration service unavailable");
     }
+    ProjectConfigHandler handler(config_manager_);
+    return fromHandler("flapi_get_environment",
+                       handler.getEnvironmentVariables(handlerRequest()));
 }
 
 ConfigToolResult ConfigToolAdapter::executeGetFilesystem(const crow::json::wvalue& args) {
-    try {
-        // Defensive check: ensure config manager is available
-        if (!config_manager_) {
-            CROW_LOG_ERROR << "flapi_get_filesystem: ConfigManager is null";
-            return createErrorResult(-32603, "Configuration service unavailable");
-        }
-
-        auto handler = std::make_unique<FilesystemHandler>(config_manager_);
-
-        crow::json::wvalue filesystem;
-        filesystem["base_path"] = config_manager_->getBasePath();
-        filesystem["template_path"] = config_manager_->getFullTemplatePath().string();
-
-        // Get the directory tree
-        crow::json::wvalue::list tree;
-        // Handler will build this - for now, return structure
-        filesystem["tree"] = std::move(tree);
-
-        CROW_LOG_INFO << "flapi_get_filesystem: returned filesystem structure";
-        return createSuccessResult(filesystem.dump());
-    } catch (const std::exception& e) {
-        CROW_LOG_ERROR << "flapi_get_filesystem failed: " << e.what();
-        return createErrorResult(-32603, "Failed to get filesystem structure: " + std::string(e.what()));
+    // Delegated. The `tree` was always an empty list, under the comment
+    // "Handler will build this - for now, return structure".
+    if (!config_manager_) {
+        return createErrorResult(-32603, "Configuration service unavailable");
     }
+    FilesystemHandler handler(config_manager_);
+    return fromHandler("flapi_get_filesystem",
+                       handler.getFilesystemStructure(handlerRequest()));
 }
 
 ConfigToolResult ConfigToolAdapter::executeGetSchema(const crow::json::wvalue& args) {
-    try {
-        // Defensive checks: ensure both managers are available
-        if (!config_manager_) {
-            CROW_LOG_ERROR << "flapi_get_schema: ConfigManager is null";
-            return createErrorResult(-32603, "Configuration service unavailable");
-        }
-        if (!db_manager_) {
-            CROW_LOG_ERROR << "flapi_get_schema: DatabaseManager is null";
-            return createErrorResult(-32603, "Database service unavailable");
-        }
-
-        auto handler = std::make_unique<SchemaHandler>(config_manager_);
-
-        crow::json::wvalue schema;
-        // The handler will query DuckDB for schema information
-        // For now, return basic structure
-        schema["tables"] = crow::json::wvalue();
-
-        CROW_LOG_INFO << "flapi_get_schema: returned database schema";
-        return createSuccessResult(schema.dump());
-    } catch (const std::exception& e) {
-        CROW_LOG_ERROR << "flapi_get_schema failed: " << e.what();
-        return createErrorResult(-32603, "Failed to get schema: " + std::string(e.what()));
+    // Delegated. This returned `{"tables": null}` for every catalog.
+    if (!config_manager_) {
+        return createErrorResult(-32603, "Configuration service unavailable");
     }
+    if (!db_manager_) {
+        return createErrorResult(-32603, "Database service unavailable");
+    }
+    SchemaHandler handler(config_manager_);
+    return fromHandler("flapi_get_schema", handler.getSchema(handlerRequest()));
 }
 
 ConfigToolResult ConfigToolAdapter::executeRefreshSchema(const crow::json::wvalue& args) {
-    try {
-        // Defensive checks: ensure both managers are available
-        if (!config_manager_) {
-            CROW_LOG_ERROR << "flapi_refresh_schema: ConfigManager is null";
-            return createErrorResult(-32603, "Configuration service unavailable");
-        }
-        if (!db_manager_) {
-            CROW_LOG_ERROR << "flapi_refresh_schema: DatabaseManager is null";
-            return createErrorResult(-32603, "Database service unavailable");
-        }
-
-        auto handler = std::make_unique<SchemaHandler>(config_manager_);
-
-        // Nothing was refreshed. The SchemaHandler constructed above was
-        // discarded without a call, and "schema_refreshed" was returned
-        // regardless. executeTool() now refuses every tool registered as
-        // unimplemented, so this body is unreachable - it refuses anyway,
-        // because the point is that no path fabricates a result.
-        CROW_LOG_WARNING << "flapi_refresh_schema is not implemented; refusing";
-        return createErrorResult(
-            -32601,
-            "flapi_refresh_schema is not implemented. Use "
-            "POST /api/v1/_schema/refresh instead.");
-    } catch (const std::exception& e) {
-        CROW_LOG_ERROR << "flapi_refresh_schema failed: " << e.what();
-        return createErrorResult(-32603, "Failed to refresh schema: " + std::string(e.what()));
+    // Delegated. This constructed a SchemaHandler, discarded it, and returned
+    // "schema_refreshed" - so nothing was ever refreshed.
+    if (!config_manager_) {
+        return createErrorResult(-32603, "Configuration service unavailable");
     }
+    if (!db_manager_) {
+        return createErrorResult(-32603, "Database service unavailable");
+    }
+    SchemaHandler handler(config_manager_);
+    return fromHandler("flapi_refresh_schema", handler.refreshSchema(handlerRequest()));
 }
 
 // ============================================================================
@@ -670,129 +607,89 @@ ConfigToolResult ConfigToolAdapter::executeGetTemplate(const crow::json::wvalue&
 }
 
 ConfigToolResult ConfigToolAdapter::executeUpdateTemplate(const crow::json::wvalue& args) {
-    try {
-        // Defensive check: ensure config manager is available
-        if (!config_manager_) {
-            CROW_LOG_ERROR << "flapi_update_template: ConfigManager is null";
-            return createErrorResult(-32603, "Configuration service unavailable");
-        }
-
-        // Extract required parameters
-        std::string error_msg = "";
-        std::string endpoint = extractStringParam(args, "endpoint", true, error_msg);
-        if (!error_msg.empty()) {
-            return createErrorResult(-32602, error_msg);
-        }
-
-        std::string content = extractStringParam(args, "content", true, error_msg);
-        if (!error_msg.empty()) {
-            return createErrorResult(-32602, error_msg);
-        }
-
-        // Validate endpoint exists
-        auto ep = config_manager_->getEndpointForPath(endpoint);
-        if (!ep) {
-            return createErrorResult(-32603, "Endpoint not found: " + endpoint);
-        }
-
-        // This tool has never written anything. It validated that the
-        // endpoint existed and then reported success, quoting the length of
-        // the content it discarded - so an operator updating a template over
-        // MCP was told it worked while the file on disk was untouched.
-        //
-        // Say so instead. Reporting success for work not done is worse than
-        // either implementing it or refusing: it is the one outcome the
-        // caller cannot detect. The REST route
-        // PUT /api/v1/_config/endpoints/{slug}/template does perform the
-        // write and is the supported path until this is implemented.
-        (void)content;
-        CROW_LOG_WARNING << "flapi_update_template is not implemented; refusing rather than "
-                            "reporting success for endpoint " << endpoint;
-        return createErrorResult(
-            -32601,
-            "flapi_update_template is not implemented. Use "
-            "PUT /api/v1/_config/endpoints/{slug}/template instead.");
-    } catch (const std::exception& e) {
-        CROW_LOG_ERROR << "flapi_update_template failed: " << e.what();
-        return createErrorResult(-32603, "Failed to update template: " + std::string(e.what()));
+    // Delegated to the same handler PUT .../template uses. This used to
+    // validate the endpoint and report success while leaving the file on disk
+    // untouched, quoting the length of the content it discarded.
+    if (!config_manager_) {
+        return createErrorResult(-32603, "Configuration service unavailable");
     }
+    std::string error_msg;
+    const std::string endpoint = extractStringParam(args, "endpoint", true, error_msg);
+    if (!error_msg.empty()) {
+        return createErrorResult(-32602, error_msg);
+    }
+    const std::string slug = PathUtils::pathToSlug(endpoint);
+    std::string content_error;
+    const std::string content = extractStringParam(args, "content", true, content_error);
+    if (!content_error.empty()) {
+        return createErrorResult(-32602, content_error);
+    }
+
+    crow::json::wvalue payload;
+    payload["template"] = content;
+    TemplateHandler handler(config_manager_);
+    return fromHandler("flapi_update_template",
+                       handler.updateEndpointTemplateBySlug(handlerRequest(payload.dump()), slug));
 }
 
 ConfigToolResult ConfigToolAdapter::executeExpandTemplate(const crow::json::wvalue& args) {
-    try {
-        // Defensive check: ensure config manager is available
-        if (!config_manager_) {
-            CROW_LOG_ERROR << "flapi_expand_template: ConfigManager is null";
-            return createErrorResult(-32603, "Configuration service unavailable");
-        }
-
-        // Extract required parameters
-        std::string error_msg = "";
-        std::string endpoint = extractStringParam(args, "endpoint", true, error_msg);
-        if (!error_msg.empty()) {
-            return createErrorResult(-32602, error_msg);
-        }
-
-        // Validate endpoint exists
-        auto ep = config_manager_->getEndpointForPath(endpoint);
-        if (!ep) {
-            return createErrorResult(-32603, "Endpoint not found: " + endpoint);
-        }
-
-        // This tool has never expanded anything. It returned a hardcoded
-        // `SELECT * FROM data WHERE 1=1` with "Template expanded
-        // successfully", which an agent cannot distinguish from a real
-        // expansion of the endpoint's actual template.
-        //
-        // executeTool() now refuses every tool whose ConfigToolDef is marked
-        // unimplemented, so this body is unreachable. It refuses anyway: the
-        // point of the fix is that no path fabricates a result.
-        CROW_LOG_WARNING << "flapi_expand_template is not implemented; refusing for endpoint "
-                         << endpoint;
-        return createErrorResult(
-            -32601,
-            "flapi_expand_template is not implemented. Use "
-            "POST /api/v1/_config/endpoints/{slug}/template/expand instead.");
-    } catch (const std::exception& e) {
-        CROW_LOG_ERROR << "flapi_expand_template failed: " << e.what();
-        return createErrorResult(-32603, "Failed to expand template: " + std::string(e.what()));
+    // Delegated. This returned a hardcoded `SELECT * FROM data WHERE 1=1`
+    // with "Template expanded successfully" - indistinguishable, to an agent,
+    // from a real expansion of the endpoint's actual template.
+    if (!config_manager_) {
+        return createErrorResult(-32603, "Configuration service unavailable");
     }
+    std::string error_msg;
+    const std::string endpoint = extractStringParam(args, "endpoint", true, error_msg);
+    if (!error_msg.empty()) {
+        return createErrorResult(-32602, error_msg);
+    }
+    const std::string slug = PathUtils::pathToSlug(endpoint);
+
+    // The handler requires a `parameters` object; an absent one is an empty
+    // parameter set, not an error.
+    crow::json::wvalue payload;
+    payload["parameters"] = crow::json::wvalue::object();
+    const auto parsed = crow::json::load(crow::json::wvalue(args).dump());
+    if (parsed && parsed.has("params") && parsed["params"].t() == crow::json::type::Object) {
+        payload["parameters"] = crow::json::wvalue(parsed["params"]);
+    } else if (parsed && parsed.has("parameters") &&
+               parsed["parameters"].t() == crow::json::type::Object) {
+        payload["parameters"] = crow::json::wvalue(parsed["parameters"]);
+    }
+
+    TemplateHandler handler(config_manager_);
+    return fromHandler("flapi_expand_template",
+                       handler.expandTemplateBySlug(handlerRequest(payload.dump()), slug));
 }
 
 ConfigToolResult ConfigToolAdapter::executeTestTemplate(const crow::json::wvalue& args) {
-    try {
-        // Defensive check: ensure config manager is available
-        if (!config_manager_) {
-            CROW_LOG_ERROR << "flapi_test_template: ConfigManager is null";
-            return createErrorResult(-32603, "Configuration service unavailable");
-        }
-
-        // Extract required parameters
-        std::string error_msg = "";
-        std::string endpoint = extractStringParam(args, "endpoint", true, error_msg);
-        if (!error_msg.empty()) {
-            return createErrorResult(-32602, error_msg);
-        }
-
-        // Validate endpoint exists
-        auto ep = config_manager_->getEndpointForPath(endpoint);
-        if (!ep) {
-            return createErrorResult(-32603, "Endpoint not found: " + endpoint);
-        }
-
-        // Likewise: this reported "Template test passed" for a query it never
-        // ran, against SQL it never produced. Claiming a test passed is the
-        // single worst thing a stub can say.
-        CROW_LOG_WARNING << "flapi_test_template is not implemented; refusing for endpoint "
-                         << endpoint;
-        return createErrorResult(
-            -32601,
-            "flapi_test_template is not implemented. Use "
-            "POST /api/v1/_config/endpoints/{slug}/template/expand instead.");
-    } catch (const std::exception& e) {
-        CROW_LOG_ERROR << "flapi_test_template failed: " << e.what();
-        return createErrorResult(-32603, "Failed to test template: " + std::string(e.what()));
+    // Delegated. This reported "Template test passed" for a query it never
+    // ran, against SQL it never produced. Of everything a stub can say,
+    // claiming a test passed is the worst.
+    if (!config_manager_) {
+        return createErrorResult(-32603, "Configuration service unavailable");
     }
+    std::string error_msg;
+    const std::string endpoint = extractStringParam(args, "endpoint", true, error_msg);
+    if (!error_msg.empty()) {
+        return createErrorResult(-32602, error_msg);
+    }
+    const std::string slug = PathUtils::pathToSlug(endpoint);
+
+    crow::json::wvalue payload;
+    payload["parameters"] = crow::json::wvalue::object();
+    const auto parsed = crow::json::load(crow::json::wvalue(args).dump());
+    if (parsed && parsed.has("params") && parsed["params"].t() == crow::json::type::Object) {
+        payload["parameters"] = crow::json::wvalue(parsed["params"]);
+    } else if (parsed && parsed.has("parameters") &&
+               parsed["parameters"].t() == crow::json::type::Object) {
+        payload["parameters"] = crow::json::wvalue(parsed["parameters"]);
+    }
+
+    TemplateHandler handler(config_manager_);
+    return fromHandler("flapi_test_template",
+                       handler.testTemplateBySlug(handlerRequest(payload.dump()), slug));
 }
 
 // ============================================================================
@@ -1175,212 +1072,78 @@ ConfigToolResult ConfigToolAdapter::executeReloadEndpoint(const crow::json::wval
 // ============================================================================
 
 ConfigToolResult ConfigToolAdapter::executeGetCacheStatus(const crow::json::wvalue& args) {
-    std::string endpoint_path;  // Declare outside try block for catch access
-    try {
-        // Defensive check: ensure config manager is available
-        if (!config_manager_) {
-            CROW_LOG_ERROR << "flapi_get_cache_status: ConfigManager is null";
-            return createErrorResult(-32603, "Configuration service unavailable");
-        }
-
-        // Extract endpoint path parameter
-        std::string error_msg = "";
-        endpoint_path = extractStringParam(args, "path", true, error_msg);
-        if (!error_msg.empty()) {
-            return createErrorResult(-32602, error_msg);
-        }
-
-        // Validate path to prevent traversal attacks
-        error_msg = isValidEndpointPath(endpoint_path);
-        if (!error_msg.empty()) {
-            return createErrorResult(-32602, error_msg);
-        }
-
-        // Find the endpoint
-        auto ep = config_manager_->getEndpointForPath(endpoint_path);
-        if (!ep) {
-            crow::json::wvalue error_detail;
-            error_detail["error"] = "Endpoint not found";
-            error_detail["path"] = endpoint_path;
-            error_detail["hint"] = "Use flapi_list_endpoints to see available endpoints";
-            return createErrorResult(-32603, error_detail.dump());
-        }
-
-        // Check if cache is enabled for this endpoint
-        if (!ep->cache.enabled) {
-            crow::json::wvalue error_detail;
-            error_detail["error"] = "Cache not enabled for this endpoint";
-            error_detail["path"] = endpoint_path;
-            error_detail["method"] = ep->method;
-            error_detail["hint"] = "Enable cache in endpoint YAML configuration and reload endpoint";
-            return createErrorResult(-32603, error_detail.dump());
-        }
-
-        // Return cache status
-        crow::json::wvalue result;
-        result["status"] = "success";
-        result["path"] = endpoint_path;
-        result["cache_enabled"] = true;
-        result["cache_table"] = ep->cache.table;
-        result["cache_schema"] = ep->cache.schema;
-
-        CROW_LOG_INFO << "flapi_get_cache_status: retrieved status for " << endpoint_path << " (table=" << ep->cache.table << ")";
-        return createSuccessResult(result.dump());
-    } catch (const std::exception& e) {
-        CROW_LOG_ERROR << "flapi_get_cache_status failed for '" << endpoint_path << "': " << e.what();
-        crow::json::wvalue error_detail;
-        error_detail["error"] = "Failed to get cache status";
-        error_detail["path"] = endpoint_path;
-        error_detail["reason"] = std::string(e.what());
-        return createErrorResult(-32603, error_detail.dump());
+    // Delegated to the same handler GET .../cache uses.
+    //
+    // The hand-rolled version echoed three fields of static YAML back and
+    // labelled it "success", while its description promised "snapshot history
+    // and refresh timestamps". An agent asking when a cache last refreshed
+    // got a successful answer with the question silently dropped, and could
+    // not tell that apart from a cache that had never refreshed.
+    if (!config_manager_) {
+        return createErrorResult(-32603, "Configuration service unavailable");
     }
+    std::string error_msg;
+    const std::string endpoint_path = extractStringParam(args, "path", true, error_msg);
+    if (!error_msg.empty()) {
+        return createErrorResult(-32602, error_msg);
+    }
+
+    CacheConfigHandler handler(config_manager_);
+    return fromHandler("flapi_get_cache_status",
+                       handler.getCacheConfig(handlerRequest(), endpoint_path));
 }
 
 ConfigToolResult ConfigToolAdapter::executeRefreshCache(const crow::json::wvalue& args) {
-    try {
-        // Defensive check: ensure config manager is available
-        if (!config_manager_) {
-            CROW_LOG_ERROR << "flapi_refresh_cache: ConfigManager is null";
-            return createErrorResult(-32603, "Configuration service unavailable");
-        }
-
-        // Extract endpoint path parameter
-        std::string error_msg = "";
-        std::string endpoint_path = extractStringParam(args, "path", true, error_msg);
-        if (!error_msg.empty()) {
-            return createErrorResult(-32602, error_msg);
-        }
-
-        // Validate path to prevent traversal attacks
-        error_msg = isValidEndpointPath(endpoint_path);
-        if (!error_msg.empty()) {
-            return createErrorResult(-32602, error_msg);
-        }
-
-        // Find the endpoint
-        auto ep = config_manager_->getEndpointForPath(endpoint_path);
-        if (!ep) {
-            return createErrorResult(-32603, "Endpoint not found: " + endpoint_path);
-        }
-
-        // Check if cache is enabled
-        if (!ep->cache.enabled) {
-            return createErrorResult(-32603, "Cache is not enabled for endpoint: " + endpoint_path);
-        }
-
-        // Trigger cache refresh
-        // No refresh was ever triggered or scheduled: this adapter holds no
-        // CacheManager reference at all (`grep -n CacheManager` on this file
-        // returns nothing). It validated the endpoint and reported
-        // "Cache refresh has been scheduled" - a mutation claiming work it
-        // never did, which a caller cannot detect.
-        CROW_LOG_WARNING << "flapi_refresh_cache is not implemented; refusing for "
-                         << endpoint_path;
-        return createErrorResult(
-            -32601,
-            "flapi_refresh_cache is not implemented. Use "
-            "POST /api/v1/_config/endpoints/{slug}/cache/refresh instead.");
-    } catch (const std::exception& e) {
-        CROW_LOG_ERROR << "flapi_refresh_cache failed: " << e.what();
-        return createErrorResult(-32603, "Failed to refresh cache: " + std::string(e.what()));
+    // Delegated to the same handler POST .../cache/refresh uses. This adapter
+    // held no CacheManager reference at all, and returned "Cache refresh has
+    // been scheduled" - a mutation claiming work nothing had queued.
+    if (!config_manager_) {
+        return createErrorResult(-32603, "Configuration service unavailable");
     }
+    std::string error_msg;
+    const std::string endpoint_path = extractStringParam(args, "path", true, error_msg);
+    if (!error_msg.empty()) {
+        return createErrorResult(-32602, error_msg);
+    }
+    CacheConfigHandler handler(config_manager_);
+    return fromHandler("flapi_refresh_cache",
+                       handler.refreshCache(handlerRequest(), endpoint_path));
 }
 
 ConfigToolResult ConfigToolAdapter::executeGetCacheAudit(const crow::json::wvalue& args) {
-    try {
-        // Defensive check: ensure config manager is available
-        if (!config_manager_) {
-            CROW_LOG_ERROR << "flapi_get_cache_audit: ConfigManager is null";
-            return createErrorResult(-32603, "Configuration service unavailable");
-        }
-
-        // Extract endpoint path parameter
-        std::string error_msg = "";
-        std::string endpoint_path = extractStringParam(args, "path", true, error_msg);
-        if (!error_msg.empty()) {
-            return createErrorResult(-32602, error_msg);
-        }
-
-        // Validate path to prevent traversal attacks
-        error_msg = isValidEndpointPath(endpoint_path);
-        if (!error_msg.empty()) {
-            return createErrorResult(-32602, error_msg);
-        }
-
-        // Find the endpoint
-        auto ep = config_manager_->getEndpointForPath(endpoint_path);
-        if (!ep) {
-            return createErrorResult(-32603, "Endpoint not found: " + endpoint_path);
-        }
-
-        // Check if cache is enabled
-        if (!ep->cache.enabled) {
-            return createErrorResult(-32603, "Cache is not enabled for endpoint: " + endpoint_path);
-        }
-
-        // Return cache audit information
-        crow::json::wvalue result;
-        result["path"] = endpoint_path;
-        result["cache_table"] = ep->cache.table;
-
-        // The audit log was INVENTED: a single entry built from
-        // std::time(nullptr) under the comment "Add sample audit entry", and
-        // returned as "Cache audit log retrieved successfully". An agent
-        // asking for an audit log received manufactured audit records - a
-        // caller polling this to confirm a refresh saw a fabricated success.
-        // Of everything a stub can do, inventing audit rows is the worst.
-        CROW_LOG_WARNING << "flapi_get_cache_audit is not implemented; refusing for "
-                         << endpoint_path;
-        return createErrorResult(
-            -32601,
-            "flapi_get_cache_audit is not implemented. Use "
-            "GET /api/v1/_config/endpoints/{slug}/cache/audit instead.");
-    } catch (const std::exception& e) {
-        CROW_LOG_ERROR << "flapi_get_cache_audit failed: " << e.what();
-        return createErrorResult(-32603, "Failed to get cache audit: " + std::string(e.what()));
+    // Delegated. This INVENTED an audit entry from std::time(nullptr) under
+    // the comment "Add sample audit entry" and returned it as a retrieved
+    // audit log - manufactured records, handed to an agent asking what had
+    // actually happened.
+    if (!config_manager_) {
+        return createErrorResult(-32603, "Configuration service unavailable");
     }
+    std::string error_msg;
+    const std::string endpoint_path = extractStringParam(args, "path", true, error_msg);
+    if (!error_msg.empty()) {
+        return createErrorResult(-32602, error_msg);
+    }
+    AuditLogHandler handler(config_manager_);
+    return fromHandler("flapi_get_cache_audit", handler.getCacheAuditLog(endpoint_path));
 }
 
 ConfigToolResult ConfigToolAdapter::executeRunCacheGC(const crow::json::wvalue& args) {
-    try {
-        // Defensive check: ensure config manager is available
-        if (!config_manager_) {
-            CROW_LOG_ERROR << "flapi_run_cache_gc: ConfigManager is null";
-            return createErrorResult(-32603, "Configuration service unavailable");
-        }
-
-        // Extract optional endpoint path parameter
-        std::string error_msg = "";
-        std::string endpoint_path = extractStringParam(args, "path", false, error_msg);
-
-        if (!endpoint_path.empty()) {
-            // Validate path to prevent traversal attacks
-            error_msg = isValidEndpointPath(endpoint_path);
-            if (!error_msg.empty()) {
-                return createErrorResult(-32602, error_msg);
-            }
-
-            // Verify endpoint exists if specified
-            auto ep = config_manager_->getEndpointForPath(endpoint_path);
-            if (!ep) {
-                return createErrorResult(-32603, "Endpoint not found: " + endpoint_path);
-            }
-
-            if (!ep->cache.enabled) {
-                return createErrorResult(-32603, "Cache is not enabled for endpoint: " + endpoint_path);
-            }
-        }
-
-        // Nothing was collected; see flapi_refresh_cache above.
-        CROW_LOG_WARNING << "flapi_run_cache_gc is not implemented; refusing";
-        return createErrorResult(
-            -32601,
-            "flapi_run_cache_gc is not implemented. Use "
-            "POST /api/v1/_config/cache/gc instead.");
-    } catch (const std::exception& e) {
-        CROW_LOG_ERROR << "flapi_run_cache_gc failed: " << e.what();
-        return createErrorResult(-32603, "Failed to run cache garbage collection: " + std::string(e.what()));
+    // Delegated. This returned "Garbage collection triggered" having
+    // triggered nothing.
+    if (!config_manager_) {
+        return createErrorResult(-32603, "Configuration service unavailable");
     }
+    std::string error_msg;
+    // `path` is optional here: the REST route collects one endpoint, and an
+    // absent path means "every cached endpoint".
+    const std::string endpoint_path = extractStringParam(args, "path", false, error_msg);
+    if (!error_msg.empty()) {
+        return createErrorResult(-32602, error_msg);
+    }
+
+    CacheConfigHandler handler(config_manager_);
+    return fromHandler("flapi_run_cache_gc",
+                       handler.performGarbageCollection(handlerRequest(), endpoint_path));
 }
 
 // ============================================================================

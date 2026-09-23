@@ -118,6 +118,15 @@ jobs:
           ${BUILD_IMAGE} \
           bash -c 'cd /build_dir && make clean && make release ${{ matrix.arch != 'arm64' && '&& make test' || '' }}'
 
+    # Runs HERE, where a configured build tree exists. It was in the
+    # integration-tests job, which only downloads the prebuilt binary and
+    # never configures CMake - so it found no crow header and passed
+    # vacuously on every run, while claiming to guard the offload against the
+    # field-drop that corrupted every Arrow response.
+    - name: Check the offload carries every crow::response field
+      shell: bash
+      run: ./scripts/check_crow_response_fields.py
+
     - uses: actions/upload-artifact@v4
       with:
         name: flapi-linux-${{ matrix.arch }}
@@ -307,7 +316,6 @@ jobs:
     - name: Check codebase invariants
       run: |
         ./scripts/check_crow_app_alias.sh
-        ./scripts/check_crow_response_fields.py
         ./scripts/check_cxx_standard_uniform.sh build/release
         ./scripts/check_tracing_abi_guard.sh build/release/libflapi-lib.a
 

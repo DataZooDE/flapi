@@ -56,7 +56,9 @@ public:
     
     // Add these two declarations
     crow::mustache::template_t compileTemplate(const std::string& templateSource);
-    std::map<std::string, std::string> getEnvironmentVariables();
+    /// Static: it only walks `environ`, and the secret collector needs it
+    /// from call sites that hold no template processor.
+    static std::map<std::string, std::string> getEnvironmentVariables();
     
     // Public method to load template content for validation
     std::string loadTemplate(const EndpointConfig& endpoint);

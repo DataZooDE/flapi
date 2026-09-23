@@ -151,7 +151,7 @@ private:
                                const std::string& schema,
                                const std::string& table,
                                std::optional<std::size_t> keep_last,
-                               const std::string& older_than_sql);
+                               const std::string& older_than_sql);   // by value: normalised inside
 
     static std::string determineCacheMode(const CacheConfig& cacheConfig);
 

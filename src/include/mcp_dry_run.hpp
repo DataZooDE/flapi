@@ -6,6 +6,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "template_secrets.hpp"
+
 namespace flapi {
 
 // Helpers for W2.2 dry-run / shadow mode. The model is:
@@ -34,50 +36,13 @@ public:
     /// credential back in the dry-run payload - over MCP, which is
     /// unauthenticated by default. Scrubbing by VALUE, not by key, because by
     /// the time the SQL is rendered the key is gone.
-    /// Every credential-valued thing a dry-run preview could disclose,
-    /// gathered from ALL the sources a template can interpolate.
+    /// The secrets an endpoint's template can interpolate.
     ///
-    /// Scrubbing used to cover `conn.*` only. A template may equally write
-    /// `{{{ env.API_KEY }}}` - the documented environment-variable pattern -
-    /// and a request field's configured `default:` is copied into params and
-    /// returned in the payload's `parameters` object. Both came back verbatim
-    /// to an unauthenticated _dryRun caller. Enumerating the sources in one
-    /// place is what stops the next one being missed.
-    class Secrets {
-    public:
-        /// Record `value` as secret if `key` names a credential. A value too
-        /// short to replace without corrupting unrelated SQL sets
-        /// `withhold()` instead - the same rule the short-connection-secret
-        /// case already used: neither leak it nor mangle the preview.
-        void add(const std::string& key, const std::string& value);
-
-        /// Like add(), but also records a long value whose NAME does not look
-        /// like a credential.
-        ///
-        /// The name heuristic is the right gate for a request default - a
-        /// `default: "100"` on a `limit` field must stay visible, or the
-        /// preview is useless. It is the wrong gate for a whitelisted
-        /// environment variable: those are server-configured, an operator
-        /// chose to expose each one to templates, and a name like
-        /// PAYMENT_VALUE or SERVICE_ACCOUNT_JSON carries a secret past any
-        /// stem list. A long env value is overwhelmingly a key or token, and
-        /// redacting one that is not costs only a less readable preview.
-        void addEnv(const std::string& key, const std::string& value);
-
-        template <typename Map>
-        void addAll(const Map& entries) {
-            for (const auto& entry : entries) {
-                add(entry.first, entry.second);
-            }
-        }
-
-        bool withhold() const { return withhold_; }
-        const std::vector<std::string>& values() const { return values_; }
-
-    protected:
-        bool withhold_ = false;
-        std::vector<std::string> values_;
-    };
+    /// Lives in template_secrets.hpp because it is no longer dry-run-only:
+    /// REST responses, MCP tools/call and MCP resources/read all have to
+    /// scrub the same set out of database error messages, which quote the
+    /// failing statement.
+    using Secrets = TemplateSecrets;
 
     /// True when a connection holds a credential too short to scrub by value.
     /// The rendered SQL must then be withheld rather than returned.
@@ -89,7 +54,9 @@ public:
         const std::unordered_map<std::string, std::string>& connection_properties);
 
     /// Replace every value in `secrets` wherever it appears in `sql`.
-    static std::string scrub(std::string sql, const Secrets& secrets);
+    static std::string scrub(std::string sql, const Secrets& secrets) {
+        return secrets.scrub(std::move(sql));
+    }
 
     /// The message returned in place of the SQL when a secret cannot be
     /// scrubbed safely.

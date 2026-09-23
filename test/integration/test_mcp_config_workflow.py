@@ -19,46 +19,40 @@ import os
 load_dotenv()
 
 
-# Seven flapi_* config tools are registered but unimplemented, and are
-# therefore not advertised by tools/list and refuse when called:
+# Eleven flapi_* config tools used to return confident, fabricated results - a
+# hardcoded `SELECT * FROM data WHERE 1=1`, "Cache refresh has been scheduled"
+# with nothing scheduled, invented audit rows, empty schemas and filesystems
+# labelled success. Each of them had a working REST handler that the adapter
+# constructed and then discarded; they now delegate to it.
 #
-#   flapi_update_template, flapi_expand_template, flapi_test_template,
-#   flapi_refresh_cache, flapi_run_cache_gc, flapi_refresh_schema,
-#   flapi_get_cache_audit
-#
-# They used to return confident, fabricated results - a hardcoded
-# `SELECT * FROM data WHERE 1=1`, "Cache refresh has been scheduled" with
-# nothing scheduled, and in one case invented audit rows. The workflow tests
-# below were written as
+# The workflow tests below were written as
 #
 #     try:  assert call_tool(...) is not None
 #     except Exception as e:  assert "cache" in str(e).lower() or ...
 #
 # which passes whether the tool fabricates, works, or raises for any reason at
-# all. They now assert the contract that holds: the unimplemented step refuses
-# and names the REST route that does the work, and the implemented steps around
-# it still succeed.
+# all - so they could not tell any of that apart. They now assert what each
+# step actually produced.
 # /customers/ is the UNCACHED endpoint in the test configuration;
 # /customers_cached/ is the one with a cache. Cache workflows have to address
 # the latter or they only ever exercise "Cache not enabled for this endpoint".
 CACHED_ENDPOINT = "/customers_cached/"
 
-UNIMPLEMENTED_OVER_MCP = (
-    "flapi_update_template", "flapi_expand_template", "flapi_test_template",
-    "flapi_refresh_cache", "flapi_run_cache_gc", "flapi_refresh_schema",
-    "flapi_get_cache_audit",
-)
+# The literal strings these tools used to return. Any of them reappearing
+# means a tool has regressed to a stub.
+FABRICATIONS = ("SELECT * FROM data WHERE 1=1", "Template test passed",
+                "Template expanded successfully", "schema_refreshed",
+                "cache_status_checked", "has been scheduled",
+                "Garbage collection triggered")
 
 
-def assert_refuses(mcp_client, tool, arguments=None):
-    """The tool must refuse, and say where the working route is."""
-    import pytest as _pytest
-    with _pytest.raises(Exception) as excinfo:
-        mcp_client.call_tool(tool, arguments or {})
-    message = str(excinfo.value)
-    assert ("not implemented" in message
-            or "Authentication required" in message), f"{tool}: {message}"
-    return message
+def assert_real(result, tool):
+    """The step produced something, and not one of the old fabrications."""
+    blob = str(result)
+    assert result is not None, f"{tool} returned nothing"
+    for phrase in FABRICATIONS:
+        assert phrase not in blob, f"{tool} returned the old stub {phrase!r}: {blob}"
+    return blob
 
 
 class SimpleMCPClient:
@@ -183,20 +177,27 @@ class TestCreateEndpointWorkflow:
         1. Expand template with sample params
         2. Test template execution
         """
-        # Neither step is available over MCP. Both used to answer with a
-        # hardcoded `SELECT * FROM data WHERE 1=1`, and flapi_test_template
-        # claimed "Template test passed" for a query it never ran - so an
-        # agent validating a template before deployment was validating
-        # nothing.
-        assert_refuses(mcp_client, "flapi_expand_template",
-                       {"endpoint": "/customers/", "params": {"limit": 10}})
-        assert_refuses(mcp_client, "flapi_test_template",
-                       {"endpoint": "/customers/", "params": {"limit": 10}})
+        # Both steps used to answer with a hardcoded
+        # `SELECT * FROM data WHERE 1=1`, and flapi_test_template claimed
+        # "Template test passed" for a query it never ran - so an agent
+        # validating a template before deployment validated nothing.
+        expanded = assert_real(
+            mcp_client.call_tool("flapi_expand_template",
+                                 {"endpoint": "/customers/",
+                                  "params": {"limit": 10}}),
+            "flapi_expand_template")
+        assert_real(
+            mcp_client.call_tool("flapi_test_template",
+                                 {"endpoint": "/customers/",
+                                  "params": {"limit": 10}}),
+            "flapi_test_template")
 
-        # The reading half of the workflow does work, and must keep working.
-        template = mcp_client.call_tool("flapi_get_template",
-                                        {"endpoint": "/customers/"})
-        assert template is not None
+        # The expansion has to come from THIS endpoint's template.
+        other = str(mcp_client.call_tool("flapi_expand_template",
+                                         {"endpoint": "/data_types/",
+                                          "params": {}}))
+        assert expanded != other, (
+            "two endpoints expanded identically:\n" + expanded)
 
 
 class TestModifyEndpointWorkflow:
@@ -225,16 +226,23 @@ class TestModifyEndpointWorkflow:
             template = mcp_client.call_tool("flapi_get_template", {"endpoint": "/customers/"})
             assert template is not None
 
-            # Steps 4-6 are not available over MCP. flapi_update_template in
-            # particular reported success while leaving the file on disk
-            # untouched, which is the one outcome a caller cannot detect.
-            assert_refuses(mcp_client, "flapi_expand_template",
-                           {"endpoint": "/customers/", "params": {}})
-            assert_refuses(mcp_client, "flapi_update_template",
-                           {"endpoint": "/customers/",
-                            "content": "SELECT 1 as test"})
-            assert_refuses(mcp_client, "flapi_test_template",
-                           {"endpoint": "/customers/", "params": {}})
+            # Step 4: expand to see the current output.
+            assert_real(mcp_client.call_tool("flapi_expand_template",
+                                             {"endpoint": "/customers/",
+                                              "params": {}}),
+                        "flapi_expand_template")
+
+            # Step 5 is deliberately NOT exercised here: flapi_update_template
+            # now really writes the file, and this suite runs against the
+            # shared session server, so a write would leak into every test
+            # after it. test_mcp_config_tool_auth.py covers the write against
+            # its own server and asserts the file changed.
+
+            # Step 6: test the template.
+            assert_real(mcp_client.call_tool("flapi_test_template",
+                                             {"endpoint": "/customers/",
+                                              "params": {}}),
+                        "flapi_test_template")
 
             # Step 7: Reload endpoint
             reload = mcp_client.call_tool("flapi_reload_endpoint", {"path": "/customers/"})
@@ -286,12 +294,12 @@ class TestCacheManagementWorkflow:
         status = mcp_client.call_tool("flapi_get_cache_status", {"path": CACHED_ENDPOINT})
         assert status is not None
 
-        # Step 2 does not, and must not pretend to: it used to build an audit
-        # entry from the current time under the comment "Add sample audit
-        # entry" and return it as a retrieved audit log.
-        message = assert_refuses(mcp_client, "flapi_get_cache_audit",
-                                 {"path": CACHED_ENDPOINT})
-        assert "cache_status_checked" not in message
+        # Step 2 used to build an audit entry from the current time under the
+        # comment "Add sample audit entry" and return it as a retrieved audit
+        # log. It now reads the real DuckLake audit table.
+        assert_real(mcp_client.call_tool("flapi_get_cache_audit",
+                                         {"path": CACHED_ENDPOINT}),
+                    "flapi_get_cache_audit")
 
     def test_workflow_cache_refresh_and_audit(self, mcp_client):
         """
@@ -303,14 +311,24 @@ class TestCacheManagementWorkflow:
         status_before = mcp_client.call_tool("flapi_get_cache_status", {"path": CACHED_ENDPOINT})
         assert status_before is not None
 
-        # The refresh never happened: the adapter holds no CacheManager
-        # reference at all, and this returned "Cache refresh has been
-        # scheduled". An agent polling the audit log to confirm it then saw a
-        # manufactured success entry - two fabrications reinforcing each other.
-        message = assert_refuses(mcp_client, "flapi_refresh_cache",
-                                 {"path": CACHED_ENDPOINT})
-        assert "has been scheduled" not in message
-        assert_refuses(mcp_client, "flapi_get_cache_audit", {"path": CACHED_ENDPOINT})
+        # The refresh never happened: the adapter held no CacheManager
+        # reference at all and returned "Cache refresh has been scheduled".
+        # An agent polling the audit log to confirm then saw a manufactured
+        # success entry - two fabrications reinforcing each other. Both now
+        # delegate to the handlers the REST routes use.
+        #
+        # flapi_refresh_cache is a mutation and requires a token, which this
+        # client does not carry; the refusal must be the AUTH one, never a
+        # fabricated success. test_mcp_config_tool_auth.py exercises the
+        # authenticated path.
+        with pytest.raises(Exception) as excinfo:
+            mcp_client.call_tool("flapi_refresh_cache", {"path": CACHED_ENDPOINT})
+        assert "Authentication required" in str(excinfo.value), str(excinfo.value)
+        assert "has been scheduled" not in str(excinfo.value)
+        time.sleep(0.2)
+        assert_real(mcp_client.call_tool("flapi_get_cache_audit",
+                                         {"path": CACHED_ENDPOINT}),
+                    "flapi_get_cache_audit")
 
     def test_workflow_cache_cleanup(self, mcp_client):
         """
@@ -322,7 +340,11 @@ class TestCacheManagementWorkflow:
         status = mcp_client.call_tool("flapi_get_cache_status", {"path": CACHED_ENDPOINT})
         assert status is not None
 
-        assert_refuses(mcp_client, "flapi_run_cache_gc", {})
+        # Also a mutation, also token-gated.
+        with pytest.raises(Exception) as excinfo:
+            mcp_client.call_tool("flapi_run_cache_gc", {"path": CACHED_ENDPOINT})
+        assert "Authentication required" in str(excinfo.value), str(excinfo.value)
+        assert "Garbage collection triggered" not in str(excinfo.value)
 
         # Reading still works either side of the refusal.
         status_after = mcp_client.call_tool("flapi_get_cache_status", {"path": CACHED_ENDPOINT})
@@ -339,9 +361,10 @@ class TestMultiStepWorkflows:
         2. Get updated schema
         3. Get filesystem to verify structure
         """
-        # Step 1 is not available over MCP: it constructed a SchemaHandler,
-        # discarded it, and returned "schema_refreshed".
-        assert_refuses(mcp_client, "flapi_refresh_schema")
+        # Step 1 used to construct a SchemaHandler, discard it, and return
+        # "schema_refreshed". It now calls SchemaHandler::refreshSchema.
+        assert_real(mcp_client.call_tool("flapi_refresh_schema"),
+                    "flapi_refresh_schema")
 
         # Step 2: Get schema
         schema = mcp_client.call_tool("flapi_get_schema")
@@ -366,14 +389,13 @@ class TestMultiStepWorkflows:
         config = mcp_client.call_tool("flapi_get_project_config")
         assert config is not None
 
-        # Step 3 used to "verify by refreshing schema". That tool never
-        # refreshed anything - it built a SchemaHandler, discarded it, and
-        # returned "schema_refreshed" - so the verification verified nothing.
-        assert_refuses(mcp_client, "flapi_refresh_schema")
-
-        # Verify against something real instead.
-        schema = mcp_client.call_tool("flapi_get_schema")
-        assert schema is not None
+        # Step 3 used to "verify by refreshing schema" against a tool that
+        # built a SchemaHandler, discarded it, and returned
+        # "schema_refreshed". It now calls SchemaHandler::refreshSchema.
+        assert_real(mcp_client.call_tool("flapi_refresh_schema"),
+                    "flapi_refresh_schema")
+        assert_real(mcp_client.call_tool("flapi_get_schema"),
+                    "flapi_get_schema")
 
     def test_workflow_comprehensive_system_check(self, mcp_client):
         """
@@ -496,9 +518,10 @@ class TestConcurrentWorkflows:
         # break and a constant cannot demonstrate.
         assert results[0] == results[1] == results[2]
 
-    def test_concurrent_calls_to_an_unimplemented_tool_all_refuse(self, mcp_client):
+    def test_concurrent_schema_refreshes_all_succeed(self, mcp_client):
         for _ in range(3):
-            assert_refuses(mcp_client, "flapi_refresh_schema")
+            assert_real(mcp_client.call_tool("flapi_refresh_schema"),
+                        "flapi_refresh_schema")
 
     def test_interleaved_read_and_list_operations(self, mcp_client):
         """Test interleaved list and get operations"""

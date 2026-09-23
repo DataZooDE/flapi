@@ -5,6 +5,7 @@
 #include <algorithm>
 
 #include "mcp_dry_run.hpp"
+#include "template_secrets.hpp"
 #include "mcp_response_shaper.hpp"
 #include "mcp_schema_builder.hpp"
 #include "flapi_telemetry.hpp"
@@ -276,32 +277,12 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
         std::map<std::string, std::string> params =
             prepareParameters(*endpoint_config, effective_arguments, request.context);
 
-        // Collected for EVERY path, not just the preview: see the declaration
-        // above. A template can interpolate three things, and only conn.* was
-        // covered - `{{{ env.API_KEY }}}` (the documented whitelisted
-        // environment-variable pattern) and a request field's configured
-        // `default:` (copied into params and echoed in the payload's own
-        // `parameters` object) both came back verbatim.
-        if (config_manager) {
-            const auto& connections = config_manager->getConnections();
-            for (const auto& conn_name : endpoint_config->connection) {
-                const auto it = connections.find(conn_name);
-                if (it != connections.end()) {
-                    secrets.addAll(it->second.properties);
-                }
-            }
-
-            // Only the variables the template layer actually exposes - the
-            // same whitelist SQLTemplateProcessor applies, so this neither
-            // under- nor over-scrubs.
-            const auto& template_config = config_manager->getTemplateConfig();
-            for (const auto& [key, value] : sql_processor->getEnvironmentVariables()) {
-                if (template_config.isEnvironmentVariableAllowed(key)) {
-                    secrets.addEnv(key, value);
-                }
-            }
-        }
-        secrets.addAll(params);
+        // Collected for EVERY path, not just the preview: see the
+        // declaration above. collectTemplateSecrets enumerates conn.*, the
+        // whitelisted env.* and params in one place, and REST and
+        // resources/read call the same function - scrubbing one path and
+        // calling it done is how this kept recurring.
+        secrets = collectTemplateSecrets(config_manager.get(), *endpoint_config, params);
 
         // W2.2 dry-run short-circuit: render the SQL via the existing template
         // processor and return it without touching the database. Write tools
@@ -424,11 +405,14 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
         // the dry-run path was fixed for - it just arrives via a different
         // return. When a secret is too short to replace safely the message is
         // withheld entirely rather than mangled.
-        std::string message = "Tool execution error: " + std::string(e.what());
-        message = secrets.withhold() ? std::string(MCPDryRun::withheldPreview())
-                                     : MCPDryRun::scrub(std::move(message), secrets);
-        return createErrorResult(message,
-                                 MCPToolExecutionResult::FailureKind::ExecutionError);
+        // publicErrorMessage, not withheldPreview(): that wording describes a
+        // PREVIEW, and reusing it here meant any caller could suppress every
+        // diagnostic for a call - validation errors included - just by passing
+        // a short value under a credential-shaped name like `token`.
+        CROW_LOG_ERROR << "Tool execution error for " << request.tool_name << ": " << e.what();
+        return createErrorResult(
+            publicErrorMessage("Tool execution error", e.what(), secrets),
+            MCPToolExecutionResult::FailureKind::ExecutionError);
     }
 }
 

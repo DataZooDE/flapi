@@ -139,6 +139,19 @@ private:
     /// so a stub cannot reach a caller whatever its body does.
     std::unordered_map<std::string, std::string> tool_unimplemented_;
 
+    /// Turn a config-service handler's crow::response into a tool result.
+    ///
+    /// Every one of these tools has a working REST handler that this adapter
+    /// was constructing and then discarding - which is how eleven of them
+    /// came to return hardcoded or empty data while reporting success.
+    /// Delegating means the MCP surface and the REST surface cannot disagree,
+    /// and the handlers' existing integration coverage applies to both.
+    static ConfigToolResult fromHandler(const std::string& tool_name,
+                                        const crow::response& response);
+
+    /// A request carrying `body` as its JSON body, for handlers that read one.
+    static crow::request handlerRequest(const std::string& body = "{}");
+
     // Tool registration
     void registerConfigTools();
     void registerDiscoveryTools();

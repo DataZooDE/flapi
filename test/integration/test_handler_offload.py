@@ -68,7 +68,7 @@ class _Server:
         env["FLAPI_IO_THREADS"] = "2"
         self.proc = subprocess.Popen(
             [flapi_binary(), "-c", os.path.join(self.tmp, "flapi.yaml"),
-             "-p", str(self.port), "--log-level", "warning"],
+             "-p", str(self.port), "--log-level", getattr(self, "log_level", "warning")],
             stdout=open(self.log_path, "w"), stderr=subprocess.STDOUT,
             cwd=self.tmp, env=env, preexec_fn=os.setsid)
         deadline = time.time() + 90
@@ -349,8 +349,9 @@ class TestHeartbeatRequestsAreNotOffloaded:
     and require the process to still be answering afterwards.
     """
 
-    def _server_with_heartbeat(self):
+    def _server_with_heartbeat(self, log_level="warning"):
         s = _Server()
+        s.log_level = log_level
         sqls = os.path.join(s.tmp, "sqls")
         # A cached endpoint whose heartbeat fires every second.
         with open(os.path.join(sqls, "cached.yaml"), "w") as f:
@@ -380,6 +381,24 @@ class TestHeartbeatRequestsAreNotOffloaded:
                 "heartbeat:\n  enabled: true\n  worker-interval: 1\n")
         os.makedirs(os.path.join(s.tmp, "data"), exist_ok=True)
         return s
+
+    def test_the_heartbeat_actually_fires(self):
+        # "Still answering 20s later" is only evidence if the heartbeat ran.
+        # Without this the test stays green while exercising nothing at all,
+        # should `heartbeat.enabled` or `worker-interval` ever stop parsing
+        # the way this config assumes - which is exactly how it was written
+        # the first time.
+        with self._server_with_heartbeat(log_level="debug") as s:
+            deadline = time.time() + 25
+            log = ""
+            while time.time() < deadline:
+                log = open(s.log_path).read()
+                if "heartbeat" in log.lower() and "/cached" in log:
+                    break
+                time.sleep(1)
+            assert "heartbeat" in log.lower(), (
+                "no heartbeat activity in the log; the test below would be "
+                "asserting nothing\n" + log[-3000:])
 
     def test_the_server_survives_a_heartbeat_driven_refresh(self):
         # Without the guard the heartbeat's synthesised request takes the

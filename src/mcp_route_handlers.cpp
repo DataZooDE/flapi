@@ -1,4 +1,5 @@
 #include "mcp_route_handlers.hpp"
+#include "template_secrets.hpp"
 #include "request_context.hpp"
 #include "trace_context.hpp"
 
@@ -1886,7 +1887,20 @@ MCPResponse MCPRouteHandlers::handleResourcesReadRequest(const MCPRequest& reque
             crow::json::wvalue result = readResourceContent(*resource_config, bound_params);
             response.result = result.dump();
         } catch (const std::exception& e) {
-            response.error = formatJsonRpcError(-32603, "Resource read error: " + std::string(e.what()));
+            // Scrubbed like tools/call and REST. A database error quotes the
+            // statement that failed - the rendered template - so this
+            // returned whatever the template interpolated from conn.*, env.*
+            // or a credential-valued default, to an unauthenticated caller.
+            // The tools/call fix did not reach here because it was written
+            // inline rather than as a shared helper; the same mistake as the
+            // auth injection, in the same handler.
+            CROW_LOG_ERROR << "Resource read error for "
+                           << resource_config->mcp_resource->name << ": " << e.what();
+            response.error = formatJsonRpcError(
+                -32603,
+                publicErrorMessage("Resource read error", e.what(),
+                                   collectTemplateSecrets(config_manager_.get(),
+                                                          *resource_config, bound_params)));
         }
     } catch (const std::exception& e) {
         response.error = formatJsonRpcError(-32603, "Resource read error: " + std::string(e.what()));

@@ -1288,6 +1288,15 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
         for (const auto& param : json["parameters"]) {
             // Convert all parameter values to strings using JsonUtils
             std::string value = JsonUtils::valueToString(param);
+            // `__auth_*` is SERVER data: the identity the transport
+            // authenticated, injected for the template. A caller must never
+            // supply it. REST strips it in combineParameters and MCP in
+            // applyMcpAuthContext; these two config-service routes are the
+            // third copy of the same invariant and were the only ones without
+            // the guard - and template/test EXECUTES what it renders.
+            if (std::string(param.key()).rfind("__auth_", 0) == 0) {
+                continue;
+            }
             params[param.key()] = value;
         }
 
@@ -1497,6 +1506,15 @@ crow::response TemplateHandler::testTemplate(const crow::request& req, const std
         for (const auto& param : json["parameters"]) {
             // Convert all parameter values to strings using JsonUtils
             std::string value = JsonUtils::valueToString(param);
+            // `__auth_*` is SERVER data: the identity the transport
+            // authenticated, injected for the template. A caller must never
+            // supply it. REST strips it in combineParameters and MCP in
+            // applyMcpAuthContext; these two config-service routes are the
+            // third copy of the same invariant and were the only ones without
+            // the guard - and template/test EXECUTES what it renders.
+            if (std::string(param.key()).rfind("__auth_", 0) == 0) {
+                continue;
+            }
             params[param.key()] = value;
         }
 

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <sstream>
 #include <fstream>
 #include <stdexcept>
@@ -9,6 +10,7 @@
 #include <tuple>
 
 #include "cache_manager.hpp"
+
 #include "database_manager.hpp"
 #include "database_manager_cache_adapter.hpp"
 
@@ -317,8 +319,11 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
             //
             // Erasing makes `{{^cache.previousSnapshotTimestamp}}` render the
             // full-load branch, which is always correct and merely slower.
+            // Only the TIMESTAMP. previousSnapshotId is still a valid
+            // snapshot id and is independently documented for time travel -
+            // erasing it removed an API a template may legitimately use while
+            // taking the full-load branch for the watermark.
             params.erase("previousSnapshotTimestamp");
-            params.erase("previousSnapshotId");
             CROW_LOG_INFO << "No cursor watermark for " << schema << "." << table
                           << " (" << cacheConfig.cursor->column
                           << "); this refresh loads the full source.";
@@ -429,10 +434,14 @@ std::string CacheManager::escapeSqlLiteral(const std::string& value) {
 std::string CacheManager::quoteIdentifier(const std::string& name) {
     std::string out = "\"";
     for (const char c : name) {
+        // Doubling, not tripling: appending "" and then falling through to
+        // append the character again produced three quotes and invalid SQL
+        // for any legitimately quoted identifier containing one.
         if (c == '"') {
             out += "\"\"";
+        } else {
+            out += c;
         }
-        out += c;
     }
     out += '"';
     return out;
@@ -496,7 +505,12 @@ std::string CacheManager::tableSnapshotPredicate(const std::vector<std::string>&
         if (i > 0) {
             out << " OR ";
         }
-        out << "list_contains(flatten(map_values(changes)), '" << keys[i] << "')";
+        // Escaped here too. The exclusivity expression built from this same
+        // vector escapes; this one did not, so a cache `table:` containing a
+        // quote broke the retention query AND fetchSnapshotInfo - silently
+        // disabling both retention and the incremental watermark.
+        out << "list_contains(flatten(map_values(changes)), '"
+            << escapeSqlLiteral(keys[i]) << "')";
     }
     out << ")";
     return out.str();
@@ -556,31 +570,53 @@ CacheManager::ExpiryCandidates CacheManager::expirableSnapshotIds(
         }
         others << ")) = 0";
 
-        // `exclusive` says whether this snapshot touched nothing but this
-        // table, selected rather than filtered so one query answers both
-        // "what may I expire" and "what would I have expired but cannot".
-        std::string query =
-            "SELECT snapshot_id, (" + others.str() + ") AS exclusive "
-            "FROM ducklake_snapshots('" + catalog + "') "
-            "WHERE " + tableSnapshotPredicate(keys);
-        if (!older_than_sql.empty()) {
-            query += " AND snapshot_time < " + older_than_sql;
-        }
-        query += " ORDER BY snapshot_id DESC";
+        // Both predicates are SELECTed, not filtered on, so one query answers
+        // every part of the decision:
+        //   `exclusive` - this snapshot touched nothing but this table, so
+        //                 expiring it cannot discard another table's data;
+        //   `aged`      - it is older than `max-snapshot-age`.
+        //
+        // The age predicate used to be in the WHERE clause, which ranked
+        // `keep_last` over the ALREADY-AGED set: `keep-last-snapshots: 3` with
+        // `max-snapshot-age: 7d` kept "the newest 3 stale ones, plus
+        // everything newer than 7d" rather than 3. The examples ship exactly
+        // that pair. Ranking over the table's whole history and applying both
+        // conditions to each row is what the two keys read like.
+        std::string aged = older_than_sql.empty()
+                               ? std::string("true")
+                               : "snapshot_time < " + older_than_sql;
+        const std::string query =
+            "SELECT snapshot_id, (" + others.str() + ") AS exclusive, (" + aged + ") AS aged "
+            "FROM ducklake_snapshots('" + escapeSqlLiteral(catalog) + "') "
+            "WHERE " + tableSnapshotPredicate(keys) +
+            " ORDER BY snapshot_id DESC";
 
         auto result = db_adapter_->executeDuckLakeQueryWithResult(query);
         auto rows = crow::json::load(result.data.dump());
         if (!(rows && rows.t() == crow::json::type::List)) {
             return out;
         }
-        // keep_last retains the newest N of whatever matched; with an
-        // age-based policy alone every match is expirable.
-        const std::size_t skip = keep_last.value_or(0);
+
+        // ALWAYS retain at least the newest snapshot of this table.
+        //
+        // With `max-snapshot-age` alone, skip was 0 and every match - the
+        // current snapshot included - was a candidate. A table refreshed
+        // weekly under `max-snapshot-age: 1d` would either have its expiry
+        // rejected wholesale (silently, at WARNING) or lose the snapshot
+        // fetchSnapshotInfo reads its incremental watermark from. The
+        // catalog-wide version had the same shape; the rewrite is the moment
+        // to give it a floor.
+        const std::size_t skip = std::max<std::size_t>(1, keep_last.value_or(0));
         for (std::size_t i = skip; i < rows.size(); ++i) {
             const auto& row = rows[i];
             if (!(row.has("snapshot_id") &&
                   row["snapshot_id"].t() == crow::json::type::Number)) {
                 continue;
+            }
+            const bool aged_out = !row.has("aged") ||
+                                  row["aged"].t() == crow::json::type::True;
+            if (!aged_out) {
+                continue;   // newer than max-snapshot-age: retained
             }
             const bool exclusive = row.has("exclusive") &&
                                    row["exclusive"].t() == crow::json::type::True;
@@ -603,8 +639,14 @@ std::string CacheManager::buildExpireSql(const std::string& catalog,
                                          const std::string& table,
                                          std::optional<std::size_t> keep_last,
                                          const std::string& older_than_sql) {
+    // `keep-last-snapshots: 0` is not a retention policy, but it must not
+    // disable an accompanying `max-snapshot-age` either - which is what
+    // returning here did when both keys were set.
     if (keep_last.has_value() && *keep_last == 0) {
-        return {};   // keeping nothing is not a retention policy; refuse it
+        if (older_than_sql.empty()) {
+            return {};
+        }
+        keep_last.reset();
     }
 
     const auto candidates =
@@ -625,7 +667,7 @@ std::string CacheManager::buildExpireSql(const std::string& catalog,
     }
 
     std::ostringstream sql;
-    sql << "CALL ducklake_expire_snapshots('" << catalog << "', versions => [";
+    sql << "CALL ducklake_expire_snapshots('" << escapeSqlLiteral(catalog) << "', versions => [";
     for (std::size_t i = 0; i < expire_ids.size(); ++i) {
         if (i > 0) {
             sql << ", ";
@@ -686,7 +728,7 @@ CacheManager::SnapshotInfo CacheManager::fetchSnapshotInfo(const std::string& ca
         // matched. A NULL table id (table not in the catalog yet) makes
         // list_contains NULL, which the OR handles.
         std::string snapshotsQuery =
-            "SELECT snapshot_id, snapshot_time FROM ducklake_snapshots('" + catalog + "') "
+            "SELECT snapshot_id, snapshot_time FROM ducklake_snapshots('" + escapeSqlLiteral(catalog) + "') "
             "WHERE " + tableSnapshotPredicate(tableChangeKeys(catalog, schema, table)) + " "
             "ORDER BY snapshot_id DESC LIMIT 2";
         try {

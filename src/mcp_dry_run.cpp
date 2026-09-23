@@ -99,45 +99,6 @@ std::string MCPDryRun::scrubConnectionSecrets(
     return sql;
 }
 
-void MCPDryRun::Secrets::add(const std::string& key, const std::string& value) {
-    if (value.empty() || !isCredentialKey(key)) {
-        return;
-    }
-    if (value.size() < kMinScrubbableSecret) {
-        // Too short to replace without corrupting unrelated text - measured:
-        // a one-byte secret "a" rewrote the middle of an unrelated file path.
-        // Withhold the whole preview rather than leak it or mangle it.
-        withhold_ = true;
-        return;
-    }
-    values_.push_back(value);
-}
-
-// Above this length, a whitelisted environment value is treated as a secret
-// whatever it is called. Chosen so that ordinary configuration - a region, a
-// bucket name, a hostname, a numeric tuning knob - stays visible in previews,
-// while API keys, tokens and service-account blobs do not.
-constexpr std::size_t kOpaqueEnvValue = 24;
-
-void MCPDryRun::Secrets::addEnv(const std::string& key, const std::string& value) {
-    add(key, value);
-    if (value.size() >= kOpaqueEnvValue &&
-        std::find(values_.begin(), values_.end(), value) == values_.end()) {
-        values_.push_back(value);
-    }
-}
-
-std::string MCPDryRun::scrub(std::string sql, const Secrets& secrets) {
-    for (const auto& value : secrets.values()) {
-        std::string::size_type pos = 0;
-        while ((pos = sql.find(value, pos)) != std::string::npos) {
-            sql.replace(pos, value.size(), "<redacted>");
-            pos += sizeof("<redacted>") - 1;
-        }
-    }
-    return sql;
-}
-
 const char* MCPDryRun::withheldPreview() {
     return "<preview withheld: a value this template can interpolate is a credential "
            "too short to redact reliably, and returning the rendered SQL would "

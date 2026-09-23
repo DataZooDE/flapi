@@ -55,7 +55,13 @@ against a hardcoded one-day cutoff that ignored your configuration entirely.
 
 Retention now only expires snapshots belonging to its own cache table, and never one that another
 table shares — so an endpoint may keep more history than you asked for, and will say so in the
-log, rather than deleting a neighbour's data.
+log, rather than deleting a neighbour's data. It also always keeps the newest snapshot, which is
+where the incremental watermark is read from, and applies `keep-last-snapshots` across the table's
+whole history rather than across the already-expired subset when both keys are set.
+
+Retention is disabled, with a warning, for a cache table whose name is ambiguous — two schemas
+holding the same table name — because DuckLake's catalog exposes no schema name to tell them
+apart and expiring the wrong one would delete another endpoint's data.
 
 ### Fixed: incremental refresh dropped rows written while it ran
 
@@ -81,20 +87,37 @@ passwords, whitelisted environment variables (`{{{ env.API_KEY }}}`) and credent
 defaults were all returned verbatim — and so were the ones a database error quoted back, which is
 a path no `_dryRun` flag is needed to reach.
 
-All three sources are redacted now, in previews and in error messages. Where a value is too short
-to replace without corrupting the surrounding SQL, the preview is withheld and says so rather than
-being silently mangled.
+All three sources are redacted now, in previews and in error messages, on **every** surface that
+returns one: REST responses, MCP `tools/call` and MCP `resources/read` all scrub the same set.
+(REST was leaking the same way, through the same mechanism, for any endpoint without an `auth:`
+block.) Where a value is too short to replace without corrupting the surrounding SQL, the preview
+is withheld and says so rather than being silently mangled.
 
 ### Fixed: MCP config tools that reported success without doing anything
 
-Seven `flapi_*` config tools returned confident results for work they never performed —
-`flapi_expand_template` and `flapi_test_template` answered with a hardcoded
-`SELECT * FROM data WHERE 1=1` and "Template test passed"; `flapi_refresh_cache` reported a
-refresh "has been scheduled" when nothing was scheduled; `flapi_get_cache_audit` **invented audit
-records**.
+Eleven `flapi_*` config tools returned confident results for work they never performed:
 
-They are no longer advertised by `tools/list`, and calling one returns an error naming the REST
-route that does work. An agent can no longer be told a cache was refreshed when it was not.
+| Tool | What it returned |
+|---|---|
+| `flapi_expand_template` | a hardcoded `SELECT * FROM data WHERE 1=1` |
+| `flapi_test_template` | "Template test passed", for a query it never ran |
+| `flapi_update_template` | success, with the file on disk untouched |
+| `flapi_refresh_cache` | "Cache refresh has been scheduled" — nothing was scheduled |
+| `flapi_run_cache_gc` | "Garbage collection triggered" |
+| `flapi_refresh_schema` | "schema_refreshed" |
+| `flapi_get_cache_audit` | **invented audit records** |
+| `flapi_get_cache_status` | three fields of static YAML, while promising snapshot history |
+| `flapi_get_environment` | an empty list, always |
+| `flapi_get_filesystem` | an empty tree |
+| `flapi_get_schema` | `"tables": null` |
+
+Every one of them had a working REST handler that the adapter was constructing and then
+discarding. They now call it, so the MCP and REST surfaces cannot disagree — an agent asking
+whether a cache refreshed gets the real answer, and one asking to expand a template gets that
+endpoint's own SQL.
+
+`flapi_get_project_config` also reported version `1.0.0` for every build; it now returns the real
+project configuration.
 
 ### Changed: one config-service name per endpoint
 
