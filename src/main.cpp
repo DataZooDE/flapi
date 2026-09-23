@@ -470,7 +470,31 @@ int main(int argc, char* argv[])
     // Installing an inert handler would make the process IGNORE SIGTERM
     // entirely - strictly worse than the in-handler shutdown this replaced,
     // and worse than the default disposition.
-    std::thread shutdown_supervisor;
+    // RAII, because main() returns from a dozen places - every CLI subcommand
+    // (`pack`, `unpack`, `info`), every argument-parsing error, and the server
+    // path itself. A joinable std::thread whose destructor runs calls
+    // std::terminate, so starting the supervisor early (which is what closes
+    // the SIGTERM-during-startup window) turned `flapi pack` into an abort.
+    // Caught by test_self_packaging.py and test_security_warnings.py.
+    struct SupervisorGuard {
+        std::thread thread;
+        ~SupervisorGuard() {
+            if (!thread.joinable()) {
+                return;
+            }
+            // Closing the write end wakes a supervisor still blocked in
+            // read(); one already running performShutdown is simply waited
+            // for, which is the point - the process must not exit out from
+            // under a drain in progress.
+            if (g_shutdown_pipe[1] >= 0) {
+                ::close(g_shutdown_pipe[1]);
+                g_shutdown_pipe[1] = -1;
+            }
+            thread.join();
+        }
+    } supervisor_guard;
+    std::thread& shutdown_supervisor = supervisor_guard.thread;
+
     if (shutdown_pipe_ready) {
         sigaction(SIGINT, &sa, nullptr);
         sigaction(SIGTERM, &sa, nullptr);
@@ -826,16 +850,7 @@ int main(int argc, char* argv[])
         if (auto server = getApiServer()) {
             server->stop();
         }
-#ifndef _WIN32
-        if (shutdown_supervisor.joinable()) {
-            if (g_shutdown_pipe[1] >= 0) {
-                ::close(g_shutdown_pipe[1]);
-                g_shutdown_pipe[1] = -1;
-            }
-            shutdown_supervisor.join();
-        }
-#endif
-        return 0;
+        return 0;   // supervisor_guard winds the supervisor down
     }
 
     // Initialize telemetry (this is a long-running server: install_kind="server",
@@ -908,19 +923,6 @@ int main(int argc, char* argv[])
         server->stop();
     }
 
-#ifndef _WIN32
-    if (shutdown_supervisor.joinable()) {
-        // On a clean exit no signal ever arrived, so wake the supervisor by
-        // closing the write end. On a signalled exit it is already running
-        // performShutdown, and joining waits for that to complete - the
-        // process must not exit out from under a drain in progress.
-        if (g_shutdown_pipe[1] >= 0) {
-            ::close(g_shutdown_pipe[1]);
-            g_shutdown_pipe[1] = -1;
-        }
-        shutdown_supervisor.join();
-    }
-#endif
 
     if (warmup_thread.joinable()) {
         warmup_thread.join();
