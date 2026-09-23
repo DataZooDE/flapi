@@ -13,6 +13,8 @@
 
 namespace flapi {
 
+class TemplateSecrets;
+
 // Forward declarations
 class ConfigManager;
 class DatabaseManager;
@@ -147,7 +149,8 @@ private:
     /// Delegating means the MCP surface and the REST surface cannot disagree,
     /// and the handlers' existing integration coverage applies to both.
     static ConfigToolResult fromHandler(const std::string& tool_name,
-                                        const crow::response& response);
+                                        const crow::response& response,
+                                        const TemplateSecrets* secrets = nullptr);
 
     /// A request carrying `body` as its JSON body, for handlers that read one.
     static crow::request handlerRequest(const std::string& body = "{}");

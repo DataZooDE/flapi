@@ -4,6 +4,7 @@
 #include "config_service.hpp"
 #include "json_utils.hpp"
 #include "path_utils.hpp"
+#include "template_secrets.hpp"
 
 #include <stdexcept>
 #include <iostream>
@@ -368,18 +369,41 @@ void ConfigToolAdapter::registerCacheTools() {
 }
 
 ConfigToolResult ConfigToolAdapter::fromHandler(const std::string& tool_name,
-                                                const crow::response& response) {
+                                                const crow::response& response,
+                                                const TemplateSecrets* secrets) {
     if (response.code >= 200 && response.code < 300) {
+        // A handler that succeeds with no body (refreshCache returns a bare
+        // 200) would otherwise hand the agent an empty string, which it
+        // cannot tell from a broken tool.
+        if (response.body.empty()) {
+            crow::json::wvalue ok;
+            ok["status"] = "ok";
+            ok["tool"] = tool_name;
+            return ConfigToolResult{true, ok.dump(), "", 0};
+        }
         return ConfigToolResult{true, response.body, "", 0};
     }
-    CROW_LOG_WARNING << tool_name << " failed: " << response.code << " " << response.body;
+
+    // Scrubbed HERE, once, rather than at each of the nineteen call sites.
+    // A handler's failure body can quote the statement that failed - the
+    // rendered template - so this is the same invariant as the REST catch
+    // blocks, MCP tools/call and resources/read. Putting it at the boundary
+    // is what stops the next delegated tool from being a new copy of it.
+    std::string detail = response.body.empty()
+                             ? ("Request failed with status " + std::to_string(response.code))
+                             : response.body;
+    CROW_LOG_WARNING << tool_name << " failed: " << response.code << " " << detail;
+    if (secrets != nullptr) {
+        detail = secrets->withhold()
+                     ? std::string("the server could not describe this failure without "
+                                   "risking disclosure; see the server log")
+                     : secrets->scrub(std::move(detail));
+    }
+
     // 404 is the caller naming something that does not exist - an invalid
     // params error, not a server error.
     const int code = (response.code == 404 || response.code == 400) ? -32602 : -32603;
-    return ConfigToolResult{false, "", response.body.empty()
-                                        ? ("Request failed with status " + std::to_string(response.code))
-                                        : response.body,
-                            code};
+    return ConfigToolResult{false, "", detail, code};
 }
 
 crow::request ConfigToolAdapter::handlerRequest(const std::string& body) {
@@ -624,38 +648,23 @@ ConfigToolResult ConfigToolAdapter::executeRefreshSchema(const crow::json::wvalu
 // ============================================================================
 
 ConfigToolResult ConfigToolAdapter::executeGetTemplate(const crow::json::wvalue& args) {
-    try {
-        // Defensive check: ensure config manager is available
-        if (!config_manager_) {
-            CROW_LOG_ERROR << "flapi_get_template: ConfigManager is null";
-            return createErrorResult(-32603, "Configuration service unavailable");
-        }
-
-        // Extract endpoint identifier from arguments
-        std::string error_msg = "";
-        std::string endpoint = extractStringParam(args, "endpoint", true, error_msg);
-        if (!error_msg.empty()) {
-            return createErrorResult(-32602, error_msg);
-        }
-
-        // Validate endpoint exists
-        auto ep = config_manager_->getEndpointForPath(endpoint);
-        if (!ep) {
-            return createErrorResult(-32603, "Endpoint not found: " + endpoint);
-        }
-
-        // Return template info
-        crow::json::wvalue result;
-        result["endpoint"] = endpoint;
-        result["template_source"] = ep->templateSource;
-        result["status"] = "Template retrieved";
-
-        CROW_LOG_INFO << "flapi_get_template: retrieved template for endpoint " << endpoint;
-        return createSuccessResult(result.dump());
-    } catch (const std::exception& e) {
-        CROW_LOG_ERROR << "flapi_get_template failed: " << e.what();
-        return createErrorResult(-32603, "Failed to get template: " + std::string(e.what()));
+    // Delegated. "Template retrieved" was returned alongside the template's
+    // FILENAME - never its content - which is the same "advertised tool does
+    // not do what it says" class as the rest, and it survived the first sweep
+    // because it returns real data, just not the data it promises.
+    if (!config_manager_) {
+        return createErrorResult(-32603, "Configuration service unavailable");
     }
+    std::string error_msg;
+    const std::string endpoint = extractStringParam(args, "endpoint", true, error_msg);
+    if (!error_msg.empty()) {
+        return createErrorResult(-32602, error_msg);
+    }
+
+    TemplateHandler handler(config_manager_);
+    return fromHandler("flapi_get_template",
+                       handler.getEndpointTemplateBySlug(handlerRequest(),
+                                                         PathUtils::pathToSlug(endpoint)));
 }
 
 ConfigToolResult ConfigToolAdapter::executeUpdateTemplate(const crow::json::wvalue& args) {
@@ -710,9 +719,17 @@ ConfigToolResult ConfigToolAdapter::executeExpandTemplate(const crow::json::wval
         payload["parameters"] = crow::json::wvalue(parsed["parameters"]);
     }
 
+    // The secret set for THIS endpoint, so a failure body quoting the
+    // rendered statement is scrubbed at the boundary.
+    TemplateSecrets secrets;
+    if (const auto ep = config_manager_->getEndpointForPath(endpoint)) {
+        std::map<std::string, std::string> rendered_params;
+        secrets = collectTemplateSecrets(config_manager_.get(), *ep, rendered_params);
+    }
+
     TemplateHandler handler(config_manager_);
     return fromHandler("flapi_expand_template",
-                       handler.expandTemplateBySlug(handlerRequest(payload.dump()), slug));
+                       handler.expandTemplateBySlug(handlerRequest(payload.dump()), slug), &secrets);
 }
 
 ConfigToolResult ConfigToolAdapter::executeTestTemplate(const crow::json::wvalue& args) {
@@ -739,9 +756,17 @@ ConfigToolResult ConfigToolAdapter::executeTestTemplate(const crow::json::wvalue
         payload["parameters"] = crow::json::wvalue(parsed["parameters"]);
     }
 
+    // The secret set for THIS endpoint, so a failure body quoting the
+    // rendered statement is scrubbed at the boundary.
+    TemplateSecrets secrets;
+    if (const auto ep = config_manager_->getEndpointForPath(endpoint)) {
+        std::map<std::string, std::string> rendered_params;
+        secrets = collectTemplateSecrets(config_manager_.get(), *ep, rendered_params);
+    }
+
     TemplateHandler handler(config_manager_);
     return fromHandler("flapi_test_template",
-                       handler.testTemplateBySlug(handlerRequest(payload.dump()), slug));
+                       handler.testTemplateBySlug(handlerRequest(payload.dump()), slug), &secrets);
 }
 
 // ============================================================================

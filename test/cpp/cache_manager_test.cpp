@@ -138,6 +138,12 @@ public:
     /// row reads as shared and the retention tests pass on an empty expiry.
     std::vector<std::int64_t> shared_snapshot_ids;
 
+    /// Snapshot ids that are NEWER than max_snapshot_age, i.e. not eligible
+    /// on age. The real query selects this as an `aged` column; without it
+    /// every row reads as aged and the combined-policy tests cannot
+    /// distinguish the two keys.
+    std::vector<std::int64_t> not_aged_snapshot_ids;
+
     QueryResult executeDuckLakeQueryWithResult(const std::string& query) override {
         executed_queries.push_back(query);
         if (throw_on_snapshot_query) {
@@ -157,6 +163,9 @@ public:
                 row["exclusive"] = std::find(shared_snapshot_ids.begin(),
                                              shared_snapshot_ids.end(), id)
                                    == shared_snapshot_ids.end();
+                row["aged"] = std::find(not_aged_snapshot_ids.begin(),
+                                        not_aged_snapshot_ids.end(), id)
+                              == not_aged_snapshot_ids.end();
                 rows.push_back(std::move(row));
             }
         }
@@ -388,6 +397,94 @@ TEST_CASE("CacheManager refreshDuckLakeCache retention SQL generation", "[cache_
         REQUIRE(expire.find("10") != std::string::npos);   // unshared, expired
         REQUIRE(expire.find("20") == std::string::npos);   // shared, retained
         REQUIRE(expire.find("30") == std::string::npos);   // newest, kept
+    }
+
+    SECTION("keep_last ranks over the whole history, not the aged subset") {
+        // `keep-last-snapshots: 2` with `max-snapshot-age` - the pair the
+        // examples ship - used to keep "the newest 2 OF THE ALREADY-AGED set"
+        // plus everything newer, i.e. N more snapshots than either key asks
+        // for. The age predicate is now selected per row rather than filtered
+        // on, so the count ranks over the table's whole history.
+        //
+        // 50 and 40 are recent (not aged out); 30, 20, 10 are old.
+        endpoint.cache.retention.keep_last_snapshots = 2;
+        endpoint.cache.retention.max_snapshot_age = "7 days";
+        adapter->snapshot_ids = {50, 40, 30, 20, 10};
+        adapter->not_aged_snapshot_ids = {50, 40};
+        std::map<std::string, std::string> params;
+        cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
+
+        std::string expire;
+        for (const auto& query : adapter->executed_queries) {
+            if (query.find("ducklake_expire_snapshots") != std::string::npos) {
+                expire = query;
+            }
+        }
+        REQUIRE_FALSE(expire.empty());
+        INFO("expire call: " << expire);
+        // The newest two are kept by the count...
+        REQUIRE(expire.find("50") == std::string::npos);
+        REQUIRE(expire.find("40") == std::string::npos);
+        // ...and the rest are old enough to go.
+        REQUIRE(expire.find("30") != std::string::npos);
+        REQUIRE(expire.find("20") != std::string::npos);
+        REQUIRE(expire.find("10") != std::string::npos);
+    }
+
+    SECTION("a snapshot newer than max_snapshot_age is kept even beyond keep_last") {
+        // Both conditions must hold, so the age policy protects a recent
+        // snapshot that the count alone would have expired.
+        endpoint.cache.retention.keep_last_snapshots = 1;
+        endpoint.cache.retention.max_snapshot_age = "7 days";
+        adapter->snapshot_ids = {50, 40, 30};
+        adapter->not_aged_snapshot_ids = {50, 40};
+        std::map<std::string, std::string> params;
+        cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
+
+        std::string expire;
+        for (const auto& query : adapter->executed_queries) {
+            if (query.find("ducklake_expire_snapshots") != std::string::npos) {
+                expire = query;
+            }
+        }
+        REQUIRE_FALSE(expire.empty());
+        INFO("expire call: " << expire);
+        REQUIRE(expire.find("40") == std::string::npos);   // recent: kept
+        REQUIRE(expire.find("30") != std::string::npos);   // old and past the count
+    }
+
+    SECTION("keep_last of zero does not disable an accompanying age policy") {
+        // `keep-last-snapshots: 0` used to return early, silently turning off
+        // a configured max-snapshot-age alongside it.
+        endpoint.cache.retention.keep_last_snapshots = 0;
+        endpoint.cache.retention.max_snapshot_age = "7 days";
+        adapter->snapshot_ids = {30, 20, 10};
+        std::map<std::string, std::string> params;
+        cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
+
+        bool expired = false;
+        for (const auto& query : adapter->executed_queries) {
+            if (query.find("ducklake_expire_snapshots") != std::string::npos) {
+                expired = true;
+            }
+        }
+        REQUIRE(expired);
+    }
+
+    SECTION("the newest snapshot is never expired, even with age alone") {
+        // fetchSnapshotInfo reads the incremental watermark from the newest
+        // surviving snapshot, so expiring it loses the watermark.
+        endpoint.cache.retention.max_snapshot_age = "7 days";
+        adapter->snapshot_ids = {30, 20, 10};
+        std::map<std::string, std::string> params;
+        cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
+
+        for (const auto& query : adapter->executed_queries) {
+            if (query.find("ducklake_expire_snapshots") != std::string::npos) {
+                INFO("expire call: " << query);
+                REQUIRE(query.find("30") == std::string::npos);
+            }
+        }
     }
 
     SECTION("No retention config means no expire call") {

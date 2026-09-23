@@ -11,6 +11,7 @@
 #include "json_utils.hpp"
 #include "request_validator.hpp"
 #include "template_secrets.hpp"
+#include "redaction.hpp"
 #include "path_utils.hpp"
 #include "database_manager.hpp"
 #include "cache_manager.hpp"
@@ -871,14 +872,30 @@ crow::response ProjectConfigHandler::getEnvironmentVariables(const crow::request
             crow::json::wvalue var;
             var["name"] = var_name;
             
-            // Try to get actual value from environment
+            // Whether it is SET, not what it contains.
+            //
+            // This returned every whitelisted variable's value verbatim. It
+            // was written for a route behind the config-service token, and
+            // then an MCP tool was wired to it - at which point the same
+            // values TemplateSecrets exists to scrub out of previews and
+            // error messages were being handed over as the tool's whole
+            // purpose. The token is required again now, but a caller asking
+            // "is API_KEY configured?" never needed the key itself, and this
+            // is the only answer that is safe to give over any transport.
+            //
+            // A value whose name does not look like a credential is still
+            // shown, because that is the case operators actually debug with:
+            // a region, a bucket, a path.
             const char* env_value = std::getenv(var_name.c_str());
-            if (env_value) {
-                var["value"] = std::string(env_value);
-                var["available"] = true;
-            } else {
+            var["available"] = env_value != nullptr;
+            if (env_value == nullptr) {
                 var["value"] = "";
-                var["available"] = false;
+            } else if (isCredentialKey(var_name) ||
+                       std::string(env_value).size() >= 24) {
+                var["value"] = "<redacted>";
+                var["redacted"] = true;
+            } else {
+                var["value"] = std::string(env_value);
             }
             
             response["variables"][idx++] = std::move(var);

@@ -166,12 +166,17 @@ class TestMcpConfigToolAuth:
             assert "error" in got, got
             assert open(s.template).read() == before
 
-    def test_an_unauthenticated_read_tool_still_works(self):
-        # Only the mutating tools require a token; this pins that the fix did
-        # not quietly close the read path too.
+    def test_even_a_read_tool_requires_the_token(self):
+        # This used to assert the opposite - that a read tool stayed
+        # anonymous - on the theory that reading is harmless. It is not: these
+        # tools read the project configuration, the environment, and the
+        # rendered SQL, and every equivalent REST route is token-gated. The
+        # config service is opt-in; MCP must not be a second, weaker door to
+        # the same handlers.
         with _Server() as s:
             got = s.call_tool("flapi_get_project_config")
-            assert "result" in got, got
+            assert "error" in got, got
+            assert "Authentication required" in got["error"]["message"], got
 
 
 class TestNoConfigToolFabricatesAResult:
@@ -267,7 +272,7 @@ class TestNoConfigToolFabricatesAResult:
 
     def test_the_project_config_version_is_not_hardcoded(self):
         with _Server() as s:
-            got = s.call_tool("flapi_get_project_config")
+            got = s.call_tool("flapi_get_project_config", token=TOKEN)
             assert "result" in got, got
             assert '"1.0.0"' not in json.dumps(got["result"]), (
                 "flapi_get_project_config still reports a hardcoded version")
@@ -279,7 +284,7 @@ class TestNoConfigToolFabricatesAResult:
                          "flapi_list_endpoints", "flapi_expand_template",
                          "flapi_get_schema", "flapi_get_environment"):
                 assert name in listed, (name, listed)
-            got = s.call_tool("flapi_get_project_config")
+            got = s.call_tool("flapi_get_project_config", token=TOKEN)
             assert "result" in got, got
 
 

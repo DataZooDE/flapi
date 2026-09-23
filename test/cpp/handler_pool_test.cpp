@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <future>
 #include <thread>
 
 #include "handler_pool.hpp"
@@ -83,4 +84,81 @@ TEST_CASE("a throwing job does not take the worker with it", "[handler_pool]") {
     REQUIRE(pool.submit([&ran] { ++ran; }));
     pool.shutdown();
     REQUIRE(ran.load() == 1);
+}
+
+TEST_CASE("shutdown abandons the queue once the drain budget expires",
+          "[handler_pool][shutdown]") {
+    // The budget bounds the QUEUE, not a running job - a worker inside a
+    // query cannot be interrupted. What it must guarantee is that one slow
+    // job does not drag every queued job along with it into a shutdown the
+    // platform is timing.
+    HandlerPool pool(1, 32);
+
+    std::atomic<int> ran{0};
+    std::promise<void> first_started;
+    auto first_started_future = first_started.get_future();
+    std::atomic<bool> release{false};
+
+    REQUIRE(pool.submit([&] {
+        first_started.set_value();
+        while (!release.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        ++ran;
+    }));
+    first_started_future.wait();
+
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(pool.submit([&] { ++ran; }));
+    }
+
+    std::thread stopper([&] { pool.shutdown(std::chrono::milliseconds(10)); });
+    // Let the budget lapse while the first job is still running.
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    release.store(true);
+    stopper.join();
+
+    // The running job finished; the five queued behind it were abandoned.
+    REQUIRE(ran.load() == 1);
+}
+
+TEST_CASE("a second shutdown waits for the first rather than returning early",
+          "[handler_pool][shutdown]") {
+    // shutdown() used to see `stopping_` already true and return BEFORE the
+    // join loop, so a second caller believed a pool had drained that had
+    // joined nothing. ~HandlerPool during static destruction took that same
+    // early return, which is the path the original SIGSEGV came from.
+    HandlerPool pool(2, 8);
+
+    std::promise<void> started;
+    auto started_future = started.get_future();
+    std::atomic<bool> release{false};
+    std::atomic<bool> job_finished{false};
+
+    REQUIRE(pool.submit([&] {
+        started.set_value();
+        while (!release.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        job_finished.store(true);
+    }));
+    started_future.wait();
+
+    std::atomic<bool> second_returned{false};
+    std::thread first([&] { pool.shutdown(std::chrono::seconds(5)); });
+    std::thread second([&] {
+        pool.shutdown(std::chrono::seconds(5));
+        second_returned.store(true);
+    });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    // Neither caller may have returned while the job is still running.
+    REQUIRE_FALSE(second_returned.load());
+
+    release.store(true);
+    first.join();
+    second.join();
+
+    REQUIRE(job_finished.load());
+    REQUIRE(second_returned.load());
 }

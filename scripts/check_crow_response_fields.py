@@ -101,6 +101,15 @@ def main():
         if spelling not in source:
             sys.exit(f"ERROR: Completer::take no longer does `{spelling}`")
 
+    # take() is only half the hop. The original bug was a field never reaching
+    # the RESPONSE, so the completion lambda has to write each one back - an
+    # edit that drops `res->compressed = compressed` while leaving take()
+    # intact reproduces the Arrow corruption and would otherwise pass.
+    for field in sorted(EXPLICIT & set(fields)):
+        if f"res->{field} = {field}" not in source:
+            sys.exit(f"ERROR: the offload's completion lambda no longer writes "
+                     f"crow::response::{field} back onto the response")
+
     print(f"OK: the offload carries every crow::response field "
           f"({', '.join(fields)})")
     return 0

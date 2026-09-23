@@ -43,7 +43,12 @@ DEFAULT_TOKEN = "DEFAULT-ACCESS-TOKEN-LEAKED"
 
 
 class _Server:
-    def __init__(self, short_secret: bool = False, unbindable: bool = False):
+    def __init__(self, short_secret: bool = False, unbindable: bool = False,
+                 config_service_token: str = None):
+        # When set, the config service is enabled with this token and the
+        # flapi_* tools are advertised. Off by default, which is also the
+        # shipped default.
+        self.config_service_token = config_service_token
         self.short_secret = short_secret
         # When true the rendered SQL is valid to render but fails to BIND, so
         # the database error quotes it back - the error-path disclosure.
@@ -90,7 +95,10 @@ class _Server:
     def start(self):
         self.proc = subprocess.Popen(
             [flapi_binary(), "-c", os.path.join(self.tmp, "flapi.yaml"),
-             "-p", str(self.port), "--log-level", "warning"],
+             "-p", str(self.port), "--log-level", "warning"]
+            + (["--config-service", "--config-service-token",
+                getattr(self, "config_service_token", "")]
+               if getattr(self, "config_service_token", None) else []),
             stdout=open(self.log_path, "w"), stderr=subprocess.STDOUT, cwd=self.tmp,
             env={**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1",
                  "API_KEY": ENV_SECRET},
@@ -267,3 +275,85 @@ class TestSecretsDoNotLeakThroughTheErrorPath:
         with _Server() as s:
             got = s.call()
             assert "result" in got, got
+
+
+class TestTheConfigToolsCannotBeUsedAsASecondDoor:
+    """The config tools reach the same templates and the same environment.
+
+    Wiring them to their real handlers made three of them a way to the very
+    values this file exists to keep in: `flapi_get_environment` returns
+    environment values, `flapi_expand_template` returns the rendered SQL, and
+    `flapi_test_template` executes it. They were all `auth_required = false`
+    at the time, so an unauthenticated MCP caller could read what `_dryRun`
+    had just been fixed to withhold.
+
+    These assert against the SAME seeded secrets as the dry-run tests above,
+    so the two paths cannot diverge.
+    """
+
+    TOKEN = "config-tools-token"
+
+    def _call(self, server, name, token=None, **arguments):
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": name, "arguments": arguments}}
+        return requests.post(f"{server.base_url}/mcp/jsonrpc", headers=headers,
+                             data=json.dumps(body), timeout=15).json()
+
+    def test_environment_values_are_not_readable_without_a_token(self):
+        with _Server(config_service_token=self.TOKEN) as s:
+            got = self._call(s, "flapi_get_environment")
+            assert ENV_SECRET not in json.dumps(got), got
+
+    def test_a_template_cannot_be_expanded_without_a_token(self):
+        with _Server(config_service_token=self.TOKEN) as s:
+            got = self._call(s, "flapi_expand_template", endpoint="/t", params={})
+            blob = json.dumps(got)
+            for secret in (SECRET, ENV_SECRET, DEFAULT_TOKEN):
+                assert secret not in blob, f"{secret} leaked: {blob}"
+
+    def test_a_template_cannot_be_executed_without_a_token(self):
+        with _Server(config_service_token=self.TOKEN) as s:
+            got = self._call(s, "flapi_test_template", endpoint="/t", params={})
+            blob = json.dumps(got)
+            for secret in (SECRET, ENV_SECRET, DEFAULT_TOKEN):
+                assert secret not in blob, f"{secret} leaked: {blob}"
+
+    def test_no_config_tool_is_advertised_when_the_service_is_off(self):
+        # The shipped default. The config tools are the config service's own
+        # operations, so with it disabled they should not be on the menu.
+        with _Server() as s:
+            listed = requests.post(
+                f"{s.base_url}/mcp/jsonrpc",
+                headers={"Content-Type": "application/json"},
+                data=json.dumps({"jsonrpc": "2.0", "id": 1,
+                                 "method": "tools/list", "params": {}}),
+                timeout=15).json()
+            names = [t["name"] for t in listed["result"]["tools"]]
+            assert names, "tools/list returned nothing at all"
+            for name in names:
+                blob = json.dumps(self._call(s, name, endpoint="/t", path="/t",
+                                             params={}, content="SELECT 1"))
+                for secret in (SECRET, ENV_SECRET, DEFAULT_TOKEN):
+                    assert secret not in blob, f"{name} leaked {secret}: {blob}"
+
+    def test_no_config_tool_leaks_a_secret_without_a_token(self):
+        # The property over the whole surface, rather than three names, with
+        # the config service actually on.
+        with _Server(config_service_token=self.TOKEN) as s:
+            listed = requests.post(
+                f"{s.base_url}/mcp/jsonrpc",
+                headers={"Content-Type": "application/json"},
+                data=json.dumps({"jsonrpc": "2.0", "id": 1,
+                                 "method": "tools/list", "params": {}}),
+                timeout=15).json()
+            names = [t["name"] for t in listed["result"]["tools"]
+                     if t["name"].startswith("flapi_")]
+            assert names, "no flapi_* tools advertised; this proves nothing"
+            for name in names:
+                blob = json.dumps(self._call(s, name, endpoint="/t", path="/t",
+                                             params={}, content="SELECT 1"))
+                for secret in (SECRET, ENV_SECRET, DEFAULT_TOKEN):
+                    assert secret not in blob, f"{name} leaked {secret}: {blob}"
