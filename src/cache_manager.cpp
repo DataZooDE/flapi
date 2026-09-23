@@ -278,6 +278,33 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
     if (snapshot.current_snapshot_committed_at) {
         params["previousSnapshotTimestamp"] = *snapshot.current_snapshot_committed_at;
     }
+
+    // When a cursor is configured, the watermark comes from the DATA, not
+    // from snapshot metadata.
+    //
+    // snapshot_time is the instant the previous refresh COMMITTED. That
+    // refresh read the source at some earlier instant T_read. A source row
+    // written at T with T_read < T <= T_commit was not read by refresh N, and
+    // `WHERE updated_at > TIMESTAMP '<T_commit>'` excludes it from refresh
+    // N+1 as well. On a continuously-written source every refresh
+    // permanently drops the rows written during its own execution, and
+    // reports success - invisible under both append and merge.
+    //
+    // max(cursor) over what is actually cached has no such window: rows above
+    // it are exactly the rows not yet loaded. Re-reading a row at the
+    // boundary is idempotent under merge and a bounded, visible duplicate
+    // under append; losing it is neither.
+    //
+    // Falls back to the snapshot timestamp when the table is new or empty, so
+    // a first refresh still renders its incremental section the same way.
+    if (cacheConfig.hasCursor()) {
+        const std::string watermark =
+            fetchCursorWatermark(catalog, schema, table, cacheConfig.cursor->column);
+        if (!watermark.empty()) {
+            params["previousSnapshotTimestamp"] = watermark;
+        }
+    }
+
     if (cacheConfig.schedule) {
         params["cacheSchedule"] = cacheConfig.schedule.value();
     }
@@ -332,6 +359,33 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
             CROW_LOG_WARNING << "Failed to expire DuckLake snapshots for " << schema << "." << table << ": " << ex.what();
         }
     }
+}
+
+std::string CacheManager::fetchCursorWatermark(const std::string& catalog,
+                                               const std::string& schema,
+                                               const std::string& table,
+                                               const std::string& cursor_column) {
+    if (cursor_column.empty()) {
+        return {};
+    }
+    try {
+        const std::string query =
+            "SELECT CAST(max(" + cursor_column + ") AS VARCHAR) AS watermark FROM " +
+            catalog + "." + schema + "." + table;
+        auto result = db_adapter_->executeDuckLakeQueryWithResult(query);
+        auto rows = crow::json::load(result.data.dump());
+        if (rows && rows.t() == crow::json::type::List && rows.size() > 0 &&
+            rows[0].has("watermark") &&
+            rows[0]["watermark"].t() == crow::json::type::String) {
+            return rows[0]["watermark"].s();
+        }
+    } catch (const std::exception& ex) {
+        // Table not created yet, or the cursor column is not in it. The
+        // snapshot timestamp remains the fallback.
+        CROW_LOG_DEBUG << "No cursor watermark for " << schema << "." << table
+                       << " (" << cursor_column << "): " << ex.what();
+    }
+    return {};
 }
 
 std::vector<std::string> CacheManager::tableChangeKeys(const std::string& catalog,

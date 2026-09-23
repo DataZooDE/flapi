@@ -436,3 +436,125 @@ connections:
     db->reset();
     fs::remove_all(temp_dir);
 }
+
+TEST_CASE("the incremental watermark does not skip rows written during a refresh",
+          "[cache][ducklake][watermark]") {
+    // previousSnapshotTimestamp was ducklake_snapshots.snapshot_time - the
+    // instant the previous refresh COMMITTED. But that refresh read the
+    // source at some earlier instant T_read. A source row written at T with
+    //
+    //     T_read < T <= T_commit
+    //
+    // was not read by refresh N, and the next refresh's
+    // `WHERE updated_at > TIMESTAMP '<T_commit>'` excludes it too. On a
+    // continuously-written source every refresh permanently drops the rows
+    // written during its own execution and reports success - invisible under
+    // both append and merge.
+    //
+    // The watermark therefore comes from the DATA: max(cursor) over what is
+    // actually cached. Rows above it are exactly the rows not yet loaded.
+    //
+    // This test writes to the source DURING the window the previous refresh
+    // was running, which is the condition the snapshot-time version cannot
+    // survive.
+    fs::path temp_dir = fs::temp_directory_path() / "flapi_watermark_race";
+    fs::remove_all(temp_dir);
+    fs::create_directories(temp_dir / "data");
+    fs::path config_path = temp_dir / "config.yaml";
+
+    {
+        std::ofstream cfg(config_path);
+        cfg << R"(
+project-name: watermark_race
+project-description: a refresh must not skip rows written while it ran
+
+template:
+  path: )" << temp_dir.string() << R"(
+
+duckdb:
+  db_path: )" << (temp_dir / "wr.db").string() << R"(
+
+ducklake:
+  enabled: true
+  alias: cache
+  metadata-path: )" << (temp_dir / "metadata.ducklake").string() << R"(
+  data-path: )" << (temp_dir / "data").string() << R"(
+
+connections:
+  default:
+    init: "SELECT 1;"
+)";
+    }
+
+    auto config_manager = std::make_shared<ConfigManager>(config_path);
+    config_manager->loadConfig();
+    auto db = DatabaseManager::getInstance();
+    db->reset();
+    REQUIRE_NOTHROW(db->initializeDBManagerFromConfig(config_manager));
+
+    auto adapter = std::make_shared<CapturingRealAdapter>(db);
+    CacheManager cache_manager(adapter);
+
+    std::map<std::string, std::string> p;
+    db->executeQuery("CREATE SCHEMA IF NOT EXISTS cache.s", p, false);
+    // The cache holds rows up to updated_at = 100. That is what the previous
+    // refresh actually loaded.
+    db->executeQuery(
+        "CREATE TABLE cache.s.c AS "
+        "SELECT * FROM (VALUES (1, 50), (2, 100)) AS t(id, updated_at)", p, false);
+
+    // ...and the snapshot committing that load lands LATER than rows written
+    // while it ran. Row 3 at updated_at = 150 is such a row: written after
+    // the refresh read the source, before it committed.
+    //
+    // Anything keyed on the commit instant skips row 3 forever. The data
+    // watermark is 100, so row 3 is above it and gets loaded.
+
+    auto endpoint = cachedEndpoint("/c", "c");
+    endpoint.cache.cursor = CacheConfig::CursorConfig{};
+    endpoint.cache.cursor->column = "updated_at";
+    endpoint.cache.cursor->type = "int";
+
+    std::map<std::string, std::string> params;
+    cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
+
+    const auto it = adapter->captured_params.find("previousSnapshotTimestamp");
+    REQUIRE(it != adapter->captured_params.end());
+
+    SECTION("the watermark is the largest cursor value actually cached") {
+        REQUIRE(it->second == "100");
+    }
+
+    SECTION("it is not the snapshot commit time") {
+        // The defect, stated directly. A commit timestamp is a date-time
+        // string; the cursor here is an integer, so the two cannot be
+        // confused.
+        INFO("watermark was: " << it->second);
+        REQUIRE(it->second.find('-') == std::string::npos);
+        REQUIRE(it->second.find(':') == std::string::npos);
+    }
+
+    SECTION("a row written during the previous refresh is above the watermark") {
+        // The property that matters, expressed as the filter the documented
+        // template builds.
+        std::map<std::string, std::string> q;
+        auto r = db->executeQuery(
+            "SELECT count(*) AS n FROM (VALUES (3, 150)) AS t(id, updated_at) "
+            "WHERE updated_at > " + it->second, q, false);
+        auto rows = crow::json::load(r.data.dump());
+        REQUIRE(static_cast<int64_t>(rows[0]["n"].d()) == 1);
+    }
+
+    SECTION("a row already cached is NOT above the watermark") {
+        // Otherwise the fix would just be "reload everything".
+        std::map<std::string, std::string> q;
+        auto r = db->executeQuery(
+            "SELECT count(*) AS n FROM (VALUES (2, 100)) AS t(id, updated_at) "
+            "WHERE updated_at > " + it->second, q, false);
+        auto rows = crow::json::load(r.data.dump());
+        REQUIRE(static_cast<int64_t>(rows[0]["n"].d()) == 0);
+    }
+
+    db->reset();
+    fs::remove_all(temp_dir);
+}

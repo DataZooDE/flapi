@@ -1331,7 +1331,7 @@ Special variables available in cache-enabled SQL templates:
 | `{{cache.table}}` | Cache table name |
 | `{{cache.schema}}` | Cache schema name |
 | `{{cache.catalog}}` | DuckLake catalog alias |
-| `{{cache.previousSnapshotTimestamp}}` | Timestamp of the last completed refresh of **this** cache table. The watermark for an incremental refresh. |
+| `{{cache.previousSnapshotTimestamp}}` | The watermark for an incremental refresh. With a `cursor:` configured it is `max(<cursor column>)` over the rows actually cached; without one it falls back to the commit timestamp of this table's last completed refresh. |
 | `{{cache.snapshotTimestamp}}` | Same instant, under the name the template context actually exposes. |
 | `{{cache.previousSnapshotId}}` | Snapshot id of that refresh. |
 
@@ -1344,6 +1344,21 @@ Special variables available in cache-enabled SQL templates:
 > `previousSnapshotTimestamp` also used to carry the refresh *before* last, so
 > an append template re-read rows the previous refresh had already appended.
 > It is now the last completed refresh, as documented here.
+>
+> **With a `cursor:` it is derived from the data, not from snapshot metadata.**
+> A snapshot's timestamp is the instant a refresh *committed*, but that refresh
+> read the source at some earlier instant. A source row written in between was
+> never read by that refresh, and a `WHERE updated_at > '<commit time>'` filter
+> excludes it from the next one too — so on a continuously-written source every
+> refresh permanently dropped the rows written while it ran, and reported
+> success. `max(<cursor>)` over what is actually cached has no such window:
+> rows above it are exactly the rows not yet loaded. A row exactly at the
+> boundary may be re-read, which is idempotent under merge and a bounded,
+> visible duplicate under append — losing it is neither.
+
+> **Note:** the value is rendered raw. With an integer or a string cursor,
+> quote or cast it in the template as that type requires; the `TIMESTAMP '...'`
+> form in the example below is right for a timestamp cursor only.
 
 **Example Template:**
 

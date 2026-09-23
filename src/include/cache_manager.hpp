@@ -92,6 +92,14 @@ private:
     /// subquery, because DuckDB refuses a subquery inside a lambda body
     /// ("Binder Error: subqueries in lambda expressions are not supported")
     /// and the exclusivity check below needs a lambda.
+    /// The largest cursor value actually present in the cache table, as a
+    /// string ready to interpolate. Empty when the table does not exist yet,
+    /// is empty, or the cursor column is absent.
+    std::string fetchCursorWatermark(const std::string& catalog,
+                                     const std::string& schema,
+                                     const std::string& table,
+                                     const std::string& cursor_column);
+
     std::vector<std::string> tableChangeKeys(const std::string& catalog,
                                              const std::string& schema,
                                              const std::string& table);
