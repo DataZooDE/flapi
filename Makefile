@@ -294,16 +294,16 @@ integration-test-ci: release integration-test-setup
 	$$FLAPI_BIN --config examples/flapi.yaml --log-level info --config-service --config-service-token test-token & \
 	SERVER_PID=$$!; \
 	echo "Server started with PID: $$SERVER_PID"; \
-	python3 -c 'import sys,time,urllib.request; url="http://localhost:8080/health"; last=None; \
-for i in range(30): \
-    try: \
-        r=urllib.request.urlopen(url, timeout=5); \
-        code=r.getcode(); \
-        if code == 200: print("Server healthy at " + url); sys.exit(0); \
-        last="status " + str(code); \
-    except Exception as e: last=str(e); \
-    print("Waiting for server readiness (attempt %d/30): %s" % (i + 1, last)); time.sleep(1); \
-raise SystemExit("Server at " + url + " failed health check after 30 attempts")' || { kill $$SERVER_PID 2>/dev/null || true; wait $$SERVER_PID 2>/dev/null || true; exit 1; }; \
+	for i in $$(seq 1 30); do \
+		if curl -fsS -m 5 http://localhost:8080/health >/dev/null 2>&1; then \
+			echo "Server healthy at http://localhost:8080/health"; break; \
+		fi; \
+		echo "Waiting for server readiness (attempt $$i/30)"; sleep 1; \
+		if [ $$i -eq 30 ]; then \
+			echo "Server failed health check after 30 attempts"; \
+			kill $$SERVER_PID 2>/dev/null || true; wait $$SERVER_PID 2>/dev/null || true; exit 1; \
+		fi; \
+	done; \
 	echo "Running integration tests..."; \
 	cd test/integration && \
 	if command -v uv >/dev/null 2>&1; then \
