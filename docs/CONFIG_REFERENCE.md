@@ -1333,7 +1333,7 @@ Special variables available in cache-enabled SQL templates:
 | `{{cache.catalog}}` | DuckLake catalog alias |
 | `{{cache.previousSnapshotTimestamp}}` | The watermark for an incremental refresh. With a `cursor:` configured it is `max(<cursor column>)` over the rows actually cached; without one it falls back to the commit timestamp of this table's last completed refresh. |
 | `{{cache.snapshotTimestamp}}` | Commit time of this table's last completed refresh. **Not** the same value as `previousSnapshotTimestamp` when a `cursor:` is configured — see below. Do not use it as an incremental watermark. |
-| `{{cache.previousSnapshotId}}` | Snapshot id of that refresh. |
+| `{{cache.previousSnapshotId}}` | Snapshot id of that refresh. Absent — along with `previousSnapshotTimestamp` — when a `cursor:` is configured but no watermark can be read (a new or empty cache table), so a template guarded on either renders its full-load branch. |
 
 > `{{cache.currentSnapshotTimestamp}}` appeared in an earlier version of this
 > table and has never existed — the implemented name is

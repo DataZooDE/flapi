@@ -88,7 +88,7 @@ These variables are available in a cache template:
 |---|---|
 | `{{cache.catalog}}` `{{cache.schema}}` `{{cache.table}}` | Where to write |
 | `{{cache.snapshotTimestamp}}` `{{cache.snapshotId}}` | This refresh |
-| `{{cache.previousSnapshotTimestamp}}` `{{cache.previousSnapshotId}}` | Last refresh — the incremental watermark |
+| `{{cache.previousSnapshotTimestamp}}` `{{cache.previousSnapshotId}}` | The incremental watermark. With a `cursor:` the timestamp is `max(<cursor>)` over the cached rows, in the cursor's own type; both are absent when no watermark can be read, so a guarded template loads in full. See CONFIG_REFERENCE. |
 | `{{cache.cursorColumn}}` `{{cache.cursorType}}` | Your declared cursor |
 | `{{cache.primaryKeys}}` | Your declared key |
 | `{{params.cacheMode}}` | `full`, `append` or `merge` |
