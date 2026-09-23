@@ -1332,7 +1332,7 @@ Special variables available in cache-enabled SQL templates:
 | `{{cache.schema}}` | Cache schema name |
 | `{{cache.catalog}}` | DuckLake catalog alias |
 | `{{cache.previousSnapshotTimestamp}}` | The watermark for an incremental refresh. With a `cursor:` configured it is `max(<cursor column>)` over the rows actually cached; without one it falls back to the commit timestamp of this table's last completed refresh. |
-| `{{cache.snapshotTimestamp}}` | Same instant, under the name the template context actually exposes. |
+| `{{cache.snapshotTimestamp}}` | Commit time of this table's last completed refresh. **Not** the same value as `previousSnapshotTimestamp` when a `cursor:` is configured — see below. Do not use it as an incremental watermark. |
 | `{{cache.previousSnapshotId}}` | Snapshot id of that refresh. |
 
 > `{{cache.currentSnapshotTimestamp}}` appeared in an earlier version of this
@@ -1359,6 +1359,19 @@ Special variables available in cache-enabled SQL templates:
 > **Note:** the value is rendered raw. With an integer or a string cursor,
 > quote or cast it in the template as that type requires; the `TIMESTAMP '...'`
 > form in the example below is right for a timestamp cursor only.
+>
+> **`{{cache.snapshotTimestamp}}` is a different value.** It is still the
+> snapshot commit time, so a template using it as a watermark keeps the
+> row-dropping behaviour described above. Use `previousSnapshotTimestamp`.
+>
+> **The comparison should match your mode.** The templates here use `>`, so a
+> row arriving later that carries *exactly* `max(<cursor>)` is not re-read —
+> it is skipped. That residual window is far narrower than the one closed
+> above (it needs a second row at the same cursor value, written after the
+> refresh read), but it is real. With `primary-key` set (merge mode) `>=` is
+> safe and closes it, because a re-read row collapses on the key. In append
+> mode `>=` duplicates instead, so either accept the window or give the cursor
+> a strictly increasing unique value.
 
 **Example Template:**
 

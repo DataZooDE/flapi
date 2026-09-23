@@ -51,6 +51,19 @@ public:
         /// case already used: neither leak it nor mangle the preview.
         void add(const std::string& key, const std::string& value);
 
+        /// Like add(), but also records a long value whose NAME does not look
+        /// like a credential.
+        ///
+        /// The name heuristic is the right gate for a request default - a
+        /// `default: "100"` on a `limit` field must stay visible, or the
+        /// preview is useless. It is the wrong gate for a whitelisted
+        /// environment variable: those are server-configured, an operator
+        /// chose to expose each one to templates, and a name like
+        /// PAYMENT_VALUE or SERVICE_ACCOUNT_JSON carries a secret past any
+        /// stem list. A long env value is overwhelmingly a key or token, and
+        /// redacting one that is not costs only a less readable preview.
+        void addEnv(const std::string& key, const std::string& value);
+
         template <typename Map>
         void addAll(const Map& entries) {
             for (const auto& entry : entries) {
@@ -61,7 +74,7 @@ public:
         bool withhold() const { return withhold_; }
         const std::vector<std::string>& values() const { return values_; }
 
-    private:
+    protected:
         bool withhold_ = false;
         std::vector<std::string> values_;
     };

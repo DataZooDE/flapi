@@ -503,22 +503,40 @@ void APIServer::handleDynamicRequest(const crow::request& req, crow::response& r
         return;
     }
 
-    // Build auth params from middleware context for template variable injection
-    auto& auth_ctx = app.get_context<AuthMiddleware>(req);
+    // Build auth params from middleware context for template variable injection.
+    //
+    // Guarded, because not every request here came off a socket.
+    // requestForEndpoint() - the heartbeat's cache-refresh path - synthesises
+    // a bare crow::request and calls app.handle_full directly, so
+    // `middleware_context` is null and get_context<>() dereferences it.
+    //
+    // The offload path above was guarded for exactly this and then routed such
+    // requests INLINE to this function - which has the same dereference, four
+    // hundred lines away. So the crash simply moved:
+    //
+    //   #0 flapi::APIServer::handleDynamicRequest(...)
+    //   #4 flapi::APIServer::requestForEndpoint(...)
+    //   #5 flapi::HeartbeatWorker::performHeartbeat(...)
+    //
+    // A synthesised request has no authenticated principal by construction, so
+    // the empty auth context is also the correct one.
     std::map<std::string, std::string> auth_params;
-    if (auth_ctx.authenticated) {
-        auth_params["__auth_username"] = auth_ctx.username;
-        auth_params["__auth_email"]    = auth_ctx.email;
-        auth_params["__auth_type"]     = auth_ctx.auth_type;
-        auth_params["__auth_authenticated"] = "true";
-        std::string roles;
-        for (const auto& r : auth_ctx.roles) {
-            if (!roles.empty()) {
-                roles += ",";
+    if (req.middleware_context != nullptr) {
+        auto& auth_ctx = app.get_context<AuthMiddleware>(req);
+        if (auth_ctx.authenticated) {
+            auth_params["__auth_username"] = auth_ctx.username;
+            auth_params["__auth_email"]    = auth_ctx.email;
+            auth_params["__auth_type"]     = auth_ctx.auth_type;
+            auth_params["__auth_authenticated"] = "true";
+            std::string roles;
+            for (const auto& r : auth_ctx.roles) {
+                if (!roles.empty()) {
+                    roles += ",";
+                }
+                roles += r;
             }
-            roles += r;
+            auth_params["__auth_roles"] = roles;
         }
-        auth_params["__auth_roles"] = roles;
     }
 
     requestHandler.handleRequest(req, res, *endpoint, pathParams, auth_params);
@@ -726,6 +744,15 @@ void APIServer::requestForEndpoint(const EndpointConfig& endpoint, const std::un
 }
 
 void APIServer::stop() {
+    // Reachable from the signal supervisor and from main. Serialised so the
+    // two cannot interleave, and so the second caller does not return while
+    // the first is still draining.
+    std::lock_guard<std::mutex> lock(stop_mutex_);
+    if (stopped_) {
+        return;
+    }
+    stopped_ = true;
+
     heartbeatWorker->stop();
 
     // Before app.stop(), not after. The pool's shutdown drains rather than

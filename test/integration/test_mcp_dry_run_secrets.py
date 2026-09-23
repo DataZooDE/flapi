@@ -43,8 +43,11 @@ DEFAULT_TOKEN = "DEFAULT-ACCESS-TOKEN-LEAKED"
 
 
 class _Server:
-    def __init__(self, short_secret: bool = False):
+    def __init__(self, short_secret: bool = False, unbindable: bool = False):
         self.short_secret = short_secret
+        # When true the rendered SQL is valid to render but fails to BIND, so
+        # the database error quotes it back - the error-path disclosure.
+        self.unbindable = unbindable
         self.tmp = tempfile.mkdtemp(prefix="flapi_dryrun_")
         self.port = free_port()
         self.base_url = f"http://127.0.0.1:{self.port}"
@@ -65,7 +68,9 @@ class _Server:
             f.write("SELECT '{{{ conn.password }}}' AS pw, '{{{ conn.path }}}' AS p, "
                     "'{{{ conn.pin_password }}}' AS short, "
                     "'{{{ env.API_KEY }}}' AS ak, "
-                    "'{{{ params.access_token }}}' AS tok\n")
+                    "'{{{ params.access_token }}}' AS tok"
+                    + (" FROM no_such_table_here" if self.unbindable else "")
+                    + "\n")
         with open(os.path.join(self.tmp, "flapi.yaml"), "w") as f:
             f.write(
                 "project-name: dryrun-secrets\n"
@@ -99,6 +104,14 @@ class _Server:
                 pass
             time.sleep(0.2)
         pytest.fail(f"server did not start:\n{open(self.log_path).read()[-3000:]}")
+
+    def call(self, **arguments):
+        """A normal tools/call - no _dryRun - returning the raw JSON-RPC."""
+        body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "leaky", "arguments": arguments}}
+        return requests.post(f"{self.base_url}/mcp/jsonrpc",
+                             headers={"Content-Type": "application/json"},
+                             data=json.dumps(body), timeout=15).json()
 
     def dry_run(self):
         body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
@@ -209,3 +222,48 @@ class TestDryRunSecretsFromEverySource:
             sql = s.dry_run()["rendered_sql"]
             assert NOT_SECRET in sql, sql
             assert sql.strip().upper().startswith("SELECT")
+
+
+class TestSecretsDoNotLeakThroughTheErrorPath:
+    """The preview was scrubbed. The error was not.
+
+    DuckDB quotes the failing statement verbatim in its message:
+
+        Binder Error: Table with name no_such_table_here does not exist!
+        LINE 1: SELECT 'CONNECTION-PASSWORD-LEAKED' AS pw ...
+
+    and that message went straight back through createErrorResult. MCP is
+    unauthenticated by default, so appending an unbindable table to a template
+    and calling it WITHOUT `_dryRun` recovered every secret the preview path
+    had just been fixed to withhold - the same defect class as F4, ~120 lines
+    away in the same function.
+
+    The secret set is now collected for every path, not just the preview, and
+    the error message is scrubbed with it.
+    """
+
+    def test_a_database_error_does_not_quote_connection_secrets(self):
+        with _Server(unbindable=True) as s:
+            got = s.call()
+            blob = json.dumps(got)
+            assert "error" in got or "result" in got, blob
+            assert SECRET not in blob, f"the connection secret leaked: {blob}"
+
+    def test_a_database_error_does_not_quote_environment_secrets(self):
+        with _Server(unbindable=True) as s:
+            assert ENV_SECRET not in json.dumps(s.call()), s.call()
+
+    def test_a_database_error_does_not_quote_credential_defaults(self):
+        with _Server(unbindable=True) as s:
+            assert DEFAULT_TOKEN not in json.dumps(s.call()), s.call()
+
+    def test_the_error_is_still_useful(self):
+        # Scrubbing must not reduce every failure to an opaque blob.
+        with _Server(unbindable=True) as s:
+            blob = json.dumps(s.call()).lower()
+            assert "no_such_table_here" in blob or "binder" in blob, blob
+
+    def test_a_successful_call_is_unaffected(self):
+        with _Server() as s:
+            got = s.call()
+            assert "result" in got, got

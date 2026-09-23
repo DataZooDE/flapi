@@ -268,10 +268,23 @@ class TestGracefulTermination:
         # Safe version: every one of those handlers does nothing but write a
         # byte to the pipe, and the supervisor performs the shutdown once.
         import ctypes
+        import platform
         import signal as signal_mod
+        import sys as _sys
 
+        # The syscall number is per-architecture and /proc/<pid>/task is
+        # Linux-only. Without this guard, an ARM64 runner - and flapi ships
+        # ARM64 binaries - issues syscall 234 (which is not tgkill there),
+        # delivers no signal, waits 60s, and reports "the process hung after
+        # SIGTERM was delivered to a pool worker": a false positive of exactly
+        # the bug under test.
+        SYS_TGKILL = {"x86_64": 234, "aarch64": 131}
+        machine = platform.machine()
+        if _sys.platform != "linux" or machine not in SYS_TGKILL:
+            pytest.skip(f"per-thread signal delivery not available on "
+                        f"{_sys.platform}/{machine}")
         libc = ctypes.CDLL("libc.so.6", use_errno=True)
-        SYS_tgkill = 234   # x86_64
+        SYS_tgkill = SYS_TGKILL[machine]
 
         s = _Server().start()
         try:
@@ -301,21 +314,96 @@ class TestGracefulTermination:
         finally:
             s.stop()
 
-    def test_sigterm_is_not_handled_inside_the_signal_handler(self):
-        # Direct evidence rather than inference from "it exited": the shutdown
-        # log line must come from the supervisor thread, and the process must
-        # exit cleanly rather than via a signal.
+    def test_a_signalled_exit_is_a_clean_exit(self):
+        # Kept for what it asserts - exit status 0, i.e. main() RETURNED - but
+        # no longer claims to prove the shutdown ran on the supervisor thread.
+        # The earlier version promised "direct evidence... the shutdown log
+        # line must come from the supervisor thread" and then asserted only
+        # `code == 0`, which is identical in substance to the idle baseline
+        # above. The per-thread delivery test is the one that discriminates.
         s = _Server().start()
         try:
             code = self._terminate(s, timeout=30)
             assert code is not None, "no exit at all"
-            # A negative return code is death BY a signal - the default
-            # disposition, i.e. the handler never completed. Handled properly,
-            # the supervisor runs the shutdown and main() RETURNS, so the exit
-            # status is an ordinary 0.
+            # A negative status is death BY a signal - the default
+            # disposition, i.e. the handler never completed.
             assert code == 0, (
-                f"expected a clean exit; got {code} "
-                f"({'killed by signal ' + str(-code) if code < 0 else 'non-zero status'})\n"
+                f"expected a clean exit; got {code}\n"
                 + open(s.log_path).read()[-2000:])
         finally:
             s.stop()
+
+class TestHeartbeatRequestsAreNotOffloaded:
+    """The heartbeat's cache refresh synthesises a request with no connection.
+
+    APIServer::requestForEndpoint() builds a bare crow::request and calls
+    app.handle_full() directly, so `req.io_service` and `req.middleware_context`
+    are both null. The offload dereferenced both - `*req.io_service` in the
+    Completer and get_context<>() beside it. Offload is ON by default, so every
+    deployment with a scheduled cache was hitting it.
+
+    That fix shipped with NO test: nothing in test/ referenced
+    requestForEndpoint, and the scheduler suite never waits for a
+    heartbeat-driven refresh. This is the minimal experiment that discriminates
+    inline-from-offloaded for a synthesised request: let the heartbeat fire,
+    and require the process to still be answering afterwards.
+    """
+
+    def _server_with_heartbeat(self):
+        s = _Server()
+        sqls = os.path.join(s.tmp, "sqls")
+        # A cached endpoint whose heartbeat fires every second.
+        with open(os.path.join(sqls, "cached.yaml"), "w") as f:
+            f.write("url-path: /cached\nmethod: GET\n"
+                    "template-source: cached.sql\nconnection: [inmem]\n"
+                    "cache:\n"
+                    "  enabled: true\n"
+                    "  table: hb_cache\n"
+                    "  schema: main\n"
+                    "  schedule: 1s\n"
+                    "heartbeat:\n  enabled: true\n")
+        with open(os.path.join(sqls, "cached.sql"), "w") as f:
+            f.write("SELECT 1 AS n\n")
+        with open(os.path.join(s.tmp, "flapi.yaml"), "w") as f:
+            f.write(
+                "project-name: heartbeat-offload\n"
+                "project-description: a synthesised request must not be offloaded\n"
+                f"http-port: {s.port}\n"
+                "stall-timeout-s: 5\n"
+                "template:\n  path: ./sqls\n"
+                "duckdb:\n  access_mode: READ_WRITE\n"
+                "ducklake:\n  enabled: true\n  alias: cache\n"
+                f"  metadata-path: {os.path.join(s.tmp, 'meta.ducklake')}\n"
+                f"  data-path: {os.path.join(s.tmp, 'data')}\n"
+                "connections:\n  inmem:\n    properties:\n      database: ':memory:'\n"
+                # worker-interval is an INTEGER number of seconds, not a duration
+                "heartbeat:\n  enabled: true\n  worker-interval: 1\n")
+        os.makedirs(os.path.join(s.tmp, "data"), exist_ok=True)
+        return s
+
+    def test_the_server_survives_a_heartbeat_driven_refresh(self):
+        # Without the guard the heartbeat's synthesised request takes the
+        # offload path, dereferences a null io_service, and takes the process
+        # with it - so "still answering 15s later" is the discriminator.
+        with self._server_with_heartbeat() as s:
+            deadline = time.time() + 20
+            last = None
+            while time.time() < deadline:
+                try:
+                    last = requests.get(f"{s.base_url}/health/live", timeout=3)
+                except requests.RequestException as exc:
+                    last = exc
+                time.sleep(1)
+            assert isinstance(last, requests.Response) and last.status_code == 200, (
+                "the server stopped answering while the heartbeat ran; a "
+                "synthesised request was probably offloaded\n"
+                + open(s.log_path).read()[-3000:])
+            assert s.proc.poll() is None, (
+                "the process exited during heartbeat refreshes\n"
+                + open(s.log_path).read()[-3000:])
+
+    def test_ordinary_requests_still_work_after_a_heartbeat_refresh(self):
+        with self._server_with_heartbeat() as s:
+            time.sleep(6)   # several heartbeat cycles
+            r = requests.get(f"{s.base_url}/cached", timeout=15)
+            assert r.status_code == 200, r.text

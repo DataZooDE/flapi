@@ -16,7 +16,8 @@
     "prepare": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest watch",
-    "test:integration": "vitest run --config vitest.integration.config.ts"
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "pretest": "npm --prefix ./shared run build"
   },
   "dependencies": {
     "@flapi/shared": "file:./shared",

@@ -1555,36 +1555,8 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                 //  - username for W1.3 audit log and W2.5 per-tool rate-limit
                 //    principal keying
                 if (auth_handler_) {
-                    auto auth_context = auth_handler_->authenticate(http_req);
-                    if (auth_context) {
-                        // The `authenticated` flag is what prepareParameters
-                        // gates identity injection on, so it must be set even
-                        // when the username is empty - otherwise an
-                        // authenticated caller with a blank subject is
-                        // indistinguishable from an anonymous one, and
-                        // `{{#auth.authenticated}}` guards in templates open
-                        // up for everybody.
-                        tool_request.context[MCPToolCallRequest::kAuthenticatedContextKey] =
-                            auth_context->authenticated ? "true" : "false";
-                        if (!auth_context->auth_type.empty()) {
-                            tool_request.context[MCPToolCallRequest::kAuthTypeContextKey] =
-                                auth_context->auth_type;
-                        }
-                        if (!auth_context->username.empty()) {
-                            tool_request.context[MCPToolCallRequest::kUsernameContextKey] =
-                                auth_context->username;
-                        }
-                        if (!auth_context->roles.empty()) {
-                            std::string roles_csv;
-                            for (size_t i = 0; i < auth_context->roles.size(); ++i) {
-                                if (i > 0) {
-                                    roles_csv += ",";
-                                }
-                                roles_csv += auth_context->roles[i];
-                            }
-                            tool_request.context[MCPToolCallRequest::kRolesContextKey] = roles_csv;
-                        }
-                    }
+                    tool_request.context =
+                        mcpAuthContextFrom(auth_handler_->authenticate(http_req));
                 }
 
                 // MCP 2026-07-28 Tasks: run the tool as a durable task when it is
@@ -1888,6 +1860,25 @@ MCPResponse MCPRouteHandlers::handleResourcesReadRequest(const MCPRequest& reque
                 response.http_status = 503;
                 return response;
             }
+        }
+
+        // The identity, on this surface too.
+        //
+        // resources/read authenticated the caller and applied per-resource
+        // RBAC, and then passed `bound_params` straight into executeQuery with
+        // no `__auth_*` strip and no injection - so `auth.*` was
+        // unconditionally empty here. The documented
+        // `{{#auth.username}}WHERE tenant = '...'{{/auth.username}}` filter
+        // rendered NOTHING and returned every tenant's rows to any
+        // authenticated caller: the identical failure to the one fixed for
+        // tools/call, one protocol method over, because that fix was made
+        // inline in MCPToolHandler::prepareParameters instead of in a helper
+        // both surfaces call.
+        if (auth_handler_) {
+            applyMcpAuthContext(bound_params,
+                                mcpAuthContextFrom(auth_handler_->authenticate(http_req)));
+        } else {
+            applyMcpAuthContext(bound_params, {});
         }
 
         // Read the resource content (binding any uri-template path params).

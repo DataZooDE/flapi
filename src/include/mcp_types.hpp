@@ -69,6 +69,15 @@ struct MCPSession {
     struct AuthContext {
         bool authenticated = false;
         std::string username;
+        /// The caller's email, when the token carries one.
+        ///
+        /// REST injects `__auth_email` unconditionally and CONFIG_REFERENCE
+        /// documents `auth.email` with no caveat, but MCP had no field for it
+        /// at all - so a `{{#auth.email}}WHERE email = '...'{{/auth.email}}`
+        /// filter rendered over REST and rendered NOTHING over MCP. That is
+        /// the same cross-tenant disclosure as the missing username, one
+        /// field over. mcp_auth_handler already resolves an email_claim.
+        std::string email;
         std::vector<std::string> roles;
         std::chrono::steady_clock::time_point auth_time;
         std::string auth_type;  // "basic", "bearer", or "oidc"

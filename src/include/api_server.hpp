@@ -88,6 +88,9 @@ private:
     // destroyed io_service and then drop a keepalive holding a connection
     // whose socket belonged to it.
     std::unique_ptr<HandlerPool> handlerPool;
+    /// stop() is reachable from the signal supervisor and from main.
+    std::mutex stop_mutex_;
+    bool stopped_ = false;
     std::shared_ptr<ConfigManager> configManager;
     std::shared_ptr<ConfigService> configService;
     std::shared_ptr<DatabaseManager> dbManager;

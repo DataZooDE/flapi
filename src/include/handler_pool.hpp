@@ -68,6 +68,10 @@ public:
 private:
     void run();
 
+    /// Held for the whole of shutdown(), so a second caller waits for the
+    /// first to finish JOINING rather than returning while workers still run.
+    /// Separate from mutex_, which the workers need in order to drain.
+    std::mutex shutdown_mutex_;
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::deque<std::function<void()>> jobs_;

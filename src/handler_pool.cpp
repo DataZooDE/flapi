@@ -38,13 +38,24 @@ bool HandlerPool::submit(std::function<void()> job) {
 }
 
 void HandlerPool::shutdown(std::chrono::milliseconds drain_budget) {
+    // Serialised, and a second caller WAITS for the first.
+    //
+    // This used to see `stopping_` already true and `return` - before the
+    // join loop. APIServer::stop() is reachable from two threads (the signal
+    // supervisor and main), so the second caller proceeded past a shutdown
+    // that had joined nothing, believing the pool drained. ~HandlerPool during
+    // static destruction took the same early return, and that is the path the
+    // original SIGSEGV came from: a worker still inside a query, reaching
+    // QueryExecutor's function-local statics after they were destroyed.
+    //
+    // A separate lock from mutex_, because the workers need mutex_ to drain.
+    std::lock_guard<std::mutex> shutdown_lock(shutdown_mutex_);
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (stopping_) {
-            return;
+        if (!stopping_) {
+            stopping_ = true;
+            drain_deadline_ = std::chrono::steady_clock::now() + drain_budget;
         }
-        stopping_ = true;
-        drain_deadline_ = std::chrono::steady_clock::now() + drain_budget;
     }
     cv_.notify_all();
     for (auto& worker : workers_) {

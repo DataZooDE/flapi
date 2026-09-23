@@ -233,6 +233,16 @@ class _AuthedServer(_Server):
     def __init__(self):
         super().__init__()
         sqls = os.path.join(self.tmp, "sqls")
+        # A resource rendering the SAME template, so the two MCP surfaces can
+        # be compared directly.
+        with open(os.path.join(sqls, "whores.yaml"), "w") as f:
+            f.write("url-path: /whores\nmethod: GET\n"
+                    "template-source: who.sql\nconnection: [inmem]\n"
+                    "mcp-resource:\n  name: whoami_resource\n"
+                    "  description: Shows the auth context.\n"
+                    "  mime-type: application/json\n"
+                    "  allowed-roles:\n    - reader\n")
+
         # REST auth is per-endpoint; MCP auth is server-wide under `mcp.auth`.
         with open(os.path.join(sqls, "who.yaml"), "w") as f:
             f.write("url-path: /who\nmethod: GET\n"
@@ -306,3 +316,56 @@ class TestAuthContextIsInjected:
             row = r["result"]["structuredContent"]["rows"][0]
             assert row["who"] == "alice", row
             assert row["roles"] == "reader", row
+
+
+class TestAuthContextOnMcpResources:
+    """resources/read is a second MCP surface, and it had the same hole.
+
+    The tools/call fix was made inline in MCPToolHandler::prepareParameters.
+    resources/read authenticates, applies per-resource RBAC, and then passed
+    its bound URI-template params straight into executeQuery - no
+    `__auth_*` strip, no injection. So `auth.*` was unconditionally empty
+    here, and the documented
+
+        {{#auth.username}}WHERE tenant = '{{ auth.username }}'{{/auth.username}}
+
+    filter rendered NOTHING and returned every tenant's rows to any
+    authenticated caller. Identical failure, one protocol method over.
+
+    Both surfaces now call applyMcpAuthContext.
+    """
+
+    AUTH = ("alice", "correct-horse")
+
+    def _read(self, server, auth):
+        body = {"jsonrpc": "2.0", "id": 1, "method": "resources/read",
+                "params": {"uri": "flapi://whoami_resource"}}
+        r = requests.post(f"{server.base_url}/mcp/jsonrpc",
+                          headers={"Content-Type": "application/json"},
+                          data=json.dumps(body), auth=auth, timeout=15).json()
+        assert "result" in r, r
+        text = r["result"]["contents"][0]["text"]
+        return json.loads(text)
+
+    def test_a_resource_renders_the_authenticated_identity(self):
+        with _AuthedServer() as s:
+            payload = self._read(s, self.AUTH)
+            blob = json.dumps(payload)
+            assert "alice" in blob, (
+                "resources/read did not inject the authenticated identity; a "
+                f"template filtering on auth.username sees nothing: {blob}")
+
+    def test_the_resource_and_tool_surfaces_agree(self):
+        # The property: REST, tools/call and resources/read are equal
+        # surfaces, so one credential produces one identity on all of them.
+        with _AuthedServer() as s:
+            resource = json.dumps(self._read(s, self.AUTH))
+            body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "whoami", "arguments": {}}}
+            tool = requests.post(f"{s.base_url}/mcp/jsonrpc",
+                                 headers={"Content-Type": "application/json"},
+                                 data=json.dumps(body), auth=self.AUTH,
+                                 timeout=15).json()
+            tool_row = tool["result"]["structuredContent"]["rows"][0]
+            assert tool_row["who"] == "alice", tool_row
+            assert "alice" in resource, resource

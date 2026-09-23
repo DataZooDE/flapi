@@ -2,6 +2,8 @@
 
 #include "redaction.hpp"
 
+#include <algorithm>
+
 namespace flapi {
 
 // Below this length a value cannot be replaced without risking unrelated text.
@@ -109,6 +111,20 @@ void MCPDryRun::Secrets::add(const std::string& key, const std::string& value) {
         return;
     }
     values_.push_back(value);
+}
+
+// Above this length, a whitelisted environment value is treated as a secret
+// whatever it is called. Chosen so that ordinary configuration - a region, a
+// bucket name, a hostname, a numeric tuning knob - stays visible in previews,
+// while API keys, tokens and service-account blobs do not.
+constexpr std::size_t kOpaqueEnvValue = 24;
+
+void MCPDryRun::Secrets::addEnv(const std::string& key, const std::string& value) {
+    add(key, value);
+    if (value.size() >= kOpaqueEnvValue &&
+        std::find(values_.begin(), values_.end(), value) == values_.end()) {
+        values_.push_back(value);
+    }
 }
 
 std::string MCPDryRun::scrub(std::string sql, const Secrets& secrets) {

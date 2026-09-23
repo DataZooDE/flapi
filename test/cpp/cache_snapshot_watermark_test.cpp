@@ -534,25 +534,22 @@ connections:
         REQUIRE(it->second.find(':') == std::string::npos);
     }
 
-    SECTION("a row written during the previous refresh is above the watermark") {
-        // The property that matters, expressed as the filter the documented
-        // template builds.
-        std::map<std::string, std::string> q;
-        auto r = db->executeQuery(
-            "SELECT count(*) AS n FROM (VALUES (3, 150)) AS t(id, updated_at) "
-            "WHERE updated_at > " + it->second, q, false);
-        auto rows = crow::json::load(r.data.dump());
-        REQUIRE(static_cast<int64_t>(rows[0]["n"].d()) == 1);
-    }
-
-    SECTION("a row already cached is NOT above the watermark") {
-        // Otherwise the fix would just be "reload everything".
-        std::map<std::string, std::string> q;
-        auto r = db->executeQuery(
-            "SELECT count(*) AS n FROM (VALUES (2, 100)) AS t(id, updated_at) "
-            "WHERE updated_at > " + it->second, q, false);
-        auto rows = crow::json::load(r.data.dump());
-        REQUIRE(static_cast<int64_t>(rows[0]["n"].d()) == 0);
+    SECTION("the watermark admits the late row and excludes the cached one") {
+        // Once the watermark is pinned to "100" above, running
+        // `WHERE updated_at > 100` against rows the TEST wrote is arithmetic,
+        // not a property of the product - the exact "asserts against SQL it
+        // wrote itself" pattern this file's header says a review caught once
+        // already. What is worth stating is the RELATION between the
+        // watermark and the data that produced it, which is the thing the
+        // commit-time version got wrong.
+        const std::int64_t watermark = std::stoll(it->second);
+        // 100 is the largest cursor value in the cache...
+        REQUIRE(watermark == 100);
+        // ...so a row written during the previous refresh (150, which is
+        // ABOVE everything cached but BELOW the commit instant) is still
+        // pending, and a row already cached (100) is not.
+        REQUIRE(150 > watermark);
+        REQUIRE_FALSE(100 > watermark);
     }
 
     db->reset();
