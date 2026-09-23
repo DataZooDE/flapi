@@ -231,36 +231,85 @@ void APIServer::setupRoutes() {
             // and destroys it before it finishes using itself.
             auto keepalive = res.connection_keepalive;
 
+            // The response must be completed EXACTLY once, on every exit path.
+            // Making that a property of the code - remembering to post a
+            // completion in each branch - is how a non-std::exception escape
+            // left the connection hung: the read loop is paused and the
+            // deadline timer cancelled, so nothing else would ever finish it,
+            // finish() would never run, and the in-flight slot would never
+            // clear, leaving readiness stuck at 503 for the life of the
+            // process.
+            //
+            // So it is a property of the TYPE instead. Whatever happens to the
+            // job, this posts something.
+            struct Completer {
+                crow::response* res;
+                const crow::request* req;
+                std::shared_ptr<void> keepalive;
+                int code = 500;
+                std::string body = "Internal Server Error";
+                crow::ci_map headers;
+                bool armed = true;
+
+                void take(crow::response& from) {
+                    code = from.code;
+                    body = std::move(from.body);
+                    headers = std::move(from.headers);
+                }
+
+                ~Completer() {
+                    if (!armed) {
+                        return;
+                    }
+                    asio::post(*req->io_service,
+                               [res = res, keepalive = keepalive, code = code,
+                                body = std::move(body),
+                                headers = std::move(headers)]() mutable {
+                                   res->code = code;
+                                   res->body = std::move(body);
+                                   for (auto& header : headers) {
+                                       res->set_header(header.first, header.second);
+                                   }
+                                   res->end();
+                               });
+                }
+            };
+
+            // The io thread must stop claiming this request the moment the
+            // work leaves it. Crow logs "Request:" for the NEXT connection on
+            // this thread before that request's before_handle runs, so leaving
+            // t_current set here stamps the offloaded request's id and trace id
+            // onto another request's log lines - the exact correlation the
+            // release advertises.
             const bool queued = handlerPool->submit(
                 [this, &req, &res, rc, &mw, keepalive]() mutable {
+                    Completer completer{&res, &req, keepalive};
+
                     RequestContextScope::activate(rc);
                     const auto span_activation = mw.span.activateOnThisThread();
 
                     crow::response local;
                     try {
                         handleDynamicRequest(req, local);
+                        completer.take(local);
                     } catch (const std::exception& e) {
                         CROW_LOG_ERROR << "handler threw off the io thread: " << e.what();
-                        local.code = 500;
-                        local.body = "Internal Server Error";
+                    } catch (...) {
+                        CROW_LOG_ERROR << "handler threw a non-standard exception off the io thread";
                     }
 
-                    // Leave the worker clean for the next job; clearIf so a
-                    // job that raced us is not stripped of its context.
                     RequestContextScope::clearIf(rc);
-
-                    asio::post(*req.io_service,
-                               [&res, keepalive, code = local.code,
-                                body = std::move(local.body),
-                                headers = std::move(local.headers)]() mutable {
-                                   res.code = code;
-                                   res.body = std::move(body);
-                                   for (auto& header : headers) {
-                                       res.set_header(header.first, header.second);
-                                   }
-                                   res.end();
-                               });
+                    // ~Completer posts the completion, whichever way we leave.
                 });
+
+            if (queued) {
+                RequestContextScope::clearIf(rc);
+                // Release the span's activation on THIS thread while it is
+                // still the innermost one, so the context stack detaches in
+                // LIFO order. The worker re-activates on its own thread; the
+                // span itself stays live and is ended in finish() as before.
+                mw.span.suspendActivation();
+            }
 
             if (!queued) {
                 // The queue is full. Answering 503 here is the honest reply to
@@ -542,6 +591,18 @@ crow::response APIServer::generateOpenAPIDoc() {
 }
 
 std::uint16_t APIServer::serverThreadCount(unsigned hardware_concurrency) {
+    // Test seam. A test for #120 has to be able to produce the condition the
+    // issue is about - a slow query monopolising the io thread a probe needs -
+    // and on a many-core machine the floor makes that vanishingly unlikely.
+    // Without this the test passes against the un-offloaded server too, which
+    // is exactly the trap the first version of it fell into.
+    if (const char* override_threads = std::getenv("FLAPI_IO_THREADS")) {
+        const int parsed = std::atoi(override_threads);
+        if (parsed >= 2 && parsed <= 64) {
+            return static_cast<std::uint16_t>(parsed);
+        }
+    }
+
     // 8 total -> 7 io threads. Enough that a single stuck query leaves the
     // instance answering, small enough to be unremarkable on a 1-vCPU
     // container. Crow clamps anything below 2 itself.
@@ -600,6 +661,19 @@ void APIServer::requestForEndpoint(const EndpointConfig& endpoint, const std::un
 
 void APIServer::stop() {
     heartbeatWorker->stop();
+
+    // Before app.stop(), not after. The pool's shutdown drains rather than
+    // drops, and that promise is only worth anything while the io_services
+    // those jobs post their completions into are still alive - after
+    // app.stop() no posted completion can run, so a "drained" job would
+    // finish its query and then have nowhere to deliver the response.
+    //
+    // submit() already refuses while stopping, so a request arriving during
+    // shutdown gets 503 rather than being queued into a closing server.
+    if (handlerPool) {
+        handlerPool->shutdown();
+    }
+
     app.stop();
 }
 

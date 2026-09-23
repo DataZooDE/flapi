@@ -103,6 +103,15 @@ public:
     /// inert or tracing is compiled out.
     [[nodiscard]] Activation activateOnThisThread() const noexcept;
 
+    /// Release this span's activation on the CURRENT thread without ending the
+    /// span.
+    ///
+    /// Call it while this span is still the innermost active one - immediately
+    /// after handing work to another thread - so the underlying context stack
+    /// detaches in LIFO order. The span stays live and its attributes can
+    /// still be set; only the ambient parenting on this thread goes away.
+    void suspendActivation() noexcept;
+
     struct Impl;
     explicit SpanScope(Impl* impl) noexcept : impl_(impl) {}
 

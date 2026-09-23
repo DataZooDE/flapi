@@ -36,6 +36,12 @@ SpanScope::Activation& SpanScope::Activation::operator=(Activation&& other) noex
     return *this;
 }
 
+void SpanScope::suspendActivation() noexcept {
+    if (impl_ != nullptr) {
+        impl_->scope.reset();
+    }
+}
+
 SpanScope::Activation SpanScope::activateOnThisThread() const noexcept {
     if (impl_ == nullptr) {
         return Activation{};

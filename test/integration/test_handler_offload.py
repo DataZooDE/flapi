@@ -10,8 +10,12 @@ Measured on one ~6.5s query with 40 concurrent probes and a single io thread:
     offload OFF : 40/40 probes blocked,  0/40 reported the stall, worst 5.04s
     offload ON  :  0/40 probes blocked, 40/40 reported the stall, worst 0.005s
 
-These tests use the shipped thread count rather than forcing one io thread, so
-they assert the property (other work proceeds) rather than the measurement.
+These tests FORCE the minimum io thread count (FLAPI_IO_THREADS=2, one accept
+thread plus one io thread), because on a many-core machine the thread floor
+makes the condition vanishingly unlikely to occur and the test passes against
+the un-offloaded server too. The first version of this file did exactly that -
+a crew review caught it - so each test here is checked against
+FLAPI_DISABLE_HANDLER_OFFLOAD=1 and must fail there.
 """
 import json
 import os
@@ -60,6 +64,8 @@ class _Server:
     def start(self):
         env = {**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"}
         env["FLAPI_DISABLE_HANDLER_OFFLOAD"] = "0" if self.offload else "1"
+        # One accept thread + one io thread: the condition #120 is about.
+        env["FLAPI_IO_THREADS"] = "2"
         self.proc = subprocess.Popen(
             [flapi_binary(), "-c", os.path.join(self.tmp, "flapi.yaml"),
              "-p", str(self.port), "--log-level", "warning"],
@@ -155,3 +161,34 @@ class TestHandlerOffload:
             r = requests.get(f"{s.base_url}/fast", timeout=20)
             assert r.status_code == 200
             assert r.json()["data"][0]["n"] == 1
+
+
+class TestOffloadTestsActuallyDiscriminate:
+    """The tests above must FAIL without the offload.
+
+    A regression test that passes against the defect it claims to pin is
+    worse than no test: it reports safety that was never checked. Three of the
+    four tests added with #137 did exactly that, which a crew review found.
+    """
+
+    def test_other_endpoints_are_blocked_when_the_offload_is_off(self):
+        with _Server(offload=False) as s:
+            worker, done = _in_flight_slow(s)
+            try:
+                time.sleep(1.5)
+                assert not done.is_set(), "the slow query finished too early to test anything"
+                blocked = 0
+                for _ in range(6):
+                    start = time.time()
+                    try:
+                        requests.get(f"{s.base_url}/fast", timeout=3)
+                    except requests.Timeout:
+                        blocked += 1
+                        continue
+                    if time.time() - start > 0.5:
+                        blocked += 1
+                assert blocked > 0, (
+                    "no request blocked with the offload disabled, so the "
+                    "offload tests above prove nothing")
+            finally:
+                done.wait(timeout=180)

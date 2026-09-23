@@ -59,10 +59,7 @@ public:
     /// io threads, which is what #120 tracks.
     static std::uint16_t serverThreadCount(unsigned hardware_concurrency);
 
-    /// Worker threads that run request handlers off Crow's io threads (#120).
-    /// Null when the offload is disabled, in which case handlers run inline as
-    /// before.
-    std::unique_ptr<HandlerPool> handlerPool;
+
     void stop();
 
     void requestForEndpoint(const EndpointConfig& endpoint, const std::unordered_map<std::string, std::string>& pathParams = {});
@@ -80,6 +77,17 @@ private:
     crow::response generateOpenAPIDoc();
     
     FlapiApp app;
+
+    // Worker threads that run request handlers off Crow's io threads (#120).
+    // Null when the offload is disabled, in which case handlers run inline.
+    //
+    // DECLARED AFTER `app` deliberately. Members are destroyed in reverse
+    // order, so this joins its workers before the io_contexts and connections
+    // they post completions into are torn down. Declared before `app`, a
+    // worker still mid-query when the process is stopping would post to a
+    // destroyed io_service and then drop a keepalive holding a connection
+    // whose socket belonged to it.
+    std::unique_ptr<HandlerPool> handlerPool;
     std::shared_ptr<ConfigManager> configManager;
     std::shared_ptr<ConfigService> configService;
     std::shared_ptr<DatabaseManager> dbManager;
