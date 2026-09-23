@@ -209,3 +209,100 @@ class TestAuthContextSpoofingOverMcp:
             rest = requests.get(f"{s.base_url}/who", params=SPOOF, timeout=10).json()["data"][0]
             assert mcp["who"] == rest["who"] == ""
             assert mcp["roles"] == rest["roles"] == ""
+
+
+class _AuthedServer(_Server):
+    """The same /who endpoint, but behind real authentication.
+
+    Stripping `__auth_*` from caller input is only half the contract. The other
+    half is that the SERVER injects the identity it authenticated - otherwise
+    `auth.username` is empty for everyone, and the documented multi-tenant
+    pattern
+
+        WHERE tenant = '{{ auth.username }}'
+
+    renders `WHERE tenant = ''`, which matches no rows, or - in the far more
+    common `{{#auth.username}}...{{/auth.username}}` form - renders no filter
+    at all and returns every tenant's rows to any caller.
+
+    REST injects it (api_server.cpp). MCP did not: MCPToolHandler stripped the
+    caller's `__auth_*` and then never put the real one back, so `auth.*` was
+    unconditionally empty over MCP even for an authenticated caller.
+    """
+
+    def __init__(self):
+        super().__init__()
+        sqls = os.path.join(self.tmp, "sqls")
+        # REST auth is per-endpoint; MCP auth is server-wide under `mcp.auth`.
+        with open(os.path.join(sqls, "who.yaml"), "w") as f:
+            f.write("url-path: /who\nmethod: GET\n"
+                    "template-source: who.sql\nconnection: [inmem]\n"
+                    "mcp-tool:\n  name: whoami\n  description: Shows the auth context.\n"
+                    "  allowed-roles:\n    - reader\n"
+                    "auth:\n  enabled: true\n  type: basic\n  users:\n"
+                    "    - username: alice\n      password: correct-horse\n"
+                    "      roles: [reader]\n")
+        with open(os.path.join(self.tmp, "flapi.yaml"), "w") as f:
+            f.write(
+                "project-name: auth-context-injection\n"
+                "project-description: the server must inject the identity it authenticated\n"
+                f"http-port: {self.port}\n"
+                "template:\n  path: ./sqls\n"
+                "connections:\n  inmem:\n    properties:\n      database: ':memory:'\n"
+                "mcp:\n  enabled: true\n"
+                "  auth:\n    enabled: true\n    type: basic\n    users:\n"
+                "      - username: alice\n        password: correct-horse\n"
+                "        roles: [reader]\n")
+
+
+class TestAuthContextIsInjected:
+    AUTH = ("alice", "correct-horse")
+
+    def _mcp_whoami(self, server, auth):
+        body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "whoami", "arguments": {}}}
+        r = requests.post(f"{server.base_url}/mcp/jsonrpc",
+                          headers={"Content-Type": "application/json"},
+                          data=json.dumps(body), auth=auth, timeout=15).json()
+        assert "result" in r, r
+        return r["result"]["structuredContent"]["rows"][0]
+
+    def test_rest_renders_the_authenticated_identity(self):
+        with _AuthedServer() as s:
+            r = requests.get(f"{s.base_url}/who", auth=self.AUTH, timeout=10)
+            assert r.status_code == 200, r.text
+            row = r.json()["data"][0]
+            assert row["who"] == "alice", row
+            assert row["authed"] == "true", row
+
+    def test_mcp_renders_the_authenticated_identity(self):
+        # This is the one that failed: empty `who` for an authenticated caller.
+        with _AuthedServer() as s:
+            row = self._mcp_whoami(s, self.AUTH)
+            assert row["who"] == "alice", (
+                "MCP did not inject the authenticated identity; a template "
+                f"filtering on auth.username sees nothing: {row!r}")
+            assert row["roles"] == "reader", row
+            assert row["authed"] == "true", row
+
+    def test_the_two_surfaces_agree_on_who_the_caller_is(self):
+        # The property, stated directly: REST and MCP are equal surfaces, so
+        # the same credential must produce the same identity on both.
+        with _AuthedServer() as s:
+            mcp = self._mcp_whoami(s, self.AUTH)
+            rest = requests.get(f"{s.base_url}/who", auth=self.AUTH,
+                                timeout=10).json()["data"][0]
+            assert mcp["who"] == rest["who"] == "alice", (mcp, rest)
+            assert mcp["authed"] == rest["authed"] == "true", (mcp, rest)
+
+    def test_a_spoof_cannot_override_the_injected_identity(self):
+        # The strip must win over caller input, not merely run before it.
+        with _AuthedServer() as s:
+            body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "whoami", "arguments": dict(SPOOF)}}
+            r = requests.post(f"{s.base_url}/mcp/jsonrpc",
+                              headers={"Content-Type": "application/json"},
+                              data=json.dumps(body), auth=self.AUTH, timeout=15).json()
+            row = r["result"]["structuredContent"]["rows"][0]
+            assert row["who"] == "alice", row
+            assert row["roles"] == "reader", row

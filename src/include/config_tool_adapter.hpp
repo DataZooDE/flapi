@@ -27,6 +27,7 @@ struct ConfigToolDef {
     std::string description;
     crow::json::wvalue input_schema;
     crow::json::wvalue output_schema;
+
 };
 
 /**
@@ -122,6 +123,21 @@ private:
     std::unordered_map<std::string, ConfigToolDef> tools_;
     std::unordered_map<std::string, bool> tool_auth_required_;
     std::unordered_map<std::string, ToolHandler> tool_handlers_;
+
+    /// Registered tools that have no working implementation, mapped to the
+    /// REST route a caller should use instead. Presence means unimplemented.
+    ///
+    /// "Is this implemented?" used to live in the handler bodies, so three
+    /// template tools were advertised identically to the working ones, and two
+    /// of them answered with a hardcoded `SELECT * FROM data WHERE 1=1` and
+    /// `"status": "Template expanded successfully"` - a fabricated result an
+    /// agent cannot distinguish from a real one. Fixing one body left its two
+    /// siblings lying.
+    ///
+    /// As a registration fact it is structural: getRegisteredTools() never
+    /// advertises a tool listed here, and executeTool() refuses it centrally,
+    /// so a stub cannot reach a caller whatever its body does.
+    std::unordered_map<std::string, std::string> tool_unimplemented_;
 
     // Tool registration
     void registerConfigTools();

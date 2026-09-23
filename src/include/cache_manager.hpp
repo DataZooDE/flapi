@@ -84,7 +84,28 @@ private:
     /// SQL to expire every snapshot beyond the newest `keep_last`, or an empty
     /// string when there is nothing to expire. Resolves the ids first because
     /// `versions` takes an explicit list.
-    std::string buildCountBasedExpireSql(const std::string& catalog, std::size_t keep_last);
+    /// The names by which `catalog`'s `changes` map refers to
+    /// `schema`.`table`: its numeric table id (for row changes) and
+    /// `schema.table` (for creates). Empty if neither can be resolved.
+    ///
+    /// Resolved as its own query rather than inlined as a correlated
+    /// subquery, because DuckDB refuses a subquery inside a lambda body
+    /// ("Binder Error: subqueries in lambda expressions are not supported")
+    /// and the exclusivity check below needs a lambda.
+    std::vector<std::string> tableChangeKeys(const std::string& catalog,
+                                             const std::string& schema,
+                                             const std::string& table);
+
+    /// SQL predicate selecting snapshots that touched the table named by
+    /// `keys`. One definition, used by both fetchSnapshotInfo and
+    /// buildCountBasedExpireSql - they each had their own notion of "this
+    /// table's snapshots" and only one of them was per-table.
+    static std::string tableSnapshotPredicate(const std::vector<std::string>& keys);
+
+    std::string buildCountBasedExpireSql(const std::string& catalog,
+                                         const std::string& schema,
+                                         const std::string& table,
+                                         std::size_t keep_last);
 
     static std::string determineCacheMode(const CacheConfig& cacheConfig);
 

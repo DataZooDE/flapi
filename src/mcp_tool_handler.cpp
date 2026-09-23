@@ -182,7 +182,8 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
         }
 
         // Prepare parameters for SQL template
-        std::map<std::string, std::string> params = prepareParameters(*endpoint_config, effective_arguments);
+        std::map<std::string, std::string> params =
+            prepareParameters(*endpoint_config, effective_arguments, request.context);
 
         // W2.2 dry-run short-circuit: render the SQL via the existing template
         // processor and return it without touching the database. Write tools
@@ -413,8 +414,10 @@ void MCPToolHandler::applyDefaultArguments(const EndpointConfig& endpoint_config
     }
 }
 
-std::map<std::string, std::string> MCPToolHandler::prepareParameters(const EndpointConfig& endpoint_config,
-                                                                    const crow::json::wvalue& arguments) const {
+std::map<std::string, std::string> MCPToolHandler::prepareParameters(
+        const EndpointConfig& endpoint_config,
+        const crow::json::wvalue& arguments,
+        const std::unordered_map<std::string, std::string>& context) const {
     // Convert JSON arguments to parameter map
     std::map<std::string, std::string> params = convertJsonToParams(arguments);
 
@@ -436,6 +439,38 @@ std::map<std::string, std::string> MCPToolHandler::prepareParameters(const Endpo
         } else {
             ++it;
         }
+    }
+
+    // ...and then inject the identity the transport actually authenticated.
+    //
+    // Stripping alone left `auth.*` unconditionally EMPTY over MCP, even for
+    // an authenticated caller, because nothing put the real principal back.
+    // Only the REST path injected (api_server.cpp). The documented
+    // multi-tenant template
+    //
+    //     {{#auth.username}}WHERE tenant = '{{ auth.username }}'{{/auth.username}}
+    //
+    // therefore rendered NO filter over MCP and returned every tenant's rows
+    // to any authenticated caller. The unconditional form rendered
+    // `WHERE tenant = ''` and returned none. Both are silent.
+    //
+    // This runs after the strip, so caller input can never win. The keys
+    // mirror api_server.cpp exactly; `auth.email` has no MCP equivalent
+    // (MCPSession::AuthContext carries no email) and is deliberately left
+    // absent rather than faked.
+    const auto ctx = [&context](const char* key) -> const std::string* {
+        const auto it = context.find(key);
+        return it == context.end() ? nullptr : &it->second;
+    };
+    const auto* username = ctx(MCPToolCallRequest::kUsernameContextKey);
+    const auto* roles = ctx(MCPToolCallRequest::kRolesContextKey);
+    const auto* auth_type = ctx(MCPToolCallRequest::kAuthTypeContextKey);
+    const auto* authenticated = ctx(MCPToolCallRequest::kAuthenticatedContextKey);
+    if (authenticated != nullptr && *authenticated == "true") {
+        params["__auth_authenticated"] = "true";
+        params["__auth_username"] = (username != nullptr) ? *username : std::string();
+        params["__auth_roles"] = (roles != nullptr) ? *roles : std::string();
+        params["__auth_type"] = (auth_type != nullptr) ? *auth_type : std::string();
     }
 
     // Defaults are applied earlier, in executeTool, so that validation sees

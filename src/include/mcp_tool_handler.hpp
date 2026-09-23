@@ -47,6 +47,13 @@ struct MCPToolCallRequest {
     // through to the tool handler as a comma-separated list. Kept as a
     // single string to keep the existing context map signature stable.
     static constexpr const char* kRolesContextKey = "auth.roles";
+    static constexpr const char* kUsernameContextKey = "auth.username";
+    static constexpr const char* kAuthTypeContextKey = "auth.type";
+
+    /// True once the caller has been authenticated. Set alongside the keys
+    /// above so a tool can distinguish "anonymous" from "authenticated with an
+    /// empty username" - the two render identically otherwise.
+    static constexpr const char* kAuthenticatedContextKey = "auth.authenticated";
 };
 
 class MCPToolHandler {
@@ -96,8 +103,15 @@ private:
     void applyDefaultArguments(const EndpointConfig& endpoint_config,
                                crow::json::wvalue& arguments) const;
 
-    std::map<std::string, std::string> prepareParameters(const EndpointConfig& endpoint_config,
-                                                        const crow::json::wvalue& arguments) const;
+    /// `context` carries the identity the transport authenticated. It is
+    /// injected as `__auth_*` AFTER the caller's own `__auth_*` keys are
+    /// stripped, which is what makes `auth.username` and friends usable from
+    /// an MCP template at all. Passing an empty map yields the anonymous
+    /// context, which is what the unauthenticated MCP default produces.
+    std::map<std::string, std::string> prepareParameters(
+        const EndpointConfig& endpoint_config,
+        const crow::json::wvalue& arguments,
+        const std::unordered_map<std::string, std::string>& context = {}) const;
 QueryResult executeQueryWithEndpoint(const EndpointConfig& endpoint_config,
                                    std::map<std::string, std::string>& params) const;
     std::string formatResult(const QueryResult& query_result,

@@ -215,7 +215,15 @@ void APIServer::setupRoutes() {
             // The work therefore moves to a pool thread and only the
             // completion is posted back to the owning io_service, which is the
             // thread Crow expects to touch the connection's buffers.
-            if (!handlerPool) {
+            // Not every request arriving here came off a socket.
+            // requestForEndpoint() - the heartbeat's cache-refresh path -
+            // synthesises a bare crow::request and calls app.handle_full
+            // directly, so it has no io_service to post a completion to and no
+            // middleware context to read. Offloading such a request
+            // dereferences both: `*req.io_service` in the Completer and
+            // get_context<>() just below. It must run inline, which is also
+            // exactly right - there is no connection to keep responsive.
+            if (!handlerPool || req.io_service == nullptr || req.middleware_context == nullptr) {
                 handleDynamicRequest(req, res);
                 return;
             }

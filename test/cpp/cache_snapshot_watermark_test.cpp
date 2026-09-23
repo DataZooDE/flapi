@@ -186,15 +186,31 @@ connections:
     SECTION("the query CacheManager issued is scoped to the table") {
         // Direct evidence that the product builds a per-table query, rather
         // than the test asserting against SQL it wrote itself.
-        bool found = false;
+        //
+        // The assertion is on the SCOPING, not on how the table is named. The
+        // table id used to be inlined as a correlated subquery; it is now
+        // resolved by its own ducklake_table_info query, because DuckDB
+        // refuses a subquery inside a lambda body and the retention filter
+        // needs one. Pinning the old shape would fail that refactor while the
+        // contract held.
+        bool queried_snapshots = false;
+        bool resolved_table = false;
         for (const auto& q : adapter->executed) {
+            if (q.find("ducklake_table_info") != std::string::npos &&
+                q.find("table_name = 'a'") != std::string::npos) {
+                resolved_table = true;
+            }
             if (q.find("ducklake_snapshots") != std::string::npos) {
-                found = true;
-                REQUIRE(q.find("ducklake_table_info") != std::string::npos);
+                queried_snapshots = true;
+                // Scoped by what the snapshot touched, and naming THIS table.
                 REQUIRE(q.find("changes") != std::string::npos);
+                REQUIRE(q.find("'s.a'") != std::string::npos);
+                // ...and never the other table's.
+                REQUIRE(q.find("'s.b'") == std::string::npos);
             }
         }
-        REQUIRE(found);
+        REQUIRE(queried_snapshots);
+        REQUIRE(resolved_table);
     }
 
     db->reset();
@@ -291,6 +307,130 @@ connections:
     SECTION("and the snapshots are actually gone") {
         // The assertion the old test could not make: the expiry took effect.
         REQUIRE(snapshotCount() < before);
+    }
+
+    db->reset();
+    fs::remove_all(temp_dir);
+}
+
+TEST_CASE("count-based retention does not touch another endpoint's snapshots",
+          "[cache][ducklake][retention]") {
+    // `keep-last-snapshots` is configured PER ENDPOINT, but every cached
+    // endpoint shares ONE DuckLake catalog - and the expiry listed snapshots
+    // with a catalog-wide `SELECT snapshot_id FROM ducklake_snapshots(cat)`.
+    // So endpoint /a refreshing with keep_last=2 expired endpoint /b's
+    // snapshots as well: b lost its time-travel history and, because
+    // fetchSnapshotInfo reads its watermark from its newest surviving
+    // snapshot, its next incremental refresh silently re-read from the wrong
+    // point.
+    //
+    // The existing retention test uses a single table, so it cannot see this.
+    // Two tables is the whole point of the test.
+    fs::path temp_dir = fs::temp_directory_path() / "flapi_retention_two_tables";
+    fs::remove_all(temp_dir);
+    fs::create_directories(temp_dir / "data");
+    fs::path config_path = temp_dir / "config.yaml";
+
+    {
+        std::ofstream cfg(config_path);
+        cfg << R"(
+project-name: retention_two_tables
+project-description: per-endpoint retention must stay per-endpoint
+
+template:
+  path: )" << temp_dir.string() << R"(
+
+duckdb:
+  db_path: )" << (temp_dir / "rt.db").string() << R"(
+
+ducklake:
+  enabled: true
+  alias: cache
+  metadata-path: )" << (temp_dir / "metadata.ducklake").string() << R"(
+  data-path: )" << (temp_dir / "data").string() << R"(
+
+connections:
+  default:
+    init: "SELECT 1;"
+)";
+    }
+
+    auto config_manager = std::make_shared<ConfigManager>(config_path);
+    config_manager->loadConfig();
+    auto db = DatabaseManager::getInstance();
+    db->reset();
+    REQUIRE_NOTHROW(db->initializeDBManagerFromConfig(config_manager));
+
+    auto adapter = std::make_shared<CapturingRealAdapter>(db);
+    CacheManager cache_manager(adapter);
+
+    std::map<std::string, std::string> p;
+    db->executeQuery("CREATE SCHEMA IF NOT EXISTS cache.s", p, false);
+    db->executeQuery("CREATE TABLE cache.s.a AS SELECT 1 AS i", p, false);
+    db->executeQuery("CREATE TABLE cache.s.b AS SELECT 1 AS i", p, false);
+    // Interleaved, so b's snapshots sit both above and below a's in the
+    // catalog-wide ordering the broken version used.
+    for (int i = 2; i <= 6; ++i) {
+        db->executeQuery("INSERT INTO cache.s.a VALUES (" + std::to_string(i) + ")", p, false);
+        db->executeQuery("INSERT INTO cache.s.b VALUES (" + std::to_string(i) + ")", p, false);
+    }
+
+    auto snapshotsOf = [&](const std::string& table) {
+        std::map<std::string, std::string> q;
+        auto r = db->executeQuery(
+            "SELECT count(*) AS n FROM ducklake_snapshots('cache') "
+            "WHERE list_contains(flatten(map_values(changes)), 's." + table + "') "
+            "   OR list_contains(flatten(map_values(changes)), "
+            "      (SELECT CAST(table_id AS VARCHAR) FROM ducklake_table_info('cache') "
+            "       WHERE table_name = '" + table + "' LIMIT 1))", q, false);
+        auto rows = crow::json::load(r.data.dump());
+        return static_cast<int64_t>(rows[0]["n"].d());
+    };
+
+    const int64_t a_before = snapshotsOf("a");
+    const int64_t b_before = snapshotsOf("b");
+    REQUIRE(a_before > 2);
+    REQUIRE(b_before > 2);
+
+    // Only /a has a retention policy. /b has none at all.
+    auto endpoint_a = cachedEndpoint("/a", "a");
+    endpoint_a.cache.retention.keep_last_snapshots = 2;
+
+    std::map<std::string, std::string> params;
+    cache_manager.refreshDuckLakeCache(config_manager, endpoint_a, params);
+
+    SECTION("a's own snapshots were expired") {
+        // Without this the test would pass by expiring nothing at all.
+        REQUIRE(snapshotsOf("a") < a_before);
+    }
+
+    SECTION("b's snapshots are untouched") {
+        REQUIRE(snapshotsOf("b") == b_before);
+    }
+
+    SECTION("the expire call names no snapshot that belongs to b") {
+        std::string expire;
+        for (const auto& q : adapter->executed) {
+            if (q.find("ducklake_expire_snapshots") != std::string::npos) {
+                expire = q;
+            }
+        }
+        REQUIRE_FALSE(expire.empty());
+
+        std::map<std::string, std::string> q;
+        auto r = db->executeQuery(
+            "SELECT snapshot_id FROM ducklake_snapshots('cache') "
+            "WHERE list_contains(flatten(map_values(changes)), 's.b') "
+            "   OR list_contains(flatten(map_values(changes)), "
+            "      (SELECT CAST(table_id AS VARCHAR) FROM ducklake_table_info('cache') "
+            "       WHERE table_name = 'b' LIMIT 1))", q, false);
+        auto rows = crow::json::load(r.data.dump());
+        REQUIRE(rows.size() > 0);
+        for (size_t i = 0; i < rows.size(); ++i) {
+            const auto id = std::to_string(static_cast<int64_t>(rows[i]["snapshot_id"].d()));
+            INFO("expire call: " << expire << " must not name b's snapshot " << id);
+            REQUIRE(expire.find(id) == std::string::npos);
+        }
     }
 
     db->reset();

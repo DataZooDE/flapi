@@ -140,6 +140,7 @@ void ConfigToolAdapter::registerTemplateTools() {
         build_basic_schema(),
         build_basic_schema()
     };
+    tool_unimplemented_["flapi_update_template"] = "PUT /api/v1/_config/endpoints/{slug}/template";
     tool_auth_required_["flapi_update_template"] = true;  // Mutation - requires auth
     tool_handlers_["flapi_update_template"] = [this](const crow::json::wvalue& args) {
         return this->executeUpdateTemplate(args);
@@ -152,6 +153,7 @@ void ConfigToolAdapter::registerTemplateTools() {
         build_basic_schema(),
         build_basic_schema()
     };
+    tool_unimplemented_["flapi_expand_template"] = "POST /api/v1/_config/endpoints/{slug}/template/expand";
     tool_auth_required_["flapi_expand_template"] = false;  // Read-only
     tool_handlers_["flapi_expand_template"] = [this](const crow::json::wvalue& args) {
         return this->executeExpandTemplate(args);
@@ -164,6 +166,7 @@ void ConfigToolAdapter::registerTemplateTools() {
         build_basic_schema(),
         build_basic_schema()
     };
+    tool_unimplemented_["flapi_test_template"] = "POST /api/v1/_config/endpoints/{slug}/template/expand";
     tool_auth_required_["flapi_test_template"] = false;  // Read-only (query execution)
     tool_handlers_["flapi_test_template"] = [this](const crow::json::wvalue& args) {
         return this->executeTestTemplate(args);
@@ -317,6 +320,12 @@ void ConfigToolAdapter::registerCacheTools() {
 std::vector<ConfigToolDef> ConfigToolAdapter::getRegisteredTools() const {
     std::vector<ConfigToolDef> result;
     for (const auto& pair : tools_) {
+        // An unimplemented tool is not offered. tools/list is a contract: an
+        // agent that sees a tool will call it, and a stub answering with a
+        // plausible-looking result is worse than one that was never offered.
+        if (tool_unimplemented_.count(pair.first) != 0) {
+            continue;
+        }
         result.push_back(pair.second);
     }
     return result;
@@ -359,6 +368,27 @@ ConfigToolResult ConfigToolAdapter::executeTool(const std::string& tool_name,
         if (!token_error.empty()) {
             CROW_LOG_WARNING << "Tool execution denied - auth validation failed for " << tool_name << ": " << token_error;
             return createErrorResult(-32001, "Authentication validation failed: " + token_error);
+        }
+    }
+
+    // Refuse an unimplemented tool here, centrally, rather than trusting each
+    // body to refuse for itself. Two of the three template tools did not, and
+    // answered with a hardcoded SQL string and "Template expanded
+    // successfully". A caller cannot tell a fabricated result from a real one,
+    // so this must not depend on remembering.
+    //
+    // Deliberately AFTER the auth gate: an unauthenticated caller must not be
+    // able to use the refusal to probe which tools exist.
+    {
+        const auto unimplemented = tool_unimplemented_.find(tool_name);
+        if (unimplemented != tool_unimplemented_.end()) {
+            CROW_LOG_WARNING << tool_name << " is not implemented; refusing rather than "
+                                "reporting success for work not done";
+            std::string message = tool_name + " is not implemented.";
+            if (!unimplemented->second.empty()) {
+                message += " Use " + unimplemented->second + " instead.";
+            }
+            return createErrorResult(-32601, message);
         }
     }
 
@@ -702,14 +732,20 @@ ConfigToolResult ConfigToolAdapter::executeExpandTemplate(const crow::json::wval
             return createErrorResult(-32603, "Endpoint not found: " + endpoint);
         }
 
-        // Return template expansion result
-        crow::json::wvalue result;
-        result["endpoint"] = endpoint;
-        result["expanded_sql"] = "SELECT * FROM data WHERE 1=1";  // Placeholder
-        result["status"] = "Template expanded successfully";
-
-        CROW_LOG_INFO << "flapi_expand_template: expanded template for endpoint " << endpoint;
-        return createSuccessResult(result.dump());
+        // This tool has never expanded anything. It returned a hardcoded
+        // `SELECT * FROM data WHERE 1=1` with "Template expanded
+        // successfully", which an agent cannot distinguish from a real
+        // expansion of the endpoint's actual template.
+        //
+        // executeTool() now refuses every tool whose ConfigToolDef is marked
+        // unimplemented, so this body is unreachable. It refuses anyway: the
+        // point of the fix is that no path fabricates a result.
+        CROW_LOG_WARNING << "flapi_expand_template is not implemented; refusing for endpoint "
+                         << endpoint;
+        return createErrorResult(
+            -32601,
+            "flapi_expand_template is not implemented. Use "
+            "POST /api/v1/_config/endpoints/{slug}/template/expand instead.");
     } catch (const std::exception& e) {
         CROW_LOG_ERROR << "flapi_expand_template failed: " << e.what();
         return createErrorResult(-32603, "Failed to expand template: " + std::string(e.what()));
@@ -737,14 +773,15 @@ ConfigToolResult ConfigToolAdapter::executeTestTemplate(const crow::json::wvalue
             return createErrorResult(-32603, "Endpoint not found: " + endpoint);
         }
 
-        // Return test result
-        crow::json::wvalue result;
-        result["endpoint"] = endpoint;
-        result["status"] = "Template test passed";
-        result["expanded_sql"] = "SELECT * FROM data WHERE 1=1";  // Placeholder
-
-        CROW_LOG_INFO << "flapi_test_template: tested template for endpoint " << endpoint;
-        return createSuccessResult(result.dump());
+        // Likewise: this reported "Template test passed" for a query it never
+        // ran, against SQL it never produced. Claiming a test passed is the
+        // single worst thing a stub can say.
+        CROW_LOG_WARNING << "flapi_test_template is not implemented; refusing for endpoint "
+                         << endpoint;
+        return createErrorResult(
+            -32601,
+            "flapi_test_template is not implemented. Use "
+            "POST /api/v1/_config/endpoints/{slug}/template/expand instead.");
     } catch (const std::exception& e) {
         CROW_LOG_ERROR << "flapi_test_template failed: " << e.what();
         return createErrorResult(-32603, "Failed to test template: " + std::string(e.what()));

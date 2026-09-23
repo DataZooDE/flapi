@@ -321,7 +321,7 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
             // N have to be resolved first. Nothing to expire is the common
             // case early in a cache's life and is not an error.
             expireSql = buildCountBasedExpireSql(
-                catalog, cacheConfig.retention.keep_last_snapshots.value());
+                catalog, schema, table, cacheConfig.retention.keep_last_snapshots.value());
         }
         if (expireSql.empty()) {
             return;   // nothing old enough to expire yet
@@ -334,7 +334,51 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
     }
 }
 
+std::vector<std::string> CacheManager::tableChangeKeys(const std::string& catalog,
+                                                       const std::string& schema,
+                                                       const std::string& table) {
+    // `changes` is a MAP(VARCHAR, VARCHAR[]) that names tables by id for row
+    // changes and by `schema.table` for creates, so both forms count.
+    std::vector<std::string> keys;
+    keys.push_back(schema + "." + table);
+    try {
+        const std::string query =
+            "SELECT CAST(table_id AS VARCHAR) AS table_id FROM ducklake_table_info('" +
+            catalog + "') WHERE table_name = '" + table + "' LIMIT 1";
+        auto result = db_adapter_->executeDuckLakeQueryWithResult(query);
+        auto rows = crow::json::load(result.data.dump());
+        if (rows && rows.t() == crow::json::type::List && rows.size() > 0 &&
+            rows[0].has("table_id") && rows[0]["table_id"].t() == crow::json::type::String) {
+            keys.push_back(rows[0]["table_id"].s());
+        }
+    } catch (const std::exception& ex) {
+        // Table not in the catalog yet on a first refresh; the name form alone
+        // is the right answer then.
+        CROW_LOG_DEBUG << "Could not resolve DuckLake table id for " << schema << "." << table
+                       << ": " << ex.what();
+    }
+    return keys;
+}
+
+std::string CacheManager::tableSnapshotPredicate(const std::vector<std::string>& keys) {
+    if (keys.empty()) {
+        return "false";
+    }
+    std::ostringstream out;
+    out << "(";
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        if (i > 0) {
+            out << " OR ";
+        }
+        out << "list_contains(flatten(map_values(changes)), '" << keys[i] << "')";
+    }
+    out << ")";
+    return out.str();
+}
+
 std::string CacheManager::buildCountBasedExpireSql(const std::string& catalog,
+                                                   const std::string& schema,
+                                                   const std::string& table,
                                                    std::size_t keep_last) {
     if (keep_last == 0) {
         return {};   // keeping nothing is not a retention policy; refuse it
@@ -342,8 +386,43 @@ std::string CacheManager::buildCountBasedExpireSql(const std::string& catalog,
 
     std::vector<std::int64_t> expire_ids;
     try {
+        // Every cached endpoint shares ONE DuckLake catalog, so a
+        // catalog-wide snapshot list is every endpoint's history. This query
+        // used to be exactly that, while `keep-last-snapshots` is configured
+        // per endpoint: an endpoint with keep_last=2 refreshing for the third
+        // time called ducklake_expire_snapshots on every other endpoint's
+        // snapshots too, destroying their time-travel history and their
+        // incremental watermark. The existing test uses a single table, so it
+        // could not see it.
+        //
+        // Two restrictions, both needed:
+        //   1. only snapshots that touched THIS table are candidates;
+        //   2. of those, only ones that touched NOTHING ELSE are expired.
+        //
+        // (2) is the conservative half. A snapshot can carry changes for
+        // several tables, and expiring it discards all of them - so a shared
+        // snapshot is left alone and this endpoint simply keeps more history
+        // than asked. Retaining too much is recoverable; deleting another
+        // endpoint's data is not.
+        const auto keys = tableChangeKeys(catalog, schema, table);
+
+        // "Touched nothing but this table": every entry in the snapshot's
+        // change list is one of this table's keys. Built from resolved
+        // literals - a subquery inside the lambda is a binder error.
+        std::ostringstream others;
+        others << "len(list_filter(flatten(map_values(changes)), x -> ";
+        for (std::size_t i = 0; i < keys.size(); ++i) {
+            if (i > 0) {
+                others << " AND ";
+            }
+            others << "x <> '" << keys[i] << "'";
+        }
+        others << ")) = 0";
+
         const std::string query =
-            "SELECT snapshot_id FROM ducklake_snapshots('" + catalog + "') ORDER BY snapshot_id DESC";
+            "SELECT snapshot_id FROM ducklake_snapshots('" + catalog + "') "
+            "WHERE " + tableSnapshotPredicate(keys) + " AND " + others.str() + " "
+            "ORDER BY snapshot_id DESC";
         auto result = db_adapter_->executeDuckLakeQueryWithResult(query);
         auto rows = crow::json::load(result.data.dump());
         if (!(rows && rows.t() == crow::json::type::List)) {
@@ -425,13 +504,9 @@ CacheManager::SnapshotInfo CacheManager::fetchSnapshotInfo(const std::string& ca
         // row changes and by `schema.table` for creates, so both forms are
         // matched. A NULL table id (table not in the catalog yet) makes
         // list_contains NULL, which the OR handles.
-        const std::string table_id_expr =
-            "(SELECT CAST(table_id AS VARCHAR) FROM ducklake_table_info('" + catalog +
-            "') WHERE table_name = '" + table + "' LIMIT 1)";
         std::string snapshotsQuery =
             "SELECT snapshot_id, snapshot_time FROM ducklake_snapshots('" + catalog + "') "
-            "WHERE list_contains(flatten(map_values(changes)), " + table_id_expr + ") "
-            "   OR list_contains(flatten(map_values(changes)), '" + schema + "." + table + "') "
+            "WHERE " + tableSnapshotPredicate(tableChangeKeys(catalog, schema, table)) + " "
             "ORDER BY snapshot_id DESC LIMIT 2";
         try {
             auto snapshots = db_adapter_->executeDuckLakeQueryWithResult(snapshotsQuery);

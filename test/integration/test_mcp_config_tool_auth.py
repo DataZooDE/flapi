@@ -84,6 +84,16 @@ class _Server:
         return requests.post(f"{self.base_url}/mcp/jsonrpc", headers=headers,
                              data=json.dumps(body), timeout=15).json()
 
+    def list_tools(self, token=None):
+        headers = {"Content-Type": "application/json"}
+        if token is not None:
+            headers["Authorization"] = f"Bearer {token}"
+        body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+        r = requests.post(f"{self.base_url}/mcp/jsonrpc", headers=headers,
+                          data=json.dumps(body), timeout=15).json()
+        assert "result" in r, r
+        return r["result"]["tools"]
+
     def stop(self):
         if self.proc:
             import signal
@@ -150,5 +160,62 @@ class TestMcpConfigToolAuth:
         # Only the mutating tools require a token; this pins that the fix did
         # not quietly close the read path too.
         with _Server() as s:
+            got = s.call_tool("flapi_get_project_config")
+            assert "result" in got, got
+
+
+class TestNoConfigToolFabricatesAResult:
+    """No config tool may report work it did not do.
+
+    `flapi_update_template` was fixed to refuse. Its two siblings, 40 lines
+    away in the same file, were not: `flapi_expand_template` and
+    `flapi_test_template` both returned the hardcoded literal
+
+        {"expanded_sql": "SELECT * FROM data WHERE 1=1",
+         "status": "Template expanded successfully"}
+
+    Both are registered auth_required=false, so any unauthenticated MCP client
+    received a fabricated SQL string indistinguishable from a real expansion -
+    and `flapi_test_template` claimed a query had passed that it never ran.
+
+    These tests are written against the PROPERTY ("no tool fabricates"), not
+    against the two names, because fixing the instance and missing the siblings
+    is exactly how this got here.
+    """
+
+    UNIMPLEMENTED = ["flapi_update_template", "flapi_expand_template", "flapi_test_template"]
+
+    def test_no_unimplemented_tool_is_advertised(self):
+        # tools/list is a contract: an agent that sees a tool will call it.
+        with _Server() as s:
+            listed = {t["name"] for t in s.list_tools()}
+            for name in self.UNIMPLEMENTED:
+                assert name not in listed, (
+                    f"{name} is advertised but has no implementation")
+
+    def test_every_unimplemented_tool_refuses(self):
+        with _Server() as s:
+            for name in self.UNIMPLEMENTED:
+                got = s.call_tool(name, token=TOKEN,
+                                  endpoint="/hello", content="SELECT 1")
+                assert "error" in got, f"{name} claimed success: {got}"
+                assert "not implemented" in got["error"]["message"], got
+
+    def test_no_tool_returns_the_placeholder_sql(self):
+        # The literal itself, so a future stub reusing it is caught whatever
+        # it calls itself.
+        with _Server() as s:
+            for name in self.UNIMPLEMENTED:
+                got = s.call_tool(name, token=TOKEN,
+                                  endpoint="/hello", content="SELECT 1")
+                assert "SELECT * FROM data WHERE 1=1" not in json.dumps(got), (
+                    f"{name} returned fabricated SQL: {got}")
+
+    def test_the_implemented_tools_are_still_advertised_and_work(self):
+        # The guard must not swallow the working tools.
+        with _Server() as s:
+            listed = {t["name"] for t in s.list_tools()}
+            assert "flapi_get_project_config" in listed, listed
+            assert "flapi_get_template" in listed, listed
             got = s.call_tool("flapi_get_project_config")
             assert "result" in got, got
