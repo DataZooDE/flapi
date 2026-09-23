@@ -33,9 +33,11 @@ TOKEN = "the-real-config-service-token"
 
 
 class _Server:
-    def __init__(self, config_service_token: str = TOKEN):
+    def __init__(self, config_service_token: str = TOKEN,
+                 cached_endpoint: bool = False):
         # "" means --config-service with NO token, which must fail closed.
         self.config_service_token = config_service_token
+        self.cached_endpoint = cached_endpoint
         self.tmp = tempfile.mkdtemp(prefix="flapi_mcptool_")
         self.port = free_port()
         self.base_url = f"http://127.0.0.1:{self.port}"
@@ -49,6 +51,14 @@ class _Server:
         self.template = os.path.join(sqls, "hello.sql")
         with open(self.template, "w") as f:
             f.write("SELECT 'original-template' AS v\n")
+        if cached_endpoint:
+            with open(os.path.join(sqls, "cached.yaml"), "w") as f:
+                f.write("url-path: /cached\nmethod: GET\n"
+                        "template-source: cached.sql\nconnection: [inmem]\n"
+                        "cache:\n  enabled: true\n  table: c_cache\n"
+                        "  schema: main\n  schedule: 1h\n")
+            with open(os.path.join(sqls, "cached.sql"), "w") as f:
+                f.write("SELECT 1 AS n\n")
         with open(os.path.join(self.tmp, "flapi.yaml"), "w") as f:
             f.write(
                 "project-name: mcp-tool-auth\n"
@@ -342,17 +352,35 @@ class TestTheMutatingCacheToolsWithAToken:
     def test_the_cache_tools_agree_with_the_rest_routes(self):
         # The point of delegating: one implementation, so the two surfaces
         # cannot answer differently.
+        #
+        # Against a CACHED endpoint. The first version used /hello, which has
+        # no cache in this fixture, so it always took the "both refuse" branch
+        # and its equality assertion - the whole point - was unreachable.
+        with _Server(cached_endpoint=True) as s:
+            mcp = s.call_tool("flapi_get_cache_status", token=TOKEN, path="/cached")
+            rest = requests.get(
+                f"{s.base_url}/api/v1/_config/endpoints/-cached/cache",
+                headers={"X-Config-Token": TOKEN}, timeout=10)
+            assert "result" in mcp, mcp
+            assert rest.status_code == 200, rest.text
+            mcp_body = mcp["result"]["content"][0]["text"]
+            assert json.loads(mcp_body) == rest.json(), (mcp_body, rest.text)
+
+    def test_the_two_surfaces_also_agree_when_there_is_no_cache(self):
+        # The property is AGREEMENT, not a particular answer. Both report
+        # `enabled: false` for an uncached endpoint, and asserting an error
+        # here would have been prescribing an answer neither surface gives.
         with _Server() as s:
             mcp = s.call_tool("flapi_get_cache_status", token=TOKEN, path="/hello")
             rest = requests.get(
                 f"{s.base_url}/api/v1/_config/endpoints/-hello/cache",
                 headers={"X-Config-Token": TOKEN}, timeout=10)
             if "result" in mcp:
-                mcp_body = mcp["result"]["content"][0]["text"]
                 assert rest.status_code == 200, rest.text
-                assert json.loads(mcp_body) == rest.json(), (mcp_body, rest.text)
+                assert json.loads(mcp["result"]["content"][0]["text"]) == rest.json()
+                assert json.loads(
+                    mcp["result"]["content"][0]["text"]).get("enabled") is False
             else:
-                # Both must refuse, and for the same reason.
                 assert rest.status_code >= 400, rest.text
 
 

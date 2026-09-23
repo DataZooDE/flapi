@@ -112,9 +112,12 @@ TEST_CASE("shutdown abandons the queue once the drain budget expires",
         REQUIRE(pool.submit([&] { ++ran; }));
     }
 
-    std::thread stopper([&] { pool.shutdown(std::chrono::milliseconds(10)); });
-    // Let the budget lapse while the first job is still running.
-    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    // A zero budget: the deadline is already past when shutdown() records it,
+    // so the worker cannot fail to observe it however the scheduler behaves.
+    // A 10ms budget raced - if the worker reached its next queued job before
+    // the 10ms elapsed it ran one, and the assertion below flaked.
+    std::thread stopper([&] { pool.shutdown(std::chrono::milliseconds(0)); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     release.store(true);
     stopper.join();
 
@@ -144,15 +147,30 @@ TEST_CASE("a second shutdown waits for the first rather than returning early",
     }));
     started_future.wait();
 
+    // BOTH callers are instrumented, and the first is started first and
+    // given time to take the shutdown lock. Instrumenting only the second
+    // meant the test could not tell which caller had returned early, so it
+    // detected the regression only when the threads happened to interleave
+    // the right way.
+    std::atomic<bool> first_returned{false};
     std::atomic<bool> second_returned{false};
-    std::thread first([&] { pool.shutdown(std::chrono::seconds(5)); });
+
+    std::thread first([&] {
+        pool.shutdown(std::chrono::seconds(5));
+        first_returned.store(true);
+    });
+    // Let the first caller get inside shutdown() before the second arrives,
+    // so the second is unambiguously the one that must WAIT.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     std::thread second([&] {
         pool.shutdown(std::chrono::seconds(5));
         second_returned.store(true);
     });
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    // Neither caller may have returned while the job is still running.
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // The job is still running, so NEITHER caller may have returned. The
+    // early-return regression shows up here as second_returned == true.
+    REQUIRE_FALSE(first_returned.load());
     REQUIRE_FALSE(second_returned.load());
 
     release.store(true);
@@ -160,5 +178,6 @@ TEST_CASE("a second shutdown waits for the first rather than returning early",
     second.join();
 
     REQUIRE(job_finished.load());
+    REQUIRE(first_returned.load());
     REQUIRE(second_returned.load());
 }

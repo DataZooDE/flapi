@@ -333,6 +333,12 @@ class TestTheConfigToolsCannotBeUsedAsASecondDoor:
                 timeout=15).json()
             names = [t["name"] for t in listed["result"]["tools"]]
             assert names, "tools/list returned nothing at all"
+            # The assertion this test is named for, which it never made: with
+            # the config service off, its tools are not on the menu.
+            advertised = [n for n in names if n.startswith("flapi_")]
+            assert not advertised, (
+                "config tools advertised while the config service is disabled: "
+                f"{advertised}")
             for name in names:
                 blob = json.dumps(self._call(s, name, endpoint="/t", path="/t",
                                              params={}, content="SELECT 1"))

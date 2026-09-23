@@ -126,20 +126,14 @@ private:
     std::unordered_map<std::string, bool> tool_auth_required_;
     std::unordered_map<std::string, ToolHandler> tool_handlers_;
 
-    /// Registered tools that have no working implementation, mapped to the
-    /// REST route a caller should use instead. Presence means unimplemented.
+/// Every registered tool must have a handler in tool_handlers_.
     ///
-    /// "Is this implemented?" used to live in the handler bodies, so three
-    /// template tools were advertised identically to the working ones, and two
-    /// of them answered with a hardcoded `SELECT * FROM data WHERE 1=1` and
-    /// `"status": "Template expanded successfully"` - a fabricated result an
-    /// agent cannot distinguish from a real one. Fixing one body left its two
-    /// siblings lying.
-    ///
-    /// As a registration fact it is structural: getRegisteredTools() never
-    /// advertises a tool listed here, and executeTool() refuses it centrally,
-    /// so a stub cannot reach a caller whatever its body does.
-    std::unordered_map<std::string, std::string> tool_unimplemented_;
+    /// There used to be a tool_unimplemented_ registry here, added when eleven
+    /// tools returned hardcoded or empty data while reporting success. They
+    /// were then wired to their real REST handlers, which emptied the registry
+    /// - leaving declared, guarded, never-populated machinery that no test
+    /// could reach. The invariant it encoded survives as the handler lookup in
+    /// getRegisteredTools(): a tool with no handler is not advertised.
 
     /// Turn a config-service handler's crow::response into a tool result.
     ///

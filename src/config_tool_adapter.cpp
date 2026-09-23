@@ -392,13 +392,29 @@ ConfigToolResult ConfigToolAdapter::fromHandler(const std::string& tool_name,
     std::string detail = response.body.empty()
                              ? ("Request failed with status " + std::to_string(response.code))
                              : response.body;
-    // Scrubbed before logging as well as before returning.
-    if (secrets != nullptr) {
-        detail = secrets->withhold()
-                     ? std::string("the server could not describe this failure without "
-                                   "risking disclosure")
-                     : secrets->scrub(std::move(detail));
+
+    // No secret set means the caller could not name an endpoint, so nothing
+    // here can be proven safe to quote. Opaque is the correct default: the
+    // scrub used to be opt-in, and most delegated tools passed nothing, so
+    // "centralised at the boundary" was true of the code and false of the
+    // behaviour.
+    if (secrets == nullptr) {
+        CROW_LOG_WARNING << tool_name << " failed: " << response.code << " " << detail;
+        const int opaque_code = (response.code == 404 || response.code == 400) ? -32602 : -32603;
+        // A 4xx names what the CALLER got wrong and cannot quote a rendered
+        // template, so it stays actionable.
+        if (response.code >= 400 && response.code < 500) {
+            return ConfigToolResult{false, "", detail, opaque_code};
+        }
+        return ConfigToolResult{false, "",
+                                tool_name + " failed; see the server log for details.",
+                                opaque_code};
     }
+    // Scrubbed before logging as well as before returning.
+    detail = secrets->withhold()
+                 ? std::string("the server could not describe this failure without "
+                               "risking disclosure")
+                 : secrets->scrub(std::move(detail));
     CROW_LOG_WARNING << tool_name << " failed: " << response.code << " " << detail;
 
     // 404 is the caller naming something that does not exist - an invalid
@@ -416,10 +432,14 @@ crow::request ConfigToolAdapter::handlerRequest(const std::string& body) {
 std::vector<ConfigToolDef> ConfigToolAdapter::getRegisteredTools() const {
     std::vector<ConfigToolDef> result;
     for (const auto& pair : tools_) {
-        // An unimplemented tool is not offered. tools/list is a contract: an
-        // agent that sees a tool will call it, and a stub answering with a
-        // plausible-looking result is worse than one that was never offered.
-        if (tool_unimplemented_.count(pair.first) != 0) {
+        // tools/list is a contract: an agent that sees a tool will call it.
+        // A tool with no handler cannot honour that, so it is not offered -
+        // which is the structural form of "no tool fabricates a result", the
+        // defect eleven of these had.
+        if (tool_handlers_.count(pair.first) == 0) {
+            CROW_LOG_ERROR << "config tool '" << pair.first
+                           << "' is registered with no handler and will not be "
+                              "advertised; this is a programming error";
             continue;
         }
         result.push_back(pair.second);
@@ -464,27 +484,6 @@ ConfigToolResult ConfigToolAdapter::executeTool(const std::string& tool_name,
         if (!token_error.empty()) {
             CROW_LOG_WARNING << "Tool execution denied - auth validation failed for " << tool_name << ": " << token_error;
             return createErrorResult(-32001, "Authentication validation failed: " + token_error);
-        }
-    }
-
-    // Refuse an unimplemented tool here, centrally, rather than trusting each
-    // body to refuse for itself. Two of the three template tools did not, and
-    // answered with a hardcoded SQL string and "Template expanded
-    // successfully". A caller cannot tell a fabricated result from a real one,
-    // so this must not depend on remembering.
-    //
-    // Deliberately AFTER the auth gate: an unauthenticated caller must not be
-    // able to use the refusal to probe which tools exist.
-    {
-        const auto unimplemented = tool_unimplemented_.find(tool_name);
-        if (unimplemented != tool_unimplemented_.end()) {
-            CROW_LOG_WARNING << tool_name << " is not implemented; refusing rather than "
-                                "reporting success for work not done";
-            std::string message = tool_name + " is not implemented.";
-            if (!unimplemented->second.empty()) {
-                message += " Use " + unimplemented->second + " instead.";
-            }
-            return createErrorResult(-32601, message);
         }
     }
 
@@ -667,10 +666,15 @@ ConfigToolResult ConfigToolAdapter::executeGetTemplate(const crow::json::wvalue&
         return createErrorResult(-32602, "Endpoint not found: " + endpoint);
     }
 
+    // Same, for the tools that already resolved the endpoint.
+    std::map<std::string, std::string> no_params;
+    const auto secrets =
+        collectTemplateSecrets(config_manager_.get(), *resolved, no_params);
+
     TemplateHandler handler(config_manager_);
     return fromHandler("flapi_get_template",
                        handler.getEndpointTemplateBySlug(handlerRequest(),
-                                                         resolved->getSlug()));
+                                                         resolved->getSlug()), &secrets);
 }
 
 ConfigToolResult ConfigToolAdapter::executeUpdateTemplate(const crow::json::wvalue& args) {
@@ -705,9 +709,14 @@ ConfigToolResult ConfigToolAdapter::executeUpdateTemplate(const crow::json::wval
 
     crow::json::wvalue payload;
     payload["template"] = content;
+    // Same, for the tools that already resolved the endpoint.
+    std::map<std::string, std::string> no_params;
+    const auto secrets =
+        collectTemplateSecrets(config_manager_.get(), *resolved, no_params);
+
     TemplateHandler handler(config_manager_);
     return fromHandler("flapi_update_template",
-                       handler.updateEndpointTemplateBySlug(handlerRequest(payload.dump()), slug));
+                       handler.updateEndpointTemplateBySlug(handlerRequest(payload.dump()), slug), &secrets);
 }
 
 ConfigToolResult ConfigToolAdapter::executeExpandTemplate(const crow::json::wvalue& args) {
@@ -1204,9 +1213,17 @@ ConfigToolResult ConfigToolAdapter::executeGetCacheStatus(const crow::json::wval
         return createErrorResult(-32602, error_msg);
     }
 
+    // The secret set for THIS endpoint, so a failure body quoting the
+    // rendered statement is scrubbed at the boundary rather than made opaque.
+    TemplateSecrets secrets;
+    if (const auto ep = config_manager_->getEndpointForPath(endpoint_path)) {
+        std::map<std::string, std::string> no_params;
+        secrets = collectTemplateSecrets(config_manager_.get(), *ep, no_params);
+    }
+
     CacheConfigHandler handler(config_manager_);
     return fromHandler("flapi_get_cache_status",
-                       handler.getCacheConfig(handlerRequest(), endpoint_path));
+                       handler.getCacheConfig(handlerRequest(), endpoint_path), &secrets);
 }
 
 ConfigToolResult ConfigToolAdapter::executeRefreshCache(const crow::json::wvalue& args) {
@@ -1221,9 +1238,17 @@ ConfigToolResult ConfigToolAdapter::executeRefreshCache(const crow::json::wvalue
     if (!error_msg.empty()) {
         return createErrorResult(-32602, error_msg);
     }
+    // The secret set for THIS endpoint, so a failure body quoting the
+    // rendered statement is scrubbed at the boundary rather than made opaque.
+    TemplateSecrets secrets;
+    if (const auto ep = config_manager_->getEndpointForPath(endpoint_path)) {
+        std::map<std::string, std::string> no_params;
+        secrets = collectTemplateSecrets(config_manager_.get(), *ep, no_params);
+    }
+
     CacheConfigHandler handler(config_manager_);
     return fromHandler("flapi_refresh_cache",
-                       handler.refreshCache(handlerRequest(), endpoint_path));
+                       handler.refreshCache(handlerRequest(), endpoint_path), &secrets);
 }
 
 ConfigToolResult ConfigToolAdapter::executeGetCacheAudit(const crow::json::wvalue& args) {
@@ -1239,8 +1264,17 @@ ConfigToolResult ConfigToolAdapter::executeGetCacheAudit(const crow::json::wvalu
     if (!error_msg.empty()) {
         return createErrorResult(-32602, error_msg);
     }
+    // The secret set for THIS endpoint, so a failure body quoting the
+    // rendered statement is scrubbed at the boundary rather than made opaque.
+    TemplateSecrets secrets;
+    if (const auto ep = config_manager_->getEndpointForPath(endpoint_path)) {
+        std::map<std::string, std::string> no_params;
+        secrets = collectTemplateSecrets(config_manager_.get(), *ep, no_params);
+    }
+
     AuditLogHandler handler(config_manager_);
-    return fromHandler("flapi_get_cache_audit", handler.getCacheAuditLog(endpoint_path));
+    return fromHandler("flapi_get_cache_audit",
+                       handler.getCacheAuditLog(endpoint_path), &secrets);
 }
 
 ConfigToolResult ConfigToolAdapter::executeRunCacheGC(const crow::json::wvalue& args) {
@@ -1261,9 +1295,17 @@ ConfigToolResult ConfigToolAdapter::executeRunCacheGC(const crow::json::wvalue& 
         return createErrorResult(-32602, error_msg);
     }
 
+    // The secret set for THIS endpoint, so a failure body quoting the
+    // rendered statement is scrubbed at the boundary rather than made opaque.
+    TemplateSecrets secrets;
+    if (const auto ep = config_manager_->getEndpointForPath(endpoint_path)) {
+        std::map<std::string, std::string> no_params;
+        secrets = collectTemplateSecrets(config_manager_.get(), *ep, no_params);
+    }
+
     CacheConfigHandler handler(config_manager_);
     return fromHandler("flapi_run_cache_gc",
-                       handler.performGarbageCollection(handlerRequest(), endpoint_path));
+                       handler.performGarbageCollection(handlerRequest(), endpoint_path), &secrets);
 }
 
 // ============================================================================
