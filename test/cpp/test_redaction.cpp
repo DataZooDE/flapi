@@ -54,6 +54,27 @@ TEST_CASE("ordinary field names are not redacted", "[redaction][security]") {
     }
 }
 
+TEST_CASE("short credential names are matched whole, not as substrings",
+          "[redaction][security]") {
+    // `pass` and `sas` are real credential key names - `pass`, `user_pass`,
+    // `db_pass`, and the Azure shared-access signature - and none of them
+    // contains "password". Added as SUBSTRING stems they immediately
+    // swallowed `passenger_count`, which the ordinary-field-names test above
+    // caught. So they are matched on the whole normalised key.
+    for (const char* key : {"pass", "user_pass", "db_pass",
+                            "sas", "sas_token", "sas_key",
+                            "service_account", "service_account_json"}) {
+        INFO("key = " << key);
+        REQUIRE(isCredentialKey(key));
+    }
+
+    for (const char* key : {"passenger_count", "passengers", "compass",
+                            "sassafras", "passage"}) {
+        INFO("key = " << key);
+        REQUIRE_FALSE(isCredentialKey(key));
+    }
+}
+
 TEST_CASE("key normalisation strips separators and case", "[redaction]") {
     REQUIRE(normaliseKey("X-Api-Key") == "xapikey");
     REQUIRE(normaliseKey("client_secret") == "clientsecret");

@@ -17,13 +17,25 @@ namespace {
 // Short stems (pin, sid, sig, otp) are deliberately absent: matched as
 // substrings they would redact half the ordinary fields in a data API, and a
 // denylist that redacts everything teaches operators to turn it off.
-constexpr std::array<std::string_view, 27> kCredentialStems{{
+constexpr std::array<std::string_view, 28> kCredentialStems{{
     "password", "passwd", "pwd", "passphrase", "passcode",
     "secret", "token", "apikey", "authorization", "cookie",
     "credential", "privatekey", "privkey", "connectionstring", "connstr",
     "signature", "bearer", "jwt", "accesskey", "clientsecret",
     "authkey", "sessionid", "dsn", "databaseurl", "hmac",
     "subscriptionkey", "functionskey",
+    // The JSON blob GCP hands out, under its own name.
+    "serviceaccount",
+}};
+
+// Credentials whose names are too SHORT to be substring stems.
+//
+// `pass` would swallow `passenger_count`, and `sas` any word containing it -
+// exactly the over-redaction the ordinary-field-names test guards, and it
+// caught both. Matched on the whole normalised key instead, plus the
+// prefixed forms that actually occur.
+constexpr std::array<std::string_view, 6> kCredentialWholeKeys{{
+    "pass", "userpass", "dbpass", "sas", "sastoken", "saskey",
 }};
 
 // Exceptions, matched on the WHOLE normalised key rather than as substrings.
@@ -64,6 +76,10 @@ bool isCredentialKey(std::string_view key) {
     if (std::find(kNotCredentials.begin(), kNotCredentials.end(), normalised)
         != kNotCredentials.end()) {
         return false;
+    }
+    if (std::find(kCredentialWholeKeys.begin(), kCredentialWholeKeys.end(), normalised)
+        != kCredentialWholeKeys.end()) {
+        return true;
     }
     return std::any_of(kCredentialStems.begin(), kCredentialStems.end(),
                        [&normalised](std::string_view stem) {
