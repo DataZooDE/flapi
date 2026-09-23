@@ -264,7 +264,21 @@ jobs:
 
     - name: Rewrite shared import to relative path
       run: |
-        sed -i "s|from '@flapi/shared'|from '../../shared/src/index'|" cli/src/lib/validation.ts
+        # Every importer, not a named one. This step listed only
+        # validation.ts; when url.ts started importing the slug codec from
+        # @flapi/shared the build broke, because bun --compile does not
+        # resolve the file: dependency. All importers live in cli/src/lib,
+        # so one relative path serves them all.
+        files=$(grep -rl "from '@flapi/shared'" cli/src)
+        test -n "$files" || { echo "no @flapi/shared importers found"; exit 1; }
+        echo "$files"
+        for f in $files; do
+          case "$f" in
+            cli/src/lib/*) ;;
+            *) echo "$f is outside cli/src/lib; ../../shared/src/index will not resolve"; exit 1 ;;
+          esac
+          sed -i "s|from '@flapi/shared'|from '../../shared/src/index'|" "$f"
+        done
 
     - name: Build standalone binary
       working-directory: cli
