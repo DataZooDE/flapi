@@ -1450,7 +1450,18 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
                                                  "redact reliably>")
                                    : secrets.scrub(expanded);
 
-        // Include variable metadata if requested
+        // Include variable metadata if requested.
+        //
+        // The same policy as `expanded` above. This block hands back the
+        // context's raw values - conn.* and env.* included - three lines
+        // after the scrub that exists to keep them out of the response, so
+        // `?include_variables=1` was a complete way around it. Each value now
+        // goes through the same TemplateSecrets scrub, which redacts a
+        // credential and leaves ordinary configuration visible.
+        const auto redact = [&secrets](const std::string& value) {
+            return secrets.withhold() ? std::string("<redacted>")
+                                      : secrets.scrub(value);
+        };
         if (include_variables) {
             // Create a copy of params for context creation (since it might be modified)
             std::map<std::string, std::string> context_params = params;
@@ -1470,7 +1481,7 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
                     for (const auto& key : context_json["params"].keys()) {
                         crow::json::wvalue var_info;
                         var_info["type"] = "string";
-                        var_info["value"] = context_json["params"][key].s();
+                        var_info["value"] = redact(context_json["params"][key].s());
                         var_info["source"] = "request";
                         request_vars[key] = std::move(var_info);
                     }
@@ -1483,7 +1494,7 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
                     for (const auto& key : context_json["conn"].keys()) {
                         crow::json::wvalue var_info;
                         var_info["type"] = "string";
-                        var_info["value"] = context_json["conn"][key].s();
+                        var_info["value"] = redact(context_json["conn"][key].s());
                         var_info["source"] = "connection";
                         conn_vars[key] = std::move(var_info);
                     }
@@ -1496,7 +1507,7 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
                     for (const auto& key : context_json["env"].keys()) {
                         crow::json::wvalue var_info;
                         var_info["type"] = "string";
-                        var_info["value"] = context_json["env"][key].s();
+                        var_info["value"] = redact(context_json["env"][key].s());
                         var_info["source"] = "environment";
                         env_vars[key] = std::move(var_info);
                     }
@@ -1509,7 +1520,7 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
                     for (const auto& key : context_json["cache"].keys()) {
                         crow::json::wvalue var_info;
                         var_info["type"] = "string";
-                        var_info["value"] = context_json["cache"][key].s();
+                        var_info["value"] = redact(context_json["cache"][key].s());
                         var_info["source"] = "cache";
                         cache_vars[key] = std::move(var_info);
                     }

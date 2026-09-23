@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include <future>
 #include <thread>
 #include <yaml-cpp/yaml.h>
 
@@ -716,26 +717,49 @@ void APIServer::run(int port) {
     // process is still alive.
     app.signal_clear();
 
+    // run_async + wait_for_server_start, NOT run().
+    //
+    // The flag check at the top of this function is necessary but not
+    // sufficient: signal_clear(), the bind and Crow's own setup all happen
+    // after it and before Crow publishes `server_`, and app.stop() is a
+    // no-op until it does. A SIGTERM inside that window therefore drained the
+    // handler pool, stopped nothing, and left a process that served 503 for
+    // the rest of its life and needed SIGKILL - three consecutive reviews
+    // found this sequence still losable.
+    //
+    // Waiting until Crow is actually stoppable and re-checking closes it: by
+    // then either stop() has already run (and we stop immediately) or it has
+    // not, and any later stop() finds a server to stop.
+    std::future<void> serving;
     if (https.enabled) {
         CROW_LOG_INFO << "HTTPS enabled: serving TLS on " << bind_host << ":" << configManager->getHttpPort();
         CROW_LOG_DEBUG << "  cert: " << https.ssl_cert_file;
         CROW_LOG_DEBUG << "  key:  " << https.ssl_key_file;
-        app.bindaddr(bind_host)
+        serving = app.bindaddr(bind_host)
            .port(configManager->getHttpPort())
            .server_name("flAPI")
            .concurrency(serverThreadCount(std::thread::hardware_concurrency()))
            .use_compression(crow::compression::GZIP)
            .ssl_file(https.ssl_cert_file, https.ssl_key_file)
-           .run();
+           .run_async();
     } else {
         CROW_LOG_INFO << "Server starting on " << bind_host << ":" << configManager->getHttpPort() << "...";
-        app.bindaddr(bind_host)
+        serving = app.bindaddr(bind_host)
            .port(configManager->getHttpPort())
            .server_name("flAPI")
            .concurrency(serverThreadCount(std::thread::hardware_concurrency()))
            .use_compression(crow::compression::GZIP)
-           .run();
+           .run_async();
     }
+
+    app.wait_for_server_start();
+    if (stop_requested_.load(std::memory_order_acquire)) {
+        CROW_LOG_INFO << "shutdown was requested while the server was starting; "
+                         "stopping immediately";
+        app.stop();
+    }
+
+    serving.wait();
 }
 
 void APIServer::requestForEndpoint(const EndpointConfig& endpoint, const std::unordered_map<std::string, std::string>& pathParams) 

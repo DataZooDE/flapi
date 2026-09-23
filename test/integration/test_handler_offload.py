@@ -426,3 +426,111 @@ class TestHeartbeatRequestsAreNotOffloaded:
             time.sleep(6)   # several heartbeat cycles
             r = requests.get(f"{s.base_url}/cached", timeout=15)
             assert r.status_code == 200, r.text
+
+
+class TestSigtermDuringStartup:
+    """The window between process start and bind.
+
+    This sequence has changed in three consecutive review rounds and had no
+    test at any point: every other termination case here signals a server that
+    is already answering /health/live.
+
+    The failure it guards against is specific and bad. APIServer::stop() can
+    run before Crow has published its server, and Crow's app.stop() is a no-op
+    until it does - so a SIGTERM in that window drained the handler pool,
+    stopped nothing, and left a process that served 503 for the rest of its
+    life and could only be killed with SIGKILL.
+    """
+
+    def _start(self, log_level="warning"):
+        # A DELIBERATELY slow startup, so the window this guards is wide
+        # enough to aim at. The dangerous gap is between APIServer being
+        # constructed and Crow publishing its server, and cache warmup sits
+        # inside it - on a trivial config that gap is about a millisecond.
+        s = _Server()
+        s.log_level = log_level
+        sqls = os.path.join(s.tmp, "sqls")
+        os.makedirs(os.path.join(s.tmp, "data"), exist_ok=True)
+        for i in range(12):
+            with open(os.path.join(sqls, f"c{i}.yaml"), "w") as f:
+                f.write(f"url-path: /c{i}\nmethod: GET\n"
+                        f"template-source: c{i}.sql\nconnection: [inmem]\n"
+                        "cache:\n  enabled: true\n"
+                        f"  table: c{i}_cache\n  schema: main\n  schedule: 1h\n")
+            with open(os.path.join(sqls, f"c{i}.sql"), "w") as f:
+                f.write("SELECT sum(i) AS s FROM range(0, 400000) t(i)\n")
+        with open(os.path.join(s.tmp, "flapi.yaml"), "w") as f:
+            f.write(
+                "project-name: slow-start\n"
+                "project-description: a signal must not be lost during startup\n"
+                f"http-port: {s.port}\n"
+                "template:\n  path: ./sqls\n"
+                "duckdb:\n  access_mode: READ_WRITE\n"
+                "ducklake:\n  enabled: true\n  alias: cache\n"
+                f"  metadata-path: {os.path.join(s.tmp, 'meta.ducklake')}\n"
+                f"  data-path: {os.path.join(s.tmp, 'data')}\n"
+                "connections:\n  inmem:\n    properties:\n      database: ':memory:'\n")
+        env = {**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1",
+               "FLAPI_DISABLE_HANDLER_OFFLOAD": "0", "FLAPI_IO_THREADS": "2"}
+        s.proc = subprocess.Popen(
+            [flapi_binary(), "-c", os.path.join(s.tmp, "flapi.yaml"),
+             "-p", str(s.port), "--log-level", log_level],
+            stdout=open(s.log_path, "w"), stderr=subprocess.STDOUT,
+            cwd=s.tmp, env=env, preexec_fn=os.setsid)
+        return s
+
+    @pytest.mark.parametrize("delay", [0.0, 0.01, 0.05, 0.1, 0.2, 0.35])
+    def test_sigterm_before_the_port_is_bound_still_exits(self, delay):
+        # Swept across the window rather than aimed at one point in it,
+        # because where startup actually is at a given millisecond varies by
+        # machine and by run.
+        import signal as signal_mod
+        s = self._start()
+        try:
+            time.sleep(delay)
+            os.killpg(os.getpgid(s.proc.pid), signal_mod.SIGTERM)
+            try:
+                code = s.proc.wait(timeout=45)
+            except subprocess.TimeoutExpired:
+                code = None
+
+            assert code is not None, (
+                f"SIGTERM {delay}s after exec did not terminate the process; "
+                "this is the 503-forever state\n"
+                + open(s.log_path).read()[-3000:])
+            # Two acceptable outcomes, and only two:
+            #   0    the handler was installed and shutdown ran;
+            #   -15  the signal arrived before the handler was installed, so
+            #        the DEFAULT disposition terminated the process.
+            # The failure being guarded against is neither: a process that
+            # survives, having drained its pool, and serves 503 forever.
+            assert code in (0, -signal_mod.SIGTERM), (
+                f"SIGTERM {delay}s after exec exited {code}\n"
+                + open(s.log_path).read()[-3000:])
+
+            # And it must not be left serving.
+            with pytest.raises(requests.RequestException):
+                requests.get(f"{s.base_url}/health/live", timeout=2)
+        finally:
+            s.stop()
+
+    def test_two_signals_in_the_startup_window_are_not_swallowed(self):
+        # The supervisor used to handle exactly one signal and return, so a
+        # first SIGTERM that arrived too early left nothing to read a second.
+        import signal as signal_mod
+        s = self._start()
+        try:
+            time.sleep(0.02)
+            os.killpg(os.getpgid(s.proc.pid), signal_mod.SIGTERM)
+            time.sleep(0.05)
+            os.killpg(os.getpgid(s.proc.pid), signal_mod.SIGTERM)
+            try:
+                code = s.proc.wait(timeout=45)
+            except subprocess.TimeoutExpired:
+                code = None
+            assert code is not None, (
+                "two SIGTERMs during startup and the process is still alive\n"
+                + open(s.log_path).read()[-3000:])
+            assert code in (0, -signal_mod.SIGTERM), code
+        finally:
+            s.stop()

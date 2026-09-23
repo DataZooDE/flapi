@@ -700,9 +700,19 @@ CacheManager::ExpiryCandidates CacheManager::expirableSnapshotIds(
                   row["snapshot_id"].t() == crow::json::type::Number)) {
                 continue;
             }
-            const bool aged_out = !row.has("aged") ||
-                                  row["aged"].t() == crow::json::type::True;
-            if (!aged_out) {
+            // Absent means "cannot tell", NOT "old enough". This read
+            // `!row.has("aged") || ...`, so a result without the column made
+            // every snapshot eligible - the same fail-open shape as the
+            // live-table listing, one loop away from it, on the same
+            // destructive path.
+            if (!row.has("aged")) {
+                CROW_LOG_WARNING << "DuckLake returned no `aged` column for "
+                                 << schema << "." << table
+                                 << "; retention cannot tell which snapshots are old "
+                                    "enough and will expire nothing this cycle.";
+                return {};
+            }
+            if (row["aged"].t() != crow::json::type::True) {
                 continue;   // newer than max-snapshot-age: retained
             }
             const bool exclusive = row.has("exclusive") &&

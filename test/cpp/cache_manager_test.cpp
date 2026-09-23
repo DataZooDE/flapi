@@ -148,6 +148,10 @@ public:
     /// introspection error would.
     bool fail_table_listing = false;
 
+    /// Omit the `aged` column, as a DuckLake version that does not produce it
+    /// would. "Absent" must not read as "old enough".
+    bool omit_aged_column = false;
+
     QueryResult executeDuckLakeQueryWithResult(const std::string& query) override {
         executed_queries.push_back(query);
         if (throw_on_snapshot_query) {
@@ -171,9 +175,11 @@ public:
                 row["exclusive"] = std::find(shared_snapshot_ids.begin(),
                                              shared_snapshot_ids.end(), id)
                                    == shared_snapshot_ids.end();
-                row["aged"] = std::find(not_aged_snapshot_ids.begin(),
-                                        not_aged_snapshot_ids.end(), id)
-                              == not_aged_snapshot_ids.end();
+                if (!omit_aged_column) {
+                    row["aged"] = std::find(not_aged_snapshot_ids.begin(),
+                                            not_aged_snapshot_ids.end(), id)
+                                  == not_aged_snapshot_ids.end();
+                }
                 rows.push_back(std::move(row));
             }
         }
@@ -506,6 +512,23 @@ TEST_CASE("CacheManager refreshDuckLakeCache retention SQL generation", "[cache_
         endpoint.cache.retention.keep_last_snapshots = 1;
         adapter->snapshot_ids = {30, 20, 10};
         adapter->fail_table_listing = true;
+        std::map<std::string, std::string> params;
+        cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
+
+        for (const auto& query : adapter->executed_queries) {
+            INFO("query: " << query);
+            REQUIRE(query.find("ducklake_expire_snapshots") == std::string::npos);
+        }
+    }
+
+    SECTION("retention expires nothing when the age column is missing") {
+        // Absent is not "old enough". The check read
+        // `!row.has("aged") || ...`, so a result without the column made every
+        // snapshot eligible - the same fail-open shape as the live-table
+        // listing, one loop away, on the same destructive path.
+        endpoint.cache.retention.keep_last_snapshots = 1;
+        adapter->snapshot_ids = {30, 20, 10};
+        adapter->omit_aged_column = true;
         std::map<std::string, std::string> params;
         cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
 
