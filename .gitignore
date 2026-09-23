@@ -49,3 +49,10 @@ spike/build/
 
 # Stray DuckDB artifact written by the ERPL extension during example/load runs
 erpl-rev.duckdb
+
+# Scratch captures from manual verification. Four of these were committed
+# once, one containing a test secret; keep them out of the tree.
+/c[0-9].json
+/ok.json
+/dry*.json
+/cfg.json

@@ -122,6 +122,21 @@ std::optional<MCPSession::AuthContext> MCPAuthHandler::authenticateBearer(
     const auto& mcp_auth = config_manager_->getMCPConfig().auth;
 
     try {
+        // An empty HMAC key is not a weak secret, it is no secret: anyone can
+        // sign a token with the empty key and it verifies, claiming any
+        // subject and any roles. `jwt-secret: '{{env.MCP_JWT_SECRET}}'`
+        // resolves to "" when the variable is unset, silently.
+        //
+        // The REST path refuses this (auth_middleware.cpp). This one did not,
+        // so the same bypass remained open over MCP - and MCP is the surface
+        // agents call.
+        if (mcp_auth.jwt_secret.empty()) {
+            CROW_LOG_ERROR << "Refusing MCP bearer authentication: jwt-secret is empty, "
+                              "so any token would verify. Check that the environment "
+                              "variable it interpolates is set.";
+            return std::nullopt;
+        }
+
         // Decode and verify JWT token
         auto decoded = jwt::decode(token);
 

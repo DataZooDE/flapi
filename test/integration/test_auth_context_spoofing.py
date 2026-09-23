@@ -51,7 +51,8 @@ class _Server:
         os.makedirs(sqls, exist_ok=True)
         with open(os.path.join(sqls, "who.yaml"), "w") as f:
             f.write("url-path: /who\nmethod: GET\n"
-                    "template-source: who.sql\nconnection: [inmem]\n")
+                    "template-source: who.sql\nconnection: [inmem]\n"
+                    "mcp-tool:\n  name: whoami\n  description: Shows the auth context.\n")
         with open(os.path.join(sqls, "who.sql"), "w") as f:
             f.write("SELECT '{{ auth.username }}' AS who, "
                     "'{{ auth.roles }}' AS roles, "
@@ -68,7 +69,8 @@ class _Server:
                 "project-description: the caller must not set its own identity\n"
                 f"http-port: {self.port}\n"
                 "template:\n  path: ./sqls\n"
-                "connections:\n  inmem:\n    properties:\n      database: ':memory:'\n")
+                "connections:\n  inmem:\n    properties:\n      database: ':memory:'\n"
+                "mcp:\n  enabled: true\n")
         self.proc = None
 
     def start(self):
@@ -139,3 +141,43 @@ class TestAuthContextSpoofing:
                              params={"__auth_username": "admin", "limit": "1"}, timeout=10)
             assert r.status_code == 200, r.text
             assert r.json()["data"][0]["who"] == ""
+
+
+class TestAuthContextSpoofingOverMcp:
+    """The same guard must hold on the MCP surface.
+
+    The first fix stripped `__auth_*` in combineParameters, which is the REST
+    path only. MCP arguments reach the template context through
+    MCPToolHandler::prepareParameters, which did not strip - so the identical
+    attack still worked, measured:
+
+        tools/call {"__auth_username":"admin","__auth_roles":"admin"}
+        -> {"who":"admin","roles":"admin"}
+
+    flAPI treats REST and MCP as equal surfaces. A guard on one of them is not
+    a guard, and MCP is the surface agents call.
+    """
+
+    def _call(self, server, **arguments):
+        body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "whoami", "arguments": arguments}}
+        r = requests.post(f"{server.base_url}/mcp/jsonrpc",
+                          headers={"Content-Type": "application/json"},
+                          data=json.dumps(body), timeout=15).json()
+        assert "result" in r, r
+        return r["result"]["structuredContent"]["rows"][0]
+
+    def test_mcp_arguments_cannot_set_the_auth_context(self):
+        with _Server() as s:
+            row = self._call(s, **SPOOF)
+            assert row["who"] == "", row
+            assert row["roles"] == "", row
+
+    def test_the_two_surfaces_agree(self):
+        # The property that matters: a guard present on one protocol and
+        # absent on the other is the bug, so assert they behave the same.
+        with _Server() as s:
+            mcp = self._call(s, **SPOOF)
+            rest = requests.get(f"{s.base_url}/who", params=SPOOF, timeout=10).json()["data"][0]
+            assert mcp["who"] == rest["who"] == ""
+            assert mcp["roles"] == rest["roles"] == ""

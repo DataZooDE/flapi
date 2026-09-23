@@ -1,1 +1,0 @@
-{"result":{"content":[{"type":"text","text":"{\"parameters\":{},\"rendered_sql\":\"SELECT 'connected' AS status, '<redacted>' AS pw\\n\",\"tool_name\":\"leaky\",\"dry_run\":true}"}],"structuredContent":{"rows":{"dry_run":true,"tool_name":"leaky","rendered_sql":"SELECT 'connected' AS status, '<redacted>' AS pw\n","parameters":{}}}},"id":1,"jsonrpc":"2.0"}

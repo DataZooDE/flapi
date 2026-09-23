@@ -14,9 +14,9 @@ was a complete authentication bypass reachable by forgetting an environment
 variable - which produces no error anywhere.
 """
 import base64
+import json
 import hashlib
 import hmac
-import json
 import os
 import subprocess
 import tempfile
@@ -143,3 +143,43 @@ class TestJwtEmptySecret:
     def test_no_token_is_refused(self):
         with _Server(secret_env_value=REAL_SECRET) as s:
             assert s.get().status_code == 401
+
+
+class TestMcpJwtEmptySecret:
+    """The empty-secret guard must hold on the MCP surface too.
+
+    The first fix refused an empty jwt-secret in AuthMiddleware, which is the
+    REST path. MCPAuthHandler built jwt::algorithm::hs256{mcp_auth.jwt_secret}
+    with no such check, so the identical complete-bypass remained open over
+    MCP - the surface agents call.
+    """
+
+    def _server(self, secret_env_value=None):
+        s = _Server(secret_env_value=secret_env_value)
+        # Re-point the fixture at MCP bearer auth.
+        cfg = os.path.join(s.tmp, "flapi.yaml")
+        with open(cfg) as f:
+            body = f.read()
+        body += ("mcp:\n  enabled: true\n  auth:\n    enabled: true\n"
+                 "    type: bearer\n"
+                 "    jwt-secret: '{{env.FLAPI_TEST_JWT_SECRET}}'\n"
+                 "    jwt-issuer: 'flapi'\n")
+        with open(cfg, "w") as f:
+            f.write(body)
+        return s
+
+    def test_an_empty_key_forgery_is_refused_over_mcp(self):
+        with self._server(secret_env_value=None) as s:
+            body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+            r = requests.post(
+                f"{s.base_url}/mcp/jsonrpc",
+                headers={"Content-Type": "application/json",
+                         "Authorization": f"Bearer {make_token('')}"},
+                data=json.dumps(body), timeout=15)
+            # Either an auth error or a refusal - what must NOT happen is the
+            # forged token being accepted as an authenticated principal.
+            assert "protected" not in r.text.lower()
+            combined = r.text + open(s.log_path).read()
+            assert ("jwt-secret is empty" in combined
+                    or r.status_code in (401, 403)
+                    or "error" in r.text.lower()), r.text[:300]
