@@ -136,6 +136,32 @@ a way around the constraints the endpoint itself enforces. `flapi_run_cache_gc` 
 its "all endpoints" form never worked — and every tool now declares its arguments in `tools/list`,
 so an agent can discover them instead of guessing and getting an error.
 
+### Fixed: smaller disclosures on the same theme
+
+- **`GET /api/v1/_config/health` is the one config-service route without a token**, and it
+  published every storage backend's path and its raw error text. A path can carry an inline
+  credential or a signature. Unauthenticated callers now get status, scheme and latency; the
+  detail needs the token.
+- A **connection property literally named `pw`, `key`, `pass` or `sas`** is now recognised as a
+  credential. Recognition is whole-key, so `passenger_count`, `sort_key` and `keyword` are still
+  ordinary columns and are not redacted out of your SQL.
+- flAPI **warns at startup** (`CREDENTIAL_TOO_SHORT_TO_REDACT`) when a configured credential is
+  under four characters. Such a value cannot be scrubbed without corrupting the SQL around it, so
+  error detail and dry-run previews are withheld for every endpoint using that connection — with
+  nothing in the response to say why. Now you are told once, at startup, and can lengthen it.
+- The incremental **cursor watermark is validated against its declared type** before the next
+  refresh interpolates it into SQL. A cached value that does not look like its `cursor.type` makes
+  the refresh fall back to a full load and log why, rather than being pasted into a query.
+- Cache retention **fails closed**: if the catalog cannot be read, nothing is expired. It
+  previously proceeded on a partial answer.
+
+### Fixed: a failed start no longer hangs
+
+If flAPI could not bind its port — most often because something else already holds it — the
+process hung instead of exiting, and ignored `SIGTERM` from that state, so a supervisor had to
+`SIGKILL` it. It now exits promptly, non-zero, saying `the server could not start: bind: Address
+already in use`.
+
 ### Changed: one config-service name per endpoint
 
 The config service addresses an endpoint by a slug, and the encoding is now injective — `/a-b` and
