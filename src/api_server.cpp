@@ -257,12 +257,39 @@ void APIServer::setupRoutes() {
                 int code = 500;
                 std::string body = "Internal Server Error";
                 crow::ci_map headers;
+                // EVERY field of crow::response a handler can set has to make
+                // the hop, not just the obvious three.
+                //
+                // These were dropped, and dropping `compressed` silently
+                // corrupted Arrow IPC responses: the Arrow path sets
+                // `compressed = false` (its payload has its own LZ4/ZSTD
+                // framing) and an explicit Content-Length. The flag stayed
+                // true on the real response, so Crow gzipped the body while
+                // the length header described the uncompressed size, and every
+                // client got a truncated stream -
+                // "IncompleteRead(826858 bytes read, 1851846 more expected)".
+                // 15 of 18 Arrow integration tests went red on the offload
+                // branch and green on main.
+                //
+                // Anything added to crow::response in a future version has to
+                // be added here too; check_crow_response_fields.sh fails the
+                // build if the struct grows a field this does not carry.
+#ifdef CROW_ENABLE_COMPRESSION
+                bool compressed = true;
+#endif
+                bool skip_body = false;
+                bool manual_length_header = false;
                 bool armed = true;
 
                 void take(crow::response& from) {
                     code = from.code;
                     body = std::move(from.body);
                     headers = std::move(from.headers);
+#ifdef CROW_ENABLE_COMPRESSION
+                    compressed = from.compressed;
+#endif
+                    skip_body = from.skip_body;
+                    manual_length_header = from.manual_length_header;
                 }
 
                 ~Completer() {
@@ -272,12 +299,22 @@ void APIServer::setupRoutes() {
                     asio::post(*req->io_service,
                                [res = res, keepalive = keepalive, code = code,
                                 body = std::move(body),
-                                headers = std::move(headers)]() mutable {
+                                headers = std::move(headers),
+#ifdef CROW_ENABLE_COMPRESSION
+                                compressed = compressed,
+#endif
+                                skip_body = skip_body,
+                                manual_length_header = manual_length_header]() mutable {
                                    res->code = code;
                                    res->body = std::move(body);
                                    for (auto& header : headers) {
                                        res->set_header(header.first, header.second);
                                    }
+#ifdef CROW_ENABLE_COMPRESSION
+                                   res->compressed = compressed;
+#endif
+                                   res->skip_body = skip_body;
+                                   res->manual_length_header = manual_length_header;
                                    res->end();
                                });
                 }
