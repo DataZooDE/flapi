@@ -122,11 +122,22 @@ private:
     /// expression) retains anything at or after it. Either may be empty.
     /// Only snapshots that touched NOTHING BUT this table are returned - see
     /// buildExpireSql.
-    std::vector<std::int64_t> expirableSnapshotIds(const std::string& catalog,
-                                                   const std::string& schema,
-                                                   const std::string& table,
-                                                   std::optional<std::size_t> keep_last,
-                                                   const std::string& older_than_sql);
+    struct ExpiryCandidates {
+        /// Snapshots this endpoint may expire.
+        std::vector<std::int64_t> expirable;
+        /// Snapshots of this table that a policy would have expired but that
+        /// are SHARED with another table, so expiring them would discard its
+        /// data too. Reported separately because "nothing to expire" and
+        /// "nothing expirable" look identical from the outside, and the
+        /// second means a configured policy silently never fires.
+        std::size_t shared = 0;
+    };
+
+    ExpiryCandidates expirableSnapshotIds(const std::string& catalog,
+                                          const std::string& schema,
+                                          const std::string& table,
+                                          std::optional<std::size_t> keep_last,
+                                          const std::string& older_than_sql);
 
     /// `CALL ducklake_expire_snapshots(..., versions => [...])`, or empty when
     /// there is nothing this endpoint may expire.

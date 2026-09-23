@@ -1,4 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
+
+#include <algorithm>
 // Pre-include STL headers before the private-to-public hack
 // to prevent "redeclared with different access" GCC errors
 // when these headers are later included via crow/asio
@@ -129,6 +131,13 @@ public:
     // cache's life.
     std::vector<std::int64_t> snapshot_ids;
 
+    /// Snapshot ids that also touched ANOTHER table. The real query selects
+    /// this as an `exclusive` column, and a snapshot that is not exclusive is
+    /// retained however the policy is configured - expiring it would discard
+    /// the other table's data too. The mock has to model that column or every
+    /// row reads as shared and the retention tests pass on an empty expiry.
+    std::vector<std::int64_t> shared_snapshot_ids;
+
     QueryResult executeDuckLakeQueryWithResult(const std::string& query) override {
         executed_queries.push_back(query);
         if (throw_on_snapshot_query) {
@@ -136,11 +145,18 @@ public:
         }
         QueryResult result;
         std::vector<crow::json::wvalue> rows;
-        if (query.find("ducklake_snapshots") != std::string::npos) {
+        if (query.find("ducklake_table_info") != std::string::npos) {
+            crow::json::wvalue row;
+            row["table_id"] = std::string("1");
+            rows.push_back(std::move(row));
+        } else if (query.find("ducklake_snapshots") != std::string::npos) {
             for (const auto id : snapshot_ids) {
                 crow::json::wvalue row;
                 row["snapshot_id"] = static_cast<double>(id);
                 row["snapshot_time"] = "2026-01-01 00:00:00";
+                row["exclusive"] = std::find(shared_snapshot_ids.begin(),
+                                             shared_snapshot_ids.end(), id)
+                                   == shared_snapshot_ids.end();
                 rows.push_back(std::move(row));
             }
         }
@@ -334,6 +350,44 @@ TEST_CASE("CacheManager refreshDuckLakeCache retention SQL generation", "[cache_
             }
         }
         REQUIRE(age_applied);
+    }
+
+    SECTION("snapshots shared with another table are never expired") {
+        // The conservative half of the per-table fix: a snapshot can carry
+        // changes for several tables, and ducklake_expire_snapshots discards
+        // all of them. Sharing therefore wins over the policy - this endpoint
+        // keeps more history than asked rather than deleting another
+        // endpoint's data.
+        endpoint.cache.retention.keep_last_snapshots = 1;
+        adapter->snapshot_ids = {30, 20, 10};
+        adapter->shared_snapshot_ids = {20, 10};   // everything beyond the newest
+        std::map<std::string, std::string> params;
+        cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
+
+        for (const auto& query : adapter->executed_queries) {
+            REQUIRE(query.find("ducklake_expire_snapshots") == std::string::npos);
+        }
+    }
+
+    SECTION("...but an unshared snapshot beside a shared one still is") {
+        // Otherwise the guard above would read as "retention never fires".
+        endpoint.cache.retention.keep_last_snapshots = 1;
+        adapter->snapshot_ids = {30, 20, 10};
+        adapter->shared_snapshot_ids = {20};
+        std::map<std::string, std::string> params;
+        cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
+
+        std::string expire;
+        for (const auto& query : adapter->executed_queries) {
+            if (query.find("ducklake_expire_snapshots") != std::string::npos) {
+                expire = query;
+            }
+        }
+        REQUIRE_FALSE(expire.empty());
+        INFO("expire call: " << expire);
+        REQUIRE(expire.find("10") != std::string::npos);   // unshared, expired
+        REQUIRE(expire.find("20") == std::string::npos);   // shared, retained
+        REQUIRE(expire.find("30") == std::string::npos);   // newest, kept
     }
 
     SECTION("No retention config means no expire call") {

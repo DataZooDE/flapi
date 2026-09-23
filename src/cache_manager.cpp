@@ -502,13 +502,13 @@ std::string CacheManager::tableSnapshotPredicate(const std::vector<std::string>&
     return out.str();
 }
 
-std::vector<std::int64_t> CacheManager::expirableSnapshotIds(
+CacheManager::ExpiryCandidates CacheManager::expirableSnapshotIds(
         const std::string& catalog,
         const std::string& schema,
         const std::string& table,
         std::optional<std::size_t> keep_last,
         const std::string& older_than_sql) {
-    std::vector<std::int64_t> expire_ids;
+    ExpiryCandidates out;
     try {
         // Every cached endpoint shares ONE DuckLake catalog, so a
         // catalog-wide snapshot list is every endpoint's history. Both expiry
@@ -556,9 +556,13 @@ std::vector<std::int64_t> CacheManager::expirableSnapshotIds(
         }
         others << ")) = 0";
 
+        // `exclusive` says whether this snapshot touched nothing but this
+        // table, selected rather than filtered so one query answers both
+        // "what may I expire" and "what would I have expired but cannot".
         std::string query =
-            "SELECT snapshot_id FROM ducklake_snapshots('" + catalog + "') "
-            "WHERE " + tableSnapshotPredicate(keys) + " AND " + others.str();
+            "SELECT snapshot_id, (" + others.str() + ") AS exclusive "
+            "FROM ducklake_snapshots('" + catalog + "') "
+            "WHERE " + tableSnapshotPredicate(keys);
         if (!older_than_sql.empty()) {
             query += " AND snapshot_time < " + older_than_sql;
         }
@@ -567,27 +571,31 @@ std::vector<std::int64_t> CacheManager::expirableSnapshotIds(
         auto result = db_adapter_->executeDuckLakeQueryWithResult(query);
         auto rows = crow::json::load(result.data.dump());
         if (!(rows && rows.t() == crow::json::type::List)) {
-            return {};
+            return out;
         }
         // keep_last retains the newest N of whatever matched; with an
         // age-based policy alone every match is expirable.
         const std::size_t skip = keep_last.value_or(0);
         for (std::size_t i = skip; i < rows.size(); ++i) {
             const auto& row = rows[i];
-            if (row.has("snapshot_id") && row["snapshot_id"].t() == crow::json::type::Number) {
-                expire_ids.push_back(static_cast<std::int64_t>(row["snapshot_id"].d()));
+            if (!(row.has("snapshot_id") &&
+                  row["snapshot_id"].t() == crow::json::type::Number)) {
+                continue;
             }
-        }
-
-        if (expire_ids.empty() && rows.size() > 0 && skip < rows.size()) {
-            CROW_LOG_DEBUG << "No expirable snapshots for " << schema << "." << table;
+            const bool exclusive = row.has("exclusive") &&
+                                   row["exclusive"].t() == crow::json::type::True;
+            if (exclusive) {
+                out.expirable.push_back(static_cast<std::int64_t>(row["snapshot_id"].d()));
+            } else {
+                ++out.shared;
+            }
         }
     } catch (const std::exception& ex) {
         CROW_LOG_WARNING << "Could not list DuckLake snapshots for retention on "
                          << schema << "." << table << ": " << ex.what();
         return {};
     }
-    return expire_ids;
+    return out;
 }
 
 std::string CacheManager::buildExpireSql(const std::string& catalog,
@@ -599,20 +607,19 @@ std::string CacheManager::buildExpireSql(const std::string& catalog,
         return {};   // keeping nothing is not a retention policy; refuse it
     }
 
-    const auto expire_ids =
+    const auto candidates =
         expirableSnapshotIds(catalog, schema, table, keep_last, older_than_sql);
+    const auto& expire_ids = candidates.expirable;
     if (expire_ids.empty()) {
-        // Distinguish "nothing old enough" from "everything is shared with
-        // another endpoint", which otherwise looks identical to a working
-        // policy that never fires.
-        const auto candidates =
-            expirableSnapshotIds(catalog, schema, table, std::nullopt, std::string());
-        if (!candidates.empty() && keep_last.has_value() &&
-            candidates.size() > *keep_last) {
+        // "Nothing old enough" and "nothing expirable" look identical from
+        // outside, and the second means a configured policy silently never
+        // fires. Say which it is.
+        if (candidates.shared > 0) {
             CROW_LOG_INFO << "Retention for " << schema << "." << table
-                          << " expired nothing: the remaining snapshots are shared "
-                             "with another cached table and cannot be expired "
-                             "without discarding its data too.";
+                          << " expired nothing: " << candidates.shared
+                          << " eligible snapshot(s) are shared with another cached "
+                             "table and cannot be expired without discarding its "
+                             "data too.";
         }
         return {};
     }
