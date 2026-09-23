@@ -2,10 +2,12 @@ vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO CrowCpp/crow
     REF "v${VERSION}"
-    SHA512 32c956a36652ac14a9ffd41333b9e80031f86b99b09f54affb9cb0196c4672c5877daebf6327a359c735f5246dd4119cf17ac5d68271953bfa389d660f745e42
+    SHA512 0fdba3c3697f53ff231cc1637b613f382b5c0230b700745548c1a0ef03c3b25f92ec15f8d1f9bca1a74cffe07053d7a829732475a8a392ee8c682ccfba91539e
     HEAD_REF master
+    # Only our patch. The upstream port's remove-cpm.patch targets crow
+    # 1.3.0, whose CMakeLists includes CPM; 1.2.0 - the version this project
+    # builds - has no CPM reference at all, and applying it there fails.
     PATCHES
-        remove-cpm.patch
         async-completion-keepalive.patch
 )
 
