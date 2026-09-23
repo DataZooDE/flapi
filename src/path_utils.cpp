@@ -1,50 +1,43 @@
 #include "path_utils.hpp"
 
-#include <cctype>
 #include <string>
 
 namespace flapi {
 
 // A URL path is addressed in the config service as
-// /api/v1/_config/endpoints/{slug}, so the slug has to survive a round trip.
-// The previous codec did not: it replaced every internal '/' with '-', every
-// non-alphanumeric with '-', collapsed runs of '-' and stripped the edges, so
-// "/a-b" and "/a/b" both became "a-b" and both decoded to "/a/b". An endpoint
-// whose URL contained a hyphen - entirely ordinary - was addressed as, and
-// rewritten to, a different endpoint (#123).
+// /api/v1/_config/endpoints/{slug}, so the slug has to survive a round trip
+// through a URL.
 //
-// This encoding is injective, verified exhaustively over every path up to
-// length 5 drawn from "/-%2Dab" (19,608 paths, no collisions, no round-trip
-// failures):
+// Two properties are required, and the first encoding to fix #123 had only one.
 //
-//   '/'  ->  '-'        so the common case stays readable: /sap/functions
-//                       becomes -sap-functions
-//   '-'  ->  "%2D"      a literal hyphen is escaped, which is what makes a
-//   '%'  ->  "%25"      '-' in a slug unambiguously mean '/'
-//   ""   ->  "empty"    unambiguous because every non-empty path begins with
-//                       '/' and therefore encodes to a leading '-'
+// 1. INJECTIVE. The original codec mapped every internal '/' to '-', every
+//    non-alphanumeric to '-', collapsed runs and stripped the edges, so "/a-b"
+//    and "/a/b" both became "a-b" and both decoded to "/a/b" - an endpoint
+//    whose URL contained a hyphen was addressed as, and rewritten to, a
+//    different endpoint.
 //
-// Two earlier attempts failed on exactly one point, worth recording so the
-// next person does not repeat them: a one-character escape for '/' cannot
-// coexist with a two-character escape for the literal, because the shorter is
-// a prefix of the longer. "//x" and "_x" both produced "__x".
+// 2. TRANSPORT-SAFE. The replacement escaped literals as "%2D" and "%25",
+//    which collides with the transport's own percent-encoding: the CLI sends
+//    encodeURIComponent(slug), turning "%2D" into "%252D", and RFC 3986
+//    §6.2.2.2 permits any normaliser to decode "%2D" - an unreserved
+//    character - back to '-'. A proxy doing that turns "-order%2Ditems" into
+//    "-order-items" and #123's collision reappears behind ordinary
+//    infrastructure.
+//
+// So the escape alphabet contains no '%' at all. JSON-pointer style:
+//
+//   '/'  ->  '-'       the common case stays readable: /sap/functions
+//                      becomes -sap-functions
+//   '-'  ->  "~1"      prefix-free: every escape starts with '~', and '~' is
+//   '~'  ->  "~0"      itself always escaped, so a '~' in a slug always begins
+//                      one and a '-' always means '/'
+//   ""   ->  "empty"   unambiguous: every non-empty path begins with '/' and
+//                      therefore encodes to a leading '-'
+//
+// Verified exhaustively over every path up to length 5 drawn from "/-~01ab":
+// 19,608 paths, no collisions, no round-trip failures, and unchanged by
+// encodeURIComponent followed by a decode.
 const std::string PathUtils::EMPTY_REPLACEMENT = "empty";
-
-namespace {
-
-bool matchesEscape(const std::string& s, std::size_t i, const char* escape) {
-    // Case-insensitive on the hex digit, since percent-encoding conventionally is.
-    if (i + 2 >= s.size() + 0 && i + 3 > s.size()) {
-        return false;
-    }
-    return s[i] == escape[0] &&
-           std::toupper(static_cast<unsigned char>(s[i + 1])) ==
-               std::toupper(static_cast<unsigned char>(escape[1])) &&
-           std::toupper(static_cast<unsigned char>(s[i + 2])) ==
-               std::toupper(static_cast<unsigned char>(escape[2]));
-}
-
-}  // namespace
 
 std::string PathUtils::pathToSlug(const std::string& path) {
     if (path.empty()) {
@@ -55,10 +48,10 @@ std::string PathUtils::pathToSlug(const std::string& path) {
     slug.reserve(path.size() + 8);
     for (const char c : path) {
         switch (c) {
-            case '/': slug += '-';     break;
-            case '-': slug += "%2D";   break;
-            case '%': slug += "%25";   break;
-            default:  slug += c;       break;
+            case '/': slug += '-';  break;
+            case '-': slug += "~1"; break;
+            case '~': slug += "~0"; break;
+            default:  slug += c;    break;
         }
     }
     return slug;
@@ -75,33 +68,42 @@ std::string PathUtils::slugToPath(const std::string& slug) {
         if (slug[i] == '-') {
             path += '/';
             i += 1;
-        } else if (i + 3 <= slug.size() && matchesEscape(slug, i, "%2D")) {
+        } else if (slug[i] == '~' && i + 1 < slug.size() && slug[i + 1] == '1') {
             path += '-';
-            i += 3;
-        } else if (i + 3 <= slug.size() && matchesEscape(slug, i, "%25")) {
-            path += '%';
-            i += 3;
+            i += 2;
+        } else if (slug[i] == '~' && i + 1 < slug.size() && slug[i + 1] == '0') {
+            path += '~';
+            i += 2;
         } else {
             path += slug[i];
             i += 1;
         }
     }
-
-    // Tolerate an identifier that is already a path. The config service also
-    // accepts a percent-encoded url-path in this position - the tavern suite
-    // addresses endpoints as "northwind%2Fproducts%2F" - which arrives here
-    // url-decoded as "northwind/products/" and contains nothing this codec
-    // encodes. The old decoder prepended the leading slash unconditionally,
-    // because it stripped one when encoding; this one encodes the leading '/'
-    // as '-', so a slug produced by pathToSlug already decodes with it.
-    //
-    // Adding it only when absent keeps both callers working and cannot
-    // collide: every slug from pathToSlug for a non-empty path starts with
-    // '-', hence decodes to a leading '/'.
-    if (!path.empty() && path.front() != '/') {
-        path.insert(path.begin(), '/');
-    }
     return path;
+}
+
+bool PathUtils::looksLikePath(const std::string& identifier) {
+    // A slug never contains '/': the encoder maps every '/' to '-'. So an
+    // identifier containing one cannot be a slug, and is the percent-decoded
+    // url-path form that the config service also accepts.
+    //
+    // This is an explicit contract rather than a fallback. An earlier version
+    // made slugToPath prepend a leading '/' whenever the decode did not start
+    // with one, which made 'x' and '-x' both address '/x' - every endpoint had
+    // two names again, the exact ambiguity #123 set out to remove.
+    return identifier.find('/') != std::string::npos;
+}
+
+std::string PathUtils::identifierToPath(const std::string& identifier) {
+    if (!looksLikePath(identifier)) {
+        return slugToPath(identifier);
+    }
+    // Already a path. Normalise only the leading slash, which a client may or
+    // may not have included.
+    if (identifier.empty() || identifier.front() == '/') {
+        return identifier;
+    }
+    return "/" + identifier;
 }
 
 } // namespace flapi

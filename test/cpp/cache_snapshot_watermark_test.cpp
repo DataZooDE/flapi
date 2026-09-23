@@ -3,8 +3,12 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <string>
+#include <vector>
 
+#include "cache_database_adapter.hpp"
+#include "cache_manager.hpp"
 #include "config_manager.hpp"
 #include "database_manager.hpp"
 
@@ -17,41 +21,73 @@ namespace fs = std::filesystem;
 // newest two snapshots in that catalog, so as soon as a second endpoint was
 // cached, another table's refresh became this table's "previous snapshot".
 // Its timestamp is NEWER than this table's real previous refresh, and
-// {{cache.previousSnapshotTimestamp}} drives the incremental WHERE clause - so
-// every row changed in between was skipped, and the refresh reported success.
+// {{cache.previousSnapshotTimestamp}} drives the incremental WHERE clause -
+// so every row changed in between was skipped, and the refresh reported
+// success.
 //
-// Demonstrated on a real catalog with two cached tables refreshed a, b, a:
-// snapshots touching `a` are [4, 2]; the catalog-wide query returned [4, 3],
-// and 3 belongs to `b`.
-//
-// This drives real DuckLake through DatabaseManager rather than calling the
-// private fetchSnapshotInfo, so it pins the observable property rather than
-// the implementation.
+// The FIRST version of this test did not test any of that. It reimplemented
+// the new SQL inside the test and asserted against its own copy, never once
+// calling CacheManager - `grep -c CacheManager` on it returned 0 - so it
+// passed unchanged against the catalog-wide code it was supposed to pin. A
+// crew review caught it. It is rewritten here to drive the real code.
 namespace {
 
-std::string perTableSnapshots(const std::string& catalog, const std::string& schema,
-                              const std::string& table) {
-    const std::string table_id_expr =
-        "(SELECT CAST(table_id AS VARCHAR) FROM ducklake_table_info('" + catalog +
-        "') WHERE table_name = '" + table + "' LIMIT 1)";
-    return "SELECT snapshot_id FROM ducklake_snapshots('" + catalog + "') "
-           "WHERE list_contains(flatten(map_values(changes)), " + table_id_expr + ") "
-           "   OR list_contains(flatten(map_values(changes)), '" + schema + "." + table + "') "
-           "ORDER BY snapshot_id DESC LIMIT 2";
+// Real query execution against a real DuckLake catalog, so the per-table
+// filtering in fetchSnapshotInfo actually runs - plus capture of the params
+// CacheManager hands to the renderer, which is where the chosen watermark
+// becomes observable from outside.
+class CapturingRealAdapter : public ICacheDatabaseAdapter {
+public:
+    explicit CapturingRealAdapter(std::shared_ptr<DatabaseManager> db) : db_(std::move(db)) {}
+
+    std::string renderCacheTemplate(const EndpointConfig&,
+                                    const CacheConfig&,
+                                    std::map<std::string, std::string>& params) override {
+        captured_params = params;
+        ++render_calls;
+        return "SELECT 1";
+    }
+
+    void executeDuckLakeQuery(const std::string& query,
+                              const std::map<std::string, std::string>& = {}) override {
+        executed.push_back(query);
+        std::map<std::string, std::string> p;
+        db_->executeQuery(query, p, false);
+    }
+
+    QueryResult executeDuckLakeQueryWithResult(const std::string& query) override {
+        executed.push_back(query);
+        std::map<std::string, std::string> p;
+        return db_->executeQuery(query, p, false);
+    }
+
+    std::map<std::string, std::string> captured_params;
+    std::vector<std::string> executed;
+    int render_calls = 0;
+
+private:
+    std::shared_ptr<DatabaseManager> db_;
+};
+
+EndpointConfig cachedEndpoint(const std::string& url, const std::string& table) {
+    EndpointConfig e;
+    e.urlPath = url;
+    e.method = "GET";
+    e.templateSource = "x.sql";
+    e.cache.enabled = true;
+    e.cache.table = table;
+    e.cache.schema = "s";
+    return e;
 }
 
 }  // namespace
 
-TEST_CASE("the incremental watermark is per table, not per catalog",
+TEST_CASE("the incremental watermark comes from the table's own snapshots",
           "[cache][ducklake][watermark]") {
-    fs::path temp_dir = fs::temp_directory_path() / "flapi_watermark_test";
+    fs::path temp_dir = fs::temp_directory_path() / "flapi_watermark_real";
     fs::remove_all(temp_dir);
-    fs::create_directories(temp_dir);
+    fs::create_directories(temp_dir / "data");
     fs::path config_path = temp_dir / "config.yaml";
-    fs::path db_path = temp_dir / "wm.db";
-    fs::path metadata_path = temp_dir / "metadata.ducklake";
-    fs::path data_path = temp_dir / "data";
-    fs::create_directories(data_path);
 
     {
         std::ofstream cfg(config_path);
@@ -63,13 +99,13 @@ template:
   path: )" << temp_dir.string() << R"(
 
 duckdb:
-  db_path: )" << db_path.string() << R"(
+  db_path: )" << (temp_dir / "wm.db").string() << R"(
 
 ducklake:
   enabled: true
   alias: cache
-  metadata-path: )" << metadata_path.string() << R"(
-  data-path: )" << data_path.string() << R"(
+  metadata-path: )" << (temp_dir / "metadata.ducklake").string() << R"(
+  data-path: )" << (temp_dir / "data").string() << R"(
 
 connections:
   default:
@@ -83,15 +119,21 @@ connections:
     db->reset();
     REQUIRE_NOTHROW(db->initializeDBManagerFromConfig(config_manager));
 
+    auto adapter = std::make_shared<CapturingRealAdapter>(db);
+    CacheManager cache_manager(adapter);
+
     std::map<std::string, std::string> p;
     db->executeQuery("CREATE SCHEMA IF NOT EXISTS cache.s", p, false);
-    // Two cached tables, refreshed interleaved: a, b, then a again.
+    // Table A is created and then refreshed again; table B moves in between.
+    // So the newest snapshot in the CATALOG belongs to A, and the second
+    // newest belongs to B - while A's own previous snapshot is older still.
     db->executeQuery("CREATE TABLE cache.s.a AS SELECT 1 AS i", p, false);
     db->executeQuery("CREATE TABLE cache.s.b AS SELECT 1 AS i", p, false);
     db->executeQuery("INSERT INTO cache.s.a VALUES (2)", p, false);
 
-    auto ids = [&](const std::string& sql) {
-        auto r = db->executeQuery(sql, p, false);
+    auto snapshotIds = [&](const std::string& sql) {
+        std::map<std::string, std::string> q;
+        auto r = db->executeQuery(sql, q, false);
         auto rows = crow::json::load(r.data.dump());
         std::vector<int64_t> out;
         if (rows && rows.t() == crow::json::type::List) {
@@ -101,30 +143,134 @@ connections:
         }
         return out;
     };
-
-    const auto catalog_wide = ids(
+    const auto catalog_wide = snapshotIds(
         "SELECT snapshot_id FROM ducklake_snapshots('cache') ORDER BY snapshot_id DESC LIMIT 2");
-    const auto for_a = ids(perTableSnapshots("cache", "s", "a"));
-    const auto for_b = ids(perTableSnapshots("cache", "s", "b"));
-
-    REQUIRE(for_a.size() == 2);
     REQUIRE(catalog_wide.size() == 2);
 
-    SECTION("a table's previous snapshot is its own, not another table's") {
-        // The property that makes incremental refresh correct.
-        REQUIRE(for_a[1] != catalog_wide[1]);
-        REQUIRE(for_a[1] < catalog_wide[1]);   // the old answer was too NEW, hence skipped rows
+    // Drive the REAL CacheManager. This is what the previous version of the
+    // test never did.
+    std::map<std::string, std::string> params;
+    cache_manager.refreshDuckLakeCache(config_manager, cachedEndpoint("/a", "a"), params);
+    REQUIRE(adapter->render_calls == 1);
+
+    SECTION("the chosen previous snapshot belongs to this table") {
+        const auto it = adapter->captured_params.find("previousSnapshotId");
+        REQUIRE(it != adapter->captured_params.end());
+        const int64_t chosen = std::stoll(it->second);
+
+        // The catalog-wide answer is table b's snapshot; a's own is older.
+        REQUIRE(chosen != catalog_wide[1]);
+        REQUIRE(chosen < catalog_wide[1]);
     }
 
-    SECTION("a table refreshed once has no previous snapshot") {
-        // b was created and never refreshed again. Reporting a previous
-        // snapshot for it would make its first incremental refresh skip
-        // everything before some unrelated table's commit.
-        REQUIRE(for_b.size() == 1);
+    SECTION("the query CacheManager issued is scoped to the table") {
+        // Direct evidence that the product builds a per-table query, rather
+        // than the test asserting against SQL it wrote itself.
+        bool found = false;
+        for (const auto& q : adapter->executed) {
+            if (q.find("ducklake_snapshots") != std::string::npos) {
+                found = true;
+                REQUIRE(q.find("ducklake_table_info") != std::string::npos);
+                REQUIRE(q.find("changes") != std::string::npos);
+            }
+        }
+        REQUIRE(found);
     }
 
-    SECTION("a table absent from the catalog yields nothing rather than throwing") {
-        REQUIRE(ids(perTableSnapshots("cache", "s", "does_not_exist")).empty());
+    db->reset();
+    fs::remove_all(temp_dir);
+}
+
+TEST_CASE("count-based retention actually expires snapshots",
+          "[cache][ducklake][retention]") {
+    // keep-last-snapshots emitted
+    //     CALL ducklake_expire_snapshots(..., versions => ARRAY[0:N])
+    // and `SELECT ARRAY[0:10]` is a DuckDB parser error, so the CALL failed
+    // every time. The failure was caught and logged at WARNING, so count-based
+    // retention had never once run while appearing configured.
+    //
+    // The integration test that was meant to cover this iterated over GC audit
+    // events and accepted `status in ["success", "error"]` - so it passed with
+    // zero events, and passed on failure when there were any. This drives the
+    // real CacheManager against a real catalog and requires the expiry to
+    // happen.
+    fs::path temp_dir = fs::temp_directory_path() / "flapi_retention_real";
+    fs::remove_all(temp_dir);
+    fs::create_directories(temp_dir / "data");
+    fs::path config_path = temp_dir / "config.yaml";
+
+    {
+        std::ofstream cfg(config_path);
+        cfg << R"(
+project-name: retention_test
+project-description: count-based retention must run
+
+template:
+  path: )" << temp_dir.string() << R"(
+
+duckdb:
+  db_path: )" << (temp_dir / "rt.db").string() << R"(
+
+ducklake:
+  enabled: true
+  alias: cache
+  metadata-path: )" << (temp_dir / "metadata.ducklake").string() << R"(
+  data-path: )" << (temp_dir / "data").string() << R"(
+
+connections:
+  default:
+    init: "SELECT 1;"
+)";
+    }
+
+    auto config_manager = std::make_shared<ConfigManager>(config_path);
+    config_manager->loadConfig();
+    auto db = DatabaseManager::getInstance();
+    db->reset();
+    REQUIRE_NOTHROW(db->initializeDBManagerFromConfig(config_manager));
+
+    auto adapter = std::make_shared<CapturingRealAdapter>(db);
+    CacheManager cache_manager(adapter);
+
+    std::map<std::string, std::string> p;
+    db->executeQuery("CREATE SCHEMA IF NOT EXISTS cache.s", p, false);
+    db->executeQuery("CREATE TABLE cache.s.r AS SELECT 1 AS i", p, false);
+    for (int i = 2; i <= 6; ++i) {
+        db->executeQuery("INSERT INTO cache.s.r VALUES (" + std::to_string(i) + ")", p, false);
+    }
+
+    auto snapshotCount = [&]() {
+        std::map<std::string, std::string> q;
+        auto r = db->executeQuery(
+            "SELECT count(*) AS n FROM ducklake_snapshots('cache')", q, false);
+        auto rows = crow::json::load(r.data.dump());
+        return static_cast<int64_t>(rows[0]["n"].d());
+    };
+    const int64_t before = snapshotCount();
+    REQUIRE(before > 2);
+
+    auto endpoint = cachedEndpoint("/r", "r");
+    endpoint.cache.retention.keep_last_snapshots = 2;
+
+    std::map<std::string, std::string> params;
+    cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
+
+    SECTION("an expire call was issued, with real snapshot ids") {
+        std::string expire;
+        for (const auto& q : adapter->executed) {
+            if (q.find("ducklake_expire_snapshots") != std::string::npos) {
+                expire = q;
+            }
+        }
+        REQUIRE_FALSE(expire.empty());
+        REQUIRE(expire.find("versions") != std::string::npos);
+        // The shape DuckDB rejects must not come back.
+        REQUIRE(expire.find("ARRAY[0:") == std::string::npos);
+    }
+
+    SECTION("and the snapshots are actually gone") {
+        // The assertion the old test could not make: the expiry took effect.
+        REQUIRE(snapshotCount() < before);
     }
 
     db->reset();

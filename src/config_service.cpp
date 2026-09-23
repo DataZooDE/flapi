@@ -327,7 +327,7 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             if (!validateToken(req)) {
                 return crow::response(401, "Unauthorized: Invalid or missing token");
             }
-            const std::string path = PathUtils::slugToPath(slug);
+            const std::string path = PathUtils::identifierToPath(slug);
             return endpoint_handler_->validateEndpointConfig(req, path);
         });
 
@@ -337,7 +337,7 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             if (!validateToken(req)) {
                 return crow::response(401, "Unauthorized: Invalid or missing token");
             }
-            const std::string path = PathUtils::slugToPath(slug);
+            const std::string path = PathUtils::identifierToPath(slug);
             return endpoint_handler_->reloadEndpointConfig(req, path);
         });
 
@@ -348,7 +348,7 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             if (!validateToken(req)) {
                 return crow::response(401, "Unauthorized: Invalid or missing token");
             }
-            const std::string path = PathUtils::slugToPath(slug);
+            const std::string path = PathUtils::identifierToPath(slug);
             return endpoint_handler_->getEndpointParameters(req, path);
         });
 
@@ -408,7 +408,7 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             if (!validateToken(req)) {
                 return crow::response(401, "Unauthorized: Invalid or missing token");
             }
-            const std::string path = PathUtils::slugToPath(slug);
+            const std::string path = PathUtils::identifierToPath(slug);
             if (req.method == crow::HTTPMethod::Get)
                 return cache_handler_->getCacheConfig(req, path);
             else
@@ -421,7 +421,7 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             if (!validateToken(req)) {
                 return crow::response(401, "Unauthorized: Invalid or missing token");
             }
-            const std::string path = PathUtils::slugToPath(slug);
+            const std::string path = PathUtils::identifierToPath(slug);
             if (req.method == crow::HTTPMethod::Get)
                 return template_handler_->getCacheTemplate(req, path);
             else
@@ -434,7 +434,7 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             if (!validateToken(req)) {
                 return crow::response(401, "Unauthorized: Invalid or missing token");
             }
-            const std::string path = PathUtils::slugToPath(slug);
+            const std::string path = PathUtils::identifierToPath(slug);
             return cache_handler_->refreshCache(req, path);
         });
 
@@ -444,7 +444,7 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             if (!validateToken(req)) {
                 return crow::response(401, "Unauthorized: Invalid or missing token");
             }
-            const std::string path = PathUtils::slugToPath(slug);
+            const std::string path = PathUtils::identifierToPath(slug);
             return cache_handler_->performGarbageCollection(req, path);
         });
 
@@ -455,7 +455,7 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             if (!validateToken(req)) {
                 return crow::response(401, "Unauthorized: Invalid or missing token");
             }
-            const std::string path = PathUtils::slugToPath(slug);
+            const std::string path = PathUtils::identifierToPath(slug);
             return audit_handler_->getCacheAuditLog(path);
         });
 
