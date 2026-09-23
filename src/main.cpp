@@ -384,6 +384,41 @@ static int g_shutdown_pipe_read = -1;
 // fd number that teardown had already closed and something else had reopened.
 static std::atomic<int> g_shutdown_pipe_write{-1};
 
+// Creates the self-pipe with both ends close-on-exec.
+//
+// `pipe2` is a Linux extension. macOS has no such symbol, which is how this
+// first reached CI: the Linux and Windows builds were green and
+// osx-universal-build failed to compile main.cpp outright. The portable
+// spelling is `pipe` plus two `fcntl(F_SETFD)` calls; the only thing lost is
+// atomicity against a concurrent `fork` in another thread, and this runs at
+// the top of main() before any thread or child exists.
+//
+// Returns true and fills `fds` on success; on failure nothing is left open.
+static bool createCloexecPipe(int fds[2]) {
+#if defined(__linux__)
+    if (::pipe2(fds, O_CLOEXEC) == 0) {
+        return true;
+    }
+    fds[0] = fds[1] = -1;
+    return false;
+#else
+    if (::pipe(fds) != 0) {
+        fds[0] = fds[1] = -1;
+        return false;
+    }
+    for (int i = 0; i < 2; ++i) {
+        const int flags = ::fcntl(fds[i], F_GETFD, 0);
+        if (flags < 0 || ::fcntl(fds[i], F_SETFD, flags | FD_CLOEXEC) < 0) {
+            ::close(fds[0]);
+            ::close(fds[1]);
+            fds[0] = fds[1] = -1;
+            return false;
+        }
+    }
+    return true;
+#endif
+}
+
 static void shutdownSupervisor() {
     // Loops. It used to return after the FIRST signal, which left a window:
     // if that signal arrived before Crow had assigned its server (so
@@ -455,7 +490,7 @@ int main(int argc, char* argv[])
     // then did nothing at all - caught by the offload suite's termination
     // tests going red.
     int shutdown_pipe[2] = {-1, -1};
-    bool shutdown_pipe_ready = ::pipe2(shutdown_pipe, O_CLOEXEC) == 0;
+    bool shutdown_pipe_ready = createCloexecPipe(shutdown_pipe);
     if (shutdown_pipe_ready) {
         const int flags = ::fcntl(shutdown_pipe[1], F_GETFL, 0);
         if (flags < 0 || ::fcntl(shutdown_pipe[1], F_SETFL, flags | O_NONBLOCK) < 0) {
