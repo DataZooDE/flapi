@@ -91,13 +91,23 @@ class TestDuckLakeAdvanced:
         # Look for garbage collection events
         gc_events = [entry for entry in audit_data if entry.get("sync_type") == "garbage_collection"]
 
-        # If we have GC events, they should indicate retention policy execution
-        for gc_event in gc_events:
-            assert gc_event["status"] in ["success", "error"]
-            if gc_event["status"] == "error":
-                # Error messages should be informative
-                assert "message" in gc_event
-                assert len(gc_event["message"]) > 0
+        # This used to iterate the events and accept status in
+        # ["success", "error"], so it passed with ZERO events and passed on
+        # failure when there were any - which is how count-based retention
+        # shipped broken for its whole life, emitting SQL DuckDB rejects as a
+        # parser error while this test stayed green.
+        #
+        # A GC event that reports an error is a failure, not an outcome.
+        failed = [e for e in gc_events if e.get("status") == "error"]
+        assert not failed, (
+            f"garbage collection reported errors: "
+            f"{[e.get('message') for e in failed][:3]}")
+
+        # The stronger assertion - that the expiry actually happens and removes
+        # snapshots - is made against a real DuckLake catalog in
+        # test/cpp/cache_snapshot_watermark_test.cpp, where the snapshot count
+        # can be observed before and after. This stage only needs to ensure the
+        # server does not report GC failures.
 
     def test_scheduled_cache_refresh(self, api_config_url, auth_headers):
         """Test that scheduled cache refreshes work correctly"""

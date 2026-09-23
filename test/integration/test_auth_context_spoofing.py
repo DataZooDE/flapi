@@ -62,7 +62,16 @@ class _Server:
                     "operation:\n  type: write\n  returns-data: false\n  transaction: false\n"
                     "template-source: w.sql\nconnection: [inmem]\n")
         with open(os.path.join(sqls, "w.sql"), "w") as f:
-            f.write("CREATE TABLE IF NOT EXISTS seen AS SELECT '{{ auth.username }}' AS who\n")
+            f.write("CREATE OR REPLACE TABLE seen AS SELECT '{{ auth.username }}' AS who\n")
+        # A reader over the table the write endpoint populates. Without this
+        # the body test asserted nothing: it POSTed a spoof, then checked
+        # /who - which renders the CURRENT request's context and is empty
+        # whatever the write stored.
+        with open(os.path.join(sqls, "seen.yaml"), "w") as f:
+            f.write("url-path: /seen\nmethod: GET\n"
+                    "template-source: seen.sql\nconnection: [inmem]\n")
+        with open(os.path.join(sqls, "seen.sql"), "w") as f:
+            f.write("SELECT who FROM seen\n")
         with open(os.path.join(self.tmp, "flapi.yaml"), "w") as f:
             f.write(
                 "project-name: auth-spoof\n"
@@ -128,11 +137,30 @@ class TestAuthContextSpoofing:
     def test_a_json_body_cannot_set_the_auth_context(self):
         # Write operations take parameters from the body, which is a second
         # entry point into the same map.
+        #
+        # The check reads back what the write actually STORED. An earlier
+        # version checked /who instead, which renders the current request's
+        # context and is empty whatever the write did - so it passed even
+        # when the spoofed identity had been written straight into the table.
         with _Server() as s:
             r = requests.post(f"{s.base_url}/w", json=dict(SPOOF), timeout=10)
             assert r.status_code in (200, 201), r.text
-            check = requests.get(f"{s.base_url}/who", timeout=10)
-            assert check.json()["data"][0]["who"] == ""
+
+            stored = requests.get(f"{s.base_url}/seen", timeout=10)
+            assert stored.status_code == 200, stored.text
+            rows = stored.json()["data"]
+            assert rows, "the write endpoint stored nothing, so this proves nothing"
+            assert rows[0]["who"] == "", (
+                f"the spoofed identity reached the database: {rows[0]!r}")
+
+    def test_a_spoof_in_the_query_string_of_a_write_is_also_ignored(self):
+        # combineWriteParameters has its own query-parameter fallback, which is
+        # a fourth entry point into the same map and was guarded separately.
+        with _Server() as s:
+            r = requests.post(f"{s.base_url}/w", params=SPOOF, json={}, timeout=10)
+            assert r.status_code in (200, 201), r.text
+            rows = requests.get(f"{s.base_url}/seen", timeout=10).json()["data"]
+            assert rows and rows[0]["who"] == "", rows
 
     def test_ordinary_parameters_still_work(self):
         # The guard is prefix-scoped; it must not eat normal input.
