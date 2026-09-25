@@ -344,6 +344,7 @@ jobs:
     - name: Check codebase invariants
       run: |
         ./scripts/check_crow_app_alias.sh
+        ./scripts/check_no_synthetic_router_entry.sh
         ./scripts/check_auth_prefix_single_source.sh
 
     - name: Run integration tests

@@ -62,13 +62,25 @@ public:
 
     void stop();
 
-    void requestForEndpoint(const EndpointConfig& endpoint, const std::unordered_map<std::string, std::string>& pathParams = {});
-    
     // Getters for heartbeat worker
     std::shared_ptr<CacheManager> getCacheManager() const;
     std::shared_ptr<DatabaseManager> getDatabaseManager() const;
 
 private:
+    // warmEndpoint() is the heartbeat's, and nothing else's. Keeping it private
+    // with a single friend is the structural half of #141: the public surface
+    // no longer offers any way to drive an endpoint without an HTTP request,
+    // so there is no second caller to grow the habit back.
+    friend class HeartbeatWorker;
+
+    /// Exercise an endpoint's full serving path - connection, extensions,
+    /// template render, query - with no HTTP request behind it.
+    ///
+    /// Calls RequestHandler directly and NEVER app.handle_full(): see the long
+    /// comment on the definition for the two null dereferences that taught us
+    /// why a synthesised crow::request must not enter the router (#141).
+    void warmEndpoint(const EndpointConfig& endpoint);
+
     void createApp();
     void setupRoutes();
     void setupCORS();

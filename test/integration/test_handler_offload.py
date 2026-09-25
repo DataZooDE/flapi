@@ -334,11 +334,11 @@ class TestGracefulTermination:
             s.stop()
 
 class TestHeartbeatRequestsAreNotOffloaded:
-    """The heartbeat's cache refresh synthesises a request with no connection.
+    """The heartbeat must not reach the offload with a request that has no connection.
 
-    APIServer::requestForEndpoint() builds a bare crow::request and calls
+    APIServer::requestForEndpoint() used to build a bare crow::request and call
     app.handle_full() directly, so `req.io_service` and `req.middleware_context`
-    are both null. The offload dereferenced both - `*req.io_service` in the
+    were both null. The offload dereferenced both - `*req.io_service` in the
     Completer and get_context<>() beside it. Offload is ON by default, so every
     deployment with a scheduled cache was hitting it.
 
@@ -347,6 +347,13 @@ class TestHeartbeatRequestsAreNotOffloaded:
     heartbeat-driven refresh. This is the minimal experiment that discriminates
     inline-from-offloaded for a synthesised request: let the heartbeat fire,
     and require the process to still be answering afterwards.
+
+    #141 removed the cause rather than the symptom - APIServer::warmEndpoint()
+    calls RequestHandler directly and nothing synthetic enters the router any
+    more - so this class no longer guards a guard. It is kept because what it
+    asserts is still exactly right from the outside: a heartbeat-backed cache
+    refreshes, and the process survives it. test_heartbeat_warming.py covers
+    what the new path does; this covers that the offload is still not involved.
     """
 
     def _server_with_heartbeat(self, log_level="warning"):
@@ -401,9 +408,9 @@ class TestHeartbeatRequestsAreNotOffloaded:
                 "asserting nothing\n" + log[-3000:])
 
     def test_the_server_survives_a_heartbeat_driven_refresh(self):
-        # Without the guard the heartbeat's synthesised request takes the
-        # offload path, dereferences a null io_service, and takes the process
-        # with it - so "still answering 15s later" is the discriminator.
+        # Before #141 the heartbeat's synthesised request took the offload path,
+        # dereferenced a null io_service, and took the process with it - so
+        # "still answering 15s later" is the discriminator.
         with self._server_with_heartbeat() as s:
             deadline = time.time() + 20
             last = None

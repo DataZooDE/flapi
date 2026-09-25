@@ -407,12 +407,14 @@ vscode-dev:
 	@npm --prefix cli/vscode-extension run dev
 
 # ------------------------------------------------------------------ guards
-# Invariants that a compiler cannot express. Both encode failures this codebase
+# Invariants that a compiler cannot express. Each encodes a failure this codebase
 # has actually hit: two crow::App spellings silently producing a second,
-# unconfigured middleware tuple, and a split C++ standard that segfaulted a test
-# while the build stayed green.
+# unconfigured middleware tuple; a synthesised crow::request routed through
+# middleware that then dereferenced its null context (#141, twice); and a split
+# C++ standard that segfaulted a test while the build stayed green.
 check-invariants:
 	@./scripts/check_crow_app_alias.sh
+	@./scripts/check_no_synthetic_router_entry.sh
 	@./scripts/check_cxx_standard_uniform.sh build/release
 	@./scripts/check_tracing_abi_guard.sh build/release/libflapi-lib.a
 

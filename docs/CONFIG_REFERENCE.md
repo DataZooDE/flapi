@@ -604,7 +604,62 @@ heartbeat:
   worker-interval: 10
 ```
 
-> **Implementation:** `src/heartbeat_worker.cpp` | **Tests:** *None*
+Both keys are global. An endpoint opts in with its own `heartbeat:` block (see
+[§3 Endpoint Configuration](#3-endpoint-configuration)); the global block
+only decides whether the worker runs at all, and how often it sweeps.
+
+#### What a heartbeat tick does
+
+For every endpoint with `heartbeat.enabled: true`, the worker runs that
+endpoint's **entire read path** — connection, DuckDB extensions, template
+render, query — and throws the result away. It is a warm-up, not a
+cache refresh: an endpoint with no `cache:` block is warmed too, and that is
+deliberate, so the first real caller does not pay the cold cost.
+
+A tick is always a **GET**, whatever the endpoint's `method:` is. Warming must
+never mutate anything.
+
+It does **not** go through the HTTP router: no routing, no CORS, no
+rate-limiting, no auth middleware, and no `rest_endpoint_served` telemetry —
+a warm-up is not traffic anybody generated. `APIServer::warmEndpoint()` calls
+`RequestHandler::handleRequest()` directly. Cache-backed endpoints are
+refreshed by the same call, through the ordinary cache path.
+
+Because there is no HTTP request, there is no authenticated principal, so
+`{{params.__auth_*}}` template variables are absent during a warm-up. A
+template that requires them should guard on them (`{{#params.__auth_username}}`)
+or the endpoint should not enable the heartbeat.
+
+#### `heartbeat.params` (endpoint-level)
+
+```yaml
+# sqls/customers.yaml
+heartbeat:
+  enabled: true
+  params:
+    status: active       # arrives in the template as {{params.status}}
+```
+
+`params` is a flat string→string map injected into the warm-up's template
+context exactly where a path or query parameter would land, so
+`{{params.status}}` renders during a heartbeat tick. Use it when the template
+needs a value to produce valid SQL — a required filter, a partition key.
+
+> **Behaviour change.** Up to and including v26.09.23, `heartbeat.params` was parsed and
+> then silently ignored: the warm-up was always issued with an empty parameter
+> map. Templates that referenced a heartbeat param rendered as if it were
+> absent. It is now honoured. If you have an endpoint whose `heartbeat.params`
+> names something the template also reads from a request — or whose endpoint
+> sets `request-fields-validation: true` and does not declare that name as a
+> request field — review it: the value now actually arrives.
+
+> **Implementation:** `src/heartbeat_worker.cpp` (`performHeartbeat`),
+> `src/api_server.cpp` (`APIServer::warmEndpoint` — reads
+> `endpoint.heartbeat.params`), `src/config_manager.cpp`
+> (`parseEndpointHeartbeat`) |
+> **Tests:** `test/integration/test_heartbeat_warming.py`,
+> `test/integration/test_handler_offload.py`
+> (`TestHeartbeatRequestsAreNotOffloaded`)
 
 ### 2.11 Storage Configuration (VFS)
 
