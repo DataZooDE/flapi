@@ -19,12 +19,12 @@ Two things were wrong with this module and both are now fixed or explained.
 2. The remaining failures were blamed on an unexplained
    "server performance degrades under high concurrent load". That was neither a
    performance problem nor general: mixed read/write traffic against a
-   SQLite-backed endpoint returns 500 for every request because SQLite allows a
-   single writer and flAPI surfaces the lock as a 500 with no retry. Measured,
-   reduced to a standalone reproducer, and filed as issue #116. The markers
-   below point at it, so they carry a cause rather than a shrug.
+   SQLite-backed endpoint returned 500 for every request because SQLite allows a
+   single writer and flAPI surfaced the lock as a 500 with no retry. Measured,
+   reduced to a standalone reproducer, and filed as issue #116 - fixed in
+   v26.09.20 by per-connection `serialize-access`. The skip that named it is
+   gone; these tests run unconditionally now.
 """
-import os
 import pytest
 import time
 import concurrent.futures
@@ -32,27 +32,6 @@ import requests
 from test_utils import make_concurrent_requests, calculate_percentiles
 
 pytestmark = pytest.mark.concurrency
-
-# Blocked on #116: SQLite permits one writer, so mixed read/write traffic against
-# the northwind example returns "database is locked" for reads and writes alike.
-#
-# These are SKIPPED rather than xfail-ed for a practical reason: each one waits out
-# client-side timeouts before failing, so confirming a bug we have already measured
-# and filed costs ~11 minutes - more than half of CI's entire integration budget.
-#
-# This is not the blanket, unexplained skip this module used to carry. It names a
-# filed issue with a standalone reproducer, and it is opt-in:
-#     FLAPI_RUN_BLOCKED_CONCURRENCY=1 pytest test_load_testing.py
-# Delete the marker when #116 is fixed; the tests are expected to pass then.
-_RUN_BLOCKED = os.getenv("FLAPI_RUN_BLOCKED_CONCURRENCY") == "1"
-SQLITE_WRITE_LOCK = pytest.mark.skipif(
-    not _RUN_BLOCKED,
-    reason="#116: concurrent read/write on a SQLite-backed endpoint returns 500 "
-           "('database is locked'); reads are collateral damage. Some of these "
-           "pass in isolation and fail only under full-suite contention - same "
-           "root cause, confirmed by 'database is locked' in the server log. "
-           "Set FLAPI_RUN_BLOCKED_CONCURRENCY=1 to run anyway.",
-)
 
 
 class TestConcurrentRequests:
@@ -80,7 +59,6 @@ class TestConcurrentRequests:
             avg_time = sum(response_times) / len(response_times)
             assert avg_time < 2.0, f"Average response time {avg_time:.2f}s exceeds 2.0s"
 
-    @SQLITE_WRITE_LOCK
     def test_concurrent_post_requests(self, isolated_examples_url, isolated_examples_server):
         """Test 50+ concurrent POST requests."""
         payload = {
@@ -104,7 +82,6 @@ class TestConcurrentRequests:
         # At least some should succeed (allowing for constraints)
         assert success_count >= 10, f"Expected at least 10 successful requests, got {success_count}"
 
-    @SQLITE_WRITE_LOCK
     def test_mixed_read_write_operations(self, isolated_examples_url, isolated_examples_server):
         """Test mixed read/write operations concurrently."""
         def make_get():
@@ -130,7 +107,6 @@ class TestConcurrentRequests:
         success_count = sum(1 for r in results if r.status_code in [200, 201])
         assert success_count >= 40, "Too many requests failed"
 
-    @SQLITE_WRITE_LOCK
     def test_no_deadlocks_or_timeouts(self, isolated_examples_url, isolated_examples_server):
         """Verify no deadlocks or timeouts occur with concurrent requests."""
         results = make_concurrent_requests(
@@ -153,14 +129,27 @@ class TestSustainedLoad:
     """Tests for sustained load over time"""
 
     @pytest.mark.slow
-    @SQLITE_WRITE_LOCK
-    def test_sustained_load_1000_requests(self, isolated_examples_url, isolated_examples_server):
-        """Run 1000 requests over 5 minutes."""
+    def test_sustained_load_held_over_time(self, isolated_examples_url, isolated_examples_server):
+        """Hold a steady ~3.3 req/s for 60s and require 95% success throughout.
+
+        This is the *sustained* counterpart to TestConcurrentRequests, which fires
+        bursts. What matters here is that the rate is held over wall-clock time -
+        so the server has to survive many sequential connections, keepalive
+        recycling and any per-request accumulation - not the absolute count.
+
+        Scaled from the original 1000 requests over 300s, which could never pass:
+        its sleeps alone floored it at ~300s and it asserted a 450s budget, while
+        pytest-timeout kills it at 300s locally and 180s in CI. The pacing interval
+        (0.3s) and the success ratio (95%) are unchanged; only the wall-clock span
+        is cut 5x, to 60s of pacing plus request time, asserted under a 90s budget.
+        That leaves ample head-room under CI's --timeout=180 while still spanning
+        two orders of magnitude more time than a burst test.
+        """
         start_time = time.time()
-        duration = 300  # 5 minutes
-        target_requests = 1000
-        interval = duration / target_requests
-        
+        duration = 60  # 1 minute of held load
+        interval = 0.3  # same pacing as before: ~3.3 requests/second
+        target_requests = int(duration / interval)  # 200
+
         results = []
         
         for i in range(target_requests):
@@ -183,15 +172,16 @@ class TestSustainedLoad:
         
         elapsed = time.time() - start_time
         
-        # Most requests should succeed
+        # Most requests should succeed - same 95% ratio as the original 950/1000
+        min_success = int(target_requests * 0.95)
         success_count = sum(1 for r in results if r["status_code"] == 200)
-        assert success_count >= 950, f"Expected at least 950 successful requests, got {success_count}"
+        assert success_count >= min_success, \
+            f"Expected at least {min_success} successful requests, got {success_count}"
         
         # Should complete within reasonable time
         assert elapsed < duration * 1.5, f"Test took {elapsed:.2f}s, expected < {duration * 1.5}s"
 
     @pytest.mark.slow
-    @SQLITE_WRITE_LOCK
     def test_consistent_performance(self, isolated_examples_url, isolated_examples_server):
         """Verify consistent performance over time."""
         response_times = []
@@ -213,7 +203,6 @@ class TestSustainedLoad:
 class TestStressScenarios:
     """Stress testing scenarios"""
 
-    @SQLITE_WRITE_LOCK
     def test_maximum_concurrent_connections(self, isolated_examples_url, isolated_examples_server):
         """Test with maximum concurrent connections."""
         # Use a reasonable number for testing (adjust based on system)
@@ -230,7 +219,6 @@ class TestStressScenarios:
         success_count = sum(1 for r in results if r.get("status_code") == 200)
         assert success_count >= max_connections * 0.8, f"Too many failures: {success_count}/{max_connections}"
 
-    @SQLITE_WRITE_LOCK
     def test_large_payload_handling(self, isolated_examples_url, isolated_examples_server):
         """Test handling of large JSON payloads."""
         # Create a payload with large strings (near 1MB limit)
