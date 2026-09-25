@@ -47,6 +47,11 @@ using namespace flapi;
 // Add global variable for signal handling
 std::atomic<bool> should_exit(false);
 
+// Set by the server thread when run() throws during startup (EADDRINUSE, an
+// unresolvable bind address, a failed validate()), read by main to pick its
+// exit status. Distinct from should_exit, which is also set by a clean signal.
+static std::atomic<bool> server_start_failed(false);
+
 // Written by main, read by the shutdown supervisor thread. A std::shared_ptr
 // is not safe for concurrent read/write, and the supervisor now starts before
 // main builds the server - so both sides go through this mutex.
@@ -872,7 +877,34 @@ int main(int argc, char* argv[])
         config_manager->setHttpHost(cmd_host);
     }
 
-    initializeDatabase(config_manager);
+    // Same reasoning as the configuration catch above (#126), on the sibling
+    // call one screen below it - this one was missed. initializeDatabase
+    // rethrows as std::runtime_error, nothing above it caught, so the throw
+    // escaped main, reached terminateHandler and hit std::abort().
+    //
+    // Measured (#145): two instances against examples/flapi.yaml, the second
+    // unable to take the DuckLake file lock -
+    //     Error creating database, Details: Failed to attach DuckLake catalog:
+    //     ... Could not set lock on file ".../cache.ducklake": Conflicting
+    //     lock is held in .../flapi (PID ...) by user jr.
+    //     timeout: the monitored command dumped core
+    // exit 134 (SIGABRT) plus a core dump of the ~77 MB binary.
+    //
+    // That is the single most likely failure in a restart loop: the previous
+    // process has not yet released the DuckLake or DuckDB file. A crash-looping
+    // container therefore filled its disk with core dumps of a recoverable,
+    // operator-fixable condition - an unreadable db_path, a cache file on a
+    // volume that has not mounted yet, bad attach credentials all land here too.
+    //
+    // terminateHandler keeps abort() for genuinely unexpected exceptions; a
+    // locked cache file is not one of them.
+    try {
+        initializeDatabase(config_manager);
+    } catch (const std::exception& e) {
+        CROW_LOG_ERROR << "Database initialization error: " << e.what();
+        CROW_LOG_ERROR << "flAPI cannot start until the database can be opened.";
+        return 1;
+    }
 
     // If a bundle was detected at startup, register the embed:// FS
     // on the DuckDB instance so `read_csv('embed://...')` and similar
@@ -940,6 +972,14 @@ int main(int argc, char* argv[])
             server->run(config_manager->getHttpPort());
         } catch (const std::exception& e) {
             CROW_LOG_ERROR << "the server could not start: " << e.what();
+            // A supervisor cannot distinguish "served, then shut down
+            // cleanly" from "never started" when both exit 0 - and this
+            // path used to fall through to main's `return 0`, so an
+            // EADDRINUSE on the configured port was reported as success.
+            // systemd would not restart it; a Kubernetes container would
+            // go Completed rather than CrashLoopBackOff, with the reason
+            // visible only to whoever read the logs.
+            server_start_failed.store(true, std::memory_order_relaxed);
             should_exit.store(true, std::memory_order_relaxed);
             server->stop();
         }
@@ -995,6 +1035,13 @@ int main(int argc, char* argv[])
     // Drain buffered telemetry on clean exit; the signal path already flushed.
     if (!should_exit) {
         flapi::GlobalTelemetry().flush();
+    }
+
+    // The server never came up: report it. The shutdown above still ran in
+    // full - the handler pool is drained and the warmup thread joined - so
+    // this only changes the status, not the teardown.
+    if (server_start_failed.load(std::memory_order_relaxed)) {
+        return 1;
     }
 
     return 0;
