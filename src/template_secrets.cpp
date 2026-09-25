@@ -169,23 +169,6 @@ void TemplateSecrets::record(const std::string& value) {
     }
 }
 
-void TemplateSecrets::add(const std::string& key, const std::string& value) {
-    add(key, value, Source::ConfiguredDefault);
-}
-
-void TemplateSecrets::addCallerSupplied(const std::string& key, const std::string& value) {
-    add(key, value, Source::Caller);
-}
-
-void TemplateSecrets::addEnv(const std::string& key, const std::string& value) {
-    add(key, value, Source::Environment);
-}
-
-void TemplateSecrets::addConnectionProperty(const std::string& key,
-                                            const std::string& value) {
-    add(key, value, Source::Connection);
-}
-
 std::string TemplateSecrets::scrub(std::string text) const {
     // LONGEST first. Replacement was insertion-ordered, so a short secret
     // that is a prefix of a longer one consumed its start and left the tail
@@ -216,9 +199,8 @@ TemplateSecrets collectTemplateSecrets(ConfigManager* config_manager,
         for (const auto& conn_name : endpoint.connection) {
             const auto it = connections.find(conn_name);
             if (it != connections.end()) {
-                for (const auto& [key, value] : it->second.properties) {
-                    secrets.addConnectionProperty(key, value);
-                }
+                secrets.addAll(it->second.properties,
+                               TemplateSecrets::Source::Connection);
             }
         }
 
@@ -230,7 +212,7 @@ TemplateSecrets collectTemplateSecrets(ConfigManager* config_manager,
         const auto& template_config = config_manager->getTemplateConfig();
         for (const auto& [key, value] : SQLTemplateProcessor::getEnvironmentVariables()) {
             if (template_config.isEnvironmentVariableAllowed(key)) {
-                secrets.addEnv(key, value);
+                secrets.add(key, value, TemplateSecrets::Source::Environment);
             }
         }
     }
@@ -241,8 +223,10 @@ TemplateSecrets collectTemplateSecrets(ConfigManager* config_manager,
     // connection property does, and get the same treatment.
     if (config_manager != nullptr) {
         const auto& ducklake = config_manager->getDuckLakeConfig();
-        secrets.addConnectionProperty("metadata-path", ducklake.metadata_path);
-        secrets.addConnectionProperty("data-path", ducklake.data_path);
+        secrets.add("metadata-path", ducklake.metadata_path,
+                    TemplateSecrets::Source::Connection);
+        secrets.add("data-path", ducklake.data_path,
+                    TemplateSecrets::Source::Connection);
     }
 
     // Params are caller-supplied: scrubbed, never a reason to withhold.
@@ -254,10 +238,11 @@ TemplateSecrets collectTemplateSecrets(ConfigManager* config_manager,
         }
         const auto it = params.find(field.fieldName);
         if (it != params.end() && it->second == field.defaultValue) {
-            secrets.add(field.fieldName, field.defaultValue);
+            secrets.add(field.fieldName, field.defaultValue,
+                        TemplateSecrets::Source::ConfiguredDefault);
         }
     }
-    secrets.addAllCallerSupplied(params);
+    secrets.addAll(params, TemplateSecrets::Source::Caller);
     return secrets;
 }
 

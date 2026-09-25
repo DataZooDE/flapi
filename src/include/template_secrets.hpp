@@ -49,29 +49,11 @@ public:
     /// are tabulated in template_secrets.cpp; that table is the whole policy.
     void add(const std::string& key, const std::string& value, Source source);
 
-    /// Deprecated: delegates to add(key, value, Source::ConfiguredDefault).
-    void add(const std::string& key, const std::string& value);
-
-    /// Deprecated: delegates to add(key, value, Source::Caller).
-    void addCallerSupplied(const std::string& key, const std::string& value);
-
-    /// Deprecated: delegates to add(key, value, Source::Environment).
-    void addEnv(const std::string& key, const std::string& value);
-
-    /// Deprecated: delegates to add(key, value, Source::Connection).
-    void addConnectionProperty(const std::string& key, const std::string& value);
-
+    /// Record every entry of `entries`, all from the same `source`.
     template <typename Map>
-    void addAllCallerSupplied(const Map& entries) {
+    void addAll(const Map& entries, Source source) {
         for (const auto& entry : entries) {
-            addCallerSupplied(entry.first, entry.second);
-        }
-    }
-
-    template <typename Map>
-    void addAll(const Map& entries) {
-        for (const auto& entry : entries) {
-            add(entry.first, entry.second);
+            add(entry.first, entry.second, source);
         }
     }
 
