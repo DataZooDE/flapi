@@ -1,5 +1,7 @@
+#include <algorithm>
 #include <cstdlib>
 #include <future>
+#include <string>
 #include <thread>
 #include <yaml-cpp/yaml.h>
 
@@ -707,6 +709,43 @@ void APIServer::run(int port) {
     // ordered (pool drained, then io_services stopped) and happens while the
     // process is still alive.
     app.signal_clear();
+
+    // Test-only seam (#143). Holds the process at a NAMED startup point, so a
+    // test can signal it there instead of guessing.
+    //
+    // It sits exactly here on purpose: past the stop_requested_ check above and
+    // before the bind. That is the window three consecutive reviews kept losing
+    // a signal in - flapi's handler is installed, but crow has no server yet,
+    // so app.stop() is still a no-op. The test that covered it swept six delays
+    // from 0 to 350ms hoping to land inside a window about a millisecond wide,
+    // and therefore did not reliably go red against any of the three defects it
+    // was meant to catch. Pausing here makes "the signal arrived while crow was
+    // not yet stoppable" a fact rather than a coincidence.
+    //
+    // Capped, and logged at WARNING: this must be impossible to leave switched
+    // on in production without it being obvious in the log, and a mistyped
+    // value must not be able to hold a container closed.
+    if (const char* pause_ms = std::getenv("FLAPI_TEST_PAUSE_BEFORE_BIND")) {
+        long requested = 0;
+        try {
+            requested = std::stol(pause_ms);
+        } catch (const std::exception&) {
+            requested = 0;
+        }
+        constexpr long kMaxPauseMs = 10000;
+        if (requested > 0) {
+            const long capped = std::min(requested, kMaxPauseMs);
+            CROW_LOG_WARNING << "FLAPI_TEST_PAUSE_BEFORE_BIND is set: holding for "
+                             << capped << "ms before binding. This is a TEST seam "
+                                          "and must not be set in production.";
+            // The marker a test waits for. Emitted AFTER the sleep starts being
+            // committed to but BEFORE it elapses, so observing it proves the
+            // process is inside the window rather than approaching it.
+            CROW_LOG_WARNING << "startup paused before bind";
+            std::this_thread::sleep_for(std::chrono::milliseconds(capped));
+            CROW_LOG_WARNING << "startup pause elapsed; binding now";
+        }
+    }
 
     // run_async + wait_for_server_start, NOT run().
     //
