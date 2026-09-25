@@ -22,21 +22,44 @@ struct EndpointConfig;
 /// returns them.
 class TemplateSecrets {
 public:
-    /// Record `value` as secret if `key` names a credential. A value too
-    /// short to replace without corrupting unrelated SQL sets `withhold()`
-    /// instead: neither leak it nor mangle the output around it.
+    /// Where a recorded value came from.
+    ///
+    /// The four sources differ in PROVENANCE, not in shape, and provenance is
+    /// what decides how strictly a value is treated. That decision is made in
+    /// exactly one place - the policy table at the top of
+    /// template_secrets.cpp - because three of this area's defects were "the
+    /// rule was applied at one call site and not at its sibling".
+    enum class Source {
+        /// A connection property out of flapi.yaml.
+        Connection,
+        /// A whitelisted environment variable the template layer exposes.
+        Environment,
+        /// A request field's configured `default:` the caller did not override.
+        ConfiguredDefault,
+        /// A value the caller sent with the request.
+        Caller,
+    };
+
+    /// Record `value` as secret, under the policy its `source` earns.
+    ///
+    /// Common to every source: an empty value is nothing, and a value whose
+    /// NAME names a credential is a secret. What differs per source is whether
+    /// a value too short to replace safely sets withhold() instead, and
+    /// whether a long value is a secret whatever it is called. The differences
+    /// are tabulated in template_secrets.cpp; that table is the whole policy.
+    void add(const std::string& key, const std::string& value, Source source);
+
+    /// Deprecated: delegates to add(key, value, Source::ConfiguredDefault).
     void add(const std::string& key, const std::string& value);
 
-    /// A value the CALLER supplied. Recorded so it is scrubbed out of a
-    /// rendered preview, but never allowed to set withhold().
-    ///
-    /// add() treats a too-short credential-shaped value as "cannot scrub
-    /// safely, suppress the whole output". Applying that to request params
-    /// handed every caller a denial-of-diagnostics switch: `?token=ab` blanked
-    /// every error the endpoint could produce - validation errors included -
-    /// on REST, tools/call and resources/read alike. A value the caller sent
-    /// is not a secret being kept FROM them.
+    /// Deprecated: delegates to add(key, value, Source::Caller).
     void addCallerSupplied(const std::string& key, const std::string& value);
+
+    /// Deprecated: delegates to add(key, value, Source::Environment).
+    void addEnv(const std::string& key, const std::string& value);
+
+    /// Deprecated: delegates to add(key, value, Source::Connection).
+    void addConnectionProperty(const std::string& key, const std::string& value);
 
     template <typename Map>
     void addAllCallerSupplied(const Map& entries) {
@@ -52,30 +75,15 @@ public:
         }
     }
 
-    /// Like add(), but also records a long value whose NAME does not look
-    /// like a credential.
-    ///
-    /// The name heuristic is the right gate for a request default - a
-    /// `default: "100"` on a `limit` field must stay visible or the preview
-    /// is useless. It is the wrong gate for a whitelisted environment
-    /// variable: those are server-configured, an operator chose to expose
-    /// each one to templates, and a name like PAYMENT_VALUE or
-    /// SERVICE_ACCOUNT_JSON carries a secret past any stem list.
-    void addEnv(const std::string& key, const std::string& value);
-
-    /// A connection property. Same treatment as a whitelisted environment
-    /// variable - both are server-configured, and a name like
-    /// `service_account_json` or `sas` carries a secret past any stem list -
-    /// except that a value which is plainly a path or a URI stays visible,
-    /// because `path` and `database` are the properties operators read a
-    /// preview to check.
-    void addConnectionProperty(const std::string& key, const std::string& value);
-
     bool withhold() const { return withhold_; }
     const std::vector<std::string>& values() const { return values_; }
 
     /// Replace every recorded value wherever it appears in `text`.
     std::string scrub(std::string text) const;
+
+private:
+    /// Record `value` once. add() has already decided it is a secret.
+    void record(const std::string& value);
 
 private:
     bool withhold_ = false;
