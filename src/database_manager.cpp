@@ -35,37 +35,10 @@ bool DatabaseManager::isInitialized() const {
 void DatabaseManager::reset() {
     std::lock_guard<std::mutex> lock(db_mutex);
 
-    // Close the database if open
-    if (db) {
-        // Try graceful shutdown first
-        if (config_manager) {
-            try {
-                const auto& ducklake_config = config_manager->getDuckLakeConfig();
-                if (ducklake_config.enabled) {
-                    try {
-                        std::string detach_stmt = "DETACH " + ducklake_config.alias + ";";
-                        // Need to execute without lock since we already hold it
-                        duckdb_connection conn;
-                        if (duckdb_connect(db, &conn) == DuckDBSuccess) {
-                            duckdb_result result;
-                            duckdb_query(conn, detach_stmt.c_str(), &result);
-                            duckdb_destroy_result(&result);
-                            duckdb_disconnect(&conn);
-                        }
-                    } catch (...) {
-                        // Ignore errors during cleanup
-                    }
-                }
-            } catch (...) {
-                // Ignore errors during cleanup
-            }
-        }
-
-        duckdb_close(&db);
-        db = nullptr;
-        initialized = false;
-        CROW_LOG_DEBUG << "DatabaseManager reset: closed database";
-    }
+    // Graceful whenever there is a config to read the DuckLake alias from -
+    // the behaviour reset() always had, so tests that re-initialise between
+    // cases still release the catalog lock before reopening it.
+    closeDatabaseLocked(/*graceful=*/config_manager != nullptr);
 
     // Clear all internal state
     cache_manager.reset();
@@ -75,67 +48,92 @@ void DatabaseManager::reset() {
     CROW_LOG_DEBUG << "DatabaseManager reset: cleared all state";
 }
 
-DatabaseManager::~DatabaseManager() {
-    try {
-        // Graceful shutdown: Detach DuckLake and flush WAL before closing.
-        //
-        // Skipped unless initialisation COMPLETED. Both statements below run
-        // SQL, and on a startup failure this destructor is reached from a
-        // shared_ptr release inside exit() - at which point DuckDB's own
-        // globals are gone and parsing a statement dereferences freed memory.
-        // Measured on a second instance whose DuckLake metadata file was
-        // already locked: 6 SIGSEGVs in 12 runs, in two different places:
-        //
-        //   #0 flapi::registerActiveExecutor(...)                 <- ours
-        //   #2 flapi::DatabaseManager::executeInitStatement("CHECKPOINT;")
-        //
-        //   #0 duckdb::Value::operator=(duckdb::Value const&)     <- DuckDB's
-        //   #1 duckdb::UserSettingsMap::TryGetSetting(...)
-        //   #2 duckdb::GlobalUserSettings::TryGetSetting(...)
-        //   #9 flapi::DatabaseManager::executeInitStatement("CHECKPOINT;")
-        //
-        // Making our own registry immortal removed the first; the second is
-        // inside DuckDB and cannot be fixed from here. A failed startup has
-        // written nothing, so there is no flush to lose - and duckdb_close()
-        // below still releases the file locks.
-        //
-        // The normal shutdown path is unchanged and still detaches and
-        // checkpoints. That path executes SQL from a destructor too, which is
-        // the same latent hazard - tracked separately.
-        if (db && config_manager && initialized) {
-            try {
-                const auto& ducklake_config = config_manager->getDuckLakeConfig();
-                if (ducklake_config.enabled) {
-                    try {
-                        // Detach DuckLake catalog to release locks
-                        std::string detach_stmt = "DETACH " + ducklake_config.alias + ";";
-                        executeInitStatement(detach_stmt);
-                        CROW_LOG_INFO << "Detached DuckLake catalog: " << ducklake_config.alias;
-                    } catch (const std::exception& e) {
-                        CROW_LOG_WARNING << "Failed to detach DuckLake catalog: " << e.what();
-                    }
-                }
+void DatabaseManager::shutdown() {
+    std::lock_guard<std::mutex> lock(db_mutex);
+    // Only a manager that finished initialising has anything to detach or
+    // flush. A failed startup wrote nothing (#145), and closing is enough.
+    closeDatabaseLocked(/*graceful=*/initialized);
+}
 
-                // Checkpoint to flush WAL before closing
-                try {
-                    executeInitStatement("CHECKPOINT;");
-                    CROW_LOG_DEBUG << "Checkpointed database WAL";
-                } catch (const std::exception& e) {
-                    CROW_LOG_WARNING << "Failed to checkpoint WAL: " << e.what();
-                }
-            } catch (const std::exception& e) {
-                CROW_LOG_WARNING << "Error during database graceful shutdown: " << e.what();
-            }
-        }
-    } catch (const std::exception& e) {
-        // Catch-all to prevent exceptions from propagating in destructor
-        CROW_LOG_ERROR << "Unexpected error during database cleanup: " << e.what();
+void DatabaseManager::closeDatabaseLocked(bool graceful) {
+    if (!db) {
+        return;
     }
 
-    // Close the database connection
+    // Raw connections, deliberately - not executeInitStatement(). That goes
+    // through QueryExecutor and the active-executor registry, takes db_mutex
+    // (already held here), and is the path both #145 backtraces ran through.
+    // Detach and checkpoint need none of it.
+    auto run = [this](const char* sql, std::string& error) -> bool {
+        duckdb_connection conn;
+        if (duckdb_connect(db, &conn) != DuckDBSuccess) {
+            error = "could not open a connection";
+            return false;
+        }
+        duckdb_result result;
+        const bool ok = duckdb_query(conn, sql, &result) == DuckDBSuccess;
+        if (!ok) {
+            const char* message = duckdb_result_error(&result);
+            error = message ? message : "unknown error";
+        }
+        duckdb_destroy_result(&result);
+        duckdb_disconnect(&conn);
+        return ok;
+    };
+
+    if (graceful && config_manager) {
+        std::string error;
+        const auto& ducklake_config = config_manager->getDuckLakeConfig();
+        if (ducklake_config.enabled) {
+            const std::string detach = "DETACH " + ducklake_config.alias + ";";
+            if (run(detach.c_str(), error)) {
+                CROW_LOG_INFO << "Detached DuckLake catalog: " << ducklake_config.alias;
+            } else {
+                CROW_LOG_WARNING << "Failed to detach DuckLake catalog "
+                                 << ducklake_config.alias << ": " << error;
+            }
+        }
+        if (run("CHECKPOINT;", error)) {
+            CROW_LOG_INFO << "Checkpointed database";
+        } else {
+            CROW_LOG_WARNING << "Failed to checkpoint database: " << error;
+        }
+    }
+
+    duckdb_close(&db);
+    db = nullptr;
+    initialized = false;
+    CROW_LOG_DEBUG << "DatabaseManager: closed database";
+}
+
+DatabaseManager::~DatabaseManager() {
+    // No SQL here, ever (#147).
+    //
+    // This destructor runs from the static shared_ptr's release inside exit(),
+    // after the statics that SQL execution depends on - ours and DuckDB's -
+    // have been destroyed. It used to DETACH and CHECKPOINT from here, and on
+    // a failed startup that segfaulted 6 times in 12:
+    //
+    //   #0 flapi::registerActiveExecutor(...)                   <- ours
+    //   #2 flapi::DatabaseManager::executeInitStatement("CHECKPOINT;")
+    //   #3 flapi::DatabaseManager::~DatabaseManager()
+    //
+    //   #0 duckdb::Value::operator=(duckdb::Value const&)       <- DuckDB's
+    //   #2 duckdb::GlobalUserSettings::TryGetSetting(...)
+    //   #9 flapi::DatabaseManager::executeInitStatement("CHECKPOINT;")
+    //
+    // On a normal shutdown it had a luckier destruction order, and its log
+    // lines never appeared in a real shutdown log - so whether it worked was
+    // never observable either. The graceful work now happens in shutdown(),
+    // which main() calls while the process is demonstrably alive: after the
+    // handler pool is drained and the warmup thread joined, so nothing is
+    // still reading or writing the catalog being detached.
+    //
+    // All that is left for here is the case where shutdown() never ran (an
+    // early return), and closing - without SQL - is safe even then: measured
+    // 0 crashes in 20 runs on exactly that path.
     if (db) {
         duckdb_close(&db);
-        CROW_LOG_DEBUG << "Closed DuckDB connection";
     }
 }
 

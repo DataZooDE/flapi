@@ -1032,6 +1032,12 @@ int main(int argc, char* argv[])
         warmup_thread.join();
     }
 
+    // Detach DuckLake and checkpoint HERE, while the process is demonstrably
+    // alive - never in ~DatabaseManager, which runs inside exit() where
+    // executing SQL is undefined (#147). After the pool drain and the warmup
+    // join on purpose: warmup writes to the catalog being detached.
+    DatabaseManager::getInstance()->shutdown();
+
     // Drain buffered telemetry on clean exit; the signal path already flushed.
     if (!should_exit) {
         flapi::GlobalTelemetry().flush();
