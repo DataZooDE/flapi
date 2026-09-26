@@ -2,6 +2,34 @@
 
 All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (the date the binary set was cut). Earlier history is in the git log.
 
+## Unreleased
+
+### Fixed: a startup failure now exits non-zero instead of dumping core, or lying
+
+Two startup failures were reported wrongly, and both matter to whatever supervises flAPI.
+
+A database that cannot be opened — most often the DuckLake or DuckDB cache file still locked by
+the previous process during a restart — used to **abort**: exit `134` (SIGABRT) with a core dump
+of the ~77 MB binary. A crash-looping container filled its disk with core dumps of a recoverable,
+operator-fixable condition. It now logs the reason and exits `1`:
+
+```
+[error] Database initialization error: Error creating database, Details: Failed to attach
+        DuckLake catalog: ... Could not set lock on file ".../cache.ducklake":
+        Conflicting lock is held in .../flapi (PID 3534350) by user jr.
+[error] flAPI cannot start until the database can be opened.
+```
+
+Other shapes that land here: an unreadable `duckdb.db_path`, a cache file on a volume that has
+not mounted yet, bad attach credentials.
+
+A **bind failure now exits `1` as well**, where it used to exit `0`. `the server could not start:
+bind: Address already in use` was logged and the process then reported success, so systemd would
+not restart it and a Kubernetes container went `Completed` rather than `CrashLoopBackOff` — the
+reason visible only to whoever read the logs.
+
+Genuinely unexpected exceptions still abort, which is what the handler is for.
+
 ## v26.09.23 — a slow query no longer blocks everything else, and `auth.*` works over MCP
 
 ### Added: a slow query no longer blocks other requests

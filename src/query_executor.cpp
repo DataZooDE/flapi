@@ -26,13 +26,37 @@ namespace flapi {
 
 namespace {
 // thread::id -> the QueryExecutor currently running a query on that thread.
+//
+// Deliberately IMMORTAL: allocated once and never destroyed. A function-local
+// static is registered with __cxa_atexit and destroyed during exit(), and this
+// registry is reached from paths that run at exactly that moment - so a plain
+// `static std::mutex m;` here is a use-after-destruction waiting for a caller.
+//
+// It has had two, and the first was fixed by ordering the caller instead of
+// the registry, which is why there was a second:
+//
+//   - SIGTERM with a query in flight: ~APIServer joined a pool worker during
+//     static destruction and the worker reached unregisterActiveExecutor()
+//     after this map was gone. Fixed by draining the pool before exit.
+//
+//   - a startup failure: ~DatabaseManager runs DETACH/CHECKPOINT from a
+//     shared_ptr release inside exit(), and executePrepared() reaches
+//     registerActiveExecutor() here. Measured 6 SIGSEGVs in 12 runs:
+//       #0 flapi::registerActiveExecutor(...)
+//       #2 flapi::DatabaseManager::executeInitStatement("CHECKPOINT;")
+//       #3 flapi::DatabaseManager::~DatabaseManager()
+//       #6 exit()
+//
+// Ordering every future caller is not a thing that can be guaranteed, so the
+// registry outlives them all instead. The memory is reclaimed by the OS at
+// process exit; nothing here owns a resource that needs releasing.
 std::mutex& activeExecMutex() {
-    static std::mutex m;
-    return m;
+    static auto* m = new std::mutex();
+    return *m;
 }
 std::unordered_map<std::thread::id, QueryExecutor*>& activeExecMap() {
-    static std::unordered_map<std::thread::id, QueryExecutor*> m;
-    return m;
+    static auto* m = new std::unordered_map<std::thread::id, QueryExecutor*>();
+    return *m;
 }
 } // namespace
 

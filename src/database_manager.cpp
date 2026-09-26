@@ -63,6 +63,7 @@ void DatabaseManager::reset() {
 
         duckdb_close(&db);
         db = nullptr;
+        initialized = false;
         CROW_LOG_DEBUG << "DatabaseManager reset: closed database";
     }
 
@@ -76,8 +77,32 @@ void DatabaseManager::reset() {
 
 DatabaseManager::~DatabaseManager() {
     try {
-        // Graceful shutdown: Detach DuckLake and flush WAL before closing
-        if (db && config_manager) {
+        // Graceful shutdown: Detach DuckLake and flush WAL before closing.
+        //
+        // Skipped unless initialisation COMPLETED. Both statements below run
+        // SQL, and on a startup failure this destructor is reached from a
+        // shared_ptr release inside exit() - at which point DuckDB's own
+        // globals are gone and parsing a statement dereferences freed memory.
+        // Measured on a second instance whose DuckLake metadata file was
+        // already locked: 6 SIGSEGVs in 12 runs, in two different places:
+        //
+        //   #0 flapi::registerActiveExecutor(...)                 <- ours
+        //   #2 flapi::DatabaseManager::executeInitStatement("CHECKPOINT;")
+        //
+        //   #0 duckdb::Value::operator=(duckdb::Value const&)     <- DuckDB's
+        //   #1 duckdb::UserSettingsMap::TryGetSetting(...)
+        //   #2 duckdb::GlobalUserSettings::TryGetSetting(...)
+        //   #9 flapi::DatabaseManager::executeInitStatement("CHECKPOINT;")
+        //
+        // Making our own registry immortal removed the first; the second is
+        // inside DuckDB and cannot be fixed from here. A failed startup has
+        // written nothing, so there is no flush to lose - and duckdb_close()
+        // below still releases the file locks.
+        //
+        // The normal shutdown path is unchanged and still detaches and
+        // checkpoints. That path executes SQL from a destructor too, which is
+        // the same latent hazard - tracked separately.
+        if (db && config_manager && initialized) {
             try {
                 const auto& ducklake_config = config_manager->getDuckLakeConfig();
                 if (ducklake_config.enabled) {
@@ -170,6 +195,11 @@ void DatabaseManager::initializeDBManagerFromConfig(std::shared_ptr<ConfigManage
 
         cache_manager = std::make_unique<CacheManager>(shared_from_this());
         cache_manager->initializeReadiness(config_manager);
+
+        // Last statement, deliberately: everything above can throw, and the
+        // destructor must be able to tell a half-built manager from a working
+        // one.
+        initialized = true;
     }
 }
 

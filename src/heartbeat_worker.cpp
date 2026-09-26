@@ -50,7 +50,26 @@ void HeartbeatWorker::workerLoop() {
 void HeartbeatWorker::performHeartbeat(const EndpointConfig& endpoint) 
 {
     CROW_LOG_DEBUG << "Performing heartbeat for endpoint " << endpoint.urlPath;
-    api_server.requestForEndpoint(endpoint);
+
+    // Direct into the handler, not through the HTTP router (#141). This is the
+    // same shape performDuckLakeScheduledTasks() below already used for
+    // refreshCache(): a background task reaching the serving layer directly
+    // rather than pretending to be a caller.
+    //
+    // Wrapped, because that used to be crow's job. app.handle_full() turned an
+    // escaping exception into a 500 on a response nobody read; here an escape
+    // would unwind through workerLoop() out of the thread function and
+    // std::terminate the process - a failing warm-up query would kill the
+    // server. One endpoint's bad template must not stop the others being
+    // warmed, or the scheduler below from running at all.
+    try {
+        api_server.warmEndpoint(endpoint);
+    } catch (const std::exception& ex) {
+        CROW_LOG_ERROR << "Heartbeat failed for " << endpoint.urlPath << ": " << ex.what();
+    } catch (...) {
+        CROW_LOG_ERROR << "Heartbeat failed for " << endpoint.urlPath
+                       << ": non-standard exception";
+    }
 }
 
 void HeartbeatWorker::performDuckLakeScheduledTasks() {

@@ -132,6 +132,16 @@ private:
     std::unordered_map<std::string, std::unique_ptr<std::mutex>> access_mutexes;
 
     duckdb_database db; // Database handle
+
+    // True only once initializeDBManagerFromConfig() has run to completion.
+    //
+    // The destructor's graceful shutdown (DETACH, CHECKPOINT) executes SQL, and
+    // executing SQL requires that DuckDB still exists. On a startup failure the
+    // destructor runs from a shared_ptr release inside exit(), by which point
+    // DuckDB's own global settings have been destroyed - so the "graceful"
+    // path segfaults. There is also nothing to flush: the failure happened
+    // before any write. See ~DatabaseManager.
+    bool initialized = false;
     std::mutex db_mutex; // Mutex for thread safety
     std::shared_ptr<CacheManager> cache_manager;
     std::shared_ptr<SQLTemplateProcessor> sql_processor;

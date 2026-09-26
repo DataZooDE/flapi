@@ -1,5 +1,7 @@
+#include <algorithm>
 #include <cstdlib>
 #include <future>
+#include <string>
 #include <thread>
 #include <yaml-cpp/yaml.h>
 
@@ -216,15 +218,15 @@ void APIServer::setupRoutes() {
             // The work therefore moves to a pool thread and only the
             // completion is posted back to the owning io_service, which is the
             // thread Crow expects to touch the connection's buffers.
-            // Not every request arriving here came off a socket.
-            // requestForEndpoint() - the heartbeat's cache-refresh path -
-            // synthesises a bare crow::request and calls app.handle_full
-            // directly, so it has no io_service to post a completion to and no
-            // middleware context to read. Offloading such a request
-            // dereferences both: `*req.io_service` in the Completer and
-            // get_context<>() just below. It must run inline, which is also
-            // exactly right - there is no connection to keep responsive.
-            if (!handlerPool || req.io_service == nullptr || req.middleware_context == nullptr) {
+            //
+            // Every request arriving here came off a socket, so `io_service`
+            // and `middleware_context` are both non-null. That is a property
+            // of the code now rather than a hope: the one non-HTTP caller -
+            // the heartbeat - no longer enters the router at all. See
+            // warmEndpoint() for the two crashes that cost, and
+            // scripts/check_no_synthetic_router_entry.sh for what stops a
+            // future caller reintroducing it.
+            if (!handlerPool) {
                 handleDynamicRequest(req, res);
                 return;
             }
@@ -508,38 +510,27 @@ void APIServer::handleDynamicRequest(const crow::request& req, crow::response& r
 
     // Build auth params from middleware context for template variable injection.
     //
-    // Guarded, because not every request here came off a socket.
-    // requestForEndpoint() - the heartbeat's cache-refresh path - synthesises
-    // a bare crow::request and calls app.handle_full directly, so
-    // `middleware_context` is null and get_context<>() dereferences it.
-    //
-    // The offload path above was guarded for exactly this and then routed such
-    // requests INLINE to this function - which has the same dereference, four
-    // hundred lines away. So the crash simply moved:
-    //
-    //   #0 flapi::APIServer::handleDynamicRequest(...)
-    //   #4 flapi::APIServer::requestForEndpoint(...)
-    //   #5 flapi::HeartbeatWorker::performHeartbeat(...)
-    //
-    // A synthesised request has no authenticated principal by construction, so
-    // the empty auth context is also the correct one.
+    // Unguarded: this function is reachable only from the router, so `req`
+    // came off a socket and `middleware_context` is non-null. It was guarded
+    // for a while because the heartbeat synthesised a bare crow::request and
+    // fed it to app.handle_full(), which reached this dereference four hundred
+    // lines from the offload guard added for the same reason. That caller is
+    // gone - see warmEndpoint().
     std::map<std::string, std::string> auth_params;
-    if (req.middleware_context != nullptr) {
-        auto& auth_ctx = app.get_context<AuthMiddleware>(req);
-        if (auth_ctx.authenticated) {
-            auth_params["__auth_username"] = auth_ctx.username;
-            auth_params["__auth_email"]    = auth_ctx.email;
-            auth_params["__auth_type"]     = auth_ctx.auth_type;
-            auth_params["__auth_authenticated"] = "true";
-            std::string roles;
-            for (const auto& r : auth_ctx.roles) {
-                if (!roles.empty()) {
-                    roles += ",";
-                }
-                roles += r;
+    auto& auth_ctx = app.get_context<AuthMiddleware>(req);
+    if (auth_ctx.authenticated) {
+        auth_params["__auth_username"] = auth_ctx.username;
+        auth_params["__auth_email"]    = auth_ctx.email;
+        auth_params["__auth_type"]     = auth_ctx.auth_type;
+        auth_params["__auth_authenticated"] = "true";
+        std::string roles;
+        for (const auto& r : auth_ctx.roles) {
+            if (!roles.empty()) {
+                roles += ",";
             }
-            auth_params["__auth_roles"] = roles;
+            roles += r;
         }
+        auth_params["__auth_roles"] = roles;
     }
 
     requestHandler.handleRequest(req, res, *endpoint, pathParams, auth_params);
@@ -719,6 +710,43 @@ void APIServer::run(int port) {
     // process is still alive.
     app.signal_clear();
 
+    // Test-only seam (#143). Holds the process at a NAMED startup point, so a
+    // test can signal it there instead of guessing.
+    //
+    // It sits exactly here on purpose: past the stop_requested_ check above and
+    // before the bind. That is the window three consecutive reviews kept losing
+    // a signal in - flapi's handler is installed, but crow has no server yet,
+    // so app.stop() is still a no-op. The test that covered it swept six delays
+    // from 0 to 350ms hoping to land inside a window about a millisecond wide,
+    // and therefore did not reliably go red against any of the three defects it
+    // was meant to catch. Pausing here makes "the signal arrived while crow was
+    // not yet stoppable" a fact rather than a coincidence.
+    //
+    // Capped, and logged at WARNING: this must be impossible to leave switched
+    // on in production without it being obvious in the log, and a mistyped
+    // value must not be able to hold a container closed.
+    if (const char* pause_ms = std::getenv("FLAPI_TEST_PAUSE_BEFORE_BIND")) {
+        long requested = 0;
+        try {
+            requested = std::stol(pause_ms);
+        } catch (const std::exception&) {
+            requested = 0;
+        }
+        constexpr long kMaxPauseMs = 10000;
+        if (requested > 0) {
+            const long capped = std::min(requested, kMaxPauseMs);
+            CROW_LOG_WARNING << "FLAPI_TEST_PAUSE_BEFORE_BIND is set: holding for "
+                             << capped << "ms before binding. This is a TEST seam "
+                                          "and must not be set in production.";
+            // The marker a test waits for. Emitted AFTER the sleep starts being
+            // committed to but BEFORE it elapses, so observing it proves the
+            // process is inside the window rather than approaching it.
+            CROW_LOG_WARNING << "startup paused before bind";
+            std::this_thread::sleep_for(std::chrono::milliseconds(capped));
+            CROW_LOG_WARNING << "startup pause elapsed; binding now";
+        }
+    }
+
     // run_async + wait_for_server_start, NOT run().
     //
     // The flag check at the top of this function is necessary but not
@@ -792,20 +820,80 @@ void APIServer::run(int port) {
     serving.get();
 }
 
-void APIServer::requestForEndpoint(const EndpointConfig& endpoint, const std::unordered_map<std::string, std::string>& pathParams) 
+void APIServer::warmEndpoint(const EndpointConfig& endpoint)
 {
-    auto req = crow::request();
+    // The heartbeat's warm-up: the ONLY non-HTTP entry into the serving path,
+    // and deliberately not an HTTP one.
+    //
+    // Its predecessor, requestForEndpoint(), synthesised a bare crow::request
+    // and handed it to app.handle_full() - i.e. it entered the router as if it
+    // had come off a socket. A default-constructed crow::request has
+    // `io_service == nullptr` and `middleware_context == nullptr`, and that
+    // cost the same null dereference twice in one release:
+    //
+    //   1. The #120 handler offload posted its completion to `*req.io_service`
+    //      and read `app.get_context<RequestContextMiddleware>(req)`. Both
+    //      dereferenced null on every heartbeat tick, and the offload is ON by
+    //      default - so every deployment with a heartbeat-enabled endpoint was
+    //      hitting it.
+    //   2. The fix guarded the offload and routed such requests INLINE to
+    //      handleDynamicRequest() - which builds its auth params from
+    //      `app.get_context<AuthMiddleware>(req)`, four hundred lines from the
+    //      guard. The crash moved rather than went:
+    //
+    //        #0 flapi::APIServer::handleDynamicRequest(...)
+    //        #4 flapi::APIServer::requestForEndpoint(...)
+    //        #5 flapi::HeartbeatWorker::performHeartbeat(...)
+    //
+    // Both were then guarded on `req.middleware_context != nullptr`, which is
+    // the wrong shape: the router was being defended from a caller with no
+    // business being there, and every future line that reasonably assumes "a
+    // request here came off a socket" was another latent instance (#141).
+    //
+    // So the heartbeat now calls the handler directly. Nothing synthetic
+    // reaches the router, both guards are gone, and
+    // scripts/check_no_synthetic_router_entry.sh fails the build if a
+    // handle_full() call reappears anywhere in src/.
+    //
+    // RequestHandler::handleRequest takes its auth context as an EXPLICIT
+    // argument and reads only req.method, req.url, req.url_params, req.body and
+    // req.get_header_value() - never middleware_context, never io_service. A
+    // synthesised request is therefore safe here, and only here, which is why
+    // it is a function-local that nothing else can get hold of.
+    crow::request req;
+
+    // GET unconditionally, even for a POST/PUT/DELETE endpoint. Warming must
+    // not mutate anything; the point is to pay the connection, extension,
+    // template-render and query-plan costs once so the first real caller does
+    // not. (This matches what requestForEndpoint() did, which forced Get too.)
     req.method = crow::HTTPMethod::Get;
+    // Read by createNextUrl() and isCacheDetailsRequest(). The route template
+    // is the honest value here - there is no filled path.
     req.url = endpoint.urlPath;
 
-    std::stringstream qs;
-    for (const auto& [key, value] : pathParams) {
-        qs << key << "=" << value << "&";
-    }
-    req.url_params = qs.str();
+    // `heartbeat.params` was parsed from day one (config_manager.cpp,
+    // parseEndpointHeartbeat) and never read: requestForEndpoint() was only
+    // ever called with its defaulted empty map, so a documented knob silently
+    // did nothing. They are passed as pathParams because that is the slot
+    // combineParameters() folds into the template context as `params.*` - the
+    // same place a path or query parameter lands.
+    std::map<std::string, std::string> params(endpoint.heartbeat.params.begin(),
+                                              endpoint.heartbeat.params.end());
 
-    auto res = crow::response();
-    app.handle_full(req, res);
+    // No auth params. A warm-up has no authenticated principal by
+    // construction, so the empty auth context is the CORRECT one, not merely
+    // the available one - the same conclusion the deleted guard had reached.
+    crow::response res;
+    requestHandler.handleRequest(req, res, endpoint, params);
+
+    // Nothing consumes the response, so a failure would otherwise be silent.
+    // No telemetry is emitted either: a warm-up is not a request anybody made,
+    // and counting it as rest_endpoint_served would inflate the endpoint's
+    // traffic with a tick of the worker interval.
+    if (res.code >= 400) {
+        CROW_LOG_WARNING << "heartbeat warm-up of " << endpoint.urlPath
+                         << " returned " << res.code;
+    }
 }
 
 void APIServer::stop() {

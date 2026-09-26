@@ -334,11 +334,11 @@ class TestGracefulTermination:
             s.stop()
 
 class TestHeartbeatRequestsAreNotOffloaded:
-    """The heartbeat's cache refresh synthesises a request with no connection.
+    """The heartbeat must not reach the offload with a request that has no connection.
 
-    APIServer::requestForEndpoint() builds a bare crow::request and calls
+    APIServer::requestForEndpoint() used to build a bare crow::request and call
     app.handle_full() directly, so `req.io_service` and `req.middleware_context`
-    are both null. The offload dereferenced both - `*req.io_service` in the
+    were both null. The offload dereferenced both - `*req.io_service` in the
     Completer and get_context<>() beside it. Offload is ON by default, so every
     deployment with a scheduled cache was hitting it.
 
@@ -347,6 +347,13 @@ class TestHeartbeatRequestsAreNotOffloaded:
     heartbeat-driven refresh. This is the minimal experiment that discriminates
     inline-from-offloaded for a synthesised request: let the heartbeat fire,
     and require the process to still be answering afterwards.
+
+    #141 removed the cause rather than the symptom - APIServer::warmEndpoint()
+    calls RequestHandler directly and nothing synthetic enters the router any
+    more - so this class no longer guards a guard. It is kept because what it
+    asserts is still exactly right from the outside: a heartbeat-backed cache
+    refreshes, and the process survives it. test_heartbeat_warming.py covers
+    what the new path does; this covers that the offload is still not involved.
     """
 
     def _server_with_heartbeat(self, log_level="warning"):
@@ -401,9 +408,9 @@ class TestHeartbeatRequestsAreNotOffloaded:
                 "asserting nothing\n" + log[-3000:])
 
     def test_the_server_survives_a_heartbeat_driven_refresh(self):
-        # Without the guard the heartbeat's synthesised request takes the
-        # offload path, dereferences a null io_service, and takes the process
-        # with it - so "still answering 15s later" is the discriminator.
+        # Before #141 the heartbeat's synthesised request took the offload path,
+        # dereferenced a null io_service, and took the process with it - so
+        # "still answering 15s later" is the discriminator.
         with self._server_with_heartbeat() as s:
             deadline = time.time() + 20
             last = None
@@ -442,7 +449,7 @@ class TestSigtermDuringStartup:
     life and could only be killed with SIGKILL.
     """
 
-    def _start(self, log_level="warning"):
+    def _start(self, log_level="warning", pause_before_bind_ms=None):
         # A DELIBERATELY slow startup, so the window this guards is wide
         # enough to aim at. The dangerous gap is between APIServer being
         # constructed and Crow publishing its server, and cache warmup sits
@@ -472,6 +479,8 @@ class TestSigtermDuringStartup:
                 "connections:\n  inmem:\n    properties:\n      database: ':memory:'\n")
         env = {**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1",
                "FLAPI_DISABLE_HANDLER_OFFLOAD": "0", "FLAPI_IO_THREADS": "2"}
+        if pause_before_bind_ms is not None:
+            env["FLAPI_TEST_PAUSE_BEFORE_BIND"] = str(pause_before_bind_ms)
         s.proc = subprocess.Popen(
             [flapi_binary(), "-c", os.path.join(s.tmp, "flapi.yaml"),
              "-p", str(s.port), "--log-level", log_level],
@@ -534,3 +543,97 @@ class TestSigtermDuringStartup:
             assert code in (0, -signal_mod.SIGTERM), code
         finally:
             s.stop()
+
+    def _wait_for_log(self, s, marker, timeout=60):
+        """Block until `marker` appears in the server log, or time out."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                with open(s.log_path) as f:
+                    if marker in f.read():
+                        return True
+            except FileNotFoundError:
+                pass
+            if s.proc.poll() is not None:
+                return False
+            time.sleep(0.05)
+        return False
+
+    def test_sigterm_inside_the_pre_bind_window_drains_and_exits_zero(self):
+        """The deterministic counterpart to the delay sweep above.
+
+        The sweep aims six guesses at a window about a millisecond wide, so it
+        does not reliably go red against any of the three defects it covers -
+        every one of them was found by reading the code instead. FLAPI_TEST_
+        PAUSE_BEFORE_BIND holds the process *in* that window, which lets this
+        assert the thing the sweep cannot: exit status exactly 0.
+
+        The sweep must accept `-SIGTERM` too, because a signal that lands
+        before main() installs the handler is legitimately killed by the
+        default disposition. Here the handler is provably installed - we waited
+        for a log line that main() emits after installing it - so the default
+        disposition is NOT an acceptable outcome, and a regression that loses
+        the signal shows up as a hang rather than as a different-but-allowed
+        exit code.
+        """
+        import signal as signal_mod
+        s = self._start(pause_before_bind_ms=5000)
+        try:
+            assert self._wait_for_log(s, "startup paused before bind"), (
+                "the process never reached the pre-bind pause\n"
+                + open(s.log_path).read()[-3000:])
+
+            # Provably inside the window now: flapi's SIGTERM handler is
+            # installed, and crow has no server, so app.stop() is a no-op.
+            os.killpg(os.getpgid(s.proc.pid), signal_mod.SIGTERM)
+            try:
+                code = s.proc.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                code = None
+
+            log = open(s.log_path).read()
+            assert code is not None, (
+                "SIGTERM inside the pre-bind window did not terminate the "
+                "process; this is the 503-forever state that needed SIGKILL\n"
+                + log[-4000:])
+            assert code == 0, (
+                f"expected a clean 0, got {code}; the handler was installed "
+                "before the signal, so nothing else is acceptable here\n"
+                + log[-4000:])
+            # It must not be left listening.
+            with pytest.raises(requests.RequestException):
+                requests.get(f"{s.base_url}/health/live", timeout=2)
+        finally:
+            s.stop()
+
+    def test_the_pause_seam_is_off_by_default_and_capped_when_on(self):
+        """The seam must be inert unless asked for, and bounded when asked.
+
+        A test-only knob in production code earns its keep only if it cannot be
+        left on silently (hence WARNING, asserted here) and cannot hold a
+        container closed if mistyped (hence the cap).
+        """
+        # INFO: "Server starting on" is an info-level line, and _start defaults
+        # to warning.
+        s = self._start(log_level="info")
+        try:
+            assert self._wait_for_log(s, "Server starting on", timeout=90), (
+                "server did not start without the seam\n"
+                + open(s.log_path).read()[-2000:])
+            log = open(s.log_path).read()
+            assert "FLAPI_TEST_PAUSE_BEFORE_BIND" not in log, (
+                "the seam announced itself when it was never set\n" + log[-2000:])
+            assert "startup paused before bind" not in log
+        finally:
+            s.stop()
+
+        # Absurd value: capped, and it says so rather than obeying.
+        s2 = self._start(pause_before_bind_ms=999999)
+        try:
+            assert self._wait_for_log(s2, "startup paused before bind", timeout=60)
+            log = open(s2.log_path).read()
+            assert "holding for 10000ms" in log, (
+                "999999ms was not capped to the 10s ceiling\n" + log[-2000:])
+            assert "must not be set in production" in log
+        finally:
+            s2.stop()

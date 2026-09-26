@@ -144,7 +144,7 @@ Storage and external data access:
 | **RequestHandler** | `src/request_handler.cpp` | HTTP request processing |
 | **RequestValidator** | `src/request_validator.cpp` | Parameter validation |
 | **CacheManager** | `src/cache_manager.cpp` | DuckLake cache operations |
-| **HeartbeatWorker** | `src/heartbeat_worker.cpp` | Background cache refresh scheduler |
+| **HeartbeatWorker** | `src/heartbeat_worker.cpp` | Background endpoint warm-up and cache refresh scheduler; calls `APIServer::warmEndpoint()` / `CacheManager::refreshCache()` directly, never the HTTP router |
 | **MCPRouteHandlers** | `src/mcp_route_handlers.cpp` | MCP JSON-RPC method handlers |
 | **MCPToolHandler** | `src/mcp_tool_handler.cpp` | MCP tool execution |
 | **MCPSessionManager** | `src/mcp_session_manager.cpp` | MCP session state |

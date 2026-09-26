@@ -12,49 +12,12 @@ namespace {
 // Below this length a value cannot be replaced without risking unrelated text.
 constexpr std::size_t kMinScrubbableSecret = 4;
 
-// Above this length, a whitelisted environment value is treated as a secret
-// whatever it is called. Chosen so ordinary configuration - a region, a bucket
-// name, a hostname, a tuning knob - stays visible, while API keys, tokens and
+// Above this length, a server-configured value - a whitelisted environment
+// variable, a connection property - is treated as a secret whatever it is
+// called. Chosen so ordinary configuration - a region, a bucket name, a
+// hostname, a tuning knob - stays visible, while API keys, tokens and
 // service-account blobs do not.
 constexpr std::size_t kOpaqueEnvValue = 24;
-}  // namespace
-
-void TemplateSecrets::add(const std::string& key, const std::string& value) {
-    if (value.empty() || !isCredentialKey(key)) {
-        return;
-    }
-    if (value.size() < kMinScrubbableSecret) {
-        // Measured: a one-byte secret "a" rewrote the middle of an unrelated
-        // file path. Withhold rather than leak or mangle.
-        withhold_ = true;
-        return;
-    }
-    if (std::find(values_.begin(), values_.end(), value) == values_.end()) {
-        values_.push_back(value);
-    }
-}
-
-void TemplateSecrets::addCallerSupplied(const std::string& key, const std::string& value) {
-    if (value.empty() || !isCredentialKey(key)) {
-        return;
-    }
-    // Long enough to replace safely: scrub it. Too short: leave it, rather
-    // than suppressing the caller's own diagnostics over a value they chose.
-    if (value.size() >= kMinScrubbableSecret &&
-        std::find(values_.begin(), values_.end(), value) == values_.end()) {
-        values_.push_back(value);
-    }
-}
-
-void TemplateSecrets::addEnv(const std::string& key, const std::string& value) {
-    add(key, value);
-    if (value.size() >= kOpaqueEnvValue &&
-        std::find(values_.begin(), values_.end(), value) == values_.end()) {
-        values_.push_back(value);
-    }
-}
-
-namespace {
 
 /// True for a location that demonstrably carries no credential.
 ///
@@ -100,13 +63,108 @@ bool looksLikeCredentialFreeLocation(const std::string& value) {
     return true;
 }
 
+/// The three questions a provenance answers.
+struct SourcePolicy {
+    /// A credential-NAMED value too short to replace safely suppresses the
+    /// whole output rather than being leaked or mangled.
+    ///
+    /// Measured: a one-byte secret "a" rewrote the middle of an unrelated file
+    /// path. Withhold rather than leak or mangle.
+    ///
+    /// NOT for a value the caller supplied, though. Applying this to request
+    /// params handed every caller a denial-of-diagnostics switch: `?token=ab`
+    /// blanked every error the endpoint could produce - validation errors
+    /// included - on REST, tools/call and resources/read alike. A value the
+    /// caller sent is not a secret being kept FROM them. It is still recorded
+    /// for scrubbing when it is long enough to replace; it just never
+    /// withholds.
+    bool withhold_when_too_short;
+
+    /// A long value is a secret whatever its NAME suggests.
+    ///
+    /// The name heuristic is the right gate for a request default - a
+    /// `default: "100"` on a `limit` field must stay visible or the preview is
+    /// useless. It is the wrong gate for a server-configured value: an
+    /// operator chose to expose each whitelisted environment variable and each
+    /// connection property to templates, and a name like PAYMENT_VALUE,
+    /// SERVICE_ACCOUNT_JSON, `service_account_json` or `sas` carries a secret
+    /// past any stem list.
+    bool opaque_value_rule;
+
+    /// Exempt a value that is plainly a path or a credential-free URI from the
+    /// opaque-value rule, because `path` and `database` are the properties
+    /// operators read a preview to check. Connection properties only; it
+    /// widens what stays visible and never narrows what is redacted, since a
+    /// credential-NAMED value is recorded before this is consulted.
+    bool exempt_credential_free_locations;
+};
+
+/// THE policy. One row per provenance, so that all four are readable side by
+/// side - four near-identical entry points, each answering one review finding
+/// in isolation, is the shape that produced a fifth inconsistency.
+///
+///   source            | withholds on a short value | opaque-value rule
+///   ------------------+----------------------------+----------------------
+///   Connection        | yes                        | yes, minus locations
+///   Environment       | yes                        | yes
+///   ConfiguredDefault | yes                        | no
+///   Caller            | NO - see above             | no
+constexpr SourcePolicy policyFor(TemplateSecrets::Source source) {
+    switch (source) {
+    case TemplateSecrets::Source::Connection:
+        return {/*withhold_when_too_short=*/true, /*opaque_value_rule=*/true,
+                /*exempt_credential_free_locations=*/true};
+    case TemplateSecrets::Source::Environment:
+        return {/*withhold_when_too_short=*/true, /*opaque_value_rule=*/true,
+                /*exempt_credential_free_locations=*/false};
+    case TemplateSecrets::Source::ConfiguredDefault:
+        return {/*withhold_when_too_short=*/true, /*opaque_value_rule=*/false,
+                /*exempt_credential_free_locations=*/false};
+    case TemplateSecrets::Source::Caller:
+        return {/*withhold_when_too_short=*/false, /*opaque_value_rule=*/false,
+                /*exempt_credential_free_locations=*/false};
+    }
+    // Unreachable for a declared enumerator. A new one gets the strictest
+    // policy until its row is written, so adding a source cannot silently
+    // disclose.
+    return {/*withhold_when_too_short=*/true, /*opaque_value_rule=*/true,
+            /*exempt_credential_free_locations=*/false};
+}
+
 }  // namespace
 
-void TemplateSecrets::addConnectionProperty(const std::string& key,
-                                            const std::string& value) {
-    add(key, value);
-    if (value.size() >= kOpaqueEnvValue && !looksLikeCredentialFreeLocation(value) &&
-        std::find(values_.begin(), values_.end(), value) == values_.end()) {
+void TemplateSecrets::add(const std::string& key, const std::string& value,
+                          Source source) {
+    if (value.empty()) {
+        return;
+    }
+    const SourcePolicy policy = policyFor(source);
+
+    if (isCredentialKey(key)) {
+        if (value.size() < kMinScrubbableSecret) {
+            // Too short to replace without risking unrelated text, so it is
+            // never recorded; whether that suppresses the output instead is
+            // the one thing provenance decides here.
+            if (policy.withhold_when_too_short) {
+                withhold_ = true;
+            }
+            return;
+        }
+        record(value);
+        return;
+    }
+
+    // The name says nothing. Only a source carrying the opaque-value rule
+    // records it, and only past the length where ordinary configuration ends.
+    if (policy.opaque_value_rule && value.size() >= kOpaqueEnvValue &&
+        !(policy.exempt_credential_free_locations &&
+          looksLikeCredentialFreeLocation(value))) {
+        record(value);
+    }
+}
+
+void TemplateSecrets::record(const std::string& value) {
+    if (std::find(values_.begin(), values_.end(), value) == values_.end()) {
         values_.push_back(value);
     }
 }
@@ -141,9 +199,8 @@ TemplateSecrets collectTemplateSecrets(ConfigManager* config_manager,
         for (const auto& conn_name : endpoint.connection) {
             const auto it = connections.find(conn_name);
             if (it != connections.end()) {
-                for (const auto& [key, value] : it->second.properties) {
-                    secrets.addConnectionProperty(key, value);
-                }
+                secrets.addAll(it->second.properties,
+                               TemplateSecrets::Source::Connection);
             }
         }
 
@@ -155,7 +212,7 @@ TemplateSecrets collectTemplateSecrets(ConfigManager* config_manager,
         const auto& template_config = config_manager->getTemplateConfig();
         for (const auto& [key, value] : SQLTemplateProcessor::getEnvironmentVariables()) {
             if (template_config.isEnvironmentVariableAllowed(key)) {
-                secrets.addEnv(key, value);
+                secrets.add(key, value, TemplateSecrets::Source::Environment);
             }
         }
     }
@@ -166,8 +223,10 @@ TemplateSecrets collectTemplateSecrets(ConfigManager* config_manager,
     // connection property does, and get the same treatment.
     if (config_manager != nullptr) {
         const auto& ducklake = config_manager->getDuckLakeConfig();
-        secrets.addConnectionProperty("metadata-path", ducklake.metadata_path);
-        secrets.addConnectionProperty("data-path", ducklake.data_path);
+        secrets.add("metadata-path", ducklake.metadata_path,
+                    TemplateSecrets::Source::Connection);
+        secrets.add("data-path", ducklake.data_path,
+                    TemplateSecrets::Source::Connection);
     }
 
     // Params are caller-supplied: scrubbed, never a reason to withhold.
@@ -179,10 +238,11 @@ TemplateSecrets collectTemplateSecrets(ConfigManager* config_manager,
         }
         const auto it = params.find(field.fieldName);
         if (it != params.end() && it->second == field.defaultValue) {
-            secrets.add(field.fieldName, field.defaultValue);
+            secrets.add(field.fieldName, field.defaultValue,
+                        TemplateSecrets::Source::ConfiguredDefault);
         }
     }
-    secrets.addAllCallerSupplied(params);
+    secrets.addAll(params, TemplateSecrets::Source::Caller);
     return secrets;
 }
 

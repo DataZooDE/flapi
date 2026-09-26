@@ -182,6 +182,28 @@ WHEN NOT MATCHED THEN INSERT *
 
 `HeartbeatWorker` (src/heartbeat_worker.cpp) runs background cache refresh.
 
+### Two background paths, both direct
+
+The worker loop drives two independent things per tick, and **neither goes
+through the HTTP router**:
+
+| Path | Entry point | Applies to |
+|------|-------------|------------|
+| Endpoint warm-up | `APIServer::warmEndpoint()` → `RequestHandler::handleRequest()` | every endpoint with `heartbeat.enabled: true`, cached or not |
+| DuckLake schedule | `CacheManager::refreshCache()` | every endpoint with `cache.schedule` |
+
+The warm-up runs the endpoint's whole read path as a synthetic GET (connection,
+extensions, template render, query) and discards the result, so a cache-backed
+endpoint is refreshed and an uncached one is merely warmed. It passes
+`endpoint.heartbeat.params` as the template parameters.
+
+`warmEndpoint()` replaced `requestForEndpoint()`, which synthesised a
+`crow::request` and called `app.handle_full()`. A synthesised request has a null
+`io_service` and a null `middleware_context`, and routing one dereferenced both
+— twice, in the handler offload and then in `handleDynamicRequest()` (#141).
+`scripts/check_no_synthetic_router_entry.sh` now fails the build if a
+`handle_full()` call reappears in `src/`.
+
 ### Initialization
 
 ```cpp
