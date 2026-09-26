@@ -394,6 +394,10 @@ jobs:
   smoke-test-linux-amd64:
     needs: [linux-build]
     runs-on: ubuntu-24.04
+    # Bounded, like the pack-smoke jobs. Each smoke job ends in
+    # `kill; wait`, so a shutdown that hangs would otherwise hold a
+    # runner for GitHub's 6-hour default instead of failing fast.
+    timeout-minutes: 10
     steps:
     - name: Download binary
       uses: actions/download-artifact@v4
@@ -446,6 +450,7 @@ jobs:
   smoke-test-linux-arm64:
     needs: [linux-build]
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
     steps:
     - name: Download binary
       uses: actions/download-artifact@v4
@@ -498,6 +503,7 @@ jobs:
   smoke-test-macos:
     needs: [osx-universal-build]
     runs-on: macos-latest
+    timeout-minutes: 10
     steps:
     - name: Download binary
       uses: actions/download-artifact@v4
@@ -550,6 +556,7 @@ jobs:
   smoke-test-windows:
     needs: [windows-build]
     runs-on: windows-latest
+    timeout-minutes: 10
     steps:
     - name: Download binary
       uses: actions/download-artifact@v4
