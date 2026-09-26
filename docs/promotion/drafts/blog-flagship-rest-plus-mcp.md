@@ -21,7 +21,7 @@ validation, its own auth story (often none), wrapping the same SQL query.
 Two deployments, two security reviews, one query.
 
 flAPI is our answer to that duplication. You write one SQL file and one YAML
-file. flAPI — a single static C++17 binary with DuckDB 1.5.3 embedded —
+file. flAPI — a single static C++20 binary with DuckDB 1.5.5 embedded —
 serves that definition as a REST endpoint *and* as an MCP tool an LLM can
 call. Same parameter validators, same role-based access control, same cache.
 Not "similar": the same code path, diverging only at the protocol layer.
@@ -44,7 +44,6 @@ connections:
 
 mcp:
   enabled: true
-  port: 8081
 ```
 
 The SQL template (`sqls/customers.sql`) is Mustache over SQL. This is the
@@ -140,12 +139,13 @@ source ecosystem — the endpoint definition would not change.
 ## The MCP side — the same endpoint, for free
 
 flAPI's MCP transport is Streamable HTTP: a JSON-RPC 2.0 endpoint at
-`POST /mcp/jsonrpc` (port 8081 in our config), with SSE for streaming.
+`POST /mcp/jsonrpc`, served on the same port as the REST API (8080 by
+default) — one server, one port.
 You can drive it with curl:
 
 ```bash
 # Initialize a session
-curl -X POST http://localhost:8081/mcp/jsonrpc \
+curl -X POST http://localhost:8080/mcp/jsonrpc \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc": "2.0", "id": 1, "method": "initialize",
        "params": {"protocolVersion": "2025-11-25",
@@ -153,12 +153,12 @@ curl -X POST http://localhost:8081/mcp/jsonrpc \
 
 # List tools — customer_lookup is there, schema auto-generated
 # from the request block
-curl -X POST http://localhost:8081/mcp/jsonrpc \
+curl -X POST http://localhost:8080/mcp/jsonrpc \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc": "2.0", "id": 2, "method": "tools/list"}'
 
 # Call it
-curl -X POST http://localhost:8081/mcp/jsonrpc \
+curl -X POST http://localhost:8080/mcp/jsonrpc \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc": "2.0", "id": 3, "method": "tools/call",
        "params": {"name": "customer_lookup", "arguments": {"id": "42"}}}'
@@ -172,7 +172,7 @@ an integer between 1 and 1,000,000 because the validator says so.
 Hooking it up to a real client is one line in Claude Code:
 
 ```bash
-claude mcp add --transport http flapi http://localhost:8081/mcp/jsonrpc
+claude mcp add --transport http flapi http://localhost:8080/mcp/jsonrpc
 ```
 
 One thing to know up front: flAPI does **not** speak stdio. It is a server;
@@ -184,7 +184,7 @@ work through a proxy such as [mcp-remote](https://github.com/geelen/mcp-remote):
   "mcpServers": {
     "flapi": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "http://localhost:8081/mcp/jsonrpc"]
+      "args": ["-y", "mcp-remote", "http://localhost:8080/mcp/jsonrpc"]
     }
   }
 }

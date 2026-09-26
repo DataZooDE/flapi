@@ -263,9 +263,10 @@ own configs.
   strict mode that refuses to start when any `params.*` site is unbound;
   it doesn't exist yet. Until it does, the dry-run audit is manual.
 
-flAPI is a single static C++17 binary with DuckDB 1.5.3 embedded
+flAPI is a single static C++20 binary with DuckDB 1.5.5 embedded
 (`uvx --from flapi-io flapi` or `pip install flapi-io`), source-available
-under BSL 1.1 — production use permitted, converts to MPL-2.0. The three
+under BSL 1.1 — production use permitted, except offering it to third
+parties as a hosted service; converts to MPL-2.0. The three
 components described here are
 [`src/sql_parameter_classifier.cpp`](https://github.com/DataZooDE/flapi/blob/main/src/sql_parameter_classifier.cpp),
 [`src/prepared_template_rewriter.cpp`](https://github.com/DataZooDE/flapi/blob/main/src/prepared_template_rewriter.cpp),

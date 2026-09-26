@@ -31,7 +31,7 @@ WHERE 1=1
 
 DuckDB-specific bits this sub might care about:
 
-- **Embedded DuckDB 1.5.3**, statically linked into a single C++17 binary.
+- **Embedded DuckDB 1.5.5**, statically linked into a single C++20 binary.
   Extensions (postgres_scanner, httpfs, bigquery, iceberg, ...) load per
   connection config.
 - **Typed params → prepared statements.** Request parameters with typed

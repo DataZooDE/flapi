@@ -24,7 +24,7 @@ validation, auth, rate limiting, caching, and OpenAPI docs around what is
 ultimately a SELECT statement. We wanted that class of endpoint to be
 config, not a service.
 
-**Architecture.** A single C++17 binary with DuckDB 1.5.3 embedded. An
+**Architecture.** A single C++20 binary with DuckDB 1.5.5 embedded. An
 endpoint is two files: a YAML config (URL path, typed parameters with
 validators, auth, rate limit, cache policy) and a Mustache-templated SQL
 file. The request path is: parameter extraction → validator chain →

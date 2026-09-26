@@ -73,8 +73,8 @@ Linux x86_64/ARM64, macOS ARM64, Windows, and Docker also exist.)
 
 **Limitations, honestly:**
 
-- MCP transport is Streamable HTTP only (`/mcp/jsonrpc`, SSE for
-  streaming). **No stdio** — Claude Desktop and other stdio-only clients
+- MCP transport is Streamable HTTP only (`/mcp/jsonrpc`, JSON
+  responses). **No stdio** — Claude Desktop and other stdio-only clients
   need a proxy like mcp-remote.
 - Read-oriented data tools; this is not a general CRUD/action backend.
 - DuckDB-centric: if DuckDB can't reach your source, neither can flAPI.

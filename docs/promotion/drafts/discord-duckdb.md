@@ -10,7 +10,7 @@ message, not a launch post.
 # Message
 
 Hey all — I'm one of the authors of flAPI and wanted to share it here
-since it's built entirely on DuckDB (1.5.3, statically embedded). It turns
+since it's built entirely on DuckDB (1.5.5, statically embedded). It turns
 a SQL file + a small YAML into a REST endpoint *and* an MCP tool from the
 same config — so anything DuckDB can read (Parquet, Postgres, BigQuery,
 S3, Iceberg, ...) becomes an API without writing a backend. Single C++
