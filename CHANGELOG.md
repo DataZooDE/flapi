@@ -2,7 +2,7 @@
 
 All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (the date the binary set was cut). Earlier history is in the git log.
 
-## Unreleased
+## v26.09.26 — a failed start exits cleanly, and a clean stop releases the cache
 
 ### Fixed: a startup failure now exits non-zero instead of dumping core, or lying
 
@@ -29,6 +29,40 @@ not restart it and a Kubernetes container went `Completed` rather than `CrashLoo
 reason visible only to whoever read the logs.
 
 Genuinely unexpected exceptions still abort, which is what the handler is for.
+
+### Fixed: a clean shutdown now releases DuckLake and flushes the database
+
+On `SIGTERM`, flAPI is meant to detach the DuckLake catalog and checkpoint the database before
+exiting, so the next process can take the cache lock straight away and starts from a flushed file.
+That work used to run in a place where it could not be relied on: it never appeared in a real
+shutdown log, and on a failed startup the same code crashed. It now runs while flAPI is still
+fully alive — after in-flight requests have drained — and says so:
+
+```
+[info] Received SIGTERM, shutting down...
+[info] Detached DuckLake catalog: cache
+[info] Checkpointed database
+```
+
+Long-running MCP tasks still executing at `SIGTERM` do not delay this: they are interrupted,
+and the process exits promptly.
+
+### Fixed: `heartbeat.params` now reaches the template
+
+An endpoint's `heartbeat:` block has always accepted `params`, and the configuration reference
+documented them, but they were never passed on — every heartbeat ran the template with no
+parameters. They now arrive exactly like request parameters:
+
+```yaml
+heartbeat:
+  enabled: true
+  params:
+    status: active       # the warm-up renders {{params.status}} as "active"
+```
+
+**If you set `heartbeat.params`, your heartbeats will start using them.** A heartbeat still runs
+the endpoint's full request path — template, validators and query — whether or not the endpoint
+is cached.
 
 ## v26.09.23 — a slow query no longer blocks everything else, and `auth.*` works over MCP
 
