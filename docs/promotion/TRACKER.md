@@ -19,14 +19,14 @@ copy-paste material lives in [SUBMISSION_KIT.md](SUBMISSION_KIT.md) and
 - [x] Record demo GIF — `docs/promotion/assets/flapi-demo.gif` (36 s, 825 KB, VHS; embedded at the top of Readme.md). Re-record anytime: `vhs docs/promotion/assets/demo.tape`
 - [x] Four more scenario GIFs (all real recordings; see `assets/README.md`): **agent-over-MCP** (`flapi-demo-agent.gif` — Claude Code answering via `customer_lookup`), **agent on BigQuery** (`flapi-demo-bigquery.gif` — public dataset, typed params, "the model never writes SQL"), **self-packaging deploy** (`flapi-demo-pack.gif`), **SharePoint lists** (`flapi-demo-sharepoint.gif` — live Microsoft 365 list via the erpl-web extension's `ATTACH ... TYPE sharepoint_lists`, agent analyzes the tracker). SAP remains blocked (no live ABAP system) rather than faked.
 - [x] Filed + fixed two launch-blocking bugs found while recording: [#100](https://github.com/DataZooDE/flapi/issues/100) MCP `logging: null` breaks the Claude Code handshake ([PR #102](https://github.com/DataZooDE/flapi/pull/102)); [#101](https://github.com/DataZooDE/flapi/issues/101) `read_parquet` fails on `embed://` bundles ([PR #103](https://github.com/DataZooDE/flapi/pull/103)). Both merged and have shipped in every release since v26.08.07.
-- [ ] README polish: lead with the MCP angle
+- [ ] README polish: lead with the MCP angle — PR #152 (REST + MCP as equals)
 
 ## 📤 Submissions (Week 1 — "seed quietly")
 
 - [ ] Official MCP Registry: publish the release-stamped `server.json` (see SUBMISSION_KIT §1 — not the repo copy, which is a `0.0.0-dev` template). Prerequisites met; for v26.09.23, stamp locally as §1 describes
-- [ ] PR to punkpeye/awesome-mcp-servers — [punkpeye#10023](https://github.com/punkpeye/awesome-mcp-servers/pull/10023) was submitted 2026-07-13 but **closed unmerged 2026-09-07**: the list now requires a Glama listing + score badge. Resubmit as a new PR after the Glama item below (SUBMISSION_KIT §2)
+- [ ] ⛔ awesome-mcp-servers — **skipped (decision 2026-09-26)**. [punkpeye#10023](https://github.com/punkpeye/awesome-mcp-servers/pull/10023) was closed unmerged 2026-09-07; relisting needs a Glama listing + score badge, not pursued for now (SUBMISSION_KIT §2)
 - [x] wong2 list (mcpservers.org): submitted via web form 2026-07-13 (free tier, category Database, contact jr@data-zoo.de) — "reviewed within 12 hours", approval lands by email. **Listing not confirmed** as of 2026-09-26 (not in the wong2 README; the site blocks automated checks)
-- [ ] **Glama: list + claim + get a score** — now a prerequisite for awesome-mcp-servers. Needs a Dockerfile on Glama that bakes in an MCP-enabled demo config (SUBMISSION_KIT §6)
+- [ ] ⛔ Glama — **skipped (decision 2026-09-26)**, along with awesome-mcp-servers (SUBMISSION_KIT §6)
 - [ ] mcp.so submit form · Smithery · PulseMCP submit
 - [ ] AlternativeTo / LibHunt / SaaSHub (alternative to PostgREST, Hasura, Datasette, ROAPI, MXCP)
 - [ ] Publish flagship blog post; post DuckDB Discord #show-and-tell (draft ready)

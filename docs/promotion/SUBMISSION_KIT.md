@@ -24,7 +24,9 @@ skeptical audiences (HN, r/dataengineering).
 > (C++20, DuckDB 1.5.5 — not C++17, 1.5.3); the MCP row no longer claims SSE
 > streaming, which flAPI does not serve; the ports row no longer cites
 > `mcp.port`, a key that is parsed but never read (MCP shares the HTTP port);
-> the licence rows now carry the hosting carve-out; and three of the four
+> the licence rows now carry the hosting carve-out; the long blurb no longer
+> claims REST and MCP share one RBAC (MCP uses `mcp-tool.allowed-roles`, REST
+> the endpoint's `auth` roles — separate mechanisms); and three of the four
 > launch blockers were already resolved.
 
 ---
@@ -52,8 +54,9 @@ skeptical audiences (HN, r/dataengineering).
 **Long blurb (directories):**
 
 > flAPI turns SQL templates and YAML configuration into governed REST
-> endpoints and MCP tools — from the same config, with the same validators,
-> RBAC and caching. It ships as a single static C++ binary with DuckDB
+> endpoints and MCP tools — from the same config, with the same validators
+> and caching, and role-based access control on each. It ships as a single
+> static C++ binary with DuckDB
 > embedded, so one `scp` (or `uvx --from flapi-io flapi`) puts a REST + MCP
 > server in front of Parquet files, Postgres, BigQuery, S3 and 50+ other
 > sources. Typed request parameters are bound as DuckDB prepared statements;
@@ -75,7 +78,9 @@ not just the source.
 2. ✅ **Demo GIF** — resolved. Five demos in `assets/` (REST + MCP, agent,
    BigQuery, SharePoint, self-packaging), and `flapi-demo.gif` is embedded in
    the README.
-3. 🔴 **README doesn't lead with MCP** — still open. The title is still
+3. 🟡 **README doesn't lead with MCP** — fixed in PR #152 (headline: "SQL →
+   REST APIs and MCP tools, from one config"); resolved once that merges.
+   Previously: The title is still
    "flAPI: Instant SQL based APIs" and the opening paragraph describes
    "read-only APIs" and REST only. The demo GIF's caption mentions MCP; the
    headline and first paragraph do not. (Note also that "read-only" undersells
@@ -118,7 +123,11 @@ not just the source.
 - Running `mcp-publisher publish` from the repo root would submit the `0.0.0-dev`
   template. Always publish from the downloaded release asset.
 
-### 2. punkpeye/awesome-mcp-servers — ⏸ CLOSED unmerged 2026-09-07, **blocked on Glama (#6)**
+### 2. punkpeye/awesome-mcp-servers — ⛔ SKIPPED (decision 2026-09-26)
+- **Decided not to pursue for now**, together with Glama (#6): the list's
+  Glama requirement means building and maintaining a Glama-specific
+  Dockerfile and demo, which isn't worth it at this stage. The notes below
+  are kept in case that changes.
 - [PR #10023](https://github.com/punkpeye/awesome-mcp-servers/pull/10023) was
   closed for 30 days' inactivity. The list now requires every entry to be
   **listed on Glama, claimed by the owner, with a quality score** (any grade),
@@ -166,7 +175,7 @@ not just the source.
   self-hosted HTTP server, so list it as a remote/self-hosted server, not
   a hosted stdio package.
 
-### 6. Glama — needs human (claim listing) — **now a prerequisite for #2**
+### 6. Glama — ⛔ SKIPPED (decision 2026-09-26), along with #2
 - Glama auto-indexes from GitHub; check https://glama.ai/mcp/servers for
   an existing flAPI entry and claim it with the GitHub org account. Note:
   Glama badges emphasise "open-source" — if asked, say *source-available
