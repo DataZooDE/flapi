@@ -35,7 +35,7 @@ they are worded to survive skeptical audiences (HN, r/dataengineering).
 | Data sources | Parquet/CSV, Postgres, BigQuery, S3/GCS/Azure, Iceberg, Delta + 50+ via DuckDB extensions; SAP ERP/BW via ERPL (demo in `examples/sqls/sap/`, stability caveats documented) |
 | Language | C++17, single static binary, embedded DuckDB 1.5.3 |
 | License | **BSL 1.1** → MPL-2.0; Additional Use Grant permits production use ("source-available", not open source) |
-| Latest release | v26.07.13 |
+| Latest release | see [GitHub releases](https://github.com/DataZooDE/flapi/releases/latest) — not pinned here, so it cannot go stale |
 | Honest limitations | Read-oriented data APIs (not a general CRUD backend) · DuckDB-centric · MCP over HTTP only · BSL license · young project |
 
 **Long blurb (directories):**
@@ -74,14 +74,22 @@ they are worded to survive skeptical audiences (HN, r/dataengineering).
 
 ## Channel-by-channel
 
-### 1. Official MCP Registry — `server.json` ✅ prepared (repo root)
+### 1. Official MCP Registry — `server.json` ✅ prepared, version automated
+- **Publish the `server.json` attached to the GitHub release, not the repo copy.** The repo
+  copy is a template with version `0.0.0-dev`. Each release job stamps the real version
+  into a copy and attaches it to the release, reading the version from the wheel files it
+  just built, so it always matches what PyPI serves (e.g. `26.9.23`, never `26.09.23`).
+  CI fails if anyone hand-edits the repo copy back to a real version.
 - Prereq: item 4 above (mcp-name marker on PyPI), then:
   ```bash
   brew install mcp-publisher   # or download from modelcontextprotocol/registry releases
+  mkdir -p /tmp/mcp-publish && cd /tmp/mcp-publish
+  gh release download --repo DataZooDE/flapi --pattern server.json   # latest release
   mcp-publisher login github   # authenticates the io.github.datazoode namespace
-  mcp-publisher publish        # reads ./server.json
+  mcp-publisher publish        # reads ./server.json - the stamped one downloaded above
   ```
-- Keep `version` in `server.json` in sync with releases (add to release checklist/workflow).
+- Running `mcp-publisher publish` from the repo root would submit the `0.0.0-dev`
+  template. Always publish from the downloaded release asset.
 
 ### 2. punkpeye/awesome-mcp-servers — ✅ SUBMITTED: [PR #10023](https://github.com/punkpeye/awesome-mcp-servers/pull/10023)
 - File: `README.md`, **Databases** section, alphabetical (case-insensitive)
