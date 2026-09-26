@@ -52,6 +52,12 @@ public:
     // This closes any open database and clears all internal state
     void reset();
 
+    // The graceful end of the database: DETACH the DuckLake catalog, CHECKPOINT,
+    // close. Called by main() once the handler pool is drained and the warmup
+    // thread joined - never from the destructor, which runs inside exit()
+    // where executing SQL is undefined (#147). Idempotent.
+    void shutdown();
+
     void initializeDBManagerFromConfig(std::shared_ptr<ConfigManager> config_manager);
     void loadDefaultExtensions(std::shared_ptr<ConfigManager> config_manager);
     void initializeConnections(std::shared_ptr<ConfigManager> config_manager);
@@ -131,16 +137,14 @@ private:
     std::mutex access_mutexes_guard;
     std::unordered_map<std::string, std::unique_ptr<std::mutex>> access_mutexes;
 
+    // Shared by reset() and shutdown(). Requires db_mutex to be held.
+    void closeDatabaseLocked(bool graceful);
+
     duckdb_database db; // Database handle
 
     // True only once initializeDBManagerFromConfig() has run to completion.
-    //
-    // The destructor's graceful shutdown (DETACH, CHECKPOINT) executes SQL, and
-    // executing SQL requires that DuckDB still exists. On a startup failure the
-    // destructor runs from a shared_ptr release inside exit(), by which point
-    // DuckDB's own global settings have been destroyed - so the "graceful"
-    // path segfaults. There is also nothing to flush: the failure happened
-    // before any write. See ~DatabaseManager.
+    // shutdown() detaches and checkpoints only when it is set: a startup that
+    // failed part-way wrote nothing, so there is nothing to flush (#145).
     bool initialized = false;
     std::mutex db_mutex; // Mutex for thread safety
     std::shared_ptr<CacheManager> cache_manager;
