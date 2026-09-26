@@ -346,6 +346,10 @@ jobs:
         ./scripts/check_crow_app_alias.sh
         ./scripts/check_no_synthetic_router_entry.sh
         ./scripts/check_auth_prefix_single_source.sh
+        # The repo copy must stay a template, and the stamp is exercised on
+        # every run - not only on release day, when a broken script costs most.
+        python3 scripts/stamp_server_json.py check --in server.json
+        python3 scripts/stamp_server_json.py self-test
 
     - name: Run integration tests
       working-directory: test/integration
@@ -394,6 +398,10 @@ jobs:
   smoke-test-linux-amd64:
     needs: [linux-build]
     runs-on: ubuntu-24.04
+    # Bounded, like the pack-smoke jobs. Each smoke job ends in
+    # `kill; wait`, so a shutdown that hangs would otherwise hold a
+    # runner for GitHub's 6-hour default instead of failing fast.
+    timeout-minutes: 10
     steps:
     - name: Download binary
       uses: actions/download-artifact@v4
@@ -446,6 +454,7 @@ jobs:
   smoke-test-linux-arm64:
     needs: [linux-build]
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
     steps:
     - name: Download binary
       uses: actions/download-artifact@v4
@@ -498,6 +507,7 @@ jobs:
   smoke-test-macos:
     needs: [osx-universal-build]
     runs-on: macos-latest
+    timeout-minutes: 10
     steps:
     - name: Download binary
       uses: actions/download-artifact@v4
@@ -550,6 +560,7 @@ jobs:
   smoke-test-windows:
     needs: [windows-build]
     runs-on: windows-latest
+    timeout-minutes: 10
     steps:
     - name: Download binary
       uses: actions/download-artifact@v4
@@ -964,6 +975,12 @@ jobs:
           --license BUSL-1.1 --url https://github.com/DataZooDE/flapi \
           --readme ./Readme.md
 
+    # Derived from the wheel FILENAMES just built - the exact artefacts being
+    # uploaded, already in PyPI's normalised form (26.9.23, never 26.09.23).
+    # The repo copy of server.json is a template; see the script's docstring.
+    - name: Stamp server.json with the released version
+      run: python3 scripts/stamp_server_json.py stamp --wheels-dir dist/flapi-io --in server.json --out dist/server.json
+
     - name: Upload flapi-io wheels
       uses: actions/upload-artifact@v4
       with:
@@ -985,6 +1002,7 @@ jobs:
           ./artifacts/flapi-linux-arm64.tar.gz \
           ./artifacts/flapi-macos-arm64.tar.gz \
           ./dist/flapi-io/*.whl \
+          ./dist/server.json \
           --title "${{ steps.get_version.outputs.VERSION }}" \
           --notes "$TAG_MSG" \
           --draft=false \

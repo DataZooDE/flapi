@@ -415,6 +415,8 @@ vscode-dev:
 check-invariants:
 	@./scripts/check_crow_app_alias.sh
 	@./scripts/check_no_synthetic_router_entry.sh
+	@python3 scripts/stamp_server_json.py check --in server.json
+	@python3 scripts/stamp_server_json.py self-test
 	@./scripts/check_cxx_standard_uniform.sh build/release
 	@./scripts/check_tracing_abi_guard.sh build/release/libflapi-lib.a
 

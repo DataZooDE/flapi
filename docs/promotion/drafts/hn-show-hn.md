@@ -28,7 +28,7 @@ https://github.com/DataZooDE/flapi
 
 Author here. flAPI takes a SQL file (Mustache-templated) plus a small YAML
 config and serves it as a REST endpoint and an MCP tool from the same
-definition — one binary, no backend code. DuckDB 1.5.3 is embedded, so the
+definition — one binary, no backend code. DuckDB 1.5.5 is embedded, so the
 SQL can hit Parquet/CSV, Postgres, BigQuery, S3/GCS/Azure, Iceberg, Delta,
 and the rest of DuckDB's 50+ source ecosystem. There's even an SAP ERP/BW
 path via the ERPL extension, though that one still has documented stability
@@ -45,7 +45,7 @@ Some build decisions people here might find interesting:
 **Why C++ and a single static binary.** The target user is a data analyst
 or a small data team, and the deploy target is often "a VM somewhere" with
 no container registry and no Python environment anyone trusts. A statically
-linked C++17 binary with DuckDB embedded means the entire runtime is one
+linked C++20 binary with DuckDB embedded means the entire runtime is one
 file. No interpreter, no virtualenv, no shared-library roulette. It also
 keeps the request path short: parameter validation, template rendering, and
 query execution all happen in-process.
@@ -79,11 +79,12 @@ stay in the environment where they belong.
 - It's for read-oriented data APIs. It is not a CRUD backend and doesn't
   want to be one.
 - It's DuckDB-centric. If DuckDB can't reach your source, neither can we.
-- MCP is Streamable HTTP only (`/mcp/jsonrpc`, SSE for streaming). No
+- MCP is Streamable HTTP only (`/mcp/jsonrpc`, JSON responses). No
   stdio transport — stdio-only clients need a proxy like mcp-remote.
 - License is Business Source License 1.1, not open source. Source-
-  available, production use permitted under the Additional Use Grant,
-  converts to MPL-2.0 after the Change Date. More below, since I know
+  available, production use permitted under the Additional Use Grant
+  (not as a hosted service for third parties), converts to MPL-2.0 after
+  the Change Date. More below, since I know
   this will come up.
 - It's a young project. The core paths are tested, but you will find
   rough edges.
@@ -182,7 +183,7 @@ connection properties.
 
 ### "MCP over HTTP only? My client is stdio."
 
-Correct — Streamable HTTP at `/mcp/jsonrpc` with SSE for streaming, no
+Correct — Streamable HTTP at `/mcp/jsonrpc` (JSON responses), no
 stdio transport today. flAPI is a long-running server, so HTTP is the
 natural fit, but stdio-only clients work through a proxy like mcp-remote.
 

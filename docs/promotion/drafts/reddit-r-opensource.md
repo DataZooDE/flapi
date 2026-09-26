@@ -58,7 +58,7 @@ tools in the same space.
 
 What it does: a Mustache-templated SQL file plus a YAML config becomes a
 REST endpoint and an MCP tool from the same definition. Single static
-C++17 binary with DuckDB embedded — so the SQL can query Parquet/CSV,
+C++20 binary with DuckDB embedded — so the SQL can query Parquet/CSV,
 Postgres, BigQuery, S3/GCS/Azure, Iceberg, Delta, and 50+ other sources.
 Typed request parameters are bound as DuckDB prepared statements (no
 string interpolation for those sites); auth with per-tool RBAC, rate
