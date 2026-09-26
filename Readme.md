@@ -1,6 +1,6 @@
-# flAPI: Instant SQL based APIs
+# flAPI: SQL → REST APIs and MCP tools, from one config
 
-flAPI is a powerful service that automatically generates read-only APIs for datasets by utilizing SQL templates. Built on top of [DuckDB](https://duckdb.org/) and leveraging its SQL engine and extension ecosystem, flAPI offers a seamless way to connect to various data sources and expose them as RESTful APIs.
+Write a SQL template and a few lines of YAML; flAPI serves it as a REST endpoint *and* an MCP tool for AI agents — with the same parameter validators and the same cache behind both, and role-based access control on each. One static binary with [DuckDB](https://duckdb.org/) inside: Parquet, Postgres, BigQuery, S3 and 50+ more sources.
 
 ![flAPI demo: one SQL template served as a REST endpoint and an MCP tool](docs/promotion/assets/flapi-demo.gif)
 
