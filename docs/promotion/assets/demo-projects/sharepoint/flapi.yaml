@@ -1,0 +1,26 @@
+project-name: sharepoint-api
+project-description: SharePoint lists as REST + MCP via erpl_web
+
+template:
+  path: './sqls'
+  environment-whitelist:
+    - '^ERPL_MS_.*'
+
+connections:
+  sharepoint:
+    init: |
+      INSTALL erpl_web FROM community;
+      LOAD erpl_web;
+      CREATE OR REPLACE SECRET ms_graph (
+        TYPE microsoft_graph,
+        PROVIDER client_credentials,
+        tenant_id '{{env.ERPL_MS_TENANT_ID}}',
+        client_id '{{env.ERPL_MS_CLIENT_ID}}',
+        client_secret '{{env.ERPL_MS_CLIENT_SECRET}}'
+      );
+      ATTACH 'Kommunikationswebsite' AS sp (TYPE sharepoint_lists, SECRET 'ms_graph');
+    properties:
+      list: 'TestList'
+
+duckdb:
+  db_path: ':memory:'

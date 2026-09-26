@@ -1,0 +1,14 @@
+url-path: /customers
+
+request:
+  - field-name: id
+    field-in: query
+    description: Customer ID
+    required: false
+    validators:
+      - type: int
+        min: 1
+
+template-source: customers.sql
+connection:
+  - customers
