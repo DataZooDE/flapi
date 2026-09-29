@@ -760,10 +760,10 @@ duckdb:
 log-level: info                     # debug, info, warn, error
 log-format: text                    # text | json
 
-# MCP server (its own top-level block)
+# MCP server (its own top-level block). No port of its own: MCP is served on
+# the HTTP port, at /mcp/jsonrpc.
 mcp:
   enabled: true
-  port: 8081
 
 # Global rate limiting (optional). Note the underscore here and the HYPHEN
 # in the per-endpoint `rate-limit:` block - they genuinely differ.
@@ -1366,7 +1366,9 @@ Configure with cron expressions or interval schedules.
 ```bash
 make docker                         # Build Docker image
 # Image includes pre-built flAPI binary
-# Ports: 8080 (REST), 8081 (MCP)
+# Port: 8080 serves both REST and MCP (/mcp/jsonrpc)
+# Published tags: :latest and :v<version> from releases only,
+# :main and :sha-<commit> from main; pull requests push nothing.
 ```
 
 ### Single Binary

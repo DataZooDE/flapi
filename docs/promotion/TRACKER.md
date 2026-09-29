@@ -23,7 +23,7 @@ copy-paste material lives in [SUBMISSION_KIT.md](SUBMISSION_KIT.md) and
 
 ## 📤 Submissions (Week 1 — "seed quietly")
 
-- [ ] Official MCP Registry: publish the release-stamped `server.json` (see SUBMISSION_KIT §1 — not the repo copy, which is a `0.0.0-dev` template). Prerequisites met; for v26.09.23, stamp locally as §1 describes
+- [ ] Official MCP Registry: publish the release-stamped `server.json` (see SUBMISSION_KIT §1 — not the repo copy, which is a `0.0.0-dev` template). Prerequisites met; ready to publish from the v26.09.26 release asset
 - [ ] ⛔ awesome-mcp-servers — **skipped (decision 2026-09-26)**. [punkpeye#10023](https://github.com/punkpeye/awesome-mcp-servers/pull/10023) was closed unmerged 2026-09-07; relisting needs a Glama listing + score badge, not pursued for now (SUBMISSION_KIT §2)
 - [x] wong2 list (mcpservers.org): submitted via web form 2026-07-13 (free tier, category Database, contact jr@data-zoo.de) — "reviewed within 12 hours", approval lands by email. **Listing not confirmed** as of 2026-09-26 (not in the wong2 README; the site blocks automated checks)
 - [ ] ⛔ Glama — **skipped (decision 2026-09-26)**, along with awesome-mcp-servers (SUBMISSION_KIT §6)

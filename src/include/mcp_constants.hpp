@@ -57,7 +57,6 @@ constexpr int INTERNAL_ERROR = -32603;
 
 // Content Types
 constexpr const char* CONTENT_TYPE_JSON = "application/json";
-constexpr const char* CONTENT_TYPE_SSE = "text/event-stream";
 
 // MCP Protocol Methods
 constexpr const char* METHOD_INITIALIZE = "initialize";

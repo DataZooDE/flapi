@@ -2,6 +2,28 @@
 
 All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (the date the binary set was cut). Earlier history is in the git log.
 
+## Unreleased
+
+### Fixed: three `mcp.*` settings did nothing, and now say so
+
+`mcp.port`, `mcp.host` and `mcp.allow-list-changed-notifications` were documented but never took
+effect. MCP is served by the same server as the REST API — on the HTTP port and host, at
+`/mcp/jsonrpc` — and flAPI has no server-to-client notification transport, so it always advertises
+`listChanged: false`. Anyone who set `mcp.port: 8081` and pointed an MCP client at 8081 got
+"connection refused".
+
+flAPI now logs a warning naming each of these keys when it is set, and what to use instead. The
+configuration still loads; nothing about how flAPI runs changes. They are gone from the
+documentation and the example configurations.
+
+### Changed: the Docker `:latest` tag is now the latest release
+
+`ghcr.io/datazoode/flapi:latest` was pushed by every CI run, including pull requests, so
+`docker run ghcr.io/datazoode/flapi` pulled whatever change had most recently been built — often
+unmerged and unreviewed. `:latest` is now pushed only by a release, and only after that release's
+tests pass. Each release is also tagged with its version (`:v26.09.26` and so on), and `:main`
+tracks the main branch for anyone who wants the newest merged code.
+
 ## v26.09.26 — a failed start exits cleanly, and a clean stop releases the cache
 
 ### Fixed: a startup failure now exits non-zero instead of dumping core, or lying

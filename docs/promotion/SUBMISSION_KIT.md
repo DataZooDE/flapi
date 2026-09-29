@@ -107,19 +107,10 @@ not just the source.
   mcp-publisher login github   # authenticates the io.github.datazoode namespace
   mcp-publisher publish        # reads ./server.json - the stamped one downloaded above
   ```
-- **`v26.09.23` and earlier have no `server.json` asset** — stamping was added
-  after that release, so the first release to carry it is the next one. Until
-  then, stamp it locally with the same script CI uses, from that release's own
-  wheel (every flapi-io wheel carries the same version; one is enough).
-  Verified on 2026-09-26 to produce `26.9.23`:
-  ```bash
-  # from a checkout of the repo
-  gh release download v26.09.23 --repo DataZooDE/flapi \
-      --pattern 'flapi_io-*-macosx_11_0_arm64.whl' -D /tmp/flapi-wheel
-  python3 scripts/stamp_server_json.py stamp --wheels-dir /tmp/flapi-wheel \
-      --in server.json --out /tmp/mcp-publish/server.json
-  cd /tmp/mcp-publish && mcp-publisher login github && mcp-publisher publish
-  ```
+- **`v26.09.26` is the first release with the stamped `server.json` attached**
+  (verified: both fields read `26.9.26`). Releases before it have none; if you
+  ever need one, stamp it from that release's own wheel:
+  `python3 scripts/stamp_server_json.py stamp --wheels-dir <dir with one wheel> --in server.json --out server.json.out`.
 - Running `mcp-publisher publish` from the repo root would submit the `0.0.0-dev`
   template. Always publish from the downloaded release asset.
 

@@ -146,9 +146,25 @@ jobs:
   # -------------------------------------------------------------------------------------------------
   # Docker Build and Push Multi-Arch
   # -------------------------------------------------------------------------------------------------
+  # What gets pushed, and when:
+  #   pull_request  build only - nothing is pushed
+  #   push to main  :main and :sha-<commit>
+  #   v* tag        :sha-<commit> here; :latest and :<tag> are added later by
+  #                 docker-promote, only once the GitHub release and PyPI
+  #                 publish have succeeded
+  # `:latest` is the latest RELEASE. It used to be pushed by every run, pull
+  # requests included, so `docker run ghcr.io/datazoode/flapi` pulled whatever
+  # PR had last run CI - unmerged, unreviewed code. Publishing also waits for
+  # the integration and Linux smoke tests, like the GitHub release and PyPI.
   docker-build:
-    needs: [linux-build]
+    needs: [linux-build, integration-tests, smoke-test-linux-amd64, smoke-test-linux-arm64, pack-smoke-linux-amd64, pack-smoke-linux-arm64]
     runs-on: ubuntu-24.04
+    # The digest THIS run pushed. docker-promote tags it, not :sha-<commit>:
+    # a main run and a tag run for the same commit both write that tag, and
+    # the tag build stamps the release version into the binary - so promoting
+    # by tag could publish main's build as the release.
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
     - uses: actions/checkout@v4
 
@@ -162,6 +178,7 @@ jobs:
       uses: docker/setup-buildx-action@v3
 
     - name: Login to GitHub Container Registry
+      if: github.event_name != 'pull_request'
       uses: docker/login-action@v3
       with:
         registry: ghcr.io
@@ -174,8 +191,8 @@ jobs:
       with:
         images: ghcr.io/${{ env.REPO_OWNER }}/flapi
         tags: |
-          type=raw,value=latest
-          type=sha,format=long
+          type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+          type=sha,format=long,enable=${{ github.event_name != 'pull_request' }}
 
     - name: Download artifacts
       uses: actions/download-artifact@v4
@@ -190,12 +207,13 @@ jobs:
         chmod +x binaries/amd64/flapi binaries/arm64/flapi
 
     - name: Build and push multi-arch image
+      id: build
       uses: docker/build-push-action@v6
       with:
         context: .
         file: Dockerfile
         platforms: linux/amd64,linux/arm64
-        push: true
+        push: ${{ github.event_name != 'pull_request' }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         build-contexts: |
@@ -877,7 +895,14 @@ jobs:
   # -------------------------------------------------------------------------------------------------
   create-release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows-build, linux-build, osx-universal-build, flapii-build, smoke-test-windows, smoke-test-linux-amd64, smoke-test-linux-arm64, smoke-test-macos, pack-smoke-linux-amd64, pack-smoke-linux-arm64, pack-smoke-macos, pack-smoke-windows]
+    # integration-tests included: without it the release and the PyPI publish
+    # (which needs create-release) went out before the tag's own integration
+    # suite had finished - on v26.09.26 it was still running when both were
+    # live. It adds little wall-clock: it runs alongside windows-build, the
+    # slowest job, and normally finishes first.
+    # docker-build too: otherwise a failed image push still lets the GitHub
+    # release and PyPI go out, leaving a release with no :latest/:<tag> image.
+    needs: [windows-build, linux-build, osx-universal-build, flapii-build, integration-tests, docker-build, smoke-test-windows, smoke-test-linux-amd64, smoke-test-linux-arm64, smoke-test-macos, pack-smoke-linux-amd64, pack-smoke-linux-arm64, pack-smoke-macos, pack-smoke-windows]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -1027,3 +1052,89 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
+  # -------------------------------------------------------------------------------------------------
+  # Docker: promote the released image to :latest and :<tag>
+  # -------------------------------------------------------------------------------------------------
+  # Runs only after the GitHub release AND the PyPI publish succeeded, so
+  # :latest can never point at a version that was not fully released. It adds
+  # tags to the image docker-build already pushed and the tests already
+  # covered - :sha-<commit> - rather than rebuilding, so what is tagged
+  # :latest is byte-for-byte what was tested.
+  docker-promote:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [docker-build, pypi-publish-flapi-io]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Deliberately NO concurrency group. A job-level group keeps only one
+    # pending job and cancels it when another arrives (the `queue` option that
+    # lifts this is documented for workflow-level concurrency only), so three
+    # quick releases would silently lose the middle one's promotion. Instead
+    # every run executes, and :latest is set convergently - see below.
+    steps:
+    - name: Prepare
+      run: echo "REPO_OWNER=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Login to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Tag the released image as :<tag>, and converge :latest on the newest release
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        DIGEST: ${{ needs.docker-build.outputs.digest }}
+      run: |
+        set -euo pipefail
+        IMAGE="ghcr.io/${REPO_OWNER}/flapi"
+        test -n "${DIGEST}" || { echo "docker-build reported no digest" >&2; exit 1; }
+
+        # 1. This release's version tag, from the exact digest this run built
+        #    and tested. Unique per release, so no other run can race it.
+        docker buildx imagetools create --tag "${IMAGE}:${GITHUB_REF_NAME}" "${IMAGE}@${DIGEST}"
+
+        # 2. :latest always ends on the NEWEST release's image, whichever run
+        #    gets here last. Re-read after writing: a run that listed releases
+        #    before a newer one appeared, and so wrote a stale :latest, sees the
+        #    change and corrects it. An older release finishing late therefore
+        #    cannot move :latest backwards.
+        #
+        #    Every path that leaves :latest unconverged fails loudly or warns.
+        #    It must never pass green with the tag wrong.
+        newest() {
+          gh release list --repo "${GITHUB_REPOSITORY}" --exclude-drafts \
+            --exclude-pre-releases --limit 100 --json tagName --jq '.[].tagName' | sort -V | tail -1
+        }
+        # Retried: a registry hiccup must not read as "not published".
+        exists() {
+          for _ in 1 2 3; do
+            docker buildx imagetools inspect "$1" >/dev/null 2>&1 && return 0
+            sleep 5
+          done
+          return 1
+        }
+        converged=false
+        for attempt in 1 2 3; do
+          NEWEST=$(newest)
+          # Our own image was pushed moments ago in step 1; never second-guess
+          # it - if it were really missing, the create below fails the job.
+          if [ "${NEWEST}" != "${GITHUB_REF_NAME}" ] && ! exists "${IMAGE}:${NEWEST}"; then
+            echo "::warning::${IMAGE}:${NEWEST} is not published, so :latest was not moved to it. That release's own docker-promote sets it; if that job failed, re-run it."
+            converged=true
+            break
+          fi
+          docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}:${NEWEST}"
+          if [ "$(newest)" = "${NEWEST}" ]; then
+            echo ":latest -> ${NEWEST}"
+            converged=true
+            break
+          fi
+        done
+        if [ "${converged}" != true ]; then
+          echo "::error:::latest did not settle on the newest release after 3 attempts; re-run this job." >&2
+          exit 1
+        fi

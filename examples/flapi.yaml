@@ -175,10 +175,7 @@ ducklake:
 # MCP Server Configuration
 # ====================================================================================
 mcp:
-  enabled: true
-  port: 8081
-  host: localhost
-  allow-list-changed-notifications: true
+  enabled: true   # served on the HTTP port above, at /mcp/jsonrpc
 
   # Tool-description hygiene scanner. When true, flAPI refuses to start
   # if any mcp-tool.description contains control characters,

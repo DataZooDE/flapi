@@ -415,12 +415,15 @@ Configures the Model Context Protocol (MCP) server.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `mcp.enabled` | boolean | `true` | Enable MCP server |
-| `mcp.port` | integer | `8081` | MCP server port |
-| `mcp.host` | string | - | MCP server host |
-| `mcp.allow-list-changed-notifications` | boolean | - | Enable list change notifications |
 | `mcp.instructions` | string | - | Inline instructions for LLM clients |
 | `mcp.instructions-file` | string | - | Path to instructions markdown file |
 | `mcp.strict-descriptions` | boolean | `false` | Reject tool descriptions containing control characters, JSON-breakout patterns, or role-override phrases ("ignore previous instructions") at config-load time |
+
+> **MCP has no port or host of its own.** It is served by the same server as the
+> REST API, on the HTTP port and host (`http-port`, `-p/--port`/`FLAPI_PORT`,
+> `--host`/`FLAPI_HOST`), at `/mcp/jsonrpc`. `mcp.port`, `mcp.host` and
+> `mcp.allow-list-changed-notifications` were documented in earlier versions but
+> never took effect; flAPI now logs a warning when any of them is set.
 
 **MCP Authentication:**
 
@@ -437,9 +440,6 @@ Configures the Model Context Protocol (MCP) server.
 ```yaml
 mcp:
   enabled: true
-  port: 8081
-  host: localhost
-  allow-list-changed-notifications: true
   instructions-file: ./mcp_instructions.md
   strict-descriptions: true
   auth:
@@ -1850,10 +1850,9 @@ ducklake:
     enabled: true
     scan-interval: 5m
 
-# MCP server
+# MCP server (shares the HTTP port)
 mcp:
   enabled: true
-  port: 8081
   instructions-file: ./mcp_instructions.md
 
 # Global authentication
@@ -2002,7 +2001,6 @@ flAPI supports both hyphenated and camelCase naming for backward compatibility:
 | `ducklake.alias` | `"cache"` |
 | `ducklake.enabled` | `false` |
 | `mcp.enabled` | `true` |
-| `mcp.port` | `8081` |
 | `mcp.auth.enabled` | `false` |
 | `auth.enabled` | `false` |
 | `rate_limit.enabled` | `false` |

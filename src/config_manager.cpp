@@ -463,7 +463,27 @@ void ConfigManager::parseMCPConfig() {
 
     auto mcp = config["mcp"];
     mcp_config.enabled = safeGet<bool>(mcp, "enabled", "mcp.enabled", true);
-    mcp_config.port = safeGet<int>(mcp, "port", "mcp.port", 8081);
+    // Keys that were documented but never read (#151). An operator who set one
+    // believed it took effect: a launch tutorial set mcp.port and pointed every
+    // MCP command at it, and got "connection refused". Say so, rather than
+    // accept a value nothing uses. None is an error - the configuration still
+    // works, it just does not do what the key promised.
+    struct IgnoredKey { const char* key; const char* why; };
+    static constexpr IgnoredKey kIgnoredMcpKeys[] = {
+        {"port", "MCP is served on the HTTP port, alongside the REST API. Set that "
+                 "with http-port, -p/--port or FLAPI_PORT"},
+        {"host", "MCP binds wherever the HTTP server binds. Set that with the "
+                 "HTTP host (--host or FLAPI_HOST)"},
+        {"allow-list-changed-notifications",
+                 "flAPI has no server-to-client notification transport, so it "
+                 "always advertises listChanged: false"},
+    };
+    for (const auto& ignored : kIgnoredMcpKeys) {
+        if (mcp[ignored.key]) {
+            CROW_LOG_WARNING << "mcp." << ignored.key << " is set but ignored: "
+                             << ignored.why << ". Remove it from the configuration.";
+        }
+    }
     mcp_config.strict_descriptions = safeGet<bool>(mcp, "strict-descriptions", "mcp.strict-descriptions", false);
     mcp_config.page_size = safeGet<int>(mcp, "page-size", "mcp.page-size", 0);
     if (mcp["tasks"]) {
@@ -481,7 +501,6 @@ void ConfigManager::parseMCPConfig() {
     }
 
     CROW_LOG_DEBUG << "MCP Enabled: " << (mcp_config.enabled ? "true" : "false");
-    CROW_LOG_DEBUG << "MCP Port: " << mcp_config.port;
     CROW_LOG_DEBUG << "MCP Strict descriptions: " << (mcp_config.strict_descriptions ? "true" : "false");
 
     // Parse MCP authentication configuration

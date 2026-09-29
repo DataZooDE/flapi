@@ -35,18 +35,19 @@ The tool's input schema is derived from `request:` — field names, types and th
 `description` of each. **Write those descriptions for the agent**, not for
 yourself; they are the only thing it has to decide what to pass.
 
-MCP runs alongside REST with no separate configuration.
+MCP runs alongside REST with no separate configuration, on the same port, at
+`/mcp/jsonrpc`.
 
 ## Call it
 
 ```bash
-curl -s http://localhost:8081/mcp/health
+curl -s http://localhost:8080/mcp/health
 
-curl -s http://localhost:8081/mcp -H 'Content-Type: application/json' -d '{
+curl -s http://localhost:8080/mcp/jsonrpc -H 'Content-Type: application/json' -d '{
   "jsonrpc": "2.0", "id": 1, "method": "tools/list"
 }'
 
-curl -s http://localhost:8081/mcp -H 'Content-Type: application/json' -d '{
+curl -s http://localhost:8080/mcp/jsonrpc -H 'Content-Type: application/json' -d '{
   "jsonrpc": "2.0", "id": 2,
   "method": "tools/call",
   "params": { "name": "get_customers", "arguments": { "id": 123 } }

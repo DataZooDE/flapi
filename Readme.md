@@ -48,38 +48,30 @@ The easiest way to get started with flAPI is to use the pre-built docker image.
 ```
 
 
-The image is pretty small and mainly contains the flAPI binary which is statically linked against [DuckDB v1.5.5](https://github.com/duckdb/duckdb/releases/tag/v1.5.5). Details about the docker image can be found in the [Dockerfile](https://github.com/DataZooDE/flapi/tree/main/docker).
+The image is pretty small and mainly contains the flAPI binary which is statically linked against [DuckDB v1.5.5](https://github.com/duckdb/duckdb/releases/tag/v1.5.5). Details about the docker image can be found in the [Dockerfile](https://github.com/DataZooDE/flapi/blob/main/Dockerfile).
 
 #### 2. Run flAPI:
 Once you have downloaded the binary, you can run flAPI by executing the following command:
 
 ```
-> docker run -it --rm -p 8080:8080 -p 8081:8081 -v $(pwd)/examples/:/config ghcr.io/datazoode/flapi -c /config/flapi.yaml
+> docker run -it --rm -p 8080:8080 -v $(pwd)/examples/:/config ghcr.io/datazoode/flapi -c /config/flapi.yaml
 ```
 
 The different arguments in this docker command are:
 - `-it --rm`: Run the container in interactive mode and remove it after the process has finished
-- `-p 8080:8080`: Exposes port 8080 of the container to the host, this makes the REST API available at `http://localhost:8080`
-- `-p 8081:8081`: Exposes port 8081 for the MCP server (when enabled)
+- `-p 8080:8080`: Exposes port 8080 of the container to the host. This one port serves both the REST API (`http://localhost:8080`) and MCP (`http://localhost:8080/mcp/jsonrpc`)
 - `-v $(pwd)/examples/:/config`: This mounts the local `examples` directory to the `/config` directory in the container, this is where the flAPI configuration file
 is expected to be found.
 - `ghcr.io/datazoode/flapi`: The docker image to use
 - `-c /config/flapi.yaml`: This is an argument to the flAPI application which tells it to use the `flapi.yaml` file in the `/config` directory as the configuration file.
 
-#### 2.1 Enable MCP Support:
-To enable MCP support, you can either:
+#### 2.1 MCP Support:
+MCP is enabled by default and served by the same server as the REST API, on the same port, at
+`/mcp/jsonrpc` — there is no separate MCP port. To switch it off, set it in `flapi.yaml`:
 
-**Option A: Use the command line flag**
-```
-> docker run -it --rm -p 8080:8080 -p 8081:8081 -v $(pwd)/examples/:/config ghcr.io/datazoode/flapi -c /config/flapi.yaml --enable-mcp
-```
-
-**Option B: Configure in flapi.yaml**
 ```yaml
 mcp:
-  enabled: true
-  port: 8081
-  # ... other MCP configuration
+  enabled: false
 ```
 
 #### 3.1 Test the API server:
@@ -114,17 +106,17 @@ If MCP is enabled, you can test the MCP server as well:
 
 ```bash
 # Check MCP server health
-> curl 'http://localhost:8081/mcp/health'
+> curl 'http://localhost:8080/mcp/health'
 
 {"status":"healthy","server":"flapi-mcp-server","version":"0.3.0","protocol_version":"2024-11-05","tools_count":0}
 
 # Initialize MCP connection
-> curl -X POST http://localhost:8081/mcp/jsonrpc \
+> curl -X POST http://localhost:8080/mcp/jsonrpc \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc": "2.0", "id": 1, "method": "initialize"}'
 
 # List available tools
-> curl -X POST http://localhost:8081/mcp/jsonrpc \
+> curl -X POST http://localhost:8080/mcp/jsonrpc \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc": "2.0", "id": 2, "method": "tools/list"}'
 ```
@@ -214,20 +206,20 @@ Once MCP is enabled, you can interact with tools using JSON-RPC 2.0:
 
 ```bash
 # Check MCP server health
-curl 'http://localhost:8081/mcp/health'
+curl 'http://localhost:8080/mcp/health'
 
 # Initialize MCP connection
-curl -X POST http://localhost:8081/mcp/jsonrpc \
+curl -X POST http://localhost:8080/mcp/jsonrpc \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc": "2.0", "id": 1, "method": "initialize"}'
 
 # List available tools (discovered from unified configuration)
-curl -X POST http://localhost:8081/mcp/jsonrpc \
+curl -X POST http://localhost:8080/mcp/jsonrpc \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc": "2.0", "id": 2, "method": "tools/list"}'
 
 # Call a tool (same SQL template used for both REST and MCP)
-curl -X POST http://localhost:8081/mcp/jsonrpc \
+curl -X POST http://localhost:8080/mcp/jsonrpc \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "get_customers", "arguments": {"id": "123"}}}'
 ```
