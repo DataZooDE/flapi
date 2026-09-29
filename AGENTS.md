@@ -1366,7 +1366,9 @@ Configure with cron expressions or interval schedules.
 ```bash
 make docker                         # Build Docker image
 # Image includes pre-built flAPI binary
-# Ports: 8080 (REST), 8081 (MCP)
+# Port: 8080 serves both REST and MCP (/mcp/jsonrpc)
+# Published tags: :latest and :v<version> from releases only,
+# :main and :sha-<commit> from main; pull requests push nothing.
 ```
 
 ### Single Binary
