@@ -70,11 +70,14 @@ auth:
     - username: admin
       password: secret
       roles: [admin, read, write]
-    - username: '{{env.CUSTOMER_API_READ_USER}}'
-      password: '{{env.CUSTOMER_API_READ_PASSWORD}}'
+    # Demo credentials. In a real deployment take them from the environment
+    # ('{{env.NAME}}', whitelisted under template.environment-whitelist): an
+    # unset variable there stops startup rather than leaving an empty password.
+    - username: reader
+      password: reader-demo
       roles: [read]
-    - username: '{{env.CUSTOMER_API_AI_USER}}'
-      password: '{{env.CUSTOMER_API_AI_PASSWORD}}'
+    - username: ai
+      password: ai-demo
       roles: [ai_tools, read]
 
 # Development Authentication (disabled)

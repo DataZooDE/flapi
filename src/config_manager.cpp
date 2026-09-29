@@ -643,6 +643,12 @@ void ConfigManager::parseMCPConfig() {
                     user.username = safeGet<std::string>(user_entry, "username", "mcp.auth.users[].username");
                     user.password = safeGet<std::string>(user_entry, "password", "mcp.auth.users[].password");
 
+                    if (user.username.empty() || user.password.empty()) {
+                        throw std::runtime_error(
+                            "mcp.auth.users: a user has an empty username or password. If it comes from "
+                            "{{env.NAME}}, that variable is unset or empty.");
+                    }
+
                     // Parse roles if present
                     if (user_entry["roles"]) {
                         for (const auto& role : user_entry["roles"]) {
@@ -1012,6 +1018,11 @@ void ConfigManager::parseEndpointAuth(const YAML::Node& endpoint_config, Endpoin
                 AuthUser auth_user;
                 auth_user.username = safeGet<std::string>(user, "username", "auth.users.username");
                 auth_user.password = safeGet<std::string>(user, "password", "auth.users.password");
+                if (auth_user.username.empty() || auth_user.password.empty()) {
+                    throw std::runtime_error(
+                        "auth.users: a user has an empty username or password. If it comes from "
+                        "{{env.NAME}}, that variable is unset or empty.");
+                }
                 auth_user.roles = safeGet<std::vector<std::string>>(user, "roles", "auth.users.roles", std::vector<std::string>());
                 endpoint.auth.users.push_back(auth_user);
                 CROW_LOG_DEBUG << "\t\t\tAdded user: " << auth_user.username << " with " << auth_user.roles.size() << " roles";
