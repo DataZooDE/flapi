@@ -1065,11 +1065,11 @@ jobs:
     needs: [docker-build, pypi-publish-flapi-io]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    # One promotion at a time, never cancelled: two release runs must not
-    # interleave their tag updates.
-    concurrency:
-      group: docker-promote
-      cancel-in-progress: false
+    # Deliberately NO concurrency group. A job-level group keeps only one
+    # pending job and cancels it when another arrives (the `queue` option that
+    # lifts this is documented for workflow-level concurrency only), so three
+    # quick releases would silently lose the middle one's promotion. Instead
+    # every run executes, and :latest is set convergently - see below.
     steps:
     - name: Prepare
       run: echo "REPO_OWNER=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
@@ -1084,7 +1084,7 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Tag the released image as :<tag>, and :latest if it is the newest release
+    - name: Tag the released image as :<tag>, and converge :latest on the newest release
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         DIGEST: ${{ needs.docker-build.outputs.digest }}
@@ -1093,17 +1093,27 @@ jobs:
         IMAGE="ghcr.io/${REPO_OWNER}/flapi"
         test -n "${DIGEST}" || { echo "docker-build reported no digest" >&2; exit 1; }
 
-        TAGS=(--tag "${IMAGE}:${GITHUB_REF_NAME}")
-        # Only the newest release may take :latest. An older release that
-        # finishes late - a slow approval, a re-run - must not move it back.
-        NEWEST=$(gh release list --repo "${GITHUB_REPOSITORY}" --exclude-drafts \
-                   --exclude-pre-releases --limit 100 --json tagName --jq '.[].tagName' \
-                 | sort -V | tail -1)
-        if [ "${NEWEST}" = "${GITHUB_REF_NAME}" ]; then
-          TAGS+=(--tag "${IMAGE}:latest")
-        else
-          echo "::warning::${GITHUB_REF_NAME} is not the newest release (${NEWEST}); :latest left alone"
-        fi
+        # 1. This release's version tag, from the exact digest this run built
+        #    and tested. Unique per release, so no other run can race it.
+        docker buildx imagetools create --tag "${IMAGE}:${GITHUB_REF_NAME}" "${IMAGE}@${DIGEST}"
 
-        docker buildx imagetools create "${TAGS[@]}" "${IMAGE}@${DIGEST}"
-        docker buildx imagetools inspect "${IMAGE}:${GITHUB_REF_NAME}"
+        # 2. :latest always ends on the NEWEST release's image, whichever run
+        #    gets here last. Re-read after writing: a run that listed releases
+        #    before a newer one appeared, and so wrote a stale :latest, sees the
+        #    change and corrects it. An older release finishing late therefore
+        #    cannot move :latest backwards.
+        newest() {
+          gh release list --repo "${GITHUB_REPOSITORY}" --exclude-drafts \
+            --exclude-pre-releases --limit 100 --json tagName --jq '.[].tagName' | sort -V | tail -1
+        }
+        for attempt in 1 2 3; do
+          NEWEST=$(newest)
+          if ! docker buildx imagetools inspect "${IMAGE}:${NEWEST}" >/dev/null 2>&1; then
+            # The newest release's own promotion has not pushed its tag yet;
+            # that run will move :latest when it gets here.
+            echo "${IMAGE}:${NEWEST} not published yet; leaving :latest to its promotion"
+            break
+          fi
+          docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}:${NEWEST}"
+          [ "$(newest)" = "${NEWEST}" ] && { echo ":latest -> ${NEWEST}"; break; }
+        done
