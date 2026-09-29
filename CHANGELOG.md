@@ -32,8 +32,9 @@ http-port: 9000
 http-host: 127.0.0.1
 ```
 
-`flapi --validate-config` reports it too, so a CI check catches it before a deploy. Nothing that was
-working can be affected: no value under `server:` has ever had any effect.
+`flapi --validate-config` reports it too, so a CI check catches it before a deploy. Removing the
+block changes nothing about how flAPI behaves, since no value under `server:` has ever had any
+effect — but a deployment whose config still carries one will **not start** until it is removed.
 
 ### Fixed: three `mcp.*` settings did nothing, and now say so
 

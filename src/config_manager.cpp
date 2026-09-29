@@ -104,23 +104,24 @@ void ConfigManager::parseMainConfig() {
         CROW_LOG_INFO << "Parsing main configuration";
         base_path = config_file.parent_path();
 
-        project_name = safeGet<std::string>(config, "project-name", "project-name");
-        project_description = safeGet<std::string>(config, "project-description", "project-description");
-        server_name = safeGet<std::string>(config, "server-name", "server-name", "localhost");
-        http_port = safeGet<int>(config, "http-port", "http-port", 8080);
-        http_host = safeGet<std::string>(config, "http-host", "http-host", "0.0.0.0");
         // flAPI has no `server:` block, and refusing one is deliberate (#153).
         // `server: {port, host}` appeared in the config-system spec and in a
         // shipped example, and NOTHING ever read it: an operator who set
         // `server.port: 9000` got a server on 8080 and no explanation. A bind
         // port is the setting where "silently ignored" does the most damage -
         // traffic goes to the wrong place - and no value of `server:` has ever
-        // done anything, so rejecting it cannot break a working configuration.
+        // done anything, so rejecting it changes nothing about how a server
+        // behaves - but a config that still carries it will no longer start.
         // Unlike the dead mcp.* keys (#151), which only warn: those are inert
         // metadata, this one misdirects traffic.
         //
         // Presence, not shape: `server: true` and an empty `server:` are as
         // wrong as `server: {port: 9000}`, and one message serves all of them.
+        //
+        // FIRST, before any other key is read. Checked after project-name and
+        // http-port, a config with a `server:` block and one other mistake
+        // reported only the other mistake - and the operator fixed that and
+        // hit this one on the next run.
         if (config["server"]) {
             throw ConfigurationError(
                 "flAPI has no `server:` block; it was never read, so anything set "
@@ -130,6 +131,12 @@ void ConfigManager::parseMainConfig() {
                 "environment variables.",
                 "server");
         }
+
+        project_name = safeGet<std::string>(config, "project-name", "project-name");
+        project_description = safeGet<std::string>(config, "project-description", "project-description");
+        server_name = safeGet<std::string>(config, "server-name", "server-name", "localhost");
+        http_port = safeGet<int>(config, "http-port", "http-port", 8080);
+        http_host = safeGet<std::string>(config, "http-host", "http-host", "0.0.0.0");
         // Top-level and kebab-case, matching http-port / http-host.
         log_level = safeGet<std::string>(config, "log-level", "log-level", "info");
         stall_timeout_s = safeGet<int>(config, "stall-timeout-s", "stall-timeout-s", 60);

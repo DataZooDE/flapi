@@ -70,6 +70,24 @@ class TestServerBlockIsRejected:
                      "--port", "--host"):
             assert real in out, f"the error does not mention {real}\n" + out[-2000:]
 
+    @pytest.mark.parametrize("config", [
+        # An earlier required key missing / an earlier key malformed must not
+        # hide the more useful error: the block is checked FIRST.
+        "project-name: p\nserver:\n  port: 9000\n",                       # no project-description
+        "project-description: d\nserver:\n  port: 9000\n",                # no project-name
+        "project-name: p\nproject-description: d\nhttp-port: not-a-number\nserver:\n  port: 9000\n",
+    ])
+    def test_the_block_is_reported_before_other_config_errors(self, config):
+        tmp = tempfile.mkdtemp(prefix="flapi_serverblock_order_")
+        os.makedirs(os.path.join(tmp, "sqls"))
+        cfg = os.path.join(tmp, "flapi.yaml")
+        with open(cfg, "w") as f:
+            f.write(config)
+        code, out = _validate("", cwd=tmp, config=cfg)
+        assert code != 0, out
+        assert "no `server:` block" in out, (
+            "another error masked the server: block message\n" + out[-2000:])
+
     def test_it_is_rejected_even_when_http_port_is_also_set(self):
         # Agreement between the two would still be a config with a dead key.
         code, out = _validate("http-port: 9000\nserver:\n  port: 9000\n")
