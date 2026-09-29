@@ -244,10 +244,10 @@ template:
 **Notes:**
 - The `path` is relative to the main configuration file location
 - **One whitelist governs every `{{env.NAME}}`**: in SQL templates, in YAML configuration
-  files (the main config and endpoint files) and in `env.NAME` include conditions. It lives
-  here, under `template:`, and nowhere else. Content pulled in with `{{include}}` is **not**
-  scanned: a `{{env.NAME}}` inside an included file is neither substituted nor checked
-  (see #165), so keep references in the including file.
+  files (the main config, endpoint files and files pulled in with `{{include}}`) and in
+  `env.NAME` include conditions. It lives here, under `template:`, and nowhere else.
+- A user in an `auth.users` list with an **empty** username or password stops startup. An unset
+  variable substitutes as an empty string, and an empty credential must never be accepted.
 - A variable must match at least one pattern. **An empty or missing whitelist allows no
   variables.** Patterns are regular expressions matched against the whole name and are
   **case-sensitive** (`AWS_REGION` and `aws_region` are different variables), so `API_KEY`

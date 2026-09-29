@@ -459,3 +459,48 @@ class TestShippedConfigsAreConsistent:
                             problems.append(f"{os.path.relpath(path, REPO)}: "
                                             f"{name} used in {os.path.relpath(f, REPO)}")
         assert not problems, "\n".join(sorted(set(problems)))
+
+
+class TestIncludedFilesFollowTheSameRule:
+    """`{{env.NAME}}` inside a `{{include ...}}`d file was never substituted and
+    never checked (#165): a password stayed the literal text `{{env.X}}`."""
+
+    ENDPOINT = ("url-path: /ep\nmethod: GET\ntemplate-source: ep.sql\n"
+                "connection: [inmem]\n"
+                "{{include:auth from ../shared/auth.yaml}}\n")
+    AUTH = ("auth:\n  enabled: true\n  type: basic\n  users:\n"
+            "    - username: alice\n      password: '{{env.FLAPI_PROBE_SECRET}}'\n")
+
+    def _run(self, whitelist, extra_env=None, auth=None):
+        tmp = tempfile.mkdtemp(prefix="flapi_envwl_inc_")
+        os.makedirs(os.path.join(tmp, "sqls"))
+        _write(tmp, "shared/auth.yaml", auth or self.AUTH)
+        _write(tmp, "sqls/ep.yaml", self.ENDPOINT)
+        _write(tmp, "sqls/ep.sql", "SELECT 1 AS n\n")
+        cfg = _write(tmp, "flapi.yaml",
+                     "project-name: p\nproject-description: d\n"
+                     "template:\n  path: ./sqls\n" + _wl(*whitelist) +
+                     "connections:\n  inmem:\n    properties:\n      database: ':memory:'\n")
+        env = {**os.environ, "FLAPI_PROBE_SECRET": SECRET, "DATAZOO_DISABLE_TELEMETRY": "1",
+               **(extra_env or {})}
+        r = subprocess.run([flapi_binary(), "-c", cfg, "--validate-config"],
+                           capture_output=True, text=True, cwd=tmp, env=env, timeout=60)
+        return r.returncode, r.stdout + r.stderr
+
+    def test_an_unlisted_variable_in_an_included_file_stops_startup(self):
+        code, out = self._run(["ONLY_THIS_ONE"])
+        assert code != 0, "an included file's unlisted variable was silently kept\n" + out[-2000:]
+        assert "FLAPI_PROBE_SECRET" in out, out[-2000:]
+        assert "not whitelisted" in out, out[-2000:]
+        assert SECRET not in out
+
+    def test_a_listed_variable_in_an_included_file_is_substituted(self):
+        code, out = self._run(["FLAPI_PROBE_SECRET"])
+        assert code == 0, out
+
+    def test_an_unset_credential_variable_stops_startup(self):
+        # Substituting an unset variable as "" would leave an empty password.
+        code, out = self._run(["FLAPI_PROBE_UNSET"],
+                              auth=self.AUTH.replace("FLAPI_PROBE_SECRET", "FLAPI_PROBE_UNSET"))
+        assert code != 0, "an empty credential was accepted\n" + out[-2000:]
+        assert "empty username or password" in out, out[-2000:]

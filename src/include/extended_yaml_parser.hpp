@@ -170,7 +170,7 @@ public:
     /**
      * @brief Load and parse a YAML file
      */
-    static YAML::Node loadYamlFile(const std::filesystem::path& file_path);
+    YAML::Node loadYamlFile(const std::filesystem::path& file_path) const;
 
     /**
      * @brief Extract a section from a YAML node

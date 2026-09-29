@@ -4,6 +4,14 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Fixed: `{{env.NAME}}` in an `{{include}}`d file was never substituted or checked
+
+A password in a shared file such as `auth.yaml` stayed the literal text `{{env.DB_PASSWORD}}`, and
+an unlisted variable there raised no error. Included files now follow the same substitution and
+`template.environment-whitelist` rules as the file that includes them. Because an unset variable
+substitutes as empty, an `auth.users` entry with an empty username or password now stops startup.
+The shipped customers example uses demo credentials instead of unset `CUSTOMER_API_*` variables.
+
 ### Fixed: `--validate-config` rejected MCP prompt files; `flapi pack` now validates first
 
 - `--validate-config` reported an MCP prompt file (`mcp-prompt:`) as invalid because it demanded a
