@@ -4,6 +4,13 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Added: unknown top-level configuration keys are reported
+
+A top-level key in `flapi.yaml` that flAPI does not read now logs a warning at startup (and under
+`--validate-config`) instead of being silently ignored, with a hint for common near-misses such as
+`rate-limit` (per-endpoint) vs `rate_limit` (global) and `https` vs `enforce-https`. It is a warning,
+never an error, so a working configuration keeps starting. `version:` stays allowed as metadata.
+
 ### Fixed: `{{env.NAME}}` in an `{{include}}`d file was never substituted or checked
 
 A password in a shared file such as `auth.yaml` stayed the literal text `{{env.DB_PASSWORD}}`, and

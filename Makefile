@@ -415,6 +415,7 @@ vscode-dev:
 check-invariants:
 	@./scripts/check_crow_app_alias.sh
 	@./scripts/check_no_synthetic_router_entry.sh
+	@./scripts/check_known_config_keys.sh
 	@python3 scripts/stamp_server_json.py check --in server.json
 	@python3 scripts/stamp_server_json.py self-test
 	@./scripts/check_cxx_standard_uniform.sh build/release

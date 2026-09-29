@@ -173,6 +173,10 @@ this same principle at packaging time.
 
 The main configuration file defines global settings, connections, and server behavior.
 
+A top-level key that flAPI does not read (a typo, a key from another product, your own annotation)
+is **ignored with a startup warning** naming it, not silently. `version:` is accepted as metadata.
+The list of known keys is `ConfigManager::KnownTopLevelKeys()` in `src/config_manager.cpp`.
+
 ### 2.1 Project Metadata
 
 | Parameter | Type | Default | Description |
