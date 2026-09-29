@@ -17,6 +17,7 @@ duckdb:
   db_path: ':memory:'
   access_mode: READ_WRITE
 
-server:
-  port: 8080
-  host: 0.0.0.0
+# Server settings. These are top-level keys, not a `server:` block -
+# flAPI rejects a `server:` section.
+http-port: 8080
+http-host: 0.0.0.0

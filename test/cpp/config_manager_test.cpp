@@ -657,7 +657,47 @@ auth:
 // examples/flapi-{s3,gcs,azure}.yaml shipped a `server:` block with port, host
 // and log_level. flAPI parses none of it - the canonical keys are top-level
 // `http-port` and `http-host` - so all three files advertised a configuration
-// shape that silently did nothing.
+// shape that silently did nothing. Such a block is now rejected outright (#153);
+// see the cases below.
+
+TEST_CASE("a server: block is rejected, naming the keys that work", "[config][server-block]") {
+    // Each shape - a map, a scalar, an empty key - is wrong for the same
+    // reason: nothing reads `server:`, so it can only mislead.
+    for (const std::string block : {"server:\n  port: 9000\n", "server: true\n", "server:\n"}) {
+        const std::string yaml =
+            "project-name: server-block\nproject-description: rejected\n"
+            "template:\n  path: ./sqls\n" + block;
+        flapi::test::TempTestConfig temp(yaml, "flapi_serverblock");
+        auto mgr = std::make_shared<ConfigManager>(temp.configPath());
+        try {
+            mgr->loadConfig();
+            FAIL("a `server:` block was accepted: " << block);
+        } catch (const std::exception& e) {
+            const std::string message = e.what();
+            REQUIRE(message.find("http-port") != std::string::npos);
+            REQUIRE(message.find("http-host") != std::string::npos);
+        }
+    }
+}
+
+TEST_CASE("http-port and http-host still configure the server", "[config][server-block]") {
+    const std::string yaml = R"(
+project-name: real-keys
+project-description: the keys that work
+template:
+  path: ./sqls
+http-port: 9123
+http-host: 127.0.0.1
+server-name: my-flapi
+)";
+    flapi::test::TempTestConfig temp(yaml, "flapi_serverblock");
+    auto mgr_ptr = temp.createConfigManager();
+
+    REQUIRE(mgr_ptr->getHttpPort() == 9123);
+    REQUIRE(mgr_ptr->getHttpHost() == "127.0.0.1");
+    // `server-name` is a different, real key and must not be caught by the check.
+    REQUIRE(mgr_ptr->getServerName() == "my-flapi");
+}
 
 TEST_CASE("log-level is read from configuration", "[config][logging]") {
     const std::string yaml = R"(
