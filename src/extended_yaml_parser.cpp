@@ -51,7 +51,11 @@ bool ExtendedYamlParser::IncludeConfig::isEnvironmentVariableAllowed(const std::
     }
 
     for (const auto& pattern : environment_whitelist) {
-        std::regex regex_pattern(pattern, std::regex_constants::icase);
+        // Case-SENSITIVE, like the SQL-template matcher. Environment variable names
+        // are case-sensitive on Linux and macOS, so `aws_region` is a different
+        // variable from `AWS_REGION`: an icase match let a pattern for one authorise
+        // reading the other (found by the security review of #157).
+        std::regex regex_pattern(pattern);
         if (std::regex_match(var_name, regex_pattern)) {
             return true;
         }

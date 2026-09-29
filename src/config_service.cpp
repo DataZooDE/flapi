@@ -127,14 +127,13 @@ crow::json::wvalue FilesystemHandler::buildFileNode(const std::filesystem::path&
         try {
             // Use ExtendedYamlParser to support {{include}} directives and environment variables
             flapi::ExtendedYamlParser::IncludeConfig include_config;
-            include_config.allow_environment_variables = true;
+            // NO substitution: a file browser shows the file as written. This parser
+            // used to have an empty whitelist, which meant "allow everything", so a
+            // `url-path: /x-{{env.SECRET}}` put any environment variable's VALUE in
+            // the response for whoever held the config-service token (#157). Even a
+            // whitelisted value has no business in a directory listing.
+            include_config.allow_environment_variables = false;
             include_config.allow_conditional_includes = true;
-            // The same whitelist the loader uses (#157). This parser used to have
-            // none, which meant "allow everything"; with "empty means none" it
-            // would show a literal `{{env.X}}` for a variable that IS whitelisted.
-            // Not made an error: this is a read-only view for a file browser.
-            include_config.environment_whitelist =
-                config_manager_->getTemplateConfig().environment_whitelist;
             
             flapi::ExtendedYamlParser parser(include_config);
             auto parse_result = parser.parseFile(file_path);

@@ -13,7 +13,7 @@ includes.
   `${VAR_NAME}` shell form is **not** supported and is left as literal text.)
 - Only variables that match the whitelist in your root config may be read. The
   whitelist is a list of regular expressions, matched against the whole variable
-  name, case-insensitively, and it lives under `template:` in the root config:
+  name (case-sensitively), and it lives under `template:` in the root config:
   ```yaml
   template:
     path: './sqls'
@@ -26,8 +26,10 @@ includes.
   not match stops flAPI at startup with an error naming every such variable and
   the key to add it to. It is never left in the file as literal text, because a
   literal `{{env.DB_PASSWORD}}` would silently become the password.
-- The rule applies to every YAML file flAPI loads — the root config, endpoint
-  files and included files — and to `env.NAME` include conditions (below).
+- The rule applies to the root config and to every endpoint file, and to `env.NAME`
+  include conditions (below). **A `{{env.NAME}}` inside a file pulled in with
+  `{{include}}` is not scanned** — it is left as literal text and is not checked
+  (#165) — so keep references in the including file.
 - `environment-whitelist` belongs under `template:`. A top-level
   `environment-whitelist:` is never read, so flAPI rejects it at startup.
 - The whitelist must be in the root config file itself, not in a file it includes.

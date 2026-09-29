@@ -13,7 +13,8 @@ whether or not it was listed, and whether or not there was a whitelist at all. T
 and Azure examples made it worse: they put `environment-whitelist:` at the **top level**, where nothing
 reads it either, so anyone copying them believed they had restricted which variables a config could read.
 
-The whitelist is now enforced for YAML files, with the same rule SQL templates already had:
+The whitelist is now enforced for the main config and endpoint files, with the same rule SQL templates
+already had:
 
 - **A variable that matches no pattern stops flAPI at startup**, with an error naming every such
   variable and the key to add it to. It is never left in the file as literal text — a literal
@@ -36,7 +37,10 @@ template:
 
 `flapi --validate-config` reports a missing entry, so a CI check catches it before a deploy. Patterns
 match the whole variable name (`^DB_` alone would match only a variable called `DB_`) and are
-case-insensitive.
+**case-sensitive**, since `AWS_REGION` and `aws_region` are different variables.
+
+Content pulled in with `{{include}}` is not scanned — a `{{env.NAME}}` inside an included file is left as
+literal text, exactly as before (see #165).
 
 A full-line comment can mention `{{env.NAME}}` without being checked. A comment after a value
 (`key: value # see {{env.X}}`) is still checked, so word those without the braces, and so is a `#` line

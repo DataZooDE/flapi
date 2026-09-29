@@ -184,12 +184,14 @@ class TestBlockScalars:
         assert code == 0, out
 
 
-class TestConfigServiceMetadataUsesTheSamePolicy:
-    """GET /api/v1/_config/filesystem parses YAML for metadata with its own
-    parser. It kept the old default, so once an empty whitelist meant "none" it
-    showed a literal `{{env.X}}` for a variable that IS whitelisted."""
+class TestTheFileBrowserNeverExposesValues:
+    """GET /api/v1/_config/filesystem parses YAML to label the tree. It built its
+    own parser with an empty whitelist, which used to mean "allow everything": any
+    environment variable's VALUE reached whoever holds the config-service token,
+    via a `url-path: /x-{{env.SECRET}}`. A file browser should show the file as
+    WRITTEN, so it does not substitute at all - even for a whitelisted variable."""
 
-    def test_the_file_tree_shows_a_whitelisted_variable_substituted(self):
+    def test_the_file_tree_shows_the_file_as_written(self):
         import time
         import requests
         tmp = tempfile.mkdtemp(prefix="flapi_envwl_cs_")
@@ -223,9 +225,10 @@ class TestConfigServiceMetadataUsesTheSamePolicy:
             r = requests.get(f"{base}/api/v1/_config/filesystem",
                              headers={"Authorization": f"Bearer {token}"}, timeout=10)
             assert r.status_code == 200, r.text[:500]
-            assert "/probe-resolved" in r.text, (
-                "the file tree showed a literal {{env.X}} for a whitelisted variable\n"
-                + r.text[:1500])
+            assert "resolved" not in r.text, (
+                "the file tree exposed an environment variable's VALUE\n" + r.text[:1500])
+            assert "/probe-{{env.FLAPI_PROBE_PATH}}" in r.text, (
+                "the file tree did not show the file as written\n" + r.text[:1500])
         finally:
             proc.terminate()
             try:
@@ -260,6 +263,44 @@ class TestComments:
             project_name="p-{{env.FLAPI_PROBE_SECRET}}",
             main_extra="# unrelated comment\n",
             template_extra=_wl("ONLY_THIS_ONE"))
+        assert code != 0, out
+
+
+class TestPatternsAreCaseSensitive:
+    """Environment variable names are case-SENSITIVE on Linux and macOS, so
+    `aws_region` and `AWS_REGION` are two different variables. The YAML matcher
+    was case-INSENSITIVE (the SQL-template one never was), so listing AWS_REGION
+    also let a config read a separate, unlisted `aws_region` - a confidentiality
+    bypass found by the security review."""
+
+    def test_a_pattern_does_not_permit_a_different_case_variant(self):
+        env_extra = {"flapi_probe_secret": "the-lowercase-variable"}
+        tmp = tempfile.mkdtemp(prefix="flapi_envwl_case_")
+        os.makedirs(os.path.join(tmp, "sqls"))
+        cfg = _write(tmp, "flapi.yaml",
+                     'project-name: "p-{{env.flapi_probe_secret}}"\n'
+                     "project-description: case probe\n"
+                     "template:\n  path: ./sqls\n" + _wl("FLAPI_PROBE_SECRET") +
+                     "connections:\n  inmem:\n    properties:\n      database: ':memory:'\n")
+        env = {**os.environ, "FLAPI_PROBE_SECRET": SECRET, "DATAZOO_DISABLE_TELEMETRY": "1",
+               **env_extra}
+        r = subprocess.run([flapi_binary(), "-c", cfg, "--validate-config",
+                            "--log-level", "debug"],
+                           capture_output=True, text=True, cwd=tmp, env=env, timeout=60)
+        out = r.stdout + r.stderr
+        assert r.returncode != 0, (
+            "whitelisting FLAPI_PROBE_SECRET let a config read the different "
+            "variable flapi_probe_secret\n" + out[-2000:])
+        assert "the-lowercase-variable" not in out, "its VALUE reached the output"
+
+    def test_the_exact_case_still_works(self):
+        code, out = _validate(project_name="p-{{env.FLAPI_PROBE_SECRET}}",
+                              template_extra=_wl("FLAPI_PROBE_SECRET"))
+        assert code == 0, out
+
+    def test_a_lowercase_pattern_does_not_match_an_uppercase_variable(self):
+        code, out = _validate(project_name="p-{{env.FLAPI_PROBE_SECRET}}",
+                              template_extra=_wl("flapi_probe_secret"))
         assert code != 0, out
 
 

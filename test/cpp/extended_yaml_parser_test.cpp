@@ -263,12 +263,20 @@ TEST_CASE("ExtendedYamlParser: an empty whitelist with error_on_unlisted still r
     REQUIRE_FALSE(parser.parseString("v: '{{env.ANYTHING}}'\n", "/tmp").success);
 }
 
-TEST_CASE("ExtendedYamlParser: whitelist patterns are full, case-insensitive matches", "[extended_yaml_parser][env-whitelist]") {
+TEST_CASE("ExtendedYamlParser: whitelist patterns are full, CASE-SENSITIVE matches", "[extended_yaml_parser][env-whitelist]") {
+    // Environment variable names are case-sensitive on Linux and macOS, so
+    // `WL_CASE_VAR` and `wl_case_var` are different variables: a pattern for one
+    // must not authorise reading the other. (It used to be case-insensitive, and
+    // the SQL-template matcher never was.)
     setenv("WL_CASE_VAR", "ok", 1);
+    setenv("wl_case_var", "the-other-variable", 1);
     ExtendedYamlParser::IncludeConfig config;
-    config.environment_whitelist = {"^wl_.*"};
+    config.environment_whitelist = {"^WL_.*"};
     ExtendedYamlParser parser(config);
     REQUIRE(parser.parseString("v: '{{env.WL_CASE_VAR}}'\n", "/tmp").node["v"].Scalar() == "ok");
+    // The lowercase variable is a different one and is NOT permitted.
+    REQUIRE(parser.parseString("v: '{{env.wl_case_var}}'\n", "/tmp").node["v"].Scalar() == "{{env.wl_case_var}}");
+    unsetenv("wl_case_var");
 
     ExtendedYamlParser::IncludeConfig substring;
     substring.environment_whitelist = {"CASE"};   // a substring is not a match

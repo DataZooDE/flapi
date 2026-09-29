@@ -35,7 +35,7 @@ public:
         bool allow_conditional_includes = true;
         std::vector<std::string> include_paths;
 
-        // Regex patterns (full match, case-insensitive) naming the variables
+        // Regex patterns (full match, case-SENSITIVE) naming the variables
         // `{{env.NAME}}` may read. EMPTY MEANS NONE: an unset whitelist must never
         // mean "no protection". (It used to mean "allow everything" here while
         // meaning "allow nothing" for SQL templates - #157.)
