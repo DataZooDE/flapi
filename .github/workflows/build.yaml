@@ -1102,18 +1102,39 @@ jobs:
         #    before a newer one appeared, and so wrote a stale :latest, sees the
         #    change and corrects it. An older release finishing late therefore
         #    cannot move :latest backwards.
+        #
+        #    Every path that leaves :latest unconverged fails loudly or warns.
+        #    It must never pass green with the tag wrong.
         newest() {
           gh release list --repo "${GITHUB_REPOSITORY}" --exclude-drafts \
             --exclude-pre-releases --limit 100 --json tagName --jq '.[].tagName' | sort -V | tail -1
         }
+        # Retried: a registry hiccup must not read as "not published".
+        exists() {
+          for _ in 1 2 3; do
+            docker buildx imagetools inspect "$1" >/dev/null 2>&1 && return 0
+            sleep 5
+          done
+          return 1
+        }
+        converged=false
         for attempt in 1 2 3; do
           NEWEST=$(newest)
-          if ! docker buildx imagetools inspect "${IMAGE}:${NEWEST}" >/dev/null 2>&1; then
-            # The newest release's own promotion has not pushed its tag yet;
-            # that run will move :latest when it gets here.
-            echo "${IMAGE}:${NEWEST} not published yet; leaving :latest to its promotion"
+          # Our own image was pushed moments ago in step 1; never second-guess
+          # it - if it were really missing, the create below fails the job.
+          if [ "${NEWEST}" != "${GITHUB_REF_NAME}" ] && ! exists "${IMAGE}:${NEWEST}"; then
+            echo "::warning::${IMAGE}:${NEWEST} is not published, so :latest was not moved to it. That release's own docker-promote sets it; if that job failed, re-run it."
+            converged=true
             break
           fi
           docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}:${NEWEST}"
-          [ "$(newest)" = "${NEWEST}" ] && { echo ":latest -> ${NEWEST}"; break; }
+          if [ "$(newest)" = "${NEWEST}" ]; then
+            echo ":latest -> ${NEWEST}"
+            converged=true
+            break
+          fi
         done
+        if [ "${converged}" != true ]; then
+          echo "::error:::latest did not settle on the newest release after 3 attempts; re-run this job." >&2
+          exit 1
+        fi
