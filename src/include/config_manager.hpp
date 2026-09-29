@@ -494,7 +494,7 @@ struct TemplateConfig {
 
     bool isEnvironmentVariableAllowed(const std::string& varName) const {
         if (environment_whitelist.empty()) {
-            return false;  // If no whitelist is specified, allow all variables
+            return false;  // Empty means NONE: an unset whitelist must never mean "no protection" (#157)
         }
         for (const auto& pattern : environment_whitelist) {
             std::regex regex(pattern);
@@ -845,6 +845,8 @@ protected:
     std::string getFullCacheSourcePath(const EndpointConfig& endpoint) const;
     
     void parseMainConfig();
+    
+    void applyEnvironmentPolicy();
     void parseConnections();
     void parseRateLimitConfig();
     void parseAuthConfig();

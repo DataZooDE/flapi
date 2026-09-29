@@ -9,21 +9,38 @@ includes.
 ---
 
 ## Environment variables
-- Write environment variables as `{{env.VAR_NAME}}` anywhere in your YAML.
-- Only variables that match the whitelist in your root config are substituted:
+- Write environment variables as `{{env.VAR_NAME}}` anywhere in your YAML. (The
+  `${VAR_NAME}` shell form is **not** supported and is left as literal text.)
+- Only variables that match the whitelist in your root config may be read. The
+  whitelist is a list of regular expressions, matched against the whole variable
+  name (case-sensitively), and it lives under `template:` in the root config:
   ```yaml
   template:
     path: './sqls'
     environment-whitelist:
       - '^FLAPI_.*'     # allow all variables starting with FLAPI_
       - '^PROJECT_.*'   # optional additional prefixes
+      - '^CONFIG_DIR$'  # or one exact variable
   ```
-- If the whitelist is empty or omitted, all environment variables are allowed.
+- **An empty or missing whitelist allows no variables.** A `{{env.NAME}}` that does
+  not match stops flAPI at startup with an error naming every such variable and
+  the key to add it to. It is never left in the file as literal text, because a
+  literal `{{env.DB_PASSWORD}}` would silently become the password.
+- The rule applies to the root config and to every endpoint file, and to `env.NAME`
+  include conditions (below). **A `{{env.NAME}}` inside a file pulled in with
+  `{{include}}` is not scanned** — it is left as literal text and is not checked
+  (#165) — so keep references in the including file.
+- `environment-whitelist` belongs under `template:`. A top-level
+  `environment-whitelist:` is never read, so flAPI rejects it at startup.
+- The whitelist must be in the root config file itself, not in a file it includes.
+- A comment can mention a variable: `{{env.X}}` on a line that is only a comment is
+  ignored. A comment after a value (`key: v # see {{env.X}}`) is still checked, and so is
+  a `#` line inside a block scalar (`key: |`), which is text rather than a comment.
 
 Examples:
 ```yaml
 # Substitute inside strings
-project-name: "${{env.PROJECT_NAME}}"
+project-name: "{{env.PROJECT_NAME}}"
 
 # Build include paths dynamically
 template:
@@ -41,6 +58,8 @@ Conditions supported:
 - `true` or `false`
 - `env.VAR_NAME` (include if the variable exists and is non-empty)
 - `!env.VAR_NAME` (include if the variable is missing or empty)
+
+The variable in a condition must be whitelisted, like any other `{{env.NAME}}`.
 
 Examples:
 ```yaml

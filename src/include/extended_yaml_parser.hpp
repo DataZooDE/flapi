@@ -34,7 +34,19 @@ public:
         bool allow_environment_variables = true;
         bool allow_conditional_includes = true;
         std::vector<std::string> include_paths;
+
+        // Regex patterns (full match, case-SENSITIVE) naming the variables
+        // `{{env.NAME}}` may read. EMPTY MEANS NONE: an unset whitelist must never
+        // mean "no protection". (It used to mean "allow everything" here while
+        // meaning "allow nothing" for SQL templates - #157.)
         std::vector<std::string> environment_whitelist;
+
+        // What to do with a `{{env.NAME}}` that is not allowed. false leaves it
+        // in the text as a literal, which is right for callers that only sniff a
+        // file's structure. true fails the parse, naming every such variable:
+        // for a real configuration a literal `{{env.DB_PASSWORD}}` would silently
+        // become the password.
+        bool error_on_unlisted_environment_variable = false;
 
         /**
          * @brief Check if an environment variable is allowed
@@ -82,6 +94,29 @@ public:
      */
     ParseResult parseString(const std::string& content,
                            const std::filesystem::path& base_path = "");
+
+    /**
+     * @brief Set which environment variables `{{env.NAME}}` may read.
+     *
+     * Applies to every later parse, including endpoint files loaded through the
+     * same parser. Lets the owner of the main configuration read the whitelist
+     * (which lives in that file) BEFORE substituting anything into it.
+     */
+    void setEnvironmentPolicy(std::vector<std::string> whitelist, bool error_on_unlisted);
+
+    /**
+     * @brief Load a file's YAML WITHOUT resolving anything.
+     *
+     * For reading the environment whitelist out of the main configuration before
+     * that file's own `{{env.NAME}}` references may be substituted. Each reference
+     * becomes an inert scalar and each include directive is dropped, so a file that
+     * is only valid YAML AFTER substitution - `{{env.DIR}}/sqls`, an env variable
+     * inside an include path - still yields its whitelist. Included files are not
+     * read: the whitelist must be in the main file itself.
+     *
+     * @throws if the file cannot be read or is not YAML even after that
+     */
+    static YAML::Node loadWithoutResolving(const std::filesystem::path& file_path);
 
         /**
          * @brief Preprocess content to handle include directives before YAML parsing

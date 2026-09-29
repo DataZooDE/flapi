@@ -19,6 +19,12 @@ version: 1.0.0
 # SQL templates can be stored in GCS
 template:
   path: gs://my-bucket/api-templates/sqls
+  # Which environment variables env references may read. It belongs HERE, under
+  # template:. A top-level environment-whitelist is never read and is rejected.
+  environment-whitelist:
+  - GOOGLE_APPLICATION_CREDENTIALS
+  - GOOGLE_CLOUD_PROJECT
+  - GCLOUD_PROJECT
 
 # Storage configuration
 storage:
@@ -62,8 +68,3 @@ http-port: 8080
 http-host: 0.0.0.0
 log-level: info
 
-# Environment variable whitelist
-environment-whitelist:
-  - GOOGLE_APPLICATION_CREDENTIALS
-  - GOOGLE_CLOUD_PROJECT
-  - GCLOUD_PROJECT

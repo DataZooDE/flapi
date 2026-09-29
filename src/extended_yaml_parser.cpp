@@ -47,11 +47,15 @@ bool ConfigFileExists(const std::filesystem::path& file_path) {
 // IncludeConfig implementation
 bool ExtendedYamlParser::IncludeConfig::isEnvironmentVariableAllowed(const std::string& var_name) const {
     if (environment_whitelist.empty()) {
-        return true; // Allow all if no whitelist
+        return false; // Empty means NONE - see the field's comment (#157)
     }
 
     for (const auto& pattern : environment_whitelist) {
-        std::regex regex_pattern(pattern, std::regex_constants::icase);
+        // Case-SENSITIVE, like the SQL-template matcher. Environment variable names
+        // are case-sensitive on Linux and macOS, so `aws_region` is a different
+        // variable from `AWS_REGION`: an icase match let a pattern for one authorise
+        // reading the other (found by the security review of #157).
+        std::regex regex_pattern(pattern);
         if (std::regex_match(var_name, regex_pattern)) {
             return true;
         }
@@ -62,6 +66,29 @@ bool ExtendedYamlParser::IncludeConfig::isEnvironmentVariableAllowed(const std::
 // ExtendedYamlParser implementation
 ExtendedYamlParser::ExtendedYamlParser() : config_() {
     CROW_LOG_DEBUG << "ExtendedYamlParser default constructor called, environment variables allowed: " << config_.allow_environment_variables;
+}
+
+YAML::Node ExtendedYamlParser::loadWithoutResolving(const std::filesystem::path& file_path) {
+    std::string content = ReadConfigFile(file_path);
+
+    // Each `{{env.NAME}}` becomes an inert scalar. Done FIRST, so an include
+    // directive that carries one in its path (`{{include from {{env.DIR}}/x}}`)
+    // has no nested braces left when the directives are dropped next.
+    static const std::regex env_ref(R"(\{\{env\.([A-Za-z_][A-Za-z0-9_]*)\}\})");
+    content = std::regex_replace(content, env_ref, "ENVREF_$1");
+
+    // Include directives are not YAML until they are expanded, and expanding
+    // them needs the very variables being decided about.
+    static const std::regex include_directive(R"(\{\{include[^}]*\}\})");
+    content = std::regex_replace(content, include_directive, "");
+
+    return YAML::Load(content);
+}
+
+void ExtendedYamlParser::setEnvironmentPolicy(std::vector<std::string> whitelist,
+                                              bool error_on_unlisted) {
+    config_.environment_whitelist = std::move(whitelist);
+    config_.error_on_unlisted_environment_variable = error_on_unlisted;
 }
 
 ExtendedYamlParser::ExtendedYamlParser(const IncludeConfig& config) : config_(config) {
@@ -654,6 +681,82 @@ YAML::Node ExtendedYamlParser::mergeNodes(const YAML::Node& target, const YAML::
     return result;
 }
 
+namespace {
+
+// Which lines of a YAML text are full-line COMMENTS.
+//
+// "The first non-blank character is '#'" is not enough: inside a block scalar
+// (`key: |`, `key: >-`, `- |`) a line starting with '#' is CONTENT - a Markdown
+// heading in an MCP prompt, say - and a variable on it must be substituted or
+// refused like any other. Treating it as a comment left a literal {{env.X}} in
+// the text with no error, which is the silent failure the whitelist enforcement
+// exists to prevent.
+//
+// A block scalar runs from the line after its header to the last line that is
+// blank or indented deeper than the header. Where that is ambiguous this errs
+// toward "content": the only cost is enforcing a variable in something that was
+// a comment, which fails loudly and is easy to fix.
+class CommentMask {
+public:
+    explicit CommentMask(const std::string& text) {
+        static const std::regex block_header(R"((?:^|[:\-])\s*[|>][+\-0-9]*\s*(?:#.*)?$)");
+        bool in_block = false;
+        size_t block_indent = 0;
+        size_t pos = 0;
+        for (;;) {
+            const size_t eol = text.find('\n', pos);
+            const size_t end = (eol == std::string::npos) ? text.size() : eol;
+            std::string line = text.substr(pos, end - pos);
+            if (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+            }
+            starts_.push_back(pos);
+
+            const size_t first = line.find_first_not_of(" \t");
+            const bool blank = (first == std::string::npos);
+            const size_t indent = blank ? line.size() : first;
+
+            bool comment = false;
+            bool handled = false;
+            if (in_block) {
+                if (blank || indent > block_indent) {
+                    handled = true;               // block scalar content
+                } else {
+                    in_block = false;             // the block ended; this line is ordinary
+                }
+            }
+            if (!handled && !blank) {
+                if (line[indent] == '#') {
+                    comment = true;
+                } else if (line.find_first_of("|>") != std::string::npos &&
+                           std::regex_search(line.substr(indent), block_header)) {
+                    in_block = true;
+                    block_indent = indent;
+                }
+            }
+            comment_.push_back(comment);
+
+            if (eol == std::string::npos) {
+                break;
+            }
+            pos = eol + 1;
+        }
+    }
+
+    // True when `pos` lies on a full-line comment.
+    bool inComment(size_t pos) const {
+        const auto it = std::upper_bound(starts_.begin(), starts_.end(), pos);
+        const size_t line = static_cast<size_t>(it - starts_.begin()) - 1;
+        return comment_[line];
+    }
+
+private:
+    std::vector<size_t> starts_;
+    std::vector<bool> comment_;
+};
+
+}  // namespace
+
 std::string ExtendedYamlParser::substituteEnvironmentVariables(const std::string& input) const {
     // If environment variables are disabled, return input unchanged
     if (!config_.allow_environment_variables) {
@@ -685,6 +788,13 @@ std::string ExtendedYamlParser::substituteEnvironmentVariables(const std::string
     std::vector<EnvVarMatch> matches;
     matches.reserve(match_count);
 
+    // Every variable that is referenced but not whitelisted, in first-seen
+    // order, so ONE error names all of them.
+    std::vector<std::string> unlisted;
+
+    // Built once per input, not once per match.
+    const CommentMask comments(result);
+
     // Recreate iterator (previous one was consumed by std::distance)
     matches_begin = std::sregex_iterator(result.begin(), result.end(), env_regex);
 
@@ -692,14 +802,31 @@ std::string ExtendedYamlParser::substituteEnvironmentVariables(const std::string
         std::string var_name = it->str(1);
         CROW_LOG_DEBUG << "Processing environment variable: " << var_name;
 
+        // A full-line YAML comment cannot reference anything. Operators write
+        // "# password comes from {{env.DB_PASSWORD}}" as documentation; with the
+        // whitelist enforced that must not stop startup, and it must not pull a
+        // secret into text nothing will read. (A trailing comment, `key: v # {{env.X}}`,
+        // is not skipped: telling it from a `#` inside a quoted value takes a
+        // real tokenizer, and failing loudly is the safe way to be wrong.)
+        if (comments.inComment(static_cast<size_t>(it->position()))) {
+            CROW_LOG_DEBUG << "Skipping environment variable in a comment: " << var_name;
+            continue;
+        }
+
         if (!config_.isEnvironmentVariableAllowed(var_name)) {
             CROW_LOG_DEBUG << "Environment variable not allowed: " << var_name;
-            continue; // Skip disallowed variables
+            if (std::find(unlisted.begin(), unlisted.end(), var_name) == unlisted.end()) {
+                unlisted.push_back(var_name);
+            }
+            continue; // Left as a literal unless the caller asked for an error
         }
 
         const char* env_value = std::getenv(var_name.c_str());
         std::string replacement = env_value ? env_value : "";
-        CROW_LOG_DEBUG << "Environment variable " << var_name << " = '" << replacement << "'";
+        // The NAME only. This line used to print the value, so every secret a
+        // configuration pulled from the environment was written to the debug
+        // log.
+        CROW_LOG_DEBUG << "Environment variable " << var_name << " substituted";
 
         // Store for logging (preserve existing behavior)
         resolved_variables_[var_name] = replacement;
@@ -711,6 +838,22 @@ std::string ExtendedYamlParser::substituteEnvironmentVariables(const std::string
             var_name,
             replacement
         });
+    }
+
+    // A `{{env.NAME}}` left as a literal is not harmless in a configuration:
+    // `password: '{{env.DB_PASSWORD}}'` would quietly become the password. For a
+    // real configuration, refuse - naming what to change - instead of guessing.
+    if (config_.error_on_unlisted_environment_variable && !unlisted.empty()) {
+        std::string names;
+        for (const auto& name : unlisted) {
+            names += (names.empty() ? "" : ", ") + name;
+        }
+        throw std::runtime_error(
+            std::string("environment variable") + (unlisted.size() > 1 ? "s " : " ") + names +
+            " referenced as {{env.NAME}} but not whitelisted. Add a pattern matching "
+            + (unlisted.size() > 1 ? "each" : "it") +
+            " to `template.environment-whitelist` in the main configuration file; "
+            "an empty or missing whitelist allows no variables.");
     }
 
     // ✅ FIX STEP 2: Process replacements in REVERSE order
@@ -733,15 +876,34 @@ bool ExtendedYamlParser::evaluateCondition(const std::string& condition) const {
     if (condition == "true") return true;
     if (condition == "false") return false;
 
+    // `env.NAME` reads the environment, so it obeys the same whitelist as
+    // `{{env.NAME}}` (#157). It only ever revealed whether a variable was set and
+    // non-empty, never its value - but it was the one place a configuration
+    // could still probe any variable it liked. A variable that is not allowed is
+    // an error where the whitelist is enforced (silently treating it as "unset"
+    // would quietly skip an include the operator asked for), and reads as unset
+    // where it is not.
+    auto read = [this, &condition](const std::string& var_name) -> const char* {
+        if (config_.isEnvironmentVariableAllowed(var_name)) {
+            return std::getenv(var_name.c_str());
+        }
+        if (config_.error_on_unlisted_environment_variable) {
+            throw std::runtime_error(
+                "environment variable " + var_name + " is read by the include condition '" +
+                condition + "' but is not whitelisted. Add a pattern matching it to "
+                "`template.environment-whitelist` in the main configuration file; "
+                "an empty or missing whitelist allows no variables.");
+        }
+        return nullptr;
+    };
+
     if (condition.find("env.") == 0) {
-        std::string var_name = condition.substr(4);
-        const char* env_value = std::getenv(var_name.c_str());
+        const char* env_value = read(condition.substr(4));
         return env_value != nullptr && std::string(env_value) != "";
     }
 
     if (condition.find("!env.") == 0) {
-        std::string var_name = condition.substr(5);
-        const char* env_value = std::getenv(var_name.c_str());
+        const char* env_value = read(condition.substr(5));
         return env_value == nullptr || std::string(env_value) == "";
     }
 

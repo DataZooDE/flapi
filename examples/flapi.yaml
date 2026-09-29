@@ -9,6 +9,13 @@ template:
   # Optional: List of regular expressions for whitelisting environment variables
   environment-whitelist:
     - '^FLAPI_.*'
+    # Variables the shipped endpoint files read through env references (see
+    # sqls/customers/customer-common.yaml). Anything not matched here stops
+    # startup - an empty or missing whitelist allows no variables.
+    - '^CUSTOMER_API_.*$'
+    - '^STAGING_API_.*$'
+    - '^API_(VERSION|PASSWORD)$'
+    - '^(ENVIRONMENT|INSTANCE_ID)$'
 
 # Database connection configurations
 connections:

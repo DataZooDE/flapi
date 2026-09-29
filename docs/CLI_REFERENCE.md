@@ -586,7 +586,7 @@ notarisation.
 
 **Configuration File Variables:**
 
-Environment variables can be used in configuration files via `${VAR_NAME}` syntax. Variables must be whitelisted in the configuration:
+Environment variables can be used in configuration files via `{{env.VAR_NAME}}` syntax. Variables must be whitelisted under `template:` in the main configuration; an unlisted variable stops startup, and an empty whitelist allows none:
 
 ```yaml
 template:

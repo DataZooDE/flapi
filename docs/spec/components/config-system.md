@@ -341,10 +341,12 @@ Environment variables in configuration are substituted at load time:
 connections:
   db:
     properties:
-      password: ${DB_PASSWORD}  # Replaced with env value
+      password: '{{env.DB_PASSWORD}}'  # Replaced with env value
 ```
 
-Variables must be whitelisted:
+Variables must be whitelisted, under `template:`. A variable that matches no pattern stops
+startup with an error naming it (never a silent literal), and an empty or missing whitelist
+allows none:
 ```yaml
 template:
   environment-whitelist:

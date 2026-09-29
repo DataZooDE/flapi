@@ -8,6 +8,13 @@ template:
   path: './sqls'
   environment-whitelist:
     - '^FLAPI_.*'
+    # Variables the shipped endpoint files read through env references (see
+    # sqls/customers/customer-common.yaml). Anything not matched here stops
+    # startup - an empty or missing whitelist allows no variables.
+    - '^CUSTOMER_API_.*$'
+    - '^STAGING_API_.*$'
+    - '^API_(VERSION|PASSWORD)$'
+    - '^(ENVIRONMENT|INSTANCE_ID)$'
 
 # Database connections (SAP ERPL and BigQuery excluded for test isolation)
 # BigQuery excluded: extension download (~50MB) blocks server startup in CI,
