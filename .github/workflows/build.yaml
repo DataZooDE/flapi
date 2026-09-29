@@ -149,7 +149,9 @@ jobs:
   # What gets pushed, and when:
   #   pull_request  build only - nothing is pushed
   #   push to main  :main and :sha-<commit>
-  #   v* tag        :latest, :<tag> and :sha-<commit>
+  #   v* tag        :sha-<commit> here; :latest and :<tag> are added later by
+  #                 docker-promote, only once the GitHub release and PyPI
+  #                 publish have succeeded
   # `:latest` is the latest RELEASE. It used to be pushed by every run, pull
   # requests included, so `docker run ghcr.io/datazoode/flapi` pulled whatever
   # PR had last run CI - unmerged, unreviewed code. Publishing also waits for
@@ -183,8 +185,6 @@ jobs:
       with:
         images: ghcr.io/${{ env.REPO_OWNER }}/flapi
         tags: |
-          type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-          type=ref,event=tag
           type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
           type=sha,format=long,enable=${{ github.event_name != 'pull_request' }}
 
@@ -1045,3 +1045,38 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
+  # -------------------------------------------------------------------------------------------------
+  # Docker: promote the released image to :latest and :<tag>
+  # -------------------------------------------------------------------------------------------------
+  # Runs only after the GitHub release AND the PyPI publish succeeded, so
+  # :latest can never point at a version that was not fully released. It adds
+  # tags to the image docker-build already pushed and the tests already
+  # covered - :sha-<commit> - rather than rebuilding, so what is tagged
+  # :latest is byte-for-byte what was tested.
+  docker-promote:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [docker-build, pypi-publish-flapi-io]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - name: Prepare
+      run: echo "REPO_OWNER=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Login to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Tag the released image as :latest and :<tag>
+      run: |
+        IMAGE="ghcr.io/${REPO_OWNER}/flapi"
+        docker buildx imagetools create \
+          --tag "${IMAGE}:latest" \
+          --tag "${IMAGE}:${GITHUB_REF_NAME}" \
+          "${IMAGE}:sha-${GITHUB_SHA}"
+        docker buildx imagetools inspect "${IMAGE}:latest"

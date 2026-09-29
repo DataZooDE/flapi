@@ -605,15 +605,22 @@ Sequence multiple tool calls for complex workflows:
 
 set -e  # Exit on error
 
+command -v jq >/dev/null || { echo "this script needs jq" >&2; exit 1; }
+
 # A tool failure arrives as a JSON-RPC `error` or a result with `isError: true`,
 # in a successful HTTP response - so curl exits 0 and `set -e` alone would
-# never stop the script. Check each response and fail on either.
+# never stop the script. Fail closed: a response that is not a JSON object
+# (empty, truncated, an HTML error page) is a failure too, not "no error".
 mcp() {
   local resp
   resp=$(curl -s -X POST http://localhost:8080/mcp/jsonrpc \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer $TOKEN" \
     -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":$1}")
+  if ! echo "$resp" | jq -e 'type == "object"' >/dev/null 2>&1; then
+    echo "MCP call returned no valid JSON-RPC response: ${resp:-<empty>}" >&2
+    exit 1
+  fi
   if echo "$resp" | jq -e '.error or .result.isError' >/dev/null; then
     echo "MCP call failed: $resp" >&2
     exit 1
