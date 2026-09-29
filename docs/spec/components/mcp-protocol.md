@@ -347,7 +347,6 @@ struct MCPSession {
 ```yaml
 mcp:
   enabled: true
-  port: 8081
   auth:
     enabled: true
     type: bearer           # or "basic", "oidc"
@@ -403,7 +402,6 @@ ClientCapabilities detectCapabilities(const crow::json::wvalue& init_params) {
 # flapi.yaml
 mcp:
   enabled: true
-  port: 8081
   instructions: |
     This MCP server provides access to customer data.
     Use the get_customers tool to query the database.

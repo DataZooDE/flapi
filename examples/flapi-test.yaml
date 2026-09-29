@@ -57,8 +57,5 @@ ducklake:
     enabled: false  # Disabled for tests
 
 mcp:
-  enabled: true
-  port: 8081
-  host: localhost
-  allow-list-changed-notifications: true
+  enabled: true   # served on the HTTP port, at /mcp/jsonrpc
   instructions-file: ./mcp_instructions.md

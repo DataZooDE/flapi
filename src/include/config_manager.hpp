@@ -436,17 +436,6 @@ enum class EndpointJsonStyle {
     CamelCase
 };
 
-struct MCPServerConfig {
-    bool enabled = false;
-    std::string server_name = "flapi-mcp-server";
-    std::string server_version = "0.1.0";
-    std::string protocol_version = "2024-11-05";
-    std::vector<std::string> capabilities = {"tools", "resources", "prompts"};
-    bool stdio_transport = false; // Use HTTP transport by default
-    int mcp_port = 8081; // Different port from REST API
-    std::string mcp_base_path = "/mcp";
-};
-
 struct MCPMethodAuthConfig {
     bool required = true;
 };
@@ -470,7 +459,6 @@ struct MCPAuthConfig {
 
 struct MCPConfig {
     bool enabled = true;
-    int port = 8081;
     MCPAuthConfig auth;
     std::string instructions;           // Inline instructions content
     std::string instructions_file;      // Path to markdown file (optional)

@@ -151,10 +151,7 @@ MCP is enabled in `flapi.yaml` under the `mcp` section:
 ```yaml
 # flapi.yaml
 mcp:
-  enabled: true
-  port: 8080                              # Same port as REST (shared)
-  host: localhost
-  allow-list-changed-notifications: true
+  enabled: true                           # served on the HTTP port, with REST
 
   # Instructions for LLM clients (optional)
   instructions-file: ./mcp_instructions.md
@@ -167,11 +164,15 @@ mcp:
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `enabled` | boolean | `true` | Enable/disable MCP server |
-| `port` | integer | `8080` | HTTP port (shared with REST) |
-| `host` | string | `localhost` | Bind address |
-| `allow-list-changed-notifications` | boolean | `true` | Enable listChanged capability |
 | `instructions-file` | string | - | Path to instructions markdown file |
 | `instructions` | string | - | Inline instructions for LLM clients |
+
+> MCP has no port or host of its own: it shares the HTTP server's port and host
+> (`http-port`, `-p/--port`/`FLAPI_PORT`, `--host`/`FLAPI_HOST`). `listChanged` is
+> always advertised as `false` — flAPI has no server-to-client notification
+> transport. The keys `mcp.port`, `mcp.host` and
+> `mcp.allow-list-changed-notifications` never took effect; flAPI now warns when
+> any of them is set.
 
 #### Configuration Tools Availability
 
@@ -1770,9 +1771,6 @@ duckdb:
 # MCP configuration
 mcp:
   enabled: true
-  port: 8080
-  host: 0.0.0.0
-  allow-list-changed-notifications: true
 
   # Instructions for LLM clients
   instructions: |
