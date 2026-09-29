@@ -181,12 +181,19 @@ The main configuration file defines global settings, connections, and server beh
 | `project-description` | string | - | Project description |
 | `server-name` | string | `"localhost"` | Server hostname for generated URLs |
 | `http-port` | integer | `8080` | HTTP server port (overridable via `--port` / `FLAPI_PORT`) |
-| `log-level` | string | `info` | Log verbosity: `debug`, `info`, `warning`, `error`. Overridable via `--log-level` / `FLAPI_LOG_LEVEL`. **Top-level key — a `server:` block is not parsed.** |
+| `log-level` | string | `info` | Log verbosity: `debug`, `info`, `warning`, `error`. Overridable via `--log-level` / `FLAPI_LOG_LEVEL`. |
 | `tracing` | map | disabled | OpenTelemetry tracing. Off by default; see [OBSERVABILITY.md](OBSERVABILITY.md). |
 | `log-format` | string | `text` | `text` for human-readable lines, `json` for one JSON object per line. Both carry `request_id` (and `trace_id` once tracing is enabled) for lines emitted while serving a request. |
 | `stall-timeout-s` | int | `60` | Readiness (`GET /health`) returns `503` when a request has been in flight longer than this. `0` disables it. Guards against a backend that stops answering without failing — a wedged connection leaves the process, DuckDB and every other connection healthy, so a `SELECT 1` probe passes while the endpoint is dead. Raise it if you serve deliberately long synchronous queries; the usual answer to those is the MCP Tasks extension. |
 | `http-host` | string | `"0.0.0.0"` | Bind address (overridable via `--host` / `FLAPI_HOST`); use `127.0.0.1` to restrict to loopback |
 
+
+> **There is no `server:` block.** The HTTP server is configured by the
+> top-level `http-port` and `http-host` keys (or `-p/--port`, `--host`,
+> `FLAPI_PORT`, `FLAPI_HOST`). A config that contains `server:` — in any form —
+> is rejected at startup with an error naming those keys. Earlier examples used
+> `server: {port, host}`; nothing ever read it, so the port silently stayed at
+> 8080.
 
 > **How many connections flAPI serves in parallel.** flAPI runs a request
 > handler on the server thread that owns its connection, and uses

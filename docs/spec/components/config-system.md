@@ -213,8 +213,7 @@ sequenceDiagram
 
 ```yaml
 project-name: my-project
-server:
-  port: 8080
+http-port: 8080                 # top-level; there is no `server:` block
 connections:
   my-data:
     properties:

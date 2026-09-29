@@ -4,6 +4,37 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Changed: a `server:` block is now an error, not silently ignored
+
+flAPI has no `server:` block. Setting the port or host under one —
+
+```yaml
+server:
+  port: 9000
+  host: 127.0.0.1
+```
+
+— never did anything: the server stayed on port 8080, bound to `0.0.0.0`, with no message. The
+block appeared in the configuration docs and in the BigQuery-procedure example, so it was easy to
+copy. Because a wrong port sends traffic to the wrong place, flAPI now **refuses to start** with a
+config that contains a `server:` block (in any form, including an empty one), and says what to use:
+
+```
+flAPI has no `server:` block; it was never read, so anything set under it had no effect.
+Configure the HTTP server with the top-level `http-port` and `http-host` keys, or with
+--port/-p and --host, or the FLAPI_PORT and FLAPI_HOST environment variables.
+```
+
+**If your config has a `server:` block, replace it before upgrading:**
+
+```yaml
+http-port: 9000
+http-host: 127.0.0.1
+```
+
+`flapi --validate-config` reports it too, so a CI check catches it before a deploy. Nothing that was
+working can be affected: no value under `server:` has ever had any effect.
+
 ### Fixed: three `mcp.*` settings did nothing, and now say so
 
 `mcp.port`, `mcp.host` and `mcp.allow-list-changed-notifications` were documented but never took

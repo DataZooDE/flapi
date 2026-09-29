@@ -109,8 +109,28 @@ void ConfigManager::parseMainConfig() {
         server_name = safeGet<std::string>(config, "server-name", "server-name", "localhost");
         http_port = safeGet<int>(config, "http-port", "http-port", 8080);
         http_host = safeGet<std::string>(config, "http-host", "http-host", "0.0.0.0");
-        // Top-level and kebab-case, matching http-port / http-host. The `server:`
-        // block that three example files used was never parsed by anything.
+        // flAPI has no `server:` block, and refusing one is deliberate (#153).
+        // `server: {port, host}` appeared in the config-system spec and in a
+        // shipped example, and NOTHING ever read it: an operator who set
+        // `server.port: 9000` got a server on 8080 and no explanation. A bind
+        // port is the setting where "silently ignored" does the most damage -
+        // traffic goes to the wrong place - and no value of `server:` has ever
+        // done anything, so rejecting it cannot break a working configuration.
+        // Unlike the dead mcp.* keys (#151), which only warn: those are inert
+        // metadata, this one misdirects traffic.
+        //
+        // Presence, not shape: `server: true` and an empty `server:` are as
+        // wrong as `server: {port: 9000}`, and one message serves all of them.
+        if (config["server"]) {
+            throw ConfigurationError(
+                "flAPI has no `server:` block; it was never read, so anything set "
+                "under it had no effect. Configure the HTTP server with the "
+                "top-level `http-port` and `http-host` keys, or with "
+                "--port/-p and --host, or the FLAPI_PORT and FLAPI_HOST "
+                "environment variables.",
+                "server");
+        }
+        // Top-level and kebab-case, matching http-port / http-host.
         log_level = safeGet<std::string>(config, "log-level", "log-level", "info");
         stall_timeout_s = safeGet<int>(config, "stall-timeout-s", "stall-timeout-s", 60);
         if (stall_timeout_s < 0) {
