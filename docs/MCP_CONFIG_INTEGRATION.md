@@ -617,12 +617,12 @@ mcp() {
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer $TOKEN" \
     -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":$1}")
-  if ! echo "$resp" | jq -e 'type == "object"' >/dev/null 2>&1; then
-    echo "MCP call returned no valid JSON-RPC response: ${resp:-<empty>}" >&2
-    exit 1
-  fi
-  if echo "$resp" | jq -e '.error or .result.isError' >/dev/null; then
-    echo "MCP call failed: $resp" >&2
+  # Succeed only on a positive shape: a JSON object with a `result` object,
+  # no `error`, and no `isError: true`. Anything else - empty, not JSON, an
+  # error, or an object with no result at all - stops the script.
+  if ! echo "$resp" | jq -e 'type == "object" and .error == null
+        and (.result | type == "object") and .result.isError != true' >/dev/null 2>&1; then
+    echo "MCP call failed: ${resp:-<empty response>}" >&2
     exit 1
   fi
   echo "$resp"

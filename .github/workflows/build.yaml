@@ -159,6 +159,12 @@ jobs:
   docker-build:
     needs: [linux-build, integration-tests, smoke-test-linux-amd64, smoke-test-linux-arm64, pack-smoke-linux-amd64, pack-smoke-linux-arm64]
     runs-on: ubuntu-24.04
+    # The digest THIS run pushed. docker-promote tags it, not :sha-<commit>:
+    # a main run and a tag run for the same commit both write that tag, and
+    # the tag build stamps the release version into the binary - so promoting
+    # by tag could publish main's build as the release.
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
     - uses: actions/checkout@v4
 
@@ -201,6 +207,7 @@ jobs:
         chmod +x binaries/amd64/flapi binaries/arm64/flapi
 
     - name: Build and push multi-arch image
+      id: build
       uses: docker/build-push-action@v6
       with:
         context: .
@@ -1058,6 +1065,11 @@ jobs:
     needs: [docker-build, pypi-publish-flapi-io]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # One promotion at a time, never cancelled: two release runs must not
+    # interleave their tag updates.
+    concurrency:
+      group: docker-promote
+      cancel-in-progress: false
     steps:
     - name: Prepare
       run: echo "REPO_OWNER=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
@@ -1072,11 +1084,26 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Tag the released image as :latest and :<tag>
+    - name: Tag the released image as :<tag>, and :latest if it is the newest release
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        DIGEST: ${{ needs.docker-build.outputs.digest }}
       run: |
+        set -euo pipefail
         IMAGE="ghcr.io/${REPO_OWNER}/flapi"
-        docker buildx imagetools create \
-          --tag "${IMAGE}:latest" \
-          --tag "${IMAGE}:${GITHUB_REF_NAME}" \
-          "${IMAGE}:sha-${GITHUB_SHA}"
-        docker buildx imagetools inspect "${IMAGE}:latest"
+        test -n "${DIGEST}" || { echo "docker-build reported no digest" >&2; exit 1; }
+
+        TAGS=(--tag "${IMAGE}:${GITHUB_REF_NAME}")
+        # Only the newest release may take :latest. An older release that
+        # finishes late - a slow approval, a re-run - must not move it back.
+        NEWEST=$(gh release list --repo "${GITHUB_REPOSITORY}" --exclude-drafts \
+                   --exclude-pre-releases --limit 100 --json tagName --jq '.[].tagName' \
+                 | sort -V | tail -1)
+        if [ "${NEWEST}" = "${GITHUB_REF_NAME}" ]; then
+          TAGS+=(--tag "${IMAGE}:latest")
+        else
+          echo "::warning::${GITHUB_REF_NAME} is not the newest release (${NEWEST}); :latest left alone"
+        fi
+
+        docker buildx imagetools create "${TAGS[@]}" "${IMAGE}@${DIGEST}"
+        docker buildx imagetools inspect "${IMAGE}:${GITHUB_REF_NAME}"
