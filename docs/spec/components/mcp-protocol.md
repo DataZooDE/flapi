@@ -151,9 +151,9 @@ Protocol handshake and capability negotiation:
   "result": {
     "protocolVersion": "2024-11-05",
     "capabilities": {
-      "tools": { "listChanged": true },
-      "resources": { "listChanged": true },
-      "prompts": { "listChanged": true }
+      "tools": { "listChanged": false },
+      "resources": { "listChanged": false },
+      "prompts": { "listChanged": false }
     },
     "serverInfo": {
       "name": "flapi-mcp-server",

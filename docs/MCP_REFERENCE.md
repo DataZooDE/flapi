@@ -228,9 +228,9 @@ curl -X POST http://localhost:8080/mcp/jsonrpc \
   "result": {
     "protocolVersion": "2025-11-25",
     "capabilities": {
-      "tools": { "listChanged": true },
-      "resources": { "subscribe": false, "listChanged": true },
-      "prompts": { "listChanged": true },
+      "tools": { "listChanged": false },
+      "resources": { "subscribe": false, "listChanged": false },
+      "prompts": { "listChanged": false },
       "logging": {}
     },
     "serverInfo": {
@@ -415,9 +415,9 @@ Establishes a new MCP session and negotiates capabilities.
   "result": {
     "protocolVersion": "2025-11-25",
     "capabilities": {
-      "tools": { "listChanged": true },
-      "resources": { "subscribe": false, "listChanged": true },
-      "prompts": { "listChanged": true },
+      "tools": { "listChanged": false },
+      "resources": { "subscribe": false, "listChanged": false },
+      "prompts": { "listChanged": false },
       "logging": {}
     },
     "serverInfo": {

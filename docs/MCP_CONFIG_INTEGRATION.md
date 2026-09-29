@@ -538,7 +538,7 @@ MCP clients can discover tools and build UIs automatically:
 
 ```python
 # Python MCP Client
-client = MCPClient("http://localhost:8081")
+client = MCPClient("http://localhost:8080/mcp/jsonrpc")  # same port as REST
 tools = client.list_tools()
 
 for tool in tools:
@@ -593,24 +593,33 @@ Sequence multiple tool calls for complex workflows:
 
 ```bash
 #!/bin/bash
-# Create endpoint, set template, enable cache, reload
+# Create endpoint, set template, reload.
+#
+# MCP is JSON-RPC 2.0 at POST /mcp/jsonrpc on the HTTP port - there is no
+# /mcp/tools/call route and no separate MCP port. Each call wraps the tool in
+# a tools/call envelope.
+#
+# NOTE: as of v26.09.26 this workflow fails at step 2 - flapi_create_endpoint
+# keeps the endpoint in memory with no template source, so update_template and
+# reload have nothing to write to or read. Tracked in #155.
 
 set -e  # Exit on error
 
+mcp() {
+  curl -s -X POST http://localhost:8080/mcp/jsonrpc \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $TOKEN" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":$1}"
+}
+
 # 1. Create endpoint
-curl -X POST http://localhost:8081/mcp/tools/call \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{"name": "flapi_create_endpoint", "arguments": {"path": "orders", "method": "GET"}}'
+mcp '{"name":"flapi_create_endpoint","arguments":{"path":"orders","method":"GET"}}'
 
 # 2. Update template
-curl -X POST http://localhost:8081/mcp/tools/call \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{"name": "flapi_update_template", "arguments": {"endpoint": "orders", "content": "SELECT * FROM orders"}}'
+mcp '{"name":"flapi_update_template","arguments":{"endpoint":"orders","content":"SELECT * FROM orders"}}'
 
 # 3. Reload endpoint
-curl -X POST http://localhost:8081/mcp/tools/call \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{"name": "flapi_reload_endpoint", "arguments": {"path": "orders"}}'
+mcp '{"name":"flapi_reload_endpoint","arguments":{"path":"orders"}}'
 
 echo "Endpoint created and configured"
 ```
