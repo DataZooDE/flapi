@@ -629,6 +629,11 @@ int main(int argc, char* argv[])
               "Result is ad-hoc signed and NOT notarisable.")
         .default_value(false)
         .implicit_value(true);
+    pack_cmd.add_argument("--skip-validation")
+        .help("Pack without validating the config first. A bundle built from an "
+              "invalid config fails at startup on every host it is copied to.")
+        .default_value(false)
+        .implicit_value(true);
     program.add_subparser(pack_cmd);
 
     argparse::ArgumentParser info_cmd("info");
@@ -664,6 +669,36 @@ int main(int argc, char* argv[])
                 : MacOSPackMode::kReservedSegment;
             const auto in_dir = pack_cmd.get<std::string>("--in");
             const auto out_path = pack_cmd.get<std::string>("--out");
+            if (!pack_cmd.get<bool>("--skip-validation")) {
+                // Refuse before anything is written: a bundle of a broken config
+                // is only discovered at startup, on the deploy target (#162).
+                std::filesystem::path main_config;
+                for (const char* name : {"flapi.yaml", "flapi.yml"}) {
+                    auto candidate = std::filesystem::path(in_dir) / name;
+                    if (std::filesystem::exists(candidate)) {
+                        main_config = candidate;
+                        break;
+                    }
+                }
+                if (main_config.empty()) {
+                    std::cerr << "flapi pack: warning: no flapi.yaml in " << in_dir
+                              << "; the bundle will have no main config\n";
+                } else {
+                    int rc = 0;
+                    try {
+                        auto cm = initializeConfig(main_config.string());
+                        rc = validateConfiguration(cm, main_config.string());
+                    } catch (const std::exception& e) {
+                        std::cerr << "✗ " << e.what() << "\n";
+                        rc = 1;
+                    }
+                    if (rc != 0) {
+                        std::cerr << "flapi pack: refusing to pack an invalid configuration "
+                                     "(fix it, or pass --skip-validation)\n";
+                        return 1;
+                    }
+                }
+            }
             const auto result = Pack(in_dir, out_path, opts);
             std::cout << "Packed " << result.entry_count
                       << " entries (" << result.archive_size

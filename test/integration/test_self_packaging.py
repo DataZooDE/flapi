@@ -52,6 +52,7 @@ def _write_fixture_tree(root: pathlib.Path) -> None:
 
     (root / "flapi.yaml").write_text(
         "project-name: self-packaging-roundtrip\n"
+        "project-description: fixture\n"
         "template:\n"
         "  path: ./sqls\n"
         "connections:\n"

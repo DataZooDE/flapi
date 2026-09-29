@@ -471,7 +471,7 @@ for the architectural rationale.
 ### `flapi pack` -- create a self-contained binary
 
 ```
-flapi pack --in <config-dir> --out <new-binary> [--allow-secrets] [--macos-append]
+flapi pack --in <config-dir> --out <new-binary> [--allow-secrets] [--macos-append] [--skip-validation]
 ```
 
 | Option | Required | Description |
@@ -479,6 +479,7 @@ flapi pack --in <config-dir> --out <new-binary> [--allow-secrets] [--macos-appen
 | `--in` | yes | Directory containing `flapi.yaml` and friends. Walked recursively. |
 | `--out` | yes | Path for the bundled output binary. Overwritten if it exists. |
 | `--allow-secrets` | no | Bypass the default secret deny list. Testing only -- production users must never set this. |
+| `--skip-validation` | no | Skip the config validation `pack` otherwise runs first (the same checks as `--validate-config`). Without it, an invalid `<in>/flapi.yaml` is refused and no output file is written. |
 | `--macos-append` | no | macOS only: append the archive after `__LINKEDIT` instead of overwriting the reserved `__FLAPI/__bundle` segment. **Not notarisable.** |
 
 **Default secret deny list** (refusal with non-zero exit, unless
