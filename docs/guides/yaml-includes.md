@@ -30,8 +30,10 @@ includes.
   files and included files — and to `env.NAME` include conditions (below).
 - `environment-whitelist` belongs under `template:`. A top-level
   `environment-whitelist:` is never read, so flAPI rejects it at startup.
+- The whitelist must be in the root config file itself, not in a file it includes.
 - A comment can mention a variable: `{{env.X}}` on a line that is only a comment is
-  ignored. A comment after a value (`key: v # see {{env.X}}`) is still checked.
+  ignored. A comment after a value (`key: v # see {{env.X}}`) is still checked, and so is
+  a `#` line inside a block scalar (`key: |`), which is text rather than a comment.
 
 Examples:
 ```yaml

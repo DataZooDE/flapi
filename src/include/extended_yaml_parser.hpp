@@ -104,6 +104,20 @@ public:
      */
     void setEnvironmentPolicy(std::vector<std::string> whitelist, bool error_on_unlisted);
 
+    /**
+     * @brief Load a file's YAML WITHOUT resolving anything.
+     *
+     * For reading the environment whitelist out of the main configuration before
+     * that file's own `{{env.NAME}}` references may be substituted. Each reference
+     * becomes an inert scalar and each include directive is dropped, so a file that
+     * is only valid YAML AFTER substitution - `{{env.DIR}}/sqls`, an env variable
+     * inside an include path - still yields its whitelist. Included files are not
+     * read: the whitelist must be in the main file itself.
+     *
+     * @throws if the file cannot be read or is not YAML even after that
+     */
+    static YAML::Node loadWithoutResolving(const std::filesystem::path& file_path);
+
         /**
          * @brief Preprocess content to handle include directives before YAML parsing
          *

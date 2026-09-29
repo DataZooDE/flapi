@@ -255,7 +255,11 @@ template:
   variable is simply not available.
 - A **top-level** `environment-whitelist:` is never read and is rejected at startup; it must be
   under `template:`.
+- The whitelist must be in the **main configuration file itself**, not in a file it includes: it is
+  read before anything is substituted or included.
 - A full-line comment can mention `{{env.NAME}}` freely; a comment after a value is still checked.
+  A line starting with `#` *inside* a block scalar (`key: |`) is text, not a comment, so a variable
+  on it is substituted or refused like any other.
 - The `path` is relative to the main configuration file location.
 - `${NAME}` is **not** a supported syntax; write `{{env.NAME}}`.
 

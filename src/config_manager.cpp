@@ -121,15 +121,20 @@ void ConfigManager::loadConfig() {
 void ConfigManager::applyEnvironmentPolicy() {
     std::vector<std::string> whitelist;
 
-    ExtendedYamlParser::IncludeConfig probe_config;
-    probe_config.allow_environment_variables = false;
-    ExtendedYamlParser probe_parser(probe_config);
-    const auto probed = probe_parser.parseFile(config_file);
+    // Read from the RAW text, not through the parser that resolves things. A
+    // config is often not valid YAML until its `{{env.NAME}}` references are
+    // substituted (`{{env.DIR}}/sqls`, an env variable in an include path), and a
+    // probe that needed valid YAML lost the whitelist for exactly those files -
+    // then the real parse rejected variables that WERE listed.
+    YAML::Node root;
+    try {
+        root = ExtendedYamlParser::loadWithoutResolving(config_file);
+    } catch (const std::exception&) {
+        // A file that is not YAML even so is not diagnosed here: the real parse
+        // that follows reports it, in the ordinary way, under an empty whitelist.
+    }
 
-    // A file that does not parse is not diagnosed here: the real parse that
-    // follows reports it, in the ordinary way. It runs with an empty whitelist.
-    if (probed.success && probed.node.IsMap()) {
-        const YAML::Node& root = probed.node;
+    if (root && root.IsMap()) {
 
         // `environment-whitelist:` at the TOP level is read by nothing. The shipped
         // S3/GCS/Azure examples had one, so anyone copying them believed

@@ -313,6 +313,72 @@ TEST_CASE_METHOD(ExtendedYamlTestFixture, "ExtendedYamlParser: include condition
     unsetenv("COND_SECRET_FLAG");
 }
 
+// A line starting with `#` INSIDE a block scalar is content (a Markdown heading in a
+// prompt), not a comment. Treating it as a comment left a literal {{env.X}} behind,
+// silently - the failure the whitelist enforcement exists to prevent.
+TEST_CASE("ExtendedYamlParser: a # line inside a block scalar is content", "[extended_yaml_parser][env-whitelist]") {
+    setenv("BS_TITLE", "Quarterly", 1);
+    ExtendedYamlParser::IncludeConfig config;
+    config.environment_whitelist = {"BS_TITLE"};
+    config.error_on_unlisted_environment_variable = true;
+    ExtendedYamlParser parser(config);
+
+    SECTION("literal block: the whitelisted variable is substituted") {
+        auto result = parser.parseString(
+            "prompt: |\n"
+            "  Intro.\n"
+            "  # Report for {{env.BS_TITLE}}\n"
+            "  Outro.\n"
+            "after: x\n", "/tmp");
+        REQUIRE(result.success);
+        REQUIRE(result.node["prompt"].Scalar().find("# Report for Quarterly") != std::string::npos);
+    }
+
+    SECTION("folded block, with a chomping indicator") {
+        auto result = parser.parseString(
+            "prompt: >-\n"
+            "  # Report for {{env.BS_TITLE}}\n", "/tmp");
+        REQUIRE(result.success);
+        REQUIRE(result.node["prompt"].Scalar().find("Quarterly") != std::string::npos);
+    }
+
+    SECTION("a block scalar as a sequence item") {
+        auto result = parser.parseString(
+            "items:\n"
+            "  - |\n"
+            "    # Report for {{env.BS_TITLE}}\n", "/tmp");
+        REQUIRE(result.success);
+        REQUIRE(result.node["items"][0].Scalar().find("Quarterly") != std::string::npos);
+    }
+
+    SECTION("an UNLISTED variable on such a line is refused, not skipped") {
+        auto result = parser.parseString(
+            "prompt: |\n"
+            "  # Report for {{env.BS_OTHER}}\n", "/tmp");
+        REQUIRE_FALSE(result.success);
+        REQUIRE(result.error_message.find("BS_OTHER") != std::string::npos);
+    }
+
+    SECTION("once the block ends, a # line is a comment again") {
+        auto result = parser.parseString(
+            "prompt: |\n"
+            "  text\n"
+            "# a comment about {{env.BS_OTHER}}\n"
+            "next: 1\n", "/tmp");
+        REQUIRE(result.success);
+        REQUIRE(result.node["next"].as<int>() == 1);
+    }
+
+    SECTION("a comment INSIDE a mapping between keys is still a comment") {
+        auto result = parser.parseString(
+            "a: 1\n"
+            "  # indented comment about {{env.BS_OTHER}}\n"
+            "b: 2\n", "/tmp");
+        REQUIRE(result.success);
+    }
+    unsetenv("BS_TITLE");
+}
+
 TEST_CASE("ExtendedYamlParser: a full-line comment can mention a variable", "[extended_yaml_parser][env-whitelist]") {
     ExtendedYamlParser::IncludeConfig config;
     config.error_on_unlisted_environment_variable = true;   // and nothing is whitelisted

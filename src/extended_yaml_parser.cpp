@@ -64,6 +64,23 @@ ExtendedYamlParser::ExtendedYamlParser() : config_() {
     CROW_LOG_DEBUG << "ExtendedYamlParser default constructor called, environment variables allowed: " << config_.allow_environment_variables;
 }
 
+YAML::Node ExtendedYamlParser::loadWithoutResolving(const std::filesystem::path& file_path) {
+    std::string content = ReadConfigFile(file_path);
+
+    // Each `{{env.NAME}}` becomes an inert scalar. Done FIRST, so an include
+    // directive that carries one in its path (`{{include from {{env.DIR}}/x}}`)
+    // has no nested braces left when the directives are dropped next.
+    static const std::regex env_ref(R"(\{\{env\.([A-Za-z_][A-Za-z0-9_]*)\}\})");
+    content = std::regex_replace(content, env_ref, "ENVREF_$1");
+
+    // Include directives are not YAML until they are expanded, and expanding
+    // them needs the very variables being decided about.
+    static const std::regex include_directive(R"(\{\{include[^}]*\}\})");
+    content = std::regex_replace(content, include_directive, "");
+
+    return YAML::Load(content);
+}
+
 void ExtendedYamlParser::setEnvironmentPolicy(std::vector<std::string> whitelist,
                                               bool error_on_unlisted) {
     config_.environment_whitelist = std::move(whitelist);
@@ -661,15 +678,79 @@ YAML::Node ExtendedYamlParser::mergeNodes(const YAML::Node& target, const YAML::
 }
 
 namespace {
-// True when `pos` lies on a line whose first non-blank character is '#'.
-bool isInFullLineComment(const std::string& text, size_t pos) {
-    const size_t line_start = text.rfind('\n', pos == 0 ? 0 : pos - 1);
-    size_t i = (line_start == std::string::npos) ? 0 : line_start + 1;
-    while (i < pos && (text[i] == ' ' || text[i] == '\t')) {
-        ++i;
+
+// Which lines of a YAML text are full-line COMMENTS.
+//
+// "The first non-blank character is '#'" is not enough: inside a block scalar
+// (`key: |`, `key: >-`, `- |`) a line starting with '#' is CONTENT - a Markdown
+// heading in an MCP prompt, say - and a variable on it must be substituted or
+// refused like any other. Treating it as a comment left a literal {{env.X}} in
+// the text with no error, which is the silent failure the whitelist enforcement
+// exists to prevent.
+//
+// A block scalar runs from the line after its header to the last line that is
+// blank or indented deeper than the header. Where that is ambiguous this errs
+// toward "content": the only cost is enforcing a variable in something that was
+// a comment, which fails loudly and is easy to fix.
+class CommentMask {
+public:
+    explicit CommentMask(const std::string& text) {
+        static const std::regex block_header(R"((?:^|[:\-])\s*[|>][+\-0-9]*\s*(?:#.*)?$)");
+        bool in_block = false;
+        size_t block_indent = 0;
+        size_t pos = 0;
+        for (;;) {
+            const size_t eol = text.find('\n', pos);
+            const size_t end = (eol == std::string::npos) ? text.size() : eol;
+            std::string line = text.substr(pos, end - pos);
+            if (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+            }
+            starts_.push_back(pos);
+
+            const size_t first = line.find_first_not_of(" \t");
+            const bool blank = (first == std::string::npos);
+            const size_t indent = blank ? line.size() : first;
+
+            bool comment = false;
+            bool handled = false;
+            if (in_block) {
+                if (blank || indent > block_indent) {
+                    handled = true;               // block scalar content
+                } else {
+                    in_block = false;             // the block ended; this line is ordinary
+                }
+            }
+            if (!handled && !blank) {
+                if (line[indent] == '#') {
+                    comment = true;
+                } else if (line.find_first_of("|>") != std::string::npos &&
+                           std::regex_search(line.substr(indent), block_header)) {
+                    in_block = true;
+                    block_indent = indent;
+                }
+            }
+            comment_.push_back(comment);
+
+            if (eol == std::string::npos) {
+                break;
+            }
+            pos = eol + 1;
+        }
     }
-    return i < pos && text[i] == '#';
-}
+
+    // True when `pos` lies on a full-line comment.
+    bool inComment(size_t pos) const {
+        const auto it = std::upper_bound(starts_.begin(), starts_.end(), pos);
+        const size_t line = static_cast<size_t>(it - starts_.begin()) - 1;
+        return comment_[line];
+    }
+
+private:
+    std::vector<size_t> starts_;
+    std::vector<bool> comment_;
+};
+
 }  // namespace
 
 std::string ExtendedYamlParser::substituteEnvironmentVariables(const std::string& input) const {
@@ -707,6 +788,9 @@ std::string ExtendedYamlParser::substituteEnvironmentVariables(const std::string
     // order, so ONE error names all of them.
     std::vector<std::string> unlisted;
 
+    // Built once per input, not once per match.
+    const CommentMask comments(result);
+
     // Recreate iterator (previous one was consumed by std::distance)
     matches_begin = std::sregex_iterator(result.begin(), result.end(), env_regex);
 
@@ -720,7 +804,7 @@ std::string ExtendedYamlParser::substituteEnvironmentVariables(const std::string
         // secret into text nothing will read. (A trailing comment, `key: v # {{env.X}}`,
         // is not skipped: telling it from a `#` inside a quoted value takes a
         // real tokenizer, and failing loudly is the safe way to be wrong.)
-        if (isInFullLineComment(result, static_cast<size_t>(it->position()))) {
+        if (comments.inComment(static_cast<size_t>(it->position()))) {
             CROW_LOG_DEBUG << "Skipping environment variable in a comment: " << var_name;
             continue;
         }

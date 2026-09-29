@@ -39,11 +39,14 @@ match the whole variable name (`^DB_` alone would match only a variable called `
 case-insensitive.
 
 A full-line comment can mention `{{env.NAME}}` without being checked. A comment after a value
-(`key: value # see {{env.X}}`) is still checked, so word those without the braces.
+(`key: value # see {{env.X}}`) is still checked, so word those without the braces, and so is a `#` line
+inside a block scalar (`key: |`), which is text rather than a comment. The whitelist itself must be in the
+main config file, not in a file it includes.
 
 Also corrected: the `${NAME}` shell form, which several docs and the Azure example used, was never
-supported — it is left as literal text. The Azure example now uses `{{env.NAME}}`. And flAPI no longer
-writes the *value* of each substituted variable to the debug log, only its name.
+supported — it is left as literal text. The Azure example now uses `{{env.NAME}}`. And the step that
+substitutes variables no longer writes each variable's *value* to the debug log, only its name. (A value can
+still appear if you put a secret into a field flAPI itself logs, such as `project-name`.)
 
 ### Changed: a `server:` block is now an error, not silently ignored
 

@@ -109,6 +109,131 @@ class TestUnlistedVariablesStopStartup:
             "fixing one at a time is a bad experience\n" + out[-2000:])
 
 
+class TestTheWhitelistIsReadBeforeTheFileIsValidYaml:
+    """The whitelist lives in the file being substituted, so it is read from the
+    RAW text. A config that is not valid YAML until its `{{env.X}}` references
+    are substituted - a bare reference with trailing text, an env variable inside
+    an include path - must still find its whitelist. Found by a Codex review: the
+    first version probed with YAML::Load, failed on such files, ran the real parse
+    with an EMPTY whitelist, and rejected variables that WERE listed."""
+
+    def test_a_bare_reference_with_trailing_text_and_a_listed_variable(self):
+        code, out = _validate(main_extra="tags:\n  - {{env.FLAPI_PROBE_SECRET}}-x\n",
+                              template_extra=_wl("FLAPI_PROBE_SECRET"))
+        assert code == 0, (
+            "a listed variable was rejected because the file is not valid YAML "
+            "before substitution\n" + out[-2000:])
+
+    def test_a_sequence_item_that_is_a_bare_reference(self):
+        code, out = _validate(main_extra="tags:\n  - {{env.FLAPI_PROBE_SECRET}}\n",
+                              template_extra=_wl("FLAPI_PROBE_SECRET"))
+        assert code == 0, out
+
+    def test_an_env_variable_inside_an_include_path(self):
+        tmp = tempfile.mkdtemp(prefix="flapi_envwl_inc_")
+        os.makedirs(os.path.join(tmp, "sqls"))
+        os.makedirs(os.path.join(tmp, "common"))
+        _write(tmp, "common/settings.yaml", "extra:\n  key: 1\n")
+        cfg = _write(tmp, "flapi.yaml",
+                     "project-name: p\nproject-description: include path probe\n"
+                     "{{include from {{env.FLAPI_PROBE_DIR}}/settings.yaml}}\n"
+                     "template:\n  path: ./sqls\n" + _wl("FLAPI_PROBE_DIR") +
+                     "connections:\n  inmem:\n    properties:\n      database: ':memory:'\n")
+        env = {**os.environ, "FLAPI_PROBE_DIR": "common", "DATAZOO_DISABLE_TELEMETRY": "1"}
+        r = subprocess.run([flapi_binary(), "-c", cfg, "--validate-config"],
+                           capture_output=True, text=True, cwd=tmp, env=env, timeout=60)
+        assert r.returncode == 0, (
+            "a whitelisted variable in an include path was rejected\n"
+            + (r.stdout + r.stderr)[-2000:])
+
+    def test_the_unlisted_variable_in_such_a_file_is_still_refused(self):
+        # The fence: fixing the probe must not have loosened enforcement.
+        code, out = _validate(main_extra="tags:\n  - {{env.FLAPI_PROBE_SECRET}}-x\n",
+                              template_extra=_wl("ONLY_THIS_ONE"))
+        assert code != 0, out
+        assert "FLAPI_PROBE_SECRET" in out, out[-2000:]
+
+
+class TestBlockScalars:
+    """A line starting with `#` inside a block scalar (`key: |`) is CONTENT - a
+    Markdown heading in a prompt - not a comment. Skipping it left a literal
+    {{env.X}} in the text with no error: the silent failure enforcement exists
+    to prevent."""
+
+    ENDPOINT = ("url-path: /ep\nmethod: GET\ntemplate-source: ep.sql\n"
+                "connection: [inmem]\n"
+                "description: |\n"
+                "  Intro text.\n"
+                "  # Heading for {{env.FLAPI_PROBE_SECRET}}\n"
+                "  More text.\n")
+
+    def test_an_unlisted_variable_on_a_hash_line_in_a_block_scalar_is_refused(self):
+        code, out = _validate(endpoint=self.ENDPOINT, template_extra=_wl("ONLY_THIS_ONE"))
+        assert code != 0, (
+            "a `#` line inside a block scalar was treated as a comment, so its "
+            "unlisted variable was silently skipped\n" + out[-2000:])
+        assert "FLAPI_PROBE_SECRET" in out, out[-2000:]
+
+    def test_a_listed_variable_there_is_fine(self):
+        code, out = _validate(endpoint=self.ENDPOINT, template_extra=_wl("FLAPI_PROBE_SECRET"))
+        assert code == 0, out
+
+    def test_a_real_comment_after_the_block_scalar_is_still_a_comment(self):
+        endpoint = self.ENDPOINT + "# a real comment about {{env.OTHER_PROBE_VAR}}\n"
+        code, out = _validate(endpoint=endpoint, template_extra=_wl("FLAPI_PROBE_SECRET"))
+        assert code == 0, out
+
+
+class TestConfigServiceMetadataUsesTheSamePolicy:
+    """GET /api/v1/_config/filesystem parses YAML for metadata with its own
+    parser. It kept the old default, so once an empty whitelist meant "none" it
+    showed a literal `{{env.X}}` for a variable that IS whitelisted."""
+
+    def test_the_file_tree_shows_a_whitelisted_variable_substituted(self):
+        import time
+        import requests
+        tmp = tempfile.mkdtemp(prefix="flapi_envwl_cs_")
+        os.makedirs(os.path.join(tmp, "sqls"))
+        _write(tmp, "sqls/ep.yaml", "url-path: /probe-{{env.FLAPI_PROBE_PATH}}\nmethod: GET\n"
+                                    "template-source: ep.sql\nconnection: [inmem]\n")
+        _write(tmp, "sqls/ep.sql", "SELECT 1 AS n\n")
+        from otel_helpers import free_port
+        port = free_port()
+        cfg = _write(tmp, "flapi.yaml",
+                     "project-name: p\nproject-description: metadata\n"
+                     f"http-port: {port}\ntemplate:\n  path: ./sqls\n"
+                     + _wl("FLAPI_PROBE_PATH") +
+                     "connections:\n  inmem:\n    properties:\n      database: ':memory:'\n")
+        env = {**os.environ, "FLAPI_PROBE_PATH": "resolved", "DATAZOO_DISABLE_TELEMETRY": "1"}
+        token = "envwl-test-token-123"
+        proc = subprocess.Popen([flapi_binary(), "-c", cfg, "-p", str(port),
+                                 "--config-service", "--config-service-token", token,
+                                 "--log-level", "warning"],
+                                cwd=tmp, env=env, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+        try:
+            base = f"http://127.0.0.1:{port}"
+            for _ in range(120):
+                try:
+                    if requests.get(f"{base}/health/live", timeout=1).status_code == 200:
+                        break
+                except requests.RequestException:
+                    pass
+                time.sleep(0.25)
+            r = requests.get(f"{base}/api/v1/_config/filesystem",
+                             headers={"Authorization": f"Bearer {token}"}, timeout=10)
+            assert r.status_code == 200, r.text[:500]
+            assert "/probe-resolved" in r.text, (
+                "the file tree showed a literal {{env.X}} for a whitelisted variable\n"
+                + r.text[:1500])
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+
 class TestComments:
     """Operators document their configs with comments like
     `# password comes from {{env.DB_PASSWORD}}`. Enforcement must not turn that
