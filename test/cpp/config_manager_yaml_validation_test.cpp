@@ -92,6 +92,95 @@ connection:
     std::filesystem::remove(config_file);
 }
 
+// An MCP prompt carries its template INLINE and touches no database. The loader
+// (EndpointConfigParser) already knows that and skips the template-source parse; the
+// validator did not, and held every prompt to the REST rule - a template-source file
+// and a connection. So `flapi --validate-config` rejected flAPI's own shipped example
+// with "template-source cannot be empty" (#156).
+TEST_CASE("YAML Validation - Valid MCP Prompt", "[config_manager][yaml][validation][mcp-prompt]") {
+    auto config_file = createTestFlapiConfig();
+    ConfigManager manager(config_file);
+    manager.loadConfig();
+
+    std::string valid_yaml = R"(
+mcp-prompt:
+  name: greet
+  description: A greeting prompt
+  template: |
+    Hello {{name}}, welcome.
+)";
+
+    auto result = manager.validateEndpointConfigFromYaml(valid_yaml);
+
+    REQUIRE(result.valid == true);
+    REQUIRE(result.errors.empty());
+    // A prompt has no database, so "no connection" is not a warning worth raising.
+    for (const auto& warning : result.warnings) {
+        REQUIRE(warning.find("connection") == std::string::npos);
+    }
+
+    std::filesystem::remove(config_file);
+}
+
+TEST_CASE("YAML Validation - MCP Prompt without a template is still invalid", "[config_manager][yaml][validation][mcp-prompt]") {
+    auto config_file = createTestFlapiConfig();
+    ConfigManager manager(config_file);
+    manager.loadConfig();
+
+    // The fence: not requiring a template-SOURCE must not mean requiring nothing.
+    std::string invalid_yaml = R"(
+mcp-prompt:
+  name: empty
+  description: A prompt with nothing to say
+)";
+
+    auto result = manager.validateEndpointConfigFromYaml(invalid_yaml);
+
+    REQUIRE(result.valid == false);
+    std::string all_errors;
+    for (const auto& e : result.errors) { all_errors += "[" + e + "] "; }
+    INFO("errors: " << all_errors);
+    bool names_the_template = false;
+    for (const auto& error : result.errors) {
+        if (error.find("template") != std::string::npos) {
+            names_the_template = true;
+        }
+    }
+    REQUIRE(names_the_template);
+
+    std::filesystem::remove(config_file);
+}
+
+TEST_CASE("YAML Validation - MCP Tool still requires a template-source", "[config_manager][yaml][validation][mcp-prompt]") {
+    auto config_file = createTestFlapiConfig();
+    ConfigManager manager(config_file);
+    manager.loadConfig();
+
+    // The other fence: only prompts are exempt.
+    std::string yaml = R"(
+mcp-tool:
+  name: list_users
+  description: Lists all users
+connection:
+  - default
+)";
+    auto result = manager.validateEndpointConfigFromYaml(yaml);
+
+    REQUIRE(result.valid == false);
+    std::string all_errors;
+    for (const auto& e : result.errors) { all_errors += "[" + e + "] "; }
+    INFO("errors: " << all_errors);
+    bool mentions_template_source = false;
+    for (const auto& error : result.errors) {
+        if (error.find("template-source") != std::string::npos) {
+            mentions_template_source = true;
+        }
+    }
+    REQUIRE(mentions_template_source);
+
+    std::filesystem::remove(config_file);
+}
+
 TEST_CASE("YAML Validation - Invalid YAML Syntax", "[config_manager][yaml][validation]") {
     auto config_file = createTestFlapiConfig();
     ConfigManager manager(config_file);

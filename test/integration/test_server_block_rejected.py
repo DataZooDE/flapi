@@ -134,11 +134,10 @@ class TestShippedConfigsHaveNoServerBlock:
         assert not offenders, (
             f"these examples set a `server:` block flAPI rejects: {offenders}")
 
-    # Only the examples that pass --validate-config today. flapi.yaml and
-    # flapi-test.yaml are excluded because that command wrongly validates an MCP
-    # prompt file as an endpoint (#156) - unrelated to `server:`. Add them back
-    # when it is fixed.
-    @pytest.mark.parametrize("name", ["flapi-bigquery-procedure.yaml"])
+    # flapi.yaml was excluded while --validate-config wrongly validated an MCP
+    # prompt file as an endpoint (#156); it is back now. flapi-test.yaml still
+    # fails, for an unrelated reason (endpoints referencing an excluded connection).
+    @pytest.mark.parametrize("name", ["flapi.yaml", "flapi-bigquery-procedure.yaml"])
     def test_the_offline_examples_validate(self, name):
         examples = os.path.join(REPO, "examples")
         code, out = _validate("", cwd=examples, config=os.path.join(examples, name))

@@ -2352,11 +2352,20 @@ EndpointConfig ConfigManager::deserializeEndpointConfigFromYaml(const std::strin
         EndpointConfig::MCPPromptInfo mcp_prompt_config;
         mcp_prompt_config.name = node["mcp-prompt"]["name"].as<std::string>();
         mcp_prompt_config.description = node["mcp-prompt"]["description"] ? node["mcp-prompt"]["description"].as<std::string>() : "";
+        // A prompt carries its template INLINE, under `template:`. The loader
+        // (EndpointConfigParser) reads it from there; this deserializer ignored it.
+        if (node["mcp-prompt"]["template"]) {
+            mcp_prompt_config.template_content = node["mcp-prompt"]["template"].as<std::string>();
+        }
         config.mcp_prompt = mcp_prompt_config;
     }
     
-    // Common fields
-    config.templateSource = node["template-source"].as<std::string>();
+    // Common fields. A prompt has no template-source; anything else that omits one
+    // is left EMPTY so validateEndpointConfig reports "template-source cannot be
+    // empty" - this used to throw a raw yaml-cpp "invalid node" exception instead.
+    if (!is_mcp_prompt && node["template-source"]) {
+        config.templateSource = node["template-source"].as<std::string>();
+    }
     
     if (node["connection"]) {
         for (const auto& conn : node["connection"]) {
@@ -2389,8 +2398,18 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
         result.errors.insert(result.errors.end(), self_errors.begin(), self_errors.end());
     }
     
-    // Validate template source
-    if (config.templateSource.empty()) {
+    // Validate template source. NOT for an MCP prompt: it carries its template
+    // inline and touches no database, and the loader already knows that (it skips
+    // the template-source parse). This held every prompt to the REST rule, so
+    // `flapi --validate-config` rejected flAPI's own shipped example with
+    // "template-source cannot be empty" (#156). A prompt is still required to HAVE
+    // a template - just not a file for it.
+    if (config.isMCPPrompt()) {
+        if (config.mcp_prompt->template_content.empty()) {
+            result.valid = false;
+            result.errors.emplace_back("mcp-prompt.template cannot be empty");
+        }
+    } else if (config.templateSource.empty()) {
         result.valid = false;
         result.errors.emplace_back("template-source cannot be empty");
     } else {
@@ -2414,9 +2433,12 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
         }
     }
     
-    // Validate connections
+    // Validate connections. A prompt has no database, so "none specified" is not a
+    // finding for it - but a connection it DOES name must still exist.
     if (config.connection.empty()) {
-        result.warnings.emplace_back("No database connection specified");
+        if (!config.isMCPPrompt()) {
+            result.warnings.emplace_back("No database connection specified");
+        }
     } else {
         for (const auto& conn_name : config.connection) {
             if (connections.find(conn_name) == connections.end()) {

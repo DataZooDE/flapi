@@ -4,6 +4,15 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Fixed: `--validate-config` rejected MCP prompt files; `flapi pack` now validates first
+
+- `--validate-config` reported an MCP prompt file (`mcp-prompt:`) as invalid because it demanded a
+  `template-source` and a connection that prompts do not use. Prompts now validate, and the shipped
+  `examples/flapi.yaml` passes.
+- `flapi pack` now validates `<in>/flapi.yaml` before writing anything. An invalid config is refused
+  with the validation errors and no bundle is created, instead of producing a binary that fails at
+  startup on the deploy target. Pass `--skip-validation` to pack anyway.
+
 ### Fixed: `environment-whitelist` was documented as required for YAML files, and never enforced
 
 `{{env.NAME}}` in a YAML configuration file — the main config, endpoint files, included files — is

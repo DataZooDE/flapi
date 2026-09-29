@@ -71,6 +71,7 @@ def _write_minimal_fixture(root: pathlib.Path) -> None:
 
     (root / "flapi.yaml").write_text(
         "project-name: bundled-http-test\n"
+        "project-description: fixture\n"
         "project-description: integration test fixture for issue #62\n"
         "template:\n"
         "  path: ./sqls\n"

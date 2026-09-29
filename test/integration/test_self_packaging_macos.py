@@ -57,6 +57,7 @@ def _write_fixture(root: pathlib.Path) -> None:
     (root / "sqls").mkdir(parents=True, exist_ok=True)
     (root / "flapi.yaml").write_text(
         "project-name: macos-pack-test\n"
+        "project-description: fixture\n"
         "project-description: macOS reserved-segment fixture\n"
         "template:\n  path: ./sqls\n"
         "connections: {}\n"
