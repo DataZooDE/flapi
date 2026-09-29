@@ -893,7 +893,9 @@ jobs:
     # suite had finished - on v26.09.26 it was still running when both were
     # live. It adds little wall-clock: it runs alongside windows-build, the
     # slowest job, and normally finishes first.
-    needs: [windows-build, linux-build, osx-universal-build, flapii-build, integration-tests, smoke-test-windows, smoke-test-linux-amd64, smoke-test-linux-arm64, smoke-test-macos, pack-smoke-linux-amd64, pack-smoke-linux-arm64, pack-smoke-macos, pack-smoke-windows]
+    # docker-build too: otherwise a failed image push still lets the GitHub
+    # release and PyPI go out, leaving a release with no :latest/:<tag> image.
+    needs: [windows-build, linux-build, osx-universal-build, flapii-build, integration-tests, docker-build, smoke-test-windows, smoke-test-linux-amd64, smoke-test-linux-arm64, smoke-test-macos, pack-smoke-linux-amd64, pack-smoke-linux-arm64, pack-smoke-macos, pack-smoke-windows]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
