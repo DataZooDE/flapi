@@ -1,3 +1,4 @@
+#include <regex>
 #include "config_manager.hpp"
 #include "redaction.hpp"
 #include "endpoint_config_parser.hpp"
@@ -64,6 +65,10 @@ void ConfigManager::loadConfig() {
     try {
         CROW_LOG_INFO << "Loading configuration file: " << config_file;
 
+        // BEFORE the main file is read for real: its `{{env.NAME}}` references
+        // are checked against a whitelist that lives in that same file.
+        applyEnvironmentPolicy();
+
         // Use ExtendedYamlParser to load the main config file
         auto result = yaml_parser.parseFile(config_file);
         if (!result.success) {
@@ -97,6 +102,81 @@ void ConfigManager::loadConfig() {
         printConfig();
         throw std::runtime_error(error_msg.str());
     }
+}
+
+// The whitelist for `{{env.NAME}}` in YAML lives in the file that is about to be
+// substituted (template.environment-whitelist), so it has to be read first: a
+// probe parse with substitution switched OFF, whose result is used only to lift
+// the whitelist out. The real parse then runs under it.
+//
+// This is what makes the whitelist real for configuration files (#157). It was
+// documented as required and never enforced - the parser was built with an empty
+// whitelist that meant "allow everything" - so a variable substituted the same
+// with a whitelist that excluded it, one that included it, and none at all.
+// SQL templates had their own, working, whitelist.
+//
+// The policy is applied to the parser every endpoint file is loaded through
+// too, so the rule holds for all configuration YAML, including runtime
+// endpoint creation and reloads.
+void ConfigManager::applyEnvironmentPolicy() {
+    std::vector<std::string> whitelist;
+
+    ExtendedYamlParser::IncludeConfig probe_config;
+    probe_config.allow_environment_variables = false;
+    ExtendedYamlParser probe_parser(probe_config);
+    const auto probed = probe_parser.parseFile(config_file);
+
+    // A file that does not parse is not diagnosed here: the real parse that
+    // follows reports it, in the ordinary way. It runs with an empty whitelist.
+    if (probed.success && probed.node.IsMap()) {
+        const YAML::Node& root = probed.node;
+
+        // `environment-whitelist:` at the TOP level is read by nothing. The shipped
+        // S3/GCS/Azure examples had one, so anyone copying them believed
+        // variables were restricted when nothing was - the same trap as a
+        // `server:` block (#153), on a security setting, so it fails closed.
+        if (root["environment-whitelist"]) {
+            throw ConfigurationError(
+                "`environment-whitelist` at the top level is never read, so it "
+                "restricts nothing. Move it under `template:` as "
+                "`template.environment-whitelist`.",
+                "environment-whitelist");
+        }
+
+        const YAML::Node tmpl = root["template"];
+        if (tmpl && tmpl.IsMap() && tmpl["environment-whitelist"]) {
+            const YAML::Node list = tmpl["environment-whitelist"];
+            if (!list.IsSequence()) {
+                throw ConfigurationError(
+                    "`template.environment-whitelist` must be a list of regular "
+                    "expressions, one per allowed variable name.",
+                    "template.environment-whitelist");
+            }
+            for (const auto& item : list) {
+                if (!item.IsScalar()) {
+                    throw ConfigurationError(
+                        "every entry of `template.environment-whitelist` must be a "
+                        "regular expression string.",
+                        "template.environment-whitelist");
+                }
+                const std::string pattern = item.as<std::string>();
+                // Compiled here so a typo is a startup error naming the pattern,
+                // not a std::regex_error escaping from the middle of a parse.
+                try {
+                    const std::regex compiled(pattern);
+                    (void)compiled;
+                } catch (const std::regex_error& e) {
+                    throw ConfigurationError(
+                        "invalid regular expression '" + pattern +
+                            "' in `template.environment-whitelist`: " + e.what(),
+                        "template.environment-whitelist");
+                }
+                whitelist.push_back(pattern);
+            }
+        }
+    }
+
+    yaml_parser.setEnvironmentPolicy(std::move(whitelist), /*error_on_unlisted=*/true);
 }
 
 void ConfigManager::parseMainConfig() {

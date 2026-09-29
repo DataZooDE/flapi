@@ -21,6 +21,14 @@ version: 1.0.0
 # SQL templates can be stored in S3
 template:
   path: s3://my-bucket/api-templates/sqls
+  # Which environment variables env references may read. It belongs HERE, under
+  # template:. A top-level environment-whitelist is never read and is rejected.
+  environment-whitelist:
+  - AWS_ACCESS_KEY_ID
+  - AWS_SECRET_ACCESS_KEY
+  - AWS_REGION
+  - AWS_SESSION_TOKEN
+  - AWS_ENDPOINT_URL
 
 # Storage configuration
 storage:
@@ -58,10 +66,3 @@ http-port: 8080
 http-host: 0.0.0.0
 log-level: info
 
-# Environment variable whitelist
-environment-whitelist:
-  - AWS_ACCESS_KEY_ID
-  - AWS_SECRET_ACCESS_KEY
-  - AWS_REGION
-  - AWS_SESSION_TOKEN
-  - AWS_ENDPOINT_URL

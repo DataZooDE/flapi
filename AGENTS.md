@@ -207,12 +207,12 @@ connections:
       port: '5432'
       database: 'mydb'
       user: 'read_user'
-      password: '${DB_PASSWORD}'            # Environment variable
+      password: '{{env.DB_PASSWORD}}'       # Environment variable (whitelisted under template:)
 ```
 
 **Key Points:**
 - Properties are custom per connection type (file path vs. database credentials)
-- Environment variables supported via `${VAR_NAME}` (must be whitelisted in flapi.yaml)
+- Environment variables supported via `{{env.VAR_NAME}}` (must match `template.environment-whitelist` in flapi.yaml; an unlisted one stops startup; empty whitelist = none; `${VAR}` is NOT supported)
 - Loaded once at startup, reused for all requests
 - Available in templates as `conn.property_name`
 

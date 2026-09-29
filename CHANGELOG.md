@@ -4,6 +4,47 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Fixed: `environment-whitelist` was documented as required for YAML files, and never enforced
+
+`{{env.NAME}}` in a YAML configuration file — the main config, endpoint files, included files — is
+documented as requiring `NAME` to match a pattern in `template.environment-whitelist`. It did not.
+The whitelist was only ever read for SQL templates; for YAML files the variable was substituted
+whether or not it was listed, and whether or not there was a whitelist at all. The shipped S3, GCS
+and Azure examples made it worse: they put `environment-whitelist:` at the **top level**, where nothing
+reads it either, so anyone copying them believed they had restricted which variables a config could read.
+
+The whitelist is now enforced for YAML files, with the same rule SQL templates already had:
+
+- **A variable that matches no pattern stops flAPI at startup**, with an error naming every such
+  variable and the key to add it to. It is never left in the file as literal text — a literal
+  `{{env.DB_PASSWORD}}` would silently become the password.
+- **An empty or missing whitelist allows no variables.** (For YAML files it used to mean "allow
+  everything".)
+- **A top-level `environment-whitelist:` is an error**, naming `template.environment-whitelist`.
+- `env.NAME` conditions in `{{include ... if env.NAME}}` obey the whitelist too. They could read
+  whether any variable was set, whitelisted or not.
+
+**Before upgrading, check any config that uses `{{env.NAME}}` in YAML:**
+
+```yaml
+template:
+  path: ./sqls
+  environment-whitelist:        # under template:, not at the top level
+    - '^DB_.*'                  # regular expressions, matched against the WHOLE name
+    - '^API_KEY$'
+```
+
+`flapi --validate-config` reports a missing entry, so a CI check catches it before a deploy. Patterns
+match the whole variable name (`^DB_` alone would match only a variable called `DB_`) and are
+case-insensitive.
+
+A full-line comment can mention `{{env.NAME}}` without being checked. A comment after a value
+(`key: value # see {{env.X}}`) is still checked, so word those without the braces.
+
+Also corrected: the `${NAME}` shell form, which several docs and the Azure example used, was never
+supported — it is left as literal text. The Azure example now uses `{{env.NAME}}`. And flAPI no longer
+writes the *value* of each substituted variable to the debug log, only its name.
+
 ### Changed: a `server:` block is now an error, not silently ignored
 
 flAPI has no `server:` block. Setting the port or host under one —

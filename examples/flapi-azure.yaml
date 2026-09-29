@@ -24,6 +24,16 @@ version: 1.0.0
 # SQL templates can be stored in Azure Blob Storage
 template:
   path: az://my-container/api-templates/sqls
+  # Which environment variables env references may read. It belongs HERE, under
+  # template:. A top-level environment-whitelist is never read and is rejected.
+  environment-whitelist:
+  - AZURE_STORAGE_CONNECTION_STRING
+  - AZURE_STORAGE_ACCOUNT
+  - AZURE_STORAGE_KEY
+  - AZURE_TENANT_ID
+  - AZURE_CLIENT_ID
+  - AZURE_SQL_USER
+  - AZURE_SQL_PASSWORD
 
 # Storage configuration
 storage:
@@ -49,8 +59,8 @@ connections:
       host: my-server.database.windows.net
       port: '1433'
       database: mydb
-      user: ${AZURE_SQL_USER}
-      password: ${AZURE_SQL_PASSWORD}
+      user: '{{env.AZURE_SQL_USER}}'
+      password: '{{env.AZURE_SQL_PASSWORD}}'
 
   # Local data (can coexist with cloud)
   local-data:
@@ -70,12 +80,3 @@ http-port: 8080
 http-host: 0.0.0.0
 log-level: info
 
-# Environment variable whitelist
-environment-whitelist:
-  - AZURE_STORAGE_CONNECTION_STRING
-  - AZURE_STORAGE_ACCOUNT
-  - AZURE_STORAGE_KEY
-  - AZURE_TENANT_ID
-  - AZURE_CLIENT_ID
-  - AZURE_SQL_USER
-  - AZURE_SQL_PASSWORD

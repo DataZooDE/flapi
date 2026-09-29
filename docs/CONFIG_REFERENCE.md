@@ -228,7 +228,7 @@ Defines where endpoint configurations and SQL templates are located.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `template.path` | string | **required** | Directory containing endpoint YAML and SQL files |
-| `template.environment-whitelist` | array[string] | `[]` | Regex patterns for allowed environment variables |
+| `template.environment-whitelist` | array[string] | `[]` | Regex patterns (full match, case-insensitive) for the environment variables `{{env.NAME}}` may read. **Empty or missing allows none.** |
 
 **Example:**
 
@@ -243,10 +243,23 @@ template:
 
 **Notes:**
 - The `path` is relative to the main configuration file location
-- Environment variables must match at least one whitelist pattern to be substituted
-- Use `^` and `$` anchors for exact matches
+- **One whitelist governs every `{{env.NAME}}`**: in SQL templates, in YAML configuration
+  files (the main config, endpoint files, includes) and in `env.NAME` include conditions.
+  It lives here, under `template:`, and nowhere else.
+- A variable must match at least one pattern. **An empty or missing whitelist allows no
+  variables.** Patterns are regular expressions matched against the whole name,
+  case-insensitively, so `API_KEY` is an exact match and `^FLAPI_.*` is a prefix.
+- In **YAML files**, a `{{env.NAME}}` that does not match **stops startup** with an error naming
+  every such variable and this key. It is never left as literal text, since a literal
+  `{{env.DB_PASSWORD}}` would quietly become the password. In SQL templates an unlisted
+  variable is simply not available.
+- A **top-level** `environment-whitelist:` is never read and is rejected at startup; it must be
+  under `template:`.
+- A full-line comment can mention `{{env.NAME}}` freely; a comment after a value is still checked.
+- The `path` is relative to the main configuration file location.
+- `${NAME}` is **not** a supported syntax; write `{{env.NAME}}`.
 
-> **Implementation:** `src/config_manager.cpp`, `src/sql_template_processor.cpp` | **Tests:** `test/cpp/sql_template_processor_test.cpp`
+> **Implementation:** `src/config_manager.cpp` (`applyEnvironmentPolicy`), `src/extended_yaml_parser.cpp`, `src/sql_template_processor.cpp` | **Tests:** `test/integration/test_environment_whitelist.py`, `test/cpp/extended_yaml_parser_test.cpp`, `test/cpp/sql_template_processor_test.cpp`
 
 ### 2.3 Connections
 
@@ -1758,23 +1771,23 @@ SELECT * FROM read_parquet('{{{ conn.path }}}')
 
 ### 10.1 Substitution Syntax
 
-Environment variables can be substituted in configuration files:
-
-**Standard Syntax:**
-
-```yaml
-password: '${DB_PASSWORD}'
-```
-
-**Template Syntax (in endpoint YAML):**
+Environment variables are substituted into configuration files — the main config,
+endpoint files and included files — with one syntax:
 
 ```yaml
+password: '{{env.DB_PASSWORD}}'
 username: '{{env.API_USER}}'
 ```
 
+The shell form `${DB_PASSWORD}` is **not** supported: it is left as literal text, so a
+password written that way would be the string `${DB_PASSWORD}`. Some examples elsewhere in
+these docs still show it; the working form is `{{env.NAME}}`.
+
 ### 10.2 Whitelist Configuration
 
-Environment variables must be whitelisted to be substituted:
+Environment variables must be whitelisted to be read. A `{{env.NAME}}` whose name matches no
+pattern stops startup with an error that names it and this key; **an empty or missing
+whitelist allows no variables**:
 
 ```yaml
 # flapi.yaml
@@ -1791,7 +1804,7 @@ template:
 | Pattern | Matches |
 |---------|---------|
 | `^FLAPI_.*` | `FLAPI_PORT`, `FLAPI_DEBUG`, etc. |
-| `^DB_` | `DB_HOST`, `DB_PASSWORD`, etc. |
+| `^DB_.*` | `DB_HOST`, `DB_PASSWORD`, etc. (patterns match the *whole* name, so `^DB_` alone would match only a variable called `DB_`) |
 | `^API_KEY$` | Only `API_KEY` |
 | `.*_SECRET$` | `JWT_SECRET`, `API_SECRET`, etc. |
 

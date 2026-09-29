@@ -34,7 +34,19 @@ public:
         bool allow_environment_variables = true;
         bool allow_conditional_includes = true;
         std::vector<std::string> include_paths;
+
+        // Regex patterns (full match, case-insensitive) naming the variables
+        // `{{env.NAME}}` may read. EMPTY MEANS NONE: an unset whitelist must never
+        // mean "no protection". (It used to mean "allow everything" here while
+        // meaning "allow nothing" for SQL templates - #157.)
         std::vector<std::string> environment_whitelist;
+
+        // What to do with a `{{env.NAME}}` that is not allowed. false leaves it
+        // in the text as a literal, which is right for callers that only sniff a
+        // file's structure. true fails the parse, naming every such variable:
+        // for a real configuration a literal `{{env.DB_PASSWORD}}` would silently
+        // become the password.
+        bool error_on_unlisted_environment_variable = false;
 
         /**
          * @brief Check if an environment variable is allowed
@@ -82,6 +94,15 @@ public:
      */
     ParseResult parseString(const std::string& content,
                            const std::filesystem::path& base_path = "");
+
+    /**
+     * @brief Set which environment variables `{{env.NAME}}` may read.
+     *
+     * Applies to every later parse, including endpoint files loaded through the
+     * same parser. Lets the owner of the main configuration read the whitelist
+     * (which lives in that file) BEFORE substituting anything into it.
+     */
+    void setEnvironmentPolicy(std::vector<std::string> whitelist, bool error_on_unlisted);
 
         /**
          * @brief Preprocess content to handle include directives before YAML parsing

@@ -181,7 +181,12 @@ TEST_CASE("ExtendedYamlParser: Section include test", "[extended_yaml_parser]") 
 }
 
 TEST_CASE("ExtendedYamlParser: Simple Environment Variable Test", "[extended_yaml_parser]") {
-    ExtendedYamlParser parser;
+    // Whitelisted explicitly: an empty whitelist allows NOTHING (#157). This used
+    // to run on a default parser and pass only because the default meant "allow
+    // everything" - the bug.
+    ExtendedYamlParser::IncludeConfig config;
+    config.environment_whitelist = {"SIMPLE_VAR"};
+    ExtendedYamlParser parser(config);
 
     setenv("SIMPLE_VAR", "simple_value", 1);
 
@@ -201,6 +206,127 @@ value: {{env.SIMPLE_VAR}}
     unsetenv("SIMPLE_VAR");
 }
 
+// --- #157: the environment whitelist is enforced, and empty means none --------
+
+TEST_CASE("ExtendedYamlParser: an empty whitelist allows no variables", "[extended_yaml_parser][env-whitelist]") {
+    setenv("WL_SECRET", "s3cret", 1);
+    ExtendedYamlParser parser;  // default: empty whitelist
+
+    auto result = parser.parseString("value: '{{env.WL_SECRET}}'\n", "/tmp");
+
+    REQUIRE(result.success);
+    // Left as text, and nothing was read from the environment.
+    REQUIRE(result.node["value"].Scalar() == "{{env.WL_SECRET}}");
+    REQUIRE(result.resolved_variables.empty());
+    unsetenv("WL_SECRET");
+}
+
+TEST_CASE("ExtendedYamlParser: a variable outside the whitelist is not read", "[extended_yaml_parser][env-whitelist]") {
+    setenv("WL_SECRET", "s3cret", 1);
+    ExtendedYamlParser::IncludeConfig config;
+    config.environment_whitelist = {"SOMETHING_ELSE"};
+    ExtendedYamlParser parser(config);
+
+    auto result = parser.parseString("value: '{{env.WL_SECRET}}'\n", "/tmp");
+
+    REQUIRE(result.success);
+    REQUIRE(result.node["value"].Scalar() == "{{env.WL_SECRET}}");
+    unsetenv("WL_SECRET");
+}
+
+TEST_CASE("ExtendedYamlParser: error_on_unlisted names every unlisted variable", "[extended_yaml_parser][env-whitelist]") {
+    setenv("WL_A", "a", 1);
+    setenv("WL_B", "b", 1);
+    ExtendedYamlParser::IncludeConfig config;
+    config.environment_whitelist = {"ONLY_THIS"};
+    config.error_on_unlisted_environment_variable = true;
+    ExtendedYamlParser parser(config);
+
+    auto result = parser.parseString("a: '{{env.WL_A}}'\nb: '{{env.WL_B}}'\nc: '{{env.WL_A}}'\n", "/tmp");
+
+    REQUIRE_FALSE(result.success);
+    // Both, once each, and where to fix it - and never the values.
+    REQUIRE(result.error_message.find("WL_A") != std::string::npos);
+    REQUIRE(result.error_message.find("WL_B") != std::string::npos);
+    REQUIRE(result.error_message.find("template.environment-whitelist") != std::string::npos);
+    REQUIRE(result.error_message.find("s3cret") == std::string::npos);
+    REQUIRE(result.error_message.find("=a") == std::string::npos);
+    unsetenv("WL_A");
+    unsetenv("WL_B");
+}
+
+TEST_CASE("ExtendedYamlParser: an empty whitelist with error_on_unlisted still refuses", "[extended_yaml_parser][env-whitelist]") {
+    ExtendedYamlParser::IncludeConfig config;
+    config.error_on_unlisted_environment_variable = true;
+    ExtendedYamlParser parser(config);
+
+    REQUIRE_FALSE(parser.parseString("v: '{{env.ANYTHING}}'\n", "/tmp").success);
+}
+
+TEST_CASE("ExtendedYamlParser: whitelist patterns are full, case-insensitive matches", "[extended_yaml_parser][env-whitelist]") {
+    setenv("WL_CASE_VAR", "ok", 1);
+    ExtendedYamlParser::IncludeConfig config;
+    config.environment_whitelist = {"^wl_.*"};
+    ExtendedYamlParser parser(config);
+    REQUIRE(parser.parseString("v: '{{env.WL_CASE_VAR}}'\n", "/tmp").node["v"].Scalar() == "ok");
+
+    ExtendedYamlParser::IncludeConfig substring;
+    substring.environment_whitelist = {"CASE"};   // a substring is not a match
+    ExtendedYamlParser strict(substring);
+    REQUIRE(strict.parseString("v: '{{env.WL_CASE_VAR}}'\n", "/tmp").node["v"].Scalar() == "{{env.WL_CASE_VAR}}");
+    unsetenv("WL_CASE_VAR");
+}
+
+TEST_CASE_METHOD(ExtendedYamlTestFixture, "ExtendedYamlParser: include conditions obey the whitelist", "[extended_yaml_parser][env-whitelist]") {
+    setenv("COND_SECRET_FLAG", "1", 1);
+    const std::string yaml = "{{include from common/auth.yaml if env.COND_SECRET_FLAG}}\nvalue: x\n";
+
+    SECTION("not whitelisted, not enforced: reads as unset, so the include is skipped") {
+        ExtendedYamlParser::IncludeConfig config;
+        config.allow_conditional_includes = true;
+        ExtendedYamlParser parser(config);
+        auto result = parser.parseString(yaml, temp_dir);
+        REQUIRE(result.success);
+        REQUIRE_FALSE(result.node["auth"]);   // the flag is set, but the parser may not look
+    }
+
+    SECTION("not whitelisted, enforced: an error naming the variable, not a silent skip") {
+        ExtendedYamlParser::IncludeConfig config;
+        config.allow_conditional_includes = true;
+        config.error_on_unlisted_environment_variable = true;
+        ExtendedYamlParser parser(config);
+        auto result = parser.parseString(yaml, temp_dir);
+        REQUIRE_FALSE(result.success);
+        REQUIRE(result.error_message.find("COND_SECRET_FLAG") != std::string::npos);
+        REQUIRE(result.error_message.find("template.environment-whitelist") != std::string::npos);
+    }
+
+    SECTION("whitelisted: evaluated") {
+        ExtendedYamlParser::IncludeConfig config;
+        config.allow_conditional_includes = true;
+        config.error_on_unlisted_environment_variable = true;
+        config.environment_whitelist = {"COND_SECRET_FLAG"};
+        ExtendedYamlParser parser(config);
+        auto result = parser.parseString(yaml, temp_dir);
+        REQUIRE(result.success);
+    }
+    unsetenv("COND_SECRET_FLAG");
+}
+
+TEST_CASE("ExtendedYamlParser: a full-line comment can mention a variable", "[extended_yaml_parser][env-whitelist]") {
+    ExtendedYamlParser::IncludeConfig config;
+    config.error_on_unlisted_environment_variable = true;   // and nothing is whitelisted
+    ExtendedYamlParser parser(config);
+
+    auto result = parser.parseString(
+        "# the password comes from {{env.DB_PASSWORD}}\n"
+        "  # and this one from {{env.OTHER}}\n"
+        "key: value\n", "/tmp");
+
+    REQUIRE(result.success);
+    REQUIRE(result.node["key"].Scalar() == "value");
+}
+
 TEST_CASE("ExtendedYamlParser: Environment variable in include path", "[extended_yaml_parser]") {
     ExtendedYamlTestFixture fixture;
 
@@ -210,7 +336,9 @@ TEST_CASE("ExtendedYamlParser: Environment variable in include path", "[extended
     std::string yaml_content = R"(
 {{include from common/{{env.TEST_FILE}}.yaml}}
 )";
-    ExtendedYamlParser parser;
+    ExtendedYamlParser::IncludeConfig config;
+    config.environment_whitelist = {"TEST_FILE"};
+    ExtendedYamlParser parser(config);
     auto result = parser.parseString(yaml_content, fixture.temp_dir);
 
     REQUIRE(result.success);
@@ -409,6 +537,8 @@ default: unchanged
 TEST_CASE_METHOD(ExtendedYamlTestFixture, "ExtendedYamlParser: Conditional includes", "[extended_yaml_parser]") {
     ExtendedYamlParser::IncludeConfig config;
     config.allow_conditional_includes = true;
+    // Conditions read the environment, so they obey the whitelist too (#157).
+    config.environment_whitelist = {"ENABLE_AUTH"};
 
     ExtendedYamlParser parser(config);
 

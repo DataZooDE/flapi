@@ -5,6 +5,11 @@ project-description: Minimal test configuration
 # Template configuration - empty
 template:
   path: './sqls'
+  # Whitelist environment variables for substitution. Under template:, where it
+  # is read - a top-level environment-whitelist is ignored and now rejected.
+  environment-whitelist:
+    - FLAPI_TEST_DUCKLAKE_METADATA
+    - FLAPI_TEST_DUCKLAKE_DATA
 
 # Database connection configurations
 connections:
@@ -36,11 +41,6 @@ ducklake:
     enabled: false  # Disable for tests
   scheduler:
     enabled: false  # Disable for tests
-
-# Whitelist environment variables for substitution in templates
-environment-whitelist:
-  - FLAPI_TEST_DUCKLAKE_METADATA
-  - FLAPI_TEST_DUCKLAKE_DATA
 
 # Enable MCP for comprehensive testing
 mcp:
