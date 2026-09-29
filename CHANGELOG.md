@@ -4,6 +4,16 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Fixed: secrets from `{{env.NAME}}` no longer leak through the config dump, and the environment listing works with patterns
+
+- When a configuration failed to load, the debug dump of the parsed config printed every
+  credential-named value (`password`, `token`, ...) verbatim, including ones read from the
+  environment. Those values now print as `<redacted>`.
+- The YAML parser no longer keeps the values of substituted variables after a parse.
+- `GET /api/v1/_config/environment-variables` treated whitelist entries as variable names, so a
+  pattern such as `^DB_.*` listed nothing. It now lists the variables that actually exist and match
+  the whitelist (plus plain-name entries, reported as unavailable when unset).
+
 ### Fixed: `--validate-config` rejected MCP prompt files; `flapi pack` now validates first
 
 - `--validate-config` reported an MCP prompt file (`mcp-prompt:`) as invalid because it demanded a

@@ -9,6 +9,13 @@
 #include <openssl/crypto.h>
 
 #include "config_service.hpp"
+
+#ifdef _WIN32
+#define ENV_BLOCK _environ
+#else
+extern char** environ;
+#define ENV_BLOCK environ
+#endif
 #include "flapi_tracing.hpp"
 #include "auth_params.hpp"
 #include "json_utils.hpp"
@@ -909,11 +916,37 @@ crow::response ProjectConfigHandler::getEnvironmentVariables(const crow::request
         crow::json::wvalue response;
         response["variables"] = crow::json::wvalue::list();
         
-        // Get template environment whitelist
+        // The whitelist holds PATTERNS (regexes), not names. Report the variables
+        // that actually exist in the environment and match one (#166): passing a
+        // pattern such as `^DB_.*` to getenv() found nothing, and an exact-name
+        // entry was the only thing that ever showed up.
         const auto& template_config = config_manager_->getTemplateConfig();
         size_t idx = 0;
-        
-        for (const auto& var_name : template_config.environment_whitelist) {
+
+        std::vector<std::string> names;
+        for (char** e = ENV_BLOCK; e != nullptr && *e != nullptr; ++e) {
+            const std::string entry(*e);
+            const auto eq = entry.find('=');
+            if (eq == std::string::npos || eq == 0) {
+                continue;
+            }
+            const auto name = entry.substr(0, eq);
+            if (template_config.isEnvironmentVariableAllowed(name)) {
+                names.push_back(name);
+            }
+        }
+        // A plain-identifier entry names one variable, so report it even when it
+        // is unset ("is API_KEY configured?" -> available:false).
+        static const std::regex plain_name(R"(^[A-Za-z_][A-Za-z0-9_]*$)");
+        for (const auto& entry : template_config.environment_whitelist) {
+            if (std::regex_match(entry, plain_name)) {
+                names.push_back(entry);
+            }
+        }
+        std::sort(names.begin(), names.end());
+        names.erase(std::unique(names.begin(), names.end()), names.end());
+
+        for (const auto& var_name : names) {
             crow::json::wvalue var;
             var["name"] = var_name;
             

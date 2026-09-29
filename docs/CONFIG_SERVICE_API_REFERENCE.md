@@ -138,7 +138,7 @@ Authorization: Bearer <token>
 
 #### GET /api/v1/_config/environment-variables
 
-List whitelisted environment variables and their availability.
+List the environment variables that exist and match a `template.environment-whitelist` pattern, plus plain-name whitelist entries (reported `available: false` when unset). Credential-looking names and long values are redacted.
 
 **Request:**
 ```http
