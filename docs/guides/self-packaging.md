@@ -75,5 +75,5 @@ for full reference + rationale.
 > **The secret deny list matches filenames, not content.** `*.env`, `secrets/*`,
 > `*.pem` and `*.key` are refused by name, case-sensitively — but a credential
 > written inline in a `flapi.yaml` is packed like any other text. Keep secrets in
-> environment variables and reference them with `${VAR}`; see
+> environment variables and reference them with `{{env.VAR}}`; see
 > [reusing config and reading the environment](./yaml-includes.md).

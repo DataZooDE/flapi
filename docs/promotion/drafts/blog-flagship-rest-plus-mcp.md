@@ -210,7 +210,7 @@ mcp:
   auth:
     enabled: true
     type: bearer
-    jwt-secret: '${MCP_JWT_SECRET}'
+    jwt-secret: '{{env.MCP_JWT_SECRET}}'
     jwt-issuer: 'https://issuer.example.com'
 ```
 

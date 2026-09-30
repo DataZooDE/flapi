@@ -304,8 +304,8 @@ connections:
       host: db.example.com
       port: '5432'
       database: mydb
-      user: '${DB_USER}'
-      password: '${DB_PASSWORD}'
+      user: '{{env.DB_USER}}'
+      password: '{{env.DB_PASSWORD}}'
 
   # BigQuery connection
   bigquery-data:
@@ -476,7 +476,7 @@ mcp:
   auth:
     enabled: true
     type: bearer
-    jwt-secret: '${MCP_JWT_SECRET}'
+    jwt-secret: '{{env.MCP_JWT_SECRET}}'
 ```
 
 **Per-tool hardening keys** (in each endpoint's `mcp-tool:` block — see Section 3.2):
@@ -551,20 +551,21 @@ flAPI's embedded server can terminate TLS directly. Reverse-proxy termination is
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `https.enabled` | boolean | `false` | Bind the listener via OpenSSL using the cert+key pair below |
-| `https.ssl_cert_file` | string | - | PEM-encoded certificate |
-| `https.ssl_key_file` | string | - | PEM-encoded private key |
-| `enforce-https.enabled` | boolean | `false` | When the server is HTTPS, redirect plain-HTTP requests instead of refusing |
+| `enforce-https.enabled` | boolean | `false` | Serve over TLS: the listener is bound via OpenSSL using the cert+key pair below |
+| `enforce-https.ssl-cert-file` | string | - | PEM-encoded certificate (required when enabled) |
+| `enforce-https.ssl-key-file` | string | - | PEM-encoded private key (required when enabled) |
+
+The block is named `enforce-https` and its keys are kebab-case. There is **no** top-level `https:`
+block: it is not read, so a config that uses one serves plain HTTP (flAPI warns about the unknown
+key at startup). There is no plain-HTTP redirect listener.
 
 **Example:**
 
 ```yaml
-https:
-  enabled: true
-  ssl_cert_file: ./ssl/cert.pem
-  ssl_key_file: ./ssl/key.pem
 enforce-https:
   enabled: true
+  ssl-cert-file: ./ssl/cert.pem
+  ssl-key-file: ./ssl/key.pem
 ```
 
 > **Implementation:** `src/api_server.cpp` | **Tests:** `test/integration/test_tls_wireup.py`
@@ -1510,10 +1511,10 @@ auth:
   type: basic
   users:
     - username: admin
-      password: '${ADMIN_PASSWORD}'
+      password: '{{env.ADMIN_PASSWORD}}'
       roles: [admin, read, write]
     - username: reader
-      password: '${READER_PASSWORD}'
+      password: '{{env.READER_PASSWORD}}'
       roles: [read]
 ```
 
@@ -1534,7 +1535,7 @@ JSON Web Token authentication.
 auth:
   enabled: true
   type: jwt
-  jwt-secret: '${JWT_SECRET}'
+  jwt-secret: '{{env.JWT_SECRET}}'
   jwt-issuer: my-auth-server
 ```
 
@@ -1555,7 +1556,7 @@ Bearer token authentication (similar to JWT).
 auth:
   enabled: true
   type: bearer
-  jwt-secret: '${API_TOKEN_SECRET}'
+  jwt-secret: '{{env.API_TOKEN_SECRET}}'
   jwt-issuer: api-gateway
 ```
 
@@ -1590,8 +1591,8 @@ auth:
   type: oidc
   oidc:
     issuer-url: https://login.microsoftonline.com/tenant-id/v2.0
-    client-id: '${AZURE_CLIENT_ID}'
-    client-secret: '${AZURE_CLIENT_SECRET}'
+    client-id: '{{env.AZURE_CLIENT_ID}}'
+    client-secret: '{{env.AZURE_CLIENT_SECRET}}'
     provider-type: microsoft
     allowed-audiences:
       - api://my-api
@@ -1621,8 +1622,8 @@ auth:
   from-aws-secretmanager:
     secret-name: prod/api/credentials
     region: us-east-1
-    secret-id: '${AWS_ACCESS_KEY}'
-    secret-key: '${AWS_SECRET_KEY}'
+    secret-id: '{{env.AWS_ACCESS_KEY}}'
+    secret-key: '{{env.AWS_SECRET_KEY}}'
 ```
 
 > **Implementation:** `src/auth_middleware.cpp`, `src/oidc_auth_handler.cpp` | **Tests:** `test/cpp/auth_middleware_test.cpp`, `test/integration/test_oidc_authentication.py`
@@ -1851,11 +1852,11 @@ connections:
       LOAD postgres;
     log-queries: false
     properties:
-      host: '${DB_HOST}'
+      host: '{{env.DB_HOST}}'
       port: '5432'
       database: customers
-      user: '${DB_USER}'
-      password: '${DB_PASSWORD}'
+      user: '{{env.DB_USER}}'
+      password: '{{env.DB_PASSWORD}}'
 
   local-parquet:
     properties:
@@ -1961,7 +1962,7 @@ cache:
 auth:
   enabled: true
   type: jwt
-  jwt-secret: '${JWT_SECRET}'
+  jwt-secret: '{{env.JWT_SECRET}}'
 
 # Rate limiting
 rate-limit:

@@ -350,7 +350,7 @@ mcp:
   auth:
     enabled: true
     type: bearer           # or "basic", "oidc"
-    jwt_secret: ${JWT_SECRET}
+    jwt_secret: '{{env.JWT_SECRET}}'
     jwt_issuer: flapi
     methods:
       tools/call:

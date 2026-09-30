@@ -4,6 +4,15 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Fixed: documentation showed configuration that flAPI does not read
+
+- TLS is configured under `enforce-https` (`enabled`, `ssl-cert-file`, `ssl-key-file`). The reference,
+  the security guide and the shipped example documented a top-level `https:` block with underscore
+  keys; flAPI ignores that and serves plain HTTP. There is no plain-HTTP redirect listener.
+- About thirty examples used `${NAME}` for environment variables. Only `{{env.NAME}}` is substituted
+  (and must match `template.environment-whitelist`); `${NAME}` stayed literal text, so a password
+  written that way was the string `${NAME}`.
+
 ### Fixed: secrets from `{{env.NAME}}` no longer leak through the config dump, and the environment listing works with patterns
 
 - When a configuration failed to load, the debug dump of the parsed config printed every

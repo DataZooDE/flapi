@@ -212,7 +212,7 @@ connections:
 
 **Key Points:**
 - Properties are custom per connection type (file path vs. database credentials)
-- Environment variables supported via `{{env.VAR_NAME}}` (must match `template.environment-whitelist` in flapi.yaml; an unlisted one stops startup; empty whitelist = none; `${VAR}` is NOT supported)
+- Environment variables supported via `{{env.VAR_NAME}}` (must match `template.environment-whitelist` in flapi.yaml; an unlisted one stops startup; empty whitelist = none; `{{env.VAR}}` is NOT supported)
 - Loaded once at startup, reused for all requests
 - Available in templates as `conn.property_name`
 
@@ -952,8 +952,8 @@ flapii project init my-api --advanced
        properties:
          host: localhost
          port: 5432
-         user: $DB_USER
-         password: $DB_PASSWORD
+         user: '{{env.DB_USER}}'
+         password: '{{env.DB_PASSWORD}}'
    ```
 
 3. Create endpoint YAML in `sqls/` directory
@@ -1286,7 +1286,7 @@ Configure in endpoint:
 ```yaml
 auth:
   type: jwt
-  token-key: ${JWT_SECRET}
+  token-key: '{{env.JWT_SECRET}}'
   issuer: "example.com"
 ```
 
