@@ -98,6 +98,7 @@ ExtendedYamlParser::ExtendedYamlParser(const IncludeConfig& config) : config_(co
 ExtendedYamlParser::ParseResult ExtendedYamlParser::parseFile(const std::filesystem::path& file_path,
                                                              const std::filesystem::path& base_path) {
     ParseResult result;
+    resolved_variables_.clear();
 
     try {
         // Determine base path
@@ -145,6 +146,7 @@ ExtendedYamlParser::ParseResult ExtendedYamlParser::parseFile(const std::filesys
 ExtendedYamlParser::ParseResult ExtendedYamlParser::parseString(const std::string& content,
                                                                const std::filesystem::path& base_path) {
     ParseResult result;
+    resolved_variables_.clear();
 
     try {
         CROW_LOG_DEBUG << "parseString called with content length: " << content.length();
@@ -836,7 +838,8 @@ std::string ExtendedYamlParser::substituteEnvironmentVariables(const std::string
         CROW_LOG_DEBUG << "Environment variable " << var_name << " substituted";
 
         // Store for logging (preserve existing behavior)
-        resolved_variables_[var_name] = replacement;
+        // Names only: the VALUE of a secret must not outlive the substitution (#166).
+        resolved_variables_[var_name] = "<redacted>";
 
         // Collect match info (no string modification yet)
         matches.push_back({

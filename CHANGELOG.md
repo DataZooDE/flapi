@@ -13,6 +13,16 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   (and must match `template.environment-whitelist`); `${NAME}` stayed literal text, so a password
   written that way was the string `${NAME}`.
 
+### Fixed: secrets from `{{env.NAME}}` no longer leak through the config dump, and the environment listing works with patterns
+
+- When a configuration failed to load, the debug dump of the parsed config printed every
+  credential-named value (`password`, `token`, ...) verbatim, including ones read from the
+  environment. Those values now print as `<redacted>`.
+- The YAML parser no longer keeps the values of substituted variables after a parse.
+- `GET /api/v1/_config/environment-variables` treated whitelist entries as variable names, so a
+  pattern such as `^DB_.*` listed nothing. It now lists the variables that actually exist and match
+  the whitelist (plus plain-name entries, reported as unavailable when unset).
+
 ### Added: unknown top-level configuration keys are reported
 
 A top-level key in `flapi.yaml` that flAPI does not read now logs a warning at startup (and under
