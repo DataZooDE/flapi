@@ -742,6 +742,9 @@ public:
     };
     ValidationResult validateEndpointConfig(const EndpointConfig& config) const;
     ValidationResult validateEndpointConfigFromYaml(const std::string& yaml_content) const;
+    // Top-level keys of the main configuration that flAPI reads (or deliberately allows).
+    static const std::vector<std::string>& KnownTopLevelKeys();
+
     ValidationResult validateEndpointConfigFile(const std::filesystem::path& file_path) const;
     
     // File persistence (only for programmatic creation/export - destroys formatting)
@@ -750,6 +753,7 @@ public:
     // Reload endpoint from disk (after external edit)
     bool reloadEndpointConfig(const std::string& slug_or_path);
 
+    void warnOnUnknownTopLevelKeys() const;
     void printConfig() const;
     static void printYamlNode(const YAML::Node& node, int indent = 0);
 

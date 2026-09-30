@@ -328,6 +328,10 @@ std::string ExtendedYamlParser::preprocessContent(const std::string& content,
                 }
             } catch (const std::exception& e) {
                 CROW_LOG_DEBUG << "Failed to load include file: " << e.what();
+                // A whitelist violation is not a path problem; let the operator see it.
+                if (std::string(e.what()).find("environment variable") != std::string::npos) {
+                    throw std::runtime_error("In included file '" + resolved_path.string() + "': " + e.what());
+                }
                 throw std::runtime_error("Could not resolve include path: " + resolved_path.string());
             }
 
@@ -649,8 +653,11 @@ bool ExtendedYamlParser::resolveIncludePath(const std::filesystem::path& include
     return false;
 }
 
-YAML::Node ExtendedYamlParser::loadYamlFile(const std::filesystem::path& file_path) {
-    return YAML::Load(ReadConfigFile(file_path));
+YAML::Node ExtendedYamlParser::loadYamlFile(const std::filesystem::path& file_path) const {
+    // Included content gets the same {{env.NAME}} substitution, and the same
+    // whitelist enforcement, as the file that includes it (#165). Without this a
+    // password in a shared auth file stayed the literal text `{{env.X}}`.
+    return YAML::Load(substituteEnvironmentVariables(ReadConfigFile(file_path)));
 }
 
 YAML::Node ExtendedYamlParser::extractSection(const YAML::Node& node, const std::string& section_name) {

@@ -184,6 +184,56 @@ void ConfigManager::applyEnvironmentPolicy() {
     yaml_parser.setEnvironmentPolicy(std::move(whitelist), /*error_on_unlisted=*/true);
 }
 
+const std::vector<std::string>& ConfigManager::KnownTopLevelKeys() {
+    // Every top-level key this file reads, plus `version` (inert metadata that
+    // shipped examples carry) and `environment-whitelist` (rejected with its own
+    // error by applyEnvironmentPolicy). scripts/check_known_config_keys.sh fails
+    // when a reader is added to this file without its key being listed here.
+    static const std::vector<std::string> keys = {
+        "project-name", "project-description", "server-name", "http-port", "http-host",
+        "log-level", "stall-timeout-s", "log-format", "cache-schema", "telemetry",
+        "template", "duckdb", "ducklake", "audit", "tracing", "storage", "mcp",
+        "heartbeat", "connections", "rate_limit", "cors", "enforce-https", "auth",
+        "version", "environment-whitelist", "server"};
+    return keys;
+}
+
+void ConfigManager::warnOnUnknownTopLevelKeys() const {
+    // A key nothing reads silently does nothing - the class of bug behind #151,
+    // #153 and #157. Warn rather than fail: operators carry their own annotation
+    // keys, and this must not stop a working config from starting.
+    static const std::vector<std::pair<std::string, std::string>> hints = {
+        {"rate-limit", "did you mean the global `rate_limit` (underscore)? `rate-limit` is the per-endpoint key"},
+        {"https", "did you mean `enforce-https`?"},
+        {"description", "did you mean `project-description`?"},
+        {"name", "did you mean `project-name`?"},
+        {"port", "did you mean `http-port`?"},
+        {"host", "did you mean `http-host`?"},
+        {"template-source", "`template-source` belongs in an endpoint file, not the main configuration"},
+    };
+    if (!config.IsMap()) {
+        return;
+    }
+    const auto& known = KnownTopLevelKeys();
+    for (const auto& entry : config) {
+        if (!entry.first.IsScalar()) {
+            continue;
+        }
+        const auto key = entry.first.Scalar();
+        if (std::find(known.begin(), known.end(), key) != known.end()) {
+            continue;
+        }
+        std::string hint;
+        for (const auto& h : hints) {
+            if (h.first == key) {
+                hint = ": " + h.second;
+            }
+        }
+        CROW_LOG_WARNING << "Unknown top-level configuration key `" << key
+                         << "` is ignored; nothing reads it" << hint << ".";
+    }
+}
+
 void ConfigManager::parseMainConfig() {
     try {
         CROW_LOG_INFO << "Parsing main configuration";
@@ -216,6 +266,8 @@ void ConfigManager::parseMainConfig() {
                 "environment variables.",
                 "server");
         }
+
+        warnOnUnknownTopLevelKeys();
 
         project_name = safeGet<std::string>(config, "project-name", "project-name");
         project_description = safeGet<std::string>(config, "project-description", "project-description");
@@ -643,6 +695,12 @@ void ConfigManager::parseMCPConfig() {
                     user.username = safeGet<std::string>(user_entry, "username", "mcp.auth.users[].username");
                     user.password = safeGet<std::string>(user_entry, "password", "mcp.auth.users[].password");
 
+                    if (user.username.empty() || user.password.empty()) {
+                        throw std::runtime_error(
+                            "mcp.auth.users: a user has an empty username or password. If it comes from "
+                            "{{env.NAME}}, that variable is unset or empty.");
+                    }
+
                     // Parse roles if present
                     if (user_entry["roles"]) {
                         for (const auto& role : user_entry["roles"]) {
@@ -1012,6 +1070,11 @@ void ConfigManager::parseEndpointAuth(const YAML::Node& endpoint_config, Endpoin
                 AuthUser auth_user;
                 auth_user.username = safeGet<std::string>(user, "username", "auth.users.username");
                 auth_user.password = safeGet<std::string>(user, "password", "auth.users.password");
+                if (auth_user.username.empty() || auth_user.password.empty()) {
+                    throw std::runtime_error(
+                        "auth.users: a user has an empty username or password. If it comes from "
+                        "{{env.NAME}}, that variable is unset or empty.");
+                }
                 auth_user.roles = safeGet<std::vector<std::string>>(user, "roles", "auth.users.roles", std::vector<std::string>());
                 endpoint.auth.users.push_back(auth_user);
                 CROW_LOG_DEBUG << "\t\t\tAdded user: " << auth_user.username << " with " << auth_user.roles.size() << " roles";

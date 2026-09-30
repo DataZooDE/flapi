@@ -14,6 +14,21 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   pattern such as `^DB_.*` listed nothing. It now lists the variables that actually exist and match
   the whitelist (plus plain-name entries, reported as unavailable when unset).
 
+### Added: unknown top-level configuration keys are reported
+
+A top-level key in `flapi.yaml` that flAPI does not read now logs a warning at startup (and under
+`--validate-config`) instead of being silently ignored, with a hint for common near-misses such as
+`rate-limit` (per-endpoint) vs `rate_limit` (global) and `https` vs `enforce-https`. It is a warning,
+never an error, so a working configuration keeps starting. `version:` stays allowed as metadata.
+
+### Fixed: `{{env.NAME}}` in an `{{include}}`d file was never substituted or checked
+
+A password in a shared file such as `auth.yaml` stayed the literal text `{{env.DB_PASSWORD}}`, and
+an unlisted variable there raised no error. Included files now follow the same substitution and
+`template.environment-whitelist` rules as the file that includes them. Because an unset variable
+substitutes as empty, an `auth.users` entry with an empty username or password now stops startup.
+The shipped customers example uses demo credentials instead of unset `CUSTOMER_API_*` variables.
+
 ### Fixed: `--validate-config` rejected MCP prompt files; `flapi pack` now validates first
 
 - `--validate-config` reported an MCP prompt file (`mcp-prompt:`) as invalid because it demanded a
