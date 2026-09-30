@@ -1624,7 +1624,11 @@ void ConfigManager::printYamlNode(const YAML::Node& node, int indent) {
             for (YAML::const_iterator it = node.begin(); it != node.end(); ++it) {
                 std::cout << indent_str << it->first.Scalar() << ": ";
                 if (it->second.IsScalar()) {
-                    std::cout << it->second.Scalar() << std::endl;
+                    // The node is post-substitution: a password that came from
+                    // {{env.X}} is in it verbatim (#166).
+                    std::cout << (isCredentialKey(it->first.Scalar()) ? std::string("<redacted>")
+                                                                      : it->second.Scalar())
+                              << std::endl;
                 } else {
                     std::cout << std::endl;
                     printYamlNode(it->second, indent + 1);

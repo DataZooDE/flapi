@@ -201,7 +201,9 @@ value: {{env.SIMPLE_VAR}}
 
     // Check that resolved variables are tracked
     REQUIRE(result.resolved_variables.size() > 0);
-    REQUIRE(result.resolved_variables["SIMPLE_VAR"] == "simple_value");
+    // Names are tracked; the VALUE must not be retained (#166).
+    REQUIRE(result.resolved_variables.count("SIMPLE_VAR") == 1);
+    REQUIRE(result.resolved_variables["SIMPLE_VAR"] != "simple_value");
 
     unsetenv("SIMPLE_VAR");
 }
