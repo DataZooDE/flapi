@@ -17,10 +17,10 @@ auth:
   type: basic
   users:
     - username: admin
-      password: '${ADMIN_PASSWORD}'
+      password: '{{env.ADMIN_PASSWORD}}'
       roles: [admin, read, write]
     - username: reader
-      password: '${READER_PASSWORD}'
+      password: '{{env.READER_PASSWORD}}'
       roles: [read]
 ```
 
@@ -28,7 +28,7 @@ auth:
 curl -u reader:$READER_PASSWORD http://localhost:8080/customers
 ```
 
-**Never write a literal password.** `${VAR}` reads from the environment; see
+**Never write a literal password.** `'{{env.VAR}}'` reads from the environment (the variable must match `template.environment-whitelist`); see
 [reusing config and reading the environment](./yaml-includes.md) for the
 whitelist rules.
 

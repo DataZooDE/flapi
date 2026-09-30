@@ -82,7 +82,7 @@ public:
 auth:
   enabled: true
   type: jwt
-  jwt_secret: ${JWT_SECRET}
+  jwt_secret: '{{env.JWT_SECRET}}'
   jwt_issuer: my-app
 ```
 
@@ -111,10 +111,10 @@ auth:
   type: basic
   users:
     - username: admin
-      password: ${ADMIN_PASSWORD}
+      password: '{{env.ADMIN_PASSWORD}}'
       roles: [admin, user]
     - username: reader
-      password: ${READER_PASSWORD}
+      password: '{{env.READER_PASSWORD}}'
       roles: [user]
 ```
 
@@ -132,7 +132,7 @@ auth:
   oidc:
     provider_type: google          # or microsoft, keycloak, generic
     issuer_url: https://accounts.google.com
-    client_id: ${GOOGLE_CLIENT_ID}
+    client_id: '{{env.GOOGLE_CLIENT_ID}}'
     allowed_audiences:
       - my-app-client-id
     username_claim: email
@@ -444,7 +444,7 @@ mcp:
   auth:
     enabled: true
     type: bearer
-    jwt_secret: ${MCP_JWT_SECRET}
+    jwt_secret: '{{env.MCP_JWT_SECRET}}'
     methods:
       tools/call:
         required: true
@@ -466,10 +466,10 @@ mcp:
    control. See _Secrets and the bundle_ below.
 
 ```yaml
-https:
+enforce-https:
   enabled: true
-  ssl_cert_file: /path/to/cert.pem
-  ssl_key_file: /path/to/key.pem
+  ssl-cert-file: /path/to/cert.pem
+  ssl-key-file: /path/to/key.pem
 ```
 
 ## Secrets and the bundle

@@ -67,17 +67,13 @@ heartbeat:
   worker-interval: 10
 
 # HTTPS enforcement configuration
-enforce-https:
-  # Whether to force HTTPS for all connections
-  enabled: false
-
 # Direct TLS termination by flAPI's embedded server (optional). Production
 # deployments usually terminate TLS at a reverse proxy; enable this only
-# if flAPI is exposed directly.
-# https:
-#   enabled: true
-#   ssl_cert_file: './ssl/cert.pem'
-#   ssl_key_file: './ssl/key.pem'
+# if flAPI is exposed directly. Requires both files when enabled.
+enforce-https:
+  enabled: false
+  # ssl-cert-file: './ssl/cert.pem'
+  # ssl-key-file: './ssl/key.pem'
 
 # CORS allow-list. The historic wildcard '*' is permitted but the
 # startup auditor warns if it is combined with auth.enabled: true
@@ -197,7 +193,7 @@ mcp:
   # auth:
   #   enabled: true
   #   type: bearer
-  #   jwt-secret: '${MCP_JWT_SECRET}'
+  #   jwt-secret: '{{env.MCP_JWT_SECRET}}'
   #   jwt-issuer: 'https://issuer.example.com'
 
   # Option 1: Load instructions from external markdown file

@@ -1247,7 +1247,7 @@ mcp:
   auth:
     enabled: true
     type: bearer
-    jwt-secret: "${JWT_SECRET}"
+    jwt-secret: "{{env.JWT_SECRET}}"
     jwt-issuer: "my-auth-server"
 ```
 
@@ -1281,7 +1281,7 @@ mcp:
       provider-type: auth0  # or: okta, google, azure, generic
       issuer-url: "https://your-tenant.auth0.com/"
       client-id: "your-client-id"
-      client-secret: "${OIDC_CLIENT_SECRET}"
+      client-secret: "{{env.OIDC_CLIENT_SECRET}}"
       allowed-audiences:
         - "your-api-audience"
       username-claim: email
@@ -1309,7 +1309,7 @@ mcp:
   auth:
     enabled: true
     type: bearer
-    jwt-secret: "${JWT_SECRET}"
+    jwt-secret: "{{env.JWT_SECRET}}"
     methods:
       initialize:
         required: false    # Allow unauthenticated initialize
@@ -1790,7 +1790,7 @@ mcp:
   auth:
     enabled: true
     type: bearer
-    jwt-secret: "${JWT_SECRET}"
+    jwt-secret: "{{env.JWT_SECRET}}"
     jwt-issuer: "customer-api"
 
     # Per-method overrides

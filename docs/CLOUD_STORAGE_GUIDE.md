@@ -290,12 +290,12 @@ Use environment variables for sensitive values:
 ```yaml
 # Good - secrets from environment
 auth:
-  jwt-secret: '${JWT_SECRET}'
+  jwt-secret: '{{env.JWT_SECRET}}'
 
 connections:
   postgres:
     properties:
-      password: '${DB_PASSWORD}'
+      password: '{{env.DB_PASSWORD}}'
 ```
 
 ### 4. Enable Server-Side Encryption

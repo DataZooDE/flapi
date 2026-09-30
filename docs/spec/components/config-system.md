@@ -101,7 +101,7 @@ Responsible for loading YAML files from disk:
 - Loads main `flapi.yaml` configuration
 - Recursively scans `sqls/` directory for endpoint configs
 - Resolves relative paths to absolute paths
-- Handles environment variable substitution (`${VAR_NAME}`)
+- Handles environment variable substitution (`{{env.VAR_NAME}}`, checked against `template.environment-whitelist`)
 
 **Key methods:**
 ```cpp
