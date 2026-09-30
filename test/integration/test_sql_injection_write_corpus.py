@@ -30,6 +30,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import zlib
 from typing import Any, Iterator, List
 
 import pytest
@@ -272,7 +273,9 @@ class TestSqlInjectionWriteCorpus:
     @pytest.mark.parametrize("payload", NAME_INJECTION_PAYLOADS)
     def test_name_injection_payload_inserts_as_literal_only(self, write_server, payload):
         before = _list_widgets(write_server)
-        unique_id = 1_000 + hash(payload) % 1_000_000  # avoid PK collisions across parametrize
+        # Deterministic (str hash() is randomised per process) and always below the
+        # endpoint's max of 1_000_000; the old expression could reach 1_000_999.
+        unique_id = 1_000 + zlib.crc32(payload.encode()) % 900_000  # avoid PK collisions across parametrize
         r = requests.post(
             f"{write_server}/widgets/",
             json={"id": unique_id, "name": payload},
