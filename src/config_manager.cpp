@@ -184,6 +184,56 @@ void ConfigManager::applyEnvironmentPolicy() {
     yaml_parser.setEnvironmentPolicy(std::move(whitelist), /*error_on_unlisted=*/true);
 }
 
+const std::vector<std::string>& ConfigManager::KnownTopLevelKeys() {
+    // Every top-level key this file reads, plus `version` (inert metadata that
+    // shipped examples carry) and `environment-whitelist` (rejected with its own
+    // error by applyEnvironmentPolicy). scripts/check_known_config_keys.sh fails
+    // when a reader is added to this file without its key being listed here.
+    static const std::vector<std::string> keys = {
+        "project-name", "project-description", "server-name", "http-port", "http-host",
+        "log-level", "stall-timeout-s", "log-format", "cache-schema", "telemetry",
+        "template", "duckdb", "ducklake", "audit", "tracing", "storage", "mcp",
+        "heartbeat", "connections", "rate_limit", "cors", "enforce-https", "auth",
+        "version", "environment-whitelist", "server"};
+    return keys;
+}
+
+void ConfigManager::warnOnUnknownTopLevelKeys() const {
+    // A key nothing reads silently does nothing - the class of bug behind #151,
+    // #153 and #157. Warn rather than fail: operators carry their own annotation
+    // keys, and this must not stop a working config from starting.
+    static const std::vector<std::pair<std::string, std::string>> hints = {
+        {"rate-limit", "did you mean the global `rate_limit` (underscore)? `rate-limit` is the per-endpoint key"},
+        {"https", "did you mean `enforce-https`?"},
+        {"description", "did you mean `project-description`?"},
+        {"name", "did you mean `project-name`?"},
+        {"port", "did you mean `http-port`?"},
+        {"host", "did you mean `http-host`?"},
+        {"template-source", "`template-source` belongs in an endpoint file, not the main configuration"},
+    };
+    if (!config.IsMap()) {
+        return;
+    }
+    const auto& known = KnownTopLevelKeys();
+    for (const auto& entry : config) {
+        if (!entry.first.IsScalar()) {
+            continue;
+        }
+        const auto key = entry.first.Scalar();
+        if (std::find(known.begin(), known.end(), key) != known.end()) {
+            continue;
+        }
+        std::string hint;
+        for (const auto& h : hints) {
+            if (h.first == key) {
+                hint = ": " + h.second;
+            }
+        }
+        CROW_LOG_WARNING << "Unknown top-level configuration key `" << key
+                         << "` is ignored; nothing reads it" << hint << ".";
+    }
+}
+
 void ConfigManager::parseMainConfig() {
     try {
         CROW_LOG_INFO << "Parsing main configuration";
@@ -216,6 +266,8 @@ void ConfigManager::parseMainConfig() {
                 "environment variables.",
                 "server");
         }
+
+        warnOnUnknownTopLevelKeys();
 
         project_name = safeGet<std::string>(config, "project-name", "project-name");
         project_description = safeGet<std::string>(config, "project-description", "project-description");
