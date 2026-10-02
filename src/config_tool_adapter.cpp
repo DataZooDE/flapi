@@ -1,3 +1,5 @@
+#include <fstream>
+#include <filesystem>
 #include "config_tool_adapter.hpp"
 
 #include <openssl/crypto.h>
@@ -52,6 +54,13 @@ const SchemaField kPath{"path", "string",
                         "The endpoint's url-path, e.g. \"/customers/\".", true};
 const SchemaField kEndpoint{"endpoint", "string",
                             "The endpoint's url-path, e.g. \"/customers/\".", true};
+const SchemaField kMethod{"method", "string", "HTTP method (default GET).", false};
+const SchemaField kTemplateSource{"template-source", "string",
+                                  "SQL template file name, relative to the templates directory "
+                                  "(default: <slug>.sql). Created with a placeholder query if absent; "
+                                  "replace it with flapi_update_template.", false};
+const SchemaField kConnection{"connection", "array",
+                              "Connection name(s) from the configuration, e.g. [\"my-data\"].", false};
 const SchemaField kContent{"content", "string", "The full SQL template text.", true};
 const SchemaField kParams{"params", "object",
                           "Template parameters, as a name/value object.", false};
@@ -269,8 +278,9 @@ void ConfigToolAdapter::registerEndpointTools() {
     // flapi_create_endpoint - Create a new endpoint
     tools_["flapi_create_endpoint"] = ConfigToolDef{
         "flapi_create_endpoint",
-        "Create a new endpoint with the provided configuration. Returns the full endpoint configuration.",
-        build_schema({kPath}),
+        "Create a new endpoint and write its configuration (and an initial SQL template) under the "
+        "templates directory, so flapi_update_template, flapi_reload_endpoint and restarts keep it.",
+        build_schema({kPath, kMethod, kTemplateSource, kConnection}),
         build_basic_schema()
     };
     tool_auth_required_["flapi_create_endpoint"] = true;
@@ -956,7 +966,12 @@ ConfigToolResult ConfigToolAdapter::executeCreateEndpoint(const crow::json::wval
             method = "GET";
         }
 
-        std::string template_source = extractStringParam(args, "template_source", false, error_msg);
+        // `template-source` is what the YAML key and the docs call it; the
+        // underscore spelling was the only one read, and neither was declared.
+        std::string template_source = extractStringParam(args, "template-source", false, error_msg);
+        if (template_source.empty()) {
+            template_source = extractStringParam(args, "template_source", false, error_msg);
+        }
 
         // Check if endpoint already exists
         if (config_manager_->getEndpointForPath(path) != nullptr) {
@@ -971,10 +986,82 @@ ConfigToolResult ConfigToolAdapter::executeCreateEndpoint(const crow::json::wval
         EndpointConfig new_endpoint;
         new_endpoint.urlPath = path;
         new_endpoint.method = method;
+
+        if (args.count("connection")) {
+            auto parsed = crow::json::load(args["connection"].dump());
+            if (parsed && parsed.t() == crow::json::type::List) {
+                for (const auto& item : parsed) {
+                    new_endpoint.connection.push_back(item.s());
+                }
+            } else if (parsed && parsed.t() == crow::json::type::String) {
+                new_endpoint.connection.push_back(parsed.s());
+            }
+        }
+
+        // File names from the slug, minus the leading '-' a leading '/' becomes.
+        std::string slug = new_endpoint.getSlug();
+        slug.erase(0, slug.find_first_not_of('-'));
+        if (slug.empty()) {
+            slug = "endpoint";
+        }
+        if (template_source.empty()) {
+            template_source = slug + ".sql";
+        }
+        // The template must stay inside the templates directory.
+        {
+            const std::filesystem::path rel(template_source);
+            bool escapes = rel.is_absolute() || template_source.find('\\') != std::string::npos ||
+                           template_source.find(':') != std::string::npos;
+            for (const auto& part : rel) {
+                if (part == "..") {
+                    escapes = true;
+                }
+            }
+            if (escapes) {
+                return createErrorResult(-32602,
+                    "template-source must be a relative path inside the templates directory: " + template_source);
+            }
+        }
         new_endpoint.templateSource = template_source;
 
-        // Add endpoint to config manager
-        config_manager_->addEndpoint(new_endpoint);
+        // Persist, so reload and a restart find it. Files are written first and
+        // removed again if the endpoint does not validate or cannot be added.
+        const std::filesystem::path template_dir = config_manager_->getTemplateConfig().path;
+        const std::filesystem::path sql_file = template_dir / template_source;
+        const std::filesystem::path yaml_file = template_dir / (slug + ".yaml");
+        if (std::filesystem::exists(yaml_file)) {
+            return createErrorResult(-32603, "Endpoint file already exists: " + yaml_file.string());
+        }
+        const bool created_sql = !std::filesystem::exists(sql_file);
+        if (created_sql) {
+            std::filesystem::create_directories(sql_file.parent_path());
+            std::ofstream sql(sql_file);
+            sql << "SELECT 1 AS placeholder\n";
+        }
+        new_endpoint.config_file_path = yaml_file.string();
+        auto cleanup = [&]() {
+            std::error_code ec;
+            std::filesystem::remove(yaml_file, ec);
+            if (created_sql) {
+                std::filesystem::remove(sql_file, ec);
+            }
+        };
+        try {
+            const auto validation = config_manager_->validateEndpointConfig(new_endpoint);
+            if (!validation.valid) {
+                cleanup();
+                std::string joined;
+                for (const auto& e : validation.errors) {
+                    joined += (joined.empty() ? "" : "; ") + e;
+                }
+                return createErrorResult(-32602, "Invalid endpoint: " + joined);
+            }
+            config_manager_->persistEndpointConfigToFile(new_endpoint, yaml_file);
+            config_manager_->addEndpoint(new_endpoint);
+        } catch (...) {
+            cleanup();
+            throw;
+        }
 
         crow::json::wvalue result;
         result["status"] = "success";
