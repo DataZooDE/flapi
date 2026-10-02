@@ -1199,3 +1199,34 @@ url-path: /customers/
     }
 }
 
+
+TEST_CASE_METHOD(ExtendedYamlTestFixture,
+                 "ExtendedYamlParser: include comment detection matches the environment pass (#166)",
+                 "[extended_yaml_parser][comments]") {
+    const std::string include = "{{include:request from common/request.yaml}}";
+
+    SECTION("a full-line comment holding an include is skipped") {
+        auto result = parser.parseString("# " + include + "\nname: x\n", temp_dir);
+        REQUIRE(result.success);
+        REQUIRE(!result.node["request"]);
+    }
+
+    SECTION("a tab-indented comment is skipped") {
+        auto result = parser.parseString("a:\n\t# " + include + "\nname: x\n", temp_dir);
+        REQUIRE(!result.node["request"]);
+    }
+
+    SECTION("a CRLF comment line is skipped") {
+        auto result = parser.parseString("# " + include + "\r\nname: x\r\n", temp_dir);
+        REQUIRE(!result.node["request"]);
+    }
+
+    SECTION("a '#' line inside a block scalar is content, not a comment") {
+        // The environment pass already treated it as content; the include pass
+        // used to call it a comment and silently leave the directive in the text.
+        auto result = parser.parseString(
+            "text: |\n  # " + include + "\nname: x\n", temp_dir);
+        REQUIRE(result.success);
+        REQUIRE(result.node["text"].Scalar().find("{{include") == std::string::npos);
+    }
+}

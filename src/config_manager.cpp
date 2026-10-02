@@ -342,6 +342,12 @@ void ConfigManager::parseTemplateConfig() {
             template_config.environment_whitelist = template_node["environment-whitelist"].as<std::vector<std::string>>();
             std::stringstream whitelist_stream;
             for (const auto& item : template_config.environment_whitelist) {
+                try {
+                    CompiledWhitelistPattern(item);  // validate once, at load
+                } catch (const std::regex_error& e) {
+                    throw ConfigurationError("Invalid regular expression '" + item + "': " + e.what(),
+                                             "template.environment-whitelist");
+                }
                 whitelist_stream << item << " ";
             }   
             CROW_LOG_DEBUG << "Environment Whitelist: " << whitelist_stream.str();

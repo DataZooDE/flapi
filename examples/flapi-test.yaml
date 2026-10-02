@@ -30,7 +30,12 @@ connections:
       LOAD sqlite;
       ATTACH IF NOT EXISTS './examples/data/northwind.sqlite' AS nw (TYPE sqlite);
 
-  # Note: sap-abap-trial connection excluded - ERPL extension causes SIGABRT in test context
+  # The real sap-abap-trial connection is excluded - the ERPL extension causes SIGABRT in
+  # test context. This stand-in has no init and loads nothing, so the two sap/ endpoints
+  # that name it are well-formed (and validate); calling them fails, as it always did.
+  sap-abap-trial:
+    properties:
+      note: stand-in, not a working SAP connection
 
   taxi-parquet:
     properties:

@@ -24,6 +24,10 @@ namespace flapi {
  * - Circular dependency detection
  * - Path resolution (relative and absolute)
  */
+/// A whitelist pattern compiled once and cached for the process (#166).
+/// Throws std::regex_error for an invalid pattern.
+const std::regex& CompiledWhitelistPattern(const std::string& pattern);
+
 class ExtendedYamlParser {
 public:
     /**

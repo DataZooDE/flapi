@@ -497,8 +497,7 @@ struct TemplateConfig {
             return false;  // Empty means NONE: an unset whitelist must never mean "no protection" (#157)
         }
         for (const auto& pattern : environment_whitelist) {
-            std::regex regex(pattern);
-            if (std::regex_match(varName, regex)) {
+            if (std::regex_match(varName, CompiledWhitelistPattern(pattern))) {
                 return true;
             }
         }

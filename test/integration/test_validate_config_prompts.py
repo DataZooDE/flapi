@@ -79,10 +79,10 @@ class TestPromptsValidate:
 
 class TestShippedExamplesValidate:
 
-    # flapi-test.yaml is NOT here: it fails --validate-config too, but for a
-    # different and legitimate reason - two SAP endpoints reference a connection the
-    # test config deliberately excludes. Filed separately; add it back when fixed.
-    @pytest.mark.parametrize("name", ["flapi.yaml", "flapi-bigquery-procedure.yaml"])
+    # flapi-test.yaml declares a stand-in sap-abap-trial connection (#167): the real
+    # one is excluded for test isolation, but two sap/ endpoints name it.
+    @pytest.mark.parametrize("name", ["flapi.yaml", "flapi-bigquery-procedure.yaml",
+                                      "flapi-test.yaml"])
     def test_the_example_configs_pass_their_own_validator(self, name):
         # flapi.yaml is the one that failed: it loads
         # sqls/customers/customers-mcp-prompt.yaml.
