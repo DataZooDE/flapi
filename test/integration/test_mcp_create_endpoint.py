@@ -122,3 +122,20 @@ def test_a_template_source_cannot_leave_the_template_directory(bad):
                       connection=["inmem"])
         assert "error" in resp or resp["result"].get("isError"), resp
         assert not os.path.exists(os.path.join(s.tmp, "escape.sql"))
+
+
+def test_delete_removes_the_endpoint_file_so_it_does_not_return_after_a_restart():
+    s = _Server()
+    with s:
+        _ok(s.tool("flapi_create_endpoint", path="/gone", connection=["inmem"]))
+        yaml_file = os.path.join(s.tmp, "sqls", "gone.yaml")
+        sql_file = os.path.join(s.tmp, "sqls", "gone.sql")
+        assert os.path.exists(yaml_file)
+        _ok(s.tool("flapi_delete_endpoint", path="/gone"))
+        assert not os.path.exists(yaml_file), "the endpoint YAML was left behind"
+        assert os.path.exists(sql_file), "the SQL template must not be deleted"
+    again = _Server(tmp=s.tmp)
+    with again:
+        assert requests.get(f"{again.base}/gone", timeout=15).status_code == 404
+        # ...and the path is free to create again.
+        _ok(again.tool("flapi_create_endpoint", path="/gone", connection=["inmem"]))
