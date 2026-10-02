@@ -1230,3 +1230,33 @@ TEST_CASE_METHOD(ExtendedYamlTestFixture,
         REQUIRE(result.node["text"].Scalar().find("{{include") == std::string::npos);
     }
 }
+
+TEST_CASE("ExtendedYamlParser: spaced env references are substituted and whitelisted (#166)",
+          "[extended_yaml_parser][env-whitelist][spaced]") {
+    setenv("SPACED_VAR", "spaced_value", 1);
+    ExtendedYamlParser::IncludeConfig cfg;
+    cfg.allow_environment_variables = true;
+    cfg.environment_whitelist = {"^SPACED_.*"};
+    cfg.error_on_unlisted_environment_variable = true;
+    ExtendedYamlParser parser(cfg);
+
+    SECTION("{{ env.X }} and {{env.X }} are substituted like {{env.X}}") {
+        auto result = parser.parseString("a: '{{ env.SPACED_VAR }}'\nb: '{{env.SPACED_VAR }}'\nc: '{{env.SPACED_VAR}}'\n", "/tmp");
+        REQUIRE(result.success);
+        REQUIRE(result.node["a"].Scalar() == "spaced_value");
+        REQUIRE(result.node["b"].Scalar() == "spaced_value");
+        REQUIRE(result.node["c"].Scalar() == "spaced_value");
+    }
+
+    SECTION("an unlisted spaced reference is refused, not left literal") {
+        auto result = parser.parseString("a: '{{ env.OTHER_VAR }}'\n", "/tmp");
+        REQUIRE(!result.success);
+        REQUIRE(result.error_message.find("OTHER_VAR") != std::string::npos);
+    }
+
+    SECTION("the triple-brace SQL form is left for the template pass") {
+        auto result = parser.parseString("sql: \"SELECT '{{{ env.OTHER_VAR }}}'\"\n", "/tmp");
+        REQUIRE(result.success);
+        REQUIRE(result.node["sql"].Scalar() == "SELECT '{{{ env.OTHER_VAR }}}'");
+    }
+}

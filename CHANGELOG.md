@@ -4,6 +4,13 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Fixed: `{{ env.NAME }}` (with spaces) in a YAML file stayed literal
+
+In YAML configuration files only the exact `{{env.NAME}}` was substituted; `{{ env.NAME }}` and
+`{{env.NAME }}` stayed as literal text with no error. They are now substituted and checked against
+`template.environment-whitelist` like the exact form. The triple-brace SQL form `{{{ env.NAME }}}`
+is not touched. `${NAME}` is still not supported.
+
 ### Fixed: every shipped example validates; include/comment handling is consistent
 
 - `examples/flapi-test.yaml` now validates: it declares a stand-in `sap-abap-trial` connection for

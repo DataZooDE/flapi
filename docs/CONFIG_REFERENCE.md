@@ -268,7 +268,7 @@ template:
   A line starting with `#` *inside* a block scalar (`key: |`) is text, not a comment, so a variable
   on it is substituted or refused like any other.
 - The `path` is relative to the main configuration file location.
-- `${NAME}` is **not** a supported syntax; write `{{env.NAME}}`.
+- `${NAME}` is **not** a supported syntax; write `{{env.NAME}}`. In YAML files, spaces inside the braces are accepted (`{{ env.NAME }}`); the triple-brace `{{{ env.NAME }}}` form is SQL-template syntax and is left for the template pass.
 
 > **Implementation:** `src/config_manager.cpp` (`applyEnvironmentPolicy`), `src/extended_yaml_parser.cpp`, `src/sql_template_processor.cpp` | **Tests:** `test/integration/test_environment_whitelist.py`, `test/cpp/extended_yaml_parser_test.cpp`, `test/cpp/sql_template_processor_test.cpp`
 
