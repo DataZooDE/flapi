@@ -12,6 +12,15 @@ sample endpoint also lacked `method`, the auth template used unsupported `${VAR}
 rate-limit template used keys flAPI never reads. The scaffold now generates the real keys, with an
 `environment-whitelist` for the variables its templates mention, and passes `--validate-config`.
 
+### Fixed: `flapi_create_endpoint` created an endpoint that could not be given a template
+
+The create tool ignored `template-source` (it read an undeclared `template_source`), kept the
+endpoint in memory only, and left `flapi_update_template` writing to the templates *directory* and
+`flapi_reload_endpoint` finding nothing on disk. It now declares `path`, `method`, `template-source`
+and `connection`, validates them, writes the endpoint YAML and a placeholder SQL file under the
+templates directory, and the endpoint serves, reloads and survives a restart. A `template-source`
+outside the templates directory is rejected.
+
 ### Fixed: `{{ env.NAME }}` (with spaces) in a YAML file stayed literal
 
 In YAML configuration files only the exact `{{env.NAME}}` was substituted; `{{ env.NAME }}` and
