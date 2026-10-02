@@ -161,7 +161,7 @@ YAML::Node ExtendedYamlParser::loadWithoutResolving(const std::filesystem::path&
     // Each `{{env.NAME}}` becomes an inert scalar. Done FIRST, so an include
     // directive that carries one in its path (`{{include from {{env.DIR}}/x}}`)
     // has no nested braces left when the directives are dropped next.
-    static const std::regex env_ref(R"(\{\{env\.([A-Za-z_][A-Za-z0-9_]*)\}\})");
+    static const std::regex env_ref(R"(\{\{[ \t]*env\.([A-Za-z_][A-Za-z0-9_]*)[ \t]*\}\})");
     content = std::regex_replace(content, env_ref, "ENVREF_$1");
 
     // Include directives are not YAML until they are expanded, and expanding
@@ -760,7 +760,7 @@ std::string ExtendedYamlParser::substituteEnvironmentVariables(const std::string
     }
 
     std::string result = input;
-    std::regex env_regex(R"(\{\{env\.([A-Za-z_][A-Za-z0-9_]*)\}\})");
+    std::regex env_regex(R"(\{\{[ \t]*env\.([A-Za-z_][A-Za-z0-9_]*)[ \t]*\}\})");
 
     auto matches_begin = std::sregex_iterator(result.begin(), result.end(), env_regex);
     auto matches_end = std::sregex_iterator();
@@ -796,6 +796,18 @@ std::string ExtendedYamlParser::substituteEnvironmentVariables(const std::string
     for (auto it = matches_begin; it != matches_end; ++it) {
         std::string var_name = it->str(1);
         CROW_LOG_DEBUG << "Processing environment variable: " << var_name;
+
+        // `{{ env.X }}` (spaces allowed) is a real reference (#166). But the
+        // triple-brace form `{{{ env.X }}}` is SQL-template syntax - an endpoint
+        // file can embed SQL - and is left for the template pass.
+        {
+            const size_t pos = static_cast<size_t>(it->position());
+            const size_t end = pos + static_cast<size_t>(it->length());
+            const bool spaced = it->str(0).find_first_of(" \t") != std::string::npos;
+            if (spaced && pos > 0 && result[pos - 1] == '{' && end < result.size() && result[end] == '}') {
+                continue;
+            }
+        }
 
         // A full-line YAML comment cannot reference anything. Operators write
         // "# password comes from {{env.DB_PASSWORD}}" as documentation; with the
