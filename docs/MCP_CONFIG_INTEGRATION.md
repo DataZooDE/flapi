@@ -91,13 +91,19 @@ The MCP client discovers available tools and calls a specific configuration tool
   "params": {
     "name": "flapi_create_endpoint",
     "arguments": {
-      "path": "customers",
+      "path": "/customers",
       "method": "POST",
-      "template_source": "customers_create.sql"
+      "template-source": "customers_create.sql",
+      "connection": ["my-data"]
     }
   }
 }
 ```
+
+`flapi_create_endpoint` writes `<slug>.yaml` and (if absent) a placeholder `<template-source>` file
+under the templates directory, so `flapi_update_template`, `flapi_reload_endpoint` and a restart all
+find the endpoint. `template-source` defaults to `<slug>.sql` and must stay inside the templates
+directory; `connection` must name a connection from the configuration.
 
 **2. MCPRouteHandlers Receives Request**
 
@@ -556,8 +562,9 @@ Clients can extract hints and present to users:
 // JavaScript MCP Client
 try {
   const result = await client.callTool("flapi_create_endpoint", {
-    path: "customers",
-    method: "POST"
+    path: "/customers",
+    method: "POST",
+    connection: ["my-data"]
   });
 } catch (error) {
   const details = JSON.parse(error.message);
