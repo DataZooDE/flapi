@@ -1196,6 +1196,7 @@ ConfigToolResult ConfigToolAdapter::executeDeleteEndpoint(const crow::json::wval
 
         std::string deleted_method = ep->method;
         std::string deleted_template = ep->templateSource;
+        const std::string deleted_file = ep->config_file_path;
 
         // Remove the endpoint
         bool removed = config_manager_->removeEndpointByPath(path);
@@ -1206,6 +1207,23 @@ ConfigToolResult ConfigToolAdapter::executeDeleteEndpoint(const crow::json::wval
             error_detail["method"] = deleted_method;
             error_detail["hint"] = "Ensure no active requests are using this endpoint";
             return createErrorResult(-32603, error_detail.dump());
+        }
+
+        // Deleting persists: remove the endpoint's YAML so it does not come back
+        // on the next start or reload. Only that file, and only from inside the
+        // templates directory; the SQL template is left alone.
+        if (!deleted_file.empty()) {
+            std::error_code ec;
+            const auto template_dir = std::filesystem::weakly_canonical(config_manager_->getTemplateConfig().path, ec);
+            const auto file = std::filesystem::weakly_canonical(deleted_file, ec);
+            const auto rel = file.lexically_relative(template_dir);
+            if (!rel.empty() && *rel.begin() != "..") {
+                std::filesystem::remove(file, ec);
+                if (ec) {
+                    CROW_LOG_WARNING << "flapi_delete_endpoint: removed " << path
+                                     << " from memory but could not delete " << file << ": " << ec.message();
+                }
+            }
         }
 
         crow::json::wvalue result;

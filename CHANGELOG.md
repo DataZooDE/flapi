@@ -12,6 +12,13 @@ sample endpoint also lacked `method`, the auth template used unsupported `${VAR}
 rate-limit template used keys flAPI never reads. The scaffold now generates the real keys, with an
 `environment-whitelist` for the variables its templates mention, and passes `--validate-config`.
 
+### Fixed: `flapi_delete_endpoint` now removes the endpoint's YAML file
+
+Since `flapi_create_endpoint` persists its endpoint, deleting one only from memory made it return on
+the next start or reload. Delete now also removes the endpoint's YAML file (only that file, only
+from inside the templates directory); the SQL template is left in place. This applies to
+hand-written endpoint files as well.
+
 ### Fixed: `flapi_create_endpoint` created an endpoint that could not be given a template
 
 The create tool ignored `template-source` (it read an undeclared `template_source`), kept the
