@@ -4,6 +4,15 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Fixed: every shipped example validates; include/comment handling is consistent
+
+- `examples/flapi-test.yaml` now validates: it declares a stand-in `sap-abap-trial` connection for
+  the two SAP endpoints that name it (the real one stays excluded for test isolation).
+- An `{{include}}` on a `#` line inside a `|` block scalar is now treated as content, matching how
+  `{{env.NAME}}` has always been handled there; full-line comments are still skipped.
+- Environment-whitelist patterns are compiled once instead of per lookup, and an invalid pattern is
+  rejected when the configuration loads.
+
 ### Fixed: documentation showed configuration that flAPI does not read
 
 - TLS is configured under `enforce-https` (`enabled`, `ssl-cert-file`, `ssl-key-file`). The reference,
