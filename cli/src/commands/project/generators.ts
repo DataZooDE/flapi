@@ -180,7 +180,7 @@ Documentation:
       // Check for required fields
       const hasProjectName = content.includes('project-name:');
       const hasConnections = content.includes('connections:');
-      const hasTemplateSource = content.includes('template-source:');
+      const hasTemplateSource = content.includes('template:');
 
       if (!hasProjectName || !hasConnections || !hasTemplateSource) {
         return {
@@ -188,7 +188,7 @@ Documentation:
           errors: [
             !hasProjectName ? 'Missing required field: project-name' : '',
             !hasConnections ? 'Missing required field: connections' : '',
-            !hasTemplateSource ? 'Missing required field: template-source' : '',
+            !hasTemplateSource ? 'Missing required field: template (with a path)' : '',
           ].filter((e) => e),
         };
       }

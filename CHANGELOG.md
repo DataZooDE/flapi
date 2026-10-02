@@ -4,6 +4,14 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Fixed: `flapii project init` scaffolded a configuration flAPI does not read
+
+The generated `flapi.yaml` used `description:` and a top-level `template-source:` (the real keys are
+`project-description` and `template: {path: ...}`), so the sample endpoint was never loaded. The
+sample endpoint also lacked `method`, the auth template used unsupported `${VAR}` references, and the
+rate-limit template used keys flAPI never reads. The scaffold now generates the real keys, with an
+`environment-whitelist` for the variables its templates mention, and passes `--validate-config`.
+
 ### Fixed: `{{ env.NAME }}` (with spaces) in a YAML file stayed literal
 
 In YAML configuration files only the exact `{{env.NAME}}` was substituted; `{{ env.NAME }}` and

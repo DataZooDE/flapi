@@ -9,14 +9,20 @@ export const PROJECT_TEMPLATES = {
    * Contains project metadata, connections, and settings
    */
   'flapi.yaml': `project-name: my-flapi-project
-description: Example flapi configuration
+project-description: Example flapi configuration
+
+# Endpoint YAML files and their SQL templates are loaded from this directory.
+template:
+  path: ./sqls
+  # Environment variables a config or template may read through {{env.NAME}}.
+  # A variable that matches no pattern here stops startup; an empty list allows none.
+  environment-whitelist:
+    - '^(API_PASSWORD|JWT_SECRET)$'
 
 connections:
   sample-data:
     properties:
       path: './data/sample.parquet'
-
-template-source: sqls
 `,
 
   /**
@@ -24,6 +30,7 @@ template-source: sqls
    * Demonstrates basic endpoint structure with parameters and validators
    */
   'sqls/sample.yaml': `url-path: /sample
+method: GET
 request:
   - field-name: id
     field-in: query
@@ -98,12 +105,12 @@ auth:
   type: basic
   users:
     - username: admin
-      password: \${API_PASSWORD}
+      password: '{{env.API_PASSWORD}}'
 
 # Example JWT (uncomment to use)
 # auth:
 #   type: jwt
-#   token-key: \${JWT_SECRET}
+#   jwt-secret: '{{env.JWT_SECRET}}'
 #   issuer: "example.com"
 `,
 
@@ -117,8 +124,8 @@ auth:
 # Example rate limiting: 100 requests per minute
 rate-limit:
   enabled: true
-  requests: 100
-  window: 60  # seconds
+  max: 100
+  interval: 60  # seconds
 `,
 };
 
