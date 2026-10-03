@@ -1,4 +1,5 @@
 #include <filesystem>
+#include <optional>
 #include <fstream>
 #include <sstream>
 #include <regex>
@@ -1417,6 +1418,13 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
         
         // If validation only is requested, perform validation checks
         if (validate_only) {
+            // The editor's UNSAVED text: validate this instead of the file on disk.
+            // Nothing is written; it is only rendered and EXPLAINed.
+            std::optional<std::string> candidate;
+            if (json.has("template") && json["template"].t() == crow::json::type::String) {
+                candidate = json["template"].s();
+            }
+            const auto secrets = collectTemplateSecrets(config_manager_.get(), *endpoint, params);
             crow::json::wvalue validation_response;
             crow::json::wvalue errors = crow::json::wvalue::list();
             crow::json::wvalue warnings = crow::json::wvalue::list();
@@ -1426,7 +1434,7 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
                 // 1. Validate Mustache template syntax by attempting to load it
                 std::string template_content;
                 try {
-                    template_content = sql_processor->loadTemplate(*endpoint);
+                    template_content = candidate ? *candidate : sql_processor->loadTemplate(*endpoint);
                 } catch (const std::exception& e) {
                     crow::json::wvalue error;
                     error["type"] = "template_load";
@@ -1474,7 +1482,14 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
                 // 3. Validate SQL by expanding and checking with DuckDB
                 if (is_valid) {
                     try {
-                        std::string expanded_sql = sql_processor->loadAndProcessTemplate(*endpoint, params);
+                        std::string expanded_sql;
+                        if (candidate) {
+                            std::map<std::string, std::string> render_params = params;
+                            expanded_sql = sql_processor->processTemplate(
+                                *candidate, sql_processor->createTemplateContext(*endpoint, render_params));
+                        } else {
+                            expanded_sql = sql_processor->loadAndProcessTemplate(*endpoint, params);
+                        }
                         
                         // Use DuckDB to validate the SQL syntax
                         auto db_manager = DatabaseManager::getInstance();
@@ -1486,14 +1501,14 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
                         } catch (const std::exception& sql_error) {
                             crow::json::wvalue error;
                             error["type"] = "sql_syntax";
-                            error["message"] = std::string("SQL validation failed: ") + sql_error.what();
+                            error["message"] = secrets.scrub(std::string("SQL validation failed: ") + sql_error.what());
                             errors[errors.size()] = std::move(error);
                             is_valid = false;
                         }
                     } catch (const std::exception& e) {
                         crow::json::wvalue error;
                         error["type"] = "template_expansion";
-                        error["message"] = std::string("Failed to expand template: ") + e.what();
+                        error["message"] = secrets.scrub(std::string("Failed to expand template: ") + e.what());
                         errors[errors.size()] = std::move(error);
                         is_valid = false;
                     }
