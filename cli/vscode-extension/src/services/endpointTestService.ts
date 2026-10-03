@@ -1,5 +1,7 @@
+import https from 'node:https';
 import axios, { AxiosRequestConfig, AxiosResponse } from 'axios';
 import * as vscode from 'vscode';
+import { readTransportSettings, TransportSettings } from './transportSettings';
 import { ResponseInfo, RequestHistory, AuthConfig } from '../types/endpointTest';
 
 const SENSITIVE_HEADER = /authorization|token|secret|password|passwd|api[-_]?key|cookie|credential|auth/i;
@@ -19,7 +21,16 @@ export function redactHeaders(headers: Record<string, string>): Record<string, s
 export class EndpointTestService {
   private outputChannel: vscode.OutputChannel;
 
-  constructor(outputChannel: vscode.OutputChannel) {
+  /**
+   * `getSettings` supplies the timeout (seconds) and TLS policy; it defaults to the
+   * `flapi.timeout` / `flapi.insecure` settings, the same ones the ConfigService
+   * client uses. This service talks to the generated REST routes, so it never gets
+   * the config-service token (only the auth the user picked in the tester).
+   */
+  constructor(
+    outputChannel: vscode.OutputChannel,
+    private getSettings: () => Pick<TransportSettings, 'timeout' | 'verifyTls'> = readTransportSettings,
+  ) {
     this.outputChannel = outputChannel;
   }
 
@@ -78,6 +89,8 @@ export class EndpointTestService {
       // Build auth headers
       const authHeaders = this.buildAuthHeaders(authConfig);
       
+      const settings = this.getSettings();
+
       // Prepare request configuration
       const config: AxiosRequestConfig = {
         method: method.toLowerCase() as any,
@@ -88,6 +101,8 @@ export class EndpointTestService {
           ...headers
         },
         params: parameters,
+        timeout: settings.timeout * 1000,
+        httpsAgent: settings.verifyTls ? undefined : new https.Agent({ rejectUnauthorized: false }),
         validateStatus: () => true // Accept all status codes
       };
 

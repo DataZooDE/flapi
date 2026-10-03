@@ -245,6 +245,23 @@
           "default": "http://localhost:8080",
           "description": "URL of the flapi server"
         },
+        "flapi.timeout": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "description": "Request timeout in seconds, for the config-service client and the endpoint tester"
+        },
+        "flapi.retries": {
+          "type": "number",
+          "default": 3,
+          "minimum": 0,
+          "description": "Retries for read (GET) requests to the config service after a network error or 429/5xx. Writes are never retried."
+        },
+        "flapi.insecure": {
+          "type": "boolean",
+          "default": false,
+          "description": "Skip TLS certificate verification (self-signed certificates). Applies to the config-service client and the endpoint tester."
+        },
         "flapi.configFile": {
           "type": "string",
           "default": "flapi.yaml",

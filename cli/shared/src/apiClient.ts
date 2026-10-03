@@ -1,16 +1,28 @@
-import axios from 'axios';
 import type { AxiosInstance, AxiosRequestConfig, InternalAxiosRequestConfig } from 'axios';
+import { createApiClient } from './lib/http';
+import type { ApiClientConfig } from './lib/types';
 import { pathToSlug, slugToPath, buildEndpointUrl } from './lib/url';
 import type { ValidationResult, ReloadResult } from './lib/types';
 
 /**
- * Configuration options for FlapiApiClient
+ * Configuration options for FlapiApiClient. The transport is `createApiClient`
+ * (the one ConfigService client), so these mirror its settings:
+ *
+ * - `baseUrl` / `baseURL`: server URL (`baseURL` is the legacy spelling)
+ * - `authToken` / `token`: config-service token (`token` is the legacy spelling)
+ * - `timeout`: SECONDS (same unit as `flapi.timeout` and `--timeout`), default 30
+ * - `retries`: retries for safe (read) requests only, default 0
+ * - `verifyTls`: verify server certificates, default true
  */
 export interface FlapiApiClientOptions {
-  baseURL: string;
+  baseURL?: string;
+  baseUrl?: string;
   token?: string;
+  authToken?: string;
   debug?: boolean;
   timeout?: number;
+  retries?: number;
+  verifyTls?: boolean;
 }
 
 /**
@@ -84,24 +96,38 @@ export class FlapiApiClient {
 
   constructor(options: FlapiApiClientOptions) {
     this.debug = options.debug ?? false;
-    
-    const headers: Record<string, string> = {
-      'Accept': 'application/json',
-      'Content-Type': 'application/json',
-    };
-    
-    // For config service endpoints, send both X-Config-Token and Authorization headers
-    if (options.token) {
-      headers['X-Config-Token'] = options.token;
-      headers['Authorization'] = `Bearer ${options.token}`;
-    }
-    
-    this.client = axios.create({
-      baseURL: options.baseURL,
-      timeout: options.timeout ?? 30000,
-      headers
-    });
+    this.client = FlapiApiClient.buildTransport(options);
+    this.setupInterceptors();
+  }
 
+  private static buildTransport(options: FlapiApiClientOptions): AxiosInstance {
+    const baseUrl = options.baseUrl ?? options.baseURL;
+    if (!baseUrl) {
+      throw new Error('FlapiApiClient requires a baseUrl');
+    }
+    return createApiClient({
+      baseUrl,
+      authToken: options.authToken ?? options.token,
+      timeout: options.timeout ?? 30,
+      retries: options.retries ?? 0,
+      verifyTls: options.verifyTls ?? true,
+      headers: { 'Content-Type': 'application/json' },
+      output: 'json',
+      jsonStyle: 'hyphen',
+      debugHttp: false,
+      quiet: true,
+      yes: false,
+    } satisfies ApiClientConfig);
+  }
+
+  /**
+   * Rebuild the transport with new settings (server URL, token, timeout, retries,
+   * TLS). Holders of this object (e.g. a validator) keep working without being
+   * handed a new instance.
+   */
+  reconfigure(options: FlapiApiClientOptions): void {
+    this.debug = options.debug ?? this.debug;
+    this.client = FlapiApiClient.buildTransport(options);
     this.setupInterceptors();
   }
 
@@ -155,7 +181,7 @@ export class FlapiApiClient {
       (error) => {
         if (this.debug) {
           const timestamp = new Date().toISOString();
-          console.error(`[FlapiAPI] ${timestamp} ✗ ${error.response?.status || 'ERROR'} ${error.config?.url}`);
+          console.error(`[FlapiAPI] ${timestamp} ✗ ${error.response?.status || 'ERROR'} ${(error.response?.config?.url ?? error.config?.url)}`);
           console.error('[FlapiAPI]   Error:', error.message);
           
           if (error.response?.data) {
@@ -190,12 +216,15 @@ export class FlapiApiClient {
    * Update authentication token
    */
   setToken(token: string | undefined) {
+    // Top-level defaults (where createApiClient put the credential at creation),
+    // not `.common`, which the top-level entries would shadow.
+    const defaults = this.client.defaults.headers as unknown as Record<string, unknown>;
     if (token) {
-      this.client.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-      this.client.defaults.headers.common['X-Config-Token'] = token;
+      defaults['Authorization'] = `Bearer ${token}`;
+      defaults['X-Config-Token'] = token;
     } else {
-      delete this.client.defaults.headers.common['Authorization'];
-      delete this.client.defaults.headers.common['X-Config-Token'];
+      delete defaults['Authorization'];
+      delete defaults['X-Config-Token'];
     }
     if (this.debug) {
       console.log('[FlapiAPI] Token updated');
