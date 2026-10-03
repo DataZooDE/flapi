@@ -22,6 +22,7 @@ export async function lossyProxy(upstreamUrl: string, dropMethod: string) {
   const server = net.createServer((client) => {
     const up = net.connect(Number(upstream.port), upstream.hostname);
     let first = true;
+    let dropping = false;
     client.on('data', (chunk) => {
       if (first) {
         first = false;
@@ -29,6 +30,7 @@ export async function lossyProxy(upstreamUrl: string, dropMethod: string) {
         const method = chunk.toString('latin1', 0, 8).split(' ')[0];
         if (method === dropMethod && !dropped) {
           dropped = true;
+          dropping = true; // the relay below must not forward the answer first (it raced the destroy)
           up.write(chunk);
           up.once('data', () => client.destroy());
           return;
@@ -36,7 +38,7 @@ export async function lossyProxy(upstreamUrl: string, dropMethod: string) {
       }
       up.write(chunk);
     });
-    up.on('data', (d) => client.writable && client.write(d));
+    up.on('data', (d) => !dropping && client.writable && client.write(d));
     up.on('close', () => client.end());
     client.on('close', () => up.destroy());
     client.on('error', () => up.destroy());
