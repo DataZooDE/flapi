@@ -14,6 +14,7 @@ export async function lossyProxy(upstreamUrl: string) {
   const server = net.createServer((client) => {
     const up = net.connect(Number(upstream.port), upstream.hostname);
     let first = true;
+    let dropping = false;
     client.on('data', (chunk) => {
       if (first) {
         first = false;
@@ -21,7 +22,10 @@ export async function lossyProxy(upstreamUrl: string) {
         seen.push(method);
         if (method === 'POST' && !dropped) {
           dropped = true;
-          // Forward it, then cut the client off before any answer comes back.
+          dropping = true;
+          // Forward it, then cut the client off before ANY answer comes back. The
+          // relay below must not forward it first (it raced the destroy, so the
+          // client sometimes got the response and the test flaked).
           up.write(chunk);
           up.once('data', () => client.destroy());
           return;
@@ -29,7 +33,7 @@ export async function lossyProxy(upstreamUrl: string) {
       }
       up.write(chunk);
     });
-    up.on('data', (d) => client.writable && client.write(d));
+    up.on('data', (d) => !dropping && client.writable && client.write(d));
     up.on('close', () => client.end());
     client.on('close', () => up.destroy());
     client.on('error', () => up.destroy());
