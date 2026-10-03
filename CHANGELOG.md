@@ -4,6 +4,22 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Fixed: the VS Code extension and the CLI share one ConfigService transport
+
+- The extension's YAML validator and reload used a second HTTP client that ignored `flapi.insecure`, had no
+  retry policy and reported errors differently from the rest of the extension. All ConfigService calls now go
+  through the same client the CLI uses: the token (sent as `X-Config-Token` and `Authorization`), TLS
+  verification, timeout and retries behave identically everywhere, and reads are retried while writes (POST,
+  PUT, DELETE) never are.
+- New settings `flapi.timeout` (seconds, default 30), `flapi.retries` (default 3) and `flapi.insecure`
+  (default off) are declared in the extension, and changing `flapi.serverUrl` or any of them now takes effect
+  for every view and the YAML validator without reloading the window.
+- The endpoint tester honours `flapi.timeout` and `flapi.insecure` too (self-signed HTTPS servers work, a
+  hung server no longer hangs the tester). It talks to your generated REST routes and never receives the
+  config-service token.
+- `FlapiApiClient` (`@flapi/shared`) accepts `baseUrl`/`authToken`/`timeout`/`retries`/`verifyTls` and still
+  accepts `baseURL`/`token`/`debug`. Its `timeout` is now in seconds, like `flapi.timeout` and `--timeout`.
+
 ### Fixed: VS Code extension security and correctness (from a review, each reproduced against a real server)
 
 - The extension logged the full request headers, including the config-service token, whenever the token

@@ -11,6 +11,7 @@ import { registerEndpointCommands } from './commands/endpointCommands';
 import { LanguageSupport } from './language/languageSupport';
 import { SchemaProvider, type SchemaNode } from './providers/SchemaProvider';
 import { YamlValidator } from './validation/yamlValidator';
+import { readTransportSettings } from './services/transportSettings';
 import { FlapiApiClient } from '@flapi/shared';
 import { TokenStorageService } from './services/tokenStorage';
 import { resolveInside, templatesRoot } from './workspace/safePath';
@@ -50,16 +51,27 @@ function clearDocContext(uri: vscode.Uri) {
 }
 
 function createClient(token?: string): ReturnType<typeof createApiClient> {
-  const config = vscode.workspace.getConfiguration('flapi');
-  const serverUrl = config.get<string>('serverUrl', 'http://localhost:8080');
+  const settings = readTransportSettings();
 
   return createApiClient({
-    baseUrl: serverUrl,
-    timeout: config.get<number>('timeout', 30),
-    retries: config.get<number>('retries', 3),
-    verifyTls: !config.get<boolean>('insecure', false),
+    baseUrl: settings.serverUrl,
+    timeout: settings.timeout,
+    retries: settings.retries,
+    verifyTls: settings.verifyTls,
     authToken: token,
   } as ApiClientConfig);
+}
+
+/** Options for FlapiApiClient built from the same settings as createClient. */
+function configClientOptions(token?: string) {
+  const settings = readTransportSettings();
+  return {
+    baseUrl: settings.serverUrl,
+    timeout: settings.timeout,
+    retries: settings.retries,
+    verifyTls: settings.verifyTls,
+    authToken: token,
+  };
 }
 
 function initializeExplorer(context: vscode.ExtensionContext, token?: string) {
@@ -126,7 +138,7 @@ function updateAllClientsWithToken(token?: string) {
   
   // Update configApiClient (FlapiApiClient)
   console.log('[Flapi] Updating configApiClient');
-  configApiClient.setToken(token);
+  configApiClient.reconfigure(configClientOptions(token));
 }
 
 export async function activate(context: vscode.ExtensionContext) {
@@ -136,10 +148,7 @@ export async function activate(context: vscode.ExtensionContext) {
   
   // Create clients with token
   const client = createClient(token);
-  const serverUrl = vscode.workspace
-    .getConfiguration('flapi')
-    .get<string>('serverUrl', 'http://localhost:8080');
-  configApiClient = new FlapiApiClient({ baseURL: serverUrl, token });
+  configApiClient = new FlapiApiClient(configClientOptions(token));
   
   // Initialize explorer with token
   initializeExplorer(context, token);
@@ -700,8 +709,11 @@ connection:
     vscode.workspace.onDidChangeConfiguration(async (event) => {
       if (event.affectsConfiguration('flapi')) {
         const currentToken = await tokenStorage.getToken();
+        // Server URL / timeout / retries / insecure apply to every client, not
+        // only the two tree views.
         updateExplorerWithToken(currentToken);
         updateSchemaWithToken(currentToken);
+        updateAllClientsWithToken(currentToken);
       }
     }),
     registerContentProviders(context, client),
