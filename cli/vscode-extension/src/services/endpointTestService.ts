@@ -2,6 +2,17 @@ import axios, { AxiosRequestConfig, AxiosResponse } from 'axios';
 import * as vscode from 'vscode';
 import { ResponseInfo, RequestHistory, AuthConfig } from '../types/endpointTest';
 
+const SENSITIVE_HEADER = /authorization|token|secret|password|passwd|api[-_]?key|cookie|credential|auth/i;
+
+/** Header values that are credentials, replaced for anything logged or persisted. */
+export function redactHeaders(headers: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers ?? {})) {
+    out[name] = SENSITIVE_HEADER.test(name) ? '<redacted>' : value;
+  }
+  return out;
+}
+
 /**
  * Service for executing HTTP requests to test endpoints
  */
@@ -88,7 +99,7 @@ export class EndpointTestService {
       this.outputChannel.appendLine(`[${new Date().toISOString()}] ${method} ${url}`);
       this.outputChannel.appendLine(`Parameters: ${JSON.stringify(parameters)}`);
       if (Object.keys(headers).length > 0) {
-        this.outputChannel.appendLine(`Headers: ${JSON.stringify(headers)}`);
+        this.outputChannel.appendLine(`Headers: ${JSON.stringify(redactHeaders(headers))}`);
       }
 
       // Execute the request
@@ -186,7 +197,8 @@ export class EndpointTestService {
     return {
       timestamp: new Date(),
       parameters,
-      headers,
+      // History is persisted in workspaceState: never keep a credential there.
+      headers: redactHeaders(headers),
       body,
       response
     };

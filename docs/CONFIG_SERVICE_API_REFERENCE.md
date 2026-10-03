@@ -633,7 +633,7 @@ Content-Type: application/json
 }
 ```
 
-**CLI:** `flapii cache update /customers --enabled true --ttl 600`
+**CLI:** `flapii cache update /customers --schedule 10m`
 
 ---
 
@@ -1318,16 +1318,16 @@ flapii cache get /customers
 Update cache configuration.
 
 ```bash
-flapii cache update /customers --enabled true --ttl 3600
+flapii cache update /customers --schedule 1h
 flapii cache update /customers -f cache.json
 ```
 
 | Option | Short | Description |
 |--------|-------|-------------|
 | `--enabled` | `-e` | Enable/disable caching |
-| `--ttl` | `-t` | Cache TTL in seconds |
-| `--max-size` | `-s` | Maximum cache size |
-| `--strategy` | - | Cache strategy |
+| `--schedule` | `-s` | Refresh schedule, e.g. `5m`, `6h` (flAPI has no TTL) |
+| `--table` | - | Cache table name |
+| `--schema` | - | Cache schema name |
 | `--file` | `-f` | JSON config file |
 | `--stdin` | - | Read from stdin |
 

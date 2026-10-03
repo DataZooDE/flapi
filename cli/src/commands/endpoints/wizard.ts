@@ -4,6 +4,7 @@ import { Console } from '../../lib/console';
 import { handleError } from '../../lib/errors';
 import chalk from 'chalk';
 import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
 import * as yaml from 'js-yaml';
 import {
   GeminiClient,
@@ -23,6 +24,7 @@ import { ConfigParser, FlApiConfigValidator } from '../../lib/gemini/parser';
 import { ConfigReviewer } from '../../lib/gemini/reviewer';
 import { buildEndpointUrl } from '../../lib/url';
 import { WizardConfig } from '../../lib/types';
+import { buildEndpointDefinition, buildEndpointYaml, buildTemplateSql } from './wizardPayload';
 
 export async function registerWizardCommand(program: Command, ctx: CliContext) {
   program
@@ -248,27 +250,18 @@ async function runManualWizard(ctx: CliContext): Promise<WizardConfig> {
   return wizardConfig;
 }
 
-async function createEndpointViaApi(
+export async function createEndpointViaApi(
   ctx: CliContext,
   config: WizardConfig
 ): Promise<void> {
   const spinner = Console.spinner(`Creating endpoint ${config.endpoint_name}...`);
 
   try {
-    // Convert WizardConfig to API format
-    const apiPayload = {
-      endpoint_name: config.endpoint_name,
-      url_path: config.url_path,
-      description: config.description || '',
-      connection: config.connection,
-      table: config.table,
-      method: config.method,
-      parameters: config.parameters,
-      enable_cache: config.enable_cache,
-      cache_ttl: config.cache_ttl || 300,
-    };
-
-    const response = await ctx.client.post('/api/v1/_config/endpoints', apiPayload);
+    // Build what the server reads, create the endpoint, then give it its SQL.
+    const definition = buildEndpointDefinition(config);
+    const sql = buildTemplateSql(config);
+    await ctx.client.post('/api/v1/_config/endpoints', definition);
+    await ctx.client.put(buildEndpointUrl(config.url_path, 'template'), { template: sql });
 
     spinner.succeed(chalk.green(`✓ Endpoint ${config.endpoint_name} created`));
 
@@ -291,37 +284,13 @@ async function createEndpointViaApi(
   }
 }
 
-async function saveToFile(config: WizardConfig, filePath: string): Promise<void> {
-  // Create endpoint configuration in YAML format
-  const endpointConfig = {
-    [config.endpoint_name]: {
-      url_path: config.url_path,
-      method: config.method,
-      connection: config.connection,
-      table: config.table,
-      description: config.description || '',
-      parameters: config.parameters.map((p) => ({
-        name: p.name,
-        type: p.type,
-        required: p.required,
-        location: p.location,
-        description: p.description || undefined,
-      })),
-      cache: config.enable_cache
-        ? {
-            enabled: true,
-            ttl: config.cache_ttl || 300,
-          }
-        : {
-            enabled: false,
-          },
-    },
-  };
-
-  const yaml_content = yaml.dump(endpointConfig, { indent: 2 });
-
+export async function saveToFile(config: WizardConfig, filePath: string): Promise<void> {
+  // The endpoint YAML plus its SQL template next to it, as the server expects.
+  const sqlPath = filePath.replace(/\.[^./\\]+$/, '') + '.sql';
+  const templateSource = path.basename(sqlPath);
   try {
-    await fs.writeFile(filePath, yaml_content, 'utf-8');
+    await fs.writeFile(filePath, buildEndpointYaml(config, templateSource), 'utf-8');
+    await fs.writeFile(sqlPath, buildTemplateSql(config), 'utf-8');
   } catch (error) {
     throw new Error(
       `Failed to write configuration file: ${error instanceof Error ? error.message : String(error)}`

@@ -4,6 +4,38 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Fixed: VS Code extension security and correctness (from a review, each reproduced against a real server)
+
+- The extension logged the full request headers, including the config-service token, whenever the token
+  changed. It no longer logs credentials, and request headers it does log (and keeps in history) have
+  `Authorization`, API-key and similar values redacted.
+- The token is stored in VS Code SecretStorage instead of the workspace state file; an older stored token is
+  migrated and removed.
+- The endpoint and SQL tester webviews rendered server-supplied column names, errors and the configured
+  url-path/method as HTML, so a hostile name ran script in the webview. They now render text, and both pages
+  carry a Content-Security-Policy with a nonce (inline `onclick` handlers were replaced).
+- Explorer open/delete/rename commands refuse a server-supplied path that resolves outside the templates
+  directory.
+- Saving or reloading an endpoint YAML reloaded the wrong slug (taken from the file name rather than the
+  url-path / MCP name) and always reported success. It now reloads the endpoint the server knows and reports
+  the real result.
+- `POST /api/v1/_config/endpoints/by-template` now finds endpoints created through the API.
+- Removed `EndpointEditorProvider`, a custom editor that was never registered.
+- The extension's tests now include a real-server suite (`npm run test:integration`, run in CI and by
+  `make cli-integration-test`).
+
+### Fixed: more CLI behaviour that did not match the server
+
+- `flapii` no longer repeats a write whose response was lost (`endpoints create`, cache refresh, delete,
+  ...). Only reads are retried, and HTTP 429/5xx on reads are now actually retried (they never were).
+  The CLI and the VS Code extension now share one HTTP client instead of two drifting copies.
+- `flapii cache update` sends settings the server reads: `--schedule`, `--table`, `--schema`, `--enabled`.
+  `--ttl`, `--max-size` and `--strategy` were never read by the server and now fail with a message.
+  `PUT .../cache` no longer fails (500) when `enabled` is omitted.
+- `flapii endpoints wizard` produced a payload and a YAML file the server could not read. It now creates a
+  working endpoint with its SQL template (`--output-file` writes the YAML and a `.sql` next to it).
+- Connection failures, a missing or wrong token, and a server with the config service off now say what to do.
+
 ### Fixed: the CLI listed only one MCP entity, printed its token, and misreported templates
 
 Found by a review of the CLI and VS Code extension, then reproduced against a real server:

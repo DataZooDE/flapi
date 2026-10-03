@@ -22,7 +22,6 @@ export class SchemaProvider implements vscode.TreeDataProvider<SchemaNodeMetadat
   }
 
   updateClient(client: AxiosInstance): void {
-    console.log('[Flapi] SchemaProvider.updateClient called, has headers:', !!client.defaults.headers);
     this.client = client;
     console.log('[Flapi] SchemaProvider calling refresh()');
     this.refresh(); // Refresh with new client

@@ -10,6 +10,7 @@ import {
   getParameterEditorJS,
   type ParameterDefinition as SharedParameterDefinition
 } from './shared/parameterEditor';
+import { ACTION_BRIDGE_JS, buildCsp, makeNonce } from './shared/security';
 
 /**
  * Message types for SQL template testing
@@ -511,11 +512,13 @@ export class SqlTemplateTesterPanel {
    * Get HTML content for the webview
    */
   private _getHtmlForWebview(): string {
+    const nonce = makeNonce();
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="${buildCsp(this._panel.webview.cspSource, nonce)}">
   <title>SQL Template Tester</title>
   <link href="https://cdn.jsdelivr.net/npm/@vscode/codicons@0.0.32/dist/codicon.css" rel="stylesheet" />
   <style>
@@ -903,7 +906,7 @@ export class SqlTemplateTesterPanel {
     <div class="main-content">
       <!-- Variables Panel (Collapsible) -->
       <div class="variables-panel">
-        <div class="variables-header" onclick="toggleVariables()">
+        <div class="variables-header" data-onclick="toggleVariables">
           <div>
             <span class="expand-icon" id="variables-expand-icon">▶</span>
             <strong>Available Variables</strong>
@@ -919,8 +922,8 @@ export class SqlTemplateTesterPanel {
       <div class="param-editor" id="param-editor">
         <h3>Request Parameters</h3>
         <div class="param-list" id="param-editor-list"></div>
-        <button class="add-param-btn" onclick="addParameter()">+ Add Parameter</button>
-        <button class="add-param-btn" onclick="loadDefaults()">Load Defaults</button>
+        <button class="add-param-btn" data-onclick="addParameter">+ Add Parameter</button>
+        <button class="add-param-btn" data-onclick="loadDefaults">Load Defaults</button>
         
         <div class="limit-input">
           <label for="result-limit">Result Limit:</label>
@@ -928,10 +931,10 @@ export class SqlTemplateTesterPanel {
         </div>
 
         <div class="actions">
-          <button class="btn-primary" onclick="previewTemplate()" title="Preview expanded SQL template">
+          <button class="btn-primary" data-onclick="previewTemplate" title="Preview expanded SQL template">
             <span class="codicon codicon-eye"></span>
           </button>
-          <button class="btn-primary" onclick="executeTest()" title="Execute SQL query">
+          <button class="btn-primary" data-onclick="executeTest" title="Execute SQL query">
             <span class="codicon codicon-play"></span>
           </button>
         </div>
@@ -970,15 +973,16 @@ export class SqlTemplateTesterPanel {
           
           <!-- View Toggle (at bottom) -->
           <div class="view-toggle-bottom">
-            <button id="jsonViewBtn" class="view-toggle-btn active" onclick="toggleView('json')">JSON</button>
-            <button id="tableViewBtn" class="view-toggle-btn" onclick="toggleView('table')">Table</button>
+            <button id="jsonViewBtn" class="view-toggle-btn active" data-onclick="toggleView" data-arg="json">JSON</button>
+            <button id="tableViewBtn" class="view-toggle-btn" data-onclick="toggleView" data-arg="table">Table</button>
           </div>
         </div>
       </div>
     </div>
   </div>
 
-  <script>
+  <script nonce="${nonce}">
+${ACTION_BRIDGE_JS}
     const vscode = acquireVsCodeApi();
     let state = {};
     let availableVariables = [];
@@ -1150,7 +1154,7 @@ export class SqlTemplateTesterPanel {
       } else {
         // Render JSON view
         const resultsDiv = document.getElementById('results-content');
-        resultsDiv.innerHTML = '<pre class="json-formatted">' + JSON.stringify(data, null, 2) + '</pre>';
+        resultsDiv.innerHTML = '<pre class="json-formatted">' + escapeHtml(JSON.stringify(data, null, 2)) + '</pre>';
       }
     }
     

@@ -6,6 +6,7 @@ import {
   getParameterEditorCSS, 
   getParameterEditorJS
 } from './shared/parameterEditor';
+import { ACTION_BRIDGE_JS, buildCsp, escapeHtmlText, makeNonce } from './shared/security';
 
 /**
  * Manages the webview panel for endpoint testing
@@ -258,14 +259,17 @@ export class EndpointTesterPanel {
   private _getHtmlForWebview(webview: vscode.Webview): string {
     // Get the request fields from the config
     const requestFields: RequestFieldDefinition[] = this._getRequestFields();
-    const urlPath = this._endpointConfig['url-path'] || this._endpointConfig.urlPath || '';
-    const method = this._endpointConfig.method || 'GET';
+    // Configuration values reach the page as text, never as markup.
+    const urlPath = escapeHtmlText(this._endpointConfig['url-path'] || this._endpointConfig.urlPath || '');
+    const method = escapeHtmlText(this._endpointConfig.method || 'GET');
+    const nonce = makeNonce();
     
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="${buildCsp(webview.cspSource, nonce)}">
     <title>Flapi Endpoint Tester</title>
     <link href="https://cdn.jsdelivr.net/npm/@vscode/codicons@0.0.32/dist/codicon.css" rel="stylesheet" />
     <style>
@@ -304,7 +308,7 @@ export class EndpointTesterPanel {
 
             <!-- Query Parameters (Collapsible) -->
             <div class="collapsible-section">
-                <div class="collapsible-header" onclick="toggleSection('params')">
+                <div class="collapsible-header" data-onclick="toggleSection" data-arg="params">
                     <div>
                         <span class="expand-icon" id="params-icon">▼</span>
                         <strong>Query Parameters</strong>
@@ -322,7 +326,7 @@ export class EndpointTesterPanel {
 
             <!-- Authentication (Collapsible) -->
             <div class="collapsible-section">
-                <div class="collapsible-header" onclick="toggleSection('auth')">
+                <div class="collapsible-header" data-onclick="toggleSection" data-arg="auth">
                     <div>
                         <span class="expand-icon" id="auth-icon">▶</span>
                         <strong>Authentication</strong>
@@ -346,7 +350,7 @@ export class EndpointTesterPanel {
 
             <!-- Headers (Collapsible) -->
             <div class="collapsible-section">
-                <div class="collapsible-header" onclick="toggleSection('headers')">
+                <div class="collapsible-header" data-onclick="toggleSection" data-arg="headers">
                     <div>
                         <span class="expand-icon" id="headers-icon">▶</span>
                         <strong>Headers (optional)</strong>
@@ -360,7 +364,7 @@ export class EndpointTesterPanel {
 
             <!-- Request Body (Collapsible, for POST/PUT) -->
             <div class="collapsible-section" id="bodySection" style="display: none;">
-                <div class="collapsible-header" onclick="toggleSection('body')">
+                <div class="collapsible-header" data-onclick="toggleSection" data-arg="body">
                     <div>
                         <span class="expand-icon" id="body-icon">▶</span>
                         <strong>Request Body</strong>
@@ -469,7 +473,8 @@ export class EndpointTesterPanel {
         </div>
     </div>
 
-    <script>
+    <script nonce="${nonce}">
+${ACTION_BRIDGE_JS}
         ${this._getScript()}
     </script>
 </body>
@@ -1236,6 +1241,13 @@ export class EndpointTesterPanel {
     return `
       (function() {
         const vscode = acquireVsCodeApi();
+
+        // Everything the server or the config supplies is rendered as text.
+        function esc(value) {
+          return String(value === undefined || value === null ? '' : value)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
         let currentState = null;
         let currentConfig = null;
 
@@ -1894,7 +1906,7 @@ export class EndpointTesterPanel {
           // Build table HTML
           let tableHTML = '<table><thead><tr>';
           columns.forEach(col => {
-            tableHTML += \`<th>\${col}</th>\`;
+            tableHTML += \`<th>\${esc(col)}</th>\`;
           });
           tableHTML += '</tr></thead><tbody>';
           
@@ -1942,11 +1954,11 @@ export class EndpointTesterPanel {
           let summaryHTML = '<div style="font-weight: bold; margin-bottom: 8px; color: var(--vscode-activityBarBadge-background);">📝 Write Operation Result</div>';
           
           if (parsedData.rows_affected !== undefined) {
-            summaryHTML += \`<div style="margin: 4px 0;"><strong>Rows Affected:</strong> <span style="color: var(--vscode-textLink-foreground);">\${parsedData.rows_affected}</span></div>\`;
+            summaryHTML += \`<div style="margin: 4px 0;"><strong>Rows Affected:</strong> <span style="color: var(--vscode-textLink-foreground);">\${esc(parsedData.rows_affected)}</span></div>\`;
           }
 
           if (parsedData.last_insert_id !== undefined) {
-            summaryHTML += \`<div style="margin: 4px 0;"><strong>Last Insert ID:</strong> <span style="color: var(--vscode-textLink-foreground);">\${parsedData.last_insert_id}</span></div>\`;
+            summaryHTML += \`<div style="margin: 4px 0;"><strong>Last Insert ID:</strong> <span style="color: var(--vscode-textLink-foreground);">\${esc(parsedData.last_insert_id)}</span></div>\`;
           }
 
           if (parsedData.returned_data && Array.isArray(parsedData.returned_data) && parsedData.returned_data.length > 0) {
@@ -1957,12 +1969,12 @@ export class EndpointTesterPanel {
             summaryHTML += \`<div style="margin: 8px 0; padding: 8px; background: var(--vscode-inputValidation-errorBackground); border-radius: 4px;">\`;
             summaryHTML += '<div style="font-weight: bold; color: var(--vscode-errorForeground); margin-bottom: 4px;">⚠️ Validation Errors:</div>';
             parsedData.errors.forEach(error => {
-              summaryHTML += \`<div style="margin: 2px 0; color: var(--vscode-errorForeground);">• \${error.field || 'Unknown'}: \${error.message || 'Error'}</div>\`;
+              summaryHTML += \`<div style="margin: 2px 0; color: var(--vscode-errorForeground);">• \${esc(error.field || 'Unknown')}: \${esc(error.message || 'Error')}</div>\`;
             });
             summaryHTML += '</div>';
           } else if (parsedData.error) {
             summaryHTML += \`<div style="margin: 8px 0; padding: 8px; background: var(--vscode-inputValidation-errorBackground); border-radius: 4px;">\`;
-            summaryHTML += \`<div style="color: var(--vscode-errorForeground);">⚠️ Error: \${parsedData.error.field || 'Unknown'}: \${parsedData.error.message || 'Error'}</div>\`;
+            summaryHTML += \`<div style="color: var(--vscode-errorForeground);">⚠️ Error: \${esc(parsedData.error.field || 'Unknown')}: \${esc(parsedData.error.message || 'Error')}</div>\`;
             summaryHTML += '</div>';
           }
           
@@ -2198,7 +2210,7 @@ export class EndpointTesterPanel {
             const timestamp = new Date(item.timestamp).toLocaleString();
             const status = item.response.status + ' ' + item.response.statusText;
             
-            header.innerHTML = '<span>' + timestamp + '</span><span class="' + getStatusClass(item.response.status) + '">' + status + '</span>';
+            header.innerHTML = '<span>' + esc(timestamp) + '</span><span class="' + esc(getStatusClass(item.response.status)) + '">' + esc(status) + '</span>';
             
             const params = document.createElement('div');
             params.className = 'history-item-params';

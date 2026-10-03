@@ -1277,7 +1277,13 @@ crow::response EndpointConfigHandler::findEndpointsByTemplate(const crow::reques
         
         for (const auto& endpoint : *endpoints) {
             // Normalize endpoint's template path
-            auto endpoint_template = std::filesystem::path(endpoint.templateSource).lexically_normal();
+            // An endpoint created through the API keeps its template-source relative
+            // to the templates directory; only file-loaded ones are absolute.
+            std::filesystem::path endpoint_template(endpoint.templateSource);
+            if (endpoint_template.is_relative()) {
+                endpoint_template = std::filesystem::path(config_manager_->getTemplateConfig().path) / endpoint_template;
+            }
+            endpoint_template = endpoint_template.lexically_normal();
             
             // Check if paths match
             if (endpoint_template == normalized_template) {
@@ -1820,7 +1826,9 @@ crow::response CacheConfigHandler::updateCacheConfig(const crow::request& req, c
         // the copy-on-write discipline the snapshot exists to provide.
         EndpointConfig updated = *endpoint;
         CacheConfig& cache = updated.cache;
-        bool enabled = json["enabled"].b();
+        // A partial update (`{"schedule": "10m"}`) leaves `enabled` alone; reading
+        // the missing key threw "cannot find key" and failed the whole request.
+        const bool enabled = json.has("enabled") ? json["enabled"].b() : cache.enabled;
         if (enabled) {
             auto table_key = json.has("table") ? json["table"].s() : updated.cache.table;
             auto schema_key = json.has("schema") ? json["schema"].s() : updated.cache.schema;

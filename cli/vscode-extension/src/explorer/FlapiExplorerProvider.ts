@@ -58,7 +58,6 @@ export class FlapiExplorerProvider implements vscode.TreeDataProvider<FlapiNodeM
 
   updateClient(client: AxiosInstance): void {
     console.log('[Flapi] FlapiExplorerProvider.updateClient called');
-    console.log('[Flapi] Client headers:', JSON.stringify(client.defaults.headers, null, 2));
     this.client = client;
     console.log('[Flapi] FlapiExplorerProvider calling refresh()');
     this.refresh(); // Refresh with new client
