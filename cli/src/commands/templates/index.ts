@@ -70,7 +70,9 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
         } else {
           Console.info(chalk.cyan(`\n📄 Template: ${path}`));
           Console.info(chalk.gray('═'.repeat(60)));
-          Console.info(chalk.white(template));
+          // The server answers {template: "<sql>"}; print the SQL, not the object.
+          const sql = typeof template === 'string' ? template : (template?.template ?? JSON.stringify(template, null, 2));
+          Console.info(chalk.white(sql));
         }
       } catch (error) {
         spinner.fail(chalk.red(`✗ Failed to fetch template ${path}`));
@@ -219,21 +221,23 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
           Console.info(chalk.cyan(`\n🔍 Template Test: ${path}`));
           Console.info(chalk.gray('═'.repeat(60)));
 
-          if (result.valid) {
-            Console.success('Template syntax is valid');
-            if (result.parameters) {
-              Console.info(chalk.blue('Required parameters:'));
-              Object.keys(result.parameters).forEach(param => {
-                Console.info(chalk.white(`  - ${param}`));
-              });
+          // The server RUNS the template and answers {columns, rows, success};
+          // a failing template is an HTTP error handled below. This used to read
+          // `result.valid`, which the server never sends, so every working
+          // template was reported as invalid.
+          if (result.success !== false) {
+            const rowCount = Array.isArray(result.rows) ? result.rows.length : 0;
+            Console.success(`Template ran successfully (${rowCount} row${rowCount === 1 ? '' : 's'})`);
+            if (Array.isArray(result.columns) && result.columns.length > 0) {
+              Console.info(chalk.blue('Columns: ') + chalk.white(result.columns.join(', ')));
             }
           } else {
-            Console.error('Template syntax is invalid');
-            if (result.errors) {
-              result.errors.forEach((error: string) => {
-                Console.error(chalk.red(`  - ${error}`));
-              });
+            Console.error('Template test failed');
+            const message = result.error ?? result.message;
+            if (message) {
+              Console.error(chalk.red(`  ${message}`));
             }
+            process.exitCode = 1;
           }
         }
       } catch (error) {

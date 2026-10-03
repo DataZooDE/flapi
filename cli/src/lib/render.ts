@@ -6,9 +6,20 @@ import chalk from 'chalk';
 
 type JsonStyle = 'camel' | 'hyphen';
 
+/** The client's own settings include the config-service token; never print it. */
+function redactSecrets(config: FlapiiConfig): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...(config as unknown as Record<string, unknown>) };
+  for (const key of Object.keys(out)) {
+    if (/token|secret|password|api[-_]?key/i.test(key) && out[key] !== undefined && out[key] !== '') {
+      out[key] = '<redacted>';
+    }
+  }
+  return out;
+}
+
 export function renderConfig(config: FlapiiConfig) {
   if (config.output === 'json') {
-    const processed = applyJsonStyle(config, config.jsonStyle);
+    const processed = applyJsonStyle(redactSecrets(config), config.jsonStyle);
     Console.info(JSON.stringify(processed, null, 2));
     return;
   }
@@ -30,7 +41,7 @@ export function renderConfig(config: FlapiiConfig) {
     },
   });
 
-  const configDict = config as unknown as Record<string, unknown>; // shared version
+  const configDict = redactSecrets(config);
   Object.entries(configDict).forEach(([key, value]) => {
     const source = getConfigSource(key, config);
     table.push([

@@ -1883,7 +1883,11 @@ crow::json::wvalue ConfigManager::getEndpointsConfig() const {
     // thread, concurrently with a writer swapping the table.
     const auto snapshot = endpointsSnapshot();
     for (const auto& endpoint : *snapshot) {
-        endpointsJson[endpoint.urlPath] = serializeEndpointConfig(endpoint, EndpointJsonStyle::CamelCase);
+        // An MCP tool/resource/prompt has no url-path. Keying by it put every one
+        // of them on "" so only the last survived and the CLI could not list the
+        // rest; they are keyed by their MCP name instead.
+        const std::string key = endpoint.urlPath.empty() ? endpoint.getName() : endpoint.urlPath;
+        endpointsJson[key] = serializeEndpointConfig(endpoint, EndpointJsonStyle::CamelCase);
     }
     return endpointsJson;
 }

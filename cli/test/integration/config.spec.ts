@@ -6,7 +6,7 @@ const cliPath = path.resolve('dist', 'index.js');
 
 describe('cli config command (integration)', () => {
   it('prints configuration in table format', async () => {
-    const result = await execa('node', [cliPath, 'config', '--output', 'table']);
+    const result = await execa('node', [cliPath, 'config', 'show', '--output', 'table']);
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain('Setting');
