@@ -411,6 +411,40 @@ jobs:
         check_name: Integration Tests
         comment_mode: off
 
+  # The flapii CLI against the REAL flapi binary (config service + token enabled,
+  # run on a temp copy of examples/). Before this, no CI job ran the CLI against a
+  # server: the suite in cli/test/integration could not even start.
+  cli-integration:
+    needs: [linux-build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Download flapi binary
+      uses: actions/download-artifact@v4
+      with:
+        name: flapi-linux-amd64
+        path: build/release
+
+    - name: Make binary executable
+      run: chmod +x build/release/flapi
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+
+    - name: Build @flapi/shared and the CLI, run the CLI integration tests
+      env:
+        FLAPI_BIN: ${{ github.workspace }}/build/release/flapi
+      run: |
+        (cd cli/shared && npm ci && npm run build)
+        cd cli
+        npm ci
+        npm run test:integration
+
   # -------------------------------------------------------------------------------------------------
   # Smoke Tests — start each platform binary and verify HTTP health before any release
   # -------------------------------------------------------------------------------------------------
@@ -903,7 +937,7 @@ jobs:
     # slowest job, and normally finishes first.
     # docker-build too: otherwise a failed image push still lets the GitHub
     # release and PyPI go out, leaving a release with no :latest/:<tag> image.
-    needs: [windows-build, linux-build, osx-universal-build, flapii-build, integration-tests, docker-build, smoke-test-windows, smoke-test-linux-amd64, smoke-test-linux-arm64, smoke-test-macos, pack-smoke-linux-amd64, pack-smoke-linux-arm64, pack-smoke-macos, pack-smoke-windows]
+    needs: [windows-build, linux-build, osx-universal-build, flapii-build, integration-tests, cli-integration, docker-build, smoke-test-windows, smoke-test-linux-amd64, smoke-test-linux-arm64, smoke-test-macos, pack-smoke-linux-amd64, pack-smoke-linux-arm64, pack-smoke-macos, pack-smoke-windows]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

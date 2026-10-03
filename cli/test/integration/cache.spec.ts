@@ -1,68 +1,26 @@
 import { describe, it, expect } from 'vitest';
-import path from 'node:path';
-import { execa } from 'execa';
-import { baseUrl, configPath } from './utils';
+import { flapii } from './helpers';
 
-const cliPath = path.resolve('dist', 'index.js');
-
+// /customers/ is the cache-enabled REST endpoint of the shipped examples. These
+// used to pick "the first endpoint" and return silently when there was none, so
+// they could pass without exercising anything.
 describe('cli cache command (integration)', () => {
   it('lists cache configurations', async () => {
-    const result = await execa('node', [cliPath, 'cache', 'list', '--output', 'json'], {
-      env: {
-        ...process.env,
-        FLAPI_BASE_URL: baseUrl,
-        FLAPI_CONFIG: configPath,
-      },
-    });
-
-    expect(result.exitCode).toBe(0);
-    // Should return an object with cache configurations
-    expect(result.stdout.length).toBeGreaterThan(0);
+    const r = await flapii(['cache', 'list', '--output', 'json']);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.length).toBeGreaterThan(0);
   });
 
-  it('gets cache configuration for an endpoint', async () => {
-    // First get the list to find an available endpoint
-    const listResult = await execa('node', [cliPath, 'endpoints', 'list', '--output', 'json'], {
-      env: { ...process.env, FLAPI_BASE_URL: baseUrl, FLAPI_CONFIG: configPath },
-    });
-
-    const endpoints = JSON.parse(listResult.stdout);
-    const endpointPath = Object.keys(endpoints)[0];
-
-    if (!endpointPath) {
-      // Skip if no endpoints available
-      return;
-    }
-
-    const result = await execa('node', [cliPath, 'cache', 'get', endpointPath, '--output', 'json'], {
-      env: { ...process.env, FLAPI_BASE_URL: baseUrl, FLAPI_CONFIG: configPath },
-    });
-
-    expect(result.exitCode).toBe(0);
-    // Should return cache configuration or empty object
-    expect(result.stdout.length).toBeGreaterThan(0);
+  it('gets the cache configuration of a cached endpoint', async () => {
+    const r = await flapii(['cache', 'get', '/customers/', '--output', 'json']);
+    expect(r.exitCode).toBe(0);
+    const cache = JSON.parse(r.stdout);
+    expect(cache.enabled ?? cache.cache?.enabled).toBe(true);
   });
 
-  it('refreshes cache for an endpoint', async () => {
-    // First get the list to find an available endpoint
-    const listResult = await execa('node', [cliPath, 'endpoints', 'list', '--output', 'json'], {
-      env: { ...process.env, FLAPI_BASE_URL: baseUrl, FLAPI_CONFIG: configPath },
-    });
-
-    const endpoints = JSON.parse(listResult.stdout);
-    const endpointPath = Object.keys(endpoints)[0];
-
-    if (!endpointPath) {
-      // Skip if no endpoints available
-      return;
-    }
-
-    const result = await execa('node', [cliPath, 'cache', 'refresh', endpointPath, '--force', '--output', 'json'], {
-      env: { ...process.env, FLAPI_BASE_URL: baseUrl, FLAPI_CONFIG: configPath },
-    });
-
-    expect(result.exitCode).toBe(0);
-    // Should return refresh result
-    expect(result.stdout.length).toBeGreaterThan(0);
+  it('refreshes the cache of a cached endpoint', async () => {
+    const r = await flapii(['cache', 'refresh', '/customers/', '--force', '--output', 'json']);
+    expect(r.exitCode, r.stderr + r.stdout).toBe(0);
+    expect(r.stdout.length).toBeGreaterThan(0);
   });
 });

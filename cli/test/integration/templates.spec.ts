@@ -40,7 +40,7 @@ describe('cli templates command (integration)', () => {
 
     expect(result.exitCode).toBe(0);
     const template = JSON.parse(result.stdout);
-    expect(typeof template).toBe('string');
+    expect(typeof template.template).toBe('string');
   });
 
   it('tests template syntax', async () => {
@@ -63,6 +63,6 @@ describe('cli templates command (integration)', () => {
 
     expect(result.exitCode).toBe(0);
     const testResult = JSON.parse(result.stdout);
-    expect(testResult).toHaveProperty('valid');
+    expect(testResult).toHaveProperty('success', true);
   });
 });

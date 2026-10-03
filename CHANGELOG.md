@@ -4,6 +4,20 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Fixed: the CLI listed only one MCP entity, printed its token, and misreported templates
+
+Found by a review of the CLI and VS Code extension, then reproduced against a real server:
+
+- `GET /api/v1/_config/endpoints` keyed MCP tools, resources and prompts by their (empty) url-path, so
+  only the last one survived. They are now keyed by name, and `flapii mcp tools|resources|prompts list`
+  see all of them.
+- `flapii config show` printed the config-service token. It now shows `<redacted>`.
+- `flapii templates get` printed `[object Object]`, and `flapii templates test` reported every working
+  template as invalid. Both now match what the server returns.
+- The CLI's own integration suite could not start (it did not enable the config service) and some of its
+  tests passed without testing anything. It now runs against a real server on a temporary copy of
+  `examples/`, and runs in CI (`make cli-integration-test`).
+
 ### Fixed: `flapii project init` scaffolded a configuration flAPI does not read
 
 The generated `flapi.yaml` used `description:` and a top-level `template-source:` (the real keys are

@@ -59,3 +59,4 @@ erpl-rev.duckdb
 
 # Left behind by test_mcp_config_workflow (flapi_create_endpoint persists; delete keeps the SQL)
 test/integration/api_configuration/sqls/workflow_tmp-.*
+test/integration/.server/

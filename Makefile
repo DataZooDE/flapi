@@ -358,8 +358,12 @@ test: release
 		ctest --output-on-failure; \
 	fi
 
+# The flapii CLI against a real flapi server (needs `make release` first)
+cli-integration-test:
+	@cd cli && npm run test:integration
+
 # Run all tests (unit + integration)
-test-all: test integration-test
+test-all: test integration-test cli-integration-test
 	@echo "All tests completed successfully"
 
 web-clean:
