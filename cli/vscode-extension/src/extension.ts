@@ -14,6 +14,8 @@ import { YamlValidator } from './validation/yamlValidator';
 import { FlapiApiClient } from '@flapi/shared';
 import { TokenStorageService } from './services/tokenStorage';
 import { resolveInside, templatesRoot } from './workspace/safePath';
+import { describeValidation, validateTemplateText } from './validation/templateValidator';
+import { endpointPathFromYamlText } from './validation/endpointPath';
 import { ParameterStorageService } from './services/parameterStorage';
 import { TestStateService } from './services/testStateService';
 import { EndpointTestService } from './services/endpointTestService';
@@ -319,10 +321,24 @@ export async function activate(context: vscode.ExtensionContext) {
         outputChannel.appendLine(`Validating SQL template: ${sqlPath}...`);
         outputChannel.appendLine(`Using config: ${yamlUri.fsPath}`);
         
+        // Validate the editor's own (possibly unsaved) text on the server, against the
+        // endpoint this file belongs to. The YAML is validated too, but it is not what
+        // "SQL template is valid" is about.
         const yamlDoc = await vscode.workspace.openTextDocument(yamlUri);
-        const isValid = await yamlValidator.validateYamlFile(yamlDoc);
-        if (isValid) {
-          vscode.window.showInformationMessage(`✓ SQL template is valid`);
+        const endpointPath = endpointPathFromYamlText(yamlDoc.getText());
+        if (!endpointPath) {
+          vscode.window.showWarningMessage('Could not tell which endpoint this SQL file belongs to (no url-path in its YAML)');
+          return;
+        }
+        const token = await tokenStorage.getToken();
+        const result = await validateTemplateText(createClient(token), endpointPath, editor.document.getText());
+        result.errors.forEach((e) => outputChannel.appendLine(`  - ERROR (${e.type}): ${e.message}`));
+        result.warnings.forEach((w) => outputChannel.appendLine(`  - WARNING (${w.type}): ${w.message}`));
+        const shown = describeValidation(result);
+        if (shown.ok) {
+          vscode.window.showInformationMessage(shown.message);
+        } else {
+          vscode.window.showErrorMessage(shown.message);
         }
       } catch (error: any) {
         vscode.window.showErrorMessage(`Validation failed: ${error.message}`);
