@@ -27,6 +27,7 @@ jobs:
     # Pinned to windows-2022: the `-G "Visual Studio 17 2022"` generator below
     # needs VS 2022, which the migrated `windows-latest` image no longer exposes
     # ("could not find any instance of Visual Studio"). windows-2022 ships VS 2022.
+    timeout-minutes: 165
     runs-on: windows-2022
     env:
       VCPKG_DEFAULT_TRIPLET: x64-windows-static
@@ -81,6 +82,7 @@ jobs:
   # Linux Matrix Build (AMD64 + ARM64)
   # -------------------------------------------------------------------------------------------------
   linux-build:
+    timeout-minutes: 120
     runs-on: ubuntu-24.04
     strategy:
       matrix:
@@ -158,6 +160,7 @@ jobs:
   # the integration and Linux smoke tests, like the GitHub release and PyPI.
   docker-build:
     needs: [linux-build, integration-tests, smoke-test-linux-amd64, smoke-test-linux-arm64, pack-smoke-linux-amd64, pack-smoke-linux-arm64]
+    timeout-minutes: 15
     runs-on: ubuntu-24.04
     # The digest THIS run pushed. docker-promote tags it, not :sha-<commit>:
     # a main run and a tag run for the same commit both write that tag, and
@@ -223,6 +226,7 @@ jobs:
   # macOS Universal
   # -------------------------------------------------------------------------------------------------
   osx-universal-build:
+    timeout-minutes: 120
     runs-on: macos-latest
     env:
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
@@ -264,6 +268,7 @@ jobs:
   # flapii CLI Build (Bun standalone binaries)
   # -------------------------------------------------------------------------------------------------
   flapii-build:
+    timeout-minutes: 15
     runs-on: ubuntu-24.04
     strategy:
       matrix:
@@ -904,6 +909,7 @@ jobs:
     # docker-build too: otherwise a failed image push still lets the GitHub
     # release and PyPI go out, leaving a release with no :latest/:<tag> image.
     needs: [windows-build, linux-build, osx-universal-build, flapii-build, integration-tests, docker-build, smoke-test-windows, smoke-test-linux-amd64, smoke-test-linux-arm64, smoke-test-macos, pack-smoke-linux-amd64, pack-smoke-linux-arm64, pack-smoke-macos, pack-smoke-windows]
+    timeout-minutes: 15
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -1037,6 +1043,7 @@ jobs:
   pypi-publish-flapi-io:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: create-release
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     name: Publish flapi-io to PyPI
     environment:
