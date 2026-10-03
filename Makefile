@@ -361,6 +361,7 @@ test: release
 # The flapii CLI against a real flapi server (needs `make release` first)
 cli-integration-test:
 	@cd cli && npm run test:integration
+	@cd cli/vscode-extension && npm run test:integration
 
 # Run all tests (unit + integration)
 test-all: test integration-test cli-integration-test

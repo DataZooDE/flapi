@@ -441,7 +441,9 @@ jobs:
         FLAPI_BIN: ${{ github.workspace }}/build/release/flapi
       run: |
         (cd cli/shared && npm ci && npm run build)
-        cd cli
+        (cd cli && npm ci && npm run test:integration)
+        # The VS Code extension's webviews, token storage and reload against the same real server.
+        cd cli/vscode-extension
         npm ci
         npm run test:integration
 

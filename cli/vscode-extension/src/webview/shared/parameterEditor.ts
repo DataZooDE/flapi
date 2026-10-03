@@ -142,11 +142,11 @@ export function getParameterEditorHTML(
     <div class="param-editor" id="${elementId}">
       <h3>Request Parameters</h3>
       <div class="param-list" id="${elementId}-list"></div>
-      <button class="add-param-btn" onclick="addParameter()">+ Add Parameter</button>
+      <button class="add-param-btn" data-onclick="addParameter">+ Add Parameter</button>
       
       ${showLoadDefaults ? `
       <div style="margin-top: 12px;">
-        <button class="add-param-btn" onclick="loadDefaults()">Load Defaults</button>
+        <button class="add-param-btn" data-onclick="loadDefaults">Load Defaults</button>
       </div>
       ` : ''}
     </div>
@@ -184,9 +184,9 @@ export function getParameterEditorJS(options: ParameterEditorOptions = {}): stri
         const description = paramDef?.description || '';
         
         return \`
-          <div class="param-row" title="\${description}">
+          <div class="param-row" title="\${escapeHtml(description)}">
             ${showParameterSource ? `
-            <select class="param-source" onchange="updateParamSource(this)">
+            <select class="param-source" data-onchange="updateParamSource" data-pass="this">
               <option value="query">Query</option>
               <option value="path">Path</option>
               <option value="header">Header</option>
@@ -208,7 +208,7 @@ export function getParameterEditorJS(options: ParameterEditorOptions = {}): stri
               placeholder="${valuePlaceholder}"
               \${isRequired ? 'required' : ''}
             />
-            <button onclick="removeParameter(this)" \${isRequired ? 'disabled title="Required parameter"' : ''}>Remove</button>
+            <button data-onclick="removeParameter" data-pass="this" \${isRequired ? 'disabled title="Required parameter"' : ''}>Remove</button>
           </div>
         \`;
       }).join('');

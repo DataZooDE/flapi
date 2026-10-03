@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { FlapiApiClient } from '@flapi/shared';
+import { FlapiApiClient, pathToSlug } from '@flapi/shared';
 
 export interface ValidationError {
     line?: number;
@@ -36,7 +36,7 @@ export class YamlValidator {
 
         try {
             const content = document.getText();
-            const slug = this.getSlugFromFilePath(document.uri.fsPath);
+            const slug = this.getSlugFromDocument(document);
             
             if (!slug) {
                 this.outputChannel.appendLine(`Could not determine slug for ${document.uri.fsPath}`);
@@ -101,19 +101,27 @@ export class YamlValidator {
     /**
      * Reload endpoint configuration in backend after successful save
      */
-    async reloadEndpointConfig(document: vscode.TextDocument): Promise<void> {
-        const slug = this.getSlugFromFilePath(document.uri.fsPath);
+    async reloadEndpointConfig(document: vscode.TextDocument): Promise<boolean> {
+        const slug = this.getSlugFromDocument(document);
         if (!slug) {
-            return;
+            this.outputChannel.appendLine(`⚠️  Could not determine which endpoint ${document.fileName} defines`);
+            return false;
         }
 
         try {
             this.outputChannel.appendLine(`Reloading endpoint configuration for ${slug}...`);
-            await this.apiClient.reloadEndpointConfig(slug);
+            const result = await this.apiClient.reloadEndpointConfig(slug);
+            if (!result.success) {
+                this.outputChannel.appendLine(`⚠️  Server did not reload ${slug}: ${result.message}`);
+                vscode.window.showWarningMessage(`Failed to reload configuration: ${result.message}`);
+                return false;
+            }
             this.outputChannel.appendLine(`✅ Endpoint configuration reloaded successfully`);
+            return true;
         } catch (error) {
             this.outputChannel.appendLine(`⚠️  Failed to reload configuration: ${error}`);
             vscode.window.showWarningMessage(`Failed to reload configuration: ${error}`);
+            return false;
         }
     }
 
@@ -194,30 +202,31 @@ export class YamlValidator {
     }
 
     /**
-     * Extract slug from file path
+     * The slug the SERVER knows an endpoint by: derived from its url-path (REST) or
+     * its MCP name, read from the document - not from the file name, which has no
+     * relation to it (customers-rest.yaml defines /customers/).
      */
-    private getSlugFromFilePath(filePath: string): string | null {
-        // Get workspace folder
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        if (!workspaceFolder) {
-            return null;
+    private getSlugFromDocument(document: vscode.TextDocument): string | null {
+        const text = document.getText();
+        // Endpoint files may carry `{{include ...}}` directives, which are not YAML
+        // until the server expands them, so the document is read line by line.
+        const strip = (v: string) => v.trim().replace(/\s+#.*$/, '').replace(/^['"]|['"]$/g, '');
+        const urlPath = /^url-path:[ \t]*(.+)$/m.exec(text);
+        if (urlPath && strip(urlPath[1])) {
+            return pathToSlug(strip(urlPath[1]));
         }
-
-        // Get relative path from workspace
-        const relativePath = vscode.workspace.asRelativePath(filePath);
-        
-        // Extract the endpoint name from the file
-        // e.g., examples/sqls/users.yaml -> users
-        const match = relativePath.match(/([^/]+)\.(yaml|yml)$/);
-        if (!match) {
-            return null;
+        const lines = text.split(/\r?\n/);
+        for (let i = 0; i < lines.length; i++) {
+            if (/^mcp-(tool|resource|prompt):\s*$/.test(lines[i])) {
+                for (let j = i + 1; j < lines.length && /^\s|^$/.test(lines[j]); j++) {
+                    const name = /^\s+name:[ \t]*(.+)$/.exec(lines[j]);
+                    if (name && strip(name[1])) {
+                        return strip(name[1]);
+                    }
+                }
+            }
         }
-
-        const endpointName = match[1];
-        
-        // For now, use the filename as the slug
-        // In the future, we might want to read the url-path or mcp-tool name from the file
-        return endpointName;
+        return null;
     }
 
     /**

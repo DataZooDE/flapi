@@ -1277,7 +1277,13 @@ crow::response EndpointConfigHandler::findEndpointsByTemplate(const crow::reques
         
         for (const auto& endpoint : *endpoints) {
             // Normalize endpoint's template path
-            auto endpoint_template = std::filesystem::path(endpoint.templateSource).lexically_normal();
+            // An endpoint created through the API keeps its template-source relative
+            // to the templates directory; only file-loaded ones are absolute.
+            std::filesystem::path endpoint_template(endpoint.templateSource);
+            if (endpoint_template.is_relative()) {
+                endpoint_template = std::filesystem::path(config_manager_->getTemplateConfig().path) / endpoint_template;
+            }
+            endpoint_template = endpoint_template.lexically_normal();
             
             // Check if paths match
             if (endpoint_template == normalized_template) {

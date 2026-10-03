@@ -13,6 +13,7 @@ import { SchemaProvider, type SchemaNode } from './providers/SchemaProvider';
 import { YamlValidator } from './validation/yamlValidator';
 import { FlapiApiClient } from '@flapi/shared';
 import { TokenStorageService } from './services/tokenStorage';
+import { resolveInside, templatesRoot } from './workspace/safePath';
 import { ParameterStorageService } from './services/parameterStorage';
 import { TestStateService } from './services/testStateService';
 import { EndpointTestService } from './services/endpointTestService';
@@ -72,9 +73,8 @@ function initializeExplorer(context: vscode.ExtensionContext, token?: string) {
 }
 
 function updateExplorerWithToken(token?: string) {
-  console.log('[Flapi] updateExplorerWithToken called with token:', token ? '***' + token.substring(token.length - 4) : 'undefined');
+  console.log('[Flapi] updateExplorerWithToken called, token', token ? 'set' : 'not set');
   const client = createClient(token);
-  console.log('[Flapi] Created client, checking headers:', JSON.stringify(client.defaults.headers, null, 2));
   if (explorerProvider) {
     console.log('[Flapi] Calling explorerProvider.updateClient');
     explorerProvider.updateClient(client);
@@ -84,7 +84,7 @@ function updateExplorerWithToken(token?: string) {
 }
 
 function updateSchemaWithToken(token?: string) {
-  console.log('[Flapi] updateSchemaWithToken called with token:', token ? '***' + token.substring(token.length - 4) : 'undefined');
+  console.log('[Flapi] updateSchemaWithToken called, token', token ? 'set' : 'not set');
   const client = createClient(token);
   if (schemaProvider) {
     console.log('[Flapi] Calling schemaProvider.updateClient');
@@ -129,10 +129,10 @@ function updateAllClientsWithToken(token?: string) {
   configApiClient.setToken(token);
 }
 
-export function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext) {
   // Initialize token storage first
   tokenStorage = new TokenStorageService(context);
-  const token = tokenStorage.getToken();
+  const token = await tokenStorage.getToken();
   
   // Create clients with token
   const client = createClient(token);
@@ -369,8 +369,10 @@ export function activate(context: vscode.ExtensionContext) {
         outputChannel.appendLine(`Using config: ${yamlUri.fsPath}`);
         
         const yamlDoc = await vscode.workspace.openTextDocument(yamlUri);
-        await yamlValidator.reloadEndpointConfig(yamlDoc);
-        vscode.window.showInformationMessage('✓ SQL template reloaded');
+        // Say so only if the server actually reloaded it.
+        if (await yamlValidator.reloadEndpointConfig(yamlDoc)) {
+          vscode.window.showInformationMessage('✓ SQL template reloaded');
+        }
       } catch (error: any) {
         vscode.window.showErrorMessage(`Reload failed: ${error.message}`);
       }
@@ -469,7 +471,7 @@ export function activate(context: vscode.ExtensionContext) {
         
         // Get authenticated client
         const config = vscode.workspace.getConfiguration('flapi');
-        const token = tokenStorage.getToken();
+        const token = await tokenStorage.getToken();
         const authClient = createClient(token);
         
         // Create or show the SQL template tester panel
@@ -508,7 +510,7 @@ export function activate(context: vscode.ExtensionContext) {
       const relativePath = node.extra?.path as string;
       if (!relativePath) return;
       
-      const fullPath = vscode.Uri.file(require('path').join(workspaceRoot, 'examples', 'sqls', relativePath));
+      const fullPath = vscode.Uri.file(resolveInside(templatesRoot(workspaceRoot), relativePath));
       try {
         const doc = await vscode.workspace.openTextDocument(fullPath);
         await vscode.window.showTextDocument(doc);
@@ -529,7 +531,7 @@ export function activate(context: vscode.ExtensionContext) {
       const relativePath = node.extra?.path as string;
       if (!relativePath) return;
       
-      const fullPath = vscode.Uri.file(require('path').join(workspaceRoot, 'examples', 'sqls', relativePath));
+      const fullPath = vscode.Uri.file(resolveInside(templatesRoot(workspaceRoot), relativePath));
       try {
         const doc = await vscode.workspace.openTextDocument(fullPath);
         await vscode.window.showTextDocument(doc);
@@ -554,7 +556,7 @@ export function activate(context: vscode.ExtensionContext) {
       
       if (confirm !== 'Delete') return;
       
-      const fullPath = vscode.Uri.file(require('path').join(workspaceRoot, 'examples', 'sqls', relativePath));
+      const fullPath = vscode.Uri.file(resolveInside(templatesRoot(workspaceRoot), relativePath));
       try {
         await vscode.workspace.fs.delete(fullPath);
         void vscode.window.showInformationMessage(`Deleted ${fileName}`);
@@ -589,10 +591,10 @@ export function activate(context: vscode.ExtensionContext) {
       if (!newName || newName === oldName) return;
       
       const path = require('path');
-      const oldFullPath = vscode.Uri.file(path.join(workspaceRoot, 'examples', 'sqls', relativePath));
+      const oldFullPath = vscode.Uri.file(resolveInside(templatesRoot(workspaceRoot), relativePath));
       const dirPath = path.dirname(relativePath);
       const newRelativePath = path.join(dirPath, newName);
-      const newFullPath = vscode.Uri.file(path.join(workspaceRoot, 'examples', 'sqls', newRelativePath));
+      const newFullPath = vscode.Uri.file(resolveInside(templatesRoot(workspaceRoot), newRelativePath));
       
       try {
         await vscode.workspace.fs.rename(oldFullPath, newFullPath);
@@ -615,7 +617,7 @@ export function activate(context: vscode.ExtensionContext) {
       if (node && node.kind === 'directory') {
         const relativePath = node.extra?.path as string;
         if (relativePath) {
-          targetDir = require('path').join('examples', 'sqls', relativePath);
+          targetDir = require('path').relative(workspaceRoot, resolveInside(templatesRoot(workspaceRoot), relativePath));
         }
       }
       
@@ -695,9 +697,9 @@ connection:
         void vscode.window.showInformationMessage(`Copied column name: ${columnName}`);
       }
     }),
-    vscode.workspace.onDidChangeConfiguration((event) => {
+    vscode.workspace.onDidChangeConfiguration(async (event) => {
       if (event.affectsConfiguration('flapi')) {
-        const currentToken = tokenStorage.getToken();
+        const currentToken = await tokenStorage.getToken();
         updateExplorerWithToken(currentToken);
         updateSchemaWithToken(currentToken);
       }
