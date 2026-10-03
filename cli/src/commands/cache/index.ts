@@ -89,13 +89,19 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
     .command('update <path>')
     .description('Update cache configuration')
     .option('-e, --enabled <enabled>', 'Enable/disable caching (true/false)')
-    .option('-t, --ttl <ttl>', 'Cache TTL in seconds')
-    .option('-s, --max-size <size>', 'Maximum cache size')
-    .option('--strategy <strategy>', 'Cache strategy (lru, ttl, etc.)')
+    .option('-s, --schedule <duration>', 'Refresh schedule, e.g. 5m, 6h')
+    .option('--table <table>', 'Cache table name')
+    .option('--schema <schema>', 'Cache schema name')
+    .option('-t, --ttl <ttl>', 'Not supported: flAPI has no TTL; use --schedule', undefined)
+    .option('--max-size <size>', 'Not supported by the server')
+    .option('--strategy <strategy>', 'Not supported by the server')
     .option('-f, --file <file>', 'JSON file containing cache configuration')
     .option('--stdin', 'Read cache configuration from stdin')
     .action(async (path: string, options: {
       enabled?: string;
+      schedule?: string;
+      table?: string;
+      schema?: string;
       ttl?: string;
       maxSize?: string;
       strategy?: string;
@@ -138,14 +144,27 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
         if (options.enabled !== undefined) {
           cacheConfig.enabled = options.enabled === 'true';
         }
-        if (options.ttl !== undefined) {
-          cacheConfig.ttl = parseInt(options.ttl);
+        // The server reads enabled, table, schema, schedule, primary-key, cursor,
+        // retention, ... It has no ttl / max_size / strategy: sending them was a
+        // silent no-op (and, before the server was fixed, a 500). Refuse them.
+        const unsupported = [
+          options.ttl !== undefined ? '--ttl (use --schedule, e.g. --schedule 5m)' : '',
+          options.maxSize !== undefined ? '--max-size' : '',
+          options.strategy !== undefined ? '--strategy' : '',
+        ].filter(Boolean);
+        if (unsupported.length > 0) {
+          Console.error(`Unsupported option(s): ${unsupported.join(', ')}. flAPI caches are configured with --schedule, --table, --schema, --enabled or --file.`);
+          process.exitCode = 1;
+          return;
         }
-        if (options.maxSize !== undefined) {
-          cacheConfig.max_size = parseInt(options.maxSize);
+        if (options.schedule !== undefined) {
+          cacheConfig.schedule = options.schedule;
         }
-        if (options.strategy !== undefined) {
-          cacheConfig.strategy = options.strategy;
+        if (options.table !== undefined) {
+          cacheConfig.table = options.table;
+        }
+        if (options.schema !== undefined) {
+          cacheConfig.schema = options.schema;
         }
 
         if (Object.keys(cacheConfig).length === 0) {

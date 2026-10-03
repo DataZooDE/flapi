@@ -1820,7 +1820,9 @@ crow::response CacheConfigHandler::updateCacheConfig(const crow::request& req, c
         // the copy-on-write discipline the snapshot exists to provide.
         EndpointConfig updated = *endpoint;
         CacheConfig& cache = updated.cache;
-        bool enabled = json["enabled"].b();
+        // A partial update (`{"schedule": "10m"}`) leaves `enabled` alone; reading
+        // the missing key threw "cannot find key" and failed the whole request.
+        const bool enabled = json.has("enabled") ? json["enabled"].b() : cache.enabled;
         if (enabled) {
             auto table_key = json.has("table") ? json["table"].s() : updated.cache.table;
             auto schema_key = json.has("schema") ? json["schema"].s() : updated.cache.schema;

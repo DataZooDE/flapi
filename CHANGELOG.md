@@ -4,6 +4,18 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Fixed: more CLI behaviour that did not match the server
+
+- `flapii` no longer repeats a write whose response was lost (`endpoints create`, cache refresh, delete,
+  ...). Only reads are retried, and HTTP 429/5xx on reads are now actually retried (they never were).
+  The CLI and the VS Code extension now share one HTTP client instead of two drifting copies.
+- `flapii cache update` sends settings the server reads: `--schedule`, `--table`, `--schema`, `--enabled`.
+  `--ttl`, `--max-size` and `--strategy` were never read by the server and now fail with a message.
+  `PUT .../cache` no longer fails (500) when `enabled` is omitted.
+- `flapii endpoints wizard` produced a payload and a YAML file the server could not read. It now creates a
+  working endpoint with its SQL template (`--output-file` writes the YAML and a `.sql` next to it).
+- Connection failures, a missing or wrong token, and a server with the config service off now say what to do.
+
 ### Fixed: the CLI listed only one MCP entity, printed its token, and misreported templates
 
 Found by a review of the CLI and VS Code extension, then reproduced against a real server:

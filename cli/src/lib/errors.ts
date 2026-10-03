@@ -1,4 +1,5 @@
 import axios, { AxiosError } from 'axios';
+import { AxiosResponseError } from '@flapi/shared';
 import { Console } from './console';
 
 export class ApiError extends Error {
@@ -15,10 +16,41 @@ export class ConflictError extends ApiError {
   }
 }
 
-export function handleError(error: unknown, opts: { quiet?: boolean } = {}): void {
+const TOKEN_HELP =
+  'The config service needs a token. Start flAPI with `--config-service --config-service-token <token>`, ' +
+  'and give the same token to flapii with --config-service-token or the FLAPI_CONFIG_SERVICE_TOKEN environment variable.';
+
+/** What to do about a failure a first-time user is likely to hit, if anything. */
+export function guidanceFor(error: unknown, baseUrl?: string): string | undefined {
+  if (error instanceof AxiosResponseError) {
+    const status = error.response.status;
+    const body = typeof error.response.data === 'string' ? error.response.data : '';
+    if (status === 401 || status === 403) {
+      return `${TOKEN_HELP} The server rejected the token (HTTP ${status}).`;
+    }
+    // A disabled config service has no routes at all, so the generic router 404 is
+    // all there is; a real "endpoint not found" carries its own message.
+    if (status === 404 && /^\s*not found\s*$/i.test(body)) {
+      return 'The config service may be disabled on this server. Start flAPI with `--config-service --config-service-token <token>`.';
+    }
+    return undefined;
+  }
+  if (isAxiosError(error) && !error.response) {
+    const where = baseUrl ?? error.config?.baseURL ?? 'the configured URL';
+    return `Cannot reach flAPI at ${where}. Is it running? Set the address with --base-url or FLAPI_BASE_URL.`;
+  }
+  return undefined;
+}
+
+export function handleError(error: unknown, opts: { quiet?: boolean; baseUrl?: string } = {}): void {
   if (opts.quiet) {
     process.exitCode = 1;
     return;
+  }
+
+  const guidance = guidanceFor(error, opts.baseUrl);
+  if (guidance) {
+    Console.error(guidance);
   }
 
   if (isAxiosError(error)) {

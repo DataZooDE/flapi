@@ -231,7 +231,7 @@ node dist/index.js cache get /customers/ --output json \
 Update cache configuration:
 ```bash
 node dist/index.js cache update /customers/ \
-  --enabled true --ttl 300 --max-size 1000 \
+  --enabled true --schedule 5m \
   --base-url http://localhost:8080 --config examples/flapi.yaml
 ```
 

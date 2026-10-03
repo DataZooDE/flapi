@@ -1,68 +1,25 @@
 import { describe, it, expect } from 'vitest';
-import path from 'node:path';
-import { execa } from 'execa';
-import { baseUrl, configPath } from './utils';
+import { flapii } from './helpers';
 
-const cliPath = path.resolve('dist', 'index.js');
-
+// Deterministic: /customers/ is a REST endpoint of the shipped examples. These used
+// to take "the first key of the list" and return when there was none, so they
+// depended on listing order and could pass without testing anything.
 describe('cli templates command (integration)', () => {
   it('lists templates', async () => {
-    const result = await execa('node', [cliPath, 'templates', 'list', '--output', 'json'], {
-      env: {
-        ...process.env,
-        FLAPI_BASE_URL: baseUrl,
-        FLAPI_CONFIG: configPath,
-      },
-    });
-
-    expect(result.exitCode).toBe(0);
-    // Should return an object with template paths
-    expect(result.stdout.length).toBeGreaterThan(0);
+    const r = await flapii(['templates', 'list', '--output', 'json']);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.length).toBeGreaterThan(0);
   });
 
   it('gets a template', async () => {
-    // First get the list to find an available template
-    const listResult = await execa('node', [cliPath, 'templates', 'list', '--output', 'json'], {
-      env: { ...process.env, FLAPI_BASE_URL: baseUrl, FLAPI_CONFIG: configPath },
-    });
-
-    const templates = JSON.parse(listResult.stdout);
-    const templatePath = Object.keys(templates)[0];
-
-    if (!templatePath) {
-      // Skip if no templates available
-      return;
-    }
-
-    const result = await execa('node', [cliPath, 'templates', 'get', templatePath, '--output', 'json'], {
-      env: { ...process.env, FLAPI_BASE_URL: baseUrl, FLAPI_CONFIG: configPath },
-    });
-
-    expect(result.exitCode).toBe(0);
-    const template = JSON.parse(result.stdout);
-    expect(typeof template.template).toBe('string');
+    const r = await flapii(['templates', 'get', '/customers/', '--output', 'json']);
+    expect(r.exitCode).toBe(0);
+    expect(typeof JSON.parse(r.stdout).template).toBe('string');
   });
 
-  it('tests template syntax', async () => {
-    // First get the list to find an available template
-    const listResult = await execa('node', [cliPath, 'templates', 'list', '--output', 'json'], {
-      env: { ...process.env, FLAPI_BASE_URL: baseUrl, FLAPI_CONFIG: configPath },
-    });
-
-    const templates = JSON.parse(listResult.stdout);
-    const templatePath = Object.keys(templates)[0];
-
-    if (!templatePath) {
-      // Skip if no templates available
-      return;
-    }
-
-    const result = await execa('node', [cliPath, 'templates', 'test', templatePath, '--output', 'json'], {
-      env: { ...process.env, FLAPI_BASE_URL: baseUrl, FLAPI_CONFIG: configPath },
-    });
-
-    expect(result.exitCode).toBe(0);
-    const testResult = JSON.parse(result.stdout);
-    expect(testResult).toHaveProperty('success', true);
+  it('tests a template', async () => {
+    const r = await flapii(['templates', 'test', '/customers/', '--output', 'json']);
+    expect(r.exitCode).toBe(0);
+    expect(JSON.parse(r.stdout)).toHaveProperty('success', true);
   });
 });
