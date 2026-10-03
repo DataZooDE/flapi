@@ -20,6 +20,13 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 - `FlapiApiClient` (`@flapi/shared`) accepts `baseUrl`/`authToken`/`timeout`/`retries`/`verifyTls` and still
   accepts `baseURL`/`token`/`debug`. Its `timeout` is now in seconds, like `flapi.timeout` and `--timeout`.
 
+### Fixed: VS Code "Validate SQL Template" now validates the SQL in the editor
+
+It validated the saved endpoint YAML and then said the SQL template was valid, so broken or unsaved SQL
+passed. The command now sends the editor's current text to the server, which renders the Mustache and
+EXPLAINs the result against the endpoint's connection (nothing is saved) and reports the real error.
+`POST .../template/expand?validate_only=1` accepts an optional `template` field for this.
+
 ### Fixed: VS Code extension security and correctness (from a review, each reproduced against a real server)
 
 - The extension logged the full request headers, including the config-service token, whenever the token
