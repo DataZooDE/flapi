@@ -15,6 +15,7 @@ import { readTransportSettings } from './services/transportSettings';
 import { FlapiApiClient } from '@flapi/shared';
 import { TokenStorageService } from './services/tokenStorage';
 import { resolveInside, templatesRoot } from './workspace/safePath';
+import { createEndpointOnServer, listConnectionNames } from './services/endpointCreator';
 import { describeValidation, validateTemplateText } from './validation/templateValidator';
 import { endpointPathFromYamlText } from './validation/endpointPath';
 import { ParameterStorageService } from './services/parameterStorage';
@@ -630,22 +631,25 @@ export async function activate(context: vscode.ExtensionContext) {
       }
     }),
     
-    vscode.commands.registerCommand('flapi.newEndpoint', async (node?: FlapiNode) => {
-      const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-      if (!workspaceRoot) {
-        void vscode.window.showErrorMessage('No workspace folder open');
+    vscode.commands.registerCommand('flapi.newEndpoint', async () => {
+      // The endpoint is created ON THE SERVER through the ConfigService; nothing is
+      // written to the local workspace (the server's templates directory is not
+      // necessarily this workspace's).
+      const token = await tokenStorage.getToken();
+      const client = createClient(token);
+
+      let connections: string[];
+      try {
+        connections = await listConnectionNames(client);
+      } catch (error) {
+        void vscode.window.showErrorMessage(`Could not read connections from the flAPI server: ${error}`);
         return;
       }
-      
-      // Get target directory
-      let targetDir = 'examples/sqls';
-      if (node && node.kind === 'directory') {
-        const relativePath = node.extra?.path as string;
-        if (relativePath) {
-          targetDir = require('path').relative(workspaceRoot, resolveInside(templatesRoot(workspaceRoot), relativePath));
-        }
+      if (connections.length === 0) {
+        void vscode.window.showErrorMessage('The flAPI server has no connections configured');
+        return;
       }
-      
+
       // Ask for endpoint name
       const endpointName = await vscode.window.showInputBox({
         prompt: 'Enter endpoint name (e.g., "my-endpoint")',
@@ -679,33 +683,22 @@ export async function activate(context: vscode.ExtensionContext) {
       
       if (!urlPath) return;
       
-      const path = require('path');
-      const yamlPath = path.join(workspaceRoot, targetDir, `${endpointName}.yaml`);
-      const sqlPath = path.join(workspaceRoot, targetDir, `${endpointName}.sql`);
-      
-      // Create YAML file
-      const yamlContent = `url-path: ${urlPath}
-template-source: ${endpointName}.sql
-connection:
-  - default
-`;
-      
-      // Create SQL file
-      const sqlContent = `SELECT 'Hello from ${endpointName}' AS message;
-`;
-      
+      const connection = connections.length === 1
+        ? connections[0]
+        : await vscode.window.showQuickPick(connections, { placeHolder: 'Connection for the new endpoint' });
+      if (!connection) return;
+
       try {
-        await vscode.workspace.fs.writeFile(vscode.Uri.file(yamlPath), Buffer.from(yamlContent, 'utf8'));
-        await vscode.workspace.fs.writeFile(vscode.Uri.file(sqlPath), Buffer.from(sqlContent, 'utf8'));
-        
-        void vscode.window.showInformationMessage(`Created endpoint: ${endpointName}`);
+        const created = await createEndpointOnServer(client, {
+          name: endpointName,
+          urlPath,
+          connection,
+          sql: `SELECT 'Hello from ${endpointName}' AS message;\n`,
+        });
+        void vscode.window.showInformationMessage(`Created endpoint ${created.urlPath} on the server`);
         explorerProvider?.refresh();
-        
-        // Open the YAML file
-        const doc = await vscode.workspace.openTextDocument(yamlPath);
-        await vscode.window.showTextDocument(doc);
       } catch (error) {
-        void vscode.window.showErrorMessage(`Failed to create endpoint: ${error}`);
+        void vscode.window.showErrorMessage(`Failed to create endpoint: ${error instanceof Error ? error.message : error}`);
       }
     }),
     vscode.commands.registerCommand('flapi.schema.copyTableName', async (node: SchemaNode) => {
