@@ -4,6 +4,18 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Fixed: VS Code "New endpoint" creates the endpoint on the server
+
+- The explorer's "New endpoint" command used to write `examples/sqls/<name>.yaml` and `.sql` into your local
+  workspace, which is only right when the server happens to read that folder. It now creates the endpoint on
+  the flAPI server itself: it is live immediately, its YAML and SQL are saved in the server's templates
+  directory (so it survives a restart), and nothing is written locally.
+- You now pick the connection from the ones the server has configured, instead of a hard-coded `default`
+  that usually did not exist. Errors (unknown connection, rejected path) show the server's message.
+- The endpoint YAML is built by the server from the values you typed, never assembled from text in the
+  extension, so a hostile name or path cannot inject YAML or escape the templates directory.
+- The new endpoint's files are no longer opened in an editor afterwards; find it in the flAPI explorer.
+
 ### Fixed: the VS Code extension and the CLI share one ConfigService transport
 
 - The extension's YAML validator and reload used a second HTTP client that ignored `flapi.insecure`, had no
