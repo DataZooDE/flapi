@@ -24,6 +24,8 @@ public:
 
 private:
     std::vector<ValidationError> validateField(const RequestFieldConfig& field, const std::map<std::string, std::string>& params);
+    std::vector<ValidationError> validateNumber(const std::string& fieldName, const std::string& value);
+    std::vector<ValidationError> validateBoolean(const std::string& fieldName, const std::string& value);
     std::vector<ValidationError> validateString(const std::string& fieldName, const std::string& value, const ValidatorConfig& validator);
     std::vector<ValidationError> validateInt(const std::string& fieldName, const std::string& value, const ValidatorConfig& validator);
     std::vector<ValidationError> validateEmail(const std::string& fieldName, const std::string& value);

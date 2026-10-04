@@ -54,9 +54,17 @@ std::vector<ValidationError> RequestValidator::validateField(const RequestFieldC
         if (validator.type == "string") {
             auto stringErrors = validateString(field.fieldName, value, validator);
             errors.insert(errors.end(), stringErrors.begin(), stringErrors.end());
-        } else if (validator.type == "int") {
+        } else if (validator.type == "int" || validator.type == "integer") {
             auto intErrors = validateInt(field.fieldName, value, validator);
             errors.insert(errors.end(), intErrors.begin(), intErrors.end());
+        } else if (validator.type == "number" || validator.type == "float" || validator.type == "double") {
+            // Classified as bindable (which skips the SQL screen below), so it must actually
+            // be a number: `0 OR true` passed for a `{{{ params.amount }}}` site (#192).
+            auto numberErrors = validateNumber(field.fieldName, value);
+            errors.insert(errors.end(), numberErrors.begin(), numberErrors.end());
+        } else if (validator.type == "boolean" || validator.type == "bool") {
+            auto boolErrors = validateBoolean(field.fieldName, value);
+            errors.insert(errors.end(), boolErrors.begin(), boolErrors.end());
         } else if (validator.type == "email") {
             auto emailErrors = validateEmail(field.fieldName, value);
             errors.insert(errors.end(), emailErrors.begin(), emailErrors.end());
@@ -109,6 +117,25 @@ std::vector<ValidationError> RequestValidator::validateField(const RequestFieldC
     }
 
     return errors;
+}
+
+std::vector<ValidationError> RequestValidator::validateNumber(const std::string& fieldName, const std::string& value) {
+    // The whole string must be one plain decimal number: optional sign, digits with an
+    // optional fraction (or a leading '.'), optional exponent. No spaces, no hex, no NaN.
+    static const std::regex number(R"(^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$)");
+    if (!std::regex_match(value, number)) {
+        return {{fieldName, "Value is not a valid number"}};
+    }
+    return {};
+}
+
+std::vector<ValidationError> RequestValidator::validateBoolean(const std::string& fieldName, const std::string& value) {
+    std::string lower = value;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return std::tolower(c); });
+    if (lower == "true" || lower == "false" || lower == "1" || lower == "0") {
+        return {};
+    }
+    return {{fieldName, "Value is not a valid boolean (true, false, 1 or 0)"}};
 }
 
 std::vector<ValidationError> RequestValidator::validateString(const std::string& fieldName, const std::string& value, const ValidatorConfig& validator) {
@@ -312,41 +339,34 @@ std::vector<ValidationError> RequestValidator::validateSqlInjection(const std::s
         }
     }
 
-    // Check for suspicious characters that are commonly used in SQL injection
-    // Single quotes are a key indicator of SQL injection attempts
-    const std::string suspiciousChars = "\'";
-    for (char c : suspiciousChars) {
-        if (value.find(c) != std::string::npos) {
-            // Check if it's part of a dangerous pattern (already checked above)
-            // Only flag if it appears in a context that suggests injection
-            // Look for patterns like ' OR ' or '; or similar
-            bool isPartOfPattern = false;
-            size_t pos = value.find(c);
-            while (pos != std::string::npos) {
-                // Check context around the quote
-                std::string context = "";
-                if (pos > 0 && pos < value.length() - 1) {
-                    context = value.substr(std::max(0, (int)pos - 2), std::min(5, (int)(value.length() - pos + 2)));
-                } else if (pos == 0 && value.length() > 1) {
-                    context = value.substr(0, 3);
-                } else if (pos == value.length() - 1 && value.length() > 1) {
-                    context = value.substr(std::max(0, (int)pos - 2), 3);
+    // A single quote is where a value leaves its string literal. It is only suspicious
+    // when something SQL-shaped sits next to it - an operator, a boolean/logic word, a
+    // parenthesis. The old check looked at a 5-character window around the quote for
+    // "OR"/"AND"/";"/"=", so whitespace pushed the tell-tale out of the window
+    // (`x'<newline><newline>OR 2>1 ...`). Look at the WHOLE value instead, with every
+    // whitespace/control character collapsed to one space first. A lone apostrophe
+    // (O'Brien, it's) is left alone.
+    if (value.find('\'') != std::string::npos) {
+        std::string normalised;
+        normalised.reserve(value.size());
+        bool in_space = false;
+        for (const unsigned char c : value) {
+            const bool space = (c <= 0x20) || c == 0x7f || c == 0xa0;
+            if (space) {
+                if (!in_space) {
+                    normalised.push_back(' ');
                 }
-                std::transform(context.begin(), context.end(), context.begin(), ::toupper);
-                // If quote appears with OR, AND, or ; nearby, it's likely injection
-                if (context.find("OR") != std::string::npos || 
-                    context.find("AND") != std::string::npos || 
-                    context.find(";") != std::string::npos ||
-                    context.find("=") != std::string::npos) {
-                    isPartOfPattern = true;
-                    break;
-                }
-                pos = value.find(c, pos + 1);
+                in_space = true;
+            } else {
+                normalised.push_back(static_cast<char>(std::tolower(c)));
+                in_space = false;
             }
-            if (isPartOfPattern) {
-                errors.push_back({fieldName, "Potential SQL injection detected"});
-                return errors;
-            }
+        }
+        static const std::regex suspicious(
+            R"([;=<>!|&()+*/%\\]|--|\b(or|and|not|xor|like|ilike|similar|in|between|is|null|true|false|union|select|from|where|having|limit|offset|order|group|join|case|when|then|else|end|exists|any|all|cast|convert)\b)");
+        if (std::regex_search(normalised, suspicious)) {
+            errors.push_back({fieldName, "Potential SQL injection detected"});
+            return errors;
         }
     }
 

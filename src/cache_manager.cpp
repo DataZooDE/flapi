@@ -980,9 +980,12 @@ void CacheManager::addQueryCacheParamsIfNecessary(std::shared_ptr<ConfigManager>
     }
 
     std::string schema = cacheConfig.schema.empty() ? config_manager->getCacheSchema() : cacheConfig.schema;
-    params.emplace("cacheCatalog", config_manager->getDuckLakeConfig().alias);
-    params.emplace("cacheSchema", schema);
-    params.emplace("cacheTable", cacheConfig.table);
+    // ASSIGN, never emplace: emplace left a request-supplied `?cacheTable=...` in place, so a
+    // caller could point a cached endpoint's template at any table (#192). These are
+    // server-owned.
+    params["cacheCatalog"] = config_manager->getDuckLakeConfig().alias;
+    params["cacheSchema"] = schema;
+    params["cacheTable"] = cacheConfig.table;
 }
 
 void CacheManager::performGarbageCollection(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::vector<std::string> previousTableNames) {
