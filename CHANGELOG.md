@@ -4,6 +4,21 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Fixed: an invalid `cache.schedule` crashed the server; a failed refresh took a working cache offline
+
+Found by a review of the server and reproduced against a real binary:
+
+- `cache.schedule: 5x` (or `0s`, or a value that overflowed such as `30000d`) was accepted at startup and then
+  terminated the whole process about two scans later. Schedules are now validated when the configuration
+  loads (and by the cache API, HTTP 400): `<positive number>[s|m|h|d]`, at most 10 years. The scheduler
+  also contains any exception per endpoint, and a failing scheduled refresh waits one interval instead of
+  retrying on every scan against a source that is down.
+- A failed refresh of an already-built cache turned the endpoint into HTTP 503 although the last snapshot was
+  fine. It now keeps serving that snapshot; `/health` reports it as `degraded` with a `stale` list (HTTP 200).
+  A cache that never built is still 503.
+- The raw DuckDB error (SQL, file paths) was returned to anonymous callers in the 503 body (`detail`) and by
+  `/health` (`error`). Both are removed; the error is in the server log.
+
 ### Security: `flapi pack` and `unpack` are safe against hostile input
 
 Found by a review of the server and reproduced against a real binary:

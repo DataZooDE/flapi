@@ -1881,7 +1881,12 @@ crow::response CacheConfigHandler::updateCacheConfig(const crow::request& req, c
             cache.enabled = false;
         }
         if (json.has("schedule")) {
-            cache.schedule = json["schedule"].s();
+            const std::string new_schedule = json["schedule"].s();
+            if (!TimeInterval::parseInterval(new_schedule)) {
+                return crow::response(400, "Invalid cache schedule '" + new_schedule +
+                                           "': expected <positive number>[s|m|h|d], e.g. 30s, 5m, 6h, 1d");
+            }
+            cache.schedule = new_schedule;
         }
         if (json.has("primary-key")) {
             cache.primary_keys.clear();

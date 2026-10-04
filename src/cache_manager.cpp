@@ -154,7 +154,22 @@ void CacheManager::markCacheReady(std::shared_ptr<ConfigManager> config_manager,
 void CacheManager::markCacheFailed(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::string& error) {
     const CacheKey key = cacheKeyForEndpoint(config_manager, endpoint);
     std::lock_guard<std::mutex> lock(readiness_mutex_);
+    // A refresh that fails over a cache that was already built must not take the endpoint
+    // offline: the last snapshot is still there and still correct, just not fresh. Only a
+    // cache that never built (Starting) becomes Failed (HTTP 503).
+    const auto previous = readiness_.find(key);
+    const bool was_built = previous != readiness_.end() && previous->second.state == ReadinessState::Ready;
+    if (was_built) {
+        auto stale = previous->second;
+        stale.stale = true;
+        stale.error = error;
+        readiness_[key] = std::move(stale);
+        CROW_LOG_ERROR << "Cache refresh failed for " << key.schema << "." << key.table
+                       << "; still serving the last snapshot: " << error;
+        return;
+    }
     readiness_[key] = CacheReadiness{ReadinessState::Failed, key.catalog, key.schema, key.table, error};
+    CROW_LOG_ERROR << "Cache build failed for " << key.schema << "." << key.table << ": " << error;
 }
 
 CacheManager::CacheReadiness CacheManager::getReadinessForKey(const CacheKey& key) const {
@@ -190,8 +205,9 @@ crow::json::wvalue CacheManager::readinessBlockJson(const CacheReadiness& readin
     errorResponse["error"] = "cache_warming";
     errorResponse["table"] = readiness.table;
     if (readiness.state == ReadinessState::Failed) {
+        // No `detail`: it carried the raw DuckDB error (SQL, file paths, connection
+        // strings) to anonymous callers. The error is in the server log.
         errorResponse["message"] = "Cache for this endpoint failed to build";
-        errorResponse["detail"] = readiness.error;
     } else {
         errorResponse["message"] = "Cache for this endpoint is still being built";
     }
@@ -214,6 +230,10 @@ CacheManager::CacheReadinessSummary CacheManager::getReadinessSummary() const {
     for (const auto& [key, readiness] : readiness_) {
         if (readiness.state == ReadinessState::Ready) {
             ++summary.ready;
+            if (readiness.stale) {
+                ++summary.stale;
+                summary.stale_caches.push_back(readiness);
+            }
         } else if (readiness.state == ReadinessState::Failed) {
             ++summary.failed;
             summary.failed_caches.push_back(readiness);
@@ -1115,23 +1135,30 @@ std::optional<std::chrono::seconds> TimeInterval::parseInterval(const std::strin
     }
 
     try {
-        std::regex pattern("^(\\d+)([smhd])$");
+        static const std::regex pattern("^(\\d{1,9})([smhd])$");
         std::smatch matches;
-        
+
         if (!std::regex_match(interval, matches, pattern)) {
             return std::nullopt;
         }
 
-        int value = std::stoi(matches[1].str());
-        char unit = matches[2].str()[0];
-        
-        switch (unit) {
-            case 's': return std::chrono::seconds(value);
-            case 'm': return std::chrono::seconds(value * 60);
-            case 'h': return std::chrono::seconds(value * 3600);
-            case 'd': return std::chrono::seconds(value * 86400);
+        // 64-bit arithmetic (a `30000d` overflowed int seconds) and strictly positive: a
+        // zero interval made the scheduler refresh on every scan.
+        const std::int64_t value = std::stoll(matches[1].str());
+        std::int64_t seconds = 0;
+        switch (matches[2].str()[0]) {
+            case 's': seconds = value; break;
+            case 'm': seconds = value * 60; break;
+            case 'h': seconds = value * 3600; break;
+            case 'd': seconds = value * 86400; break;
             default: return std::nullopt;
         }
+        // At most ~10 years: beyond that it is a typo, and keeps every consumer far from overflow.
+        constexpr std::int64_t kMaxSeconds = 10LL * 365 * 86400;
+        if (seconds <= 0 || seconds > kMaxSeconds) {
+            return std::nullopt;
+        }
+        return std::chrono::seconds(seconds);
     } catch (const std::exception&) {
         return std::nullopt;
     }

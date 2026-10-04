@@ -1323,9 +1323,12 @@ Content-Type: application/json
 }
 ```
 
-If warmup fails, the endpoint continues to return `503` and includes the failure detail. This is
-intentional: a cached endpoint must never return `200` with empty or partial results from a
-half-built cache.
+If the **first build** fails, the endpoint continues to return `503` (without the failure detail, which
+is only in the server log). This is intentional: a cached endpoint must never return `200` with empty or
+partial results from a half-built cache. A failing **refresh** of a cache that was already built does not
+take the endpoint offline: it keeps serving the last snapshot (see `/health`: `stale`).
+
+`cache.schedule` must be `<positive number>[s|m|h|d]` (at most 10 years); anything else stops startup.
 
 Endpoints without a `cache:` block are not gated by cache readiness.
 

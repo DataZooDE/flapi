@@ -645,6 +645,20 @@ cache:
     auto ready = cache_manager.getEndpointReadiness(config_manager, endpoint);
     REQUIRE(ready.state == CacheManager::ReadinessState::Ready);
 
+    // A refresh that fails over a cache that was already built keeps it serving (#193):
+    // the last snapshot is still correct, just stale.
+    cache_manager.markCacheFailed(config_manager, endpoint, "boom");
+    auto stale = cache_manager.getEndpointReadiness(config_manager, endpoint);
+    REQUIRE(stale.state == CacheManager::ReadinessState::Ready);
+    REQUIRE(stale.stale);
+    REQUIRE(stale.error == "boom");
+
+    // A successful refresh clears it.
+    cache_manager.markCacheReady(config_manager, endpoint);
+    REQUIRE_FALSE(cache_manager.getEndpointReadiness(config_manager, endpoint).stale);
+
+    // A cache that never built is Failed.
+    cache_manager.markCacheStarting(config_manager, endpoint);
     cache_manager.markCacheFailed(config_manager, endpoint, "boom");
     auto failed = cache_manager.getEndpointReadiness(config_manager, endpoint);
     REQUIRE(failed.state == CacheManager::ReadinessState::Failed);
