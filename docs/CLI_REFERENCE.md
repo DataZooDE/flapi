@@ -485,10 +485,19 @@ flapi pack --in <config-dir> --out <new-binary> [--allow-secrets] [--macos-appen
 **Default secret deny list** (refusal with non-zero exit, unless
 `--allow-secrets`):
 
-- `*.env`             at any depth
+- `*.env` and `.env.*` (e.g. `.env.local`)  at any depth
 - `secrets/` segment  at any depth
 - `*.pem`             at any depth
 - `*.key`             at any depth
+
+Matching is **case-insensitive** (`.ENV`, `SECRETS/token`, `server.PEM` are refused too).
+Symlinks are never followed: a symlink in the input tree is refused with an error.
+
+**Bundle limits.** Reading a bundle (startup, `info`, `unpack`) refuses entries whose name would
+leave the extraction directory (`../x`, absolute paths, backslashes), more than 100000 entries
+(`FLAPI_BUNDLE_MAX_ENTRIES`) and more than 1 GiB decompressed (`FLAPI_BUNDLE_MAX_MIB`). A binary whose
+bundle is present but damaged or unsafe **refuses to start** instead of falling back to a
+`flapi.yaml` beside it.
 
 **Reproducible builds.** Set `SOURCE_DATE_EPOCH` to stamp every
 archive entry with a deterministic mtime; the produced binary is

@@ -36,7 +36,7 @@ local filesystem unchanged — existing operators see no behaviour
 change.
 
 **Secrets stay out of the bundle.** `flapi pack` refuses files
-matching `*.env`, `secrets/*`, `*.pem`, `*.key` by default. The
+matching `*.env` / `.env.*`, `secrets/*`, `*.pem`, `*.key` by default (case-insensitively), and never follows symlinks. The
 override (`--allow-secrets`) is for testing only. Credentials
 come from the environment at runtime (`AWS_*`, `GOOGLE_*`,
 `AZURE_*`, `FLAPI_CONFIG_SERVICE_TOKEN`, `{{env.VAR}}` YAML

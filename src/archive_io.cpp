@@ -1,3 +1,5 @@
+#include <cstdlib>
+#include <string>
 #include "archive_io.hpp"
 
 #include <archive.h>
@@ -144,6 +146,46 @@ std::vector<std::uint8_t> WriteArchive(const ArchiveEntries& entries,
     return out;
 }
 
+bool IsSafeArchiveEntryName(const std::string& name) {
+    if (name.empty() || name.find('\0') != std::string::npos || name.find('\\') != std::string::npos) {
+        return false;
+    }
+    if (name[0] == '/' || (name.size() > 1 && name[1] == ':')) {
+        return false;
+    }
+    std::size_t start = 0;
+    while (start <= name.size()) {
+        const auto end = name.find('/', start);
+        const auto part = name.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        if (part == "..") {
+            return false;
+        }
+        if (end == std::string::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+    return true;
+}
+
+namespace {
+
+std::uint64_t EnvLimit(const char* name, std::uint64_t fallback, std::uint64_t scale) {
+    if (const char* v = std::getenv(name)) {
+        try {
+            const auto parsed = std::stoull(v);
+            if (parsed > 0) {
+                return static_cast<std::uint64_t>(parsed) * scale;
+            }
+        } catch (...) {
+            // fall through to the default
+        }
+    }
+    return fallback;
+}
+
+}  // namespace
+
 ArchiveEntries ReadArchive(const std::vector<std::uint8_t>& buffer) {
     if (buffer.empty()) {
         throw ArchiveIOError("archive buffer is empty");
@@ -163,6 +205,10 @@ ArchiveEntries ReadArchive(const std::vector<std::uint8_t>& buffer) {
         throw ArchiveIOError(ArchiveErrorMessage(a, "archive_read_open_memory"));
     }
 
+    const std::uint64_t max_total = EnvLimit("FLAPI_BUNDLE_MAX_MIB", 1024ull * 1024 * 1024, 1024ull * 1024);
+    const std::uint64_t max_entries = EnvLimit("FLAPI_BUNDLE_MAX_ENTRIES", 100000, 1);
+    std::uint64_t total_bytes = 0;
+
     ArchiveEntries result;
     archive_entry* entry = nullptr;
 
@@ -177,6 +223,18 @@ ArchiveEntries ReadArchive(const std::vector<std::uint8_t>& buffer) {
 
         const char* path_cstr = archive_entry_pathname(entry);
         std::string name = path_cstr ? path_cstr : "";
+        if (!IsSafeArchiveEntryName(name)) {
+            throw ArchiveIOError("unsafe entry name in bundle (outside the extraction directory): '" + name + "'");
+        }
+        if (result.size() + 1 > max_entries) {
+            throw ArchiveIOError("bundle has more entries than the limit of " + std::to_string(max_entries) +
+                                 " entries (FLAPI_BUNDLE_MAX_ENTRIES)");
+        }
+        // A declared size over the limit is refused before a byte is inflated.
+        if (archive_entry_size_is_set(entry) && static_cast<std::uint64_t>(archive_entry_size(entry)) > max_total) {
+            throw ArchiveIOError("bundle entry '" + name + "' exceeds the size limit of " +
+                                 std::to_string(max_total >> 20) + " MiB (FLAPI_BUNDLE_MAX_MIB)");
+        }
 
         std::vector<std::uint8_t> data;
         std::array<std::uint8_t, 8192> chunk{};
@@ -187,6 +245,12 @@ ArchiveEntries ReadArchive(const std::vector<std::uint8_t>& buffer) {
             }
             if (n == 0) {
                 break;
+            }
+            total_bytes += static_cast<std::uint64_t>(n);
+            if (total_bytes > max_total) {
+                // Checked while inflating: the declared size can lie.
+                throw ArchiveIOError("bundle exceeds the size limit of " + std::to_string(max_total >> 20) +
+                                     " MiB when decompressed (FLAPI_BUNDLE_MAX_MIB)");
             }
             data.insert(data.end(), chunk.begin(), chunk.begin() + n);
         }
