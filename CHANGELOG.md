@@ -4,6 +4,22 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Security: the config service could write files outside the templates directory; CORS allowlist; token echo
+
+Found by a review of the server and reproduced against a real binary:
+
+- A config-token holder could create an endpoint whose `template-source` (or cache `template-file`) was an
+  absolute path or `../…`, then read or overwrite that file through the template routes (REST, and MCP
+  `flapi_update_endpoint`). Template paths used through the management APIs must now resolve - symlinks
+  included - to a file inside the templates directory; anything else is rejected with HTTP 400. **Behaviour
+  change:** an endpoint whose YAML points its template outside the templates directory can no longer have
+  that template read or written through the config service (edit the file directly).
+  Nested relative sources such as `reports/daily.sql` work, and their directories are created.
+- A request from an `Origin` that is not in `cors.allow-origins` still received
+  `Access-Control-Allow-Origin: *`. It now gets no CORS headers.
+- With the config service enabled the server printed its bearer token to stdout even when you supplied it.
+  A supplied token is no longer echoed; a generated one (the only place you can learn it) still is.
+
 ### Fixed: the VS Code endpoint tester no longer persists credentials
 
 An `Authorization` header, API key, token or password typed into the endpoint tester's headers or parameters

@@ -1133,6 +1133,12 @@ ConfigToolResult ConfigToolAdapter::executeUpdateEndpoint(const crow::json::wval
             if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
                 updated.templateSource = val_str.substr(1, val_str.length() - 2);
             }
+            // The same boundary flapi_create_endpoint enforces: an endpoint's template
+            // must stay inside the templates directory.
+            const auto problem = config_manager_->TemplatePathProblem(updated.templateSource);
+            if (!problem.empty()) {
+                return createErrorResult(-32602, problem);
+            }
         }
 
         // Replace the endpoint
