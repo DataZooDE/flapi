@@ -1146,6 +1146,13 @@ void ConfigManager::parseEndpointCache(const YAML::Node& endpoint_config, const 
 
     if (cache_node["schedule"]) {
         endpoint.cache.schedule = safeGet<std::string>(cache_node, "schedule", "cache.schedule");
+        // Refuse it at load. An invalid schedule used to be accepted here and then threw
+        // inside the heartbeat worker, which terminated the whole process (#193).
+        if (!TimeInterval::parseInterval(*endpoint.cache.schedule)) {
+            throw ConfigurationError("Invalid cache schedule '" + *endpoint.cache.schedule +
+                                     "': expected <positive number>[s|m|h|d], e.g. 30s, 5m, 6h, 1d",
+                                     "cache.schedule");
+        }
     }
 
     if (cache_node["primary-key"]) {

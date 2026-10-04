@@ -696,8 +696,11 @@ During cache warmup, `/health/live` returns `200` as soon as the server is liste
 }
 ```
 
-If a cache warmup fails, `/health` returns `503` with `"status": "degraded"` and a `failed` list
-including the table name and error.
+If a cache has **never built** (the warm-up failed), `/health` returns `503` with `"status":
+"degraded"` and a `failed` list naming the table and schema. If a later **refresh** fails over a cache
+that was already built, the endpoint keeps serving the last snapshot and `/health` returns `200` with
+`"status": "degraded"` and a `stale` list. The error text (SQL, file paths) is written to the server log
+only: `/health` is unauthenticated and never returns it.
 
 Requests to a cached data endpoint while its cache is starting or failed return `503 Service
 Unavailable` with `Retry-After: 5` and a JSON body containing `"error": "cache_warming"`. flAPI

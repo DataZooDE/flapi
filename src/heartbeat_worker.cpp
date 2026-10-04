@@ -90,8 +90,17 @@ void HeartbeatWorker::performDuckLakeScheduledTasks() {
             continue; // No schedule configured
         }
 
-        // Simple schedule check - in production, this would use cron-like scheduling
-        if (shouldRunScheduledRefresh(endpoint, now)) {
+        // The WHOLE per-endpoint step is guarded: an exception that escapes this worker
+        // thread std::terminate()s the process, and a bad schedule used to do exactly that
+        // from shouldRunScheduledRefresh() on the second scan (#193).
+        bool due = false;
+        try {
+            due = shouldRunScheduledRefresh(endpoint, now);
+        } catch (const std::exception& ex) {
+            CROW_LOG_ERROR << "Skipping scheduled refresh for " << endpoint.urlPath << ": " << ex.what();
+            continue;
+        }
+        if (due) {
             try {
                 CROW_LOG_INFO << "Running scheduled cache refresh for endpoint: " << endpoint.urlPath;
                 
@@ -104,6 +113,9 @@ void HeartbeatWorker::performDuckLakeScheduledTasks() {
                 
             } catch (const std::exception& ex) {
                 CROW_LOG_ERROR << "Failed scheduled cache refresh for " << endpoint.urlPath << ": " << ex.what();
+                // Count the attempt: without it the endpoint was due again on EVERY scan,
+                // hammering a source that is down. The next try is one interval away.
+                last_refresh_times[endpoint.urlPath] = now;
             }
         }
     }

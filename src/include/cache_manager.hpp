@@ -46,15 +46,18 @@ public:
         std::string catalog;
         std::string schema;
         std::string table;
-        std::string error;
+        std::string error;       // internal: logged, never returned to callers
+        bool stale = false;      // Ready, but the latest refresh failed (last snapshot still served)
     };
 
     struct CacheReadinessSummary {
         int total = 0;
         int ready = 0;
         int failed = 0;
+        int stale = 0;
         std::vector<CacheReadiness> pending_caches;
         std::vector<CacheReadiness> failed_caches;
+        std::vector<CacheReadiness> stale_caches;
     };
 
     void initializeReadiness(std::shared_ptr<ConfigManager> config_manager);

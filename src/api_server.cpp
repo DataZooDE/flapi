@@ -613,7 +613,9 @@ crow::response APIServer::getHealth() {
             crow::json::wvalue item;
             item["table"] = cache.table;
             item["schema"] = cache.schema;
-            item["error"] = cache.error;
+            // The error text (SQL, file paths) stays in the server log; /health is
+            // unauthenticated.
+            item["state"] = "failed";
             failed.push_back(std::move(item));
         }
         health["failed"] = std::move(failed);
@@ -631,6 +633,22 @@ crow::response APIServer::getHealth() {
         }
         health["pending"] = std::move(pending);
         return crow::response(503, health);
+    }
+
+    if (summary.stale > 0) {
+        // Serving, but a refresh is failing: the last snapshot is returned. 200 so a load
+        // balancer keeps sending traffic; "degraded" so a monitor can alert.
+        health["status"] = "degraded";
+        std::vector<crow::json::wvalue> stale;
+        for (const auto& cache : summary.stale_caches) {
+            crow::json::wvalue item;
+            item["table"] = cache.table;
+            item["schema"] = cache.schema;
+            item["state"] = "stale";
+            stale.push_back(std::move(item));
+        }
+        health["stale"] = std::move(stale);
+        return crow::response(200, health);
     }
 
     health["status"] = "ready";
