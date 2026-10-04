@@ -25,7 +25,15 @@ void FlapiCorsMiddleware::after_handle(crow::request& req, crow::response& res, 
 
     const auto resolved = policy_.resolveAllowedOrigin(request_origin, allow_origins_);
     if (!resolved.has_value()) {
-        return;  // No CORS header — browser blocks cross-origin access.
+        // No CORS header - the browser blocks cross-origin access. Crow's own CORS
+        // handler may already have set its wildcard defaults on this response, which
+        // would hand a disallowed origin `Access-Control-Allow-Origin: *`; take them off.
+        res.headers.erase("Access-Control-Allow-Origin");
+        res.headers.erase("Access-Control-Allow-Headers");
+        res.headers.erase("Access-Control-Allow-Methods");
+        res.headers.erase("Access-Control-Allow-Credentials");
+        res.headers.erase("Access-Control-Max-Age");
+        return;
     }
 
     // Overwrite any value Crow's CORSHandler may already have set. The
