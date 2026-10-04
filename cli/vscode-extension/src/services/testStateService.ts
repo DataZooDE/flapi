@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { blankMap } from './credentials';
 
 /**
  * Unified test state for REST endpoints and SQL templates
@@ -96,7 +97,18 @@ export class TestStateService {
    */
   async saveState(state: TestState): Promise<void> {
     const key = this.getStorageKey(state.identifier);
-    await this.context.workspaceState.update(key, state);
+    // Credentials are never persisted (see credentials.ts); the live panel keeps them.
+    const persisted: TestState = {
+      ...state,
+      parameters: blankMap(state.parameters),
+      ...(state.headers ? { headers: blankMap(state.headers) } : {}),
+      history: (state.history ?? []).map((h: any) => ({
+        ...h,
+        ...(h.parameters ? { parameters: blankMap(h.parameters) } : {}),
+        ...(h.headers ? { headers: blankMap(h.headers) } : {}),
+      })),
+    } as TestState;
+    await this.context.workspaceState.update(key, persisted);
   }
 
   /**
@@ -191,7 +203,7 @@ export class TestStateService {
   async setWorkspaceDefaults(defaults: Record<string, string>): Promise<void> {
     await this.context.workspaceState.update(
       TestStateService.WORKSPACE_DEFAULTS_KEY,
-      defaults
+      blankMap(defaults)
     );
   }
 

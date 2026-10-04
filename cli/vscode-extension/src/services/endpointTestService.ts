@@ -4,15 +4,11 @@ import * as vscode from 'vscode';
 import { readTransportSettings, TransportSettings } from './transportSettings';
 import { ResponseInfo, RequestHistory, AuthConfig } from '../types/endpointTest';
 
-const SENSITIVE_HEADER = /authorization|token|secret|password|passwd|api[-_]?key|cookie|credential|auth/i;
+import { redactMap } from './credentials';
 
-/** Header values that are credentials, replaced for anything logged or persisted. */
+/** Header values that are credentials, replaced for anything logged or kept in history. */
 export function redactHeaders(headers: Record<string, string>): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [name, value] of Object.entries(headers ?? {})) {
-    out[name] = SENSITIVE_HEADER.test(name) ? '<redacted>' : value;
-  }
-  return out;
+  return redactMap(headers);
 }
 
 /**

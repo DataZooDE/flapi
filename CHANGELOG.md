@@ -4,6 +4,13 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Fixed: the VS Code endpoint tester no longer persists credentials
+
+An `Authorization` header, API key, token or password typed into the endpoint tester's headers or parameters
+(or into the workspace default headers) was saved in the workspace state file. Credential-looking names are
+now saved with an empty value: the open panel still sends the real value, and after the panel is reopened
+the name is restored empty for you to re-enter. Request history was already redacted.
+
 ### Fixed: VS Code "New endpoint" creates the endpoint on the server
 
 - The explorer's "New endpoint" command used to write `examples/sqls/<name>.yaml` and `.sql` into your local
