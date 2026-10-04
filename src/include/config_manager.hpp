@@ -727,7 +727,11 @@ public:
     crow::json::wvalue getFlapiConfig() const;
     crow::json::wvalue getEndpointsConfig() const;
     crow::json::wvalue serializeEndpointConfig(const EndpointConfig& config, EndpointJsonStyle style) const;
-    EndpointConfig deserializeEndpointConfig(const crow::json::rvalue& json) const;
+    /// With `merge_existing` the JSON is applied ON TOP of the endpoint that already has
+    /// this url-path and method: whatever the JSON does not carry (auth users, rate-limit,
+    /// per-field validators/defaults, ...) is kept, so GET -> PUT cannot strip an endpoint
+    /// of its protections (#191). Without it (create) the endpoint starts empty.
+    EndpointConfig deserializeEndpointConfig(const crow::json::rvalue& json, bool merge_existing = false) const;
     
     // YAML serialization/deserialization (for export, debugging)
     std::string serializeEndpointConfigToYaml(const EndpointConfig& config) const;

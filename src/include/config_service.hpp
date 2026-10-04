@@ -148,7 +148,7 @@ public:
     
     // Helper methods
     crow::json::wvalue endpointConfigToJson(const EndpointConfig& config);
-    EndpointConfig jsonToEndpointConfig(const crow::json::rvalue& json);
+    EndpointConfig jsonToEndpointConfig(const crow::json::rvalue& json, bool merge_existing = false);
 
 private:
     std::shared_ptr<ConfigManager> config_manager_;

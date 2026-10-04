@@ -4,6 +4,21 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Security: PUT of an endpoint's own configuration no longer strips its protections; pagination is validated
+
+Found by a review of the server and reproduced against a real binary:
+
+- `GET /api/v1/_config/endpoints/{slug}` followed by `PUT` of the returned JSON dropped every request
+  validator (so `amount=500` was accepted on an endpoint that limited it to 100), dropped the endpoint's
+  auth users (leaving authentication enabled with nobody able to pass, or a config that no longer matched the
+  one served), and re-enabled a cache the endpoint had disabled. `PUT` now applies the JSON on top of the
+  endpoint it replaces, so anything the JSON omits is kept, and `GET` now returns every validator field
+  (`allowedValues`, `min`/`max` for dates and times, `min-length`/`max-length`, `preventSqlInjection`) so the
+  round trip is lossless.
+- `?limit=` and `?offset=` were parsed with a numeric prefix, so `limit=1;SELECT 1` or `limit=1 OR 1=1`
+  reached the SQL text of `LIMIT {{params.limit}}`. They must now be plain non-negative integers (HTTP 400
+  otherwise) and the template receives the normalised numbers.
+
 ### Fixed: the VS Code endpoint tester no longer persists credentials
 
 An `Authorization` header, API key, token or password typed into the endpoint tester's headers or parameters

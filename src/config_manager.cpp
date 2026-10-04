@@ -1938,16 +1938,36 @@ crow::json::wvalue ConfigManager::serializeEndpointConfig(const EndpointConfig& 
 
             std::vector<crow::json::wvalue> validatorsJson;
         for (const auto& validator : field.validators) {
-                crow::json::wvalue validatorJson;
-            validatorJson[(style == EndpointJsonStyle::HyphenCase) ? "type" : "type"] = validator.type;
-                if (validator.type == "string") {
-                validatorJson[(style == EndpointJsonStyle::HyphenCase) ? "regex" : "regex"] = validator.regex;
-                } else if (validator.type == "int") {
-                validatorJson[(style == EndpointJsonStyle::HyphenCase) ? "min" : "min"] = validator.min;
-                validatorJson[(style == EndpointJsonStyle::HyphenCase) ? "max" : "max"] = validator.max;
+            crow::json::wvalue validatorJson;
+            validatorJson["type"] = validator.type;
+            // The same key names the endpoint YAML uses, so GET -> PUT loses nothing.
+            if (validator.type == "string") {
+                validatorJson["regex"] = validator.regex;
+                if (validator.min > 0) {
+                    validatorJson["min-length"] = validator.min;
                 }
-                validatorsJson.push_back(std::move(validatorJson));
+                if (validator.max > 0) {
+                    validatorJson["max-length"] = validator.max;
+                }
+            } else if (validator.type == "int") {
+                validatorJson["min"] = validator.min;
+                validatorJson["max"] = validator.max;
+            } else if (validator.type == "enum") {
+                crow::json::wvalue::list allowed;
+                for (const auto& v : validator.allowedValues) {
+                    allowed.push_back(v);
+                }
+                validatorJson["allowedValues"] = std::move(allowed);
+            } else if (validator.type == "date") {
+                validatorJson["min"] = validator.minDate;
+                validatorJson["max"] = validator.maxDate;
+            } else if (validator.type == "time") {
+                validatorJson["min"] = validator.minTime;
+                validatorJson["max"] = validator.maxTime;
             }
+            validatorJson["preventSqlInjection"] = validator.preventSqlInjection;
+            validatorsJson.push_back(std::move(validatorJson));
+        }
         fieldJson[(style == EndpointJsonStyle::HyphenCase) ? "validators" : "validators"] = std::move(validatorsJson);
         requestFields.push_back(std::move(fieldJson));
     }
@@ -2068,7 +2088,45 @@ std::string requireStringField(const crow::json::rvalue& json, std::initializer_
 }
 }
 
-EndpointConfig ConfigManager::deserializeEndpointConfig(const crow::json::rvalue& json) const {
+namespace {
+
+// Validators as GET returns them (and as the endpoint YAML spells them).
+ValidatorConfig validatorFromJson(const crow::json::rvalue& v) {
+    ValidatorConfig out;
+    out.type = v.has("type") ? std::string(v["type"].s()) : std::string();
+    auto str = [&](const char* key) { return v.has(key) ? std::string(v[key].s()) : std::string(); };
+    if (out.type == "int") {
+        out.min = v.has("min") ? static_cast<int>(v["min"].i()) : std::numeric_limits<int>::min();
+        out.max = v.has("max") ? static_cast<int>(v["max"].i()) : std::numeric_limits<int>::max();
+    } else if (out.type == "string") {
+        out.regex = str("regex");
+        out.min = v.has("min-length") ? static_cast<int>(v["min-length"].i())
+                                      : (v.has("min") ? static_cast<int>(v["min"].i()) : 0);
+        out.max = v.has("max-length") ? static_cast<int>(v["max-length"].i())
+                                      : (v.has("max") ? static_cast<int>(v["max"].i()) : 0);
+    } else if (out.type == "enum") {
+        const char* key = v.has("allowedValues") ? "allowedValues" : (v.has("allowed-values") ? "allowed-values" : nullptr);
+        if (key) {
+            for (const auto& item : v[key]) {
+                out.allowedValues.push_back(item.s());
+            }
+        }
+    } else if (out.type == "date") {
+        out.minDate = str("min");
+        out.maxDate = str("max");
+    } else if (out.type == "time") {
+        out.minTime = str("min");
+        out.maxTime = str("max");
+    }
+    if (v.has("preventSqlInjection")) {
+        out.preventSqlInjection = v["preventSqlInjection"].b();
+    }
+    return out;
+}
+
+}  // namespace
+
+EndpointConfig ConfigManager::deserializeEndpointConfig(const crow::json::rvalue& json, bool merge_existing) const {
     EndpointConfig config;
 
     auto getBool = [&](std::initializer_list<std::string> keys, bool defaultValue) -> bool {
@@ -2091,37 +2149,86 @@ EndpointConfig ConfigManager::deserializeEndpointConfig(const crow::json::rvalue
     };
 
     auto urlKey = requireStringField(json, {"url-path", "urlPath", "url_path"});
-    config.urlPath = json[urlKey].s();
+    const std::string url_path = json[urlKey].s();
     auto methodKey = firstExistingKey(json, {"method", "Method"});
     std::string method = methodKey.empty() ? std::string("GET") : std::string(json[methodKey].s());
+
+    // PUT semantics: start from the endpoint being replaced, so what the JSON cannot
+    // carry (auth users and their passwords - never serialised -, per-field defaults,
+    // anything the caller simply left out) is kept rather than silently dropped.
+    std::optional<EndpointConfig> base;
+    if (merge_existing) {
+        if (const auto existing = getEndpointForPathAndMethod(url_path, method)) {
+            base = *existing;
+            config = *existing;
+        }
+    }
+
+    config.urlPath = url_path;
     config.method = std::move(method);
     auto templateKey = requireStringField(json, {"template-source", "templateSource", "template_source"});
     config.templateSource = json[templateKey].s();
-    config.connection = getList({"connection", "connections"});
-    config.with_pagination = getBool({"with-pagination", "withPagination", "with_pagination"}, true);
-    config.request_fields_validation = getBool({"request-fields-validation", "requestFieldsValidation"}, false);
+    if (!firstExistingKey(json, {"connection", "connections"}).empty()) {
+        config.connection = getList({"connection", "connections"});
+    }
+    config.with_pagination = getBool({"with-pagination", "withPagination", "with_pagination"}, base ? base->with_pagination : true);
+    config.request_fields_validation = getBool({"request-fields-validation", "requestFieldsValidation"},
+                                               base ? base->request_fields_validation : false);
 
     if (json.has("request")) {
+        std::vector<RequestFieldConfig> fields;
         for (const auto& field : json["request"]) {
             RequestFieldConfig fieldConfig;
             auto fieldNameKey = requireStringField(field, {"field-name", "fieldName"});
             auto fieldInKey = requireStringField(field, {"field-in", "fieldIn"});
             fieldConfig.fieldName = field[fieldNameKey].s();
             fieldConfig.fieldIn = field[fieldInKey].s();
+
+            // The same field as it was, so anything this JSON omits for it is kept.
+            const RequestFieldConfig* previous = nullptr;
+            if (base) {
+                for (const auto& candidate : base->request_fields) {
+                    if (candidate.fieldName == fieldConfig.fieldName && candidate.fieldIn == fieldConfig.fieldIn) {
+                        previous = &candidate;
+                        break;
+                    }
+                }
+            }
+            if (previous) {
+                fieldConfig = *previous;
+            }
+
             auto descKey = firstExistingKey(field, {"description"});
             if (!descKey.empty()) {
                 fieldConfig.description = field[descKey].s();
             }
             auto requiredKey = firstExistingKey(field, {"required"});
-            fieldConfig.required = !requiredKey.empty() ? field[requiredKey].b() : false;
-            config.request_fields.push_back(fieldConfig);
+            if (!requiredKey.empty()) {
+                fieldConfig.required = field[requiredKey].b();
+            }
+            auto defaultKey = firstExistingKey(field, {"default", "defaultValue"});
+            if (!defaultKey.empty()) {
+                fieldConfig.defaultValue = field[defaultKey].s();
+            }
+            // Validators: what the caller sends REPLACES the field's list (an empty list
+            // removes them on purpose); absent keeps the existing ones.
+            if (field.has("validators")) {
+                fieldConfig.validators.clear();
+                for (const auto& v : field["validators"]) {
+                    fieldConfig.validators.push_back(validatorFromJson(v));
+                }
+            }
+            fields.push_back(std::move(fieldConfig));
         }
+        config.request_fields = std::move(fields);
     }
 
     if (json.has("cache") || json.has("cache-config") || json.has("cacheConfig")) {
         auto key = firstExistingKey(json, {"cache", "cache-config", "cacheConfig"});
         const auto& cacheJson = json[key];
-        config.cache.enabled = getBool({"enabled"}, true);
+        // From the cache OBJECT: this read the endpoint's top level, where `enabled` does
+        // not exist, so the default (true) re-enabled a cache that GET reported disabled.
+        config.cache.enabled = cacheJson.has("enabled") ? cacheJson["enabled"].b() : true;
 
         auto tableKey = firstExistingKey(cacheJson, {"table"});
         if (!tableKey.empty()) {
@@ -2170,14 +2277,44 @@ EndpointConfig ConfigManager::deserializeEndpointConfig(const crow::json::rvalue
         if (!deleteKey.empty()) {
             config.cache.delete_handling = cacheJson[deleteKey].s();
         }
+        auto templateFileKey = firstExistingKey(cacheJson, {"template-file", "templateFile"});
+        if (!templateFileKey.empty()) {
+            config.cache.template_file = cacheJson[templateFileKey].s();
+        }
     }
 
     if (json.has("auth")) {
         const auto& authJson = json["auth"];
-        config.auth.enabled = authJson.has("enabled") ? authJson["enabled"].b() : false;
+        // enabled/type from the JSON; users, roles and secrets (never serialised) stay.
+        if (authJson.has("enabled")) {
+            config.auth.enabled = authJson["enabled"].b();
+        } else if (!base) {
+            config.auth.enabled = false;
+        }
         if (authJson.has("type")) {
             config.auth.type = authJson["type"].s();
         }
+    }
+
+    auto rateKey = firstExistingKey(json, {"rate-limit", "rateLimit"});
+    if (!rateKey.empty()) {
+        const auto& rateJson = json[rateKey];
+        config.rate_limit.declared = true;
+        if (rateJson.has("enabled")) {
+            config.rate_limit.enabled = rateJson["enabled"].b();
+        }
+        if (rateJson.has("max")) {
+            config.rate_limit.max = static_cast<int>(rateJson["max"].i());
+        }
+        if (rateJson.has("interval")) {
+            config.rate_limit.interval = static_cast<int>(rateJson["interval"].i());
+        }
+        if (rateJson.has("key")) {
+            config.rate_limit.key_strategy = rateJson["key"].s();
+        }
+    }
+    if (json.has("heartbeat") && json["heartbeat"].has("enabled")) {
+        config.heartbeat.enabled = json["heartbeat"]["enabled"].b();
     }
 
     return config;
