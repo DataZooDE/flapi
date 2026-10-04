@@ -15,6 +15,28 @@
 
 namespace flapi {
 
+namespace {
+
+// Pagination values go into `LIMIT {{params.limit}}` / `OFFSET ...`, so they must be a plain
+// non-negative integer - the WHOLE string. std::stoll accepted a numeric prefix, so
+// `limit=1;SELECT 1`, `limit=5 ` and `limit=1 OR 1=1` reached the SQL text (#191).
+bool ParsePlainNonNegativeInt(const std::string& text, int64_t& out) {
+    if (text.empty() || text.size() > 15) {
+        return false;
+    }
+    int64_t value = 0;
+    for (const char c : text) {
+        if (c < '0' || c > '9') {
+            return false;
+        }
+        value = value * 10 + (c - '0');
+    }
+    out = value;
+    return true;
+}
+
+}  // namespace
+
 RequestHandler::RequestHandler(std::shared_ptr<DatabaseManager> db_manager, std::shared_ptr<ConfigManager> config_manager)
     : db_manager(db_manager), config_manager(config_manager), validator(std::make_shared<RequestValidator>()) 
 {
@@ -266,15 +288,16 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
         // Parse pagination parameters
         int64_t offset = 0;
         int64_t limit = 100;
-        try {
-            if (params.count("offset")) offset = std::stoll(params["offset"]);
-            if (params.count("limit")) limit = std::stoll(params["limit"]);
-        } catch (const std::exception& e) {
+        if ((params.count("offset") && !ParsePlainNonNegativeInt(params["offset"], offset)) ||
+            (params.count("limit") && !ParsePlainNonNegativeInt(params["limit"], limit))) {
             res.code = 400;
-            res.body = "Invalid pagination parameters";
+            res.body = "Invalid pagination parameters: offset and limit must be non-negative integers";
             res.end();
             return;
         }
+        // The template renders these, so hand it the normalised numbers, not the raw text.
+        params["offset"] = std::to_string(offset);
+        params["limit"] = std::to_string(limit);
 
         // Content negotiation - determine response format
         std::string acceptHeader = req.get_header_value("Accept");
@@ -439,16 +462,13 @@ bool RequestHandler::isCacheDetailsRequest(const crow::request& req, const Endpo
 void RequestHandler::parsePaginationParams(std::map<std::string, std::string>& params) {
     int64_t offset = 0;
     int64_t limit = 100;
-    try {
-        if (params.count("offset")) offset = std::stoll(params["offset"]);
-        if (params.count("limit")) limit = std::stoll(params["limit"]);
-        
-        // Add parsed values back to params
-        params["offset"] = std::to_string(offset);
-        params["limit"] = std::to_string(limit);
-    } catch (const std::exception& e) {
+    if ((params.count("offset") && !ParsePlainNonNegativeInt(params["offset"], offset)) ||
+        (params.count("limit") && !ParsePlainNonNegativeInt(params["limit"], limit))) {
         throw std::runtime_error("Invalid pagination parameters");
     }
+    // Add parsed values back to params
+    params["offset"] = std::to_string(offset);
+    params["limit"] = std::to_string(limit);
 }
 
 std::string RequestHandler::createNextUrl(const crow::request& req, const QueryResult& queryResult) 

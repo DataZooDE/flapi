@@ -1060,7 +1060,7 @@ crow::response EndpointConfigHandler::updateEndpointConfigBySlug(const crow::req
             return crow::response(400, "Invalid JSON");
         }
 
-        auto updated_config = jsonToEndpointConfig(json);
+        auto updated_config = jsonToEndpointConfig(json, /*merge_existing=*/true);
         
         // Verify slug matches
         if (updated_config.getSlug() != slug) {
@@ -1121,8 +1121,8 @@ crow::json::wvalue EndpointConfigHandler::endpointConfigToJson(const EndpointCon
     return config_manager_->serializeEndpointConfig(config, EndpointJsonStyle::HyphenCase);
 }
 
-EndpointConfig EndpointConfigHandler::jsonToEndpointConfig(const crow::json::rvalue& json) {
-    return config_manager_->deserializeEndpointConfig(json);
+EndpointConfig EndpointConfigHandler::jsonToEndpointConfig(const crow::json::rvalue& json, bool merge_existing) {
+    return config_manager_->deserializeEndpointConfig(json, merge_existing);
 }
 
 // Implement remaining endpoint handlers...
@@ -1133,7 +1133,7 @@ crow::response EndpointConfigHandler::updateEndpointConfig(const crow::request& 
             return crow::response(400, "Invalid JSON");
         }
 
-        auto updated_config = jsonToEndpointConfig(json);
+        auto updated_config = jsonToEndpointConfig(json, /*merge_existing=*/true);
 
         if (updated_config.urlPath != path) {
             return crow::response(400, "URL path in config does not match endpoint path");
