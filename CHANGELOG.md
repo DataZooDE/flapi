@@ -20,6 +20,21 @@ Found by a review of the server and reproduced against a real binary:
 - A damaged bundle made `info`/`unpack` abort, and a binary with a damaged bundle silently ran the
   `flapi.yaml` next to it instead. `info`/`unpack` now report an error, and a damaged bundle stops startup.
 
+### Security: PUT of an endpoint's own configuration no longer strips its protections; pagination is validated
+
+Found by a review of the server and reproduced against a real binary:
+
+- `GET /api/v1/_config/endpoints/{slug}` followed by `PUT` of the returned JSON dropped every request
+  validator (so `amount=500` was accepted on an endpoint that limited it to 100), dropped the endpoint's
+  auth users (leaving authentication enabled with nobody able to pass, or a config that no longer matched the
+  one served), and re-enabled a cache the endpoint had disabled. `PUT` now applies the JSON on top of the
+  endpoint it replaces, so anything the JSON omits is kept, and `GET` now returns every validator field
+  (`allowedValues`, `min`/`max` for dates and times, `min-length`/`max-length`, `preventSqlInjection`) so the
+  round trip is lossless.
+- `?limit=` and `?offset=` were parsed with a numeric prefix, so `limit=1;SELECT 1` or `limit=1 OR 1=1`
+  reached the SQL text of `LIMIT {{params.limit}}`. They must now be plain non-negative integers (HTTP 400
+  otherwise) and the template receives the normalised numbers.
+
 ### Security: the config service could write files outside the templates directory; CORS allowlist; token echo
 
 Found by a review of the server and reproduced against a real binary:
