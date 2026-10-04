@@ -4,6 +4,19 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Security: three rate-limit bypasses
+
+Found by a review of the server and reproduced against a real binary:
+
+- The limiter looked the endpoint up by path only, so a limited `POST /items` was never limited when
+  `GET /items` had no limit (and the reverse). It now looks up by path **and method**.
+- The bucket key included the literal request path, so `/items/:id` got a fresh bucket for every id. The
+  bucket is now per route.
+- With `rate-limit.key: user` or `user-or-ip` the bucket was a hash of the raw `Authorization` header before
+  it was verified, so rotating invalid credentials gave a fresh bucket on every request (unlimited password
+  guessing). Every such request now also counts against its client IP with a ceiling of 10x the per-user
+  limit.
+
 ### Fixed: an invalid `cache.schedule` crashed the server; a failed refresh took a working cache offline
 
 Found by a review of the server and reproduced against a real binary:

@@ -531,7 +531,7 @@ Global rate limiting settings.
 | `rate_limit.enabled` | boolean | `false` | Enable rate limiting globally |
 | `rate_limit.max` | integer | `100` | Maximum requests per interval |
 | `rate_limit.interval` | integer | `60` | Time window in seconds |
-| `rate_limit.key` | string | `ip` | Bucket key: `ip` (legacy, per-IP), `user` (authenticated principal only), or `user-or-ip` (principal when present, IP fallback) |
+| `rate_limit.key` | string | `ip` | Bucket key: `ip` (legacy, per-IP), `user` (authenticated principal only), or `user-or-ip` (principal when present, IP fallback). With `user`/`user-or-ip` every request ALSO counts against its client IP with a ceiling of 10x the limit, so rotating invalid credentials cannot mint fresh buckets; many legitimate users behind one address share that ceiling. Buckets are per endpoint **route** and HTTP method (`/items/:id` is one bucket, `GET` and `POST` on one path are limited separately). |
 
 **Example:**
 
