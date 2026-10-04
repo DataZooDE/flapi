@@ -962,7 +962,7 @@ void ConfigManager::parseEndpointValidators(const YAML::Node& req, RequestFieldC
             ValidatorConfig validatorConfig;
             validatorConfig.type = safeGet<std::string>(validator, "type", "validators.type");
             
-            if (validatorConfig.type == "int") {
+            if (validatorConfig.type == "int" || validatorConfig.type == "integer") {
                 validatorConfig.min = safeGet<int>(validator, "min", "validators.min", std::numeric_limits<int>::min());
                 validatorConfig.max = safeGet<int>(validator, "max", "validators.max", std::numeric_limits<int>::max());
             } else if (validatorConfig.type == "string") {
@@ -1980,7 +1980,7 @@ crow::json::wvalue ConfigManager::serializeEndpointConfig(const EndpointConfig& 
                 if (validator.max > 0) {
                     validatorJson["max-length"] = validator.max;
                 }
-            } else if (validator.type == "int") {
+            } else if (validator.type == "int" || validator.type == "integer") {
                 validatorJson["min"] = validator.min;
                 validatorJson["max"] = validator.max;
             } else if (validator.type == "enum") {
@@ -2126,7 +2126,7 @@ ValidatorConfig validatorFromJson(const crow::json::rvalue& v) {
     ValidatorConfig out;
     out.type = v.has("type") ? std::string(v["type"].s()) : std::string();
     auto str = [&](const char* key) { return v.has(key) ? std::string(v[key].s()) : std::string(); };
-    if (out.type == "int") {
+    if (out.type == "int" || out.type == "integer") {
         out.min = v.has("min") ? static_cast<int>(v["min"].i()) : std::numeric_limits<int>::min();
         out.max = v.has("max") ? static_cast<int>(v["max"].i()) : std::numeric_limits<int>::max();
     } else if (out.type == "string") {

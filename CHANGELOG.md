@@ -4,6 +4,24 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Security: request-validator hardening
+
+Found by a review of the server and reproduced against a real binary:
+
+- The SQL-injection screen was bypassed with whitespace: `x'<newline>OR 2>1<newline>OR n = 'x` passed it and,
+  spliced into `WHERE n = '{{{ params.name }}}'`, returned every row. The screen now collapses whitespace and
+  inspects the whole value whenever it contains a single quote. It is still a heuristic: **use `{{ params.x }}`
+  (bound) for request values**; the docs now say so (CONFIG_REFERENCE 5.9).
+- `number`, `float`, `double`, `boolean` (and the aliases `integer`, `bool`) were treated as safe-to-skip-the-screen
+  but were not validated at all, so `0 OR true` reached a `{{{ params.amount }}}` site. They are validated now.
+- A request could override a cached endpoint's server-owned `cacheTable` / `cacheSchema` / `cacheCatalog` with
+  `?cacheTable=...` and make the template read another table. Those values are now always the configured ones.
+
+**Behaviour change:** a value containing a single quote **and** an SQL-looking character or word
+(`( ) = < > + * / % & | ;`, `or`, `and`, `like`, ...) is rejected (HTTP 400), even for a bound `{{ }}` site -
+e.g. `O'Brien (retired)`. A lone apostrophe (`O'Brien`) is fine. Set `preventSqlInjection: false` on a field you
+use only through `{{ }}` if you need such values.
+
 ### Fixed: an invalid `cache.schedule` crashed the server; a failed refresh took a working cache offline
 
 Found by a review of the server and reproduced against a real binary:

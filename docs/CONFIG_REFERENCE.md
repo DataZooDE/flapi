@@ -1268,7 +1268,30 @@ validators:
     max: "18:00:00"
 ```
 
-> **Implementation:** `src/request_validator.cpp` | **Tests:** `test/cpp/request_validator_test.cpp`, `test/integration/test_customers.tavern.yaml`
+### 5.8 Number and Boolean Validators
+
+`type: number` (aliases `float`, `double`) requires the **whole** value to be one plain decimal number
+(`-3`, `1.5`, `.5`, `1e3`; no spaces, hex or `NaN`). `type: boolean` (alias `bool`) accepts `true`, `false`,
+`1`, `0` (any case). `type: integer` is an alias of `int`. A value that does not match is rejected with
+HTTP 400 before any SQL is rendered.
+
+```yaml
+validators:
+  - type: number
+```
+
+### 5.9 The SQL-injection screen is a safety net, not the defence
+
+Every string-like field (and any field without a bound type) is screened for SQL keywords, comment markers
+and, when the value contains a single quote, SQL-shaped tokens next to it (operators, `or`/`and`/`like`, a
+parenthesis, ...) after collapsing all whitespace. That is a heuristic: it can be evaded by a payload it
+does not know. **Use `{{ params.x }}` (double braces): flAPI binds it as a prepared-statement parameter, so
+the value can never change the SQL.** `{{{ params.x }}}` interpolates the value as text; reserve it for
+identifiers and fragments you validate with an `enum` or a strict `regex`. Set `preventSqlInjection: false`
+on a field only when it is used exclusively through `{{ }}` and legitimately contains such characters
+(e.g. a free-text name with an apostrophe and parentheses).
+
+> **Implementation:** `src/request_validator.cpp` | **Tests:** `test/cpp/request_validator_test.cpp`, `test/integration/test_customers.tavern.yaml`, `test/integration/test_validator_hardening.py`
 
 ---
 
