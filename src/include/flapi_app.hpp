@@ -25,13 +25,14 @@ namespace flapi {
 // Guarded in CI by scripts/check_crow_app_alias.sh.
 //
 // Middleware order matters: `after_handle` runs in reverse order, so
-// `FlapiCorsMiddleware` (sitting between `crow::CORSHandler` and the rest)
-// gets its turn to set `Access-Control-Allow-Origin` BEFORE Crow's
-// CORSHandler does. Crow uses `set_header_no_override`, so the origin we
-// choose dynamically wins.
+// `FlapiCorsMiddleware` is declared BEFORE `crow::CORSHandler` to get the LAST word:
+// Crow's handler writes its wildcard defaults first, then ours overwrites the origin
+// for an allowed Origin and REMOVES them for a disallowed one. (It used to run
+// before Crow's handler, which could not undo the `Access-Control-Allow-Origin: *`
+// it then added - so a non-allowlisted origin was still granted access, #189.)
 // RequestContextMiddleware is FIRST, deliberately: Crow runs before_handle in
 // declaration order, so only first position brackets rate limiting and auth and
 // therefore sees the 401/403/429 rejections an operator most often asks about.
-using FlapiApp = crow::App<RequestContextMiddleware, crow::CORSHandler, FlapiCorsMiddleware, RateLimitMiddleware, AuthMiddleware>;
+using FlapiApp = crow::App<RequestContextMiddleware, FlapiCorsMiddleware, crow::CORSHandler, RateLimitMiddleware, AuthMiddleware>;
 
 }  // namespace flapi

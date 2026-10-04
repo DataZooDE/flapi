@@ -808,7 +808,9 @@ int main(int argc, char* argv[])
     }
 
     // If config service is enabled but no token provided, generate one
+    bool config_service_token_generated = false;
     if (config_service_enabled && config_service_token.empty()) {
+        config_service_token_generated = true;
         config_service_token = ConfigTokenUtils::generateSecureToken();
         CROW_LOG_INFO << "Generated config service token (no token was provided)";
     }
@@ -1051,13 +1053,20 @@ int main(int argc, char* argv[])
         std::cout << "============================================================\n";
         std::cout << "    CONFIG SERVICE ENABLED\n";
         std::cout << "============================================================\n";
-        std::cout << "    Token: " << config_service_token << "\n";
-        std::cout << "============================================================\n";
-        std::cout << "\n";
-        std::cout << "Use this token to authenticate configuration API requests:\n";
-        std::cout << "  Authorization: Bearer " << config_service_token << "\n";
-        std::cout << "or\n";
-        std::cout << "  X-Config-Token: " << config_service_token << "\n";
+        if (config_service_token_generated) {
+            // No token was supplied, so this is the only place the operator can learn it.
+            std::cout << "    Token: " << config_service_token << "\n";
+            std::cout << "============================================================\n";
+            std::cout << "\n";
+            std::cout << "Use this token to authenticate configuration API requests:\n";
+            std::cout << "  Authorization: Bearer " << config_service_token << "\n";
+            std::cout << "or\n";
+            std::cout << "  X-Config-Token: " << config_service_token << "\n";
+        } else {
+            // A supplied token is never echoed: stdout ends up in collected logs.
+            std::cout << "    Token: (supplied via --config-service-token or FLAPI_CONFIG_SERVICE_TOKEN)\n";
+            std::cout << "============================================================\n";
+        }
         std::cout << "\n";
     }
 
