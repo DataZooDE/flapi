@@ -6,6 +6,11 @@
 
 namespace flapi {
 
+namespace {
+// Per-IP ceiling for `key: user|user-or-ip` endpoints, as a multiple of the per-user limit.
+constexpr int kIpBackstopFactor = 10;
+}  // namespace
+
 void RateLimitMiddleware::setConfig(std::shared_ptr<ConfigManager> config_manager) {
     this->config_manager = config_manager;
 }
@@ -13,7 +18,10 @@ void RateLimitMiddleware::setConfig(std::shared_ptr<ConfigManager> config_manage
 void RateLimitMiddleware::before_handle(crow::request& req, crow::response& res, context& ctx) {
     if (!config_manager) return;
 
-    const auto endpoint = config_manager->getEndpointForPath(req.url);
+    // By path AND method, as auth and request handling do: looking up by path alone made
+    // `GET /items` (no limit) decide for `POST /items` (limited) - a bypass (#198).
+    const auto endpoint = config_manager->getEndpointForPathAndMethod(
+        req.url, crow::method_name(req.method));
     if (!endpoint) {
         return;
     }
@@ -56,11 +64,29 @@ void RateLimitMiddleware::before_handle(crow::request& req, crow::response& res,
     }
     const auto strategy = RateLimitKeyStrategyUtils::parse(limit.key_strategy);
     RateLimitKeyBuilder key_builder;
-    std::string rate_key = key_builder.buildKey(strategy, client_ip, auth_header, req.url);
+    // The ROUTE, not the literal request path: `/items/:id` is one bucket, not one per id.
+    const std::string route = endpoint->urlPath.empty() ? req.url : endpoint->urlPath;
+    std::string rate_key = key_builder.buildKey(strategy, client_ip, auth_header, route + "|" + endpoint->method);
 
+    bool backstop_exceeded = false;
     {
         std::lock_guard<std::mutex> lock(mutex);
         updateRateLimit(rate_key, limit.max, limit.interval, ctx);
+        if (strategy != RateLimitKeyStrategy::Ip) {
+            // The per-user bucket is keyed on the Authorization header BEFORE it is verified,
+            // so a caller rotating invalid tokens got a fresh bucket every request. Backstop:
+            // every request also counts against its client IP, with a ceiling well above a
+            // legitimate user's limit (many users can share one NAT address).
+            context backstop;
+            updateRateLimit("ip-backstop|" + client_ip + "|" + route + "|" + endpoint->method,
+                            limit.max * kIpBackstopFactor, limit.interval, backstop);
+            backstop_exceeded = backstop.remaining < 0;
+            if (backstop_exceeded && ctx.remaining >= 0) {
+                // Report the backstop's window, not the (fresh) bucket that was rotated into.
+                ctx = backstop;
+                ctx.remaining = -1;
+            }
+        }
     }
 
     // Convert steady_clock to system_clock for proper Unix timestamp
