@@ -17,12 +17,16 @@ namespace flapi {
 
 namespace {
 
-const std::array<std::regex, 4>& SecretPatterns() {
-    static const std::array<std::regex, 4> patterns{
-        std::regex(R"((^|/)[^/]*\.env$)"),
-        std::regex(R"((^|/)secrets/)"),
-        std::regex(R"((^|/)[^/]*\.pem$)"),
-        std::regex(R"((^|/)[^/]*\.key$)"),
+// Case-INSENSITIVE: `.ENV`, `SECRETS/token` and `server.PEM` are the same files on a
+// case-insensitive filesystem (macOS, Windows) and were bundled by the case-sensitive
+// patterns. `.env.local` / `.env.production` style variants are covered too.
+const std::array<std::regex, 5>& SecretPatterns() {
+    static const std::array<std::regex, 5> patterns{
+        std::regex(R"((^|/)[^/]*\.env$)", std::regex::icase),
+        std::regex(R"((^|/)\.env\.[^/]*$)", std::regex::icase),
+        std::regex(R"((^|/)secrets/)", std::regex::icase),
+        std::regex(R"((^|/)[^/]*\.pem$)", std::regex::icase),
+        std::regex(R"((^|/)[^/]*\.key$)", std::regex::icase),
     };
     return patterns;
 }
@@ -99,11 +103,18 @@ ArchiveEntries CollectEntries(const std::filesystem::path& in_dir, bool allow_se
     ArchiveEntries entries;
     for (const auto& dir_entry :
          std::filesystem::recursive_directory_iterator(in_dir)) {
+        const auto rel = std::filesystem::relative(dir_entry.path(), in_dir);
+        const std::string rel_str = rel.generic_string();  // always forward slashes
+
+        // Never follow a link: one pointing outside the input tree would put that
+        // file's contents (or a `../` entry name) into a distributable binary.
+        if (dir_entry.is_symlink()) {
+            throw PackError("refusing to bundle symlink: " + rel_str +
+                            " (symlinks are not followed; copy the file into the tree instead)");
+        }
         if (!dir_entry.is_regular_file()) {
             continue;
         }
-        const auto rel = std::filesystem::relative(dir_entry.path(), in_dir);
-        const std::string rel_str = rel.generic_string();  // always forward slashes
 
         if (!allow_secrets && IsSecretExcluded(rel_str)) {
             throw PackError(
@@ -286,10 +297,22 @@ UnpackResult UnpackBundleFromPath(const std::filesystem::path& binary,
         throw PackError("cannot create unpack directory: " + dst_dir.string());
     }
 
+    const auto dst_root = std::filesystem::weakly_canonical(dst_dir, ec);
     UnpackResult r;
     for (const auto& [name, data] : entries) {
+        // ReadArchive already refuses unsafe names; re-checked here because this is the
+        // function that writes, and the destination may contain symlinks of its own.
+        if (!IsSafeArchiveEntryName(name)) {
+            throw PackError("unsafe entry name in bundle (outside --to): '" + name + "'");
+        }
         auto out_path = dst_dir / name;
         std::filesystem::create_directories(out_path.parent_path(), ec);
+        const auto parent_real = std::filesystem::weakly_canonical(out_path.parent_path(), ec);
+        const auto rel_to_root = parent_real.lexically_relative(dst_root);
+        if (ec || (!rel_to_root.empty() && *rel_to_root.begin() == "..") ||
+            std::filesystem::is_symlink(out_path, ec)) {
+            throw PackError("refusing to write '" + name + "': it resolves outside --to (symlink in the destination)");
+        }
 
         std::ofstream out(out_path, std::ios::binary | std::ios::trunc);
         if (!out) {

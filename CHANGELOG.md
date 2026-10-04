@@ -4,6 +4,22 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Security: `flapi pack` and `unpack` are safe against hostile input
+
+Found by a review of the server and reproduced against a real binary:
+
+- `flapi unpack` wrote a bundle entry named `../escaped.txt` outside `--to` (and followed symlinks already in
+  the destination). Entries that are absolute, contain `..` or backslashes are now refused.
+- `flapi pack` followed symlinks, so a link to a file outside the input tree was bundled. Symlinks are now
+  refused.
+- The secret deny list was case-sensitive: `.ENV`, `SECRETS/token`, `server.PEM` were bundled. It is now
+  case-insensitive and also covers `.env.local`-style files (so `.env.example` is refused too; use
+  `--allow-secrets` for those).
+- A small bundle could inflate without limit. Reading a bundle is now capped at 1 GiB decompressed and
+  100000 entries (`FLAPI_BUNDLE_MAX_MIB`, `FLAPI_BUNDLE_MAX_ENTRIES`), enforced while inflating.
+- A damaged bundle made `info`/`unpack` abort, and a binary with a damaged bundle silently ran the
+  `flapi.yaml` next to it instead. `info`/`unpack` now report an error, and a damaged bundle stops startup.
+
 ### Fixed: the VS Code endpoint tester no longer persists credentials
 
 An `Authorization` header, API key, token or password typed into the endpoint tester's headers or parameters

@@ -132,8 +132,8 @@ std::shared_ptr<ConfigManager> initializeConfig(const std::string& config_file) 
 // Detects whether the running binary has a ZIP bundle appended to it and,
 // if so, decompresses it once and hands it to FileProviderFactory so all
 // later config / SQL-template reads come from the in-memory map.
-// Failure to read or decompress is logged at WARNING and silently falls
-// back to filesystem mode -- the spike's safety-net behaviour (#42).
+// A bundle that is present but unreadable is FATAL: silently falling back to the
+// filesystem would serve a different configuration than the one packaged (#190).
 void detectAndRegisterEmbeddedBundle() {
     auto loc = LocateBundleInSelf();
     if (!loc.has_value()) {
@@ -144,9 +144,9 @@ void detectAndRegisterEmbeddedBundle() {
         const auto self_path = GetSelfPath();
         std::ifstream f(self_path, std::ios::binary);
         if (!f.is_open()) {
-            CROW_LOG_WARNING << "Bundle detected but self-binary unreadable; "
-                                "falling back to filesystem mode";
-            return;
+            std::cerr << "flapi: this binary carries a bundle but cannot read itself; refusing to start "
+                         "(it would otherwise serve whatever configuration sits beside it)\n";
+            std::exit(1);
         }
 
         std::vector<std::uint8_t> bytes(loc->size);
@@ -154,8 +154,8 @@ void detectAndRegisterEmbeddedBundle() {
         f.read(reinterpret_cast<char*>(bytes.data()),
                static_cast<std::streamsize>(loc->size));
         if (!f) {
-            CROW_LOG_WARNING << "Bundle read truncated; falling back to filesystem mode";
-            return;
+            std::cerr << "flapi: the bundle in this binary is truncated; refusing to start\n";
+            std::exit(1);
         }
 
         auto entries = std::make_shared<ArchiveEntries>(ReadArchive(bytes));
@@ -163,8 +163,11 @@ void detectAndRegisterEmbeddedBundle() {
         FileProviderFactory::SetBundleContents(std::move(entries));
         CROW_LOG_INFO << "Bundle detected and registered (" << entry_count << " entries)";
     } catch (const std::exception& e) {
-        CROW_LOG_WARNING << "Bundle detection failed (" << e.what()
-                         << "); falling back to filesystem mode";
+        // A bundle is there but unusable. Falling back to a flapi.yaml on disk would
+        // run a DIFFERENT configuration than the one that was packaged, silently.
+        std::cerr << "flapi: the bundle in this binary is damaged or unsafe (" << e.what()
+                  << "); refusing to start\n";
+        std::exit(1);
     }
 }
 
@@ -714,7 +717,12 @@ int main(int argc, char* argv[])
     }
 
     if (program.is_subcommand_used("info")) {
-        return PrintBundleInfo(std::cout);
+        try {
+            return PrintBundleInfo(std::cout);
+        } catch (const std::exception& e) {
+            std::cerr << "flapi info: bundle error: " << e.what() << "\n";
+            return 1;
+        }
     }
 
     if (program.is_subcommand_used("unpack")) {
@@ -726,6 +734,9 @@ int main(int argc, char* argv[])
             return 0;
         } catch (const PackError& e) {
             std::cerr << "flapi unpack: " << e.what() << "\n";
+            return 1;
+        } catch (const std::exception& e) {
+            std::cerr << "flapi unpack: bundle error: " << e.what() << "\n";
             return 1;
         }
     }

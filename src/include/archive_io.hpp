@@ -36,6 +36,15 @@ public:
 std::vector<std::uint8_t> WriteArchive(const ArchiveEntries& entries,
                                        const ArchiveWriteOptions& options = {});
 
+// True when `name` is a plain relative path that stays inside the directory it is
+// extracted to: non-empty, no NUL, no backslash, not absolute (`/x`, `C:`), and no `..`
+// component. A bundle entry failing this is a zip-slip attempt.
+bool IsSafeArchiveEntryName(const std::string& name);
+
+// Limits applied while a bundle is READ (startup, `info`, `unpack`): a few KiB of
+// ZIP can inflate to gigabytes. Defaults: 1 GiB total, 100000 entries; override with
+// FLAPI_BUNDLE_MAX_MIB / FLAPI_BUNDLE_MAX_ENTRIES.
+//
 // Reads an in-memory ZIP archive. Throws ArchiveIOError when the
 // buffer is empty, not a recognised ZIP, or truncated.
 ArchiveEntries ReadArchive(const std::vector<std::uint8_t>& buffer);
