@@ -1002,6 +1002,13 @@ crow::response EndpointConfigHandler::createEndpoint(const crow::request& req) {
             return crow::response(400, "Invalid JSON");
 
         auto endpoint = jsonToEndpointConfig(json);
+        for (const auto& source : {endpoint.templateSource,
+                                   endpoint.cache.template_file.value_or(std::string())}) {
+            const auto problem = config_manager_->TemplatePathProblem(source);
+            if (!problem.empty()) {
+                return crow::response(400, problem);
+            }
+        }
         config_manager_->addEndpoint(endpoint);
         
         return crow::response(201);
@@ -1058,6 +1065,13 @@ crow::response EndpointConfigHandler::updateEndpointConfigBySlug(const crow::req
         // Verify slug matches
         if (updated_config.getSlug() != slug) {
             return crow::response(400, "Slug in config does not match endpoint slug");
+        }
+        for (const auto& source : {updated_config.templateSource,
+                                   updated_config.cache.template_file.value_or(std::string())}) {
+            const auto problem = config_manager_->TemplatePathProblem(source);
+            if (!problem.empty()) {
+                return crow::response(400, problem);
+            }
         }
 
         if (!config_manager_->replaceEndpoint(updated_config)) {
@@ -1123,6 +1137,13 @@ crow::response EndpointConfigHandler::updateEndpointConfig(const crow::request& 
 
         if (updated_config.urlPath != path) {
             return crow::response(400, "URL path in config does not match endpoint path");
+        }
+        for (const auto& source : {updated_config.templateSource,
+                                   updated_config.cache.template_file.value_or(std::string())}) {
+            const auto problem = config_manager_->TemplatePathProblem(source);
+            if (!problem.empty()) {
+                return crow::response(400, problem);
+            }
         }
 
         if (!config_manager_->replaceEndpoint(updated_config)) {
@@ -1346,6 +1367,8 @@ crow::response TemplateHandler::getEndpointTemplate(const crow::request& req, co
         crow::json::wvalue response;
         response["template"] = buffer.str();
         return crow::response(200, response);
+    } catch (const std::invalid_argument& e) {
+        return crow::response(400, e.what());
     } catch (const std::exception& e) {
         return crow::response(500, std::string("Internal server error: ") + e.what());
     }
@@ -1366,6 +1389,8 @@ crow::response TemplateHandler::updateEndpointTemplate(const crow::request& req,
 
         // Write the template to file
         auto template_path = resolveTemplatePath(endpoint->templateSource);
+        std::error_code mkdir_ec;
+        std::filesystem::create_directories(template_path.parent_path(), mkdir_ec);
         std::ofstream file(template_path);
         if (!file.is_open()) {
             return crow::response(500, "Could not open template file for writing: " + template_path.string());
@@ -1377,6 +1402,8 @@ crow::response TemplateHandler::updateEndpointTemplate(const crow::request& req,
         }
 
         return crow::response(200);
+    } catch (const std::invalid_argument& e) {
+        return crow::response(400, e.what());
     } catch (const std::exception& e) {
         return crow::response(500, std::string("Internal server error: ") + e.what());
     }
@@ -1884,6 +1911,10 @@ crow::response CacheConfigHandler::updateCacheConfig(const crow::request& req, c
             cache.delete_handling = json["delete-handling"].s();
         }
         if (json.has("template-file")) {
+            const auto problem = config_manager_->TemplatePathProblem(json["template-file"].s());
+            if (!problem.empty()) {
+                return crow::response(400, problem);
+            }
             cache.template_file = json["template-file"].s();
         }
 
@@ -1919,6 +1950,8 @@ crow::response TemplateHandler::getCacheTemplate(const crow::request& req, const
         crow::json::wvalue response;
         response["template"] = buffer.str();
         return crow::response(200, response);
+    } catch (const std::invalid_argument& e) {
+        return crow::response(400, e.what());
     } catch (const std::exception& e) {
         return crow::response(500, std::string("Internal server error: ") + e.what());
     }
@@ -1951,6 +1984,8 @@ crow::response TemplateHandler::updateCacheTemplate(const crow::request& req, co
         }
 
         return crow::response(200);
+    } catch (const std::invalid_argument& e) {
+        return crow::response(400, e.what());
     } catch (const std::exception& e) {
         return crow::response(500, std::string("Internal server error: ") + e.what());
     }
@@ -2020,6 +2055,15 @@ crow::response CacheConfigHandler::performGarbageCollection(const crow::request&
 }
 
 std::filesystem::path TemplateHandler::resolveTemplatePath(const std::string& source) const {
+    // The one boundary every template/cache-template read and write passes: refuse
+    // anything outside the templates directory (absolute, `../`, or via a symlink).
+    if (config_manager_) {
+        const auto problem = config_manager_->TemplatePathProblem(source);
+        if (!problem.empty()) {
+            throw std::invalid_argument(problem);
+        }
+    }
+
     std::filesystem::path template_path(source);
     if (template_path.is_absolute()) {
         return template_path;

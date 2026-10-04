@@ -598,6 +598,12 @@ public:
     std::string getHttpHost() const;
     void setHttpHost(const std::string& host);
     virtual std::string getTemplatePath() const;
+
+    /// Why `source` (an endpoint `template-source` or cache `template-file`) may not be
+    /// read or written through the management APIs, or "" when it may: it must resolve -
+    /// symlinks included - to a path strictly inside the templates directory. An absolute
+    /// or `../` source let a token holder overwrite any file the server can write (#189).
+    std::string TemplatePathProblem(const std::string& source) const;
     std::string getCacheSchema() const;
     const std::unordered_map<std::string, ConnectionConfig>& getConnections() const;
     const RateLimitConfig& getRateLimitConfig() const;

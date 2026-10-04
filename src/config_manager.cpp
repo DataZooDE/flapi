@@ -1877,6 +1877,30 @@ crow::json::wvalue ConfigManager::getFlapiConfig() const {
     return result;
 }
 
+std::string ConfigManager::TemplatePathProblem(const std::string& source) const {
+    if (source.empty()) {
+        return "";
+    }
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path root = fs::weakly_canonical(fs::path(getTemplatePath()), ec);
+    if (ec) {
+        return "the templates directory cannot be resolved";
+    }
+    const fs::path candidate(source);
+    // weakly_canonical resolves symlinks in the part that exists, so a link inside the
+    // directory that points outside it is caught as well.
+    const fs::path resolved = fs::weakly_canonical(candidate.is_absolute() ? candidate : root / candidate, ec);
+    if (ec) {
+        return "the template path cannot be resolved";
+    }
+    const fs::path rel = resolved.lexically_relative(root);
+    if (rel.empty() || rel == "." || *rel.begin() == "..") {
+        return "template path '" + source + "' is outside the templates directory";
+    }
+    return "";
+}
+
 crow::json::wvalue ConfigManager::getEndpointsConfig() const {
     crow::json::wvalue endpointsJson;
     // Pin the snapshot: this is reachable from the config service on a request
