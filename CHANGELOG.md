@@ -4,6 +4,13 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Fixed: the VS Code endpoint tester no longer persists credentials
+
+An `Authorization` header, API key, token or password typed into the endpoint tester's headers or parameters
+(or into the workspace default headers) was saved in the workspace state file. Credential-looking names are
+now saved with an empty value: the open panel still sends the real value, and after the panel is reopened
+the name is restored empty for you to re-enter. Request history was already redacted.
+
 ### Fixed: the VS Code extension and the CLI share one ConfigService transport
 
 - The extension's YAML validator and reload used a second HTTP client that ignored `flapi.insecure`, had no

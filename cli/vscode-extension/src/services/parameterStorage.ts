@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { EndpointTestState, RequestHistory } from '../types/endpointTest';
+import { blankMap } from './credentials';
 
 /**
  * Service for persisting endpoint test parameters and history
@@ -35,7 +36,19 @@ export class ParameterStorageService {
    */
   async saveEndpointState(state: EndpointTestState): Promise<void> {
     const key = this.getStorageKey(state.slug);
-    await this.context.workspaceState.update(key, state);
+    // workspaceState is an ordinary file beside the workspace: credentials typed
+    // into headers or parameters are blanked on the way in (the live panel keeps them).
+    const persisted: EndpointTestState = {
+      ...state,
+      headers: blankMap(state.headers),
+      parameters: blankMap(state.parameters),
+      history: (state.history ?? []).map((h) => ({
+        ...h,
+        headers: blankMap(h.headers),
+        parameters: blankMap(h.parameters),
+      })),
+    };
+    await this.context.workspaceState.update(key, persisted);
   }
 
   /**
@@ -106,7 +119,7 @@ export class ParameterStorageService {
   async setWorkspaceDefaults(defaults: Record<string, string>): Promise<void> {
     await this.context.workspaceState.update(
       ParameterStorageService.WORKSPACE_DEFAULTS_KEY,
-      defaults
+      blankMap(defaults)
     );
   }
 
