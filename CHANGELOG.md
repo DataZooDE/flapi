@@ -4,6 +4,36 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+## v26.10.31 — security hardening, and serverless startup without data or network on the boot path
+
+### Upgrade notes — these changes can turn a request or a config that worked into an error
+
+- **Validator:** a request value that contains a single quote **and** an SQL-looking character or word is
+  rejected with HTTP 400, even at a bound `{{ }}` site. This covers `( ) = < > + * / % & | ;`, `or`, `and`,
+  `like` and similar, e.g. `O'Brien (retired)`. A lone apostrophe (`O'Brien`) is fine.
+  Opt out per field with `preventSqlInjection: false`.
+- **Validator:** `number`, `float`, `double`, `boolean`, `integer` and `bool` fields are now actually
+  validated, so non-numeric or non-boolean values get HTTP 400.
+- **Pagination:** `?limit=` and `?offset=` must be plain non-negative integers (HTTP 400 otherwise).
+- **Cached endpoints:** `?cacheTable=`, `?cacheSchema=` and `?cacheCatalog=` in a request are ignored. The
+  configured values are always used.
+- **Rate limits:** limits are now matched by path **and** method, and counted per route rather than per literal
+  path, so `/items/:id` shares one bucket. Limits that were silently bypassed now apply.
+- **`cache.schedule`:** an invalid schedule (`5x`, `0s`, more than 10 years) stops startup instead of crashing
+  the server later.
+- **`flapi pack`:** symlinks are refused. The secret deny list is case-insensitive and covers `.env.*`, so
+  `.env.example` is refused too (use `--allow-secrets`). A damaged bundle stops startup.
+- **Config service:** template paths that resolve outside the templates directory can no longer be read or
+  written through the management APIs (HTTP 400).
+- **CORS:** an `Origin` not in `cors.allow-origins` gets no CORS headers (previously `*`).
+
+Everything new for serverless deployments is opt-in; every default is unchanged.
+
+### Docker
+
+New `ghcr.io/datazoode/flapi:<version>-runtime` image with `core_functions`, every default DuckDB extension and
+`bigquery` pre-installed, starting offline (`FLAPI_EXTENSIONS_OFFLINE=1`). `:latest` stays the slim image.
+
 ### Added: serverless startup without data or network on the boot path
 
 Running flAPI on scale-to-zero platforms (Cloud Run, App Runner) loaded every cache from its source on every
@@ -211,6 +241,8 @@ Found by a review of the CLI and VS Code extension, then reproduced against a re
 - The CLI's own integration suite could not start (it did not enable the config service) and some of its
   tests passed without testing anything. It now runs against a real server on a temporary copy of
   `examples/`, and runs in CI (`make cli-integration-test`).
+
+## v26.10.2 — safer configuration: env variables are enforced, dead keys are reported, and the docs match the code
 
 ### Fixed: `flapii project init` scaffolded a configuration flAPI does not read
 
