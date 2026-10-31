@@ -161,6 +161,16 @@ void detectAndRegisterEmbeddedBundle() {
         }
 
         auto entries = std::make_shared<ArchiveEntries>(ReadArchive(bytes));
+        // Extensions packed with --with-extensions: extract once (content-addressed), use
+        // them as the extension directory, and drop them from the in-memory map - they are
+        // the bulk of the bundle and nothing serves them as config files.
+        if (auto dir = MaterializeBundledExtensions(*entries, std::filesystem::temp_directory_path() / "flapi-extensions")) {
+            SetBundledExtensionDirectory(*dir);
+            for (auto it = entries->begin(); it != entries->end();) {
+                it = it->first.rfind(kBundledExtensionsPrefix, 0) == 0 ? entries->erase(it) : std::next(it);
+            }
+            CROW_LOG_INFO << "Bundled DuckDB extensions extracted to " << dir->string();
+        }
         const std::size_t entry_count = entries->size();
         FileProviderFactory::SetBundleContents(std::move(entries));
         CROW_LOG_INFO << "Bundle detected and registered (" << entry_count << " entries)";
@@ -644,6 +654,15 @@ int main(int argc, char* argv[])
               "Result is ad-hoc signed and NOT notarisable.")
         .default_value(false)
         .implicit_value(true);
+    pack_cmd.add_argument("--with-extensions")
+        .help("Install the config's DuckDB extensions (core_functions, duckdb.default-extensions, "
+              "INSTALLs in connections.*.init) for this platform and embed them; the packed "
+              "binary then starts offline")
+        .default_value(false)
+        .implicit_value(true);
+    pack_cmd.add_argument("--extensions-dir")
+        .help("Embed this already filled extension directory instead (e.g. for another platform)")
+        .default_value(std::string(""));
     pack_cmd.add_argument("--skip-validation")
         .help("Pack without validating the config first. A bundle built from an "
               "invalid config fails at startup on every host it is copied to.")
@@ -753,7 +772,42 @@ int main(int argc, char* argv[])
                     }
                 }
             }
+            std::filesystem::path installed_extensions;
+            const auto extensions_dir = pack_cmd.get<std::string>("--extensions-dir");
+            if (pack_cmd.get<bool>("--with-extensions")) {
+                if (!extensions_dir.empty()) {
+                    std::cerr << "flapi pack: --with-extensions and --extensions-dir are exclusive\n";
+                    return 1;
+                }
+                std::filesystem::path main_config;
+                for (const char* name : {"flapi.yaml", "flapi.yml"}) {
+                    if (std::filesystem::exists(std::filesystem::path(in_dir) / name)) {
+                        main_config = std::filesystem::path(in_dir) / name;
+                        break;
+                    }
+                }
+                if (main_config.empty()) {
+                    std::cerr << "flapi pack: --with-extensions needs a flapi.yaml in " << in_dir << "\n";
+                    return 1;
+                }
+                crow::logger::setLogLevel(crow::LogLevel::Warning);
+                const auto specs = CollectExtensionSpecs(*initializeConfig(main_config.string()));
+                installed_extensions = std::filesystem::temp_directory_path() /
+                                       ("flapi-pack-extensions-" + std::to_string(::getpid()));
+                std::filesystem::remove_all(installed_extensions);
+                if (InstallExtensions(specs, installed_extensions.string(), std::cout) > 0) {
+                    std::filesystem::remove_all(installed_extensions);
+                    std::cerr << "flapi pack: could not install every extension; nothing was packed\n";
+                    return 1;
+                }
+                opts.extensions_dir = installed_extensions;
+            } else if (!extensions_dir.empty()) {
+                opts.extensions_dir = std::filesystem::path(extensions_dir);
+            }
             const auto result = Pack(in_dir, out_path, opts);
+            if (!installed_extensions.empty()) {
+                std::filesystem::remove_all(installed_extensions);
+            }
             std::cout << "Packed " << result.entry_count
                       << " entries (" << result.archive_size
                       << " bytes) into " << result.output.string() << "\n";

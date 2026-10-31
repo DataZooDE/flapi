@@ -184,3 +184,55 @@ class TestOfflineExtensions:
         assert res.returncode != 0, out
         assert "flapi extensions install" in out
         assert time.time() - started < 30
+
+
+class TestPackedExtensions:
+    def test_packed_binary_carries_its_extensions_and_starts_offline(self, project):
+        out = os.path.join(project.dir, "flapi-packed")
+        # Inside a bundle, data files are read through the embed:// filesystem.
+        with open(project.config) as f:
+            cfg = f.read()
+        with open(project.config, "w") as f:
+            f.write(cfg.replace("path: ./data/cities.csv", "path: embed://data/cities.csv"))
+        pack = project.run("pack", "--in", project.dir, "--out", out, "--with-extensions", timeout=900)
+        assert pack.returncode == 0, pack.stdout + pack.stderr
+        assert "core_functions" in pack.stdout
+
+        info = subprocess.run([out, "info"], capture_output=True, text=True, timeout=60)
+        assert ".flapi/extensions/" in info.stdout
+
+        # Run from an empty directory with no network: config AND extensions come from the bundle.
+        run_dir = tempfile.mkdtemp(prefix="flapi_packed_run_")
+        port = free_port()
+        log = open(os.path.join(run_dir, "server.log"), "w")
+        env = {**project.env(**NO_NETWORK), "TMPDIR": run_dir}
+        env.pop("FLAPI_EXTENSION_DIRECTORY", None)
+        env.pop("FLAPI_EXTENSIONS_OFFLINE", None)
+        proc = subprocess.Popen([out, "-p", str(port)], cwd=run_dir, env=env, stdout=log, stderr=subprocess.STDOUT)
+        try:
+            base = f"http://127.0.0.1:{port}"
+            deadline = time.time() + 60
+            while time.time() < deadline:
+                assert proc.poll() is None, open(os.path.join(run_dir, "server.log")).read()
+                try:
+                    if requests.get(f"{base}/health", timeout=1).status_code == 200:
+                        break
+                except requests.RequestException:
+                    pass
+                time.sleep(0.2)
+            else:
+                pytest.fail(open(os.path.join(run_dir, "server.log")).read())
+            assert requests.get(f"{base}/cities", timeout=10).status_code == 200
+            server_log = open(os.path.join(run_dir, "server.log")).read()
+            assert "Bundled DuckDB extensions extracted" in server_log
+            assert "Offline extensions" in server_log
+        finally:
+            proc.terminate()
+            proc.wait(timeout=20)
+            shutil.rmtree(run_dir, ignore_errors=True)
+
+    def test_with_extensions_and_extensions_dir_are_exclusive(self, project):
+        res = project.run("pack", "--in", project.dir, "--out", os.path.join(project.dir, "x"),
+                          "--with-extensions", "--extensions-dir", project.dir)
+        assert res.returncode == 1
+        assert "exclusive" in res.stderr

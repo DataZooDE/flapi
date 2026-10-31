@@ -488,7 +488,8 @@ for the architectural rationale.
 ### `flapi pack` -- create a self-contained binary
 
 ```
-flapi pack --in <config-dir> --out <new-binary> [--allow-secrets] [--macos-append] [--skip-validation]
+flapi pack --in <config-dir> --out <new-binary> [--with-extensions | --extensions-dir <dir>]
+           [--allow-secrets] [--macos-append] [--skip-validation]
 ```
 
 | Option | Required | Description |
@@ -498,6 +499,18 @@ flapi pack --in <config-dir> --out <new-binary> [--allow-secrets] [--macos-appen
 | `--allow-secrets` | no | Bypass the default secret deny list. Testing only -- production users must never set this. |
 | `--skip-validation` | no | Skip the config validation `pack` otherwise runs first (the same checks as `--validate-config`). Without it, an invalid `<in>/flapi.yaml` is refused and no output file is written. |
 | `--macos-append` | no | macOS only: append the archive after `__LINKEDIT` instead of overwriting the reserved `__FLAPI/__bundle` segment. **Not notarisable.** |
+| `--with-extensions` | no | Install the DuckDB extensions the config needs (`core_functions`, `duckdb.default-extensions`, every `INSTALL` in `connections.*.init`) **for the platform `pack` runs on**, and embed them. Fails without writing output if any cannot be installed. |
+| `--extensions-dir` | no | Embed an already filled extension directory instead, e.g. one built by `flapi extensions install` for another platform. Exclusive with `--with-extensions`. |
+
+**Embedded extensions.** They are stored under the reserved `.flapi/extensions/` prefix (an input tree
+may not use it). At startup the binary extracts them once to
+`$TMPDIR/flapi-extensions/ext-<content hash>/`, reusing that directory on the next start, and uses it as
+`extension_directory` with **offline extensions on**. A data source works from a single `scp`-ed file
+with no network access. Precedence: `duckdb.extension_directory` in the config >
+`FLAPI_EXTENSION_DIRECTORY` > the bundle. Set `FLAPI_EXTENSIONS_OFFLINE=0` to allow downloads anyway.
+Extensions are platform-specific, so pack on (or `--extensions-dir` for) the target platform. On macOS
+they usually exceed the 16 MiB reserved segment; raise `FLAPI_RESERVED_BUNDLE_MIB` at build time or use
+`--macos-append`.
 
 **Default secret deny list** (refusal with non-zero exit, unless
 `--allow-secrets`):

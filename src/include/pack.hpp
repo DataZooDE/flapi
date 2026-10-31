@@ -53,6 +53,10 @@ struct PackOptions {
     // on Darwin (silent no-op elsewhere). Defaults to true; tests set
     // this to false to skip the codesign call.
     bool codesign = true;
+
+    // A filled DuckDB extension directory to embed under kBundledExtensionsPrefix.
+    // The packed binary uses it as its extension directory and starts offline.
+    std::optional<std::filesystem::path> extensions_dir;
 };
 
 struct PackResult {

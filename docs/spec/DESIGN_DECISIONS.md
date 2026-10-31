@@ -650,6 +650,9 @@ per-instance cache from BigQuery at boot, for data rebuilt once a day.
   mutations.
 - `flapi cache refresh` turns the writer into a job (a Cloud Run Job or an
   Airflow task) instead of an always-on server.
+- `flapi pack --with-extensions` puts the same extensions into the self-packaging
+  bundle (§ 9). They are extracted once, content-addressed, at startup, so the
+  single-binary deployment needs no network either.
 - Extensions are resolved when the image is built, not when it boots:
   `duckdb.default-extensions` (configurable), `flapi extensions install`,
   `FLAPI_EXTENSION_DIRECTORY`, `FLAPI_EXTENSIONS_OFFLINE`, and a `-runtime`

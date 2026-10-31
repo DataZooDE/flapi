@@ -1,5 +1,8 @@
 #pragma once
 
+#include <cstdint>
+#include <filesystem>
+#include <map>
 #include <optional>
 #include <ostream>
 #include <string>
@@ -35,5 +38,16 @@ std::vector<ExtensionSpec> CollectExtensionSpecs(const ConfigManager& config_man
 // extensions that failed; every failure is written to `log`, so a build step reports all at once.
 int InstallExtensions(const std::vector<ExtensionSpec>& specs, const std::string& extension_directory,
                       std::ostream& log);
+
+// The directory a bundle's extensions were extracted to (set once at startup by main).
+// When set, it is the default extension_directory and implies offline extensions.
+void SetBundledExtensionDirectory(std::optional<std::filesystem::path> dir);
+std::optional<std::filesystem::path> BundledExtensionDirectory();
+
+// Writes the bundle's kBundledExtensionsPrefix entries below `cache_root`, in a directory
+// named by a hash of their contents (reused when it already exists). Returns that
+// directory, or nothing when the bundle carries no extensions.
+std::optional<std::filesystem::path> MaterializeBundledExtensions(
+    const std::map<std::string, std::vector<std::uint8_t>>& entries, const std::filesystem::path& cache_root);
 
 } // namespace flapi

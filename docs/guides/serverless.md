@@ -103,6 +103,10 @@ COPY sqls/ /app/config/sqls/
 ENV FLAPI_CONFIG=/app/config/flapi.yaml FLAPI_EXTENSIONS_OFFLINE=1
 ```
 
+Not using containers? `flapi pack --in . --out api --with-extensions` produces
+one binary that carries its config **and** its extensions and starts offline
+([CLI_REFERENCE § 3](../CLI_REFERENCE.md#flapi-pack----create-a-self-contained-binary)).
+
 `FLAPI_EXTENSIONS_OFFLINE=1` turns a missing extension into a clear startup
 error instead of a download. If you need other extensions, build your own
 layer with `flapi extensions install --config flapi.yaml` (see

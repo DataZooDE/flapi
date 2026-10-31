@@ -2,6 +2,12 @@
 
 #include <duckdb.h>
 #include <algorithm>
+#include <cstdio>
+#include <fstream>
+#include <mutex>
+#include <unistd.h>
+
+#include "archive_io.hpp"
 #include <regex>
 #include <set>
 
@@ -145,6 +151,106 @@ int InstallExtensions(const std::vector<ExtensionSpec>& specs, const std::string
     duckdb_disconnect(&con);
     duckdb_close(&db);
     return failures;
+}
+
+namespace {
+
+std::mutex& bundledMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::optional<std::filesystem::path>& bundledDirectory() {
+    static std::optional<std::filesystem::path> dir;
+    return dir;
+}
+
+// FNV-1a over names, sizes and bytes: names the extraction directory, so a re-packed
+// binary with different extensions never reuses (or half-overwrites) an older one.
+std::string contentHash(const std::vector<std::pair<std::string, const std::vector<std::uint8_t>*>>& files) {
+    std::uint64_t h = 1469598103934665603ULL;
+    auto mix = [&h](unsigned char byte) {
+        h ^= byte;
+        h *= 1099511628211ULL;
+    };
+    for (const auto& [name, data] : files) {
+        for (const char c : name) {
+            mix(static_cast<unsigned char>(c));
+        }
+        mix(0);
+        for (const char c : std::to_string(data->size())) {
+            mix(static_cast<unsigned char>(c));
+        }
+        mix(0);
+        for (const auto byte : *data) {
+            mix(byte);
+        }
+    }
+    char hex[17];
+    std::snprintf(hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(h));
+    return hex;
+}
+
+} // namespace
+
+void SetBundledExtensionDirectory(std::optional<std::filesystem::path> dir) {
+    std::lock_guard<std::mutex> lock(bundledMutex());
+    bundledDirectory() = std::move(dir);
+}
+
+std::optional<std::filesystem::path> BundledExtensionDirectory() {
+    std::lock_guard<std::mutex> lock(bundledMutex());
+    return bundledDirectory();
+}
+
+std::optional<std::filesystem::path> MaterializeBundledExtensions(
+    const std::map<std::string, std::vector<std::uint8_t>>& entries, const std::filesystem::path& cache_root) {
+    namespace fs = std::filesystem;
+    const std::string prefix = kBundledExtensionsPrefix;
+    std::vector<std::pair<std::string, const std::vector<std::uint8_t>*>> files;
+    for (const auto& [name, data] : entries) {
+        if (name.rfind(prefix, 0) != 0) {
+            continue;
+        }
+        const std::string rel = name.substr(prefix.size());
+        const fs::path normal = fs::path(rel).lexically_normal();
+        if (rel.empty() || normal.is_absolute() || normal.generic_string().rfind("..", 0) == 0) {
+            throw std::runtime_error("bundled extension entry escapes its directory: " + name);
+        }
+        files.emplace_back(normal.generic_string(), &data);
+    }
+    if (files.empty()) {
+        return std::nullopt;
+    }
+
+    const fs::path dir = cache_root / ("ext-" + contentHash(files));
+    if (fs::exists(dir / ".complete")) {
+        return dir;
+    }
+    // Written beside the target and renamed into place: a crash or a concurrent start
+    // never leaves a half-written directory under the final name.
+    const fs::path staging = cache_root / (dir.filename().string() + ".tmp-" + std::to_string(::getpid()));
+    fs::remove_all(staging);
+    for (const auto& [rel, data] : files) {
+        const fs::path target = staging / rel;
+        fs::create_directories(target.parent_path());
+        std::ofstream out(target, std::ios::binary | std::ios::trunc);
+        out.write(reinterpret_cast<const char*>(data->data()), static_cast<std::streamsize>(data->size()));
+        if (!out) {
+            throw std::runtime_error("cannot write bundled extension " + target.string());
+        }
+    }
+    std::ofstream(staging / ".complete") << "ok\n";
+    std::error_code ec;
+    fs::rename(staging, dir, ec);
+    if (ec) {
+        // Another process got there first; its copy has the same contents.
+        fs::remove_all(staging);
+        if (!fs::exists(dir / ".complete")) {
+            throw std::runtime_error("cannot place bundled extensions in " + dir.string() + ": " + ec.message());
+        }
+    }
+    return dir;
 }
 
 } // namespace flapi

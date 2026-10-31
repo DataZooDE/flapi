@@ -1,5 +1,6 @@
 #include <regex>
 #include "config_manager.hpp"
+#include "extension_installer.hpp"
 #include "redaction.hpp"
 #include "endpoint_config_parser.hpp"
 #include "config_loader.hpp"
@@ -454,13 +455,22 @@ void ConfigManager::parseDuckDBConfig() {
         }
     }
 
-    // Image-level defaults: a baked extension directory, and whether startup may download.
+    // Image- and bundle-level defaults. Precedence: config > FLAPI_EXTENSION_DIRECTORY >
+    // extensions embedded by `flapi pack --with-extensions`.
+    const auto bundled = BundledExtensionDirectory();
     if (duckdb_config.settings.count("extension_directory") == 0) {
         if (const char* dir = std::getenv("FLAPI_EXTENSION_DIRECTORY"); dir != nullptr && *dir != '\0') {
             duckdb_config.settings["extension_directory"] = dir;
+        } else if (bundled) {
+            duckdb_config.settings["extension_directory"] = bundled->string();
         }
     }
-    duckdb_config.offline_extensions = isTruthyEnv("FLAPI_EXTENSIONS_OFFLINE");
+    // A bundle that carries its extensions starts offline unless told otherwise.
+    if (const char* offline = std::getenv("FLAPI_EXTENSIONS_OFFLINE"); offline != nullptr && *offline != '\0') {
+        duckdb_config.offline_extensions = isTruthyEnv("FLAPI_EXTENSIONS_OFFLINE");
+    } else {
+        duckdb_config.offline_extensions = bundled.has_value();
+    }
 }
 
 const DuckDBConfig& ConfigManager::getDuckDBConfig() const {

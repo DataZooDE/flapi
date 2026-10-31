@@ -21,6 +21,9 @@ instance start, and installed DuckDB extensions over the network on every boot. 
   a config's extensions (defaults and every `INSTALL` in `connections.*.init`) at build time;
   `FLAPI_EXTENSION_DIRECTORY` points startup at them, and `FLAPI_EXTENSIONS_OFFLINE=1` turns a missing extension
   into a startup error instead of a download.
+- `flapi pack --with-extensions` (or `--extensions-dir <dir>`) embeds the config's DuckDB extensions in the
+  bundle. The packed binary extracts them once to a content-addressed directory and starts offline, so a
+  single file runs with no network.
 - A `ghcr.io/datazoode/flapi:<version>-runtime` image with `core_functions`, every default extension and
   `bigquery` pre-installed.
 - Found on the way: flAPI's DuckDB loads no extension statically, so even `core_functions` was downloaded on the
