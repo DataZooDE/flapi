@@ -11,8 +11,8 @@ duckdb:
 ducklake:
   enabled: true
   alias: cache
-  metadata-path: /tmp/flapi-offline-fixture/cache.ducklake
-  data-path: /tmp/flapi-offline-fixture/cache_data
+  metadata-path: /tmp/flapi-offline-cache.ducklake
+  data-path: /tmp/flapi-offline-cache-data/
 connections:
   local:
     properties:
