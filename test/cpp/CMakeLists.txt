@@ -31,6 +31,9 @@ add_executable(flapi_tests
     https_config_test.cpp
     macho_bundle_test.cpp
     cache_manager_test.cpp
+    cache_warmup_mode_test.cpp
+    extension_installer_test.cpp
+    ducklake_reader_test.cpp
     mcp_authorization_policy_test.cpp
     mcp_content_types_test.cpp
     mcp_description_scanner_test.cpp

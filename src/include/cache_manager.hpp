@@ -38,7 +38,8 @@ public:
     enum class ReadinessState {
         Starting,
         Ready,
-        Failed
+        Failed,
+        Unbuilt   // warm-up skipped and the table does not exist yet
     };
 
     struct CacheReadiness {
@@ -55,9 +56,11 @@ public:
         int ready = 0;
         int failed = 0;
         int stale = 0;
+        int unbuilt = 0;
         std::vector<CacheReadiness> pending_caches;
         std::vector<CacheReadiness> failed_caches;
         std::vector<CacheReadiness> stale_caches;
+        std::vector<CacheReadiness> unbuilt_caches;
     };
 
     void initializeReadiness(std::shared_ptr<ConfigManager> config_manager);

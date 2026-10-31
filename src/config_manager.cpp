@@ -20,6 +20,18 @@
 
 namespace flapi {
 
+std::optional<CacheWarmupMode> ParseCacheWarmupMode(const std::string& value) {
+    return std::nullopt;  // TODO(G1)
+}
+
+std::string CacheWarmupModeToString(CacheWarmupMode mode) {
+    return "";  // TODO(G1)
+}
+
+CacheWarmupMode ConfigManager::getEffectiveCacheWarmupMode(const EndpointConfig& endpoint) const {
+    return CacheWarmupMode::Always;  // TODO(G1)
+}
+
 std::chrono::seconds CacheConfig::getRefreshTimeInSeconds() const {
     if (!schedule || schedule->empty()) {
         return std::chrono::seconds::zero();

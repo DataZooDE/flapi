@@ -189,4 +189,8 @@ void HeartbeatWorker::performDuckLakeCompaction() {
     }
 }
 
+bool HeartbeatWorker::ShouldRunCacheMaintenance(const DuckLakeConfig& ducklake_config) {
+    return true;  // TODO(G4a)
+}
+
 } // namespace flapi

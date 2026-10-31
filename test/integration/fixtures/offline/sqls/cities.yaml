@@ -1,0 +1,4 @@
+url-path: /cities
+method: GET
+template-source: cities.sql
+connection: [local]

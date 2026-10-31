@@ -1,0 +1,9 @@
+url-path: /cities-cached
+method: GET
+template-source: cities_cached.sql
+connection: [local]
+cache:
+  enabled: true
+  schema: main
+  table: cities_cache
+  template-file: cities_cached_populate.sql

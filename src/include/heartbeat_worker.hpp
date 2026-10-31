@@ -21,6 +21,10 @@ public:
     void start();
     void stop();
 
+    // Scheduled refresh, retention and compaction write to the catalog. A read-only
+    // replica must do none of them.
+    static bool ShouldRunCacheMaintenance(const DuckLakeConfig& ducklake_config);
+
 private:
     std::shared_ptr<ConfigManager> config_manager;
     APIServer& api_server;

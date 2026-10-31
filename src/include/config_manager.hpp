@@ -169,6 +169,18 @@ struct RequestFieldConfig {
     std::string mcp_header;
 };
 
+// When a cache is (re)built at startup. `always` is the historic behaviour; `if-empty`
+// skips a table that already exists in the catalog; `never` leaves building to the
+// scheduler, a manual refresh or `flapi cache refresh`.
+enum class CacheWarmupMode {
+    Always,
+    IfEmpty,
+    Never
+};
+
+std::optional<CacheWarmupMode> ParseCacheWarmupMode(const std::string& value);
+std::string CacheWarmupModeToString(CacheWarmupMode mode);
+
 struct CacheConfig {
     bool enabled = false;
     std::string table;
@@ -189,6 +201,7 @@ struct CacheConfig {
     std::optional<std::string> template_file;
     bool invalidate_on_write = false;  // Invalidate cache after write operations
     bool refresh_on_write = false;      // Refresh cache immediately after write operations
+    std::optional<CacheWarmupMode> warmup;  // Overrides ducklake.warmup for this endpoint
 
     bool hasCursor() const { return cursor.has_value(); }
     bool hasPrimaryKey() const { return !primary_keys.empty(); }
@@ -486,6 +499,7 @@ struct DuckDBConfig {
     std::unordered_map<std::string, std::string> settings;
     std::string db_path;  // New field for database path
     std::vector<std::string> default_extensions;
+    bool offline_extensions = false;  // FLAPI_EXTENSIONS_OFFLINE: never download, fail fast on a missing extension
 };
 
 struct TemplateConfig {
@@ -545,6 +559,8 @@ struct DuckLakeConfig {
     std::string metadata_path;
     std::string data_path;
     bool override_data_path = false;
+    bool read_only = false;  // Attach READ_ONLY; implies warm-up never and no cache maintenance
+    CacheWarmupMode warmup = CacheWarmupMode::Always;
     DuckLakeRetentionConfig retention;
     DuckLakeCompactionConfig compaction;
     DuckLakeSchedulerConfig scheduler;
@@ -708,6 +724,10 @@ public:
 
     const GlobalHeartbeatConfig& getGlobalHeartbeatConfig() const { return global_heartbeat_config; }
     const DuckLakeConfig& getDuckLakeConfig() const { return ducklake_config; }
+    // Set from --cache-warmup / FLAPI_CACHE_WARMUP; wins over the config files.
+    void setCacheWarmupOverride(std::optional<CacheWarmupMode> mode) { cache_warmup_override = mode; }
+    // read-only > override > endpoint cache.warmup > ducklake.warmup
+    CacheWarmupMode getEffectiveCacheWarmupMode(const EndpointConfig& endpoint) const;
     const MCPConfig& getMCPConfig() const { return mcp_config; }
     const StorageConfig& getStorageConfig() const { return storage_config; }
     const AuditConfig& getAuditConfig() const { return audit_config; }
@@ -842,6 +862,7 @@ protected:
     CorsConfig cors_config;
     GlobalHeartbeatConfig global_heartbeat_config;
     DuckLakeConfig ducklake_config;
+    std::optional<CacheWarmupMode> cache_warmup_override;
     MCPConfig mcp_config;
     StorageConfig storage_config;
     AuditConfig audit_config;
