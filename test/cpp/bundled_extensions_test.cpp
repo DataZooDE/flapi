@@ -100,7 +100,10 @@ TEST_CASE("MaterializeBundledExtensions writes only extension entries, once", "[
     const auto mtime = fs::last_write_time(*dir / "v1.5.5/linux_amd64/httpfs.duckdb_extension");
     auto again = MaterializeBundledExtensions(entries, cache.path());
     REQUIRE(again == dir);
-    REQUIRE(fs::last_write_time(*again / "v1.5.5/linux_amd64/httpfs.duckdb_extension") == mtime);
+    // Compared outside REQUIRE: on libc++ file_time_type has an __int128 duration, which
+    // Catch2 cannot stringify when it decomposes the expression (macOS build error).
+    const bool untouched = fs::last_write_time(*again / "v1.5.5/linux_amd64/httpfs.duckdb_extension") == mtime;
+    REQUIRE(untouched);
 
     // Different contents, different directory: a re-packed binary never sees stale files.
     entries[std::string(kBundledExtensionsPrefix) + "v1.5.5/linux_amd64/httpfs.duckdb_extension"] = bytesOf("ELF-httpfs-v2");
