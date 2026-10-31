@@ -165,6 +165,7 @@ jobs:
     # by tag could publish main's build as the release.
     outputs:
       digest: ${{ steps.build.outputs.digest }}
+      runtime-digest: ${{ steps.build-runtime.outputs.digest }}
     steps:
     - uses: actions/checkout@v4
 
@@ -218,6 +219,50 @@ jobs:
         labels: ${{ steps.meta.outputs.labels }}
         build-contexts: |
           build=binaries
+
+    - name: Docker meta (runtime)
+      id: meta-runtime
+      uses: docker/metadata-action@v5
+      with:
+        images: ghcr.io/${{ env.REPO_OWNER }}/flapi
+        flavor: |
+          suffix=-runtime,onlatest=true
+        tags: |
+          type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+          type=sha,format=long,enable=${{ github.event_name != 'pull_request' }}
+
+    # Same binaries, extensions pre-installed. Built on pull requests too, so a
+    # broken extension install fails the PR rather than the release.
+    - name: Build and push multi-arch runtime image
+      id: build-runtime
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: Dockerfile
+        target: runtime
+        platforms: linux/amd64,linux/arm64
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: ${{ steps.meta-runtime.outputs.tags }}
+        labels: ${{ steps.meta-runtime.outputs.labels }}
+        build-contexts: |
+          build=binaries
+
+    # The point of the runtime image: it must start with no network at all.
+    - name: Runtime image starts offline
+      run: |
+        set -euo pipefail
+        docker buildx build --load --target runtime --platform linux/amd64 \
+          --build-context build=binaries -t flapi-runtime-test -f Dockerfile .
+        docker run -d --name rt --network none -e FLAPI_EXTENSIONS_OFFLINE=1 -w /config \
+          -v "$PWD/test/integration/fixtures/offline:/config:ro" flapi-runtime-test --config /config/flapi.yaml
+        # bash, not sh: /dev/tcp is a bash feature and the image's /bin/sh is dash.
+        for i in $(seq 1 30); do
+          if docker exec rt bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf "GET /health/live HTTP/1.0\r\n\r\n" >&3 && cat <&3' 2>/dev/null | grep -q '"live"'; then
+            docker logs rt; docker rm -f rt; exit 0
+          fi
+          sleep 1
+        done
+        docker logs rt; docker rm -f rt; exit 1
 
   # -------------------------------------------------------------------------------------------------
   # macOS Universal
@@ -1125,6 +1170,7 @@ jobs:
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         DIGEST: ${{ needs.docker-build.outputs.digest }}
+        RUNTIME_DIGEST: ${{ needs.docker-build.outputs.runtime-digest }}
       run: |
         set -euo pipefail
         IMAGE="ghcr.io/${REPO_OWNER}/flapi"
@@ -1133,6 +1179,9 @@ jobs:
         # 1. This release's version tag, from the exact digest this run built
         #    and tested. Unique per release, so no other run can race it.
         docker buildx imagetools create --tag "${IMAGE}:${GITHUB_REF_NAME}" "${IMAGE}@${DIGEST}"
+        # The runtime variant of the same release. :latest stays the slim image.
+        test -n "${RUNTIME_DIGEST}" || { echo "docker-build reported no runtime digest" >&2; exit 1; }
+        docker buildx imagetools create --tag "${IMAGE}:${GITHUB_REF_NAME}-runtime" "${IMAGE}@${RUNTIME_DIGEST}"
 
         # 2. :latest always ends on the NEWEST release's image, whichever run
         #    gets here last. Re-read after writing: a run that listed releases

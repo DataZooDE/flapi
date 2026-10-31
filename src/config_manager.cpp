@@ -1,5 +1,6 @@
 #include <regex>
 #include "config_manager.hpp"
+#include "extension_installer.hpp"
 #include "redaction.hpp"
 #include "endpoint_config_parser.hpp"
 #include "config_loader.hpp"
@@ -19,6 +20,65 @@
 #include <crow/logging.h>
 
 namespace flapi {
+
+std::optional<CacheWarmupMode> ParseCacheWarmupMode(const std::string& value) {
+    if (value == "always") {
+        return CacheWarmupMode::Always;
+    }
+    if (value == "if-empty") {
+        return CacheWarmupMode::IfEmpty;
+    }
+    if (value == "never") {
+        return CacheWarmupMode::Never;
+    }
+    return std::nullopt;
+}
+
+std::string CacheWarmupModeToString(CacheWarmupMode mode) {
+    switch (mode) {
+        case CacheWarmupMode::Always: return "always";
+        case CacheWarmupMode::IfEmpty: return "if-empty";
+        case CacheWarmupMode::Never: return "never";
+    }
+    return "always";
+}
+
+CacheWarmupMode ConfigManager::getEffectiveCacheWarmupMode(const EndpointConfig& endpoint) const {
+    // A read-only replica cannot build anything, whatever else asks it to.
+    if (ducklake_config.read_only) {
+        return CacheWarmupMode::Never;
+    }
+    if (cache_warmup_override) {
+        return *cache_warmup_override;
+    }
+    if (endpoint.cache.warmup) {
+        return *endpoint.cache.warmup;
+    }
+    return ducklake_config.warmup;
+}
+
+namespace {
+
+CacheWarmupMode parseWarmupNode(const YAML::Node& node, const std::string& yaml_path) {
+    const auto value = node.as<std::string>();
+    const auto mode = ParseCacheWarmupMode(value);
+    if (!mode) {
+        throw ConfigurationError("Invalid warm-up mode '" + value + "'. Expected always, if-empty or never",
+                                 yaml_path);
+    }
+    return *mode;
+}
+
+bool isTruthyEnv(const char* name) {
+    const char* value = std::getenv(name);
+    if (value == nullptr) {
+        return false;
+    }
+    const std::string s(value);
+    return s == "1" || s == "true" || s == "yes";
+}
+
+} // namespace
 
 std::chrono::seconds CacheConfig::getRefreshTimeInSeconds() const {
     if (!schedule || schedule->empty()) {
@@ -372,6 +432,18 @@ void ConfigManager::parseDuckDBConfig() {
         auto duckdb_node = config["duckdb"];
         for (const auto& setting : duckdb_node) {
             std::string key = setting.first.as<std::string>();
+            if (key == "default-extensions") {
+                // A list - read before the scalar conversion below, which throws on one.
+                if (!setting.second.IsSequence()) {
+                    throw ConfigurationError("duckdb.default-extensions must be a list, e.g. [httpfs, parquet]",
+                                             "duckdb.default-extensions");
+                }
+                duckdb_config.default_extensions.clear();
+                for (const auto& extension : setting.second) {
+                    duckdb_config.default_extensions.push_back(extension.as<std::string>());
+                }
+                continue;
+            }
             std::string value = setting.second.as<std::string>();
             if (key == "db_path") {
                 duckdb_config.db_path = value;
@@ -381,6 +453,23 @@ void ConfigManager::parseDuckDBConfig() {
                 CROW_LOG_DEBUG << "\tDuckDB Setting: " << key << " = " << value;
             }
         }
+    }
+
+    // Image- and bundle-level defaults. Precedence: config > FLAPI_EXTENSION_DIRECTORY >
+    // extensions embedded by `flapi pack --with-extensions`.
+    const auto bundled = BundledExtensionDirectory();
+    if (duckdb_config.settings.count("extension_directory") == 0) {
+        if (const char* dir = std::getenv("FLAPI_EXTENSION_DIRECTORY"); dir != nullptr && *dir != '\0') {
+            duckdb_config.settings["extension_directory"] = dir;
+        } else if (bundled) {
+            duckdb_config.settings["extension_directory"] = bundled->string();
+        }
+    }
+    // A bundle that carries its extensions starts offline unless told otherwise.
+    if (const char* offline = std::getenv("FLAPI_EXTENSIONS_OFFLINE"); offline != nullptr && *offline != '\0') {
+        duckdb_config.offline_extensions = isTruthyEnv("FLAPI_EXTENSIONS_OFFLINE");
+    } else {
+        duckdb_config.offline_extensions = bundled.has_value();
     }
 }
 
@@ -408,6 +497,10 @@ void ConfigManager::parseDuckLakeConfig() {
         ducklake_config.metadata_path = safeGet<std::string>(node, "metadata-path", "ducklake.metadata-path");
         ducklake_config.data_path = safeGet<std::string>(node, "data-path", "ducklake.data-path");
         ducklake_config.override_data_path = safeGet<bool>(node, "override-data-path", "ducklake.override-data-path", false);
+        ducklake_config.read_only = safeGet<bool>(node, "read-only", "ducklake.read-only", false);
+        if (node["warmup"]) {
+            ducklake_config.warmup = parseWarmupNode(node["warmup"], "ducklake.warmup");
+        }
 
         if (node["retention"]) {
             auto retention = node["retention"];
@@ -1144,6 +1237,10 @@ void ConfigManager::parseEndpointCache(const YAML::Node& endpoint_config, const 
     endpoint.cache.table = safeGet<std::string>(cache_node, "table", "cache.table");
     endpoint.cache.schema = safeGet<std::string>(cache_node, "schema", "cache.schema", std::string("cache"));
 
+    if (cache_node["warmup"]) {
+        endpoint.cache.warmup = parseWarmupNode(cache_node["warmup"], "cache.warmup");
+    }
+
     if (cache_node["schedule"]) {
         endpoint.cache.schedule = safeGet<std::string>(cache_node, "schedule", "cache.schedule");
         // Refuse it at load. An invalid schedule used to be accepted here and then threw
@@ -1838,6 +1935,8 @@ crow::json::wvalue ConfigManager::getFlapiConfig() const {
     ducklakeJson["metadata-path"] = ducklake_config.metadata_path;
     ducklakeJson["data-path"] = ducklake_config.data_path;
     ducklakeJson["override-data-path"] = ducklake_config.override_data_path;
+    ducklakeJson["read-only"] = ducklake_config.read_only;
+    ducklakeJson["warmup"] = CacheWarmupModeToString(ducklake_config.warmup);
 
     // Add data inlining configuration
     if (ducklake_config.data_inlining_row_limit) {

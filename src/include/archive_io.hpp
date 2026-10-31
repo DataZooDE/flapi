@@ -11,6 +11,10 @@ namespace flapi {
 
 using ArchiveEntries = std::map<std::string, std::vector<std::uint8_t>>;
 
+// Bundle entries under this prefix are DuckDB extensions (`flapi pack --with-extensions`),
+// laid out as in an extension directory: <prefix>v1.5.5/linux_amd64/httpfs.duckdb_extension.
+inline constexpr const char* kBundledExtensionsPrefix = ".flapi/extensions/";
+
 struct ArchiveWriteOptions {
     std::optional<std::int64_t> source_date_epoch;
 };

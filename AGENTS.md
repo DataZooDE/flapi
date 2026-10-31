@@ -451,6 +451,12 @@ cd /tmp && ./flapi-prod
   scheme, so `read_csv('embed://data/cities.csv')` resolves to the
   same in-memory bytes.
 
+**Extensions can go in the bundle.** `flapi pack --with-extensions` installs
+the config's DuckDB extensions (host platform) and embeds them under
+`.flapi/extensions/`. At startup they are extracted once to
+`$TMPDIR/flapi-extensions/ext-<hash>/`, used as `extension_directory`, and
+offline extensions are on (`FLAPI_EXTENSIONS_OFFLINE=0` overrides).
+
 **Secrets never go in the bundle.** `pack` refuses files matching
 `*.env`, `secrets/*`, `*.pem`, `*.key` by default. Credentials come
 from environment variables at runtime (`AWS_*`, `GOOGLE_*`, `AZURE_*`,

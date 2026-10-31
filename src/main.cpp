@@ -41,6 +41,8 @@
 #include "vfs_adapter.hpp"
 #include "vfs_health_checker.hpp"
 #include "datazoo_banner.hpp"
+#include "cache_refresh_command.hpp"
+#include "extension_installer.hpp"
 
 using namespace flapi;
 
@@ -159,6 +161,16 @@ void detectAndRegisterEmbeddedBundle() {
         }
 
         auto entries = std::make_shared<ArchiveEntries>(ReadArchive(bytes));
+        // Extensions packed with --with-extensions: extract once (content-addressed), use
+        // them as the extension directory, and drop them from the in-memory map - they are
+        // the bulk of the bundle and nothing serves them as config files.
+        if (auto dir = MaterializeBundledExtensions(*entries, std::filesystem::temp_directory_path() / "flapi-extensions")) {
+            SetBundledExtensionDirectory(*dir);
+            for (auto it = entries->begin(); it != entries->end();) {
+                it = it->first.rfind(kBundledExtensionsPrefix, 0) == 0 ? entries->erase(it) : std::next(it);
+            }
+            CROW_LOG_INFO << "Bundled DuckDB extensions extracted to " << dir->string();
+        }
         const std::size_t entry_count = entries->size();
         FileProviderFactory::SetBundleContents(std::move(entries));
         CROW_LOG_INFO << "Bundle detected and registered (" << entry_count << " entries)";
@@ -606,6 +618,16 @@ int main(int argc, char* argv[])
         .default_value(false)
         .implicit_value(true);
 
+    program.add_argument("--cache-warmup")
+        .help("Override the cache warm-up mode for this run: always, if-empty or never "
+              "(env: FLAPI_CACHE_WARMUP)")
+        .default_value(std::string(""));
+
+    program.add_argument("--no-cache-warmup")
+        .help("Start without building any cache (same as --cache-warmup never)")
+        .default_value(false)
+        .implicit_value(true);
+
     // ------------------------------------------------------------------
     // Self-packaging subcommands (#45). Each subcommand is optional; if
     // none is given the binary runs as the API server, preserving the
@@ -632,6 +654,15 @@ int main(int argc, char* argv[])
               "Result is ad-hoc signed and NOT notarisable.")
         .default_value(false)
         .implicit_value(true);
+    pack_cmd.add_argument("--with-extensions")
+        .help("Install the config's DuckDB extensions (core_functions, duckdb.default-extensions, "
+              "INSTALLs in connections.*.init) for this platform and embed them; the packed "
+              "binary then starts offline")
+        .default_value(false)
+        .implicit_value(true);
+    pack_cmd.add_argument("--extensions-dir")
+        .help("Embed this already filled extension directory instead (e.g. for another platform)")
+        .default_value(std::string(""));
     pack_cmd.add_argument("--skip-validation")
         .help("Pack without validating the config first. A bundle built from an "
               "invalid config fails at startup on every host it is copied to.")
@@ -651,6 +682,45 @@ int main(int argc, char* argv[])
         .help("Destination directory (will be created if missing)")
         .required();
     program.add_subparser(unpack_cmd);
+
+    // ------------------------------------------------------------------
+    // Operations subcommands: a refresh job, and build-time extension install.
+    // ------------------------------------------------------------------
+    argparse::ArgumentParser cache_cmd("cache");
+    cache_cmd.add_description("Cache operations that run once and exit.");
+    argparse::ArgumentParser cache_refresh_cmd("refresh");
+    cache_refresh_cmd.add_description(
+        "Refresh caches once and exit (0 ok, 1 a refresh failed, 2 usage). For a writer job.");
+    cache_refresh_cmd.add_argument("-c", "--config")
+        .help("Path to flapi.yaml (env: FLAPI_CONFIG)")
+        .default_value(std::string(""));
+    cache_refresh_cmd.add_argument("--endpoint")
+        .help("URL path of a cached endpoint; repeatable")
+        .append()
+        .default_value(std::vector<std::string>{});
+    cache_refresh_cmd.add_argument("--all")
+        .help("Refresh every cached endpoint")
+        .default_value(false)
+        .implicit_value(true);
+    cache_cmd.add_subparser(cache_refresh_cmd);
+    program.add_subparser(cache_cmd);
+
+    argparse::ArgumentParser extensions_cmd("extensions");
+    extensions_cmd.add_description("DuckDB extension management.");
+    argparse::ArgumentParser extensions_install_cmd("install");
+    extensions_install_cmd.add_description(
+        "Pre-install DuckDB extensions, e.g. at image build time, then exit.");
+    extensions_install_cmd.add_argument("-c", "--config")
+        .help("Install what this config needs: duckdb.default-extensions + INSTALLs in connections.*.init")
+        .default_value(std::string(""));
+    extensions_install_cmd.add_argument("--dir")
+        .help("Extension directory (default: FLAPI_EXTENSION_DIRECTORY, then DuckDB's default)")
+        .default_value(std::string(""));
+    extensions_install_cmd.add_argument("extensions")
+        .help("Extensions to install, name or name@repository")
+        .remaining();
+    extensions_cmd.add_subparser(extensions_install_cmd);
+    program.add_subparser(extensions_cmd);
 
     try {
         program.parse_args(argc, argv);
@@ -702,7 +772,42 @@ int main(int argc, char* argv[])
                     }
                 }
             }
+            std::filesystem::path installed_extensions;
+            const auto extensions_dir = pack_cmd.get<std::string>("--extensions-dir");
+            if (pack_cmd.get<bool>("--with-extensions")) {
+                if (!extensions_dir.empty()) {
+                    std::cerr << "flapi pack: --with-extensions and --extensions-dir are exclusive\n";
+                    return 1;
+                }
+                std::filesystem::path main_config;
+                for (const char* name : {"flapi.yaml", "flapi.yml"}) {
+                    if (std::filesystem::exists(std::filesystem::path(in_dir) / name)) {
+                        main_config = std::filesystem::path(in_dir) / name;
+                        break;
+                    }
+                }
+                if (main_config.empty()) {
+                    std::cerr << "flapi pack: --with-extensions needs a flapi.yaml in " << in_dir << "\n";
+                    return 1;
+                }
+                crow::logger::setLogLevel(crow::LogLevel::Warning);
+                const auto specs = CollectExtensionSpecs(*initializeConfig(main_config.string()));
+                installed_extensions = std::filesystem::temp_directory_path() /
+                                       ("flapi-pack-extensions-" + std::to_string(CurrentProcessId()));
+                std::filesystem::remove_all(installed_extensions);
+                if (InstallExtensions(specs, installed_extensions.string(), std::cout) > 0) {
+                    std::filesystem::remove_all(installed_extensions);
+                    std::cerr << "flapi pack: could not install every extension; nothing was packed\n";
+                    return 1;
+                }
+                opts.extensions_dir = installed_extensions;
+            } else if (!extensions_dir.empty()) {
+                opts.extensions_dir = std::filesystem::path(extensions_dir);
+            }
             const auto result = Pack(in_dir, out_path, opts);
+            if (!installed_extensions.empty()) {
+                std::filesystem::remove_all(installed_extensions);
+            }
             std::cout << "Packed " << result.entry_count
                       << " entries (" << result.archive_size
                       << " bytes) into " << result.output.string() << "\n";
@@ -741,11 +846,114 @@ int main(int argc, char* argv[])
         }
     }
 
+    if (program.is_subcommand_used("cache")) {
+        if (!cache_cmd.is_subcommand_used("refresh")) {
+            std::cerr << cache_cmd;
+            return 2;
+        }
+        std::string config_path = cache_refresh_cmd.get<std::string>("--config");
+        if (config_path.empty()) {
+            const char* env = std::getenv("FLAPI_CONFIG");
+            config_path = (env != nullptr && *env != '\0') ? env : "flapi.yaml";
+        }
+        crow::logger::setLogLevel(crow::LogLevel::Warning);
+        int rc = 0;
+        try {
+            auto cm = initializeConfig(config_path);
+            CacheRefreshOptions options;
+            options.endpoints = cache_refresh_cmd.get<std::vector<std::string>>("--endpoint");
+            options.all = cache_refresh_cmd.get<bool>("--all");
+            rc = RunCacheRefreshCommand(cm, options, std::cout);
+        } catch (const std::exception& e) {
+            std::cerr << "flapi cache refresh: " << e.what() << "\n";
+            rc = 1;
+        }
+        // Release the catalog cleanly (DuckLake detach) before the process exits.
+        DatabaseManager::getInstance()->reset();
+        return rc;
+    }
+
+    if (program.is_subcommand_used("extensions")) {
+        if (!extensions_cmd.is_subcommand_used("install")) {
+            std::cerr << extensions_cmd;
+            return 2;
+        }
+        std::vector<ExtensionSpec> specs;
+        std::vector<std::string> args;
+        try {
+            args = extensions_install_cmd.get<std::vector<std::string>>("extensions");
+        } catch (const std::logic_error&) {
+            // no positional extensions given
+        }
+        for (const auto& arg : args) {
+            auto spec = ParseExtensionSpec(arg);
+            if (!spec) {
+                std::cerr << "flapi extensions install: invalid extension '" << arg
+                          << "' (expected name or name@repository)\n";
+                return 2;
+            }
+            specs.push_back(*spec);
+        }
+        const auto config_path = extensions_install_cmd.get<std::string>("--config");
+        if (!config_path.empty()) {
+            try {
+                crow::logger::setLogLevel(crow::LogLevel::Warning);
+                auto cm = initializeConfig(config_path);
+                for (const auto& spec : CollectExtensionSpecs(*cm)) {
+                    specs.push_back(spec);
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "flapi extensions install: " << e.what() << "\n";
+                return 1;
+            }
+        }
+        if (specs.empty()) {
+            std::cerr << "flapi extensions install: nothing to install; pass --config or extension names\n";
+            return 2;
+        }
+        std::string dir = extensions_install_cmd.get<std::string>("--dir");
+        if (dir.empty()) {
+            if (const char* env = std::getenv("FLAPI_EXTENSION_DIRECTORY"); env != nullptr) {
+                dir = env;
+            }
+        }
+        const int failures = InstallExtensions(specs, dir, std::cout);
+        if (failures > 0) {
+            std::cerr << "flapi extensions install: " << failures << " extension(s) failed\n";
+            return 1;
+        }
+        return 0;
+    }
+
     std::string config_file = program.get<std::string>("--config");
     int cmd_port = program.get<int>("--port");
     std::string cmd_host = program.get<std::string>("--host");
     std::string log_level = program.get<std::string>("--log-level");
     bool validate_config = program.get<bool>("--validate-config");
+
+    // Cache warm-up override. Precedence: --no-cache-warmup > --cache-warmup > FLAPI_CACHE_WARMUP.
+    // Checked before anything is loaded: a typo must not start a server that warms everything.
+    std::optional<CacheWarmupMode> warmup_override;
+    {
+        std::string requested = program.get<std::string>("--cache-warmup");
+        std::string source = "--cache-warmup";
+        if (program.get<bool>("--no-cache-warmup")) {
+            requested = "never";
+        } else if (requested.empty()) {
+            if (const char* env = std::getenv("FLAPI_CACHE_WARMUP"); env != nullptr && *env != '\0') {
+                requested = env;
+                source = "FLAPI_CACHE_WARMUP";
+            }
+        }
+        if (!requested.empty()) {
+            warmup_override = ParseCacheWarmupMode(requested);
+            if (!warmup_override) {
+                std::cerr << "Invalid " << source << " '" << requested
+                          << "'. Expected always, if-empty or never.\n";
+                return 1;
+            }
+        }
+    }
 
     // 12-factor env-var fallback (#47, #63). Precedence:
     //   CLI flag > env var > config file > built-in default.
@@ -838,6 +1046,7 @@ int main(int argc, char* argv[])
         CROW_LOG_ERROR << "flAPI cannot start until the configuration is valid.";
         return 1;
     }
+    config_manager->setCacheWarmupOverride(warmup_override);
 
     // Precedence: CLI > environment > config file > default. An operator who
     // passed --log-level meant it, but absent that the config file must be

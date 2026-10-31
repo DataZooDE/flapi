@@ -34,8 +34,10 @@ void CacheManager::warmUpCaches(std::shared_ptr<ConfigManager> config_manager) {
     CROW_LOG_INFO << "Warming up endpoint caches, this might take some time...";
     initializeReadiness(config_manager);
     
-    // Initialize audit tables first
-    initializeAuditTables(config_manager);
+    // Initialize audit tables first - not on a read-only catalog, which cannot take the DDL.
+    if (!config_manager->getDuckLakeConfig().read_only) {
+        initializeAuditTables(config_manager);
+    }
     
     const auto& cache_schema = config_manager->getCacheSchema();
 
@@ -44,6 +46,23 @@ void CacheManager::warmUpCaches(std::shared_ptr<ConfigManager> config_manager) {
     {
         // Warmup: refresh caches only for endpoints with cache enabled and a table defined
         if (endpoint.cache.enabled && !endpoint.cache.table.empty()) {
+            const auto mode = config_manager->getEffectiveCacheWarmupMode(endpoint);
+            if (mode != CacheWarmupMode::Always) {
+                const CacheKey key = cacheKeyForEndpoint(config_manager, endpoint);
+                if (cacheTableExists(key.catalog, key.schema, key.table)) {
+                    CROW_LOG_INFO << "Cache " << key.schema << "." << key.table
+                                  << " already exists; skipping warm-up (" << CacheWarmupModeToString(mode) << ")";
+                    markCacheReady(config_manager, endpoint);
+                    continue;
+                }
+                if (mode == CacheWarmupMode::Never) {
+                    CROW_LOG_WARNING << "Cache " << key.schema << "." << key.table
+                                     << " does not exist and warm-up is 'never'; its endpoint answers 503 "
+                                        "cache_not_built until a refresh builds it";
+                    markCacheUnbuilt(config_manager, endpoint);
+                    continue;
+                }
+            }
             markCacheStarting(config_manager, endpoint);
             try {
                 if (refreshCache(config_manager, endpoint, params)) {
@@ -172,6 +191,35 @@ void CacheManager::markCacheFailed(std::shared_ptr<ConfigManager> config_manager
     CROW_LOG_ERROR << "Cache build failed for " << key.schema << "." << key.table << ": " << error;
 }
 
+void CacheManager::markCacheUnbuilt(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint) {
+    const CacheKey key = cacheKeyForEndpoint(config_manager, endpoint);
+    std::lock_guard<std::mutex> lock(readiness_mutex_);
+    readiness_[key] = CacheReadiness{ReadinessState::Unbuilt, key.catalog, key.schema, key.table, ""};
+}
+
+bool CacheManager::cacheTableExists(const std::string& catalog, const std::string& schema, const std::string& table) {
+    try {
+        // Filtered here rather than in SQL: the listing is small, and the same
+        // shape is what the retention code already reads from duckdb_tables().
+        auto result = db_adapter_->executeDuckLakeQueryWithResult(
+            "SELECT schema_name, table_name FROM duckdb_tables() WHERE database_name = '" +
+            escapeSqlLiteral(catalog) + "'");
+        auto rows = crow::json::load(result.data.dump());
+        if (!rows || rows.t() != crow::json::type::List) {
+            return false;
+        }
+        for (const auto& row : rows) {
+            if (row.has("schema_name") && row.has("table_name") &&
+                row["schema_name"].s() == schema && row["table_name"].s() == table) {
+                return true;
+            }
+        }
+    } catch (const std::exception& ex) {
+        CROW_LOG_WARNING << "Could not list tables in catalog '" << catalog << "': " << ex.what();
+    }
+    return false;
+}
+
 CacheManager::CacheReadiness CacheManager::getReadinessForKey(const CacheKey& key) const {
     std::lock_guard<std::mutex> lock(readiness_mutex_);
     auto it = readiness_.find(key);
@@ -202,9 +250,11 @@ std::optional<CacheManager::CacheReadiness> CacheManager::readinessBlock(std::sh
 
 crow::json::wvalue CacheManager::readinessBlockJson(const CacheReadiness& readiness) {
     crow::json::wvalue errorResponse;
-    errorResponse["error"] = "cache_warming";
+    errorResponse["error"] = readiness.state == ReadinessState::Unbuilt ? "cache_not_built" : "cache_warming";
     errorResponse["table"] = readiness.table;
-    if (readiness.state == ReadinessState::Failed) {
+    if (readiness.state == ReadinessState::Unbuilt) {
+        errorResponse["message"] = "Cache for this endpoint has not been built (warm-up skipped)";
+    } else if (readiness.state == ReadinessState::Failed) {
         // No `detail`: it carried the raw DuckDB error (SQL, file paths, connection
         // strings) to anonymous callers. The error is in the server log.
         errorResponse["message"] = "Cache for this endpoint failed to build";
@@ -237,6 +287,9 @@ CacheManager::CacheReadinessSummary CacheManager::getReadinessSummary() const {
         } else if (readiness.state == ReadinessState::Failed) {
             ++summary.failed;
             summary.failed_caches.push_back(readiness);
+        } else if (readiness.state == ReadinessState::Unbuilt) {
+            ++summary.unbuilt;
+            summary.unbuilt_caches.push_back(readiness);
         } else {
             summary.pending_caches.push_back(readiness);
         }

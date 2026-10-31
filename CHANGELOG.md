@@ -4,6 +4,33 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Added: serverless startup without data or network on the boot path
+
+Running flAPI on scale-to-zero platforms (Cloud Run, App Runner) loaded every cache from its source on every
+instance start, and installed DuckDB extensions over the network on every boot. Each of these is now optional:
+
+- `ducklake.warmup: always | if-empty | never` (default `always`, unchanged), per-endpoint `cache.warmup`, and the
+  overrides `--cache-warmup <mode>` / `--no-cache-warmup` / `FLAPI_CACHE_WARMUP`. A skipped cache whose table
+  does not exist is *unbuilt*: its endpoint answers `503 cache_not_built`, and `/health` answers `200 degraded`
+  with an `unbuilt` list.
+- `ducklake.read-only: true` attaches the catalog `READ_ONLY` for replicas of a catalog another process writes:
+  no warm-up, no scheduled refresh, retention or compaction, and `409` from the config service's cache mutations.
+- `flapi cache refresh --config … (--endpoint /path … | --all)` refreshes once and exits (0 ok, 1 a refresh
+  failed, 2 usage), so the writer can be a job instead of an always-on server.
+- `duckdb.default-extensions: [...]` replaces the hard-coded extension list; `flapi extensions install` pre-installs
+  a config's extensions (defaults and every `INSTALL` in `connections.*.init`) at build time;
+  `FLAPI_EXTENSION_DIRECTORY` points startup at them, and `FLAPI_EXTENSIONS_OFFLINE=1` turns a missing extension
+  into a startup error instead of a download.
+- `flapi pack --with-extensions` (or `--extensions-dir <dir>`) embeds the config's DuckDB extensions in the
+  bundle. The packed binary extracts them once to a content-addressed directory and starts offline, so a
+  single file runs with no network.
+- A `ghcr.io/datazoode/flapi:<version>-runtime` image with `core_functions`, every default extension and
+  `bigquery` pre-installed.
+- Found on the way: flAPI's DuckDB loads no extension statically, so even `core_functions` was downloaded on the
+  first query of every fresh container. `flapi extensions install` always includes it, and offline startup
+  checks it explicitly.
+- New guide: [docs/guides/serverless.md](docs/guides/serverless.md).
+
 ### Security: request-validator hardening
 
 Found by a review of the server and reproduced against a real binary:

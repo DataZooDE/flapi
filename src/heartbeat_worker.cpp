@@ -74,7 +74,7 @@ void HeartbeatWorker::performHeartbeat(const EndpointConfig& endpoint)
 
 void HeartbeatWorker::performDuckLakeScheduledTasks() {
     const auto& ducklakeConfig = config_manager->getDuckLakeConfig();
-    if (!ducklakeConfig.enabled || !ducklakeConfig.scheduler.enabled) {
+    if (!ShouldRunCacheMaintenance(ducklakeConfig)) {
         return;
     }
 
@@ -187,6 +187,10 @@ void HeartbeatWorker::performDuckLakeCompaction() {
     } catch (const std::exception& ex) {
         CROW_LOG_ERROR << "DuckLake compaction failed: " << ex.what();
     }
+}
+
+bool HeartbeatWorker::ShouldRunCacheMaintenance(const DuckLakeConfig& ducklake_config) {
+    return ducklake_config.enabled && ducklake_config.scheduler.enabled && !ducklake_config.read_only;
 }
 
 } // namespace flapi

@@ -584,6 +584,7 @@ crow::response APIServer::getHealth() {
     health["caches"]["total"] = summary.total;
     health["caches"]["ready"] = summary.ready;
     health["caches"]["failed"] = summary.failed;
+    health["caches"]["unbuilt"] = summary.unbuilt;
 
     // A stalled request is checked BEFORE cache state, because it is the more
     // serious condition: caches degrade loudly, a wedged backend does not.
@@ -622,7 +623,8 @@ crow::response APIServer::getHealth() {
         return crow::response(503, health);
     }
 
-    if (summary.ready < summary.total) {
+    // Unbuilt caches are a decision (warm-up skipped), not a start in progress.
+    if (summary.ready + summary.unbuilt < summary.total) {
         health["status"] = "starting";
         std::vector<crow::json::wvalue> pending;
         for (const auto& cache : summary.pending_caches) {
@@ -635,19 +637,28 @@ crow::response APIServer::getHealth() {
         return crow::response(503, health);
     }
 
-    if (summary.stale > 0) {
-        // Serving, but a refresh is failing: the last snapshot is returned. 200 so a load
-        // balancer keeps sending traffic; "degraded" so a monitor can alert.
+    if (summary.stale > 0 || summary.unbuilt > 0) {
+        // Serving, but not everything: a refresh is failing (the last snapshot is returned),
+        // or warm-up was skipped and a cache table does not exist yet. 200 so a load balancer
+        // or startup probe keeps going; "degraded" so a monitor can alert.
         health["status"] = "degraded";
-        std::vector<crow::json::wvalue> stale;
-        for (const auto& cache : summary.stale_caches) {
-            crow::json::wvalue item;
-            item["table"] = cache.table;
-            item["schema"] = cache.schema;
-            item["state"] = "stale";
-            stale.push_back(std::move(item));
+        auto list = [](const std::vector<CacheManager::CacheReadiness>& caches, const char* state) {
+            std::vector<crow::json::wvalue> items;
+            for (const auto& cache : caches) {
+                crow::json::wvalue item;
+                item["table"] = cache.table;
+                item["schema"] = cache.schema;
+                item["state"] = state;
+                items.push_back(std::move(item));
+            }
+            return items;
+        };
+        if (summary.stale > 0) {
+            health["stale"] = list(summary.stale_caches, "stale");
         }
-        health["stale"] = std::move(stale);
+        if (summary.unbuilt > 0) {
+            health["unbuilt"] = list(summary.unbuilt_caches, "unbuilt");
+        }
         return crow::response(200, health);
     }
 

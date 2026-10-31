@@ -20,11 +20,14 @@ This document provides a complete reference for the `flapi` server executable's 
    - [Validate Configuration](#validate-configuration---validate-config)
    - [Configuration Service](#configuration-service---config-service)
    - [Configuration Service Token](#configuration-service-token---config-service-token)
+   - [Cache Warm-up](#cache-warm-up---cache-warmup---no-cache-warmup)
 3. [Self-Packaging Subcommands](#3-self-packaging-subcommands)
    - [`flapi pack`](#flapi-pack----create-a-self-contained-binary)
    - [`flapi info`](#flapi-info----inspect-the-running-binarys-bundle)
    - [`flapi unpack`](#flapi-unpack---to-dir----dump-the-bundle-for-debugging)
    - [macOS notarisation specifics](#macos-notarisation-specifics)
+   - [`flapi cache refresh`](#flapi-cache-refresh----refresh-caches-once-and-exit)
+   - [`flapi extensions install`](#flapi-extensions-install----pre-install-duckdb-extensions)
 4. [Environment Variables](#4-environment-variables)
 5. [Usage Examples](#5-usage-examples)
    - [Basic Startup](#basic-startup)
@@ -416,6 +419,20 @@ export FLAPI_CONFIG_SERVICE_TOKEN="secret-token-12345"
 
 ---
 
+### Cache Warm-up (`--cache-warmup`, `--no-cache-warmup`)
+
+Overrides `ducklake.warmup` and every endpoint's `cache.warmup` for this run.
+
+| Property | Value |
+|----------|-------|
+| Long form | `--cache-warmup <always\|if-empty\|never>`, `--no-cache-warmup` (= `never`) |
+| Default | the configured mode (`always` unless configured) |
+| Environment variable | `FLAPI_CACHE_WARMUP` |
+
+`never` starts the server without running a single populate query, which is what a CI smoke test
+wants: `./flapi -c flapi.yaml --no-cache-warmup` and probe `/health` (it answers `200`, `degraded`, listing
+the unbuilt caches). An invalid value exits with code 1. `ducklake.read-only: true` always means `never`.
+
 ### Disable Telemetry (`--no-telemetry`)
 
 Disables startup and shutdown telemetry events.
@@ -471,7 +488,8 @@ for the architectural rationale.
 ### `flapi pack` -- create a self-contained binary
 
 ```
-flapi pack --in <config-dir> --out <new-binary> [--allow-secrets] [--macos-append] [--skip-validation]
+flapi pack --in <config-dir> --out <new-binary> [--with-extensions | --extensions-dir <dir>]
+           [--allow-secrets] [--macos-append] [--skip-validation]
 ```
 
 | Option | Required | Description |
@@ -481,6 +499,18 @@ flapi pack --in <config-dir> --out <new-binary> [--allow-secrets] [--macos-appen
 | `--allow-secrets` | no | Bypass the default secret deny list. Testing only -- production users must never set this. |
 | `--skip-validation` | no | Skip the config validation `pack` otherwise runs first (the same checks as `--validate-config`). Without it, an invalid `<in>/flapi.yaml` is refused and no output file is written. |
 | `--macos-append` | no | macOS only: append the archive after `__LINKEDIT` instead of overwriting the reserved `__FLAPI/__bundle` segment. **Not notarisable.** |
+| `--with-extensions` | no | Install the DuckDB extensions the config needs (`core_functions`, `duckdb.default-extensions`, every `INSTALL` in `connections.*.init`) **for the platform `pack` runs on**, and embed them. Fails without writing output if any cannot be installed. |
+| `--extensions-dir` | no | Embed an already filled extension directory instead, e.g. one built by `flapi extensions install` for another platform. Exclusive with `--with-extensions`. |
+
+**Embedded extensions.** They are stored under the reserved `.flapi/extensions/` prefix (an input tree
+may not use it). At startup the binary extracts them once to
+`$TMPDIR/flapi-extensions/ext-<content hash>/`, reusing that directory on the next start, and uses it as
+`extension_directory` with **offline extensions on**. A data source works from a single `scp`-ed file
+with no network access. Precedence: `duckdb.extension_directory` in the config >
+`FLAPI_EXTENSION_DIRECTORY` > the bundle. Set `FLAPI_EXTENSIONS_OFFLINE=0` to allow downloads anyway.
+Extensions are platform-specific, so pack on (or `--extensions-dir` for) the target platform. On macOS
+they usually exceed the 16 MiB reserved segment; raise `FLAPI_RESERVED_BUNDLE_MIB` at build time or use
+`--macos-append`.
 
 **Default secret deny list** (refusal with non-zero exit, unless
 `--allow-secrets`):
@@ -579,6 +609,48 @@ notarisation.
 
 > **Implementation:** `src/macho_bundle.cpp` | **Tests:** `test/cpp/macho_bundle_test.cpp`, `test/integration/test_self_packaging_macos.py`
 
+### `flapi cache refresh` -- refresh caches once and exit
+
+```bash
+flapi cache refresh --config flapi.yaml --endpoint /orders --endpoint /customers
+flapi cache refresh --config flapi.yaml --all
+```
+
+Opens DuckDB and the DuckLake catalog read-write, runs each selected cache's populate template exactly
+as the server would (same watermark and merge semantics, same retention), prints a JSON summary and
+exits. It opens no port and runs no warm-up, so it fits a Cloud Run Job or an Airflow task right after
+`dbt build`, replacing an always-on writer. Readers attach the same catalog with
+`ducklake.read-only: true`.
+
+```json
+{"refreshed": [{"endpoint": "/orders", "table": "orders_cache", "status": "ok"}], "failed": 0}
+```
+
+| Exit code | Meaning |
+|-----------|---------|
+| `0` | every selected cache refreshed |
+| `1` | at least one refresh failed (the others still ran; see `"status": "failed"`) |
+| `2` | usage: nothing selected, an unknown endpoint, a non-cached endpoint, or a `read-only` catalog |
+
+`--config` falls back to `FLAPI_CONFIG`, then `flapi.yaml`.
+
+### `flapi extensions install` -- pre-install DuckDB extensions
+
+```bash
+# Everything a config needs: core_functions (always needed by flAPI), duckdb.default-extensions,
+# and every INSTALL in connections.*.init
+flapi extensions install --config flapi.yaml --dir /opt/flapi/extensions
+
+# Or name them; @repo for non-core repositories
+flapi extensions install --dir /opt/flapi/extensions httpfs parquet ducklake bigquery@community
+```
+
+Installs into `--dir` (default: `FLAPI_EXTENSION_DIRECTORY`, then DuckDB's own default) and exits `1` if
+any extension failed, after reporting every failure. Run it at image build time; at runtime set
+`FLAPI_EXTENSION_DIRECTORY` to the same directory and, to make a missing extension a startup error
+rather than a download, `FLAPI_EXTENSIONS_OFFLINE=1`. The extension directory is keyed by DuckDB version and
+platform, so install with the same `flapi` binary you ship.
+
 ---
 
 ## 4. Environment Variables
@@ -591,6 +663,9 @@ notarisation.
 | `FLAPI_LOG_LEVEL` | Log verbosity (fallback for `--log-level`); invalid values exit 1 | `--log-level` fallback |
 | `FLAPI_CONFIG_SERVICE_TOKEN` | Authentication token for configuration service API | `--config-service-token` fallback |
 | `FLAPI_NO_TELEMETRY` | Disable telemetry when set to `1`, `true`, or `yes` | `--no-telemetry` fallback |
+| `FLAPI_CACHE_WARMUP` | `always`, `if-empty` or `never`; invalid values exit 1 | `--cache-warmup` fallback |
+| `FLAPI_EXTENSION_DIRECTORY` | Default `extension_directory` when the config sets none | DuckDB startup, `flapi extensions install` |
+| `FLAPI_EXTENSIONS_OFFLINE` | `1`/`true`/`yes`: never download extensions; a missing one stops startup | DuckDB startup |
 | `SOURCE_DATE_EPOCH` | Mtime stamped on every entry by `flapi pack` (reproducible builds) | `flapi pack` |
 | `CODESIGN_IDENTITY` | macOS only: identity passed to `codesign --sign` after `flapi pack`. Defaults to `-` (ad-hoc). | `flapi pack` |
 
@@ -659,8 +734,12 @@ deployment ready for traffic.
 ### CI/CD Validation
 
 ```bash
-# Validate configuration in CI pipeline
+# Validate configuration in CI pipeline (does not open the database)
 ./flapi -c flapi.yaml --validate-config
+
+# Start the real server without touching any data source
+./flapi -c flapi.yaml --no-cache-warmup &
+curl -fsS http://localhost:8080/health   # 200, "degraded" until caches are built
 
 # Shell script example
 if ./flapi --validate-config; then
@@ -699,7 +778,9 @@ During cache warmup, `/health/live` returns `200` as soon as the server is liste
 If a cache has **never built** (the warm-up failed), `/health` returns `503` with `"status":
 "degraded"` and a `failed` list naming the table and schema. If a later **refresh** fails over a cache
 that was already built, the endpoint keeps serving the last snapshot and `/health` returns `200` with
-`"status": "degraded"` and a `stale` list. The error text (SQL, file paths) is written to the server log
+`"status": "degraded"` and a `stale` list. If warm-up was skipped (`--no-cache-warmup`, `warmup: never`,
+`read-only`) and a cache table does not exist, `/health` returns `200` with `"status": "degraded"` and an
+`unbuilt` list, and that endpoint answers `503` with `"error": "cache_not_built"`. The error text (SQL, file paths) is written to the server log
 only: `/health` is unauthenticated and never returns it.
 
 Requests to a cached data endpoint while its cache is starting or failed return `503 Service

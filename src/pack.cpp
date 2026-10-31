@@ -116,6 +116,11 @@ ArchiveEntries CollectEntries(const std::filesystem::path& in_dir, bool allow_se
             continue;
         }
 
+        if (rel_str.rfind(".flapi/", 0) == 0) {
+            throw PackError("refusing to bundle " + rel_str +
+                            ": .flapi/ is reserved for files flapi pack adds itself");
+        }
+
         if (!allow_secrets && IsSecretExcluded(rel_str)) {
             throw PackError(
                 "refusing to bundle secret-looking file: " + rel_str +
@@ -131,6 +136,30 @@ ArchiveEntries CollectEntries(const std::filesystem::path& in_dir, bool allow_se
         entries.emplace(rel_str, std::move(data));
     }
     return entries;
+}
+
+// Embeds a filled DuckDB extension directory under kBundledExtensionsPrefix, keeping its
+// <version>/<platform>/ layout so it can be extracted back into an extension directory.
+void AddExtensionEntries(const std::filesystem::path& extensions_dir, ArchiveEntries& entries) {
+    if (!std::filesystem::is_directory(extensions_dir)) {
+        throw PackError("extension directory does not exist: " + extensions_dir.string());
+    }
+    for (const auto& dir_entry : std::filesystem::recursive_directory_iterator(extensions_dir)) {
+        const auto rel = std::filesystem::relative(dir_entry.path(), extensions_dir).generic_string();
+        if (dir_entry.is_symlink()) {
+            throw PackError("refusing to bundle symlink in extension directory: " + rel);
+        }
+        if (!dir_entry.is_regular_file()) {
+            continue;
+        }
+        std::ifstream f(dir_entry.path(), std::ios::binary);
+        if (!f) {
+            throw PackError("cannot read extension file: " + dir_entry.path().string());
+        }
+        entries.emplace(std::string(kBundledExtensionsPrefix) + rel,
+                        std::vector<std::uint8_t>((std::istreambuf_iterator<char>(f)),
+                                                  std::istreambuf_iterator<char>()));
+    }
 }
 
 void CopyExecutableBits(const std::filesystem::path& src,
@@ -162,6 +191,9 @@ PackResult Pack(const std::filesystem::path& in_dir,
     // I/O on the output. Otherwise a rejected `.env` leaves a multi-GB
     // half-written binary sitting in the user's tmp dir.
     auto entries = CollectEntries(in_dir, options.allow_secrets);
+    if (options.extensions_dir) {
+        AddExtensionEntries(*options.extensions_dir, entries);
+    }
 
     ArchiveWriteOptions write_opts;
     write_opts.source_date_epoch = ResolveSourceDateEpoch(options.source_date_epoch);

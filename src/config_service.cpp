@@ -1849,7 +1849,25 @@ crow::response CacheConfigHandler::getCacheConfig(const crow::request& req, cons
     }
 }
 
+namespace {
+
+// ducklake.read-only: this instance serves a catalog another process writes.
+crow::response readOnlyCacheResponse() {
+    crow::json::wvalue body;
+    body["error"] = "read_only_cache";
+    body["message"] = "The DuckLake catalog is attached read-only (ducklake.read-only); "
+                      "refresh it from the writer, e.g. `flapi cache refresh`";
+    crow::response response(409, body);
+    response.set_header("Content-Type", "application/json");
+    return response;
+}
+
+} // namespace
+
 crow::response CacheConfigHandler::updateCacheConfig(const crow::request& req, const std::string& path) {
+    if (config_manager_->getDuckLakeConfig().read_only) {
+        return readOnlyCacheResponse();
+    }
     try {
         auto json = crow::json::load(req.body);
         if (!json) {
@@ -1997,6 +2015,9 @@ crow::response TemplateHandler::updateCacheTemplate(const crow::request& req, co
 }
 
 crow::response CacheConfigHandler::refreshCache(const crow::request& req, const std::string& path) {
+    if (config_manager_->getDuckLakeConfig().read_only) {
+        return readOnlyCacheResponse();
+    }
     try {
         // Find the endpoint
         auto endpoint = config_manager_->getEndpointForPath(path);
@@ -2030,6 +2051,9 @@ crow::response CacheConfigHandler::refreshCache(const crow::request& req, const 
 }
 
 crow::response CacheConfigHandler::performGarbageCollection(const crow::request& req, const std::string& path) {
+    if (config_manager_->getDuckLakeConfig().read_only) {
+        return readOnlyCacheResponse();
+    }
     try {
         // Find the endpoint
         auto endpoint = config_manager_->getEndpointForPath(path);

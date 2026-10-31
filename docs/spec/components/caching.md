@@ -373,6 +373,30 @@ warming, `CacheManager::readinessBlock` short-circuits
 `RequestHandler::handleRequest` with a 503 and a `Retry-After` header, rather
 than serving an empty table as though it were an empty result.
 
+### Readiness states
+
+| State | Set when | Request path | `/health` |
+|---|---|---|---|
+| `Starting` | before warm-up reaches the cache | `503 cache_warming` | `503 starting` |
+| `Ready` | a refresh succeeded, or warm-up was skipped and the table exists | served | `200 ready` (or `degraded` + `stale` after a failed refresh) |
+| `Failed` | the first build failed | `503 cache_warming` | `503 degraded` |
+| `Unbuilt` | warm-up was skipped (`never`, `read-only`) and the table does not exist | `503 cache_not_built` | `200 degraded`, `unbuilt` list |
+
+The warm-up mode for an endpoint is resolved by
+`ConfigManager::getEffectiveCacheWarmupMode`. The order is: `ducklake.read-only`,
+then the CLI/env override, then `cache.warmup`, then `ducklake.warmup`.
+"Table exists" is a lookup in `duckdb_tables()` for the catalog alias, so on a
+`:memory:` database `if-empty` behaves like `always`.
+
+## Writer and readers
+
+`flapi cache refresh` (`src/cache_refresh_command.cpp`) is the writer. It runs
+`CacheManager::refreshCache` for the selected endpoints and exits.
+Replicas set `ducklake.read-only: true`. The catalog is then attached
+`READ_ONLY`, `HeartbeatWorker::ShouldRunCacheMaintenance` returns false (no
+scheduled refresh, retention or compaction), and `CacheConfigHandler` answers
+`409 read_only_cache` to refresh, update and GC.
+
 ## Source Files
 
 | File | Purpose |

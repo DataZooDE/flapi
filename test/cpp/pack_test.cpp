@@ -320,3 +320,57 @@ TEST_CASE("UnpackBundleFromPath restores all entries to dst",
                   std::istreambuf_iterator<char>());
     REQUIRE(a == b);
 }
+
+TEST_CASE("Pack embeds an extension directory under the reserved prefix", "[pack][extensions]") {
+    TempDir host_dir;
+    TempDir input;
+    PopulateSampleTree(input);
+    TempDir extensions;
+    extensions.WriteFile("v1.5.5/linux_amd64/httpfs.duckdb_extension", "ELF-httpfs");
+    extensions.WriteFile("v1.5.5/linux_amd64/core_functions.duckdb_extension", "ELF-core");
+
+    PackOptions opts;
+    opts.host_binary_override = WriteFakeHost(host_dir);
+    opts.source_date_epoch = 0;
+    opts.extensions_dir = extensions.path();
+
+    TempFilePath out;
+    auto result = Pack(input.path(), out.path(), opts);
+    REQUIRE(result.entry_count == 6);
+
+    auto loc = LocateBundle(out.path());
+    REQUIRE(loc.has_value());
+    auto bytes = ReadAllBytes(out.path());
+    std::vector<std::uint8_t> zip(
+        bytes.begin() + static_cast<std::ptrdiff_t>(loc->offset),
+        bytes.begin() + static_cast<std::ptrdiff_t>(loc->offset + loc->size));
+    auto entries = ReadArchive(zip);
+
+    REQUIRE(entries.count("flapi.yaml") == 1);
+    const auto key = std::string(kBundledExtensionsPrefix) + "v1.5.5/linux_amd64/httpfs.duckdb_extension";
+    REQUIRE(entries.count(key) == 1);
+    REQUIRE(std::string(entries[key].begin(), entries[key].end()) == "ELF-httpfs");
+}
+
+TEST_CASE("Pack refuses an input tree that uses the reserved extension prefix", "[pack][extensions]") {
+    TempDir host_dir;
+    TempDir input;
+    PopulateSampleTree(input);
+    input.WriteFile(".flapi/extensions/v1/x.duckdb_extension", "smuggled");
+
+    PackOptions opts;
+    opts.host_binary_override = WriteFakeHost(host_dir);
+    TempFilePath out;
+    REQUIRE_THROWS_AS(Pack(input.path(), out.path(), opts), PackError);
+}
+
+TEST_CASE("Pack refuses a missing extension directory", "[pack][extensions]") {
+    TempDir host_dir;
+    TempDir input;
+    PopulateSampleTree(input);
+    PackOptions opts;
+    opts.host_binary_override = WriteFakeHost(host_dir);
+    opts.extensions_dir = input.path() / "does-not-exist";
+    TempFilePath out;
+    REQUIRE_THROWS_AS(Pack(input.path(), out.path(), opts), PackError);
+}
