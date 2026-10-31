@@ -38,7 +38,7 @@ ENTRYPOINT ["/app/flapi"]
 FROM slim AS runtime
 ENV FLAPI_EXTENSION_DIRECTORY=/opt/flapi/extensions
 RUN /app/flapi extensions install --dir /opt/flapi/extensions \
-        httpfs ducklake fts json postgres sqlite parquet bigquery@community
+        core_functions httpfs ducklake fts json postgres sqlite parquet bigquery@community
 LABEL org.opencontainers.image.description="flAPI with every default DuckDB extension plus bigquery pre-installed."
 
 # The default target stays the slim image.

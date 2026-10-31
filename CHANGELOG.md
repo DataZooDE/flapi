@@ -21,7 +21,11 @@ instance start, and installed DuckDB extensions over the network on every boot. 
   a config's extensions (defaults and every `INSTALL` in `connections.*.init`) at build time;
   `FLAPI_EXTENSION_DIRECTORY` points startup at them, and `FLAPI_EXTENSIONS_OFFLINE=1` turns a missing extension
   into a startup error instead of a download.
-- A `ghcr.io/datazoode/flapi:<version>-runtime` image with every default extension plus `bigquery` pre-installed.
+- A `ghcr.io/datazoode/flapi:<version>-runtime` image with `core_functions`, every default extension and
+  `bigquery` pre-installed.
+- Found on the way: flAPI's DuckDB loads no extension statically, so even `core_functions` was downloaded on the
+  first query of every fresh container. `flapi extensions install` always includes it, and offline startup
+  checks it explicitly.
 - New guide: [docs/guides/serverless.md](docs/guides/serverless.md).
 
 ### Security: request-validator hardening

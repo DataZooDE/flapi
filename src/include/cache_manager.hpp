@@ -67,6 +67,9 @@ public:
     void markCacheStarting(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint);
     void markCacheReady(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint);
     void markCacheFailed(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::string& error);
+    void markCacheUnbuilt(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint);
+    // Whether the cache table exists in the DuckLake catalog. A failed lookup reads as "no".
+    bool cacheTableExists(const std::string& catalog, const std::string& schema, const std::string& table);
     CacheReadiness getEndpointReadiness(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint) const;
     std::optional<CacheReadiness> readinessBlock(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint) const;
     static crow::json::wvalue readinessBlockJson(const CacheReadiness& readiness);

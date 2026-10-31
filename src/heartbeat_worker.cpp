@@ -74,7 +74,7 @@ void HeartbeatWorker::performHeartbeat(const EndpointConfig& endpoint)
 
 void HeartbeatWorker::performDuckLakeScheduledTasks() {
     const auto& ducklakeConfig = config_manager->getDuckLakeConfig();
-    if (!ducklakeConfig.enabled || !ducklakeConfig.scheduler.enabled) {
+    if (!ShouldRunCacheMaintenance(ducklakeConfig)) {
         return;
     }
 
@@ -190,7 +190,7 @@ void HeartbeatWorker::performDuckLakeCompaction() {
 }
 
 bool HeartbeatWorker::ShouldRunCacheMaintenance(const DuckLakeConfig& ducklake_config) {
-    return true;  // TODO(G4a)
+    return ducklake_config.enabled && ducklake_config.scheduler.enabled && !ducklake_config.read_only;
 }
 
 } // namespace flapi

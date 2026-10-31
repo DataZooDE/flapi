@@ -15,6 +15,11 @@ struct ExtensionSpec {
     std::string repository;
 };
 
+// Extensions flAPI needs whatever the config says. Its DuckDB loads no extension
+// statically, and every query needs core_functions: without it pre-installed, an
+// offline start fails and an online one downloads it on the first query.
+const std::vector<std::string>& ImplicitExtensions();
+
 // Parses `name` or `name@repository`. Both parts must be identifiers: they end up in SQL.
 std::optional<ExtensionSpec> ParseExtensionSpec(const std::string& arg);
 
@@ -23,7 +28,7 @@ std::string BuildInstallStatement(const ExtensionSpec& spec);
 // The `[FORCE] INSTALL <name> [FROM <repository>]` statements in a block of init SQL.
 std::vector<ExtensionSpec> ExtractInstallSpecs(const std::string& init_sql);
 
-// duckdb.default-extensions, then every INSTALL in connections.*.init; first occurrence wins.
+// ImplicitExtensions(), duckdb.default-extensions, then every INSTALL in connections.*.init; first occurrence wins.
 std::vector<ExtensionSpec> CollectExtensionSpecs(const ConfigManager& config_manager);
 
 // Installs into `extension_directory` (empty = DuckDB's default). Returns the number of

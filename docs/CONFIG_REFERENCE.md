@@ -388,6 +388,8 @@ duckdb:
 - `FLAPI_EXTENSIONS_OFFLINE=1` (also `true`/`yes`) never downloads: startup skips `INSTALL`, sets
   `autoinstall_known_extensions=false`, and **fails** if a default extension cannot be loaded, naming it and
   `flapi extensions install`. Without it a missing extension is only a warning.
+- flAPI's DuckDB loads no extension statically. `core_functions` is needed by every query, so online it is
+  autoinstalled on first use, and offline it must be pre-installed (`flapi extensions install` always includes it).
 - Pre-install everything a config needs with `flapi extensions install --config flapi.yaml --dir <path>`
   ([CLI_REFERENCE § 3](./CLI_REFERENCE.md)).
 

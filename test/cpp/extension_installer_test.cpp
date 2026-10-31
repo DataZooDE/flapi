@@ -164,10 +164,23 @@ TEST_CASE("CollectExtensionSpecs merges defaults and connection inits without du
     for (const auto& spec : specs) {
         names.push_back(spec.repository.empty() ? spec.name : spec.name + "@" + spec.repository);
     }
-    REQUIRE(names == std::vector<std::string>{"json", "postgres", "bigquery@community"});
+    // core_functions first: flAPI's DuckDB loads no extension statically, and every query
+    // needs it, so a pre-installed set without it still downloads on the first query.
+    REQUIRE(names == std::vector<std::string>{"core_functions", "json", "postgres", "bigquery@community"});
+}
+
+TEST_CASE("CollectExtensionSpecs always includes the extensions flAPI itself needs", "[extensions]") {
+    TempTestConfig temp(baseConfig("duckdb:\n  default-extensions: []\n"), "ext_collect_implicit");
+    auto cm = temp.createConfigManager();
+    auto specs = CollectExtensionSpecs(*cm);
+    REQUIRE(specs.size() == 1);
+    REQUIRE(specs.front().name == "core_functions");
 }
 
 TEST_CASE("Offline mode fails fast on a missing extension and names the fix", "[extensions][database_manager]") {
+    // An empty extension directory: nothing may be found in ~/.duckdb from earlier tests.
+    TempDirectory empty_dir("ext_offline_empty_dir");
+    EnvGuard dir("FLAPI_EXTENSION_DIRECTORY", empty_dir.path());
     TempTestConfig temp(baseConfig("duckdb:\n  default-extensions: [flapi_test_missing_ext]\n"), "ext_offline_missing");
     EnvGuard off("FLAPI_EXTENSIONS_OFFLINE", std::string("1"));
     auto cm = temp.createConfigManager();
@@ -181,6 +194,7 @@ TEST_CASE("Offline mode fails fast on a missing extension and names the fix", "[
         const std::string what = ex.what();
         INFO(what);
         REQUIRE(what.find("flapi_test_missing_ext") != std::string::npos);
+        REQUIRE(what.find("core_functions") != std::string::npos);
         REQUIRE(what.find("flapi extensions install") != std::string::npos);
     }
     db->reset();

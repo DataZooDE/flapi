@@ -624,7 +624,8 @@ exits. It opens no port and runs no warm-up, so it fits a Cloud Run Job or an Ai
 ### `flapi extensions install` -- pre-install DuckDB extensions
 
 ```bash
-# Everything a config needs: duckdb.default-extensions + every INSTALL in connections.*.init
+# Everything a config needs: core_functions (always needed by flAPI), duckdb.default-extensions,
+# and every INSTALL in connections.*.init
 flapi extensions install --config flapi.yaml --dir /opt/flapi/extensions
 
 # Or name them; @repo for non-core repositories

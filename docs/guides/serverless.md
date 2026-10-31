@@ -91,8 +91,9 @@ choosing this over § 2.
 
 ## 4. Fast, offline startup
 
-Use the `-runtime` image. It carries every default extension (`httpfs`,
-`ducklake`, `fts`, `json`, `postgres`, `sqlite`, `parquet`) plus `bigquery`,
+Use the `-runtime` image. It carries `core_functions`, every default
+extension (`httpfs`, `ducklake`, `fts`, `json`, `postgres`, `sqlite`,
+`parquet`) and `bigquery`,
 and sets `FLAPI_EXTENSION_DIRECTORY`:
 
 ```dockerfile
