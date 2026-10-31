@@ -2,7 +2,15 @@
 
 // Pre-include STL headers before the private-to-public hack (see cache_manager_test.cpp).
 #include <algorithm>
+#include <any>
+#include <atomic>
+#include <chrono>
+#include <future>
 #include <map>
+#include <mutex>
+#include <optional>
+#include <sstream>
+#include <thread>
 #include <memory>
 #include <set>
 #include <string>
@@ -11,6 +19,7 @@
 #include <crow.h>
 #define private public
 #include "../../src/include/cache_manager.hpp"
+#include "../../src/include/query_executor.hpp"
 #undef private
 #include "test_utils.hpp"
 
