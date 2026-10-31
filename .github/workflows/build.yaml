@@ -255,8 +255,9 @@ jobs:
           --build-context build=binaries -t flapi-runtime-test -f Dockerfile .
         docker run -d --name rt --network none -e FLAPI_EXTENSIONS_OFFLINE=1 -w /config \
           -v "$PWD/test/integration/fixtures/offline:/config:ro" flapi-runtime-test --config /config/flapi.yaml
+        # bash, not sh: /dev/tcp is a bash feature and the image's /bin/sh is dash.
         for i in $(seq 1 30); do
-          if docker exec rt sh -c 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf "GET /health/live HTTP/1.0\r\n\r\n" >&3 && cat <&3' 2>/dev/null | grep -q '"live"'; then
+          if docker exec rt bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf "GET /health/live HTTP/1.0\r\n\r\n" >&3 && cat <&3' 2>/dev/null | grep -q '"live"'; then
             docker logs rt; docker rm -f rt; exit 0
           fi
           sleep 1
