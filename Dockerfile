@@ -1,4 +1,4 @@
-FROM ubuntu:24.04
+FROM ubuntu:24.04 AS slim
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -26,3 +26,20 @@ LABEL org.opencontainers.image.source="https://github.com/datazoo/flapi"
 LABEL org.opencontainers.image.licenses="BUSL-1.1"
 
 ENTRYPOINT ["/app/flapi"]
+
+# ---------------------------------------------------------------------------
+# runtime: the same image with every default DuckDB extension (plus bigquery)
+# pre-installed, so a
+# container never downloads one at startup (scale-to-zero platforms, egress-less
+# networks). Built with `--target runtime`; published as :<tag>-runtime.
+# Installed by the binary that ships, so the directory matches its DuckDB
+# version and platform (under QEMU the arm64 stage fetches arm64 builds).
+# ---------------------------------------------------------------------------
+FROM slim AS runtime
+ENV FLAPI_EXTENSION_DIRECTORY=/opt/flapi/extensions
+RUN /app/flapi extensions install --dir /opt/flapi/extensions \
+        httpfs ducklake fts json postgres sqlite parquet bigquery@community
+LABEL org.opencontainers.image.description="flAPI with every default DuckDB extension plus bigquery pre-installed."
+
+# The default target stays the slim image.
+FROM slim

@@ -366,6 +366,7 @@ Configures the embedded DuckDB database engine.
 | `duckdb.threads` | integer | auto | Number of threads for query parallelism |
 | `duckdb.max_memory` | string | auto | Memory limit (e.g., `4GB`, `512MB`) |
 | `duckdb.default_order` | string | - | Default sort order: `ASC` or `DESC` |
+| `duckdb.default-extensions` | list | `[httpfs, ducklake, fts, json, postgres, sqlite, parquet]` | Extensions installed and loaded at startup. `[]` loads none. A scalar is refused. |
 | `duckdb.<setting>` | any | - | Any DuckDB configuration setting |
 
 **Example:**
@@ -381,7 +382,14 @@ duckdb:
 
 **Notes:**
 - Omit `db_path` or set to `:memory:` for an in-memory database
-- Any key-value pairs are passed directly as DuckDB settings
+- Any other key-value pairs are passed directly as DuckDB settings
+- `FLAPI_EXTENSION_DIRECTORY` sets `extension_directory` when the config does not. The `-runtime` image sets it to
+  its baked directory, so extensions are never downloaded at startup.
+- `FLAPI_EXTENSIONS_OFFLINE=1` (also `true`/`yes`) never downloads: startup skips `INSTALL`, sets
+  `autoinstall_known_extensions=false`, and **fails** if a default extension cannot be loaded, naming it and
+  `flapi extensions install`. Without it a missing extension is only a warning.
+- Pre-install everything a config needs with `flapi extensions install --config flapi.yaml --dir <path>`
+  ([CLI_REFERENCE § 3](./CLI_REFERENCE.md)).
 
 > **Implementation:** `src/database_manager.cpp` | **Tests:** `test/cpp/database_manager_test.cpp`
 
@@ -396,6 +404,15 @@ Configures DuckLake for snapshot-based caching with time-travel capabilities.
 | `ducklake.metadata-path` | string | - | Directory for DuckLake metadata |
 | `ducklake.data-path` | string | - | Directory for DuckLake data files |
 | `ducklake.data-inlining-row-limit` | integer | - | Maximum rows to inline in metadata |
+| `ducklake.warmup` | string | `always` | When caches are built at startup: `always` (re-run every populate query), `if-empty` (only tables that do not exist yet), `never` (none). See below. |
+| `ducklake.read-only` | boolean | `false` | Attach the catalog `READ_ONLY`, for replicas serving a catalog another process writes. Implies `warmup: never`, no scheduled refresh, retention or compaction, and `409` from the config service's cache mutations. |
+
+**Warm-up.** `if-empty` suits a persistent `db_path` or a shared catalog: a restart serves what is already
+there. With `never`, a cache whose table does not exist is **unbuilt**: its endpoint answers `503`
+`cache_not_built`, and `/health` answers `200` with `status: degraded` and an `unbuilt` list, so a startup
+probe or CI smoke test passes while a monitor still sees it. The scheduler, `POST …/cache/refresh` and
+`flapi cache refresh` build it later. Precedence: `read-only` > `--cache-warmup` / `FLAPI_CACHE_WARMUP` >
+endpoint `cache.warmup` > `ducklake.warmup`.
 
 **Retention Configuration:**
 
@@ -1308,6 +1325,7 @@ DuckLake caching enables snapshot-based query result caching with automatic refr
 | `cache.schema` | string | `"cache"` | DuckDB schema name |
 | `cache.schedule` | string | - | Refresh schedule (e.g., `5m`, `1h`, `30s`) |
 | `cache.template-file` | string | - | Custom cache refresh SQL template |
+| `cache.warmup` | string | - | Overrides `ducklake.warmup` for this endpoint: `always`, `if-empty` or `never` |
 
 **Schedule Format:**
 - `30s` = 30 seconds
@@ -1350,6 +1368,9 @@ If the **first build** fails, the endpoint continues to return `503` (without th
 is only in the server log). This is intentional: a cached endpoint must never return `200` with empty or
 partial results from a half-built cache. A failing **refresh** of a cache that was already built does not
 take the endpoint offline: it keeps serving the last snapshot (see `/health`: `stale`).
+
+When warm-up is skipped (`warmup: never`, or `read-only`) and the cache table does not exist, the
+endpoint returns `503` with `"error": "cache_not_built"` until a refresh builds it.
 
 `cache.schedule` must be `<positive number>[s|m|h|d]` (at most 10 years); anything else stops startup.
 

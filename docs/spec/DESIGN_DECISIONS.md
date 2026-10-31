@@ -631,6 +631,52 @@ atomically on reload; readers pin a snapshot through `EndpointRef`.
 
 ---
 
+## 11. The Cache Serves Long-Lived Servers; Serverless Reads Data in Place
+
+**Context:** A team moving flAPI from App Runner to Cloud Run (scale-to-zero)
+reported 6–17 minute cold starts, multi-GiB containers and 20-minute deploys.
+The common cause was that every instance, and every CI run, filled the
+per-instance cache from BigQuery at boot, for data rebuilt once a day.
+
+**Decision:** Keep the cache as it is, but make every boot-time cost optional:
+
+- `ducklake.warmup: always | if-empty | never` (plus `--cache-warmup`,
+  `FLAPI_CACHE_WARMUP`, and per-endpoint `cache.warmup`). The default stays
+  `always`. A skipped cache whose table is missing is *unbuilt*: its endpoint
+  answers `503 cache_not_built`, and `/health` answers `200 degraded`. A
+  probe or smoke test can pass while a monitor still sees the problem.
+- `ducklake.read-only: true` for replicas of a catalog another process
+  writes. It implies `never`, no scheduled maintenance, and `409` on cache
+  mutations.
+- `flapi cache refresh` turns the writer into a job (a Cloud Run Job or an
+  Airflow task) instead of an always-on server.
+- Extensions are resolved when the image is built, not when it boots:
+  `duckdb.default-extensions` (configurable), `flapi extensions install`,
+  `FLAPI_EXTENSION_DIRECTORY`, `FLAPI_EXTENSIONS_OFFLINE`, and a `-runtime`
+  image.
+
+For batch data the recommended pattern is no cache at all. The template
+reads versioned Parquet in place ([guides/serverless.md](../guides/serverless.md)).
+
+**Tradeoffs:**
+- (+) Startup no longer depends on source size or network egress
+- (+) Writer and readers are separated without a second binary
+- (-) `unbuilt` returns 200 on `/health`. A deployment whose caches are never
+  built looks healthy to a probe, so the guide tells operators to alert on
+  `degraded`.
+- (-) `if-empty` serves a table built by an earlier config. A changed
+  populate template is not detected; force a refresh after changing it.
+
+**Source files:** `src/cache_manager.cpp`, `src/config_manager.cpp`,
+`src/extension_installer.cpp`, `src/cache_refresh_command.cpp`,
+`src/heartbeat_worker.cpp`, `src/database_manager.cpp`
+
+**Tests:** `test/cpp/cache_warmup_mode_test.cpp`,
+`test/cpp/extension_installer_test.cpp`, `test/cpp/ducklake_reader_test.cpp`,
+`test/integration/test_serverless_startup.py`
+
+---
+
 ## Summary
 
 These design decisions prioritize:
@@ -641,5 +687,6 @@ These design decisions prioritize:
 5. **Performance** - Caching and efficient query execution
 6. **Deployability** - One artifact ships everything (#9 self-packaging)
 7. **Observability** - One request identity across traces, audit and logs (#10)
+8. **Elasticity** - Nothing heavy on the boot path; batch data is produced once and read in place (#11)
 
 For implementation details, see the [component documentation](./components/).

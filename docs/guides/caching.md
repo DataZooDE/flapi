@@ -121,9 +121,18 @@ WHEN NOT MATCHED THEN INSERT (*) VALUES (s.*);
 
 ## When it refreshes
 
-- **At startup** — caches are warmed for endpoints that enable them.
+- **At startup**: caches are warmed for endpoints that enable them, according to
+  `ducklake.warmup`. With `always` (the default) every populate query runs again.
+  With `if-empty` only tables that do not exist yet are built. With `never` none
+  are, and a missing table answers `503 cache_not_built` until it is built.
+  `--no-cache-warmup` forces `never` for one run, e.g. in CI.
 - **On `cache.schedule`** — per endpoint.
 - **On demand** — `flapii cache refresh /endpoint`.
+
+- **From a pipeline**: `flapi cache refresh --config flapi.yaml --all` refreshes
+  once and exits (`0` ok, `1` a refresh failed, `2` usage). Run it after the
+  upstream build. Replicas then attach the same catalog with
+  `ducklake.read-only: true`; see [serverless.md](./serverless.md).
 
 A normal GET never triggers a refresh. While a cache is still warming, requests
 get **503 with `Retry-After`** rather than an empty result set.
