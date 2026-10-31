@@ -5,7 +5,11 @@
 #include <cstdio>
 #include <fstream>
 #include <mutex>
+#ifdef _WIN32
+#include <process.h>
+#else
 #include <unistd.h>
+#endif
 
 #include "archive_io.hpp"
 #include <regex>
@@ -32,6 +36,14 @@ std::string trim(const std::string& s) {
 }
 
 } // namespace
+
+long CurrentProcessId() {
+#ifdef _WIN32
+    return static_cast<long>(_getpid());
+#else
+    return static_cast<long>(::getpid());
+#endif
+}
 
 const std::vector<std::string>& ImplicitExtensions() {
     static const std::vector<std::string> extensions = {"core_functions"};
@@ -229,7 +241,7 @@ std::optional<std::filesystem::path> MaterializeBundledExtensions(
     }
     // Written beside the target and renamed into place: a crash or a concurrent start
     // never leaves a half-written directory under the final name.
-    const fs::path staging = cache_root / (dir.filename().string() + ".tmp-" + std::to_string(::getpid()));
+    const fs::path staging = cache_root / (dir.filename().string() + ".tmp-" + std::to_string(CurrentProcessId()));
     fs::remove_all(staging);
     for (const auto& [rel, data] : files) {
         const fs::path target = staging / rel;

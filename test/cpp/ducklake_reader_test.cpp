@@ -8,6 +8,7 @@
 
 #include <crow.h>
 #include "cache_refresh_command.hpp"
+#include "extension_installer.hpp"
 #include "config_manager.hpp"
 #include "config_service.hpp"
 #include "database_manager.hpp"
@@ -23,7 +24,7 @@ namespace {
 class SharedCatalog {
 public:
     explicit SharedCatalog(const std::string& prefix)
-        : _dir(fs::temp_directory_path() / (prefix + "_" + std::to_string(::getpid()))) {
+        : _dir(fs::temp_directory_path() / (prefix + "_" + std::to_string(CurrentProcessId()))) {
         fs::remove_all(_dir);
         fs::create_directories(_dir / "sqls");
         fs::create_directories(_dir / "cache_data");

@@ -18,6 +18,10 @@ struct ExtensionSpec {
     std::string repository;
 };
 
+// The current process id, portable (POSIX getpid / Windows _getpid). Names temporary
+// directories so concurrent processes never share one.
+long CurrentProcessId();
+
 // Extensions flAPI needs whatever the config says. Its DuckDB loads no extension
 // statically, and every query needs core_functions: without it pre-installed, an
 // offline start fails and an online one downloads it on the first query.

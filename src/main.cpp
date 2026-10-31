@@ -793,7 +793,7 @@ int main(int argc, char* argv[])
                 crow::logger::setLogLevel(crow::LogLevel::Warning);
                 const auto specs = CollectExtensionSpecs(*initializeConfig(main_config.string()));
                 installed_extensions = std::filesystem::temp_directory_path() /
-                                       ("flapi-pack-extensions-" + std::to_string(::getpid()));
+                                       ("flapi-pack-extensions-" + std::to_string(CurrentProcessId()));
                 std::filesystem::remove_all(installed_extensions);
                 if (InstallExtensions(specs, installed_extensions.string(), std::cout) > 0) {
                     std::filesystem::remove_all(installed_extensions);

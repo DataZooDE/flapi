@@ -12,6 +12,11 @@
 #include "pack.hpp"
 #include "test_utils.hpp"
 
+#ifdef _WIN32
+#define setenv(name, value, overwrite) _putenv_s(name, value)
+#define unsetenv(name) _putenv((std::string(name) + "=").c_str())
+#endif
+
 using namespace flapi;
 using namespace flapi::test;
 namespace fs = std::filesystem;
