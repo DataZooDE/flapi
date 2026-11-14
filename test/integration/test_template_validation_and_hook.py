@@ -452,3 +452,34 @@ def test_hook_helpers_time_travel_deletions_and_config_blocks(tmp_path):
     assert blocks["ducklake"] == {"enabled": "yes", "alias": "cache"}
     assert blocks["mcp"] == {"enabled": "false"}
     assert hook._scalar(blocks["ducklake"]["enabled"]) == "true"
+
+
+def test_hook_passes_on_overlapping_route_warnings(tmp_path):
+    # Cluster I-3: an allow-shadowing split between overlapping routes with
+    # different auth validates, so its WARNING must reach Claude as context -
+    # e.g. a protected general route added under an open literal.
+    project = tmp_path / "shadow"
+    (project / "sqls").mkdir(parents=True)
+    (project / "flapi.yaml").write_text("project-name: s\nproject-description: s\ntemplate:\n  path: ./sqls\n"
+                                        "connections:\n  m:\n    properties:\n      database: ':memory:'\n")
+    (project / "sqls" / "q.sql").write_text("SELECT 1 AS n\n")
+    (project / "sqls" / "seven.yaml").write_text(
+        "url-path: /customers/7\nmethod: GET\ntemplate-source: q.sql\nconnection: [m]\n"
+        "auth:\n  enabled: false\nallow-shadowing: true\n")
+    general = project / "sqls" / "general.yaml"
+    general.write_text(
+        "url-path: /customers/:id\nmethod: GET\ntemplate-source: q.sql\nconnection: [m]\n"
+        "auth:\n  enabled: true\n  type: basic\n  users:\n    - username: u\n      password: hook-pw-789\n")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("FLAPI_")}
+    env.update({"FLAPI_URL": f"http://127.0.0.1:{free_port()}", "FLAPI_CONFIG_SERVICE_TOKEN": "t",
+                "FLAPI_BIN": flapi_binary()})
+    event = json.dumps({"tool_input": {"file_path": str(general)}})
+    proc = subprocess.run(["python3", HOOK], input=event, capture_output=True, text=True, timeout=180, env=env)
+    assert proc.returncode == 0, proc.stderr
+    context = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "SECURITY WARNINGS" in context, context
+    assert ("Overlapping routes with different auth: GET /customers/7 (open) takes precedence over "
+            "GET /customers/:id (basic)") in context, context
+    assert "still serves every other URL its pattern matches" in context, context
+    assert context.count("Overlapping routes with different auth") == 1, context
+    assert "hook-pw-789" not in context

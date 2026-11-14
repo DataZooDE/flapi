@@ -7,8 +7,9 @@ file that belongs to a flAPI project (a flapi.yaml in it or an ancestor dir):
 1. If `flapi` is on PATH (or FLAPI_BIN is set), run
    `flapi -c <flapi.yaml> --validate-config`. On failure, the output goes back
    to Claude (exit 2 on PostToolUse feeds stderr to the model; the edit itself
-   has already happened, so nothing is blocked). SECURITY WARNINGS it prints
-   are passed on even when validation passes.
+   has already happened, so nothing is blocked). SECURITY WARNINGS it prints,
+   and `Overlapping routes with different auth` warnings (an allow-shadowing
+   split), are passed on even when validation passes.
 2. flapi.yaml itself is never hot-reloaded: the hook says to restart the
    server. A file outside template.path that is not an endpoint YAML (e.g. an
    {{include}} fragment elsewhere) is validated only.
@@ -164,6 +165,13 @@ def validate(flapi: str, cfg: Path) -> tuple[bool, str, list[str]]:
                 security.append(line.strip())
             elif line.strip() and not set(line.strip()) <= {"="}:
                 in_security = False
+        # An allowed (allow-shadowing) split between overlapping routes whose
+        # auth differs: the general route still serves every other URL it
+        # matches, so adding a protected general route under an open literal,
+        # or the reverse, must be visible - not buried in the log.
+        marker = line.find("Overlapping routes with different auth")
+        if marker >= 0:
+            security.append(line[marker:].strip())
     # Only what explains the failure: INFO lines bury it.
     relevant = [line for line in output.splitlines()
                 if re.search(r"ERROR|WARN|✗|[Ee]rror|Missing|Invalid|\[[A-Z_]+\]", line)]
@@ -669,7 +677,7 @@ def main() -> int:
                   file=sys.stderr)
             return 2
         if security:
-            notes.append("flapi --validate-config SECURITY WARNINGS:\n" + "\n".join(security))
+            notes.append("flapi --validate-config SECURITY WARNINGS:\n" + "\n".join(dict.fromkeys(security)))
 
     # flapi.yaml is read once at startup: there is nothing to hot-reload.
     if edited.resolve() == cfg.resolve():
