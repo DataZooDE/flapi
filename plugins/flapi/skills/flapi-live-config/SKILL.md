@@ -146,6 +146,9 @@ export FLAPI_CONFIG_SERVICE_TOKEN=...            # same token as the server
 flapii endpoints list -o table
 flapii endpoints get /customer-lookup
 flapii templates expand /customer-lookup -p '{"nation":"3"}'   # rendered SQL, no execution
+curl -s -X POST -H "X-Config-Token: $FLAPI_CONFIG_SERVICE_TOKEN" -d '{"parameters":{}}' \
+  'http://localhost:8080/api/v1/_config/endpoints/-customer~1lookup/template/expand?validate_only=1'
+                                                               # parsed + bound, not run
 flapii templates test /customer-lookup -p '{"nation":"3"}'     # executes it
 flapii endpoints reload /customer-lookup
 flapii cache refresh /products
@@ -181,8 +184,9 @@ applies from the next tick.
 
 ## The plugin's validate-and-reload hook
 
-After Claude edits a `.yaml`, `.yml` or `.sql` file under a directory with `flapi.yaml`
-(`plugins/flapi/hooks/validate_and_reload.py`, PostToolUse on Edit/Write/MultiEdit):
+After Claude edits a `.yaml`, `.yml` or `.sql` file under a directory with `flapi.yaml`, or
+under the `template.path` of the config `FLAPI_CONFIG` names (a `../sqls` shared by a writer
+and a replica) (`plugins/flapi/hooks/validate_and_reload.py`, PostToolUse on Edit/Write/MultiEdit):
 
 1. If `flapi` is on `PATH` or `FLAPI_BIN` is set: `flapi -c <flapi.yaml> --validate-config
    --no-telemetry`. On failure the output goes back to Claude (exit 2). `SECURITY WARNINGS`
@@ -190,15 +194,22 @@ After Claude edits a `.yaml`, `.yml` or `.sql` file under a directory with `flap
 2. `flapi.yaml` itself: Claude is told to restart the server (it is not hot-reloaded). A file
    outside `template.path` is only validated (an endpoint YAML there is reported as not loaded).
 3. If `FLAPI_CONFIG_SERVICE_TOKEN` is set and the server at `FLAPI_URL` (else
-   `FLAPI_BASE_URL`) answers: a YAML file is reloaded BY FILE with
+   `FLAPI_BASE_URL`) answers: a server running from a packed bundle (`"bundled": true` in
+   `GET /api/v1/_config/project`), or one whose `template-path` is another directory, is not
+   reloaded - the hook says why. Otherwise a YAML file is reloaded BY FILE with
    `POST /api/v1/_config/endpoints/reload-file` - which also loads a new file, handles
    MCP-only files, and changes exactly that file's endpoint when another file shares the
    url-path. For a `.sql` file it asks `POST /api/v1/_config/endpoints/by-template` (serving
    template or cache `template-file`) and reloads each declaring YAML by file.
-4. It then renders every affected template: the serving template with `?validate_only=1`
-   (render + `EXPLAIN`), a cache `template-file` with `?target=cache` (render, and a dropped
-   cursor watermark is reported). Render or SQL errors and reload failures (400/409 with the
-   server's reason) go back to Claude (exit 2).
+4. It then VALIDATES every affected template, running nothing: the serving template with
+   `?validate_only=1` twice - no parameters, then a sample value per typed request field
+   (`int` -> `min` or 1, `number` -> `min` or 1.0, `string` -> a value matching its regex,
+   `enum` -> first value, `date` -> today, `boolean` -> true), so SQL inside `{{#params.x}}`
+   is checked too - and a cache `template-file` with `?target=cache&validate_only=1` (live
+   watermark, parsed per statement, bare-SELECT rule, bound in a rolled-back transaction).
+   Parse/bind errors and reload failures (400/409 with the server's reason) go back to Claude
+   (exit 2); the message names the parameter sets checked. A cached endpoint whose cache
+   table does not exist yet is a note: "cache not built yet; run `flapii cache refresh <path>`".
 5. A 401/403 is reported as a rejected `FLAPI_CONFIG_SERVICE_TOKEN` (exit 2); no server
    running is a silent no-op, as is a missing token.
 

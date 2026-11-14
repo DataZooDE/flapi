@@ -74,6 +74,18 @@ Templates, requests and responses:
   endpoint's cache is maintained. Before, the row was deleted but the tool reported an error.
 - **Validator range messages name the limit**: `Integer is greater than the maximum allowed value (max 1000)`
   (also for string length, number, date and time bounds). Clients that compare the exact text must update.
+- **`template/expand?validate_only=1` binds the SQL that runs, statement by statement.** It used to EXPLAIN
+  the pasted rendering as one string; it now validates the prepared rendering (typed `{{ params.x }}` as `?`),
+  parses each statement separately and binds it in a rolled-back transaction. A template that was reported
+  valid can now be `valid: false` (a binder error inside a rendered section, a broken second statement), and
+  one that was reported invalid only because of pasted values (`c = ALFKI`) is now valid. Errors carry
+  `statement` and `kind`; a cached endpoint reading a cache not built yet is a `cache_not_built` warning, not an
+  error.
+- **`template/expand?target=cache` of a template with a Mustache syntax error is a 400** naming
+  `<file>:<line>:<col>`; it was a 500.
+- **The bare-SELECT refusal of a populate template is worded for a guard:** a SELECT before the last statement
+  is refused with "cache template statement N of M is a bare SELECT; its result is discarded. Wrap a check in
+  CREATE OR REPLACE TEMP TABLE _chk AS SELECT ...". Clients that compare the old text must update.
 - **Response formatting:** row keys (JSON and CSV) follow the `SELECT` column order; `DOUBLE`/`FLOAT` print
   in shortest form (`711.56`, not `711.55999999999994543`); a naive `TIMESTAMP` has no `Z` suffix (only
   `TIMESTAMPTZ` does). Applies to REST, MCP `tools/call` and `resources/read`.
@@ -178,6 +190,24 @@ Config service, MCP and CLI:
 - **`flapii --json-style` re-cases only configuration documents** (endpoints, MCP tools/resources/prompts, cache
   config, project, templates list). Data such as metrics, cache audit, schema, health, template expansion and
   validation is printed exactly as the server sends it, in snake_case (`duration_ms`, `rows_affected`).
+
+### Added: checking cache templates before the refresh does
+
+- **`POST .../template/expand?target=cache&validate_only=1`** checks the cache populate template without running
+  it: rendered with the live watermark, split into statements, parse errors reported per statement, the
+  bare-SELECT rule applied, and every statement bound in a transaction that is rolled back (a `CREATE TABLE ...
+  AS` bootstrap is created there `WITH NO DATA`, so the MERGE after it is checked before the first build).
+  `MERGE INTOO`, `SELEC oops;`, an unknown column and a bare SELECT used to pass every check and fail at the
+  next refresh. Answer: `{valid, statements, errors[{statement, type, kind, message}], warnings, expanded}`.
+- **`GET /api/v1/_config/project` has `bundled`**: `true` when the server runs from a packed binary.
+- **The Claude Code hook validates, not just renders:** cache templates with the new check, serving templates
+  with `validate_only` also with a sample value for each typed request field (so SQL inside `{{#params.x}}` is
+  checked), naming the parameter sets it checked. A cache not built yet is a note ("run `flapii cache refresh
+  <path>`"); a packed server or one serving another `template.path` is not reloaded, and the hook says so.
+  `FLAPI_CONFIG` now also covers files under its `template.path` outside the config's directory.
+- **`flapii` says a request timed out** ("request timed out after Ns; the server may still be working (a refresh
+  keeps running); raise --timeout and check `flapii cache audit <path>`") instead of "Cannot reach flAPI ... Is
+  it running?".
 
 ### Added: reload by file, and safer MCP resources
 

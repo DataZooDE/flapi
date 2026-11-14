@@ -69,29 +69,48 @@ flapi -c flapi.yaml --config-service --config-service-token "$FLAPI_CONFIG_SERVI
 # then start Claude Code in the same shell
 ```
 
-### Hook: validate, then hot-reload
+### Hook: validate, hot-reload, then check the templates
 
 After Claude edits a `.yaml`, `.yml` or `.sql` file inside a flAPI project (a
-directory with a `flapi.yaml` in it or above it), the plugin:
+directory with a `flapi.yaml` in it or above it, or inside the `template.path` of
+the config `FLAPI_CONFIG` names, e.g. a `../sqls` shared by a writer and a
+replica), the plugin:
 
 1. runs `flapi -c <flapi.yaml> --validate-config`, if `flapi` is on `PATH` or
    `FLAPI_BIN` is set. Any errors go back to Claude, which fixes them.
-2. reloads each affected endpoint on the running server, if validation passed and
-   `FLAPI_CONFIG_SERVICE_TOKEN` is set. It calls
-   `POST /api/v1/_config/endpoints/{path}/reload` on `FLAPI_URL`. A file that no
-   longer loads is rejected with its reason (the endpoint keeps its previous
-   configuration), and a successful reload also updates the MCP tool list.
+2. reloads the edited endpoint file on the running server, if validation passed
+   and `FLAPI_CONFIG_SERVICE_TOKEN` is set (`POST /api/v1/_config/endpoints/reload-file`
+   on `FLAPI_URL`; a new file is loaded too). For a `.sql` file, every endpoint
+   YAML that uses it as `template-source` or cache `template-file` is reloaded.
+   A file that no longer loads is rejected with its reason, and the endpoint
+   keeps its previous configuration.
+3. checks the affected templates without running them
+   (`template/expand?validate_only=1`, see the
+   [API reference](../CONFIG_SERVICE_API_REFERENCE.md)): the serving template
+   once with no parameters and once with a sample value for every typed request
+   field (`int` -> its `min` or 1, `string` -> a value matching its regex, `enum`
+   -> the first value, `date` -> today, ...), so SQL inside `{{#params.x}}`
+   sections is checked as well; a cache `template-file` with
+   `target=cache&validate_only=1`, i.e. with the live watermark, per statement,
+   with the bare-SELECT rule. Parse and bind errors (an unknown column, `MERGE
+   INTOO`) go back to Claude. The message names the parameter sets it checked.
+   A cached endpoint whose cache table does not exist yet is a note ("cache not
+   built yet; run `flapii cache refresh <path>`"), not an error.
+
+The hook does not reload into a server that cannot take the edit: a server
+running from a packed bundle (`flapi pack`; edits on disk cannot reach it), or
+one whose `template.path` is a different directory than the edited project's.
+It says which instead.
 
 If something is missing (no binary, no project, no token, no server), the hook
-does nothing. It never blocks an edit. A newly created endpoint file is not loaded
-yet, so the hook says so: use `flapii endpoints create` or restart the server.
+does nothing. It never blocks an edit.
 
 | Variable | Default | Used by |
 |---|---|---|
 | `FLAPI_URL` | `http://localhost:8080` | MCP server, hook, `flapii` (when `FLAPI_BASE_URL` is unset) |
 | `FLAPI_CONFIG_SERVICE_TOKEN` | — | MCP server, hook, `flapii` |
 | `FLAPI_BIN` | `flapi` on `PATH` | hook |
-| `FLAPI_CONFIG` | nearest `flapi.yaml` | hook |
+| `FLAPI_CONFIG` | nearest `flapi.yaml` | hook (also for files under its `template.path`) |
 
 ## Working on the plugin
 

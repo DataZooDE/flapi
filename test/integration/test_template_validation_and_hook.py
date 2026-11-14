@@ -1,0 +1,333 @@
+"""Validating templates without running them, and the Claude Code hook (#211, F2).
+
+* `template/expand?target=cache&validate_only=1` renders the cache populate
+  template with the live watermark, splits it into statements, reports parse
+  errors per statement, applies the bare-SELECT rule and binds every statement
+  in a rolled-back transaction - `MERGE INTOO`, `SELEC oops;`, unknown columns
+  and bare SELECTs used to pass and fail at the next refresh.
+* The serving path's `validate_only` binds the SQL that actually runs.
+* `expand --cache` of a template with an unclosed section is a 400 naming the
+  line, not a 500.
+* The plugin hook validates (not just renders) cache and serving templates,
+  also with sample values for typed request fields, treats a cache that is not
+  built yet as a note, recognises a packed server, and honours FLAPI_CONFIG for
+  a template.path outside the config's directory.
+
+The server's config lives in writer/ and its template.path is ../sqls: the
+shared layout of a writer and a replica.
+"""
+import json
+import os
+import shutil
+import subprocess
+import tempfile
+import time
+from types import SimpleNamespace
+
+import pytest
+import requests
+
+from otel_helpers import flapi_binary, free_port
+
+pytestmark = pytest.mark.standalone_server
+
+TOKEN = "f2-validation-token"
+AUTH = {"Authorization": f"Bearer {TOKEN}"}
+HOOK = os.path.join(os.path.dirname(__file__), "..", "..", "plugins", "flapi", "hooks",
+                    "validate_and_reload.py")
+
+CONFIG = """\
+project-name: f2-validation
+project-description: template validation
+template:
+  path: ../sqls
+connections:
+  src:
+    properties:
+      path: ./source.csv
+ducklake:
+  enabled: true
+  alias: cache
+  metadata-path: ./cache.ducklake
+  data-path: ./cache_data
+  warmup: never
+rate_limit:
+  enabled: false
+"""
+
+GOOD_CACHE = """\
+{{^cache.previousSnapshotTimestamp}}
+CREATE TABLE IF NOT EXISTS {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS
+SELECT * FROM read_csv('{{{conn.path}}}') WHERE false;
+{{/cache.previousSnapshotTimestamp}}
+MERGE INTO {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS t
+USING (SELECT * FROM read_csv('{{{conn.path}}}')) AS s
+ON t.id = s.id
+WHEN MATCHED THEN UPDATE SET name = s.name, version = s.version
+WHEN NOT MATCHED THEN INSERT *;
+"""
+
+FILES = {
+    "orders.yaml": """\
+url-path: /orders
+method: GET
+template-source: serve.sql
+connection: [src]
+cache:
+  enabled: true
+  table: orders_cache
+  schema: main
+  primary-key: [id]
+  cursor:
+    column: version
+    type: integer
+  template-file: orders_cache.sql
+""",
+    "serve.sql": "SELECT * FROM {{{cache.catalog}}}.{{{cache.schema}}}.{{{cache.table}}} ORDER BY id\n",
+    "orders_cache.sql": GOOD_CACHE,
+    "items.yaml": """\
+url-path: /items
+method: GET
+template-source: items.sql
+connection: [src]
+request:
+  - field-name: id
+    field-in: query
+    required: false
+    validators:
+      - type: int
+        min: 1
+  - field-name: name
+    field-in: query
+    required: false
+    validators:
+      - type: string
+        regex: "^[a-z]+$"
+""",
+    "items.sql": """\
+SELECT * FROM read_csv('{{{conn.path}}}')
+WHERE 1=1
+{{#params.id}} AND id = {{ params.id }} {{/params.id}}
+{{#params.name}} AND name = '{{{ params.name }}}' {{/params.name}}
+""",
+}
+
+
+def _start(cmd, cwd):
+    return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, cwd=cwd,
+                            env={**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"})
+
+
+def _wait(base):
+    for _ in range(300):
+        try:
+            if requests.get(f"{base}/health/live", timeout=2).status_code == 200:
+                return
+        except requests.RequestException:
+            pass
+        time.sleep(0.2)
+    raise RuntimeError("server did not start")
+
+
+@pytest.fixture(scope="module")
+def server():
+    root = tempfile.mkdtemp(prefix="flapi_f2_")
+    writer = os.path.join(root, "writer")
+    sqls = os.path.join(root, "sqls")
+    os.makedirs(writer)
+    os.makedirs(sqls)
+    with open(os.path.join(writer, "flapi.yaml"), "w") as f:
+        f.write(CONFIG)
+    with open(os.path.join(writer, "source.csv"), "w") as f:
+        f.write("id,name,version\n1,a,1\n2,b,1\n")
+    for name, body in FILES.items():
+        with open(os.path.join(sqls, name), "w") as f:
+            f.write(body)
+    port = free_port()
+    proc = _start([flapi_binary(), "-c", os.path.join(writer, "flapi.yaml"), "-p", str(port),
+                   "--config-service", "--config-service-token", TOKEN, "--log-level", "warning"], writer)
+    base = f"http://127.0.0.1:{port}"
+    try:
+        _wait(base)
+        yield SimpleNamespace(base=base, root=root, writer=writer, sqls=sqls)
+    finally:
+        proc.terminate()
+        proc.wait(timeout=30)
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def _expand(server, slug, query, params=None, template=None):
+    body = {"parameters": params or {}}
+    if template is not None:
+        body["template"] = template
+    return requests.post(f"{server.base}/api/v1/_config/endpoints/{slug}/template/expand?{query}",
+                         headers=AUTH, json=body, timeout=30)
+
+
+def _write(server, name, body):
+    with open(os.path.join(server.sqls, name), "w") as f:
+        f.write(body)
+
+
+@pytest.fixture
+def cache_template(server):
+    yield lambda body: _write(server, "orders_cache.sql", body)
+    _write(server, "orders_cache.sql", GOOD_CACHE)
+
+
+def _cache_validate(server):
+    r = _expand(server, "-orders", "target=cache&validate_only=1")
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_a_good_cache_template_is_valid_and_nothing_is_built(server):
+    result = _cache_validate(server)
+    assert result["valid"] is True, result
+    assert result["target"] == "cache" and result["statements"] == 2, result
+    assert "MERGE INTO cache.main.orders_cache" in result["expanded"]
+    # Validation ran nothing: the cache table still does not exist.
+    serving = _expand(server, "-orders", "validate_only=1").json()
+    assert any(w["type"] == "cache_not_built" for w in serving["warnings"]), serving
+
+
+@pytest.mark.parametrize("broken,statement,kind,needle", [
+    (GOOD_CACHE.replace("MERGE INTO", "MERGE INTOO"), 2, "parse", "syntax error"),
+    ("SELEC oops;\n", 1, "parse", "syntax error"),
+    (GOOD_CACHE.replace("ON t.id = s.id", "ON t.c_bogus = s.id"), 2, "bind", "c_bogus"),
+])
+def test_cache_template_errors_are_reported_per_statement(server, cache_template, broken, statement, kind, needle):
+    cache_template(broken)
+    result = _cache_validate(server)
+    assert result["valid"] is False, result
+    errors = [e for e in result["errors"] if e["statement"] == statement and e["kind"] == kind]
+    assert errors, result
+    assert needle in errors[0]["message"], errors
+
+
+def test_a_guard_select_is_refused_with_the_discarded_result_message(server, cache_template):
+    cache_template(GOOD_CACHE.replace("MERGE INTO", "SELECT count(*) FROM read_csv('{{{conn.path}}}');\nMERGE INTO"))
+    result = _cache_validate(server)
+    assert result["valid"] is False, result
+    [error] = [e for e in result["errors"] if e["type"] == "bare_select"]
+    assert error["statement"] == 2
+    assert "statement 2 of 3 is a bare SELECT; its result is discarded" in error["message"]
+    assert "CREATE OR REPLACE TEMP TABLE _chk AS SELECT" in error["message"]
+    # The refresh refuses it with the same words.
+    r = requests.post(f"{server.base}/api/v1/_config/endpoints/-orders/cache/refresh", headers=AUTH, timeout=60)
+    assert r.status_code >= 400 and "its result is discarded" in r.text, r.text
+
+
+def test_expand_cache_with_an_unclosed_section_is_a_400_with_the_line(server, cache_template):
+    cache_template("{{#cache.previousSnapshotTimestamp}}\nSELECT 1\n")
+    r = _expand(server, "-orders", "target=cache")
+    assert r.status_code == 400, r.text
+    assert "orders_cache.sql:1:" in r.text, r.text
+    v = _cache_validate(server)
+    assert v["valid"] is False and v["errors"][0]["type"] == "template_syntax", v
+
+
+def test_serving_validation_binds_sql_inside_sections(server):
+    template = FILES["items.sql"].replace("AND id = {{ params.id }}", "AND bogus_col = {{ params.id }}")
+    absent = _expand(server, "-items", "validate_only=1", template=template).json()
+    assert absent["valid"] is True, absent
+    present = _expand(server, "-items", "validate_only=1", params={"id": "1"}, template=template).json()
+    assert present["valid"] is False, present
+    assert "bogus_col" in present["errors"][0]["message"]
+    assert present["errors"][0]["statement"] == 1
+    assert "bogus_col" in present["expanded"], present
+
+
+def run_hook(server, edited, config=True, base=None):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("FLAPI_")}
+    env.update({"FLAPI_URL": base or server.base, "FLAPI_CONFIG_SERVICE_TOKEN": TOKEN,
+                "FLAPI_BIN": flapi_binary()})
+    if config:
+        env["FLAPI_CONFIG"] = os.path.join(server.writer, "flapi.yaml")
+    event = json.dumps({"tool_input": {"file_path": str(edited)}})
+    proc = subprocess.run(["python3", HOOK], input=event, capture_output=True, text=True, timeout=180, env=env)
+    context = ""
+    if proc.stdout.strip():
+        context = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+    return proc.returncode, context, proc.stderr
+
+
+def test_hook_needs_flapi_config_for_a_shared_template_path(server):
+    path = os.path.join(server.sqls, "items.sql")
+    # No flapi.yaml above ../sqls: without FLAPI_CONFIG the hook cannot know the project.
+    assert run_hook(server, path, config=False) == (0, "", "")
+    code, context, err = run_hook(server, path)
+    assert code == 0, err
+    assert "GET /items" in context
+    assert "checked with no params and sample params id=1, name=x" in context, context
+
+
+def test_hook_reports_a_bug_inside_a_param_section(server):
+    path = os.path.join(server.sqls, "items.sql")
+    try:
+        _write(server, "items.sql", FILES["items.sql"].replace("AND id =", "AND bogus_col ="))
+        code, _, err = run_hook(server, path)
+        assert code == 2, err
+        assert "sample params id=1" in err and "bogus_col" in err, err
+    finally:
+        _write(server, "items.sql", FILES["items.sql"])
+
+
+def test_hook_validates_a_cache_template_and_notes_an_unbuilt_cache(server, cache_template):
+    path = os.path.join(server.sqls, "orders_cache.sql")
+    code, context, err = run_hook(server, path)
+    assert code == 0, err
+    assert "GET /orders" in context, context
+
+    # The serving template reads a cache table that is not built yet: a note.
+    code, context, err = run_hook(server, os.path.join(server.sqls, "orders.yaml"))
+    assert code == 0, err
+    assert "cache not built yet; run `flapii cache refresh /orders`" in context, context
+
+    cache_template(GOOD_CACHE.replace("MERGE INTO", "MERGE INTOO"))
+    code, _, err = run_hook(server, path)
+    assert code == 2 and "syntax error" in err, err
+
+
+def test_hook_does_not_reload_into_another_project(server, tmp_path):
+    other = tmp_path / "other"
+    (other / "sqls").mkdir(parents=True)
+    (other / "flapi.yaml").write_text("project-name: o\nproject-description: o\ntemplate:\n  path: ./sqls\n"
+                                      "connections:\n  m:\n    properties:\n      database: ':memory:'\n")
+    edited = other / "sqls" / "x.sql"
+    edited.write_text("SELECT 1\n")
+    code, context, err = run_hook(server, edited, config=False)
+    assert code == 0, err
+    assert "not this project's" in context, context
+
+
+def test_hook_recognises_a_packed_server(server, tmp_path):
+    project = tmp_path / "project"
+    (project / "sqls").mkdir(parents=True)
+    (project / "flapi.yaml").write_text("project-name: p\nproject-description: p\ntemplate:\n  path: ./sqls\n"
+                                        "connections:\n  m:\n    properties:\n      database: ':memory:'\n")
+    (project / "sqls" / "one.yaml").write_text("url-path: /one\ntemplate-source: one.sql\nconnection: [m]\n")
+    (project / "sqls" / "one.sql").write_text("SELECT 1 AS one\n")
+    packed = str(tmp_path / "flapi-packed")
+    r = subprocess.run([flapi_binary(), "pack", "--in", str(project), "--out", packed],
+                       capture_output=True, text=True, timeout=300,
+                       env={**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"})
+    assert r.returncode == 0, r.stdout + r.stderr
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    port = free_port()
+    proc = _start([packed, "-p", str(port), "--config-service", "--config-service-token", TOKEN,
+                   "--log-level", "warning"], str(run_dir))
+    base = f"http://127.0.0.1:{port}"
+    try:
+        _wait(base)
+        project = requests.get(f"{base}/api/v1/_config/project", headers=AUTH, timeout=10).json()
+        assert project["bundled"] is True
+        assert requests.get(f"{server.base}/api/v1/_config/project", headers=AUTH,
+                            timeout=10).json()["bundled"] is False
+        code, context, err = run_hook(server, os.path.join(server.sqls, "items.sql"), base=base)
+        assert code == 0, err
+        assert "packed bundle" in context and "cannot be hot-reloaded" in context, context
+    finally:
+        proc.terminate()
+        proc.wait(timeout=30)
