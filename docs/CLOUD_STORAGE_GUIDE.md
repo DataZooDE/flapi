@@ -9,6 +9,12 @@ authentication, and its failure modes.
 
 ## Overview
 
+> **Known limitation:** a remote `template.path` (an `s3://`, `gs://`, `az://` or `https://` directory) does not work
+> yet. flAPI lists the template directory on the local filesystem, so startup fails with
+> `Template path does not exist or is not a directory`. Keep the endpoint YAML and SQL templates on local disk
+> (or bundle them with `flapi pack`). Data files and DuckLake data paths on cloud storage do work.
+
+
 flAPI supports loading configuration and SQL template files from remote storage via DuckDB's Virtual File System (VFS). This enables:
 
 - **Serverless deployments**: Run flAPI on AWS Lambda, Google Cloud Run, or Azure Functions without volume mounts

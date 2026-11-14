@@ -837,7 +837,12 @@ connection:
   - local-data
 ```
 
-Or configure the template base path as a remote URL:
+> **Known limitation:** a remote `template.path` (an `s3://`, `gs://`, `az://` or `https://` directory) does not work
+> yet. flAPI lists the template directory on the local filesystem, so startup fails with
+> `Template path does not exist or is not a directory`. Keep the endpoint YAML and SQL templates on local disk
+> (or bundle them with `flapi pack`). Data files and DuckLake data paths on cloud storage do work.
+
+The intended form, once supported:
 
 ```yaml
 # flapi.yaml - templates from HTTPS
