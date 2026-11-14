@@ -467,7 +467,7 @@ def test_hook_reports_render_errors_of_a_sql_edit(server):
         f.write("SELECT FROM WHERE\n")
     code, _, err = run_hook(server, path, flapi_bin=False)
     assert code == 2
-    assert "rendering failed" in err
+    assert "template validation failed" in err
 
 
 def test_hook_renders_a_cache_template_file(server):

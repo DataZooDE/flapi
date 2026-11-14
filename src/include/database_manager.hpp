@@ -94,13 +94,49 @@ public:
                                                  bool rebuild = false);
     /// 1-based index of the first SELECT statement in `script`, or nullopt
     /// (also when the script does not parse - execution reports that). Pure.
-    static std::optional<std::size_t> FindSelectStatement(const std::string& script);
+    /// `statement_count`, when given, receives the number of statements parsed.
+    static std::optional<std::size_t> FindSelectStatement(const std::string& script,
+                                                          std::size_t* statement_count = nullptr);
+    /// The statements of `script`, split on top-level `;` (string literals,
+    /// quoted identifiers, dollar quotes and comments respected), each without
+    /// its terminator; whitespace/comment-only pieces are dropped. Splitting is
+    /// lexical only, so a statement that does not parse still gets its own
+    /// number - the parser rejects the whole script at its first error. Pure.
+    static std::vector<std::string> SplitStatements(const std::string& script);
+
+    /// One finding of validateScript, `statement` 1-based (0: the script as a whole).
+    struct ScriptIssue {
+        std::size_t statement = 0;
+        std::string type;      // parse | bare_select | bind | cache_not_built | not_checked
+        std::string message;
+    };
+    struct ScriptValidation {
+        std::size_t statements = 0;
+        std::vector<ScriptIssue> errors;
+        std::vector<ScriptIssue> warnings;
+    };
+    /// Checks a rendered script WITHOUT running it (template/expand?validate_only):
+    /// each statement is parsed by the connection's parser, then prepared - bound
+    /// and planned, which is what EXPLAIN checks: unknown tables and columns,
+    /// type errors - inside a transaction that is always rolled back. Only a
+    /// plain CREATE TABLE/SCHEMA without AS (no data) is executed there, so a
+    /// later statement that writes the table it creates can be bound; no DML and
+    /// no query ever runs. With `populate` it is a cache populate template and
+    /// the bare-SELECT rule applies. A table that does not exist because an
+    /// earlier statement would create it is a warning (not_checked), as is the
+    /// cache table `cache_table` before its first build (cache_not_built).
+    ScriptValidation validateScript(const std::string& script, const PopulateTarget* populate,
+                                    const PopulateTarget* cache_table);
     /// The error a populate template containing a SELECT is refused with.
     // A script that is exactly one SELECT, as `CREATE OR REPLACE TABLE <target>
     // AS <select>`; nullopt for anything else. Used for a cache with no
     // template-file, whose populate SQL is the endpoint's serving template.
     static std::optional<std::string> MaterialiseSelect(const std::string& script, const PopulateTarget& target);
-    static std::string PopulateSelectError(const PopulateTarget& target, std::size_t statement);
+    /// `statement_count` (0: unknown) tells a bare SELECT before the last
+    /// statement - a guard whose result is discarded - from one that is the
+    /// whole build.
+    static std::string PopulateSelectError(const PopulateTarget& target, std::size_t statement,
+                                           std::size_t statement_count = 0);
     std::string renderCacheTemplate(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params);
     
     // Write operation methods

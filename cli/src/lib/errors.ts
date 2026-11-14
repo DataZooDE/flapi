@@ -47,6 +47,15 @@ export function guidanceFor(error: unknown, baseUrl?: string, tokenSent?: boolea
     }
     return undefined;
   }
+  if (isAxiosError(error) && !error.response && isTimeout(error)) {
+    // The server answered nothing within --timeout - which on a cache refresh or
+    // a slow template test means it is still WORKING, not down. "Is it running?"
+    // sent people restarting a server mid-refresh.
+    const ms = typeof error.config?.timeout === 'number' ? error.config.timeout : undefined;
+    const after = ms ? `after ${Math.round(ms / 1000)}s` : 'before the server answered';
+    return `Request timed out ${after}; the server may still be working (a refresh keeps running). ` +
+      'Raise --timeout (or FLAPI_TIMEOUT) and check `flapii cache audit <path>`.';
+  }
   if (isAxiosError(error) && !error.response) {
     const where = baseUrl ?? error.config?.baseURL ?? 'the configured URL';
     return `Cannot reach flAPI at ${where}. Is it running? Set the address with --base-url or FLAPI_BASE_URL.`;
@@ -114,6 +123,11 @@ export function handleError(
 
 export function isAxiosError(error: unknown): error is AxiosError {
   return axios.isAxiosError(error);
+}
+
+/** Axios reports its own `timeout` as ECONNABORTED ("timeout of Nms exceeded") or ETIMEDOUT. */
+function isTimeout(error: AxiosError): boolean {
+  return error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT' || /timeout of \d+ms exceeded/i.test(error.message);
 }
 
 /** The human-readable reason in an error body: a plain-text body, or its message/error/reason field. */

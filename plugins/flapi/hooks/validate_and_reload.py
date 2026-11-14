@@ -20,10 +20,20 @@ file that belongs to a flAPI project (a flapi.yaml in it or an ancestor dir):
      another file shares the url-path (GET + POST /orders);
    - a .sql file is looked up with POST .../endpoints/by-template (template-source
      and cache template-file), and each declaring YAML is reloaded by file;
-   - the affected templates are then rendered: the serving template with
-     ?validate_only (render + EXPLAIN), a cache template-file with
-     ?target=cache; render and SQL errors are reported.
+   - the affected templates are then VALIDATED, never run: the serving
+     template with ?validate_only=1 - once with no parameters and once with a
+     sample value for every typed request field, so SQL inside
+     {{#params.x}} sections is checked too - and a cache template-file with
+     ?target=cache&validate_only=1 (rendered with the live watermark, parsed
+     per statement, bare-SELECT rule, bound in a rolled-back transaction).
+     Parse/bind errors are reported (exit 2); a cache whose table is not built
+     yet is a note, not a failure.
+   A server running from a packed bundle (`bundled` in /api/v1/_config/project)
+   cannot take edits from disk: the hook says so instead of reloading.
    A rejected token (HTTP 401/403) is reported; no server is a silent no-op.
+
+FLAPI_CONFIG names the project when the edited file is under its directory OR
+its template.path (a writer and a replica sharing ../sqls).
 
 Every other precondition that is not met (no flapi binary, no project, no
 token) is a silent no-op: the hook must never get in the way of editing.
@@ -31,6 +41,7 @@ Only the standard library is used.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -56,11 +67,10 @@ def find_project_config(path: Path) -> Path | None:
     env_cfg = os.environ.get("FLAPI_CONFIG")
     if env_cfg and Path(env_cfg).is_file():
         cfg = Path(env_cfg).resolve()
-        try:
-            path.resolve().relative_to(cfg.parent)
+        # Under the config's directory, or under its template.path even when
+        # that lives elsewhere (template: {path: ../shared/sqls}).
+        if is_within(path, cfg.parent) or is_within(path, template_dir(cfg)):
             return cfg
-        except ValueError:
-            pass
     for parent in [path.parent, *path.parent.parents]:
         candidate = parent / "flapi.yaml"
         if candidate.is_file():
@@ -100,13 +110,20 @@ def path_to_slug(url_path: str) -> str:
     return "".join(out) or "empty"
 
 
-def key_to_url(key: str, suffix: str) -> str:
+def key_to_url(key: str, suffix: str) -> tuple[str, str]:
     """Config-service URL for an endpoint key ("GET /orders" or an MCP name)."""
     method, _, path = key.partition(" ")
+    tail = f"/{suffix}" if suffix else ""
     if path.startswith("/"):
         slug = urllib.parse.quote(path_to_slug(path), safe=":~")
-        return f"/api/v1/_config/endpoints/{slug}/{suffix}", f"method={method}"
-    return f"/api/v1/_config/endpoints/{urllib.parse.quote(key, safe='')}/{suffix}", ""
+        return f"/api/v1/_config/endpoints/{slug}{tail}", f"method={method}"
+    return f"/api/v1/_config/endpoints/{urllib.parse.quote(key, safe='')}{tail}", ""
+
+
+def url_path_of(key: str) -> str:
+    """What `flapii cache refresh` takes: the url-path, or the MCP name."""
+    _, _, path = key.partition(" ")
+    return path if path.startswith("/") else key
 
 
 def validate(flapi: str, cfg: Path) -> tuple[bool, str, list[str]]:
@@ -183,22 +200,137 @@ def reload_file(base: str, token: str, yaml_file: Path) -> tuple[list[str], str 
     return [], f"{yaml_file.name} (HTTP {status}: {message[:400]})"
 
 
-def render(base: str, token: str, key: str, cache: bool) -> str | None:
-    """Render one endpoint's template (serving: render + EXPLAIN; cache: render). Error or None."""
-    path, method_query = key_to_url(key, "template/expand")
-    query = "&".join(q for q in (method_query, "target=cache" if cache else "validate_only=1") if q)
-    what = f"{key} ({'cache template-file' if cache else 'template'})"
+_SAMPLE_STRINGS = ["x", "a", "abc", "test", "A", "ABC", "1", "123", "x1", "a_b", "ALFKI", "2024-01-01",
+                   "a@example.com", "00000000-0000-0000-0000-000000000000"]
+
+
+def _number(value, fallback):
+    """A validator bound, unless it is unset or the int-range sentinel."""
     try:
-        status, body = request("POST", f"{base}{path}?{query}", token, {"parameters": {}}, ok_codes=(200, 400))
-    except urllib.error.HTTPError as exc:
-        return f"{what}: HTTP {exc.code}: {error_text(exc)}"
-    if status != 200:
-        return f"{what}: {body.get('error') or body}"
-    if not cache and body.get("valid") is False:
-        errors = "; ".join(str(e.get("message", e)) for e in body.get("errors", []))
-        return f"{what}: {errors}"
-    if cache and body.get("watermark_dropped_reason"):
-        return f"{what}: warning: {body['watermark_dropped_reason']}"
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return fallback if abs(number) >= 2**31 - 1 else number
+
+
+def sample_value(field: dict):
+    """A value the field's first typed validator accepts, or None (untyped)."""
+    for v in field.get("validators") or []:
+        kind = str(v.get("type", "")).lower()
+        if kind in ("int", "integer"):
+            return str(int(_number(v.get("min"), 1)))
+        if kind in ("number", "float", "double"):
+            return str(_number(v.get("min"), 1.0))
+        if kind == "enum":
+            values = v.get("allowedValues") or v.get("values") or []
+            return str(values[0]) if values else None
+        if kind == "date":
+            return str(v.get("min") or datetime.date.today().isoformat())
+        if kind == "time":
+            return str(v.get("min") or "12:00:00")
+        if kind in ("boolean", "bool"):
+            return "true"
+        if kind == "email":
+            return "a@example.com"
+        if kind == "uuid":
+            return "00000000-0000-0000-0000-000000000000"
+        if kind == "string":
+            min_len = int(_number(v.get("min-length"), 0))
+            pattern = v.get("regex") or ""
+            for candidate in _SAMPLE_STRINGS:
+                value = candidate * max(1, -(-min_len // len(candidate)))
+                try:
+                    if not pattern or re.fullmatch(pattern, value):
+                        return value
+                except re.error:
+                    break
+            return "x" * max(1, min_len)
+    return None
+
+
+def sample_params(base: str, token: str, key: str) -> dict[str, str]:
+    """A sample value for each declared typed request field ({} if none or unknown)."""
+    path, method_query = key_to_url(key, "")
+    try:
+        _, body = request("GET", f"{base}{path}" + (f"?{method_query}" if method_query else ""), token)
+    except urllib.error.HTTPError:
+        return {}
+    samples = {}
+    for field in body.get("request") or []:
+        name = field.get("field-name")
+        value = sample_value(field)
+        if name and value is not None:
+            samples[str(name)] = value
+    return samples
+
+
+def render(base: str, token: str, key: str, cache: bool) -> tuple[list[str], list[str]]:
+    """Validate one endpoint's template without running it: (errors, notes)."""
+    path, method_query = key_to_url(key, "template/expand")
+    query = "&".join(q for q in (method_query, "target=cache" if cache else "", "validate_only=1") if q)
+    what = f"{key} ({'cache template-file' if cache else 'template'})"
+    param_sets: list[tuple[str, dict]] = [("no params", {})]
+    if not cache:
+        samples = sample_params(base, token, key)
+        if samples:
+            param_sets.append(("sample params " + ", ".join(f"{k}={v}" for k, v in sorted(samples.items())),
+                               samples))
+    errors: list[str] = []
+    notes: list[str] = []
+    not_built = False
+    for label, params in param_sets:
+        try:
+            status, body = request("POST", f"{base}{path}?{query}", token, {"parameters": params},
+                                   ok_codes=(200, 400))
+        except urllib.error.HTTPError as exc:
+            errors.append(f"{what}: HTTP {exc.code}: {error_text(exc)}")
+            break
+        if status != 200:
+            errors.append(f"{what}: {body.get('error') or body}")
+            break
+        for warning in body.get("warnings") or []:
+            kind = warning.get("type")
+            if kind == "cache_not_built":
+                not_built = True
+            elif kind in ("watermark_dropped", "not_checked") and label == "no params":
+                notes.append(f"{what}: warning: {warning.get('message')}")
+        if body.get("valid") is False:
+            problems = []
+            for e in body.get("errors") or []:
+                message = str(e.get("message", e))
+                # An older server reports a cache that is not built as an error.
+                if re.search(r"Table with name \S+ does not exist", message) and "cache" in message.lower():
+                    not_built = True
+                    continue
+                problems.append(message)
+            if problems:
+                errors.append(f"{what} [{label}]: " + "; ".join(problems))
+    if not_built:
+        notes.append(f"{what}: cache not built yet; run `flapii cache refresh {url_path_of(key)}`")
+    if not errors and not cache:
+        notes.append(f"{what}: checked with " + " and ".join(label for label, _ in param_sets))
+    return errors, notes
+
+
+def not_this_project(base: str, token: str, templates: Path) -> str | None:
+    """Why the server cannot take this edit (packed bundle, other project), or None."""
+    try:
+        _, project = request("GET", f"{base}/api/v1/_config/project", token)
+    except urllib.error.HTTPError:
+        return None
+    if project.get("bundled"):
+        return (f"flapi: the server at {base} runs from a packed bundle; edits on disk cannot be "
+                "hot-reloaded into it. Repack (`flapi pack`) and redeploy, or run the unpacked project "
+                "to develop against.")
+    served = str(project.get("template-path") or "")
+    if served and Path(served).is_absolute():
+        try:
+            same = Path(served).resolve() == templates
+        except OSError:
+            same = True
+        if not same:
+            return (f"flapi: the server at {base} serves template.path {served}, not this project's "
+                    f"{templates}; nothing was reloaded. Point FLAPI_URL at this project's server.")
     return None
 
 
@@ -273,6 +405,11 @@ def main() -> int:
     failed: list[str] = []
     to_render: list[tuple[str, bool]] = []
     try:
+        reason = not_this_project(base, token, templates)
+        if reason:
+            notes.insert(0, reason)
+            emit("\n".join(notes))
+            return 0
         if edited.suffix == ".sql":
             _, found = request("POST", f"{base}/api/v1/_config/endpoints/by-template", token,
                                {"template_path": str(edited.resolve())})
@@ -297,7 +434,11 @@ def main() -> int:
                 to_render.append((key, False))
                 if has_cache_template(edited):
                     to_render.append((key, True))
-        render_errors = [e for e in (render(base, token, k, c) for k, c in to_render) if e]
+        render_errors: list[str] = []
+        for key, cache in to_render:
+            errors, render_notes = render(base, token, key, cache)
+            render_errors.extend(errors)
+            notes.extend(render_notes)
     except TokenRejected as exc:
         print(f"flapi: the config service at {base} rejected FLAPI_CONFIG_SERVICE_TOKEN ({exc}); "
               f"{edited.name} was NOT reloaded. Set it to the server's --config-service-token.",
@@ -314,13 +455,13 @@ def main() -> int:
         if failed:
             lines.append("flapi hot-reload failed for: " + "; ".join(failed))
         if render_errors:
-            lines.append("flapi: reloaded, but rendering failed:\n  " + "\n  ".join(render_errors))
+            lines.append("flapi: reloaded, but template validation failed:\n  " + "\n  ".join(render_errors))
         if notes:
             lines.extend(notes)
         print("\n".join(lines), file=sys.stderr)
         return 2
     if reloaded:
-        notes.insert(0, f"flapi: validated, hot-reloaded and rendered {', '.join(reloaded)} on {base}.")
+        notes.insert(0, f"flapi: validated, hot-reloaded and checked {', '.join(reloaded)} on {base}.")
     elif edited.suffix == ".sql":
         notes.insert(0, f"flapi: config valid; no loaded endpoint uses {edited.name}.")
     elif is_endpoint_yaml:

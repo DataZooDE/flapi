@@ -2,12 +2,15 @@
 #include <cstdio>
 #include <sstream>
 #include <algorithm>
+#include <cctype>
 #include "crow/json.h"
 #include <yaml-cpp/yaml.h>
 
 #include "duckdb.hpp"
 #include "duckdb/main/capi/capi_internal.hpp"
 #include "duckdb/parser/parser.hpp"
+#include "duckdb/parser/statement/create_statement.hpp"
+#include "duckdb/parser/parsed_data/create_table_info.hpp"
 
 #include "sql_template_processor.hpp"
 #include "sql_utils.hpp"
@@ -617,7 +620,8 @@ std::string qualifiedTarget(const PopulateTarget& target) {
 
 } // namespace
 
-std::optional<std::size_t> DatabaseManager::FindSelectStatement(const std::string& script) {
+std::optional<std::size_t> DatabaseManager::FindSelectStatement(const std::string& script,
+                                                                std::size_t* statement_count) {
     // DuckDB's own parser, not a regex: `WITH ... INSERT`, `CREATE TABLE ... AS
     // SELECT` and a SELECT inside a string literal or comment must all read
     // correctly. A script the standalone parser cannot read (an extension's
@@ -625,6 +629,9 @@ std::optional<std::size_t> DatabaseManager::FindSelectStatement(const std::strin
     try {
         duckdb::Parser parser;
         parser.ParseQuery(script);
+        if (statement_count) {
+            *statement_count = parser.statements.size();
+        }
         for (std::size_t i = 0; i < parser.statements.size(); ++i) {
             if (parser.statements[i] && parser.statements[i]->type == duckdb::StatementType::SELECT_STATEMENT) {
                 return i + 1;
@@ -634,6 +641,265 @@ std::optional<std::size_t> DatabaseManager::FindSelectStatement(const std::strin
         return std::nullopt;
     }
     return std::nullopt;
+}
+
+std::vector<std::string> DatabaseManager::SplitStatements(const std::string& script) {
+    std::vector<std::string> out;
+    std::string current;
+    bool meaningful = false;  // anything but whitespace and comments so far
+    const std::size_t n = script.size();
+    const auto flush = [&]() {
+        if (meaningful) {
+            out.push_back(current);
+        }
+        current.clear();
+        meaningful = false;
+    };
+    std::size_t i = 0;
+    while (i < n) {
+        const char c = script[i];
+        if (c == '-' && i + 1 < n && script[i + 1] == '-') {
+            const std::size_t end = script.find('\n', i);
+            const std::size_t stop = end == std::string::npos ? n : end;
+            current.append(script, i, stop - i);
+            i = stop;
+            continue;
+        }
+        if (c == '/' && i + 1 < n && script[i + 1] == '*') {
+            const std::size_t end = script.find("*/", i + 2);
+            const std::size_t stop = end == std::string::npos ? n : end + 2;
+            current.append(script, i, stop - i);
+            i = stop;
+            continue;
+        }
+        if (c == '\'' || c == '"') {
+            // '' and "" (the escaped quote) need no special case: the pair
+            // closes and immediately re-opens the literal.
+            const std::size_t end = script.find(c, i + 1);
+            const std::size_t stop = end == std::string::npos ? n : end + 1;
+            current.append(script, i, stop - i);
+            meaningful = true;
+            i = stop;
+            continue;
+        }
+        if (c == '$') {
+            // $$ ... $$ or $tag$ ... $tag$; `$1` is a parameter, not a quote.
+            std::size_t j = i + 1;
+            while (j < n && (std::isalnum(static_cast<unsigned char>(script[j])) || script[j] == '_')) {
+                ++j;
+            }
+            const bool is_quote = j < n && script[j] == '$' &&
+                                  (j == i + 1 || !std::isdigit(static_cast<unsigned char>(script[i + 1])));
+            if (is_quote) {
+                const std::string tag = script.substr(i, j - i + 1);
+                const std::size_t end = script.find(tag, j + 1);
+                const std::size_t stop = end == std::string::npos ? n : end + tag.size();
+                current.append(script, i, stop - i);
+                meaningful = true;
+                i = stop;
+                continue;
+            }
+        }
+        if (c == ';') {
+            flush();
+            ++i;
+            continue;
+        }
+        if (!std::isspace(static_cast<unsigned char>(c))) {
+            meaningful = true;
+        }
+        current += c;
+        ++i;
+    }
+    flush();
+    return out;
+}
+
+namespace {
+
+// PlainCreate: a definition that moves no data (table without AS, schema, view,
+// macro, sequence). CreateAs: CREATE TABLE ... AS <query>. Create: anything
+// else that creates (an index builds over the table's rows).
+enum class StatementKind { Unknown, Select, Transaction, PlainCreate, CreateAs, Create, Other };
+
+// What the standalone parser makes of one statement. Unknown when it cannot
+// read it (an extension's syntax): then only the connection judges it.
+StatementKind ClassifyStatement(const std::string& sql) {
+    try {
+        duckdb::Parser parser;
+        parser.ParseQuery(sql);
+        if (parser.statements.size() != 1 || !parser.statements[0]) {
+            return StatementKind::Unknown;
+        }
+        const auto& statement = *parser.statements[0];
+        switch (statement.type) {
+            case duckdb::StatementType::SELECT_STATEMENT:
+                return StatementKind::Select;
+            case duckdb::StatementType::TRANSACTION_STATEMENT:
+                return StatementKind::Transaction;
+            case duckdb::StatementType::CREATE_STATEMENT: {
+                const auto& info = statement.Cast<duckdb::CreateStatement>().info;
+                if (!info || info->type == duckdb::CatalogType::INDEX_ENTRY) {
+                    return StatementKind::Create;
+                }
+                if (info->type == duckdb::CatalogType::TABLE_ENTRY && info->Cast<duckdb::CreateTableInfo>().query) {
+                    return StatementKind::CreateAs;
+                }
+                return StatementKind::PlainCreate;
+            }
+            default:
+                return StatementKind::Other;
+        }
+    } catch (const std::exception&) {
+        return StatementKind::Unknown;
+    }
+}
+
+// Whether a DuckDB "... does not exist" message is about `table`.
+bool NamesTable(const std::string& message, const std::string& table) {
+    if (table.empty()) {
+        return false;
+    }
+    for (const auto& form : {"name " + table + " ", "name " + table + "!", "\"" + table + "\"", "." + table + " ",
+                             "." + table + "!"}) {
+        if (message.find(form) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
+DatabaseManager::ScriptValidation DatabaseManager::validateScript(const std::string& script,
+                                                                  const PopulateTarget* populate,
+                                                                  const PopulateTarget* cache_table) {
+    ScriptValidation out;
+    const auto statements = SplitStatements(script);
+    out.statements = statements.size();
+    if (statements.empty()) {
+        out.errors.push_back({0, "parse", "the template renders no SQL statement"});
+        return out;
+    }
+
+    auto executor = createQueryExecutor();
+    duckdb_connection conn = executor.conn;
+
+    // Everything below runs inside ONE transaction that is always rolled back,
+    // so nothing it does - the plain CREATEs it replays - is ever committed. A
+    // failed statement can leave the transaction unusable, so after one it is
+    // restarted and the CREATEs so far replayed.
+    std::vector<std::string> replay;
+    const auto begin = [&]() {
+        if (duckdb_query(conn, "BEGIN TRANSACTION", nullptr) == DuckDBError) {
+            return false;
+        }
+        for (const auto& create : replay) {
+            duckdb_query(conn, create.c_str(), nullptr);
+        }
+        return true;
+    };
+    const auto rollback = [&]() { duckdb_query(conn, "ROLLBACK", nullptr); };
+    bool in_transaction = begin();
+
+    bool creates_unrun = false;  // an earlier CREATE this check did not run
+    for (std::size_t i = 0; i < statements.size(); ++i) {
+        const std::size_t number = i + 1;
+        const std::string& sql = statements[i];
+
+        // The CONNECTION's parser, so syntax an extension adds is accepted.
+        duckdb_extracted_statements extracted = nullptr;
+        const idx_t count = duckdb_extract_statements(conn, sql.c_str(), &extracted);
+        if (count == 0) {
+            const char* raw = extracted ? duckdb_extract_statements_error(extracted) : nullptr;
+            out.errors.push_back({number, "parse", raw ? raw : "statement could not be parsed"});
+            duckdb_destroy_extracted(&extracted);
+            continue;
+        }
+
+        const StatementKind kind = ClassifyStatement(sql);
+        if (kind == StatementKind::Transaction) {
+            // The script's own BEGIN/COMMIT: this check's transaction stands in.
+            duckdb_destroy_extracted(&extracted);
+            continue;
+        }
+        if (populate && kind == StatementKind::Select) {
+            out.errors.push_back(
+                {number, "bare_select", PopulateSelectError(*populate, number, statements.size())});
+            duckdb_destroy_extracted(&extracted);
+            continue;
+        }
+
+        // Preparing binds and plans - what EXPLAIN checks - and runs nothing.
+        duckdb_prepared_statement prepared = nullptr;
+        std::optional<std::string> failure;
+        if (duckdb_prepare_extracted_statement(conn, extracted, 0, &prepared) == DuckDBError) {
+            const char* raw = prepared ? duckdb_prepare_error(prepared) : nullptr;
+            failure = raw ? raw : "statement could not be prepared";
+        } else if (kind == StatementKind::PlainCreate && in_transaction) {
+            // A definition without data, created in the doomed transaction so
+            // the MERGE/INSERT after it binds against the real columns.
+            duckdb_result result;
+            if (duckdb_execute_prepared(prepared, &result) == DuckDBError) {
+                const char* raw = duckdb_result_error(&result);
+                failure = raw ? raw : "statement failed";
+            } else {
+                replay.push_back(sql);
+            }
+            duckdb_destroy_result(&result);
+        }
+        duckdb_destroy_prepare(&prepared);
+        duckdb_destroy_extracted(&extracted);
+        bool created = false;
+        if (!failure && kind == StatementKind::CreateAs && in_transaction) {
+            // `WITH NO DATA`: the table with the query's columns and no rows -
+            // the query is planned, not run - so what follows binds against it.
+            // Not every CTAS form accepts the suffix; one that does not just
+            // leaves its table unchecked.
+            const std::string no_data = sql + "\nWITH NO DATA";
+            if (duckdb_query(conn, no_data.c_str(), nullptr) != DuckDBError) {
+                replay.push_back(no_data);
+                created = true;
+            } else {
+                rollback();
+                in_transaction = begin();
+            }
+        }
+
+        if (failure) {
+            const std::string& message = *failure;
+            const bool missing = message.find("does not exist") != std::string::npos;
+            if (missing && cache_table && NamesTable(message, cache_table->table)) {
+                out.warnings.push_back(
+                    {number, "cache_not_built",
+                     "cache table " + cache_table->catalog + "." + cache_table->schema + "." + cache_table->table +
+                         " does not exist yet (cache not built); statement " + std::to_string(number) +
+                         " was not checked against it"});
+            } else if (missing && creates_unrun) {
+                out.warnings.push_back({number, "not_checked",
+                                        "statement " + std::to_string(number) +
+                                            " was not checked: it uses a table an earlier statement creates (" +
+                                            message + ")"});
+            } else if (message.find("Could not determine type of parameters") != std::string::npos) {
+                out.warnings.push_back(
+                    {number, "not_checked", "statement " + std::to_string(number) + " was not fully checked: " + message});
+            } else {
+                out.errors.push_back({number, "bind", message});
+            }
+            if (in_transaction) {
+                rollback();
+                in_transaction = begin();
+            }
+        }
+        if (kind == StatementKind::Create || kind == StatementKind::Unknown ||
+            (kind == StatementKind::CreateAs && !created) || (kind == StatementKind::PlainCreate && failure)) {
+            creates_unrun = true;
+        }
+    }
+    if (in_transaction) {
+        rollback();
+    }
+    return out;
 }
 
 std::optional<std::string> DatabaseManager::MaterialiseSelect(const std::string& script, const PopulateTarget& target) {
@@ -653,7 +919,17 @@ std::optional<std::string> DatabaseManager::MaterialiseSelect(const std::string&
     return "CREATE OR REPLACE TABLE " + qualifiedTarget(target) + " AS\n" + script;
 }
 
-std::string DatabaseManager::PopulateSelectError(const PopulateTarget& target, std::size_t statement) {
+std::string DatabaseManager::PopulateSelectError(const PopulateTarget& target, std::size_t statement,
+                                                 std::size_t statement_count) {
+    // A SELECT before the last statement is usually a guard or a debugging
+    // probe in a script that DOES write the table; "builds nothing" sent its
+    // author looking for a missing write that was there all along.
+    if (statement_count > 1 && statement < statement_count) {
+        return "cache template statement " + std::to_string(statement) + " of " + std::to_string(statement_count) +
+               " is a bare SELECT; its result is discarded. Wrap a check in CREATE OR REPLACE TEMP TABLE _chk AS "
+               "SELECT ... (the template must write {{cache.catalog}}.{{cache.schema}}.{{cache.table}}, here " +
+               target.catalog + "." + target.schema + "." + target.table + ")";
+    }
     return "cache template must write {{cache.catalog}}.{{cache.schema}}.{{cache.table}} (here " +
            target.catalog + "." + target.schema + "." + target.table +
            "), e.g. CREATE OR REPLACE TABLE ... AS SELECT ...; statement " + std::to_string(statement) +
@@ -669,8 +945,9 @@ std::optional<int64_t> DatabaseManager::executeDuckLakeScript(const std::string&
     // recorded as a success, and the endpoint then answered 500 on a missing
     // table.
     if (target) {
-        if (const auto select_at = FindSelectStatement(script)) {
-            throw std::runtime_error(PopulateSelectError(*target, *select_at));
+        std::size_t statement_count = 0;
+        if (const auto select_at = FindSelectStatement(script, &statement_count)) {
+            throw std::runtime_error(PopulateSelectError(*target, *select_at, statement_count));
         }
     }
 

@@ -134,9 +134,14 @@ Authorization: Bearer <token>
   "template-path": "/srv/api/sqls",
   "connections": {"customers": {"init": "...", "properties": {"path": "./data/customers.parquet"}}},
   "auth": {"enabled": false},
-  "ducklake": {"enabled": true, "alias": "cache", "warmup": "always", "read-only": false}
+  "ducklake": {"enabled": true, "alias": "cache", "warmup": "always", "read-only": false},
+  "bundled": false
 }
 ```
+
+`bundled` is `true` when the server runs from a packed binary (`flapi pack`): it serves the configuration
+folded into it, so edits to files on disk cannot reach it and its config-service writes are refused. The
+Claude Code hook uses it to say so instead of reloading.
 
 The project configuration is read-only through this API: `PUT /api/v1/_config/project` answers
 `405 Method Not Allowed` with `Allow: GET` (after the usual `401` for a missing token). Edit
@@ -655,7 +660,8 @@ Expand a Mustache template with parameters.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `include_variables` | boolean | Include variable metadata in response |
-| `validate_only` | boolean | Only validate, don't expand |
+| `validate_only` | boolean | Check the rendered SQL without running it (see below) |
+| `target` | `cache` | The cache populate template instead of the serving template |
 
 **Request:**
 ```http
@@ -690,6 +696,58 @@ or `( IS NULL OR c <= )` for an absent value). `{{{ }}}` and untyped fields are 
 `?target=cache` renders the cache populate template as the next refresh would (no bindings). When the
 cursor watermark read from the cache table does not match `cursor.type` (it is then dropped and the
 refresh loads the full source), the answer carries `watermark_dropped_reason`.
+
+A template with a Mustache syntax error (an unclosed `{{#section}}`, a stray `{{/x}}`) is a **400**
+whose `error` names the file, line and column (`Invalid template .../orders_cache.sql:1:1: ...`). It used
+to be a 500.
+
+**`?validate_only=1` (serving template) and `?target=cache&validate_only=1` (cache template).** The
+template is rendered - the serving one as the serving path renders it (typed params as `?`
+placeholders), the cache one with the live watermark exactly as the next refresh would, and a cache
+without `template-file` as the `CREATE OR REPLACE TABLE ... AS <serving SELECT>` it is materialised as -
+and then checked, **never run**:
+
+1. split into statements (top-level `;`; string literals, quoted identifiers and comments respected), each
+   parsed by DuckDB's parser: a syntax error is reported against its own statement;
+2. for `target=cache`, the bare-SELECT rule of a refresh: a SELECT statement is an error;
+3. every statement is prepared - bound and planned, which is what `EXPLAIN` checks: unknown tables and
+   columns, type errors - inside a transaction that is always rolled back. No DML and no query runs. Only
+   a definition without data (`CREATE TABLE` without AS, `CREATE SCHEMA`/`VIEW`) is executed in that
+   transaction, and a `CREATE TABLE ... AS` as `... WITH NO DATA`, so a later statement that writes the
+   table they create (`MERGE INTO` on a first build) is bound against its real columns.
+
+`template` in the body (an unsaved candidate) is validated instead of the file, for the serving template.
+
+```json
+{
+  "valid": false,
+  "target": "cache",
+  "statements": 2,
+  "expanded": "CREATE TABLE IF NOT EXISTS cache.main.orders_cache AS ...;\nMERGE INTOO ...",
+  "errors": [
+    {"statement": 2, "type": "sql_syntax", "kind": "parse",
+     "message": "SQL validation failed: statement 2: Parser Error: syntax error at or near \"INTOO\""}
+  ],
+  "warnings": []
+}
+```
+
+| Error `type` (`kind`) | Meaning |
+|---|---|
+| `sql_syntax` (`parse`) | The statement does not parse |
+| `sql_syntax` (`bind`) | It parses but does not bind: unknown table/column, type mismatch |
+| `bare_select` | `target=cache`: a SELECT builds nothing. Before the last statement the message reads "statement N of M is a bare SELECT; its result is discarded. Wrap a check in CREATE OR REPLACE TEMP TABLE _chk AS SELECT ..." |
+| `template_syntax` | The Mustache template is unbalanced (`statement` 0) |
+| `template_load`, `template_expansion`, `context_creation` | Serving template only: it could not be read or rendered |
+
+| Warning `type` | Meaning |
+|---|---|
+| `cache_not_built` | The statement reads or writes the endpoint's cache table, which does not exist yet: run `flapii cache refresh <path>`. Not an error |
+| `not_checked` | The statement uses a table an earlier statement would create and this check could not (e.g. `CREATE INDEX`), or its parameter types could not be determined |
+| `watermark_dropped` | `target=cache`: the `watermark_dropped_reason` of the plain expansion |
+| `undefined_variable` | Serving template: a `{{ name }}` the context may not define |
+
+`valid` is `true` exactly when `errors` is empty. `bindings` is not returned.
 
 **CLI:** `flapii templates expand /customers -p '{"id":"123"}' [--cache] [--method GET]`
 

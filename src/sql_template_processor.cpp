@@ -74,6 +74,20 @@ PreparedQueryRender SQLTemplateProcessor::loadAndProcessTemplatePrepared(
     return out;
 }
 
+PreparedQueryRender SQLTemplateProcessor::processTemplatePrepared(const std::string& templateContent,
+                                                                  const EndpointConfig& endpoint,
+                                                                  std::map<std::string, std::string>& params) {
+    RequireValidMustacheSyntax(templateContent, endpoint.templateSource);
+    PreparedTemplateRewriter rewriter;
+    SqlParameterClassifier classifier;
+    auto rewrite = rewriter.rewrite(templateContent, endpoint.request_fields, classifier);
+    crow::mustache::context ctx = createTemplateContext(endpoint, params);
+    PreparedQueryRender out;
+    out.sql = processTemplate(rewrite.rewritten_template, ctx);
+    out.bindings = std::move(rewrite.bindings);
+    return out;
+}
+
 std::string SQLTemplateProcessor::loadAndProcessTemplate(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params) {
     std::string templatePath;
     if (cacheConfig.template_file) {

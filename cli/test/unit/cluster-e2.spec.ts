@@ -9,6 +9,7 @@ import { requestRows } from '../../src/commands/metrics';
 import { resolveValidateDir } from '../../src/commands/config/validate';
 import { PROJECT_TEMPLATES } from '../../src/commands/project/templates';
 import { AxiosResponseError } from '@flapi/shared';
+import { AxiosError } from 'axios';
 
 describe('#211 cluster E2 (CLI)', () => {
   it('keeps ":" literal and appends ?method=', () => {
@@ -21,6 +22,17 @@ describe('#211 cluster E2 (CLI)', () => {
     const err = new AxiosResponseError({ status: 401, statusText: 'Unauthorized', data: {}, headers: {} } as any);
     expect(guidanceFor(err, undefined, true)).toContain('rejected the token');
     expect(guidanceFor(err, undefined, false)).toContain('needs a token');
+  });
+
+  it('says "timed out", not "is it running?", when the request timed out', () => {
+    const timeout = new AxiosError('timeout of 5000ms exceeded', 'ECONNABORTED', { timeout: 5000, headers: {} } as any);
+    const message = guidanceFor(timeout, 'http://localhost:8080', true);
+    expect(message).toContain('timed out after 5s');
+    expect(message).toContain('--timeout');
+    expect(message).toContain('flapii cache audit');
+    expect(message).not.toContain('Is it running');
+    const refused = new AxiosError('connect ECONNREFUSED', 'ECONNREFUSED', { headers: {} } as any);
+    expect(guidanceFor(refused, 'http://localhost:8080', true)).toContain('Is it running');
   });
 
   it('shows REST+Tool for a file with url-path and mcp-tool', () => {

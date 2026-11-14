@@ -1534,7 +1534,9 @@ from the previous run still exists.
 
 **The populate template must build the table.** A cache template whose statement is a bare `SELECT` is
 refused before it runs (`cache template must write {{cache.catalog}}.{{cache.schema}}.{{cache.table}} …
-statement N of the template is a bare SELECT, which builds nothing`). After the script has run, the
+statement N of the template is a bare SELECT, which builds nothing`; a SELECT before the last statement,
+e.g. a guard, is refused with `statement N of M is a bare SELECT; its result is discarded. Wrap a check in
+CREATE OR REPLACE TEMP TABLE _chk AS SELECT ...`). After the script has run, the
 cache table must exist; if it does not, the refresh fails and is rolled back. Write a
 `CREATE OR REPLACE TABLE … AS SELECT …`, an `INSERT INTO …` or a `MERGE INTO …`.
 

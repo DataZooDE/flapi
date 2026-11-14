@@ -34,6 +34,14 @@ against a running server, then HTTP/MCP tests against a running server.
   `requird:`); only unknown TOP-level keys of `flapi.yaml` and a few known-inert
   keys (`field-type`, `server-name`, connection `log-queries`) log a warning. A
   typo'd optional key validates fine and does nothing.
+- **`POST .../template/expand?validate_only=1` checks SQL without running it**
+  (add `target=cache` for the populate template, rendered with the live watermark):
+  each statement is parsed, then bound in a rolled-back transaction - unknown
+  columns/tables, `MERGE INTOO`, a bare SELECT in a populate template - and the
+  answer is `{valid, errors[{statement, type, kind, message}], warnings, expanded}`.
+  SQL inside `{{#params.x}}` is only checked when `x` is in `parameters`; the
+  plugin hook sends a sample value per typed field. A cache not built yet is a
+  `cache_not_built` warning, not an error.
 - **`flapii templates expand` skips validators and pastes values in**; the real
   request binds `{{ params.x }}` as `?`. Use `templates test` (validates, then
   runs the SQL) or a real HTTP call to see true behaviour.

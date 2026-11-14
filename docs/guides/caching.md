@@ -98,8 +98,13 @@ flAPI runs the populate template **verbatim**. It does not wrap a `SELECT` in a
 `CREATE TABLE`, so the template itself must write the table. A statement that
 is only a `SELECT` is refused before anything runs (`cache template must write
 {{cache.catalog}}.{{cache.schema}}.{{cache.table}} … statement N of the template
-is a bare SELECT, which builds nothing`), and after the script the cache table
-must exist, or the refresh fails and is rolled back. A cache whose first build
+is a bare SELECT, which builds nothing`; a guard SELECT before the last statement
+is refused too, with "its result is discarded. Wrap a check in CREATE OR REPLACE
+TEMP TABLE _chk AS SELECT ..."), and after the script the cache table
+must exist, or the refresh fails and is rolled back. Check a template before the
+refresh does with `POST .../template/expand?target=cache&validate_only=1`: it
+parses and binds each statement without running anything
+([API reference](../CONFIG_SERVICE_API_REFERENCE.md)). A cache whose first build
 fails answers `503 {"error":"cache_build_failed"}` with `Retry-After: 5`; the
 reason is in the server log.
 

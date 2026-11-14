@@ -122,6 +122,40 @@ void addCacheTargetParams(const std::shared_ptr<ConfigManager>& config_manager, 
     }
 }
 
+/// The DuckLake table a cached endpoint's cache writes, or nullopt.
+std::optional<PopulateTarget> cacheTableOf(const ConfigManager& config_manager, const EndpointConfig& endpoint) {
+    if (!endpoint.cache.enabled || endpoint.cache.table.empty() || !config_manager.getDuckLakeConfig().enabled) {
+        return std::nullopt;
+    }
+    return PopulateTarget{config_manager.getDuckLakeConfig().alias,
+                          endpoint.cache.schema.empty() ? "main" : endpoint.cache.schema, endpoint.cache.table};
+}
+
+/// validateScript's findings, as template/expand?validate_only lists them.
+/// Parse and bind errors keep the type `sql_syntax` existing clients test for;
+/// `kind` says which, `statement` is 1-based.
+void appendScriptIssues(const DatabaseManager::ScriptValidation& validation, const TemplateSecrets& secrets,
+                        crow::json::wvalue& errors, crow::json::wvalue& warnings) {
+    for (const auto& issue : validation.errors) {
+        crow::json::wvalue error;
+        const bool sql = issue.type == "parse" || issue.type == "bind";
+        error["type"] = sql ? std::string("sql_syntax") : issue.type;
+        error["kind"] = issue.type;
+        error["statement"] = static_cast<uint64_t>(issue.statement);
+        error["message"] = secrets.scrub(sql ? "SQL validation failed: statement " + std::to_string(issue.statement) +
+                                                   ": " + issue.message
+                                             : issue.message);
+        errors[errors.size()] = std::move(error);
+    }
+    for (const auto& issue : validation.warnings) {
+        crow::json::wvalue warning;
+        warning["type"] = issue.type;
+        warning["statement"] = static_cast<uint64_t>(issue.statement);
+        warning["message"] = secrets.scrub(issue.message);
+        warnings[warnings.size()] = std::move(warning);
+    }
+}
+
 } // namespace
 
 crow::json::wvalue buildMetricsJson(const std::shared_ptr<ConfigManager>& config_manager, const std::string& filter) {
@@ -1260,6 +1294,10 @@ crow::response ProjectConfigHandler::getProjectConfig(const crow::request& req) 
             return crow::response(500, "Internal server error: Configuration manager is not initialized");
         }
         auto config = config_manager_->getFlapiConfig();
+        // Lets a client (the Claude Code hook, flapii) tell that edits to files
+        // on disk cannot reach this server: a packed binary serves the copy
+        // folded into it, and its config-service writes are refused.
+        config["bundled"] = FileProviderFactory::GetBundleContents() != nullptr;
         return crow::response(200, config);
     } catch (const std::exception& e) {
         return crow::response(500, std::string("Internal server error: ") + e.what());
@@ -2535,7 +2573,28 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
                 return crow::response(400, "DuckLake not enabled");
             }
             std::map<std::string, std::string> cache_params;
-            const std::string rendered = cache_manager->renderRefreshTemplate(config_manager_, *endpoint, cache_params);
+            std::string rendered;
+            try {
+                rendered = cache_manager->renderRefreshTemplate(config_manager_, *endpoint, cache_params);
+            } catch (const std::invalid_argument& e) {
+                // The Mustache checker's "Invalid template <file>:<line>:<col>: ...".
+                // A broken template is the caller's input, not a server fault.
+                if (validate_only) {
+                    crow::json::wvalue response;
+                    crow::json::wvalue errors = crow::json::wvalue::list();
+                    crow::json::wvalue error;
+                    error["type"] = "template_syntax";
+                    error["statement"] = 0;
+                    error["message"] = e.what();
+                    errors[0] = std::move(error);
+                    response["target"] = "cache";
+                    response["valid"] = false;
+                    response["errors"] = std::move(errors);
+                    response["warnings"] = crow::json::wvalue::list();
+                    return crow::response(200, response);
+                }
+                return jsonError(400, e.what());
+            }
             const auto secrets = collectTemplateSecrets(config_manager_.get(), *endpoint, cache_params);
             crow::json::wvalue response;
             response["target"] = "cache";
@@ -2545,6 +2604,38 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
                                                      "interpolates is a credential too short to "
                                                      "redact reliably>")
                                        : secrets.scrub(rendered);
+            if (validate_only) {
+                // Checked as the next refresh would run it - with this watermark,
+                // the bare-SELECT rule, and the materialisation a cache without a
+                // template-file gets - but never run: parsed per statement and
+                // prepared (bound) in a transaction that is rolled back. A
+                // `MERGE INTOO`, an unknown column or a bare SELECT used to pass
+                // here and fail at the next scheduled refresh.
+                const PopulateTarget populate = *cacheTableOf(*config_manager_, *endpoint);
+                std::string script = rendered;
+                if (!endpoint->cache.template_file) {
+                    if (auto materialised = DatabaseManager::MaterialiseSelect(rendered, populate)) {
+                        script = std::move(*materialised);
+                    }
+                }
+                const auto validation = db_manager->validateScript(script, &populate, &populate);
+                crow::json::wvalue errors = crow::json::wvalue::list();
+                crow::json::wvalue warnings = crow::json::wvalue::list();
+                appendScriptIssues(validation, secrets, errors, warnings);
+                if (const auto it = cache_params.find(CacheManager::kWatermarkDroppedReasonKey);
+                    it != cache_params.end()) {
+                    crow::json::wvalue warning;
+                    warning["type"] = "watermark_dropped";
+                    warning["statement"] = 0;
+                    warning["message"] = secrets.scrub(it->second);
+                    warnings[warnings.size()] = std::move(warning);
+                }
+                response["valid"] = validation.errors.empty();
+                response["statements"] = static_cast<uint64_t>(validation.statements);
+                response["errors"] = std::move(errors);
+                response["warnings"] = std::move(warnings);
+                return crow::response(200, response);
+            }
             // Named as a template author writes them.
             static const std::map<std::string, std::string> kTemplateName = {
                 {"cacheCatalog", "cache.catalog"}, {"cacheSchema", "cache.schema"},
@@ -2650,28 +2741,31 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
                 // 3. Validate SQL by expanding and checking with DuckDB
                 if (is_valid) {
                     try {
-                        std::string expanded_sql;
                         addCacheTargetParams(config_manager_, *endpoint, params);
-                        if (candidate) {
-                            std::map<std::string, std::string> render_params = params;
-                            expanded_sql = sql_processor->processTemplate(
-                                *candidate, sql_processor->createTemplateContext(*endpoint, render_params));
-                        } else {
-                            expanded_sql = sql_processor->loadAndProcessTemplate(*endpoint, params);
-                        }
-                        
-                        // Use DuckDB to validate the SQL syntax
+                        // Rendered as the serving path renders it: typed
+                        // `{{ params.x }}` become `?` placeholders. The pasted
+                        // rendering reported `c = ALFKI` binder errors for SQL
+                        // that never runs.
+                        std::map<std::string, std::string> render_params = params;
+                        const auto prepared =
+                            candidate ? sql_processor->processTemplatePrepared(*candidate, *endpoint, render_params)
+                                      : sql_processor->loadAndProcessTemplatePrepared(*endpoint, render_params);
+                        validation_response["expanded"] =
+                            secrets.withhold() ? std::string("<expansion withheld: a value this template "
+                                                             "interpolates is a credential too short to "
+                                                             "redact reliably>")
+                                               : secrets.scrub(prepared.sql);
+
+                        // Parsed per statement and prepared (bound and planned,
+                        // as EXPLAIN does) inside a rolled-back transaction;
+                        // nothing runs. A cached endpoint reading a cache that is
+                        // not built yet is a warning, not an error.
                         auto db_manager = DatabaseManager::getInstance();
-                        try {
-                            // Use EXPLAIN to validate SQL without executing it
-                            std::string explain_query = "EXPLAIN " + expanded_sql;
-                            auto result = db_manager->executeQuery(explain_query, {}, false);
-                            // If we get here, the SQL is valid
-                        } catch (const std::exception& sql_error) {
-                            crow::json::wvalue error;
-                            error["type"] = "sql_syntax";
-                            error["message"] = secrets.scrub(std::string("SQL validation failed: ") + sql_error.what());
-                            errors[errors.size()] = std::move(error);
+                        const auto cache_table = cacheTableOf(*config_manager_, *endpoint);
+                        const auto validation = db_manager->validateScript(
+                            prepared.sql, nullptr, cache_table ? &*cache_table : nullptr);
+                        appendScriptIssues(validation, secrets, errors, warnings);
+                        if (!validation.errors.empty()) {
                             is_valid = false;
                         }
                     } catch (const std::exception& e) {
@@ -2809,6 +2903,10 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
         }
 
         return crow::response(200, response);
+    } catch (const std::invalid_argument& e) {
+        // RequireValidMustacheSyntax: an unbalanced template is a 400 naming
+        // file:line, not an internal error.
+        return jsonError(400, e.what());
     } catch (const std::exception& e) {
         return crow::response(500, std::string("Internal server error: ") + e.what());
     }

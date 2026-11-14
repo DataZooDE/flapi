@@ -418,6 +418,9 @@ flapi -c flapi.yaml --config-service --config-service-token dev-token --log-leve
 flapii cache get /customers                 # table, schema, cursor, primary key, template file
 flapii cache template /customers            # the populate SQL the server reads
 flapii templates expand /customers --cache  # rendered with the live watermark, not executed
+curl -s -X POST -H "X-Config-Token: $FLAPI_CONFIG_SERVICE_TOKEN" -d '{"parameters":{}}' \
+  'http://localhost:8080/api/v1/_config/endpoints/-customers/template/expand?target=cache&validate_only=1'
+                                            # parsed + bound per statement, nothing runs
 flapii cache update-template /customers --file sqls/customers_cache.sql
 flapii cache refresh /customers             # run it now
 flapii cache audit /customers -o table      # mode, status, duration_ms, rows, snapshot
@@ -435,7 +438,18 @@ flapii cache audit /customers -o table      # mode, status, duration_ms, rows, s
 - `flapii templates expand <path> --cache` renders the **populate** template with
   the live watermark and snapshot variables, without executing it (returns
   `target`, `mode`, `expanded`, `variables`): check which branch the next refresh
-  takes. Without `--cache` it renders the serving template.
+  takes. Without `--cache` it renders the serving template. A template with an
+  unclosed `{{#section}}` is a 400 naming `<file>:<line>:<col>`.
+- `?target=cache&validate_only=1` (curl above; the plugin hook calls it after every
+  edit) also CHECKS that rendering without running it: per-statement parse errors,
+  the bare-SELECT rule, and binder errors (unknown columns) from preparing each
+  statement in a rolled-back transaction. The `CREATE TABLE IF NOT EXISTS ... AS
+  ... WHERE false` bootstrap is created there `WITH NO DATA`, so the MERGE after it
+  is bound even before the first build. `MERGE INTOO`, `SELEC oops;` and `c_bogus`
+  used to pass and fail at the next refresh.
+- A bare SELECT before the last statement (a guard) is refused with "statement N of
+  M is a bare SELECT; its result is discarded. Wrap a check in CREATE OR REPLACE TEMP
+  TABLE _chk AS SELECT ...".
 - `flapii cache template` / `update-template` need `template-file`; without it they
   answer `400 Cache template not configured`.
 - Prove the incremental branch: refresh, change the source, refresh again, and
