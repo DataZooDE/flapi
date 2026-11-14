@@ -259,6 +259,11 @@ struct EndpointConfig {
     std::string templateSource;
     std::vector<std::string> connection;
     bool with_pagination = true;
+    // `allow-shadowing: true`: this endpoint may take precedence over a less
+    // specific, overlapping route of the same method whose auth is stricter
+    // or different (`/customers/7` open beside `/customers/:id` protected).
+    // Without it that combination is refused at load.
+    bool allow_shadowing = false;
     RateLimitConfig rate_limit;
     AuthConfig auth;
     CacheConfig cache;
@@ -463,6 +468,10 @@ struct EndpointConfig {
                 }
                 if (!urlPath.empty() && urlPath[0] != '/') {
                     errors.push_back("url-path must start with /");
+                } else if (!urlPath.empty()) {
+                    if (auto problem = RouteTranslator::urlPathProblem(urlPath); !problem.empty()) {
+                        errors.push_back(problem);
+                    }
                 }
                 break;
             case Type::MCP_Tool:
@@ -829,7 +838,26 @@ public:
     /// "" or why `candidate` may not be added: another loaded endpoint (from a
     /// different YAML file) already serves the same url-path and method. Both
     /// files are named.
-    std::string DuplicateEndpointProblem(const EndpointConfig& candidate) const;
+    ///
+    /// Also refuses a route that overlaps another endpoint's route for the
+    /// same method (both can match one request path) when the more specific
+    /// of the two - the one that answers those requests - has different auth
+    /// that is not at least as strict as the other's, unless the more specific
+    /// endpoint sets `allow-shadowing: true`.
+    ///
+    /// `replacing`: the endpoint an update replaces, which is not compared.
+    std::string DuplicateEndpointProblem(const EndpointConfig& candidate,
+                                         const EndpointConfig* replacing = nullptr) const;
+    /// Logs every allowed overlap of `candidate` with a loaded endpoint: a
+    /// WARNING when their auth differs (naming both and which one answers the
+    /// overlapping requests), INFO when it is the same.
+    void LogRouteOverlaps(const EndpointConfig& candidate, const EndpointConfig* replacing = nullptr) const;
+    /// The HTTP method as flapi stores and compares it: trimmed, upper-case,
+    /// empty -> GET. Does not judge it; see HttpMethodProblem.
+    static std::string CanonicalHttpMethod(const std::string& method);
+    /// "" or why `method` (as written) is not one of GET, POST, PUT, PATCH,
+    /// DELETE. `endpoint` names the endpoint in the message.
+    static std::string HttpMethodProblem(const std::string& method, const std::string& endpoint);
     /// The route a url-path compiles to, parameter names discarded:
     /// `/customers/:id` and `/customers/:cid` have the same shape.
     static std::string RouteShape(const std::string& url_path);

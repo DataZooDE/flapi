@@ -90,6 +90,7 @@ add_executable(flapi_tests
     test_alloc_budget.cpp
     runtime_metrics_test.cpp
     route_shape_duplicate_test.cpp
+    route_precedence_test.cpp
     test_cluster_c_regressions.cpp
     test_cluster_e2_regressions.cpp
     test_cluster_g1_regressions.cpp

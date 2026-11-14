@@ -161,7 +161,25 @@ void EndpointConfigParser::parseRestEndpointFields(
     EndpointConfig& config
 ) {
     config.urlPath = config_manager_->safeGet<std::string>(yaml_node, "url-path", "url-path");
-    config.method = config_manager_->safeGet<std::string>(yaml_node, "method", "method", "GET");
+    // Canonical (trimmed, upper-case, empty -> GET) from here on, and only the
+    // five methods routing knows. `method: get` used to load as "get": the
+    // duplicate check compared it case-sensitively against a protected `GET`
+    // on the same route and let it in, while routing upper-cases both and
+    // could pick it - an open copy answering the protected URL.
+    // `method:` with no value is YAML null: the default, like `method: ''`.
+    const std::string raw_method = (yaml_node["method"] && yaml_node["method"].IsNull())
+        ? std::string("GET")
+        : config_manager_->safeGet<std::string>(yaml_node, "method", "method", "GET");
+    if (auto problem = ConfigManager::HttpMethodProblem(raw_method, config.urlPath); !problem.empty()) {
+        throw std::runtime_error(problem);
+    }
+    config.method = ConfigManager::CanonicalHttpMethod(raw_method);
+    // A url-path the router cannot match literally (`/customers/{cid}`) used
+    // to load and then crash every request that reached it in the route scan.
+    if (auto problem = RouteTranslator::urlPathProblem(config.urlPath); !problem.empty()) {
+        throw std::runtime_error(problem);
+    }
+    config.allow_shadowing = config_manager_->safeGet<bool>(yaml_node, "allow-shadowing", "allow-shadowing", false);
     config.description = config_manager_->safeGet<std::string>(yaml_node, "description", "description", "");
     config.with_pagination = config_manager_->safeGet<bool>(yaml_node, "with-pagination", "with-pagination", true);
     config.request_fields_validation = config_manager_->safeGet<bool>(yaml_node, "request-fields-validation", "request-fields-validation", false);

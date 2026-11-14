@@ -1005,6 +1005,9 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
         if (!prefix.empty() && prefix.back() != '/') {
             prefix += '/';
         }
+        // Sorted, so the load order (and with it the order of log lines and
+        // load errors) is the same on every machine.
+        std::vector<std::string> names;
         for (const auto& [name, _data] : *bundle) {
             if (!prefix.empty() && name.rfind(prefix, 0) != 0) {
                 continue;
@@ -1014,6 +1017,10 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
             if (extension != ".yaml" && extension != ".yml") {
                 continue;
             }
+            names.push_back(name);
+        }
+        std::sort(names.begin(), names.end());
+        for (const auto& name : names) {
             total_yaml_files++;
             size_t endpoints_before = endpointsSnapshot()->size();
             loadEndpointConfig(name);
@@ -1022,17 +1029,26 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
             }
         }
     } else if (std::filesystem::exists(template_path) && std::filesystem::is_directory(template_path)) {
+        // Sorted by path: recursive_directory_iterator order is whatever the
+        // file system returns (creation order on tmpfs), and routing used to
+        // depend on it. It no longer does, but load errors and log lines
+        // should still come out the same everywhere.
+        std::vector<std::filesystem::path> files;
         for (const auto& entry : std::filesystem::recursive_directory_iterator(template_path)) {
             if (entry.is_regular_file()) {
                 auto extension = entry.path().extension();
                 if (extension == ".yaml" || extension == ".yml") {
-                    total_yaml_files++;
-                    size_t endpoints_before = endpointsSnapshot()->size();
-                    loadEndpointConfig(entry.path().string());
-                    if (endpointsSnapshot()->size() > endpoints_before) {
-                        loaded_endpoints++;
-                    }
+                    files.push_back(entry.path());
                 }
+            }
+        }
+        std::sort(files.begin(), files.end());
+        for (const auto& file : files) {
+            total_yaml_files++;
+            size_t endpoints_before = endpointsSnapshot()->size();
+            loadEndpointConfig(file.string());
+            if (endpointsSnapshot()->size() > endpoints_before) {
+                loaded_endpoints++;
             }
         }
     } else {
@@ -1084,6 +1100,7 @@ void ConfigManager::loadEndpointConfig(const std::string& config_file) {
         if (const auto duplicate = DuplicateEndpointProblem(endpoint); !duplicate.empty()) {
             throw std::runtime_error(duplicate);
         }
+        LogRouteOverlaps(endpoint);
 
         // Add to endpoints list
         mutateEndpointsVoid([&](std::vector<EndpointConfig>& eps) { eps.push_back(endpoint); });
@@ -2206,35 +2223,77 @@ std::shared_ptr<const std::vector<EndpointConfig>> ConfigManager::endpointsSnaps
     return endpoints_snapshot;
 }
 
-const EndpointConfig* ConfigManager::findEndpoint(const std::vector<EndpointConfig>& endpoints,
-                                                  const std::string& path) {
+namespace {
+
+// Of the endpoints in `endpoints` that match `path` (and `accept`), the one
+// that answers it: the most specific route (RouteTranslator::compareSpecificity),
+// never simply the first in the table. First-match made precedence depend on
+// load order - recursive_directory_iterator order, and a reload moved the
+// file to the end - so an open `/customers/7` or `/:z/:x/b` could answer the
+// URLs of a protected `/customers/:id` or `/a/:x/b`, and a reload of the
+// protected file could flip a live URL from 401 to 200. Every request-time
+// lookup (rate limit, auth, the handler) goes through here, so all three
+// always resolve the same endpoint.
+template <typename Accept>
+const EndpointConfig* mostSpecificMatch(const std::vector<EndpointConfig>& endpoints, const std::string& path,
+                                        Accept accept) {
+    const EndpointConfig* best = nullptr;
     for (const auto& endpoint : endpoints) {
-        if (endpoint.matchesPath(path)) {
-            return &endpoint;
+        if (!accept(endpoint) || !endpoint.matchesPath(path)) {
+            continue;
+        }
+        if (best == nullptr) {
+            best = &endpoint;
+            continue;
+        }
+        // MCP-only entries match by name and have no route to compare.
+        if (endpoint.isRESTEndpoint() && best->isRESTEndpoint() &&
+            RouteTranslator::compareSpecificity(endpoint.urlPath, best->urlPath) < 0) {
+            best = &endpoint;
         }
     }
-    return nullptr;
+    return best;
+}
+
+}  // namespace
+
+const EndpointConfig* ConfigManager::findEndpoint(const std::vector<EndpointConfig>& endpoints,
+                                                  const std::string& path) {
+    return mostSpecificMatch(endpoints, path, [](const EndpointConfig&) { return true; });
 }
 
 const EndpointConfig* ConfigManager::findEndpoint(const std::vector<EndpointConfig>& endpoints,
                                                   const std::string& path,
                                                   const std::string& httpMethod) {
-    // Mirrors getEndpointForPathAndMethod exactly: case-insensitive, empty
-    // endpoint method means GET.
-    std::string methodUpper = httpMethod;
-    std::transform(methodUpper.begin(), methodUpper.end(), methodUpper.begin(), ::toupper);
+    // Case-insensitive, empty means GET - on both sides, for endpoints built
+    // in code; the parsers already store the canonical form.
+    const std::string wanted = CanonicalHttpMethod(httpMethod);
+    return mostSpecificMatch(endpoints, path, [&](const EndpointConfig& endpoint) {
+        return CanonicalHttpMethod(endpoint.method) == wanted;
+    });
+}
 
-    for (const auto& endpoint : endpoints) {
-        if (!endpoint.matchesPath(path)) {
-            continue;
-        }
-        std::string endpointMethod = endpoint.method.empty() ? "GET" : endpoint.method;
-        std::transform(endpointMethod.begin(), endpointMethod.end(), endpointMethod.begin(), ::toupper);
-        if (endpointMethod == methodUpper) {
-            return &endpoint;
+std::string ConfigManager::CanonicalHttpMethod(const std::string& method) {
+    const auto first = method.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) {
+        return "GET";
+    }
+    const auto last = method.find_last_not_of(" \t\r\n");
+    std::string out = method.substr(first, last - first + 1);
+    std::transform(out.begin(), out.end(), out.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    return out;
+}
+
+std::string ConfigManager::HttpMethodProblem(const std::string& method, const std::string& endpoint) {
+    const std::string canonical = CanonicalHttpMethod(method);
+    for (const char* allowed : {"GET", "POST", "PUT", "PATCH", "DELETE"}) {
+        if (canonical == allowed) {
+            return "";
         }
     }
-    return nullptr;
+    return "Endpoint " + endpoint + ": method '" + method +
+           "' is not supported; use one of GET, POST, PUT, PATCH, DELETE";
 }
 std::string ConfigManager::getBasePath() const { return base_path.string(); }
 
@@ -2475,6 +2534,9 @@ crow::json::wvalue ConfigManager::serializeEndpointConfig(const EndpointConfig& 
         }
 
         set("with-pagination", "withPagination", config.with_pagination);
+        if (config.allow_shadowing) {
+            set("allow-shadowing", "allowShadowing", true);
+        }
         set("request-fields-validation", "requestFieldsValidation", config.request_fields_validation);
     } else {
         // An MCP-only tool/resource runs a template on a connection too; both
@@ -2751,7 +2813,15 @@ EndpointConfig ConfigManager::deserializeEndpointConfig(const crow::json::rvalue
     auto urlKey = requireStringField(json, {"url-path", "urlPath", "url_path"});
     const std::string url_path = json[urlKey].s();
     auto methodKey = firstExistingKey(json, {"method", "Method"});
-    std::string method = methodKey.empty() ? std::string("GET") : std::string(json[methodKey].s());
+    const std::string raw_method = methodKey.empty() ? std::string("GET") : std::string(json[methodKey].s());
+    // The same canonical form and the same five methods as the YAML loader.
+    if (auto problem = HttpMethodProblem(raw_method, url_path); !problem.empty()) {
+        throw std::runtime_error(problem);
+    }
+    if (auto problem = RouteTranslator::urlPathProblem(url_path); !problem.empty()) {
+        throw std::runtime_error(problem);
+    }
+    std::string method = CanonicalHttpMethod(raw_method);
 
     // PUT semantics: start from the endpoint being replaced, so what the JSON cannot
     // carry (auth users and their passwords - never serialised -, per-field defaults,
@@ -2777,6 +2847,8 @@ EndpointConfig ConfigManager::deserializeEndpointConfig(const crow::json::rvalue
         config.connection = getList({"connection", "connections"});
     }
     config.with_pagination = getBool({"with-pagination", "withPagination", "with_pagination"}, base ? base->with_pagination : true);
+    config.allow_shadowing = getBool({"allow-shadowing", "allowShadowing", "allow_shadowing"},
+                                     base ? base->allow_shadowing : false);
     config.request_fields_validation = getBool({"request-fields-validation", "requestFieldsValidation"},
                                                base ? base->request_fields_validation : false);
 
@@ -2977,7 +3049,136 @@ std::string ConfigManager::RouteShape(const std::string& url_path) {
     return RouteTranslator::translateRoutePath(url_path, ignored_names);
 }
 
-std::string ConfigManager::DuplicateEndpointProblem(const EndpointConfig& candidate) const {
+namespace {
+
+// The part of an endpoint's (effective, inheritance already applied) auth that
+// decides who gets in: enabled, scheme, roles.
+struct AuthSignature {
+    bool enabled = false;
+    std::string type;
+    std::vector<std::string> roles;   // sorted
+
+    bool operator==(const AuthSignature& other) const {
+        return enabled == other.enabled && (!enabled || (type == other.type && roles == other.roles));
+    }
+};
+
+AuthSignature authSignature(const EndpointConfig& ep) {
+    AuthSignature sig;
+    sig.enabled = ep.auth.enabled;
+    if (sig.enabled) {
+        sig.type = ep.auth.type == "jwt" ? std::string("bearer") : ep.auth.type;
+        sig.roles = ep.auth.roles;
+        std::sort(sig.roles.begin(), sig.roles.end());
+        sig.roles.erase(std::unique(sig.roles.begin(), sig.roles.end()), sig.roles.end());
+    }
+    return sig;
+}
+
+// `winner` admits nobody `loser` would refuse: `loser` is open, or both use the
+// same scheme and `winner` requires a subset of `loser`'s roles (roles are
+// "any one of"; none means any authenticated principal).
+bool atLeastAsStrict(const AuthSignature& winner, const AuthSignature& loser) {
+    if (!loser.enabled) {
+        return true;
+    }
+    if (!winner.enabled || winner.type != loser.type) {
+        return false;
+    }
+    if (loser.roles.empty()) {
+        return true;
+    }
+    return !winner.roles.empty() &&
+           std::includes(loser.roles.begin(), loser.roles.end(), winner.roles.begin(), winner.roles.end());
+}
+
+std::string describeAuth(const AuthSignature& sig) {
+    if (!sig.enabled) {
+        return "open";
+    }
+    std::string out = sig.type.empty() ? std::string("auth") : sig.type;
+    if (!sig.roles.empty()) {
+        out += ", roles [";
+        for (std::size_t i = 0; i < sig.roles.size(); ++i) {
+            out += (i == 0 ? "" : ", ") + sig.roles[i];
+        }
+        out += "]";
+    }
+    return out;
+}
+
+// A request path both routes match, for the messages: the winner's literals
+// filled into the loser's parameters (`/customers/7`, `/a/{x}/b`).
+std::string sampleOverlapPath(const std::string& winner, const std::string& loser) {
+    std::vector<std::string> w;
+    std::vector<std::string> l;
+    for (const auto* route : {&winner, &loser}) {
+        auto& out = route == &winner ? w : l;
+        std::size_t start = 1;
+        while (true) {
+            const auto end = route->find('/', start);
+            out.push_back(route->substr(start, end == std::string::npos ? std::string::npos : end - start));
+            if (end == std::string::npos) {
+                break;
+            }
+            start = end + 1;
+        }
+    }
+    std::string path;
+    for (std::size_t i = 0; i < w.size() && i < l.size(); ++i) {
+        const bool w_param = w[i].size() > 1 && w[i].front() == ':';
+        const bool l_param = l[i].size() > 1 && l[i].front() == ':';
+        const std::string& literal = !w_param ? w[i] : (!l_param ? l[i] : w[i]);
+        path += "/" + (w_param && l_param ? "{" + w[i].substr(1) + "}" : literal);
+    }
+    return path;
+}
+
+struct RouteOverlap {
+    const EndpointConfig* winner;
+    const EndpointConfig* loser;
+    AuthSignature winner_auth;
+    AuthSignature loser_auth;
+};
+
+std::optional<RouteOverlap> overlapOf(const EndpointConfig& candidate, const EndpointConfig& ep) {
+    if (candidate.urlPath.empty() || ep.urlPath.empty() ||
+        ConfigManager::CanonicalHttpMethod(candidate.method) != ConfigManager::CanonicalHttpMethod(ep.method) ||
+        !RouteTranslator::routesOverlap(candidate.urlPath, ep.urlPath)) {
+        return std::nullopt;
+    }
+    const int order = RouteTranslator::compareSpecificity(candidate.urlPath, ep.urlPath);
+    if (order == 0) {
+        return std::nullopt;   // the same shape: a duplicate, reported as such
+    }
+    RouteOverlap overlap;
+    overlap.winner = order < 0 ? &candidate : &ep;
+    overlap.loser = order < 0 ? &ep : &candidate;
+    overlap.winner_auth = authSignature(*overlap.winner);
+    overlap.loser_auth = authSignature(*overlap.loser);
+    return overlap;
+}
+
+std::string describeOverlap(const RouteOverlap& o) {
+    const std::string method = ConfigManager::CanonicalHttpMethod(o.winner->method);
+    return method + " " + o.winner->urlPath + " (" + describeAuth(o.winner_auth) + ") takes precedence over " +
+           method + " " + o.loser->urlPath + " (" + describeAuth(o.loser_auth) + ") for " +
+           sampleOverlapPath(o.winner->urlPath, o.loser->urlPath);
+}
+
+bool skippedFor(const EndpointConfig& ep, const EndpointConfig& candidate, const EndpointConfig* replacing) {
+    if (!candidate.config_file_path.empty() && ep.config_file_path == candidate.config_file_path) {
+        return true;   // the same file, e.g. a reload of it
+    }
+    // The endpoint an update replaces is not a conflict with its new version.
+    return replacing != nullptr && ConfigManager::EndpointKey(ep) == ConfigManager::EndpointKey(*replacing) &&
+           ep.config_file_path == replacing->config_file_path;
+}
+
+}  // namespace
+
+std::string ConfigManager::DuplicateEndpointProblem(const EndpointConfig& candidate,
+                                                    const EndpointConfig* replacing) const {
     const auto where = [](const EndpointConfig& ep) {
         return ep.config_file_path.empty() ? std::string("(in memory)") : ep.config_file_path;
     };
@@ -2987,23 +3188,38 @@ std::string ConfigManager::DuplicateEndpointProblem(const EndpointConfig& candid
     const auto same_name = [](const auto& a, const auto& b) {
         return a.has_value() && b.has_value() && !a->name.empty() && a->name == b->name;
     };
+    const std::string candidate_method = CanonicalHttpMethod(candidate.method);
     const auto snapshot = endpointsSnapshot();
     for (const auto& ep : *snapshot) {
-        if (!candidate.config_file_path.empty() && ep.config_file_path == candidate.config_file_path) {
-            continue;   // the same file, e.g. a reload of it
+        if (skippedFor(ep, candidate, replacing)) {
+            continue;
         }
         // Compared as the ROUTE the router compiles, not as text: `/customers/:id`
         // and `/customers/:cid` match exactly the same requests. Compared as
         // strings both loaded, and after a restart load order decided which one
         // served - an endpoint with `auth: {enabled: false}` could shadow the
-        // authenticated one and answer without credentials.
-        if (!candidate.urlPath.empty() && !ep.urlPath.empty() && ep.method == candidate.method &&
+        // authenticated one and answer without credentials. Methods are
+        // compared canonically for the same reason: `get` is routed as GET.
+        if (!candidate.urlPath.empty() && !ep.urlPath.empty() && CanonicalHttpMethod(ep.method) == candidate_method &&
             RouteShape(ep.urlPath) == RouteShape(candidate.urlPath)) {
             const std::string same_path = ep.urlPath == candidate.urlPath
                 ? candidate.urlPath
                 : candidate.urlPath + " (same route as " + ep.urlPath + ")";
-            return "Duplicate endpoint " + candidate.method + " " + same_path + ": declared in " +
+            return "Duplicate endpoint " + candidate_method + " " + same_path + ": declared in " +
                    where(ep) + " and " + where(candidate);
+        }
+        // Overlapping routes (`/customers/7` and `/customers/:id`): the more
+        // specific one answers the URLs both match. When that one lets in
+        // someone the other would refuse, a protected URL is served by the
+        // looser endpoint - refused unless the winner opts in.
+        if (const auto overlap = overlapOf(candidate, ep)) {
+            if (!(overlap->winner_auth == overlap->loser_auth) &&
+                !atLeastAsStrict(overlap->winner_auth, overlap->loser_auth) && !overlap->winner->allow_shadowing) {
+                return "Overlapping routes with different auth: " + describeOverlap(*overlap) + " (declared in " +
+                       where(*overlap->winner) + " and " + where(*overlap->loser) +
+                       "). Give both the same auth, make the routes disjoint, or set `allow-shadowing: true` on " +
+                       overlap->winner->urlPath + " if it is meant to answer those requests";
+            }
         }
         const char* kind = nullptr;
         std::string name;
@@ -3023,6 +3239,25 @@ std::string ConfigManager::DuplicateEndpointProblem(const EndpointConfig& candid
         }
     }
     return "";
+}
+
+void ConfigManager::LogRouteOverlaps(const EndpointConfig& candidate, const EndpointConfig* replacing) const {
+    const auto snapshot = endpointsSnapshot();
+    for (const auto& ep : *snapshot) {
+        if (skippedFor(ep, candidate, replacing)) {
+            continue;
+        }
+        const auto overlap = overlapOf(candidate, ep);
+        if (!overlap) {
+            continue;
+        }
+        if (overlap->winner_auth == overlap->loser_auth) {
+            CROW_LOG_INFO << "Overlapping routes (same auth): " << describeOverlap(*overlap);
+        } else {
+            CROW_LOG_WARNING << "Overlapping routes with different auth: " << describeOverlap(*overlap)
+                             << (overlap->winner->allow_shadowing ? " (allow-shadowing: true)" : "");
+        }
+    }
 }
 
 void ConfigManager::addEndpoint(const EndpointConfig& endpoint) {
@@ -3131,7 +3366,10 @@ std::string ConfigManager::serializeEndpointConfigToYaml(const EndpointConfig& c
     // REST endpoint fields
     if (config.isRESTEndpoint()) {
         out << YAML::Key << "url-path" << YAML::Value << config.urlPath;
-        out << YAML::Key << "method" << YAML::Value << config.method;
+        out << YAML::Key << "method" << YAML::Value << CanonicalHttpMethod(config.method);
+        if (config.allow_shadowing) {
+            out << YAML::Key << "allow-shadowing" << YAML::Value << true;
+        }
     }
     
     // MCP Tool fields
@@ -3254,7 +3492,16 @@ EndpointConfig ConfigManager::deserializeEndpointConfigFromYaml(const std::strin
     // Parse REST endpoint
     if (is_rest_endpoint) {
         config.urlPath = node["url-path"].as<std::string>();
-        config.method = node["method"] ? node["method"].as<std::string>() : "GET";
+        const std::string raw_method =
+            (node["method"] && !node["method"].IsNull()) ? node["method"].as<std::string>() : "GET";
+        if (auto problem = HttpMethodProblem(raw_method, config.urlPath); !problem.empty()) {
+            throw std::runtime_error(problem);
+        }
+        config.method = CanonicalHttpMethod(raw_method);
+        if (auto problem = RouteTranslator::urlPathProblem(config.urlPath); !problem.empty()) {
+            throw std::runtime_error(problem);
+        }
+        config.allow_shadowing = node["allow-shadowing"] && node["allow-shadowing"].as<bool>();
     }
     
     // Parse MCP Tool
@@ -3681,6 +3928,7 @@ ConfigManager::FileReloadResult ConfigManager::reloadEndpointFile(const std::fil
             CROW_LOG_ERROR << "Failed to reload " << file << ": " << duplicate;
             return result;
         }
+        LogRouteOverlaps(fresh);
 
         // Replace by FILE, not by name. Matching by url-path replaced the first
         // endpoint with that path, so reloading the POST /orders file overwrote
@@ -3688,12 +3936,20 @@ ConfigManager::FileReloadResult ConfigManager::reloadEndpointFile(const std::fil
         std::vector<EndpointConfig> replaced;
         mutateEndpointsVoid([&](std::vector<EndpointConfig>& eps) {
             replaced.clear();
-            auto it = std::stable_partition(eps.begin(), eps.end(), [&](const EndpointConfig& ep) {
-                return ep.config_file_path.empty() || canonicalOrSelf(ep.config_file_path) != wanted;
-            });
+            const auto from_file = [&](const EndpointConfig& ep) {
+                return !ep.config_file_path.empty() && canonicalOrSelf(ep.config_file_path) == wanted;
+            };
+            // Back where it was: a reload used to move the endpoint to the end
+            // of the table, which - with first-match routing - changed which
+            // endpoint answered overlapping URLs. Routing no longer depends on
+            // order, but listings should not reshuffle on every reload either.
+            const auto position = static_cast<std::size_t>(
+                std::find_if(eps.begin(), eps.end(), from_file) - eps.begin());
+            auto it = std::stable_partition(eps.begin(), eps.end(),
+                                            [&](const EndpointConfig& ep) { return !from_file(ep); });
             replaced.assign(it, eps.end());
             eps.erase(it, eps.end());
-            eps.push_back(fresh);
+            eps.insert(eps.begin() + static_cast<std::ptrdiff_t>(std::min(position, eps.size())), fresh);
         });
 
         if (endpoint_repository) {

@@ -545,6 +545,24 @@ SlugTarget ResolveSlugTarget(const ConfigManager& cm, const std::string& raw_slu
             matched.push_back(&ep);
         }
     }
+    // A path several routes of one method match (/orders/7 against /orders/7
+    // and /orders/:id) names the endpoint that serves it - the most specific,
+    // as request routing picks - not an ambiguity.
+    if (exact.empty() && matched.size() > 1) {
+        std::vector<const EndpointConfig*> served;
+        for (const auto* ep : matched) {
+            const std::string m = upperCopy(ep->method.empty() ? "GET" : ep->method);
+            const auto same_method = std::find_if(served.begin(), served.end(), [&](const EndpointConfig* other) {
+                return upperCopy(other->method.empty() ? "GET" : other->method) == m;
+            });
+            if (same_method == served.end()) {
+                served.push_back(ep);
+            } else if (RouteTranslator::compareSpecificity(ep->urlPath, (*same_method)->urlPath) < 0) {
+                *same_method = ep;
+            }
+        }
+        matched = std::move(served);
+    }
     auto& candidates = exact.empty() ? matched : exact;
     // Method order, so the "ambiguous" message is stable across file systems.
     std::sort(candidates.begin(), candidates.end(), [](const EndpointConfig* a, const EndpointConfig* b) {
@@ -1622,10 +1640,8 @@ std::string scalarOrEmpty(const YAML::Node& node, const char* key) {
 EndpointConfig identityOf(const YAML::Node& doc) {
     EndpointConfig id;
     id.urlPath = scalarOrEmpty(doc, "url-path");
-    id.method = scalarOrEmpty(doc, "method");
-    if (id.method.empty()) {
-        id.method = "GET";
-    }
+    // Canonical, as the loader stores it: `get` is GET.
+    id.method = ConfigManager::CanonicalHttpMethod(scalarOrEmpty(doc, "method"));
     if (doc["mcp-tool"]) {
         id.mcp_tool = EndpointConfig::MCPToolInfo{};
         id.mcp_tool->name = scalarOrEmpty(doc["mcp-tool"], "name");
@@ -1766,23 +1782,35 @@ std::string FileDeclaring(const ConfigManager& cm, const std::string& url_path, 
     if (!std::filesystem::is_directory(dir, ec)) {
         return "";
     }
+    // Files already loaded are the duplicate check's business, which names
+    // both endpoints; this is about files nobody loaded.
+    std::error_code canon_ec;   // not `ec`: that one ends the directory walk
+    std::vector<std::filesystem::path> loaded;
+    for (const auto& ep : *cm.getEndpoints()) {
+        if (!ep.config_file_path.empty()) {
+            loaded.push_back(std::filesystem::weakly_canonical(ep.config_file_path, canon_ec));
+        }
+    }
     for (std::filesystem::recursive_directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
         const auto ext = it->path().extension();
         if (!it->is_regular_file(ec) || (ext != ".yaml" && ext != ".yml")) {
             continue;
         }
+        if (std::find(loaded.begin(), loaded.end(), std::filesystem::weakly_canonical(it->path(), canon_ec)) !=
+            loaded.end()) {
+            continue;
+        }
         try {
             const YAML::Node doc = YAML::LoadFile(it->path().string());
-            if (!doc || !doc.IsMap() || scalarOrEmpty(doc, "url-path") != url_path) {
+            // By route shape and canonical method, as the loader's duplicate
+            // check compares: /x/:cid in a file is /x/:id, `get` is GET.
+            const std::string declared_path = scalarOrEmpty(doc, "url-path");
+            if (!doc || !doc.IsMap() || declared_path.empty() ||
+                ConfigManager::RouteShape(declared_path) != ConfigManager::RouteShape(url_path)) {
                 continue;
             }
-            std::string declared = scalarOrEmpty(doc, "method");
-            if (declared.empty()) {
-                declared = "GET";
-            }
-            std::transform(declared.begin(), declared.end(), declared.begin(),
-                           [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-            if (declared == method) {
+            if (ConfigManager::CanonicalHttpMethod(scalarOrEmpty(doc, "method")) ==
+                ConfigManager::CanonicalHttpMethod(method)) {
                 return it->path().string();
             }
         } catch (const std::exception&) {
@@ -1842,16 +1870,38 @@ Outcome CreateFromDocument(ConfigManager& cm, const YAML::Node& doc) {
         outcome.error = problem;
         return outcome;
     }
+    // The route and method before anything is looked up or written: a
+    // url-path the router cannot match, or a method it does not route, is the
+    // caller's error - and the file is written with the canonical method.
+    YAML::Node canonical = YAML::Clone(doc);
+    if (const std::string url_path = scalarOrEmpty(doc, "url-path"); doc["url-path"]) {
+        if (const auto problem = RouteTranslator::urlPathProblem(url_path); !problem.empty()) {
+            outcome.status = 400;
+            outcome.error = problem;
+            return outcome;
+        }
+        const std::string raw_method = scalarOrEmpty(doc, "method");
+        if (const auto problem = ConfigManager::HttpMethodProblem(raw_method, url_path); !problem.empty()) {
+            outcome.status = 400;
+            outcome.error = problem;
+            return outcome;
+        }
+        if (doc["method"]) {
+            canonical["method"] = ConfigManager::CanonicalHttpMethod(raw_method);
+        }
+    }
 
     const EndpointConfig id = identityOf(doc);
     const auto existing = cm.getEndpoints();
     for (const auto& ep : *existing) {
-        const bool same_rest = !id.urlPath.empty() && ep.urlPath == id.urlPath && ep.method == id.method;
+        const bool same_rest = !id.urlPath.empty() && ep.urlPath == id.urlPath &&
+                               ConfigManager::CanonicalHttpMethod(ep.method) == id.method;
         const bool same_name = id.urlPath.empty() && !id.getName().empty() && ep.getName() == id.getName();
         if (same_rest || same_name) {
             outcome.status = 409;
-            outcome.error = "Endpoint already exists: " + id.getIdentifier() +
-                            " (update it with PUT, or delete it first)";
+            outcome.error = "Endpoint already exists: " + ConfigManager::EndpointKey(ep) + " (declared in " +
+                            (ep.config_file_path.empty() ? std::string("memory") : ep.config_file_path) +
+                            "; update it with PUT, or delete it first)";
             return outcome;
         }
     }
@@ -1861,9 +1911,7 @@ Outcome CreateFromDocument(ConfigManager& cm, const YAML::Node& doc) {
     // sqls/x.yaml` then wrote a second copy, and the next start had two files
     // for one url-path+method.
     if (!id.urlPath.empty()) {
-        std::string method = id.method;
-        std::transform(method.begin(), method.end(), method.begin(),
-                       [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+        const std::string& method = id.method;
         if (const auto other = FileDeclaring(cm, id.urlPath, method); !other.empty()) {
             outcome.status = 409;
             outcome.error = "Endpoint already exists: " + id.method + " " + id.urlPath + " is declared in " + other +
@@ -1891,7 +1939,7 @@ Outcome CreateFromDocument(ConfigManager& cm, const YAML::Node& doc) {
         return outcome;
     }
 
-    if (!writeFile(file, emit(doc), outcome.error)) {
+    if (!writeFile(file, emit(canonical), outcome.error)) {
         outcome.status = 500;
         return outcome;
     }
@@ -1912,6 +1960,7 @@ Outcome CreateFromDocument(ConfigManager& cm, const YAML::Node& doc) {
             outcome.error = duplicate;
             return outcome;
         }
+        cm.LogRouteOverlaps(outcome.config);
         cm.addEndpoint(outcome.config);
     } catch (const std::exception& e) {
         cleanup();
@@ -1959,7 +2008,18 @@ Outcome UpdateFromPatch(ConfigManager& cm, const EndpointConfig& existing, const
         base = YAML::Load(cm.serializeEndpointConfigToYaml(existing));
     }
 
-    const YAML::Node merged = deepMerge(base, patch);
+    YAML::Node merged = deepMerge(base, patch);
+    // The method as the loader will read it: one of the five, canonical. "get"
+    // for a GET endpoint is the same method, not a change of it.
+    if (existing.isRESTEndpoint() && merged["method"] && merged["method"].IsScalar()) {
+        const std::string raw_method = merged["method"].as<std::string>();
+        if (const auto problem = ConfigManager::HttpMethodProblem(raw_method, existing.urlPath); !problem.empty()) {
+            outcome.status = 400;
+            outcome.error = problem;
+            return outcome;
+        }
+        merged["method"] = ConfigManager::CanonicalHttpMethod(raw_method);
+    }
     if (const auto problem = templatePathProblem(cm, merged); !problem.empty()) {
         outcome.status = 400;
         outcome.error = problem;
@@ -1968,7 +2028,8 @@ Outcome UpdateFromPatch(ConfigManager& cm, const EndpointConfig& existing, const
     // The update must still name the same endpoint: renaming it is a delete
     // plus a create, and replaceEndpoint would otherwise silently miss.
     if (!identityOf(merged).isSameEndpoint(existing) ||
-        (existing.isRESTEndpoint() && identityOf(merged).method != existing.method)) {
+        (existing.isRESTEndpoint() &&
+         identityOf(merged).method != ConfigManager::CanonicalHttpMethod(existing.method))) {
         outcome.status = 400;
         outcome.error = "The update changes the endpoint's url-path, method or name; delete and re-create it instead";
         return outcome;
@@ -1993,6 +2054,17 @@ Outcome UpdateFromPatch(ConfigManager& cm, const EndpointConfig& existing, const
             restore();
             return outcome;
         }
+        // An update can change auth (or set allow-shadowing), and with it
+        // whether an overlap with another route is acceptable: opening up
+        // /customers/7 beside a protected /customers/:id must be refused here
+        // as it would be at load.
+        if (const auto problem = cm.DuplicateEndpointProblem(outcome.config, &existing); !problem.empty()) {
+            restore();
+            outcome.status = 409;
+            outcome.error = problem;
+            return outcome;
+        }
+        cm.LogRouteOverlaps(outcome.config, &existing);
         if (!cm.replaceEndpoint(outcome.config)) {
             restore();
             outcome.status = 404;
@@ -2234,6 +2306,9 @@ crow::response EndpointConfigHandler::updateExisting(const crow::request& req, c
     }
     if (!updated_config.isSameEndpoint(existing)) {
         return jsonError(400, "URL path in config does not match endpoint path");
+    }
+    if (const auto problem = config_manager_->DuplicateEndpointProblem(updated_config, &existing); !problem.empty()) {
+        return jsonError(409, problem);
     }
     for (const auto& source : {updated_config.templateSource,
                                updated_config.cache.template_file.value_or(std::string())}) {
