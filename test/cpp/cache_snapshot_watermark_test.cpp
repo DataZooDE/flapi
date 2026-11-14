@@ -77,6 +77,9 @@ EndpointConfig cachedEndpoint(const std::string& url, const std::string& table) 
     e.cache.enabled = true;
     e.cache.table = table;
     e.cache.schema = "s";
+    // An explicit populate template: without one the rendered SELECT stand-in
+    // would be materialised into the table (CacheManager::refreshDuckLakeCache).
+    e.cache.template_file = "x_cache.sql";
     return e;
 }
 
