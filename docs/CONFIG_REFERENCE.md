@@ -1012,7 +1012,7 @@ REST endpoints expose SQL queries as HTTP APIs.
 |-----------|------|---------|-------------|
 | `url-path` | string | **required** | HTTP path (e.g., `/customers`, `/customers/:id`). Rules below |
 | `method` | string | `GET` | HTTP method: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, in any case (trimmed and stored upper-case; empty means `GET`). Anything else is a load error naming the endpoint |
-| `allow-shadowing` | boolean | `false` | Let this endpoint answer the URLs it shares with a less specific, overlapping route of the same method whose auth is stricter or different. Without it that combination is refused (see *Route precedence*) |
+| `allow-shadowing` | boolean | `false` | Let this endpoint answer the URLs it shares with a less specific, overlapping route of the same method whose effective auth differs in any way (looser or stricter). Without it that combination is refused (see *Route precedence*) |
 | `description` | string | - | The operation's description in `/doc.yaml`. Without it, `mcp-tool.description` is used; without either, the operation has none |
 | `template-source` | string | **required** | Path to SQL template file |
 | `connection` | array[string] | **required** | Connection name(s) from flapi.yaml |
@@ -1058,7 +1058,10 @@ violation is a load error / 400 naming the endpoint):
 - starts with `/`; `/` alone is allowed, and so is one trailing `/` (`/customers/`),
   which is then part of the route (`/customers` is a different route);
 - every segment is either a literal of `A-Z a-z 0-9 . _ ~ -` or a parameter `:name`
-  (`name` = letters, digits, `_`, not starting with a digit);
+  (`name` = letters, digits, `_`, not starting with a digit); each parameter name
+  appears once per path (`/a/:id/b/:id` is refused);
+- no `.` or `..` segment (`/a/../b`): clients and proxies resolve them before the
+  request arrives, so the route would never match what was written;
 - no empty segments (`//`), no `{id}` (write `:id`), no `*`, `(`, `[`, `+`, `?`, `|`, `^`,
   `$`, `\`, `<`, `>`, `%` or spaces. Routes are matched exactly and case-sensitively.
 
@@ -1071,20 +1074,40 @@ and the request handler always resolve the same endpoint. Routes with the same s
 (`/customers/:id` and `/customers/:cid`, same method in any case) are duplicates and
 stop startup.
 
-When overlapping endpoints have different auth (compared on `enabled`, `type` with
-`jwt` = `bearer`, and `roles`), the winner must be at least as strict as the other:
-the other is open, or both use the same type and the winner's roles are a non-empty
-subset of the other's (or the other has none). Otherwise startup, reload, reload-file,
-create and update refuse it:
+When overlapping endpoints have different **effective** auth (after inheriting the
+top-level `auth:` block), startup, reload, reload-file, create and update refuse the
+pair, **in either direction** - an open literal over a protected `:param` route and a
+protected literal over an open one alike. Auth is compared on `enabled`, `type`
+(`jwt` = `bearer`), `roles` **and the identity source**: `users` (username, password,
+per-user roles), `jwt-secret` (compared as a digest), `jwt-issuer`, the `oidc` issuer,
+client and audiences, and the `from-aws-secretmanager` secret and region. Any
+difference counts; secret values never appear in the message:
 
 ```
-Overlapping routes with different auth: GET /customers/7 (open) takes precedence over
-GET /customers/:id (basic, roles [admin]) for /customers/7 (declared in ... and ...).
+Overlapping routes with different auth: GET /customers/7 (basic, roles [admin]) takes
+precedence over GET /customers/:id (open) for /customers/7 (auth differs in: enabled);
+/customers/:id still serves every other URL its pattern matches, including other
+spellings of the same value such as /customers/07 - a literal route protects that
+exact path string, not a record (declared in ... and ...).
 ```
 
-Set `allow-shadowing: true` on the more specific endpoint when it is meant to answer
-those URLs; the overlap is then logged as a WARNING. Allowed overlaps with different
-auth log a WARNING, overlaps with the same auth an INFO line.
+**A literal route protects only that exact path string.** Path parameters are matched
+as text and the SQL usually casts them, so `/customers/07`, `/customers/+7` (and
+`/customers/7.0` for a float column) reach `/customers/:id` and select the same row
+as the protected `/customers/7`. To protect a record, either give both routes the same
+auth, or protect the general endpoint and filter rows by the caller inside its
+template:
+
+```sql
+-- /customers/:id, auth: basic with users admin (roles [admin]) and guest (roles [guest])
+SELECT * FROM customers
+WHERE id = {{{ params.id }}}
+  AND (id <> 7 OR list_contains(string_split('{{ auth.roles }}', ','), 'admin'))
+```
+
+Set `allow-shadowing: true` on the **more specific** endpoint only when the split is
+intended; the overlap is then logged as a WARNING (which the plugin hook passes on to
+Claude). Overlaps with the same auth log an INFO line.
 
 ### 3.2 MCP Tools
 

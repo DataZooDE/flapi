@@ -77,8 +77,8 @@ echo "exit=$?"
 | empty Basic-auth password from an unset env var | | |
 | Mustache syntax in a template (unclosed `{{#x}}`: `<file>:<line>:<col>`) | | |
 | two files with one route + method (`Duplicate endpoint ...`; `get` = `GET`) | overlapping routes, same auth (info) or allowed by `allow-shadowing` (WARNING) | |
-| overlapping routes where the more specific one has looser auth (`Overlapping routes with different auth`) | | |
-| `url-path` with characters outside `[A-Za-z0-9._~-]` or `:name` segments (`{id}` -> use `:id`); a method other than GET/POST/PUT/PATCH/DELETE | | |
+| overlapping routes whose effective auth differs in any way, either direction, incl. other users/secrets (`Overlapping routes with different auth`) | | |
+| `url-path` with characters outside `[A-Za-z0-9._~-]` or `:name` segments (`{id}` -> use `:id`), a `.`/`..` segment or a repeated `:name`; a method other than GET/POST/PUT/PATCH/DELETE | | |
 
 Fail CI on warnings too:
 

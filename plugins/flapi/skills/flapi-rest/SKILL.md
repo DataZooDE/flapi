@@ -54,8 +54,12 @@ becomes a route.
 - **Overlapping routes: the most specific wins.** With `/customers/7` and
   `/customers/:id`, `GET /customers/7` goes to the literal one (left to right, a
   literal segment beats `:param`), regardless of file order. If their auth differs
-  and the winner is looser, loading is refused unless the winner sets
-  `allow-shadowing: true` (see flapi-auth).
+  in any way (either one stricter, or other users/secrets), loading is refused
+  unless the literal sets `allow-shadowing: true` (see flapi-auth). A literal
+  route protects only that exact string: `/customers/07` and `/customers/+7` still
+  hit `/customers/:id` and the same row - protect a record by filtering on `auth.*`
+  in the general endpoint, or give both routes the same auth.
+- `url-path` refuses `.` / `..` segments and a `:param` name used twice.
 - **The global block is `rate_limit` (underscore); per endpoint it is
   `rate-limit` (hyphen)**, and it needs `enabled: true` (default false).
 

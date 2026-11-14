@@ -133,7 +133,8 @@ segment by segment from the left, a literal segment beats a `:param`
 limiting, auth and the request handler all call `getEndpointForPathAndMethod`, so they
 always agree on the endpoint. At admission (load, reload-file, create, update)
 `DuplicateEndpointProblem` refuses same-shape routes and overlapping routes
-(`RouteTranslator::routesOverlap`) whose winner has looser auth unless it sets
+(`RouteTranslator::routesOverlap`) whose effective auth differs in any way (scheme,
+roles or identity source; either direction) unless the more specific one sets
 `allow-shadowing`; `LogRouteOverlaps` logs the allowed overlaps. `url-path` and `method`
 are validated and canonicalised by every parser (`RouteTranslator::urlPathProblem`,
 `ConfigManager::HttpMethodProblem` / `CanonicalHttpMethod`). Endpoint files load in

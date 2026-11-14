@@ -39,12 +39,20 @@ Three independent gates: the endpoint's own `auth:` block (REST), `mcp.auth`
 - **An endpoint's auth protects its own route entry, not a URL space.** A request
   is answered by the most specific matching route of its method (literal segment
   beats `:param`, left to right; file order never matters), and that endpoint's
-  auth applies. Overlapping routes whose auth differs are refused at load, reload,
-  create and update when the winner is looser (open `/customers/7` beside a
-  protected `/customers/:id`: `Overlapping routes with different auth: ...`),
-  unless the winner sets `allow-shadowing: true`; a stricter winner is allowed
-  with a WARNING. `method: get` is GET, so it cannot slip a second copy in.
+  auth applies. Overlapping routes whose effective auth differs IN ANY WAY are
+  refused at load, reload, create and update, in either direction (open
+  `/customers/7` beside a protected `/customers/:id`, or a protected literal beside
+  an open one: `Overlapping routes with different auth: ...`), unless the more
+  specific one sets `allow-shadowing: true` (then a WARNING). "Different" includes
+  the identity source: other `users` or passwords, `jwt-secret`, `jwt-issuer`, OIDC
+  issuer/client/audience, AWS secret - a literal with its own `guest` user is refused.
+  `method: get` is GET, so it cannot slip a second copy in.
   Audit with `flapii endpoints list` (method, url-path and auth of each).
+- **A literal route protects that exact path string, not a record.** `/customers/07`
+  and `/customers/+7` still reach `/customers/:id` and select row 7. To protect a
+  record, give both routes the same auth, or protect the general endpoint and filter
+  by the caller in its SQL:
+  `AND (id <> 7 OR list_contains(string_split('{{ auth.roles }}', ','), 'admin'))`.
 - **A 401 names the endpoint's scheme**: `WWW-Authenticate: Basic realm="flAPI"`
   or `Bearer realm="flAPI"` (`, error="invalid_token"` for a refused token), body
   `{"error":"Unauthorized","message":...}`.

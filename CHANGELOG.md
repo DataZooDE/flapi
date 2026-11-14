@@ -16,13 +16,35 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   endpoint's URLs and a reload could flip a live URL from 401 to 200. Now, segment by segment from the left,
   a literal beats a `:param`, and rate limiting, auth and the handler always resolve the same endpoint.
   Endpoint files load in sorted path order.
-- **SECURITY: overlapping routes whose more specific endpoint has looser auth are refused.** Startup,
+- **SECURITY: overlapping routes whose more specific endpoint has looser auth are refused** (since
+  widened to any auth difference, see below). Startup,
   reload, reload-file, create and update now fail with `Overlapping routes with different auth: GET
   /customers/7 (open) takes precedence over GET /customers/:id (basic, roles [admin]) for /customers/7 ...`
   (409 from the config service and the MCP tools). Set `allow-shadowing: true` on the more specific endpoint
   if it is meant to answer those URLs. Allowed overlaps with different auth log a WARNING, with equal auth
   an INFO line. A configuration that relied on the old first-match order may now stop at startup: fix the
   routes or the auth, or opt in.
+- **SECURITY: overlapping routes are refused whenever their auth differs, in either direction.** A
+  protected literal over an open `:param` route (`/customers/7` with basic auth beside an open
+  `/customers/:id`) used to load with a WARNING, but it protects only the string `7`:
+  `/customers/07` and `/customers/+7` reached the open endpoint and returned the same row without
+  credentials. Such a pair is now refused like the reverse, unless the more specific endpoint sets
+  `allow-shadowing: true`. The message says which endpoint wins for which URLs and that the other still
+  serves every other URL its pattern matches. To protect a record, give both routes the same auth or filter
+  rows by `auth.*` inside the general endpoint. **A configuration with a protected literal over an open or
+  differently protected general route now stops at startup**: fix the auth or add `allow-shadowing: true`
+  to the literal.
+- **SECURITY: "same auth" includes the identity source.** Overlap checks compared only enabled, type and
+  roles, so a literal with its own `guest` user (or another `jwt-secret`, `jwt-issuer`, OIDC issuer /
+  audience / client, or AWS secret) counted as the same auth and served the protected URL to guest. Users
+  (name, password, per-user roles), a digest of `jwt-secret`, `jwt-issuer`, the OIDC settings and the
+  `from-aws-secretmanager` source are now compared; any difference is "different auth" and refused as
+  above. Messages name the differing field (`auth differs in: users`), never a secret.
+- **`url-path` refuses `.` and `..` segments and a repeated `:param` name** (`/a/../b`, `/a/:id/b/:id`).
+  A non-ASCII character in a url-path is now named whole with its code point (`'é' (U+00E9)`) instead of
+  a broken byte.
+- **The plugin hook passes `Overlapping routes with different auth` warnings** from `--validate-config`
+  (an `allow-shadowing` split) to Claude as context, next to SECURITY WARNINGS.
 - **SECURITY: `method` is normalised and limited to GET, POST, PUT, PATCH, DELETE.** It is trimmed and
   upper-cased at every entry point (endpoint files, the config service, `flapii endpoints create`, the MCP
   `flapi_create_endpoint` / `flapi_update_endpoint` tools); empty means GET. `method: get` beside a protected

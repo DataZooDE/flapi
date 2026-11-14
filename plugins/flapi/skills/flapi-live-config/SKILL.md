@@ -59,12 +59,17 @@ tools (`flapi_*`) inside the server. `flapii` is its CLI client. It is **off by 
   (or `/a/:x/b` beside `/:z/:x/b`) both match some URLs; the one with a literal where the
   other has a `:param`, comparing segments left to right, answers them, whatever the file
   order or reload history. Auth, rate limiting and the handler always agree on it. When
-  the winner's auth differs and is NOT at least as strict (open over protected, other
-  type, wider roles), startup, reload, create and update refuse it (409 `Overlapping routes
-  with different auth: GET /items/special (open) takes precedence over GET /items/:id
-  (basic, roles [admin]) for /items/special ...`) unless the winner sets
-  `allow-shadowing: true`; otherwise the overlap is logged (WARNING if auth differs).
-  An update that opens up the specific route is 409 too and leaves the file as it was.
+  their effective auth differs in ANY way - either direction, other type or roles, or
+  another identity source (users/passwords, jwt-secret, jwt-issuer, OIDC, AWS secret) -
+  startup, reload, create and update refuse it (409 `Overlapping routes with different
+  auth: GET /items/special (open) takes precedence over GET /items/:id (basic, roles
+  [admin]) for /items/special (auth differs in: enabled); /items/:id still serves every
+  other URL its pattern matches ...`) unless the more specific one sets
+  `allow-shadowing: true` (then a WARNING, which the hook passes to you as context).
+  Same auth: an INFO line. An update that changes either side's auth is 409 too and
+  leaves the file as it was. A literal route protects one path string, not a record
+  (`/customers/07` still reaches `/customers/:id`): filter rows by `auth.*` in the
+  general endpoint, or give both the same auth.
 - **A `PUT` body must name the endpoint**: include `url-path` (or the `mcp-tool` /
   `mcp-resource` / `mcp-prompt` block). Without it the body is treated as the legacy
   camelCase form and fails with 500 `Missing required field in endpoint config`. Changing
@@ -210,7 +215,8 @@ and a replica) (`plugins/flapi/hooks/validate_and_reload.py`, PostToolUse on Edi
 
 1. If `flapi` is on `PATH` or `FLAPI_BIN` is set: `flapi -c <flapi.yaml> --validate-config
    --no-telemetry`. On failure the output goes back to Claude (exit 2). `SECURITY WARNINGS`
-   lines it prints are passed to Claude even when validation passes.
+   lines it prints, and `Overlapping routes with different auth` warnings (an
+   `allow-shadowing` split), are passed to Claude even when validation passes.
 2. `flapi.yaml` itself: Claude is told to restart the server (it is not hot-reloaded). A file
    outside `template.path` is only validated (an endpoint YAML there is reported as not loaded).
 3. If `FLAPI_CONFIG_SERVICE_TOKEN` is set and the server at `FLAPI_URL` (else

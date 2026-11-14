@@ -248,10 +248,16 @@ Endpoints that could let an open route answer a protected one's URLs are refused
 admission:
 
 - same route shape + same method (`/x/:id` vs `/x/:cid`; `get` vs `GET`): duplicate;
-- overlapping routes where the more specific endpoint's auth (enabled, type, roles) is
-  not at least as strict as the other's: `Overlapping routes with different auth`,
-  unless the more specific endpoint sets `allow-shadowing: true` (then a WARNING);
-- `url-path` segments outside `[A-Za-z0-9._~-]+` / `:name`, and methods other than the
+- overlapping routes whose effective auth differs in any way, in either direction:
+  `Overlapping routes with different auth`, unless the more specific endpoint sets
+  `allow-shadowing: true` (then a WARNING). The comparison covers enabled, type, roles
+  and the identity source - users (name, password digest, per-user roles), a SHA-256
+  digest of `jwt-secret`, `jwt-issuer`, OIDC issuer/client/audiences/claims, and the
+  `from-aws-secretmanager` source; messages name the differing field, never a value.
+  A stricter literal is refused too: it protects one path string, while other spellings
+  of the same value (`/customers/07`, `/customers/+7`) still reach the general route;
+- `url-path` segments outside `[A-Za-z0-9._~-]+` / `:name`, `.` / `..` segments, a
+  repeated `:name`, and methods other than the
   five REST methods: load error / 400. Literal segments are regex-escaped, and a route
   that fails to compile matches nothing rather than crashing the worker.
 
