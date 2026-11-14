@@ -308,6 +308,17 @@ struct EndpointConfig {
         // other field) before executing. When empty the resource is a static
         // "flapi://<name>" URI.
         std::string uri_template;
+
+        // Response shaping (mcp-resource.response), like mcp-tool.response.
+        // Unset falls back to the same file's mcp-tool.response, and max-rows
+        // then to kDefaultMaxRows: a resource is read whole, with no LIMIT the
+        // caller can pass, so an uncapped read of a big table went to the
+        // model in full (16282 rows / 3.5 MB measured).
+        static constexpr std::size_t kDefaultMaxRows = 1000;
+        struct ResponseShape {
+            std::optional<std::size_t> max_rows;
+            std::optional<std::vector<std::string>> redact_columns;
+        } response;
     };
 
     struct MCPPromptInfo {
@@ -816,8 +827,34 @@ public:
     // File persistence (only for programmatic creation/export - destroys formatting)
     void persistEndpointConfigToFile(const EndpointConfig& config, const std::filesystem::path& file_path) const;
     
-    // Reload endpoint from disk (after external edit)
+    // Reload endpoint from disk (after external edit). `slug_or_path` may also
+    // be an EndpointKey() ("POST /orders"), which names one of several
+    // endpoints sharing a url-path.
     bool reloadEndpointConfig(const std::string& slug_or_path);
+
+    /// "METHOD /path" for a REST endpoint, the MCP name otherwise: unique per
+    /// loaded endpoint, unlike the url-path (GET /orders and POST /orders).
+    static std::string EndpointKey(const EndpointConfig& endpoint);
+    /// Look an endpoint up by EndpointKey(), falling back to a url-path / MCP
+    /// name (the first match, as getEndpointForPath does).
+    EndpointRef getEndpointForKey(const std::string& key) const;
+
+    /// Reload every endpoint declared in `file`, or LOAD it when no loaded
+    /// endpoint comes from it (a hand-written YAML added after startup).
+    struct FileReloadResult {
+        bool ok = false;
+        int status = 200;              // 200 reloaded, 201 newly loaded, 4xx on error
+        std::string error;
+        bool loaded_new = false;
+        std::vector<std::string> endpoints;   // EndpointKey() of each published endpoint
+        std::vector<std::string> warnings;
+    };
+    FileReloadResult reloadEndpointFile(const std::filesystem::path& file);
+
+    /// Remove exactly this endpoint (url-path AND method, or MCP name), not
+    /// every endpoint whose path matches - removeEndpointByPath("/orders")
+    /// removed GET and POST alike.
+    bool removeEndpoint(const EndpointConfig& endpoint);
 
     void warnOnUnknownTopLevelKeys() const;
     // Warns about keys that are parsed but acted on by nothing (server-name,

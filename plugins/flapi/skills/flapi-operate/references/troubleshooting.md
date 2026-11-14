@@ -25,15 +25,15 @@ Likely causes:
 - The path differs from `url-path`. Matching is exact: `/customers/` is not `/customers`.
 - The YAML is outside `template.path`, or failed to parse (startup stops on a bad YAML,
   so a running server means the file was not there or not an endpoint).
-- The file was added after startup. Reload only re-reads files that were loaded.
+- The file was added after startup: load it with `flapii endpoints reload --file <yaml>`.
 - It is an MCP-only YAML (`mcp-tool:` without `url-path:`): no REST route by design.
 - `/api/v1/_config/*` 404: the server runs without `--config-service`.
 - `POST .../reload` 404 `{"success":false}`: the endpoint is unknown. A reload of a known
   endpoint whose YAML is now invalid answers **400** with the parser's `reason`.
 
-Fix: correct `url-path` or the request; restart after adding files by hand (or create them
-through the config service: `flapii endpoints create`, which also writes the YAML);
-`flapii endpoints reload <path>` after editing a loaded one.
+Fix: correct `url-path` or the request; `flapii endpoints reload --file <yaml>` after adding a
+file by hand (or create it through the config service: `flapii endpoints create`, which also
+writes the YAML); `flapii endpoints reload <path>` after editing a loaded one.
 
 ---
 

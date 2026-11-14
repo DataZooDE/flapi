@@ -28,12 +28,19 @@ tools (`flapi_*`) inside the server. `flapii` is its CLI client. It is **off by 
   REST and the MCP config tools accept any non-empty token, and startup warns when it is
   shorter than 16 characters.
 - **Hot reload is per endpoint YAML.** `flapii endpoints reload <path>` re-reads that one
-  file and rebuilds the MCP lists (`tools/list` etc.). It does not see new files or
-  changes to `flapi.yaml` (connections, auth, ducklake, mcp). Restart for those.
+  file and rebuilds the MCP lists (`tools/list` etc.). `flapii endpoints reload --file
+  <yaml>` (`POST /api/v1/_config/endpoints/reload-file`) does the same by FILE and also LOADS
+  a new hand-written file in `template.path`. Changes to `flapi.yaml` (connections, auth,
+  ducklake, mcp) need a restart.
+- **Several endpoints can share a url-path** (`GET /orders` + `POST /orders`). Every slug
+  route then needs `?method=` (`flapii ... --method POST`); without it the answer is 400
+  `Ambiguous: /orders is served by GET (...), POST (...); specify ?method=GET|POST`. The
+  endpoint list keys them `"GET /orders"` / `"POST /orders"`. Two files with the same MCP
+  tool/resource/prompt name fail the load, naming both.
 - **SQL template edits need no reload.** The `.sql` file is read on every request.
 - **A failed reload answers 400** `{"message":"Failed to reload endpoint configuration",
   "reason":"<file>: Failed to parse YAML: ..."}` and the old configuration keeps serving;
-  404 means the endpoint is unknown (e.g. a file the server has not loaded yet).
+  404 means the endpoint is unknown (a file the server has not loaded yet: use `reload --file`).
 - **Create, update and delete persist.** `POST /endpoints` (`flapii endpoints create`)
   writes `<template dir>/<slug>.yaml` (leading `-` dropped: `/orders` -> `orders.yaml`)
   and answers 201; an existing endpoint is 409. `PUT` deep-merges the body onto the YAML
@@ -163,8 +170,8 @@ older docs is wrong (404).
 |---|---|
 | A `.sql` endpoint template | Nothing. Next request uses it |
 | A cache template (`template-file`) | Nothing for the file; run `flapii cache refresh <path>` to rebuild now |
-| An existing endpoint YAML (request fields, validators, auth, cache keys, `mcp-*` blocks) | `flapii endpoints reload <path>`. REST, `tools/call` and `tools/list` use it at once |
-| A new endpoint YAML file | **Restart**, or create it through `flapii endpoints create -f` instead of writing the file |
+| An existing endpoint YAML (request fields, validators, auth, cache keys, `mcp-*` blocks) | `flapii endpoints reload <path> [--method M]` or `flapii endpoints reload --file <yaml>`. REST, `tools/call` and `tools/list` use it at once |
+| A new endpoint YAML file in `template.path` | `flapii endpoints reload --file <yaml>` (loads it; `endpoints create -f` of a file already there answers 409 and points here) |
 | A renamed or moved YAML file | Restart |
 | `flapi.yaml` (connections, `template`, `auth`, `ducklake`, `mcp`, `rate_limit`) | **Restart**. There is no full-config reload: `DELETE /config` is 405 (`Allow: GET`) |
 | Log level | `flapii config log-level set <debug\|info\|warning\|error>` (until restart; `warn` is accepted as `warning`) |
@@ -178,21 +185,24 @@ After Claude edits a `.yaml`, `.yml` or `.sql` file under a directory with `flap
 (`plugins/flapi/hooks/validate_and_reload.py`, PostToolUse on Edit/Write/MultiEdit):
 
 1. If `flapi` is on `PATH` or `FLAPI_BIN` is set: `flapi -c <flapi.yaml> --validate-config
-   --no-telemetry`. On failure the output goes back to Claude (exit 2).
-2. If `FLAPI_CONFIG_SERVICE_TOKEN` is set and the server at `FLAPI_URL` (else
-   `FLAPI_BASE_URL`) answers: for a
-   `.sql` file it asks `POST /api/v1/_config/endpoints/by-template` which endpoints use it;
-   for a YAML file it reads the top-level `url-path:`. Then it calls
-   `POST /api/v1/_config/endpoints/{slug}/reload` for each.
-3. A 404 from reload is taken as "not loaded yet", and Claude is told a new file needs
-   `flapii endpoints create` or a restart (create writes its own `<slug>.yaml`; if the
-   hand-written file has another name, restart instead). A 400 (YAML that does not
-   parse) is reported back with the server's `reason` (exit 2).
+   --no-telemetry`. On failure the output goes back to Claude (exit 2). `SECURITY WARNINGS`
+   lines it prints are passed to Claude even when validation passes.
+2. `flapi.yaml` itself: Claude is told to restart the server (it is not hot-reloaded). A file
+   outside `template.path` is only validated (an endpoint YAML there is reported as not loaded).
+3. If `FLAPI_CONFIG_SERVICE_TOKEN` is set and the server at `FLAPI_URL` (else
+   `FLAPI_BASE_URL`) answers: a YAML file is reloaded BY FILE with
+   `POST /api/v1/_config/endpoints/reload-file` - which also loads a new file, handles
+   MCP-only files, and changes exactly that file's endpoint when another file shares the
+   url-path. For a `.sql` file it asks `POST /api/v1/_config/endpoints/by-template` (serving
+   template or cache `template-file`) and reloads each declaring YAML by file.
+4. It then renders every affected template: the serving template with `?validate_only=1`
+   (render + `EXPLAIN`), a cache `template-file` with `?target=cache` (render, and a dropped
+   cursor watermark is reported). Render or SQL errors and reload failures (400/409 with the
+   server's reason) go back to Claude (exit 2).
+5. A 401/403 is reported as a rejected `FLAPI_CONFIG_SERVICE_TOKEN` (exit 2); no server
+   running is a silent no-op, as is a missing token.
 
-Every missing precondition is a silent no-op. Limits that follow from the code:
-an MCP-only YAML (no `url-path:`) is never reloaded by the hook (it reports the file as "not
-a loaded endpoint"; run `flapii endpoints reload <name>`); keep `flapi` on `PATH` so step 1
-catches invalid YAML before the server sees it.
+Keep `flapi` on `PATH` so step 1 catches invalid YAML before the server sees it.
 
 ## Schema introspection
 
@@ -216,8 +226,8 @@ MCP: `flapi_get_schema`, `flapi_refresh_schema`.
 3. `flapii endpoints get <path>` to see what is loaded.
 4. Edit the YAML or SQL file on disk (the plugin hook validates and reloads it).
 5. Without the hook: `flapi -c flapi.yaml --validate-config`, then
-   `flapii endpoints reload <path>` for YAML (SQL needs nothing).
+   `flapii endpoints reload --file <yaml>` for YAML, new files included (SQL needs nothing).
 6. `flapii templates expand <path> -p '{...}'`, then `flapii templates test` or `curl` the
    endpoint.
-7. New files (not created through `flapii endpoints create`) or `flapi.yaml` changed: restart.
+7. `flapi.yaml` changed: restart.
 8. Check the effect with `flapii metrics -e <path>` (`flapi-operate`).

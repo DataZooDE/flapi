@@ -25,8 +25,9 @@ that request. A support report quoting the header is enough to find the request.
 Tracing does not need to be on for these. With the config service enabled
 (`--config-service`), flAPI keeps cheap in-process counters for:
 
-- every endpoint and MCP tool: requests, status classes (or tool failures), and
-  latency p50/p95/p99/max
+- every endpoint and MCP tool: requests, status classes (or tool failures),
+  `rejected` (401/403 on the route, MCP role denials - not failures, not server
+  errors), and latency p50/p95/p99/max
 - 401/403/429 rejections
 - `503`s from a cache that is not ready yet (`cache_warming`, `cache_build_failed`,
   `cache_not_built`), counted separately as `503_cache` / `cache_unavailable`,
@@ -43,9 +44,9 @@ curl -s -H "Authorization: Bearer $FLAPI_CONFIG_SERVICE_TOKEN" \
 
 An agent connected over MCP can read the same document with the
 `flapi_get_metrics` config tool. Counters start at zero when the process starts
-(`requests.since_unix_ms`). Percentiles are histogram bucket upper bounds (capped
-at the observed max), which
-is enough to find the slow endpoint but not for exact SLO reporting. Use traces
+(`requests.since_unix_ms`). Percentiles are estimates: interpolated inside a
+histogram bucket (ten buckets per decade, ~25% wide) and capped at the observed
+max, which is enough to find the slow endpoint but not for exact SLO reporting. Use traces
 for that. Recording a request costs no allocation once its endpoint has been seen
 (`test/cpp/runtime_metrics_test.cpp`). For the field-by-field format, see
 [CONFIG_SERVICE_API_REFERENCE § 2.6](CONFIG_SERVICE_API_REFERENCE.md#get-apiv1_configmetrics).

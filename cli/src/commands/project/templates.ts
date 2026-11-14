@@ -59,7 +59,6 @@ connection: [sample-data]
 {{#params.id}}
 WHERE id = {{ params.id }}
 {{/params.id}}
-LIMIT 100
 `,
 
   /**
@@ -79,9 +78,9 @@ LIMIT 100
    * Git ignore rules for flapi projects
    * Prevents committing sensitive files, cache files, and data
    */
-  '.gitignore': `# flapi data and cache
-data/
+  '.gitignore': `# flapi cache and database files (data/ holds source data: keep it)
 *.db
+*.db.wal
 *.ducklake
 cache/
 
@@ -109,14 +108,18 @@ build/
 
   /**
    * Reusable authentication configuration template
-   * Can be included in endpoint configs using {{include from common/auth.yaml}}
+   * Can be included in endpoint configs using {{include:auth from ../common/auth.yaml}}
+   * (include paths resolve against the including file, i.e. from sqls/)
    * Provides examples of Basic Auth and JWT
    */
   'common/auth.yaml': `# Reusable authentication configuration
-# Reference in endpoints with: {{include from common/auth.yaml}}
+# Reference it from an endpoint YAML in sqls/ (paths resolve against that file):
+#   {{include:auth from ../common/auth.yaml}}
+# API_PASSWORD must be listed under template.environment-whitelist in flapi.yaml.
 
 # Example Basic Auth
 auth:
+  enabled: true
   type: basic
   users:
     - username: admin
@@ -125,6 +128,7 @@ auth:
 # Example JWT (uncomment to use)
 # auth:
 #   type: jwt
+#   enabled: true
 #   jwt-secret: '{{env.JWT_SECRET}}'
 #   issuer: "example.com"
 `,
@@ -134,7 +138,8 @@ auth:
    * Can be included in endpoint configs for consistent rate limiting
    */
   'common/rate-limit.yaml': `# Reusable rate limiting configuration
-# Reference in endpoints with: {{include from common/rate-limit.yaml}}
+# Reference it from an endpoint YAML in sqls/ (paths resolve against that file):
+#   {{include:rate-limit from ../common/rate-limit.yaml}}
 
 # Example rate limiting: 100 requests per minute
 rate-limit:

@@ -34,6 +34,7 @@ const char* staticAuthKind(const std::string& configured) {
 #include "password_hasher.hpp"
 #include "database_manager.hpp"
 #include "flapi_telemetry.hpp"
+#include "runtime_metrics.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/types/blob.hpp"
 #include "oidc_provider_presets.hpp"
@@ -169,6 +170,23 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
 
     CROW_LOG_DEBUG << "Auth enabled for endpoint: " << req.url;
 
+    // A 401/403 from here never reaches the handler, which is where a REST
+    // series is recorded, so these rejections were counted globally only and
+    // never against their route. Named and recorded here instead.
+    const std::string method_name = crow::method_name(req.method);
+    const std::string route = endpoint->urlPath;
+    if (auto* rc = RequestContextScope::current()) {
+        rc->route_template_storage = route;
+        rc->route_template = rc->route_template_storage;
+    }
+    const auto record_rejection = [&](int status) {
+        const auto* rc = RequestContextScope::current();
+        const auto started = rc != nullptr ? rc->t0 : std::chrono::steady_clock::now();
+        RuntimeMetrics::instance().recordRest(
+            method_name, route, status,
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started));
+    };
+
     // auth_kind is the endpoint's configured scheme (enum, never a secret).
     const std::string auth_kind = endpoint->auth.type;
 
@@ -186,6 +204,7 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
             rc->auth_kind = "basic";
             rc->principal = "anonymous";
         }
+        record_rejection(401);
         res.end();
         flapi::GlobalTelemetry().authEnforced(auth_kind, /*allow=*/false);
         return;
@@ -212,6 +231,7 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
             rc->auth_kind = staticAuthKind(endpoint->auth.type);
             rc->principal = ctx.username.empty() ? "anonymous" : ctx.username;
         }
+        record_rejection(401);
         res.end();
     } else {
         CROW_LOG_DEBUG << "Authentication successful for user: " << ctx.username;
@@ -232,6 +252,7 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
             body["error"] = "Forbidden";
             body["message"] = "The authenticated principal does not hold any role this endpoint requires.";
             res.body = body.dump();
+            record_rejection(403);
             res.end();
             flapi::GlobalTelemetry().authEnforced(auth_kind, /*allow=*/false);
             return;

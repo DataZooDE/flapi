@@ -388,7 +388,13 @@ void DatabaseManager::initializeConnections(std::shared_ptr<ConfigManager> confi
         const auto& init = connection_config.getInit();
         if (!init.empty()) {
             CROW_LOG_DEBUG << "Executing init statement for connection: " << connection_name;
-            executeInitStatement(init);
+            // Named: with several connections, "IO Error: Extension ... not
+            // found" at startup did not say whose init failed.
+            try {
+                executeInitStatement(init);
+            } catch (const std::exception& e) {
+                throw std::runtime_error("connection '" + connection_name + "' init: " + e.what());
+            }
         }
     }
 }

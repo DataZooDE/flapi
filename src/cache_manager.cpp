@@ -427,10 +427,11 @@ std::string CacheManager::renderRefreshTemplate(std::shared_ptr<ConfigManager> c
     //
     // Falls back to the snapshot timestamp when the table is new or empty, so
     // a first refresh still renders its incremental section the same way.
+    std::string watermark_dropped_reason;
     if (cacheConfig.hasCursor()) {
         const std::string watermark =
             fetchCursorWatermark(catalog, schema, table, cacheConfig.cursor->column,
-                                 cacheConfig.cursor->type);
+                                 cacheConfig.cursor->type, &watermark_dropped_reason);
         if (!watermark.empty()) {
             params["previousSnapshotTimestamp"] = watermark;
         } else {
@@ -484,6 +485,12 @@ std::string CacheManager::renderRefreshTemplate(std::shared_ptr<ConfigManager> c
     const auto rendered_with = params;
     std::string rendered = db_adapter_->renderCacheTemplate(endpoint, cacheConfig, params);
     params = rendered_with;
+    // After rendering: the reason is for the caller (expand --cache, the
+    // refresh answer, the audit row), not a template variable. It used to be
+    // in the server log only, so a cache silently reloaded in full every time.
+    if (!watermark_dropped_reason.empty() && !full) {
+        params[kWatermarkDroppedReasonKey] = watermark_dropped_reason;
+    }
     return rendered;
 }
 
@@ -538,8 +545,12 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
         if (after.current_snapshot_id) {
             details.snapshot_id = *after.current_snapshot_id;
         }
-        recordSyncEvent(config_manager, endpoint, sync_type, "success",
-                        "Cache refreshed successfully", details);
+        std::string message = "Cache refreshed successfully";
+        if (const auto it = params.find(kWatermarkDroppedReasonKey); it != params.end()) {
+            details.warning = it->second;
+            message += "; warning: " + it->second;
+        }
+        recordSyncEvent(config_manager, endpoint, sync_type, "success", message, details);
     } catch (const std::exception& ex) {
         details.completed_at = std::chrono::system_clock::now();
         // Scrubbed before it is RECORDED. A failed refresh's DuckDB error
@@ -661,7 +672,8 @@ std::string CacheManager::fetchCursorWatermark(const std::string& catalog,
                                                const std::string& schema,
                                                const std::string& table,
                                                const std::string& cursor_column,
-                                               const std::string& cursor_type) {
+                                               const std::string& cursor_type,
+                                               std::string* dropped_reason) {
     if (cursor_column.empty()) {
         return {};
     }
@@ -680,11 +692,18 @@ std::string CacheManager::fetchCursorWatermark(const std::string& catalog,
                 // Dropped, not escaped. The caller then erases the watermark
                 // and the refresh takes its full-load branch, which is always
                 // correct and merely slower - see isPlausibleWatermark.
-                CROW_LOG_WARNING
-                    << "The cursor watermark read from " << schema << "." << table
-                    << " does not look like a " << cursor_type
-                    << "; it will not be interpolated into the refresh template and "
-                       "this refresh loads the full source.";
+                const std::string article =
+                    (!cursor_type.empty() && std::string("aeiouAEIOU").find(cursor_type[0]) != std::string::npos)
+                        ? "an " : "a ";
+                const std::string reason =
+                    "the cursor watermark read from " + schema + "." + table + " (" + cursor_column +
+                    ") does not look like " + article + cursor_type +
+                    " (cursor.type); it was not interpolated and this refresh loaded the full source - "
+                    "set cursor.type to the column's type";
+                CROW_LOG_WARNING << "The " << reason.substr(4);
+                if (dropped_reason != nullptr) {
+                    *dropped_reason = reason;
+                }
                 return {};
             }
 
@@ -1374,6 +1393,7 @@ void CacheManager::updateRefreshStats(const CacheKey& key, const std::string& en
     stats.last_rows_affected = details.rows_affected;
     stats.last_snapshot_id = details.snapshot_id;
     stats.last_completed_at = details.completed_at;
+    stats.last_warning = details.warning;
     stats.refreshes += 1;
     if (status != "success") {
         stats.failures += 1;
@@ -1580,7 +1600,32 @@ std::optional<std::chrono::system_clock::time_point> CacheManager::lastRefreshCo
 
 std::optional<std::chrono::system_clock::time_point> CacheManager::newestSnapshotTime(
         std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint) {
-    const CacheKey key = cacheKeyForEndpoint(config_manager, endpoint);
+    return newestSnapshotTimeForKey(cacheKeyForEndpoint(config_manager, endpoint));
+}
+
+std::optional<std::chrono::system_clock::time_point> CacheManager::dataTimestamp(
+        const std::string& catalog, const std::string& schema, const std::string& table) {
+    const CacheKey key{catalog, schema, table};
+    {
+        std::lock_guard<std::mutex> lock(refresh_stats_mutex_);
+        const auto it = refresh_stats_.find(key);
+        if (it != refresh_stats_.end() && it->second.last_success_at) {
+            return it->second.last_success_at;
+        }
+        const auto memo = snapshot_time_memo_.find(key);
+        if (memo != snapshot_time_memo_.end()) {
+            return memo->second;
+        }
+    }
+    // Outside the lock: a catalog query. Once per table per process, so the
+    // metrics endpoint stays cheap.
+    const auto found = newestSnapshotTimeForKey(key);
+    std::lock_guard<std::mutex> lock(refresh_stats_mutex_);
+    snapshot_time_memo_[key] = found;
+    return found;
+}
+
+std::optional<std::chrono::system_clock::time_point> CacheManager::newestSnapshotTimeForKey(const CacheKey& key) {
     try {
         const std::string query =
             "SELECT CAST(epoch_ms(snapshot_time) AS BIGINT) AS ms FROM ducklake_snapshots('" +

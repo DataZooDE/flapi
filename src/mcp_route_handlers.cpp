@@ -1068,7 +1068,9 @@ void MCPRouteHandlers::discoverMCPEntitiesImpl() const {
             CROW_LOG_DEBUG << "Adding MCP tool: " << (endpoint.mcp_tool ? endpoint.mcp_tool->name : "null");
             tools.push_back(endpointToMCPToolDefinition(endpoint));
         }
-        if (endpoint.isMCPResource()) {
+        // A uri-templated resource has no concrete uri to read: its flapi://<name>
+        // 404s. It is advertised in resources/templates/list only.
+        if (endpoint.isMCPResource() && endpoint.mcp_resource->uri_template.empty()) {
             CROW_LOG_DEBUG << "Adding MCP resource: " << (endpoint.mcp_resource ? endpoint.mcp_resource->name : "null");
             resources.push_back(endpointToMCPResourceDefinition(endpoint));
         }
@@ -1563,6 +1565,12 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                     content_response.addText(config_result.result);
                     crow::json::wvalue mcp_result = content_response.toJson();
                     response.result = mcp_result.dump();
+                } else if (config_result.error_code == -32001) {
+                    // A missing/rejected config-service token is an AUTH error,
+                    // not an internal one: -32603 "Tool execution failed:
+                    // Authentication validation failed" sent clients looking for
+                    // a server bug. -32001 is the adapter's auth code.
+                    response.error = formatJsonRpcError(-32001, config_result.error_message);
                 } else {
                     // Config-service (flapi_*) tools are management operations;
                     // their failures stay JSON-RPC errors (isError is reserved for
@@ -1726,7 +1734,17 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                     content_response.addText(result.result);
 
                     auto parsed_rows = crow::json::load(result.result);
-                    if (parsed_rows) {
+                    const auto dry = result.metadata.find("dry_run");
+                    const bool is_dry_run = dry != result.metadata.end() && dry->second == "true";
+                    if (parsed_rows && is_dry_run) {
+                        // A dry run returned no rows: `rows` stays the array the
+                        // outputSchema promises (it was the preview OBJECT), and
+                        // the preview fields sit beside it.
+                        crow::json::wvalue structured(parsed_rows);
+                        structured["rows"] = crow::json::wvalue::list();
+                        structured["row_count"] = 0;
+                        content_response.setStructuredContent(std::move(structured));
+                    } else if (parsed_rows) {
                         crow::json::wvalue structured;
                         structured["rows"] = crow::json::wvalue(parsed_rows);
                         if (parsed_rows.t() == crow::json::type::List) {
@@ -1735,8 +1753,11 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                         content_response.setStructuredContent(std::move(structured));
                     }
                     // Learn this tool's outputSchema from the real result columns
-                    // so a subsequent tools/list can advertise it.
-                    cacheOutputSchemaFromRows(tool_name, result.result);
+                    // so a subsequent tools/list can advertise it - never from a
+                    // dry-run preview, whose shape is not the tool's.
+                    if (!is_dry_run) {
+                        cacheOutputSchemaFromRows(tool_name, result.result);
+                    }
 
                     crow::json::wvalue mcp_result = content_response.toJson();
                     response.result = mcp_result.dump();
@@ -1894,6 +1915,20 @@ MCPResponse MCPRouteHandlers::handleResourcesReadRequest(const MCPRequest& reque
 
         CROW_LOG_DEBUG << "Reading resource: " << resource_config->mcp_resource->name;
 
+        // Defaults + the field validators, exactly as tools/call runs them. The
+        // uri-template values used to reach the template unvalidated, so a
+        // field's regex/enum - the guard in front of `{{{ params.x }}}` - did
+        // not apply on this surface. Runs before the auth injection below, so
+        // the injected `__auth_*` are not mistaken for unknown parameters.
+        if (const auto invalid = validateMcpParams(*resource_config, bound_params); !invalid.empty()) {
+            CROW_LOG_WARNING << "MCP resources/read rejected for '"
+                             << resource_config->mcp_resource->name << "': " << invalid;
+            response.error = formatJsonRpcError(
+                -32602, "Invalid parameters for resource '" + resource_config->mcp_resource->name +
+                            "': " + invalid);
+            return response;
+        }
+
         if (auto cache_manager = db_manager_->getCacheManager()) {
             if (auto readiness = cache_manager->readinessBlock(config_manager_, *resource_config)) {
                 auto body = CacheManager::readinessBlockJson(*readiness);
@@ -2005,6 +2040,27 @@ bool matchUriTemplate(const std::string& tmpl, const std::string& uri,
 
 } // namespace
 
+ResponseShape resourceResponseShape(const EndpointConfig& endpoint) {
+    ResponseShape shape;
+    const auto& own = endpoint.mcp_resource->response;
+    const EndpointConfig::MCPToolInfo::ResponseShape* tool =
+        endpoint.mcp_tool ? &endpoint.mcp_tool->response : nullptr;
+
+    shape.max_rows = own.max_rows;
+    if (!shape.max_rows && tool != nullptr) {
+        shape.max_rows = tool->max_rows;
+    }
+    if (!shape.max_rows) {
+        shape.max_rows = EndpointConfig::MCPResourceInfo::kDefaultMaxRows;
+    }
+    if (own.redact_columns) {
+        shape.redact_columns = *own.redact_columns;
+    } else if (tool != nullptr) {
+        shape.redact_columns = tool->redact_columns;
+    }
+    return shape;
+}
+
 // Resource functionality implementation
 std::optional<EndpointConfig> MCPRouteHandlers::findResourceByURI(
     const std::string& uri, std::map<std::string, std::string>& bound_params) const {
@@ -2065,31 +2121,36 @@ crow::json::wvalue MCPRouteHandlers::readResourceContent(
             std::map<std::string, std::string> query_params = params;
             auto query_result = db_manager_->executeQuery(resource_config, query_params, false);
 
-            // Check if the query result structure has the data we need
-            if (query_result.data.size() > 0) {
-                // Get the result as a JSON string
-                std::string result_text;
-                if (resource_config.mcp_resource->mime_type == "application/json" ||
-                    resource_config.mcp_resource->mime_type.find("json") != std::string::npos) {
-                    result_text = query_result.data.dump();
-                } else {
-                    // For text/plain, convert JSON to a readable text format
-                    result_text = query_result.data.dump(); // For now, use JSON format
-                }
+            // An empty result is a valid read ("[]"), not an internal error:
+            // it used to throw "Resource query returned no data" -> -32603.
+            const size_t row_count = query_result.data.size();
+            std::string result_text = row_count > 0 ? query_result.data.dump() : std::string("[]");
 
-                // Convert the result to MCP resource content format
-                crow::json::wvalue content_item;
-                content_item["uri"] = reported_uri;
-                content_item["mimeType"] = resource_config.mcp_resource->mime_type;
-                content_item["text"] = result_text;
-
-                crow::json::wvalue contents_array = crow::json::wvalue::list();
-                contents_array[0] = std::move(content_item);
-
-                result["contents"] = std::move(contents_array);
-            } else {
-                throw std::runtime_error("Resource query returned no data");
+            // Response shaping: mcp-resource.response, else the same file's
+            // mcp-tool.response, and max-rows defaults to a cap either way.
+            const auto shape = resourceResponseShape(resource_config);
+            const bool truncated = shape.max_rows.has_value() && row_count > *shape.max_rows;
+            if (!shape.isNoOp() && row_count > 0) {
+                result_text = MCPResponseShaper().shape(result_text, shape);
             }
+
+            // Convert the result to MCP resource content format
+            crow::json::wvalue content_item;
+            content_item["uri"] = reported_uri;
+            content_item["mimeType"] = resource_config.mcp_resource->mime_type;
+            content_item["text"] = result_text;
+            if (truncated) {
+                // Said in the result, not only the log, so the reader knows it
+                // holds a prefix and how to get the rest.
+                content_item["_meta"]["truncated"] = true;
+                content_item["_meta"]["row_count"] = static_cast<int64_t>(row_count);
+                content_item["_meta"]["max_rows"] = static_cast<int64_t>(*shape.max_rows);
+            }
+
+            crow::json::wvalue contents_array = crow::json::wvalue::list();
+            contents_array[0] = std::move(content_item);
+
+            result["contents"] = std::move(contents_array);
         } else {
             // Fallback: return a simple resource representation
             crow::json::wvalue content_item;

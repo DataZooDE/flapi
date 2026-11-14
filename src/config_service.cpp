@@ -33,6 +33,7 @@ extern char** environ;
 #include "database_manager.hpp"
 #include "cache_manager.hpp"
 #include "sql_template_processor.hpp"
+#include "mcp_dry_run.hpp"
 #include "arrow_metrics.hpp"
 #include "runtime_metrics.hpp"
 #include "vfs_health_checker.hpp"
@@ -90,9 +91,19 @@ crow::json::wvalue buildCacheMetricsJson(const std::string& endpoint_filter) {
             const int64_t timed = st.refreshes;  // refreshes with a duration (all of them, since timing landed)
             row["duration_ms"]["avg"] = timed > 0 ? st.total_duration_ms / timed : 0;
             row["duration_ms"]["max"] = st.max_duration_ms;
-            if (st.last_success_at) {
-                row["data_age_seconds"] = static_cast<int64_t>(
-                    std::chrono::duration_cast<std::chrono::seconds>(now - *st.last_success_at).count());
+        }
+        // The last successful refresh, else the newest snapshot in the catalog:
+        // after a restart whose refresh failed, an old snapshot IS served.
+        {
+            const auto first = name.find('.');
+            const auto second = name.find('.', first + 1);
+            if (first != std::string::npos && second != std::string::npos) {
+                if (const auto at = cache_manager->dataTimestamp(name.substr(0, first),
+                                                                 name.substr(first + 1, second - first - 1),
+                                                                 name.substr(second + 1))) {
+                    row["data_age_seconds"] = static_cast<int64_t>(std::max<int64_t>(
+                        0, std::chrono::duration_cast<std::chrono::seconds>(now - *at).count()));
+                }
             }
         }
         rows.push_back(std::move(row));
@@ -383,6 +394,131 @@ ConfigService::ConfigService(std::shared_ptr<ConfigManager> config_manager,
     }
 }
 
+namespace {
+
+// Every config-service 401 says the same thing in the same shape (JSON, like
+// every other error here). They used to differ by route: plain text on most,
+// {"error":"Unauthorized"} on /metrics.
+crow::response unauthorizedResponse() {
+    crow::json::wvalue body;
+    body["error"] = "Unauthorized: missing or invalid config-service token "
+                    "(send it as X-Config-Token or Authorization: Bearer)";
+    crow::response res(401, body);
+    res.set_header("Content-Type", "application/json");
+    return res;
+}
+
+crow::response slugError(int status, const std::string& message) {
+    crow::json::wvalue body;
+    body["error"] = message;
+    crow::response res(status, body);
+    res.set_header("Content-Type", "application/json");
+    return res;
+}
+
+std::string upperCopy(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    return s;
+}
+
+}  // namespace
+
+std::string DecodeSlugSegment(const std::string& slug) {
+    // ':' is legal in a path segment (RFC 3986 pchar), but encodeURIComponent
+    // sends it as %3A, and the slug of /products/:id arrived as "-products-%3Aid"
+    // and matched nothing. Only %3A is decoded: '%' never occurs in a slug
+    // (see path_utils.cpp), so this cannot alias another endpoint.
+    std::string out;
+    out.reserve(slug.size());
+    for (std::size_t i = 0; i < slug.size(); ++i) {
+        if (slug[i] == '%' && i + 3 <= slug.size() &&
+            (slug.compare(i, 3, "%3A") == 0 || slug.compare(i, 3, "%3a") == 0)) {
+            out += ':';
+            i += 2;
+        } else {
+            out += slug[i];
+        }
+    }
+    return out;
+}
+
+SlugTarget ResolveSlugTarget(const ConfigManager& cm, const std::string& raw_slug, const char* method_param) {
+    SlugTarget target;
+    const std::string slug = DecodeSlugSegment(raw_slug);
+    const std::string path = PathUtils::identifierToPath(slug);
+    const std::string method = method_param != nullptr ? upperCopy(method_param) : std::string();
+
+    // Exact names first (the slug, the url-path, the MCP name); a route match
+    // (/orders/7 against /orders/:id) only when nothing is named exactly.
+    std::vector<const EndpointConfig*> exact;
+    std::vector<const EndpointConfig*> matched;
+    const auto snapshot = cm.getEndpoints();
+    for (const auto& ep : *snapshot) {
+        if (!method.empty()) {
+            // ?method= names a REST endpoint.
+            if (ep.urlPath.empty() || upperCopy(ep.method.empty() ? "GET" : ep.method) != method) {
+                continue;
+            }
+        }
+        const bool is_exact = ep.getSlug() == slug || (!ep.urlPath.empty() && ep.urlPath == path) ||
+                              (ep.urlPath.empty() && ep.getName() == slug);
+        if (is_exact) {
+            exact.push_back(&ep);
+        } else if (ep.matchesPath(path)) {
+            matched.push_back(&ep);
+        }
+    }
+    auto& candidates = exact.empty() ? matched : exact;
+    // Method order, so the "ambiguous" message is stable across file systems.
+    std::sort(candidates.begin(), candidates.end(), [](const EndpointConfig* a, const EndpointConfig* b) {
+        return ConfigManager::EndpointKey(*a) < ConfigManager::EndpointKey(*b);
+    });
+    target.found = !candidates.empty();
+    if (candidates.empty()) {
+        target.status = 404;
+        target.error = "Endpoint not found: " + (path.empty() ? slug : path) +
+                       (method.empty() ? std::string() : " with method " + method);
+        return target;
+    }
+    if (candidates.size() > 1) {
+        // Several endpoints share the url-path (GET /orders + POST /orders).
+        // Picking one silently is how reload reloaded the other file and
+        // answered 200; say so and let the caller name it.
+        std::string served;
+        std::string methods;
+        for (const auto* ep : candidates) {
+            const std::string m = upperCopy(ep->method.empty() ? "GET" : ep->method);
+            served += (served.empty() ? "" : ", ") + m + " (" +
+                      (ep->config_file_path.empty() ? std::string("in memory") : ep->config_file_path) + ")";
+            methods += (methods.empty() ? "" : "|") + m;
+        }
+        target.status = 400;
+        target.error = "Ambiguous: " + (path.empty() ? slug : path) + " is served by " + served +
+                       "; specify ?method=" + methods;
+        return target;
+    }
+    target.ok = true;
+    target.status = 200;
+    target.key = ConfigManager::EndpointKey(*candidates.front());
+    return target;
+}
+
+namespace {
+
+// The route-level form: resolved, or the JSON error to answer with.
+std::optional<crow::response> resolveOrError(const ConfigManager& cm, const std::string& slug,
+                                             const crow::request& req, std::string& key) {
+    const auto target = ResolveSlugTarget(cm, slug, req.url_params.get("method"));
+    if (!target.ok) {
+        return slugError(target.status, target.error);
+    }
+    key = target.key;
+    return std::nullopt;
+}
+
+}  // namespace
+
 void ConfigService::setDocGenerator(std::shared_ptr<OpenAPIDocGenerator> doc_gen) {
     doc_generator_ = doc_gen;
 }
@@ -399,7 +535,7 @@ std::string ConfigService::RouteTemplateFor(const std::string& url) {
         const std::string rest = path.substr(endpoints_prefix.size());
         const auto slash = rest.find('/');
         const std::string slug = rest.substr(0, slash);
-        if (slug != "by-template" && !slug.empty()) {
+        if (slug != "by-template" && slug != "reload-file" && !slug.empty()) {
             path = endpoints_prefix + "<string>" +
                    (slash == std::string::npos ? std::string() : rest.substr(slash));
         }
@@ -446,19 +582,27 @@ bool ConfigService::validateToken(const crow::request& req) const {
                              presented.size()) == 0;
     };
 
+    // A presented-but-wrong token is logged (never the token itself): without
+    // this a misconfigured client and a scanner both left no trace beyond 401s.
+    const auto rejected = [&req](const char* header) {
+        CROW_LOG_WARNING << "Config service: rejected " << header << " token for "
+                         << req.url.substr(0, req.url.find('?'));
+        return false;
+    };
+
     // Check Authorization header: "Bearer <token>"
     auto auth_header = req.get_header_value("Authorization");
     if (!auth_header.empty()) {
         const std::string bearer_prefix = "Bearer ";
         if (auth_header.substr(0, bearer_prefix.length()) == bearer_prefix) {
-            return matches(auth_header.substr(bearer_prefix.length()));
+            return matches(auth_header.substr(bearer_prefix.length())) || rejected("Authorization: Bearer");
         }
     }
 
     // Also check X-Config-Token header for easier testing
     auto token_header = req.get_header_value("X-Config-Token");
     if (!token_header.empty()) {
-        return matches(token_header);
+        return matches(token_header) || rejected("X-Config-Token");
     }
 
     return false;
@@ -478,7 +622,7 @@ void ConfigService::registerRoutes(FlapiApp& app) {
         .methods("GET"_method, "PUT"_method)
         ([this](const crow::request& req) {
             if (!validateToken(req)) {
-                return crow::response(401, "Unauthorized: Invalid or missing token");
+                return unauthorizedResponse();
             }
             if (req.method == crow::HTTPMethod::Get) {
                 return project_handler_->getProjectConfig(req);
@@ -497,7 +641,7 @@ void ConfigService::registerRoutes(FlapiApp& app) {
         .methods("GET"_method)
         ([this](const crow::request& req) {
             if (!validateToken(req)) {
-                return crow::response(401, "Unauthorized: Invalid or missing token");
+                return unauthorizedResponse();
             }
             return project_handler_->getEnvironmentVariables(req);
         });
@@ -507,7 +651,7 @@ void ConfigService::registerRoutes(FlapiApp& app) {
         .methods("GET"_method, "POST"_method)
         ([this](const crow::request& req) {
             if (!validateToken(req)) {
-                return crow::response(401, "Unauthorized: Invalid or missing token");
+                return unauthorizedResponse();
             }
             if (req.method == crow::HTTPMethod::Get)
                 return endpoint_handler_->listEndpoints(req);
@@ -515,20 +659,38 @@ void ConfigService::registerRoutes(FlapiApp& app) {
                 return endpoint_handler_->createEndpoint(req);
         });
 
+    // Reload (or load) every endpoint a YAML file declares. Addressed by FILE,
+    // not slug: a new hand-written endpoint has no slug the server knows yet
+    // (create answered 409 "declared in file", reload 404), and two files may
+    // share a url-path. Registered before the <string> routes it shadows.
+    CROW_ROUTE(app, "/api/v1/_config/endpoints/reload-file")
+        .methods("POST"_method)
+        ([this](const crow::request& req) {
+            if (!validateToken(req)) {
+                return unauthorizedResponse();
+            }
+            return endpoint_handler_->reloadEndpointFile(req);
+        });
+
+    // Every slug route below takes an optional ?method=: several endpoints may
+    // share a url-path, and without it such a slug is a 400, not a guess.
     CROW_ROUTE(app, "/api/v1/_config/endpoints/<string>")
         .methods("GET"_method, "PUT"_method, "DELETE"_method)
         ([this](const crow::request& req, const std::string& slug) {
             if (!validateToken(req)) {
-                return crow::response(401, "Unauthorized: Invalid or missing token");
+                return unauthorizedResponse();
             }
-            // Use centralized slug lookup in endpoint handler
+            std::string key;
+            if (auto error = resolveOrError(*config_manager, slug, req, key)) {
+                return std::move(*error);
+            }
             switch (req.method) {
                 case crow::HTTPMethod::Get:
-                    return endpoint_handler_->getEndpointConfigBySlug(req, slug);
+                    return endpoint_handler_->getEndpointConfig(req, key);
                 case crow::HTTPMethod::Put:
-                    return endpoint_handler_->updateEndpointConfigBySlug(req, slug);
+                    return endpoint_handler_->updateEndpointConfig(req, key);
                 case crow::HTTPMethod::Delete:
-                    return endpoint_handler_->deleteEndpointBySlug(req, slug);
+                    return endpoint_handler_->deleteEndpoint(req, key);
                 default:
                     return crow::response(405);
             }
@@ -539,20 +701,29 @@ void ConfigService::registerRoutes(FlapiApp& app) {
         .methods("POST"_method)
         ([this](const crow::request& req, const std::string& slug) {
             if (!validateToken(req)) {
-                return crow::response(401, "Unauthorized: Invalid or missing token");
+                return unauthorizedResponse();
             }
-            const std::string path = PathUtils::identifierToPath(slug);
-            return endpoint_handler_->validateEndpointConfig(req, path);
+            // Validating a not-yet-existing endpoint is fine: the target only
+            // chooses the directory the YAML is checked from.
+            const auto target = ResolveSlugTarget(*config_manager, slug, req.url_params.get("method"));
+            if (!target.ok && target.found) {
+                return slugError(target.status, target.error);
+            }
+            return endpoint_handler_->validateEndpointConfig(
+                req, target.ok ? target.key : PathUtils::identifierToPath(DecodeSlugSegment(slug)));
         });
 
     CROW_ROUTE(app, "/api/v1/_config/endpoints/<string>/reload")
         .methods("POST"_method)
         ([this](const crow::request& req, const std::string& slug) {
             if (!validateToken(req)) {
-                return crow::response(401, "Unauthorized: Invalid or missing token");
+                return unauthorizedResponse();
             }
-            const std::string path = PathUtils::identifierToPath(slug);
-            return endpoint_handler_->reloadEndpointConfig(req, path);
+            std::string key;
+            if (auto error = resolveOrError(*config_manager, slug, req, key)) {
+                return std::move(*error);
+            }
+            return endpoint_handler_->reloadEndpointConfig(req, key);
         });
 
     // Parameters route
@@ -560,10 +731,13 @@ void ConfigService::registerRoutes(FlapiApp& app) {
         .methods("GET"_method)
         ([this](const crow::request& req, const std::string& slug) {
             if (!validateToken(req)) {
-                return crow::response(401, "Unauthorized: Invalid or missing token");
+                return unauthorizedResponse();
             }
-            const std::string path = PathUtils::identifierToPath(slug);
-            return endpoint_handler_->getEndpointParameters(req, path);
+            std::string key;
+            if (auto error = resolveOrError(*config_manager, slug, req, key)) {
+                return std::move(*error);
+            }
+            return endpoint_handler_->getEndpointParameters(req, key);
         });
 
     // Find endpoints by template file
@@ -571,11 +745,11 @@ void ConfigService::registerRoutes(FlapiApp& app) {
         .methods("POST"_method)
         ([this](const crow::request& req) {
             if (!validateToken(req)) {
-                return crow::response(401, "Unauthorized: Invalid or missing token");
+                return unauthorizedResponse();
             }
             auto json = crow::json::load(req.body);
             if (!json || !json.has("template_path")) {
-                return crow::response(400, "Invalid JSON: missing 'template_path' field");
+                return slugError(400, "Invalid JSON: missing 'template_path' field");
             }
             const std::string template_path = json["template_path"].s();
             return endpoint_handler_->findEndpointsByTemplate(req, template_path);
@@ -586,33 +760,42 @@ void ConfigService::registerRoutes(FlapiApp& app) {
         .methods("GET"_method, "PUT"_method)
         ([this](const crow::request& req, const std::string& slug) {
             if (!validateToken(req)) {
-                return crow::response(401, "Unauthorized: Invalid or missing token");
+                return unauthorizedResponse();
             }
-            // Use slug-based lookup (works for both REST and MCP)
+            std::string key;
+            if (auto error = resolveOrError(*config_manager, slug, req, key)) {
+                return std::move(*error);
+            }
             if (req.method == crow::HTTPMethod::Get)
-                return template_handler_->getEndpointTemplateBySlug(req, slug);
+                return template_handler_->getEndpointTemplate(req, key);
             else
-                return template_handler_->updateEndpointTemplateBySlug(req, slug);
+                return template_handler_->updateEndpointTemplate(req, key);
         });
 
     CROW_ROUTE(app, "/api/v1/_config/endpoints/<string>/template/expand")
         .methods("POST"_method)
         ([this](const crow::request& req, const std::string& slug) {
             if (!validateToken(req)) {
-                return crow::response(401, "Unauthorized: Invalid or missing token");
+                return unauthorizedResponse();
             }
-            // Use slug-based lookup (works for both REST and MCP)
-            return template_handler_->expandTemplateBySlug(req, slug);
+            std::string key;
+            if (auto error = resolveOrError(*config_manager, slug, req, key)) {
+                return std::move(*error);
+            }
+            return template_handler_->expandTemplate(req, key);
         });
 
     CROW_ROUTE(app, "/api/v1/_config/endpoints/<string>/template/test")
         .methods("POST"_method)
         ([this](const crow::request& req, const std::string& slug) {
             if (!validateToken(req)) {
-                return crow::response(401, "Unauthorized: Invalid or missing token");
+                return unauthorizedResponse();
             }
-            // Use slug-based lookup (works for both REST and MCP)
-            return template_handler_->testTemplateBySlug(req, slug);
+            std::string key;
+            if (auto error = resolveOrError(*config_manager, slug, req, key)) {
+                return std::move(*error);
+            }
+            return template_handler_->testTemplate(req, key);
         });
 
     // Cache routes
@@ -620,46 +803,58 @@ void ConfigService::registerRoutes(FlapiApp& app) {
         .methods("GET"_method, "PUT"_method)
         ([this](const crow::request& req, const std::string& slug) {
             if (!validateToken(req)) {
-                return crow::response(401, "Unauthorized: Invalid or missing token");
+                return unauthorizedResponse();
             }
-            const std::string path = PathUtils::identifierToPath(slug);
+            std::string key;
+            if (auto error = resolveOrError(*config_manager, slug, req, key)) {
+                return std::move(*error);
+            }
             if (req.method == crow::HTTPMethod::Get)
-                return cache_handler_->getCacheConfig(req, path);
+                return cache_handler_->getCacheConfig(req, key);
             else
-                return cache_handler_->updateCacheConfig(req, path);
+                return cache_handler_->updateCacheConfig(req, key);
         });
 
     CROW_ROUTE(app, "/api/v1/_config/endpoints/<string>/cache/template")
         .methods("GET"_method, "PUT"_method)
         ([this](const crow::request& req, const std::string& slug) {
             if (!validateToken(req)) {
-                return crow::response(401, "Unauthorized: Invalid or missing token");
+                return unauthorizedResponse();
             }
-            const std::string path = PathUtils::identifierToPath(slug);
+            std::string key;
+            if (auto error = resolveOrError(*config_manager, slug, req, key)) {
+                return std::move(*error);
+            }
             if (req.method == crow::HTTPMethod::Get)
-                return template_handler_->getCacheTemplate(req, path);
+                return template_handler_->getCacheTemplate(req, key);
             else
-                return template_handler_->updateCacheTemplate(req, path);
+                return template_handler_->updateCacheTemplate(req, key);
         });
 
     CROW_ROUTE(app, "/api/v1/_config/endpoints/<string>/cache/refresh")
         .methods("POST"_method)
         ([this](const crow::request& req, const std::string& slug) {
             if (!validateToken(req)) {
-                return crow::response(401, "Unauthorized: Invalid or missing token");
+                return unauthorizedResponse();
             }
-            const std::string path = PathUtils::identifierToPath(slug);
-            return cache_handler_->refreshCache(req, path);
+            std::string key;
+            if (auto error = resolveOrError(*config_manager, slug, req, key)) {
+                return std::move(*error);
+            }
+            return cache_handler_->refreshCache(req, key);
         });
 
     CROW_ROUTE(app, "/api/v1/_config/endpoints/<string>/cache/gc")
         .methods("POST"_method)
         ([this](const crow::request& req, const std::string& slug) {
             if (!validateToken(req)) {
-                return crow::response(401, "Unauthorized: Invalid or missing token");
+                return unauthorizedResponse();
             }
-            const std::string path = PathUtils::identifierToPath(slug);
-            return cache_handler_->performGarbageCollection(req, path);
+            std::string key;
+            if (auto error = resolveOrError(*config_manager, slug, req, key)) {
+                return std::move(*error);
+            }
+            return cache_handler_->performGarbageCollection(req, key);
         });
 
     // DuckLake audit routes
@@ -667,19 +862,23 @@ void ConfigService::registerRoutes(FlapiApp& app) {
         .methods("GET"_method)
         ([this](const crow::request& req, const std::string& slug) {
             if (!validateToken(req)) {
-                return crow::response(401, "Unauthorized: Invalid or missing token");
+                return unauthorizedResponse();
             }
-            const std::string path = PathUtils::identifierToPath(slug);
-            return audit_handler_->getCacheAuditLog(path);
+            std::string key;
+            if (auto error = resolveOrError(*config_manager, slug, req, key)) {
+                return std::move(*error);
+            }
+            return audit_handler_->getCacheAuditLog(key);
         });
 
-    CROW_ROUTE(app, "/api/v1/_config/cache/audit")
+CROW_ROUTE(app, "/api/v1/_config/cache/audit")
         .methods("GET"_method)
         ([this](const crow::request& req) {
             if (!validateToken(req)) {
-                return crow::response(401, "Unauthorized: Invalid or missing token");
+                return unauthorizedResponse();
             }
-            return audit_handler_->getAllCacheAuditLogs();
+            const char* table = req.url_params.get("table");
+            return audit_handler_->getAllCacheAuditLogs(table != nullptr ? table : "");
         });
 
     // Schema routes
@@ -687,7 +886,7 @@ void ConfigService::registerRoutes(FlapiApp& app) {
         .methods("GET"_method)
         ([this](const crow::request& req) {
             if (!validateToken(req)) {
-                return crow::response(401, "Unauthorized: Invalid or missing token");
+                return unauthorizedResponse();
             }
             return schema_handler_->getSchema(req);
         });
@@ -696,7 +895,7 @@ void ConfigService::registerRoutes(FlapiApp& app) {
         .methods("POST"_method)
         ([this](const crow::request& req) {
             if (!validateToken(req)) {
-                return crow::response(401, "Unauthorized: Invalid or missing token");
+                return unauthorizedResponse();
             }
             return schema_handler_->refreshSchema(req);
         });
@@ -706,7 +905,7 @@ void ConfigService::registerRoutes(FlapiApp& app) {
         .methods("GET"_method)
         ([this](const crow::request& req) {
             if (!validateToken(req)) {
-                return crow::response(401, "Unauthorized: Invalid or missing token");
+                return unauthorizedResponse();
             }
             return filesystem_handler_->getFilesystemStructure(req);
         });
@@ -716,7 +915,7 @@ void ConfigService::registerRoutes(FlapiApp& app) {
         .methods("GET"_method, "PUT"_method)
         ([this](const crow::request& req) {
             if (!validateToken(req)) {
-                return crow::response(401, "Unauthorized: Invalid or missing token");
+                return unauthorizedResponse();
             }
             
             if (req.method == crow::HTTPMethod::Get) {
@@ -780,7 +979,7 @@ void ConfigService::registerRoutes(FlapiApp& app) {
         .methods("GET"_method)
         ([this](const crow::request& req) {
             if (!validateToken(req)) {
-                return crow::response(401, R"({"error":"Unauthorized"})");
+                return unauthorizedResponse();
             }
 
             // ?endpoint=/path narrows the requests and caches blocks to one route / tool.
@@ -951,7 +1150,7 @@ AuditLogHandler::AuditLogHandler(std::shared_ptr<ConfigManager> config_manager)
 
 crow::response AuditLogHandler::getCacheAuditLog(const std::string& path) {
     try {
-        const auto endpoint = config_manager_->getEndpointForPath(path);
+        const auto endpoint = config_manager_->getEndpointForKey(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -983,7 +1182,7 @@ crow::response AuditLogHandler::getCacheAuditLog(const std::string& path) {
     }
 }
 
-crow::response AuditLogHandler::getAllCacheAuditLogs() {
+crow::response AuditLogHandler::getAllCacheAuditLogs(const std::string& table) {
     try {
         const auto& ducklake_config = config_manager_->getDuckLakeConfig();
         if (!ducklake_config.enabled) {
@@ -993,7 +1192,7 @@ crow::response AuditLogHandler::getAllCacheAuditLogs() {
         auto db_manager = DatabaseManager::getInstance();
         const std::string catalog = ducklake_config.alias;
         
-        std::string audit_query = buildAuditQuery(catalog);
+        std::string audit_query = buildAuditQuery(catalog, "", table);
         std::map<std::string, std::string> params;
         auto result = db_manager->executeDuckLakeQuery(audit_query, params);
         
@@ -1003,8 +1202,9 @@ crow::response AuditLogHandler::getAllCacheAuditLogs() {
     }
 }
 
-std::string AuditLogHandler::buildAuditQuery(const std::string& catalog, 
-                                               const std::string& endpoint_filter) const {
+std::string AuditLogHandler::buildAuditQuery(const std::string& catalog,
+                                               const std::string& endpoint_filter,
+                                               const std::string& table_filter) const {
     std::ostringstream query;
     query << R"(
         SELECT event_id, endpoint_path, cache_table, cache_schema, sync_type, status, message,
@@ -1026,6 +1226,24 @@ std::string AuditLogHandler::buildAuditQuery(const std::string& catalog,
             }
         }
         query << "\n        WHERE endpoint_path = '" << escaped_filter << "'";
+    } else if (!table_filter.empty()) {
+        // Per cache TABLE: several endpoints can share one, and a refresh is
+        // filed under whichever endpoint triggered it - the per-endpoint view
+        // showed only part of that table's history.
+        const auto quote = [](const std::string& v) {
+            std::string out = "'";
+            for (const char c : v) {
+                out += c == '\'' ? std::string("''") : std::string(1, c);
+            }
+            return out + "'";
+        };
+        const auto dot = table_filter.find('.');
+        if (dot == std::string::npos) {
+            query << "\n        WHERE cache_table = " << quote(table_filter);
+        } else {
+            query << "\n        WHERE cache_schema = " << quote(table_filter.substr(0, dot))
+                  << " AND cache_table = " << quote(table_filter.substr(dot + 1));
+        }
     }
     
     query << R"(
@@ -1332,6 +1550,34 @@ std::string FileDeclaring(const ConfigManager& cm, const std::string& url_path, 
     return "";
 }
 
+std::string FileDeclaringMcpName(const ConfigManager& cm, const std::string& name) {
+    std::error_code ec;
+    const std::filesystem::path dir = cm.getTemplateConfig().path;
+    if (name.empty() || !std::filesystem::is_directory(dir, ec)) {
+        return "";
+    }
+    for (std::filesystem::recursive_directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        const auto ext = it->path().extension();
+        if (!it->is_regular_file(ec) || (ext != ".yaml" && ext != ".yml")) {
+            continue;
+        }
+        try {
+            const YAML::Node doc = YAML::LoadFile(it->path().string());
+            if (!doc || !doc.IsMap() || doc["url-path"]) {
+                continue;
+            }
+            for (const char* kind : {"mcp-tool", "mcp-resource", "mcp-prompt"}) {
+                if (scalarOrEmpty(doc[kind], "name") == name) {
+                    return it->path().string();
+                }
+            }
+        } catch (const std::exception&) {
+            // Not plain YAML (e.g. {{include}} directives); the loader judges it.
+        }
+    }
+    return "";
+}
+
 bool IsCanonicalDocument(const YAML::Node& doc) {
     return doc && doc.IsMap() &&
            (doc["url-path"] || doc["mcp-tool"] || doc["mcp-resource"] || doc["mcp-prompt"]);
@@ -1379,7 +1625,17 @@ Outcome CreateFromDocument(ConfigManager& cm, const YAML::Node& doc) {
         if (const auto other = FileDeclaring(cm, id.urlPath, method); !other.empty()) {
             outcome.status = 409;
             outcome.error = "Endpoint already exists: " + id.method + " " + id.urlPath + " is declared in " + other +
-                            " (reload it, or update it with PUT)";
+                            " - load it with POST /api/v1/_config/endpoints/reload-file {\"file\": \"" + other +
+                            "\"} (flapii endpoints reload --file " + other + ") instead of creating a copy";
+            return outcome;
+        }
+    } else if (!id.getName().empty()) {
+        // The MCP-only form of the same: an mcp-tool file written to sqls/ by hand.
+        if (const auto other = FileDeclaringMcpName(cm, id.getName()); !other.empty()) {
+            outcome.status = 409;
+            outcome.error = "Endpoint already exists: MCP name '" + id.getName() + "' is declared in " + other +
+                            " - load it with POST /api/v1/_config/endpoints/reload-file {\"file\": \"" + other +
+                            "\"} (flapii endpoints reload --file " + other + ") instead of creating a copy";
             return outcome;
         }
     }
@@ -1404,6 +1660,14 @@ Outcome CreateFromDocument(ConfigManager& cm, const YAML::Node& doc) {
     try {
         if (!parseAndValidate(cm, file, outcome)) {
             cleanup();
+            return outcome;
+        }
+        // url-path+method AND every MCP name against the loaded table: a
+        // REST+tool file reusing a loaded tool name loaded silently before.
+        if (const auto duplicate = cm.DuplicateEndpointProblem(outcome.config); !duplicate.empty()) {
+            cleanup();
+            outcome.status = 409;
+            outcome.error = duplicate;
             return outcome;
         }
         cm.addEndpoint(outcome.config);
@@ -1760,8 +2024,8 @@ crow::response EndpointConfigHandler::updateEndpointConfigBySlug(const crow::req
 
 crow::response EndpointConfigHandler::removeExisting(const EndpointConfig& existing) {
     const std::string file = existing.config_file_path;
-    const std::string name = existing.isRESTEndpoint() ? existing.urlPath : existing.getName();
-    if (!config_manager_->removeEndpointByPath(name)) {
+    // Exactly this endpoint: by path it removed GET /orders with POST /orders.
+    if (!config_manager_->removeEndpoint(existing)) {
         return jsonError(404, "Endpoint not found");
     }
     // Deleting persists, like flapi_delete_endpoint: the YAML goes too, so the
@@ -1792,7 +2056,7 @@ crow::response EndpointConfigHandler::deleteEndpointBySlug(const crow::request& 
 // Legacy path-based method (kept for backward compatibility)
 crow::response EndpointConfigHandler::getEndpointConfig(const crow::request& req, const std::string& path) {
     try {
-        const auto endpoint = config_manager_->getEndpointForPath(path);
+        const auto endpoint = config_manager_->getEndpointForKey(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -1814,7 +2078,7 @@ EndpointConfig EndpointConfigHandler::jsonToEndpointConfig(const crow::json::rva
 
 crow::response EndpointConfigHandler::updateEndpointConfig(const crow::request& req, const std::string& path) {
     try {
-        const auto endpoint = config_manager_->getEndpointForPath(path);
+        const auto endpoint = config_manager_->getEndpointForKey(path);
         if (!endpoint) {
             return jsonError(404, "Endpoint not found");
         }
@@ -1826,7 +2090,7 @@ crow::response EndpointConfigHandler::updateEndpointConfig(const crow::request& 
 
 crow::response EndpointConfigHandler::deleteEndpoint(const crow::request& req, const std::string& path) {
     try {
-        const auto endpoint = config_manager_->getEndpointForPath(path);
+        const auto endpoint = config_manager_->getEndpointForKey(path);
         if (!endpoint) {
             return jsonError(404, "Endpoint not found");
         }
@@ -1864,7 +2128,7 @@ crow::response EndpointConfigHandler::validateEndpointConfig(const crow::request
         ConfigManager::ValidationResult validation{true, {}, {}};
         std::filesystem::path dir = config_manager_->getTemplateConfig().path;
         if (doc) {
-            const auto existing = config_manager_->getEndpointForPath(path);
+            const auto existing = config_manager_->getEndpointForKey(path);
             if (existing && !existing->config_file_path.empty()) {
                 dir = std::filesystem::path(existing->config_file_path).parent_path();
             }
@@ -1928,18 +2192,12 @@ crow::response EndpointConfigHandler::reloadEndpointConfig(const crow::request& 
         // Known first, so "no such endpoint" (404) and "it exists but its file
         // is broken" are told apart. Both answered 404 "Failed to reload", so a
         // typo in the YAML looked like a wrong slug.
-        auto snapshot = config_manager_->getEndpoints();
-        const EndpointConfig* target = nullptr;
-        for (const auto& ep : *snapshot) {
-            if (ep.getName() == path || ep.matchesPath(path)) {
-                target = &ep;
-                break;
-            }
-        }
+        // By key: the route resolved slug + ?method= to exactly one endpoint.
+        const auto target = config_manager_->getEndpointForKey(path);
         crow::json::wvalue response;
         // `error` like create/update/delete answer, so a client reads every
         // config-service failure the same way; `message`/`reason` stay.
-        if (target == nullptr) {
+        if (!target) {
             response["success"] = false;
             response["error"] = "Endpoint not found: " + path;
             response["message"] = "Endpoint not found: " + path;
@@ -1965,9 +2223,74 @@ crow::response EndpointConfigHandler::reloadEndpointConfig(const crow::request& 
     }
 }
 
+crow::response EndpointConfigHandler::reloadEndpointFile(const crow::request& req) {
+    crow::json::wvalue response;
+    const auto fail = [&response](int status, const std::string& message) {
+        response["success"] = false;
+        response["error"] = message;
+        crow::response res(status, response);
+        res.set_header("Content-Type", "application/json");
+        return res;
+    };
+    try {
+        auto json = crow::json::load(req.body);
+        if (!json || json.t() != crow::json::type::Object || !json.has("file") ||
+            json["file"].t() != crow::json::type::String) {
+            return fail(400, "Invalid JSON: expected {\"file\": \"<path to the endpoint YAML>\"}");
+        }
+        if (FileProviderFactory::GetBundleContents() != nullptr) {
+            return fail(409, "This server runs from a packed bundle; its configuration is read-only");
+        }
+        std::filesystem::path file = std::string(json["file"].s());
+        if (file.is_relative()) {
+            file = std::filesystem::path(config_manager_->getBasePath()) / file;
+        }
+        // Only files the loader itself would read: the templates directory.
+        // Anything else is not an endpoint at the next restart either.
+        std::error_code ec;
+        const auto template_dir = std::filesystem::weakly_canonical(config_manager_->getTemplateConfig().path, ec);
+        const auto canonical = std::filesystem::weakly_canonical(file, ec);
+        const auto rel = canonical.lexically_relative(template_dir);
+        if (rel.empty() || *rel.begin() == "..") {
+            return fail(400, file.string() + " is outside template.path (" + template_dir.string() +
+                                 "); only endpoint YAMLs there are loaded");
+        }
+        const auto ext = canonical.extension();
+        if (ext != ".yaml" && ext != ".yml") {
+            return fail(400, file.string() + " is not a YAML file");
+        }
+
+        const auto result = config_manager_->reloadEndpointFile(canonical);
+        if (!result.ok) {
+            return fail(result.status, result.error);
+        }
+        response["success"] = true;
+        response["file"] = canonical.string();
+        response["status"] = result.loaded_new ? "loaded" : "reloaded";
+        response["message"] = result.loaded_new ? "Endpoint configuration loaded" : "Endpoint configuration reloaded";
+        crow::json::wvalue keys = crow::json::wvalue::list();
+        for (std::size_t i = 0; i < result.endpoints.size(); ++i) {
+            keys[i] = result.endpoints[i];
+        }
+        response["endpoints"] = std::move(keys);
+        if (!result.warnings.empty()) {
+            crow::json::wvalue warnings = crow::json::wvalue::list();
+            for (std::size_t i = 0; i < result.warnings.size(); ++i) {
+                warnings[i] = result.warnings[i];
+            }
+            response["warnings"] = std::move(warnings);
+        }
+        crow::response res(result.status, response);
+        res.set_header("Content-Type", "application/json");
+        return res;
+    } catch (const std::exception& e) {
+        return fail(500, std::string("Reload error: ") + e.what());
+    }
+}
+
 crow::response EndpointConfigHandler::getEndpointParameters(const crow::request& req, const std::string& path) {
     try {
-        const auto endpoint = config_manager_->getEndpointForPath(path);
+        const auto endpoint = config_manager_->getEndpointForKey(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -2038,19 +2361,40 @@ crow::response EndpointConfigHandler::findEndpointsByTemplate(const crow::reques
         const auto endpoints = config_manager_->getEndpoints();   // pinned snapshot
         size_t idx = 0;
         
-        for (const auto& endpoint : *endpoints) {
-            // Normalize endpoint's template path
-            // An endpoint created through the API keeps its template-source relative
-            // to the templates directory; only file-loaded ones are absolute.
-            std::filesystem::path endpoint_template(endpoint.templateSource);
-            if (endpoint_template.is_relative()) {
-                endpoint_template = std::filesystem::path(config_manager_->getTemplateConfig().path) / endpoint_template;
+        // An endpoint created through the API keeps its template paths relative
+        // to the templates directory; only file-loaded ones are absolute.
+        const auto normalize = [this](const std::string& source) {
+            std::filesystem::path p(source);
+            if (p.is_relative()) {
+                p = std::filesystem::path(config_manager_->getTemplateConfig().path) / p;
             }
-            endpoint_template = endpoint_template.lexically_normal();
-            
-            // Check if paths match
-            if (endpoint_template == normalized_template) {
+            return p.lexically_normal();
+        };
+
+        for (const auto& endpoint : *endpoints) {
+            // The template-source, and the cache's template-file: editing a
+            // cache populate SQL used to find no endpoint, so nothing was
+            // reloaded or re-rendered for it.
+            std::vector<std::string> roles;
+            if (!endpoint.templateSource.empty() && normalize(endpoint.templateSource) == normalized_template) {
+                roles.push_back("template-source");
+            }
+            if (endpoint.cache.template_file && !endpoint.cache.template_file->empty() &&
+                normalize(*endpoint.cache.template_file) == normalized_template) {
+                roles.push_back("cache.template-file");
+            }
+
+            if (!roles.empty()) {
                 crow::json::wvalue ep;
+                // `role` is the first match; `roles` all of them (one file can
+                // be both, though that is unusual).
+                ep["role"] = roles.front();
+                crow::json::wvalue role_list = crow::json::wvalue::list();
+                for (std::size_t r = 0; r < roles.size(); ++r) {
+                    role_list[r] = roles[r];
+                }
+                ep["roles"] = std::move(role_list);
+                ep["slug"] = endpoint.getSlug();
                 ep["url_path"] = endpoint.urlPath;
                 ep["method"] = endpoint.method;
                 ep["config_file_path"] = endpoint.config_file_path;
@@ -2090,7 +2434,7 @@ crow::response EndpointConfigHandler::findEndpointsByTemplate(const crow::reques
 crow::response TemplateHandler::getEndpointTemplate(const crow::request& req, const std::string& path) {
     try {
         // Find the endpoint
-        auto endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForKey(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -2123,7 +2467,7 @@ crow::response TemplateHandler::updateEndpointTemplate(const crow::request& req,
         }
 
         // Find the endpoint
-        auto endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForKey(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -2163,7 +2507,7 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
         bool validate_only = url_params.get("validate_only") != nullptr;
 
         // Find the endpoint
-        auto endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForKey(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -2203,6 +2547,11 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
                 {"previousSnapshotTimestamp", "cache.previousSnapshotTimestamp"},
                 {"cursorColumn", "cache.cursorColumn"}, {"cursorType", "cache.cursorType"},
                 {"primaryKeys", "cache.primaryKeys"}, {"cacheMode", "params.cacheMode"}};
+            if (const auto it = cache_params.find(CacheManager::kWatermarkDroppedReasonKey);
+                it != cache_params.end()) {
+                response["watermark_dropped_reason"] = it->second;
+                cache_params.erase(it);
+            }
             crow::json::wvalue vars;
             for (const auto& [k, v] : cache_params) {
                 const auto it = kTemplateName.find(k);
@@ -2348,7 +2697,13 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
         // expanded to `FROM ..` - the SQL a user reads to debug a cached
         // endpoint was not the SQL that runs.
         addCacheTargetParams(config_manager_, *endpoint, params);
-        std::string expanded = sql_processor->loadAndProcessTemplate(*endpoint, params);
+        // Rendered as the serving path renders it (executeQueryOnce): a typed
+        // `{{ params.x }}` is a `?` placeholder whose value is BOUND, listed in
+        // `bindings`. Pasting the value in showed SQL that never runs -
+        // `ALFKI IS NULL OR`, and `( IS NULL OR c <= )` for an absent one.
+        const std::map<std::string, std::string> bind_values = params;
+        auto prepared = sql_processor->loadAndProcessTemplatePrepared(*endpoint, params);
+        const std::string& expanded = prepared.sql;
 
         // Scrubbed, like the MCP dry-run preview - this IS the same payload.
         // A template interpolating `{{{ conn.password }}}` or
@@ -2362,6 +2717,8 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
                                                  "interpolates is a credential too short to "
                                                  "redact reliably>")
                                    : secrets.scrub(expanded);
+        response["bindings"] = MCPDryRun::bindingsJson(prepared.bindings, bind_values,
+                                                       endpoint->request_fields, secrets);
 
         // Include variable metadata if requested.
         //
@@ -2458,7 +2815,7 @@ crow::response TemplateHandler::testTemplate(const crow::request& req, const std
         }
 
         // Find the endpoint
-        auto endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForKey(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -2589,7 +2946,7 @@ crow::response TemplateHandler::testTemplateBySlug(const crow::request& req, con
 
 crow::response CacheConfigHandler::getCacheConfig(const crow::request& req, const std::string& path) {
     try {
-        auto endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForKey(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -2665,7 +3022,7 @@ crow::response CacheConfigHandler::updateCacheConfig(const crow::request& req, c
             return crow::response(400, "Invalid JSON");
         }
 
-        auto endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForKey(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -2744,7 +3101,7 @@ crow::response CacheConfigHandler::updateCacheConfig(const crow::request& req, c
 
 crow::response TemplateHandler::getCacheTemplate(const crow::request& req, const std::string& path) {
     try {
-        auto endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForKey(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -2778,7 +3135,7 @@ crow::response TemplateHandler::updateCacheTemplate(const crow::request& req, co
             return crow::response(400, "Invalid JSON: missing 'template' field");
         }
 
-        auto endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForKey(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }
@@ -2823,7 +3180,7 @@ crow::response CacheConfigHandler::refreshCache(const crow::request& req, const 
     };
     try {
         // Find the endpoint
-        auto endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForKey(path);
         if (!endpoint) {
             return refreshError(404, "Endpoint not found", path);
         }
@@ -2883,6 +3240,9 @@ crow::response CacheConfigHandler::refreshCache(const crow::request& req, const 
                 if (stats.last_snapshot_id) {
                     body["snapshot_id"] = *stats.last_snapshot_id;
                 }
+                if (stats.last_warning) {
+                    body["warning"] = *stats.last_warning;
+                }
                 break;
             }
         }
@@ -2900,7 +3260,7 @@ crow::response CacheConfigHandler::performGarbageCollection(const crow::request&
     }
     try {
         // Find the endpoint
-        auto endpoint = config_manager_->getEndpointForPath(path);
+        auto endpoint = config_manager_->getEndpointForKey(path);
         if (!endpoint) {
             return crow::response(404, "Endpoint not found");
         }

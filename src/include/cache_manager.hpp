@@ -46,6 +46,9 @@ public:
     /// snapshot values - what `flapii templates expand --cache` shows. Fills
     /// `params` with the cache.* context it rendered with. Executes nothing.
     /// `full` renders it as a forced full rebuild would (no watermark).
+    /// The params key renderRefreshTemplate sets (after rendering, never in the
+    /// template context) when it dropped the cursor watermark, with the reason.
+    static constexpr const char* kWatermarkDroppedReasonKey = "watermarkDroppedReason";
     std::string renderRefreshTemplate(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint,
                                       std::map<std::string, std::string>& params, bool full = false);
     /// The retention policy that applies to a cache: its own `retention` block when it
@@ -63,6 +66,12 @@ public:
     /// Commit time of the newest snapshot that touched the endpoint's cache table.
     std::optional<std::chrono::system_clock::time_point> newestSnapshotTime(
         std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint);
+    /// How old the SERVED data of catalog.schema.table is: the last successful
+    /// refresh this process ran, else the newest snapshot in the catalog (looked
+    /// up once and remembered). After a restart whose first refresh failed the
+    /// old snapshot is still served, and its age used to be reported as absent.
+    std::optional<std::chrono::system_clock::time_point> dataTimestamp(
+        const std::string& catalog, const std::string& schema, const std::string& table);
 
     /// Catalog-wide compaction (merge adjacent files, rewrite delete-heavy files,
     /// delete the replaced files), recorded in the audit log as `compaction`.
@@ -141,6 +150,10 @@ public:
         std::optional<std::chrono::system_clock::time_point> completed_at;
         std::optional<int64_t> rows_affected;
         std::optional<std::string> snapshot_id;
+        // Set when the refresh ran but not as configured - today: the cursor
+        // watermark was dropped (cursor.type mismatch) and it loaded the full
+        // source. Carried into the audit message and the refresh answer.
+        std::optional<std::string> warning;
     };
     void recordSyncEvent(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::string& sync_type, const std::string& status, const std::string& message = "", const SyncEventDetails& details = {});
     /// In-memory roll-up of every refresh this process ran, per cache table,
@@ -158,6 +171,7 @@ public:
         std::optional<std::string> last_snapshot_id;
         std::optional<std::chrono::system_clock::time_point> last_completed_at;
         std::optional<std::chrono::system_clock::time_point> last_success_at;
+        std::optional<std::string> last_warning;
         int64_t refreshes = 0;
         int64_t failures = 0;
         int64_t total_duration_ms = 0;
@@ -244,7 +258,8 @@ private:
                                      const std::string& schema,
                                      const std::string& table,
                                      const std::string& cursor_column,
-                                     const std::string& cursor_type);
+                                     const std::string& cursor_type,
+                                     std::string* dropped_reason = nullptr);
 
     /// The names by which `catalog`'s `changes` map refers to
     /// `schema`.`table`: its numeric table id (for row changes) and
@@ -356,6 +371,9 @@ private:
                             const std::string& status, const SyncEventDetails& details);
     mutable std::mutex refresh_stats_mutex_;
     std::map<CacheKey, CacheRefreshStats> refresh_stats_;
+    // dataTimestamp's catalog lookups, by table; an entry may hold nullopt.
+    std::map<CacheKey, std::optional<std::chrono::system_clock::time_point>> snapshot_time_memo_;
+    std::optional<std::chrono::system_clock::time_point> newestSnapshotTimeForKey(const CacheKey& key);
 
     mutable std::mutex inflight_mutex_;
     std::set<CacheKey> inflight_refreshes_;

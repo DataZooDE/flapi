@@ -83,6 +83,9 @@ void RuntimeMetrics::recordRest(std::string_view method, std::string_view route_
         s.status_5xx.fetch_add(1, std::memory_order_relaxed);
     } else if (status_code >= 400) {
         s.status_4xx.fetch_add(1, std::memory_order_relaxed);
+        if (status_code == 401 || status_code == 403) {
+            s.rejected.fetch_add(1, std::memory_order_relaxed);
+        }
     } else if (status_code >= 300) {
         s.status_3xx.fetch_add(1, std::memory_order_relaxed);
     } else {
@@ -90,10 +93,15 @@ void RuntimeMetrics::recordRest(std::string_view method, std::string_view route_
     }
 }
 
-void RuntimeMetrics::recordMcpTool(std::string_view tool_name, bool success, std::chrono::microseconds duration) {
+void RuntimeMetrics::recordMcpTool(std::string_view tool_name, bool success, std::chrono::microseconds duration,
+                                   bool rejected) {
     Series& s = seriesFor(kMcpToolKind, tool_name);
     observe(s, duration);
-    if (!success) {
+    if (rejected) {
+        // A role denial is the policy working, not the tool failing: it was
+        // counted as a failure and therefore as a server error.
+        s.rejected.fetch_add(1, std::memory_order_relaxed);
+    } else if (!success) {
         s.failures.fetch_add(1, std::memory_order_relaxed);
     }
 }
@@ -113,20 +121,27 @@ double RuntimeMetrics::percentileMs(const std::array<int64_t, kBucketCount>& buc
     if (total <= 0) {
         return 0.0;
     }
-    // The bucket's upper bound is an upper ESTIMATE; clamped to the observed
-    // maximum, so a p99 of 250 ms is never reported beside a max of 120 ms.
+    // Interpolated inside the bucket by the quantile's rank in it, then
+    // clamped to the observed maximum, so a p99 of 250 ms is never reported
+    // beside a max of 120 ms. Reporting the bucket's upper bound made p50, p95
+    // and p99 identical whenever the traffic sat in one bucket.
     const auto clamp = [max_ms](double v) { return max_ms >= 0.0 ? std::min(v, max_ms) : v; };
-    const auto rank = static_cast<int64_t>(q * static_cast<double>(total) + 0.999999);
+    const double rank = q * static_cast<double>(total);
     int64_t cumulative = 0;
     for (std::size_t i = 0; i < kBucketCount; ++i) {
+        const int64_t before = cumulative;
         cumulative += buckets[i];
-        if (cumulative >= rank) {
+        if (buckets[i] > 0 && static_cast<double>(cumulative) >= rank) {
             // The +Inf bucket has no upper bound: the observed maximum is the
             // best estimate (the largest finite bound without one).
             if (i >= kBucketBoundsUs.size()) {
                 return max_ms >= 0.0 ? max_ms : static_cast<double>(kBucketBoundsUs.back()) / 1000.0;
             }
-            return clamp(static_cast<double>(kBucketBoundsUs[i]) / 1000.0);
+            const double lower = i == 0 ? 0.0 : static_cast<double>(kBucketBoundsUs[i - 1]);
+            const double upper = static_cast<double>(kBucketBoundsUs[i]);
+            const double fraction =
+                std::clamp((rank - static_cast<double>(before)) / static_cast<double>(buckets[i]), 0.0, 1.0);
+            return clamp((lower + (upper - lower) * fraction) / 1000.0);
         }
     }
     return clamp(static_cast<double>(kBucketBoundsUs.back()) / 1000.0);
@@ -149,6 +164,7 @@ std::vector<RuntimeMetrics::SeriesSnapshot> RuntimeMetrics::snapshot() const {
         snap.status_5xx = series->status_5xx.load(std::memory_order_relaxed);
         snap.cache_unavailable = series->cache_unavailable.load(std::memory_order_relaxed);
         snap.failures = series->failures.load(std::memory_order_relaxed);
+        snap.rejected = series->rejected.load(std::memory_order_relaxed);
         std::array<int64_t, kBucketCount> buckets{};
         int64_t total = 0;
         for (std::size_t i = 0; i < kBucketCount; ++i) {
@@ -187,6 +203,7 @@ crow::json::wvalue RuntimeMetrics::toJson(const std::string& route_filter) const
         }
         row[s.protocol == "mcp" ? "tool" : "route"] = s.route;
         row["requests"] = s.requests;
+        row["rejected"] = s.rejected;
         if (s.protocol == "mcp") {
             row["failures"] = s.failures;
         } else {

@@ -56,11 +56,12 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
 
   templates
     .command('get <path>')
+    .option('--method <method>', 'HTTP method, when several endpoints share the path (GET + POST /orders)')
     .description('Get template content')
-    .action(async (path: string) => {
+    .action(async (path: string, options: { method?: string }) => {
       const spinner = Console.spinner(`Fetching template ${path}...`);
       try {
-        const endpointUrl = buildEndpointUrl(path, 'template');
+        const endpointUrl = buildEndpointUrl(path, 'template', options.method);
         const response = await ctx.client.get(endpointUrl);
         spinner.succeed(chalk.green(`✓ Template ${path} retrieved`));
         const template = response.data;
@@ -83,10 +84,11 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
 
   templates
     .command('update <path>')
+    .option('--method <method>', 'HTTP method, when several endpoints share the path (GET + POST /orders)')
     .description('Update template content')
     .option('-f, --file <file>', 'File containing template content')
     .option('--stdin', 'Read template content from stdin')
-    .action(async (path: string, options: { file?: string; stdin?: boolean }) => {
+    .action(async (path: string, options: { method?: string; file?: string; stdin?: boolean }) => {
       if (options.file && options.stdin) {
         Console.error('Cannot specify both --file and --stdin');
         process.exitCode = 1;
@@ -115,7 +117,7 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
 
       const spinner = Console.spinner(`Updating template ${path}...`);
       try {
-        const endpointUrl = buildEndpointUrl(path, 'template');
+        const endpointUrl = buildEndpointUrl(path, 'template', options.method);
         await ctx.client.put(endpointUrl, {
           template: templateContent
         });
@@ -129,11 +131,12 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
 
   templates
     .command('expand <path>')
+    .option('--method <method>', 'HTTP method, when several endpoints share the path (GET + POST /orders)')
     .description('Expand template with parameters (--cache: the cache populate template as the next refresh renders it)')
     .option('-p, --params <params>', 'JSON parameters for template expansion')
     .option('--params-file <file>', 'File containing JSON parameters')
     .option('--cache', 'Expand the cache populate template with the live watermark instead of the serving template')
-    .action(async (path: string, options: { params?: string; paramsFile?: string; cache?: boolean }) => {
+    .action(async (path: string, options: { method?: string; params?: string; paramsFile?: string; cache?: boolean }) => {
       let params: any = {};
 
       if (options.params) {
@@ -158,7 +161,7 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
 
       const spinner = Console.spinner(`Expanding template ${path}...`);
       try {
-        const endpointUrl = buildEndpointUrl(path, 'template/expand');
+        const endpointUrl = buildEndpointUrl(path, 'template/expand', options.method);
         const response = await ctx.client.post(
           endpointUrl,
           { parameters: params },
@@ -183,10 +186,11 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
 
   templates
     .command('test <path>')
+    .option('--method <method>', 'HTTP method, when several endpoints share the path (GET + POST /orders)')
     .description('Test template syntax and parameters')
     .option('-p, --params <params>', 'JSON parameters for template testing')
     .option('--params-file <file>', 'File containing JSON parameters')
-    .action(async (path: string, options: { params?: string; paramsFile?: string }) => {
+    .action(async (path: string, options: { method?: string; params?: string; paramsFile?: string }) => {
       let params: any = {};
 
       if (options.params) {
@@ -211,7 +215,7 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
 
       const spinner = Console.spinner(`Testing template ${path}...`);
       try {
-        const endpointUrl = buildEndpointUrl(path, 'template/test');
+        const endpointUrl = buildEndpointUrl(path, 'template/test', options.method);
         const response = await ctx.client.post(endpointUrl, {
           parameters: params
         });

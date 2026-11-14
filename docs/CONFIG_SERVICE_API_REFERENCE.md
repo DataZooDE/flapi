@@ -96,14 +96,19 @@ Any non-empty token configured with `--config-service-token` / `FLAPI_CONFIG_SER
 accepted; startup warns when it is shorter than 16 characters. The `flapi_*` MCP config tools take
 the same token: `X-Config-Token` first, then `Authorization: Bearer`.
 
-**Unauthenticated Response:**
+**Unauthenticated Response** (every config route, `/metrics` included):
 
 ```http
 HTTP/1.1 401 Unauthorized
-Content-Type: text/plain
+Content-Type: application/json
 
-Unauthorized: Invalid or missing token
+{"error": "Unauthorized: missing or invalid config-service token (send it as X-Config-Token or Authorization: Bearer)"}
 ```
+
+A request that presents a token which does not match is also logged as a warning
+(`Config service: rejected X-Config-Token token for /api/v1/_config/...`; the token itself is never
+logged). A `flapi_*` MCP tool called without a token, or with a wrong one, answers JSON-RPC error
+`-32001` naming `X-Config-Token` (it was `-32603 "Tool execution failed: ..."`).
 
 ---
 
@@ -175,6 +180,15 @@ Authorization: Bearer <token>
 
 ### 2.2 Endpoint Management
 
+**Addressing an endpoint.** Every `/api/v1/_config/endpoints/{slug}/...` route takes the slug of the
+url-path (`/customers` -> `-customers`, `/order-items` -> `-order~1items`) or an MCP-only endpoint's
+name, and an optional `?method=GET|POST|...`. Several files may serve one url-path with different
+methods (`GET /orders` and `POST /orders`): such a slug without `?method=` answers
+`400 {"error": "Ambiguous: /orders is served by GET (<file>), POST (<file>); specify ?method=GET|POST"}`
+instead of acting on an arbitrary one. A slug served by one endpoint needs no method. A `:` in the
+slug (`/products/:id` -> `-products-:id`) may be sent literally or as `%3A`. Unknown slug:
+`404 {"error": "Endpoint not found: ..."}`.
+
 #### GET /api/v1/_config/endpoints
 
 List all endpoint configurations.
@@ -185,8 +199,11 @@ GET /api/v1/_config/endpoints HTTP/1.1
 Authorization: Bearer <token>
 ```
 
-**Response (200):** an object keyed by URL path (or MCP name). The list uses camelCase keys;
+**Response (200):** an object keyed by URL path (or MCP name). A url-path served by several endpoints
+is keyed `"METHOD /path"` for each of them (`"GET /orders"`, `"POST /orders"`); a path served once
+keeps its plain key. The list uses camelCase keys;
 `GET /api/v1/_config/endpoints/{slug}` returns the same document with the YAML (hyphenated) keys.
+MCP-only tools and resources carry their `templateSource` and `connection` too.
 ```json
 {
   "/customers": {
@@ -214,7 +231,10 @@ Create a new endpoint. The body goes through the same loader as a YAML file on d
 A file named after the url-path (`/orders` -> `orders.yaml`, `/a/b` -> `a_b.yaml`; an MCP-only endpoint after its name) in the templates directory
 and registered at once, including in MCP `tools/list`. An endpoint without an `auth:` block inherits
 the top-level `auth:`. `409` when that file exists, when a loaded endpoint has the same url-path and
-method, or when any YAML file in the templates directory already declares them (loaded or not).
+method or the same MCP tool/resource/prompt name, or when any YAML file in the templates directory
+already declares them (loaded or not). In that last case the error names the file and says to load
+it with `POST /api/v1/_config/endpoints/reload-file` (`flapii endpoints reload --file <yaml>`)
+instead of writing a second copy.
 
 **Request:**
 ```http
@@ -428,15 +448,60 @@ reload; create it with POST or restart).
 ```
 
 Every reload error carries `error`, like create, update and delete (`404`: `"error": "Endpoint not
-found: ..."`). A reload whose file now declares another endpoint's url-path and method fails with
-`"reason": "Duplicate endpoint GET /x: declared in ... and ..."`.
+found: ..."`). A reload whose file now declares another endpoint's url-path and method, or another
+file's MCP tool/resource/prompt name, fails with `"reason": "Duplicate endpoint GET /x: declared in
+... and ..."` (or `Duplicate MCP tool name 'x': declared in ... and ...`).
+
+The reload replaces the endpoint(s) loaded **from that endpoint's file**. It used to replace the first
+endpoint with the same url-path, so reloading the `POST /orders` file overwrote `GET /orders` and
+answered 200 with the POST change not applied. Use `?method=` when the path is shared.
 
 Every endpoint change (create, update, delete, reload; over REST or the `flapi_*` MCP tools)
 rebuilds the MCP `tools/list`, `resources/list` and `prompts/list` at once. Pagination cursors issued
 before the change are rejected. No `notifications/list_changed` is sent (`listChanged` stays `false`),
 so MCP clients see the change on their next list call.
 
-**CLI:** `flapii endpoints reload /customers`
+**CLI:** `flapii endpoints reload /customers [--method POST]`
+
+---
+
+#### POST /api/v1/_config/endpoints/reload-file
+
+Reload every endpoint a YAML file declares, addressed by the FILE - or load it when nothing is loaded
+from it yet (a hand-written endpoint YAML added after startup goes live without a restart).
+
+**Request:**
+```http
+POST /api/v1/_config/endpoints/reload-file HTTP/1.1
+X-Config-Token: <token>
+Content-Type: application/json
+
+{"file": "/srv/api/sqls/orders_post.yaml"}
+```
+
+A relative `file` is resolved against the directory of `flapi.yaml`.
+
+**Response:** `200` (reloaded) or `201` (newly loaded):
+```json
+{
+  "success": true,
+  "status": "loaded",
+  "file": "/srv/api/sqls/orders_post.yaml",
+  "endpoints": ["POST /orders"],
+  "message": "Endpoint configuration loaded"
+}
+```
+
+`endpoints` lists each endpoint by its key: `"METHOD /path"`, or the MCP name for an MCP-only file.
+Errors are `{"success": false, "error": "..."}`:
+
+| Status | When |
+|--------|------|
+| `400` | no `file`; the file is outside `template.path` or not YAML; it does not validate; or it is not an endpoint file (`... is not an endpoint file (no url-path, mcp-tool, mcp-resource or mcp-prompt)`) |
+| `404` | the file does not exist |
+| `409` | it declares a url-path + method or an MCP name another file already serves (both files named), or the server runs from a packed bundle |
+
+**CLI:** `flapii endpoints reload --file sqls/orders_post.yaml`
 
 ---
 
@@ -474,7 +539,8 @@ Authorization: Bearer <token>
 
 #### POST /api/v1/_config/endpoints/by-template
 
-Find endpoints using a specific template file.
+Find endpoints using a specific template file: as their `template-source`, or as their cache
+`template-file` (the cache populate SQL).
 
 **Request:**
 ```http
@@ -496,15 +562,25 @@ Content-Type: application/json
     {
       "url_path": "/customers",
       "method": "GET",
+      "slug": "-customers",
+      "role": "template-source",
+      "roles": ["template-source"],
+      "config_file_path": "/srv/api/sqls/customers.yaml",
       "type": "REST"
     },
     {
       "mcp_name": "get_customers",
+      "slug": "get_customers",
+      "role": "cache.template-file",
+      "roles": ["cache.template-file"],
       "type": "MCP_Tool"
     }
   ]
 }
 ```
+
+`role` says how the endpoint uses the file (`template-source` or `cache.template-file`); `roles` lists
+both when one file is both.
 
 > **Implementation:** `src/config_service.cpp`, `src/endpoint_repository.cpp` | **Tests:** `test/cpp/config_service_test.cpp`, `test/integration/test_config_service_endpoints.tavern.yaml`
 
@@ -588,11 +664,24 @@ Content-Type: application/json
 **Response (200):**
 ```json
 {
-  "expanded": "SELECT * FROM customers\nWHERE 1=1\n  AND id = 123\n  AND status = 'active'"
+  "expanded": "SELECT * FROM customers\nWHERE 1=1\n  AND id = ?\n  AND status = 'active'",
+  "bindings": [
+    {"position": 1, "name": "id", "type": "integer", "value": 123}
+  ]
 }
 ```
 
-**CLI:** `flapii templates expand /customers -p '{"id":"123"}'`
+`expanded` is the SQL the serving path runs: a `{{ params.x }}` whose field has a typed validator
+(`int`, `number`, `boolean`, `date`, `time`, ...) is a `?` placeholder and its value is bound, listed in
+`bindings` in placeholder order (`value` is `null` for an absent parameter: the placeholder binds NULL).
+The value used to be pasted into `expanded`, which showed SQL that never runs (`ALFKI IS NULL OR ...`,
+or `( IS NULL OR c <= )` for an absent value). `{{{ }}}` and untyped fields are still substituted.
+
+`?target=cache` renders the cache populate template as the next refresh would (no bindings). When the
+cursor watermark read from the cache table does not match `cursor.type` (it is then dropped and the
+refresh loads the full source), the answer carries `watermark_dropped_reason`.
+
+**CLI:** `flapii templates expand /customers -p '{"id":"123"}' [--cache] [--method GET]`
 
 ---
 
@@ -773,6 +862,9 @@ Authorization: Bearer <token>
 ```
 
 `mode` is the mode that ran (`full`, `append` or `merge`; `full` for a cache without `template-file`).
+`warning` is present when the refresh ran but not as configured: the cursor watermark did not look like
+`cursor.type` and was dropped, so the refresh loaded the full source (the same text is appended to the
+audit row's `message`).
 `duration_ms`, `rows_affected` and `snapshot_id` are left out when unknown. When a refresh of the same
 table is already running (warm-up, the scheduler) nothing is started and the answer is
 `{"status": "already_running", "endpoint": ..., "full": ...}`.
@@ -852,7 +944,11 @@ GET /api/v1/_config/cache/audit HTTP/1.1
 Authorization: Bearer <token>
 ```
 
-**Response (200):** Array of audit log entries for all endpoints.
+| Query parameter | Description |
+|---|---|
+| `table` | Optional. One cache table, `schema.table` or `table`: its events whichever endpoint sharing the table triggered them. |
+
+**Response (200):** Array of audit log entries for all endpoints (or for `table`).
 
 `event_id` is a UUIDv4. `sync_type` is the refresh mode (`full`, `append`, `merge`) or
 `compaction`. `rows_affected` is the sum over the template's statements. The log is bounded: the
@@ -1037,12 +1133,15 @@ Authorization: Bearer <token>
 
 `requests` series are keyed by **route template** (never a filled path), so their
 number is bounded by your endpoints. Unmatched paths share the route `<unmatched>`.
-REST series count status classes. MCP tool series count `failures` (calls whose
-tool result reported an error). Latency is measured server-side around the
-handler. Percentiles are estimated from a fixed histogram (bucket bounds
-0.1, 0.25, 0.5, 1, 2.5, 5, 10, 25, 50, 100, 250, 500 ms, then 1, 2.5, 5, 10, 30
-and 60 s), and each is the **upper bound** of the bucket that contains it, capped
-at the observed `max`.
+REST series count status classes; a 401/403 an endpoint's auth answered is counted
+in its route's `status.4xx` and in `rejected`. MCP tool series count `failures`
+(calls whose tool result reported an error) and `rejected` (role denials, 403),
+which are not failures and not in `server_errors`. Latency is measured server-side
+around the handler. Percentiles are **estimates** from a fixed histogram with ten
+buckets per decade (bounds 1, 1.25, 1.6, 2, 2.5, 3.2, 4, 5, 6.3, 8 x 10^n, from
+0.1 ms to 60 s): the quantile's bucket is found and the value interpolated linearly
+inside it, never above the observed `max`. A percentile is therefore accurate to
+about one bucket width (~25%), not an exact sample.
 A `503` whose body has an `"error"` starting with `cache_` (`cache_warming`,
 `cache_build_failed`, `cache_not_built`) is a cache that is not ready yet, not a
 server fault: it is counted under `status.503_cache` per series and in
@@ -1053,17 +1152,14 @@ from middleware before an endpoint ran.
 `caches` lists every cache the server knows about, refreshed or not. `state` is
 `starting`, `ready`, `stale` (the last refresh failed and the previous snapshot is
 still served), `failed` or `unbuilt`. A cache that has never been refreshed in
-this process has no `last`, `duration_ms` or `data_age_seconds`. `duration_ms`
+this process has no `last` or `duration_ms`; its `data_age_seconds` is the age of the
+newest snapshot in the catalog (looked up once), so an old snapshot served after a
+restart whose refresh failed still shows its age. `duration_ms`
 times the populate statement only. `rows_affected` is the sum of the rows written
 by every statement in the cache template. The same values are written to the cache
 audit log, `GET /api/v1/_config/endpoints/{path}/cache/audit`.
 
-**Response (401):**
-```json
-{
-  "error": "Unauthorized"
-}
-```
+**Response (401):** the JSON every config route answers (see [Authentication](#authentication)).
 
 All counters are cumulative since process start (`requests.since_unix_ms`) and
 are not persisted across restarts. `endpoints.count` is present only
@@ -1273,7 +1369,8 @@ flapii config show
 Validate endpoint YAML files locally.
 
 ```bash
-flapii config validate
+flapii config validate                     # template.path of ./flapi.yaml
+flapii -c my/flapi.yaml config validate    # template.path of that file
 flapii config validate -f endpoint.yaml
 flapii config validate -d ./sqls
 ```
@@ -1281,7 +1378,10 @@ flapii config validate -d ./sqls
 | Option | Short | Description |
 |--------|-------|-------------|
 | `--file` | `-f` | Specific YAML file to validate |
-| `--dir` | `-d` | Directory containing YAML files |
+| `--dir` | `-d` | Directory containing YAML files (default: `template.path` of the global `--config`, else of `./flapi.yaml`, resolved against that file's directory) |
+
+Exits `1` when validation fails, when no YAML file is found, or when the `--config` file cannot be read
+or has no `template.path`.
 
 ---
 
@@ -1361,7 +1461,14 @@ Get specific endpoint configuration.
 ```bash
 flapii endpoints get /customers
 flapii endpoints get /users/:id
+flapii endpoints get /orders --method POST   # when several endpoints share the path
 ```
+
+Every command that names an endpoint by path (`endpoints get|update|delete|parameters|validate|reload`,
+`templates get|update|expand|test`, `cache get|update|template|update-template|refresh|gc|audit`) takes
+`--method <METHOD>`, sent as `?method=`. Without it, a path served by several endpoints is an error that
+lists the methods. `endpoints list -o table` shows `REST+Tool` (or `REST+Resource`) for a file that is
+both a REST route and an MCP entity.
 
 ---
 
@@ -1418,7 +1525,13 @@ Reload endpoint from disk.
 
 ```bash
 flapii endpoints reload /customers
+flapii endpoints reload /orders --method POST
+flapii endpoints reload --file sqls/new_endpoint.yaml    # reload by file, or LOAD a new file
 ```
+
+`--file` calls `POST /api/v1/_config/endpoints/reload-file`: it reloads every endpoint the YAML
+declares, and loads a hand-written file the server has not loaded yet (`endpoints create -f` of such a
+file answers 409 and points here).
 
 ---
 
@@ -1582,8 +1695,12 @@ Show the refresh history of one cache, or of all caches without a path.
 
 ```bash
 flapii cache audit /customers -o table
+flapii cache audit --table analytics.orders_cache -o table   # one cache table, any endpoint
 flapii cache audit                         # all caches, JSON
 ```
+
+`-o table` includes a `message` column (truncated to 60 characters): the reason a refresh failed, or a
+warning it ran with (a dropped cursor watermark).
 
 ---
 

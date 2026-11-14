@@ -81,6 +81,17 @@ std::unordered_map<std::string, std::string> mcpAuthContextFrom(
 void applyMcpAuthContext(std::map<std::string, std::string>& params,
                          const std::unordered_map<std::string, std::string>& context);
 
+/// Fill the endpoint's configured field defaults into `params`, then run the
+/// RequestValidator on them - known fields AND the unknown-parameter check.
+/// Returns "" when the parameters are valid, else "<field>: <reason>; ...".
+///
+/// Shared by tools/call and resources/read: the read path used to bind
+/// uri-template values straight into the template with no validation, so a
+/// field's regex/enum - the only thing between `{{{ params.x }}}` and the SQL -
+/// was skipped on that surface.
+std::string validateMcpParams(const EndpointConfig& endpoint,
+                              std::map<std::string, std::string>& params);
+
 class MCPToolHandler {
 public:
     explicit MCPToolHandler(std::shared_ptr<DatabaseManager> db_manager,

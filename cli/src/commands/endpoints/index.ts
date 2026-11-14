@@ -6,7 +6,7 @@ import { renderJson, renderConfigJson, renderEndpointsTable, renderEndpointTable
 import { buildEndpointUrl } from '../../lib/url';
 import { applyOutputOverride } from '../../lib/options';
 import { resolvePayload, withPayloadOptions } from '../payload';
-import { validateEndpointConfig, reloadEndpointConfig } from '../../lib/validation';
+import { validateEndpointConfig, reloadEndpointConfig, reloadEndpointFile } from '../../lib/validation';
 import { registerWizardCommand } from './wizard';
 import chalk from 'chalk';
 import * as fs from 'node:fs/promises';
@@ -41,12 +41,13 @@ export function registerEndpointCommands(program: Command, ctx: CliContext) {
 
   endpoints
     .command('get <path>')
+    .option('--method <method>', 'HTTP method, when several endpoints share the path (GET + POST /orders)')
     .description('Get endpoint configuration')
     .option('--output <format>', 'Output format: json or table')
-    .action(async (path: string, options: { output?: 'json' | 'table' }) => {
+    .action(async (path: string, options: { method?: string; output?: 'json' | 'table' }) => {
       const spinner = Console.spinner(`Fetching endpoint ${path}...`);
       try {
-        const endpointUrl = buildEndpointUrl(path);
+        const endpointUrl = buildEndpointUrl(path, '', options.method);
         const response = await ctx.client.get(endpointUrl);
         spinner.succeed(chalk.green(`✓ Endpoint ${path} retrieved`));
         const payload = response.data;
@@ -65,12 +66,13 @@ export function registerEndpointCommands(program: Command, ctx: CliContext) {
 
   endpoints
     .command('parameters <path>')
+    .option('--method <method>', 'HTTP method, when several endpoints share the path (GET + POST /orders)')
     .description('Get parameter definitions for an endpoint')
     .option('--output <format>', 'Output format: json or table')
-    .action(async (path: string, options: { output?: 'json' | 'table' }) => {
+    .action(async (path: string, options: { method?: string; output?: 'json' | 'table' }) => {
       const spinner = Console.spinner(`Fetching parameters for ${path}...`);
       try {
-        const endpointUrl = buildEndpointUrl(path, 'parameters');
+        const endpointUrl = buildEndpointUrl(path, 'parameters', options.method);
         const response = await ctx.client.get(endpointUrl);
         spinner.succeed(chalk.green(`✓ Parameters for ${path} retrieved`));
         const data = response.data;
@@ -121,13 +123,14 @@ export function registerEndpointCommands(program: Command, ctx: CliContext) {
   withPayloadOptions(
     endpoints
       .command('update <path>')
+      .option('--method <method>', 'HTTP method, when several endpoints share the path (GET + POST /orders)')
       .description('Update an existing endpoint')
   )
-    .action(async (path: string, options: { file?: string; stdin?: boolean }) => {
+    .action(async (path: string, options: { method?: string; file?: string; stdin?: boolean }) => {
       const spinner = Console.spinner(`Updating endpoint ${path}...`);
       try {
         const payload = await resolvePayload(options);
-        const endpointUrl = buildEndpointUrl(path);
+        const endpointUrl = buildEndpointUrl(path, '', options.method);
         await ctx.client.put(endpointUrl, payload);
         spinner.succeed(chalk.green(`✓ Endpoint ${path} updated successfully`));
       } catch (error) {
@@ -139,9 +142,10 @@ export function registerEndpointCommands(program: Command, ctx: CliContext) {
 
   endpoints
     .command('delete <path>')
+    .option('--method <method>', 'HTTP method, when several endpoints share the path (GET + POST /orders)')
     .description('Delete an endpoint')
     .option('--force', 'Skip confirmation prompt')
-    .action(async (path: string, options: { force?: boolean }) => {
+    .action(async (path: string, options: { method?: string; force?: boolean }) => {
       if (!options.force && !ctx.config.yes) {
         Console.warn(`Use --force or --yes to delete endpoint ${path}`);
         process.exitCode = 1;
@@ -150,7 +154,7 @@ export function registerEndpointCommands(program: Command, ctx: CliContext) {
 
       const spinner = Console.spinner(`Deleting endpoint ${path}...`);
       try {
-        const endpointUrl = buildEndpointUrl(path);
+        const endpointUrl = buildEndpointUrl(path, '', options.method);
         await ctx.client.delete(endpointUrl);
         spinner.succeed(chalk.green(`✓ Endpoint ${path} deleted successfully`));
       } catch (error) {
@@ -164,8 +168,9 @@ export function registerEndpointCommands(program: Command, ctx: CliContext) {
     .command('validate <path>')
     .description('Validate endpoint configuration YAML file')
     .option('-f, --file <file>', 'Path to YAML file to validate')
+    .option('--method <method>', 'HTTP method, when several endpoints share the path (GET + POST /orders)')
     .option('--output <format>', 'Output format: json or table')
-    .action(async (path: string, options: { file?: string; output?: 'json' | 'table' }) => {
+    .action(async (path: string, options: { file?: string; method?: string; output?: 'json' | 'table' }) => {
       const spinner = Console.spinner(`Validating endpoint ${path}...`);
       try {
         let yamlContent: string;
@@ -190,7 +195,7 @@ export function registerEndpointCommands(program: Command, ctx: CliContext) {
           return;
         }
 
-        const result = await validateEndpointConfig(ctx.client, path, yamlContent);
+        const result = await validateEndpointConfig(ctx.client, path, yamlContent, options.method);
         
         if (result.valid) {
           spinner.succeed(chalk.green(`✓ Endpoint ${path} is valid`));
@@ -221,12 +226,41 @@ export function registerEndpointCommands(program: Command, ctx: CliContext) {
     });
 
   endpoints
-    .command('reload <path>')
-    .description('Reload endpoint configuration from disk')
-    .action(async (path: string) => {
+    .command('reload [path]')
+    .option('--method <method>', 'HTTP method, when several endpoints share the path (GET + POST /orders)')
+    .option(
+      '--file <yaml>',
+      'Reload every endpoint this YAML declares - and LOAD it when it is new (a hand-written file in template.path)',
+    )
+    .description('Reload endpoint configuration from disk (by url-path, or by YAML file with --file)')
+    .action(async (path: string | undefined, options: { method?: string; file?: string }) => {
+      if (options.file) {
+        const nodePath = await import('node:path');
+        const file = nodePath.resolve(options.file);
+        const spinner = Console.spinner(`Reloading ${file}...`);
+        try {
+          const result = await reloadEndpointFile(ctx.client, file);
+          if (result.success) {
+            spinner.succeed(chalk.green(`✓ ${result.message}`));
+          } else {
+            spinner.fail(chalk.red(`✗ ${result.message}`));
+            process.exitCode = 1;
+          }
+        } catch (error) {
+          spinner.fail(chalk.red(`✗ Failed to reload ${file}`));
+          handleError(error, ctx.config);
+          process.exitCode = 1;
+        }
+        return;
+      }
+      if (!path) {
+        Console.error('Pass the endpoint path, or --file <yaml>');
+        process.exitCode = 1;
+        return;
+      }
       const spinner = Console.spinner(`Reloading endpoint ${path}...`);
       try {
-        const result = await reloadEndpointConfig(ctx.client, path);
+        const result = await reloadEndpointConfig(ctx.client, path, options.method);
 
         if (result.success) {
           spinner.succeed(chalk.green(`✓ ${result.message}`));
