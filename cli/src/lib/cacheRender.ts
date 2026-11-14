@@ -16,6 +16,10 @@ export function cacheAuditRows(rows: unknown, withEndpoint = false): Record<stri
       out.duration_ms = row.duration_ms ?? '';
       out.rows = row.rows_affected ?? '';
       out.snapshot = row.snapshot_id ?? '';
+      // The reason a refresh failed, or a warning it ran with (a dropped
+      // cursor watermark) - truncated so the table stays readable.
+      const message = typeof row.message === 'string' ? row.message : '';
+      out.message = message.length > 60 ? `${message.slice(0, 57)}...` : message;
       return out;
     });
 }

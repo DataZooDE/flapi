@@ -93,6 +93,33 @@ Caching:
   `POST .../cache/refresh?full=true` erase the watermark and drop the cache table in the same transaction, so an
   append cache is rebuilt instead of re-appended.
 
+- **SECURITY: MCP `resources/read` validates uri-template values.** A value bound from
+  `flapi://customers/{id}` now gets the field's `default:` and validators (regex, enum, int, ...) and the
+  unknown-parameter check, like `tools/call`; a failing value answers `-32602`. Before, it reached the template
+  unvalidated. A `{var}` without a matching `request:` field is now refused as an unknown parameter: declare it.
+- **`resources/read` is capped at 1000 rows by default** (`mcp-resource.response.max-rows`, else the file's
+  `mcp-tool.response.max-rows`); a capped read carries `_meta.truncated`. `redact-columns` applies too.
+- **A config-service slug served by several endpoints needs `?method=`** (`GET /orders` + `POST /orders`):
+  without it every `/api/v1/_config/endpoints/{slug}/...` route answers 400 "Ambiguous ... specify
+  ?method=GET|POST" instead of acting on one of them. `flapii` takes `--method`; the `flapi_*` endpoint tools
+  take `method`. `GET /api/v1/_config/endpoints` keys such endpoints `"GET /orders"` / `"POST /orders"`
+  (a path served once keeps its plain key).
+- **Two files with the same MCP tool, resource or prompt name stop startup** (and fail a reload), with an
+  error naming both files. Before, both loaded and `tools/call` ran whichever came first.
+- **Config-service 401s are JSON** `{"error": "Unauthorized: missing or invalid config-service token ..."}` on
+  every route (most answered plain text). A `flapi_*` MCP tool without a valid token answers JSON-RPC `-32001`
+  naming `X-Config-Token` (it was `-32603 "Tool execution failed: ..."`).
+- **`template/expand` and MCP `_dryRun` show the SQL that runs:** a typed `{{ params.x }}` is a `?` with its value
+  in the new `bindings` list, instead of the value pasted in. `_dryRun` `parameters` are typed (`3`, not `"3"`)
+  and `structuredContent.rows` is `[]`.
+- **Metrics:** MCP role denials no longer count as tool `failures` or `server_errors` (they are `rejected`).
+  Percentiles are interpolated inside finer buckets (ten per decade) instead of reporting the bucket's upper
+  bound, so p50/p95/p99 values change. `/health` `caches.ready` no longer counts stale caches (see
+  `caches.stale`).
+- **`flapi cache refresh`** exits `2` (not `1`) for an argument it does not know.
+- **`flapii config validate`** checks the `template.path` of `--config` (or `./flapi.yaml`) instead of
+  `examples/sqls`, and fails when the config cannot be read.
+
 Config service, MCP and CLI:
 
 - **Two endpoint files with the same `url-path` and `method` stop startup**, with an error naming both files.
@@ -128,6 +155,24 @@ Config service, MCP and CLI:
 - **`flapii --json-style` re-cases only configuration documents** (endpoints, MCP tools/resources/prompts, cache
   config, project, templates list). Data such as metrics, cache audit, schema, health, template expansion and
   validation is printed exactly as the server sends it, in snake_case (`duration_ms`, `rows_affected`).
+
+### Added: reload by file, and safer MCP resources
+
+- **`POST /api/v1/_config/endpoints/reload-file {"file": "<yaml>"}`** (`flapii endpoints reload --file <yaml>`)
+  reloads every endpoint a YAML declares and LOADS a hand-written file the server has not loaded yet - a new
+  endpoint goes live without a restart. `flapii endpoints create -f` of a file already in `template.path`
+  answers 409 and points to it. The Claude Code plugin hook uses it, then renders the affected templates and
+  reports render/SQL errors, a rejected token, `SECURITY WARNINGS`, and "restart the server" for `flapi.yaml`.
+- **`mcp-resource.response`** (`max-rows`, `redact-columns`).
+- **`?method=`** on every config-service endpoint route, `--method` on the `flapii` commands.
+- **`GET /api/v1/_config/cache/audit?table=schema.table`** (`flapii cache audit --table`): one cache table's
+  refreshes, whichever endpoint sharing it triggered them; `flapii cache audit -o table` shows the message.
+- **A dropped cursor watermark is reported:** when the watermark does not look like `cursor.type`, the refresh
+  answer has a `warning`, the audit row's message says so, and `template/expand?target=cache` returns
+  `watermark_dropped_reason`.
+- **Metrics:** a `rejected` count per series (REST 401/403 now attributed to their route; MCP role denials);
+  `flapii metrics -o table` shows p50 and rejected. `/health` reports `caches.stale`; a cache's
+  `data_age_seconds` falls back to the newest snapshot after a restart.
 
 ### Added: Claude Code plugin
 
@@ -201,6 +246,24 @@ Narrow to one endpoint with `?endpoint=/path`.
 - **Security audit:** endpoint locations include the method (`endpoint GET /orders`), an empty
   `mcp.auth.jwt-secret` is reported as `AUTH_EMPTY_JWT_SECRET` at startup, and that warning says what happens:
   authentication fails closed and every token is refused.
+- **Config service, shared url-paths:** reloading the `POST /orders` file replaced `GET /orders` and answered
+  200 with the change not applied; `DELETE` of one removed both; `PUT` updated the first. Each now acts on the
+  endpoint named by slug + `?method=` (reload: on that endpoint's file).
+- **`resources/list` no longer lists uri-templated resources** (their `flapi://<name>` could not be read); they
+  are in `resources/templates/list`. An empty resource result is `"[]"`, not `-32603`.
+- **`POST .../endpoints/by-template`** also finds endpoints whose cache `template-file` is that file
+  (`role: cache.template-file`).
+- **`flapii`:** a `:` in a path (`/products/:id`) is sent literally (the server also decodes `%3A`); a 401 after
+  sending a token says the token was rejected; `endpoints list -o table` shows `REST+Tool` and the connection of
+  MCP-only tools and resources.
+- **`flapii project init`:** include comments use `../common/...` (resolved from `sqls/`), the scaffolded
+  `auth.yaml` has `enabled: true`, `.gitignore` no longer ignores `data/`, and `sample.sql` has no `LIMIT 100`
+  (it broke pagination totals).
+- **`flapi cache refresh`** accepts `--log-level` and `--no-telemetry` after the subcommand.
+- **Messages:** a failing connection `init` at startup names the connection (`connection 'x' init: ...`); the
+  description scanner names the matched phrase and its offset; the cursor-watermark warning says "an integer";
+  the GCS credentials warning appears only when the configuration uses `gs://` or GCS; a rejected
+  config-service token is logged.
 - **`flapi --version`** and `server.version` in `GET /api/v1/_config/health` show the real build version.
 - **Passwords:** PBKDF2 hashes are no longer flagged by the security audit, and passlib's own encoding as well
   as standard and URL-safe base64 are accepted.

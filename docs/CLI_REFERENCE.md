@@ -654,9 +654,15 @@ and exits `1`.
 |-----------|---------|
 | `0` | every selected cache refreshed |
 | `1` | at least one refresh failed (the others still ran; see `"status": "failed"`), or the catalog is locked by a running server |
-| `2` | usage: nothing selected, an unknown endpoint, a non-cached endpoint, or a `read-only` catalog |
+| `2` | usage: an argument the command does not know, nothing selected, an unknown endpoint, a non-cached endpoint, or a `read-only` catalog |
 
-`--config` falls back to `FLAPI_CONFIG`, then `flapi.yaml`.
+`--config` falls back to `FLAPI_CONFIG`, then `flapi.yaml`. `--log-level` (default `warning`) and
+`--no-telemetry` are accepted after the subcommand too (`flapi cache refresh --all --no-telemetry`); the
+one-shot sends no telemetry either way.
+
+A refresh whose cursor watermark does not look like `cursor.type` (e.g. `type: integer` over a VARCHAR
+column) drops the watermark and loads the full source; the audit row's `message` says so
+(`Cache refreshed successfully; warning: ...`), as does the server's refresh answer (`warning`).
 
 ### `flapi extensions install` -- pre-install DuckDB extensions
 
@@ -793,7 +799,7 @@ During cache warmup, `/health/live` returns `200` as soon as the server is liste
 ```json
 {
   "status": "starting",
-  "caches": {"total": 4, "ready": 1, "failed": 0},
+  "caches": {"total": 4, "ready": 1, "stale": 0, "failed": 0, "unbuilt": 0},
   "pending": [{"schema": "cache", "table": "customers_cache"}],
   "uptime_s": 7
 }
@@ -811,6 +817,9 @@ only: `/health` is unauthenticated and never returns it.
 
 A cache counts as **failed** only when no table exists to serve: its first build failed. The failure is
 logged once, with the reason.
+
+`caches.ready` counts caches that are ready and current; a `stale` cache (serving its last snapshot
+while refreshes fail) is counted in `caches.stale` only, no longer in `ready`.
 
 If a data request has been in flight for `stall-timeout-s` seconds or longer (top-level key, default
 `60`, `0` disables), `/health` returns `503` with `"status": "stalled"`, `"stalled_after_s"` and

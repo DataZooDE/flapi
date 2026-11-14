@@ -594,7 +594,11 @@ crow::response APIServer::getHealth() {
     }
 
     health["caches"]["total"] = summary.total;
-    health["caches"]["ready"] = summary.ready;
+    // `ready` excludes `stale` (serving the last snapshot while refreshes
+    // fail): a stale cache was counted as ready, so the numbers said all was
+    // well while `status` said degraded.
+    health["caches"]["ready"] = summary.ready - summary.stale;
+    health["caches"]["stale"] = summary.stale;
     health["caches"]["failed"] = summary.failed;
     health["caches"]["unbuilt"] = summary.unbuilt;
 

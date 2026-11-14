@@ -56,6 +56,9 @@ const SchemaField kPath{"path", "string",
 const SchemaField kEndpoint{"endpoint", "string",
                             "The endpoint's url-path, e.g. \"/customers/\".", true};
 const SchemaField kMethod{"method", "string", "HTTP method (default GET).", false};
+const SchemaField kMethodSelect{"method", "string",
+                                "HTTP method, needed when several endpoints share the path "
+                                "(GET /orders + POST /orders).", false};
 const SchemaField kTemplateSource{"template-source", "string",
                                   "SQL template file name, relative to the templates directory "
                                   "(default: <slug>.sql). Created with a placeholder query if absent; "
@@ -99,6 +102,41 @@ crow::json::wvalue build_schema(std::initializer_list<SchemaField> fields) {
     }
     return schema;
 }
+
+
+// The endpoint a flapi_* tool names: `path` plus an optional `method`. Several
+// endpoints may share a url-path (GET + POST /orders); without a method that
+// is an error naming the choices, never the first match - by path alone
+// reload reloaded the other file and delete removed both.
+ConfigManager::EndpointRef resolveToolEndpoint(const ConfigManager& cm, const crow::json::wvalue& args,
+                                               const std::string& path, std::string& error) {
+    std::string method;
+    if (const auto parsed = crow::json::load(args.dump());
+        parsed && parsed.t() == crow::json::type::Object && parsed.has("method") &&
+        parsed["method"].t() == crow::json::type::String) {
+        method = parsed["method"].s();
+        std::transform(method.begin(), method.end(), method.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    }
+    if (!method.empty()) {
+        return cm.getEndpointForKey(method + " " + path);
+    }
+    std::string methods;
+    int shared = 0;
+    for (const auto& ep : *cm.getEndpoints()) {
+        if (!ep.urlPath.empty() && ep.urlPath == path) {
+            ++shared;
+            methods += (methods.empty() ? "" : "|") + ConfigManager::EndpointKey(ep).substr(
+                0, ConfigManager::EndpointKey(ep).find(' '));
+        }
+    }
+    if (shared > 1) {
+        error = "Ambiguous: " + path + " is served by several endpoints; pass method (" + methods + ")";
+        return {};
+    }
+    return cm.getEndpointForPath(path);
+}
+
 
 }  // namespace
 
@@ -274,7 +312,7 @@ void ConfigToolAdapter::registerEndpointTools() {
     tools_["flapi_get_endpoint"] = ConfigToolDef{
         "flapi_get_endpoint",
         "Get the complete configuration for a specific endpoint including validators, cache settings, and auth requirements",
-        build_schema({kPath}),
+        build_schema({kPath, kMethodSelect}),
         build_basic_schema()
     };
     tool_auth_required_["flapi_get_endpoint"] = true;
@@ -301,7 +339,7 @@ void ConfigToolAdapter::registerEndpointTools() {
         "Update the configuration of an existing endpoint. The change is merged into its YAML file "
         "(persisted, like PUT /api/v1/_config/endpoints/{slug}); settings not mentioned are kept. "
         "url-path, method and name cannot change: delete and re-create instead.",
-        build_schema({kPath, kTemplateSource, kConnection, kUpdateConfig}),
+        build_schema({kPath, kMethodSelect, kTemplateSource, kConnection, kUpdateConfig}),
         build_basic_schema()
     };
     tool_auth_required_["flapi_update_endpoint"] = true;
@@ -313,7 +351,7 @@ void ConfigToolAdapter::registerEndpointTools() {
     tools_["flapi_delete_endpoint"] = ConfigToolDef{
         "flapi_delete_endpoint",
         "Delete an endpoint by its path. The endpoint becomes unavailable for API calls immediately.",
-        build_schema({kPath}),
+        build_schema({kPath, kMethodSelect}),
         build_basic_schema()
     };
     tool_auth_required_["flapi_delete_endpoint"] = true;
@@ -325,7 +363,7 @@ void ConfigToolAdapter::registerEndpointTools() {
     tools_["flapi_reload_endpoint"] = ConfigToolDef{
         "flapi_reload_endpoint",
         "Reload an endpoint configuration from disk without restarting the server. Useful after manual YAML edits.",
-        build_schema({kPath}),
+        build_schema({kPath, kMethodSelect}),
         build_basic_schema()
     };
     tool_auth_required_["flapi_reload_endpoint"] = true;
@@ -506,7 +544,9 @@ ConfigToolResult ConfigToolAdapter::executeTool(const std::string& tool_name,
     // Check authentication if required
     if (isAuthenticationRequired(tool_name)) {
         if (auth_token.empty()) {
-            return createErrorResult(-32001, "Authentication required for tool: " + tool_name);
+            return createErrorResult(-32001, "Authentication required for tool: " + tool_name +
+                                                 " - send the config-service token in the X-Config-Token "
+                                                 "header (or Authorization: Bearer when MCP auth is off)");
         }
 
         // Format first - a cheap, non-secret-dependent reject for obviously
@@ -523,7 +563,9 @@ ConfigToolResult ConfigToolAdapter::executeTool(const std::string& tool_name,
         }
         if (!token_error.empty()) {
             CROW_LOG_WARNING << "Tool execution denied - auth validation failed for " << tool_name << ": " << token_error;
-            return createErrorResult(-32001, "Authentication validation failed: " + token_error);
+            return createErrorResult(-32001, "Config-service token rejected for tool " + tool_name + ": " +
+                                                 token_error + " (X-Config-Token must be the server's "
+                                                 "--config-service-token)");
         }
     }
 
@@ -939,7 +981,11 @@ ConfigToolResult ConfigToolAdapter::executeGetEndpoint(const crow::json::wvalue&
         }
 
         // Find the endpoint
-        auto ep = config_manager_->getEndpointForPath(endpoint_path);
+        std::string ambiguity;
+        auto ep = resolveToolEndpoint(*config_manager_, args, endpoint_path, ambiguity);
+        if (!ambiguity.empty()) {
+            return createErrorResult(-32602, ambiguity);
+        }
         if (!ep) {
             return createErrorResult(-32603, "Endpoint not found: " + endpoint_path);
         }
@@ -1143,7 +1189,11 @@ ConfigToolResult ConfigToolAdapter::executeUpdateEndpoint(const crow::json::wval
         }
 
         // Find existing endpoint
-        auto ep = config_manager_->getEndpointForPath(path);
+        std::string ambiguity;
+        auto ep = resolveToolEndpoint(*config_manager_, args, path, ambiguity);
+        if (!ambiguity.empty()) {
+            return createErrorResult(-32602, ambiguity);
+        }
         if (!ep) {
             crow::json::wvalue error_detail;
             error_detail["error"] = "Endpoint not found";
@@ -1239,7 +1289,11 @@ ConfigToolResult ConfigToolAdapter::executeDeleteEndpoint(const crow::json::wval
         }
 
         // Verify endpoint exists
-        auto ep = config_manager_->getEndpointForPath(path);
+        std::string ambiguity;
+        auto ep = resolveToolEndpoint(*config_manager_, args, path, ambiguity);
+        if (!ambiguity.empty()) {
+            return createErrorResult(-32602, ambiguity);
+        }
         if (!ep) {
             crow::json::wvalue error_detail;
             error_detail["error"] = "Endpoint not found";
@@ -1253,7 +1307,7 @@ ConfigToolResult ConfigToolAdapter::executeDeleteEndpoint(const crow::json::wval
         const std::string deleted_file = ep->config_file_path;
 
         // Remove the endpoint
-        bool removed = config_manager_->removeEndpointByPath(path);
+        bool removed = config_manager_->removeEndpoint(*ep);
         if (!removed) {
             crow::json::wvalue error_detail;
             error_detail["error"] = "Failed to delete endpoint";
@@ -1314,7 +1368,11 @@ ConfigToolResult ConfigToolAdapter::executeReloadEndpoint(const crow::json::wval
         }
 
         // Verify endpoint exists
-        auto ep = config_manager_->getEndpointForPath(path);
+        std::string ambiguity;
+        auto ep = resolveToolEndpoint(*config_manager_, args, path, ambiguity);
+        if (!ambiguity.empty()) {
+            return createErrorResult(-32602, ambiguity);
+        }
         if (!ep) {
             crow::json::wvalue error_detail;
             error_detail["error"] = "Endpoint not found";
@@ -1327,7 +1385,7 @@ ConfigToolResult ConfigToolAdapter::executeReloadEndpoint(const crow::json::wval
         std::string original_template = ep->templateSource;
 
         // Reload the endpoint configuration from disk
-        bool reloaded = config_manager_->reloadEndpointConfig(path);
+        bool reloaded = config_manager_->reloadEndpointConfig(ConfigManager::EndpointKey(*ep));
         if (!reloaded) {
             crow::json::wvalue error_detail;
             error_detail["error"] = "Failed to reload endpoint configuration from disk";

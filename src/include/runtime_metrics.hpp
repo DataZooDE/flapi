@@ -28,15 +28,24 @@ namespace flapi {
 /// endpoints because callers pass route TEMPLATES (or a fixed literal for
 /// unmatched paths), never filled paths.
 ///
-/// Percentiles are estimated from the histogram: the reported value is the
-/// upper bound of the bucket that contains the quantile, so it is an upper
-/// estimate with bucket resolution, not an exact sample.
+/// Percentiles are estimated from the histogram: the quantile's bucket is
+/// found, and the value interpolated linearly between that bucket's bounds by
+/// the quantile's rank inside it, then clamped to the observed maximum. An
+/// estimate with bucket resolution (~25% wide buckets), not an exact sample.
+/// With the old 1-2.5-5 bounds and the bucket's UPPER bound reported, every
+/// request between 100 and 250 ms gave p50 = p95 = p99 = max.
 class RuntimeMetrics {
 public:
-    /// Upper bucket bounds in microseconds; the last bucket is +Inf.
-    static constexpr std::array<int64_t, 18> kBucketBoundsUs = {
-        100, 250, 500, 1'000, 2'500, 5'000, 10'000, 25'000, 50'000, 100'000,
-        250'000, 500'000, 1'000'000, 2'500'000, 5'000'000, 10'000'000, 30'000'000, 60'000'000};
+    /// Upper bucket bounds in microseconds (the R10 series: ten per decade,
+    /// 1-1.25-1.6-2-2.5-3.2-4-5-6.3-8), 100 us to 60 s; the last bucket is +Inf.
+    static constexpr std::array<int64_t, 58> kBucketBoundsUs = {
+        100, 125, 160, 200, 250, 320, 400, 500, 630, 800,
+        1'000, 1'250, 1'600, 2'000, 2'500, 3'200, 4'000, 5'000, 6'300, 8'000,
+        10'000, 12'500, 16'000, 20'000, 25'000, 32'000, 40'000, 50'000, 63'000, 80'000,
+        100'000, 125'000, 160'000, 200'000, 250'000, 320'000, 400'000, 500'000, 630'000, 800'000,
+        1'000'000, 1'250'000, 1'600'000, 2'000'000, 2'500'000, 3'200'000, 4'000'000, 5'000'000,
+        6'300'000, 8'000'000,
+        10'000'000, 12'500'000, 16'000'000, 20'000'000, 25'000'000, 32'000'000, 40'000'000, 60'000'000};
     static constexpr std::size_t kBucketCount = kBucketBoundsUs.size() + 1;
 
     struct Series {
@@ -49,7 +58,11 @@ public:
         /// cache_not_built, cache_build_failed). Counted apart from status_5xx:
         /// they are an expected state during warm-up, not a server fault.
         std::atomic<int64_t> cache_unavailable{0};
-        std::atomic<int64_t> failures{0};  ///< MCP tool calls that reported !success
+        std::atomic<int64_t> failures{0};  ///< MCP tool calls that reported !success (not rejections)
+        /// Requests refused for authentication/authorization: REST 401/403
+        /// (also counted in status_4xx), MCP role denials (NOT in failures -
+        /// a denied caller is not a broken tool).
+        std::atomic<int64_t> rejected{0};
         std::atomic<int64_t> sum_us{0};
         std::atomic<int64_t> max_us{0};
         std::array<std::atomic<int64_t>, kBucketCount> buckets{};
@@ -65,6 +78,7 @@ public:
         int64_t status_2xx = 0, status_3xx = 0, status_4xx = 0, status_5xx = 0;
         int64_t cache_unavailable = 0;
         int64_t failures = 0;
+        int64_t rejected = 0;
         double avg_ms = 0.0;
         double max_ms = 0.0;
         double p50_ms = 0.0, p95_ms = 0.0, p99_ms = 0.0;
@@ -84,7 +98,10 @@ public:
     static bool isCacheUnavailableResponse(int status_code, std::string_view body);
 
     /// One MCP tool call. `success` is the tool result, independent of HTTP status.
-    void recordMcpTool(std::string_view tool_name, bool success, std::chrono::microseconds duration);
+    /// `rejected`: the caller was denied (role check), counted as `rejected`
+    /// rather than as a failure / server error.
+    void recordMcpTool(std::string_view tool_name, bool success, std::chrono::microseconds duration,
+                       bool rejected = false);
 
     /// Rejections recorded for every request, including those stopped by
     /// middleware before any handler ran.
@@ -100,7 +117,7 @@ public:
     /// (empty = all) keeps only series whose route or tool name matches.
     crow::json::wvalue toJson(const std::string& route_filter = "") const;
 
-    /// Upper bound (ms) of the bucket containing quantile `q` of `buckets`,
+    /// Quantile `q` of `buckets` in ms, interpolated inside its bucket and
     /// never more than `max_ms` (when >= 0): a bucket bound above the largest
     /// observation is not a latency anything ever took.
     static double percentileMs(const std::array<int64_t, kBucketCount>& buckets, int64_t total, double q,

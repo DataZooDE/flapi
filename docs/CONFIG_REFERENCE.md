@@ -1045,9 +1045,12 @@ MCP resources expose data as readable resources for AI models.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `mcp-resource.name` | string | **required** | Unique resource name |
+| `mcp-resource.name` | string | **required** | Unique resource name (two files with the same name fail the load) |
 | `mcp-resource.description` | string | **required** | Resource description |
 | `mcp-resource.mime-type` | string | `application/json` | Content MIME type |
+| `mcp-resource.uri-template` | string | - | `flapi://customers/{id}`: a parameterised resource, listed in `resources/templates/list` only. Each `{var}` must be a `request:` field; its validators run on `resources/read` |
+| `mcp-resource.response.max-rows` | integer | the file's `mcp-tool.response.max-rows`, else `1000` | Cap the rows a read returns; a capped read carries `_meta.truncated` |
+| `mcp-resource.response.redact-columns` | array[string] | the file's `mcp-tool.response.redact-columns` | Columns replaced by `"<redacted>"` |
 
 **Example:**
 
@@ -1056,6 +1059,9 @@ mcp-resource:
   name: customer_schema
   description: Customer database schema and field definitions
   mime-type: application/json
+  response:
+    max-rows: 200          # default 1000
+    redact-columns: [email]
 
 template-source: schema-query.sql
 connection:

@@ -56,12 +56,14 @@ TEST_CASE("Percentiles never exceed the observed maximum", "[runtime_metrics][re
     REQUIRE(all.size() == 1);
     CHECK_THAT(all[0].max_ms, Catch::Matchers::WithinAbs(120.0, 1e-9));
     CHECK(all[0].p99_ms <= all[0].max_ms);
-    CHECK_THAT(all[0].p50_ms, Catch::Matchers::WithinAbs(120.0, 1e-9));
+    // Interpolated inside (100, 125] ms, and never above the maximum.
+    CHECK(all[0].p50_ms > 100.0);
+    CHECK(all[0].p50_ms <= all[0].max_ms);
 
-    // Without a maximum the bucket bound is still what is reported.
+    // Without a maximum the interpolated value inside the bucket is reported.
     std::array<int64_t, RuntimeMetrics::kBucketCount> buckets{};
     buckets[RuntimeMetrics::bucketFor(120'000)] = 1;
-    CHECK_THAT(RuntimeMetrics::percentileMs(buckets, 1, 0.99), Catch::Matchers::WithinAbs(250.0, 1e-9));
+    CHECK_THAT(RuntimeMetrics::percentileMs(buckets, 1, 0.99), Catch::Matchers::WithinAbs(124.75, 1e-9));
     CHECK_THAT(RuntimeMetrics::percentileMs(buckets, 1, 0.99, 120.0), Catch::Matchers::WithinAbs(120.0, 1e-9));
 }
 

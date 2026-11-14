@@ -13,6 +13,8 @@ export interface RequestSeries {
   tool?: string;
   requests: number;
   failures?: number;
+  /** 401/403 (REST) and role denials (MCP): refused callers, not failures. */
+  rejected?: number;
   /** `503_cache`: cache not ready (warming/not built/failed), not counted in 5xx. */
   status?: Partial<Record<'2xx' | '3xx' | '4xx' | '5xx' | '503_cache', number>>;
   latency_ms: { avg: number; p50: number; p95: number; p99: number; max: number };
@@ -44,9 +46,13 @@ export function requestRows(series: RequestSeries[]): Record<string, unknown>[] 
           ? s.failures ?? 0
           : `${s.status?.['4xx'] ?? 0} 4xx / ${s.status?.['5xx'] ?? 0} 5xx` +
             (s.status?.['503_cache'] ? ` / ${s.status['503_cache']} cache-not-ready` : ''),
+      rejected: s.rejected ?? 0,
       avg_ms: fmtMs(s.latency_ms.avg),
-      p95_ms: `≤${fmtMs(s.latency_ms.p95)}`,
-      p99_ms: `≤${fmtMs(s.latency_ms.p99)}`,
+      // Estimates interpolated inside a histogram bucket (never above max),
+      // hence `~`: they used to be the bucket's upper bound, shown as `≤`.
+      p50_ms: `~${fmtMs(s.latency_ms.p50)}`,
+      p95_ms: `~${fmtMs(s.latency_ms.p95)}`,
+      p99_ms: `~${fmtMs(s.latency_ms.p99)}`,
       max_ms: fmtMs(s.latency_ms.max),
     }));
 }

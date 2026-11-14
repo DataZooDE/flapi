@@ -2341,11 +2341,25 @@ crow::json::wvalue ConfigManager::getEndpointsConfig() const {
     // Pin the snapshot: this is reachable from the config service on a request
     // thread, concurrently with a writer swapping the table.
     const auto snapshot = endpointsSnapshot();
+    std::map<std::string, int> per_path;
+    for (const auto& endpoint : *snapshot) {
+        if (!endpoint.urlPath.empty()) {
+            ++per_path[endpoint.urlPath];
+        }
+    }
     for (const auto& endpoint : *snapshot) {
         // An MCP tool/resource/prompt has no url-path. Keying by it put every one
         // of them on "" so only the last survived and the CLI could not list the
         // rest; they are keyed by their MCP name instead.
-        const std::string key = endpoint.urlPath.empty() ? endpoint.getName() : endpoint.urlPath;
+        //
+        // A url-path several endpoints share (GET + POST /orders) is keyed
+        // "METHOD /path" for each of them: keyed by the path alone, all but the
+        // last were dropped from the listing. A path served once keeps its
+        // plain key, so existing clients see the same shape.
+        std::string key = endpoint.urlPath.empty() ? endpoint.getName() : endpoint.urlPath;
+        if (!endpoint.urlPath.empty() && per_path[endpoint.urlPath] > 1) {
+            key = EndpointKey(endpoint);
+        }
         endpointsJson[key] = serializeEndpointConfig(endpoint, EndpointJsonStyle::CamelCase);
     }
     return endpointsJson;
@@ -2377,6 +2391,20 @@ crow::json::wvalue ConfigManager::serializeEndpointConfig(const EndpointConfig& 
 
         set("with-pagination", "withPagination", config.with_pagination);
         set("request-fields-validation", "requestFieldsValidation", config.request_fields_validation);
+    } else {
+        // An MCP-only tool/resource runs a template on a connection too; both
+        // were left out, so `flapii endpoints list` showed every resource on
+        // connection "N/A".
+        if (!config.templateSource.empty()) {
+            set("template-source", "templateSource", config.templateSource);
+        }
+        if (!config.connection.empty()) {
+            auto connection_list = crow::json::wvalue::list();
+            for (const auto& conn : config.connection) {
+                connection_list.push_back(conn);
+            }
+            json["connection"] = std::move(connection_list);
+        }
     }
 
     std::vector<crow::json::wvalue> requestFields;
@@ -2835,20 +2863,40 @@ void ConfigManager::refreshConfig() {
 }
 
 std::string ConfigManager::DuplicateEndpointProblem(const EndpointConfig& candidate) const {
-    if (candidate.urlPath.empty()) {
-        return "";
-    }
+    const auto where = [](const EndpointConfig& ep) {
+        return ep.config_file_path.empty() ? std::string("(in memory)") : ep.config_file_path;
+    };
+    // An MCP name is the tool/resource/prompt's whole identity to a client:
+    // two `northwind_order` tools loaded silently and tools/call ran whichever
+    // came first. Checked per kind - a tool and a resource may share a name.
+    const auto same_name = [](const auto& a, const auto& b) {
+        return a.has_value() && b.has_value() && !a->name.empty() && a->name == b->name;
+    };
     const auto snapshot = endpointsSnapshot();
     for (const auto& ep : *snapshot) {
-        if (ep.urlPath != candidate.urlPath || ep.method != candidate.method) {
-            continue;
-        }
         if (!candidate.config_file_path.empty() && ep.config_file_path == candidate.config_file_path) {
             continue;   // the same file, e.g. a reload of it
         }
-        return "Duplicate endpoint " + candidate.method + " " + candidate.urlPath + ": declared in " +
-               (ep.config_file_path.empty() ? std::string("(in memory)") : ep.config_file_path) + " and " +
-               (candidate.config_file_path.empty() ? std::string("(in memory)") : candidate.config_file_path);
+        if (!candidate.urlPath.empty() && ep.urlPath == candidate.urlPath && ep.method == candidate.method) {
+            return "Duplicate endpoint " + candidate.method + " " + candidate.urlPath + ": declared in " +
+                   where(ep) + " and " + where(candidate);
+        }
+        const char* kind = nullptr;
+        std::string name;
+        if (same_name(ep.mcp_tool, candidate.mcp_tool)) {
+            kind = "tool";
+            name = candidate.mcp_tool->name;
+        } else if (same_name(ep.mcp_resource, candidate.mcp_resource)) {
+            kind = "resource";
+            name = candidate.mcp_resource->name;
+        } else if (same_name(ep.mcp_prompt, candidate.mcp_prompt)) {
+            kind = "prompt";
+            name = candidate.mcp_prompt->name;
+        }
+        if (kind != nullptr) {
+            return std::string("Duplicate MCP ") + kind + " name '" + name + "': declared in " +
+                   where(ep) + " and " + where(candidate);
+        }
     }
     return "";
 }
@@ -2910,7 +2958,10 @@ bool ConfigManager::replaceEndpoint(const EndpointConfig& endpoint) {
     // endpoint_repository has its own locking. Decide inside, act outside.
     const bool replaced = mutateEndpoints([&](std::vector<EndpointConfig>& eps) -> bool {
         for (auto& candidate : eps) {
-            if (endpoint.isSameEndpoint(candidate)) {
+            // The method too: isSameEndpoint compares the url-path only, so a
+            // PUT to POST /orders replaced GET /orders when it came first.
+            if (endpoint.isSameEndpoint(candidate) &&
+                (!endpoint.isRESTEndpoint() || EndpointKey(endpoint) == EndpointKey(candidate))) {
                 candidate = endpoint;
                 return true;
             }
@@ -3316,32 +3367,184 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfigFile(const 
     }
 }
 
-// Reload endpoint from disk (after external edit)
-// Note: This method modifies the endpoints vector. Ensure proper synchronization if called from multiple threads.
-bool ConfigManager::reloadEndpointConfig(const std::string& slug_or_path) {
-    // Pin the table for the read phase: `it` must stay valid across the parse
-    // below, which can take a while and runs concurrently with other requests.
-    auto snapshot = endpointsSnapshot();
+std::string ConfigManager::EndpointKey(const EndpointConfig& endpoint) {
+    if (endpoint.urlPath.empty()) {
+        return endpoint.getName();
+    }
+    std::string method = endpoint.method.empty() ? std::string("GET") : endpoint.method;
+    std::transform(method.begin(), method.end(), method.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    return method + " " + endpoint.urlPath;
+}
 
-    // Try to find existing endpoint by URL path or MCP name
-    auto it = std::find_if(snapshot->begin(), snapshot->end(), [&](const EndpointConfig& ep) {
-        return ep.getName() == slug_or_path || ep.matchesPath(slug_or_path);
-    });
-    
-    if (it == snapshot->end()) {
+ConfigManager::EndpointRef ConfigManager::getEndpointForKey(const std::string& key) const {
+    auto snapshot = endpointsSnapshot();
+    for (const auto& ep : *snapshot) {
+        if (EndpointKey(ep) == key) {
+            return EndpointRef(snapshot, &ep);
+        }
+    }
+    // "METHOD /path" naming a templated path (/orders/:id addressed as
+    // "GET /orders/7") resolves by route match, method included.
+    const auto space = key.find(' ');
+    if (space != std::string::npos && key.find('/') == space + 1) {
+        return EndpointRef(snapshot, findEndpoint(*snapshot, key.substr(space + 1), key.substr(0, space)));
+    }
+    return EndpointRef(snapshot, findEndpoint(*snapshot, key));
+}
+
+bool ConfigManager::removeEndpoint(const EndpointConfig& endpoint) {
+    const std::string key = EndpointKey(endpoint);
+    const auto removed = mutateEndpoints(
+        [&](std::vector<EndpointConfig>& eps) -> std::vector<EndpointConfig> {
+            std::vector<EndpointConfig> taken;
+            auto it = std::stable_partition(eps.begin(), eps.end(),
+                                            [&](const EndpointConfig& ep) { return EndpointKey(ep) != key; });
+            taken.assign(std::make_move_iterator(it), std::make_move_iterator(eps.end()));
+            eps.erase(it, eps.end());
+            return taken;
+        });
+    if (endpoint_repository) {
+        for (const auto& ep : removed) {
+            if (ep.isRESTEndpoint()) {
+                endpoint_repository->removeRestEndpoint(ep.urlPath, ep.method);
+            } else if (!ep.getName().empty()) {
+                endpoint_repository->removeMCPEndpoint(ep.getName());
+            }
+        }
+    }
+    return !removed.empty();
+}
+
+namespace {
+
+std::string canonicalOrSelf(const std::filesystem::path& p) {
+    std::error_code ec;
+    auto canonical = std::filesystem::weakly_canonical(p, ec);
+    return ec ? std::filesystem::absolute(p).lexically_normal().string() : canonical.string();
+}
+
+}  // namespace
+
+ConfigManager::FileReloadResult ConfigManager::reloadEndpointFile(const std::filesystem::path& file) {
+    FileReloadResult result;
+    if (!std::filesystem::exists(file)) {
+        result.status = 404;
+        result.error = "YAML file not found: " + file.string();
+        return result;
+    }
+    const std::string wanted = canonicalOrSelf(file);
+
+    // Validate the file first
+    ValidationResult validation = validateEndpointConfigFile(file);
+    if (!validation.valid) {
+        std::string joined;
+        for (const auto& e : validation.errors) {
+            joined += (joined.empty() ? "" : "; ") + e;
+        }
+        result.status = 400;
+        result.error = file.string() + ": " + joined;
+        CROW_LOG_ERROR << "Validation failed for " << file << ": " << joined;
+        return result;
+    }
+
+    try {
+        EndpointConfigParser parser(yaml_parser, this);
+        auto parse_result = parser.parseFromFile(file);
+        if (!parse_result.success) {
+            result.status = 400;
+            result.error = parse_result.error_message.find("Not a valid endpoint configuration") != std::string::npos
+                ? file.string() + " is not an endpoint file (no url-path, mcp-tool, mcp-resource or mcp-prompt)"
+                : file.string() + ": " + parse_result.error_message;
+            return result;
+        }
+        EndpointConfig fresh = parse_result.config;
+
+        // The file's identity, so the duplicate check skips the endpoint this
+        // file already holds - and only that one.
+        {
+            const auto snapshot = endpointsSnapshot();
+            for (const auto& ep : *snapshot) {
+                if (!ep.config_file_path.empty() && canonicalOrSelf(ep.config_file_path) == wanted) {
+                    fresh.config_file_path = ep.config_file_path;
+                    break;
+                }
+            }
+        }
+        if (const auto duplicate = DuplicateEndpointProblem(fresh); !duplicate.empty()) {
+            result.status = 409;
+            result.error = duplicate;
+            CROW_LOG_ERROR << "Failed to reload " << file << ": " << duplicate;
+            return result;
+        }
+
+        // Replace by FILE, not by name. Matching by url-path replaced the first
+        // endpoint with that path, so reloading the POST /orders file overwrote
+        // GET /orders and answered 200 - the POST change silently not applied.
+        std::vector<EndpointConfig> replaced;
+        mutateEndpointsVoid([&](std::vector<EndpointConfig>& eps) {
+            replaced.clear();
+            auto it = std::stable_partition(eps.begin(), eps.end(), [&](const EndpointConfig& ep) {
+                return ep.config_file_path.empty() || canonicalOrSelf(ep.config_file_path) != wanted;
+            });
+            replaced.assign(it, eps.end());
+            eps.erase(it, eps.end());
+            eps.push_back(fresh);
+        });
+
+        if (endpoint_repository) {
+            for (const auto& ep : replaced) {
+                if (ep.isRESTEndpoint()) {
+                    endpoint_repository->removeRestEndpoint(ep.urlPath, ep.method);
+                } else if (!ep.getName().empty()) {
+                    endpoint_repository->removeMCPEndpoint(ep.getName());
+                }
+            }
+            endpoint_repository->addEndpoint(fresh);
+        }
+
+        result.ok = true;
+        result.loaded_new = replaced.empty();
+        result.status = result.loaded_new ? 201 : 200;
+        result.endpoints.push_back(EndpointKey(fresh));
+        for (const auto& w : validation.warnings) {
+            result.warnings.push_back(w);
+        }
+        for (const auto& w : parse_result.warnings) {
+            result.warnings.push_back(w);
+        }
+        CROW_LOG_INFO << (result.loaded_new ? "Loaded new endpoint configuration from: "
+                                            : "Reloaded endpoint configuration from: ")
+                      << file;
+        for (const auto& warning : result.warnings) {
+            CROW_LOG_WARNING << "  - " << warning;
+        }
+        return result;
+    } catch (const std::exception& e) {
+        result.status = 400;
+        result.error = file.string() + ": " + e.what();
+        CROW_LOG_ERROR << "Failed to reload endpoint: " << e.what();
+        return result;
+    }
+}
+
+// Reload endpoint from disk (after external edit)
+bool ConfigManager::reloadEndpointConfig(const std::string& slug_or_path) {
+    const auto target = getEndpointForKey(slug_or_path);
+    if (!target) {
         CROW_LOG_WARNING << "Endpoint not found for reload: " << slug_or_path;
         return false;
     }
-    
+
     // Get the YAML configuration file path
     std::filesystem::path yaml_file;
-    if (!it->config_file_path.empty()) {
+    if (!target->config_file_path.empty()) {
         // Use the stored config file path (set during initial load by EndpointConfigParser)
-        yaml_file = it->config_file_path;
+        yaml_file = target->config_file_path;
     } else {
         // Fallback for endpoints loaded before the refactoring (derive from templateSource)
-        yaml_file = std::filesystem::path(template_config.path) / it->templateSource;
-        
+        yaml_file = std::filesystem::path(template_config.path) / target->templateSource;
+
         // If templateSource is a .sql file, look for the corresponding .yaml file
         if (yaml_file.extension() == ".sql") {
             auto yaml_candidate = yaml_file;
@@ -3360,72 +3563,12 @@ bool ConfigManager::reloadEndpointConfig(const std::string& slug_or_path) {
             }
         }
     }
-    
-    if (!std::filesystem::exists(yaml_file)) {
-        CROW_LOG_ERROR << "YAML file not found for reload: " << yaml_file;
-        return false;
-    }
-    
-    // Validate the file first
-    ValidationResult validation = validateEndpointConfigFile(yaml_file);
-    if (!validation.valid) {
-        CROW_LOG_ERROR << "Validation failed for " << yaml_file << ":";
-        for (const auto& error : validation.errors) {
-            CROW_LOG_ERROR << "  - " << error;
-        }
-        return false;
-    }
-    
-    try {
-        // Use EndpointConfigParser for consistent path resolution
-        EndpointConfigParser parser(yaml_parser, this);
-        auto parse_result = parser.parseFromFile(yaml_file);
-        
-        if (!parse_result.success) {
-            CROW_LOG_ERROR << "Failed to parse endpoint config: " << parse_result.error_message;
-            return false;
-        }
-        
-        // The reloaded file must not now claim another endpoint's url-path+method.
-        {
-            EndpointConfig probe = parse_result.config;
-            probe.config_file_path = it->config_file_path.empty() ? yaml_file.string() : it->config_file_path;
-            if (const auto duplicate = DuplicateEndpointProblem(probe); !duplicate.empty()) {
-                CROW_LOG_ERROR << "Failed to reload endpoint: " << duplicate;
-                return false;
-            }
-        }
 
-        // Publish the reloaded configuration through copy-modify-swap. Matching
-        // by name again rather than by index: the table may have been mutated by
-        // another thread while this file was being parsed.
-        const std::string target_name = it->getName();
-        mutateEndpointsVoid([&](std::vector<EndpointConfig>& eps) {
-            for (auto& ep : eps) {
-                if (ep.getName() == target_name) {
-                    ep = parse_result.config;
-                    return;
-                }
-            }
-            // Gone since we looked - treat the reload as an addition.
-            eps.push_back(parse_result.config);
-        });
-        
-        CROW_LOG_INFO << "Reloaded endpoint configuration from: " << yaml_file;
-        
-        // Log warnings if any (from both validation and parsing)
-        for (const auto& warning : validation.warnings) {
-            CROW_LOG_WARNING << "  - " << warning;
-        }
-        for (const auto& warning : parse_result.warnings) {
-            CROW_LOG_WARNING << "  - " << warning;
-        }
-        
-        return true;
-    } catch (const std::exception& e) {
-        CROW_LOG_ERROR << "Failed to reload endpoint: " << e.what();
-        return false;
+    const auto result = reloadEndpointFile(yaml_file);
+    if (!result.ok) {
+        CROW_LOG_ERROR << "Failed to reload endpoint " << slug_or_path << ": " << result.error;
     }
+    return result.ok;
 }
 
 // Template method implementations

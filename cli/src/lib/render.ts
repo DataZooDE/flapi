@@ -125,7 +125,7 @@ export function renderEndpointsTable(endpoints: Record<string, unknown>) {
       chalk.bold.blue('Connection'),
       chalk.bold.red('Cache')
     ],
-    colWidths: [25, 8, 10, 12, 15, 8],
+    colWidths: [25, 8, 15, 12, 15, 8],
     style: {
       head: [],
       border: [],
@@ -424,10 +424,20 @@ function formatValue(value: unknown): string {
   return String(value);
 }
 
-function determineEndpointType(config: Record<string, unknown>): string {
-  if ('mcp-tool' in config || 'mcpTool' in config) return 'MCP Tool';
-  if ('mcp-resource' in config || 'mcpResource' in config) return 'MCP Resource';
-  if ('mcp-prompt' in config || 'mcpPrompt' in config) return 'MCP Prompt';
+export function determineEndpointType(config: Record<string, unknown>): string {
+  // A file with a url-path AND an mcp-* block serves both; it showed as
+  // "MCP Tool" only, hiding that it is a REST route as well.
+  const rest = Boolean(config['url-path'] ?? config.urlPath);
+  const kind =
+    'mcp-tool' in config || 'mcpTool' in config
+      ? 'Tool'
+      : 'mcp-resource' in config || 'mcpResource' in config
+        ? 'Resource'
+        : 'mcp-prompt' in config || 'mcpPrompt' in config
+          ? 'Prompt'
+          : undefined;
+  if (kind && rest) return `REST+${kind}`;
+  if (kind) return `MCP ${kind}`;
   return 'REST';
 }
 

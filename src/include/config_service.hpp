@@ -78,7 +78,25 @@ std::string FileStemFor(const EndpointConfig& endpoint);
 /// (METHOD upper case), loaded or not; "" when none does.
 std::string FileDeclaring(const ConfigManager& cm, const std::string& url_path, const std::string& method);
 
+/// A YAML file in the templates directory that declares the MCP tool,
+/// resource or prompt `name`, loaded or not; "" when none does.
+std::string FileDeclaringMcpName(const ConfigManager& cm, const std::string& name);
+
 }  // namespace endpoint_files
+
+/// What a config-service slug route (+ optional ?method=) names. Several
+/// endpoints may share a url-path (GET /orders + POST /orders): with no
+/// method that is a 400 "ambiguous", never an arbitrary pick.
+struct SlugTarget {
+    bool ok = false;
+    bool found = false;          // at least one endpoint matched
+    int status = 404;
+    std::string error;
+    std::string key;             // ConfigManager::EndpointKey() of the target
+};
+SlugTarget ResolveSlugTarget(const ConfigManager& cm, const std::string& slug, const char* method_param);
+/// "%3A" -> ':' in a slug path segment (the CLI's encodeURIComponent).
+std::string DecodeSlugSegment(const std::string& slug);
 
 /**
  * Handler for DuckLake audit log operations
@@ -89,11 +107,14 @@ public:
     explicit AuditLogHandler(std::shared_ptr<ConfigManager> config_manager);
     
     crow::response getCacheAuditLog(const std::string& path);
-    crow::response getAllCacheAuditLogs();
+    /// `table` ("schema.table" or "table"): only that cache table's events,
+    /// whichever endpoint sharing it triggered them.
+    crow::response getAllCacheAuditLogs(const std::string& table = "");
 
 private:
     std::shared_ptr<ConfigManager> config_manager_;
-    std::string buildAuditQuery(const std::string& catalog, const std::string& endpoint_filter = "") const;
+    std::string buildAuditQuery(const std::string& catalog, const std::string& endpoint_filter = "",
+                                const std::string& table_filter = "") const;
 };
 
 /**
@@ -199,6 +220,8 @@ public:
     
     crow::response validateEndpointConfig(const crow::request& req, const std::string& path);
     crow::response reloadEndpointConfig(const crow::request& req, const std::string& path);
+    // POST /endpoints/reload-file {"file": "..."}: reload or load one YAML.
+    crow::response reloadEndpointFile(const crow::request& req);
     crow::response getEndpointParameters(const crow::request& req, const std::string& path);
     crow::response findEndpointsByTemplate(const crow::request& req, const std::string& template_path);
     

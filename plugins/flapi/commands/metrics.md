@@ -13,9 +13,10 @@ Use the `flapi-operate` skill; `flapi-cache-tuning` for slow caches.
    `flapii cache audit` for caches that look slow or failing. The flapi MCP server's
    `flapi_get_metrics` tool returns the same data.
 2. Summarize in a short table:
-   - endpoints / tools by p95 latency (state that percentiles are histogram bucket
-     upper bounds, capped at the max) and error rate (5xx for REST, failures for
-     MCP). Report cache 503s (`status.503_cache`, `requests.cache_unavailable`)
+   - endpoints / tools by p95 latency (state that percentiles are estimates
+     interpolated inside a histogram bucket, capped at the max) and error rate (5xx
+     for REST, failures for MCP). `rejected` (401/403 on a route, MCP role denials)
+     is refused callers, not errors. Report cache 503s (`status.503_cache`, `requests.cache_unavailable`)
      separately: they are a cache not ready yet, not a server error, and are not
      in `5xx` / `server_errors`
    - 401 / 403 / 429 rejection counts and what they suggest (bad clients, attacks,

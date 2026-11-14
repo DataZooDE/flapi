@@ -102,7 +102,8 @@ MCPToolExecutionResult MCPToolHandler::executeTool(const MCPToolCallRequest& req
     flapi::GlobalTelemetry().mcpToolCalled(request.tool_name, result.success, duration_ms);
     RuntimeMetrics::instance().recordMcpTool(
         request.tool_name, result.success,
-        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0));
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0),
+        result.failure_kind == MCPToolExecutionResult::FailureKind::PermissionDenied);
     return result;
 }
 
@@ -289,7 +290,13 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
         // honour dry-run the same way — no side effects, just the SQL that
         // would have run.
         if (is_dry_run) {
-            std::string rendered_sql = sql_processor->loadAndProcessTemplate(*endpoint_config, params);
+            // Rendered the way it RUNS: prepared, typed params as `?` with the
+            // values listed in `bindings`. The values pasted into the SQL were a
+            // preview of a statement that never executes.
+            std::map<std::string, std::string> bind_values = params;
+            std::map<std::string, std::string> render_params = params;
+            auto prepared = sql_processor->loadAndProcessTemplatePrepared(*endpoint_config, render_params);
+            std::string rendered_sql = std::move(prepared.sql);
             // The rendered SQL goes back to the caller, and MCP is
             // unauthenticated by default, so any credential a template
             // interpolated leaves with it.
@@ -308,7 +315,9 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
             } else {
                 rendered_sql = secrets.scrub(std::move(rendered_sql));
             }
-            std::string payload = MCPDryRun::formatResult(request.tool_name, rendered_sql, params);
+            std::string payload = MCPDryRun::formatResult(request.tool_name, rendered_sql, bind_values,
+                                                          prepared.bindings, endpoint_config->request_fields,
+                                                          secrets);
 
             std::unordered_map<std::string, std::string> metadata;
             metadata["tool_name"] = request.tool_name;
@@ -447,31 +456,43 @@ bool MCPToolHandler::validateToolArguments(const std::string& tool_name, const c
     // Convert JSON arguments to parameter map for validation
     std::map<std::string, std::string> params = convertJsonToParams(arguments);
 
-    // Use RequestValidator to validate known parameters
-    std::vector<ValidationError> errors = validator->validateRequestParameters(endpoint_config->request_fields, params);
-
-    // For MCP tools, always reject unknown parameters for security and correctness
-    // This ensures that typos and invalid parameters are caught early
-    auto unknownParamErrors = validator->validateRequestFields(endpoint_config->request_fields, params);
-    errors.insert(errors.end(), unknownParamErrors.begin(), unknownParamErrors.end());
-
-    if (!errors.empty()) {
-        CROW_LOG_WARNING << "Tool argument validation failed for " << tool_name << ":";
-        std::ostringstream joined;
-        for (size_t i = 0; i < errors.size(); ++i) {
-            CROW_LOG_WARNING << "  - " << errors[i].fieldName << ": " << errors[i].errorMessage;
-            if (i > 0) {
-                joined << "; ";
-            }
-            joined << errors[i].fieldName << ": " << errors[i].errorMessage;
-        }
+    const std::string joined = validateMcpParams(*endpoint_config, params);
+    if (!joined.empty()) {
+        CROW_LOG_WARNING << "Tool argument validation failed for " << tool_name << ": " << joined;
         // Surface the actionable per-field messages so a model can self-correct
         // rather than seeing a generic "invalid arguments".
-        error_out = "Invalid arguments for tool '" + tool_name + "': " + joined.str();
+        error_out = "Invalid arguments for tool '" + tool_name + "': " + joined;
         return false;
     }
 
     return true;
+}
+
+std::string validateMcpParams(const EndpointConfig& endpoint,
+                              std::map<std::string, std::string>& params) {
+    // Defaults first, the order REST uses (combineParameters, then the
+    // validator), so a required field with a `default:` passes on every surface.
+    for (const auto& field : endpoint.request_fields) {
+        if (!field.defaultValue.empty() && params.find(field.fieldName) == params.end()) {
+            params[field.fieldName] = field.defaultValue;
+        }
+    }
+
+    RequestValidator validator;
+    std::vector<ValidationError> errors = validator.validateRequestParameters(endpoint.request_fields, params);
+    // Unknown parameters are rejected on MCP: a typo must not silently drop a
+    // filter, and an undeclared value has no validator standing behind it.
+    auto unknown = validator.validateRequestFields(endpoint.request_fields, params);
+    errors.insert(errors.end(), unknown.begin(), unknown.end());
+
+    std::ostringstream joined;
+    for (size_t i = 0; i < errors.size(); ++i) {
+        if (i > 0) {
+            joined << "; ";
+        }
+        joined << errors[i].fieldName << ": " << errors[i].errorMessage;
+    }
+    return joined.str();
 }
 
 std::vector<std::string> MCPToolHandler::getAvailableTools() const {

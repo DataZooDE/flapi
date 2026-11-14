@@ -24,8 +24,14 @@
 #include "rate_limit_middleware.hpp"
 #include "auth_middleware.hpp"
 #include "config_tool_adapter.hpp"
+#include "mcp_response_shaper.hpp"
 
 namespace flapi {
+
+/// The shaping resources/read applies: mcp-resource.response, else the same
+/// file's mcp-tool.response, with max-rows defaulting to
+/// MCPResourceInfo::kDefaultMaxRows. Never a no-op cap-wise.
+ResponseShape resourceResponseShape(const EndpointConfig& endpoint);
 
 /**
  * MCPRouteHandlers provides HTTP route handlers for MCP (Model Context Protocol) endpoints.

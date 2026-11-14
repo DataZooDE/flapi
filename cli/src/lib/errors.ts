@@ -20,13 +20,25 @@ const TOKEN_HELP =
   'The config service needs a token. Start flAPI with `--config-service --config-service-token <token>`, ' +
   'and give the same token to flapii with --config-service-token or the FLAPI_CONFIG_SERVICE_TOKEN environment variable.';
 
-/** What to do about a failure a first-time user is likely to hit, if anything. */
-export function guidanceFor(error: unknown, baseUrl?: string): string | undefined {
+const TOKEN_REJECTED_HELP =
+  'The config service rejected the token flapii sent. It must equal the server\'s --config-service-token; ' +
+  'check --config-service-token / FLAPI_CONFIG_SERVICE_TOKEN (or FLAPI_TOKEN) against the token the server was started with.';
+
+/**
+ * What to do about a failure a first-time user is likely to hit, if anything.
+ * `tokenSent`: whether this request carried a token - a 401 then means the
+ * token is WRONG, and "the config service needs a token" sent people looking
+ * for a flag they had already passed.
+ */
+export function guidanceFor(error: unknown, baseUrl?: string, tokenSent?: boolean): string | undefined {
   if (error instanceof AxiosResponseError) {
     const status = error.response.status;
     const body = typeof error.response.data === 'string' ? error.response.data : '';
     if (status === 401 || status === 403) {
-      return `${TOKEN_HELP} The server rejected the token (HTTP ${status}).`;
+      if (tokenSent) {
+        return `${TOKEN_REJECTED_HELP} (HTTP ${status})`;
+      }
+      return `${TOKEN_HELP} No token was sent (HTTP ${status}).`;
     }
     // A disabled config service has no routes at all, so the generic router 404 is
     // all there is; a real "endpoint not found" carries its own message.
@@ -42,13 +54,17 @@ export function guidanceFor(error: unknown, baseUrl?: string): string | undefine
   return undefined;
 }
 
-export function handleError(error: unknown, opts: { quiet?: boolean; baseUrl?: string } = {}): void {
+export function handleError(
+  error: unknown,
+  opts: { quiet?: boolean; baseUrl?: string; authToken?: string; configServiceToken?: string } = {},
+): void {
   if (opts.quiet) {
     process.exitCode = 1;
     return;
   }
 
-  const guidance = guidanceFor(error, opts.baseUrl);
+  const tokenSent = Boolean(opts.authToken ?? opts.configServiceToken ?? process.env.FLAPI_CONFIG_SERVICE_TOKEN ?? process.env.FLAPI_TOKEN);
+  const guidance = guidanceFor(error, opts.baseUrl, tokenSent);
   if (guidance) {
     Console.error(guidance);
   }

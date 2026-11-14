@@ -263,6 +263,21 @@ void EndpointConfigParser::parseMcpResourceFields(
         resource_info.allowed_roles = std::move(roles);
     }
 
+    // Response shaping, the same keys as mcp-tool.response. Optional so that
+    // "unset" can fall back to the file's mcp-tool.response at read time.
+    if (auto response_node = mcp_resource_node["response"]; response_node.IsDefined()) {
+        if (auto mr = response_node["max-rows"]; mr.IsDefined()) {
+            resource_info.response.max_rows = mr.as<std::size_t>();
+        }
+        if (auto rc = response_node["redact-columns"]; rc.IsDefined()) {
+            std::vector<std::string> columns;
+            for (const auto& column : rc) {
+                columns.push_back(column.as<std::string>());
+            }
+            resource_info.response.redact_columns = std::move(columns);
+        }
+    }
+
     config.mcp_resource = resource_info;
 }
 

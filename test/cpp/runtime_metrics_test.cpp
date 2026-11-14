@@ -58,14 +58,16 @@ TEST_CASE("RuntimeMetrics keeps MCP tools apart from REST routes", "[runtime_met
     CHECK(all[0].failures == 1);
 }
 
-TEST_CASE("RuntimeMetrics percentiles are bucket upper bounds", "[runtime_metrics]") {
+TEST_CASE("RuntimeMetrics percentiles are interpolated inside their bucket", "[runtime_metrics]") {
     std::array<int64_t, RuntimeMetrics::kBucketCount> buckets{};
-    // 90 requests <=1ms, 10 requests in the (25ms, 50ms] bucket
+    // 90 requests in (0.8ms, 1ms], 10 requests in the (25ms, 32ms] bucket
     buckets[RuntimeMetrics::bucketFor(900)] = 90;
     buckets[RuntimeMetrics::bucketFor(30'000)] = 10;
-    CHECK_THAT(RuntimeMetrics::percentileMs(buckets, 100, 0.50), Catch::Matchers::WithinAbs(1.0, 1e-9));
+    // rank 50 of 90 in (0.8, 1.0]: 0.8 + 0.2 * 50/90
+    CHECK_THAT(RuntimeMetrics::percentileMs(buckets, 100, 0.50), Catch::Matchers::WithinAbs(0.8 + 0.2 * 50.0 / 90.0, 1e-9));
     CHECK_THAT(RuntimeMetrics::percentileMs(buckets, 100, 0.90), Catch::Matchers::WithinAbs(1.0, 1e-9));
-    CHECK_THAT(RuntimeMetrics::percentileMs(buckets, 100, 0.95), Catch::Matchers::WithinAbs(50.0, 1e-9));
+    // rank 5 of 10 in (25, 32]
+    CHECK_THAT(RuntimeMetrics::percentileMs(buckets, 100, 0.95), Catch::Matchers::WithinAbs(28.5, 1e-9));
     CHECK(RuntimeMetrics::percentileMs(buckets, 0, 0.5) == 0.0);
     // beyond the last finite bound lands in +Inf and reports the last bound
     CHECK(RuntimeMetrics::bucketFor(120'000'000) == RuntimeMetrics::kBucketCount - 1);
@@ -137,4 +139,48 @@ TEST_CASE("RuntimeMetrics recording a known series does not allocate", "[runtime
     }
     INFO("allocations observed: " << observed);
     REQUIRE(observed == 0);
+}
+
+TEST_CASE("RuntimeMetrics percentiles differ when all traffic sits in one bucket", "[runtime_metrics][regression]") {
+    // The reported bug: every request between 100 and 250 ms gave
+    // p50 = p95 = p99 = max, because the bucket's upper bound (clamped to the
+    // max) was reported for every quantile.
+    auto& m = RuntimeMetrics::instance();
+    m.reset();
+    for (int i = 0; i < 100; ++i) {
+        m.recordRest("GET", "/one-bucket", 200, microseconds(170'000 + i * 300));
+    }
+    const auto all = m.snapshot();
+    REQUIRE(all.size() == 1);
+    CHECK(all[0].p50_ms < all[0].p95_ms);
+    CHECK(all[0].p95_ms < all[0].p99_ms);
+    CHECK(all[0].p99_ms <= all[0].max_ms);
+    CHECK(all[0].p50_ms > 160.0);
+}
+
+TEST_CASE("RuntimeMetrics counts MCP role denials as rejected, not failures", "[runtime_metrics][regression]") {
+    auto& m = RuntimeMetrics::instance();
+    m.reset();
+    m.recordMcpTool("orders", false, microseconds(100), /*rejected=*/true);
+    m.recordMcpTool("orders", false, microseconds(100));
+    const auto all = m.snapshot();
+    REQUIRE(all.size() == 1);
+    CHECK(all[0].failures == 1);
+    CHECK(all[0].rejected == 1);
+    const auto json = crow::json::load(m.toJson().dump());
+    CHECK(json["server_errors"].i() == 1);
+    CHECK(json["series"][0]["rejected"].i() == 1);
+}
+
+TEST_CASE("RuntimeMetrics counts REST 401/403 as rejected on their route", "[runtime_metrics][regression]") {
+    auto& m = RuntimeMetrics::instance();
+    m.reset();
+    m.recordRest("GET", "/secure", 401, microseconds(50));
+    m.recordRest("GET", "/secure", 403, microseconds(50));
+    m.recordRest("GET", "/secure", 404, microseconds(50));
+    const auto all = m.snapshot();
+    REQUIRE(all.size() == 1);
+    CHECK(all[0].status_4xx == 3);
+    CHECK(all[0].rejected == 2);
+    CHECK(all[0].status_5xx == 0);
 }

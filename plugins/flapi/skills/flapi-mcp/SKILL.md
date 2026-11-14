@@ -256,7 +256,11 @@ SELECT ProductName, UnitPrice FROM nw.Products ORDER BY UnitPrice DESC LIMIT 10
 - A **prompt** has no SQL. `prompts/get` renders `template` with the arguments (Mustache).
 - A **resource** runs its SQL on `resources/read` and returns
   `contents[{uri, mimeType, text}]`. `uri-template: flapi://customers/{id}` lists it under
-  `resources/templates/list` and binds `{id}` on read.
+  `resources/templates/list` only (not `resources/list`) and binds `{id}` on read - through
+  the `request:` field's default and validators, like `tools/call` (a bad value is `-32602`).
+  Declare every `{var}` as a field. A read is capped at `mcp-resource.response.max-rows`
+  (else the file's `mcp-tool.response`, else 1000; `_meta.truncated` says so) and honours
+  `redact-columns`; an empty result is `"text":"[]"`.
 - `allowed-roles` works on `mcp-resource` and `mcp-prompt` as on tools.
 
 ## Calling it with curl
@@ -287,7 +291,9 @@ Real `tools/call` result (trimmed):
   Integer is greater than the maximum allowed value`. An unknown tool is JSON-RPC `-32602`
   `Tool not found: x`.
 - **Dry-run:** add `"_dryRun": true` to `arguments`. Validators, roles and rate limits still
-  run; the SQL does not. The result text is `{"dry_run":true,"tool_name":...,"rendered_sql":...,"parameters":{...}}`.
+  run; the SQL does not. The result text is `{"dry_run":true,"tool_name":...,"rendered_sql":...,"bindings":[...],"parameters":{...}}`:
+  typed params are `?` in `rendered_sql` with their values in `bindings`, and `parameters`
+  are typed (`3`, not `"3"`). `structuredContent.rows` is `[]`.
   The SQL is withheld if it would expose a secret too short to redact.
 - Other methods: `resources/list`, `resources/read` (`{"uri":"flapi://segment_summary"}`),
   `prompts/list`, `prompts/get` (`{"name":..,"arguments":{..}}`), `ping`,
@@ -337,8 +343,8 @@ so both the data tools and the `flapi_*` tools work on one connection. See `flap
    use it. Give every request field a `description` and a typed validator.
 3. Add a `limit` field with `default:` and/or `response.max-rows`.
 4. `flapi -c flapi.yaml --validate-config`. Fix any `DESCRIPTION_*` warning.
-5. Reload it (`flapii endpoints reload <path>`, or the plugin hook does it on save); a new
-   file needs a restart (or create it with `flapii endpoints create -f` instead).
+5. Reload it (`flapii endpoints reload --file <yaml>`, which also loads a new file, or the
+   plugin hook does it on save).
 6. `tools/list` with curl: check the name, types, ranges and `required`.
 7. `tools/call` with `"_dryRun": true`, then for real. Compare with the REST route.
 8. Connect the client (`claude mcp add ...` or the plugin's server) and ask the agent to

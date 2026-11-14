@@ -117,7 +117,10 @@ describe('cache refresh and audit', () => {
       [{ endpoint_path: '/a', sync_started_at: 't0', sync_type: 'full', status: 'success', duration_ms: 5, rows_affected: 3, snapshot_id: 9, message: 'x' }],
       true,
     );
-    expect(rows).toEqual([{ endpoint: '/a', time: 't0', mode: 'full', status: 'success', duration_ms: 5, rows: 3, snapshot: 9 }]);
+    expect(rows).toEqual([{ endpoint: '/a', time: 't0', mode: 'full', status: 'success', duration_ms: 5, rows: 3, snapshot: 9, message: 'x' }]);
+    const long = cacheAuditRows([{ message: 'y'.repeat(100) }])[0].message as string;
+    expect(long.length).toBe(60);
+    expect(long.endsWith('...')).toBe(true);
     expect(Object.keys(cacheAuditRows([{ sync_type: 'full' }])[0])).not.toContain('endpoint');
     expect(cacheAuditRows({ not: 'a list' })).toEqual([]);
   });

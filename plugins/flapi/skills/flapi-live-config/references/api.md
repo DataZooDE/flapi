@@ -30,9 +30,10 @@ marked "open". All exist only when the server runs with `--config-service`.
 | `PUT /api/v1/_config/endpoints/{slug}` | partial JSON with `url-path` (or the `mcp-*` block) | Deep-merge onto the YAML file, re-parse, persist (200 `"status":"updated"`). Changing url-path/method/name 400; `{{include}}` file 409; camelCase body: memory only, `"persisted": false`; body without an identity key: 500 `Missing required field in endpoint config` | `endpoints update` |
 | `DELETE /api/v1/_config/endpoints/{slug}` | | Remove the endpoint and its YAML file | `endpoints delete` |
 | `POST /api/v1/_config/endpoints/{slug}/validate` | raw YAML text | Real parser: `{"valid":..,"errors":[..],"warnings":[..]}` | `endpoints validate <path> -f file` (or YAML on stdin) |
-| `POST /api/v1/_config/endpoints/{slug}/reload` | | Re-read the endpoint's YAML file. 200 `{"success":true}`; 400 with `reason` when it does not parse; 404 only for an unknown endpoint | `endpoints reload` |
+| `POST /api/v1/_config/endpoints/{slug}/reload[?method=M]` | | Re-read the endpoint's YAML file. 200 `{"success":true}`; 400 with `reason` when it does not parse, or "Ambiguous" when several endpoints share the path and no `method` is given; 404 only for an unknown endpoint | `endpoints reload [--method M]` |
+| `POST /api/v1/_config/endpoints/reload-file` | `{"file":"/abs/sqls/x.yaml"}` | Reload every endpoint the file declares, or LOAD a file not loaded yet. 200 reloaded / 201 loaded, `{"endpoints":["POST /orders"]}`; 400 outside `template.path` / invalid / not an endpoint file; 409 duplicate url-path+method or MCP name | `endpoints reload --file` |
 | `GET /api/v1/_config/endpoints/{slug}/parameters` | | Request fields with validators | `endpoints parameters` |
-| `POST /api/v1/_config/endpoints/by-template` | `{"template_path":"/abs/or/rel.sql"}` | Endpoints that use a template file | (hook) |
+| `POST /api/v1/_config/endpoints/by-template` | `{"template_path":"/abs/or/rel.sql"}` | Endpoints that use a template file, as `template-source` or cache `template-file` (`role`/`roles`, `config_file_path`, `slug`) | (hook) |
 | `GET /api/v1/_config/endpoints/{slug}/template` | | `{"template":"..."}` | `templates get` |
 | `PUT /api/v1/_config/endpoints/{slug}/template` | `{"template":"..."}` | Write the `.sql` file (persists) | `templates update` |
 | `POST /api/v1/_config/endpoints/{slug}/template/expand` | `{"parameters":{..}}` | `{"expanded":"<sql>"}`, nothing runs | `templates expand` |
@@ -73,7 +74,7 @@ Arguments named `path` / `endpoint` take the URL path (`/customers`), not a slug
 | `flapi_create_endpoint` | `path` | `method`, `template-source`, `connection` | **writes `<name>.yaml`** (`/a/b` -> `a_b.yaml`; and a placeholder SQL if missing) under `template.path` |
 | `flapi_update_endpoint` | `path` | `config` (endpoint keys, YAML spelling), or the keys at top level (`template-source`/`template_source`, `connection`, ...) | **merged into the YAML and persisted**, like REST `PUT`; changing url-path/method is refused |
 | `flapi_delete_endpoint` | `path` | | **removes the endpoint's YAML file** too |
-| `flapi_reload_endpoint` | `path` | | POST reload |
+| `flapi_reload_endpoint` | `path` | `method` (needed when several endpoints share the path) | POST reload |
 | `flapi_get_template` | `endpoint` | | GET template |
 | `flapi_update_template` | `endpoint`, `content` | | PUT template |
 | `flapi_expand_template` | `endpoint` | `params` | POST expand |

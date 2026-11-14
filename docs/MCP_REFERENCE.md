@@ -606,10 +606,18 @@ Set `arguments._dryRun: true` to run the validate → render → plan pipeline w
 ```json
 {
   "dry_run": true,
-  "rendered_sql": "SELECT 42 AS customer_id, 'fake' AS name",
-  "params": {"id": "42"}
+  "tool_name": "customer_lookup",
+  "rendered_sql": "SELECT ? AS customer_id, 'fake' AS name",
+  "bindings": [{"position": 1, "name": "id", "type": "integer", "value": 42}],
+  "parameters": {"id": 42}
 }
 ```
+
+`rendered_sql` is the statement the tool would RUN: a `{{ params.x }}` whose field has a typed
+validator is a `?` and its value is listed in `bindings` (`value: null` when absent). `parameters` is
+typed by the field's validators (an `int` field is `42`, not `"42"`). `structuredContent` holds the same
+fields plus `"rows": []` and `"row_count": 0`, so `rows` is always an array; a dry run never teaches the
+tool's `outputSchema`.
 
 The dry-run path does NOT skip validators, role checks, or rate limits — it skips only the SQL execution step. A caller that lacks the role to invoke the tool gets the same `Permission denied` from a dry-run as from a real call.
 
@@ -658,7 +666,10 @@ Lists all available MCP resources.
 | `resources[].mimeType` | string | Content MIME type |
 | `resources[].uri` | string | Resource URI |
 
-> **Implementation:** `src/mcp_route_handlers.cpp` | **Tests:** `test/integration/test_mcp_integration.py`
+A resource with a `uri-template` has no concrete URI to read, so it is listed only by
+`resources/templates/list`, not here.
+
+> **Implementation:** `src/mcp_route_handlers.cpp` | **Tests:** `test/integration/test_mcp_integration.py`, `test/integration/test_cluster_e2_config_mcp.py`
 
 ---
 
@@ -701,7 +712,20 @@ Reads the content of an MCP resource.
 }
 ```
 
-> **Implementation:** `src/mcp_route_handlers.cpp`, `src/mcp_content_types.cpp` | **Tests:** `test/integration/test_mcp_integration.py`
+**Parameters are validated as on `tools/call`.** The values a `uri-template` binds
+(`flapi://customers/{id}`) get the field's `default:`, then its validators (regex, enum, int, ...) and
+the unknown-parameter check, before the template renders. A value that fails answers `-32602 "Invalid
+parameters for resource '<name>': <field>: <reason>"`. Before, the bound values reached the template
+unvalidated - a `{{{ params.id }}}` was open to injection on this surface only. Declare every
+`{var}` as a `request:` field.
+
+**The result is shaped.** `mcp-resource.response` takes `max-rows` and `redact-columns` like
+`mcp-tool.response`; without it the same file's `mcp-tool.response` applies, and `max-rows` defaults
+to **1000**. A capped read says so on the content item:
+`"_meta": {"truncated": true, "row_count": 16282, "max_rows": 1000}`. An empty result is
+`"text": "[]"` (it was a `-32603` internal error).
+
+> **Implementation:** `src/mcp_route_handlers.cpp`, `src/mcp_content_types.cpp` | **Tests:** `test/integration/test_mcp_integration.py`, `test/integration/test_cluster_e2_config_mcp.py`
 
 ---
 
@@ -1756,8 +1780,11 @@ visible to every intermediary.
 - **`listChanged`** is advertised as `false` (flAPI has no notification transport).
 - **`completion/complete`** results are wrapped under a `completion` key.
 - **Resource templates:** `mcp-resource.uri-template` (e.g. `flapi://customers/{id}`)
-  exposes a resource in `resources/templates/list` and binds path variables on
-  `resources/read`.
+  exposes a resource in `resources/templates/list` (and not in `resources/list`) and
+  binds path variables on `resources/read`, validated by the matching `request:` fields.
+- **Names are unique per kind:** two files declaring the same MCP tool, resource or
+  prompt name fail the load (and a reload / `reload-file`), naming both files. A tool
+  and a resource may share a name.
 
 ---
 

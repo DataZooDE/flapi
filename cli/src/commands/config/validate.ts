@@ -67,7 +67,10 @@ async function validateEndpointFile(filePath: string): Promise<ValidationIssue[]
       return issues; // Skip non-endpoint YAML files
     }
     
-    // Validate template-source
+    // Validate template-source (a prompt carries its template inline)
+    if (doc['mcp-prompt'] && !doc['url-path'] && !doc['mcp-tool'] && !doc['mcp-resource']) {
+      return issues;
+    }
     if (!doc['template-source']) {
       issues.push({
         endpoint: endpointName,
@@ -120,28 +123,64 @@ async function validateEndpointFile(filePath: string): Promise<ValidationIssue[]
   return issues;
 }
 
+/**
+ * The endpoint directory to validate: --dir, else the template.path of the
+ * flapi.yaml given with --config (or ./flapi.yaml), resolved against that
+ * file's directory. It used to default to examples/sqls whatever --config
+ * said, so `flapii -c my/flapi.yaml config validate` checked the wrong tree -
+ * or none, printed "No YAML files found" and passed.
+ */
+export async function resolveValidateDir(
+  dirOption: string | undefined,
+  configPath: string | undefined,
+): Promise<{ dir: string; source: string }> {
+  if (dirOption) {
+    return { dir: dirOption, source: '--dir' };
+  }
+  const candidates = configPath ? [configPath] : ['flapi.yaml', 'flapi.yml'];
+  for (const candidate of candidates) {
+    let content: string;
+    try {
+      content = await fs.readFile(candidate, 'utf-8');
+    } catch {
+      if (configPath) {
+        throw new Error(`Cannot read the configuration ${candidate}`);
+      }
+      continue;
+    }
+    const doc = (YAML.load(content) ?? {}) as { template?: { path?: string } };
+    const templatePath = doc.template?.path;
+    if (!templatePath) {
+      throw new Error(`${candidate} has no template.path; pass --dir`);
+    }
+    return { dir: path.resolve(path.dirname(path.resolve(candidate)), templatePath), source: candidate };
+  }
+  return { dir: 'examples/sqls', source: 'default' };
+}
+
 export function registerValidateCommand(config: Command, ctx: CliContext) {
   config
     .command('validate')
     .description('Validate flapi configuration and endpoint files')
     .option('-f, --file <path>', 'Specific YAML file to validate')
-    .option('-d, --dir <path>', 'Directory containing endpoint YAML files', 'examples/sqls')
+    .option('-d, --dir <path>', 'Directory containing endpoint YAML files (default: template.path of --config / ./flapi.yaml)')
     .action(async (options: { file?: string; dir?: string }) => {
       const spinner = Console.spinner('Validating configuration...');
-      
+
       try {
         let yamlFiles: string[] = [];
-        
+
         if (options.file) {
           // Validate single file
           yamlFiles = [options.file];
         } else {
           // Validate all files in directory
-          yamlFiles = await findYamlFiles(options.dir || 'examples/sqls');
-          
+          const { dir, source } = await resolveValidateDir(options.dir, ctx.config.configPath);
+          yamlFiles = await findYamlFiles(dir);
+
           if (yamlFiles.length === 0) {
             spinner.fail(chalk.red('No YAML files found'));
-            Console.warn(`Directory: ${options.dir || 'examples/sqls'}`);
+            Console.warn(`Directory: ${dir} (from ${source})`);
             process.exitCode = 1;
             return;
           }

@@ -708,6 +708,16 @@ int main(int argc, char* argv[])
         .help("Force a full rebuild: ignore the incremental watermark and rebuild the table")
         .default_value(false)
         .implicit_value(true);
+    // The global flags, accepted after the subcommand too: argparse scopes
+    // options to the parser they follow, so `flapi cache refresh --all
+    // --no-telemetry` was rejected as an unknown argument.
+    cache_refresh_cmd.add_argument("--log-level")
+        .help("Set the log level (debug, info, warning|warn, error); default warning")
+        .default_value(std::string(""));
+    cache_refresh_cmd.add_argument("--no-telemetry")
+        .help("Disable telemetry (the one-shot sends none; accepted for symmetry)")
+        .default_value(false)
+        .implicit_value(true);
     cache_cmd.add_subparser(cache_refresh_cmd);
     program.add_subparser(cache_cmd);
 
@@ -732,6 +742,20 @@ int main(int argc, char* argv[])
         program.parse_args(argc, argv);
     } catch (const std::runtime_error& err) {
         std::cerr << err.what() << std::endl;
+        // `flapi cache refresh` documents 2 for a usage error (0 ok, 1 a refresh
+        // failed); a parse error there exited 1, indistinguishable from a
+        // failed refresh in a cron job's exit code.
+        bool cache_command = false;
+        for (int i = 1; i < argc; ++i) {
+            if (std::string(argv[i]) == "cache") {
+                cache_command = true;
+                break;
+            }
+        }
+        if (cache_command) {
+            std::cerr << cache_refresh_cmd;
+            return 2;
+        }
         std::cerr << program;
         return 1;
     }
@@ -863,6 +887,26 @@ int main(int argc, char* argv[])
             config_path = (env != nullptr && *env != '\0') ? env : "flapi.yaml";
         }
         crow::logger::setLogLevel(crow::LogLevel::Warning);
+        {
+            std::string level = cache_refresh_cmd.get<std::string>("--log-level");
+            if (level.empty() && program.is_used("--log-level")) {
+                level = program.get<std::string>("--log-level");
+            }
+            std::transform(level.begin(), level.end(), level.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (level == "debug") {
+                crow::logger::setLogLevel(crow::LogLevel::Debug);
+            } else if (level == "info") {
+                crow::logger::setLogLevel(crow::LogLevel::Info);
+            } else if (level == "error") {
+                crow::logger::setLogLevel(crow::LogLevel::Error);
+            } else if (!level.empty() && level != "warning" && level != "warn") {
+                crow::json::wvalue body;
+                body["error"] = "invalid --log-level '" + level + "': use debug, info, warning|warn or error";
+                std::cout << body.dump() << std::endl;
+                return 2;
+            }
+        }
         int rc = 0;
         try {
             auto cm = initializeConfig(config_path);
@@ -1181,7 +1225,25 @@ int main(int argc, char* argv[])
         CROW_LOG_INFO << "Registered embed:// DuckDB filesystem";
     }
 
-    // Configure cloud credentials in DuckDB after database is initialized
+    // Configure cloud credentials in DuckDB after database is initialized.
+    // The GCS caveat is logged only when something here reads gs:// or GCS.
+    {
+        const auto mentions_gcs = [](std::string text) {
+            std::transform(text.begin(), text.end(), text.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return text.find("gs://") != std::string::npos || text.find("gcs") != std::string::npos;
+        };
+        bool referenced = mentions_gcs(config_manager->getTemplatePath()) ||
+                          mentions_gcs(config_manager->getDuckLakeConfig().metadata_path) ||
+                          mentions_gcs(config_manager->getDuckLakeConfig().data_path);
+        for (const auto& [name, connection] : config_manager->getConnections()) {
+            referenced = referenced || mentions_gcs(connection.getInit());
+            for (const auto& [key, value] : connection.properties) {
+                referenced = referenced || mentions_gcs(value);
+            }
+        }
+        flapi::getGlobalCredentialManager().setGcsReferenced(referenced);
+    }
     configureCloudCredentialsInDuckDB();
 
     // Verify storage health at startup

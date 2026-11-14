@@ -14,7 +14,7 @@ describe('metrics rows', () => {
     expect(rows[0].errors).toBe(1);
     expect(rows[1].endpoint).toBe('GET /fast');
     expect(rows[1].errors).toBe('0 4xx / 0 5xx');
-    expect(rows[1].p95_ms).toBe('≤1.00');
+    expect(rows[1].p95_ms).toBe('~1.00');
   });
 
   it('orders caches by last refresh duration and shows never-refreshed caches', () => {

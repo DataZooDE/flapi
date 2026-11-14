@@ -236,7 +236,7 @@ bool CredentialManager::configureDuckDB() {
     // service-account key file. GOOGLE_APPLICATION_CREDENTIALS therefore has
     // no effect on gs:// reads - and startup used to log "GCS credentials
     // configured", which sent operators looking everywhere but here.
-    if (_gcs_credentials.has_value()) {
+    if (_gcs_credentials.has_value() && _gcs_referenced) {
         const auto& creds = _gcs_credentials.value();
         CROW_LOG_WARNING << "GCS: " << (creds.key_file.empty() ? "a Google Cloud project" : "GOOGLE_APPLICATION_CREDENTIALS")
                          << " is set, but DuckDB's httpfs does not use service-account credentials, "

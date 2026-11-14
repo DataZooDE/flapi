@@ -7,6 +7,9 @@
 #include <vector>
 
 #include "template_secrets.hpp"
+#include "prepared_template_rewriter.hpp"
+#include "sql_parameter_classifier.hpp"
+#include "config_manager.hpp"
 
 namespace flapi {
 
@@ -41,6 +44,27 @@ public:
     static std::string formatResult(const std::string& tool_name,
                                     const std::string& rendered_sql,
                                     const std::map<std::string, std::string>& parameters);
+
+    /// The same, for SQL rendered the way the server RUNS it (prepared: a
+    /// typed `{{ params.x }}` is a `?`), with the `bindings` list beside it and
+    /// `parameters` typed by the fields' validators (an int field is 3, not
+    /// "3"). Pasting bound values into the preview showed SQL that never ran
+    /// (`ALFKI IS NULL OR`, or `( IS NULL OR c <= )` for an absent value).
+    static std::string formatResult(const std::string& tool_name,
+                                    const std::string& rendered_sql,
+                                    const std::map<std::string, std::string>& parameters,
+                                    const std::vector<PreparedBindingSpec>& bindings,
+                                    const std::vector<RequestFieldConfig>& fields,
+                                    const TemplateSecrets& secrets);
+
+    /// A parameter value as JSON, typed by the field's validators.
+    static crow::json::wvalue typedParameter(const std::string& value, const RequestFieldConfig* field);
+    /// [{position, name, type, value}] for each `?` in order; value null when
+    /// the parameter is absent (the placeholder binds NULL).
+    static crow::json::wvalue bindingsJson(const std::vector<PreparedBindingSpec>& bindings,
+                                           const std::map<std::string, std::string>& values,
+                                           const std::vector<RequestFieldConfig>& fields,
+                                           const TemplateSecrets& secrets);
 };
 
 } // namespace flapi

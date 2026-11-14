@@ -28,8 +28,11 @@ Designing the cache (mode, templates, deletes) is `flapi-cache-design`.
 - **`rows_affected` is the sum of the DML counts** of all statements in the
   template (the whole template runs as one transaction). A `MERGE` counts every
   matched row, changed or not, so an overlap window inflates it.
-- **Metrics reset on restart; percentiles are histogram bucket upper bounds,**
-  capped at the observed `max`. Use the audit log for history.
+- **Metrics reset on restart; percentiles are estimates** interpolated inside a
+  histogram bucket (~25% wide), capped at the observed `max`. Use the audit log for history.
+- **A `cursor.type` that does not match the column drops the watermark:** every refresh
+  then loads the full source. `flapii templates expand <path> --cache` shows
+  `watermark_dropped_reason`, the refresh answer a `warning`, the audit row's `message` too.
 - **The scheduler is on by default** and checks every
   `ducklake.scheduler.scan-interval` (default: the shorter of
   `heartbeat.worker-interval`, 60 s, and the shortest `cache.schedule`; floor 1 s).
