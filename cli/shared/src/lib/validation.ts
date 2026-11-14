@@ -35,11 +35,18 @@ export async function reloadEndpointConfig(
 ): Promise<ReloadResult> {
   const url = buildEndpointUrl(slug, 'reload');
   
-  const response = await client.post(url);
+  // 400 = the endpoint exists but its YAML does not load (the reason says
+  // why); 404 = no such endpoint, which is an error the caller reports.
+  const response = await client.post(url, undefined, {
+    validateStatus: (status) => status === 200 || status === 400,
+  });
 
+  const reason = typeof response.data?.reason === 'string' ? response.data.reason : undefined;
+  const message = response.data?.message ?? '';
   return {
-    success: response.data.success ?? false,
-    message: response.data.message ?? '',
+    success: response.data?.success ?? false,
+    message: reason ? `${message}: ${reason}` : message,
+    reason,
   };
 }
 

@@ -2,7 +2,7 @@ import type { Command } from 'commander';
 import type { CliContext } from '../../lib/types';
 import { Console } from '../../lib/console';
 import { handleError } from '../../lib/errors';
-import { renderJson, renderMcpToolsTable } from '../../lib/render';
+import { renderJson, renderConfigJson, renderMcpToolsTable } from '../../lib/render';
 import chalk from 'chalk';
 
 export function registerMcpToolsCommand(parent: Command, ctx: CliContext) {
@@ -22,7 +22,7 @@ export function registerMcpToolsCommand(parent: Command, ctx: CliContext) {
           .filter((entry) => entry.config?.['mcp-tool'] ?? entry.config?.mcpTool);
 
         if (ctx.config.output === 'json') {
-          renderJson(tools.map((entry) => entry.config), ctx.config.jsonStyle);
+          renderConfigJson(tools.map((entry) => entry.config), ctx.config.jsonStyle, 'document');
         } else {
           renderMcpToolsTable(tools);
         }
@@ -54,12 +54,12 @@ export function registerMcpToolsCommand(parent: Command, ctx: CliContext) {
         }
 
         if (ctx.config.output === 'json') {
-          renderJson(tool, ctx.config.jsonStyle);
+          renderConfigJson(tool, ctx.config.jsonStyle, 'document');
         } else {
           const toolConfig = tool['mcp-tool'] ?? tool['mcpTool'] ?? tool;
           Console.info(chalk.cyan(`\n🔧 MCP Tool: ${name}`));
           Console.info(chalk.gray('═'.repeat(60)));
-          renderJson(toolConfig, ctx.config.jsonStyle);
+          renderConfigJson(toolConfig, ctx.config.jsonStyle, 'document');
         }
       } catch (error) {
         spinner.fail(chalk.red(`✗ Failed to fetch MCP tool ${name}`));

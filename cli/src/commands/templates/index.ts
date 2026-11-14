@@ -2,7 +2,7 @@ import type { Command } from 'commander';
 import type { CliContext } from '../../lib/types';
 import { Console } from '../../lib/console';
 import { handleError } from '../../lib/errors';
-import { renderJson, renderTemplatesTable } from '../../lib/render';
+import { renderJson, renderConfigJson, renderTemplatesTable } from '../../lib/render';
 import { buildEndpointUrl } from '../../lib/url';
 import chalk from 'chalk';
 
@@ -43,7 +43,7 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
         }
 
         if (ctx.config.output === 'json') {
-          renderJson(templates, ctx.config.jsonStyle);
+          renderConfigJson(templates, ctx.config.jsonStyle, 'keyed');
         } else {
           renderTemplatesTable(templates);
         }
@@ -66,7 +66,7 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
         const template = response.data;
 
         if (ctx.config.output === 'json') {
-          renderJson(template, ctx.config.jsonStyle);
+          renderJson(template);
         } else {
           Console.info(chalk.cyan(`\n📄 Template: ${path}`));
           Console.info(chalk.gray('═'.repeat(60)));
@@ -168,7 +168,7 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
         const result = response.data;
 
         if (ctx.config.output === 'json') {
-          renderJson(result, ctx.config.jsonStyle);
+          renderJson(result);
         } else {
           Console.info(chalk.cyan(`\n📄 Expanded Template: ${path}`));
           Console.info(chalk.gray('═'.repeat(60)));
@@ -219,7 +219,7 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
         const result = response.data;
 
         if (ctx.config.output === 'json') {
-          renderJson(result, ctx.config.jsonStyle);
+          renderJson(result);
         } else {
           Console.info(chalk.cyan(`\n🔍 Template Test: ${path}`));
           Console.info(chalk.gray('═'.repeat(60)));

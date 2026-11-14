@@ -45,6 +45,10 @@ public:
         std::atomic<int64_t> status_3xx{0};
         std::atomic<int64_t> status_4xx{0};
         std::atomic<int64_t> status_5xx{0};
+        /// 503s that mean "this endpoint's cache is not ready" (cache_warming,
+        /// cache_not_built, cache_build_failed). Counted apart from status_5xx:
+        /// they are an expected state during warm-up, not a server fault.
+        std::atomic<int64_t> cache_unavailable{0};
         std::atomic<int64_t> failures{0};  ///< MCP tool calls that reported !success
         std::atomic<int64_t> sum_us{0};
         std::atomic<int64_t> max_us{0};
@@ -59,6 +63,7 @@ public:
         std::string route;
         int64_t requests = 0;
         int64_t status_2xx = 0, status_3xx = 0, status_4xx = 0, status_5xx = 0;
+        int64_t cache_unavailable = 0;
         int64_t failures = 0;
         double avg_ms = 0.0;
         double max_ms = 0.0;
@@ -69,8 +74,14 @@ public:
     static RuntimeMetrics& instance();
 
     /// One REST request to `route_template` (never a filled path).
+    /// `cache_unavailable`: a 503 answered because the endpoint's cache is not
+    /// ready - counted under `cache_unavailable`, not under 5xx.
     void recordRest(std::string_view method, std::string_view route_template,
-                    int status_code, std::chrono::microseconds duration);
+                    int status_code, std::chrono::microseconds duration,
+                    bool cache_unavailable = false);
+
+    /// Whether a response is the cache-readiness 503 (body error "cache_*").
+    static bool isCacheUnavailableResponse(int status_code, std::string_view body);
 
     /// One MCP tool call. `success` is the tool result, independent of HTTP status.
     void recordMcpTool(std::string_view tool_name, bool success, std::chrono::microseconds duration);
@@ -89,8 +100,11 @@ public:
     /// (empty = all) keeps only series whose route or tool name matches.
     crow::json::wvalue toJson(const std::string& route_filter = "") const;
 
-    /// Upper bound (ms) of the bucket containing quantile `q` of `buckets`.
-    static double percentileMs(const std::array<int64_t, kBucketCount>& buckets, int64_t total, double q);
+    /// Upper bound (ms) of the bucket containing quantile `q` of `buckets`,
+    /// never more than `max_ms` (when >= 0): a bucket bound above the largest
+    /// observation is not a latency anything ever took.
+    static double percentileMs(const std::array<int64_t, kBucketCount>& buckets, int64_t total, double q,
+                               double max_ms = -1.0);
     static std::size_t bucketFor(int64_t duration_us);
 
     /// Tests only: forget every series and counter.

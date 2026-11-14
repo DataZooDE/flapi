@@ -84,4 +84,6 @@ export interface ValidationResult {
 export interface ReloadResult {
   success: boolean;
   message: string;
+  /** Why a reload failed (parse/validation error, missing file), when it did. */
+  reason?: string;
 }

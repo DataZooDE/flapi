@@ -29,6 +29,49 @@ class OpenAPIDocGenerator;
 /// and `caches`; empty means everything. Shared with the flapi_get_metrics tool.
 crow::json::wvalue buildMetricsJson(const std::shared_ptr<ConfigManager>& config_manager, const std::string& filter = "");
 
+/// Endpoint YAML persistence shared by the REST config service and the flapi_*
+/// MCP tools, so a create/update/delete over either survives a reload and a
+/// restart the same way. Every write goes through the LOADER's parser
+/// (EndpointConfigParser::parseFromFile), so what is served is exactly what a
+/// restart would load from the file - mcp-tool, request validators, cache and
+/// all - with template paths resolved against the YAML's own directory.
+namespace endpoint_files {
+
+struct Outcome {
+    bool ok = false;
+    int status = 500;          // HTTP status for the REST caller
+    std::string error;         // why, when !ok
+    EndpointConfig config;     // the parsed endpoint, when ok
+    std::string file;          // the YAML written
+};
+
+/// Create: `doc` is the endpoint document (the YAML file's content). Written to
+/// <template dir>/<slug>.yaml, parsed, validated and added; the file is removed
+/// again on any failure. 409 when the endpoint or the file already exists.
+Outcome CreateFromDocument(ConfigManager& cm, const YAML::Node& doc);
+
+/// Update: `patch` is deep-merged onto the endpoint's YAML (maps merge,
+/// everything else is replaced), written, re-parsed and swapped in; the old
+/// file is restored on failure. Keys the patch omits - auth users, validators -
+/// are kept, the same PUT semantics as deserializeEndpointConfig(merge).
+Outcome UpdateFromPatch(ConfigManager& cm, const EndpointConfig& existing, const YAML::Node& patch);
+
+/// Remove a deleted endpoint's YAML, only when it lies inside the templates
+/// directory. The SQL template is left alone. Returns "" or a warning.
+std::string RemoveEndpointFile(const ConfigManager& cm, const std::string& file);
+
+/// Why reloadEndpointConfig() failed for an endpoint that exists: the missing
+/// file, the parse error or the validation errors.
+std::string ReloadFailureReason(const ConfigManager& cm, const EndpointConfig& endpoint);
+
+/// True when the document names its endpoint with the canonical (YAML) keys -
+/// url-path / mcp-tool / mcp-resource / mcp-prompt - rather than the legacy
+/// camelCase JSON spellings (urlPath, templateSource) only the JSON
+/// deserializer understands.
+bool IsCanonicalDocument(const YAML::Node& doc);
+
+}  // namespace endpoint_files
+
 /**
  * Handler for DuckLake audit log operations
  * Responsibility: Retrieve cache synchronization audit logs
@@ -156,6 +199,10 @@ public:
     EndpointConfig jsonToEndpointConfig(const crow::json::rvalue& json, bool merge_existing = false);
 
 private:
+    // Shared by the slug- and path-addressed PUT / DELETE.
+    crow::response updateExisting(const crow::request& req, const EndpointConfig& existing);
+    crow::response removeExisting(const EndpointConfig& existing);
+
     std::shared_ptr<ConfigManager> config_manager_;
 };
 
@@ -181,6 +228,10 @@ private:
  */
 class ConfigService {
 public:
+    // Below this length the token is still accepted (by REST and MCP alike),
+    // but a warning is logged at startup.
+    static constexpr std::size_t kMinRecommendedTokenLength = 16;
+
     explicit ConfigService(std::shared_ptr<ConfigManager> config_manager, 
                           bool enabled = false,
                           const std::string& auth_token = "");
@@ -190,6 +241,9 @@ public:
     
     bool isEnabled() const { return enabled_; }
     bool validateToken(const crow::request& req) const;
+    // The bounded route template ("/api/v1/_config/endpoints/<string>/reload")
+    // for a config-service request URL; used to label its span.
+    static std::string RouteTemplateFor(const std::string& url);
 
     std::shared_ptr<ConfigManager> config_manager;
     

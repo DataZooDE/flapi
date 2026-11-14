@@ -29,6 +29,9 @@ export function loadConfig(options: CliOptions): FlapiiConfig {
   const baseUrl =
     options.baseUrl ??
     env.FLAPI_BASE_URL ??
+    // The name the Claude Code plugin (and its docs) use; FLAPI_BASE_URL wins
+    // when both are set.
+    env.FLAPI_URL ??
     yamlConfig?.cli?.http?.['base-url'] ??
     DEFAULT_BASE_URL;
 

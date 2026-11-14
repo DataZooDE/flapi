@@ -63,11 +63,23 @@ void RuntimeMetrics::observe(Series& s, std::chrono::microseconds duration) {
     s.last_request_unix_ms.store(nowUnixMs(), std::memory_order_relaxed);
 }
 
+bool RuntimeMetrics::isCacheUnavailableResponse(int status_code, std::string_view body) {
+    // CacheManager::readinessBlockJson: {"error":"cache_warming"|"cache_not_built"|
+    // "cache_build_failed", ...}. Only ever on a 503.
+    return status_code == 503 && body.find(R"("error":"cache_)") != std::string_view::npos;
+}
+
 void RuntimeMetrics::recordRest(std::string_view method, std::string_view route_template,
-                                int status_code, std::chrono::microseconds duration) {
+                                int status_code, std::chrono::microseconds duration,
+                                bool cache_unavailable) {
     Series& s = seriesFor(method, route_template);
     observe(s, duration);
-    if (status_code >= 500) {
+    if (cache_unavailable) {
+        // Not a 5xx: a cache that is still warming (or was never built) is a
+        // known, temporary state, and counting it as a server error made
+        // `flapii metrics` report failures for every request during warm-up.
+        s.cache_unavailable.fetch_add(1, std::memory_order_relaxed);
+    } else if (status_code >= 500) {
         s.status_5xx.fetch_add(1, std::memory_order_relaxed);
     } else if (status_code >= 400) {
         s.status_4xx.fetch_add(1, std::memory_order_relaxed);
@@ -96,21 +108,28 @@ void RuntimeMetrics::recordRejection(int status_code) {
     }
 }
 
-double RuntimeMetrics::percentileMs(const std::array<int64_t, kBucketCount>& buckets, int64_t total, double q) {
+double RuntimeMetrics::percentileMs(const std::array<int64_t, kBucketCount>& buckets, int64_t total, double q,
+                                    double max_ms) {
     if (total <= 0) {
         return 0.0;
     }
+    // The bucket's upper bound is an upper ESTIMATE; clamped to the observed
+    // maximum, so a p99 of 250 ms is never reported beside a max of 120 ms.
+    const auto clamp = [max_ms](double v) { return max_ms >= 0.0 ? std::min(v, max_ms) : v; };
     const auto rank = static_cast<int64_t>(q * static_cast<double>(total) + 0.999999);
     int64_t cumulative = 0;
     for (std::size_t i = 0; i < kBucketCount; ++i) {
         cumulative += buckets[i];
         if (cumulative >= rank) {
-            // The +Inf bucket has no upper bound; report the largest finite one.
-            const int64_t bound = i < kBucketBoundsUs.size() ? kBucketBoundsUs[i] : kBucketBoundsUs.back();
-            return static_cast<double>(bound) / 1000.0;
+            // The +Inf bucket has no upper bound: the observed maximum is the
+            // best estimate (the largest finite bound without one).
+            if (i >= kBucketBoundsUs.size()) {
+                return max_ms >= 0.0 ? max_ms : static_cast<double>(kBucketBoundsUs.back()) / 1000.0;
+            }
+            return clamp(static_cast<double>(kBucketBoundsUs[i]) / 1000.0);
         }
     }
-    return static_cast<double>(kBucketBoundsUs.back()) / 1000.0;
+    return clamp(static_cast<double>(kBucketBoundsUs.back()) / 1000.0);
 }
 
 std::vector<RuntimeMetrics::SeriesSnapshot> RuntimeMetrics::snapshot() const {
@@ -128,6 +147,7 @@ std::vector<RuntimeMetrics::SeriesSnapshot> RuntimeMetrics::snapshot() const {
         snap.status_3xx = series->status_3xx.load(std::memory_order_relaxed);
         snap.status_4xx = series->status_4xx.load(std::memory_order_relaxed);
         snap.status_5xx = series->status_5xx.load(std::memory_order_relaxed);
+        snap.cache_unavailable = series->cache_unavailable.load(std::memory_order_relaxed);
         snap.failures = series->failures.load(std::memory_order_relaxed);
         std::array<int64_t, kBucketCount> buckets{};
         int64_t total = 0;
@@ -138,9 +158,9 @@ std::vector<RuntimeMetrics::SeriesSnapshot> RuntimeMetrics::snapshot() const {
         const int64_t sum_us = series->sum_us.load(std::memory_order_relaxed);
         snap.avg_ms = total > 0 ? static_cast<double>(sum_us) / static_cast<double>(total) / 1000.0 : 0.0;
         snap.max_ms = static_cast<double>(series->max_us.load(std::memory_order_relaxed)) / 1000.0;
-        snap.p50_ms = percentileMs(buckets, total, 0.50);
-        snap.p95_ms = percentileMs(buckets, total, 0.95);
-        snap.p99_ms = percentileMs(buckets, total, 0.99);
+        snap.p50_ms = percentileMs(buckets, total, 0.50, snap.max_ms);
+        snap.p95_ms = percentileMs(buckets, total, 0.95, snap.max_ms);
+        snap.p99_ms = percentileMs(buckets, total, 0.99, snap.max_ms);
         snap.last_request_unix_ms = series->last_request_unix_ms.load(std::memory_order_relaxed);
         out.push_back(std::move(snap));
     }
@@ -155,7 +175,7 @@ crow::json::wvalue RuntimeMetrics::toJson(const std::string& route_filter) const
     out["rejections"]["forbidden"] = forbidden();
 
     std::vector<crow::json::wvalue> rows;
-    int64_t total = 0, errors = 0;
+    int64_t total = 0, errors = 0, cache_unavailable = 0;
     for (const auto& s : snapshot()) {
         if (!route_filter.empty() && s.route != route_filter) {
             continue;
@@ -174,6 +194,7 @@ crow::json::wvalue RuntimeMetrics::toJson(const std::string& route_filter) const
             row["status"]["3xx"] = s.status_3xx;
             row["status"]["4xx"] = s.status_4xx;
             row["status"]["5xx"] = s.status_5xx;
+            row["status"]["503_cache"] = s.cache_unavailable;
         }
         row["latency_ms"]["avg"] = s.avg_ms;
         row["latency_ms"]["p50"] = s.p50_ms;
@@ -182,11 +203,14 @@ crow::json::wvalue RuntimeMetrics::toJson(const std::string& route_filter) const
         row["latency_ms"]["max"] = s.max_ms;
         row["last_request_unix_ms"] = s.last_request_unix_ms;
         total += s.requests;
+        // server_errors excludes cache-not-ready 503s; they are cache_unavailable.
         errors += s.protocol == "mcp" ? s.failures : s.status_5xx;
+        cache_unavailable += s.cache_unavailable;
         rows.push_back(std::move(row));
     }
     out["total"] = total;
     out["server_errors"] = errors;
+    out["cache_unavailable"] = cache_unavailable;
     out["series"] = crow::json::wvalue(rows);
     return out;
 }

@@ -25,7 +25,7 @@ connections:
     init: |
       INSTALL 'bigquery' FROM community;
       LOAD 'bigquery';
-    # Connection-specific properties (accessible in templates via {{ context.conn.property_name }})
+    # Connection-specific properties (accessible in templates via {{ conn.property_name }})
     properties:
       project_id: 'd-kaercher-lakehouse'
 
@@ -75,9 +75,8 @@ enforce-https:
   # ssl-cert-file: './ssl/cert.pem'
   # ssl-key-file: './ssl/key.pem'
 
-# CORS allow-list. The historic wildcard '*' is permitted but the
-# startup auditor warns if it is combined with auth.enabled: true
-# (credential-bearing requests across origins).
+# CORS allow-list. The wildcard '*' lets any origin call the API from a
+# browser; list your real origins in production, especially with auth enabled.
 cors:
   allow-origins:
     - '*'   # dev/demo default; replace with a real allow-list for production

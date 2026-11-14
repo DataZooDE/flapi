@@ -1240,18 +1240,10 @@ ConfigToolResult ConfigToolAdapter::executeDeleteEndpoint(const crow::json::wval
         // Deleting persists: remove the endpoint's YAML so it does not come back
         // on the next start or reload. Only that file, and only from inside the
         // templates directory; the SQL template is left alone.
-        if (!deleted_file.empty()) {
-            std::error_code ec;
-            const auto template_dir = std::filesystem::weakly_canonical(config_manager_->getTemplateConfig().path, ec);
-            const auto file = std::filesystem::weakly_canonical(deleted_file, ec);
-            const auto rel = file.lexically_relative(template_dir);
-            if (!rel.empty() && *rel.begin() != "..") {
-                std::filesystem::remove(file, ec);
-                if (ec) {
-                    CROW_LOG_WARNING << "flapi_delete_endpoint: removed " << path
-                                     << " from memory but could not delete " << file << ": " << ec.message();
-                }
-            }
+        // Shared with REST DELETE /api/v1/_config/endpoints/<slug>.
+        const auto file_warning = endpoint_files::RemoveEndpointFile(*config_manager_, deleted_file);
+        if (!file_warning.empty()) {
+            CROW_LOG_WARNING << "flapi_delete_endpoint " << path << ": " << file_warning;
         }
 
         crow::json::wvalue result;
@@ -1314,6 +1306,7 @@ ConfigToolResult ConfigToolAdapter::executeReloadEndpoint(const crow::json::wval
             crow::json::wvalue error_detail;
             error_detail["error"] = "Failed to reload endpoint configuration from disk";
             error_detail["path"] = path;
+            error_detail["reason"] = endpoint_files::ReloadFailureReason(*config_manager_, *ep);
             error_detail["hint"] = "Verify that endpoint YAML file exists and is valid";
             return createErrorResult(-32603, error_detail.dump());
         }
@@ -1596,97 +1589,42 @@ bool ConfigToolAdapter::tokenMatchesConfigured(const std::string& auth_token) co
         return false;
     }
 
-    // Accept both "<scheme> <token>" and a bare token, matching what
-    // validateAuthToken permits.
-    std::string presented = auth_token;
-    const size_t space_pos = auth_token.find(' ');
-    if (space_pos != std::string::npos) {
-        presented = auth_token.substr(space_pos + 1);
-    }
-
     // Constant time, so the comparison cannot be turned into an oracle that
     // reveals the token a character at a time. Length is compared first and
     // that does leak the length; CRYPTO_memcmp needs equal sizes.
-    if (presented.size() != expected_auth_token_.size()) {
-        return false;
+    auto equals = [this](const std::string& presented) {
+        if (presented.size() != expected_auth_token_.size()) {
+            return false;
+        }
+        return CRYPTO_memcmp(presented.data(), expected_auth_token_.data(),
+                             presented.size()) == 0;
+    };
+
+    // The value as presented first (what REST compares), then the part after a
+    // "<scheme> " prefix, so both a bare token and "Bearer <token>" work.
+    if (equals(auth_token)) {
+        return true;
     }
-    return CRYPTO_memcmp(presented.data(), expected_auth_token_.data(),
-                         presented.size()) == 0;
+    const size_t space_pos = auth_token.find(' ');
+    return space_pos != std::string::npos && equals(auth_token.substr(space_pos + 1));
 }
 
 std::string ConfigToolAdapter::validateAuthToken(const std::string& auth_token) {
-    // Check for empty token
+    // Only the checks the REST config service applies too (its token check
+    // compares the presented value and nothing else). This used to demand
+    // >= 8 characters, a Base64 alphabet and a known scheme name, so a token
+    // REST accepted - `--config-service-token abc123`, or one containing `!` -
+    // was refused by every flapi_* tool with "too short" / "invalid
+    // characters". One secret now gates both transports identically; a weak
+    // token is warned about at startup instead of being refused on one of them.
     if (auth_token.empty()) {
         return "Authentication token is required";
     }
-
-    // Minimum token length check
-    if (auth_token.length() < 8) {
-        return "Authentication token is too short (minimum 8 characters)";
-    }
-
-    // Maximum token length check (prevent DoS via huge tokens)
+    // Bounded so a huge header cannot make the comparison costly.
     if (auth_token.length() > 4096) {
         return "Authentication token is too long (maximum 4096 characters)";
     }
-
-    // Parse token format
-    size_t space_pos = auth_token.find(' ');
-
-    if (space_pos == std::string::npos) {
-        // No space found - could be a raw token, check if it looks like a valid token
-        // Should contain only alphanumeric, dash, underscore, dot, or equals sign (for Base64)
-        for (char c : auth_token) {
-            if (!std::isalnum(c) && c != '-' && c != '_' && c != '.' && c != '=' && c != ':') {
-                return "Authentication token contains invalid characters";
-            }
-        }
-        // Raw token format is valid (API tokens, simple tokens)
-        CROW_LOG_DEBUG << "Token validation: raw token format accepted";
-        return "";
-    }
-
-    // Token has a scheme prefix (Bearer, Basic, Token, etc.)
-    std::string scheme = auth_token.substr(0, space_pos);
-    std::string token_value = auth_token.substr(space_pos + 1);
-
-    // Validate scheme
-    if (scheme != "Bearer" && scheme != "Basic" && scheme != "Token" && scheme != "API-Key") {
-        return "Unsupported authentication scheme: " + scheme +
-               " (supported: Bearer, Basic, Token, API-Key)";
-    }
-
-    // Validate token value is not empty
-    if (token_value.empty()) {
-        return scheme + " token cannot be empty";
-    }
-
-    // Bearer tokens should contain Base64 characters
-    if (scheme == "Bearer" || scheme == "Basic") {
-        for (char c : token_value) {
-            if (!std::isalnum(c) && c != '+' && c != '/' && c != '-' && c != '_' && c != '=') {
-                return scheme + " token contains invalid Base64 characters";
-            }
-        }
-    }
-
-    // Validate token value length (minimum and maximum)
-    if (token_value.length() < 4) {
-        return scheme + " token is too short (minimum 4 characters)";
-    }
-
-    if (token_value.length() > 2048) {
-        return scheme + " token is too long (maximum 2048 characters)";
-    }
-
-    // For Bearer tokens, ensure the Base64 length is valid
-    if (scheme == "Bearer" && token_value.length() % 4 != 0 && token_value.find('=') == std::string::npos) {
-        // Note: Base64 can have padding variations, so we're lenient here
-        CROW_LOG_DEBUG << "Bearer token Base64 length may need padding validation";
-    }
-
-    CROW_LOG_INFO << "Token validation successful: scheme=" << scheme << ", token_length=" << token_value.length();
-    return "";  // Token is valid
+    return "";
 }
 
 }  // namespace flapi

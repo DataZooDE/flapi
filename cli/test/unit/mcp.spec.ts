@@ -15,6 +15,7 @@ vi.mock('../../src/lib/console', () => ({
 
 vi.mock('../../src/lib/render', () => ({
   renderJson: vi.fn(),
+  renderConfigJson: vi.fn(),
   renderMcpToolsTable: vi.fn(),
   renderMcpResourcesTable: vi.fn(),
   renderMcpPromptsTable: vi.fn(),

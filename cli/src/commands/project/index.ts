@@ -2,7 +2,7 @@ import type { Command } from 'commander';
 import type { CliContext } from '../../lib/types';
 import { Console } from '../../lib/console';
 import { handleError } from '../../lib/errors';
-import { renderJson } from '../../lib/render';
+import { renderJson, renderConfigJson } from '../../lib/render';
 import { registerInitCommand } from './init';
 import chalk from 'chalk';
 
@@ -23,7 +23,7 @@ export function registerProjectCommands(program: Command, ctx: CliContext) {
         const projectData = result.data;
 
         if (ctx.config.output === 'json') {
-          renderJson(projectData, ctx.config.jsonStyle);
+          renderConfigJson(projectData, ctx.config.jsonStyle, 'document');
         } else {
           Console.info(chalk.cyan('\n📊 Project Information'));
           Console.info(chalk.gray('═'.repeat(60)));

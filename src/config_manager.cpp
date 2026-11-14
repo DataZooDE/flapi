@@ -2761,6 +2761,48 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
         result.errors.insert(result.errors.end(), self_errors.begin(), self_errors.end());
     }
     
+    // Whether a template file exists, and the path to name when it does not.
+    //
+    // The parser has ALREADY resolved the path against the YAML's directory.
+    // Prepending template.path to that unconditionally double-prefixed every
+    // relative one - in a packed bundle all paths are relative archive keys, so
+    // `--validate-config` warned "Template file does not exist:
+    // sqls/sqls/x.sql" for every endpoint of a bundle that served fine - and it
+    // looked only at the disk, never in the bundle. The resolved path is tried
+    // first; template.path/<source> only for a source parsed without a
+    // directory (validateEndpointConfigFromYaml).
+    auto templateFileExists = [this](const std::string& source, std::string& reported) {
+        const std::filesystem::path as_is(source);
+        std::vector<std::filesystem::path> candidates{as_is};
+        if (!as_is.is_absolute()) {
+            candidates.push_back(std::filesystem::path(template_config.path) / as_is);
+        }
+        const bool bundled = FileProviderFactory::GetBundleContents() != nullptr;
+        for (const auto& candidate : candidates) {
+            std::error_code ec;
+            if (std::filesystem::exists(candidate, ec)) {
+                return true;
+            }
+            if (bundled) {
+                try {
+                    if (FileProviderFactory::CreateProvider(candidate.string())->FileExists(candidate.string())) {
+                        return true;
+                    }
+                } catch (const std::exception&) {
+                    // not resolvable through the bundle either
+                }
+            }
+        }
+        // Name the as-is path when it already lies under template.path (it was
+        // resolved), the prefixed one otherwise - never a doubled prefix.
+        const std::string prefix = std::filesystem::path(template_config.path).lexically_normal().string();
+        const std::string normal = as_is.lexically_normal().string();
+        reported = (as_is.is_absolute() || (!prefix.empty() && normal.rfind(prefix, 0) == 0))
+                       ? as_is.string()
+                       : candidates.back().string();
+        return false;
+    };
+
     // Validate template source. NOT for an MCP prompt: it carries its template
     // inline and touches no database, and the loader already knows that (it skips
     // the template-source parse). This held every prompt to the REST rule, so
@@ -2781,21 +2823,13 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
             result.warnings.emplace_back("Template source contains path traversal sequences: " + config.templateSource);
             result.warnings.emplace_back("Template file does not exist (path traversal detected)");
         } else {
-            // Check if template file exists
-            // Note: config.templateSource is already resolved relative to YAML file directory during parsing
-            std::filesystem::path template_path(config.templateSource);
-
-            // If path is not absolute, prepend template_config.path
-            if (!template_path.is_absolute()) {
-                template_path = std::filesystem::path(template_config.path) / template_path;
-            }
-
-            if (!std::filesystem::exists(template_path)) {
-                result.warnings.emplace_back("Template file does not exist: " + template_path.string());
+            std::string reported;
+            if (!templateFileExists(config.templateSource, reported)) {
+                result.warnings.emplace_back("Template file does not exist: " + reported);
             }
         }
     }
-    
+
     // Validate connections. A prompt has no database, so "none specified" is not a
     // finding for it - but a connection it DOES name must still exist.
     if (config.connection.empty()) {
@@ -2810,19 +2844,12 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
             }
         }
     }
-    
+
     // Validate cache template if specified
     if (config.cache.enabled && config.cache.template_file) {
-        // Note: config.cache.template_file is already resolved relative to YAML file directory during parsing
-        std::filesystem::path cache_template_path(config.cache.template_file.value());
-        
-        // If path is not absolute, prepend template_config.path
-        if (!cache_template_path.is_absolute()) {
-            cache_template_path = std::filesystem::path(template_config.path) / cache_template_path;
-        }
-        
-        if (!std::filesystem::exists(cache_template_path)) {
-            result.warnings.emplace_back("Cache template file does not exist: " + cache_template_path.string());
+        std::string reported;
+        if (!templateFileExists(config.cache.template_file.value(), reported)) {
+            result.warnings.emplace_back("Cache template file does not exist: " + reported);
         }
     }
     

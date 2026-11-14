@@ -22,7 +22,9 @@ template:
 connections:
   sample-data:
     properties:
-      path: './data/sample.parquet'
+      # Created by \`flapii project init\` so the sample endpoint answers out of
+      # the box. Paths starting with ./ resolve against this file's directory.
+      path: './data/sample.csv'
 `,
 
   /**
@@ -53,11 +55,24 @@ connection: [sample-data]
    * - Conditional sections {{#params.id}}...{{/params.id}}
    * - Connection property access {{{ conn.path }}}
    */
-  'sqls/sample.sql': `SELECT * FROM read_parquet('{{{ conn.path }}}')
+  'sqls/sample.sql': `SELECT * FROM read_csv_auto('{{{ conn.path }}}')
 {{#params.id}}
 WHERE id = {{ params.id }}
 {{/params.id}}
 LIMIT 100
+`,
+
+  /**
+   * Sample data for the sample endpoint. The scaffold pointed at
+   * ./data/sample.parquet and never created it, so GET /sample answered 500 on
+   * a fresh project. CSV, because it can be written as text.
+   */
+  'data/sample.csv': `id,name,category,price
+1,Widget,tools,9.99
+2,Gadget,tools,19.50
+3,Gizmo,toys,4.25
+4,Doohickey,toys,12.00
+5,Thingamajig,misc,7.75
 `,
 
   /**

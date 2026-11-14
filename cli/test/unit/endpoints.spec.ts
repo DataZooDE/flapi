@@ -17,6 +17,7 @@ vi.mock('../../src/lib/console', () => ({
 
 vi.mock('../../src/lib/render', () => ({
   renderJson: vi.fn(),
+  renderConfigJson: vi.fn(),
   renderEndpointsTable: vi.fn(),
   renderEndpointTable: vi.fn(),
 }));

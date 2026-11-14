@@ -233,8 +233,9 @@ void EndpointConfigParser::parseMcpToolFields(
         tool_info.rate_limit.interval = config_manager_->safeGet<int>(rl, "interval", "mcp-tool.rate-limit.interval", 60);
     }
 
-    // MCP 2026-07-28 Tasks: async / async-after (a duration in ms, or a plain
-    // integer of milliseconds).
+    // MCP 2026-07-28 Tasks: async / async-after-ms. async-after-ms is a plain
+    // integer number of milliseconds (`async-after-ms: 5000`); a duration
+    // string such as "5s" is NOT accepted and fails the load as a type error.
     tool_info.async = config_manager_->safeGet<bool>(mcp_tool_node, "async", "mcp-tool.async", false);
     tool_info.async_after_ms = config_manager_->safeGet<int>(mcp_tool_node, "async-after-ms", "mcp-tool.async-after-ms", 0);
 

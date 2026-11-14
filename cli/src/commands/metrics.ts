@@ -13,7 +13,8 @@ export interface RequestSeries {
   tool?: string;
   requests: number;
   failures?: number;
-  status?: Record<'2xx' | '3xx' | '4xx' | '5xx', number>;
+  /** `503_cache`: cache not ready (warming/not built/failed), not counted in 5xx. */
+  status?: Partial<Record<'2xx' | '3xx' | '4xx' | '5xx' | '503_cache', number>>;
   latency_ms: { avg: number; p50: number; p95: number; p99: number; max: number };
 }
 
@@ -41,7 +42,8 @@ export function requestRows(series: RequestSeries[]): Record<string, unknown>[] 
       errors:
         s.protocol === 'mcp'
           ? s.failures ?? 0
-          : `${s.status?.['4xx'] ?? 0} 4xx / ${s.status?.['5xx'] ?? 0} 5xx`,
+          : `${s.status?.['4xx'] ?? 0} 4xx / ${s.status?.['5xx'] ?? 0} 5xx` +
+            (s.status?.['503_cache'] ? ` / ${s.status['503_cache']} cache-not-ready` : ''),
       avg_ms: fmtMs(s.latency_ms.avg),
       p95_ms: `≤${fmtMs(s.latency_ms.p95)}`,
       p99_ms: `≤${fmtMs(s.latency_ms.p99)}`,
@@ -87,7 +89,7 @@ export function registerMetricsCommand(program: Command, ctx: CliContext) {
         const data = response.data ?? {};
 
         if (ctx.config.output === 'json') {
-          renderJson(data, ctx.config.jsonStyle);
+          renderJson(data);
           return;
         }
 
@@ -96,12 +98,13 @@ export function registerMetricsCommand(program: Command, ctx: CliContext) {
         Console.info(chalk.cyan('\n📈 Requests'));
         Console.info(chalk.gray('═'.repeat(60)));
         Console.info(
-          `${requests.total ?? 0} requests, ${requests.server_errors ?? 0} server errors · ` +
+          `${requests.total ?? 0} requests, ${requests.server_errors ?? 0} server errors, ` +
+            `${requests.cache_unavailable ?? 0} cache-not-ready 503s · ` +
             `rejected: ${rejections.unauthorized ?? 0} × 401, ${rejections.forbidden ?? 0} × 403, ` +
             `${rejections.rate_limited ?? 0} × 429`,
         );
         renderTable(requestRows(requests.series ?? []));
-        Console.info(chalk.dim('Percentiles are histogram bucket upper bounds.'));
+        Console.info(chalk.dim('Percentiles are histogram bucket upper bounds, capped at the observed max.'));
 
         Console.info(chalk.cyan('\n🗄️  Caches'));
         Console.info(chalk.gray('═'.repeat(60)));

@@ -1242,7 +1242,10 @@ int main(int argc, char* argv[])
         }
     });
 
-    CROW_LOG_INFO << "flAPI unified server started - REST API and MCP on port " << config_manager->getHttpPort();
+    // Not "started": the bind has not happened yet (it fails later, on the
+    // server thread, with EADDRINUSE). APIServer::run logs "listening on" once
+    // it has succeeded.
+    CROW_LOG_DEBUG << "flAPI server thread launched for port " << config_manager->getHttpPort();
 
     std::thread warmup_thread;
     if (auto cache_manager = DatabaseManager::getInstance()->getCacheManager()) {

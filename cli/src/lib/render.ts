@@ -1,7 +1,7 @@
 import cliTable3 from 'cli-table3';
 import { Console } from './console';
 import type { FlapiiConfig } from './types';
-import { toCamelCaseKeys, toHyphenCaseKeys } from './casing';
+import { toCamelCaseKeys, toHyphenCaseKeys, renameKey } from './casing';
 import chalk from 'chalk';
 
 type JsonStyle = 'camel' | 'hyphen';
@@ -54,9 +54,62 @@ export function renderConfig(config: FlapiiConfig) {
   Console.info(table.toString());
 }
 
-export function renderJson(value: unknown, style: JsonStyle = 'camel') {
-  const processed = applyJsonStyle(value, style);
-  Console.info(JSON.stringify(processed, null, 2));
+/**
+ * Print a DATA payload as JSON, exactly as the server sent it: metrics, audit
+ * rows, schema, expand/test results, health, query results. Never re-cased.
+ *
+ * `--json-style` used to be applied to everything, and the keys of a data
+ * payload are data: endpoint paths ("/customers" became "customers"), table
+ * and column names, status classes ("2xx" became "2Xx").
+ */
+export function renderJson(value: unknown) {
+  Console.info(JSON.stringify(value, null, 2));
+}
+
+/**
+ * How a config document is laid out:
+ *  - 'document': one config object (an endpoint, a cache block, the project),
+ *    or a list of them;
+ *  - 'keyed':    an object keyed by an identifier (endpoint path) whose VALUES
+ *    are config objects - the keys are kept verbatim.
+ */
+export type ConfigShape = 'document' | 'keyed';
+
+// Inside a config document, the children of these keys are named by the user
+// (parameter names, connection properties, schema properties), not by flAPI.
+const VERBATIM_CHILD_KEYS = new Set([
+  'properties', 'params', 'parameters', 'variables', 'env', 'headers', 'defaults',
+  'inputSchema', 'input_schema', 'input-schema', 'outputSchema', 'output_schema', 'output-schema',
+]);
+
+/** Re-case the FIELD NAMES of a config document (`--json-style`), never its data keys. */
+export function applyConfigJsonStyle(value: unknown, style: JsonStyle, shape: ConfigShape = 'document'): unknown {
+  if (shape === 'keyed' && value && typeof value === 'object' && !Array.isArray(value)) {
+    const out: Record<string, unknown> = {};
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = applyConfigJsonStyle(nested, style, 'document');
+    }
+    return out;
+  }
+  return restyleDocument(value, style);
+}
+
+export function renderConfigJson(value: unknown, style: JsonStyle, shape: ConfigShape = 'document') {
+  Console.info(JSON.stringify(applyConfigJsonStyle(value, style, shape), null, 2));
+}
+
+function restyleDocument(value: unknown, style: JsonStyle): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => restyleDocument(item, style));
+  }
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    out[renameKey(key, style)] = VERBATIM_CHILD_KEYS.has(key) ? nested : restyleDocument(nested, style);
+  }
+  return out;
 }
 
 export function renderEndpointsTable(endpoints: Record<string, unknown>) {
