@@ -38,7 +38,7 @@ whitelist rules.
 |---|---|---|
 | Basic | `basic` | Internal tools, a handful of known callers |
 | JWT | `jwt` | You already issue signed tokens |
-| Bearer | `bearer` | Static API keys |
+| Bearer | `bearer` | You issue HS256-signed JWTs: the token must verify against `jwt-secret`, carry `iss` equal to `jwt-issuer`, a `sub` claim and a `roles` array (it may be empty). A token missing any of them, or a static API key, gets `401` |
 | OIDC | `oidc` | An identity provider is the source of truth (Entra, Keycloak, Auth0, Okta) |
 
 Each method's full parameter list is in

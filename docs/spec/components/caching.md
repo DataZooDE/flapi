@@ -143,7 +143,7 @@ INSERT INTO {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
 SELECT * FROM source_table
 WHERE 1=1
 {{#cache.previousSnapshotTimestamp}}
-  AND created_at > TIMESTAMP '{{cache.previousSnapshotTimestamp}}'
+  AND created_at > TIMESTAMP '{{{cache.previousSnapshotTimestamp}}}'
 {{/cache.previousSnapshotTimestamp}};
 ```
 
@@ -167,7 +167,7 @@ USING (
     SELECT * FROM source_table
     WHERE 1=1
     {{#cache.previousSnapshotTimestamp}}
-    AND updated_at > TIMESTAMP '{{cache.previousSnapshotTimestamp}}'
+    AND updated_at > TIMESTAMP '{{{cache.previousSnapshotTimestamp}}}'
     {{/cache.previousSnapshotTimestamp}}
 ) AS source
 ON target.id = source.id
@@ -178,7 +178,11 @@ WHEN NOT MATCHED THEN INSERT *
 **Use when:**
 - Rows are updated in place (customers, orders)
 - Deletes are visible in the source (a soft-delete flag or `deleted_at` that
-  bumps the cursor), handled with `WHEN MATCHED AND source.is_deleted THEN DELETE`.
+  bumps the cursor). DuckLake's `MERGE` accepts only one `UPDATE`/`DELETE`
+  action, so a `DELETE` arm next to the `UPDATE` arm fails; delete in a
+  separate `DELETE … WHERE id IN (<deleted delta>)` before the `MERGE`, or keep
+  tombstones and filter them when serving
+  ([guides/caching.md](../../guides/caching.md#deletes-in-merge-mode)).
   A hard delete leaves no row for the delta to carry, so it is invisible to
   any incremental mode.
 

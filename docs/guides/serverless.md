@@ -17,7 +17,7 @@ startup. When the data changes in batches (a nightly `dbt build`), produce it
 
 | Your data | Pattern | Startup cost | Query cost |
 |---|---|---|---|
-| Small (< ~500 MB), changes rarely | Per-instance cache with `ducklake.warmup: if-empty` on a persistent `db_path`, or plain `always` if a load takes seconds | one load per instance | in-memory |
+| Small (< ~500 MB), changes rarely | Per-instance cache with `ducklake.warmup: if-empty` on a persistent `ducklake.metadata-path` and `data-path`, or plain `always` if a load takes seconds | one load per instance | local DuckLake table |
 | Batch-exported Parquet (any size) | **Read in place**: no `cache:`; the template reads the files (§ 2) | none | file scan with row-group pruning |
 | Needs snapshots, incremental merge or time travel | **Shared DuckLake**: one writer job (`flapi cache refresh`), read-only replicas (§ 3) | catalog attach only | catalog look-ups + file scan |
 
@@ -89,6 +89,15 @@ A Postgres catalog costs network round trips on every query, so put it in
 the same region on a machine that is not shared-core, and measure p50 before
 choosing this over § 2.
 
+**A DuckDB-file catalog cannot be shared with a running fleet.** A DuckDB file
+takes an exclusive lock, and a replica holds it for its whole life even with
+`read-only: true`. While any server has the file open, the one-shot writer
+fails with `Failed to attach DuckLake catalog: ... Could not set lock on file
+... Conflicting lock is held`. The writer can only run when no replica holds
+the file (between deploys, with the fleet scaled to zero), and the replicas
+must start after it finishes. For a writer that runs while replicas serve, use
+a Postgres catalog.
+
 ## 4. Fast, offline startup
 
 Use the `-runtime` image. It carries `core_functions`, every default
@@ -115,9 +124,15 @@ Trim `duckdb.default-extensions` to what your endpoints use.
 
 ## 5. Probes and CI
 
-- **Startup probe:** `/health/live`, which answers as soon as the port listens.
-- **Liveness probe:** `/health`, which is `503` only for a stalled request
-  or a cache that failed to build.
+- **Startup and liveness probes:** `/health/live`, which answers `200` as soon
+  as the port listens. Do **not** point liveness at `/health`: it answers `503`
+  with `status: starting` while caches warm, so a large warm-up turns into a
+  restart loop.
+- **Readiness (traffic) probe:** `/health`. It is `503` while caches are
+  starting, when a cache failed to build at this start, and when a request has
+  been in flight longer than `stall-timeout-s`; it is `200` (`ready`, or
+  `degraded` for a stale or unbuilt cache) otherwise. See
+  [CLI_REFERENCE § 6](../CLI_REFERENCE.md#6-runtime-health-endpoints).
 - **CI:** `flapi --validate-config` never opens the database. To smoke-test
   the real server without touching data, start it with `--no-cache-warmup`.
   `/health` then answers `200` with `status: degraded` and lists the unbuilt

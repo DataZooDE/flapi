@@ -55,7 +55,7 @@ Templates have access to these variables:
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `params.*` | Request parameters | `params.id`, `params.limit` |
+| `params.*` | Request parameters | `params.id`, `params.status` |
 | `conn.*` | Connection properties | `conn.path`, `conn.host` |
 | `env.*` | Environment variables | `env.API_KEY` |
 | `cache.*` | Cache metadata | `cache.table`, `cache.previousSnapshotTimestamp` |
@@ -63,18 +63,20 @@ Templates have access to these variables:
 
 ### Template Syntax
 
-**Triple Braces (String Escaping):**
+**Triple Braces (raw text, no escaping):**
 ```sql
--- Escapes quotes for safe string interpolation
+-- Inserts the value as-is; quotes are NOT doubled
 WHERE name = '{{{ params.name }}}'
--- Input: O'Brien → Output: 'O''Brien'
+-- Input: O'Brien → Output: 'O'Brien'  (a syntax error; a crafted value is injection)
 ```
+Only the validator (and the SQL-injection screen) stands between the value and the SQL here.
 
-**Double Braces (Raw Output):**
+**Double Braces (bound or HTML-escaped):**
 ```sql
--- No escaping, for numbers and identifiers
-LIMIT {{ params.limit }}
--- Input: 100 → Output: 100
+-- Outside a section, on a field with a typed validator: replaced by `?` and bound
+WHERE id = {{ params.id }}
+-- Inside a {{#...}} section, or without a typed validator: HTML-escaped text
+-- Input: O'Brien → Output: O&#39;Brien
 ```
 
 **Conditional Sections:**
@@ -92,8 +94,10 @@ LIMIT {{ params.limit }}
 
 **Default Values:**
 ```sql
-LIMIT {{#params.limit}}{{ params.limit }}{{/params.limit}}{{^params.limit}}100{{/params.limit}}
+AND region = '{{#params.region}}{{{ params.region }}}{{/params.region}}{{^params.region}}EU{{/params.region}}'
 ```
+`limit`/`offset` are reserved for pagination (`with-pagination`, on by default); a template
+`LIMIT {{ params.limit }}` runs before flAPI's offset and breaks paging.
 
 ### Processing Flow
 

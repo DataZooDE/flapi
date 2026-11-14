@@ -16,7 +16,6 @@ method: GET                      # GET, POST, PUT, DELETE, PATCH
 request:
   - field-name: id
     field-in: query              # query | path | body | header
-    field-type: int
     required: false
     validators:
       - type: int
@@ -27,7 +26,25 @@ connection: [my-data]
 ```
 
 `url-path` may contain path parameters: `/customers/:id` with a matching
-`field-in: path` entry.
+`field-in: path` entry. A field's type comes from its validators (`type: int`
+above); there is no `field-type` key.
+
+## Pagination is on by default
+
+`with-pagination` defaults to `true`. flAPI wraps your query, and every GET
+response is an object, not a bare array:
+
+```json
+{"next": "/customers?offset=4&limit=2", "total_count": 10, "data": [ ... ]}
+```
+
+The page size defaults to **100** rows; `?limit=` and `?offset=` choose a page,
+and the same values come back in the `X-Total-Count`, `X-Limit`, `X-Offset` and
+`X-Next` headers. **`limit` and `offset` are reserved for this.** Do not declare
+them as request fields and do not use `{{ params.limit }}` in a template: a
+template `LIMIT {{ params.limit }}` applies the limit *before* flAPI's offset, so
+`?limit=2&offset=2` returns `"data": []`. Set `with-pagination: false` if you
+want to return a bare array and control `LIMIT` yourself.
 
 The full key list is in [CONFIG_REFERENCE § 3](../CONFIG_REFERENCE.md).
 
@@ -69,13 +86,12 @@ WHERE 1=1
   AND price >= {{ params.min_price }}
 {{/params.min_price}}
 ORDER BY created_at DESC
-LIMIT {{#params.limit}}{{ params.limit }}{{/params.limit}}{{^params.limit}}100{{/params.limit}}
 ```
 
 `WHERE 1=1` means every filter can be appended with `AND` regardless of which
 ones are present. `{{#x}}…{{/x}}` renders only when `x` is present;
-`{{^x}}…{{/x}}` renders only when it is absent — which is how the `LIMIT` above
-gets a default.
+`{{^x}}…{{/x}}` renders only when it is absent (for a default value). There is no
+`LIMIT` here: pagination adds it (see above).
 
 ## Validators
 
@@ -91,10 +107,10 @@ validators:
   - type: string
     min-length: 1
     max-length: 200
-    pattern: "^[a-zA-Z0-9_]+$"
+    regex: "^[a-zA-Z0-9_]+$"
 
   - type: enum
-    values: [active, inactive, pending]
+    allowedValues: [active, inactive, pending]
 
   - type: date
     min: "2020-01-01"
@@ -113,8 +129,9 @@ will fail to connect.
 # Render the template without running it
 flapii templates expand /customers --params '{"id":"123"}'
 
-# Validate the YAML before the server sees it
-flapii endpoints validate sqls/customers.yaml
+# Validate the YAML before the server sees it: the argument is the endpoint's
+# url-path, the YAML comes from --file (or stdin)
+flapii endpoints validate /customers --file sqls/customers.yaml
 
 # Check what the server actually loaded
 flapii endpoints list

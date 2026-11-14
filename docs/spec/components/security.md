@@ -231,10 +231,10 @@ private:
 | Type | Options | Example |
 |------|---------|---------|
 | `int` | `min`, `max` | `min: 1, max: 1000` |
-| `string` | `min-length`, `max-length`, `pattern` | `max-length: 200` |
+| `string` | `min-length`, `max-length`, `regex` | `max-length: 200` |
 | `email` | - | Validates email format |
 | `uuid` | - | Validates UUID format |
-| `enum` | `values` | `values: [active, inactive]` |
+| `enum` | `allowedValues` | `allowedValues: [active, inactive]` |
 | `date` | `min`, `max` | `min: 2020-01-01` |
 | `time` | `min`, `max` | `min: 09:00:00` |
 
@@ -259,14 +259,14 @@ request:
     field-in: query
     validators:
       - type: enum
-        values: [active, inactive, pending]
+        allowedValues: [active, inactive, pending]
 
   - field-name: name
     field-in: body
     validators:
       - type: string
         max-length: 200
-        pattern: "^[a-zA-Z0-9 ]+$"
+        regex: "^[a-zA-Z0-9 ]+$"
 ```
 
 ### SQL Injection Prevention
@@ -286,26 +286,28 @@ When enabled, rejects inputs containing:
 
 ### Triple Braces for Strings
 
-Triple braces `{{{ }}}` escape quotes for safe SQL interpolation:
+Triple braces `{{{ }}}` insert the value **unescaped**. They do not double
+quotes, so they are only as safe as the field's validator:
 
 ```sql
 -- Template
 WHERE name = '{{{ params.name }}}'
 
 -- Input: O'Brien
--- Output: WHERE name = 'O''Brien'
+-- Output: WHERE name = 'O'Brien'     (syntax error; a crafted value is injection)
 ```
 
 ### Double Braces for Numbers
 
-Double braces `{{ }}` for numeric values (no escaping):
+Outside a `{{#...}}` section, on a field with a typed validator, `{{ }}` is
+replaced by `?` and bound as a prepared-statement parameter. Elsewhere it is
+HTML-escaped text (`'` becomes `&#39;`), which is not SQL escaping:
 
 ```sql
--- Template
-LIMIT {{ params.limit }}
+-- Template (field `id` has `validators: [{type: int}]`)
+WHERE id = {{ params.id }}
 
--- Input: 100
--- Output: LIMIT 100
+-- Executed as: WHERE id = ?   with the value bound as an integer
 ```
 
 ### Safe Query Pattern
@@ -314,10 +316,10 @@ LIMIT {{ params.limit }}
 SELECT * FROM customers
 WHERE 1=1
 {{#params.name}}
-  AND name = '{{{ params.name }}}'   -- String: escaped
+  AND name = '{{{ params.name }}}'   -- String: raw text, relies on the validator
 {{/params.name}}
 {{#params.id}}
-  AND id = {{ params.id }}           -- Number: raw
+  AND id = {{ params.id }}           -- Number: HTML-escaped text (inside a section, not bound)
 {{/params.id}}
 ```
 

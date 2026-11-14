@@ -239,7 +239,7 @@ Content-Type: application/json
 {
   "success": true,
   "message": "Endpoint created",
-  "slug": "GET-orders"
+  "slug": "-orders"
 }
 ```
 
@@ -259,7 +259,7 @@ Get a specific endpoint configuration.
 
 **Request:**
 ```http
-GET /api/v1/_config/endpoints/GET-customers HTTP/1.1
+GET /api/v1/_config/endpoints/-customers HTTP/1.1
 Authorization: Bearer <token>
 ```
 
@@ -286,7 +286,7 @@ Update an endpoint configuration.
 
 **Request:**
 ```http
-PUT /api/v1/_config/endpoints/GET-customers HTTP/1.1
+PUT /api/v1/_config/endpoints/-customers HTTP/1.1
 Authorization: Bearer <token>
 Content-Type: application/json
 
@@ -316,7 +316,7 @@ Delete an endpoint.
 
 **Request:**
 ```http
-DELETE /api/v1/_config/endpoints/GET-customers HTTP/1.1
+DELETE /api/v1/_config/endpoints/-customers HTTP/1.1
 Authorization: Bearer <token>
 ```
 
@@ -338,7 +338,7 @@ Validate endpoint configuration.
 
 **Request:**
 ```http
-POST /api/v1/_config/endpoints/GET-customers/validate HTTP/1.1
+POST /api/v1/_config/endpoints/-customers/validate HTTP/1.1
 Authorization: Bearer <token>
 Content-Type: text/plain
 
@@ -367,7 +367,7 @@ Reload endpoint configuration from disk.
 
 **Request:**
 ```http
-POST /api/v1/_config/endpoints/GET-customers/reload HTTP/1.1
+POST /api/v1/_config/endpoints/-customers/reload HTTP/1.1
 Authorization: Bearer <token>
 ```
 
@@ -389,7 +389,7 @@ Get parameter definitions for an endpoint.
 
 **Request:**
 ```http
-GET /api/v1/_config/endpoints/GET-customers/parameters HTTP/1.1
+GET /api/v1/_config/endpoints/-customers/parameters HTTP/1.1
 Authorization: Bearer <token>
 ```
 
@@ -461,7 +461,7 @@ Get the SQL template content.
 
 **Request:**
 ```http
-GET /api/v1/_config/endpoints/GET-customers/template HTTP/1.1
+GET /api/v1/_config/endpoints/-customers/template HTTP/1.1
 Authorization: Bearer <token>
 ```
 
@@ -482,7 +482,7 @@ Update the SQL template.
 
 **Request:**
 ```http
-PUT /api/v1/_config/endpoints/GET-customers/template HTTP/1.1
+PUT /api/v1/_config/endpoints/-customers/template HTTP/1.1
 Authorization: Bearer <token>
 Content-Type: application/json
 
@@ -516,7 +516,7 @@ Expand a Mustache template with parameters.
 
 **Request:**
 ```http
-POST /api/v1/_config/endpoints/GET-customers/template/expand HTTP/1.1
+POST /api/v1/_config/endpoints/-customers/template/expand HTTP/1.1
 Authorization: Bearer <token>
 Content-Type: application/json
 
@@ -545,7 +545,7 @@ Execute a template with sample parameters (limited to 10 rows).
 
 **Request:**
 ```http
-POST /api/v1/_config/endpoints/GET-customers/template/test HTTP/1.1
+POST /api/v1/_config/endpoints/-customers/template/test HTTP/1.1
 Authorization: Bearer <token>
 Content-Type: application/json
 
@@ -581,7 +581,7 @@ Get cache configuration.
 
 **Request:**
 ```http
-GET /api/v1/_config/endpoints/GET-customers/cache HTTP/1.1
+GET /api/v1/_config/endpoints/-customers/cache HTTP/1.1
 Authorization: Bearer <token>
 ```
 
@@ -614,7 +614,7 @@ Update cache configuration.
 
 **Request:**
 ```http
-PUT /api/v1/_config/endpoints/GET-customers/cache HTTP/1.1
+PUT /api/v1/_config/endpoints/-customers/cache HTTP/1.1
 Authorization: Bearer <token>
 Content-Type: application/json
 
@@ -643,14 +643,14 @@ Get the cache populate template.
 
 **Request:**
 ```http
-GET /api/v1/_config/endpoints/GET-customers/cache/template HTTP/1.1
+GET /api/v1/_config/endpoints/-customers/cache/template HTTP/1.1
 Authorization: Bearer <token>
 ```
 
 **Response (200):**
 ```json
 {
-  "template": "INSERT INTO {{cache.table}} SELECT * FROM source"
+  "template": "CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS SELECT * FROM source"
 }
 ```
 
@@ -664,12 +664,12 @@ Update the cache populate template.
 
 **Request:**
 ```http
-PUT /api/v1/_config/endpoints/GET-customers/cache/template HTTP/1.1
+PUT /api/v1/_config/endpoints/-customers/cache/template HTTP/1.1
 Authorization: Bearer <token>
 Content-Type: application/json
 
 {
-  "template": "REPLACE INTO {{cache.table}} SELECT * FROM customers"
+  "template": "CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS SELECT * FROM customers"
 }
 ```
 
@@ -691,7 +691,7 @@ Trigger a cache refresh.
 
 **Request:**
 ```http
-POST /api/v1/_config/endpoints/GET-customers/cache/refresh HTTP/1.1
+POST /api/v1/_config/endpoints/-customers/cache/refresh HTTP/1.1
 Authorization: Bearer <token>
 ```
 
@@ -713,7 +713,7 @@ Run garbage collection on cache snapshots.
 
 **Request:**
 ```http
-POST /api/v1/_config/endpoints/GET-customers/cache/gc HTTP/1.1
+POST /api/v1/_config/endpoints/-customers/cache/gc HTTP/1.1
 Authorization: Bearer <token>
 ```
 
@@ -730,7 +730,7 @@ Get cache synchronization audit log for an endpoint.
 
 **Request:**
 ```http
-GET /api/v1/_config/endpoints/GET-customers/cache/audit HTTP/1.1
+GET /api/v1/_config/endpoints/-customers/cache/audit HTTP/1.1
 Authorization: Bearer <token>
 ```
 
@@ -1613,10 +1613,10 @@ Slugs identify endpoints in API paths. The format depends on endpoint type:
 
 | Type | Format | Example |
 |------|--------|---------|
-| REST | `{METHOD}-{path}` | `GET-customers`, `POST-orders` |
-| MCP Tool | `{tool_name}` | `get_customers` |
-| MCP Resource | `resource-{name}` | `resource-schema` |
-| MCP Prompt | `prompt-{name}` | `prompt-analysis` |
+| REST | the encoded `url-path` (method is not part of it) | `-customers`, `-orders` |
+| MCP tool (no `url-path`) | the bare tool name | `get_customers` |
+| MCP resource (no `url-path`) | the bare resource name | `schema` |
+| MCP prompt (no `url-path`) | the bare prompt name | `analysis` |
 
 **Path Conversion Rules:**
 
@@ -1648,11 +1648,16 @@ transit by an ordinary proxy and reintroduce that collision.
 | `/order-items` | `-order~1items` |
 | `/` | `-` |
 
-**Two accepted forms.** This endpoint also accepts a percent-encoded url-path
-(`customers%2F`) in place of a slug. They are told apart by a property that
-cannot overlap: a slug never contains `/`, because every `/` is encoded as `-`.
-That is an explicit contract, not a fallback — making the slug decoder tolerate
-a bare path would give every endpoint two names again.
+An endpoint that has a `url-path` is addressed **only** by its path slug, even
+when it also declares an `mcp-tool`: `/customers` with tool `get_customers` is
+`-customers`, and `GET /api/v1/_config/endpoints/get_customers` returns 404. The
+bare-name form applies only to MCP entries without a `url-path`.
+
+**One accepted form.** The slug is the only name the endpoint routes accept. A
+percent-encoded url-path (`customers%2F`, `%2Fcustomers`) returns 404: the
+routes match a single path segment and Crow percent-decodes before matching, so
+the decoded `/` never reaches the slug lookup (`src/path_utils.cpp`,
+`PathUtils::identifierToPath`).
 
 **Clients must agree byte-for-byte.** `flapii` implements the same codec in
 `cli/src/lib/url.ts`, and both it and the server are tested against the shared

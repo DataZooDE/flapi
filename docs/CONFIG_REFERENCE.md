@@ -157,7 +157,7 @@ should not bake in.
 | `FLAPI_CONFIG_SERVICE_TOKEN` | startup | Bearer token for the management API (fallback for `--config-service-token`) | CLI > env > auto-generate |
 | `FLAPI_NO_TELEMETRY` | startup | Disable PostHog telemetry (fallback for `--no-telemetry`) | CLI > env > config-file > enabled |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` | startup, query time | S3 credentials (DuckDB `httpfs`) | env only |
-| `GOOGLE_APPLICATION_CREDENTIALS` / `GOOGLE_CLOUD_PROJECT` | startup, query time | GCS credentials (DuckDB `httpfs`) | env only |
+| `GOOGLE_APPLICATION_CREDENTIALS` / `GOOGLE_CLOUD_PROJECT` | startup | Detected and logged only. flAPI does **not** configure GCS for DuckDB from them, and DuckDB `httpfs` does not read a service-account file: GCS access needs an HMAC key in a DuckDB secret (`CREATE SECRET (TYPE gcs, KEY_ID '…', SECRET '…')`, e.g. in a connection's `init`) | — |
 | `AZURE_STORAGE_CONNECTION_STRING` / `AZURE_STORAGE_ACCOUNT` / `AZURE_STORAGE_KEY` | startup, query time | Azure Blob credentials | env only |
 | `{{env.VARNAME}}` in YAML | startup (config parse) | Interpolated into any string field | requires `environment-whitelist` entry |
 
@@ -591,11 +591,11 @@ enforce-https:
 
 ### 2.9.1 CORS
 
-Cross-Origin Resource Sharing. The legacy wildcard `*` is gone — the default is same-origin only, and operators opt into a config-driven allowlist.
+Cross-Origin Resource Sharing. With no `cors` block, or an empty `allow-origins` list, every response carries `Access-Control-Allow-Origin: *` (`src/cors_policy.cpp`, `CorsPolicy::resolveAllowedOrigin`). Set an allow-list to restrict it: a request whose `Origin` is in the list gets that origin echoed back, any other origin (and a request without `Origin`) gets no `Access-Control-Allow-Origin` header. A `*` entry anywhere in the list means wildcard again.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `cors.allow-origins` | array | `[]` | List of allowed `Origin:` values. Use `["*"]` only for demos / local development |
+| `cors.allow-origins` | array | `[]` (= `*`) | List of allowed `Origin:` values. Empty or absent sends `Access-Control-Allow-Origin: *` |
 
 **Example:**
 
@@ -606,7 +606,7 @@ cors:
     - https://staging.example.com
 ```
 
-`flapii project init` ships a `cors.allow-origins: ["*"]` in the generated `flapi.yaml` so first-run experiences stay friction-free; the startup auditor emits a warning when `*` is combined with `auth.enabled: true` (credential-bearing requests across origins).
+`flapii project init` does not generate a `cors` block, so a new project answers every origin with `*`. Set an explicit allow-list before exposing an authenticated API to browsers.
 
 > **Implementation:** `src/cors_middleware.cpp`, `src/cors_policy.cpp` | **Tests:** `test/cpp/cors_policy_test.cpp`, `test/integration/test_cors_allowlist.py`
 
@@ -760,7 +760,7 @@ template:
 | `http://` | HTTP URLs (not recommended) | None required |
 | `s3://` | Amazon S3 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` |
 | `s3a://`, `s3n://` | S3-compatible storage | Same as S3 |
-| `gs://` | Google Cloud Storage | `GOOGLE_APPLICATION_CREDENTIALS` |
+| `gs://` | Google Cloud Storage | HMAC key in a DuckDB secret (`TYPE gcs`); `GOOGLE_*` variables are not used |
 | `az://`, `abfs://` | Azure Blob Storage | `AZURE_STORAGE_ACCOUNT`, `AZURE_STORAGE_KEY` |
 | `file://` | Local filesystem | None required |
 
@@ -808,10 +808,28 @@ export AWS_SESSION_TOKEN=your-session-token
 
 **Google Cloud Storage:**
 
-```bash
-export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
-# Or use application default credentials
-gcloud auth application-default login
+flAPI reads `GOOGLE_APPLICATION_CREDENTIALS` / `GOOGLE_CLOUD_PROJECT` only to log
+that they are set (`src/credential_manager.cpp`, `CredentialManager::configureDuckDB`
+applies nothing for GCS). DuckDB's `httpfs` authenticates to GCS with an **HMAC
+key**, not a service-account JSON file or application-default credentials. Create
+the key in the Cloud Console (Cloud Storage → Settings → Interoperability) and
+register it as a DuckDB secret, for example in the connection's `init`, reading
+the values from environment variables (whitelist them, e.g. `'^GCS_HMAC_.*'` under
+`template.environment-whitelist`):
+
+```yaml
+connections:
+  gcs-data:
+    init: |
+      INSTALL httpfs;
+      LOAD httpfs;
+      CREATE OR REPLACE SECRET gcs_hmac (
+        TYPE gcs,
+        KEY_ID '{{env.GCS_HMAC_KEY_ID}}',
+        SECRET '{{env.GCS_HMAC_SECRET}}'
+      );
+    properties:
+      path: 'gs://my-bucket/data/*.parquet'
 ```
 
 **Azure Blob Storage:**
@@ -898,7 +916,7 @@ REST endpoints expose SQL queries as HTTP APIs.
 | `method` | string | `GET` | HTTP method: `GET`, `POST`, `PUT`, `PATCH`, `DELETE` |
 | `template-source` | string | **required** | Path to SQL template file |
 | `connection` | array[string] | **required** | Connection name(s) from flapi.yaml |
-| `with-pagination` | boolean | `true` | Enable pagination (adds `limit`/`offset`) |
+| `with-pagination` | boolean | `true` | Wrap the query in `?limit=` (default `100`) / `?offset=` paging; the body is `{"next", "total_count", "data"}` plus `X-Total-Count`/`X-Limit`/`X-Offset`/`X-Next` headers. `limit`/`offset` are reserved; do not use them in the template. `false` returns a bare JSON array |
 | `request-fields-validation` | boolean | `false` | Enable strict field validation |
 
 **Example:**
@@ -1125,13 +1143,13 @@ Default values are used when a parameter is not provided:
 
 ```yaml
 request:
-  - field-name: limit
+  - field-name: days
     field-in: query
-    default: "100"
+    default: "30"
     validators:
       - type: int
         min: 1
-        max: 1000
+        max: 365
 
   - field-name: sort_order
     field-in: query
@@ -1142,6 +1160,7 @@ request:
 ```
 
 **Notes:**
+- Do not declare `limit` or `offset`: on a paginated endpoint (the default) they are reserved for pagination (§3)
 - Defaults are always strings in YAML; validators handle type conversion
 - Defaults are applied before validation
 
@@ -1304,11 +1323,31 @@ validators:
 Every string-like field (and any field without a bound type) is screened for SQL keywords, comment markers
 and, when the value contains a single quote, SQL-shaped tokens next to it (operators, `or`/`and`/`like`, a
 parenthesis, ...) after collapsing all whitespace. That is a heuristic: it can be evaded by a payload it
-does not know. **Use `{{ params.x }}` (double braces): flAPI binds it as a prepared-statement parameter, so
-the value can never change the SQL.** `{{{ params.x }}}` interpolates the value as text; reserve it for
-identifiers and fragments you validate with an `enum` or a strict `regex`. Set `preventSqlInjection: false`
-on a field only when it is used exclusively through `{{ }}` and legitimately contains such characters
-(e.g. a free-text name with an apostrophe and parentheses).
+does not know. **A bare `{{ params.x }}` (double braces, no quotes) is bound as a prepared-statement
+parameter, so the value can never change the SQL — but only when all of these hold**
+(`src/prepared_template_rewriter.cpp`, `src/sql_parameter_classifier.cpp`):
+
+- the reference is **outside** every `{{#...}}` / `{{^...}}` section. Inside a section it is rendered as
+  text (HTML-escaped, unquoted), exactly like any other Mustache value;
+- the field is declared under `request:` and has a validator whose `type` is one of `int`/`integer`,
+  `number`/`float`/`double`, `boolean`/`bool`, `date`, `time`, `string`, `uuid`, `email` or `enum`. A
+  field without such a validator is rendered as text;
+- the reference is **not** inside a SQL string literal. flAPI replaces the tag with `?` wherever it
+  stands, so `'{{ params.x }}'` becomes the literal `'?'`, not a placeholder, and the request fails with
+  `500 Failed to bind parameter`. Write `WHERE name = {{ params.name }}`, without quotes; the bound value
+  is typed (`VARCHAR` for string-like validators), so no quotes are needed.
+
+```sql
+-- bound: outside a section, typed field, no quotes
+WHERE name = {{ params.name }}
+-- NOT bound: inside a section; quote it with triple braces and rely on the validator
+{{#params.city}} AND city = '{{{ params.city }}}' {{/params.city}}
+```
+
+`{{{ params.x }}}` always interpolates the value as text; reserve it for identifiers and fragments you
+validate with an `enum` or a strict `regex`, and for optional filters inside sections. Set
+`preventSqlInjection: false` on a field only when every reference to it is a bound `{{ }}` and it
+legitimately contains such characters (e.g. a free-text name with an apostrophe and parentheses).
 
 > **Implementation:** `src/request_validator.cpp` | **Tests:** `test/cpp/request_validator_test.cpp`, `test/integration/test_customers.tavern.yaml`, `test/integration/test_validator_hardening.py`
 
@@ -1525,7 +1564,7 @@ Special variables available in cache-enabled SQL templates:
 INSERT INTO {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
 SELECT * FROM source_table
 {{#cache.previousSnapshotTimestamp}}
-WHERE updated_at > TIMESTAMP '{{cache.previousSnapshotTimestamp}}'
+WHERE updated_at > TIMESTAMP '{{{cache.previousSnapshotTimestamp}}}'
 {{/cache.previousSnapshotTimestamp}}
 ```
 
@@ -1733,8 +1772,12 @@ SQL templates use Mustache syntax for dynamic query generation.
 ```sql
 SELECT * FROM table
 WHERE id = {{ params.id }}        -- with `validators: [{type: int}]` → bound as int64
-LIMIT {{ params.limit }}
 ```
+
+The placeholder is only used **outside** `{{#...}}`/`{{^...}}` sections and **outside** SQL string
+literals: inside a section the value is rendered as text, and `'{{ params.x }}'` turns into the literal
+`'?'` (the request then fails with `500 Failed to bind parameter`). See
+[§5.9](#59-the-sql-injection-screen-is-a-safety-net-not-the-defence).
 
 **Triple Braces `{{{ }}}`** - Renders the raw value with no HTML entity escaping; **always** flows through Mustache, never through the prepared path. Use inside single-quoted SQL string literals, inside `LIKE` patterns, or anywhere the value participates in the SQL text itself:
 
@@ -1779,7 +1822,9 @@ WHERE 1=1
 **Inverted Sections (if not exists or falsy):**
 
 ```sql
-LIMIT {{#params.limit}}{{ params.limit }}{{/params.limit}}{{^params.limit}}100{{/params.limit}}
+{{^params.status}}
+  AND status <> 'archived'
+{{/params.status}}
 ```
 
 ### 9.4 Best Practices
@@ -1812,9 +1857,12 @@ Use triple braces (`{{{ params.X }}}`) when the value participates in the SQL te
 **3. Provide Default Values:**
 
 ```sql
-ORDER BY created_at {{#params.order}}{{ params.order }}{{/params.order}}{{^params.order}}DESC{{/params.order}}
-LIMIT {{#params.limit}}{{ params.limit }}{{/params.limit}}{{^params.limit}}100{{/params.limit}}
+ORDER BY created_at {{#params.order}}{{{ params.order }}}{{/params.order}}{{^params.order}}DESC{{/params.order}}
 ```
+
+Do **not** do this for `limit`/`offset`. With `with-pagination: true` (the default) they are reserved:
+flAPI wraps the query and applies `?limit=`/`?offset=` itself (100 rows per page by default). A template
+`LIMIT {{ params.limit }}` runs before flAPI's offset, so `?limit=2&offset=2` returns `"data": []`.
 
 **4. Use Connection Properties for File Paths:**
 

@@ -4,12 +4,13 @@ Complete reference for all 20 MCP configuration management tools in flAPI. These
 
 ## Overview
 
-The Configuration Service exposes 20 MCP tools organized into 4 functional categories:
+The Configuration Service exposes 20 MCP tools organized into 5 functional categories:
 
 - **Discovery Tools (5)**: Read-only introspection of project configuration
 - **Template Tools (4)**: SQL template management and testing
 - **Endpoint Tools (6)**: CRUD operations for REST endpoints
 - **Cache Tools (4)**: Cache status and management operations
+- **Metrics Tool (1)**: `flapi_get_metrics`, runtime request and cache metrics
 
 All tools use JSON-RPC 2.0 protocol with MCP error codes for standardized error handling.
 
@@ -575,6 +576,8 @@ policy. Requires authentication.
 the audit log as `sync_type: garbage_collection`.
 
 ---
+
+## Metrics Tool
 
 ### flapi_get_metrics
 

@@ -125,8 +125,8 @@ Type getType() const {
 - Familiar to many developers
 
 **Implementation:**
-- Triple braces `{{{ }}}` - HTML-escaped output (safe for strings)
-- Double braces `{{ }}` - Raw output (for numbers, identifiers)
+- Triple braces `{{{ }}}` - raw output, no escaping of any kind (used inside quoted string literals; the validator is the defence)
+- Double braces `{{ }}` - HTML-escaped output; outside a section and on a field with a typed validator it is replaced by `?` and bound as a prepared-statement parameter
 - Sections `{{#param}}...{{/param}}` - Conditional rendering
 
 **Example:**
@@ -136,7 +136,6 @@ WHERE 1=1
 {{#params.id}}
   AND customer_id = {{{ params.id }}}
 {{/params.id}}
-LIMIT {{ params.limit }}
 ```
 
 **Tradeoffs:**
@@ -299,7 +298,7 @@ request:
     validators:
       - type: string
         max-length: 200
-        pattern: "^[a-zA-Z0-9 ]+$"
+        regex: "^[a-zA-Z0-9 ]+$"
 ```
 
 **Tradeoffs:**

@@ -70,7 +70,6 @@ method: GET
 request:
   - field-name: id
     field-in: query
-    field-type: int
     required: false
     validators:
       - type: int
@@ -88,10 +87,13 @@ WHERE 1=1
 {{#params.id}}
   AND customer_id = {{{ params.id }}}
 {{/params.id}}
-LIMIT 100
 ```
 
-The `WHERE 1=1` idiom lets each filter be added conditionally. See
+The `WHERE 1=1` idiom lets each filter be added conditionally. The `int`
+validator is what types the field (there is no `field-type` key). There is no
+`LIMIT`: GET responses are paginated by default (100 rows per page, `?limit=` /
+`?offset=`, `{"next", "total_count", "data"}` in the body), so a `LIMIT` in the
+template would cap what pagination can reach. See
 [Building a REST endpoint](./rest-endpoints.md) for the template rules that
 matter — particularly the difference between `{{ }}` and `{{{ }}}`.
 

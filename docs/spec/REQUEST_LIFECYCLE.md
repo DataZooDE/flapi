@@ -174,7 +174,7 @@ validators:
     min: 1
     max: 999999
   - type: string
-    pattern: "^[a-zA-Z0-9]+$"
+    regex: "^[a-zA-Z0-9]+$"
 ```
 
 Validation failure returns 400 with details:

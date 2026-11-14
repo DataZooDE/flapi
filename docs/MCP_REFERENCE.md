@@ -184,7 +184,7 @@ The MCP server exposes two categories of tools:
 
 2. **Configuration Management Tools** (Only when `--config-service` flag is used)
    - `flapi_*` tools for runtime management of endpoints, templates, caches
-   - 18 tools organized in 4 categories: Discovery, Template, Endpoint, Cache
+   - 20 tools in 5 categories: Discovery (5), Template (4), Endpoint (6), Cache (4), Metrics (1: `flapi_get_metrics`)
    - See [MCP Configuration Tools API Reference](./MCP_CONFIG_TOOLS_API.md)
 
 **To enable configuration tools:**
@@ -917,7 +917,7 @@ request:
     required: false
     validators:
       - type: enum
-        values: ["active", "inactive", "pending"]
+        allowedValues: ["active", "inactive", "pending"]
 
 template-source: customer-lookup.sql
 connection:
@@ -1278,7 +1278,7 @@ mcp:
     enabled: true
     type: oidc
     oidc:
-      provider-type: auth0  # or: okta, google, azure, generic
+      provider-type: auth0  # or: okta, google, microsoft (alias azure), keycloak, github, generic
       issuer-url: "https://your-tenant.auth0.com/"
       client-id: "your-client-id"
       client-secret: "{{env.OIDC_CLIENT_SECRET}}"
@@ -1295,7 +1295,7 @@ mcp:
 | Auth0 | `auth0` | JWKS URL, claims mapping |
 | Okta | `okta` | JWKS URL, claims mapping |
 | Google | `google` | JWKS URL, claims mapping |
-| Azure AD | `azure` | JWKS URL, claims mapping |
+| Microsoft Entra ID (Azure AD) | `microsoft` (alias `azure`) | JWKS URL, claims mapping |
 | Generic | `generic` | Manual configuration |
 
 ### 8.4 Per-Method Auth
@@ -1839,16 +1839,7 @@ request:
     required: false
     validators:
       - type: enum
-        values: ["active", "inactive", "pending"]
-
-  - field-name: limit
-    field-in: query
-    description: Maximum results to return
-    required: false
-    validators:
-      - type: int
-        min: 1
-        max: 100
+        allowedValues: ["active", "inactive", "pending"]
 
 template-source: customer-lookup.sql
 connection:
@@ -1884,8 +1875,11 @@ WHERE 1=1
   AND status = '{{{ params.status }}}'
 {{/params.status}}
 ORDER BY created_at DESC
-LIMIT {{#params.limit}}{{ params.limit }}{{/params.limit}}{{^params.limit}}25{{/params.limit}}
 ```
+
+No `limit` field and no `LIMIT`: over REST the endpoint is paginated (`?limit=`/`?offset=`, 100 rows
+by default), and an MCP `tools/call` honours `limit`/`offset` arguments without declaring them. A
+template `LIMIT {{ params.limit }}` would break REST paging (`?limit=2&offset=2` returns no rows).
 
 ---
 

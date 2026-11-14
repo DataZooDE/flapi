@@ -235,7 +235,7 @@ connections:
 
 **Key Points:**
 - Properties are custom per connection type (file path vs. database credentials)
-- Environment variables supported via `{{env.VAR_NAME}}` (must match `template.environment-whitelist` in flapi.yaml; an unlisted one stops startup; empty whitelist = none; `{{env.VAR}}` is NOT supported)
+- Environment variables supported via `{{env.VAR_NAME}}` (must match `template.environment-whitelist` in flapi.yaml; an unlisted one stops startup; empty whitelist = none; `${VAR}` is NOT supported - only `{{env.VAR}}`, with optional spaces inside the braces)
 - Loaded once at startup, reused for all requests
 - Available in templates as `conn.property_name`
 
@@ -296,8 +296,9 @@ WHERE 1=1
   AND price >= {{ params.min_price }}
 {{/params.min_price}}
 ORDER BY created_at DESC
-LIMIT {{#params.limit}}{{ params.limit }}{{/params.limit}}{{^params.limit}}100{{/params.limit}}
 ```
+
+> **Pagination owns `limit`/`offset`.** GET endpoints are paginated by default (`with-pagination: true`, 100 rows per page, body `{next, total_count, data}`), and `?limit=`/`?offset=` are reserved for it. Never write `LIMIT {{ params.limit }}` in a template: it applies before flAPI's offset, so `?limit=2&offset=2` returns `data: []`.
 
 ### 4. Validators
 
@@ -313,12 +314,12 @@ validators:
   - type: string
     min-length: 1
     max-length: 200
-    pattern: "^[a-zA-Z0-9_]+$"
+    regex: "^[a-zA-Z0-9_]+$"
 
   - type: email
   - type: uuid
   - type: enum
-    values: ["active", "inactive", "pending"]
+    allowedValues: ["active", "inactive", "pending"]
   - type: date
     min: "2020-01-01"
     max: "2025-12-31"
@@ -355,7 +356,7 @@ cache:
 - `{{cache.table}}` - Cache table name
 - `{{cache.schema}}` - Schema name
 - `{{cache.previousSnapshotTimestamp}}` - Last refresh time
-- `{{cache.currentSnapshotTimestamp}}` - This refresh time
+- `{{cache.snapshotTimestamp}}` - This refresh time (`{{cache.currentSnapshotTimestamp}}` does not exist and renders empty)
 
 **Snapshot Lifecycle:**
 ```
@@ -384,8 +385,7 @@ method: GET                        # HTTP method
 request:
   - field-name: id
     field-in: query               # query, path, header, body
-    field-type: int
-    required: false
+    required: false               # the type comes from the validator; there is no field-type key
     validators:
       - type: int
         min: 1
@@ -420,7 +420,7 @@ auth:
 
 **SQL Template with Mustache** (`sqls/endpoint_name.sql`):
 ```sql
-SELECT * FROM read_parquet('{{ context.conn.path }}')
+SELECT * FROM read_parquet('{{{ conn.path }}}')
 WHERE 1=1
 {{#params.id}}
   AND customer_id = {{ params.id }}
@@ -432,8 +432,9 @@ WHERE 1=1
 
 Template variables available:
 - `params.*`: Query/path/body parameters from request
-- `context.conn.*`: Connection properties (paths, credentials)
-- `context.auth.*`: Authentication context
+- `conn.*`: Connection properties (paths, credentials) of the endpoint's first connection
+- `auth.*`: Authentication context (`auth.username`, `auth.roles`, `auth.email`, `auth.type`, `auth.authenticated`)
+- `context.conn.*` / `context.auth.*` do **not** exist and render as empty strings
 
 ### 6. Self-Packaging (single-binary deploy)
 
@@ -507,15 +508,14 @@ WHERE 1=1
   AND column2 = {{{ params.filter2 }}}
 {{/params.filter2}}
 ORDER BY created_at DESC
-LIMIT {{#params.limit}}{{ params.limit }}{{/params.limit}}{{^params.limit}}100{{/params.limit}}
 ```
 
 **Why This Works:**
 - `WHERE 1=1` allows adding any number of AND conditions
 - Each condition wrapped in conditional section (only rendered if parameter exists)
-- Default applied if parameter not specified (see LIMIT)
+- No `LIMIT`: default pagination adds it (see the warning in §3)
 - Triple braces for strings, double for numbers
-- No SQL injection risk (validators + escaping)
+- Injection defence is the validator (plus prepared-statement binding for a bare `{{ params.x }}` outside sections); neither brace form escapes SQL
 
 ### Template Variable Types
 
@@ -534,9 +534,10 @@ LIMIT {{#params.limit}}{{ params.limit }}{{/params.limit}}{{^params.limit}}100{{
 
 **Default Values:**
 ```sql
-LIMIT {{#params.limit}}{{ params.limit }}{{/params.limit}}{{^params.limit}}100{{/params.limit}}
--- Use params.limit if provided, otherwise default to 100
+AND region = '{{#params.region}}{{{ params.region }}}{{/params.region}}{{^params.region}}EU{{/params.region}}'
+-- Use params.region if provided, otherwise default to EU
 ```
+(Not for `limit`/`offset`: those are reserved for pagination.)
 
 **Connection Properties:**
 ```sql
@@ -549,7 +550,7 @@ SELECT * FROM read_parquet('{{{ conn.path }}}')
 INSERT INTO {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
 SELECT * FROM source
 {{#cache.previousSnapshotTimestamp}}
-WHERE updated_at > TIMESTAMP '{{cache.previousSnapshotTimestamp}}'
+WHERE updated_at > TIMESTAMP '{{{cache.previousSnapshotTimestamp}}}'
 {{/cache.previousSnapshotTimestamp}}
 -- Only refresh rows changed since last snapshot
 ```
@@ -738,20 +739,19 @@ cache:
   schedule: 6h                     # how often to refresh
   # Mode is INFERRED from primary-key/cursor - there is no `refresh:` key.
   table: cache_table_name          # Where to store cached results
-  refresh_query: |                 # Optional: custom refresh query
-    SELECT * FROM external_source
+  template-file: cache_populate.sql  # The populate SQL (there is no refresh_query key)
 ```
 
 **Cache Refresh Lifecycle:**
 1. HeartbeatWorker monitors cache expiration schedules
-2. On refresh trigger: execute refresh query
-3. Full refresh: `REPLACE INTO cache_table SELECT ...`
-4. Incremental: `INSERT INTO cache_table SELECT ...`
-5. Subsequent requests serve from cache until TTL expires
+2. On refresh trigger: run the `template-file` **verbatim**, all statements in one transaction (a failure changes nothing)
+3. Full refresh: the template must write the table itself, e.g. `CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS SELECT ...` (a bare `SELECT` is not wrapped and creates nothing)
+4. Incremental: `INSERT INTO ...` (append) or a single-action `MERGE` (merge), behind a `{{^cache.previousSnapshotTimestamp}}` bootstrap that creates the table on the first run
+5. Requests always read the cache table; a GET never triggers a refresh
 
 **Materialized Results:**
-- Cache tables stored in DuckDB local database
-- Results materialized as Parquet internally
+- Cache tables live in the DuckLake catalog (`ducklake.metadata-path`), not in `duckdb.db_path`
+- Data is written as Parquet files under `ducklake.data-path`
 - Fast serving from local storage (millisecond latency)
 
 ## Configuration Reference
@@ -786,7 +786,7 @@ duckdb:
     - name: postgres
 
 # Logging (top level, not nested under `server:`)
-log-level: info                     # debug, info, warn, error
+log-level: info                     # debug, info, warning, error
 log-format: text                    # text | json
 
 # MCP server (its own top-level block). No port of its own: MCP is served on
@@ -816,7 +816,7 @@ tracing:
 ```bash
 # Configuration
 FLAPI_CONFIG=path/to/flapi.yaml     # Config file path
-FLAPI_LOG_LEVEL=debug|info|warn|error
+FLAPI_LOG_LEVEL=debug|info|warning|error
 FLAPI_PORT=8080                      # HTTP port (fallback for --port)
 FLAPI_HOST=0.0.0.0                   # Bind address (fallback for --host)
 
@@ -1003,7 +1003,9 @@ method: GET
 request:
   - field-name: param1
     field-in: query
-    field-type: string
+    validators:
+      - type: string
+        max-length: 100
 template-source: my_endpoint.sql
 connection: [data-source]
 ```
@@ -1011,7 +1013,7 @@ connection: [data-source]
 2. **Create SQL template** (`sqls/my_endpoint.sql`):
 ```sql
 SELECT * FROM table
-WHERE column = '{{ params.param1 }}'
+WHERE column = {{ params.param1 }}   -- bound as a prepared parameter: no quotes
 ```
 
 3. **Test locally**:
@@ -1126,8 +1128,8 @@ make run-debug
 - Templates use Mustache syntax: `{{ variable_name }}`
 - Available variables:
   - `params.*` - Request parameters
-  - `context.conn.*` - Connection properties
-  - `context.auth.*` - Auth context
+  - `conn.*` - Connection properties
+  - `auth.*` - Auth context
 - Test template rendering locally before deployment
 
 ### Debugging a Failed Request
@@ -1455,9 +1457,9 @@ Versioning: `v*` tags (e.g., `v0.5.0`). Tag push triggers the full release pipel
 2. Tag and push: `git tag v{version} && git push origin v{version}`
 3. `.github/workflows/build.yaml` triggers on `v*` tag push (there is no separate `release.yaml`):
    - Downloads build artifacts (4 flapi server + 4 flapii CLI binaries)
-   - Creates archive assets (`.tar.gz` for Unix, `.zip` for Windows)
+   - Creates archive assets for the **flapi server only** (`.tar.gz` for Unix, `.zip` for Windows)
    - Builds **4** `flapi_io` Python wheels via `bin-to-wheel`, each bundling both the flapi and flapii binaries for that platform
-   - Creates the GitHub Release with the archives and wheels
+   - Creates the GitHub Release with the 4 server archives, the wheels and `server.json`. The flapii binaries are **not** attached as standalone release assets; they ship only inside the `flapi-io` wheels (the `flapii-*` names in the table above are CI artifact names)
    - Publishes the `flapi-io` wheels to PyPI via trusted publishing (OIDC)
 
 ### PyPI Trusted Publishing Setup

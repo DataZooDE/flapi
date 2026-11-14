@@ -761,7 +761,7 @@ flAPI always registers two unauthenticated health endpoints. They do not require
 | Endpoint | Purpose | Response |
 |----------|---------|----------|
 | `GET /health/live` | Liveness: process is up and the listener is accepting connections | `200 {"status":"live"}` |
-| `GET /health` | Readiness: cache-enabled endpoints are ready to serve | `200` when ready, `503` while starting or degraded |
+| `GET /health` | Readiness: cache-enabled endpoints are ready to serve | `200` with `status` `ready`, or `degraded` (a `stale` or `unbuilt` cache); `503` with `status` `starting`, `degraded` (a `failed` first build) or `stalled` |
 
 During cache warmup, `/health/live` returns `200` as soon as the server is listening, while
 `/health` returns:
@@ -782,6 +782,14 @@ that was already built, the endpoint keeps serving the last snapshot and `/healt
 `read-only`) and a cache table does not exist, `/health` returns `200` with `"status": "degraded"` and an
 `unbuilt` list, and that endpoint answers `503` with `"error": "cache_not_built"`. The error text (SQL, file paths) is written to the server log
 only: `/health` is unauthenticated and never returns it.
+
+A cache counts as **failed** whenever its warm-up at *this* start failed, even if the DuckLake table
+still holds a snapshot from an earlier run: with `warmup: always`, restarting while the source is
+unreachable gives `503` and a `failed` list, not `stale`.
+
+If a data request has been in flight for `stall-timeout-s` seconds or longer (top-level key, default
+`60`, `0` disables), `/health` returns `503` with `"status": "stalled"`, `"stalled_after_s"` and
+`requests.oldest_ms`. This check runs before the cache checks.
 
 Requests to a cached data endpoint while its cache is starting or failed return `503 Service
 Unavailable` with `Retry-After: 5` and a JSON body containing `"error": "cache_warming"`. flAPI
