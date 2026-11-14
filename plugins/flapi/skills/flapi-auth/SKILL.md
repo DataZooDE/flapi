@@ -26,7 +26,9 @@ Three independent gates: the endpoint's own `auth:` block (REST), `mcp.auth`
 - **A top-level `auth:` block in `flapi.yaml` protects every REST endpoint that
   has no `auth:` block of its own.** An endpoint's own block REPLACES the global
   one (no merge: repeat `users`/`jwt-secret` there). `auth: {enabled: false}` on
-  an endpoint opts it out. Startup logs `Global auth (type 'basic') applies to N
+  an endpoint opts it out. A block without `enabled` that sets `type`, `roles`,
+  `users`, `jwt-*`, `oidc` or `from-aws-secretmanager` is ON (it used to be off,
+  i.e. open); only an explicit `enabled: false` turns auth off. Startup logs `Global auth (type 'basic') applies to N
   endpoint(s) ...; M endpoint(s) opt out ...`. Upgrading a config that had a
   top-level block: endpoints that were open now answer 401.
 - **The REST types are `basic`, `bearer` and `oidc`; `type: jwt` is an alias of

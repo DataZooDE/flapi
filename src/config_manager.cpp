@@ -1203,6 +1203,25 @@ std::string ConfigManager::normalizeAuthType(const std::string& type) {
     return type;
 }
 
+namespace {
+
+// Keys that only mean something when authentication is on. A block that sets
+// any of them and leaves out `enabled` wants authentication: `enabled` used to
+// default to false there, so `auth: {type: basic, users: [...]}` left the
+// endpoint OPEN - and, under a global auth block, counted it as an opt-out.
+// Only an explicit `enabled: false` turns authentication off.
+bool DeclaresAuthentication(const YAML::Node& auth_node) {
+    for (const char* key : {"type", "roles", "users", "jwt-secret", "jwt-issuer", "oidc",
+                            "from-aws-secretmanager"}) {
+        if (auth_node[key]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+}  // namespace
+
 void ConfigManager::applyGlobalAuthDefault(EndpointConfig& endpoint) const {
     // The top-level `auth:` block is the default for every endpoint that does
     // not declare its own. Before this it protected nothing: only the endpoint
@@ -1227,7 +1246,13 @@ void ConfigManager::parseEndpointAuth(const YAML::Node& endpoint_config, Endpoin
         auto auth_node = endpoint_config["auth"];
         endpoint.auth.declared = true;
         endpoint.auth.inherited = false;
-        endpoint.auth.enabled = safeGet<bool>(auth_node, "enabled", "auth.enabled", false);
+        endpoint.auth.enabled = safeGet<bool>(auth_node, "enabled", "auth.enabled",
+                                              DeclaresAuthentication(auth_node));
+        if (!auth_node["enabled"] && endpoint.auth.enabled) {
+            CROW_LOG_INFO << "Endpoint " << (endpoint.urlPath.empty() ? endpoint.templateSource : endpoint.urlPath)
+                          << ": `auth:` has no `enabled` key but configures authentication, so it is ON "
+                             "(write `enabled: false` to turn it off)";
+        }
         endpoint.auth.type = normalizeAuthType(safeGet<std::string>(auth_node, "type", "auth.type", ""));
         endpoint.auth.roles = safeGet<std::vector<std::string>>(auth_node, "roles", "auth.roles", std::vector<std::string>());
         if (auth_node["jwt-secret"]) {
@@ -1609,7 +1634,14 @@ void ConfigManager::parseAuthConfig() {
     CROW_LOG_INFO << "Parsing auth configuration";
     if (config["auth"]) {
         auto auth_node = config["auth"];
-        auth_enabled = auth_node["enabled"].as<bool>();
+        // Same rule as an endpoint block (DeclaresAuthentication). A missing
+        // `enabled` used to be a yaml-cpp conversion error at startup.
+        auth_enabled = safeGet<bool>(auth_node, "enabled", "auth.enabled", DeclaresAuthentication(auth_node));
+        if (!auth_node["enabled"]) {
+            CROW_LOG_INFO << "Global `auth:` has no `enabled` key: authentication is "
+                          << (auth_enabled ? "ON (it configures authentication; write `enabled: false` to turn it off)"
+                                           : "OFF (it configures nothing)");
+        }
         CROW_LOG_DEBUG << "Auth enabled: " << auth_enabled;
 
         if (auth_node["type"]) {
@@ -2629,8 +2661,10 @@ EndpointConfig ConfigManager::deserializeEndpointConfig(const crow::json::rvalue
         config.auth.inherited = false;
         if (authJson.has("enabled")) {
             config.auth.enabled = authJson["enabled"].b();
-        } else if (!base) {
-            config.auth.enabled = false;
+        } else if (!base || !base->auth.declared) {
+            // A block that configures authentication is on unless it says
+            // `enabled: false` (DeclaresAuthentication, for YAML).
+            config.auth.enabled = authJson.has("type") || authJson.has("roles");
         }
         if (authJson.has("type")) {
             config.auth.type = normalizeAuthType(authJson["type"].s());

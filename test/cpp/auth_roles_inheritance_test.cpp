@@ -268,6 +268,77 @@ auth:
     REQUIRE_FALSE(ep->auth.inherited);
 }
 
+// Regression (#211, security): an `auth:` block that configures authentication
+// but has no `enabled` key defaulted to enabled: false - the endpoint was OPEN,
+// and under a global block it counted as an opt-out. Only `enabled: false` opts out.
+TEST_CASE("An auth block without enabled is on when it configures authentication", "[auth][global]") {
+    const std::string users = R"(
+  users:
+    - username: ivan
+      password: ivan-pw
+      roles: [reader])";
+
+    SECTION("per endpoint, no global block") {
+        TempTestConfig temp(kBaseConfig, "auth_implicit_endpoint");
+        temp.writeSqlTemplate("q.sql", "SELECT 1");
+        temp.writeEndpoint("typed.yaml", endpointYaml("/typed", "auth:\n  type: basic" + users));
+        temp.writeEndpoint("roles.yaml", endpointYaml("/roles", "auth:\n  roles: [reader]" + users));
+        temp.writeEndpoint("off.yaml", endpointYaml("/off", "auth:\n  enabled: false\n  type: basic" + users));
+        temp.writeEndpoint("empty.yaml", endpointYaml("/empty", "auth: {}"));
+        auto cm = temp.createConfigManager();
+        REQUIRE(cm->getEndpointForPathAndMethod("/typed", "GET")->auth.enabled);
+        REQUIRE(cm->getEndpointForPathAndMethod("/roles", "GET")->auth.enabled);
+        REQUIRE_FALSE(cm->getEndpointForPathAndMethod("/off", "GET")->auth.enabled);
+        REQUIRE_FALSE(cm->getEndpointForPathAndMethod("/empty", "GET")->auth.enabled);
+
+        AuthMiddleware middleware;
+        middleware.initialize(cm);
+        REQUIRE(call(middleware, "/typed", "").code == 401);
+        REQUIRE(call(middleware, "/typed", basicHeader("ivan", "ivan-pw")).code == 200);
+        REQUIRE(call(middleware, "/off", "").code == 200);
+    }
+    SECTION("under a global block it is not an opt-out") {
+        const std::string config = std::string(kBaseConfig) + R"(
+auth:
+  enabled: true
+  type: basic
+  users:
+    - username: gina
+      password: gina-pw
+)";
+        TempTestConfig temp(config, "auth_implicit_global");
+        temp.writeSqlTemplate("q.sql", "SELECT 1");
+        temp.writeEndpoint("own.yaml", endpointYaml("/own", "auth:\n  type: basic" + users));
+        auto cm = temp.createConfigManager();
+        auto own = cm->getEndpointForPathAndMethod("/own", "GET");
+        REQUIRE(own->auth.enabled);
+        REQUIRE(own->auth.declared);
+        AuthMiddleware middleware;
+        middleware.initialize(cm);
+        REQUIRE(call(middleware, "/own", "").code == 401);
+    }
+    SECTION("a global block without enabled") {
+        const std::string config = std::string(kBaseConfig) + R"(
+auth:
+  type: basic
+  users:
+    - username: gina
+      password: gina-pw
+)";
+        TempTestConfig temp(config, "auth_implicit_global_block");
+        temp.writeSqlTemplate("q.sql", "SELECT 1");
+        temp.writeEndpoint("e.yaml", endpointYaml("/e", ""));
+        auto cm = temp.createConfigManager();   // used to throw: `enabled` was required
+        auto ep = cm->getEndpointForPathAndMethod("/e", "GET");
+        REQUIRE(ep->auth.enabled);
+        REQUIRE(ep->auth.inherited);
+        AuthMiddleware middleware;
+        middleware.initialize(cm);
+        REQUIRE(call(middleware, "/e", "").code == 401);
+        REQUIRE(call(middleware, "/e", basicHeader("gina", "gina-pw")).code == 200);
+    }
+}
+
 TEST_CASE("Config-service JSON round trip keeps roles and inheritance", "[auth][global][config_service]") {
     const std::string config = std::string(kBaseConfig) + R"(
 auth:

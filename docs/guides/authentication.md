@@ -94,6 +94,10 @@ auth:
   enabled: false
 ```
 
+Only `enabled: false` opts out. An `auth:` block without `enabled` that sets
+`type`, `roles`, `users`, `jwt-secret`, `jwt-issuer`, `oidc` or
+`from-aws-secretmanager` is on; startup logs that it is.
+
 Startup tells you what happened:
 `Global auth (type 'basic') applies to 3 endpoint(s) without their own auth: block; 1 endpoint(s) opt out with auth: {enabled: false}`.
 

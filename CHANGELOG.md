@@ -16,6 +16,12 @@ Authentication and requests:
   was ignored for REST endpoints. A deployment with global auth enabled now answers 401 on endpoints that were
   open. An endpoint's own block replaces the global one (no merge); keep an endpoint public with
   `auth: {enabled: false}`. Startup logs how many endpoints inherit the global block and how many opt out.
+- **SECURITY: an `auth:` block without `enabled` is on when it configures authentication.** A block that sets
+  `type`, `roles`, `users`, `jwt-secret`, `jwt-issuer`, `oidc` or `from-aws-secretmanager` but no `enabled`
+  used to default to `enabled: false`: such an endpoint was open, and under a global `auth:` block it counted
+  as an opt-out. It now requires authentication; only an explicit `enabled: false` turns auth off. Endpoints
+  configured this way that answered without credentials now answer 401. The same rule applies to the
+  top-level block, which used to fail startup without `enabled`. Startup logs the effective setting.
 - **`auth.roles` on REST endpoints is enforced.** A caller who authenticates but holds none of the listed roles
   gets 403 `{"error":"Forbidden",...}`. Before, any authenticated user got through.
 - **`field-in: header` fields are read from the request headers** (case-insensitive), on GET and on writes. A
@@ -69,6 +75,10 @@ Caching:
   replaces it). Caches that kept every snapshot may now expire old ones, so time travel to them stops working.
 - **Expired snapshots' files are deleted** after retention or `cache gc` runs, so disk space is reclaimed.
 - **The cache audit log keeps the newest 1000 rows per cache table.**
+- **`POST .../cache/refresh` answers JSON:** `{"status":"refreshed","endpoint","mode","full","duration_ms",
+  "rows_affected","snapshot_id"}` (or `"status":"already_running"` when a refresh of that table is in flight),
+  and errors as `{"error":...,"reason":...}`. Before, success was an empty 200 and errors plain text.
+  `flapii cache refresh` prints these fields.
 - **Full rebuild drops the table:** `flapii cache refresh <path> --full`, `flapi cache refresh --full` and
   `POST .../cache/refresh?full=true` erase the watermark and drop the cache table in the same transaction, so an
   append cache is rebuilt instead of re-appended.

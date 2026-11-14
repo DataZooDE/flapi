@@ -197,8 +197,11 @@ and an info log line `Authorization denied for user '<name>' on <endpoint>`. A f
 The top-level `auth:` block is the default for every REST endpoint **without its own `auth:` block**
 (`ConfigManager::applyGlobalAuthDefault`, applied at load, on reload, and to endpoints created through
 the config service). Such an endpoint is marked `inherited`, which the config service reports as
-`auth.inherited`. An endpoint block replaces the global one outright — nothing is merged, and
-`enabled` defaults to `false` inside an endpoint block:
+`auth.inherited`. An endpoint block replaces the global one outright — nothing is merged. Inside any
+`auth:` block (global or endpoint) `enabled` defaults to `true` when the block configures authentication
+(it sets `type`, `roles`, `users`, `jwt-secret`, `jwt-issuer`, `oidc` or `from-aws-secretmanager`), else to `false`; only an explicit `enabled: false` turns it off or opts an
+endpoint out (`parseEndpointAuth`, `parseAuthConfig`, `DeclaresAuthentication`; the effective value is
+logged):
 
 ```yaml
 # Public endpoint (no auth), even with a global auth: block

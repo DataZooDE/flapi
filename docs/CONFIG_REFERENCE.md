@@ -547,7 +547,7 @@ Global authentication settings that apply to all endpoints unless overridden.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `auth.enabled` | boolean | `false` | Enable authentication for every REST endpoint without its own `auth:` block |
+| `auth.enabled` | boolean | `true` if the block sets `type`, `roles`, `users`, `jwt-secret`, `jwt-issuer`, `oidc` or `from-aws-secretmanager`, else `false` | Enable authentication for every REST endpoint without its own `auth:` block. The same default applies inside an endpoint's `auth:` block; only `enabled: false` turns it off |
 | `auth.type` | string | - | Default auth type: `basic`, `bearer` (alias `jwt`), `oidc` |
 | `auth.jwt-secret` | string | - | JWT signing key |
 | `auth.jwt-issuer` | string | - | Expected JWT issuer claim |
@@ -557,7 +557,8 @@ Global authentication settings that apply to all endpoints unless overridden.
 **Inheritance.** A top-level `auth:` block with `enabled: true` applies to every REST endpoint that has
 **no `auth:` block of its own** — at startup, on reload, and to endpoints created through the config
 service without one. An endpoint's own block **replaces** the global one (the two are not merged), and
-`auth: {enabled: false}` on an endpoint opts it out. Startup logs
+`auth: {enabled: false}` on an endpoint opts it out. An endpoint block that leaves out `enabled` but
+configures authentication (`type`, `roles`, `users`, `jwt-*`, ...) is ON, not an opt-out. Startup logs
 `Global auth (type '<type>') applies to N endpoint(s) without their own auth: block; M endpoint(s) opt out with auth: {enabled: false}`.
 The config service reports each endpoint's `auth.roles` and `auth.inherited`. MCP tools are not covered:
 they use `mcp.auth` (§2.6).
@@ -2276,7 +2277,7 @@ flAPI supports both hyphenated and camelCase naming for backward compatibility:
 | `ducklake.compaction.enabled` | `false` |
 | `mcp.enabled` | `true` |
 | `mcp.auth.enabled` | `false` |
-| `auth.enabled` | `false` |
+| `auth.enabled` | `true` when the `auth:` block configures authentication, else `false` |
 | `auth.roles` | `[]` (any authenticated caller) |
 | `project-description` | `""` |
 | `rate_limit.enabled` | `false` |
