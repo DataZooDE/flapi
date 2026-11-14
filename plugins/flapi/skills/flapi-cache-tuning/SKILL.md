@@ -327,7 +327,9 @@ SELECT * FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}} ORDER BY segmen
 - **Compaction** runs `ducklake_merge_adjacent_files`, `ducklake_rewrite_data_files`
   and a file cleanup once per catalog when due; the audit log records it as
   `sync_type` `compaction` (read it with `GET /api/v1/_config/cache/audit?sync_type=compaction`).
-  A one-shot `flapi cache refresh` also compacts when due. `compaction.delete-threshold`
+  A one-shot `flapi cache refresh` also compacts when due, and `flapii cache compact [path]`
+  (`POST /api/v1/_config/cache/compact`) runs it now, for the catalog or one table,
+  whatever the schedule. `compaction.delete-threshold`
   (0 < x <= 1) is the share of deleted rows above which a file is rewritten; DuckLake's
   default is 0.95, so a merge cache's delete files are otherwise never rewritten and
   every refresh gets slower. `0.2` rewrote them to 0 delete files in the measurement

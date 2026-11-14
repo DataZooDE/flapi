@@ -50,6 +50,16 @@ bool isSnapshotNotFoundMessage(const std::string& message) {
            message.find("does not exist at timestamp") != std::string::npos;
 }
 
+// `AT (VERSION => n)` for a snapshot from before the cache's schema existed:
+// DuckDB names the schema, not the version - "Table with name "sales.t" does
+// not exist because schema "sales" does not exist" - so it was a 500. A ready
+// cache's schema exists NOW (readiness gates the request), so on a cached
+// endpoint this is the past being asked for.
+bool isSchemaBeforeSnapshotMessage(const std::string& message, const EndpointConfig& endpoint) {
+    const std::string schema = endpoint.cache.schema.empty() ? "main" : endpoint.cache.schema;
+    return message.find("does not exist because schema \"" + schema + "\" does not exist") != std::string::npos;
+}
+
 void writeInternalError(crow::response& res) {
     crow::json::wvalue body;
     body["error"] = "Internal Server Error";
@@ -446,7 +456,8 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
         // Time travel on a cached endpoint to a snapshot that does not exist (or
         // that retention expired) is the caller asking for something absent, not
         // a server fault: it was a 500.
-        if (endpoint.cache.enabled && isSnapshotNotFoundMessage(e.what())) {
+        if (endpoint.cache.enabled &&
+            (isSnapshotNotFoundMessage(e.what()) || isSchemaBeforeSnapshotMessage(e.what(), endpoint))) {
             CROW_LOG_INFO << "time travel to an unknown snapshot: " << e.what();
             res.code = 404;
             res.set_header("Content-Type", "application/json");

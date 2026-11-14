@@ -449,8 +449,11 @@ To remove a table no endpoint uses any more (for example after changing `cache.s
 Compaction runs once per catalog per period: `ducklake_merge_adjacent_files`, `ducklake_rewrite_data_files`
 and a file cleanup. Each run writes an audit row with `sync_type` `compaction`, and when it last ran
 survives a restart. A one-shot `flapi cache refresh` also compacts when compaction is due. Startup logs
-`DuckLake compaction every <schedule>; last run ...; next due ...`. Its history is
-`GET /api/v1/_config/cache/audit?sync_type=compaction`.
+`DuckLake compaction every <schedule>; last run ...; next due ...`, and each run logs
+`DuckLake compaction is due (schedule ...); running it now`. Its history is
+`GET /api/v1/_config/cache/audit?sync_type=compaction`; a catalog-wide run's row has an empty
+`cache_table` and `cache_schema`. To compact now, whatever the schedule (and even with
+`compaction.enabled: false`): `flapii cache compact [path]` / `POST /api/v1/_config/cache/compact`.
 
 **Scheduler Configuration:**
 
@@ -488,7 +491,8 @@ ducklake:
 ```
 
 **Audit log.** Every refresh and compaction writes a row to the catalog's `audit.sync_events` table
-(`event_id` is a UUIDv4). It is bounded: the newest 1000 rows per cache table are kept, and older audit
+(`event_id` is a UUIDv4). Its `full` column (BOOLEAN) is `true` for a refresh that loaded the whole
+source: a forced `--full`, a full-mode cache, or an incremental cache's first build. It is bounded: the newest 1000 rows per cache table are kept, and older audit
 snapshots are expired together with the cache's own.
 
 > **Implementation:** `src/cache_manager.cpp` | **Tests:** `test/cpp/database_manager_ducklake_test.cpp`, `test/integration/test_ducklake_cache.tavern.yaml`

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+
 #include <crow.h>
 #include <chrono>
 #include <filesystem>
@@ -830,6 +832,12 @@ public:
     std::string DuplicateEndpointProblem(const EndpointConfig& candidate) const;
     bool removeEndpointByPath(const std::string& path);
     bool replaceEndpoint(const EndpointConfig& endpoint);
+
+    /// `listener` runs after every change of the loaded endpoint table (create,
+    /// update, delete, reload, reload-file, the MCP config tools), on the thread
+    /// that made it and outside the table's lock. The cache manager uses it to
+    /// keep its readiness registry in step with the cache tables endpoints name.
+    void addEndpointsChangedListener(std::function<void()> listener);
     
     std::unordered_map<std::string, std::string> getPropertiesForTemplates(const std::string& connectionName) const;
 
@@ -882,6 +890,7 @@ public:
         std::string error;
         bool loaded_new = false;
         std::vector<std::string> endpoints;   // EndpointKey() of each published endpoint
+        std::vector<std::string> removed;     // EndpointKey() of each endpoint unloaded (file deleted)
         std::vector<std::string> warnings;
     };
     FileReloadResult reloadEndpointFile(const std::filesystem::path& file);
@@ -954,20 +963,36 @@ protected:
     // Every writer must go through here; nothing mutates a published vector.
     template <typename Fn>
     auto mutateEndpoints(Fn&& mutate) -> decltype(mutate(std::declval<std::vector<EndpointConfig>&>())) {
-        std::lock_guard<MovableMutex> guard(endpoints_mutex);
-        auto next = std::make_shared<std::vector<EndpointConfig>>(*endpoints_snapshot);
-        auto result = mutate(*next);
-        endpoints_snapshot = std::shared_ptr<const std::vector<EndpointConfig>>(std::move(next));
+        std::vector<std::function<void()>> listeners;
+        auto result = [&]() {
+            std::lock_guard<MovableMutex> guard(endpoints_mutex);
+            auto next = std::make_shared<std::vector<EndpointConfig>>(*endpoints_snapshot);
+            auto r = mutate(*next);
+            endpoints_snapshot = std::shared_ptr<const std::vector<EndpointConfig>>(std::move(next));
+            listeners = endpoints_changed_listeners;
+            return r;
+        }();
+        notifyEndpointsChanged(listeners);
         return result;
     }
 
     template <typename Fn>
     void mutateEndpointsVoid(Fn&& mutate) {
-        std::lock_guard<MovableMutex> guard(endpoints_mutex);
-        auto next = std::make_shared<std::vector<EndpointConfig>>(*endpoints_snapshot);
-        mutate(*next);
-        endpoints_snapshot = std::shared_ptr<const std::vector<EndpointConfig>>(std::move(next));
+        std::vector<std::function<void()>> listeners;
+        {
+            std::lock_guard<MovableMutex> guard(endpoints_mutex);
+            auto next = std::make_shared<std::vector<EndpointConfig>>(*endpoints_snapshot);
+            mutate(*next);
+            endpoints_snapshot = std::shared_ptr<const std::vector<EndpointConfig>>(std::move(next));
+            listeners = endpoints_changed_listeners;
+        }
+        notifyEndpointsChanged(listeners);
     }
+
+    // Called (outside the lock) after every published change of the endpoint
+    // table; see addEndpointsChangedListener().
+    std::vector<std::function<void()>> endpoints_changed_listeners;
+    static void notifyEndpointsChanged(const std::vector<std::function<void()>>& listeners);
     std::filesystem::path base_path;
     DuckDBConfig duckdb_config;
     TemplateConfig template_config;

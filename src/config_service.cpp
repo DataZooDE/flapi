@@ -32,7 +32,9 @@ extern char** environ;
 #include "redaction.hpp"
 #include "path_utils.hpp"
 #include "database_manager.hpp"
+#include "database_health.hpp"
 #include "cache_manager.hpp"
+#include "cache_refresh_command.hpp"
 #include "sql_template_processor.hpp"
 #include "mcp_dry_run.hpp"
 #include "arrow_metrics.hpp"
@@ -111,6 +113,7 @@ crow::json::wvalue buildCacheMetricsJson(const std::shared_ptr<ConfigManager>& c
             row["failures"] = st.failures;
             row["last"]["mode"] = st.last_sync_type;
             row["last"]["status"] = st.last_status;
+            row["last"]["full"] = st.last_full;
             if (st.last_duration_ms) { row["last"]["duration_ms"] = *st.last_duration_ms; }
             if (st.last_rows_affected) { row["last"]["rows_affected"] = *st.last_rows_affected; }
             if (st.last_snapshot_id) { row["last"]["snapshot_id"] = *st.last_snapshot_id; }
@@ -462,6 +465,15 @@ namespace {
 // Every config-service 401 says the same thing in the same shape (JSON, like
 // every other error here). They used to differ by route: plain text on most,
 // {"error":"Unauthorized"} on /metrics.
+// The database was invalidated by an internal DuckDB error (see DatabaseHealth):
+// every route that would touch it answers this instead of a 500 per request.
+crow::response databaseFatalResponse() {
+    crow::response res(503, DatabaseHealth::FatalResponseJson());
+    res.set_header("Content-Type", "application/json");
+    res.set_header("Retry-After", "30");
+    return res;
+}
+
 crow::response unauthorizedResponse() {
     crow::json::wvalue body;
     body["error"] = "Unauthorized: missing or invalid config-service token "
@@ -506,7 +518,8 @@ std::string DecodeSlugSegment(const std::string& slug) {
     return out;
 }
 
-SlugTarget ResolveSlugTarget(const ConfigManager& cm, const std::string& raw_slug, const char* method_param) {
+SlugTarget ResolveSlugTarget(const ConfigManager& cm, const std::string& raw_slug, const char* method_param,
+                             bool cached_only) {
     SlugTarget target;
     const std::string slug = DecodeSlugSegment(raw_slug);
     const std::string path = PathUtils::identifierToPath(slug);
@@ -537,6 +550,37 @@ SlugTarget ResolveSlugTarget(const ConfigManager& cm, const std::string& raw_slu
     std::sort(candidates.begin(), candidates.end(), [](const EndpointConfig* a, const EndpointConfig* b) {
         return ConfigManager::EndpointKey(*a) < ConfigManager::EndpointKey(*b);
     });
+    if (cached_only && candidates.size() > 1) {
+        // A /cache/* route is about a cache: a cached GET /orders beside an
+        // uncached POST /orders is not ambiguous. Only endpoints that have a
+        // cache count, and several of them on ONE table are one cache. With
+        // none cached, the first is kept and the route says it has no cache.
+        std::vector<const EndpointConfig*> cached;
+        for (const auto* ep : candidates) {
+            if (ep->cache.enabled && !ep->cache.table.empty()) {
+                cached.push_back(ep);
+            }
+        }
+        const auto same_table = [&cached]() {
+            for (const auto* ep : cached) {
+                if (ep->cache.table != cached.front()->cache.table ||
+                    ep->cache.schema != cached.front()->cache.schema) {
+                    return false;
+                }
+            }
+            return true;
+        };
+        if (cached.empty()) {
+            candidates.resize(1);
+        } else if (same_table()) {
+            // The one naming a populate template, as warm-up picks.
+            const auto with_template = std::find_if(cached.begin(), cached.end(),
+                                                    [](const EndpointConfig* ep) { return ep->cache.hasTemplate(); });
+            candidates = {with_template != cached.end() ? *with_template : cached.front()};
+        } else {
+            candidates = cached;
+        }
+    }
     target.found = !candidates.empty();
     if (candidates.empty()) {
         target.status = 404;
@@ -571,8 +615,9 @@ namespace {
 
 // The route-level form: resolved, or the JSON error to answer with.
 std::optional<crow::response> resolveOrError(const ConfigManager& cm, const std::string& slug,
-                                             const crow::request& req, std::string& key) {
-    const auto target = ResolveSlugTarget(cm, slug, req.url_params.get("method"));
+                                             const crow::request& req, std::string& key,
+                                             bool cached_only = false) {
+    const auto target = ResolveSlugTarget(cm, slug, req.url_params.get("method"), cached_only);
     if (!target.ok) {
         return slugError(target.status, target.error);
     }
@@ -687,6 +732,9 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             if (!validateToken(req)) {
                 return unauthorizedResponse();
             }
+            if (DatabaseHealth::IsFatal()) {
+                return databaseFatalResponse();
+            }
             if (req.method == crow::HTTPMethod::Get) {
                 return project_handler_->getProjectConfig(req);
             }
@@ -706,6 +754,9 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             if (!validateToken(req)) {
                 return unauthorizedResponse();
             }
+            if (DatabaseHealth::IsFatal()) {
+                return databaseFatalResponse();
+            }
             return project_handler_->getEnvironmentVariables(req);
         });
 
@@ -715,6 +766,9 @@ void ConfigService::registerRoutes(FlapiApp& app) {
         ([this](const crow::request& req) {
             if (!validateToken(req)) {
                 return unauthorizedResponse();
+            }
+            if (DatabaseHealth::IsFatal()) {
+                return databaseFatalResponse();
             }
             if (req.method == crow::HTTPMethod::Get)
                 return endpoint_handler_->listEndpoints(req);
@@ -732,6 +786,9 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             if (!validateToken(req)) {
                 return unauthorizedResponse();
             }
+            if (DatabaseHealth::IsFatal()) {
+                return databaseFatalResponse();
+            }
             return endpoint_handler_->reloadEndpointFile(req);
         });
 
@@ -742,6 +799,9 @@ void ConfigService::registerRoutes(FlapiApp& app) {
         ([this](const crow::request& req, const std::string& slug) {
             if (!validateToken(req)) {
                 return unauthorizedResponse();
+            }
+            if (DatabaseHealth::IsFatal()) {
+                return databaseFatalResponse();
             }
             std::string key;
             if (auto error = resolveOrError(*config_manager, slug, req, key)) {
@@ -766,6 +826,9 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             if (!validateToken(req)) {
                 return unauthorizedResponse();
             }
+            if (DatabaseHealth::IsFatal()) {
+                return databaseFatalResponse();
+            }
             // Validating a not-yet-existing endpoint is fine: the target only
             // chooses the directory the YAML is checked from.
             const auto target = ResolveSlugTarget(*config_manager, slug, req.url_params.get("method"));
@@ -782,6 +845,9 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             if (!validateToken(req)) {
                 return unauthorizedResponse();
             }
+            if (DatabaseHealth::IsFatal()) {
+                return databaseFatalResponse();
+            }
             std::string key;
             if (auto error = resolveOrError(*config_manager, slug, req, key)) {
                 return std::move(*error);
@@ -795,6 +861,9 @@ void ConfigService::registerRoutes(FlapiApp& app) {
         ([this](const crow::request& req, const std::string& slug) {
             if (!validateToken(req)) {
                 return unauthorizedResponse();
+            }
+            if (DatabaseHealth::IsFatal()) {
+                return databaseFatalResponse();
             }
             std::string key;
             if (auto error = resolveOrError(*config_manager, slug, req, key)) {
@@ -810,6 +879,9 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             if (!validateToken(req)) {
                 return unauthorizedResponse();
             }
+            if (DatabaseHealth::IsFatal()) {
+                return databaseFatalResponse();
+            }
             auto json = crow::json::load(req.body);
             if (!json || !json.has("template_path")) {
                 return slugError(400, "Invalid JSON: missing 'template_path' field");
@@ -824,6 +896,9 @@ void ConfigService::registerRoutes(FlapiApp& app) {
         ([this](const crow::request& req, const std::string& slug) {
             if (!validateToken(req)) {
                 return unauthorizedResponse();
+            }
+            if (DatabaseHealth::IsFatal()) {
+                return databaseFatalResponse();
             }
             std::string key;
             if (auto error = resolveOrError(*config_manager, slug, req, key)) {
@@ -841,6 +916,9 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             if (!validateToken(req)) {
                 return unauthorizedResponse();
             }
+            if (DatabaseHealth::IsFatal()) {
+                return databaseFatalResponse();
+            }
             std::string key;
             if (auto error = resolveOrError(*config_manager, slug, req, key)) {
                 return std::move(*error);
@@ -853,6 +931,9 @@ void ConfigService::registerRoutes(FlapiApp& app) {
         ([this](const crow::request& req, const std::string& slug) {
             if (!validateToken(req)) {
                 return unauthorizedResponse();
+            }
+            if (DatabaseHealth::IsFatal()) {
+                return databaseFatalResponse();
             }
             std::string key;
             if (auto error = resolveOrError(*config_manager, slug, req, key)) {
@@ -868,8 +949,11 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             if (!validateToken(req)) {
                 return unauthorizedResponse();
             }
+            if (DatabaseHealth::IsFatal()) {
+                return databaseFatalResponse();
+            }
             std::string key;
-            if (auto error = resolveOrError(*config_manager, slug, req, key)) {
+            if (auto error = resolveOrError(*config_manager, slug, req, key, /*cached_only=*/true)) {
                 return std::move(*error);
             }
             if (req.method == crow::HTTPMethod::Get)
@@ -884,8 +968,11 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             if (!validateToken(req)) {
                 return unauthorizedResponse();
             }
+            if (DatabaseHealth::IsFatal()) {
+                return databaseFatalResponse();
+            }
             std::string key;
-            if (auto error = resolveOrError(*config_manager, slug, req, key)) {
+            if (auto error = resolveOrError(*config_manager, slug, req, key, /*cached_only=*/true)) {
                 return std::move(*error);
             }
             if (req.method == crow::HTTPMethod::Get)
@@ -900,8 +987,11 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             if (!validateToken(req)) {
                 return unauthorizedResponse();
             }
+            if (DatabaseHealth::IsFatal()) {
+                return databaseFatalResponse();
+            }
             std::string key;
-            if (auto error = resolveOrError(*config_manager, slug, req, key)) {
+            if (auto error = resolveOrError(*config_manager, slug, req, key, /*cached_only=*/true)) {
                 return std::move(*error);
             }
             return cache_handler_->refreshCache(req, key);
@@ -913,8 +1003,11 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             if (!validateToken(req)) {
                 return unauthorizedResponse();
             }
+            if (DatabaseHealth::IsFatal()) {
+                return databaseFatalResponse();
+            }
             std::string key;
-            if (auto error = resolveOrError(*config_manager, slug, req, key)) {
+            if (auto error = resolveOrError(*config_manager, slug, req, key, /*cached_only=*/true)) {
                 return std::move(*error);
             }
             return cache_handler_->performGarbageCollection(req, key);
@@ -928,7 +1021,25 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             if (!validateToken(req)) {
                 return unauthorizedResponse();
             }
+            if (DatabaseHealth::IsFatal()) {
+                return databaseFatalResponse();
+            }
             return cache_handler_->dropCacheTable(req);
+        });
+
+    // Run DuckLake compaction now - catalog-wide, or for one endpoint's table
+    // ({"endpoint": "/orders", "method": "GET"}). It ran only on its schedule, so
+    // an operator who saw files pile up had no way to act before the next run.
+    CROW_ROUTE(app, "/api/v1/_config/cache/compact")
+        .methods("POST"_method)
+        ([this](const crow::request& req) {
+            if (!validateToken(req)) {
+                return unauthorizedResponse();
+            }
+            if (DatabaseHealth::IsFatal()) {
+                return databaseFatalResponse();
+            }
+            return cache_handler_->compactCache(req);
         });
 
     // DuckLake audit routes
@@ -938,8 +1049,11 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             if (!validateToken(req)) {
                 return unauthorizedResponse();
             }
+            if (DatabaseHealth::IsFatal()) {
+                return databaseFatalResponse();
+            }
             std::string key;
-            if (auto error = resolveOrError(*config_manager, slug, req, key)) {
+            if (auto error = resolveOrError(*config_manager, slug, req, key, /*cached_only=*/true)) {
                 return std::move(*error);
             }
             return audit_handler_->getCacheAuditLog(key);
@@ -950,6 +1064,9 @@ CROW_ROUTE(app, "/api/v1/_config/cache/audit")
         ([this](const crow::request& req) {
             if (!validateToken(req)) {
                 return unauthorizedResponse();
+            }
+            if (DatabaseHealth::IsFatal()) {
+                return databaseFatalResponse();
             }
             const char* table = req.url_params.get("table");
             const char* sync_type = req.url_params.get("sync_type");
@@ -964,6 +1081,9 @@ CROW_ROUTE(app, "/api/v1/_config/cache/audit")
             if (!validateToken(req)) {
                 return unauthorizedResponse();
             }
+            if (DatabaseHealth::IsFatal()) {
+                return databaseFatalResponse();
+            }
             return schema_handler_->getSchema(req);
         });
 
@@ -972,6 +1092,9 @@ CROW_ROUTE(app, "/api/v1/_config/cache/audit")
         ([this](const crow::request& req) {
             if (!validateToken(req)) {
                 return unauthorizedResponse();
+            }
+            if (DatabaseHealth::IsFatal()) {
+                return databaseFatalResponse();
             }
             return schema_handler_->refreshSchema(req);
         });
@@ -982,6 +1105,9 @@ CROW_ROUTE(app, "/api/v1/_config/cache/audit")
         ([this](const crow::request& req) {
             if (!validateToken(req)) {
                 return unauthorizedResponse();
+            }
+            if (DatabaseHealth::IsFatal()) {
+                return databaseFatalResponse();
             }
             return filesystem_handler_->getFilesystemStructure(req);
         });
@@ -1081,6 +1207,13 @@ CROW_ROUTE(app, "/api/v1/_config/cache/audit")
             // Database status
             auto db_manager = DatabaseManager::getInstance();
             health["database"]["status"] = db_manager ? "connected" : "disconnected";
+            const bool database_fatal = DatabaseHealth::IsFatal();
+            if (database_fatal) {
+                // Invalidated by an internal error: nothing works until a restart.
+                health["status"] = "fatal";
+                health["database"]["status"] = "invalidated";
+                health["database"]["reason"] = DatabaseHealth::FatalReason().value_or("");
+            }
 
             // Endpoints count
             if (config_manager) {
@@ -1190,7 +1323,7 @@ CROW_ROUTE(app, "/api/v1/_config/cache/audit")
                 health["credentials"] = std::move(credentials);
             }
 
-            return crow::response(200, health);
+            return crow::response(database_fatal ? 503 : 200, health);
         });
 
     // OpenAPI documentation route
@@ -1224,6 +1357,27 @@ CROW_ROUTE(app, "/api/v1/_config/cache/audit")
 AuditLogHandler::AuditLogHandler(std::shared_ptr<ConfigManager> config_manager)
     : config_manager_(config_manager) {}
 
+namespace {
+// The audit query, falling back for a catalog whose audit table predates the
+// `full` column - a read-only replica reading a catalog its (older) writer has
+// not migrated yet. Only the writer adds the column (initializeAuditTables).
+QueryResult runAuditQuery(DatabaseManager& db_manager, const std::string& query) {
+    std::map<std::string, std::string> params;
+    try {
+        return db_manager.executeDuckLakeQuery(query, params);
+    } catch (const std::exception& e) {
+        static const std::string with_full = "coalesce(\"full\", false) AS \"full\"";
+        const auto at = query.find(with_full);
+        if (at == std::string::npos || std::string(e.what()).find("full") == std::string::npos) {
+            throw;
+        }
+        std::string legacy = query;
+        legacy.replace(at, with_full.size(), "false AS \"full\"");
+        return db_manager.executeDuckLakeQuery(legacy, params);
+    }
+}
+}  // namespace
+
 crow::response AuditLogHandler::getCacheAuditLog(const std::string& path) {
     try {
         const auto endpoint = config_manager_->getEndpointForKey(path);
@@ -1249,10 +1403,7 @@ crow::response AuditLogHandler::getCacheAuditLog(const std::string& path) {
         // and filtering on that matched no rows - an empty audit for every
         // endpoint with a path parameter.
         std::string audit_query = buildAuditQuery(catalog, endpoint->urlPath);
-        std::map<std::string, std::string> params;
-        auto result = db_manager->executeDuckLakeQuery(audit_query, params);
-        
-        return crow::response(200, result.data);
+        return crow::response(200, runAuditQuery(*db_manager, audit_query).data);
     } catch (const std::exception& e) {
         return crow::response(500, std::string("Internal server error: ") + e.what());
     }
@@ -1269,14 +1420,12 @@ crow::response AuditLogHandler::getAllCacheAuditLogs(const std::string& table, c
         const std::string catalog = ducklake_config.alias;
         
         std::string audit_query = buildAuditQuery(catalog, "", table, sync_type);
-        std::map<std::string, std::string> params;
-        auto result = db_manager->executeDuckLakeQuery(audit_query, params);
-        
-        return crow::response(200, result.data);
+        return crow::response(200, runAuditQuery(*db_manager, audit_query).data);
     } catch (const std::exception& e) {
         return crow::response(500, std::string("Internal server error: ") + e.what());
     }
 }
+
 
 std::string AuditLogHandler::buildAuditQuery(const std::string& catalog,
                                                const std::string& endpoint_filter,
@@ -1285,7 +1434,8 @@ std::string AuditLogHandler::buildAuditQuery(const std::string& catalog,
     std::ostringstream query;
     query << R"(
         SELECT event_id, endpoint_path, cache_table, cache_schema, sync_type, status, message,
-               snapshot_id, rows_affected, sync_started_at, sync_completed_at, duration_ms
+               snapshot_id, rows_affected, sync_started_at, sync_completed_at, duration_ms,
+               coalesce("full", false) AS "full"
         FROM )" << catalog << R"(.audit.sync_events)";
     
     if (!endpoint_filter.empty()) {
@@ -2294,9 +2444,18 @@ crow::response EndpointConfigHandler::reloadEndpointConfig(const crow::request& 
             return crow::response(404, response);
         }
 
+        const std::string file = target->config_file_path;
         const bool success = config_manager_->reloadEndpointConfig(path);
         response["success"] = success;
         if (success) {
+            if (!file.empty() && !std::filesystem::exists(file)) {
+                // Its YAML was deleted: reloading unloaded it (and anything
+                // else that file declared).
+                response["status"] = "removed";
+                response["message"] = "Endpoint file " + file + " no longer exists; the endpoint was unloaded";
+                response["removed"] = crow::json::wvalue::list({ConfigManager::EndpointKey(*target)});
+                return crow::response(200, response);
+            }
             response["message"] = "Endpoint configuration reloaded successfully";
             return crow::response(200, response);
         }
@@ -2356,6 +2515,20 @@ crow::response EndpointConfigHandler::reloadEndpointFile(const crow::request& re
         }
         response["success"] = true;
         response["file"] = canonical.string();
+        if (!result.removed.empty()) {
+            // The file was deleted: what it declared is unloaded.
+            response["status"] = "removed";
+            response["message"] = "Endpoint file no longer exists; its endpoints were unloaded";
+            crow::json::wvalue removed = crow::json::wvalue::list();
+            for (std::size_t i = 0; i < result.removed.size(); ++i) {
+                removed[i] = result.removed[i];
+            }
+            response["removed"] = std::move(removed);
+            response["endpoints"] = crow::json::wvalue::list();
+            crow::response res(200, response);
+            res.set_header("Content-Type", "application/json");
+            return res;
+        }
         response["status"] = result.loaded_new ? "loaded" : "reloaded";
         response["message"] = result.loaded_new ? "Endpoint configuration loaded" : "Endpoint configuration reloaded";
         crow::json::wvalue keys = crow::json::wvalue::list();
@@ -2669,7 +2842,18 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
                         script = std::move(*materialised);
                     }
                 }
+                // Serialised with refreshes: validation executes the template's
+                // READ_ONLY ATTACH/DETACH, and attach names are instance-wide -
+                // run beside a refresh attaching the same alias, it would hit
+                // the collision that invalidates the database.
+                std::unique_lock<std::mutex> catalog_lock;
+                if (auto cache_manager = db_manager->getCacheManager()) {
+                    catalog_lock = cache_manager->lockCatalogWrites();
+                }
                 const auto validation = db_manager->validateScript(script, &populate, &populate);
+                if (catalog_lock.owns_lock()) {
+                    catalog_lock.unlock();
+                }
                 crow::json::wvalue errors = crow::json::wvalue::list();
                 crow::json::wvalue warnings = crow::json::wvalue::list();
                 appendScriptIssues(validation, secrets, errors, warnings);
@@ -3378,6 +3562,9 @@ crow::response CacheConfigHandler::refreshCache(const crow::request& req, const 
         try {
             ran = cache_manager->refreshCache(config_manager_, *endpoint, params, options);
         } catch (const std::exception& e) {
+            if (DatabaseHealth::IsFatal()) {
+                return databaseFatalResponse();
+            }
             return refreshError(400, "Cache refresh failed", e.what());
         }
 
@@ -3398,6 +3585,9 @@ crow::response CacheConfigHandler::refreshCache(const crow::request& req, const 
                     continue;
                 }
                 body["mode"] = stats.last_sync_type;
+                // What the refresh did: a forced rebuild, a full-mode cache, or an
+                // incremental cache's bootstrap all load the whole source.
+                body["full"] = stats.last_full;
                 if (stats.last_duration_ms) {
                     body["duration_ms"] = *stats.last_duration_ms;
                 }
@@ -3490,9 +3680,86 @@ crow::response CacheConfigHandler::dropCacheTable(const crow::request& req) {
         if (!result.warning.empty()) {
             body["warning"] = result.warning;
         }
+        if (!result.pinned_by.empty()) {
+            crow::json::wvalue pinned = crow::json::wvalue::list();
+            for (std::size_t i = 0; i < result.pinned_by.size(); ++i) {
+                pinned[i] = result.pinned_by[i];
+            }
+            body["pinned_by"] = std::move(pinned);
+        }
         return answer(200, std::move(body));
     } catch (const std::exception& e) {
         return error(500, "drop_failed", e.what());
+    }
+}
+
+crow::response CacheConfigHandler::compactCache(const crow::request& req) {
+    const auto answer = [](int status, crow::json::wvalue body) {
+        crow::response res(status, body);
+        res.set_header("Content-Type", "application/json");
+        return res;
+    };
+    const auto error = [&answer](int status, const std::string& code, const std::string& message) {
+        crow::json::wvalue body;
+        body["error"] = code;
+        body["message"] = message;
+        return answer(status, std::move(body));
+    };
+    if (config_manager_->getDuckLakeConfig().read_only) {
+        return readOnlyCacheResponse("compaction rewrites files; run it on the writer");
+    }
+    if (!config_manager_->getDuckLakeConfig().enabled) {
+        return error(400, "ducklake_disabled", "DuckLake is not enabled (ducklake.enabled)");
+    }
+    std::string schema;
+    std::string table;
+    if (!req.body.empty()) {
+        auto json = crow::json::load(req.body);
+        if (!json || json.t() != crow::json::type::Object) {
+            return error(400, "invalid_request", R"(expected {} or {"endpoint": "<url-path>", "method": "GET"})");
+        }
+        if (json.has("endpoint")) {
+            if (json["endpoint"].t() != crow::json::type::String) {
+                return error(400, "invalid_request", "`endpoint` must be a string");
+            }
+            const std::string method =
+                json.has("method") && json["method"].t() == crow::json::type::String ? std::string(json["method"].s())
+                                                                                      : std::string();
+            const auto lookup = FindCachedEndpointForPath(*config_manager_, json["endpoint"].s(), method);
+            if (!lookup.endpoint) {
+                return error(lookup.found ? 400 : 404, lookup.found ? "no_cache" : "endpoint_not_found", lookup.error);
+            }
+            schema = lookup.endpoint->cache.schema.empty() ? "main" : lookup.endpoint->cache.schema;
+            table = lookup.endpoint->cache.table;
+        }
+    }
+    auto db_manager = DatabaseManager::getInstance();
+    auto cache_manager = db_manager ? db_manager->getCacheManager() : nullptr;
+    if (!cache_manager) {
+        return error(500, "internal_error", "Cache manager is not initialized");
+    }
+    try {
+        const auto result = cache_manager->performCompaction(config_manager_, schema, table);
+        crow::json::wvalue body;
+        body["status"] = result.status;
+        body["duration_ms"] = result.duration_ms;
+        if (result.files_rewritten) {
+            body["files_rewritten"] = *result.files_rewritten;
+        }
+        if (!table.empty()) {
+            body["schema"] = schema;
+            body["table"] = table;
+        }
+        body["message"] = result.message;
+        if (result.status == "error" && DatabaseHealth::IsFatal()) {
+            return databaseFatalResponse();
+        }
+        return answer(result.status == "error" ? 500 : 200, std::move(body));
+    } catch (const std::exception& e) {
+        if (DatabaseHealth::IsFatal()) {
+            return databaseFatalResponse();
+        }
+        return error(500, "compaction_failed", e.what());
     }
 }
 

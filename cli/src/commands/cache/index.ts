@@ -354,6 +354,34 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
     });
 
   cache
+    .command('compact [path]')
+    .option('--method <method>', 'HTTP method, when several endpoints on the path have a cache')
+    .description(
+      'Run DuckLake compaction now (merge small files, rewrite delete-heavy ones, delete the replaced files): ' +
+        'the whole catalog, or only the cache table of [path]',
+    )
+    .action(async (path: string | undefined, options: { method?: string }) => {
+      const target = path ? `for ${path}` : 'for the catalog';
+      const body: Record<string, string> = {};
+      if (path) {
+        body.endpoint = path.startsWith('/') ? path : `/${path}`;
+        if (options.method) {
+          body.method = options.method.toUpperCase();
+        }
+      }
+      const spinner = Console.spinner(`Compacting ${target}...`);
+      try {
+        const response = await ctx.client.post('/api/v1/_config/cache/compact', body);
+        spinner.succeed(chalk.green(`✓ Compacted ${target}`));
+        renderJson(response.data);
+      } catch (error) {
+        spinner.fail(chalk.red(`✗ Failed to compact ${target}`));
+        handleError(error, ctx.config);
+        process.exitCode = 1;
+      }
+    });
+
+  cache
     .command('audit [path]')
     .option('--method <method>', 'HTTP method, when several endpoints share the path (GET + POST /orders)')
     .description('Get cache sync audit log (for one endpoint, one cache table with --table, or all)')

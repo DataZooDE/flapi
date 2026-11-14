@@ -289,6 +289,32 @@ sequenceDiagram
     end
 ```
 
+### One refresh at a time per catalog
+
+`CacheManager::lockCatalogWrites()` serialises every write flAPI makes to the
+DuckLake catalog on its own: a populate script with its retention and audit row
+(`refreshCache`), compaction, garbage collection, `drop-table`, and the cache-target
+`validate_only` check that executes a template's READ_ONLY `ATTACH`. The duplicate
+check comes first, so a second refresh of the SAME table is still coalesced
+(`refreshCache` returns false, `already_running`) instead of queueing; a refresh of
+another table waits for the lock.
+
+Attach names are instance-wide in DuckDB. Two populate templates that each run
+`DETACH DATABASE IF EXISTS src; ATTACH ... AS src (READ_ONLY)` used to run in
+parallel and hit `INTERNAL Error: Database name src was already used by a different
+database for this meta transaction`, which INVALIDATES the database: every later
+query failed with `database has been invalidated` until restart. Measured with three
+such caches refreshed concurrently, five rounds: all 15 refreshes now succeed (about
+1.5 s in all for 20k/5k/10k-row sources); before, the first round invalidated the
+database.
+
+`DatabaseHealth` (`src/database_health.cpp`) is the safety net for any other cause:
+every DuckDB error raised through `QueryExecutor` or the populate script is passed to
+`NoteDatabaseError`; the first that reports an invalidation sets a process-wide flag
+and logs it once (critical). `/health` and `/health/live` then answer
+`503 {"status":"fatal","reason":...}`, data requests and config-service routes
+`503 database_invalidated`.
+
 ### Schedule Parsing
 
 ```cpp
@@ -394,8 +420,13 @@ POST /api/v1/_config/endpoints/{path}/cache/refresh?full=true
 # {status, expired_snapshots, files_deleted, bytes_freed, message}
 POST /api/v1/_config/endpoints/{path}/cache/gc
 
-# Drop a cache table no endpoint uses (left by a changed schema:/table:)
+# Drop a cache table no endpoint uses (left by a changed schema:/table:); the
+# retention of tables whose snapshots still pin its files runs now, and what it
+# keeps is named in `pinned_by`
 POST /api/v1/_config/cache/drop-table   {"schema": "old", "table": "t"}
+
+# Compaction now: the catalog, or one endpoint's table
+POST /api/v1/_config/cache/compact      {"endpoint": "/orders"}
 ```
 
 ### Programmatic
@@ -440,7 +471,15 @@ none), and updates the in-memory roll-up served under `caches` by
 
 Time travel in a serving template (`AT (VERSION => n)`) to a snapshot that does
 not exist or was expired answers `404 {"error":"snapshot_not_found"}`, not 500
-(`RequestHandler`, DuckLake "No snapshot found at version|timestamp").
+(`RequestHandler`, DuckLake "No snapshot found at version|timestamp"). So does a
+snapshot from before the cache's schema existed (DuckDB: `Table with name
+"sales.t" does not exist because schema "sales" does not exist`), which was a 500.
+
+Each audit row also has `full` (BOOLEAN): the refresh loaded the whole source - a
+forced `--full`, a full-mode cache, or an incremental cache's bootstrap with no
+watermark. A writer adds the column to an older audit table at start
+(`ADD COLUMN IF NOT EXISTS "full"`); the audit routes read `false` for a table that
+has none yet (a replica on a catalog its writer has not migrated).
 
 ## Readiness during warmup
 
@@ -463,6 +502,16 @@ than serving an empty table as though it were an empty result.
 | `Stale` | a refresh failed over a table that exists (including a failed warm-up over a table an earlier run built) | served (previous snapshot) | `200 degraded`, `stale` list |
 | `Unbuilt` | warm-up was skipped (`never`, `read-only`) and the table does not exist | `503 cache_not_built` | `200 degraded`, `unbuilt` list |
 
+The registry follows the endpoint table. `ConfigManager::addEndpointsChangedListener`
+calls `CacheManager::syncReadinessWithEndpoints` after every change (create, update,
+delete, reload, reload-file, the MCP config tools): an entry for a table no endpoint
+names any more is dropped with its refresh stats, a newly named table starts `Ready`
+when it exists in the catalog, else `Unbuilt`. A changed `cache.table` used to have no
+entry (its GET answered 500) and the old one stayed in `/health` until restart.
+
+On a read-only replica the `cache_not_built` message says the writer has not built
+the cache yet (`CacheReadiness::replica`), not "warm-up skipped".
+
 The warm-up mode for an endpoint is resolved by
 `ConfigManager::getEffectiveCacheWarmupMode`. The order is: `ducklake.read-only`,
 then the CLI/env override, then `cache.warmup`, then `ducklake.warmup`.
@@ -479,7 +528,10 @@ holds the catalog lock it prints
 `{"error":"a running flapi holds the DuckLake catalog lock; refresh through the server: flapii cache refresh <path> (if the holders are read-only replicas, stop the replicas, or use a Postgres/SQLite/MySQL DuckLake catalog, which a writer and replicas can share)"}`
 and exits 1. A server or replica that cannot attach a locked DuckDB-file catalog
 fails with `Failed to attach DuckLake catalog: another process holds the lock ...`
-(`DatabaseManager::DuckLakeAttachErrorMessage`, credentials redacted). A missing
+(`DatabaseManager::DuckLakeAttachErrorMessage`, credentials redacted). Any other
+attach failure of a read-only replica says to start the writer first (a Postgres
+catalog with no DuckLake metadata yet), and `DuckLake catalog attached read-only` is
+logged only once the ATTACH succeeded. A missing
 local metadata directory or `data-path` is created first
 (`PrepareDuckLakeDirectories`). A replica refuses to start without them. On SIGTERM a server interrupts running populate scripts and
 refuses new refreshes.

@@ -1045,12 +1045,12 @@ TEST_CASE("buildSyncEventInsert escapes values and computes duration", "[cache_m
     CHECK(sql.find("'main'") != std::string::npos);
     CHECK(sql.find("TIMESTAMP '2023-11-14 22:13:20.000'") != std::string::npos);
     CHECK(sql.find("TIMESTAMP '2023-11-14 22:13:21.234'") != std::string::npos);
-    CHECK(sql.find(", 1234)") != std::string::npos);
+    CHECK(sql.find(", 1234, false)") != std::string::npos);   // duration_ms, full
     CHECK(sql.find("NULL, 5, ") != std::string::npos);
 
     CacheManager::SyncEventDetails none;
     const auto bare = CacheManager::buildSyncEventInsert("cache", "evt_2", endpoint, "full", "success", "", none);
-    CHECK(bare.find("CAST(CURRENT_TIMESTAMP AS TIMESTAMP), NULL)") != std::string::npos);
+    CHECK(bare.find("CAST(CURRENT_TIMESTAMP AS TIMESTAMP), NULL, false)") != std::string::npos);
 }
 
 TEST_CASE("extractAffectedRowCount reads only a DML Count row", "[cache_manager][audit]") {

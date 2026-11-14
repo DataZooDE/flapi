@@ -145,6 +145,11 @@ What works (verified on v26.10.31), best first:
    {{/cache.previousSnapshotTimestamp}}
    ```
 
+   Every cache may use the same alias `src`: refreshes run one at a time per catalog.
+   (Before #211 two such refreshes in parallel collided on the alias and invalidated the
+   database until restart.) `?target=cache&validate_only=1` executes this READ_ONLY
+   ATTACH, so the statements reading `src` are checked; it detaches it again afterwards.
+
    The server still holds the file between refreshes, so the writer never writes it
    in place: it builds a copy and renames it over the original
    (`cp warehouse.duckdb next.duckdb && duckdb next.duckdb -c "..." && mv next.duckdb

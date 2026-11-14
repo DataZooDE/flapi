@@ -327,6 +327,7 @@ add_library(flapi-lib STATIC
     src/auth_middleware.cpp
     src/cache_manager.cpp
     src/cache_refresh_command.cpp
+    src/database_health.cpp
     src/extension_installer.cpp
     src/database_manager_cache_adapter.cpp
     src/duckdb_embed_fs.cpp

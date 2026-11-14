@@ -2,6 +2,7 @@
 #include <filesystem>
 #include <cstdio>
 #include <sstream>
+#include <set>
 #include <algorithm>
 #include <cctype>
 #include "crow/json.h"
@@ -12,10 +13,15 @@
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/statement/create_statement.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
+#include "duckdb/parser/statement/attach_statement.hpp"
+#include "duckdb/parser/statement/detach_statement.hpp"
+#include "duckdb/parser/parsed_data/attach_info.hpp"
+#include "duckdb/parser/parsed_data/detach_info.hpp"
 
 #include "sql_template_processor.hpp"
 #include "sql_utils.hpp"
 #include "database_manager.hpp"
+#include "database_health.hpp"
 #include "cache_refresh_command.hpp"
 #include "extension_installer.hpp"
 #include <chrono>
@@ -228,6 +234,14 @@ std::string DatabaseManager::DuckLakeAttachErrorMessage(const DuckLakeConfig& du
                "read-only replica), or use a Postgres/SQLite/MySQL DuckLake catalog to run a writer with "
                "read-only replicas. (" + detail + ")";
     }
+    if (ducklake.read_only) {
+        // A replica attaches a catalog the WRITER creates. Started first - the
+        // usual cause on a Postgres/SQLite/MySQL catalog, whose database exists
+        // but holds no DuckLake metadata yet - it failed with DuckDB's text alone.
+        return "Failed to attach DuckLake catalog read-only: a read-only replica cannot create the catalog; if "
+               "the writer has not run yet, start the writer first (it creates the catalog on its first start), "
+               "then this replica. (" + detail + ")";
+    }
     return "Failed to attach DuckLake catalog: " + detail;
 }
 
@@ -278,7 +292,6 @@ void DatabaseManager::initializeDBManagerFromConfig(std::shared_ptr<ConfigManage
 
             if (ducklake_config.read_only) {
                 attach_stmt += ", READ_ONLY";
-                CROW_LOG_INFO << "DuckLake catalog attached read-only";
             }
 
             attach_stmt += ");";
@@ -293,6 +306,11 @@ void DatabaseManager::initializeDBManagerFromConfig(std::shared_ptr<ConfigManage
             try {
                 executeInitStatement(attach_stmt);
                 ducklake_attached_ = true;
+                // Only once it worked: this used to be logged before the ATTACH,
+                // so a replica that could not attach said "attached" first.
+                if (ducklake_config.read_only) {
+                    CROW_LOG_INFO << "DuckLake catalog attached read-only";
+                }
             } catch (const std::exception& e) {
                 throw std::runtime_error(DuckLakeAttachErrorMessage(ducklake_config, e.what()));
             }
@@ -302,6 +320,19 @@ void DatabaseManager::initializeDBManagerFromConfig(std::shared_ptr<ConfigManage
 
         cache_manager = std::make_unique<CacheManager>(shared_from_this());
         cache_manager->initializeReadiness(config_manager);
+        // The readiness registry follows the endpoint table: a reload that
+        // changed `cache.table` used to leave the old table's entry (and its
+        // `failed` state) in /health until restart, and the new table had none,
+        // so its endpoint answered 500 instead of 503 cache_not_built.
+        config_manager->addEndpointsChangedListener(
+            [weak_cache = std::weak_ptr<CacheManager>(cache_manager),
+             weak_config = std::weak_ptr<ConfigManager>(config_manager)]() {
+                auto cache = weak_cache.lock();
+                auto config = weak_config.lock();
+                if (cache && config) {
+                    cache->syncReadinessWithEndpoints(config);
+                }
+            });
 
         // Last statement, deliberately: everything above can throw, and the
         // destructor must be able to tell a half-built manager from a working
@@ -852,6 +883,83 @@ StatementKind ClassifyStatement(const std::string& sql) {
     }
 }
 
+// An ATTACH or DETACH as validateScript sees it.
+struct AttachDetach {
+    bool attach = false;   // else DETACH
+    std::string alias;
+    bool read_only = false;
+};
+
+std::string LowerAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return value;
+}
+
+std::optional<AttachDetach> ParseAttachDetach(const std::string& sql) {
+    try {
+        duckdb::Parser parser;
+        parser.ParseQuery(sql);
+        if (parser.statements.size() != 1 || !parser.statements[0]) {
+            return std::nullopt;
+        }
+        auto& statement = *parser.statements[0];
+        if (statement.type == duckdb::StatementType::DETACH_STATEMENT) {
+            const auto& info = statement.Cast<duckdb::DetachStatement>().info;
+            if (!info) {
+                return std::nullopt;
+            }
+            return AttachDetach{false, LowerAscii(info->name), false};
+        }
+        if (statement.type != duckdb::StatementType::ATTACH_STATEMENT) {
+            return std::nullopt;
+        }
+        const auto& info = statement.Cast<duckdb::AttachStatement>().info;
+        if (!info) {
+            return std::nullopt;
+        }
+        AttachDetach out;
+        out.attach = true;
+        out.alias = info->name;
+        if (out.alias.empty()) {
+            // ATTACH 'dir/file.duckdb' with no AS: DuckDB names it after the file.
+            out.alias = std::filesystem::path(info->path).stem().string();
+        }
+        out.alias = LowerAscii(out.alias);
+        const auto flag = [](const duckdb::unique_ptr<duckdb::ParsedExpression>& expr) {
+            if (!expr) {
+                return true;   // `(READ_ONLY)` with no value
+            }
+            const auto text = LowerAscii(expr->ToString());
+            return text != "false" && text != "0" && text != "'false'";
+        };
+        for (const auto& [key, expr] : info->parsed_options) {
+            const auto name = LowerAscii(key);
+            if (name == "read_only" || name == "readonly") {
+                out.read_only = flag(expr);
+            } else if (name == "read_write" || name == "readwrite") {
+                out.read_only = !flag(expr);
+            } else if (name == "access_mode" && expr) {
+                out.read_only = LowerAscii(expr->ToString()).find("read_only") != std::string::npos;
+            }
+        }
+        return out;
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
+// Whether a DuckDB error message names `alias` (a catalog/schema qualifier).
+bool NamesAlias(const std::string& message, const std::string& alias) {
+    const auto lower = LowerAscii(message);
+    for (const auto& form : {"name " + alias + " ", "name " + alias + "!", "\"" + alias + "\"", alias + "."}) {
+        if (lower.find(form) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Whether a DuckDB "... does not exist" message is about `table`.
 bool NamesTable(const std::string& message, const std::string& table) {
     if (table.empty()) {
@@ -881,6 +989,34 @@ DatabaseManager::ScriptValidation DatabaseManager::validateScript(const std::str
 
     auto executor = createQueryExecutor();
     duckdb_connection conn = executor.conn;
+
+    // A populate template that reads its source through
+    //     DETACH DATABASE IF EXISTS src; ATTACH '<file>' AS src (READ_ONLY);
+    // could not be checked: neither statement ran, so every later statement
+    // failed with "schema src does not exist". A READ_ONLY ATTACH is executed
+    // now (a writable one never is - validation must not be able to write), a
+    // DETACH only of what this validation attached, and everything it attached
+    // is detached again at the end. Databases attached before it (the cache
+    // catalog, a connection's own ATTACH) are never touched. The caller holds
+    // the catalog lock (CacheManager::lockCatalogWrites), so this cannot race a
+    // refresh's ATTACH of the same name.
+    std::set<std::string> attached_before;
+    if (populate) {
+        duckdb_result databases;
+        if (duckdb_query(conn, "SELECT database_name FROM duckdb_databases()", &databases) == DuckDBSuccess) {
+            for (idx_t row = 0; row < duckdb_row_count(&databases); ++row) {
+                char* name = duckdb_value_varchar(&databases, 0, row);
+                if (name) {
+                    attached_before.insert(LowerAscii(name));
+                    duckdb_free(name);
+                }
+            }
+        }
+        duckdb_destroy_result(&databases);
+    }
+    std::set<std::string> attached_here;      // attached by this validation, still attached
+    std::set<std::string> ever_attached_here; // detached again at the end
+    std::set<std::string> not_attached;       // writable ATTACHes this check skipped
 
     // Everything below runs inside ONE transaction that is always rolled back,
     // so nothing it does - the plain CREATEs it replays - is ever committed. A
@@ -912,6 +1048,51 @@ DatabaseManager::ScriptValidation DatabaseManager::validateScript(const std::str
             out.errors.push_back({number, "parse", raw ? raw : "statement could not be parsed"});
             duckdb_destroy_extracted(&extracted);
             continue;
+        }
+
+        if (populate) {
+            if (const auto ad = ParseAttachDetach(sql)) {
+                duckdb_destroy_extracted(&extracted);
+                if (!ad->attach) {
+                    // Only what this validation attached; DETACH of anything
+                    // else would detach a database the server is using.
+                    if (attached_here.erase(ad->alias) > 0) {
+                        duckdb_query(conn, sql.c_str(), nullptr);
+                        replay.push_back(sql);
+                    }
+                    continue;
+                }
+                if (!ad->read_only) {
+                    not_attached.insert(ad->alias);
+                    out.warnings.push_back(
+                        {number, "not_checked",
+                         "statement " + std::to_string(number) + " attaches " + ad->alias +
+                             " without READ_ONLY; validation attaches only READ_ONLY databases, so statements "
+                             "reading " + ad->alias + " were not checked (add (READ_ONLY) to the ATTACH)"});
+                    continue;
+                }
+                if (attached_before.count(ad->alias) > 0 && attached_here.count(ad->alias) == 0) {
+                    out.warnings.push_back(
+                        {number, "not_checked",
+                         "statement " + std::to_string(number) + ": " + ad->alias +
+                             " is already attached on the server; validation checked against that database"});
+                    continue;
+                }
+                duckdb_result result;
+                if (duckdb_query(conn, sql.c_str(), &result) == DuckDBError) {
+                    const char* raw = duckdb_result_error(&result);
+                    out.errors.push_back({number, "attach", raw ? raw : "ATTACH failed"});
+                    not_attached.insert(ad->alias);
+                } else {
+                    attached_here.insert(ad->alias);
+                    ever_attached_here.insert(ad->alias);
+                    // Replayed like a CREATE, should a restarted transaction
+                    // have lost it; a replay that finds it attached is a no-op.
+                    replay.push_back(sql);
+                }
+                duckdb_destroy_result(&result);
+                continue;
+            }
         }
 
         const StatementKind kind = ClassifyStatement(sql);
@@ -966,7 +1147,13 @@ DatabaseManager::ScriptValidation DatabaseManager::validateScript(const std::str
         if (failure) {
             const std::string& message = *failure;
             const bool missing = message.find("does not exist") != std::string::npos;
-            if (missing && cache_table && NamesTable(message, cache_table->table)) {
+            const auto unattached = std::find_if(not_attached.begin(), not_attached.end(),
+                                                 [&](const std::string& alias) { return NamesAlias(message, alias); });
+            if (unattached != not_attached.end()) {
+                out.warnings.push_back({number, "not_checked",
+                                        "statement " + std::to_string(number) + " was not checked: it reads " +
+                                            *unattached + ", which validation did not attach"});
+            } else if (missing && cache_table && NamesTable(message, cache_table->table)) {
                 out.warnings.push_back(
                     {number, "cache_not_built",
                      "cache table " + cache_table->catalog + "." + cache_table->schema + "." + cache_table->table +
@@ -995,6 +1182,14 @@ DatabaseManager::ScriptValidation DatabaseManager::validateScript(const std::str
     }
     if (in_transaction) {
         rollback();
+    }
+    // Never leave anything attached.
+    for (const auto& alias : ever_attached_here) {
+        if (attached_before.count(alias) > 0) {
+            continue;
+        }
+        const std::string detach = "DETACH DATABASE IF EXISTS " + quotePopulateIdentifier(alias);
+        duckdb_query(conn, detach.c_str(), nullptr);
     }
     return out;
 }
@@ -1056,6 +1251,7 @@ std::optional<int64_t> DatabaseManager::executeDuckLakeScript(const std::string&
         const char* raw = stmts ? duckdb_extract_statements_error(stmts) : nullptr;
         const std::string error_message = raw ? raw : "no statements";
         duckdb_destroy_extracted(&stmts);
+        DatabaseHealth::NoteDatabaseError(error_message);
         throw std::runtime_error("Query execution failed: " + error_message);
     }
 
@@ -1093,6 +1289,7 @@ std::optional<int64_t> DatabaseManager::executeDuckLakeScript(const std::string&
                 const char* raw = stmt ? duckdb_prepare_error(stmt) : nullptr;
                 const std::string error_message = raw ? raw : "statement could not be prepared";
                 duckdb_destroy_prepare(&stmt);
+                DatabaseHealth::NoteDatabaseError(error_message);
                 throw std::runtime_error("Query execution failed: " + error_message);
             }
             try {

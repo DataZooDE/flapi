@@ -94,7 +94,10 @@ struct SlugTarget {
     std::string error;
     std::string key;             // ConfigManager::EndpointKey() of the target
 };
-SlugTarget ResolveSlugTarget(const ConfigManager& cm, const std::string& slug, const char* method_param);
+/// With `cached_only` (the /cache/* routes) only endpoints that have a cache
+/// count towards ambiguity: a cached GET beside an uncached POST names the GET.
+SlugTarget ResolveSlugTarget(const ConfigManager& cm, const std::string& slug, const char* method_param,
+                             bool cached_only = false);
 /// "%3A" -> ':' in a slug path segment (the CLI's encodeURIComponent).
 std::string DecodeSlugSegment(const std::string& slug);
 
@@ -199,6 +202,7 @@ public:
     /// POST /api/v1/_config/cache/drop-table {"schema","table"}: drop a cache table
     /// no endpoint uses any more, expire its snapshots and delete its files.
     crow::response dropCacheTable(const crow::request& req);
+    crow::response compactCache(const crow::request& req);
 
 private:
     std::shared_ptr<ConfigManager> config_manager_;

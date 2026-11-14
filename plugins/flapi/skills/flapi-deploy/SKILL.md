@@ -37,8 +37,9 @@ user-invocable: false
   pre-installed extensions.
 - **`/health` is readiness, not liveness.** It answers 503 while caches warm (`starting`),
   when a cache failed to build (`degraded` + `failed`), and when a request is stuck longer
-  than `stall-timeout-s` (`stalled`). Liveness is `/health/live`, which is always 200 once
-  the port listens. A liveness probe on `/health` restart-loops a slow warm-up.
+  than `stall-timeout-s` (`stalled`). Liveness is `/health/live`, which is 200 once the
+  port listens, until the DuckDB database is invalidated by an internal error: then both
+  answer 503 `"status":"fatal"` so the orchestrator restarts the process. A liveness probe on `/health` restart-loops a slow warm-up.
 - **The images have no `curl`, no `wget` and no `HEALTHCHECK`.** They run as root with
   `WORKDIR /app` and `ENTRYPOINT ["/app/flapi"]`. Pass `-c /config/flapi.yaml` or set
   `FLAPI_CONFIG`. For an in-container probe, use `bash` + `/dev/tcp` (`/bin/sh` is dash).

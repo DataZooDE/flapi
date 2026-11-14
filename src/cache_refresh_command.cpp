@@ -1,6 +1,8 @@
 #include "cache_refresh_command.hpp"
 
 #include <crow.h>
+#include <algorithm>
+#include <cctype>
 #include <filesystem>
 
 #include "cache_manager.hpp"
@@ -38,6 +40,71 @@ std::string CatalogLockMessage(const std::string& endpoint_path) {
            "DuckLake catalog, which a writer and replicas can share)";
 }
 
+CachedEndpointLookup FindCachedEndpointForPath(const ConfigManager& config_manager, const std::string& path,
+                                               const std::string& method) {
+    CachedEndpointLookup out;
+    std::string wanted_method = method;
+    std::transform(wanted_method.begin(), wanted_method.end(), wanted_method.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    const auto snapshot = config_manager.getEndpoints();
+    std::vector<const EndpointConfig*> on_path;
+    for (const auto& ep : *snapshot) {
+        if (ep.urlPath != path) {
+            continue;
+        }
+        std::string ep_method = ep.method.empty() ? std::string("GET") : ep.method;
+        std::transform(ep_method.begin(), ep_method.end(), ep_method.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+        if (!wanted_method.empty() && ep_method != wanted_method) {
+            continue;
+        }
+        on_path.push_back(&ep);
+    }
+    if (on_path.empty()) {
+        // A templated path (/orders/:id) named by a concrete one.
+        const auto* matched = wanted_method.empty() ? ConfigManager::findEndpoint(*snapshot, path)
+                                                    : ConfigManager::findEndpoint(*snapshot, path, wanted_method);
+        if (matched) {
+            on_path.push_back(matched);
+        }
+    }
+    if (on_path.empty()) {
+        out.error = "unknown endpoint " + path + (wanted_method.empty() ? "" : " with method " + wanted_method);
+        return out;
+    }
+    out.found = true;
+    // Only endpoints WITH a cache count: an uncached POST /orders beside the
+    // cached GET /orders used to be picked (first in load order) and the
+    // refresh failed with "has no cache".
+    std::vector<const EndpointConfig*> cached;
+    for (const auto* ep : on_path) {
+        if (ep->cache.enabled && !ep->cache.table.empty()) {
+            cached.push_back(ep);
+        }
+    }
+    if (cached.empty()) {
+        out.error = "endpoint " + path + (wanted_method.empty() ? "" : " (" + wanted_method + ")") + " has no cache";
+        return out;
+    }
+    const auto* chosen = cached.front();
+    for (const auto* ep : cached) {
+        if (ep->cache.table != chosen->cache.table || ep->cache.schema != chosen->cache.schema) {
+            std::string methods;
+            for (const auto* c : cached) {
+                methods += (methods.empty() ? "" : "|") + (c->method.empty() ? std::string("GET") : c->method);
+            }
+            out.error = "ambiguous: several endpoints on " + path + " cache into different tables; pass --method " +
+                        methods;
+            return out;
+        }
+        if (!chosen->cache.hasTemplate() && ep->cache.hasTemplate()) {
+            chosen = ep;   // the one naming a populate template, as warm-up picks
+        }
+    }
+    out.endpoint = *chosen;
+    return out;
+}
+
 int RunCacheRefreshCommand(std::shared_ptr<ConfigManager> config_manager,
                            const CacheRefreshOptions& options, std::ostream& out) {
     const auto& ducklake = config_manager->getDuckLakeConfig();
@@ -57,14 +124,11 @@ int RunCacheRefreshCommand(std::shared_ptr<ConfigManager> config_manager,
         selected = CacheManager::warmupEndpoints(config_manager);
     }
     for (const auto& path : options.endpoints) {
-        auto endpoint = config_manager->getEndpointForPath(path);
-        if (!endpoint) {
-            return usageError(out, "unknown endpoint " + path);
+        const auto lookup = FindCachedEndpointForPath(*config_manager, path, options.method);
+        if (!lookup.endpoint) {
+            return usageError(out, lookup.error);
         }
-        if (!endpoint->cache.enabled || endpoint->cache.table.empty()) {
-            return usageError(out, "endpoint " + path + " has no cache");
-        }
-        selected.push_back(*endpoint);
+        selected.push_back(*lookup.endpoint);
     }
     if (selected.empty()) {
         return usageError(out, "nothing to refresh: pass --endpoint <path> or --all");
