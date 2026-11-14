@@ -1080,8 +1080,11 @@ pair, **in either direction** - an open literal over a protected `:param` route 
 protected literal over an open one alike. Auth is compared on `enabled`, `type`
 (`jwt` = `bearer`), `roles` **and the identity source**: `users` (username, password,
 per-user roles), `jwt-secret` (compared as a digest), `jwt-issuer`, the `oidc` issuer,
-client and audiences, and the `from-aws-secretmanager` secret and region. Any
-difference counts; secret values never appear in the message:
+client, audiences, claims, `scopes`, `verify-expiration` and `clock-skew-seconds`, and
+the `from-aws-secretmanager` secret and region. Any difference counts, including a
+re-hashed password with a new salt or a provider preset against its spelled-out
+`issuer-url` (copy the block byte for byte, or use a YAML include); secret values never
+appear in the message:
 
 ```
 Overlapping routes with different auth: GET /customers/7 (basic, roles [admin]) takes

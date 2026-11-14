@@ -37,8 +37,8 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 - **SECURITY: "same auth" includes the identity source.** Overlap checks compared only enabled, type and
   roles, so a literal with its own `guest` user (or another `jwt-secret`, `jwt-issuer`, OIDC issuer /
   audience / client, or AWS secret) counted as the same auth and served the protected URL to guest. Users
-  (name, password, per-user roles), a digest of `jwt-secret`, `jwt-issuer`, the OIDC settings and the
-  `from-aws-secretmanager` source are now compared; any difference is "different auth" and refused as
+  (name, password, per-user roles), a digest of `jwt-secret`, `jwt-issuer`, the OIDC settings (including `scopes`,
+  `verify-expiration` and `clock-skew-seconds`) and the `from-aws-secretmanager` source are now compared; any difference is "different auth" and refused as
   above. Messages name the differing field (`auth differs in: users`), never a secret.
 - **`url-path` refuses `.` and `..` segments and a repeated `:param` name** (`/a/../b`, `/a/:id/b/:id`).
   A non-ASCII character in a url-path is now named whole with its code point (`'é' (U+00E9)`) instead of

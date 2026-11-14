@@ -483,6 +483,16 @@ TEST_CASE("OIDC and AWS secret sources are part of the auth comparison", "[routi
     auto other_audience = oidc("/customers/7", "https://idp.example/a", "other");
     other_audience.config_file_path = "/x/literal.yaml";
     CHECK(mgr->DuplicateEndpointProblem(other_audience).find("auth differs in: oidc") != std::string::npos);
+    // Token-validation settings change who gets in: a literal that accepts expired tokens is not "same auth".
+    auto no_expiry = same;
+    no_expiry.auth.oidc->verify_expiration = false;
+    CHECK(mgr->DuplicateEndpointProblem(no_expiry).find("auth differs in: oidc") != std::string::npos);
+    auto huge_skew = same;
+    huge_skew.auth.oidc->clock_skew_seconds = 99999999;
+    CHECK(mgr->DuplicateEndpointProblem(huge_skew).find("auth differs in: oidc") != std::string::npos);
+    auto other_scopes = same;
+    other_scopes.auth.oidc->scopes = {"openid", "admin"};
+    CHECK(mgr->DuplicateEndpointProblem(other_scopes).find("auth differs in: oidc") != std::string::npos);
 
     auto aws = same;
     aws.auth.from_aws_secretmanager = flapi::AuthFromSecretManagerConfig{};

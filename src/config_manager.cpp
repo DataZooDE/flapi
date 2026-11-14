@@ -3143,7 +3143,10 @@ AuthSignature authSignature(const EndpointConfig& ep) {
         const auto& o = *auth.oidc;
         sig.oidc = joined({o.issuer_url, o.client_id, digestOf(o.client_secret), o.provider_type, o.tenant_id,
                            o.realm, o.domain, joined(sortedUnique(o.allowed_audiences)), o.username_claim,
-                           o.roles_claim, o.groups_claim, o.role_claim_path});
+                           o.roles_claim, o.groups_claim, o.role_claim_path,
+                           // token-validation settings decide who gets in as much as the issuer does
+                           o.verify_expiration ? "exp" : "no-exp", std::to_string(o.clock_skew_seconds),
+                           joined(sortedUnique(o.scopes))});
     }
     if (auth.from_aws_secretmanager) {
         const auto& s = *auth.from_aws_secretmanager;
