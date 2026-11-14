@@ -11,6 +11,7 @@
 #include "mcp_response_shaper.hpp"
 #include "mcp_schema_builder.hpp"
 #include "flapi_telemetry.hpp"
+#include "request_handler.hpp"
 
 namespace flapi {
 
@@ -330,14 +331,9 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
                 write_result = db_manager->executeWrite(*endpoint_config, params);
             }
 
-            // Handle cache operations after successful write
-            if (endpoint_config->cache.enabled) {
-                if (endpoint_config->cache.invalidate_on_write) {
-                    db_manager->invalidateCache(*endpoint_config);
-                }
-                // Note: refresh_on_write is handled by RequestHandler in REST context
-                // For MCP, we just invalidate if configured
-            }
+            // Same cache maintenance as the REST write path: invalidate-on-write
+            // synchronously, refresh-on-write in the background.
+            RequestHandler::handleCacheAfterWrite(db_manager, *endpoint_config);
 
             // Format write result
             crow::json::wvalue write_response;

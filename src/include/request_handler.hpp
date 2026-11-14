@@ -15,13 +15,21 @@ public:
     RequestHandler(std::shared_ptr<DatabaseManager> db_manager, std::shared_ptr<ConfigManager> config_manager);
     void handleRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams, const std::map<std::string, std::string>& authParams = {});
 
+    // Cache maintenance after a successful write (REST and MCP):
+    //   invalidate-on-write -> refresh synchronously, before the response;
+    //   refresh-on-write    -> refresh asynchronously, the response does not wait.
+    static void handleCacheAfterWrite(const std::shared_ptr<DatabaseManager>& db_manager,
+                                      const EndpointConfig& endpoint);
+
+    // Fills `field-in: header` fields from the request headers (case-insensitive).
+    static void applyHeaderFields(const crow::request& req, const EndpointConfig& endpoint,
+                                  std::map<std::string, std::string>& params);
+
 private:
     std::map<std::string, std::string> defaultParams;
 
-    void handleDeleteRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams);
     void handleGetRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams, const std::map<std::string, std::string>& authParams);
     void handleWriteRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams, const std::map<std::string, std::string>& authParams);
-    void handleCacheAfterWrite(const EndpointConfig& endpoint, const WriteResult& writeResult);
 
     bool isCacheDetailsRequest(const crow::request& req, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams);
 

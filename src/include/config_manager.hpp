@@ -105,7 +105,14 @@ struct OIDCConfig {
     std::string client_secret;                        // Client secret (from env if needed)
 
     // Provider type for presets
-    std::string provider_type = "generic";            // "google", "microsoft", "keycloak", etc.
+    std::string provider_type = "generic";            // "google", "microsoft" (alias "azure"), "keycloak", etc.
+
+    // Values substituted into the preset issuer-url placeholders:
+    // {tenant} <- tenant-id (Microsoft), {realm} <- realm (Keycloak),
+    // {domain} <- domain (Keycloak host, Auth0, Okta).
+    std::string tenant_id;
+    std::string realm;
+    std::string domain;
 
     // Token validation
     std::vector<std::string> allowed_audiences;       // Expected 'aud' claims
@@ -138,6 +145,16 @@ struct AuthConfig {
     std::string jwt_secret;
     std::string jwt_issuer;
     std::optional<OIDCConfig> oidc;                   // NEW: OIDC configuration
+    // Roles the authenticated principal must hold (any one of them). Empty
+    // means "any authenticated principal". Enforced by AuthMiddleware with 403.
+    std::vector<std::string> roles;
+    // The endpoint carries its own `auth:` block (YAML) / `auth` object (JSON).
+    // An endpoint WITHOUT one inherits the top-level `auth:` block.
+    bool declared = false;
+    // This config was copied from the top-level `auth:` block rather than
+    // written on the endpoint. Serialisers leave it out, so persisting an
+    // endpoint does not freeze the global credentials into its file.
+    bool inherited = false;
 };
 
 struct ValidatorConfig {
@@ -739,6 +756,11 @@ public:
     bool isTelemetryEnabled() const { return telemetry_enabled; }
     double getTelemetrySampleRate() const { return telemetry_sample_rate; }
     const AuthConfig& getGlobalAuthConfig() const { return global_auth_config; }
+    // `jwt` -> `bearer`; every other value unchanged.
+    static std::string normalizeAuthType(const std::string& type);
+    // Copy the top-level `auth:` block onto an endpoint that declares none
+    // (auth.declared == false), when global auth is enabled. No-op otherwise.
+    void applyGlobalAuthDefault(EndpointConfig& endpoint) const;
 
     // Load MCP server instructions (inline or from file)
     std::string loadMCPInstructions() const;
@@ -783,6 +805,10 @@ public:
     bool reloadEndpointConfig(const std::string& slug_or_path);
 
     void warnOnUnknownTopLevelKeys() const;
+    // Warns about keys that are parsed but acted on by nothing (server-name,
+    // storage: with a local template path, connections.*.log-queries /
+    // log-parameters / allow).
+    void warnOnInertKeys() const;
     void printConfig() const;
     static void printYamlNode(const YAML::Node& node, int indent = 0);
 

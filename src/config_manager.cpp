@@ -6,6 +6,7 @@
 #include "config_loader.hpp"
 #include "endpoint_repository.hpp"
 #include "caching_file_provider.hpp"
+#include "oidc_provider_presets.hpp"
 #include "vfs_adapter.hpp"
 #include "path_validator.hpp"
 #include <cctype>
@@ -153,6 +154,22 @@ void ConfigManager::loadConfig() {
             });
         }
 
+        if (auth_enabled) {
+            const auto snapshot = endpointsSnapshot();
+            std::size_t inherited = 0;
+            std::size_t opted_out = 0;
+            for (const auto& ep : *snapshot) {
+                if (ep.auth.inherited) {
+                    ++inherited;
+                } else if (ep.auth.declared && !ep.auth.enabled) {
+                    ++opted_out;
+                }
+            }
+            CROW_LOG_INFO << "Global auth (type '" << global_auth_config.type << "') applies to "
+                          << inherited << " endpoint(s) without their own `auth:` block; "
+                          << opted_out << " endpoint(s) opt out with `auth: {enabled: false}`";
+        }
+
         CROW_LOG_INFO << "Configuration loaded successfully";
     } catch (const YAML::Exception& e) {
         std::ostringstream error_msg;
@@ -294,6 +311,36 @@ void ConfigManager::warnOnUnknownTopLevelKeys() const {
     }
 }
 
+void ConfigManager::warnOnInertKeys() const {
+    // Keys that are parsed - so they are not "unknown" (#160) - but that no
+    // code acts on. An operator who sets one believes it does something.
+    // Warn, do not fail: none of them changes how a working config behaves.
+    if (config["server-name"]) {
+        CROW_LOG_WARNING << "Configuration key `server-name` has no effect: nothing reads it. "
+                            "Remove it; the HTTP bind address is `http-host`.";
+    }
+    if (config["storage"] && !PathSchemeUtils::IsRemotePath(template_config.path)) {
+        CROW_LOG_WARNING << "Configuration block `storage:` has no effect: it only configures "
+                            "the cache for REMOTE template paths (s3://, gs://, az://, https://), "
+                            "and `template.path` is local.";
+    }
+    const auto connections_node = config["connections"];
+    if (connections_node && connections_node.IsMap()) {
+        for (const auto& connection : connections_node) {
+            if (!connection.second.IsMap()) {
+                continue;
+            }
+            const std::string name = connection.first.as<std::string>();
+            for (const char* key : {"log-queries", "log-parameters", "allow"}) {
+                if (connection.second[key]) {
+                    CROW_LOG_WARNING << "Configuration key `connections." << name << "." << key
+                                     << "` has no effect: nothing reads it. Remove it.";
+                }
+            }
+        }
+    }
+}
+
 void ConfigManager::parseMainConfig() {
     try {
         CROW_LOG_INFO << "Parsing main configuration";
@@ -330,12 +377,23 @@ void ConfigManager::parseMainConfig() {
         warnOnUnknownTopLevelKeys();
 
         project_name = safeGet<std::string>(config, "project-name", "project-name");
-        project_description = safeGet<std::string>(config, "project-description", "project-description");
+        project_description = safeGet<std::string>(config, "project-description", "project-description", "");
         server_name = safeGet<std::string>(config, "server-name", "server-name", "localhost");
         http_port = safeGet<int>(config, "http-port", "http-port", 8080);
         http_host = safeGet<std::string>(config, "http-host", "http-host", "0.0.0.0");
         // Top-level and kebab-case, matching http-port / http-host.
         log_level = safeGet<std::string>(config, "log-level", "log-level", "info");
+        if (log_level == "warn") {
+            log_level = "warning";
+        }
+        // An unknown level used to fall through set_log_level() to info,
+        // silently - the same value on the command line is a startup error.
+        if (log_level != "debug" && log_level != "info" &&
+            log_level != "warning" && log_level != "error") {
+            throw ConfigurationError("invalid log level '" + log_level +
+                                         "'; must be one of: debug, info, warning (or warn), error",
+                                     "log-level");
+        }
         stall_timeout_s = safeGet<int>(config, "stall-timeout-s", "stall-timeout-s", 60);
         if (stall_timeout_s < 0) {
             throw std::runtime_error("stall-timeout-s must be 0 (disabled) or positive; got "
@@ -361,6 +419,7 @@ void ConfigManager::parseMainConfig() {
         parseStorageConfig();
         parseTemplateConfig();
         parseGlobalHeartbeatConfig();
+        warnOnInertKeys();
 
         if (config["cache-schema"]) {
             cache_schema = safeGet<std::string>(config, "cache-schema", "cache-schema");
@@ -996,6 +1055,14 @@ void ConfigManager::parseEndpointRequestFields(const YAML::Node& endpoint_config
             
             field.mcp_header = safeGet<std::string>(req, "mcp-header", "request.mcp-header", "");
 
+            // `field-type` appears in older examples but nothing reads it: it
+            // neither types nor validates the value. Say so at load.
+            if (req["field-type"]) {
+                CROW_LOG_WARNING << "Request field `" << field.fieldName
+                                 << "`: `field-type` has no effect (nothing reads it). "
+                                    "Use `validators:` (e.g. `- type: int`) to constrain the value.";
+            }
+
             parseEndpointValidators(req, field);
 
             endpoint.request_fields.push_back(field);
@@ -1059,7 +1126,10 @@ void ConfigManager::parseEndpointValidators(const YAML::Node& req, RequestFieldC
                 validatorConfig.min = safeGet<int>(validator, "min", "validators.min", std::numeric_limits<int>::min());
                 validatorConfig.max = safeGet<int>(validator, "max", "validators.max", std::numeric_limits<int>::max());
             } else if (validatorConfig.type == "string") {
-                validatorConfig.regex = safeGet<std::string>(validator, "regex", "validators.regex", "");
+                // `pattern` is the documented spelling; `regex` the original one.
+                // Both are accepted; `regex` wins when a validator carries both.
+                validatorConfig.regex = safeGet<std::string>(validator, "regex", "validators.regex",
+                    safeGet<std::string>(validator, "pattern", "validators.pattern", ""));
                 validatorConfig.min = safeGet<int>(validator, "min", "validators.min", 0);
                 validatorConfig.max = safeGet<int>(validator, "max", "validators.max", 0);
                 if (validator["min-length"]) {
@@ -1069,7 +1139,14 @@ void ConfigManager::parseEndpointValidators(const YAML::Node& req, RequestFieldC
                     validatorConfig.max = safeGet<int>(validator, "max-length", "validators.max-length", validatorConfig.max);
                 }
             } else if (validatorConfig.type == "enum") {
-                validatorConfig.allowedValues = safeGet<std::vector<std::string>>(validator, "allowedValues", "validators.allowedValues");
+                // `values` is the documented spelling; `allowedValues` the original.
+                if (validator["allowedValues"]) {
+                    validatorConfig.allowedValues = safeGet<std::vector<std::string>>(validator, "allowedValues", "validators.allowedValues");
+                } else if (validator["values"]) {
+                    validatorConfig.allowedValues = safeGet<std::vector<std::string>>(validator, "values", "validators.values");
+                } else {
+                    throw ConfigurationError("Missing required key: values (or allowedValues)", "validators.values");
+                }
             } else if (validatorConfig.type == "date") {
                 validatorConfig.minDate = safeGet<std::string>(validator, "min", "validators.min", "");
                 validatorConfig.maxDate = safeGet<std::string>(validator, "max", "validators.max", "");
@@ -1102,12 +1179,42 @@ void ConfigManager::parseEndpointRateLimit(const YAML::Node& endpoint_config, En
     }
 }
 
+std::string ConfigManager::normalizeAuthType(const std::string& type) {
+    // `jwt` is what the docs and the shipped customer example call HS256 bearer
+    // tokens; it matched no authenticator and so refused every request with 401.
+    if (type == "jwt") {
+        return "bearer";
+    }
+    return type;
+}
+
+void ConfigManager::applyGlobalAuthDefault(EndpointConfig& endpoint) const {
+    // The top-level `auth:` block is the default for every endpoint that does
+    // not declare its own. Before this it protected nothing: only the endpoint
+    // block was ever checked, so `auth: {enabled: true, ...}` in flapi.yaml
+    // left every endpoint open while reading as a protected server.
+    if (endpoint.auth.declared || !auth_enabled) {
+        return;
+    }
+    endpoint.auth = global_auth_config;
+    endpoint.auth.enabled = true;
+    endpoint.auth.declared = false;
+    endpoint.auth.inherited = true;
+}
+
 void ConfigManager::parseEndpointAuth(const YAML::Node& endpoint_config, EndpointConfig& endpoint) {
     CROW_LOG_DEBUG << "\tParsing endpoint auth configuration";
-    if (endpoint_config["auth"]) {
+    if (!endpoint_config["auth"]) {
+        applyGlobalAuthDefault(endpoint);
+        return;
+    }
+    {
         auto auth_node = endpoint_config["auth"];
+        endpoint.auth.declared = true;
+        endpoint.auth.inherited = false;
         endpoint.auth.enabled = safeGet<bool>(auth_node, "enabled", "auth.enabled", false);
-        endpoint.auth.type = safeGet<std::string>(auth_node, "type", "auth.type", "");
+        endpoint.auth.type = normalizeAuthType(safeGet<std::string>(auth_node, "type", "auth.type", ""));
+        endpoint.auth.roles = safeGet<std::vector<std::string>>(auth_node, "roles", "auth.roles", std::vector<std::string>());
         if (auth_node["jwt-secret"]) {
             endpoint.auth.jwt_secret = safeGet<std::string>(auth_node, "jwt-secret", "auth.jwt-secret");
         }
@@ -1483,9 +1590,10 @@ void ConfigManager::parseAuthConfig() {
         CROW_LOG_DEBUG << "Auth enabled: " << auth_enabled;
 
         if (auth_node["type"]) {
-            global_auth_config.type = auth_node["type"].as<std::string>();
+            global_auth_config.type = normalizeAuthType(auth_node["type"].as<std::string>());
             CROW_LOG_DEBUG << "Auth type: " << global_auth_config.type;
         }
+        global_auth_config.roles = safeGet<std::vector<std::string>>(auth_node, "roles", "auth.roles", std::vector<std::string>());
         if (auth_node["jwt-secret"]) {
             global_auth_config.jwt_secret = auth_node["jwt-secret"].as<std::string>();
         }
@@ -1499,6 +1607,11 @@ void ConfigManager::parseAuthConfig() {
                 AuthUser auth_user;
                 auth_user.username = user["username"].as<std::string>();
                 auth_user.password = user["password"].as<std::string>();
+                if (auth_user.username.empty() || auth_user.password.empty()) {
+                    throw std::runtime_error(
+                        "auth.users: a user has an empty username or password. If it comes from "
+                        "{{env.NAME}}, that variable is unset or empty.");
+                }
                 if (user["roles"]) {
                     auth_user.roles = user["roles"].as<std::vector<std::string>>();
                 }
@@ -1539,6 +1652,19 @@ OIDCConfig ConfigManager::parseOIDCConfigNode(const YAML::Node& oidc_node, const
     if (oidc_node["provider-type"]) {
         oidc_config.provider_type = oidc_node["provider-type"].as<std::string>();
         CROW_LOG_DEBUG << log_prefix << "OIDC provider type: " << oidc_config.provider_type;
+    }
+
+    // Preset placeholder values ({tenant}, {realm}, {domain} in issuer-url).
+    if (oidc_node["tenant-id"]) {
+        oidc_config.tenant_id = oidc_node["tenant-id"].as<std::string>();
+    } else if (oidc_node["tenant"]) {
+        oidc_config.tenant_id = oidc_node["tenant"].as<std::string>();
+    }
+    if (oidc_node["realm"]) {
+        oidc_config.realm = oidc_node["realm"].as<std::string>();
+    }
+    if (oidc_node["domain"]) {
+        oidc_config.domain = oidc_node["domain"].as<std::string>();
     }
 
     // Token validation settings
@@ -1592,6 +1718,20 @@ OIDCConfig ConfigManager::parseOIDCConfigNode(const YAML::Node& oidc_node, const
     // JWKS caching
     if (oidc_node["jwks-cache-hours"]) {
         oidc_config.jwks_cache_hours = oidc_node["jwks-cache-hours"].as<int>();
+    }
+
+    // Validate at LOAD, against the preset as it will be applied at request
+    // time. Before, a preset issuer-url with an unsubstitutable placeholder
+    // was only logged ("OIDC configuration error") on the first request and
+    // every token was then refused - a config that read as protected and
+    // could authenticate nobody.
+    {
+        OIDCConfig effective = oidc_config;
+        OIDCProviderPresets::applyPreset(effective);
+        const std::string problem = OIDCProviderPresets::validateProviderConfig(effective);
+        if (!problem.empty()) {
+            throw ConfigurationError(log_prefix + "OIDC: " + problem, "auth.oidc");
+        }
     }
 
     return oidc_config;
@@ -2133,6 +2273,18 @@ crow::json::wvalue ConfigManager::serializeEndpointConfig(const EndpointConfig& 
     crow::json::wvalue authJson;
     authJson["enabled"] = config.auth.enabled;
     authJson["type"] = config.auth.type;
+    {
+        auto roles = crow::json::wvalue::list();
+        for (const auto& role : config.auth.roles) {
+            roles.push_back(role);
+        }
+        authJson["roles"] = std::move(roles);
+    }
+    // Marks auth copied from the top-level `auth:` block. A client that sends
+    // this object back unchanged keeps the endpoint inheriting; without the
+    // marker a GET-then-PUT round trip would turn inheritance into a
+    // declaration (and `enabled: false` into a silent opt-out).
+    authJson["inherited"] = config.auth.inherited;
     if (config.auth.from_aws_secretmanager) {
         crow::json::wvalue awsJson;
         awsJson[(style == EndpointJsonStyle::HyphenCase) ? "secret-name" : "secretName"] = config.auth.from_aws_secretmanager->secret_name;
@@ -2248,13 +2400,15 @@ ValidatorConfig validatorFromJson(const crow::json::rvalue& v) {
         out.min = v.has("min") ? static_cast<int>(v["min"].i()) : std::numeric_limits<int>::min();
         out.max = v.has("max") ? static_cast<int>(v["max"].i()) : std::numeric_limits<int>::max();
     } else if (out.type == "string") {
-        out.regex = str("regex");
+        out.regex = v.has("regex") ? str("regex") : str("pattern");
         out.min = v.has("min-length") ? static_cast<int>(v["min-length"].i())
                                       : (v.has("min") ? static_cast<int>(v["min"].i()) : 0);
         out.max = v.has("max-length") ? static_cast<int>(v["max-length"].i())
                                       : (v.has("max") ? static_cast<int>(v["max"].i()) : 0);
     } else if (out.type == "enum") {
-        const char* key = v.has("allowedValues") ? "allowedValues" : (v.has("allowed-values") ? "allowed-values" : nullptr);
+        const char* key = v.has("allowedValues") ? "allowedValues"
+                        : (v.has("allowed-values") ? "allowed-values"
+                        : (v.has("values") ? "values" : nullptr));
         if (key) {
             for (const auto& item : v[key]) {
                 out.allowedValues.push_back(item.s());
@@ -2432,17 +2586,38 @@ EndpointConfig ConfigManager::deserializeEndpointConfig(const crow::json::rvalue
         }
     }
 
-    if (json.has("auth")) {
+    const bool auth_inherited_in_json =
+        json.has("auth") && json["auth"].has("inherited") &&
+        json["auth"]["inherited"].t() == crow::json::type::True;
+    if (json.has("auth") && !auth_inherited_in_json) {
         const auto& authJson = json["auth"];
-        // enabled/type from the JSON; users, roles and secrets (never serialised) stay.
+        // enabled/type/roles from the JSON; users and secrets (never serialised) stay.
+        if (base && base->auth.inherited) {
+            // Turning an inherited config into a declared one: start clean so
+            // the global users/secrets are not frozen into this endpoint.
+            config.auth = AuthConfig{};
+        }
+        config.auth.declared = true;
+        config.auth.inherited = false;
         if (authJson.has("enabled")) {
             config.auth.enabled = authJson["enabled"].b();
         } else if (!base) {
             config.auth.enabled = false;
         }
         if (authJson.has("type")) {
-            config.auth.type = authJson["type"].s();
+            config.auth.type = normalizeAuthType(authJson["type"].s());
         }
+        if (authJson.has("roles")) {
+            config.auth.roles.clear();
+            for (const auto& role : authJson["roles"]) {
+                config.auth.roles.push_back(role.s());
+            }
+        }
+    } else if (!base || auth_inherited_in_json || base->auth.inherited) {
+        // No auth of its own: inherit the global block (re-applied so a PUT
+        // picks up the current global config rather than a stale copy).
+        config.auth = AuthConfig{};
+        applyGlobalAuthDefault(config);
     }
 
     auto rateKey = firstExistingKey(json, {"rate-limit", "rateLimit"});
@@ -2646,10 +2821,19 @@ std::string ConfigManager::serializeEndpointConfigToYaml(const EndpointConfig& c
     }
     
     // Auth configuration
-    if (config.auth.enabled) {
+    // Inherited auth is NOT written: the file keeps inheriting the global
+    // block. A declared `enabled: false` IS written - it is an explicit opt-out
+    // from the global block, and dropping it would re-protect the endpoint on
+    // the next load (or protect it with something other than intended).
+    if (!config.auth.inherited && (config.auth.enabled || config.auth.declared)) {
         out << YAML::Key << "auth" << YAML::Value << YAML::BeginMap;
-        out << YAML::Key << "enabled" << YAML::Value << true;
-        out << YAML::Key << "type" << YAML::Value << config.auth.type;
+        out << YAML::Key << "enabled" << YAML::Value << config.auth.enabled;
+        if (config.auth.enabled) {
+            out << YAML::Key << "type" << YAML::Value << config.auth.type;
+            if (!config.auth.roles.empty()) {
+                out << YAML::Key << "roles" << YAML::Value << YAML::Flow << config.auth.roles;
+            }
+        }
         out << YAML::EndMap;
     }
     

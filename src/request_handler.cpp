@@ -5,6 +5,7 @@
 #include "content_negotiation.hpp"
 #include "arrow_serializer.hpp"
 #include "query_executor.hpp"
+#include "request_context.hpp"
 
 #include <iostream>
 #include <map>
@@ -12,6 +13,11 @@
 #include "crow/json.h"
 #include <sstream>
 #include <algorithm>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <set>
+#include <thread>
 
 namespace flapi {
 
@@ -33,6 +39,20 @@ bool ParsePlainNonNegativeInt(const std::string& text, int64_t& out) {
     }
     out = value;
     return true;
+}
+
+void writeInternalError(crow::response& res) {
+    crow::json::wvalue body;
+    body["error"] = "Internal Server Error";
+    body["message"] = "The request failed on the server. The details are in the server log "
+                      "under this request id.";
+    if (const auto* rc = RequestContextScope::current()) {
+        body["request_id"] = std::string(rc->requestIdView());
+    }
+    res.code = 500;
+    res.set_header("Content-Type", "application/json");
+    res.body = body.dump();
+    res.end();
 }
 
 }  // namespace
@@ -73,10 +93,12 @@ void RequestHandler::handleRequest(const crow::request& req, crow::response& res
         case crow::HTTPMethod::Post:
         case crow::HTTPMethod::Put:
         case crow::HTTPMethod::Patch:
-            handleWriteRequest(req, res, endpoint, pathParams, authParams);
-            break;
         case crow::HTTPMethod::Delete:
-            handleDeleteRequest(req, res, endpoint, pathParams);
+            // DELETE runs its template like every other write. It used to skip
+            // the template entirely: a cached endpoint got its cache refreshed
+            // ("Cache invalidated"), anything else got 405, and the row the
+            // caller asked to delete was never touched.
+            handleWriteRequest(req, res, endpoint, pathParams, authParams);
             break;
         default:
             res.code = 405;
@@ -156,7 +178,7 @@ void RequestHandler::handleWriteRequest(const crow::request& req, crow::response
         }
         
         // Handle cache operations after successful write
-        handleCacheAfterWrite(endpoint, writeResult);
+        handleCacheAfterWrite(db_manager, endpoint);
         
         // Build response body
         crow::json::wvalue response;
@@ -208,39 +230,15 @@ void RequestHandler::handleWriteRequest(const crow::request& req, crow::response
         const std::string public_detail =
             publicErrorMessage("Error handling write request", e.what(), secrets);
         CROW_LOG_ERROR << public_detail;
-        res.code = 500;
-        // A database error quotes the statement that failed, which IS the
-        // rendered template - so this returned whatever the template
-        // interpolated: `{{{conn.password}}}`, `{{{env.API_KEY}}}`, a
-        // credential-valued default. The MCP path was fixed for exactly this
-        // and justified by "MCP is unauthenticated by default"; REST auth is
-        // per-endpoint and equally optional, so an endpoint without an
-        // `auth:` block leaked the same secrets through the same mechanism.
-        // Same collector, same scrub, both surfaces.
-        res.body = publicErrorMessage("Internal Server Error", e.what(), secrets);
-        res.end();
+        // The body carries NO part of the failure text. A database error
+        // quotes the statement that failed, which IS the rendered template,
+        // and names absolute file paths ("No files found that match the
+        // pattern /srv/app/data/x.parquet"). Secret scrubbing (above, for the
+        // log) removes credentials but not the SQL or the paths, which map the
+        // deployment for anyone who can trigger an error. The detail stays in
+        // the server log, which carries the same request id as this body.
+        writeInternalError(res);
         return;
-    }
-}
-
-void RequestHandler::handleDeleteRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams) {
-    if (db_manager->isCacheEnabled(endpoint)) {
-        auto ret = db_manager->invalidateCache(endpoint);
-        if (ret) {
-            res.code = 200;
-            res.body = "Cache invalidated";
-            res.end();
-        }
-        else {
-            res.code = 500;
-            res.body = "Internal Server Error";
-            res.end();
-        }
-    }
-    else {
-        res.code = 405;
-        res.body = "Method not allowed";
-        res.end();
     }
 }
 
@@ -440,17 +438,14 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
         const std::string public_detail =
             publicErrorMessage("Error handling request", e.what(), secrets);
         CROW_LOG_ERROR << public_detail;
-        res.code = 500;
-        // A database error quotes the statement that failed, which IS the
-        // rendered template - so this returned whatever the template
-        // interpolated: `{{{conn.password}}}`, `{{{env.API_KEY}}}`, a
-        // credential-valued default. The MCP path was fixed for exactly this
-        // and justified by "MCP is unauthenticated by default"; REST auth is
-        // per-endpoint and equally optional, so an endpoint without an
-        // `auth:` block leaked the same secrets through the same mechanism.
-        // Same collector, same scrub, both surfaces.
-        res.body = publicErrorMessage("Internal Server Error", e.what(), secrets);
-        res.end();
+        // The body carries NO part of the failure text. A database error
+        // quotes the statement that failed, which IS the rendered template,
+        // and names absolute file paths ("No files found that match the
+        // pattern /srv/app/data/x.parquet"). Secret scrubbing (above, for the
+        // log) removes credentials but not the SQL or the paths, which map the
+        // deployment for anyone who can trigger an error. The detail stays in
+        // the server log, which carries the same request id as this body.
+        writeInternalError(res);
         return;
     }
 }
@@ -508,7 +503,31 @@ std::map<std::string, std::string> RequestHandler::combineParameters(const crow:
         }
         params[key] = req.url_params.get(key);
     }
+    applyHeaderFields(req, endpoint, params);
     return params;
+}
+
+void RequestHandler::applyHeaderFields(const crow::request& req, const EndpointConfig& endpoint,
+                                       std::map<std::string, std::string>& params) {
+    // `field-in: header` fields come from the request HEADERS. They were read
+    // from the query string instead, so a declared header was never seen and
+    // a same-named query parameter stood in for it. A header field is now
+    // satisfied only by the header (or its configured default): a query
+    // parameter must not be able to impersonate e.g. a gateway-set tenant id.
+    // Crow's header map is case-insensitive, as HTTP header names are.
+    for (const auto& field : endpoint.request_fields) {
+        if (field.fieldIn != "header" || isReservedAuthKey(field.fieldName)) {
+            continue;
+        }
+        const std::string value = req.get_header_value(field.fieldName);
+        if (!value.empty()) {
+            params[field.fieldName] = value;
+        } else if (!field.defaultValue.empty()) {
+            params[field.fieldName] = field.defaultValue;
+        } else {
+            params.erase(field.fieldName);
+        }
+    }
 }
 
 std::map<std::string, std::string> RequestHandler::combineWriteParameters(const crow::request& req,
@@ -524,10 +543,12 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
         params[key] = value;
     }
 
-    // Extract parameters from JSON body (highest precedence for write operations)
-    if (req.method == crow::HTTPMethod::Post || 
-        req.method == crow::HTTPMethod::Put || 
-        req.method == crow::HTTPMethod::Patch) {
+    // Extract parameters from JSON body (highest precedence for write operations).
+    // A DELETE body is optional; most clients send the key in the path or query.
+    if (req.method == crow::HTTPMethod::Post ||
+        req.method == crow::HTTPMethod::Put ||
+        req.method == crow::HTTPMethod::Patch ||
+        req.method == crow::HTTPMethod::Delete) {
         
         if (!req.body.empty()) {
             try {
@@ -656,36 +677,118 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
         }
     }
 
+    applyHeaderFields(req, endpoint, params);
     return params;
 }
 
-void RequestHandler::handleCacheAfterWrite(const EndpointConfig& endpoint, const WriteResult& writeResult) {
-    // Only process if cache is enabled for this endpoint
-    if (!db_manager->isCacheEnabled(endpoint)) {
+namespace {
+
+// One background worker for refresh-on-write. A write must not wait for the
+// refresh (that is what invalidate-on-write is for), but a detached thread per
+// write could still be running DuckDB while statics are torn down at exit, and
+// a burst of writes would start a refresh each. A single worker, joined on
+// destruction, with refreshes coalesced per endpoint, avoids both.
+class AsyncCacheRefresher {
+public:
+    static AsyncCacheRefresher& instance() {
+        static AsyncCacheRefresher refresher;
+        return refresher;
+    }
+
+    void schedule(std::shared_ptr<DatabaseManager> db_manager, const EndpointConfig& endpoint) {
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            if (_stopping) {
+                return;
+            }
+            std::string key = endpoint.getIdentifier();
+            if (!_queued.insert(key).second) {
+                return;   // already pending; that refresh will see this write too
+            }
+            _jobs.push_back(Job{std::move(db_manager), endpoint, std::move(key)});
+            if (!_worker.joinable()) {
+                _worker = std::thread([this] { run(); });
+            }
+        }
+        _cv.notify_one();
+    }
+
+    ~AsyncCacheRefresher() {
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            _stopping = true;
+            _jobs.clear();
+        }
+        _cv.notify_all();
+        if (_worker.joinable()) {
+            _worker.join();
+        }
+    }
+
+private:
+    struct Job {
+        std::shared_ptr<DatabaseManager> db_manager;
+        EndpointConfig endpoint;
+        std::string key;
+    };
+
+    void run() {
+        while (true) {
+            Job job;
+            {
+                std::unique_lock<std::mutex> lock(_mutex);
+                _cv.wait(lock, [this] { return _stopping || !_jobs.empty(); });
+                if (_stopping) {
+                    return;
+                }
+                job = std::move(_jobs.front());
+                _jobs.pop_front();
+                _queued.erase(job.key);
+            }
+            try {
+                if (job.db_manager->invalidateCache(job.endpoint)) {
+                    CROW_LOG_DEBUG << "Cache refreshed after write (async) for endpoint: " << job.key;
+                } else {
+                    CROW_LOG_WARNING << "Asynchronous cache refresh after write failed for endpoint: " << job.key;
+                }
+            } catch (const std::exception& e) {
+                CROW_LOG_WARNING << "Asynchronous cache refresh after write failed for endpoint "
+                                 << job.key << ": " << e.what();
+            }
+        }
+    }
+
+    std::mutex _mutex;
+    std::condition_variable _cv;
+    std::deque<Job> _jobs;
+    std::set<std::string> _queued;
+    std::thread _worker;
+    bool _stopping = false;
+};
+
+}  // namespace
+
+void RequestHandler::handleCacheAfterWrite(const std::shared_ptr<DatabaseManager>& db_manager,
+                                           const EndpointConfig& endpoint) {
+    if (!db_manager || !db_manager->isCacheEnabled(endpoint)) {
         return;
     }
-    
-    // Invalidate cache if configured
+
+    // invalidate-on-write: refresh NOW, before the response, so a read issued
+    // after this write's response sees the write.
     if (endpoint.cache.invalidate_on_write) {
         db_manager->invalidateCache(endpoint);
         CROW_LOG_DEBUG << "Cache invalidated after write operation for endpoint: " << endpoint.getIdentifier();
+        return;   // already fresh; a second, asynchronous refresh would be redundant
     }
-    
-    // Refresh cache if configured
+
+    // refresh-on-write: refresh in the background; the response does not
+    // wait. This was a no-op that only logged.
     if (endpoint.cache.refresh_on_write) {
-        // Note: Cache refresh typically involves running the cache sync
-        // For now, we'll trigger a manual refresh via the cache manager
-        // This may need to be enhanced based on the actual cache refresh mechanism
-        auto cache_manager = db_manager->getCacheManager();
-        if (cache_manager) {
-            // The actual refresh mechanism would depend on CacheManager's API
-            // For now, we'll log that refresh was requested
-            CROW_LOG_DEBUG << "Cache refresh requested after write operation for endpoint: " << endpoint.getIdentifier();
-            // In a full implementation, we would call a refresh method here
-            // cache_manager->refreshCacheForEndpoint(endpoint);
-        }
+        AsyncCacheRefresher::instance().schedule(db_manager, endpoint);
+        CROW_LOG_DEBUG << "Cache refresh scheduled after write operation for endpoint: " << endpoint.getIdentifier();
     }
-    
+
     // If neither option is set, let the heartbeat handle refresh naturally
 }
 
