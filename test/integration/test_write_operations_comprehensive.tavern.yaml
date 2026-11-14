@@ -14,7 +14,7 @@ stages:
   
   - name: UPDATE + SELECT pattern - verify SELECT result returned
     request:
-      url: "{base_url}/northwind/products/17"
+      url: "{base_url}/northwind/products/18"
       method: PUT
       headers:
         Content-Type: application/json
@@ -31,7 +31,7 @@ stages:
 
   - name: Verify UPDATE + SELECT returns correct product structure
     request:
-      url: "{base_url}/northwind/products/17"
+      url: "{base_url}/northwind/products/18"
       method: PUT
       headers:
         Content-Type: application/json
@@ -45,7 +45,7 @@ stages:
       json:
         rows_affected: 1
         data:
-          - ProductID: 17
+          - ProductID: 18
             ProductName: "Structure Test Product"
             # Should have other product fields
 
@@ -78,7 +78,7 @@ stages:
   
   - name: Verify all JSON body fields extracted (including unknown)
     request:
-      url: "{base_url}/northwind/products/17"
+      url: "{base_url}/northwind/products/18"
       method: PUT
       headers:
         Content-Type: application/json
@@ -96,7 +96,7 @@ stages:
 
   - name: Parameter precedence - body overrides query
     request:
-      url: "{base_url}/northwind/products/17?product_name=QueryName"
+      url: "{base_url}/northwind/products/18?product_name=QueryName"
       method: PUT
       headers:
         Content-Type: application/json
@@ -111,7 +111,7 @@ stages:
         rows_affected: 1
         data:
           - ProductName: "BodyName"  # Body should take precedence
-            ProductID: 17
+            ProductID: 18
 
   # ============================================
   # SQL Injection Comprehensive Tests
@@ -119,7 +119,7 @@ stages:
   
   - name: SQL injection - OR 1=1 pattern
     request:
-      url: "{base_url}/northwind/products/17"
+      url: "{base_url}/northwind/products/18"
       method: PUT
       headers:
         Content-Type: application/json
@@ -134,7 +134,7 @@ stages:
 
   - name: SQL injection - comment pattern (--)
     request:
-      url: "{base_url}/northwind/products/17"
+      url: "{base_url}/northwind/products/18"
       method: PUT
       headers:
         Content-Type: application/json
@@ -149,7 +149,7 @@ stages:
 
   - name: SQL injection - single quote pattern
     request:
-      url: "{base_url}/northwind/products/17"
+      url: "{base_url}/northwind/products/18"
       method: PUT
       headers:
         Content-Type: application/json
@@ -164,7 +164,7 @@ stages:
 
   - name: SQL injection - false positive should pass (word boundary)
     request:
-      url: "{base_url}/northwind/products/17"
+      url: "{base_url}/northwind/products/18"
       method: PUT
       headers:
         Content-Type: application/json
@@ -185,7 +185,7 @@ stages:
   
   - name: Unknown parameter with validate-before-write enabled
     request:
-      url: "{base_url}/northwind/products/17"
+      url: "{base_url}/northwind/products/18"
       method: PUT
       headers:
         Content-Type: application/json
@@ -202,7 +202,7 @@ stages:
 
   - name: Parameter name case sensitivity test
     request:
-      url: "{base_url}/northwind/products/17"
+      url: "{base_url}/northwind/products/18"
       method: PUT
       headers:
         Content-Type: application/json
@@ -222,7 +222,7 @@ stages:
   
   - name: Empty string vs null vs missing parameter
     request:
-      url: "{base_url}/northwind/products/17"
+      url: "{base_url}/northwind/products/18"
       method: PUT
       headers:
         Content-Type: application/json
