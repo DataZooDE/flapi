@@ -309,15 +309,14 @@ void CacheManager::leaveRefresh(const CacheKey& key) {
     inflight_refreshes_.erase(key);
 }
 
-void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string> params) {
+std::string CacheManager::renderRefreshTemplate(std::shared_ptr<ConfigManager> config_manager,
+                                                const EndpointConfig& endpoint,
+                                                std::map<std::string, std::string>& params) {
     const auto& cacheConfig = endpoint.cache;
     const auto& ducklakeConfig = config_manager->getDuckLakeConfig();
     const std::string catalog = ducklakeConfig.alias;
     const std::string schema = cacheConfig.schema.empty() ? "main" : cacheConfig.schema;
     const std::string table = cacheConfig.table;
-
-    // Ensure cache schema exists before processing cache template
-    ensureCacheSchemaExists(catalog, schema);
 
     SnapshotInfo snapshot = fetchSnapshotInfo(catalog, schema, table);
 
@@ -418,7 +417,25 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
         params["primaryKeys"] = joinStrings(cacheConfig.primary_keys, ",");
     }
 
-    const std::string rendered = db_adapter_->renderCacheTemplate(endpoint, cacheConfig, params);
+    // Rendering consumes the cache.* entries (they move into the template
+    // context); hand the caller the values it rendered with.
+    const auto rendered_with = params;
+    std::string rendered = db_adapter_->renderCacheTemplate(endpoint, cacheConfig, params);
+    params = rendered_with;
+    return rendered;
+}
+
+void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string> params) {
+    const auto& cacheConfig = endpoint.cache;
+    const auto& ducklakeConfig = config_manager->getDuckLakeConfig();
+    const std::string catalog = ducklakeConfig.alias;
+    const std::string schema = cacheConfig.schema.empty() ? "main" : cacheConfig.schema;
+    const std::string table = cacheConfig.table;
+
+    // Ensure cache schema exists before processing cache template
+    ensureCacheSchemaExists(catalog, schema);
+
+    const std::string rendered = renderRefreshTemplate(config_manager, endpoint, params);
 
     // Timed around the populate statement only - what an operator tuning a
     // slow refresh can change - so the audit's duration_ms is comparable

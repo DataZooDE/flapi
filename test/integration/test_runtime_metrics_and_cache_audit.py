@@ -37,6 +37,7 @@ connections:
   src:
     properties:
       path: ./source.csv
+      fail_at: '1'
 ducklake:
   enabled: true
   alias: cache
@@ -125,6 +126,59 @@ USING (
 ON t.id = s.id
 WHEN MATCHED THEN UPDATE SET name = s.name, version = s.version
 WHEN NOT MATCHED THEN INSERT *;
+""",
+    # Soft deletes the DuckLake way: DuckLake's MERGE takes one UPDATE/DELETE
+    # action, so deletes are a DELETE statement before a single-action MERGE.
+    "soft.yaml": """\
+url-path: /soft
+method: GET
+template-source: serve.sql
+connection: [src]
+cache:
+  enabled: true
+  table: soft_cache
+  schema: main
+  primary-key: [id]
+  cursor:
+    column: version
+    type: integer
+  template-file: soft_cache.sql
+""",
+    "soft_cache.sql": """\
+{{^cache.previousSnapshotTimestamp}}
+CREATE TABLE IF NOT EXISTS {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS
+SELECT id, name, version FROM read_csv('{{{conn.path}}}') WHERE false;
+{{/cache.previousSnapshotTimestamp}}
+DELETE FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
+WHERE id IN (SELECT id FROM read_csv('{{{conn.path}}}') WHERE name = 'DELETED');
+MERGE INTO {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS t
+USING (
+  SELECT id, name, version FROM read_csv('{{{conn.path}}}')
+  WHERE name <> 'DELETED'
+  {{#cache.previousSnapshotTimestamp}}
+    AND version > {{cache.previousSnapshotTimestamp}}
+  {{/cache.previousSnapshotTimestamp}}
+) AS s
+ON t.id = s.id
+WHEN MATCHED THEN UPDATE SET name = s.name, version = s.version
+WHEN NOT MATCHED THEN INSERT *;
+""",
+    # A template that fails AFTER writing: nothing it wrote may survive.
+    "broken.yaml": """\
+url-path: /broken
+method: GET
+template-source: serve.sql
+connection: [src]
+cache:
+  enabled: true
+  table: broken_cache
+  schema: main
+  template-file: broken_cache.sql
+""",
+    "broken_cache.sql": """\
+CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS
+SELECT * FROM read_csv('{{{conn.path}}}');
+SELECT error('boom') FROM read_csv('{{{conn.path}}}') WHERE id >= (SELECT {{{conn.fail_at}}});
 """,
     "serve.sql": SERVE,
 }
@@ -312,3 +366,26 @@ class TestMetricsMcpTool:
         doc = json.loads(result["content"][0]["text"])
         assert [s["route"] for s in doc["requests"]["series"]] == ["/full"]
         assert doc["caches"][0]["endpoint"] == "/full"
+
+
+class TestRefreshIsAtomic:
+    def test_a_failed_first_build_leaves_no_table(self, server):
+        r = requests.post(f"{server.base}/api/v1/_config/endpoints/-broken/cache/refresh", headers=AUTH, timeout=60)
+        assert r.status_code >= 400
+        # The CREATE that ran before the failure was rolled back: the endpoint
+        # must not serve an empty (or any) table as if it were built.
+        served = requests.get(f"{server.base}/broken", timeout=30)
+        assert served.status_code == 503, served.text
+        state = {c["cache"]: c for c in metrics(server)["caches"]}["cache.main.broken_cache"]["state"]
+        assert state in ("failed", "unbuilt"), state
+
+    def test_deletes_then_single_action_merge(self, server):
+        refresh(server, "soft")
+        # update id 2, soft-delete id 3, insert id 4
+        write_source(server.root, [(1, "a", 1), (2, "b2", 2), (3, "DELETED", 2), (4, "d", 2)])
+        refresh(server, "soft")
+        rows = {r["id"]: r["name"] for r in requests.get(f"{server.base}/soft", timeout=30).json()["data"]}
+        assert rows == {1: "a", 2: "b2", 4: "d"}
+        newest = audit(server, "soft")[0]
+        # 1 deleted + 1 updated + 1 inserted, summed over the script's statements
+        assert newest["rows_affected"] == 3, newest

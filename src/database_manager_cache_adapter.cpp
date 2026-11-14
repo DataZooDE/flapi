@@ -27,8 +27,8 @@ QueryResult DatabaseManagerCacheAdapter::executeDuckLakeQueryWithResult(const st
 
 std::optional<int64_t> DatabaseManagerCacheAdapter::executeDuckLakeQueryCountingRows(
     const std::string& query, const std::map<std::string, std::string>& params) {
-    auto result = db_manager_->executeDuckLakeQuery(query, params);
-    return extractAffectedRowCount(result.data.dump());
+    (void)params;  // a rendered cache template has no remaining parameters
+    return db_manager_->executeDuckLakeScript(query);
 }
 
 std::optional<int64_t> extractAffectedRowCount(const std::string& result_json) {

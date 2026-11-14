@@ -129,10 +129,11 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
 
   templates
     .command('expand <path>')
-    .description('Expand template with parameters')
+    .description('Expand template with parameters (--cache: the cache populate template as the next refresh renders it)')
     .option('-p, --params <params>', 'JSON parameters for template expansion')
     .option('--params-file <file>', 'File containing JSON parameters')
-    .action(async (path: string, options: { params?: string; paramsFile?: string }) => {
+    .option('--cache', 'Expand the cache populate template with the live watermark instead of the serving template')
+    .action(async (path: string, options: { params?: string; paramsFile?: string; cache?: boolean }) => {
       let params: any = {};
 
       if (options.params) {
@@ -158,9 +159,11 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
       const spinner = Console.spinner(`Expanding template ${path}...`);
       try {
         const endpointUrl = buildEndpointUrl(path, 'template/expand');
-        const response = await ctx.client.post(endpointUrl, {
-          parameters: params
-        });
+        const response = await ctx.client.post(
+          endpointUrl,
+          { parameters: params },
+          options.cache ? { params: { target: 'cache' } } : undefined,
+        );
         spinner.succeed(chalk.green(`✓ Template ${path} expanded successfully`));
         const result = response.data;
 

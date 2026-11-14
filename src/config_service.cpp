@@ -96,6 +96,16 @@ crow::json::wvalue buildCacheMetricsJson(const std::string& endpoint_filter) {
     return crow::json::wvalue(rows);
 }
 
+/// The cache catalog/schema/table a cached endpoint's serving template reads,
+/// exactly as the request path supplies them.
+void addCacheTargetParams(const std::shared_ptr<ConfigManager>& config_manager, const EndpointConfig& endpoint,
+                          std::map<std::string, std::string>& params) {
+    auto db_manager = DatabaseManager::getInstance();
+    if (auto cache_manager = db_manager ? db_manager->getCacheManager() : nullptr) {
+        cache_manager->addQueryCacheParamsIfNecessary(config_manager, endpoint, params);
+    }
+}
+
 } // namespace
 
 crow::json::wvalue buildMetricsJson(const std::shared_ptr<ConfigManager>& config_manager, const std::string& filter) {
@@ -902,7 +912,12 @@ crow::response AuditLogHandler::getCacheAuditLog(const std::string& path) {
         auto db_manager = DatabaseManager::getInstance();
         const std::string catalog = ducklake_config.alias;
         
-        std::string audit_query = buildAuditQuery(catalog, path);
+        // Filter on the endpoint's own url-path, which is what each sync event
+        // records. The caller's path only RESOLVES to the endpoint: for
+        // /customers/:id it may arrive as /customers/%3Aid or /customers/123,
+        // and filtering on that matched no rows - an empty audit for every
+        // endpoint with a path parameter.
+        std::string audit_query = buildAuditQuery(catalog, endpoint->urlPath);
         std::map<std::string, std::string> params;
         auto result = db_manager->executeDuckLakeQuery(audit_query, params);
         
@@ -1504,6 +1519,50 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
             return crow::response(404, "Endpoint not found");
         }
 
+        // ?target=cache: the cache POPULATE template, rendered exactly as the
+        // next refresh would render it - live watermark, snapshot ids, cursor
+        // and key context - and executed nowhere. Developing an incremental
+        // cache query is otherwise blind: the watermark only exists inside a
+        // refresh.
+        const char* target = url_params.get("target");
+        if (target != nullptr && std::string(target) == "cache") {
+            if (!endpoint->cache.enabled || endpoint->cache.table.empty()) {
+                return crow::response(400, "Cache not enabled for this endpoint");
+            }
+            auto db_manager = DatabaseManager::getInstance();
+            auto cache_manager = db_manager ? db_manager->getCacheManager() : nullptr;
+            if (!cache_manager || !config_manager_->getDuckLakeConfig().enabled) {
+                return crow::response(400, "DuckLake not enabled");
+            }
+            std::map<std::string, std::string> cache_params;
+            const std::string rendered = cache_manager->renderRefreshTemplate(config_manager_, *endpoint, cache_params);
+            const auto secrets = collectTemplateSecrets(config_manager_.get(), *endpoint, cache_params);
+            crow::json::wvalue response;
+            response["target"] = "cache";
+            response["mode"] = cache_params.count("cacheMode") ? cache_params.at("cacheMode") : std::string();
+            response["expanded"] = secrets.withhold()
+                                       ? std::string("<expansion withheld: a value this template "
+                                                     "interpolates is a credential too short to "
+                                                     "redact reliably>")
+                                       : secrets.scrub(rendered);
+            // Named as a template author writes them.
+            static const std::map<std::string, std::string> kTemplateName = {
+                {"cacheCatalog", "cache.catalog"}, {"cacheSchema", "cache.schema"},
+                {"cacheTable", "cache.table"}, {"cacheSchedule", "cache.schedule"},
+                {"cacheSnapshotId", "cache.snapshotId"}, {"cacheSnapshotTimestamp", "cache.snapshotTimestamp"},
+                {"previousSnapshotId", "cache.previousSnapshotId"},
+                {"previousSnapshotTimestamp", "cache.previousSnapshotTimestamp"},
+                {"cursorColumn", "cache.cursorColumn"}, {"cursorType", "cache.cursorType"},
+                {"primaryKeys", "cache.primaryKeys"}, {"cacheMode", "params.cacheMode"}};
+            crow::json::wvalue vars;
+            for (const auto& [k, v] : cache_params) {
+                const auto it = kTemplateName.find(k);
+                vars[it != kTemplateName.end() ? it->second : k] = secrets.scrub(v);
+            }
+            response["variables"] = std::move(vars);
+            return crow::response(200, response);
+        }
+
         // Convert parameters to map
         std::map<std::string, std::string> params;
         for (const auto& param : json["parameters"]) {
@@ -1587,6 +1646,7 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
                 if (is_valid) {
                     try {
                         std::string expanded_sql;
+                        addCacheTargetParams(config_manager_, *endpoint, params);
                         if (candidate) {
                             std::map<std::string, std::string> render_params = params;
                             expanded_sql = sql_processor->processTemplate(
@@ -1633,7 +1693,12 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
             return crow::response(200, validation_response);
         }
         
-        // Normal template expansion
+        // Normal template expansion. The cache target is server-owned context
+        // the serving path adds before rendering (RequestHandler ->
+        // DatabaseManager::executeQueryOnce); without it a cached endpoint
+        // expanded to `FROM ..` - the SQL a user reads to debug a cached
+        // endpoint was not the SQL that runs.
+        addCacheTargetParams(config_manager_, *endpoint, params);
         std::string expanded = sql_processor->loadAndProcessTemplate(*endpoint, params);
 
         // Scrubbed, like the MCP dry-run preview - this IS the same payload.

@@ -548,6 +548,95 @@ QueryResult DatabaseManager::executeDuckLakeQuery(const std::string& query, cons
     return executeQuery(query, params, false);
 }
 
+std::optional<int64_t> DatabaseManager::executeDuckLakeScript(const std::string& script) {
+    auto executor = createQueryExecutor();
+
+    duckdb_extracted_statements stmts = nullptr;
+    const idx_t n_statements = duckdb_extract_statements(executor.conn, script.c_str(), &stmts);
+    if (n_statements == 0) {
+        const char* raw = stmts ? duckdb_extract_statements_error(stmts) : nullptr;
+        const std::string error_message = raw ? raw : "no statements";
+        duckdb_destroy_extracted(&stmts);
+        throw std::runtime_error("Query execution failed: " + error_message);
+    }
+
+    // A refresh template used to run as one duckdb_query() in autocommit mode:
+    // each statement committed on its own. A failure halfway (the MERGE after a
+    // DELETE, or after the CREATE TABLE that bootstraps the first build) left
+    // the earlier statements applied while the refresh reported failure - rows
+    // deleted from a cache that "kept serving the last snapshot", or an empty
+    // table that `warmup: if-empty` then took for a finished build.
+    //
+    // The probe uses its OWN extraction: preparing an extracted statement moves
+    // it out of the set, so a second prepare of the same index gets nothing.
+    bool own_transaction = false;
+    {
+        duckdb_extracted_statements probe_set = nullptr;
+        const idx_t n_probe = duckdb_extract_statements(executor.conn, script.c_str(), &probe_set);
+        for (idx_t i = 0; i < n_probe && !own_transaction; i++) {
+            duckdb_prepared_statement probe = nullptr;
+            // Preparing a later statement can fail before earlier ones ran (it
+            // may name a table they create); that is not a transaction statement.
+            if (duckdb_prepare_extracted_statement(executor.conn, probe_set, i, &probe) != DuckDBError &&
+                duckdb_prepared_statement_type(probe) == DUCKDB_STATEMENT_TYPE_TRANSACTION) {
+                own_transaction = true;
+            }
+            duckdb_destroy_prepare(&probe);
+        }
+        duckdb_destroy_extracted(&probe_set);
+    }
+
+    std::optional<int64_t> total;
+    const auto run = [&]() {
+        for (idx_t i = 0; i < n_statements; i++) {
+            duckdb_prepared_statement stmt = nullptr;
+            if (duckdb_prepare_extracted_statement(executor.conn, stmts, i, &stmt) == DuckDBError) {
+                const char* raw = stmt ? duckdb_prepare_error(stmt) : nullptr;
+                const std::string error_message = raw ? raw : "statement could not be prepared";
+                duckdb_destroy_prepare(&stmt);
+                throw std::runtime_error("Query execution failed: " + error_message);
+            }
+            try {
+                executor.executePrepared(stmt, "cache refresh");
+            } catch (...) {
+                duckdb_destroy_prepare(&stmt);
+                throw;
+            }
+            duckdb_destroy_prepare(&stmt);
+            // DML (INSERT/UPDATE/DELETE/MERGE, and CREATE TABLE ... AS) answers
+            // with one BIGINT column named Count.
+            if (duckdb_column_count(&executor.result) == 1 &&
+                std::string(duckdb_column_name(&executor.result, 0)) == "Count" &&
+                duckdb_row_count(&executor.result) == 1) {
+                total = total.value_or(0) + duckdb_value_int64(&executor.result, 0, 0);
+            }
+        }
+    };
+
+    try {
+        if (!own_transaction) {
+            executor.execute("BEGIN TRANSACTION", "cache refresh");
+        }
+        run();
+        if (!own_transaction) {
+            executor.execute("COMMIT", "cache refresh");
+        }
+    } catch (...) {
+        if (!own_transaction) {
+            try {
+                executor.execute("ROLLBACK", "cache refresh");
+            } catch (...) {
+                // The connection is discarded right after; DuckDB rolls back an
+                // open transaction on disconnect.
+            }
+        }
+        duckdb_destroy_extracted(&stmts);
+        throw;
+    }
+    duckdb_destroy_extracted(&stmts);
+    return total;
+}
+
 std::string DatabaseManager::processTemplate(const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
     return sql_processor->loadAndProcessTemplate(endpoint, params);
 }

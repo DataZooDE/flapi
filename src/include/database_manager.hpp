@@ -76,6 +76,13 @@ public:
     // The executor owns the duckdb_result and must remain alive while accessing it
     std::unique_ptr<QueryExecutor> executeQueryRaw(const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
     QueryResult executeDuckLakeQuery(const std::string& query, const std::map<std::string, std::string>& params = {});
+    /// Run a (possibly multi-statement) DuckLake script - a rendered cache
+    /// populate template - in ONE transaction, statement by statement, and
+    /// return the sum of the row counts its DML statements report (nullopt if
+    /// none reports one). Any failure rolls the whole script back, so a failed
+    /// refresh leaves the cache exactly as it was. A script that manages its own
+    /// transaction (contains BEGIN/COMMIT/ROLLBACK) is run as written.
+    std::optional<int64_t> executeDuckLakeScript(const std::string& script);
     std::string renderCacheTemplate(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params);
     
     // Write operation methods

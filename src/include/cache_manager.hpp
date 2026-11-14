@@ -31,6 +31,11 @@ public:
 
     bool refreshCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
     void refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string> params);
+    /// The populate SQL the NEXT refresh would run, with the live watermark and
+    /// snapshot values - what `flapii templates expand --cache` shows. Fills
+    /// `params` with the cache.* context it rendered with. Executes nothing.
+    std::string renderRefreshTemplate(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint,
+                                      std::map<std::string, std::string>& params);
     static std::string joinStrings(const std::vector<std::string>& values, const std::string& delimiter);
     void addQueryCacheParamsIfNecessary(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
     void performGarbageCollection(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::vector<std::string> previousTableNames);
