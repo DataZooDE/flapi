@@ -1005,8 +1005,9 @@ REST endpoints expose SQL queries as HTTP APIs.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `url-path` | string | **required** | HTTP path (e.g., `/customers`, `/customers/:id`) |
-| `method` | string | `GET` | HTTP method: `GET`, `POST`, `PUT`, `PATCH`, `DELETE` |
+| `url-path` | string | **required** | HTTP path (e.g., `/customers`, `/customers/:id`). Rules below |
+| `method` | string | `GET` | HTTP method: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, in any case (trimmed and stored upper-case; empty means `GET`). Anything else is a load error naming the endpoint |
+| `allow-shadowing` | boolean | `false` | Let this endpoint answer the URLs it shares with a less specific, overlapping route of the same method whose auth is stricter or different. Without it that combination is refused (see *Route precedence*) |
 | `description` | string | - | The operation's description in `/doc.yaml`. Without it, `mcp-tool.description` is used; without either, the operation has none |
 | `template-source` | string | **required** | Path to SQL template file |
 | `connection` | array[string] | **required** | Connection name(s) from flapi.yaml |
@@ -1045,6 +1046,40 @@ URL path parameters use the `:param` syntax and are automatically extracted:
 url-path: /customers/:id/orders/:order_id
 # Available as: params.id, params.order_id
 ```
+
+**url-path rules** (checked at load, by `--validate-config`, and by create/update; a
+violation is a load error / 400 naming the endpoint):
+
+- starts with `/`; `/` alone is allowed, and so is one trailing `/` (`/customers/`),
+  which is then part of the route (`/customers` is a different route);
+- every segment is either a literal of `A-Z a-z 0-9 . _ ~ -` or a parameter `:name`
+  (`name` = letters, digits, `_`, not starting with a digit);
+- no empty segments (`//`), no `{id}` (write `:id`), no `*`, `(`, `[`, `+`, `?`, `|`, `^`,
+  `$`, `\`, `<`, `>`, `%` or spaces. Routes are matched exactly and case-sensitively.
+
+**Route precedence.** Two endpoints of the same method may have *overlapping* routes:
+`/customers/7` and `/customers/:id`, or `/a/:x/b` and `/:z/:x/b`, both match some
+URLs. Such a URL is answered by the **most specific** route: compare segments left to
+right; at the first position where one route has a literal and the other a `:param`,
+the literal wins. This never depends on file order or reloads, and rate limiting, auth
+and the request handler always resolve the same endpoint. Routes with the same shape
+(`/customers/:id` and `/customers/:cid`, same method in any case) are duplicates and
+stop startup.
+
+When overlapping endpoints have different auth (compared on `enabled`, `type` with
+`jwt` = `bearer`, and `roles`), the winner must be at least as strict as the other:
+the other is open, or both use the same type and the winner's roles are a non-empty
+subset of the other's (or the other has none). Otherwise startup, reload, reload-file,
+create and update refuse it:
+
+```
+Overlapping routes with different auth: GET /customers/7 (open) takes precedence over
+GET /customers/:id (basic, roles [admin]) for /customers/7 (declared in ... and ...).
+```
+
+Set `allow-shadowing: true` on the more specific endpoint when it is meant to answer
+those URLs; the overlap is then logged as a WARNING. Allowed overlaps with different
+auth log a WARNING, overlaps with the same auth an INFO line.
 
 ### 3.2 MCP Tools
 

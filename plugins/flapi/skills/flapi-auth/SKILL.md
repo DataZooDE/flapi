@@ -36,6 +36,15 @@ Three independent gates: the endpoint's own `auth:` block (REST), `mcp.auth`
   enabled global block that is a load error `AUTH_NO_TYPE`; so is `users:` or a
   secret without `type:`. One scheme per block (and per `mcp.auth`): keys the
   type ignores (`users:` under bearer, `jwt-secret:` under basic) log a warning.
+- **An endpoint's auth protects its own route entry, not a URL space.** A request
+  is answered by the most specific matching route of its method (literal segment
+  beats `:param`, left to right; file order never matters), and that endpoint's
+  auth applies. Overlapping routes whose auth differs are refused at load, reload,
+  create and update when the winner is looser (open `/customers/7` beside a
+  protected `/customers/:id`: `Overlapping routes with different auth: ...`),
+  unless the winner sets `allow-shadowing: true`; a stricter winner is allowed
+  with a WARNING. `method: get` is GET, so it cannot slip a second copy in.
+  Audit with `flapii endpoints list` (method, url-path and auth of each).
 - **A 401 names the endpoint's scheme**: `WWW-Authenticate: Basic realm="flAPI"`
   or `Bearer realm="flAPI"` (`, error="invalid_token"` for a refused token), body
   `{"error":"Unauthorized","message":...}`.

@@ -53,8 +53,18 @@ tools (`flapi_*`) inside the server. `flapii` is its CLI client. It is **off by 
   Do not also hand-write a file for an endpoint you create this way: the server writes
   its own, and two files with one `url-path` + method stop the next startup: `Duplicate
   endpoint GET /x: declared in a.yaml and b.yaml` (reload and create refuse it with 409).
-  Routes are compared by shape, so `/items/:id` and `/items/:item_id` are the same endpoint
-  (`... (same route as /items/:id)`); a literal `/items/special` beside `/items/:id` is not.
+  Routes are compared by shape and methods canonically (`get` is GET), so `/items/:id` and
+  `/items/:item_id` are the same endpoint (`... (same route as /items/:id)`).
+- **Overlapping routes: the most specific answers.** `/items/special` beside `/items/:id`
+  (or `/a/:x/b` beside `/:z/:x/b`) both match some URLs; the one with a literal where the
+  other has a `:param`, comparing segments left to right, answers them, whatever the file
+  order or reload history. Auth, rate limiting and the handler always agree on it. When
+  the winner's auth differs and is NOT at least as strict (open over protected, other
+  type, wider roles), startup, reload, create and update refuse it (409 `Overlapping routes
+  with different auth: GET /items/special (open) takes precedence over GET /items/:id
+  (basic, roles [admin]) for /items/special ...`) unless the winner sets
+  `allow-shadowing: true`; otherwise the overlap is logged (WARNING if auth differs).
+  An update that opens up the specific route is 409 too and leaves the file as it was.
 - **A `PUT` body must name the endpoint**: include `url-path` (or the `mcp-tool` /
   `mcp-resource` / `mcp-prompt` block). Without it the body is treated as the legacy
   camelCase form and fails with 500 `Missing required field in endpoint config`. Changing

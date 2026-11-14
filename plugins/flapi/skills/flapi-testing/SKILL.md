@@ -70,13 +70,15 @@ echo "exit=$?"
 | YAML syntax in `flapi.yaml` or any endpoint file | template file does not exist | SQL syntax, tables, columns |
 | missing `project-name` | `No database connection specified` | Mustache variable names (`{{ params.typo }}` renders empty) |
 | `{{env.X}}` not in `template.environment-whitelist` | unknown top-level key (log line) | connection `init` SQL, extensions |
-| `url-path` not starting with `/`, no `url-path`/`mcp-*` | security warnings (stderr) | unknown keys inside endpoint files |
+| `url-path` not starting with `/` or containing `//`, no `url-path`/`mcp-*` | security warnings (stderr) | unknown keys inside endpoint files |
 | `connection:` naming an undefined connection | `field-type`, other known-inert keys | |
 | missing required validator keys (`allowedValues`/`values`) | | DuckLake / cache SQL |
 | bad `log-level`, `compaction.schedule`, `scan-interval`, OIDC placeholder | | |
 | empty Basic-auth password from an unset env var | | |
 | Mustache syntax in a template (unclosed `{{#x}}`: `<file>:<line>:<col>`) | | |
-| two files with one `url-path` + method (`Duplicate endpoint ...`) | | |
+| two files with one route + method (`Duplicate endpoint ...`; `get` = `GET`) | overlapping routes, same auth (info) or allowed by `allow-shadowing` (WARNING) | |
+| overlapping routes where the more specific one has looser auth (`Overlapping routes with different auth`) | | |
+| `url-path` with characters outside `[A-Za-z0-9._~-]` or `:name` segments (`{id}` -> use `:id`); a method other than GET/POST/PUT/PATCH/DELETE | | |
 
 Fail CI on warnings too:
 

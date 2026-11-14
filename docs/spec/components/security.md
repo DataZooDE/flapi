@@ -238,6 +238,26 @@ auth:
   users: [...]
 ```
 
+### Route precedence and shadowing
+
+An endpoint's auth protects its own route entry. A request is resolved once per layer
+(rate limit, auth, handler), all through `ConfigManager::findEndpoint`, which picks the
+most specific matching route of the request's method - a literal segment beats a
+`:param`, left to right - independent of load order, so the three layers never disagree.
+Endpoints that could let an open route answer a protected one's URLs are refused at
+admission:
+
+- same route shape + same method (`/x/:id` vs `/x/:cid`; `get` vs `GET`): duplicate;
+- overlapping routes where the more specific endpoint's auth (enabled, type, roles) is
+  not at least as strict as the other's: `Overlapping routes with different auth`,
+  unless the more specific endpoint sets `allow-shadowing: true` (then a WARNING);
+- `url-path` segments outside `[A-Za-z0-9._~-]+` / `:name`, and methods other than the
+  five REST methods: load error / 400. Literal segments are regex-escaped, and a route
+  that fails to compile matches nothing rather than crashing the worker.
+
+Route matching is exact and case-sensitive: trailing-slash, case, `//`, `%3A` and `HEAD`
+variants do not reach a different endpoint.
+
 ### CORS and credentials
 
 `SecurityAuditor` warns `CORS_WILDCARD_WITH_AUTH` when any authentication is enabled and

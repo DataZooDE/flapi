@@ -10,6 +10,36 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   `GET /items/:item_id` match the same requests; both used to load and load order decided which one answered,
   so an endpoint with `auth: {enabled: false}` could shadow an authenticated one. Startup, reload and create now
   refuse the second one with `Duplicate endpoint GET /items/:item_id (same route as /items/:id)`.
+- **SECURITY: request routing picks the most specific route, never the first one loaded.** Overlapping
+  routes of one method (`/customers/7` and `/customers/:id`, `/a/:x/b` and `/:z/:x/b`) were resolved by
+  directory order, and a reload moved the file to the end, so an open endpoint could answer a protected
+  endpoint's URLs and a reload could flip a live URL from 401 to 200. Now, segment by segment from the left,
+  a literal beats a `:param`, and rate limiting, auth and the handler always resolve the same endpoint.
+  Endpoint files load in sorted path order.
+- **SECURITY: overlapping routes whose more specific endpoint has looser auth are refused.** Startup,
+  reload, reload-file, create and update now fail with `Overlapping routes with different auth: GET
+  /customers/7 (open) takes precedence over GET /customers/:id (basic, roles [admin]) for /customers/7 ...`
+  (409 from the config service and the MCP tools). Set `allow-shadowing: true` on the more specific endpoint
+  if it is meant to answer those URLs. Allowed overlaps with different auth log a WARNING, with equal auth
+  an INFO line. A configuration that relied on the old first-match order may now stop at startup: fix the
+  routes or the auth, or opt in.
+- **SECURITY: `method` is normalised and limited to GET, POST, PUT, PATCH, DELETE.** It is trimmed and
+  upper-cased at every entry point (endpoint files, the config service, `flapii endpoints create`, the MCP
+  `flapi_create_endpoint` / `flapi_update_endpoint` tools); empty means GET. `method: get` beside a protected
+  `GET` on the same route used to load (the duplicate check compared case-sensitively) and could answer
+  without credentials; it is now `Duplicate endpoint GET ...`. Any other method (`HEAD`, `FETCH`, ...) is a
+  load error / 400 naming the endpoint; such endpoints were never routable. A PUT or MCP update with
+  `"method": "get"` on a GET endpoint is no change and succeeds (the REST PUT used to answer 400).
+- **`url-path` is validated.** Segments must be literals of `A-Z a-z 0-9 . _ ~ -` or `:name`; one trailing
+  `/` is allowed, `//` is not. `url-path: /customers/{cid}` used to pass `--validate-config` and then hang
+  every request that reached it in the route scan (health checks included); it is now a load error / 400
+  that suggests `:cid`. Literal segments are matched literally (`.` used to match any character).
+- **MCP `flapi_create_endpoint` takes an `auth` argument** (the shape of a YAML `auth:` block), creates the
+  endpoint through the same loader as `POST /api/v1/_config/endpoints` (so a top-level `auth:` block is
+  inherited and duplicate/overlap checks apply), names the conflicting endpoint when it refuses, and
+  reports `"auth"` plus a `"warning"` (and a log line) when the new endpoint is unauthenticated. Creating
+  `POST /x` beside `GET /x`, or `/x/7` beside `/x/:id`, is no longer refused as "Endpoint already exists"
+  (it still is when the file it would write, e.g. `x.yaml`, exists).
 - **Cache keys `rollback-window` and `delete-handling` are deprecated.** They were accepted but never did
   anything. They still load, and startup now logs a warning for each. Handle deleted rows in the merge
   template instead; see [Deletes in merge mode](docs/guides/caching.md#deletes-in-merge-mode).

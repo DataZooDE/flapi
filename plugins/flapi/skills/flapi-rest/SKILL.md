@@ -48,7 +48,14 @@ becomes a route.
 - **Endpoint YAML is read at startup**; template `.sql` edits apply on the next
   request. After changing YAML, restart or `flapii endpoints reload <path>`
   (a YAML that no longer parses: 400 with a `reason`).
-- **Routes match exactly**: `/customers/` is a 404 for `url-path: /customers`.
+- **Routes match exactly**: `/customers/` is a 404 for `url-path: /customers`
+  (and route text is case-sensitive). Segments are literals of `[A-Za-z0-9._~-]` or
+  `:name`; anything else (`{id}`, `*`, `(`) is a load error - write `:id`.
+- **Overlapping routes: the most specific wins.** With `/customers/7` and
+  `/customers/:id`, `GET /customers/7` goes to the literal one (left to right, a
+  literal segment beats `:param`), regardless of file order. If their auth differs
+  and the winner is looser, loading is refused unless the winner sets
+  `allow-shadowing: true` (see flapi-auth).
 - **The global block is `rate_limit` (underscore); per endpoint it is
   `rate-limit` (hyphen)**, and it needs `enabled: true` (default false).
 
@@ -56,7 +63,7 @@ becomes a route.
 
 ```yaml
 url-path: /customers/:id        # required, starts with '/'; ':name' = path parameter
-method: GET                      # GET (default) | POST | PUT | PATCH | DELETE
+method: GET                      # GET (default) | POST | PUT | PATCH | DELETE (any case; stored upper-case)
 request:
   - field-name: id               # available as params.id
     field-in: path               # query | path | body | header
