@@ -634,7 +634,8 @@ def main() -> int:
     check_template_vars(rep, files, cache_template_vars())
 
     if not args.static_only:
-        flapi = Path(args.flapi)
+        # Resolved now: groups run with cwd set to a temp project directory.
+        flapi = Path(args.flapi).resolve()
         if not flapi.exists():
             rep.fail("flapi", f"{flapi} not found; build it (make release) or pass --static-only")
         else:
