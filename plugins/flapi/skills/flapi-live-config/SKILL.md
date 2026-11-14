@@ -30,12 +30,17 @@ tools (`flapi_*`) inside the server. `flapii` is its CLI client. It is **off by 
 - **Hot reload is per endpoint YAML.** `flapii endpoints reload <path>` re-reads that one
   file and rebuilds the MCP lists (`tools/list` etc.). `flapii endpoints reload --file
   <yaml>` (`POST /api/v1/_config/endpoints/reload-file`) does the same by FILE and also LOADS
-  a new hand-written file in `template.path`. Changes to `flapi.yaml` (connections, auth,
-  ducklake, mcp) need a restart.
+  a new hand-written file in `template.path`; for a DELETED file it unloads the endpoints
+  that file declared (200 `"status":"removed"`, `"removed":["GET /x"]`). A reload that
+  changes `cache.table` makes the endpoint 503 `cache_not_built` until a refresh (or
+  serves at once if that table exists) and drops the old table from `/health`. Changes to
+  `flapi.yaml` (connections, auth, ducklake, mcp) need a restart.
 - **Several endpoints can share a url-path** (`GET /orders` + `POST /orders`). Every slug
   route then needs `?method=` (`flapii ... --method POST`); without it the answer is 400
   `Ambiguous: /orders is served by GET (...), POST (...); specify ?method=GET|POST`. The
-  endpoint list keys them `"GET /orders"` / `"POST /orders"`. Two files with the same MCP
+  endpoint list keys them `"GET /orders"` / `"POST /orders"`. The `/cache/*` routes (and
+  `flapi cache refresh --endpoint`) count only endpoints WITH a cache: a cached GET beside an
+  uncached POST needs no `?method=` there. Two files with the same MCP
   tool/resource/prompt name fail the load, naming both.
 - **SQL template edits need no reload.** The `.sql` file is read on every request.
 - **A failed reload answers 400** `{"message":"Failed to reload endpoint configuration",

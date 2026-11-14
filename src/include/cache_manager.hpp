@@ -76,7 +76,18 @@ public:
 
     /// Catalog-wide compaction (merge adjacent files, rewrite delete-heavy files,
     /// delete the replaced files), recorded in the audit log as `compaction`.
-    void performCompaction(std::shared_ptr<ConfigManager> config_manager);
+    struct CompactionResult {
+        std::string status;   // "compacted" | "error" | "skipped" (disabled / read-only)
+        std::optional<std::int64_t> files_rewritten;  // when DuckLake reports it
+        std::int64_t duration_ms = 0;
+        std::string message;
+    };
+    /// `schema`/`table` empty: the whole catalog (the scheduled job). Otherwise
+    /// only that table's files are merged and rewritten. Runs whether or not
+    /// `compaction.enabled` is set - that switch is the SCHEDULE; an explicit
+    /// call (POST /api/v1/_config/cache/compact) is the operator asking.
+    CompactionResult performCompaction(std::shared_ptr<ConfigManager> config_manager,
+                                       const std::string& schema = "", const std::string& table = "");
     /// When compaction last ran, from the audit log.
     std::optional<std::chrono::system_clock::time_point> lastCompactionTime(std::shared_ptr<ConfigManager> config_manager);
     /// ducklake.compaction is enabled and its schedule has elapsed since the last run.
@@ -84,6 +95,21 @@ public:
 
     /// Shutdown: refuse new refreshes, stop warm-up, and interrupt the populate
     /// queries running now (repeatedly, for up to `budget`).
+    // Held for every write to the DuckLake catalog flapi makes on its own:
+    // populate scripts (with their retention), compaction, garbage collection,
+    // dropping an obsolete table, and the cache-target validation that executes
+    // a template's ATTACH/DETACH. One at a time per catalog.
+    //
+    // Two refreshes of DIFFERENT tables used to run in parallel on the one
+    // DuckDB instance. Attach names are instance-wide, so two populate scripts
+    // that both `DETACH DATABASE IF EXISTS src; ATTACH ... AS src` (the recipe
+    // the caching skill taught) collided with "INTERNAL Error: Database name
+    // src was already used by a different database for this meta transaction",
+    // which INVALIDATES the database: every later query failed until restart.
+    // Same-table duplicates are still coalesced before this lock is taken
+    // (refreshCache answers false), so they do not queue up behind it.
+    std::unique_lock<std::mutex> lockCatalogWrites();
+
     void interruptRefreshesForShutdown(std::chrono::milliseconds budget = std::chrono::milliseconds(5000));
     bool shutdownRequested() const;
 
@@ -106,6 +132,9 @@ public:
         std::int64_t bytes_freed = 0;
         std::string message;
         std::string warning;
+        // drop-table: the endpoints whose retained snapshots still pin some of
+        // the dropped table's files, each with the policy that keeps them.
+        std::vector<std::string> pinned_by;
     };
     /// Drop a cache table no endpoint uses, expire its snapshots and delete its
     /// files. status: dropped | not_found.
@@ -128,6 +157,7 @@ public:
         std::string error;       // internal: logged, never returned to callers
         bool stale = false;      // Ready, but the latest refresh failed (last snapshot still served)
         bool previous_table = false;  // Starting over a table a previous run built (warm-up: always)
+        bool replica = false;    // set by readinessBlock() on a read-only replica (message wording)
     };
 
     struct CacheReadinessSummary {
@@ -143,6 +173,13 @@ public:
     };
 
     void initializeReadiness(std::shared_ptr<ConfigManager> config_manager);
+    // Brings readiness and refresh stats in step with the cache tables the
+    // loaded endpoints name, after the endpoint table changed (reload,
+    // reload-file, create, update, delete): entries for tables no endpoint names
+    // any more are dropped, and a newly named table starts `ready` when it
+    // already exists in the catalog, else `unbuilt` (503 cache_not_built until a
+    // refresh builds it). Tables still named keep their state.
+    void syncReadinessWithEndpoints(std::shared_ptr<ConfigManager> config_manager);
     void markCacheStarting(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint);
     void markCacheReady(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint);
     void markCacheFailed(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::string& error);
@@ -178,6 +215,12 @@ public:
         // watermark was dropped (cursor.type mismatch) and it loaded the full
         // source. Carried into the audit message and the refresh answer.
         std::optional<std::string> warning;
+        // The refresh loaded the whole source: a forced --full / ?full=true, a
+        // full-mode cache, or an incremental cache with no watermark yet (the
+        // bootstrap). Column `full` of the audit table; unset reads as false.
+        // An optional, not `bool full = false`: a default member initializer
+        // here breaks the `= {}` default argument of recordSyncEvent (GCC).
+        std::optional<bool> full;
     };
     void recordSyncEvent(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::string& sync_type, const std::string& status, const std::string& message = "", const SyncEventDetails& details = {});
     /// In-memory roll-up of every refresh this process ran, per cache table,
@@ -196,6 +239,7 @@ public:
         std::optional<std::chrono::system_clock::time_point> last_completed_at;
         std::optional<std::chrono::system_clock::time_point> last_success_at;
         std::optional<std::string> last_warning;
+        bool last_full = false;
         int64_t refreshes = 0;
         int64_t failures = 0;
         int64_t total_duration_ms = 0;
@@ -438,6 +482,9 @@ private:
 
     mutable std::mutex inflight_mutex_;
     std::set<CacheKey> inflight_refreshes_;
+
+    // See lockCatalogWrites().
+    std::mutex catalog_write_mutex_;
 };
 
 } // namespace flapi

@@ -6,6 +6,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "api_server.hpp"
+#include "database_health.hpp"
 #include "runtime_metrics.hpp"
 #include "handler_pool.hpp"
 #include "in_flight_registry.hpp"
@@ -545,7 +546,27 @@ void APIServer::handleDynamicRequest(const crow::request& req, crow::response& r
         auth_params["__auth_roles"] = roles;
     }
 
+    // A database invalidated by an internal error fails every query until the
+    // process restarts; say so (503) instead of a 500 per request. Checked
+    // after the request too: the request that hit the invalidation answers the
+    // same way.
+    const auto fatal_response = [&res]() {
+        res.code = 503;
+        res.set_header("Content-Type", "application/json");
+        res.set_header("Retry-After", "30");
+        res.body = DatabaseHealth::FatalResponseJson();
+    };
+    if (DatabaseHealth::IsFatal()) {
+        fatal_response();
+        res.end();
+        emit_telemetry(endpoint->urlPath, false);
+        return;
+    }
+
     requestHandler.handleRequest(req, res, *endpoint, pathParams, auth_params);
+    if (res.code >= 500 && DatabaseHealth::IsFatal()) {
+        fatal_response();
+    }
 
     // flapi has no per-request cache hit/miss signal (the "cache" is a
     // materialized DuckLake table the template queries); the honest bounded
@@ -575,13 +596,35 @@ crow::response APIServer::refreshConfig() {
     }
 }
 
+namespace {
+// An invalidated DuckDB never recovers in-process (DatabaseHealth), so even
+// LIVENESS fails: a supervisor that only probes /health/live must restart it.
+std::optional<crow::response> fatalHealthResponse() {
+    const auto reason = DatabaseHealth::FatalReason();
+    if (!reason) {
+        return std::nullopt;
+    }
+    crow::json::wvalue health;
+    health["status"] = "fatal";
+    health["reason"] = *reason;
+    health["message"] = DatabaseHealth::FatalMessage();
+    return crow::response(503, health);
+}
+}  // namespace
+
 crow::response APIServer::getLiveHealth() {
+    if (auto fatal = fatalHealthResponse()) {
+        return std::move(*fatal);
+    }
     crow::json::wvalue health;
     health["status"] = "live";
     return crow::response(200, health);
 }
 
 crow::response APIServer::getHealth() {
+    if (auto fatal = fatalHealthResponse()) {
+        return std::move(*fatal);
+    }
     crow::json::wvalue health;
     const auto uptime = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::steady_clock::now() - startedAt);

@@ -706,6 +706,9 @@ int main(int argc, char* argv[])
         .help("URL path of a cached endpoint; repeatable")
         .append()
         .default_value(std::vector<std::string>{});
+    cache_refresh_cmd.add_argument("--method")
+        .help("HTTP method of the --endpoint, when several endpoints on that path have a cache")
+        .default_value(std::string(""));
     cache_refresh_cmd.add_argument("--all")
         .help("Refresh every cached endpoint")
         .default_value(false)
@@ -962,6 +965,7 @@ int main(int argc, char* argv[])
             options.endpoints = cache_refresh_cmd.get<std::vector<std::string>>("--endpoint");
             options.all = cache_refresh_cmd.get<bool>("--all");
             options.full = cache_refresh_cmd.get<bool>("--full");
+            options.method = cache_refresh_cmd.get<std::string>("--method");
             rc = RunCacheRefreshCommand(cm, options, std::cout);
         } catch (const std::exception& e) {
             std::cerr << "flapi cache refresh: " << e.what() << "\n";

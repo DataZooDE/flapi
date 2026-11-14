@@ -92,6 +92,17 @@ Templates, requests and responses:
 
 Caching:
 
+- **Cache refreshes run one at a time per DuckLake catalog.** A refresh of another table waits for the running
+  one (scheduled, manual, warm-up, one-shot and write-triggered alike); a second refresh of the same table still
+  answers `already_running` at once. Compaction, garbage collection, `drop-table` and
+  `?target=cache&validate_only=1` take the same lock. A manual refresh can therefore take longer to answer
+  while another cache refreshes.
+- **`/health/live` answers 503 `{"status":"fatal","reason":...}` when the DuckDB database has been
+  invalidated** by an internal error, and so does `/health`; data and config-service requests answer 503
+  `database_invalidated` (they were a 500 each, forever). A liveness probe now restarts such a process.
+- **The `full` field of a refresh answer is what the refresh did**: `true` also for a full-mode cache and for an
+  incremental cache's first build, not only for `?full=true`. The audit table gets a `full` column
+  (added to existing catalogs by the writer at start); the audit routes return it.
 - **The cache scheduler is on by default.** Every `cache.schedule` now runs without
   `ducklake.scheduler.enabled: true`; set it to `false` to keep the old behaviour (startup warns).
 - **No refresh at startup beyond the warm-up.** A cache's first scheduled refresh is one `schedule` after its
@@ -206,6 +217,14 @@ Config service, MCP and CLI:
 - **`flapii --json-style` re-cases only configuration documents** (endpoints, MCP tools/resources/prompts, cache
   config, project, templates list). Data such as metrics, cache audit, schema, health, template expansion and
   validation is printed exactly as the server sends it, in snake_case (`duration_ms`, `rows_affected`).
+
+### Added: compaction on demand, `--method` for one-shot refreshes
+
+- **`flapii cache compact [path]`** / **`POST /api/v1/_config/cache/compact`** run DuckLake compaction now, for
+  the whole catalog or one endpoint's cache table, whatever `compaction.schedule` says. The answer is
+  `{status, duration_ms, files_rewritten?}`; 409 on a read-only replica. A scheduled run now logs
+  `DuckLake compaction is due ...` when it starts.
+- **`flapi cache refresh --method <M>`** picks one of several cached endpoints on a path.
 
 ### Added: checking cache templates before the refresh does
 
@@ -322,6 +341,31 @@ Narrow to one endpoint with `?endpoint=/path`.
   missing stops and says so.
 
 ### Fixed
+
+- **Two concurrent refreshes could invalidate the database until restart.** Populate templates that
+  `DETACH DATABASE IF EXISTS src; ATTACH ... AS src (READ_ONLY)` (the recipe the caching skill taught) ran in
+  parallel for different tables and collided on the alias: `INTERNAL Error: Database name src was already used
+  by a different database for this meta transaction`, after which every request failed with
+  `database has been invalidated` while `/health` stayed 200. Refreshes are serialised per catalog, and an
+  invalidation from any cause now makes the health probes fail (see Upgrade notes).
+- **The cache readiness registry follows endpoint changes.** A reload that changed `cache.table` made the GET a
+  500 (it is 503 `cache_not_built` until built, or served when the table exists), and the old table's entry -
+  including a `failed` one - stayed in `/health` (`caches.total` too) until restart.
+- **`?target=cache&validate_only=1` executes a template's `ATTACH ... (READ_ONLY)`**, so statements reading the
+  attached source are checked instead of failing with `schema src does not exist`; it detaches what it
+  attached. A writable `ATTACH` is not executed and is reported `not_checked`.
+- **A cached `GET /orders` beside an uncached `POST /orders`:** `flapi cache refresh --endpoint /orders` picked
+  the POST and failed with `has no cache` (exit 2), and the config-service `/cache/*` routes answered
+  `Ambiguous`. Only endpoints with a cache count now.
+- **Time travel to a snapshot from before the cache's schema existed** answers 404 `snapshot_not_found`, not 500.
+- **Read-only replicas:** a cache the writer has not built says so (`the writer has not built it yet`), not
+  `warm-up skipped`; a replica that cannot attach its catalog says to start the writer first, and
+  `DuckLake catalog attached read-only` is logged only after the attach succeeded.
+- **`reload-file` of a deleted endpoint YAML** unloads the endpoints it declared (200 `"status":"removed"`)
+  instead of answering 404 and leaving the routes loaded.
+- **`drop-table`** applies the retention of live tables whose snapshots still pin the dropped table's files right
+  away and names, in `pinned_by`, the endpoint whose policy keeps the rest.
+- **Catalog-wide compaction audit rows** have an empty `cache_schema` (it was `main`).
 
 - **SECURITY: DuckLake catalog credentials were shown in clear.** A Postgres or MySQL `metadata-path` with
   `password=...` (including a resolved `{{env.X}}`) appeared in `GET /api/v1/_config/project` and in startup

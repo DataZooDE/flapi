@@ -22,6 +22,10 @@ user-invocable: false
 - **`/health` is readiness, `/health/live` is liveness.** `/health` answers 503 while caches
   build, when a cache failed, and when a request has run longer than `stall-timeout-s`.
   Point a liveness probe at `/health` and Kubernetes kills a server that is only warming up.
+- **`fatal` (503 on `/health` AND `/health/live`) means restart.** An internal DuckDB error
+  invalidated the database; nothing works until the process restarts, so even liveness
+  fails. `reason` has the DuckDB text, the log has a critical line with the cause; every
+  data and config request answers 503 `database_invalidated`.
 - **`degraded` can be 200 or 503.** 503 when a cache **failed** to build. 200 when a cache is
   **stale** (a refresh failed, the last snapshot is served) or **unbuilt** (warm-up skipped).
 - **A failed first cache build answers `"error":"cache_build_failed"`** (`Retry-After: 5`).
@@ -88,7 +92,9 @@ warm-ups) on `/health`. Health probes produce no trace span and no audit line.
 |---|---|---|---|
 | `{"error":"cache_warming","message":"Cache for this endpoint is still being built"}` | 5 | Warm-up running | Wait; `/health` turns `ready` |
 | `{"error":"cache_build_failed","message":"Cache for this endpoint failed to build"}` | 5 | First populate failed (SQL error, bare `SELECT`, table not written) | `flapii cache audit <path>`, fix SQL, `flapii cache refresh <path>` |
-| `{"error":"cache_not_built","message":"...(warm-up skipped)"}` | 5 | `--no-cache-warmup` or `warmup: never` | `flapii cache refresh <path>` |
+| `{"error":"cache_not_built","message":"...(warm-up skipped)"}` | 5 | `--no-cache-warmup`, `warmup: never`, or a reload that named a new `cache.table` | `flapii cache refresh <path>` |
+| `{"error":"cache_not_built","message":"...the writer has not built it yet"}` | 5 | Read-only replica; the writer has not built the table | Refresh on the writer |
+| `{"error":"database_invalidated",...}` | 30 | An internal DuckDB error invalidated the database (`/health` 503 `fatal`) | Restart flapi; report the `reason` |
 | `{"error":"The database is busy; retry shortly."}` | 1 | Lock contention outlived 5 retries | Retry; find the writer holding the lock |
 | `Server is at capacity. Try again shortly.` (text) | 1 | Handler queue full | Scale out; find slow queries |
 
@@ -243,8 +249,10 @@ flapii cache audit /products -o table     # refresh history with durations, rows
 flapii cache audit                        # all endpoints
 flapii cache gc /products                 # expire snapshots per retention, delete their files (JSON counts; no_policy without retention)
 flapii cache drop-table old.products_cache  # drop a cache table no endpoint uses (after a schema: change)
+flapii cache compact [/products]          # DuckLake compaction now: whole catalog, or one table
 flapi cache refresh -c flapi.yaml --all   # one-shot job; server must NOT be running on this DuckLake
 flapi cache refresh -c flapi.yaml --endpoint /products   # exit 0 ok, 1 failed or catalog locked, 2 usage
+flapi cache refresh -c flapi.yaml --endpoint /orders --method GET   # only when cached endpoints on the path differ
 flapi -c flapi.yaml --no-cache-warmup     # start without building caches
 flapi -c flapi.yaml --cache-warmup if-empty   # always | if-empty | never (env FLAPI_CACHE_WARMUP)
 ```

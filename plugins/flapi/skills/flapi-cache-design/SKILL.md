@@ -410,7 +410,13 @@ Writer jobs, the lock, prebuilt catalogs (absolute `data_path`!), replica config
   demand: `{status, expired_snapshots, files_deleted, bytes_freed}` (`no_policy`
   without retention).
 - A table left behind by a `table:`/`schema:` change: `flapii cache drop-table
-  <schema>.<table>` (409 `cache_table_in_use` while an endpoint still names it).
+  <schema>.<table>` (409 `cache_table_in_use` while an endpoint still names it). It
+  applies the retention of live tables whose snapshots still pin the dropped table's
+  files right away, and `pinned_by` names the endpoint whose policy keeps the rest.
+- Refreshes run one at a time per catalog (a refresh of another table waits; one of the
+  same table answers `already_running`), so populate templates may share an ATTACH alias.
+- The audit row's `full` says the refresh loaded the whole source (`--full`, full mode,
+  or the first incremental build).
 - `ducklake.compaction: {enabled: true, schedule: 1d}` (interval or `@daily` etc.,
   not cron) merges small files once per catalog; audit `sync_type` `compaction`
   (`GET /api/v1/_config/cache/audit?sync_type=compaction`). `delete-threshold: 0.2`

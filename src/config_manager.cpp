@@ -3500,6 +3500,24 @@ ConfigManager::EndpointRef ConfigManager::getEndpointForKey(const std::string& k
     return EndpointRef(snapshot, findEndpoint(*snapshot, key));
 }
 
+void ConfigManager::addEndpointsChangedListener(std::function<void()> listener) {
+    std::lock_guard<MovableMutex> guard(endpoints_mutex);
+    endpoints_changed_listeners.push_back(std::move(listener));
+}
+
+void ConfigManager::notifyEndpointsChanged(const std::vector<std::function<void()>>& listeners) {
+    for (const auto& listener : listeners) {
+        // A listener's failure must not turn a successful reload into an error.
+        try {
+            listener();
+        } catch (const std::exception& ex) {
+            CROW_LOG_WARNING << "Endpoint change listener failed: " << ex.what();
+        } catch (...) {
+            CROW_LOG_WARNING << "Endpoint change listener failed";
+        }
+    }
+}
+
 bool ConfigManager::removeEndpoint(const EndpointConfig& endpoint) {
     const std::string key = EndpointKey(endpoint);
     const auto removed = mutateEndpoints(
@@ -3535,12 +3553,40 @@ std::string canonicalOrSelf(const std::filesystem::path& p) {
 
 ConfigManager::FileReloadResult ConfigManager::reloadEndpointFile(const std::filesystem::path& file) {
     FileReloadResult result;
+    const std::string wanted = canonicalOrSelf(file);
     if (!std::filesystem::exists(file)) {
-        result.status = 404;
-        result.error = "YAML file not found: " + file.string();
+        // A deleted endpoint file: unload what it declared. It used to answer
+        // 404 and leave the endpoints loaded - a route still served from a file
+        // that no longer exists, 500-ing once its template went with it.
+        std::vector<EndpointConfig> removed;
+        mutateEndpointsVoid([&](std::vector<EndpointConfig>& eps) {
+            removed.clear();
+            auto it = std::stable_partition(eps.begin(), eps.end(), [&](const EndpointConfig& ep) {
+                return ep.config_file_path.empty() || canonicalOrSelf(ep.config_file_path) != wanted;
+            });
+            removed.assign(it, eps.end());
+            eps.erase(it, eps.end());
+        });
+        if (removed.empty()) {
+            result.status = 404;
+            result.error = "YAML file not found: " + file.string();
+            return result;
+        }
+        for (const auto& ep : removed) {
+            if (endpoint_repository) {
+                if (ep.isRESTEndpoint()) {
+                    endpoint_repository->removeRestEndpoint(ep.urlPath, ep.method);
+                } else if (!ep.getName().empty()) {
+                    endpoint_repository->removeMCPEndpoint(ep.getName());
+                }
+            }
+            result.removed.push_back(EndpointKey(ep));
+        }
+        result.ok = true;
+        result.status = 200;
+        CROW_LOG_INFO << "Endpoint file " << file << " was deleted; unloaded " << removed.size() << " endpoint(s)";
         return result;
     }
-    const std::string wanted = canonicalOrSelf(file);
 
     // Validate the file first
     ValidationResult validation = validateEndpointConfigFile(file);

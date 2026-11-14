@@ -215,7 +215,9 @@ class TestPopulateTemplate:
             result = r.json()
             assert result["status"] == "refreshed", result
             assert result["mode"] == "full", "materialised whatever cursor/primary-key imply"
-            assert result["full"] is False
+            # `full` is what the refresh did (#211 G1): a materialised full refresh loads
+            # the whole source, though ?full= was not asked for.
+            assert result["full"] is True
             assert result["rows_affected"] == 3
             assert result["duration_ms"] >= 0
             assert result["snapshot_id"]

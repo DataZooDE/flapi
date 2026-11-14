@@ -638,7 +638,14 @@ notarisation.
 flapi cache refresh --config flapi.yaml --endpoint /orders --endpoint /customers
 flapi cache refresh --config flapi.yaml --all
 flapi cache refresh --config flapi.yaml --endpoint /orders --full   # drop and rebuild
+flapi cache refresh --config flapi.yaml --endpoint /orders --method GET
 ```
+
+`--endpoint` picks the endpoint on that path **that has a cache**: a cached `GET /orders` beside an
+uncached `POST /orders` refreshes the GET (it used to pick whichever loaded first and fail with
+`has no cache`, exit `2`). Several cached endpoints on one path and table are one cache. `--method`
+narrows the choice; it is needed only when cached endpoints on the path use different tables
+(`ambiguous: ... pass --method GET|POST`, exit `2`).
 
 Opens DuckDB and the DuckLake catalog read-write, runs each selected cache's populate template exactly
 as the server would (same watermark and merge semantics, same retention), prints a JSON summary and
@@ -807,8 +814,22 @@ flAPI always registers two unauthenticated health endpoints. They do not require
 
 | Endpoint | Purpose | Response |
 |----------|---------|----------|
-| `GET /health/live` | Liveness: process is up and the listener is accepting connections | `200 {"status":"live"}` |
+| `GET /health/live` | Liveness: process is up and the listener is accepting connections | `200 {"status":"live"}`; `503 {"status":"fatal"}` when the database was invalidated |
 | `GET /health` | Readiness: cache-enabled endpoints are ready to serve | `200` with `status` `ready`, or `degraded` (a `stale` or `unbuilt` cache); `503` with `status` `starting`, `degraded` (a `failed` first build) or `stalled` |
+
+**An invalidated database is fatal.** An internal DuckDB error can invalidate the whole database; every
+later query then fails with `database has been invalidated` until the process restarts. flAPI detects it
+on the first such error, logs it once at `critical` level with the cause, and from then on BOTH
+`/health` and `/health/live` answer
+
+```json
+503 {"status": "fatal", "reason": "<the DuckDB error, at most 300 characters>", "message": "The database has been invalidated ... flapi must be restarted; GET /health shows the cause."}
+```
+
+so a supervisor or liveness probe restarts it. Data and config-service requests answer `503`
+`{"error":"database_invalidated","message":...}` (`Retry-After: 30`) instead of a `500` each. The one
+known trigger, two refreshes attaching the same alias in parallel, cannot happen any more: refreshes
+are serialised per catalog.
 
 During cache warmup, `/health/live` returns `200` as soon as the server is listening, while
 `/health` returns:
@@ -829,7 +850,11 @@ that was already built, the endpoint keeps serving the last snapshot and `/healt
 run built: with `warmup: always`, restarting while the source is unreachable keeps serving the existing
 table and reports it `stale`. If warm-up was skipped (`--no-cache-warmup`, `warmup: never`,
 `read-only`) and a cache table does not exist, `/health` returns `200` with `"status": "degraded"` and an
-`unbuilt` list, and that endpoint answers `503` with `"error": "cache_not_built"`. The error text (SQL, file paths) is written to the server log
+`unbuilt` list, and that endpoint answers `503` with `"error": "cache_not_built"` (on a read-only
+replica the message says the writer has not built it yet). The readiness list follows endpoint
+changes: a reload, create, update or delete that names a new cache table adds it as `unbuilt` (or
+`ready` when the table exists), and a table no endpoint names any more is dropped from `/health` and
+`caches.total` (a stale `failed` entry used to stay until restart). The error text (SQL, file paths) is written to the server log
 only: `/health` is unauthenticated and never returns it.
 
 A cache counts as **failed** only when no table exists to serve: its first build failed. The failure is

@@ -110,6 +110,20 @@ A request that presents a token which does not match is also logged as a warning
 logged). A `flapi_*` MCP tool called without a token, or with a wrong one, answers JSON-RPC error
 `-32001` naming `X-Config-Token` (it was `-32603 "Tool execution failed: ..."`).
 
+**Invalidated database.** After an internal DuckDB error invalidates the database (nothing recovers it
+but a restart), every config route except `/metrics` and `/log-level` answers, after the token check:
+
+```http
+HTTP/1.1 503 Service Unavailable
+Retry-After: 30
+Content-Type: application/json
+
+{"error": "database_invalidated", "message": "The database has been invalidated by an earlier internal error and flapi must be restarted; GET /health shows the cause."}
+```
+
+`GET /api/v1/_config/health` answers `503` with `"status": "fatal"` and
+`database: {"status": "invalidated", "reason": "..."}`.
+
 ---
 
 ## 2. REST API Reference
@@ -509,8 +523,20 @@ Errors are `{"success": false, "error": "..."}`:
 | Status | When |
 |--------|------|
 | `400` | no `file`; the file is outside `template.path` or not YAML; it does not validate; or it is not an endpoint file (`... is not an endpoint file (no url-path, mcp-tool, mcp-resource or mcp-prompt)`) |
-| `404` | the file does not exist |
+| `404` | the file does not exist and no loaded endpoint was declared in it |
 | `409` | it declares a url-path + method or an MCP name another file already serves (both files named), or the server runs from a packed bundle |
+
+**A deleted file unloads its endpoints.** When `file` no longer exists but endpoints loaded from it are
+still served, they are unloaded and the answer is `200`:
+
+```json
+{"success": true, "status": "removed", "file": "/srv/api/sqls/orders_post.yaml",
+ "removed": ["POST /orders"], "endpoints": [],
+ "message": "Endpoint file no longer exists; its endpoints were unloaded"}
+```
+
+It used to answer `404` and leave the routes loaded. `POST .../endpoints/{slug}/reload` on an endpoint whose
+YAML was deleted does the same (`"status": "removed"`).
 
 **CLI:** `flapii endpoints reload --file sqls/orders_post.yaml`
 
@@ -721,6 +747,13 @@ and then checked, **never run**:
    a definition without data (`CREATE TABLE` without AS, `CREATE SCHEMA`/`VIEW`) is executed in that
    transaction, and a `CREATE TABLE ... AS` as `... WITH NO DATA`, so a later statement that writes the
    table they create (`MERGE INTO` on a first build) is bound against its real columns.
+4. for `target=cache`, an `ATTACH ... (READ_ONLY)` in the template is executed, so the statements that
+   read the attached database are checked against it (they used to fail with `schema src does not exist`).
+   A `DETACH` is executed only for a database this check attached; a database the server already has
+   attached is used as it is. Everything the check attached is detached again afterwards. An `ATTACH`
+   without `READ_ONLY` is not executed: it is a `not_checked` warning, and so is every statement that
+   reads its alias. The check waits for a running cache refresh (they share the catalog lock), so it can
+   never collide with a refresh attaching the same alias.
 
 `template` in the body (an unsaved candidate) is validated instead of the file, for the serving template.
 
@@ -948,6 +981,17 @@ change). When a refresh of the same
 table is already running (warm-up, the scheduler) nothing is started and the answer is
 `{"status": "already_running", "endpoint": ..., "full": ...}`.
 
+`full` is `true` when the refresh loaded the whole source: `?full=true`, a full-mode cache (no
+`cursor`), or an incremental cache's first build (no watermark yet). It used to echo `?full=` only.
+The audit row records the same value (column `full`).
+
+Refreshes run **one at a time per DuckLake catalog** - populate script, retention and audit row - and so
+do compaction, garbage collection, `drop-table` and `?target=cache&validate_only=1`. A refresh of another
+table waits for the running one; a second refresh of the SAME table answers `already_running` at once.
+Two populate templates that `DETACH DATABASE IF EXISTS src; ATTACH ... AS src` used to run in parallel
+and collide on the alias ("Database name src was already used by a different database for this meta
+transaction"), which invalidates the DuckDB database (see `503 database_invalidated` below).
+
 Errors are JSON `{"error": ..., "reason": ...}`:
 
 | Status | When |
@@ -956,6 +1000,12 @@ Errors are JSON `{"error": ..., "reason": ...}`:
 | `400` | cache not enabled (`"error": "Cache is not enabled for this endpoint"`), or the refresh failed (`"error": "Cache refresh failed"`, `"reason"`: the error) |
 | `404` | unknown endpoint (`"error": "Endpoint not found"`) |
 | `409` | `ducklake.read-only: true`: `{"error":"read_only_cache","message":"... refresh it from the writer, e.g. `flapi cache refresh`"}` |
+| `503` | `database_invalidated`: the DuckDB database was invalidated by an internal error; restart flapi |
+
+The `/cache/*` routes (`cache`, `cache/template`, `cache/refresh`, `cache/gc`, `cache/audit`) count only
+endpoints **that have a cache** when a path is shared: a cached `GET /orders` beside an uncached
+`POST /orders` resolves to the GET without `?method=`. Several cached endpoints on one cache table are one
+cache. `?method=` is needed only when cached endpoints on the path use different tables.
 
 A refresh through this API counts as the cache's last refresh for the scheduler: the next scheduled
 refresh is one `schedule` later.
@@ -1036,7 +1086,53 @@ Content-Type: application/json
 | `404` | `table_not_found` |
 | `409` | `cache_table_in_use` (a configured endpoint caches into it), `protected_table` (schema `audit`), `read_only_cache` |
 
+Snapshots in the dropped table's window that touched a live table belong to that table's history. Its
+retention policy is applied right away (not at its next refresh), so the dropped table's files go as soon
+as that policy allows. Whatever it still keeps is named in `pinned_by`, one entry per endpoint, e.g.
+`"/orders (main.orders_cache: 2 snapshot(s) kept by retention keep-last-snapshots 2)"`, and in `message`.
+An endpoint without a retention policy is named with `no retention policy`.
+
 **CLI:** `flapii cache drop-table old.customers_cache`
+
+---
+
+#### POST /api/v1/_config/cache/compact
+
+Run DuckLake compaction now: merge adjacent small files, rewrite delete-heavy files
+(`compaction.delete-threshold`), and delete the files they replaced. The scheduled job
+(`ducklake.compaction.schedule`) does the same for the whole catalog. This route runs whether or not
+`compaction.enabled` is set.
+
+```http
+POST /api/v1/_config/cache/compact HTTP/1.1
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{"endpoint": "/orders", "method": "GET"}
+```
+
+No body (or `{}`) compacts the whole catalog. `endpoint` (with an optional `method`, picked like the
+`/cache/*` routes) compacts only that endpoint's cache table.
+
+**Response (200):**
+```json
+{"status": "compacted", "duration_ms": 84, "schema": "main", "table": "orders_cache",
+ "message": "Compacted main.orders_cache"}
+```
+
+`files_rewritten` is present when DuckLake reports how many files it replaced. An audit row with
+`sync_type` `compaction` is recorded: a catalog-wide run under an empty `cache_table` AND an empty
+`cache_schema` (it used to be `main`), a table run under that table.
+
+| Status | When |
+|--------|------|
+| `200` | compacted |
+| `400` | `ducklake_disabled`, `invalid_request`, or `no_cache` (the endpoint has no cache) |
+| `404` | `endpoint_not_found` |
+| `409` | `read_only_cache` |
+| `500` | `status: "error"`: a compaction step failed (`message` names it) |
+
+**CLI:** `flapii cache compact [/orders] [--method GET]`
 
 ---
 
@@ -1065,10 +1161,15 @@ Authorization: Bearer <token>
     "rows_affected": 42,
     "sync_started_at": "2025-01-10T14:30:00Z",
     "sync_completed_at": "2025-01-10T14:30:05Z",
-    "duration_ms": 5234
+    "duration_ms": 5234,
+    "full": false
   }
 ]
 ```
+
+`full` is `true` for a refresh that loaded the whole source (a forced `--full`, a full-mode cache, or an
+incremental cache's first build). The column is added to an existing audit table (`ALTER TABLE ... ADD
+COLUMN IF NOT EXISTS "full"`) when a writer starts; rows written before read `false`.
 
 ---
 
@@ -1258,6 +1359,7 @@ Authorization: Bearer <token>
       "last": {
         "mode": "merge",
         "status": "success",
+        "full": false,
         "duration_ms": 812,
         "rows_affected": 37,
         "snapshot_id": "118",
@@ -1842,6 +1944,21 @@ flapii cache audit                         # all caches, JSON
 
 `-o table` includes a `message` column (truncated to 60 characters): the reason a refresh failed, or a
 warning it ran with (a dropped cursor watermark).
+
+---
+
+#### cache compact
+
+Run DuckLake compaction now (`POST /api/v1/_config/cache/compact`), for the whole catalog or for one
+endpoint's cache table.
+
+```bash
+flapii cache compact                  # the whole catalog
+flapii cache compact /orders          # only /orders' cache table
+flapii cache compact /orders --method GET
+```
+
+Prints the server's answer (`status`, `duration_ms`, `files_rewritten` when DuckLake reports it).
 
 ---
 

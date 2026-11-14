@@ -1,4 +1,5 @@
 #include "query_executor.hpp"
+#include "database_health.hpp"
 #include "flapi_tracing.hpp"
 #include "trace_semconv.hpp"
 #include "duckdb_raii.hpp"
@@ -396,6 +397,7 @@ void QueryExecutor::execute(const std::string& query, const std::string& context
         duckdb_destroy_result(&result);
         // Enumerated, never the DuckDB message: that string routinely contains
         // fragments of the failing SQL, i.e. customer data.
+        DatabaseHealth::NoteDatabaseError(error_message);
         span.setError("query_failed");
         throw std::runtime_error("Query execution failed" + context_msg + ": " + error_message);
     }
@@ -432,6 +434,7 @@ void QueryExecutor::executePrepared(duckdb_prepared_statement stmt,
         duckdb_destroy_result(&result);
         // Enumerated, never the DuckDB message: it routinely contains fragments
         // of the failing SQL, i.e. customer data.
+        DatabaseHealth::NoteDatabaseError(error_message);
         span.setError("query_failed");
         throw std::runtime_error("Prepared statement execution failed" + context_msg + ": " + error_message);
     }
@@ -512,6 +515,7 @@ void QueryExecutor::executeWithBindings(const std::string& sql,
         const char* err = duckdb_prepare_error(stmt);
         std::string err_str = err ? err : "(no detail)";
         duckdb_destroy_prepare(&stmt);
+        DatabaseHealth::NoteDatabaseError(err_str);
         std::string context_msg = context.empty() ? "" : " during " + context;
         throw std::runtime_error("Prepare failed" + context_msg + ": " + err_str);
     }

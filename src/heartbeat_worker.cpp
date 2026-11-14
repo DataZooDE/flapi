@@ -302,6 +302,10 @@ void HeartbeatWorker::performDuckLakeScheduledTasks() {
                 }
                 const auto now = std::chrono::system_clock::now();
                 if (RefreshDue(last_compaction_time, *interval, now)) {
+                    // Said when it happens: the startup line gives the due time,
+                    // and nothing marked the moment it was reached.
+                    CROW_LOG_INFO << "DuckLake compaction is due (schedule " << *ducklakeConfig.compaction.schedule
+                                  << "); running it now";
                     cache_manager->performCompaction(config_manager);
                     last_compaction_time = now;
                 }
