@@ -260,9 +260,10 @@ struct EndpointConfig {
     std::vector<std::string> connection;
     bool with_pagination = true;
     // `allow-shadowing: true`: this endpoint may take precedence over a less
-    // specific, overlapping route of the same method whose auth is stricter
-    // or different (`/customers/7` open beside `/customers/:id` protected).
-    // Without it that combination is refused at load.
+    // specific, overlapping route of the same method whose effective auth
+    // differs in any way (scheme, roles, users, secrets, issuers), in either
+    // direction (`/customers/7` open beside `/customers/:id` protected, or the
+    // other way round). Without it that combination is refused at load.
     bool allow_shadowing = false;
     RateLimitConfig rate_limit;
     AuthConfig auth;
@@ -841,9 +842,11 @@ public:
     ///
     /// Also refuses a route that overlaps another endpoint's route for the
     /// same method (both can match one request path) when the more specific
-    /// of the two - the one that answers those requests - has different auth
-    /// that is not at least as strict as the other's, unless the more specific
-    /// endpoint sets `allow-shadowing: true`.
+    /// when their effective auth differs in any way - enabled, scheme, roles,
+    /// or the identity source (users and their passwords, jwt-secret,
+    /// jwt-issuer, OIDC issuer/audience/client, AWS secret) - unless the more
+    /// specific endpoint sets `allow-shadowing: true`. Secrets are compared as
+    /// digests and never appear in the message.
     ///
     /// `replacing`: the endpoint an update replaces, which is not compared.
     std::string DuplicateEndpointProblem(const EndpointConfig& candidate,

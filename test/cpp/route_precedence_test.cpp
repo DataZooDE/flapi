@@ -122,11 +122,26 @@ TEST_CASE("url-paths are validated", "[routing][url-path]") {
     }
     for (const char* bad : {"", "customers", "/customers/{cid}", "/a/*", "/a(b)", "/a/[x]", "/a+", "/a?",
                             "/a<b>", "/a|b", "/^a$", "/a\\b", "//a", "/a//b", "/a/:", "/a/:1x", "/a/:x-y",
-                            "/a/b:c", "/a b", "/a%3Aid"}) {
+                            "/a/b:c", "/a b", "/a%3Aid", "/a/./b", "/a/../b", "/..", "/.", "/a/:id/b/:id",
+                            "/:x/:x", "/caf\xC3\xA9"}) {
         INFO(bad);
         CHECK_FALSE(RouteTranslator::urlPathProblem(bad).empty());
     }
     CHECK(RouteTranslator::urlPathProblem("/customers/{cid}").find("`:cid`") != std::string::npos);
+    // Dots inside a segment are fine; only whole `.` / `..` segments are not.
+    for (const char* ok : {"/a/.well-known", "/a/..b", "/v1.2/x", "/a/:id/b/:other"}) {
+        INFO(ok);
+        CHECK(RouteTranslator::urlPathProblem(ok).empty());
+    }
+    CHECK(RouteTranslator::urlPathProblem("/a/../b").find("'..'") != std::string::npos);
+    CHECK(RouteTranslator::urlPathProblem("/a/:id/b/:id").find("`:id` appears more than once") != std::string::npos);
+    // A non-ASCII character is printed whole with its code point, not as one
+    // byte of its UTF-8 encoding.
+    const auto accent = RouteTranslator::urlPathProblem("/caf\xC3\xA9");
+    CHECK(accent.find("contains '\xC3\xA9' (U+00E9)") != std::string::npos);
+    CHECK(RouteTranslator::urlPathProblem("/a\xE2\x82\xAC").find("(U+20AC)") != std::string::npos);
+    CHECK(RouteTranslator::urlPathProblem("/a\xFF").find("invalid UTF-8 byte 0xFF") != std::string::npos);
+    CHECK(RouteTranslator::urlPathProblem("/a\xC3").find("invalid UTF-8 byte 0xC3") != std::string::npos);
 }
 
 TEST_CASE("A url-path with regex metacharacters is a load error, not a hung server", "[routing][url-path]") {
@@ -238,10 +253,10 @@ TEST_CASE("Overlaps that are allowed: same auth, stricter winner, explicit opt-i
         temp.writeEndpoint("b.yaml", endpointYaml("/customers/7", "GET", true));
         CHECK(loadError(temp).empty());
     }
-    SECTION("the more specific route is the protected one") {
+    SECTION("the more specific route is the protected one, with allow-shadowing") {
         flapi::test::TempTestConfig temp(kConfig, "overlap_stricter");
         temp.writeSqlTemplate("a.sql", "SELECT 1 AS n\n");
-        temp.writeEndpoint("a.yaml", endpointYaml("/a/:x/b", "GET", true));
+        temp.writeEndpoint("a.yaml", endpointYaml("/a/:x/b", "GET", true, "allow-shadowing: true\n"));
         temp.writeEndpoint("b.yaml", endpointYaml("/:z/:x/b", "GET", false));
         temp.writeEndpoint("c.yaml", endpointYaml("/a/:y/:z", "GET", false));
         auto mgr = temp.createConfigManager();
@@ -284,7 +299,9 @@ TEST_CASE("Overlaps that are allowed: same auth, stricter winner, explicit opt-i
 TEST_CASE("Reloading either file does not change which endpoint answers", "[routing][precedence][security]") {
     flapi::test::TempTestConfig temp(kConfig, "reload_precedence");
     temp.writeSqlTemplate("a.sql", "SELECT 1 AS n\n");
-    const auto protected_file = temp.writeEndpoint("a.yaml", endpointYaml("/customers/7", "GET", true));
+    // The protected literal opts in: without it this split is refused (I-1).
+    const auto protected_file =
+        temp.writeEndpoint("a.yaml", endpointYaml("/customers/7", "GET", true, "allow-shadowing: true\n"));
     const auto open_file = temp.writeEndpoint("b.yaml", endpointYaml("/customers/:id", "GET", false));
     auto mgr = temp.createConfigManager();
 
@@ -339,4 +356,137 @@ TEST_CASE("A reload or create that would open a protected URL is refused", "[rou
     updated.config_file_path.clear();
     CHECK(mgr->DuplicateEndpointProblem(updated).find("Duplicate endpoint") != std::string::npos);
     CHECK(mgr->DuplicateEndpointProblem(updated, &*self).empty());
+}
+
+namespace {
+
+std::string basicYaml(const std::string& path, const std::string& user, const std::string& password,
+                      const std::string& extra = "") {
+    return "url-path: " + path + "\nmethod: GET\ntemplate-source: a.sql\nconnection: [mem]\n"
+           "auth:\n  enabled: true\n  type: basic\n  roles: [admin]\n  users:\n"
+           "    - username: " + user + "\n      password: " + password + "\n      roles: [admin]\n" + extra;
+}
+
+std::string bearerYaml(const std::string& path, const std::string& secret, const std::string& issuer) {
+    return "url-path: " + path + "\nmethod: GET\ntemplate-source: a.sql\nconnection: [mem]\n"
+           "auth:\n  enabled: true\n  type: bearer\n  jwt-secret: " + secret + "\n  jwt-issuer: " + issuer + "\n";
+}
+
+}  // namespace
+
+TEST_CASE("A protected literal over an open :param route is refused (finding I-1)", "[routing][overlap][security]") {
+    // `/customers/7` protected protects the string "7" only: `/customers/07`
+    // and `/customers/+7` match the open `/customers/:id` and name the same row.
+    for (const auto& [literal_file, param_file] :
+         {std::pair<std::string, std::string>{"a.yaml", "b.yaml"}, {"b.yaml", "a.yaml"}}) {
+        flapi::test::TempTestConfig temp(kConfig, "overlap_protected_literal");
+        temp.writeSqlTemplate("a.sql", "SELECT 1 AS n\n");
+        temp.writeEndpoint(param_file, endpointYaml("/customers/:id", "GET", false));
+        temp.writeEndpoint(literal_file, endpointYaml("/customers/7", "GET", true));
+        const auto error = loadError(temp);
+        INFO(error);
+        CHECK(error.find("Overlapping routes with different auth: GET /customers/7 (basic, roles [admin]) takes "
+                         "precedence over GET /customers/:id (open) for /customers/7") != std::string::npos);
+        CHECK(error.find("/customers/:id still serves every other URL its pattern matches") != std::string::npos);
+        CHECK(error.find("such as /customers/07") != std::string::npos);
+        CHECK(error.find("protects that exact path string, not a record") != std::string::npos);
+        CHECK(error.find("allow-shadowing: true` on /customers/7") != std::string::npos);
+    }
+    SECTION("a narrower role set on the literal is refused too") {
+        flapi::test::TempTestConfig temp(kConfig, "overlap_narrower_roles");
+        temp.writeSqlTemplate("a.sql", "SELECT 1 AS n\n");
+        std::string wider = endpointYaml("/customers/:id", "GET", true);
+        wider.replace(wider.find("roles: [admin]"), std::string("roles: [admin]").size(), "roles: [admin, guest]");
+        temp.writeEndpoint("a.yaml", wider);
+        temp.writeEndpoint("b.yaml", endpointYaml("/customers/7", "GET", true));
+        CHECK(loadError(temp).find("auth differs in: roles") != std::string::npos);
+    }
+    SECTION("allow-shadowing on the literal accepts it") {
+        flapi::test::TempTestConfig temp(kConfig, "overlap_protected_literal_opt_in");
+        temp.writeSqlTemplate("a.sql", "SELECT 1 AS n\n");
+        temp.writeEndpoint("a.yaml", endpointYaml("/customers/:id", "GET", false));
+        temp.writeEndpoint("b.yaml", endpointYaml("/customers/7", "GET", true, "allow-shadowing: true\n"));
+        auto mgr = temp.createConfigManager();
+        const auto ep = mgr->getEndpointForPathAndMethod("/customers/7", "GET");
+        REQUIRE(ep);
+        CHECK(ep->auth.enabled);
+        const auto other = mgr->getEndpointForPathAndMethod("/customers/07", "GET");
+        REQUIRE(other);
+        CHECK(other->urlPath == "/customers/:id");
+    }
+}
+
+TEST_CASE("Same scheme and roles but a different identity source is different auth (finding I-2)",
+          "[routing][overlap][security]") {
+    const auto refused = [](const std::string& general, const std::string& literal) {
+        flapi::test::TempTestConfig temp(kConfig, "overlap_identity");
+        temp.writeSqlTemplate("a.sql", "SELECT 1 AS n\n");
+        temp.writeEndpoint("a.yaml", general);
+        temp.writeEndpoint("b.yaml", literal);
+        return loadError(temp);
+    };
+    SECTION("a literal with its own guest user") {
+        const auto error = refused(basicYaml("/customers/:id", "admin", "s3cr3t-admin-pw"),
+                                   basicYaml("/customers/7", "guest", "guest-pw"));
+        INFO(error);
+        CHECK(error.find("auth differs in: users") != std::string::npos);
+        // Never secret material in the message.
+        CHECK(error.find("s3cr3t-admin-pw") == std::string::npos);
+        CHECK(error.find("guest-pw") == std::string::npos);
+    }
+    SECTION("the same user with a different password") {
+        CHECK(refused(basicYaml("/customers/:id", "admin", "pw-one"), basicYaml("/customers/7", "admin", "pw-two"))
+                  .find("auth differs in: users") != std::string::npos);
+    }
+    SECTION("bearer with a different jwt-secret") {
+        const auto error = refused(bearerYaml("/customers/:id", "super-secret-one", "iss"),
+                                   bearerYaml("/customers/7", "super-secret-two", "iss"));
+        INFO(error);
+        CHECK(error.find("auth differs in: jwt-secret") != std::string::npos);
+        CHECK(error.find("super-secret-one") == std::string::npos);
+        CHECK(error.find("super-secret-two") == std::string::npos);
+    }
+    SECTION("bearer with a different jwt-issuer") {
+        CHECK(refused(bearerYaml("/customers/:id", "k", "issuer-a"), bearerYaml("/customers/7", "k", "issuer-b"))
+                  .find("auth differs in: jwt-issuer") != std::string::npos);
+    }
+    SECTION("identical identity sources still load") {
+        CHECK(refused(basicYaml("/customers/:id", "admin", "pw"), basicYaml("/customers/7", "admin", "pw")).empty());
+        CHECK(refused(bearerYaml("/customers/:id", "k", "iss"), bearerYaml("/customers/7", "k", "iss")).empty());
+    }
+}
+
+TEST_CASE("OIDC and AWS secret sources are part of the auth comparison", "[routing][overlap][security]") {
+    flapi::test::TempTestConfig temp(kConfig, "overlap_oidc");
+    temp.writeSqlTemplate("a.sql", "SELECT 1 AS n\n");
+    auto mgr = temp.createConfigManager();
+    const auto oidc = [](const std::string& path, const std::string& issuer, const std::string& audience) {
+        EndpointConfig ep = rest(path);
+        ep.auth.enabled = true;
+        ep.auth.type = "oidc";
+        flapi::OIDCConfig o;
+        o.issuer_url = issuer;
+        o.client_id = "client";
+        o.allowed_audiences = {audience};
+        ep.auth.oidc = o;
+        return ep;
+    };
+    auto general = oidc("/customers/:id", "https://idp.example/a", "api");
+    general.config_file_path = "/x/general.yaml";
+    mgr->addEndpoint(general);
+    auto same = oidc("/customers/7", "https://idp.example/a", "api");
+    same.config_file_path = "/x/literal.yaml";
+    CHECK(mgr->DuplicateEndpointProblem(same).empty());
+    auto other_issuer = oidc("/customers/7", "https://idp.example/b", "api");
+    other_issuer.config_file_path = "/x/literal.yaml";
+    CHECK(mgr->DuplicateEndpointProblem(other_issuer).find("auth differs in: oidc") != std::string::npos);
+    auto other_audience = oidc("/customers/7", "https://idp.example/a", "other");
+    other_audience.config_file_path = "/x/literal.yaml";
+    CHECK(mgr->DuplicateEndpointProblem(other_audience).find("auth differs in: oidc") != std::string::npos);
+
+    auto aws = same;
+    aws.auth.from_aws_secretmanager = flapi::AuthFromSecretManagerConfig{};
+    aws.auth.from_aws_secretmanager->secret_name = "prod/users";
+    aws.auth.from_aws_secretmanager->region = "eu-central-1";
+    CHECK(mgr->DuplicateEndpointProblem(aws).find("from-aws-secretmanager") != std::string::npos);
 }

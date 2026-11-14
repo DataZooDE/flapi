@@ -22,6 +22,8 @@
 #include <crow.h>
 #include <iomanip>
 #include <crow/logging.h>
+#include <openssl/sha.h>
+#include <array>
 
 namespace flapi {
 
@@ -3051,45 +3053,103 @@ std::string ConfigManager::RouteShape(const std::string& url_path) {
 
 namespace {
 
-// The part of an endpoint's (effective, inheritance already applied) auth that
-// decides who gets in: enabled, scheme, roles.
+// An endpoint's effective auth (inheritance already applied), reduced to what
+// decides who gets in: enabled, scheme, roles AND the identity source the
+// credentials are checked against. Two basic blocks with different users, or
+// bearer blocks with different secrets, admit different people even when
+// scheme and roles match - comparing only those let a literal route with its
+// own `guest` user serve the protected endpoint's URL to guest. Secret values
+// (passwords, jwt-secret, client-secret) are held only as SHA-256 digests and
+// are never part of a message.
 struct AuthSignature {
     bool enabled = false;
     std::string type;
     std::vector<std::string> roles;   // sorted
+    std::vector<std::string> users;   // sorted "name\x1fdigest(password)\x1froles"
+    std::string jwt_secret_digest;
+    std::string jwt_issuer;
+    std::string oidc;                 // issuer/audience/client fields, joined
+    std::string aws_secret;           // from-aws-secretmanager source, joined
 
-    bool operator==(const AuthSignature& other) const {
-        return enabled == other.enabled && (!enabled || (type == other.type && roles == other.roles));
+    bool operator==(const AuthSignature& other) const { return differences(other).empty(); }
+
+    // The names of the parts that differ ("type", "users", "jwt-secret", ...),
+    // never their values.
+    std::vector<std::string> differences(const AuthSignature& other) const {
+        std::vector<std::string> out;
+        if (enabled != other.enabled) {
+            out.emplace_back("enabled");
+            return out;
+        }
+        if (!enabled) {
+            return out;
+        }
+        const auto check = [&](bool same, const char* name) {
+            if (!same) {
+                out.emplace_back(name);
+            }
+        };
+        check(type == other.type, "type");
+        check(roles == other.roles, "roles");
+        check(users == other.users, "users");
+        check(jwt_secret_digest == other.jwt_secret_digest, "jwt-secret");
+        check(jwt_issuer == other.jwt_issuer, "jwt-issuer");
+        check(oidc == other.oidc, "oidc");
+        check(aws_secret == other.aws_secret, "from-aws-secretmanager");
+        return out;
     }
 };
+
+std::string digestOf(const std::string& secret) {
+    if (secret.empty()) {
+        return "";
+    }
+    std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
+    ::SHA256(reinterpret_cast<const unsigned char*>(secret.data()), secret.size(), digest.data());
+    return std::string(reinterpret_cast<const char*>(digest.data()), digest.size());
+}
+
+std::vector<std::string> sortedUnique(std::vector<std::string> values) {
+    std::sort(values.begin(), values.end());
+    values.erase(std::unique(values.begin(), values.end()), values.end());
+    return values;
+}
+
+std::string joined(const std::vector<std::string>& parts) {
+    std::string out;
+    for (const auto& part : parts) {
+        out += part;
+        out += '\x1f';
+    }
+    return out;
+}
 
 AuthSignature authSignature(const EndpointConfig& ep) {
     AuthSignature sig;
     sig.enabled = ep.auth.enabled;
-    if (sig.enabled) {
-        sig.type = ep.auth.type == "jwt" ? std::string("bearer") : ep.auth.type;
-        sig.roles = ep.auth.roles;
-        std::sort(sig.roles.begin(), sig.roles.end());
-        sig.roles.erase(std::unique(sig.roles.begin(), sig.roles.end()), sig.roles.end());
+    if (!sig.enabled) {
+        return sig;
+    }
+    const auto& auth = ep.auth;
+    sig.type = auth.type == "jwt" ? std::string("bearer") : auth.type;
+    sig.roles = sortedUnique(auth.roles);
+    for (const auto& user : auth.users) {
+        sig.users.push_back(joined({user.username, digestOf(user.password), joined(sortedUnique(user.roles))}));
+    }
+    std::sort(sig.users.begin(), sig.users.end());
+    sig.jwt_secret_digest = digestOf(auth.jwt_secret);
+    sig.jwt_issuer = auth.jwt_issuer;
+    if (auth.oidc) {
+        const auto& o = *auth.oidc;
+        sig.oidc = joined({o.issuer_url, o.client_id, digestOf(o.client_secret), o.provider_type, o.tenant_id,
+                           o.realm, o.domain, joined(sortedUnique(o.allowed_audiences)), o.username_claim,
+                           o.roles_claim, o.groups_claim, o.role_claim_path});
+    }
+    if (auth.from_aws_secretmanager) {
+        const auto& s = *auth.from_aws_secretmanager;
+        sig.aws_secret = joined({s.secret_name, s.region, s.secret_id, s.secret_key, s.secret_table});
     }
     return sig;
-}
-
-// `winner` admits nobody `loser` would refuse: `loser` is open, or both use the
-// same scheme and `winner` requires a subset of `loser`'s roles (roles are
-// "any one of"; none means any authenticated principal).
-bool atLeastAsStrict(const AuthSignature& winner, const AuthSignature& loser) {
-    if (!loser.enabled) {
-        return true;
-    }
-    if (!winner.enabled || winner.type != loser.type) {
-        return false;
-    }
-    if (loser.roles.empty()) {
-        return true;
-    }
-    return !winner.roles.empty() &&
-           std::includes(loser.roles.begin(), loser.roles.end(), winner.roles.begin(), winner.roles.end());
 }
 
 std::string describeAuth(const AuthSignature& sig) {
@@ -3159,11 +3219,76 @@ std::optional<RouteOverlap> overlapOf(const EndpointConfig& candidate, const End
     return overlap;
 }
 
+// Another request path the LESS specific route answers although it names the
+// same record as the winner's literal (`/customers/07` for `/customers/7`), or
+// "" when no obvious one exists. Path parameters are matched as strings and
+// the SQL usually casts or compares loosely, so a literal route protects one
+// path string, not one record.
+std::string otherSpelling(const std::string& winner, const std::string& loser) {
+    const std::string sample = sampleOverlapPath(winner, loser);
+    std::vector<std::string> w;
+    std::vector<std::string> l;
+    std::vector<std::string> out;
+    for (const auto& [route, parts] : {std::pair<const std::string*, std::vector<std::string>*>{&winner, &w},
+                                       {&loser, &l}, {&sample, &out}}) {
+        std::size_t start = 1;
+        while (true) {
+            const auto end = route->find('/', start);
+            parts->push_back(route->substr(start, end == std::string::npos ? std::string::npos : end - start));
+            if (end == std::string::npos) {
+                break;
+            }
+            start = end + 1;
+        }
+    }
+    for (std::size_t i = 0; i < w.size() && i < l.size() && i < out.size(); ++i) {
+        const bool w_literal = w[i].empty() || w[i].front() != ':';
+        const bool l_param = l[i].size() > 1 && l[i].front() == ':';
+        if (!w_literal || !l_param || w[i].empty()) {
+            continue;
+        }
+        const std::string& lit = w[i];
+        if (std::all_of(lit.begin(), lit.end(), [](unsigned char c) { return std::isdigit(c) != 0; })) {
+            out[i] = "0" + lit;
+        } else {
+            auto alt = lit;
+            const auto letter = std::find_if(alt.begin(), alt.end(), [](unsigned char c) { return std::isalpha(c); });
+            if (letter == alt.end()) {
+                continue;
+            }
+            *letter = std::isupper(static_cast<unsigned char>(*letter)) ? std::tolower(*letter) : std::toupper(*letter);
+            out[i] = alt;
+        }
+        std::string path;
+        for (const auto& part : out) {
+            path += "/" + part;
+        }
+        return path;
+    }
+    return "";
+}
+
 std::string describeOverlap(const RouteOverlap& o) {
     const std::string method = ConfigManager::CanonicalHttpMethod(o.winner->method);
-    return method + " " + o.winner->urlPath + " (" + describeAuth(o.winner_auth) + ") takes precedence over " +
-           method + " " + o.loser->urlPath + " (" + describeAuth(o.loser_auth) + ") for " +
-           sampleOverlapPath(o.winner->urlPath, o.loser->urlPath);
+    std::string text = method + " " + o.winner->urlPath + " (" + describeAuth(o.winner_auth) +
+                       ") takes precedence over " + method + " " + o.loser->urlPath + " (" +
+                       describeAuth(o.loser_auth) + ") for " + sampleOverlapPath(o.winner->urlPath, o.loser->urlPath);
+    const auto differs = o.winner_auth.differences(o.loser_auth);
+    if (differs.empty()) {
+        return text;
+    }
+    text += " (auth differs in:";
+    for (std::size_t i = 0; i < differs.size(); ++i) {
+        text += (i == 0 ? " " : ", ") + differs[i];
+    }
+    text += "); " + o.loser->urlPath + " still serves every other URL its pattern matches, including other " +
+            "spellings of the same value";
+    const auto other = otherSpelling(o.winner->urlPath, o.loser->urlPath);
+    if (!other.empty()) {
+        text += " such as " + other;
+    }
+    text += " - a literal route protects that exact path string, not a record";
+    return text;
 }
 
 bool skippedFor(const EndpointConfig& ep, const EndpointConfig& candidate, const EndpointConfig* replacing) {
@@ -3209,16 +3334,19 @@ std::string ConfigManager::DuplicateEndpointProblem(const EndpointConfig& candid
                    where(ep) + " and " + where(candidate);
         }
         // Overlapping routes (`/customers/7` and `/customers/:id`): the more
-        // specific one answers the URLs both match. When that one lets in
-        // someone the other would refuse, a protected URL is served by the
-        // looser endpoint - refused unless the winner opts in.
+        // specific one answers the URLs both match, the other one every other
+        // URL its pattern matches. Refused in EITHER direction when their auth
+        // differs at all, unless the winner opts in: an open literal serves a
+        // protected record, and a protected literal (`/customers/7` over an open
+        // `/customers/:id`) protects only that string - `/customers/07` and
+        // `/customers/+7` still reach the open endpoint and name the same row.
         if (const auto overlap = overlapOf(candidate, ep)) {
-            if (!(overlap->winner_auth == overlap->loser_auth) &&
-                !atLeastAsStrict(overlap->winner_auth, overlap->loser_auth) && !overlap->winner->allow_shadowing) {
+            if (!(overlap->winner_auth == overlap->loser_auth) && !overlap->winner->allow_shadowing) {
                 return "Overlapping routes with different auth: " + describeOverlap(*overlap) + " (declared in " +
                        where(*overlap->winner) + " and " + where(*overlap->loser) +
-                       "). Give both the same auth, make the routes disjoint, or set `allow-shadowing: true` on " +
-                       overlap->winner->urlPath + " if it is meant to answer those requests";
+                       "). Give both the same auth, make the routes disjoint, filter rows by auth.* inside " +
+                       overlap->loser->urlPath + ", or set `allow-shadowing: true` on " + overlap->winner->urlPath +
+                       " if this split is intended";
             }
         }
         const char* kind = nullptr;

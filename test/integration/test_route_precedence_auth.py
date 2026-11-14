@@ -38,10 +38,10 @@ BASE_CONFIG = (
 )
 
 
-def protected(path, method="GET"):
+def protected(path, method="GET", extra="", user="u", password="p"):
     return (f"url-path: {path}\nmethod: {method}\ntemplate-source: secret.sql\nconnection: [inmem]\n"
             "auth:\n  enabled: true\n  type: basic\n  roles: [admin]\n  users:\n"
-            "    - username: u\n      password: p\n      roles: [admin]\n")
+            f"    - username: {user}\n      password: {password}\n      roles: [admin]\n" + extra)
 
 
 def open_endpoint(path, method="GET", extra=""):
@@ -226,7 +226,10 @@ class TestOverlappingRoutes:
     @pytest.mark.parametrize("open_route", ["/:z/:x/b", "/a/:y/:z"])
     @pytest.mark.parametrize("open_first", [True, False])
     def test_the_more_specific_protected_route_answers_in_any_file_order(self, open_route, open_first):
-        files = [("sqls/protected.yaml", protected("/a/:x/b")), ("sqls/open.yaml", open_endpoint(open_route))]
+        # A protected, more specific route over an open one is a split the user
+        # must opt into (cluster I); with the opt-in, precedence is order-free.
+        files = [("sqls/protected.yaml", protected("/a/:x/b", extra="allow-shadowing: true\n")),
+                 ("sqls/open.yaml", open_endpoint(open_route))]
         s = _Server(files[::-1] if open_first else files)
         try:
             s.assert_protected("/a/1/b")
@@ -234,6 +237,54 @@ class TestOverlappingRoutes:
             out = s.output()
             assert "Overlapping routes with different auth: GET /a/:x/b (basic, roles [admin]) takes precedence " \
                    f"over GET {open_route} (open)" in out, out[-3000:]
+            assert f"{open_route} still serves every other URL its pattern matches" in out, out[-3000:]
+        finally:
+            s.stop()
+
+    @pytest.mark.parametrize("literal_first", [True, False])
+    def test_a_protected_literal_over_an_open_parameter_route_stops_startup(self, literal_first):
+        # Cluster I-1: `/customers/7` protected over an open `/customers/:id`
+        # used to load with a WARNING, and /customers/07 and /customers/+7 - the
+        # same record - were served by the open endpoint without credentials.
+        files = [("sqls/c_open.yaml", open_endpoint("/customers/:id").replace("open.sql", "secret.sql")),
+                 ("sqls/c_protected.yaml", protected("/customers/7"))]
+        out = _startup_error(files[::-1] if literal_first else files)
+        assert ("Overlapping routes with different auth: GET /customers/7 (basic, roles [admin]) takes precedence "
+                "over GET /customers/:id (open) for /customers/7") in out, out[-3000:]
+        assert "/customers/:id still serves every other URL its pattern matches" in out
+        assert "such as /customers/07" in out
+        assert "allow-shadowing: true` on /customers/7" in out
+        code, vout = _validate(files)
+        assert code != 0 and "Overlapping routes with different auth" in vout, vout[-2000:]
+
+    def test_a_literal_with_its_own_guest_user_stops_startup(self):
+        # Cluster I-2: same scheme and roles, different users counted as "same
+        # auth" and the guest's credentials opened /customers/7.
+        out = _startup_error([("sqls/a.yaml", protected("/customers/:id", password="admin-pw-123")),
+                              ("sqls/b.yaml", protected("/customers/7", user="guest", password="guest-pw-456"))])
+        assert "auth differs in: users" in out, out[-3000:]
+        assert "admin-pw-123" not in out and "guest-pw-456" not in out
+
+    def test_a_literal_with_a_different_jwt_secret_stops_startup(self):
+        def bearer(path, secret):
+            return (f"url-path: {path}\nmethod: GET\ntemplate-source: secret.sql\nconnection: [inmem]\n"
+                    f"auth:\n  enabled: true\n  type: bearer\n  jwt-secret: {secret}\n  jwt-issuer: iss\n")
+        out = _startup_error([("sqls/a.yaml", bearer("/customers/:id", "jwt-secret-AAAA")),
+                              ("sqls/b.yaml", bearer("/customers/7", "jwt-secret-BBBB"))])
+        assert "auth differs in: jwt-secret" in out, out[-3000:]
+        assert "jwt-secret-AAAA" not in out and "jwt-secret-BBBB" not in out
+
+    def test_a_create_of_a_protected_literal_over_an_open_route_is_refused(self):
+        s = _Server([("sqls/c_open.yaml", open_endpoint("/customers/:id"))])
+        try:
+            body = {"url-path": "/customers/7", "method": "GET", "template-source": "secret.sql",
+                    "connection": ["inmem"],
+                    "auth": {"enabled": True, "type": "basic", "roles": ["admin"],
+                             "users": [{"username": "u", "password": "p", "roles": ["admin"]}]}}
+            r = requests.post(f"{s.base}/api/v1/_config/endpoints", headers=H, json=body, timeout=10)
+            assert r.status_code == 409, r.text
+            assert "still serves every other URL" in r.json()["error"], r.text
+            assert "OPEN" in s.get("/customers/7").text   # unchanged: one open endpoint, nothing pretended
         finally:
             s.stop()
 
@@ -273,9 +324,9 @@ class TestOverlappingRoutes:
             s.stop()
 
     def test_reloading_the_protected_file_never_flips_a_url_open(self):
-        # Allowed (the specific route is the protected one): reloads, by slug,
+        # Allowed with the opt-in on the protected literal: reloads, by slug,
         # by file and after a no-op edit, must keep /customers/7 at 401.
-        s = _Server([("sqls/c_protected.yaml", protected("/customers/7")),
+        s = _Server([("sqls/c_protected.yaml", protected("/customers/7", extra="allow-shadowing: true\n")),
                      ("sqls/c_open.yaml", open_endpoint("/customers/:id"))])
         try:
             s.assert_protected("/customers/7")
@@ -333,7 +384,8 @@ class TestUrlPathValidation:
         assert code != 0
         assert "/customers/{cid}" in out and "`:cid`" in out, out[-2000:]
 
-    @pytest.mark.parametrize("bad", ["/customers/{cid}", "/a/*", "/a(b)", "/a/[x]", "/a+b", "/a|b"])
+    @pytest.mark.parametrize("bad", ["/customers/{cid}", "/a/*", "/a(b)", "/a/[x]", "/a+b", "/a|b",
+                                     "/a/../b", "/a/./b", "/a/:id/b/:id"])
     def test_create_refuses_it_and_the_server_keeps_answering(self, bad):
         s = _Server([("sqls/a.yaml", protected("/customers/:id"))])
         try:
@@ -364,6 +416,12 @@ class TestUrlPathValidation:
             assert requests.head(f"{s.base}/customers/1", timeout=5).status_code != 200
         finally:
             s.stop()
+
+
+    def test_a_non_ascii_character_is_named_whole(self):
+        code, out = _validate([("sqls/a.yaml", open_endpoint("/caf\u00e9"))])
+        assert code != 0
+        assert "contains '\u00e9' (U+00E9)" in out, out[-2000:]
 
 
 class TestMcpCreate:

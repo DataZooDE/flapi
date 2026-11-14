@@ -9,6 +9,8 @@
 #include <unordered_map>
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
+#include <cstdint>
 
 namespace flapi {
 
@@ -165,6 +167,40 @@ std::vector<RouteSegment> routeSegments(const std::string& url_path) {
     return segments;
 }
 
+// The character at `text[pos]` for a message: the whole UTF-8 sequence (not
+// its first byte, which printed as mojibake for `é`) plus its code point.
+std::string describeChar(const std::string& text, std::size_t pos) {
+    const auto lead = static_cast<unsigned char>(text[pos]);
+    if (lead < 0x80) {
+        return "'" + std::string(1, text[pos]) + "'";
+    }
+    std::size_t len = 0;
+    uint32_t cp = 0;
+    if ((lead & 0xE0) == 0xC0) {
+        len = 2;
+        cp = lead & 0x1F;
+    } else if ((lead & 0xF0) == 0xE0) {
+        len = 3;
+        cp = lead & 0x0F;
+    } else if ((lead & 0xF8) == 0xF0) {
+        len = 4;
+        cp = lead & 0x07;
+    }
+    bool valid = len != 0 && pos + len <= text.size();
+    for (std::size_t i = 1; valid && i < len; ++i) {
+        const auto cont = static_cast<unsigned char>(text[pos + i]);
+        valid = (cont & 0xC0) == 0x80;
+        cp = (cp << 6) | (cont & 0x3F);
+    }
+    char hex[16];
+    if (!valid) {
+        std::snprintf(hex, sizeof(hex), "0x%02X", lead);
+        return std::string("an invalid UTF-8 byte ") + hex;
+    }
+    std::snprintf(hex, sizeof(hex), "U+%04X", static_cast<unsigned int>(cp));
+    return "'" + text.substr(pos, len) + "' (" + hex + ")";
+}
+
 bool isLiteralChar(char c) {
     return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' ||
            c == '~' || c == '-';
@@ -180,6 +216,7 @@ std::string RouteTranslator::urlPathProblem(const std::string& url_path) {
         return "";
     }
     const auto segments = routeSegments(url_path);
+    std::vector<std::string> param_names;
     for (std::size_t i = 0; i < segments.size(); ++i) {
         const auto& segment = segments[i];
         const std::string& text = segment.text;
@@ -199,17 +236,32 @@ std::string RouteTranslator::urlPathProblem(const std::string& url_path) {
                 return "url-path '" + url_path + "': parameter segment '" + text +
                        "' must be `:name` with a name of letters, digits and _ (not starting with a digit)";
             }
+            // Both would be bound to one `params.<name>`: the template would see
+            // only one of the two values.
+            if (std::find(param_names.begin(), param_names.end(), name) != param_names.end()) {
+                return "url-path '" + url_path + "': parameter `:" + name +
+                       "` appears more than once; give each path parameter its own name";
+            }
+            param_names.push_back(name);
             continue;
         }
-        for (const char c : text) {
+        // Clients and proxies normalise `.` and `..` away (`/a/../b` is sent
+        // as `/b`), so such a route never matches what was written - or matches
+        // something else after normalisation.
+        if (text == "." || text == "..") {
+            return "url-path '" + url_path + "': segment '" + text +
+                   "' is not allowed (clients and proxies resolve dot segments before the request reaches flapi)";
+        }
+        for (std::size_t k = 0; k < text.size(); ++k) {
+            const char c = text[k];
             if (!isLiteralChar(c)) {
                 std::string hint;
                 if (text.size() > 2 && text.front() == '{' && text.back() == '}') {
                     hint = "; path parameters are written `:" + text.substr(1, text.size() - 2) + "`, not `" + text +
                            "`";
                 }
-                return "url-path '" + url_path + "': segment '" + text + "' contains '" + std::string(1, c) +
-                       "'; a literal segment may only use letters, digits and . _ ~ -" + hint;
+                return "url-path '" + url_path + "': segment '" + text + "' contains " + describeChar(text, k) +
+                       "; a literal segment may only use letters, digits and . _ ~ -" + hint;
             }
         }
     }
