@@ -117,6 +117,31 @@ is re-read once (a no-op under merge).
 | `MERGE` / `INSERT` into a table that does not exist yet | `Catalog Error: Table with name ... does not exist!` |
 | `cache.delete-handling: soft` | deprecated, no effect (warning at startup) |
 
+## Late rows in append mode
+
+A strict `>` skips a row that arrives later with a cursor value at or below the watermark, and the refresh still reports success. Either accept
+that, or re-read an overlap window and drop what is already cached (append has no
+key, so the anti-join is yours). Use `>=` in **both** predicates: with `>` a row
+exactly at the window edge (lateness = window) is lost forever; the anti-join
+keeps `>=` idempotent.
+
+```sql
+INSERT INTO {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
+SELECT id, ts, kind FROM src_events.events AS s
+WHERE s.ts >= TIMESTAMP '{{{cache.previousSnapshotTimestamp}}}' - INTERVAL 10 MINUTE
+  AND NOT EXISTS (
+    SELECT 1 FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS c
+    WHERE c.id = s.id
+      AND c.ts >= TIMESTAMP '{{{cache.previousSnapshotTimestamp}}}' - INTERVAL 10 MINUTE);
+```
+
+Without the anti-join an overlap window duplicates the whole window on **every**
+refresh. Use `NOT EXISTS`, not `NOT IN`: one NULL id in the subquery makes `NOT IN`
+match nothing, so every late row is silently dropped. Size the window to the
+measured maximum lateness plus a margin (`flapi-cache-tuning`); merge mode makes
+overlap idempotent without the anti-join. Verified: a row exactly at the edge is
+loaded with `>=`, and an unchanged source re-reads 0 rows.
+
 ## Detecting lost rows
 
 A strict `>` loses late rows silently, a missing anti-join duplicates them, and
@@ -157,3 +182,7 @@ SELECT
   that appears twice, so read it together with `dup_rows`; `sum(hash(...))` (a
   `HUGEINT`) does not cancel but is order-independent too.
 - Run it while no refresh is writing, or accept one refresh of skew.
+- Source in a DuckDB file that only the populate template attaches? The check
+  cannot read that alias before the first refresh or after a restart without
+  warm-up: give it its own `init` attach or read export drops (`flapi-setup`
+  [references/connections.md](../../flapi-setup/references/connections.md#duckdb-file-as-a-cache-source)).

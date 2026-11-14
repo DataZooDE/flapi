@@ -68,13 +68,15 @@ echo "exit=$?"
 | Caught (exit 1 or startup error) | Reported as warning (exit 0) | Not checked at all |
 |---|---|---|
 | YAML syntax in `flapi.yaml` or any endpoint file | template file does not exist | SQL syntax, tables, columns |
-| missing `project-name` | `No database connection specified` | Mustache syntax and variable names |
+| missing `project-name` | `No database connection specified` | Mustache variable names (`{{ params.typo }}` renders empty) |
 | `{{env.X}}` not in `template.environment-whitelist` | unknown top-level key (log line) | connection `init` SQL, extensions |
 | `url-path` not starting with `/`, no `url-path`/`mcp-*` | security warnings (stderr) | unknown keys inside endpoint files |
 | `connection:` naming an undefined connection | `field-type`, other known-inert keys | |
 | missing required validator keys (`allowedValues`/`values`) | | DuckLake / cache SQL |
 | bad `log-level`, `compaction.schedule`, `scan-interval`, OIDC placeholder | | |
 | empty Basic-auth password from an unset env var | | |
+| Mustache syntax in a template (unclosed `{{#x}}`: `<file>:<line>:<col>`) | | |
+| two files with one `url-path` + method (`Duplicate endpoint ...`) | | |
 
 Fail CI on warnings too:
 

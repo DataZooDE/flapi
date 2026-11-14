@@ -78,11 +78,10 @@ flapii project init my-api --force    # overwrite existing files
 flapii project init my-api --no-examples --skip-validation
 ```
 
-The command creates `flapi.yaml`, `sqls/sample.yaml`, `sqls/sample.sql`, an empty `data/`,
-`common/auth.yaml`, `common/rate-limit.yaml` and `.gitignore`. The sample endpoint reads
-`./data/sample.parquet`, which is **not** created. `GET /sample` returns 500 until you put
-a file there or change the connection. `--advanced` and `--ai` (needs a Gemini key) are
-also available.
+The command creates `flapi.yaml`, `sqls/sample.yaml`, `sqls/sample.sql`, `data/sample.csv`,
+`common/auth.yaml`, `common/rate-limit.yaml` and `.gitignore`. The sample endpoint
+`GET /sample` reads `./data/sample.csv`, which init also writes, so it answers 200 at once.
+`--advanced` and `--ai` (needs a Gemini key) are also available.
 
 ## Minimal complete project
 

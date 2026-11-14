@@ -11,6 +11,10 @@ Use the `flapi-cache-design` skill to choose and write the cache, then
 1. Read the endpoint YAML and its SQL template, and inspect the source: row count,
    whether rows are only appended or also updated/deleted, which column reliably
    increases on every change (the cursor candidate), and the primary key.
+   For a naive `TIMESTAMP` cursor, check that every writer uses one clock and
+   zone: a writer storing local time next to UTC rows moves the watermark ahead
+   and later rows are silently skipped. Have writers store UTC (`now() AT TIME
+   ZONE 'UTC'`), or use `TIMESTAMPTZ`, and keep an overlap window.
 2. Decide the mode with the user, stating the trade-off in two lines:
    - full refresh: no `cursor` (small or fully-recomputed data)
    - append: `cursor` only (immutable events; handle late-arriving rows)

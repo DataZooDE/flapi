@@ -38,8 +38,8 @@ Designing the cache (mode, templates, deletes) is `flapi-cache-design`.
   the delta size on a big table.
 - **Merge caches slow down with every refresh** (measured on 10M rows: 175 → 377 ms
   over 8 refreshes, ~30 ms each) because delete files pile up, and default
-  compaction does not rewrite them. Set `ducklake.compaction.delete-threshold` and
-  rebuild with `--full` now and then (§6).
+  compaction does not rewrite them. Size `ducklake.compaction.delete-threshold` to
+  your delta share (§6), or rebuild with `--full` now and then.
 - **A `cursor.type` that does not match the column drops the watermark:** every refresh
   then loads the full source. `flapii templates expand <path> --cache` shows
   `watermark_dropped_reason`, the refresh answer a `warning`, the audit row's `message` too.
@@ -145,8 +145,9 @@ script (`Processed query:`).
 | Refresh time ≥ schedule | Lengthen `schedule`, or make the refresh cheaper first |
 | Many tiny refreshes (tens to a few thousand rows), many small files | `ducklake.data-inlining-row-limit` up to a few thousand; `ducklake.compaction`. Never raise inlining to the size of a large delta (60-100x slower merges) |
 | Metadata / snapshot count, storage keep growing | `cache.retention` or global `ducklake.retention`; `flapii cache gc <path>` (JSON: `expired_snapshots`, `files_deleted`, `bytes_freed`); an old table after a `schema:` change: `flapii cache drop-table <schema>.<table>` |
-| Incremental (merge) refresh time grows every refresh | Delete files pile up: `ducklake.compaction.delete-threshold: 0.2` (DuckLake's default rewrites only above 0.95 deleted; measured: rewrites to 0 delete files) plus a periodic `flapii cache refresh <path> --full` (476 ms on 10M rows, then back to the fast baseline) |
-| Out of memory / swapping during a full rebuild | Size `duckdb.max_memory` for the CTAS: 10M rows x 10 columns peaked at ~4 GB RSS (a merge refresh ~1.5 GB) |
+| Incremental (merge) refresh time grows every refresh | Delete files pile up (DuckLake's default rewrites a file only above 0.95 deleted): `ducklake.compaction.delete-threshold` ≈ refreshes between compactions × delta share (§6), or a periodic `flapii cache refresh <path> --full` (476 ms on 10M rows, then back to the fast baseline) |
+| Out of memory / swapping during a full rebuild | Size `duckdb.max_memory` for the CTAS; RSS grows with width and `duckdb.threads`. Measured `--full` of 10M rows: 0.86 GB peak at `threads: 8`, 1.5 GB at 16; an earlier ~4 GB (10 columns) is an upper bound |
+| Cached GET no faster than (or slower than) the source | A DuckLake read costs ~10 ms per query, and a paginated GET runs two (page + count): ~20 ms on 1.2k rows vs 2.7 ms reading local Parquet directly. `with-pagination: false` drops the count query for count-heavy endpoints. Cache remote or slow sources, not local Parquet/DuckDB files |
 | CPU-bound transform, or spilling | `duckdb.threads`, `duckdb.max_memory` |
 | Startup spends minutes warming | `ducklake.warmup: if-empty` with a persistent catalog, or build in CI (`flapi-cache-design`) |
 | Write endpoints slow since write-through | `invalidate-on-write` runs the populate synchronously: make it incremental, or switch to `refresh-on-write` (after the response) |
@@ -286,7 +287,7 @@ ducklake:
   compaction:
     enabled: true
     schedule: '@daily'
-    delete-threshold: 0.2          # rewrite files with > 20% deleted rows (merge caches)
+    delete-threshold: 0.05         # ~ refreshes between compactions x delta share (§6)
 ```
 
 ```yaml
@@ -326,19 +327,34 @@ SELECT * FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}} ORDER BY segmen
   delta made merge refreshes 60-100x slower (118 ms → 11.9-23.7 s at ~112k rows).
 - **Compaction** runs `ducklake_merge_adjacent_files`, `ducklake_rewrite_data_files`
   and a file cleanup once per catalog when due; the audit log records it as
-  `sync_type` `compaction` (read it with `GET /api/v1/_config/cache/audit?sync_type=compaction`).
-  A one-shot `flapi cache refresh` also compacts when due, and `flapii cache compact [path]`
-  (`POST /api/v1/_config/cache/compact`) runs it now, for the catalog or one table,
-  whatever the schedule. `compaction.delete-threshold`
-  (0 < x <= 1) is the share of deleted rows above which a file is rewritten; DuckLake's
-  default is 0.95, so a merge cache's delete files are otherwise never rewritten and
-  every refresh gets slower. `0.2` rewrote them to 0 delete files in the measurement
-  above; a periodic `--full` rebuild resets the table completely.
+  `sync_type` `compaction` (`GET /api/v1/_config/cache/audit?sync_type=compaction`).
+  The first run is due one `compaction.schedule` after start (or after the last
+  recorded run); a one-shot `flapi cache refresh` also compacts when due, and
+  `flapii cache compact [path]` (`POST /api/v1/_config/cache/compact`) runs it now,
+  for the catalog or one table.
+- **`compaction.delete-threshold`** (0 < x <= 1, DuckLake default 0.95) is the share
+  of deleted rows above which a file is rewritten. Set it to about **refreshes between
+  compactions × delta share**: 1% random updates per refresh, ~5 refreshes per
+  hourly compaction ≈ 0.05, not 0.2. Measured on a merge cache with 1%
+  random deltas (20 refreshes): `0.2` never triggered and refreshes grew +43 ms each
+  (199 → 1022 ms); `0.05` gave a sawtooth of 174-453 ms (avg 311); `0.01` stayed flat
+  but rewrote the base on every compaction (disk 2.8 → 6.9 GB). Lower means more
+  compaction time and RSS, and each rewrite briefly doubles that table's disk. Schedule
+  compaction at or a little slower than the refresh rate; a periodic `--full` resets
+  the table completely.
+- **Disk peak ≈ live size × (1 + base rewrites inside the retention window)**: the
+  replaced files stay while a kept snapshot sees them. For large merge caches keep
+  `keep-last-snapshots` small (1-2), and run `flapii cache gc <path>` per endpoint
+  after a compaction to free the rewritten files now. A table that is not refreshed
+  never runs its retention (it runs after a refresh): `gc` it.
 - **Retention** (`cache.retention`, else `ducklake.retention`; an endpoint block
   replaces the global one) runs after every refresh of that endpoint and on
   `flapii cache gc <path>`; it expires only this table's snapshots, so time travel
   to them stops working, including the earlier incarnations a full refresh or a
-  `--full` rebuild leaves. Without any retention `gc` answers `"status": "no_policy"`.
+  `--full` rebuild leaves. The old incarnation's files go once the last snapshot
+  before the `--full` leaves the window: N-1 more writing refreshes with
+  `keep-last-snapshots: N` (measured N=2: 1, N=4: 3). Without any retention `gc`
+  answers `"status": "no_policy"`.
   Snapshots shared with another table are kept and reported as a `warning`.
 - **Files of expired snapshots are deleted** right after the expiry
   (`ducklake_cleanup_old_files`), so disk usage follows retention. A full refresh
@@ -349,9 +365,11 @@ SELECT * FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}} ORDER BY segmen
 - **`duckdb.threads` / `duckdb.max_memory`** (any key under `duckdb:` is passed to
   DuckDB as a setting, e.g. `threads: 4`, `max_memory: 2GB`) apply to the whole
   process: serving and refreshing share them. More threads help scans and
-  aggregates; a memory limit makes large merges spill instead of failing. A full CTAS
-  of 10M rows x 10 columns peaked at ~4 GB RSS, a merge refresh of the same table at
-  ~1.5 GB: size `max_memory` (and the container) for the full rebuild, not the delta.
+  aggregates; a memory limit makes large merges spill instead of failing. Size
+  `max_memory` (and the container) for the full rebuild, not the delta. Measured
+  `--full` of 10M rows: peak RSS 0.86 GB at `threads: 8` and 1.5 GB at 16 (durations 931-1602
+  ms across runs); treat an older ~4 GB CTAS (10 columns) and ~1.5 GB
+  merge-refresh figure as upper bounds that depend on width and threads.
 
 
 ## Canonical tuning loop

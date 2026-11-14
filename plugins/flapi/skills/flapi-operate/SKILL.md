@@ -117,34 +117,34 @@ whatever `--json-style` says; `-o table` adds `N cache-not-ready` to the summary
 ```json
 {
   "requests": {
-    "since_unix_ms": 1794652929023, "total": 22, "server_errors": 2, "cache_unavailable": 4,
+    "since_unix_ms": 1794689683288, "total": 6, "server_errors": 0, "cache_unavailable": 0,
     "rejections": {"unauthorized": 1, "forbidden": 0, "rate_limited": 0},
     "series": [
-      {"protocol": "rest", "method": "GET", "route": "/customer-lookup", "requests": 14,
-       "status": {"2xx": 11, "3xx": 0, "4xx": 3, "5xx": 0, "503_cache": 0},
-       "latency_ms": {"avg": 3.06, "p50": 5, "p95": 10, "p99": 10, "max": 5.139},
-       "last_request_unix_ms": 1794653073515},
-      {"protocol": "rest", "method": "GET", "route": "<unmatched>", "requests": 1,
-       "status": {"2xx": 0, "3xx": 0, "4xx": 1, "5xx": 0, "503_cache": 0}, "latency_ms": {"...": 0}},
-      {"protocol": "mcp", "tool": "customer_lookup", "requests": 5, "failures": 1,
-       "latency_ms": {"avg": 2.72, "p50": 5, "p95": 10, "p99": 10, "max": 5.516}}
+      {"protocol": "rest", "method": "GET", "route": "/orders", "requests": 6, "rejected": 0,
+       "status": {"2xx": 5, "3xx": 0, "4xx": 1, "5xx": 0, "503_cache": 0},
+       "latency_ms": {"avg": 15.125, "p50": 14.833, "p95": 29.9, "p99": 30.668, "max": 30.668},
+       "last_request_unix_ms": 1794689758394}
     ]
   },
   "caches": [
-    {"cache": "cache.cache.products_cache", "endpoint": "/products", "state": "ready",
-     "refreshes": 2, "failures": 0, "data_age_seconds": 0,
-     "last": {"mode": "full", "status": "success", "duration_ms": 31, "rows_affected": 77,
-              "snapshot_id": "6", "completed_at": "2026-11-14 10:45:35.745"},
-     "duration_ms": {"avg": 35, "max": 40}}
+    {"cache": "cache.cache.orders_c", "endpoint": "/orders", "state": "ready",
+     "refreshes": 20, "failures": 0, "data_age_seconds": 9,
+     "last": {"mode": "merge", "status": "success", "full": false, "duration_ms": 80,
+              "rows_affected": 1, "snapshot_id": "42", "completed_at": "2026-11-14 20:55:49.309"},
+     "duration_ms": {"avg": 54, "max": 109}}
   ],
-  "endpoints": {"count": 5},
+  "endpoints": {"count": 4},
   "arrow": {"total_requests": 0, "...": 0},
   "tracing": {"enabled": false, "spans_submitted": 0, "spans_exported": 0, "spans_dropped": 0, "spans_flush_timeouts": 0}
 }
 ```
 
-- `route` is the endpoint's `url-path`; every unknown path is one `<unmatched>` series.
-  Config-service routes are not counted per route.
+- `route` is the endpoint's `url-path`; every unknown path is one `<unmatched>` series
+  (MCP tools are `"protocol": "mcp", "tool": ...` series). Config-service routes are not
+  counted per route. `rejected` counts that series' 401/403 (REST) or role denials (MCP); the global
+  `rejections` also counts config-service 401s. `cache_unavailable` / `503_cache` count
+  503s from a cache that is not ready. `last.full` is true for a refresh that loaded the
+  whole source.
 - `latency_ms` (ms, three decimals) runs from the start of the request, so it includes
   auth: a Basic-auth endpoint shows the ~165 ms PBKDF2 check in `max` for each first
   request with a password (later ones hit the verification cache) and for every wrong one.
@@ -217,8 +217,10 @@ SELECT * FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
 ```
 
 - Every response has `X-Request-Id: req-...`. The same id is on every log line written while
-  serving it (`"request_id":"req-3f18..."` in JSON, `request_id=req-...` in text), and in
-  the audit line. To debug a failed call: take the header, then
+  serving it, the access-log `Response:` line included (`"request_id":"req-3f18..."` in
+  JSON, `request_id=req-...` in text), and in the audit line. The `Request:` line is written
+  before the id exists; it shares the connection pointer (`0x7fd2800095e0`) with its
+  `Response:` line. To debug a failed call: take the header, then
   `grep req-3f1812a93deaa6c1 server.log`. A 500 body carries the same id as `request_id`;
   the DuckDB error is only in the log.
 - Change the level at runtime: `flapii config log-level set debug` (until restart). `debug`

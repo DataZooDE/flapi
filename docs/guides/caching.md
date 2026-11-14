@@ -343,14 +343,19 @@ What usually makes a refresh shorter, biggest win first:
    refreshes and refresh time rising from ~1.2 s to ~6.3 s. Compact the table,
    or rebuild it with an occasional full rebuild (`flapii cache refresh <path> --full`).
    Compaction rewrites a file only above DuckLake's 95% deleted rows by default. Set
-   `ducklake.compaction.delete-threshold` (e.g. `0.2`) so it does.
+   `ducklake.compaction.delete-threshold` so it does: about refreshes between
+   compactions × the share of rows each refresh changes (1% per refresh, five
+   refreshes per compaction: `0.05`). Lower values rewrite more often (more
+   compaction time and briefly twice the table's disk).
 7. **Bound snapshot growth.** Every refresh is a DuckLake snapshot. Set
    `retention.keep-last-snapshots` / `max-snapshot-age` (per cache, or once under
    `ducklake.retention` for all caches without their own). Retention runs after
    every refresh and on `flapii cache gc <path>`; expired files are deleted from
    disk. That includes the earlier incarnations a full refresh or `--full` rebuild
-   leaves behind. A file goes only when no kept snapshot of any table still sees
-   it. After changing `cache.schema`, drop the old table with
+   leaves behind, once the last snapshot before the rebuild leaves the window:
+   with `keep-last-snapshots: N`, N-1 more refreshes that write (until then the
+   disk holds both copies). A file goes only when no kept snapshot of any table
+   still sees it. After changing `cache.schema`, drop the old table with
    `flapii cache drop-table <old-schema>.<table>`.
 
 The `flapi-cache-tuning` skill in the [Claude Code plugin](./claude-code.md)

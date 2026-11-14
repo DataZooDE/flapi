@@ -22,7 +22,8 @@ resource, `flapi-testing` for the test, `flapi-auth` if it needs auth).
      parameter of the same name does not satisfy it
    - `WHERE 1=1` + `{{#params.x}} AND ... {{/params.x}}` for optional filters
    - triple braces inside quoted string literals, double braces only for validated
-     numbers; a bounded default `LIMIT`
+     numbers; no `LIMIT` in the SQL (pagination wraps it): bound rows with a
+     `limit` request field (`int`, default, max) or `mcp-tool.response.max-rows`
    - for MCP: a description an agent can act on (what it returns, when to use it,
      parameter meanings and units)
 4. Validate with `flapi -c flapi.yaml --validate-config`; render the SQL with

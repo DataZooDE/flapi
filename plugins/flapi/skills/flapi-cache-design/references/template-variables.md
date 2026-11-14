@@ -102,3 +102,8 @@ Error: refusing: ...`, the audit row is `error`, and the fingerprint is unchange
 - The audit log is data: `flapii` prints it as the server sends it, snake_case
   (`duration_ms`, `rows_affected`, `snapshot_id`, `message`), whatever `--json-style`
   says. A successful `flapii cache refresh` prints mode, rows, duration and snapshot.
+- A failed `flapii cache refresh` prints `[400] Bad Request: Cache refresh failed`
+  with a `reason` (the DuckDB error); the audit row's `message` has it too.
+  `--log-level debug` logs every rendered statement (`Processed query:`).
+- Prove the incremental branch: refresh, change the source, refresh again, and
+  check that the second audit row is the mode you expect with a small `rows_affected`.

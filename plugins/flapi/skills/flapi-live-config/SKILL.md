@@ -51,7 +51,8 @@ tools (`flapi_*`) inside the server. `flapii` is its CLI client. It is **off by 
   and answers 201; an existing endpoint is 409. `PUT` deep-merges the body onto the YAML
   file and re-parses it (comments in that file are lost). `DELETE` removes the file.
   Do not also hand-write a file for an endpoint you create this way: the server writes
-  its own, and two files with one `url-path` both load after a restart.
+  its own, and two files with one `url-path` + method stop the next startup: `Duplicate
+  endpoint GET /x: declared in a.yaml and b.yaml` (reload and create refuse it with 409).
 - **A `PUT` body must name the endpoint**: include `url-path` (or the `mcp-tool` /
   `mcp-resource` / `mcp-prompt` block). Without it the body is treated as the legacy
   camelCase form and fails with 500 `Missing required field in endpoint config`. Changing

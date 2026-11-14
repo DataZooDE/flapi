@@ -106,7 +106,7 @@ ducklake:
   compaction:
     enabled: true
     schedule: "24h"            # interval, or @hourly / @daily / @midnight / @weekly
-    delete-threshold: 0.2      # rewrite files with >20% deleted rows (DuckLake default 0.95)
+    delete-threshold: 0.05     # ~ refreshes between compactions x delta share (DuckLake default 0.95)
   scheduler:
     enabled: true              # the default; false opts out (startup warns)
     scan-interval: "1m"        # default: min(heartbeat.worker-interval, shortest cache.schedule)
@@ -306,7 +306,8 @@ database for this meta transaction`, which INVALIDATES the database: every later
 query failed with `database has been invalidated` until restart. Measured with three
 such caches refreshed concurrently, five rounds: all 15 refreshes now succeed (about
 1.5 s in all for 20k/5k/10k-row sources); before, the first round invalidated the
-database.
+database. The user-facing recipe still gives each populate template a unique alias,
+and keeps uncached endpoints off those aliases (they exist only after a refresh).
 
 `DatabaseHealth` (`src/database_health.cpp`) is the safety net for any other cause:
 every DuckDB error raised through `QueryExecutor` or the populate script is passed to

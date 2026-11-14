@@ -43,9 +43,11 @@ REST endpoint too. One SQL template serves both.
 - **The description scanner warns by default and fails only with `mcp.strict-descriptions:
   true`.** It flags the substring `system:` anywhere, so "file system: ..." trips it.
 - **`flapi_*` config tools need the config-service token** on the MCP request:
-  `X-Config-Token: <token>` is read first, then `Authorization: Bearer <token>`. Without
-  `--config-service` they are not in `tools/list`. Startup warns about a token under 16
-  characters.
+  `X-Config-Token: <token>` is read first, then `Authorization: Bearer <token>` (only
+  while `mcp.auth` is off; with it on, `Authorization` is the MCP credential). With
+  `--config-service` they are LISTED in `tools/list` even without the token; a call
+  without it is JSON-RPC `-32001 Authentication required for tool: ...`. Without
+  `--config-service` they are not listed. Startup warns about a token under 16 characters.
 - **There is no `mcp.port` or `mcp.host`.** Setting either only logs a warning.
 - **The `customers.parquet` fixture ignores filters on `c_mktsegment`.** `c_mktsegment =
   'BUILDING'` returns 0 rows in DuckDB itself. Filter on `c_nationkey` or `c_custkey` in
@@ -334,7 +336,9 @@ Python client: [references/jsonrpc.md](references/jsonrpc.md).
 claude mcp add --transport http flapi-local http://localhost:8080/mcp/jsonrpc
 # with the config tools (server started with --config-service):
 claude mcp add --transport http flapi-local http://localhost:8080/mcp/jsonrpc \
-  --header "Authorization: Bearer $FLAPI_CONFIG_SERVICE_TOKEN"
+  --header "X-Config-Token: $FLAPI_CONFIG_SERVICE_TOKEN"
+# with mcp.auth on, add the MCP credential too:
+#   --header "Authorization: Bearer $FLAPI_MCP_TOKEN"   (or "Authorization: Basic <base64 user:pass>")
 ```
 
 **This plugin** already registers an MCP server named `flapi` at
@@ -343,7 +347,11 @@ claude mcp add --transport http flapi-local http://localhost:8080/mcp/jsonrpc \
 `Authorization: Bearer ${FLAPI_MCP_TOKEN:-}` (a JWT for `mcp.auth`; leave it unset when
 `mcp.auth` is off, an empty `Bearer ` is then ignored) (`plugins/flapi/.mcp.json`). Export
 them before starting Claude Code. The config token must not go in `Authorization`: with
-`mcp.auth` on, that header is checked as the MCP credential and every call is a 401. A `claude mcp add` (named `flapi-local` above to
+`mcp.auth` on, that header is checked as the MCP credential and every call is a 401
+(`-32000 The credentials sent were not accepted.`). `FLAPI_MCP_TOKEN` is a JWT for
+`mcp.auth.type: bearer` (`sub`, `iss` = `jwt-issuer`, a `roles` claim matching the tools'
+`allowed-roles`) or an OIDC access token; for `type: basic` use `claude mcp add` with a
+Basic header instead. A `claude mcp add` (named `flapi-local` above to
 avoid a clash) is only needed for another server or without the plugin.
 
 **Claude Desktop** reads stdio servers from `claude_desktop_config.json`. flAPI speaks HTTP

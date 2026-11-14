@@ -40,7 +40,7 @@ Three independent gates: the endpoint's own `auth:` block (REST), `mcp.auth`
   or `Bearer realm="flAPI"` (`, error="invalid_token"` for a refused token), body
   `{"error":"Unauthorized","message":...}`.
 - **The REST types are `basic`, `bearer` and `oidc`; `type: jwt` is an alias of
-  `bearer`.** Any other type refuses every request (`AUTH_UNKNOWN_TYPE`).
+  `bearer`.** Any other type is a load error (below).
 - **`auth.roles` is enforced on REST.** An authenticated caller holding none of
   the listed roles gets **403** `{"error":"Forbidden","message":...}`; no or
   wrong credentials stay 401; `roles: []` (or absent) = any authenticated user.
@@ -52,9 +52,13 @@ Three independent gates: the endpoint's own `auth:` block (REST), `mcp.auth`
 - **Passwords: store a PBKDF2-SHA256 hash** `$pbkdf2-sha256$<iter>$<salt>$<hash>`.
   passlib's `pbkdf2_sha256` output, standard and URL-safe base64 all verify.
   **bcrypt never verifies** (startup warning `AUTH_BCRYPT_UNSUPPORTED`: that user
-  cannot log in). A successful check is remembered for 5 minutes, so only the first
-  request with a password pays the ~165 ms PBKDF2 cost; a wrong password pays it
-  every time. Reloading the endpoint file (or any auth change) clears the cache.
+  cannot log in). **PBKDF2 costs ~165 ms CPU per check at 600k iterations.** A
+  successful check is remembered for 5 minutes (per user + password + hash, at most
+  10,000 entries), so only the first request with a password pays it; a wrong password
+  pays it every time. At most half the cores derive at once; a request that waits
+  more than 2 s for a slot is refused (401, log `too many password checks in
+  progress`). Reloading the endpoint file (or any auth change) clears the cache. For
+  hot paths and many distinct clients prefer bearer/OIDC (a signature check, no KDF).
 - **`type` must be `basic`, `bearer` (alias `jwt`) or `oidc`.** A typo fails to
   load / reload with `AUTH_UNKNOWN_TYPE` naming the endpoint and the valid types.
 - **With `mcp.auth.enabled: true`, a tool without `allowed-roles` is denied to
@@ -343,6 +347,10 @@ curl -s -w ' %{http_code}\n' -u agent:reader-pass $MCP -H 'Content-Type: applica
   `required: false`, letting clients list tools anonymously).
 - `allowed-roles` also exists on `mcp-resource` and `mcp-prompt`.
 - Endpoint-level `auth:` does not apply to the MCP side of a dual REST+MCP file.
+- **The plugin's MCP entry with `mcp.auth` on**: export `FLAPI_MCP_TOKEN` (a JWT as
+  above for `type: bearer`, an access token for `oidc`); it goes in `Authorization:
+  Bearer`, and the config token separately in `X-Config-Token`. Unset, every call is
+  401. For `type: basic` register the server yourself with a Basic header (`flapi-mcp`).
 
 ### OAuth protected-resource metadata (RFC 9728)
 

@@ -434,7 +434,9 @@ refresh and on `…/cache/gc`; once snapshots are expired, flAPI also runs
 `ducklake_cleanup_old_files(<catalog>, cleanup_all => true)`, so the data files they referenced are
 deleted from disk (or the bucket) rather than left behind. Expiry is per table and covers every
 incarnation of it: a CTAS full refresh or a `--full` rebuild creates a new table id, and the old ones'
-snapshots expire too. A file is deleted only once no remaining snapshot of any table can see it.
+snapshots expire too. A file is deleted only once no remaining snapshot of any table can see it, so
+after a `--full` the old copy stays until the last snapshot before the rebuild leaves the window
+(`keep-last-snapshots: N`: N-1 more refreshes that write).
 To remove a table no endpoint uses any more (for example after changing `cache.schema`), call
 `POST /api/v1/_config/cache/drop-table` (`flapii cache drop-table schema.table`).
 
@@ -444,7 +446,7 @@ To remove a table no endpoint uses any more (for example after changing `cache.s
 |-----------|------|---------|-------------|
 | `ducklake.compaction.enabled` | boolean | `false` | Enable automatic compaction. Needs a `schedule` as well |
 | `ducklake.compaction.schedule` | string | - | How often: an interval (`30m`, `6h`, `1d`) or `@hourly`, `@daily`, `@midnight`, `@weekly`. Anything else (including a cron expression) stops startup with an error naming the key. Without `compaction.enabled: true` it has no effect, and startup warns |
-| `ducklake.compaction.delete-threshold` | number | DuckLake's `0.95` | Fraction of deleted rows (`0 < x <= 1`) above which `ducklake_rewrite_data_files` rewrites a data file. A merge cache's delete files rarely reach DuckLake's default, so refreshes slow down as they pile up. Try `0.2`. Out of range stops startup |
+| `ducklake.compaction.delete-threshold` | number | DuckLake's `0.95` | Fraction of deleted rows (`0 < x <= 1`) above which `ducklake_rewrite_data_files` rewrites a data file. A merge cache's delete files rarely reach DuckLake's default, so refreshes slow down as they pile up. Set about refreshes between compactions × the share of rows a refresh changes (1% x 5 = `0.05`); `0.2` never triggered with 1% deltas. Out of range stops startup |
 
 Compaction runs once per catalog per period: `ducklake_merge_adjacent_files`, `ducklake_rewrite_data_files`
 and a file cleanup. Each run writes an audit row with `sync_type` `compaction`, and when it last ran

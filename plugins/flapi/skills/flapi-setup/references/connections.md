@@ -132,23 +132,38 @@ What works (verified on v26.10.31), best first:
    ```
 
    ```sql
-   DETACH DATABASE IF EXISTS src;
-   ATTACH IF NOT EXISTS '{{{conn.path}}}' AS src (READ_ONLY);
+   DETACH DATABASE IF EXISTS src_events;
+   ATTACH IF NOT EXISTS '{{{conn.path}}}' AS src_events (READ_ONLY);
    {{^cache.previousSnapshotTimestamp}}
    CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS
-   SELECT id, ts, kind FROM src.events;
+   SELECT id, ts, kind FROM src_events.events;
    {{/cache.previousSnapshotTimestamp}}
    {{#cache.previousSnapshotTimestamp}}
    INSERT INTO {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
-   SELECT id, ts, kind FROM src.events
+   SELECT id, ts, kind FROM src_events.events
    WHERE ts > TIMESTAMP '{{{cache.previousSnapshotTimestamp}}}';   -- late rows: flapi-cache-design
    {{/cache.previousSnapshotTimestamp}}
    ```
 
-   Every cache may use the same alias `src`: refreshes run one at a time per catalog.
-   (Before #211 two such refreshes in parallel collided on the alias and invalidated the
-   database until restart.) `?target=cache&validate_only=1` executes this READ_ONLY
-   ATTACH, so the statements reading `src` are checked; it detaches it again afterwards.
+   **Give every populate template its own alias** (`src_orders`, `src_events`, ...).
+   The attached database belongs to the whole process, so a shared `src` is detached
+   and re-attached under the feet of whatever else reads it. Before #211 two caches over
+   one file refreshing at the same time collided on one alias and invalidated the
+   database until restart; refreshes now run one at a time per catalog, which prevents
+   the crash, but a unique alias still keeps templates out of each other's way.
+   `?target=cache&validate_only=1` executes this READ_ONLY ATTACH, so the statements
+   reading the alias are checked; it detaches it again afterwards.
+
+   **An uncached endpoint must not read an alias that only a populate template
+   attaches** (a reconcile/check endpoint, say). It does not exist before the first
+   refresh, after a failed one, or after a restart with `warmup: if-empty`/`never`:
+   the endpoint answers 500 (`schema "src_orders" does not exist` in the log). A
+   serving template cannot attach (it is wrapped in `SELECT * FROM (...)`). Either
+   give it a connection whose `init` attaches the file under a third alias
+   (`ATTACH IF NOT EXISTS '...' AS wh_check (READ_ONLY)`; it coexists with the
+   template's attach of the same file, but it holds the lock and keeps reading the
+   inode it opened at startup, so after a rename it sees the old file until restart),
+   or, better when uncached endpoints read the source, use export drops (2.).
 
    The server still holds the file between refreshes, so the writer never writes it
    in place: it builds a copy and renames it over the original

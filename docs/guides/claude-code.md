@@ -67,11 +67,21 @@ Both variables default to empty (`${VAR:-}` in `.mcp.json`), so the server
 registers even when neither is set. The config token used to go in
 `Authorization`, so once `mcp.auth` was on every plugin call was a 401.
 
+To point the plugin at a server with `mcp.auth` on, export `FLAPI_MCP_TOKEN`:
+for `mcp.auth.type: bearer` an HS256 JWT signed with `jwt-secret`, with `sub`, an
+`iss` equal to `jwt-issuer` and a `roles` claim that matches the tools'
+`allowed-roles`; for `type: oidc` an access token from the identity provider. A
+server with `type: basic` needs an `Authorization: Basic ...` header, which the
+plugin entry cannot send: register it yourself with `claude mcp add --transport
+http ... --header "Authorization: Basic <base64 user:pass>" --header
+"X-Config-Token: $FLAPI_CONFIG_SERVICE_TOKEN"`.
+
 Claude then sees your endpoints as MCP tools. If the server runs with
 `--config-service`, Claude also sees the `flapi_*` config tools. With those it can
 list and edit endpoints, expand templates, refresh caches and read
-`flapi_get_metrics`. Every `flapi_*` tool needs the config-service token, which
-`X-Config-Token` carries. Endpoint changes show up in `tools/list` at once,
+`flapi_get_metrics`. The `flapi_*` tools are listed in `tools/list` even without
+the token, but every call needs the config-service token, which `X-Config-Token`
+carries (without it: JSON-RPC `-32001 Authentication required for tool: ...`). Endpoint changes show up in `tools/list` at once,
 without a restart.
 
 ```bash

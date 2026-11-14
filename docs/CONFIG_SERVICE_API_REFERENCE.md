@@ -991,6 +991,8 @@ table waits for the running one; a second refresh of the SAME table answers `alr
 Two populate templates that `DETACH DATABASE IF EXISTS src; ATTACH ... AS src` used to run in parallel
 and collide on the alias ("Database name src was already used by a different database for this meta
 transaction"), which invalidates the DuckDB database (see `503 database_invalidated` below).
+Serialisation prevents that crash; still give each populate template its own alias (`src_orders`,
+`src_events`), because an attach is process-wide and a shared one is detached under whatever else reads it.
 
 Errors are JSON `{"error": ..., "reason": ...}`:
 
