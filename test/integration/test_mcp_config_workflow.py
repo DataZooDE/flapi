@@ -303,6 +303,12 @@ class TestModifyEndpointWorkflow:
                                      {"path": "/workflow_tmp/"})
             except Exception:
                 pass
+            # Delete keeps the placeholder SQL the create wrote (by design);
+            # this server serves the checked-in api_configuration directory.
+            sqls = os.path.join(os.path.dirname(__file__), "api_configuration", "sqls")
+            for leftover in ("workflow_tmp.yaml", "workflow_tmp.sql"):
+                if os.path.exists(os.path.join(sqls, leftover)):
+                    os.remove(os.path.join(sqls, leftover))
 
 
 class TestCacheManagementWorkflow:

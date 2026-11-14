@@ -367,19 +367,34 @@ class TestConfigEndpointTools:
             assert "exists" in str(e) or "not found" in str(e) or "connection" in str(e).lower() or "authentication" in str(e).lower()
 
     def test_flapi_update_endpoint_valid(self, mcp_client):
-        """Test updating an endpoint configuration"""
-        update_config = {
-            "path": "/customers/",
-            "description": "Updated description"
-        }
+        """Test updating an endpoint configuration.
 
+        flapi_update_endpoint now PERSISTS (it is merged into the endpoint's
+        YAML), so it runs against a throwaway endpoint: this server serves the
+        checked-in api_configuration directory, and updating /customers/ wrote
+        into test/integration/api_configuration/sqls/customers.yaml.
+        """
+        sqls = os.path.join(os.path.dirname(__file__), "api_configuration", "sqls")
         try:
-            result = mcp_client.call_tool("flapi_update_endpoint", update_config)
-            # Should succeed or return meaningful result
+            mcp_client.call_tool("flapi_create_endpoint", {"path": "/update_tmp/", "method": "GET"})
+            result = mcp_client.call_tool("flapi_update_endpoint", {
+                "path": "/update_tmp/",
+                "config": {"with-pagination": False},
+            })
             assert result is not None
+            with open(os.path.join(sqls, "update_tmp.yaml")) as f:
+                assert "with-pagination: false" in f.read()
         except Exception as e:
             # Expected - auth required for mutation
             assert "authentication" in str(e).lower()
+        finally:
+            try:
+                mcp_client.call_tool("flapi_delete_endpoint", {"path": "/update_tmp/"})
+            except Exception:
+                pass
+            for leftover in ("update_tmp.yaml", "update_tmp.sql"):
+                if os.path.exists(os.path.join(sqls, leftover)):
+                    os.remove(os.path.join(sqls, leftover))
 
     def test_flapi_delete_endpoint_invalid_path(self, mcp_client):
         """Test deleting with invalid endpoint path"""
