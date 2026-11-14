@@ -266,10 +266,22 @@ class TestSecretsDoNotLeakThroughTheErrorPath:
             assert DEFAULT_TOKEN not in json.dumps(s.call()), s.call()
 
     def test_the_error_is_still_useful(self):
-        # Scrubbing must not reduce every failure to an opaque blob.
+        # Scrubbing must not reduce every failure to an opaque blob - but the
+        # detail belongs in the server LOG, under the request id the caller
+        # gets back (#211 G2: it also quoted the SQL and template paths).
+        import re
         with _Server(unbindable=True) as s:
-            blob = json.dumps(s.call()).lower()
-            assert "no_such_table_here" in blob or "binder" in blob, blob
+            blob = json.dumps(s.call())
+            assert "no_such_table_here" not in blob.lower(), blob
+            match = re.search(r"request_id (req-[0-9a-f]+)", blob)
+            assert match, blob
+            time.sleep(0.3)
+            # A text log record spans lines (DuckDB's caret diagram); the id
+            # closes the record that names the table.
+            with open(s.log_path) as f:
+                log = f.read()
+            record = log[:log.index(match.group(1))]
+            assert "no_such_table_here" in record[record.rfind("[error]"):], log
 
     def test_a_successful_call_is_unaffected(self):
         with _Server() as s:

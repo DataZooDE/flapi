@@ -26,11 +26,26 @@ file that belongs to a flAPI project (a flapi.yaml in it or an ancestor dir):
      {{#params.x}} sections is checked too - and a cache template-file with
      ?target=cache&validate_only=1 (rendered with the live watermark, parsed
      per statement, bare-SELECT rule, bound in a rolled-back transaction).
-     Parse/bind errors are reported (exit 2); a cache whose table is not built
-     yet is a note, not a failure.
+     A parameter used inside `AT (...)` (time travel) gets no sample value:
+     an invented version or timestamp does not exist. Parse/bind errors are
+     reported (exit 2); a cache whose table is not built yet (seen on the
+     no-parameter run) is a note, not a failure.
+   Before the token is sent anywhere, the server must be THIS project's: its
+   OpenAPI title (GET /doc.yaml, no token) must be this flapi.yaml's
+   project-name, and then its template.path this project's. Otherwise the hook
+   names the URL it found and stops.
+   If flapi.yaml changed since the server started (its mtime is newer than the
+   server's uptime) and its ducklake/auth/mcp settings differ from what the
+   server reports, the hook says "restart the server first" instead of
+   reloading endpoints into a server running the old main configuration.
    A server running from a packed bundle (`bundled` in /api/v1/_config/project)
    cannot take edits from disk: the hook says so instead of reloading.
    A rejected token (HTTP 401/403) is reported; no server is a silent no-op.
+4. After a Bash command that deleted an endpoint YAML (rm, git rm, unlink, mv
+   away), or an edited YAML that no longer exists, the file is passed to
+   reload-file, which unloads what it declared (200 {"status":"removed",
+   "removed":[...]}); the removed endpoints are reported. 404 means nothing was
+   loaded from it (an older server, which cannot unload, answers 404 too).
 
 FLAPI_CONFIG names the project when the edited file is under its directory OR
 its template.path (a writer and a replica sharing ../sqls).
@@ -45,9 +60,11 @@ import datetime
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -248,30 +265,63 @@ def sample_value(field: dict):
     return None
 
 
-def sample_params(base: str, token: str, key: str) -> dict[str, str]:
-    """A sample value for each declared typed request field ({} if none or unknown)."""
+_AT_CLAUSE = re.compile(r"\bAT\s*\(((?:[^()]|\([^()]*\))*)\)", re.IGNORECASE)
+_PARAM_REF = re.compile(r"params\.([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def time_travel_params(sql: str) -> set[str]:
+    """Names of the params used inside `AT (VERSION => ...)` / `AT (TIMESTAMP => ...)`."""
+    names: set[str] = set()
+    for clause in _AT_CLAUSE.finditer(sql):
+        names.update(_PARAM_REF.findall(clause.group(1)))
+    return names
+
+
+def template_text(templates: Path | None, source: str) -> str:
+    if not source:
+        return ""
+    path = Path(source)
+    if not path.is_absolute() and templates is not None:
+        path = templates / path
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def sample_params(base: str, token: str, key: str, templates: Path | None = None) -> dict[str, str]:
+    """A sample value for each declared typed request field ({} if none or unknown).
+
+    A field used inside AT (...) gets none: a made-up snapshot version or
+    timestamp names a snapshot that does not exist, and the resulting error
+    says nothing about the edit.
+    """
     path, method_query = key_to_url(key, "")
     try:
         _, body = request("GET", f"{base}{path}" + (f"?{method_query}" if method_query else ""), token)
     except urllib.error.HTTPError:
         return {}
+    skip = time_travel_params(template_text(templates, str(body.get("template-source") or "")))
     samples = {}
     for field in body.get("request") or []:
         name = field.get("field-name")
+        if not name or str(name) in skip:
+            continue
         value = sample_value(field)
-        if name and value is not None:
+        if value is not None:
             samples[str(name)] = value
     return samples
 
 
-def render(base: str, token: str, key: str, cache: bool) -> tuple[list[str], list[str]]:
+def render(base: str, token: str, key: str, cache: bool,
+           templates: Path | None = None) -> tuple[list[str], list[str]]:
     """Validate one endpoint's template without running it: (errors, notes)."""
     path, method_query = key_to_url(key, "template/expand")
     query = "&".join(q for q in (method_query, "target=cache" if cache else "", "validate_only=1") if q)
     what = f"{key} ({'cache template-file' if cache else 'template'})"
     param_sets: list[tuple[str, dict]] = [("no params", {})]
     if not cache:
-        samples = sample_params(base, token, key)
+        samples = sample_params(base, token, key, templates)
         if samples:
             param_sets.append(("sample params " + ", ".join(f"{k}={v}" for k, v in sorted(samples.items())),
                                samples))
@@ -288,19 +338,30 @@ def render(base: str, token: str, key: str, cache: bool) -> tuple[list[str], lis
         if status != 200:
             errors.append(f"{what}: {body.get('error') or body}")
             break
+        first_run = label == "no params"
         for warning in body.get("warnings") or []:
             kind = warning.get("type")
             if kind == "cache_not_built":
-                not_built = True
-            elif kind in ("watermark_dropped", "not_checked") and label == "no params":
+                # Only the no-parameter run decides "not built"; a sample run
+                # failing is about the sample, never evidence of that.
+                not_built = not_built or first_run
+            elif kind == "watermark_dropped" and first_run:
+                notes.append(f"{what}: warning: {warning.get('message')} - the next refresh would load "
+                             "the full source")
+            elif kind == "not_checked" and first_run:
                 notes.append(f"{what}: warning: {warning.get('message')}")
         if body.get("valid") is False:
             problems = []
             for e in body.get("errors") or []:
                 message = str(e.get("message", e))
+                missing_cache = (re.search(r"Table with name \S+ does not exist", message)
+                                 and "cache" in message.lower())
                 # An older server reports a cache that is not built as an error.
-                if re.search(r"Table with name \S+ does not exist", message) and "cache" in message.lower():
+                if missing_cache and first_run:
                     not_built = True
+                    continue
+                # The same missing table again on a sample run: already noted.
+                if missing_cache and not_built:
                     continue
                 problems.append(message)
             if problems:
@@ -312,8 +373,132 @@ def render(base: str, token: str, key: str, cache: bool) -> tuple[list[str], lis
     return errors, notes
 
 
-def not_this_project(base: str, token: str, templates: Path) -> str | None:
-    """Why the server cannot take this edit (packed bundle, other project), or None."""
+def _scalar(value) -> str:
+    """A YAML / JSON scalar normalised for comparison."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    text = str(value).strip().strip("'\"").strip()
+    lowered = text.lower()
+    if lowered in ("true", "yes", "on"):
+        return "true"
+    if lowered in ("false", "no", "off"):
+        return "false"
+    return text
+
+
+def project_name(cfg: Path) -> str | None:
+    """project-name of flapi.yaml, without a YAML library."""
+    try:
+        text = cfg.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = re.search(r"^project-name:\s*(.+?)\s*(?:#.*)?$", text, re.MULTILINE)
+    return _scalar(match.group(1)) if match else None
+
+
+def top_level_scalars(cfg: Path, sections: tuple[str, ...]) -> dict[str, dict[str, str]]:
+    """The scalar keys directly under each named top-level block of flapi.yaml."""
+    try:
+        lines = cfg.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    current: str | None = None
+    child_indent: int | None = None
+    for line in lines:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        if indent == 0:
+            match = re.match(r"^([A-Za-z_-]+):\s*(?:#.*)?$", line)
+            current = match.group(1) if match and match.group(1) in sections else None
+            child_indent = None
+            if current:
+                out.setdefault(current, {})
+            continue
+        if current is None:
+            continue
+        if child_indent is None:
+            child_indent = indent
+        if indent != child_indent:
+            continue
+        match = re.match(r"^\s*([A-Za-z_-]+):\s*(.*?)\s*(?:#.*)?$", line)
+        if match and match.group(2):
+            out[current][match.group(1)] = match.group(2)
+    return out
+
+
+def _get_json_no_token(url: str):
+    """(status, body) of a GET that carries NO credential; None if unreadable."""
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, method="GET"), timeout=10) as resp:
+            return resp.status, resp.read().decode(errors="replace")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode(errors="replace")
+
+
+def wrong_server(base: str, cfg: Path) -> str | None:
+    """Why the server at `base` is not this project's - checked WITHOUT the token.
+
+    The token is the project's config-service secret; a server on the default
+    port that belongs to another project must not receive it. GET /doc.yaml
+    needs no credential and names the served project (OpenAPI info.title).
+    """
+    wanted = project_name(cfg)
+    if not wanted:
+        return None
+    status, body = _get_json_no_token(f"{base}/doc.yaml")
+    if status != 200:
+        return None
+    match = re.search(r"^info:\s*\n(?:[ \t]+.*\n)*?[ \t]+title:\s*(.+?)\s*$", body, re.MULTILINE)
+    if not match:
+        return None
+    served = _scalar(match.group(1))
+    if served != wanted:
+        return (f"flapi: the server at {base} serves project '{served}', not this project's "
+                f"'{wanted}' ({cfg}); nothing was sent to it (the config-service token included). "
+                "Point FLAPI_URL at this project's server.")
+    return None
+
+
+def main_config_stale(base: str, cfg: Path, project: dict) -> str | None:
+    """'restart first' when flapi.yaml changed since the server started and differs from it."""
+    try:
+        status, body = _get_json_no_token(f"{base}/health")
+        uptime = float(json.loads(body).get("uptime_s")) if status in (200, 503) else None
+    except (ValueError, TypeError, AttributeError, urllib.error.URLError, OSError):
+        uptime = None
+    try:
+        mtime = cfg.stat().st_mtime
+    except OSError:
+        return None
+    if uptime is not None and mtime <= time.time() - uptime + 1:
+        return None   # not touched since the server started
+    compared = {"ducklake": ("enabled", "alias", "read-only"), "auth": ("enabled",), "mcp": ("enabled",)}
+    in_file = top_level_scalars(cfg, tuple(compared))
+    diffs = []
+    for section, keys in compared.items():
+        served = project.get(section)
+        if not isinstance(served, dict):
+            continue
+        for key in keys:
+            if key not in served or key not in in_file.get(section, {}):
+                continue
+            mine = in_file[section][key]
+            if "{{" in mine:
+                continue   # interpolated: the server's resolved value cannot be compared
+            if _scalar(mine) != _scalar(served[key]):
+                diffs.append(f"{section}.{key} is {_scalar(mine)} in {cfg.name}, {_scalar(served[key])} "
+                             "on the server")
+    if not diffs:
+        return None
+    return (f"flapi: {cfg.name} changed since the server at {base} started ({'; '.join(diffs)}). "
+            "Restart the server first; nothing was reloaded into a server running the old main "
+            "configuration.")
+
+
+def not_this_project(base: str, token: str, templates: Path, cfg: Path | None = None) -> str | None:
+    """Why the server cannot take this edit (packed bundle, other project, stale), or None."""
     try:
         _, project = request("GET", f"{base}/api/v1/_config/project", token)
     except urllib.error.HTTPError:
@@ -331,7 +516,115 @@ def not_this_project(base: str, token: str, templates: Path) -> str | None:
         if not same:
             return (f"flapi: the server at {base} serves template.path {served}, not this project's "
                     f"{templates}; nothing was reloaded. Point FLAPI_URL at this project's server.")
+    if cfg is not None:
+        return main_config_stale(base, cfg, project)
     return None
+
+
+DELETING_COMMANDS = {"rm", "unlink", "trash", "mv"}
+
+
+def deleted_yaml_files(command: str, cwd: Path) -> list[Path]:
+    """YAML files a shell command removed (rm / git rm / unlink / trash / mv away) that are gone now."""
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return []
+    found: list[Path] = []
+    segment: list[str] = []
+    for token in tokens + [";"]:
+        if token and set(token) <= set(";&|"):
+            words = [w for w in segment if "=" not in w or w.startswith(("-", "/", "."))]
+            if words and words[0] == "git" and len(words) > 1 and words[1] in ("rm", "mv"):
+                words = words[1:]
+            if words and Path(words[0]).name in DELETING_COMMANDS:
+                operands = [w for w in words[1:] if not w.startswith("-")]
+                if Path(words[0]).name == "mv":
+                    operands = operands[:-1]   # the destination is not deleted
+                for operand in operands:
+                    if operand.lower().endswith((".yaml", ".yml")) and not any(c in operand for c in "*?["):
+                        path = Path(operand) if Path(operand).is_absolute() else cwd / operand
+                        if not path.exists():
+                            found.append(path)
+            segment = []
+        else:
+            segment.append(token)
+    return found
+
+
+def unload_deleted(base: str, token: str, yaml_file: Path) -> tuple[str, bool]:
+    """(report line, failed) for a deleted endpoint YAML passed to reload-file."""
+    try:
+        status, body = request("POST", f"{base}/api/v1/_config/endpoints/reload-file", token,
+                               {"file": str(yaml_file)}, ok_codes=(200, 400, 404, 409))
+    except urllib.error.HTTPError as exc:
+        return f"{yaml_file.name}: HTTP {exc.code}: {error_text(exc)}", True
+    if status == 200 and (body.get("status") == "removed" or body.get("success")):
+        # {"status":"removed","removed":[...]}: the endpoints the file declared.
+        keys = [str(k) for k in body.get("removed") or body.get("endpoints") or []]
+        if keys:
+            return f"flapi: {yaml_file.name} was deleted; the server unloaded {', '.join(keys)}.", False
+        return f"flapi: {yaml_file.name} was deleted; the server had nothing loaded from it.", False
+    message = str(body.get("error", ""))
+    if status == 404:
+        # Nothing was loaded from that file. (A server that predates unloading
+        # also answers 404 here, and keeps serving the file's endpoints until
+        # it restarts.)
+        return (f"flapi: {yaml_file.name} was deleted; the server at {base} had nothing loaded from it "
+                "(a server too old to unload deleted files keeps serving them until it restarts).", False)
+    if "is outside template.path" in message or "is not an endpoint file" in message:
+        return "", False
+    return f"{yaml_file.name} (HTTP {status}: {message[:400]})", True
+
+
+def handle_bash(event: dict) -> int:
+    """After a shell command: unload endpoint YAMLs it deleted."""
+    command = str((event.get("tool_input") or {}).get("command") or "")
+    if not re.search(r"\b(rm|unlink|trash|mv)\b", command):
+        return 0
+    cwd = Path(str(event.get("cwd") or os.getcwd()))
+    return handle_deleted(deleted_yaml_files(command, cwd))
+
+
+def handle_deleted(deleted: list[Path]) -> int:
+    """Pass each deleted endpoint YAML to reload-file, which unloads what it declared."""
+    token = os.environ.get("FLAPI_CONFIG_SERVICE_TOKEN")
+    if not deleted or not token:
+        return 0
+    base = (os.environ.get("FLAPI_URL") or os.environ.get("FLAPI_BASE_URL") or "http://localhost:8080").rstrip("/")
+    lines: list[str] = []
+    failed: list[str] = []
+    for yaml_file in deleted:
+        cfg = find_project_config(yaml_file)
+        if cfg is None or yaml_file.resolve() == cfg.resolve():
+            continue
+        templates = template_dir(cfg)
+        if not is_within(yaml_file, templates):
+            continue
+        try:
+            reason = wrong_server(base, cfg) or not_this_project(base, token, templates)
+            if reason:
+                lines.append(reason)
+                continue
+            line, is_failure = unload_deleted(base, token, yaml_file.resolve())
+        except TokenRejected as exc:
+            print(f"flapi: the config service at {base} rejected FLAPI_CONFIG_SERVICE_TOKEN ({exc}); "
+                  f"the endpoints of the deleted {yaml_file.name} were NOT unloaded.", file=sys.stderr)
+            return 2
+        except (urllib.error.URLError, OSError, ValueError):
+            return 0   # no server running: nothing to unload
+        if line and is_failure:
+            failed.append(line)
+        elif line:
+            lines.append(line)
+    if failed:
+        print("flapi: unloading deleted endpoint files failed for: " + "; ".join(failed), file=sys.stderr)
+        return 2
+    if lines:
+        emit("\n".join(lines))
+    return 0
 
 
 def has_cache_template(yaml_file: Path) -> bool:
@@ -351,11 +644,16 @@ def main() -> int:
         event = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
         return 0
+    if event.get("tool_name") == "Bash":
+        return handle_bash(event)
     tool_input = event.get("tool_input") or {}
     file_path = tool_input.get("file_path") or tool_input.get("path")
     if not file_path:
         return 0
     edited = Path(file_path)
+    if edited.suffix.lower() in (".yaml", ".yml") and not edited.exists():
+        # The edited endpoint file is gone: unload what it declared.
+        return handle_deleted([edited])
     if edited.suffix.lower() not in EXTENSIONS or not edited.exists():
         return 0
     cfg = find_project_config(edited)
@@ -405,7 +703,8 @@ def main() -> int:
     failed: list[str] = []
     to_render: list[tuple[str, bool]] = []
     try:
-        reason = not_this_project(base, token, templates)
+        # Token-free identity check first, then the token-carrying ones.
+        reason = wrong_server(base, cfg) or not_this_project(base, token, templates, cfg)
         if reason:
             notes.insert(0, reason)
             emit("\n".join(notes))
@@ -436,7 +735,7 @@ def main() -> int:
                     to_render.append((key, True))
         render_errors: list[str] = []
         for key, cache in to_render:
-            errors, render_notes = render(base, token, key, cache)
+            errors, render_notes = render(base, token, key, cache, templates)
             render_errors.extend(errors)
             notes.extend(render_notes)
     except TokenRejected as exc:

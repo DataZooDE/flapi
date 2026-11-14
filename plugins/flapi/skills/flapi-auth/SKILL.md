@@ -52,7 +52,11 @@ Three independent gates: the endpoint's own `auth:` block (REST), `mcp.auth`
 - **Passwords: store a PBKDF2-SHA256 hash** `$pbkdf2-sha256$<iter>$<salt>$<hash>`.
   passlib's `pbkdf2_sha256` output, standard and URL-safe base64 all verify.
   **bcrypt never verifies** (startup warning `AUTH_BCRYPT_UNSUPPORTED`: that user
-  cannot log in).
+  cannot log in). A successful check is remembered for 5 minutes, so only the first
+  request with a password pays the ~165 ms PBKDF2 cost; a wrong password pays it
+  every time. Reloading the endpoint file (or any auth change) clears the cache.
+- **`type` must be `basic`, `bearer` (alias `jwt`) or `oidc`.** A typo fails to
+  load / reload with `AUTH_UNKNOWN_TYPE` naming the endpoint and the valid types.
 - **With `mcp.auth.enabled: true`, a tool without `allowed-roles` is denied to
   everyone** (403). `tools/list` still lists every tool. MCP uses only
   `mcp.auth`; the REST `auth:` blocks (global or endpoint) do not apply to it.

@@ -55,16 +55,28 @@ Claude loads a skill when your request matches it. You do not have to invoke one
 ### MCP server
 
 The plugin registers a `flapi` MCP server at `$FLAPI_URL/mcp/jsonrpc` (default
-`http://localhost:8080`). It sends `Authorization: Bearer $FLAPI_CONFIG_SERVICE_TOKEN`.
+`http://localhost:8080`). It sends two headers:
+
+- `X-Config-Token: $FLAPI_CONFIG_SERVICE_TOKEN`, for the `flapi_*` config tools;
+- `Authorization: Bearer $FLAPI_MCP_TOKEN`, for `mcp.auth` (a JWT the server's
+  `mcp.auth` accepts). With `FLAPI_MCP_TOKEN` unset the header is an empty
+  `Bearer `, which a server without `mcp.auth` ignores and a server with it
+  answers 401 `Authentication required for method: ...`.
+
+Both variables default to empty (`${VAR:-}` in `.mcp.json`), so the server
+registers even when neither is set. The config token used to go in
+`Authorization`, so once `mcp.auth` was on every plugin call was a 401.
+
 Claude then sees your endpoints as MCP tools. If the server runs with
 `--config-service`, Claude also sees the `flapi_*` config tools. With those it can
 list and edit endpoints, expand templates, refresh caches and read
 `flapi_get_metrics`. Every `flapi_*` tool needs the config-service token, which
-this header carries. Endpoint changes show up in `tools/list` at once, without a
-restart.
+`X-Config-Token` carries. Endpoint changes show up in `tools/list` at once,
+without a restart.
 
 ```bash
 export FLAPI_CONFIG_SERVICE_TOKEN=$(openssl rand -hex 32)
+export FLAPI_MCP_TOKEN=...   # only when mcp.auth is enabled
 flapi -c flapi.yaml --config-service --config-service-token "$FLAPI_CONFIG_SERVICE_TOKEN"
 # then start Claude Code in the same shell
 ```
@@ -94,13 +106,29 @@ replica), the plugin:
    `target=cache&validate_only=1`, i.e. with the live watermark, per statement,
    with the bare-SELECT rule. Parse and bind errors (an unknown column, `MERGE
    INTOO`) go back to Claude. The message names the parameter sets it checked.
-   A cached endpoint whose cache table does not exist yet is a note ("cache not
-   built yet; run `flapii cache refresh <path>`"), not an error.
+   A parameter used inside `AT (VERSION => ...)` / `AT (TIMESTAMP => ...)` gets
+   no sample value: an invented snapshot does not exist.
+   A cached endpoint whose cache table does not exist yet (seen on the
+   no-parameter run) is a note ("cache not built yet; run `flapii cache refresh
+   <path>`"), not an error; a failing sample run is always reported as the
+   error it is. A validation that had to drop the cache's watermark says so:
+   the next refresh would load the full source.
 
-The hook does not reload into a server that cannot take the edit: a server
+The hook first checks that the server at `FLAPI_URL` is this project's, and
+only then sends the token: `GET /doc.yaml` (no token) must name this
+`flapi.yaml`'s `project-name`, and then `template.path` must be this project's
+directory. Otherwise it says which URL it found and sends nothing there. It
+does not reload into a server that cannot take the edit either: a server
 running from a packed bundle (`flapi pack`; edits on disk cannot reach it), or
-one whose `template.path` is a different directory than the edited project's.
-It says which instead.
+one started before `flapi.yaml` changed when the `ducklake`, `auth` or `mcp`
+settings it reports differ from the file ("restart the server first").
+
+After a shell command that deletes an endpoint YAML in `template.path` (`rm`,
+`git rm`, `unlink`, `mv` elsewhere), or an edit whose file no longer exists, the
+hook passes the file to `reload-file`, which unloads what it declared
+(`200 {"status":"removed","removed":[...]}`), and reports the removed endpoints.
+A 404 means nothing was loaded from that file (a server too old to unload
+deleted files answers 404 as well and keeps serving them until it restarts).
 
 If something is missing (no binary, no project, no token, no server), the hook
 does nothing. It never blocks an edit.
@@ -108,7 +136,8 @@ does nothing. It never blocks an edit.
 | Variable | Default | Used by |
 |---|---|---|
 | `FLAPI_URL` | `http://localhost:8080` | MCP server, hook, `flapii` (when `FLAPI_BASE_URL` is unset) |
-| `FLAPI_CONFIG_SERVICE_TOKEN` | — | MCP server, hook, `flapii` |
+| `FLAPI_CONFIG_SERVICE_TOKEN` | — | MCP server (`X-Config-Token`), hook, `flapii` |
+| `FLAPI_MCP_TOKEN` | — | MCP server (`Authorization: Bearer`, for `mcp.auth`) |
 | `FLAPI_BIN` | `flapi` on `PATH` | hook |
 | `FLAPI_CONFIG` | nearest `flapi.yaml` | hook (also for files under its `template.path`) |
 

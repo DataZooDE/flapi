@@ -169,7 +169,9 @@ so grep the server log for the `request_id` to see what went wrong.
 parameters are validated, the template is rendered and executed, and the answer
 is `200 {"rows_affected": n}`. `n` is the number of rows the statements changed
 (DuckDB's count, summed over a multi-statement template; with `RETURNING`, the
-number of returned rows), so a `DELETE` of a missing id answers `0`. A `DELETE`
+number of returned rows), so a `DELETE` of a missing id answers `0`. Rows a
+`RETURNING` sends back come as `"data"` after `rows_affected`, their keys in the
+`RETURNING` column order (`[]` with `returns-data: true` and no row). A `DELETE`
 endpoint is written like the others:
 
 ```yaml

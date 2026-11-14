@@ -187,7 +187,7 @@ The list of known keys is `ConfigManager::KnownTopLevelKeys()` in `src/config_ma
 | `http-port` | integer | `8080` | HTTP server port (overridable via `--port` / `FLAPI_PORT`) |
 | `log-level` | string | `info` | Log verbosity: `debug`, `info`, `warning` (or `warn`), `error`. Overridable via `--log-level` / `FLAPI_LOG_LEVEL` (both also accept `warn`). Any other value stops startup. |
 | `tracing` | map | disabled | OpenTelemetry tracing. Off by default; see [OBSERVABILITY.md](OBSERVABILITY.md). |
-| `log-format` | string | `text` | `text` for human-readable lines, `json` for one JSON object per line. Both carry `request_id` (and `trace_id` once tracing is enabled) for lines emitted while serving a request. |
+| `log-format` | string | `text` | `text` for human-readable lines, `json` for one JSON object per line, from the first startup line on (lines logged while the configuration is read are held until it says which format). Both carry `request_id` (and `trace_id` once tracing is enabled) for lines emitted while serving a request, Crow's `Response: ...` access line included. |
 | `stall-timeout-s` | int | `60` | Readiness (`GET /health`) returns `503` when a request has been in flight longer than this. `0` disables it. Guards against a backend that stops answering without failing — a wedged connection leaves the process, DuckDB and every other connection healthy, so a `SELECT 1` probe passes while the endpoint is dead. Raise it if you serve deliberately long synchronous queries; the usual answer to those is the MCP Tasks extension. |
 | `http-host` | string | `"0.0.0.0"` | Bind address (overridable via `--host` / `FLAPI_HOST`); use `127.0.0.1` to restrict to loopback |
 
@@ -515,7 +515,7 @@ Configures the Model Context Protocol (MCP) server.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `mcp.auth.enabled` | boolean | `false` | Enable MCP authentication |
-| `mcp.auth.type` | string | - | Auth type: `basic`, `bearer`, `oidc` |
+| `mcp.auth.type` | string | - | Auth type: `basic`, `bearer` (alias `jwt`), `oidc`. Anything else fails to load when `mcp.auth.enabled` (`AUTH_UNKNOWN_TYPE`) |
 | `mcp.auth.methods.<method>.required` | boolean | `true` | Per-method authentication requirement |
 
 > **Deny-by-default RBAC:** when `mcp.auth.enabled: true`, every MCP tool MUST declare `mcp-tool.allowed-roles`. A tool without that list refuses every call with `Permission denied`. This prevents a freshly-added tool from being callable by any authenticated user. Endpoints without `mcp.auth.enabled` keep working without role config — the `flapii project init` demo path stays simple.
@@ -562,7 +562,7 @@ Global authentication settings that apply to all endpoints unless overridden.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `auth.enabled` | boolean | `true` if the block sets `type`, `roles`, `users`, `jwt-secret`, `jwt-issuer`, `oidc` or `from-aws-secretmanager`, else `false` | Enable authentication for every REST endpoint without its own `auth:` block. The same default applies inside an endpoint's `auth:` block; only `enabled: false` turns it off |
-| `auth.type` | string | - | Default auth type: `basic`, `bearer` (alias `jwt`), `oidc` |
+| `auth.type` | string | - | Default auth type: `basic`, `bearer` (alias `jwt`), `oidc`. Anything else fails to load (`AUTH_UNKNOWN_TYPE`) |
 | `auth.jwt-secret` | string | - | JWT signing key |
 | `auth.jwt-issuer` | string | - | Expected JWT issuer claim |
 | `auth.users` | array | - | User list for basic auth |
@@ -581,6 +581,21 @@ and credentials and applies its own `roles` on top. Without an enabled global bl
 `AUTH_NO_TYPE`; so does a block that has credentials but no `type`. Keys the chosen type never reads
 (`users:` under `bearer`, `jwt-secret:` under `basic`, ...) produce a load warning naming them — one scheme
 applies per block, and the same goes for the global block and `mcp.auth`.
+
+An enabled block whose `type` is not a scheme flAPI has (a typo such as `basci`) fails to load, and is
+refused on reload, with `AUTH_UNKNOWN_TYPE: Endpoint GET /x has auth type 'basci', which is not a scheme
+flAPI supports. Valid types: basic, bearer, jwt (alias of bearer), oidc.` The same applies to the global
+block and to `mcp.auth.type` (which also accepts `jwt`). Such a block used to answer 401 to every request
+and log nothing.
+
+**Basic-auth cost.** A PBKDF2 hash at 600 000 iterations costs ~165 ms of CPU to check, and Basic auth
+sends the password with every request. flAPI remembers a **successful** check for 5 minutes (at most
+10 000 entries, keyed by an HMAC of user, password and stored hash under a per-process random key; no
+password is stored), so only the first request with a given password pays it. A wrong password is
+checked in full every time and never remembered; a changed hash never matches an old entry; every load
+or reload of an `auth:` block empties the cache. At most half the cores derive PBKDF2 at once; a request
+that waits more than 2 s for a slot is refused (401) and the log says why, so a flood of wrong passwords
+cannot occupy every worker.
 
 **401 responses** carry the configured scheme's challenge — `WWW-Authenticate: Basic realm="flAPI"` for
 basic, `Bearer realm="flAPI"` for bearer and oidc, with `error="invalid_token"` when a bearer token was sent

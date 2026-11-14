@@ -1420,6 +1420,7 @@ WriteResult DatabaseManager::executeWrite(QueryExecutor& executor, const Endpoin
 
         if (hasReturningClause && executor.columnCount() > 0 && executor.rowCount() > 0) {
             result.returned_data = executor.toJson();
+            result.returned_columns = executor.columnNames();
             hasReturningData = true;
         }
     }
@@ -1428,6 +1429,7 @@ WriteResult DatabaseManager::executeWrite(QueryExecutor& executor, const Endpoin
         runStatement(statements.size() - 1, "select returning data");
         if (executor.columnCount() > 0 && executor.rowCount() > 0) {
             result.returned_data = executor.toJson();
+            result.returned_columns = executor.columnNames();
         }
     }
 

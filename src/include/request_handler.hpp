@@ -21,6 +21,12 @@ public:
     static void handleCacheAfterWrite(const std::shared_ptr<DatabaseManager>& db_manager,
                                       const EndpointConfig& endpoint);
 
+    // A write's response body, `{"rows_affected":N,"data":[...]}`, with the
+    // RETURNING rows' keys in column order and doubles in shortest form (a
+    // wvalue dump scrambles the keys). `data` is present when rows came back,
+    // and as [] when `always_include_data` is set and none did.
+    static std::string formatWriteResultJson(const WriteResult& result, bool always_include_data);
+
     // Fills `field-in: header` fields from the request headers (case-insensitive).
     static void applyHeaderFields(const crow::request& req, const EndpointConfig& endpoint,
                                   std::map<std::string, std::string>& params);

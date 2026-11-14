@@ -1276,7 +1276,12 @@ REST series count status classes; a 401/403 an endpoint's auth answered is count
 in its route's `status.4xx` and in `rejected`. MCP tool series count `failures`
 (calls whose tool result reported an error) and `rejected` (role denials, 403),
 which are not failures and not in `server_errors`. Latency is measured server-side
-around the handler. Percentiles are **estimates** from a fixed histogram with ten
+from the start of the request (the first middleware) to the response, for every
+outcome, so authentication (a ~165 ms PBKDF2 check on a Basic-auth endpoint's first
+request with a password), rate limiting and rejections are inside it; it used to
+start in the handler and miss them. MCP tool series include the MCP authentication
+too (a task runs on a worker and is timed from its start). Values are milliseconds
+rounded to three decimals. Percentiles are **estimates** from a fixed histogram with ten
 buckets per decade (bounds 1, 1.25, 1.6, 2, 2.5, 3.2, 4, 5, 6.3, 8 x 10^n, from
 0.1 ms to 60 s): the quantile's bucket is found and the value interpolated linearly
 inside it, never above the observed `max`. A percentile is therefore accurate to

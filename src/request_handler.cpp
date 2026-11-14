@@ -185,21 +185,7 @@ void RequestHandler::handleWriteRequest(const crow::request& req, crow::response
         // Handle cache operations after successful write
         handleCacheAfterWrite(db_manager, endpoint);
         
-        // Build response body
-        crow::json::wvalue response;
-        response["rows_affected"] = static_cast<int64_t>(writeResult.rows_affected);
-        
-        // Include returned data if available and configured
-        if (writeResult.returned_data.has_value()) {
-            // Included even if not explicitly configured (helpful for debugging)
-            response["data"] = std::move(*writeResult.returned_data);
-        } else if (endpoint.operation.returns_data) {
-            // A RETURNING that matched no row is still an answer: an empty list,
-            // not a missing key a client has to special-case.
-            response["data"] = crow::json::wvalue::list();
-        }
-        
-        res.write(response.dump());
+        res.write(formatWriteResultJson(writeResult, endpoint.operation.returns_data));
         res.end();
         return;
         
@@ -805,6 +791,22 @@ private:
 };
 
 }  // namespace
+
+std::string RequestHandler::formatWriteResultJson(const WriteResult& result, bool always_include_data) {
+    std::string out = "{\"rows_affected\":" + std::to_string(result.rows_affected);
+    if (result.returned_data.has_value()) {
+        // Included even if not explicitly configured (helpful for debugging).
+        out += ",\"data\":";
+        out += QueryResult::dumpJson(*result.returned_data,
+                                     result.returned_columns.empty() ? nullptr : &result.returned_columns);
+    } else if (always_include_data) {
+        // A RETURNING that matched no row is still an answer: an empty list,
+        // not a missing key a client has to special-case.
+        out += ",\"data\":[]";
+    }
+    out += '}';
+    return out;
+}
 
 void RequestHandler::handleCacheAfterWrite(const std::shared_ptr<DatabaseManager>& db_manager,
                                            const EndpointConfig& endpoint) {

@@ -1,5 +1,7 @@
 #include "runtime_metrics.hpp"
 
+#include <cmath>
+
 #include <algorithm>
 #include <mutex>
 
@@ -213,11 +215,14 @@ crow::json::wvalue RuntimeMetrics::toJson(const std::string& route_filter) const
             row["status"]["5xx"] = s.status_5xx;
             row["status"]["503_cache"] = s.cache_unavailable;
         }
-        row["latency_ms"]["avg"] = s.avg_ms;
-        row["latency_ms"]["p50"] = s.p50_ms;
-        row["latency_ms"]["p95"] = s.p95_ms;
-        row["latency_ms"]["p99"] = s.p99_ms;
-        row["latency_ms"]["max"] = s.max_ms;
+        // Microsecond resolution, which is what is measured: the interpolated
+        // percentiles came out as 7.495730337078647.
+        const auto ms3 = [](double v) { return std::round(v * 1000.0) / 1000.0; };
+        row["latency_ms"]["avg"] = ms3(s.avg_ms);
+        row["latency_ms"]["p50"] = ms3(s.p50_ms);
+        row["latency_ms"]["p95"] = ms3(s.p95_ms);
+        row["latency_ms"]["p99"] = ms3(s.p99_ms);
+        row["latency_ms"]["max"] = ms3(s.max_ms);
         row["last_request_unix_ms"] = s.last_request_unix_ms;
         total += s.requests;
         // server_errors excludes cache-not-ready 503s; they are cache_unavailable.

@@ -1062,7 +1062,9 @@ CROW_ROUTE(app, "/api/v1/_config/cache/audit")
             const char* filter_param = req.url_params.get("endpoint");
             crow::json::wvalue metrics = buildMetricsJson(config_manager, filter_param ? filter_param : "");
 
-            crow::response res(200, metrics.dump());
+            // dumpJson, not dump(): crow prints doubles with 21 significant
+            // digits, so a rounded 7.496 came out as 7.49600000000000044.
+            crow::response res(200, QueryResult::dumpJson(metrics));
             res.set_header("Content-Type", "application/json");
             return res;
         });

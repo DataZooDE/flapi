@@ -67,8 +67,12 @@ export function handleError(
   error: unknown,
   opts: { quiet?: boolean; baseUrl?: string; authToken?: string; configServiceToken?: string } = {},
 ): void {
+  // Quiet still reports the failure - once, one line, no guidance - so a
+  // script sees why it failed; it used to print nothing at all while the
+  // spinner's own "Failed to ..." line still came out.
+  process.exitCode = 1;
   if (opts.quiet) {
-    process.exitCode = 1;
+    Console.error(oneLineError(error));
     return;
   }
 
@@ -85,10 +89,7 @@ export function handleError(
 
     const prefix = status ? `[${status}] ${statusText}` : statusText;
     Console.error(`${prefix}: ${detail}`);
-
-    if (error.response?.data && typeof error.response.data === 'object') {
-      Console.error(JSON.stringify(error.response.data, null, 2));
-    }
+    printBodyIfMoreThan(error.response?.data, detail);
     return;
   }
 
@@ -102,9 +103,7 @@ export function handleError(
     const prefix = `[${status}] ${statusText || 'HTTP Error'}`;
     const detail = messageFromBody(data);
     Console.error(detail ? `${prefix}: ${detail}` : prefix);
-    if (data && typeof data === 'object') {
-      Console.error(JSON.stringify(data, null, 2));
-    }
+    printBodyIfMoreThan(data, detail);
     return;
   }
 
@@ -119,6 +118,42 @@ export function handleError(
   }
 
   Console.error('Unknown error occurred');
+}
+
+/**
+ * The error body as JSON, unless it says nothing the one-line message did not:
+ * `{"error": "Endpoint not found: /x"}` used to be printed a second time, in
+ * full, under "[404] Not Found: Endpoint not found: /x".
+ */
+export function printBodyIfMoreThan(data: unknown, detail: string | undefined): void {
+  if (!data || typeof data !== 'object') {
+    return;
+  }
+  const body = data as Record<string, unknown>;
+  const said = (key: string) =>
+    key === 'success' || (['error', 'message', 'reason'].includes(key) && body[key] === detail);
+  if (Object.keys(body).some((key) => !said(key))) {
+    Console.error(JSON.stringify(data, null, 2));
+  }
+}
+
+/** The failure in one line: the status and the server's reason. */
+export function oneLineError(error: unknown): string {
+  if (error instanceof AxiosResponseError) {
+    const { status, statusText, data } = error.response;
+    const detail = messageFromBody(data);
+    const prefix = `[${status}] ${statusText || 'HTTP Error'}`;
+    return detail ? `${prefix}: ${detail}` : prefix;
+  }
+  if (isAxiosError(error)) {
+    const status = error.response?.status;
+    const detail = extractMessage(error);
+    return status ? `[${status}] ${error.response?.statusText ?? 'HTTP Error'}: ${detail}` : detail;
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return 'Unknown error occurred';
 }
 
 export function isAxiosError(error: unknown): error is AxiosError {

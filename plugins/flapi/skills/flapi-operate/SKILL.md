@@ -139,6 +139,9 @@ whatever `--json-style` says; `-o table` adds `N cache-not-ready` to the summary
 
 - `route` is the endpoint's `url-path`; every unknown path is one `<unmatched>` series.
   Config-service routes are not counted per route.
+- `latency_ms` (ms, three decimals) runs from the start of the request, so it includes
+  auth: a Basic-auth endpoint shows the ~165 ms PBKDF2 check in `max` for each first
+  request with a password (later ones hit the verification cache) and for every wrong one.
 - Cache `state`: `starting`, `ready`, `stale`, `failed`, `unbuilt`. A failed refresh has
   `last.status: "error"` and no `rows_affected`. `data_age_seconds` is the age of the data
   being served.

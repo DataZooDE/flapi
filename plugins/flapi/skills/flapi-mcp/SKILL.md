@@ -276,7 +276,10 @@ Runnable CRUD example (REST + MCP, basic auth, `allowed-roles`) and the calls:
 
 - Path and body fields become tool arguments with the validators' types
   (`id` integer, `done` boolean). A failed write (duplicate key) is a tool result
-  with `"isError": true` and the database error text, not a JSON-RPC error.
+  with `"isError": true`, not a JSON-RPC error. Its text is generic ("Tool execution
+  failed on the server. The details are in the server log under request_id req-...");
+  the database error, SQL and file paths are only in the server log line with that id.
+  A bad argument (validator) keeps its specific message.
 - `mcp.auth` covers the MCP side only; the REST routes of the same files need
   `auth:` (endpoint or global, `flapi-auth`).
 - Several methods on one `url-path` (GET + POST `/tasks`): config-service routes for
@@ -336,8 +339,11 @@ claude mcp add --transport http flapi-local http://localhost:8080/mcp/jsonrpc \
 
 **This plugin** already registers an MCP server named `flapi` at
 `${FLAPI_URL:-http://localhost:8080}/mcp/jsonrpc` with
-`Authorization: Bearer ${FLAPI_CONFIG_SERVICE_TOKEN}` (`plugins/flapi/.mcp.json`). Export
-both variables before starting Claude Code. A `claude mcp add` (named `flapi-local` above to
+`X-Config-Token: ${FLAPI_CONFIG_SERVICE_TOKEN:-}` (the `flapi_*` config tools) and
+`Authorization: Bearer ${FLAPI_MCP_TOKEN:-}` (a JWT for `mcp.auth`; leave it unset when
+`mcp.auth` is off, an empty `Bearer ` is then ignored) (`plugins/flapi/.mcp.json`). Export
+them before starting Claude Code. The config token must not go in `Authorization`: with
+`mcp.auth` on, that header is checked as the MCP credential and every call is a 401. A `claude mcp add` (named `flapi-local` above to
 avoid a clash) is only needed for another server or without the plugin.
 
 **Claude Desktop** reads stdio servers from `claude_desktop_config.json`. flAPI speaks HTTP

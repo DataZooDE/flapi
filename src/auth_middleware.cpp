@@ -344,7 +344,7 @@ bool AuthMiddleware::authenticateBasic(const std::string& auth_header, const End
 bool AuthMiddleware::authenticateInlineUsers(const std::string& username, const std::string& password,
                                           const EndpointConfig& endpoint, context& ctx) {
     for (const auto& user : endpoint.auth.users) {
-        if (user.username == username && verifyPassword(password, user.password)) {
+        if (user.username == username && verifyCredentials(username, password, user.password)) {
             ctx.username = username;
             ctx.roles = user.roles;
             return true;
@@ -367,7 +367,7 @@ bool AuthMiddleware::authenticateAwsSecrets(const std::string& username, const s
         }
 
         auto [stored_password, roles] = result.value();
-        if (verifyPassword(password, stored_password)) 
+        if (verifyCredentials(username, password, stored_password))
         {
             ctx.username = username;
             for (const auto& role : roles) {
@@ -435,6 +435,14 @@ bool AuthMiddleware::verifyPassword(const std::string& provided_password, const 
     // deprecation warnings; the runtime keeps accepting legacy hashes so
     // existing configs do not break on upgrade.
     return PasswordHasher{}.verify(provided_password, stored_password);
+}
+
+bool AuthMiddleware::verifyCredentials(const std::string& username, const std::string& provided_password,
+                                       const std::string& stored_password) {
+    // Same verdict as verifyPassword, with successful PBKDF2 checks remembered
+    // and concurrent derivations capped (see PasswordVerificationCache).
+    return PasswordVerificationCache::instance().verifyCredentials(username, provided_password,
+                                                                   stored_password);
 }
 
 bool AuthMiddleware::authenticateBearer(const std::string& auth_header, const EndpointConfig& endpoint, context& ctx) {

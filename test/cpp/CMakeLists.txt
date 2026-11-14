@@ -101,6 +101,7 @@ add_executable(flapi_tests
     test_in_flight_registry.cpp
     test_http_client_tracing.cpp
     test_flapi_log_handler.cpp
+    g2_auth_metrics_logging_test.cpp
     test_endpoint_snapshot.cpp
     test_route_translator_perf.cpp
 )

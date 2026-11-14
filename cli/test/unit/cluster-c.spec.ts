@@ -71,10 +71,17 @@ describe('error bodies are printed', () => {
     expect(mockError).toHaveBeenCalledWith('[400] Bad Request: Cache is not enabled for this endpoint');
   });
 
-  it('prints the error field of a JSON body, then the body', () => {
+  it('prints the error field of a JSON body once, not the body again', () => {
     handleError(responseError(400, 'Bad Request', { error: 'Binder Error: no column x' }));
+    expect(mockError).toHaveBeenCalledTimes(1);
     expect(mockError).toHaveBeenNthCalledWith(1, '[400] Bad Request: Binder Error: no column x');
-    expect(mockError).toHaveBeenNthCalledWith(2, JSON.stringify({ error: 'Binder Error: no column x' }, null, 2));
+  });
+
+  it('prints the body after the error field when it carries more', () => {
+    const body = { error: 'Binder Error: no column x', line: 3 };
+    handleError(responseError(400, 'Bad Request', body));
+    expect(mockError).toHaveBeenNthCalledWith(1, '[400] Bad Request: Binder Error: no column x');
+    expect(mockError).toHaveBeenNthCalledWith(2, JSON.stringify(body, null, 2));
   });
 
   it('finds message/error/reason', () => {

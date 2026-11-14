@@ -132,6 +132,18 @@ auditor (`src/security_auditor.cpp`) reports them as `AUTH_BCRYPT_UNSUPPORTED`. 
 plaintext still verify but are reported. The auditor's advice for all of them is
 `pbkdf2_sha256.using(rounds=600000).hash(...)` from passlib.
 
+**Verification cache** (`PasswordVerificationCache`, `src/password_hasher.cpp`): Basic auth
+(REST and `mcp.auth`) goes through `AuthMiddleware::verifyCredentials`, which remembers a
+*successful* PBKDF2 check for 5 minutes. The key is HMAC-SHA256 under a per-process random key
+over user, password and stored hash (length-prefixed), so no password is kept and a changed hash
+never matches; failures are never cached; at most 10 000 entries (expired ones swept first, then
+arbitrary eviction); every parse of an auth block (load, reload, config-service update) clears
+it. Derivations are capped at half the cores; a caller that cannot get a slot within 2 s is
+refused (fail closed). Before this every request paid ~165 ms of CPU, wrong passwords included.
+
+An enabled auth block with an unknown `type` is a load/reload error (`AUTH_UNKNOWN_TYPE`), not
+an endpoint that refuses everyone.
+
 #### OIDC Authentication (src/oidc_auth_handler.cpp)
 
 ```yaml

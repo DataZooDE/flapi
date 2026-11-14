@@ -304,7 +304,9 @@ def test_hook_does_not_reload_into_another_project(server, tmp_path):
 def test_hook_recognises_a_packed_server(server, tmp_path):
     project = tmp_path / "project"
     (project / "sqls").mkdir(parents=True)
-    (project / "flapi.yaml").write_text("project-name: p\nproject-description: p\ntemplate:\n  path: ./sqls\n"
+    # This project, packed: same project-name, so the token-free identity
+    # check passes and the bundled check is what answers.
+    (project / "flapi.yaml").write_text("project-name: f2-validation\nproject-description: p\ntemplate:\n  path: ./sqls\n"
                                         "connections:\n  m:\n    properties:\n      database: ':memory:'\n")
     (project / "sqls" / "one.yaml").write_text("url-path: /one\ntemplate-source: one.sql\nconnection: [m]\n")
     (project / "sqls" / "one.sql").write_text("SELECT 1 AS one\n")
@@ -331,3 +333,122 @@ def test_hook_recognises_a_packed_server(server, tmp_path):
     finally:
         proc.terminate()
         proc.wait(timeout=30)
+
+
+def _load_hook_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("flapi_hook", HOOK)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_hook_sends_no_token_to_another_projects_server(server, tmp_path):
+    """G2 12(a): the identity check that decides where the token may go needs no token."""
+    import http.server
+    import threading
+
+    seen = []
+
+    class OtherProject(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append((self.path, self.headers.get("X-Config-Token"), self.headers.get("Authorization")))
+            if self.path == "/doc.yaml":
+                body = b"openapi: 3.0.0\ninfo:\n  title: someone-else\n  version: 1.0.0\n"
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        do_POST = do_GET
+
+        def log_message(self, *args):
+            pass
+
+    httpd = http.server.HTTPServer(("127.0.0.1", 0), OtherProject)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        code, context, err = run_hook(server, os.path.join(server.sqls, "items.sql"), base=base)
+        assert code == 0, err
+        assert "serves project 'someone-else'" in context and "f2-validation" in context, context
+        assert base in context, context
+        assert seen and all(token is None and auth is None for _, token, auth in seen), seen
+    finally:
+        httpd.shutdown()
+
+
+def test_hook_says_restart_when_flapi_yaml_changed_under_the_server(server):
+    """G2 12(b): a changed ducklake/auth/mcp block needs a restart, not a reload."""
+    cfg = os.path.join(server.writer, "flapi.yaml")
+    original = open(cfg).read()
+    try:
+        with open(cfg, "w") as f:
+            f.write(original.replace("ducklake:\n  enabled: true", "ducklake:\n  enabled: false"))
+        code, context, err = run_hook(server, os.path.join(server.sqls, "items.sql"))
+        assert code == 0, err
+        assert "Restart the server first" in context, context
+        assert "ducklake.enabled is false in flapi.yaml, true on the server" in context, context
+        assert "hot-reloaded" not in context, context
+    finally:
+        with open(cfg, "w") as f:
+            f.write(original)
+    # Newer than the server but the same settings: reloads as usual.
+    code, context, err = run_hook(server, os.path.join(server.sqls, "items.sql"))
+    assert code == 0, err
+    assert "hot-reloaded" in context, context
+
+
+def test_hook_unloads_an_endpoint_file_a_shell_command_deleted(server):
+    """G2 12(c): `rm sqls/x.yaml` -> reload-file, which unloads it (or says it cannot)."""
+    _write(server, "doomed.yaml", "url-path: /doomed\nmethod: GET\ntemplate-source: items.sql\n"
+                                  "connection: [src]\n")
+    code, context, err = run_hook(server, os.path.join(server.sqls, "doomed.yaml"))
+    assert code == 0, err
+    assert "GET /doomed" in context, context
+    os.remove(os.path.join(server.sqls, "doomed.yaml"))
+
+    env = {k: v for k, v in os.environ.items() if not k.startswith("FLAPI_")}
+    env.update({"FLAPI_URL": server.base, "FLAPI_CONFIG_SERVICE_TOKEN": TOKEN,
+                "FLAPI_CONFIG": os.path.join(server.writer, "flapi.yaml")})
+    event = json.dumps({"tool_name": "Bash", "cwd": server.sqls,
+                        "tool_input": {"command": "rm -f doomed.yaml && echo done"}})
+    proc = subprocess.run(["python3", HOOK], input=event, capture_output=True, text=True, timeout=60, env=env)
+    assert proc.returncode == 0, proc.stderr
+    context = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "doomed.yaml was deleted" in context, context
+    # 200 {"status":"removed","removed":[...]} -> named; a server without
+    # unload support answers 404, reported as nothing loaded / restart.
+    assert ("unloaded GET /doomed" in context) or ("had nothing loaded from it" in context), context
+
+    # A command that deletes nothing is a no-op.
+    event = json.dumps({"tool_name": "Bash", "cwd": server.sqls, "tool_input": {"command": "ls -la"}})
+    proc = subprocess.run(["python3", HOOK], input=event, capture_output=True, text=True, timeout=60, env=env)
+    assert (proc.returncode, proc.stdout, proc.stderr) == (0, "", "")
+
+
+def test_hook_helpers_time_travel_deletions_and_config_blocks(tmp_path):
+    """G2 12(c)(d)(b): the parsing the hook does without a YAML library."""
+    hook = _load_hook_module()
+    assert hook.time_travel_params(
+        "SELECT * FROM t {{#params.v}} AT (VERSION => {{ params.v }}) {{/params.v}} "
+        "WHERE id = {{ params.id }} AT (TIMESTAMP => CAST('{{{ params.ts }}}' AS TIMESTAMP))"
+    ) == {"v", "ts"}
+    assert hook.time_travel_params("SELECT 1 WHERE a = {{ params.a }}") == set()
+
+    (tmp_path / "keep.yaml").write_text("x: 1\n")
+    found = hook.deleted_yaml_files(
+        "rm -f gone.yaml keep.yaml 'with space.yml' *.yaml; git rm old.yml && mv moved.yaml /tmp/dest.yaml"
+        " | cat; mv a.sql b.yaml", tmp_path)
+    assert sorted(p.name for p in found) == ["gone.yaml", "moved.yaml", "old.yml", "with space.yml"]
+
+    cfg = tmp_path / "flapi.yaml"
+    cfg.write_text("project-name: 'my proj'  # c\nducklake:\n  enabled: yes\n  alias: cache\n  retention:\n"
+                   "    keep-last-snapshots: 3\nauth:\n  enabled: '{{env.X}}'\nmcp:\n  enabled: false\n")
+    assert hook.project_name(cfg) == "my proj"
+    blocks = hook.top_level_scalars(cfg, ("ducklake", "auth", "mcp"))
+    assert blocks["ducklake"] == {"enabled": "yes", "alias": "cache"}
+    assert blocks["mcp"] == {"enabled": "false"}
+    assert hook._scalar(blocks["ducklake"]["enabled"]) == "true"
