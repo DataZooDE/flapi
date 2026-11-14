@@ -82,12 +82,19 @@ their roles from `users[].roles`; token callers from the token's roles claim.
 
 A top-level `auth:` block with `enabled: true` in `flapi.yaml` applies to every
 REST endpoint that has **no `auth:` block of its own** — including endpoints you
-create later through the config service. An endpoint's own block **replaces**
-the global one; the two are not merged, so an endpoint block must be complete:
-`enabled: true` (it defaults to `false` in an endpoint block), the `type`, the
-users or secret, and its `roles`. A block that only says `roles: [admin]` turns
-authentication **off** for that endpoint. To leave one endpoint public
-while the rest are protected, opt it out explicitly:
+create later through the config service. An endpoint's own block that names a
+`type` or credentials **replaces** the global one; the two are not merged, so
+such a block must be complete: the `type`, the users or secret, and its `roles`.
+
+A block that names **no scheme and no credentials** — `auth: {roles: [admin]}` —
+uses the global block's type and credentials and applies its own `roles` on
+top. Without an enabled global block that is a load error (`AUTH_NO_TYPE`), as
+is a block with `users:` or a secret but no `type:`. One scheme applies per
+block: keys the chosen type never reads (`users:` under `bearer`,
+`jwt-secret:` under `basic`) are named in a load warning.
+
+To leave one endpoint public while the rest are protected, opt it out
+explicitly:
 
 ```yaml
 auth:
@@ -120,6 +127,16 @@ call you:
 cors:
   allow-origins: ['https://app.example.com']
 ```
+
+Browser preflights (`OPTIONS` with `Access-Control-Request-Method`) from an
+allowed origin get `Access-Control-Allow-Origin`, `-Methods`, `-Headers`,
+`-Max-Age` and `Vary: Origin`, on REST paths and `/mcp/jsonrpc`. The requested
+headers are echoed unless you set `cors.allow-headers`, so `Authorization`
+passes; a bare `*` would not cover it.
+
+A `401` carries the endpoint's own challenge — `WWW-Authenticate: Basic
+realm="flAPI"` or `Bearer realm="flAPI"` (with `error="invalid_token"` when a
+token was refused) — and a JSON body `{"error":"Unauthorized","message":...}`.
 
 ## Checking it
 

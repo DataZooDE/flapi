@@ -158,6 +158,11 @@ struct AuthConfig {
     // written on the endpoint. Serialisers leave it out, so persisting an
     // endpoint does not freeze the global credentials into its file.
     bool inherited = false;
+    // The endpoint declares its own block but only roles (or other non-
+    // credential keys): type and credentials come from the top-level block
+    // (ConfigManager::inheritGlobalCredentials). Serialisers then write the
+    // roles but not the inherited type.
+    bool credentials_inherited = false;
 };
 
 struct ValidatorConfig {
@@ -772,6 +777,17 @@ public:
     // Copy the top-level `auth:` block onto an endpoint that declares none
     // (auth.declared == false), when global auth is enabled. No-op otherwise.
     void applyGlobalAuthDefault(EndpointConfig& endpoint) const;
+    // An enabled endpoint `auth:` block that names no scheme and no credentials
+    // (typically `roles:` only) takes the top-level block's type and
+    // credentials, keeping its own roles when it lists any. Without an enabled
+    // top-level block, or with credentials but no `type`, it throws
+    // AUTH_NO_TYPE: such an endpoint could only ever answer 401.
+    void inheritGlobalCredentials(AuthConfig& auth, bool declares_credentials, bool declares_roles,
+                                  const std::string& location) const;
+    // Load-time warning naming keys the chosen auth type never reads
+    // (`users:` under bearer, `jwt-secret:` under basic, ...).
+    static void warnIgnoredAuthKeys(const YAML::Node& auth_node, const std::string& type,
+                                    const std::string& location);
 
     // Load MCP server instructions (inline or from file)
     std::string loadMCPInstructions() const;

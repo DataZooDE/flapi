@@ -36,3 +36,14 @@ namespace flapi {
 using FlapiApp = crow::App<RequestContextMiddleware, FlapiCorsMiddleware, crow::CORSHandler, RateLimitMiddleware, AuthMiddleware>;
 
 }  // namespace flapi
+
+// OPTIONS is answered after the request's headers are read, not at the request
+// line, so CORS preflights reach the middlewares with `Origin` and
+// `Access-Control-Request-*` (defined and explained in cors_middleware.cpp).
+// Declared here, before any use can instantiate the generic members.
+template<>
+std::unique_ptr<crow::routing_handle_result> flapi::FlapiApp::handle_initial(crow::request& req,
+                                                                              crow::response& res);
+template<>
+void flapi::FlapiApp::handle(crow::request& req, crow::response& res,
+                             std::unique_ptr<crow::routing_handle_result>& found);

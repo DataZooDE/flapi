@@ -24,6 +24,16 @@ Authentication and requests:
   top-level block, which used to fail startup without `enabled`. Startup logs the effective setting.
 - **`auth.roles` on REST endpoints is enforced.** A caller who authenticates but holds none of the listed roles
   gets 403 `{"error":"Forbidden",...}`. Before, any authenticated user got through.
+- **An endpoint `auth:` block with no `type` and no credentials (e.g. `roles:` only) uses the top-level
+  block's type and credentials** and applies its own roles on top. Before, it had type `""` and answered
+  401 to every request. Without an enabled top-level block such a block now stops startup with
+  `AUTH_NO_TYPE`, and so does a block with `users:` or a secret but no `type:` (both refused every request
+  before).
+- **401 responses carry a JSON body** `{"error":"Unauthorized","message":"..."}` instead of the plain text
+  `401 Unauthorized`, and a `WWW-Authenticate` challenge for the endpoint's own scheme: `Bearer realm="flAPI"`
+  for bearer and OIDC endpoints (with `error="invalid_token"` when a token was refused), `Basic
+  realm="flAPI"` for basic. Before, every endpoint challenged `Basic`, and a refused token got no challenge.
+  Clients that matched the old text or the Basic challenge on bearer endpoints must be updated.
 - **`field-in: header` fields are read from the request headers** (case-insensitive), on GET and on writes. A
   query or body parameter of the same name no longer satisfies them.
 - **`method: DELETE` endpoints run their SQL template** like the other write methods (parameters, validation,
@@ -179,6 +189,18 @@ Narrow to one endpoint with `?endpoint=/path`.
 
 ### Fixed
 
+- **CORS preflights:** with `cors.allow-origins` set, an `OPTIONS` preflight from an allowed origin answered
+  204 without any `Access-Control-Allow-*` header (REST paths and `/mcp/jsonrpc`), so browsers blocked every
+  authenticated or JSON cross-origin call. Preflights now get `Access-Control-Allow-Origin`, `-Methods`,
+  `-Headers` (the requested headers, unless `cors.allow-headers` is set; `Authorization`, `Content-Type`,
+  `X-Config-Token` and `Mcp-Session-Id` by name when auth is on and none were requested), `-Max-Age: 600` and
+  `Vary: Origin`. Responses that echo an allowed origin also carry `Vary: Origin`.
+- **Auth config:** keys the chosen auth type never reads (`users:` under `bearer`, `jwt-secret:` under
+  `basic`, ...) in an endpoint block, the top-level block or `mcp.auth` are named in a load warning; one
+  scheme applies per block. The audit line of a 401 names the endpoint's scheme instead of always `basic`.
+- **Security audit:** endpoint locations include the method (`endpoint GET /orders`), an empty
+  `mcp.auth.jwt-secret` is reported as `AUTH_EMPTY_JWT_SECRET` at startup, and that warning says what happens:
+  authentication fails closed and every token is refused.
 - **`flapi --version`** and `server.version` in `GET /api/v1/_config/health` show the real build version.
 - **Passwords:** PBKDF2 hashes are no longer flagged by the security audit, and passlib's own encoding as well
   as standard and URL-safe base64 are accepted.

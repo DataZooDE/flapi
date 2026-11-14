@@ -282,7 +282,10 @@ TEST_CASE("An auth block without enabled is on when it configures authentication
         TempTestConfig temp(kBaseConfig, "auth_implicit_endpoint");
         temp.writeSqlTemplate("q.sql", "SELECT 1");
         temp.writeEndpoint("typed.yaml", endpointYaml("/typed", "auth:\n  type: basic" + users));
-        temp.writeEndpoint("roles.yaml", endpointYaml("/roles", "auth:\n  roles: [reader]" + users));
+        // `roles:` (with users) and no type: ON - and therefore a load error
+        // since #211 E3 (AUTH_NO_TYPE), covered in auth_cors_ergonomics_test.
+        // With a type it is on and authenticates.
+        temp.writeEndpoint("roles.yaml", endpointYaml("/roles", "auth:\n  type: basic\n  roles: [reader]" + users));
         temp.writeEndpoint("off.yaml", endpointYaml("/off", "auth:\n  enabled: false\n  type: basic" + users));
         temp.writeEndpoint("empty.yaml", endpointYaml("/empty", "auth: {}"));
         auto cm = temp.createConfigManager();

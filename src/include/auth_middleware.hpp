@@ -81,6 +81,11 @@ public:
     // True when `required` is empty or `held` contains at least one of them.
     static bool hasRequiredRole(const std::vector<std::string>& required,
                                 const std::vector<std::string>& held);
+    // The `WWW-Authenticate` challenge of a 401 for the endpoint's configured
+    // scheme: `Basic realm="flAPI"` for basic, `Bearer realm="flAPI"` for
+    // bearer and oidc, with `error="invalid_token"` when a token was sent and
+    // refused (RFC 6750 §3).
+    static std::string challengeFor(const std::string& auth_type, bool credentials_sent);
 };
 
 } // namespace flapi

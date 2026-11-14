@@ -13,14 +13,17 @@ namespace flapi {
 class ConfigManager;
 
 // W1.2: Crow middleware that enforces the `cors.allow-origins` allowlist.
-// Runs alongside `crow::CORSHandler` — it provides only the per-request
-// `Access-Control-Allow-Origin` header, while Crow's CORSHandler keeps
-// handling methods, headers, and max-age.
+// Runs alongside `crow::CORSHandler` and has the last word (see
+// flapi_app.hpp): it sets the per-request `Access-Control-Allow-Origin` and
+// `Vary: Origin`, and on a preflight (OPTIONS with
+// `Access-Control-Request-Method`) also Allow-Methods, Allow-Headers and
+// Max-Age. Crow's handler only knows static values, and its `*` for headers
+// does not cover `Authorization`.
 //
-// The middleware reads the request's `Origin` header, asks `CorsPolicy`
-// for the value it should advertise, and writes it directly onto the
-// response. Crow's CORSHandler then sees the header is already set and
-// declines to override it (see `set_header_no_override` in Crow).
+// Preflights only reach this middleware WITH their request headers because
+// FlapiApp defers Crow's built-in OPTIONS answer (cors_middleware.cpp): Crow
+// otherwise answers OPTIONS as soon as the request line is parsed, before
+// any header - `Origin` included - has been read.
 class FlapiCorsMiddleware {
 public:
     struct context {};
@@ -33,8 +36,14 @@ public:
     void before_handle(crow::request& req, crow::response& res, context& ctx);
     void after_handle(crow::request& req, crow::response& res, context& ctx);
 
+    // OPTIONS carrying `Access-Control-Request-Method`.
+    static bool isPreflight(const crow::request& req);
+
 private:
     std::vector<std::string> allow_origins_;
+    std::vector<std::string> allow_headers_;
+    std::vector<std::string> allow_methods_;
+    bool auth_enabled_ = false;
     CorsPolicy policy_;
 };
 

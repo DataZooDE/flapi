@@ -16,7 +16,49 @@ bool containsExact(const std::vector<std::string>& allow_origins,
     return std::find(allow_origins.begin(), allow_origins.end(), origin) != allow_origins.end();
 }
 
+std::string joinList(const std::vector<std::string>& items) {
+    std::string out;
+    for (const auto& item : items) {
+        if (!out.empty()) {
+            out += ", ";
+        }
+        out += item;
+    }
+    return out;
+}
+
 } // namespace
+
+const std::vector<std::string>& CorsPolicy::credentialHeaders() {
+    static const std::vector<std::string> headers = {
+        "Authorization", "Content-Type", "X-Config-Token", "Mcp-Session-Id"};
+    return headers;
+}
+
+std::string CorsPolicy::resolveAllowHeaders(const std::vector<std::string>& configured,
+                                            const std::string& requested_headers,
+                                            bool auth_enabled) const {
+    if (!configured.empty() && !containsWildcard(configured)) {
+        return joinList(configured);
+    }
+    // Echoing what the browser asked for is the only answer that covers
+    // `Authorization` without the operator listing it: `*` does not.
+    if (!requested_headers.empty()) {
+        return requested_headers;
+    }
+    std::string out = kWildcard;
+    if (auth_enabled) {
+        out += ", " + joinList(credentialHeaders());
+    }
+    return out;
+}
+
+std::string CorsPolicy::resolveAllowMethods(const std::vector<std::string>& configured) const {
+    if (configured.empty()) {
+        return "GET, POST, PUT, PATCH, DELETE";
+    }
+    return joinList(configured);
+}
 
 std::optional<std::string> CorsPolicy::resolveAllowedOrigin(
     const std::string& request_origin,
