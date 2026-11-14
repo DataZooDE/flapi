@@ -178,7 +178,8 @@ cache:
     "broken_cache.sql": """\
 CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS
 SELECT * FROM read_csv('{{{conn.path}}}');
-SELECT error('boom') FROM read_csv('{{{conn.path}}}') WHERE id >= (SELECT {{{conn.fail_at}}});
+INSERT INTO {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
+SELECT id, error('boom'), version FROM read_csv('{{{conn.path}}}') WHERE id >= (SELECT {{{conn.fail_at}}});
 """,
     "serve.sql": SERVE,
 }

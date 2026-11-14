@@ -12,6 +12,13 @@ struct EndpointConfig;
 struct CacheConfig;
 class QueryResult;
 
+/// The table a cache populate template is required to write.
+struct PopulateTarget {
+    std::string catalog;
+    std::string schema;
+    std::string table;
+};
+
 /**
  * Interface for database operations used by CacheManager.
  * This abstraction enables unit testing CacheManager without touching DuckDB.
@@ -60,6 +67,24 @@ public:
         const std::string& query, const std::map<std::string, std::string>& params = {}) {
         executeDuckLakeQuery(query, params);
         return std::nullopt;
+    }
+
+    /**
+     * Execute a rendered cache populate template that must build `target`.
+     *
+     * The real implementation refuses a template containing a bare SELECT before
+     * running anything, fails (and rolls back) a script that did not leave
+     * `target` existing, and with `rebuild` drops `target` inside the same
+     * transaction first so the template's full-load branch rebuilds it from
+     * scratch. The default delegates to executeDuckLakeQueryCountingRows so test
+     * doubles keep working unchanged.
+     */
+    virtual std::optional<int64_t> executePopulateScript(const std::string& script,
+                                                         const PopulateTarget& target,
+                                                         bool rebuild) {
+        (void)target;
+        (void)rebuild;
+        return executeDuckLakeQueryCountingRows(script, {});
     }
 };
 

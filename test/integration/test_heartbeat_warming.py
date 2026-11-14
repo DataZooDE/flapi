@@ -104,9 +104,17 @@ class _Server:
                     "  table: hb_cache\n"
                     "  schema: main\n"
                     "  schedule: 1s\n"
+                    "  template-file: cached_populate.sql\n"
                     "heartbeat:\n  enabled: true\n")
+        # The cache needs a populate template that WRITES the table. Without one,
+        # the serving SELECT doubled as the "populate" query: it built nothing
+        # and the endpoint answered from its own SELECT, never from the cache.
+        # A bare SELECT is now refused as a populate template.
+        with open(os.path.join(sqls, "cached_populate.sql"), "w") as f:
+            f.write("CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS\n"
+                    "SELECT 42 AS n\n")
         with open(os.path.join(sqls, "cached.sql"), "w") as f:
-            f.write("SELECT 42 AS n\n")
+            f.write("SELECT * FROM {{{cache.catalog}}}.{{{cache.schema}}}.{{{cache.table}}}\n")
 
         with open(os.path.join(self.tmp, "flapi.yaml"), "w") as f:
             f.write(

@@ -33,6 +33,10 @@ public:
     std::optional<int64_t> executeDuckLakeQueryCountingRows(
         const std::string& query, const std::map<std::string, std::string>& params = {}) override;
 
+    std::optional<int64_t> executePopulateScript(const std::string& script,
+                                                 const PopulateTarget& target,
+                                                 bool rebuild) override;
+
 private:
     std::shared_ptr<DatabaseManager> db_manager_;
 };

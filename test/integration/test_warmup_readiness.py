@@ -279,9 +279,13 @@ class TestWarmupReadiness:
 
         cached = requests.get(f"{failed_warmup_server['base_url']}/cached", timeout=1)
         assert cached.status_code == 503
-        assert cached.json()["error"] == "cache_warming"
+        # Not "cache_warming": a failed build does not finish by waiting.
+        assert cached.json()["error"] == "cache_build_failed"
+        assert cached.headers["Retry-After"] == "5"
+        # Logged once, not once by the refresh and again by warm-up.
+        assert _read_log(failed_warmup_server["log_path"]).count("Cache build failed") == 1
 
-    def test_scheduler_duplicate_refresh_is_suppressed_during_warmup(self, scheduler_warmup_server):
+    def test_scheduler_does_not_refresh_during_warmup(self, scheduler_warmup_server):
         _wait_for_live(
             scheduler_warmup_server["base_url"],
             scheduler_warmup_server["process"],
@@ -296,5 +300,15 @@ class TestWarmupReadiness:
             time.sleep(0.5)
 
         assert ready.status_code == 200, f"readiness never became ready: {ready.text}\n{_read_log(scheduler_warmup_server['log_path'])}"
+        # The scheduler used to treat every cache as "never refreshed" and fire on
+        # its first scan, racing the warm-up build (only the in-flight guard
+        # stopped a double build). It now waits for warm-up and counts the
+        # schedule from it: the first scheduled refresh comes one schedule (2 s)
+        # AFTER warm-up finished.
+        time.sleep(4)
         log_text = _read_log(scheduler_warmup_server["log_path"])
-        assert "Skipping duplicate in-flight cache refresh" in log_text
+        assert "Skipping duplicate in-flight cache refresh" not in log_text
+        finished = log_text.find("Finished warming up endpoint caches")
+        first_scheduled = log_text.find("Running scheduled cache refresh")
+        assert finished >= 0, log_text[-3000:]
+        assert first_scheduled > finished, log_text[-3000:]

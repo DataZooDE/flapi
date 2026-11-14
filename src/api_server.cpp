@@ -949,6 +949,14 @@ void APIServer::stop() {
 
     if (!drained_) {
         drained_ = true;
+        // Interrupt running cache refreshes FIRST. The heartbeat join below, the
+        // handler-pool drain (a config-service refresh) and main's warm-up join all
+        // wait for them, and a warm-up populate query held SIGTERM for ~80 s.
+        if (dbManager) {
+            if (auto cache_manager = dbManager->getCacheManager()) {
+                cache_manager->interruptRefreshesForShutdown();
+            }
+        }
         heartbeatWorker->stop();
 
     // Before app.stop(), not after. The pool's shutdown drains rather than
