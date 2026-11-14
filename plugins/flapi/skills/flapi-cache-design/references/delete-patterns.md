@@ -184,5 +184,8 @@ SELECT
 - Run it while no refresh is writing, or accept one refresh of skew.
 - Source in a DuckDB file that only the populate template attaches? The check
   cannot read that alias before the first refresh or after a restart without
-  warm-up: give it its own `init` attach or read export drops (`flapi-setup`
+  warm-up. An `init` attach of its own keeps reading the file that was there at startup:
+  if the writer publishes by rename it compares against a stale copy until restart, and a
+  `missing_rows`/`extra_rows` it reports is then NOT a reason to widen the window. Prefer
+  export drops, or compute the source side outside flapi (`flapi-setup`
   [references/connections.md](../../flapi-setup/references/connections.md#duckdb-file-as-a-cache-source)).

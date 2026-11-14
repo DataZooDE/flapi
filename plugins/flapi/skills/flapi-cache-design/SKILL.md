@@ -397,9 +397,10 @@ coalesced). Example: [references/write-through-and-rebuild.md](references/write-
   default schema `cache` and across `--full`: five CTAS refreshes under
   `keep-last-snapshots: 2` leave 2 data files. **After `--full` the old incarnation's
   files stay until the last snapshot before the rebuild leaves the window**: with
-  `keep-last-snapshots: N` that is N-1 more writing refreshes (measured: N=2 freed
-  them on the 1st, N=4 on the 3rd; a 0-row refresh writes no snapshot and does not
-  count). Until then the disk holds both copies. `flapii cache gc <path>` runs it on
+  `keep-last-snapshots: N` that is N-1 more writing refreshes (measured with one cache in the catalog: N=2 freed them on the 1st, N=4 on the 3rd; a
+  0-row refresh writes no snapshot and does not count). With several caches in one catalog,
+  another table's retained snapshots taken before the rebuild pin the old files too: count
+  refreshes of every table, or run one more refresh round before expecting the space back. Until then the disk holds both copies. `flapii cache gc <path>` runs it on
   demand: `{status, expired_snapshots, files_deleted, bytes_freed}` (`no_policy`
   without retention).
 - A table left behind by a `table:`/`schema:` change: `flapii cache drop-table

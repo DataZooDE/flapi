@@ -409,7 +409,8 @@ top-level `https:` block is ignored with a warning.
 ## Startup security warnings
 
 Printed to stderr as `SECURITY WARNINGS (n)` on every start and on
-`--validate-config`; they never stop startup.
+`--validate-config`; they never stop startup. (An unknown `auth.type` is not a warning but a
+load error, `AUTH_UNKNOWN_TYPE`, see above.)
 
 | Code | Meaning |
 |---|---|
@@ -417,7 +418,6 @@ Printed to stderr as `SECURITY WARNINGS (n)` on every start and on
 | `AUTH_MD5_PASSWORD` | 32-hex MD5 password: unsalted, migrate to PBKDF2 |
 | `AUTH_BCRYPT_UNSUPPORTED` | bcrypt hash: flAPI cannot verify it, every login as that user is refused |
 | `AUTH_EMPTY_JWT_SECRET` | bearer endpoint, global block or `mcp.auth` with empty `jwt-secret`: fails closed, every token is refused |
-| `AUTH_UNKNOWN_TYPE` | `type` is not basic/bearer/jwt/oidc: all requests 401 |
 | `CORS_WILDCARD_WITH_AUTH` | `cors.allow-origins` empty or `"*"` while any auth is enabled |
 | `MCP_UNAUTHENTICATED_TOOLS` | `mcp.enabled` with tools and `mcp.auth.enabled: false` |
 | `CREDENTIAL_TOO_SHORT_TO_REDACT` | a credential connection property under 4 chars: error detail is withheld |

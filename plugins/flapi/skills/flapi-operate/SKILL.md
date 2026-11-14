@@ -48,8 +48,8 @@ user-invocable: false
   lock; refresh through that server with `flapii cache refresh <path>`.
 - **`--validate-config` does not open the database.** A missing extension, a bad `ATTACH`
   or a DuckLake lock passes validation and fails at startup.
-- **`flapii` errors show the server's reason**: `[400] Bad Request: Cache refresh failed:
-  <error>`, followed by the JSON body when there is one.
+- **`flapii` errors show the server's reason**: a status line such as `✘ [400] Bad Request:
+  Cache refresh failed`, followed by the JSON body whose `reason` holds the DuckDB error.
 - **SIGTERM interrupts running populate scripts** (shutdown within ~10 s); later refreshes
   are refused while shutting down. The interrupted refresh rolls back.
 - **Log levels are `debug`, `info`, `warning` (or `warn`), `error`**, on `--log-level`,

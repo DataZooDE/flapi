@@ -6,6 +6,10 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ### Upgrade notes
 
+- **Endpoints whose routes differ only in parameter names are duplicates.** `GET /items/:id` and
+  `GET /items/:item_id` match the same requests; both used to load and load order decided which one answered,
+  so an endpoint with `auth: {enabled: false}` could shadow an authenticated one. Startup, reload and create now
+  refuse the second one with `Duplicate endpoint GET /items/:item_id (same route as /items/:id)`.
 - **Cache keys `rollback-window` and `delete-handling` are deprecated.** They were accepted but never did
   anything. They still load, and startup now logs a warning for each. Handle deleted rows in the merge
   template instead; see [Deletes in merge mode](docs/guides/caching.md#deletes-in-merge-mode).

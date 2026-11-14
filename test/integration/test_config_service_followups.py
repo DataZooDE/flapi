@@ -161,6 +161,30 @@ class TestDuplicateEndpoints:
         assert "Duplicate endpoint GET /a" in out, out[-2000:]
         assert "a.yaml" in out and "a_copy.yaml" in out
 
+    def test_same_route_with_another_parameter_name_stops_startup(self):
+        # Security: /items/:id (authenticated) and /items/:item_id (open) match the
+        # same requests. Compared as strings both loaded, and load order decided
+        # which one answered - the open copy could serve without credentials.
+        authed = ("url-path: /items/:id\nmethod: GET\ntemplate-source: a.sql\n"
+                  "connection: [inmem]\nrequest:\n  - field-name: id\n    field-in: path\n"
+                  "    validators:\n      - type: int\n"
+                  "auth:\n  enabled: true\n  type: basic\n  users:\n"
+                  "    - username: u\n      password: p\n")
+        open_copy = ("url-path: /items/:item_id\nmethod: GET\ntemplate-source: b.sql\n"
+                     "connection: [inmem]\nrequest:\n  - field-name: item_id\n    field-in: path\n"
+                     "    validators:\n      - type: int\n"
+                     "auth:\n  enabled: false\n")
+        root = _project({"sqls/items.yaml": authed, "sqls/items_open.yaml": open_copy})
+        proc, log = _spawn(root, free_port())
+        try:
+            proc.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            pytest.fail("two endpoints with the same route shape did not stop startup")
+        assert proc.returncode != 0
+        out = open(log).read()
+        assert "Duplicate endpoint GET /items/:" in out and "same route as" in out, out[-2000:]
+
     def test_same_path_with_another_method_is_fine(self):
         s = _Server({"sqls/a.yaml": ENDPOINT_A,
                      "sqls/a_post.yaml": ENDPOINT_A.replace("method: GET", "method: POST")})

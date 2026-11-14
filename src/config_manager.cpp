@@ -1,5 +1,6 @@
 #include <regex>
 #include "config_manager.hpp"
+#include "route_translator.hpp"
 #include "mustache_syntax_check.hpp"
 #include "extension_installer.hpp"
 #include "redaction.hpp"
@@ -2969,6 +2970,13 @@ void ConfigManager::refreshConfig() {
     throw std::runtime_error("Not implemented");
 }
 
+std::string ConfigManager::RouteShape(const std::string& url_path) {
+    // The regex RouteTranslator compiles, with parameter names discarded: two
+    // url-paths with the same shape match the same requests.
+    std::vector<std::string> ignored_names;
+    return RouteTranslator::translateRoutePath(url_path, ignored_names);
+}
+
 std::string ConfigManager::DuplicateEndpointProblem(const EndpointConfig& candidate) const {
     const auto where = [](const EndpointConfig& ep) {
         return ep.config_file_path.empty() ? std::string("(in memory)") : ep.config_file_path;
@@ -2984,8 +2992,17 @@ std::string ConfigManager::DuplicateEndpointProblem(const EndpointConfig& candid
         if (!candidate.config_file_path.empty() && ep.config_file_path == candidate.config_file_path) {
             continue;   // the same file, e.g. a reload of it
         }
-        if (!candidate.urlPath.empty() && ep.urlPath == candidate.urlPath && ep.method == candidate.method) {
-            return "Duplicate endpoint " + candidate.method + " " + candidate.urlPath + ": declared in " +
+        // Compared as the ROUTE the router compiles, not as text: `/customers/:id`
+        // and `/customers/:cid` match exactly the same requests. Compared as
+        // strings both loaded, and after a restart load order decided which one
+        // served - an endpoint with `auth: {enabled: false}` could shadow the
+        // authenticated one and answer without credentials.
+        if (!candidate.urlPath.empty() && !ep.urlPath.empty() && ep.method == candidate.method &&
+            RouteShape(ep.urlPath) == RouteShape(candidate.urlPath)) {
+            const std::string same_path = ep.urlPath == candidate.urlPath
+                ? candidate.urlPath
+                : candidate.urlPath + " (same route as " + ep.urlPath + ")";
+            return "Duplicate endpoint " + candidate.method + " " + same_path + ": declared in " +
                    where(ep) + " and " + where(candidate);
         }
         const char* kind = nullptr;

@@ -830,6 +830,9 @@ public:
     /// different YAML file) already serves the same url-path and method. Both
     /// files are named.
     std::string DuplicateEndpointProblem(const EndpointConfig& candidate) const;
+    /// The route a url-path compiles to, parameter names discarded:
+    /// `/customers/:id` and `/customers/:cid` have the same shape.
+    static std::string RouteShape(const std::string& url_path);
     bool removeEndpointByPath(const std::string& path);
     bool replaceEndpoint(const EndpointConfig& endpoint);
 
