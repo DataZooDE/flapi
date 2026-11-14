@@ -55,7 +55,11 @@ const SchemaField kPath{"path", "string",
                         "The endpoint's url-path, e.g. \"/customers/\".", true};
 const SchemaField kEndpoint{"endpoint", "string",
                             "The endpoint's url-path, e.g. \"/customers/\".", true};
-const SchemaField kMethod{"method", "string", "HTTP method (default GET).", false};
+const SchemaField kMethod{"method", "string", "HTTP method: GET (default), POST, PUT, PATCH or DELETE.", false};
+const SchemaField kAuth{"auth", "object",
+                        "The endpoint's auth, the same shape as a YAML `auth:` block, e.g. "
+                        "{\"enabled\": true, \"type\": \"basic\", \"roles\": [\"admin\"], \"users\": [...]}. "
+                        "Without it the endpoint inherits the top-level auth block, or is open.", false};
 const SchemaField kMethodSelect{"method", "string",
                                 "HTTP method, needed when several endpoints share the path "
                                 "(GET /orders + POST /orders).", false};
@@ -325,7 +329,7 @@ void ConfigToolAdapter::registerEndpointTools() {
         "flapi_create_endpoint",
         "Create a new endpoint and write its configuration (and an initial SQL template) under the "
         "templates directory, so flapi_update_template, flapi_reload_endpoint and restarts keep it.",
-        build_schema({kPath, kMethod, kTemplateSource, kConnection}),
+        build_schema({kPath, kMethod, kTemplateSource, kConnection, kAuth}),
         build_basic_schema()
     };
     tool_auth_required_["flapi_create_endpoint"] = true;
@@ -1037,11 +1041,17 @@ ConfigToolResult ConfigToolAdapter::executeCreateEndpoint(const crow::json::wval
         if (!error_msg.empty()) {
             return createErrorResult(-32602, error_msg);
         }
-
-        method = extractStringParam(args, "method", false, error_msg);
-        if (method.empty()) {
-            method = "GET";
+        if (const auto problem = RouteTranslator::urlPathProblem(path); !problem.empty()) {
+            return createErrorResult(-32602, problem);
         }
+
+        // Canonical and one of the five, as the YAML loader and REST create
+        // require: "get" used to be stored as written.
+        const std::string raw_method = extractStringParam(args, "method", false, error_msg);
+        if (const auto problem = ConfigManager::HttpMethodProblem(raw_method, path); !problem.empty()) {
+            return createErrorResult(-32602, problem);
+        }
+        method = ConfigManager::CanonicalHttpMethod(raw_method);
 
         // `template-source` is what the YAML key and the docs call it; the
         // underscore spelling was the only one read, and neither was declared.
@@ -1050,43 +1060,37 @@ ConfigToolResult ConfigToolAdapter::executeCreateEndpoint(const crow::json::wval
             template_source = extractStringParam(args, "template_source", false, error_msg);
         }
 
-        // Check if endpoint already exists
-        if (config_manager_->getEndpointForPath(path) != nullptr) {
-            crow::json::wvalue error_detail;
-            error_detail["error"] = "Endpoint already exists";
-            error_detail["path"] = path;
-            error_detail["hint"] = "Use flapi_update_endpoint to modify existing endpoint, or delete it first with flapi_delete_endpoint";
-            return createErrorResult(-32603, error_detail.dump());
-        }
-
-        // Create new endpoint configuration
-        EndpointConfig new_endpoint;
-        new_endpoint.urlPath = path;
-        new_endpoint.method = method;
+        // The endpoint as a YAML document, created through the same path as
+        // POST /api/v1/_config/endpoints: written, parsed by the loader (so a
+        // top-level auth block is inherited and `auth` is read exactly as in
+        // a file), checked for duplicates and overlapping routes, then added.
+        YAML::Node doc;
+        doc["url-path"] = path;
+        doc["method"] = method;
 
         if (args.count("connection")) {
             auto parsed = crow::json::load(args["connection"].dump());
             if (parsed && parsed.t() == crow::json::type::List) {
                 for (const auto& item : parsed) {
-                    new_endpoint.connection.push_back(item.s());
+                    doc["connection"].push_back(std::string(item.s()));
                 }
             } else if (parsed && parsed.t() == crow::json::type::String) {
-                new_endpoint.connection.push_back(parsed.s());
+                doc["connection"].push_back(std::string(parsed.s()));
             }
         }
-
-        {
-            std::string upper = method;
-            std::transform(upper.begin(), upper.end(), upper.begin(),
-                           [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-            if (const auto other = endpoint_files::FileDeclaring(*config_manager_, path, upper); !other.empty()) {
-                return createErrorResult(-32603, "Endpoint already exists: " + upper + " " + path +
-                                                     " is declared in " + other + " (reload it instead)");
+        if (args.count("auth")) {
+            const YAML::Node auth = YAML::Load(args["auth"].dump());
+            if (!auth || !auth.IsMap()) {
+                return createErrorResult(-32602, "auth must be an object, the same shape as an endpoint's `auth:` block");
             }
+            doc["auth"] = auth;
         }
 
+        EndpointConfig identity;
+        identity.urlPath = path;
+        identity.method = method;
         // Readable file names, the same as POST /api/v1/_config/endpoints gives.
-        const std::string slug = endpoint_files::FileStemFor(new_endpoint);
+        const std::string slug = endpoint_files::FileStemFor(identity);
         if (template_source.empty()) {
             template_source = slug + ".sql";
         }
@@ -1105,45 +1109,35 @@ ConfigToolResult ConfigToolAdapter::executeCreateEndpoint(const crow::json::wval
                     "template-source must be a relative path inside the templates directory: " + template_source);
             }
         }
-        new_endpoint.templateSource = template_source;
+        doc["template-source"] = template_source;
 
-        // Persist, so reload and a restart find it. Files are written first and
-        // removed again if the endpoint does not validate or cannot be added.
+        // A placeholder template, so the endpoint loads; removed again if the
+        // endpoint is not created.
         const std::filesystem::path template_dir = config_manager_->getTemplateConfig().path;
         const std::filesystem::path sql_file = template_dir / template_source;
-        const std::filesystem::path yaml_file = template_dir / (slug + ".yaml");
-        if (std::filesystem::exists(yaml_file)) {
-            return createErrorResult(-32603, "Endpoint file already exists: " + yaml_file.string());
-        }
         const bool created_sql = !std::filesystem::exists(sql_file);
         if (created_sql) {
             std::filesystem::create_directories(sql_file.parent_path());
             std::ofstream sql(sql_file);
             sql << "SELECT 1 AS placeholder\n";
         }
-        new_endpoint.config_file_path = yaml_file.string();
-        auto cleanup = [&]() {
-            std::error_code ec;
-            std::filesystem::remove(yaml_file, ec);
+        const auto outcome = endpoint_files::CreateFromDocument(*config_manager_, doc);
+        if (!outcome.ok) {
             if (created_sql) {
+                std::error_code ec;
                 std::filesystem::remove(sql_file, ec);
             }
-        };
-        try {
-            const auto validation = config_manager_->validateEndpointConfig(new_endpoint);
-            if (!validation.valid) {
-                cleanup();
-                std::string joined;
-                for (const auto& e : validation.errors) {
-                    joined += (joined.empty() ? "" : "; ") + e;
-                }
-                return createErrorResult(-32602, "Invalid endpoint: " + joined);
+            crow::json::wvalue error_detail;
+            // The reason names the endpoint it conflicts with, when it does.
+            error_detail["error"] = outcome.status == 409 ? "Endpoint already exists" : "Failed to create endpoint";
+            error_detail["path"] = path;
+            error_detail["method"] = method;
+            error_detail["reason"] = outcome.error;
+            if (outcome.status == 409) {
+                error_detail["hint"] = "Use flapi_update_endpoint to modify the existing endpoint, or delete it first "
+                                       "with flapi_delete_endpoint";
             }
-            config_manager_->persistEndpointConfigToFile(new_endpoint, yaml_file);
-            config_manager_->addEndpoint(new_endpoint);
-        } catch (...) {
-            cleanup();
-            throw;
+            return createErrorResult(outcome.status == 400 ? -32602 : -32603, error_detail.dump());
         }
 
         crow::json::wvalue result;
@@ -1151,7 +1145,17 @@ ConfigToolResult ConfigToolAdapter::executeCreateEndpoint(const crow::json::wval
         result["path"] = path;
         result["method"] = method;
         result["template_source"] = template_source;
+        result["file"] = outcome.file;
         result["message"] = "Endpoint created successfully";
+        result["auth"] = outcome.config.auth.enabled ? outcome.config.auth.type : std::string("none");
+        if (!outcome.config.auth.enabled) {
+            // Said in the result as well as the log: an agent creating an
+            // endpoint should know it answers anyone.
+            result["warning"] = "The endpoint is unauthenticated: anyone who can reach the server can call it. "
+                                "Pass `auth` to protect it.";
+            CROW_LOG_WARNING << "flapi_create_endpoint: created " << method << " " << path
+                             << " WITHOUT authentication";
+        }
 
         CROW_LOG_INFO << "flapi_create_endpoint: created endpoint " << path << " with method " << method;
         return createSuccessResult(result.dump());
@@ -1224,12 +1228,6 @@ ConfigToolResult ConfigToolAdapter::executeUpdateEndpoint(const crow::json::wval
         if (patch["template_source"]) {
             patch["template-source"] = patch["template_source"];
             patch.remove("template_source");
-        }
-        if (patch["method"]) {
-            std::string method = patch["method"].as<std::string>("");
-            std::transform(method.begin(), method.end(), method.begin(),
-                           [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-            patch["method"] = method;
         }
         if (patch.size() == 0) {
             return createErrorResult(-32602, "Nothing to update: pass endpoint keys, e.g. config: {\"template-source\": \"x.sql\"}");
