@@ -115,6 +115,22 @@ Caching:
 - **Full rebuild drops the table:** `flapii cache refresh <path> --full`, `flapi cache refresh --full` and
   `POST .../cache/refresh?full=true` erase the watermark and drop the cache table in the same transaction, so an
   append cache is rebuilt instead of re-appended.
+- **Retention now expires what it should, so more history goes.** It never matched a cache in the default
+  schema `cache` (DuckLake records the create as `'"cache".t'`) or with a keyword table name, nor the earlier
+  incarnations of a cache (each CTAS full refresh and each `--full` rebuild makes a new table id). Such caches
+  kept every snapshot and file; under `keep-last-snapshots` / `max-snapshot-age` they now keep only what the
+  policy says, and time travel to the expired snapshots stops working.
+- **`POST .../cache/gc` answers JSON** `{"status":"expired"|"nothing_to_expire"|"no_policy"|"error",
+  "expired_snapshots","files_deleted","bytes_freed","message"}` instead of the text "Garbage collection
+  completed", and a failed GC is HTTP 500 (was 200). Without a retention policy it is `no_policy`.
+- **`snapshot_id` in the refresh answer and the audit is the snapshot that refresh committed**, or absent/null
+  when it committed none or it is unknown. It used to be a guess (often another schema's table, or a previous
+  refresh).
+- **A read-only replica answers 409 `read_only_cache` to `PUT .../cache/template`** (it overwrote the
+  writer's populate SQL). The 409 messages now say what to do for each operation.
+- **Time travel to an unknown or expired snapshot on a cached endpoint is 404**
+  `{"error":"snapshot_not_found"}` (was 500).
+- **New key `ducklake.compaction.delete-threshold`** (0 < x <= 1): a value outside that range stops startup.
 
 - **SECURITY: MCP `resources/read` validates uri-template values.** A value bound from
   `flapi://customers/{id}` now gets the field's `default:` and validators (regex, enum, int, ...) and the
@@ -255,7 +271,44 @@ Narrow to one endpoint with `?endpoint=/path`.
 - `flapii` reads `FLAPI_URL` when `FLAPI_BASE_URL` is not set; `flapii cache audit -o table` prints a table;
   `flapii metrics -o table` shows cache-not-ready 503s separately.
 
+### Added: cache retention, replicas and packaging
+
+- Drop an obsolete cache table (one left behind by a changed `schema:`/`table:`) with
+  `flapii cache drop-table [schema.]table` or `POST /api/v1/_config/cache/drop-table {"schema","table"}`.
+  Its snapshots are expired and its files deleted. A table an endpoint still uses is refused with 409.
+- `ducklake.compaction.delete-threshold`: the share of deleted rows above which compaction rewrites a data
+  file (DuckLake's default, 0.95, is rarely reached by merge caches).
+- `GET /api/v1/_config/cache/audit?sync_type=compaction` (any `sync_type`, combinable with `?table=`) shows
+  compaction history. Startup logs when compaction is next due.
+- `GET /api/v1/_config/project` shows `ducklake.warmup_effective` (`never` on a read-only replica).
+- A read-only replica serves a cache as soon as the writer has built it. It checks again at most every 5 s on
+  requests, and on every scheduler scan. Before, a replica started before the build answered 503
+  `cache_not_built` until restarted.
+- `flapi pack --exclude <glob>` (repeatable). The configured DuckLake catalog (`metadata-path`, its `.wal`,
+  `data-path`) and `*.ducklake`, `*.ducklake.wal`, `*.ducklake.files` are never bundled.
+- `embed://<path>` works outside a packed binary: it resolves against the configuration directory, so a
+  config written for `flapi pack` also runs from its source tree.
+- A missing local DuckLake metadata directory or `data-path` is created. A read-only replica that finds one
+  missing stops and says so.
+
 ### Fixed
+
+- **SECURITY: DuckLake catalog credentials were shown in clear.** A Postgres or MySQL `metadata-path` with
+  `password=...` (including a resolved `{{env.X}}`) appeared in `GET /api/v1/_config/project` and in startup
+  attach errors. Passwords, secrets, tokens and URL `user:password@` parts are now `<redacted>`.
+- **Packed binaries:** `flapi cache refresh` and `flapi extensions install` read the bundled `flapi.yaml`.
+  They used to fail with "Could not open file: flapi.yaml". The one-shot refresh resolves `embed://` paths too.
+- **Retention with a same-named table in another schema** works for each table. Before, retention was off for
+  both.
+- **GC and retention report what they could not expire.** Snapshots that are shared with another table are
+  logged as a WARNING and noted in the audit message.
+- **Lock conflicts on a DuckDB-file catalog explain themselves:** stop the other process, or use a
+  Postgres/SQLite/MySQL catalog for a writer with replicas. The one-shot refresh no longer prints a spurious
+  "Failed to detach DuckLake catalog".
+- **`--validate-config` with `template.path: ../sqls`** no longer reports path traversal or missing files
+  for templates that exist. It warns only when a template is outside `template.path`.
+- **`GET /api/v1/_config/metrics?endpoint=/x`** lists the endpoint's cache before its first refresh, and every
+  cache row names its `endpoint`.
 
 - **CORS preflights:** with `cors.allow-origins` set, an `OPTIONS` preflight from an allowed origin answered
   204 without any `Access-Control-Allow-*` header (REST paths and `/mcp/jsonrpc`), so browsers blocked every

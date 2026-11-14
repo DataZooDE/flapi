@@ -6,6 +6,7 @@
 #include "duckdb/common/file_open_flags.hpp"
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
 
@@ -60,10 +61,38 @@ private:
     std::shared_ptr<const ArchiveEntries> _entries;
 };
 
-// Registers an EmbeddedFileSystem on the global DuckDB instance.
-// No-op when no bundle has been set via FileProviderFactory or when
-// DatabaseManager isn't initialised yet. Returns true if a filesystem
-// was registered.
-bool RegisterEmbeddedFileSystem();
+// `embed://<rel>` outside a packed binary: <root>/<rel> on the local disk, so
+// a configuration written for `flapi pack` also runs from its source tree.
+// Paths that escape `root` are refused, as they cannot exist in a bundle.
+class DirectoryEmbedFileSystem : public ::duckdb::FileSystem {
+public:
+    explicit DirectoryEmbedFileSystem(std::filesystem::path root);
+    ~DirectoryEmbedFileSystem() override = default;
+
+    ::duckdb::unique_ptr<::duckdb::FileHandle> OpenFile(
+        const std::string& path,
+        ::duckdb::FileOpenFlags flags,
+        ::duckdb::optional_ptr<::duckdb::FileOpener> opener = nullptr) override;
+    ::duckdb::vector<::duckdb::OpenFileInfo> Glob(
+        const std::string& path,
+        ::duckdb::FileOpener* opener = nullptr) override;
+    bool CanHandleFile(const std::string& fpath) override;
+    bool FileExists(const std::string& filename,
+                    ::duckdb::optional_ptr<::duckdb::FileOpener> opener = nullptr) override;
+    std::string GetName() const override { return "embed-directory"; }
+
+    /// The local path `embed://<rel>` names; throws for one outside root.
+    std::string MapPath(const std::string& path) const;
+
+private:
+    std::filesystem::path _root;
+    ::duckdb::unique_ptr<::duckdb::FileSystem> _local;
+};
+
+// Registers the embed:// filesystem on the global DuckDB instance: the
+// bundle's EmbeddedFileSystem when one was set via FileProviderFactory, else
+// (when `config_dir` is given) a DirectoryEmbedFileSystem over it. No-op when
+// DatabaseManager isn't initialised yet. Returns true if one was registered.
+bool RegisterEmbeddedFileSystem(const std::string& config_dir = "");
 
 }  // namespace flapi

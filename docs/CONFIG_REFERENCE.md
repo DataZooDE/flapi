@@ -407,11 +407,11 @@ Configures DuckLake for snapshot-based caching with time-travel capabilities.
 |-----------|------|---------|-------------|
 | `ducklake.enabled` | boolean | `false` | Enable DuckLake caching system |
 | `ducklake.alias` | string | `"cache"` | Catalog alias for DuckLake tables |
-| `ducklake.metadata-path` | string | - | Directory for DuckLake metadata |
-| `ducklake.data-path` | string | - | Directory for DuckLake data files |
+| `ducklake.metadata-path` | string | - | DuckLake metadata catalog: a DuckDB file path, or `sqlite:`/`postgres:`/`mysql:` connection string. A missing parent directory of a local file is created (a read-only replica refuses to start instead). Shown redacted (`password=<redacted>`) in config API answers and logs |
+| `ducklake.data-path` | string | - | Directory (or object-store prefix) for DuckLake data files; a missing local directory is created |
 | `ducklake.data-inlining-row-limit` | integer | - | Maximum rows to inline in metadata |
 | `ducklake.warmup` | string | `always` | When caches are built at startup: `always` (re-run every populate query), `if-empty` (only tables that do not exist yet), `never` (none). See below. |
-| `ducklake.read-only` | boolean | `false` | Attach the catalog `READ_ONLY`, for replicas serving a catalog another process writes. Implies `warmup: never`, no scheduled refresh, retention or compaction, and `409` from the config service's cache mutations. |
+| `ducklake.read-only` | boolean | `false` | Attach the catalog `READ_ONLY`, for replicas serving a catalog another process writes. Implies `warmup: never`, no scheduled refresh, retention or compaction, and `409` from the config service's cache mutations. A cache not yet built is checked again (at most every 5 s on requests, and on every scheduler scan) and served once the writer has built it; that needs a shared Postgres/SQLite/MySQL catalog, because a DuckDB-file catalog serves one process. |
 
 **Warm-up.** `if-empty` suits a persistent `db_path` or a shared catalog: a restart serves what is already
 there. With `never`, a cache whose table does not exist is **unbuilt**: its endpoint answers `503`
@@ -431,7 +431,11 @@ The global block is the default for every cache that has **no `retention:` block
 endpoint's `cache.retention` replaces it as a whole (the two are not merged). Retention runs after each
 refresh and on `…/cache/gc`; once snapshots are expired, flAPI also runs
 `ducklake_cleanup_old_files(<catalog>, cleanup_all => true)`, so the data files they referenced are
-deleted from disk (or the bucket) rather than left behind.
+deleted from disk (or the bucket) rather than left behind. Expiry is per table and covers every
+incarnation of it: a CTAS full refresh or a `--full` rebuild creates a new table id, and the old ones'
+snapshots expire too. A file is deleted only once no remaining snapshot of any table can see it.
+To remove a table no endpoint uses any more (for example after changing `cache.schema`), call
+`POST /api/v1/_config/cache/drop-table` (`flapii cache drop-table schema.table`).
 
 **Compaction Configuration:**
 
@@ -439,10 +443,13 @@ deleted from disk (or the bucket) rather than left behind.
 |-----------|------|---------|-------------|
 | `ducklake.compaction.enabled` | boolean | `false` | Enable automatic compaction. Needs a `schedule` as well |
 | `ducklake.compaction.schedule` | string | - | How often: an interval (`30m`, `6h`, `1d`) or `@hourly`, `@daily`, `@midnight`, `@weekly`. Anything else (including a cron expression) stops startup with an error naming the key. Without `compaction.enabled: true` it has no effect, and startup warns |
+| `ducklake.compaction.delete-threshold` | number | DuckLake's `0.95` | Fraction of deleted rows (`0 < x <= 1`) above which `ducklake_rewrite_data_files` rewrites a data file. A merge cache's delete files rarely reach DuckLake's default, so refreshes slow down as they pile up. Try `0.2`. Out of range stops startup |
 
 Compaction runs once per catalog per period: `ducklake_merge_adjacent_files`, `ducklake_rewrite_data_files`
 and a file cleanup. Each run writes an audit row with `sync_type` `compaction`, and when it last ran
-survives a restart. A one-shot `flapi cache refresh` also compacts when compaction is due.
+survives a restart. A one-shot `flapi cache refresh` also compacts when compaction is due. Startup logs
+`DuckLake compaction every <schedule>; last run ...; next due ...`. Its history is
+`GET /api/v1/_config/cache/audit?sync_type=compaction`.
 
 **Scheduler Configuration:**
 
@@ -1553,7 +1560,8 @@ branch rebuilds it from scratch — an append cache is rebuilt, not appended to 
 manages its own `BEGIN`/`COMMIT` only gets the watermark cleared (a warning says so).
 
 When warm-up is skipped (`warmup: never`, or `read-only`) and the cache table does not exist, the
-endpoint returns `503` with `"error": "cache_not_built"` until a refresh builds it.
+endpoint returns `503` with `"error": "cache_not_built"` until a refresh builds it. On a read-only
+replica, the writer's refresh counts: the replica notices the new table within about 5 s.
 
 `cache.schedule` must be `<positive number>[s|m|h|d]` (at most 10 years); anything else stops startup.
 

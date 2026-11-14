@@ -506,7 +506,7 @@ for the architectural rationale.
 
 ```
 flapi pack --in <config-dir> --out <new-binary> [--with-extensions | --extensions-dir <dir>]
-           [--allow-secrets] [--macos-append] [--skip-validation]
+           [--exclude <glob>]... [--allow-secrets] [--macos-append] [--skip-validation]
 ```
 
 | Option | Required | Description |
@@ -514,6 +514,7 @@ flapi pack --in <config-dir> --out <new-binary> [--with-extensions | --extension
 | `--in` | yes | Directory containing `flapi.yaml` and friends. Walked recursively. |
 | `--out` | yes | Path for the bundled output binary. Overwritten if it exists. |
 | `--allow-secrets` | no | Bypass the default secret deny list. Testing only -- production users must never set this. |
+| `--exclude` | no | Do not bundle files matching this glob, relative to `--in`; repeatable. `*` stays within a path segment, `**` crosses segments, `?` matches one character. A pattern without `/` matches a file or directory name at any depth, and a matching directory excludes everything below it (`--exclude scratch --exclude 'data/raw/**'`). |
 | `--skip-validation` | no | Skip the config validation `pack` otherwise runs first (the same checks as `--validate-config`). Without it, an invalid `<in>/flapi.yaml` is refused and no output file is written. |
 | `--macos-append` | no | macOS only: append the archive after `__LINKEDIT` instead of overwriting the reserved `__FLAPI/__bundle` segment. **Not notarisable.** |
 | `--with-extensions` | no | Install the DuckDB extensions the config needs (`core_functions`, `duckdb.default-extensions`, every `INSTALL` in `connections.*.init`) **for the platform `pack` runs on**, and embed them. Fails without writing output if any cannot be installed. |
@@ -528,6 +529,11 @@ with no network access. Precedence: `duckdb.extension_directory` in the config >
 Extensions are platform-specific, so pack on (or `--extensions-dir` for) the target platform. On macOS
 they usually exceed the 16 MiB reserved segment; raise `FLAPI_RESERVED_BUNDLE_MIB` at build time or use
 `--macos-append`.
+
+**Never bundled: the DuckLake catalog.** The configured `ducklake.metadata-path` (and its `.wal`) and
+`data-path`, when they lie inside `--in`, and any `*.ducklake`, `*.ducklake.wal` or `*.ducklake.files`
+are left out. They are runtime state that a bundle never opens. `pack` prints
+`Excluded N file(s) (DuckLake catalog / --exclude), e.g. <path>`.
 
 **Default secret deny list** (refusal with non-zero exit, unless
 `--allow-secrets`):
@@ -652,8 +658,13 @@ compacts the catalog when `ducklake.compaction` is due.
 
 If a running server holds the DuckLake catalog (a DuckDB-file catalog is locked
 by the process that has it open), the command prints
-`{"error":"a running flapi holds the DuckLake catalog lock; refresh through the server: flapii cache refresh <path>"}`
+`{"error":"a running flapi holds the DuckLake catalog lock; refresh through the server: flapii cache refresh <path> (if the holders are read-only replicas, stop the replicas, or use a Postgres/SQLite/MySQL DuckLake catalog, which a writer and replicas can share)"}`
 and exits `1`.
+
+In a packed binary the command reads the **bundled** config: `--config` defaults to the bundled
+`flapi.yaml`, and `embed://` paths in the populate SQL read the bundle. Outside a packed binary,
+`embed://<path>` resolves to `<config directory>/<path>`, so a config written for `flapi pack` also
+refreshes from its source tree.
 
 | Exit code | Meaning |
 |-----------|---------|
@@ -684,7 +695,8 @@ Installs into `--dir` (default: `FLAPI_EXTENSION_DIRECTORY`, then DuckDB's own d
 any extension failed, after reporting every failure. Run it at image build time; at runtime set
 `FLAPI_EXTENSION_DIRECTORY` to the same directory and, to make a missing extension a startup error
 rather than a download, `FLAPI_EXTENSIONS_OFFLINE=1`. The extension directory is keyed by DuckDB version and
-platform, so install with the same `flapi` binary you ship.
+platform, so install with the same `flapi` binary you ship. In a packed binary, `flapi extensions install` with
+no names and no `--config` installs what the bundled `flapi.yaml` needs.
 
 ---
 

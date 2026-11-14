@@ -134,8 +134,16 @@ public:
     std::optional<int64_t> executeDuckLakeQueryCountingRows(
         const std::string& query, const std::map<std::string, std::string>& params) override {
         executeDuckLakeQuery(query, params);
+        // The populate statement commits a snapshot: what the catalog reports
+        // from here on, when the test sets it.
+        if (snapshot_ids_after_populate) {
+            snapshot_ids = *snapshot_ids_after_populate;
+        }
         return rows_to_report;
     }
+
+    /// The snapshot list once the populate statement ran (nullopt: unchanged).
+    std::optional<std::vector<std::int64_t>> snapshot_ids_after_populate;
 
     // Snapshot ids the next ducklake_snapshots() query should report, newest
     // first. Empty means "no snapshots", which is the common state early in a
@@ -195,7 +203,10 @@ public:
             names.data = crow::json::wvalue(std::move(name_rows));
             return names;
         }
-        if (query.find("ducklake_table_info") != std::string::npos) {
+        // The metadata catalog's table history (every id schema.table has had)
+        // answers the same shape as ducklake_table_info.
+        if (query.find("ducklake_table_info") != std::string::npos ||
+            query.find(".ducklake_table t") != std::string::npos) {
             if (fail_table_listing) {
                 throw std::runtime_error("catalog unavailable");
             }
@@ -928,7 +939,8 @@ TEST_CASE("CacheManager records refresh timing, rows and snapshot in the audit",
 
     auto adapter = std::make_shared<RecordingCacheAdapter>();
     adapter->rows_to_report = 42;
-    adapter->snapshot_ids = {7};
+    adapter->snapshot_ids = {};
+    adapter->snapshot_ids_after_populate = std::vector<std::int64_t>{7};
     CacheManager cache_manager(adapter);
 
     EndpointConfig endpoint;
@@ -950,6 +962,37 @@ TEST_CASE("CacheManager records refresh timing, rows and snapshot in the audit",
     CHECK(insert->find("'7'") != std::string::npos);      // snapshot_id
     CHECK(insert->find("TIMESTAMP '") != std::string::npos);
     CHECK(insert->find("CURRENT_TIMESTAMP") == std::string::npos);
+}
+
+TEST_CASE("A refresh that committed no snapshot records no snapshot_id", "[cache_manager][audit]") {
+    // The audit and the refresh answer used to carry whatever snapshot the
+    // table lookup found newest - a guessed id, or a PREVIOUS refresh's. A
+    // refresh that committed nothing has no snapshot of its own: null.
+    TempTestConfig temp(kDuckLakeAuditConfig, "cache_audit_no_snapshot");
+    auto config_manager = temp.createConfigManager();
+
+    auto adapter = std::make_shared<RecordingCacheAdapter>();
+    adapter->rows_to_report = 0;
+    adapter->snapshot_ids = {7};   // before AND after: nothing was committed
+    CacheManager cache_manager(adapter);
+
+    EndpointConfig endpoint;
+    endpoint.urlPath = "/orders";
+    endpoint.cache.enabled = true;
+    endpoint.cache.table = "orders_cache";
+    endpoint.cache.schema = "analytics";
+
+    std::map<std::string, std::string> params;
+    cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
+
+    const auto insert = std::find_if(adapter->executed_queries.begin(), adapter->executed_queries.end(),
+        [](const std::string& q) { return q.find("audit.sync_events") != std::string::npos &&
+                                          q.find("INSERT") != std::string::npos; });
+    REQUIRE(insert != adapter->executed_queries.end());
+    CHECK(insert->find("'7'") == std::string::npos);
+    for (const auto& stats : cache_manager.getRefreshStats()) {
+        CHECK_FALSE(stats.last_snapshot_id.has_value());
+    }
 }
 
 TEST_CASE("CacheManager failed refresh still records a duration", "[cache_manager][audit]") {

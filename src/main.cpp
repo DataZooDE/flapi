@@ -665,6 +665,12 @@ int main(int argc, char* argv[])
     pack_cmd.add_argument("--extensions-dir")
         .help("Embed this already filled extension directory instead (e.g. for another platform)")
         .default_value(std::string(""));
+    pack_cmd.add_argument("--exclude")
+        .help("Do not bundle files matching this glob (relative to --in; * within a segment, ** across; "
+              "a name without / matches at any depth); repeatable. The DuckLake catalog "
+              "(metadata-path, data-path, *.ducklake, *.ducklake.wal) is always excluded.")
+        .append()
+        .default_value(std::vector<std::string>{});
     pack_cmd.add_argument("--skip-validation")
         .help("Pack without validating the config first. A bundle built from an "
               "invalid config fails at startup on every host it is copied to.")
@@ -834,7 +840,44 @@ int main(int argc, char* argv[])
             } else if (!extensions_dir.empty()) {
                 opts.extensions_dir = std::filesystem::path(extensions_dir);
             }
+            opts.exclude_globs = pack_cmd.get<std::vector<std::string>>("--exclude");
+            // The configured DuckLake catalog: runtime state that a bundle never
+            // opens, and often the largest thing in the tree.
+            for (const char* name : {"flapi.yaml", "flapi.yml"}) {
+                const auto candidate = std::filesystem::path(in_dir) / name;
+                if (!std::filesystem::exists(candidate)) {
+                    continue;
+                }
+                try {
+                    crow::logger::setLogLevel(crow::LogLevel::Warning);
+                    const auto cm = initializeConfig(candidate.string());
+                    const auto& ducklake = cm->getDuckLakeConfig();
+                    const auto root = std::filesystem::weakly_canonical(std::filesystem::path(in_dir));
+                    for (const auto& configured : {ducklake.metadata_path, ducklake.metadata_path + ".wal",
+                                                   ducklake.data_path}) {
+                        const auto colon = configured.find(':');
+                        if (configured.empty() || (colon != std::string::npos && colon != 1)) {
+                            continue;   // a DSN or URL, not a file in the tree
+                        }
+                        std::filesystem::path path(configured);
+                        if (path.is_relative()) {
+                            path = std::filesystem::path(cm->getBasePath()) / path;
+                        }
+                        const auto rel = std::filesystem::weakly_canonical(path).lexically_relative(root);
+                        if (!rel.empty() && *rel.begin() != "..") {
+                            opts.exclude_globs.push_back(rel.generic_string());
+                        }
+                    }
+                } catch (const std::exception&) {
+                    // Validation (above) reports a broken config; the defaults still apply.
+                }
+                break;
+            }
             const auto result = Pack(in_dir, out_path, opts);
+            if (!result.excluded.empty()) {
+                std::cout << "Excluded " << result.excluded.size()
+                          << " file(s) (DuckLake catalog / --exclude), e.g. " << result.excluded.front() << "\n";
+            }
             if (!installed_extensions.empty()) {
                 std::filesystem::remove_all(installed_extensions);
             }
@@ -907,6 +950,11 @@ int main(int argc, char* argv[])
                 return 2;
             }
         }
+        // The bundle first: a packed binary's `cache refresh` read flapi.yaml from
+        // the working directory ("Could not open file: flapi.yaml") because the
+        // subcommand ran before the server path registered it. With a bundle,
+        // the default flapi.yaml is the bundled one.
+        detectAndRegisterEmbeddedBundle();
         int rc = 0;
         try {
             auto cm = initializeConfig(config_path);
@@ -945,7 +993,13 @@ int main(int argc, char* argv[])
             }
             specs.push_back(*spec);
         }
-        const auto config_path = extensions_install_cmd.get<std::string>("--config");
+        // As for `cache refresh`: a packed binary reads its own bundled config,
+        // and with no names and no --config installs what the bundled flapi.yaml needs.
+        detectAndRegisterEmbeddedBundle();
+        auto config_path = extensions_install_cmd.get<std::string>("--config");
+        if (config_path.empty() && specs.empty() && FileProviderFactory::GetBundleContents() != nullptr) {
+            config_path = "flapi.yaml";
+        }
         if (!config_path.empty()) {
             try {
                 crow::logger::setLogLevel(crow::LogLevel::Warning);
@@ -1221,7 +1275,7 @@ int main(int argc, char* argv[])
     // If a bundle was detected at startup, register the embed:// FS
     // on the DuckDB instance so `read_csv('embed://...')` and similar
     // calls inside SQL templates can resolve to the in-memory archive.
-    if (RegisterEmbeddedFileSystem()) {
+    if (RegisterEmbeddedFileSystem(std::filesystem::absolute(config_manager->getBasePath().empty() ? std::string(".") : config_manager->getBasePath()).string())) {
         CROW_LOG_INFO << "Registered embed:// DuckDB filesystem";
     }
 

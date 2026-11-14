@@ -439,6 +439,15 @@ containing them would surprise. A short exact-match exception set keeps LLM toke
 counters (`max_tokens`, `token_count`) readable, since this is an MCP tool
 surface.
 
+**DuckLake catalog paths.** A Postgres/MySQL `ducklake.metadata-path` is a DSN
+with `password=...`, often a resolved `{{env.X}}`. `RedactConnectionSecrets`
+(`src/config_manager.cpp`) masks `password`/`passwd`/`pwd`/`*secret*`/`*token*`/
+`api_key`/`access_key` values and the password of a `scheme://user:pw@host` URL.
+It applies to `metadata-path` / `data-path` in `GET /api/v1/_config/project`
+(`ConfigManager::getFlapiConfig`, also behind `/config`) and to the DuckLake
+attach error (`DatabaseManager::DuckLakeAttachErrorMessage`), which quoted the
+whole `ATTACH` statement in the log and on stderr.
+
 **Redaction** (`src/redaction.cpp`) applies two denylists. The credential stems
 are unconditional — they do not depend on the operator's list being complete —
 and the operator's `audit.redact` list is reused rather than duplicated, because

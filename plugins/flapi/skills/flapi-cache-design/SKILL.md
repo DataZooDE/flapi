@@ -384,7 +384,8 @@ The write endpoint answers 503 until the cache is first built. Runnable example:
 
 - `ducklake.read-only: true` makes an instance a replica of a catalog another
   process writes: no warm-up, schedule, retention or compaction, and cache
-  refresh/update/gc answer `409 read_only_cache`.
+  refresh/update/template/gc/drop-table answer `409 read_only_cache`. A cache the
+  writer builds later is picked up within about 5 s.
 - The writer can be a job: `flapi cache refresh -c flapi.yaml --all` (exit `0` ok,
   `1` a refresh failed or the catalog is locked, `2` usage).
 - **A DuckDB-file catalog is locked by the process that opened it for writing**:
@@ -398,17 +399,25 @@ Recipes: [references/deployment-patterns.md](references/deployment-patterns.md).
 
 - Every committed write to the cache table is a DuckLake snapshot; the audit row
   of each refresh records its `snapshot_id`. A 0-row incremental refresh creates
-  none for the table (the audit row itself is a snapshot of `audit.sync_events`).
+  none for the table, and its `snapshot_id` is then null (the audit row itself is
+  a snapshot of `audit.sync_events`). Time travel to an expired or unknown
+  version answers `404 snapshot_not_found`.
 - `cache.retention.keep-last-snapshots: N` / `max-snapshot-age: 7d` expire this
   table's old snapshots **after every refresh**; `flapii cache gc <path>` applies
   the same policy on demand. Expired versions can no longer be time-travelled.
 - `ducklake.retention` (global, same keys) applies to every cache without its own
   `retention:`; an endpoint block replaces it (no merge).
-- After an expiry the files no snapshot references are deleted, so disk space is
-  reclaimed. The audit log is bounded too (newest 1000 rows per cache table).
+- Expiry covers every incarnation of the table: each CTAS full refresh and
+  `--full` rebuild makes a new table id, and the old ones' snapshots go too.
+  After an expiry the files no snapshot references are deleted, so disk space is
+  reclaimed. A file another table's kept snapshot can still see stays until that
+  snapshot expires. An old table left by a `schema:` change:
+  `flapii cache drop-table <schema>.<table>`. The audit log is bounded too (newest 1000 rows per cache table).
 - `ducklake.compaction: {enabled: true, schedule: 1d}` (or `@hourly`, `@daily`,
   `@midnight`, `@weekly`; not cron) merges small files once per catalog; the
-  audit log shows it as `sync_type` `compaction`.
+  audit log shows it as `sync_type` `compaction`
+  (`GET /api/v1/_config/cache/audit?sync_type=compaction`). `delete-threshold: 0.2`
+  makes it rewrite files with more than 20% deleted rows (merge caches).
 
 ## Developing the populate SQL
 

@@ -13,6 +13,9 @@ Always start with: `curl -s -i "$B/<path>?<query>"` (status, body, `X-Request-Id
 ## 404 Not Found
 
 Body is plain `Not Found`. In metrics it is counted under route `<unmatched>`.
+A cached endpoint answering `404 {"error":"snapshot_not_found"}` was asked for an
+`AT (VERSION => n)` / `AT (TIMESTAMP => t)` snapshot that does not exist or was
+expired by retention (`cache.retention`).
 
 Commands:
 ```bash
@@ -158,7 +161,7 @@ grep -i "cache build failed" server.log
 |---|---|---|
 | `cache_warming` "still being built"; health `starting` | Warm-up in progress | Wait; size the startup probe for the build time |
 | `cache_build_failed`; health `degraded` (503) | First build failed: SQL error, a bare `SELECT` (`statement N of the template is a bare SELECT`), or the script left no table | Fix the cache template, `flapii cache refresh <path>` |
-| `cache_not_built`; health `degraded` (200) with `unbuilt` | Warm-up skipped | `flapii cache refresh <path>` or drop `--no-cache-warmup` |
+| `cache_not_built`; health `degraded` (200) with `unbuilt` | Warm-up skipped | `flapii cache refresh <path>` or drop `--no-cache-warmup`. On a read-only replica: refresh on the writer; the replica serves it within ~5 s (log `now exists in the shared catalog`) |
 | `The database is busy; retry shortly.` | Lock contention (a write or another process) | Retry; avoid a second process on the same DuckDB/DuckLake |
 | `Server is at capacity. Try again shortly.` | Handler queue full | Find slow queries (metrics), add instances |
 | health `stalled` | A request older than `stall-timeout-s` | Find the wedged source (log, `requests.oldest_ms`); restart the instance |
@@ -179,7 +182,8 @@ Run it in the foreground and read the last `[ERROR]` lines. `flapi -c flapi.yaml
 | `'issuer-url' (...{tenant}...) still contains the {tenant} placeholder. Set tenant-id` | OIDC preset without `tenant-id` / `realm` / `domain` | Add the key the message names |
 | `has a description that failed strict validation (mcp.strict-descriptions is true)` | Description scanner | Rephrase the description (`flapi-mcp`) |
 | `IO Error: Extension ".../nosuchext.duckdb_extension" not found` | `LOAD` of an extension that is not installed / offline | `INSTALL` it in `init`, or `flapi extensions install -c flapi.yaml` at build time |
-| `Could not set lock on file ".../cache.ducklake": Conflicting lock is held in .../flapi (PID n)` | Another flAPI process (or `flapi cache refresh`) holds the DuckLake | Stop it (`ps -p n`), or give each process its own `metadata-path`; use replicas (`ducklake.read-only`) for scale-out |
+| `Failed to attach DuckLake catalog: another process holds the lock on the DuckDB-file catalog ...` (raw: `Conflicting lock is held in .../flapi (PID n)`) | Another flAPI process (a writer, a replica, or `flapi cache refresh`) holds the DuckDB-file catalog | Stop it (`ps -p n`), or give each process its own `metadata-path`; a writer with replicas needs a Postgres/SQLite/MySQL catalog |
+| `Failed to attach DuckLake catalog: directory ... does not exist (ducklake.read-only: ...)` | Replica started before the catalog exists | Start the writer first, or fix `metadata-path` / `data-path` (a writer creates them) |
 | `the server could not start: bind: Address already in use` | Port taken | `-p <port>` / `FLAPI_PORT`, or stop the other process |
 | `invalid log level 'verbose'; must be one of: debug, info, warning (or warn), error` | Unknown `log-level` | One of those |
 

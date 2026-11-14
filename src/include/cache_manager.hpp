@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <functional>
 #include <optional>
 #include <chrono>
 #include <atomic>
@@ -96,7 +97,21 @@ public:
     static std::string newEventId();
     static std::string joinStrings(const std::vector<std::string>& values, const std::string& delimiter);
     void addQueryCacheParamsIfNecessary(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
-    void performGarbageCollection(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::vector<std::string> previousTableNames);
+    /// What a garbage collection did, for the GC route's JSON answer.
+    struct GarbageCollectionResult {
+        /// expired | nothing_to_expire | no_policy | error
+        std::string status;
+        std::size_t expired_snapshots = 0;
+        std::size_t files_deleted = 0;
+        std::int64_t bytes_freed = 0;
+        std::string message;
+        std::string warning;
+    };
+    /// Drop a cache table no endpoint uses, expire its snapshots and delete its
+    /// files. status: dropped | not_found.
+    GarbageCollectionResult dropObsoleteCacheTable(std::shared_ptr<ConfigManager> config_manager,
+                                                   const std::string& schema, const std::string& table);
+    GarbageCollectionResult performGarbageCollection(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::vector<std::string> previousTableNames);
 
     enum class ReadinessState {
         Starting,
@@ -135,7 +150,16 @@ public:
     // Whether the cache table exists in the DuckLake catalog. A failed lookup reads as "no".
     bool cacheTableExists(const std::string& catalog, const std::string& schema, const std::string& table);
     CacheReadiness getEndpointReadiness(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint) const;
-    std::optional<CacheReadiness> readinessBlock(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint) const;
+    /// Non-const: on a read-only replica an unbuilt cache is re-checked here
+    /// (throttled) - the writer may have built it since.
+    std::optional<CacheReadiness> readinessBlock(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint);
+    /// Read-only replicas only: every cache not Ready (unbuilt, failed, or
+    /// starting with no refresh in flight) whose table now exists in the shared
+    /// catalog becomes Ready. `force` skips the per-table throttle. Returns how
+    /// many became Ready. A no-op on a writer, whose own refreshes set readiness.
+    std::size_t recheckReadOnlyCaches(std::shared_ptr<ConfigManager> config_manager, bool force = false);
+    /// Minimum time between two re-checks of one table on the request path.
+    static constexpr std::chrono::seconds kReadOnlyRecheckInterval{5};
     static crow::json::wvalue readinessBlockJson(const CacheReadiness& readiness);
     static crow::response readinessBlockResponse(const CacheReadiness& readiness);
     CacheReadinessSummary getReadinessSummary() const;
@@ -213,7 +237,25 @@ public:
 
 private:
     /// Delete data files no remaining snapshot references (after an expiry).
-    void cleanupOldFiles(const std::string& catalog);
+    std::size_t cleanupOldFiles(const std::string& catalog);
+    /// Total bytes of the data and delete files the catalog still references.
+    std::optional<std::int64_t> referencedFileBytes(const std::string& catalog);
+
+    /// What one retention pass did: run after a refresh and by manual GC.
+    struct RetentionOutcome {
+        std::size_t expired_snapshots = 0;
+        std::size_t files_deleted = 0;
+        std::int64_t bytes_freed = 0;
+        /// Set when the policy could not do what it says (shared snapshots, an
+        /// unresolvable table); logged at WARNING and put in the audit message.
+        std::string warning;
+        std::string error;
+    };
+    /// `before_expiry` runs once the candidates are known (with the warning, if
+    /// any) and before anything is expired.
+    RetentionOutcome applyRetention(const std::string& catalog, const std::string& schema,
+                                    const std::string& table, const CacheConfig::RetentionConfig& retention,
+                                    const std::function<void(const std::string&)>& before_expiry = {});
     /// Expire all but the newest kAuditSnapshotsKept audit snapshots; true if it ran.
     bool expireAuditSnapshots(const std::string& catalog);
 
@@ -249,6 +291,14 @@ private:
     /// Quote a name as a SQL identifier.
     static std::string quoteIdentifier(const std::string& name);
 
+    /// The (quoted) name of the metadata database DuckLake attaches for `catalog`.
+    static std::string metadataCatalog(const std::string& catalog);
+
+    /// How `changes.tables_created` names schema.table: the bare form, plus the
+    /// form DuckLake actually writes (each part optionally quoted, so the default
+    /// schema `cache` - a keyword - appears as '"cache".t').
+    static std::vector<std::string> tableNameKeys(const std::string& schema, const std::string& table);
+
     /// The largest cursor value actually present in the cache table, returned
     /// RAW - escaping belongs at interpolation, where the template author's
     /// choice of `{{{ }}}` versus `{{ }}` decides the quoting. Empty when the
@@ -263,7 +313,11 @@ private:
 
     /// The names by which `catalog`'s `changes` map refers to
     /// `schema`.`table`: its numeric table id (for row changes) and
-    /// `schema.table` (for creates).
+    /// `schema.table` (for creates). Every id the table has had - a full refresh
+    /// (CREATE OR REPLACE) and a `--full` rebuild each make a new one - resolved
+    /// through the schema NAME from the metadata catalog's ducklake_table /
+    /// ducklake_schema, so dropped incarnations stay expirable and a same-named
+    /// table in another schema is never confused with this one.
     ///
     /// Resolved as its own query rather than inlined as a correlated
     /// subquery, because DuckDB refuses a subquery inside a lambda body
@@ -319,6 +373,8 @@ private:
         /// "nothing expirable" look identical from the outside, and the
         /// second means a configured policy silently never fires.
         std::size_t shared = 0;
+        /// The table could not be resolved unambiguously, so nothing was considered.
+        bool unresolved = false;
     };
 
     ExpiryCandidates expirableSnapshotIds(const std::string& catalog,
@@ -341,7 +397,8 @@ private:
                                const std::string& schema,
                                const std::string& table,
                                std::optional<std::size_t> keep_last,
-                               const std::string& older_than_sql);
+                               const std::string& older_than_sql,
+                               ExpiryCandidates* report = nullptr);
 
     static std::string determineCacheMode(const CacheConfig& cacheConfig);
 
@@ -366,6 +423,10 @@ private:
 
     mutable std::mutex readiness_mutex_;
     std::map<CacheKey, CacheReadiness> readiness_;
+    // Read-only replicas: when each table was last re-checked (readiness_mutex_).
+    std::map<CacheKey, std::chrono::steady_clock::time_point> readonly_rechecked_at_;
+    /// One table's read-only re-check; true when it became Ready.
+    bool recheckReadOnlyKey(const CacheKey& key, bool force);
 
     void updateRefreshStats(const CacheKey& key, const std::string& endpoint_path, const std::string& sync_type,
                             const std::string& status, const SyncEventDetails& details);

@@ -134,7 +134,8 @@ script (`Processed query:`).
 | Overlap window rereads a lot | Shrink it to the measured maximum lateness |
 | Refresh time ≥ schedule | Lengthen `schedule`, or make the refresh cheaper first |
 | Many tiny refreshes, many small files | `ducklake.data-inlining-row-limit`; `ducklake.compaction` |
-| Metadata / snapshot count, storage keep growing | `cache.retention` or global `ducklake.retention`; `flapii cache gc <path>` |
+| Metadata / snapshot count, storage keep growing | `cache.retention` or global `ducklake.retention`; `flapii cache gc <path>` (JSON: `expired_snapshots`, `files_deleted`, `bytes_freed`); an old table after a `schema:` change: `flapii cache drop-table <schema>.<table>` |
+| Merge refreshes slow down, delete files pile up | `ducklake.compaction.delete-threshold: 0.2` (DuckLake rewrites only above 0.95 by default) |
 | CPU-bound transform, or spilling | `duckdb.threads`, `duckdb.max_memory` |
 | Startup spends minutes warming | `ducklake.warmup: if-empty` with a persistent catalog, or build in CI (`flapi-cache-design`) |
 | Write endpoints slow since write-through | `invalidate-on-write` runs the populate synchronously: make it incremental, or switch to `refresh-on-write` (after the response) |
@@ -300,15 +301,21 @@ SELECT * FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}} ORDER BY segmen
   by default; raise the limit when deltas are larger than that but frequent.
 - **Compaction** runs `ducklake_merge_adjacent_files`, `ducklake_rewrite_data_files`
   and a file cleanup once per catalog when due; the audit log records it as
-  `sync_type` `compaction`. A one-shot `flapi cache refresh` also compacts when due.
+  `sync_type` `compaction` (read it with `GET /api/v1/_config/cache/audit?sync_type=compaction`).
+  A one-shot `flapi cache refresh` also compacts when due. `compaction.delete-threshold`
+  (0 < x <= 1) is the share of deleted rows above which a file is rewritten.
 - **Retention** (`cache.retention`, else `ducklake.retention`; an endpoint block
   replaces the global one) runs after every refresh of that endpoint and on
   `flapii cache gc <path>`; it expires only this table's snapshots, so time travel
-  to them stops working. Without any retention `gc` does nothing.
+  to them stops working, including the earlier incarnations a full refresh or a
+  `--full` rebuild leaves. Without any retention `gc` answers `"status": "no_policy"`.
+  Snapshots shared with another table are kept and reported as a `warning`.
 - **Files of expired snapshots are deleted** right after the expiry
   (`ducklake_cleanup_old_files`), so disk usage follows retention. A full refresh
-  (`CREATE OR REPLACE`) writes a new copy of the table every time: measured, six
-  full refreshes under `keep-last-snapshots: 3` leave 3 Parquet files.
+  (`CREATE OR REPLACE`) writes a new copy of the table every time: measured, five
+  full refreshes under `keep-last-snapshots: 2` leave 2 Parquet files, in the
+  default schema `cache` too. A file stays while any kept snapshot, of any table,
+  can still see it.
 - **`duckdb.threads` / `duckdb.max_memory`** (any key under `duckdb:` is passed to
   DuckDB as a setting, e.g. `threads: 4`, `max_memory: 2GB`) apply to the whole
   process: serving and refreshing share them. More threads help scans and

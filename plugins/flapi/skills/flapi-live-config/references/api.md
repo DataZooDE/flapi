@@ -20,7 +20,7 @@ marked "open". All exist only when the server runs with `--config-service`.
 | Method and path | Body | Does | flapii |
 |---|---|---|---|
 | `GET /api/v1/_config/health` (open) | | Server, database, endpoint count, Arrow, storage, credentials | `health` |
-| `GET /api/v1/_config/project` | | Project name, description and settings (secrets redacted) | `ping`, `project get`, `config show` |
+| `GET /api/v1/_config/project` | | Project name, description and settings (secrets redacted, including a `password=` in `ducklake.metadata-path`); `ducklake.warmup_effective` is the warm-up that runs (`never` on a replica) | `ping`, `project get`, `config show` |
 | `PUT /api/v1/_config/project` | | 405 `Allow: GET` (read-only; edit `flapi.yaml`) | |
 | `GET /api/v1/_config/environment-variables` | | Whitelisted env vars and whether they are set | `config env` |
 | `GET /api/v1/_config/filesystem` | | Template directory tree | `config filesystem` |
@@ -40,11 +40,12 @@ marked "open". All exist only when the server runs with `--config-service`.
 | `POST /api/v1/_config/endpoints/{slug}/template/test` | `{"parameters":{..}}` | Executes; `{"success","columns","rows"}` (up to 10 rows) | `templates test` |
 | `GET /api/v1/_config/endpoints/{slug}/cache` | | Cache config | `cache get` |
 | `PUT /api/v1/_config/endpoints/{slug}/cache` | `{"enabled":true,"table":"..","schedule":"10m"}` | Change cache config | `cache update` |
-| `GET\|PUT /api/v1/_config/endpoints/{slug}/cache/template` | `{"template":"..."}` | Cache populate SQL | `cache template`, `cache update-template` |
+| `GET\|PUT /api/v1/_config/endpoints/{slug}/cache/template` | `{"template":"..."}` | Cache populate SQL; PUT is 409 `read_only_cache` on a replica | `cache template`, `cache update-template` |
 | `POST /api/v1/_config/endpoints/{slug}/cache/refresh[?full=true]` | | Refresh now; `?full=true` drops and rebuilds the table, watermark erased. 200 `{"status":"refreshed","endpoint","mode","full","duration_ms","rows_affected","snapshot_id"}` (`"already_running"` if one is in flight); 400 `{"error":"Cache refresh failed","reason":...}` if it fails; 409 `read_only_cache` on a replica | `cache refresh [--full]` |
-| `POST /api/v1/_config/endpoints/{slug}/cache/gc` | | Expire old snapshots per `retention` | `cache gc` |
+| `POST /api/v1/_config/endpoints/{slug}/cache/gc` | | Expire old snapshots per `retention`, delete freed files. 200 `{"status":"expired"\|"nothing_to_expire"\|"no_policy","expired_snapshots","files_deleted","bytes_freed","message","warning"?}`; 500 `status: "error"`; 409 on a replica | `cache gc` |
+| `POST /api/v1/_config/cache/drop-table` | `{"schema":"old","table":"t"}` | Drop a cache table no endpoint uses; expire its snapshots, delete its files. 200 `{"status":"dropped",...}`; 409 `cache_table_in_use` / `protected_table` / `read_only_cache`; 404 `table_not_found` | `cache drop-table [schema.]table` |
 | `GET /api/v1/_config/endpoints/{slug}/cache/audit` | | Refresh history: `sync_started_at`, `sync_completed_at`, `duration_ms`, `rows_affected`, `snapshot_id`, `status`, `message` | `cache audit <path>` |
-| `GET /api/v1/_config/cache/audit` | | Same, all endpoints | `cache audit` |
+| `GET /api/v1/_config/cache/audit` | | Same, all endpoints; `?table=schema.table`, `?sync_type=compaction` (or `full`, `append`, `merge`, `garbage_collection`, `drop_table`) | `cache audit` |
 | `GET /api/v1/_config/schema` | | Attached databases, tables, columns; `?tables=true` (optional `&connection=`): table list with `qualified_name`; `?connections=true`: configured connections. Failures 500 | `schema get`, `schema tables`, `schema connections` |
 | `POST /api/v1/_config/schema/refresh` | | Re-read the schema | `schema refresh` |
 | `GET\|PUT /api/v1/_config/log-level` | `{"level":"debug"}` | Runtime log level (`debug`, `info`, `warning`, `error`; `warn` = `warning`) | `config log-level get\|set` |
