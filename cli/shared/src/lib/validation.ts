@@ -44,7 +44,9 @@ export async function reloadEndpointConfig(
   });
 
   const reason = typeof response.data?.reason === 'string' ? response.data.reason : undefined;
-  const message = response.data?.message ?? '';
+  // An ambiguous slug (several methods on one path) answers 400 with only
+  // {"error": ...}; without this fallback the CLI printed an empty message.
+  const message = response.data?.message ?? response.data?.error ?? '';
   return {
     success: response.data?.success ?? false,
     message: reason ? `${message}: ${reason}` : message,

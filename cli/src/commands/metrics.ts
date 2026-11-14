@@ -110,7 +110,7 @@ export function registerMetricsCommand(program: Command, ctx: CliContext) {
             `${rejections.rate_limited ?? 0} × 429`,
         );
         renderTable(requestRows(requests.series ?? []));
-        Console.info(chalk.dim('Percentiles are histogram bucket upper bounds, capped at the observed max.'));
+        Console.info(chalk.dim('Percentiles are interpolated within histogram buckets and capped at the observed max.'));
 
         Console.info(chalk.cyan('\n🗄️  Caches'));
         Console.info(chalk.gray('═'.repeat(60)));
