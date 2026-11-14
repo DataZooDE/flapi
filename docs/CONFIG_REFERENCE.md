@@ -363,7 +363,7 @@ Configures the embedded DuckDB database engine.
 | `duckdb.access_mode` | string | `READ_WRITE` | Database access mode: `READ_WRITE` or `READ_ONLY` |
 | `duckdb.threads` | integer | auto | Number of threads for query parallelism |
 | `duckdb.max_memory` | string | auto | Memory limit (e.g., `4GB`, `512MB`) |
-| `duckdb.default_order` | string | - | Default sort order: `ASC` or `DESC` |
+| `duckdb.default_order` | string | - | Default sort order: `ASC` or `DESC`. With `ducklake.enabled` it is set per flAPI connection, not globally, because DuckLake's own catalog queries need the ascending default |
 | `duckdb.default-extensions` | list | `[httpfs, ducklake, fts, json, postgres, sqlite, parquet]` | Extensions installed and loaded at startup. `[]` loads none. A scalar is refused. |
 | `duckdb.<setting>` | any | - | Any DuckDB configuration setting |
 
@@ -1424,7 +1424,7 @@ DuckLake caching enables snapshot-based query result caching with automatic refr
 | `cache.table` | string | **required** | Cache table name |
 | `cache.schema` | string | `"cache"` | DuckDB schema name |
 | `cache.schedule` | string | - | Refresh schedule (e.g., `5m`, `1h`, `30s`) |
-| `cache.template-file` | string | - | Custom cache refresh SQL template |
+| `cache.template-file` | string | - | Cache populate SQL template. Without it the endpoint's `template-source` is materialised with a full refresh (startup warns) |
 | `cache.warmup` | string | - | Overrides `ducklake.warmup` for this endpoint: `always`, `if-empty` or `never` |
 
 **Schedule Format:**
@@ -1485,6 +1485,12 @@ refused before it runs (`cache template must write {{cache.catalog}}.{{cache.sch
 statement N of the template is a bare SELECT, which builds nothing`). After the script has run, the
 cache table must exist; if it does not, the refresh fails and is rolled back. Write a
 `CREATE OR REPLACE TABLE … AS SELECT …`, an `INSERT INTO …` or a `MERGE INTO …`.
+
+Without `cache.template-file` the endpoint's `template-source` is the populate SQL. If it renders to a single
+`SELECT` it is materialised as `CREATE OR REPLACE TABLE <catalog>.<schema>.<table> AS <select>` - a full
+refresh every time, whatever `primary-key`/`cursor` imply (audited as `full`) - and startup warns
+`cache on <endpoint> has no template-file: ...`. The bare-`SELECT` refusal applies only to an explicit
+`template-file`.
 
 Shared tables (several endpoints with the same `cache.table`) are warmed once, not once per endpoint.
 

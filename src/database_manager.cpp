@@ -215,7 +215,10 @@ QueryExecutor DatabaseManager::createQueryExecutor()
     if (db == nullptr) {
         throw std::runtime_error("Database not initialized");
     }
-    return QueryExecutor(db);
+    // session_default_order_: see createAndInitializeDuckDBConfig. A session
+    // setting, so DuckLake's own connection keeps the ascending default it
+    // depends on.
+    return QueryExecutor(db, session_default_order_);
 }
 
 void DatabaseManager::logDuckDBVersion() {
@@ -302,7 +305,21 @@ void DatabaseManager::createAndInitializeDuckDBConfig(std::shared_ptr<ConfigMana
 
     // Apply settings from the configuration
     const auto& duckdb_settings = config_manager->getDuckDBConfig().settings;
+    session_default_order_.reset();
     for (const auto& [key, value] : duckdb_settings) {
+        // `default_order` is never set GLOBALLY while DuckLake is attached.
+        // DuckLake runs its catalog queries on its own connection, which takes
+        // the global default, and several of them rely on a bare ORDER BY
+        // (`ORDER BY table_id, parent_column NULLS FIRST, column_order`). Under
+        // a global DESC it read a table's columns in reverse, so every commit
+        // into the catalog failed ("Failed to flush changes into DuckLake:
+        // Could not convert string 'analytics' to INT64") - every cache build
+        // and every audit event. Applied per flapi connection instead, so
+        // endpoint and cache templates still see the configured order.
+        if (key == "default_order" && config_manager->getDuckLakeConfig().enabled) {
+            session_default_order_ = value;
+            continue;
+        }
         if (duckdb_set_config(config, key.c_str(), value.c_str()) == DuckDBError) {
             duckdb_destroy_config(&config);
             throw std::runtime_error("Failed to set DuckDB configuration: " + key);
@@ -598,6 +615,23 @@ std::optional<std::size_t> DatabaseManager::FindSelectStatement(const std::strin
         return std::nullopt;
     }
     return std::nullopt;
+}
+
+std::optional<std::string> DatabaseManager::MaterialiseSelect(const std::string& script, const PopulateTarget& target) {
+    try {
+        duckdb::Parser parser;
+        parser.ParseQuery(script);
+        if (parser.statements.size() != 1 || !parser.statements[0] ||
+            parser.statements[0]->type != duckdb::StatementType::SELECT_STATEMENT) {
+            return std::nullopt;
+        }
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+    // The text as rendered, not the parser's re-serialisation: what DuckDB runs
+    // is then exactly what the template author wrote. A trailing `;` or
+    // comment is harmless at the end of CREATE ... AS.
+    return "CREATE OR REPLACE TABLE " + qualifiedTarget(target) + " AS\n" + script;
 }
 
 std::string DatabaseManager::PopulateSelectError(const PopulateTarget& target, std::size_t statement) {

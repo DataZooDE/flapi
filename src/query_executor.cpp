@@ -96,6 +96,34 @@ QueryExecutor::QueryExecutor(duckdb_database db) : has_result(false) {
     }
 }
 
+QueryExecutor::QueryExecutor(duckdb_database db, const std::optional<std::string>& session_default_order)
+    : QueryExecutor(db) {
+    if (!session_default_order) {
+        return;
+    }
+    std::string literal = "'";
+    for (const char c : *session_default_order) {
+        literal += c;
+        if (c == '\'') {
+            literal += '\'';
+        }
+    }
+    literal += "'";
+    duckdb_result set_result;
+    const bool ok = duckdb_query(conn, ("SET SESSION default_order = " + literal).c_str(), &set_result) == DuckDBSuccess;
+    std::string error;
+    if (!ok) {
+        const char* message = duckdb_result_error(&set_result);
+        error = message ? message : "unknown error";
+    }
+    duckdb_destroy_result(&set_result);
+    if (!ok) {
+        // The delegating constructor has completed, so the destructor runs and
+        // disconnects.
+        throw std::runtime_error("Failed to set default_order: " + error);
+    }
+}
+
 QueryExecutor::~QueryExecutor() {
     if (has_result) {
         duckdb_destroy_result(&result);

@@ -52,6 +52,11 @@ Caching:
   runs. MCP tool writes follow the same rules.
 - **A populate template that is a bare `SELECT` is refused** before it runs, and a template that does not leave
   the cache table in place fails and rolls back. Before, both "succeeded" and the endpoint then failed.
+- **A cache without `template-file` materialises the endpoint template.** Its `template-source` was the populate
+  SQL and, as a bare `SELECT`, built nothing. When it renders to a single `SELECT` it now runs as
+  `CREATE OR REPLACE TABLE <cache table> AS <select>`: a full refresh every time, whatever `primary-key` and
+  `cursor` imply (audited as `full`). Startup warns `cache on <endpoint> has no template-file`. Declare
+  `template-file` for incremental refreshes.
 - **An endpoint whose cache failed its first build answers 503 `{"error":"cache_build_failed"}`** (with
   `Retry-After: 5`) instead of `cache_warming`.
 - **`ducklake.compaction.schedule` is parsed:** an interval (`6h`, `1d`) or `@hourly`, `@daily`, `@midnight`,
@@ -167,6 +172,10 @@ Narrow to one endpoint with `?endpoint=/path`.
 - **Cache audit log:** every refresh now records its real start and end time, `duration_ms`, `rows_affected`
   and the `snapshot_id` it produced. Before, start and end were the same instant and the other three were
   always empty, so refresh time could not be measured.
+- **`duckdb.default_order: DESC` with DuckLake:** every commit into the DuckLake catalog failed
+  (`Failed to flush changes into DuckLake: Could not convert string '...' to INT64`), so no cache was built and
+  no audit event was recorded. DuckLake reads a table's columns with a bare `ORDER BY` on its own connection,
+  and the global DESC reversed them. With DuckLake enabled, `default_order` is now applied per flAPI connection.
 - **Global `rate_limit:`:** `rate_limit: {enabled: false}` stopped startup with `bad conversion`, because `max`
   and `interval` were required even with the limiter off. They now default to 100 and 60, as on endpoints.
   A malformed value names its key.

@@ -1437,6 +1437,14 @@ void ConfigManager::parseEndpointCache(const YAML::Node& endpoint_config, const 
         }
     }
 
+    if (endpoint.cache.enabled && !endpoint.cache.table.empty() && !endpoint.cache.template_file) {
+        const std::string name = !endpoint.urlPath.empty() ? endpoint.urlPath : endpoint.templateSource;
+        CROW_LOG_WARNING << "cache on " << name
+                         << " has no template-file: its endpoint template is materialised with a full refresh; "
+                            "declare template-file for incremental refreshes and read the cache table from "
+                            "template-source";
+    }
+
     CROW_LOG_DEBUG << "\t\tCache Enabled: " << (endpoint.cache.enabled ? "true" : "false");
     CROW_LOG_DEBUG << "\t\tCache Table: " << endpoint.cache.table;
     CROW_LOG_DEBUG << "\t\tCache Schema: " << endpoint.cache.schema;

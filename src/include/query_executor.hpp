@@ -3,6 +3,7 @@
 #include <duckdb.h>
 #include <crow.h>
 #include <stdexcept>
+#include <optional>
 #include <string>
 #include <map>
 #include <thread>
@@ -108,6 +109,8 @@ private:
 class QueryExecutor {
 public:
     QueryExecutor(duckdb_database db);
+    // Also applies `SET SESSION default_order` on the new connection.
+    QueryExecutor(duckdb_database db, const std::optional<std::string>& session_default_order);
     ~QueryExecutor();
     
     void execute(const std::string& query, const std::string& context = "");

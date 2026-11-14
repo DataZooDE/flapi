@@ -103,6 +103,15 @@ must exist, or the refresh fails and is rolled back. A cache whose first build
 fails answers `503 {"error":"cache_build_failed"}` with `Retry-After: 5`; the
 reason is in the server log.
 
+**No `template-file`?** Then the endpoint's own `template-source` is the populate
+SQL. When it renders to a single `SELECT`, flAPI materialises it as
+`CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS <select>`:
+a full refresh on every run, whatever `primary-key`/`cursor` imply, recorded as
+`full` in the audit log. Startup warns (`cache on <endpoint> has no template-file:
+its endpoint template is materialised with a full refresh; ...`). The endpoint still
+serves its `template-source`, which then reads the source, not the cache. For a
+real cache declare `template-file` and point `template-source` at the cache table.
+
 Full refresh (no `primary-key`, no `cursor`):
 
 ```sql

@@ -96,6 +96,10 @@ public:
     /// (also when the script does not parse - execution reports that). Pure.
     static std::optional<std::size_t> FindSelectStatement(const std::string& script);
     /// The error a populate template containing a SELECT is refused with.
+    // A script that is exactly one SELECT, as `CREATE OR REPLACE TABLE <target>
+    // AS <select>`; nullopt for anything else. Used for a cache with no
+    // template-file, whose populate SQL is the endpoint's serving template.
+    static std::optional<std::string> MaterialiseSelect(const std::string& script, const PopulateTarget& target);
     static std::string PopulateSelectError(const PopulateTarget& target, std::size_t statement);
     std::string renderCacheTemplate(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params);
     
@@ -162,6 +166,10 @@ private:
     void closeDatabaseLocked(bool graceful);
 
     duckdb_database db; // Database handle
+
+    // duckdb.default_order, applied per connection when DuckLake is enabled
+    // (see createAndInitializeDuckDBConfig); empty otherwise.
+    std::optional<std::string> session_default_order_;
 
     // True only once initializeDBManagerFromConfig() has run to completion.
     // shutdown() detaches and checkpoints only when it is set: a startup that

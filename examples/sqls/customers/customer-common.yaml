@@ -158,14 +158,14 @@ cache:
   table: customers_cache
   schema: analytics  # Optional: defaults to 'cache'
   schedule: 5m
-  # primary-key + cursor = incremental merge; cursor alone = append; neither = full
-  primary-key: [c_custkey]
-  cursor:
-    column: c_custkey
-    type: integer
+  # primary-key + cursor = incremental merge; cursor alone = append; neither = full.
+  # customers_cache.sql is a full rebuild, so neither is declared here; an
+  # incremental mode needs a template-file with an incremental branch
+  # (docs/guides/caching.md).
   retention:
     keep-last-snapshots: 5
     max-snapshot-age: 14d
+  template-file: customers_cache.sql  # The SQL that populates the cache
 
 # High-Performance DuckLake Caching
 cache-performance:

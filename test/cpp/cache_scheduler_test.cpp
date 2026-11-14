@@ -43,11 +43,12 @@ public:
     std::optional<std::int64_t> snapshot_ms;
     std::atomic<bool> block{false};
     std::atomic<bool> interrupted{false};
+    std::string render_result = "CREATE OR REPLACE TABLE t AS SELECT 1";
 
     std::string renderCacheTemplate(const EndpointConfig&, const CacheConfig&,
                                     std::map<std::string, std::string>& params) override {
         rendered_params.push_back(params);
-        return "CREATE OR REPLACE TABLE t AS SELECT 1";
+        return render_result;
     }
 
     void executeDuckLakeQuery(const std::string& query, const std::map<std::string, std::string>&) override {
@@ -479,4 +480,43 @@ TEST_CASE("The scheduler seeds from the newest snapshot of the table", "[cache_m
     std::map<std::string, std::string> params;
     cache_manager.refreshCache(cm, endpoint, params);
     REQUIRE(cache_manager.lastRefreshCompletedAt(cm, endpoint).has_value());
+}
+
+// Regression (#211): a cache block without template-file renders the endpoint's
+// serving template, normally a bare SELECT. It used to build nothing; then the
+// bare-SELECT refusal made the cache `failed` (examples/flapi-test.yaml's
+// /customers/ answered 503). Materialised now, as a full refresh.
+TEST_CASE("A cache without template-file materialises its serving SELECT", "[cache_manager][populate]") {
+    TempTestConfig temp(ducklakeConfig(""), "materialise_select");
+    auto cm = temp.createConfigManager();
+    auto adapter = std::make_shared<SchedulerCacheAdapter>();
+    adapter->render_result = "SELECT id, name FROM src WHERE 1=1\n";
+    CacheManager cache_manager(adapter);
+    auto endpoint = cachedEndpoint("orders");
+    endpoint.cache.primary_keys = {"id"};
+    endpoint.cache.cursor = CacheConfig::CursorConfig{"id", "integer"};   // merge mode by inference
+
+    SECTION("no template-file: CREATE OR REPLACE TABLE ... AS <select>, recorded as full") {
+        std::map<std::string, std::string> params;
+        REQUIRE(cache_manager.refreshCache(cm, endpoint, params));
+        REQUIRE(adapter->count("CREATE OR REPLACE TABLE \"cache\".\"main\".\"orders\" AS\nSELECT id, name FROM src") == 1);
+        REQUIRE(adapter->count("INSERT INTO cache.audit.sync_events") == 1);
+        REQUIRE(adapter->count("'full', 'success'") == 1);
+    }
+    SECTION("an explicit template-file is passed through, so a bare SELECT is still refused") {
+        endpoint.cache.template_file = "orders_cache.sql";
+        std::map<std::string, std::string> params;
+        REQUIRE(cache_manager.refreshCache(cm, endpoint, params));
+        REQUIRE(adapter->count("CREATE OR REPLACE TABLE \"cache\"") == 0);
+        REQUIRE(adapter->count("'merge', 'success'") == 1);
+    }
+    SECTION("a multi-statement serving template is not rewritten") {
+        adapter->render_result = "DELETE FROM x; SELECT 1";
+        std::map<std::string, std::string> params;
+        REQUIRE(cache_manager.refreshCache(cm, endpoint, params));
+        REQUIRE(adapter->count("CREATE OR REPLACE TABLE \"cache\"") == 0);
+    }
+    REQUIRE(DatabaseManager::MaterialiseSelect("SELECT 1;", PopulateTarget{"c", "s", "t"}) ==
+            std::optional<std::string>("CREATE OR REPLACE TABLE \"c\".\"s\".\"t\" AS\nSELECT 1;"));
+    REQUIRE_FALSE(DatabaseManager::MaterialiseSelect("CREATE TABLE x AS SELECT 1", PopulateTarget{"c", "s", "t"}).has_value());
 }

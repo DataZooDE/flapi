@@ -497,7 +497,21 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
     // Ensure cache schema exists before processing cache template
     ensureCacheSchemaExists(catalog, schema);
 
-    const std::string rendered = renderRefreshTemplate(config_manager, endpoint, params, options.full);
+    std::string rendered = renderRefreshTemplate(config_manager, endpoint, params, options.full);
+    std::string sync_type = determineCacheMode(cacheConfig);
+    if (!cacheConfig.template_file) {
+        // No template-file: the populate SQL is the endpoint's SERVING template,
+        // which is normally a bare SELECT over the source. That used to run, build
+        // nothing and record success; the bare-SELECT refusal then made such a
+        // cache `failed` (503). It is materialised instead - a full refresh
+        // whatever mode the cursor/primary-key imply, since a serving template has
+        // no incremental branch. An explicit template-file is still refused a bare
+        // SELECT (executeDuckLakeScript). The load-time warning says so.
+        if (auto materialised = DatabaseManager::MaterialiseSelect(rendered, PopulateTarget{catalog, schema, table})) {
+            rendered = std::move(*materialised);
+            sync_type = "full";
+        }
+    }
     if (options.full) {
         CROW_LOG_INFO << "Full rebuild of " << schema << "." << table
                       << " requested: the watermark is cleared and the table is rebuilt from scratch";
@@ -524,7 +538,7 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
         if (after.current_snapshot_id) {
             details.snapshot_id = *after.current_snapshot_id;
         }
-        recordSyncEvent(config_manager, endpoint, determineCacheMode(cacheConfig), "success",
+        recordSyncEvent(config_manager, endpoint, sync_type, "success",
                         "Cache refreshed successfully", details);
     } catch (const std::exception& ex) {
         details.completed_at = std::chrono::system_clock::now();
@@ -538,7 +552,7 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
         // out; this was the one that persisted it AT REST, which is strictly
         // worse than the log leak that was fixed alongside it.
         const auto secrets = collectTemplateSecrets(config_manager.get(), endpoint, params);
-        recordSyncEvent(config_manager, endpoint, determineCacheMode(cacheConfig), "error",
+        recordSyncEvent(config_manager, endpoint, sync_type, "error",
                         publicErrorMessage("Cache refresh failed", ex.what(), secrets), details);
         throw;
     }

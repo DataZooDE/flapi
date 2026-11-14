@@ -27,6 +27,7 @@ add_executable(flapi_tests
     config_service_schema_test.cpp
     config_tool_adapter_test.cpp
     database_manager_test.cpp
+    database_manager_default_order_test.cpp
     embedded_archive_file_provider_test.cpp
     endpoint_config_parser_test.cpp
     extended_yaml_parser_test.cpp

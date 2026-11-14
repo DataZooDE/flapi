@@ -47,6 +47,10 @@ triggers a refresh.
   a bare `SELECT` is refused before it runs: `cache template must write
   {{cache.catalog}}.{{cache.schema}}.{{cache.table}} ... statement N of the template
   is a bare SELECT`. A script that runs but leaves no table also fails and rolls back.
+  Without `template-file`, the endpoint's `template-source` is the populate SQL: a
+  single `SELECT` there is materialised (`CREATE OR REPLACE TABLE ... AS`) as a full
+  refresh whatever the inferred mode, and startup warns. Declare `template-file` for
+  incremental modes.
 - **No refresh at startup beyond warm-up.** The first scheduled refresh comes one
   `schedule` after the last real refresh (this run's warm-up, else the newest
   snapshot, else process start). A restart does not re-run every cache.
