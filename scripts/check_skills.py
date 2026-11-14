@@ -34,7 +34,7 @@ Snippet tags (first line of a fenced block)
 -------------------------------------------
     ```yaml
     # flapi: config group=orders            -> flapi.yaml of group "orders"
-    # flapi: endpoint group=orders file=orders.yaml
+    # flapi: endpoint group=orders file=orders.yaml [allow=MCP_UNAUTHENTICATED_TOOLS]
     #   (inside an endpoint) # flapi: check GET /orders?limit=2 -> 200
     ```sql
     -- flapi: template group=orders file=orders.sql
@@ -79,12 +79,15 @@ TAG = re.compile(r"^\s*(?:#|--)\s*flapi:\s*(\w+)(.*)$")
 # Keys whose CHILDREN are names the user chooses, not config keys.
 USER_NAMED_CHILDREN = {
     "connections",      # connection names (their children ARE checked)
+    "methods",          # mcp.auth.methods: JSON-RPC method names
     "properties",       # connection properties / JSON-schema properties
     "env", "headers", "arguments", "params", "defaults",
     "examples", "example", "secrets-map", "variables", "presets",
 }
 # Keys whose whole subtree is user data (JSON schema bodies, free-form maps).
-OPAQUE_SUBTREES = {"input_schema", "inputSchema", "input-schema", "output_schema",
+# `duckdb:` passes any other key straight to DuckDB as a setting (threads,
+# max_memory, ...), so its children are DuckDB's namespace, not flAPI's.
+OPAQUE_SUBTREES = {"duckdb", "input_schema", "inputSchema", "input-schema", "output_schema",
                    "outputSchema", "output-schema", "schema-properties", "items", "annotations"}
 
 
@@ -173,6 +176,7 @@ def parser_keys() -> set[str]:
         r'\[\s*"([A-Za-z][A-Za-z0-9_-]*)"\s*\]',
         r'safeGet<[^>]+>\s*\([^,]+,\s*"([A-Za-z][A-Za-z0-9_-]*)"',
         r'\.has\(\s*"([A-Za-z][A-Za-z0-9_-]*)"\s*\)',
+        r'\bkey\s*==\s*"([A-Za-z][A-Za-z0-9_-]*)"',
         r'(?:firstExistingKey|getFirst\w*|readAny\w*)\([^{]*\{([^}]*)\}',
         r'KnownTopLevelKeys\(\)\s*\{(.*?)return keys;',
     ]
@@ -351,6 +355,17 @@ class HelpModel:
     def check(self, tokens: list[str]) -> str | None:
         path: tuple = ()
         i = 0
+        # Leading global options (`flapii -o table templates ...`, `flapi -c x.yaml pack`).
+        root_opts = self.help(())[1]
+        while i < len(tokens) and tokens[i].startswith("-"):
+            name = tokens[i].split("=", 1)[0]
+            if name.startswith("--") and name not in root_opts and name not in ("--help", "--version"):
+                return f"option {name} not accepted by '<root>'"
+            i += 1
+            # an option value follows unless the option is a flag or uses =
+            if "=" not in tokens[i - 1] and i < len(tokens) and not tokens[i].startswith("-") \
+                    and tokens[i] not in self.help(())[0]:
+                i += 1
         while i < len(tokens):
             tok = tokens[i]
             subs, _ = self.help(path)
@@ -394,8 +409,20 @@ def cli_invocations(files: list[Path], binary: str) -> list[tuple[Path, int, lis
                     tokens = shlex.split(rest)
                 except ValueError:
                     tokens = rest.split()
-                # placeholders like <path> are arguments, not commands
-                tokens = [t for t in tokens if t]
+                # The command ends at the first shell operator or redirection.
+                cut = []
+                for t in tokens:
+                    if re.match(r"^(\|\|?|&&?|;|\d?>>?.*|<.*|\)+)$", t):
+                        break
+                    stripped = t.rstrip(";)")
+                    if stripped:
+                        cut.append(stripped)
+                    if t != stripped:
+                        break
+                tokens = cut
+                # `claude mcp add ... flapi http://...` names a server, it is not a flapi call
+                if re.search(r"\bmcp\s+add\b[^`\n]*$", line[:m.start() + 1]):
+                    continue
                 if tokens and re.match(r"^[a-z-]", tokens[0]):
                     found.append((f, n, tokens))
     return found
@@ -429,7 +456,8 @@ def run_groups(rep: Report, snippets: list[Snippet], flapi: Path):
             if not g:
                 rep.fail(f"{rel(s.path)}:{s.line}", f"`flapi: {s.tag}` needs group=")
                 continue
-            groups.setdefault(f"{s.path.parent.name}/{g}", []).append(s)
+            skill = s.path.relative_to(PLUGIN).parts[1] if s.path.is_relative_to(PLUGIN / "skills") else s.path.parent.name
+            groups.setdefault(f"{skill}/{g}", []).append(s)
     for name, members in sorted(groups.items()):
         run_group(rep, name, members, flapi)
 
@@ -470,10 +498,18 @@ def run_group(rep: Report, name: str, members: list[Snippet], flapi: Path):
         proc = subprocess.run([str(flapi), "-c", "flapi.yaml", "--validate-config"], cwd=root,
                               capture_output=True, text=True, timeout=120, env=env)
         out = proc.stdout + proc.stderr
-        warned = re.search(r"(?im)^\s*(⚠|warning)|\[WARNING", out)
+        # SECURITY WARNINGS goes to stderr as a banner, not a log line.
+        # A group may accept specific auditor codes it demonstrates on purpose
+        # (`allow=MCP_UNAUTHENTICATED_TOOLS` on any of its tags), never others.
+        allowed = {c for m in members for c in m.attrs.get("allow", "").split(",") if c}
+        security_codes = set(re.findall(r"^\[([A-Z_]+)\]", out, re.M))
+        unexpected_security = security_codes - allowed
+        log_warned = re.search(r"(?im)^\s*(⚠|warning)|\[WARNING", out)
+        warned = log_warned or unexpected_security
         if proc.returncode != 0 or warned:
             rep.fail(where, "flapi --validate-config: " + " | ".join(
-                l.strip() for l in out.splitlines() if re.search(r"(?i)error|warn|✗|⚠", l))[:1500])
+                l.strip() for l in out.splitlines()
+                if re.search(r"(?i)error|warn|✗|⚠", l) or re.match(r"^\[[A-Z_]+\]", l))[:1500])
             return
         rep.ok(where, "validate-config")
         if checks:

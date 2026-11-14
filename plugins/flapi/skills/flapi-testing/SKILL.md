@@ -97,7 +97,7 @@ error; run the request with curl or check the server log for the message.
 ## The endpoint under test (runnable)
 
 ```yaml
-# flapi: endpoint group=suite file=customers.yaml
+# flapi: endpoint group=suite allow=MCP_UNAUTHENTICATED_TOOLS file=customers.yaml
 url-path: /customers
 method: GET
 mcp-tool:

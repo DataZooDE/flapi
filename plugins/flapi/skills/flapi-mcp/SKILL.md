@@ -55,7 +55,7 @@ REST endpoint too. One SQL template serves both.
 The tool below is also `GET /customer-lookup`.
 
 ```yaml
-# flapi: endpoint group=lookup file=customer_lookup.yaml
+# flapi: endpoint group=lookup allow=MCP_UNAUTHENTICATED_TOOLS file=customer_lookup.yaml
 url-path: /customer-lookup          # drop this line for an MCP-only tool
 method: GET
 mcp-tool:
@@ -168,7 +168,7 @@ Each hit logs `[WARNING] MCP tool 'x' description: [CODE] ...` and startup goes 
 A complete project: server instructions, a resource, a prompt and an async tool.
 
 ```yaml
-# flapi: config group=agentkit
+# flapi: config group=agentkit allow=MCP_UNAUTHENTICATED_TOOLS
 project-name: agent-kit
 project-description: MCP resources, prompts and an async tool
 template:

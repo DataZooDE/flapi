@@ -67,7 +67,10 @@ def validate(flapi: str, cfg: Path) -> tuple[bool, str]:
     except (OSError, subprocess.TimeoutExpired) as exc:
         return True, f"(flapi validation skipped: {exc})"
     output = (proc.stdout + proc.stderr).strip()
-    return proc.returncode == 0, output
+    # Only what explains the failure: INFO lines bury it.
+    relevant = [line for line in output.splitlines()
+                if re.search(r"ERROR|WARN|✗|[Ee]rror|Missing|Invalid|\[[A-Z_]+\]", line)]
+    return proc.returncode == 0, "\n".join(relevant[-40:]) or output[-2000:]
 
 
 def request(method: str, url: str, token: str, body: dict | None = None):
@@ -81,26 +84,50 @@ def request(method: str, url: str, token: str, body: dict | None = None):
         return json.loads(raw) if raw.strip().startswith(("{", "[")) else {}
 
 
-def yaml_url_path(edited: Path) -> str | None:
-    """Top-level `url-path:` of an endpoint YAML (no YAML library needed)."""
+def yaml_identifier(edited: Path) -> tuple[str | None, str | None]:
+    """(identifier, slug) of an endpoint YAML without a YAML library.
+
+    REST endpoints are addressed by `url-path` (slug: `/` -> `-`); MCP-only
+    tools, resources and prompts by the `name:` under their `mcp-*:` block,
+    which the config service takes as-is.
+    """
     try:
-        for line in edited.read_text(encoding="utf-8").splitlines():
-            match = re.match(r"^url-path:\s*['\"]?([^'\"#\s]+)", line)
-            if match:
-                return match.group(1)
+        lines = edited.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return None
-    return None
+        return None, None
+    for line in lines:
+        match = re.match(r"^url-path:\s*['\"]?([^'\"#\s]+)", line)
+        if match:
+            return match.group(1), path_to_slug(match.group(1))
+    in_mcp = False
+    for line in lines:
+        if re.match(r"^mcp-(tool|resource|prompt):", line):
+            in_mcp = True
+            continue
+        if in_mcp:
+            if line and not line[0].isspace():
+                in_mcp = False
+                continue
+            match = re.match(r"^\s+name:\s*['\"]?([^'\"#\s]+)", line)
+            if match:
+                return match.group(1), match.group(1)
+    return None, None
 
 
-def endpoints_for_file(base: str, token: str, edited: Path) -> list[str]:
-    """url-paths of loaded endpoints that use the edited YAML or SQL template."""
+def endpoints_for_file(base: str, token: str, edited: Path) -> list[tuple[str, str]]:
+    """(identifier, slug) of loaded endpoints that use the edited YAML or SQL template."""
     if edited.suffix == ".sql":
         found = request("POST", f"{base}/api/v1/_config/endpoints/by-template", token,
                         {"template_path": str(edited)})
-        return sorted({ep["url_path"] for ep in found.get("endpoints", []) if ep.get("url_path")})
-    url_path = yaml_url_path(edited)
-    return [url_path] if url_path else []
+        out = set()
+        for ep in found.get("endpoints", []):
+            if ep.get("url_path"):
+                out.add((ep["url_path"], path_to_slug(ep["url_path"])))
+            elif ep.get("mcp_name"):
+                out.add((ep["mcp_name"], ep["mcp_name"]))
+        return sorted(out)
+    ident, slug = yaml_identifier(edited)
+    return [(ident, slug)] if ident else []
 
 
 def main() -> int:
@@ -130,16 +157,16 @@ def main() -> int:
     token = os.environ.get("FLAPI_CONFIG_SERVICE_TOKEN")
     if not token:
         return 0
-    base = os.environ.get("FLAPI_URL", "http://localhost:8080").rstrip("/")
+    base = (os.environ.get("FLAPI_URL") or os.environ.get("FLAPI_BASE_URL") or "http://localhost:8080").rstrip("/")
     try:
         targets = endpoints_for_file(base, token, edited)
     except (urllib.error.URLError, OSError, ValueError):
         return 0  # no server running: nothing to reload
 
     reloaded, failed = [], []
-    for url_path in targets:
+    for url_path, slug in targets:
         try:
-            request("POST", f"{base}/api/v1/_config/endpoints/{path_to_slug(url_path)}/reload", token)
+            request("POST", f"{base}/api/v1/_config/endpoints/{slug}/reload", token)
             reloaded.append(url_path)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
