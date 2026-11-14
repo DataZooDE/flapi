@@ -84,11 +84,11 @@ cache:
   cursor:
     column: updated_at         # Change tracking column
     type: timestamp
-  retention:
+  retention:                   # replaces ducklake.retention for this cache (no merge)
     keep-last-snapshots: 10    # Max snapshots to keep
     max-snapshot-age: "7d"     # Max age of snapshots
-  invalidate-on-write: true    # Clear on write operations
-  refresh-on-write: false      # Refresh after writes (REST writes only)
+  invalidate-on-write: true    # Refresh synchronously before a write's response
+  refresh-on-write: false      # Refresh asynchronously after a write's response
   template-file: customers_cache.sql  # The populate SQL
 ```
 
@@ -100,16 +100,19 @@ ducklake:
   alias: cache                 # Database alias
   metadata-path: ./cache/metadata
   data-path: ./cache/data
-  retention:
+  retention:                   # default for caches without their own retention
     keep-last-snapshots: 100
     max-snapshot-age: "30d"
   compaction:
     enabled: true
-    schedule: "24h"
+    schedule: "24h"            # interval, or @hourly / @daily / @midnight / @weekly
   scheduler:
-    enabled: true
-    scan-interval: "1m"
+    enabled: true              # the default; false opts out (startup warns)
+    scan-interval: "1m"        # default: min(heartbeat.worker-interval, shortest cache.schedule)
 ```
+
+An invalid `compaction.schedule` or `scheduler.scan-interval` stops startup, as
+does a `heartbeat.worker-interval` <= 0 (default 60 s).
 
 ## Cache Modes
 
@@ -118,7 +121,8 @@ ducklake:
 Replaces entire cache table on each refresh:
 
 ```sql
--- Cache populate template (full refresh)
+-- Cache populate template (full refresh). A bare SELECT is refused before it
+-- runs, and the cache table must exist after the script or the refresh rolls back.
 CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS
 SELECT * FROM read_parquet('{{{ conn.path }}}')
 ```
@@ -204,6 +208,20 @@ WHEN NOT MATCHED THEN INSERT *
 ## HeartbeatWorker
 
 `HeartbeatWorker` (src/heartbeat_worker.cpp) runs background cache refresh.
+It runs two cadences on one thread: endpoint heartbeats every
+`heartbeat.worker-interval` (default 60 s), and cache schedules every scan
+interval (`ducklake.scheduler.scan-interval`, default
+`min(worker-interval, shortest cache.schedule)`, floor 1 s). The scheduler is
+on unless `ducklake.scheduler.enabled: false`. Startup logs `Cache scheduler on:
+N scheduled cache(s), checked every X s` and warns for any schedule shorter than
+the scan interval. Endpoints that share a cache table share one schedule.
+
+There is no refresh at boot: a cache is due one `schedule` after its last real
+refresh, which is this run's warm-up, else the table's newest snapshot, else
+process start. Refreshes through the config service count. Compaction
+(`ducklake.compaction`, enabled + schedule) runs once per catalog when due
+(`merge_adjacent_files`, `rewrite_data_files`, cleanup), writes an audit row with
+`sync_type` `compaction`, and its due time survives restarts.
 
 ### Two background paths, both direct
 
@@ -308,6 +326,13 @@ SELECT * FROM cache.customers_cache VERSION AS OF 5;
 
 ### Snapshot Pruning
 
+After a refresh (and on `cache/gc`), the cache's retention, or
+`ducklake.retention` when the cache has none, expires old snapshots, then
+`ducklake_cleanup_old_files(<catalog>, cleanup_all => true)` deletes the
+unreferenced files, so disk space is reclaimed. The audit log is bounded too:
+the newest 1000 `sync_events` rows per cache table are kept, and audit
+snapshots are expired together with the cache's.
+
 ```cpp
 void pruneSnapshots(const std::string& table, const RetentionConfig& retention) {
     if (retention.keep_last_snapshots.has_value()) {
@@ -329,15 +354,26 @@ Caches can be invalidated:
 
 ```yaml
 cache:
-  invalidate-on-write: true  # Clear cache after writes
-  refresh-on-write: true     # Or immediately refresh (REST writes; MCP writes only invalidate)
+  invalidate-on-write: true  # refresh synchronously, before the write's response
+  refresh-on-write: true     # or: refresh asynchronously, after the response
 ```
+
+`invalidate-on-write` refreshes before the response is sent, so the next read
+sees the write. `refresh-on-write` refreshes in the background after the
+response; concurrent requests for one endpoint are coalesced into one refresh.
+With both set, only the synchronous refresh runs. REST writes (including
+`method: DELETE`) and MCP tool writes follow the same rules.
 
 ### Via API
 
 ```bash
-# Force cache refresh
+# Refresh now
 POST /api/v1/_config/endpoints/{path}/cache/refresh
+
+# Full rebuild: erase the watermark and DROP the cache table, then run the
+# template, all in one transaction (an append cache is rebuilt, not re-appended).
+# A template with its own BEGIN/COMMIT only gets the watermark cleared (warning).
+POST /api/v1/_config/endpoints/{path}/cache/refresh?full=true
 
 # Expire old snapshots per the endpoint's retention policy
 POST /api/v1/_config/endpoints/{path}/cache/gc
@@ -365,8 +401,8 @@ sequenceDiagram
 
     Client->>RH: GET /customers?id=123
     RH->>CM: readinessBlock(endpoint)
-    alt cache starting / not built
-        CM-->>RH: blocked (cache_warming | cache_not_built)
+    alt cache starting / failed / not built
+        CM-->>RH: blocked (cache_warming | cache_build_failed | cache_not_built)
         RH-->>Client: 503 + Retry-After
     else ready (or stale: last refresh failed, previous snapshot served)
         CM-->>RH: none
@@ -399,7 +435,8 @@ than serving an empty table as though it were an empty result.
 |---|---|---|---|
 | `Starting` | before warm-up reaches the cache | `503 cache_warming` | `503 starting` |
 | `Ready` | a refresh succeeded, or warm-up was skipped and the table exists | served | `200 ready` (or `degraded` + `stale` after a failed refresh) |
-| `Failed` | the first build failed | `503 cache_warming` | `503 degraded` |
+| `Failed` | the first build failed (logged once) | `503 cache_build_failed`, `Retry-After: 5` | `503 degraded` |
+| `Stale` | a refresh failed over a table that exists (including a failed warm-up over a table an earlier run built) | served (previous snapshot) | `200 degraded`, `stale` list |
 | `Unbuilt` | warm-up was skipped (`never`, `read-only`) and the table does not exist | `503 cache_not_built` | `200 degraded`, `unbuilt` list |
 
 The warm-up mode for an endpoint is resolved by
@@ -411,7 +448,13 @@ then the CLI/env override, then `cache.warmup`, then `ducklake.warmup`.
 ## Writer and readers
 
 `flapi cache refresh` (`src/cache_refresh_command.cpp`) is the writer. It runs
-`CacheManager::refreshCache` for the selected endpoints and exits.
+`CacheManager::refreshCache` for the selected endpoints and exits. Its summary
+gives each item's `duration_ms`, `rows_affected` and, with `--full`,
+`"full": true`; it also compacts when compaction is due. If a running server
+holds the catalog lock it prints
+`{"error":"a running flapi holds the DuckLake catalog lock; refresh through the server: flapii cache refresh <path>"}`
+and exits 1. On SIGTERM a server interrupts running populate scripts and
+refuses new refreshes.
 Replicas set `ducklake.read-only: true`. The catalog is then attached
 `READ_ONLY`, `HeartbeatWorker::ShouldRunCacheMaintenance` returns false (no
 scheduled refresh, retention or compaction), and `CacheConfigHandler` answers

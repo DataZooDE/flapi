@@ -76,14 +76,16 @@ public:
 
 ### Authentication Types
 
-#### JWT Authentication
+#### Bearer / JWT Authentication
+
+`type: jwt` is an alias of `type: bearer` (normalised at load, `ConfigManager::normalizeAuthType`).
 
 ```yaml
 auth:
   enabled: true
-  type: jwt
-  jwt_secret: '{{env.JWT_SECRET}}'
-  jwt_issuer: my-app
+  type: bearer            # or jwt
+  jwt-secret: '{{env.JWT_SECRET}}'
+  jwt-issuer: my-app
 ```
 
 **Token validation:**
@@ -123,6 +125,13 @@ auth:
 Authorization: Basic YWRtaW46cGFzc3dvcmQ=
 ```
 
+**Stored passwords** (`src/password_hasher.cpp`): `$pbkdf2-sha256$…` MCF strings are verified
+(passlib's ab64 alphabet as well as standard and URL-safe base64). bcrypt hashes are recognised and
+**always refused** — the verifier never fails open on a format it cannot check — and the startup
+auditor (`src/security_auditor.cpp`) reports them as `AUTH_BCRYPT_UNSUPPORTED`. MD5 hex and
+plaintext still verify but are reported. The auditor's advice for all of them is
+`pbkdf2_sha256.using(rounds=600000).hash(...)` from passlib.
+
 #### OIDC Authentication (src/oidc_auth_handler.cpp)
 
 ```yaml
@@ -130,14 +139,18 @@ auth:
   enabled: true
   type: oidc
   oidc:
-    provider_type: google          # or microsoft, keycloak, generic
-    issuer_url: https://accounts.google.com
-    client_id: '{{env.GOOGLE_CLIENT_ID}}'
-    allowed_audiences:
+    provider-type: google          # or microsoft (azure, azure-ad, entra), keycloak, auth0, okta, github, generic
+    issuer-url: https://accounts.google.com
+    client-id: '{{env.GOOGLE_CLIENT_ID}}'
+    allowed-audiences:
       - my-app-client-id
-    username_claim: email
-    roles_claim: groups
+    username-claim: email
+    roles-claim: groups
 ```
+
+Presets with a templated issuer take `tenant-id` (alias `tenant`), `realm` and `domain`, which replace
+`{tenant}`, `{realm}` and `{domain}` in `issuer-url` (`OIDCProviderPresets::substitutePlaceholders`).
+A placeholder still present after substitution is a startup error naming the key to set.
 
 **OIDC components:**
 - `OIDCDiscoveryClient` - Fetches `.well-known/openid-configuration`
@@ -149,8 +162,8 @@ auth:
 ```yaml
 auth:
   enabled: true
-  from_aws_secretmanager:
-    secret_name: my-app/api-users
+  from-aws-secretmanager:
+    secret-name: my-app/api-users
     region: us-east-1
 ```
 
@@ -166,42 +179,47 @@ Endpoints can require specific roles:
 # sqls/admin_report.yaml
 url-path: /admin/report
 auth:
-  required: true
+  enabled: true
+  type: basic
   roles: [admin]       # Only admin role can access
+  users: [...]
 ```
 
-**Role checking:**
-```cpp
-bool checkRoles(const context& ctx, const EndpointConfig& endpoint) {
-    if (!endpoint.auth.required) return true;
-    if (endpoint.auth.roles.empty()) return ctx.authenticated;
+**Role checking** happens in `AuthMiddleware::before_handle`, right after a successful authentication
+(`AuthMiddleware::hasRequiredRole`): an empty `roles` list admits any authenticated principal; otherwise
+holding any one listed role suffices. A principal with none of them gets `403`
+`{"error":"Forbidden","message":"The authenticated principal does not hold any role this endpoint requires."}`
+and an info log line `Authorization denied for user '<name>' on <endpoint>`. A failed authentication is
+`401`. MCP tools are authorised separately, by `mcp-tool.allowed-roles`.
 
-    for (const auto& required_role : endpoint.auth.roles) {
-        if (std::find(ctx.roles.begin(), ctx.roles.end(), required_role)
-            != ctx.roles.end()) {
-            return true;
-        }
-    }
-    return false;
-}
-```
+### Global Auth and Per-Endpoint Override
 
-### Per-Endpoint Auth Override
-
-Each endpoint can override global auth settings:
+The top-level `auth:` block is the default for every REST endpoint **without its own `auth:` block**
+(`ConfigManager::applyGlobalAuthDefault`, applied at load, on reload, and to endpoints created through
+the config service). Such an endpoint is marked `inherited`, which the config service reports as
+`auth.inherited`. An endpoint block replaces the global one outright — nothing is merged, and
+`enabled` defaults to `false` inside an endpoint block:
 
 ```yaml
-# Public endpoint (no auth)
+# Public endpoint (no auth), even with a global auth: block
 url-path: /public/status
 auth:
-  required: false
+  enabled: false
 
 # Protected endpoint with specific roles
 url-path: /admin/users
 auth:
-  required: true
+  enabled: true
+  type: basic
   roles: [admin]
+  users: [...]
 ```
+
+### CORS and credentials
+
+`SecurityAuditor` warns `CORS_WILDCARD_WITH_AUTH` when any authentication is enabled and
+`cors.allow-origins` is empty or contains `*`: every origin then gets `Access-Control-Allow-Origin: *`,
+so a hostile page can call the API with a credential the browser holds and read the answer.
 
 ## Input Validation
 
@@ -231,10 +249,10 @@ private:
 | Type | Options | Example |
 |------|---------|---------|
 | `int` | `min`, `max` | `min: 1, max: 1000` |
-| `string` | `min-length`, `max-length`, `regex` | `max-length: 200` |
+| `string` | `min-length`, `max-length`, `regex` (alias `pattern`) | `max-length: 200` |
 | `email` | - | Validates email format |
 | `uuid` | - | Validates UUID format |
-| `enum` | `allowedValues` | `allowedValues: [active, inactive]` |
+| `enum` | `allowedValues` (alias `values`) | `allowedValues: [active, inactive]` |
 | `date` | `min`, `max` | `min: 2020-01-01` |
 | `time` | `min`, `max` | `min: 09:00:00` |
 
@@ -344,11 +362,13 @@ Request arrives
   - Reject SQL injection attempts
   - Reject if invalid → 400
     ↓
-[Layer 4: Template Escaping]
-  - Triple braces escape quotes
-  - Prevents injection in SQL
+[Layer 4: Template Rendering]
+  - Typed {{ }} outside sections become bound ? parameters
+  - Everything else is text: quoting discipline + validators
     ↓
 [Query Execution]
+  - Any failure → 500 with a fixed body + request_id;
+    SQL, paths and database errors go to the server log only
     ↓
 [Layer 5: Telemetry Egress]
   - Redact credential-shaped keys, then clamp
@@ -356,6 +376,20 @@ Request arrives
   - Enumerated error types, never exception messages
   - Values only at the payload tier, only from declared fields
 ```
+
+### Error responses
+
+A request that fails inside flAPI answers `500` with a JSON body that carries no SQL, no file paths and
+no database error text (`src/request_handler.cpp`):
+
+```json
+{"error": "Internal Server Error",
+ "message": "The request failed on the server. The details are in the server log under this request id.",
+ "request_id": "req-46788500aef28a89"}
+```
+
+The detail is logged with the same request id, which is also the `X-Request-Id` response header, so an
+operator can find it and a caller learns nothing about the schema.
 
 ### Layer 5: Telemetry egress
 
@@ -431,7 +465,7 @@ rate_limit:
 **Per-endpoint override:**
 ```yaml
 url-path: /expensive-endpoint
-rate_limit:
+rate-limit:
   enabled: true
   max: 10
   interval: 60
@@ -446,7 +480,7 @@ mcp:
   auth:
     enabled: true
     type: bearer
-    jwt_secret: '{{env.MCP_JWT_SECRET}}'
+    jwt-secret: '{{env.MCP_JWT_SECRET}}'
     methods:
       tools/call:
         required: true
@@ -502,7 +536,8 @@ Two mechanisms enforce this:
    credential flapi understands is read from a documented
    environment variable -- never from a bundled YAML field:
    - AWS S3:    `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION`
-   - GCS:       `GOOGLE_APPLICATION_CREDENTIALS` / `GOOGLE_CLOUD_PROJECT`
+   - GCS:       an HMAC key in a `CREATE SECRET (TYPE gcs, …)` in a connection `init`, its
+                values from `{{env.NAME}}` (`GOOGLE_*` variables are detected but not applied)
    - Azure:     `AZURE_STORAGE_CONNECTION_STRING` / `AZURE_STORAGE_ACCOUNT` / `AZURE_STORAGE_KEY`
    - Mgmt API:  `FLAPI_CONFIG_SERVICE_TOKEN`
    - JWT:       configured via `{{env.JWT_SECRET}}` against a

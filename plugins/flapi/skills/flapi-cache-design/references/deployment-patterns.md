@@ -11,24 +11,27 @@
 ```bash
 flapi cache refresh -c flapi.yaml --all
 flapi cache refresh -c flapi.yaml --endpoint /orders --endpoint /customers
+flapi cache refresh -c flapi.yaml --endpoint /orders --full   # drop and rebuild
 ```
 
 - Exit `0`: every refresh ok. `1`: a refresh failed, or the catalog could not be
   attached (e.g. it is locked). `2`: usage (no `--all`/`--endpoint`, unknown
   endpoint, endpoint without cache, ducklake disabled or read-only).
 - stdout is a JSON summary:
-  `{"failed":0,"refreshed":[{"endpoint":"/orders","schema":"cache","table":"orders_cache","status":"ok"}]}`;
-  a failure has `"status":"failed"` and `"error"`.
+  `{"failed":0,"refreshed":[{"endpoint":"/orders","schema":"cache","table":"orders_cache","status":"ok","rows_affected":830,"duration_ms":412}]}`;
+  `"full": true` with `--full`; a failure has `"status":"failed"` and `"error"`.
+  Endpoints sharing a table are refreshed once.
 - It runs the same populate SQL as the server: incremental templates stay
-  incremental, and an audit row is written.
+  incremental, an audit row is written, and a due `ducklake.compaction` runs.
 - `time flapi cache refresh ...` is the simplest end-to-end timing.
 
 ## The DuckDB-file catalog lock
 
 A DuckDB-file `metadata-path` is opened by one writing process at a time. While a
-server has it attached, `flapi cache refresh` on the same file fails with
-`Could not set lock on file ... Conflicting lock is held` (exit 1), and a writer
-cannot attach while read-only replicas hold it either. So with a file catalog:
+server has it attached, `flapi cache refresh` on the same file exits 1 with a
+JSON `error` that says a running server holds the DuckLake catalog lock and to
+refresh through it (`flapii cache refresh <path>`),
+and a writer cannot attach while read-only replicas hold it either. So with a file catalog:
 
 - refresh through the running server (`flapii cache refresh <path>`, the
   schedule), or

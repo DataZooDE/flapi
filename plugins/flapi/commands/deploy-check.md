@@ -10,11 +10,15 @@ for cache warm-up choices, `flapi-auth` for exposure).
 
 Work through this list and report each item as PASS / FIX / N/A with evidence:
 
-1. `flapi -c flapi.yaml --validate-config` is clean (no errors; warnings explained).
+1. `flapi -c flapi.yaml --validate-config` is clean (no errors; warnings explained),
+   and `flapi --version` is the version you mean to ship.
 2. No secrets in the tree: no literal passwords/tokens in YAML or SQL; every
    `{{env.X}}` matched by `template.environment-whitelist`; `.env`, `*.pem`, `*.key`
    not shipped (`flapi pack` refuses them by default - do not add `--allow-secrets`).
-3. Auth: every endpoint that exposes non-public data has `auth:`; the config service
+3. Auth: every endpoint that exposes non-public data has `auth:` or inherits the
+   top-level one (startup logs `Global auth ... applies to N endpoint(s)`; each
+   `auth: {enabled: false}` opt-out is intended); `cors.allow-origins` is an
+   allowlist; no `AUTH_BCRYPT_UNSUPPORTED` / `AUTH_PLAINTEXT_PASSWORD`; the config service
    is either off in production or protected by a strong `--config-service-token`.
 4. Caches: warm-up mode fits the target (`if-empty`/`never` + a prebuilt cache for
    serverless; `always` only if startup time allows); replicas use

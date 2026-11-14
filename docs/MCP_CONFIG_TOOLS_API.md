@@ -31,7 +31,15 @@ When `--config-service` is NOT enabled:
 
 **Error Codes:** See [MCP Reference § Appendix B](./MCP_REFERENCE.md#appendix-b-error-reference) for complete MCP error reference.
 
-**Authentication:** See [Configuration Reference § 7](./CONFIG_REFERENCE.md#7-authentication) for all authentication schemes and setup.
+**Authentication:** every `flapi_*` tool, read or write, needs the config-service token
+(`--config-service-token` / `FLAPI_CONFIG_SERVICE_TOKEN`), sent as `X-Config-Token: <token>` (read
+first) or `Authorization: Bearer <token>`. Any non-empty token works as the configured value; startup
+warns below 16 characters. Without it a call fails with `Authentication required for tool: <name>`;
+with a wrong one, `Authentication validation failed: Invalid authentication token`. Endpoint-backed
+MCP tools use `mcp.auth` in `flapi.yaml` instead.
+
+Endpoint changes made with these tools (create, update, delete, reload) rebuild `tools/list`,
+`resources/list` and `prompts/list` immediately; no restart and no notification.
 
 ---
 
@@ -43,7 +51,7 @@ Read-only tools for introspecting project configuration and database schema.
 
 Get project metadata and configuration information.
 
-**Authentication:** Not required
+**Authentication:** Required (config-service token)
 
 **Parameters:** None
 
@@ -70,7 +78,7 @@ Get project metadata and configuration information.
 
 Get whitelisted environment variables available to templates.
 
-**Authentication:** Not required
+**Authentication:** Required (config-service token)
 
 **Parameters:** None
 
@@ -96,7 +104,7 @@ Get whitelisted environment variables available to templates.
 
 Get directory structure of template and configuration files.
 
-**Authentication:** Not required
+**Authentication:** Required (config-service token)
 
 **Parameters:** None
 
@@ -126,7 +134,7 @@ Get directory structure of template and configuration files.
 
 Get database schema information for all configured connections.
 
-**Authentication:** Not required
+**Authentication:** Required (config-service token)
 
 **Parameters:** None
 
@@ -160,7 +168,7 @@ Get database schema information for all configured connections.
 
 Refresh database schema cache by querying all connections.
 
-**Authentication:** Not required
+**Authentication:** Required (config-service token)
 
 **Parameters:** None
 
@@ -183,7 +191,7 @@ Tools for managing and testing SQL templates with Mustache syntax.
 
 Retrieve the SQL template content for an endpoint.
 
-**Authentication:** Not required
+**Authentication:** Required (config-service token)
 
 **Parameters:**
 - `endpoint` (string, required): Endpoint identifier or filename (e.g., "customers")
@@ -242,7 +250,7 @@ Update the SQL template content for an endpoint (requires authentication).
 
 Test Mustache template expansion with sample parameters.
 
-**Authentication:** Not required
+**Authentication:** Required (config-service token)
 
 **Parameters:**
 - `endpoint` (string, required): Endpoint identifier
@@ -263,7 +271,7 @@ Test Mustache template expansion with sample parameters.
 
 Validate template syntax and Mustache syntax.
 
-**Authentication:** Not required
+**Authentication:** Required (config-service token)
 
 **Parameters:**
 - `endpoint` (string, required): Endpoint identifier
@@ -296,7 +304,7 @@ CRUD operations for REST endpoint configuration (path, method, template, cache).
 
 List all configured REST and MCP endpoints.
 
-**Authentication:** Not required
+**Authentication:** Required (config-service token)
 
 **Parameters:** None
 
@@ -327,7 +335,7 @@ List all configured REST and MCP endpoints.
 
 Get complete configuration for a specific endpoint.
 
-**Authentication:** Not required
+**Authentication:** Required (config-service token)
 
 **Parameters:**
 - `path` (string, required): Endpoint path
@@ -476,7 +484,7 @@ Monitor and manage DuckLake cache for endpoints.
 
 Get cache status and configuration for an endpoint.
 
-**Authentication:** Not required
+**Authentication:** Required (config-service token)
 
 **Parameters:**
 - `path` (string, required): Endpoint path
@@ -513,16 +521,15 @@ Trigger manual cache refresh for an endpoint (requires authentication).
 **Parameters:**
 - `path` (string, required): Endpoint path
 
+The refresh runs before the call returns. There is no full-rebuild argument; use
+`POST /api/v1/_config/endpoints/{slug}/cache/refresh?full=true` or `flapii cache refresh <path> --full`.
+
 **Response (Success):**
 ```json
-{
-  "path": "customers",
-  "status": "Cache refresh triggered",
-  "cache_table": "customers_cache",
-  "timestamp": "1704067200",
-  "message": "Cache refresh has been scheduled"
-}
+{"tool": "flapi_refresh_cache", "status": "ok"}
 ```
+
+Read the outcome with `flapi_get_cache_audit` or `flapi_get_metrics`.
 
 ---
 
@@ -658,7 +665,7 @@ Configuration tools do not have built-in rate limiting but respect server-level 
 
 4. **Handle structured errors**: Parse error responses for `hint` field to guide users
 
-5. **Authenticate with correct scheme**: Use `Bearer` for JWT tokens, `Basic` for credentials, `Token` for API keys
+5. **Send the config-service token**: `X-Config-Token: <token>` or `Authorization: Bearer <token>` on every call
 
 6. **Reload after configuration changes**: Use `flapi_reload_endpoint` to apply changes without server restart
 

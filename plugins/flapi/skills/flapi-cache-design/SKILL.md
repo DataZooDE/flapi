@@ -5,8 +5,10 @@ description: >
   incremental merge are inferred from cursor / primary-key, writing the populate
   SQL (first-run CTAS bootstrap, watermark, late rows, overlap windows, soft and
   hard deletes), the serving template, warm-up modes and 503 cache_warming /
-  cache_not_built, schedules, write-through (invalidate-on-write), read-only
-  replicas on a shared catalog, prebuilt caches in CI, snapshots and time travel.
+  cache_not_built / cache_build_failed, schedules and the scheduler, full rebuilds
+  (--full), write-through (invalidate-on-write / refresh-on-write), read-only
+  replicas on a shared catalog, prebuilt caches in CI, snapshots, retention and
+  time travel.
   Use when a user wants to cache an endpoint, pick a refresh mode, write or debug
   a cache template, or serve a cache from several instances.
 version: 26.10.31
@@ -41,22 +43,21 @@ triggers a refresh.
   UPDATE/DELETE action`. Keep tombstones (below) or run a separate `DELETE`.
 - **`INSERT (*) VALUES (s.*)` is not DuckDB.** Write `WHEN NOT MATCHED THEN INSERT *`,
   bare `INSERT` (by name), or list the columns.
-- **`cache.schedule` does nothing unless `ducklake.scheduler.enabled: true`.**
-  The worker checks every `heartbeat.worker-interval` seconds (60 without a
-  `heartbeat:` block, 10 with one), so a schedule shorter than that is rounded up.
-  `ducklake.scheduler.scan-interval` is parsed but never read.
-- **`refresh-on-write` has no effect.** It is parsed and logged, nothing more. Use
-  `invalidate-on-write: true`, which re-runs the populate SQL after the write.
+- **A populate template must write the table.** A template that is (or ends in)
+  a bare `SELECT` is refused before it runs: `cache template must write
+  {{cache.catalog}}.{{cache.schema}}.{{cache.table}} ... statement N of the template
+  is a bare SELECT`. A script that runs but leaves no table also fails and rolls back.
+- **No refresh at startup beyond warm-up.** The first scheduled refresh comes one
+  `schedule` after the last real refresh (this run's warm-up, else the newest
+  snapshot, else process start). A restart does not re-run every cache.
 - **`schema` defaults to `cache`**, so the table is `cache.cache.<table>` with the
   default alias. Always address it as `{{cache.catalog}}.{{cache.schema}}.{{cache.table}}`.
 - **`rollback-window` and `delete-handling` are deprecated and have no effect**
   (startup logs a warning). Deletes are SQL in your template.
-- **There is no "force full rebuild" switch.** `flapii cache refresh --force` is
-  sent but ignored by the server; an incremental cache stays incremental. Build
-  a rebuild branch into the template (see "Forcing a full rebuild").
-- **A failed first build answers 503 forever** (`"error": "cache_warming"`,
-  message `failed to build`) until a refresh succeeds. The DuckDB error is in
-  `flapii cache audit <path>` and the server log, not in the 503 body.
+- **A failed first build answers 503** `{"error": "cache_build_failed"}` with
+  `Retry-After: 5` until a refresh succeeds. The DuckDB error is in
+  `flapii cache audit <path>`, the server log (logged once) and the body of a
+  manual refresh, not in the 503 body.
 
 ## Pick the mode
 
@@ -90,9 +91,11 @@ ducklake:
   metadata-path: ./cache.ducklake    # DuckDB-file catalog, or postgres:dbname=... for a fleet
   data-path: ./cache_data            # Parquet files; s3:// gs:// work
   warmup: always                     # always | if-empty | never
-  scheduler:
-    enabled: true                    # REQUIRED for cache.schedule
 ```
+
+The scheduler is **on by default**: every `cache.schedule` runs without further
+config. Startup logs `Cache scheduler on: N scheduled cache(s), checked every X s`.
+`ducklake.scheduler.enabled: false` turns it off (with a warning).
 
 ## Full refresh
 
@@ -136,7 +139,8 @@ ORDER BY ProductID
 ```
 
 Without `template-file` the **serving** template is also used as the populate
-SQL. Always set `template-file`.
+SQL, which is a bare `SELECT` and is refused (`503 cache_build_failed`). Always
+set `template-file`.
 
 ## Incremental append
 
@@ -182,29 +186,9 @@ SELECT * FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
 ORDER BY OrderID DESC
 ```
 
-**Detect lost rows.** A strict `>` loses late rows silently, and the refresh still
-reports success. Reconcile now and then with an uncached endpoint (cache
-variables are not set there, so name the table: `<alias>.<schema>.<table>`):
-
-```yaml
-# flapi: endpoint group=order-feed file=order-feed-check.yaml
-url-path: /order-feed/check
-template-source: order-feed-check.sql
-connection: [northwind]
-# flapi: check GET /order-feed/check -> 200
-```
-
-```sql
--- flapi: template group=order-feed file=order-feed-check.sql
-SELECT
-  (SELECT count(*) FROM nw.Orders)          AS source_rows,
-  (SELECT count(*) FROM cache.cache.order_feed) AS cached_rows,
-  (SELECT count(*) FROM nw.Orders
-    WHERE OrderID NOT IN (SELECT OrderID FROM cache.cache.order_feed)) AS missing_rows
-```
-
-`missing_rows > 0` means the cursor is not monotonic or rows arrive late: widen
-the overlap window (it must cover the **maximum** lateness) or switch to merge.
+**Detect lost rows**: a strict `>` loses late rows silently while the refresh reports
+success. Reconcile with an uncached check endpoint:
+[references/delete-patterns.md](references/delete-patterns.md#detecting-lost-rows).
 
 - **Quote the watermark for its type**: bare for an integer, `TIMESTAMP '{{{cache.previousSnapshotTimestamp}}}'`
   for a timestamp, `DATE '...'` for a date. Use triple braces inside quotes.
@@ -234,9 +218,9 @@ WHERE s.ts > TIMESTAMP '{{{cache.previousSnapshotTimestamp}}}' - INTERVAL 10 MIN
 ## Incremental merge, with deletes as tombstones
 
 Keep deleted rows in the cache with their flag and filter them when serving.
-It is one `MERGE` with one `UPDATE` action (DuckLake's limit), it is atomic, its
-`rows_affected` is reported, and because the tombstone keeps its `updated_at`
-the watermark moves past the delete.
+It is one `MERGE` with one `UPDATE` action (DuckLake's limit), it is atomic,
+and because the tombstone keeps its `updated_at` the watermark moves past the
+delete.
 
 ```yaml
 # flapi: config group=crm
@@ -331,10 +315,17 @@ ORDER BY id
 
 ## Forcing a full rebuild
 
-No flag does it. Add a branch on a whitelisted env var and run the one-shot
-(`FLAPI_CACHE_REBUILD=1 flapi cache refresh -c flapi.yaml --endpoint /customers`),
-or on a running server swap in a CTAS-only file with `flapii cache update-template`,
-refresh, and swap back. Template: [references/write-through-and-rebuild.md](references/write-through-and-rebuild.md#forcing-a-full-rebuild).
+```bash
+flapii cache refresh /customers --full                  # running server (POST .../cache/refresh?full=true)
+flapi cache refresh -c flapi.yaml --endpoint /customers --full   # one-shot, no server
+```
+
+`--full` erases the watermark **and** drops the cache table in the same
+transaction, so the `{{^cache.previousSnapshotTimestamp}}` branch rebuilds it from
+scratch (an append cache is rebuilt, not re-appended). Readers keep the old
+snapshot until the commit, and a failed rebuild restores it. The audit row keeps
+the YAML's mode label (`append`/`merge`). Details:
+[references/write-through-and-rebuild.md](references/write-through-and-rebuild.md#forcing-a-full-rebuild).
 
 ## The serving template
 
@@ -353,30 +344,36 @@ refresh, and swap back. Template: [references/write-through-and-rebuild.md](refe
 | Trigger | How |
 |---|---|
 | Startup warm-up | `ducklake.warmup` / `cache.warmup`: `always` (default, re-run every populate SQL), `if-empty` (only missing tables), `never`. Override per run: `--cache-warmup if-empty`, `--no-cache-warmup`, env `FLAPI_CACHE_WARMUP`. Precedence: `read-only` > flag/env > `cache.warmup` > `ducklake.warmup`. |
-| Schedule | `cache.schedule: 30s / 10m / 6h / 1d` **and** `ducklake.scheduler.enabled: true`. The first scan after startup refreshes at once (right after warm-up). |
-| On demand | `flapii cache refresh <path>`, `POST /api/v1/_config/endpoints/{slug}/cache/refresh`, MCP config tool `flapi_refresh_cache` |
-| After a write | `invalidate-on-write: true` on the write endpoint (below) |
-| Pipeline / CI | `flapi cache refresh -c flapi.yaml --all` or `--endpoint <path>` (repeatable), no server |
+| Schedule | `cache.schedule: 30s / 10m / 6h / 1d`. Checked every `ducklake.scheduler.scan-interval` (default: the shorter of `heartbeat.worker-interval`, 60 s, and the shortest schedule; floor 1 s). Due one schedule after the last real refresh, so not at boot. Endpoints sharing a table share one schedule. |
+| On demand | `flapii cache refresh <path> [--full]`, `POST /api/v1/_config/endpoints/{slug}/cache/refresh[?full=true]`, MCP config tool `flapi_refresh_cache`. Counts as the last refresh for the schedule. |
+| After a write | `invalidate-on-write` (synchronous) or `refresh-on-write` (after the response) on the write endpoint (below) |
+| Pipeline / CI | `flapi cache refresh -c flapi.yaml --all` or `--endpoint <path>` (repeatable) `[--full]`, no server |
 
 - The config-service slug is the path with `/` → `-` and a literal `-` → `~1`:
   `/orders` is `-orders`, `/order-feed` is `-order~1feed`. `flapii` encodes it for you.
 - A refresh of a table that is already refreshing is skipped, not queued.
 - A failed refresh changes nothing: the previous snapshot keeps serving. Do not
-  add your own `BEGIN` / `COMMIT` to a populate template.
+  add your own `BEGIN` / `COMMIT` to a populate template (with one, `--full` can
+  only clear the watermark, not drop the table, and warns).
 - While a cache has never been built, its endpoint answers `503` with
-  `Retry-After: 5`: `cache_warming` (building, or the first build failed) or
-  `cache_not_built` (warm-up skipped and no table yet). `/health` reports
-  `degraded` with `unbuilt` / `failed` lists. A **later** failed refresh keeps
-  serving the last snapshot and marks the cache `stale`.
+  `Retry-After: 5`: `cache_warming` (building), `cache_build_failed` (the first
+  build failed) or `cache_not_built` (warm-up skipped and no table yet). `/health`
+  reports `degraded` with `unbuilt` / `failed` lists. A **later** failed refresh
+  (including a failed warm-up over an existing table) keeps serving the last
+  snapshot and marks the cache `stale`.
 
-## Write-through: invalidate on write
+## Write-through: refresh after a write
 
-Give the POST/PUT/PATCH endpoint its own `cache:` block with the same `table` and
-`template-file`, plus `invalidate-on-write: true`. After a successful write flAPI
-re-runs that populate SQL synchronously, before answering, for REST and MCP tool
-calls alike. `refresh-on-write` has no effect. The write latency now includes the
-refresh, every endpoint naming the table is warmed at startup, and the write
-endpoint answers 503 until the cache is built. Runnable example:
+Give the POST/PUT/PATCH/DELETE endpoint its own `cache:` block with the same
+`table` and `template-file`, plus one of:
+
+| Key | When the populate SQL runs | Use when |
+|---|---|---|
+| `invalidate-on-write: true` | synchronously, before the response | the caller must read its own write |
+| `refresh-on-write: true` | after the response, coalesced per endpoint | write latency matters more than read-your-write |
+
+Both set means synchronous only. REST and MCP tool writes follow the same rules.
+The write endpoint answers 503 until the cache is first built. Runnable example:
 [references/write-through-and-rebuild.md](references/write-through-and-rebuild.md).
 
 ## Replicas and prebuilt caches
@@ -401,7 +398,13 @@ Recipes: [references/deployment-patterns.md](references/deployment-patterns.md).
 - `cache.retention.keep-last-snapshots: N` / `max-snapshot-age: 7d` expire this
   table's old snapshots **after every refresh**; `flapii cache gc <path>` applies
   the same policy on demand. Expired versions can no longer be time-travelled.
-  `ducklake.retention` (global) is parsed but never read: set it per endpoint.
+- `ducklake.retention` (global, same keys) applies to every cache without its own
+  `retention:`; an endpoint block replaces it (no merge).
+- After an expiry the files no snapshot references are deleted, so disk space is
+  reclaimed. The audit log is bounded too (newest 1000 rows per cache table).
+- `ducklake.compaction: {enabled: true, schedule: 1d}` (or `@hourly`, `@daily`,
+  `@midnight`, `@weekly`; not cron) merges small files once per catalog; the
+  audit log shows it as `sync_type` `compaction`.
 
 ## Developing the populate SQL
 
@@ -413,14 +416,15 @@ flapii cache template /customers            # the populate SQL the server reads
 flapii templates expand /customers --cache  # rendered with the live watermark, not executed
 flapii cache update-template /customers --file sqls/customers_cache.sql
 flapii cache refresh /customers             # run it now
-flapii cache audit /customers               # status, message (the DuckDB error), durationMs, rowsAffected
+flapii cache audit /customers -o table      # mode, status, duration_ms, rows, snapshot
 ```
 
 - The populate file is re-read on every refresh: editing it on disk works too.
-- `flapii` prints camelCase keys (`durationMs`, `rowsAffected`, `snapshotId`);
-  `--json-style hyphen` changes that. The REST API returns snake_case.
-- `flapii cache refresh` prints only `Bad Request` on failure; the error text is
-  in `flapii cache audit <path>` (and in the body of the raw `POST .../cache/refresh`).
+- The audit log is data: `flapii` prints it exactly as the server sends it,
+  snake_case (`duration_ms`, `rows_affected`, `snapshot_id`, `message`), whatever
+  `--json-style` says.
+- A failed `flapii cache refresh` prints `[400] Bad Request: Cache refresh failed:
+  <the DuckDB error>`; the same text is in the audit row's `message`.
 - `--log-level debug` logs every rendered statement (`Processed query:`), the
   only way to see the populate SQL after Mustache.
 - `flapii templates expand <path> --cache` renders the **populate** template with
@@ -437,11 +441,12 @@ flapii cache audit /customers               # status, message (the DuckDB error)
 1. Inspect the source: row count, append-only or mutable, deletes (flag or hard),
    the cursor column and its type, the key, how late rows can arrive.
 2. Pick the mode from the tables above; declare `cursor` / `primary-key` to match.
-3. Enable `ducklake:` (and `scheduler.enabled` if you use `schedule`).
+3. Enable `ducklake:` (the scheduler is on by default).
 4. Write the populate SQL with the `{{^...}}` CTAS bootstrap and the guarded delta
    branch; write the serving template against `{{cache.catalog}}.{{cache.schema}}.{{cache.table}}`.
 5. `flapi -c flapi.yaml --validate-config`, then start with `--config-service`.
 6. `flapii cache refresh <path>` twice with a source change in between; read
-   `flapii cache audit <path>`: first `CREATE` with all rows, then a small delta.
+   `flapii cache audit <path> -o table`: first the CTAS with all rows, then a small
+   delta. After a template change, `flapii cache refresh <path> --full` rebuilds.
 7. GET the endpoint; for merge, check that deleted keys are gone.
 8. Choose warm-up and schedule; measure and tune with `flapi-cache-tuning`.

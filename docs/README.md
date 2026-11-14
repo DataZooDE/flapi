@@ -44,6 +44,7 @@ New to flAPI? Start with [Getting started](./guides/getting-started.md).
 | Cache an expensive query | [guides/caching.md](./guides/caching.md) |
 | Choose full refresh vs incremental | [guides/caching.md#choosing-a-refresh-strategy](./guides/caching.md#choosing-a-refresh-strategy) |
 | Handle deleted rows in an incremental cache | [guides/caching.md#deletes-in-merge-mode](./guides/caching.md#deletes-in-merge-mode) |
+| Rebuild a cache from scratch, or understand when it refreshes | [guides/caching.md#when-it-refreshes](./guides/caching.md#when-it-refreshes) |
 | Measure and shorten cache refresh time | [guides/caching.md#measuring-and-tuning-refresh-time](./guides/caching.md#measuring-and-tuning-refresh-time) |
 | Understand cache snapshots and time travel | [spec/components/caching.md](./spec/components/caching.md) |
 | Run on Cloud Run / scale-to-zero without loading data at startup | [guides/serverless.md](./guides/serverless.md) |

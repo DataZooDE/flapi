@@ -23,11 +23,10 @@ REST endpoint too. One SQL template serves both.
 
 ## Critical gotchas
 
-- **`tools/list` is built once, at startup.** `flapii endpoints reload`, the plugin hook
-  and `flapi_reload_endpoint` update what `tools/call` executes. They do NOT update the
-  tool's description or input schema in `tools/list` or `resources/list`. A new tool from
-  `flapii endpoints create` answers `Tool not found`. **Restart the server after changing an
-  `mcp-*` block or adding a tool.**
+- **`tools/list`, `resources/list` and `prompts/list` follow endpoint changes.** Every
+  create/update/delete/reload (config service, `flapii`, the plugin hook or a `flapi_*`
+  tool) rebuilds them; no restart. Clients are not notified (`listChanged` stays
+  `false`), so re-list after a change; a pagination cursor from before it is rejected.
 - **An MCP call has no default row limit.** REST pages at 100 rows. A `tools/call` with no
   `limit` argument returns every row the SQL produces (1500 rows in the customers
   fixture). Declare a `limit` request field with an `int` validator and a `default`, and/or
@@ -36,15 +35,17 @@ REST endpoint too. One SQL template serves both.
   REST pagination and for an MCP `limit` argument. See `flapi-rest`.
 - **The tool's argument types come from validators only.** `int` -> `integer`,
   `number`/`double`/`float` -> `number`, `boolean` -> `boolean`, `enum` -> `enum` list, and
-  everything else (or no validator) -> `string`. `field-type:` is read by nothing.
-- **Enum values go under `allowedValues:`.** `values:` (shown in older docs) stops startup.
+  everything else (or no validator) -> `string`. `field-type:` is read by nothing (load
+  warning). A `default:` is emitted in the schema with that type (`10`, `true`).
+- **Enum values go under `allowedValues:`** (`values:` is accepted as an alias).
 - **`async: true` only takes effect for a modern (2026-07-28) client that declares the tasks
   extension.** Every other (legacy-era) client gets a normal synchronous result.
 - **The description scanner warns by default and fails only with `mcp.strict-descriptions:
   true`.** It flags the substring `system:` anywhere, so "file system: ..." trips it.
-- **`flapi_*` config tools need `Authorization: Bearer <config-service token>`** on the MCP
-  request (not `X-Config-Token`), and the token must be at least 8 characters. Without
-  `--config-service` they are not in `tools/list`.
+- **`flapi_*` config tools need the config-service token** on the MCP request:
+  `X-Config-Token: <token>` is read first, then `Authorization: Bearer <token>`. Without
+  `--config-service` they are not in `tools/list`. Startup warns about a token under 16
+  characters.
 - **There is no `mcp.port` or `mcp.host`.** Setting either only logs a warning.
 - **The `customers.parquet` fixture ignores filters on `c_mktsegment`.** `c_mktsegment =
   'BUILDING'` returns 0 rows in DuckDB itself. Filter on `c_nationkey` or `c_custkey` in
@@ -113,7 +114,7 @@ server):
  "inputSchema": {"type": "object", "properties": {
    "nation": {"type": "integer", "minimum": 0, "maximum": 24,
               "description": "Nation key, an integer 0-24. Omit for all nations."},
-   "limit":  {"type": "integer", "minimum": 1, "maximum": 100, "default": "10",
+   "limit":  {"type": "integer", "minimum": 1, "maximum": 100, "default": 10,
               "description": "Maximum rows to return, 1-100. Default 10."}}}}
 ```
 
@@ -326,9 +327,8 @@ only, so bridge it with `mcp-remote` (needs Node; not tested against flAPI here)
 HTTP.
 
 **Behind MCP auth** (`mcp.auth.enabled: true`), the client sends the JWT, OIDC token or
-Basic credentials as `Authorization`. That same header is what the `flapi_*` tools read,
-so on such a server the config tools only work if you call them separately with the
-config-service token. See `flapi-auth`.
+Basic credentials as `Authorization` and the config-service token as `X-Config-Token`,
+so both the data tools and the `flapi_*` tools work on one connection. See `flapi-auth`.
 
 ## Canonical workflow: SQL to agent tool
 
@@ -337,7 +337,8 @@ config-service token. See `flapi-auth`.
    use it. Give every request field a `description` and a typed validator.
 3. Add a `limit` field with `default:` and/or `response.max-rows`.
 4. `flapi -c flapi.yaml --validate-config`. Fix any `DESCRIPTION_*` warning.
-5. **Restart** the server (`tools/list` is built at startup).
+5. Reload it (`flapii endpoints reload <path>`, or the plugin hook does it on save); a new
+   file needs a restart (or create it with `flapii endpoints create -f` instead).
 6. `tools/list` with curl: check the name, types, ranges and `required`.
 7. `tools/call` with `"_dryRun": true`, then for real. Compare with the REST route.
 8. Connect the client (`claude mcp add ...` or the plugin's server) and ask the agent to

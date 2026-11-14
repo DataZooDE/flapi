@@ -92,8 +92,8 @@ choosing this over § 2.
 **A DuckDB-file catalog cannot be shared with a running fleet.** A DuckDB file
 takes an exclusive lock, and a replica holds it for its whole life even with
 `read-only: true`. While any server has the file open, the one-shot writer
-fails with `Failed to attach DuckLake catalog: ... Could not set lock on file
-... Conflicting lock is held`. The writer can only run when no replica holds
+fails (exit `1`) with `{"error":"a running flapi holds the DuckLake catalog lock;
+refresh through the server: flapii cache refresh <path>"}`. The writer can only run when no replica holds
 the file (between deploys, with the fleet scaled to zero), and the replicas
 must start after it finishes. For a writer that runs while replicas serve, use
 a Postgres catalog.
@@ -129,7 +129,7 @@ Trim `duckdb.default-extensions` to what your endpoints use.
   with `status: starting` while caches warm, so a large warm-up turns into a
   restart loop.
 - **Readiness (traffic) probe:** `/health`. It is `503` while caches are
-  starting, when a cache failed to build at this start, and when a request has
+  starting, when a cache's first build failed (no table to serve), and when a request has
   been in flight longer than `stall-timeout-s`; it is `200` (`ready`, or
   `degraded` for a stale or unbuilt cache) otherwise. See
   [CLI_REFERENCE § 6](../CLI_REFERENCE.md#6-runtime-health-endpoints).

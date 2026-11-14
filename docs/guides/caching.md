@@ -19,11 +19,14 @@ ducklake:
   alias: cache
   metadata-path: ./data/cache.ducklake
   data-path: ./data/cache.ducklake
-  retention:
+  retention:                 # default for every cache without its own retention
     max-snapshot-age: 14d
-  scheduler:
-    enabled: true
 ```
+
+The scheduler is **on by default**: every `cache.schedule` is honoured without
+further configuration. Set `ducklake.scheduler.enabled: false` only to opt out
+(startup then warns that scheduled caches will not refresh). Startup logs
+`Cache scheduler on: N scheduled cache(s), checked every X s`.
 
 ## 2. Add a cache block to the endpoint
 
@@ -92,9 +95,13 @@ cache:
 ## Writing the populate template
 
 flAPI runs the populate template **verbatim**. It does not wrap a `SELECT` in a
-`CREATE TABLE`, so the template itself must write the table. A template that
-is only a `SELECT` "succeeds", the table is never created, and the serving
-endpoint fails with `Table with name … does not exist`.
+`CREATE TABLE`, so the template itself must write the table. A statement that
+is only a `SELECT` is refused before anything runs (`cache template must write
+{{cache.catalog}}.{{cache.schema}}.{{cache.table}} … statement N of the template
+is a bare SELECT, which builds nothing`), and after the script the cache table
+must exist, or the refresh fails and is rolled back. A cache whose first build
+fails answers `503 {"error":"cache_build_failed"}` with `Retry-After: 5`; the
+reason is in the server log.
 
 Full refresh (no `primary-key`, no `cursor`):
 
@@ -282,8 +289,9 @@ flapii cache audit /customers     # sync_type, status, duration_ms, rows_affecte
 flapii metrics --endpoint /customers   # last/avg/max refresh duration, data age, state
 ```
 
-Without a running server, time the one-shot refresh:
-`time flapi cache refresh -c flapi.yaml --endpoint /customers`.
+Without a running server, run the one-shot refresh: its JSON summary carries
+`duration_ms` and `rows_affected` per cache
+(`flapi cache refresh -c flapi.yaml --endpoint /customers`).
 
 `rows_affected` is the **sum over every DML statement** in the template: a
 template that deletes 1 row and then merges 2 reports `3`. `CREATE TABLE … AS`
@@ -306,16 +314,19 @@ What usually makes a refresh shorter, biggest win first:
    table are skipped, not queued.
 5. **Keep small deltas cheap.** Frequent small refreshes create many small files.
    `ducklake.data-inlining-row-limit` keeps small inserts in the catalog, and
-   `ducklake.compaction` merges files on a schedule.
+   `ducklake.compaction` (`enabled: true` plus a `schedule` such as `24h` or
+   `@daily`) merges small files and cleans up once per schedule.
 6. **Watch merge-mode refresh time creep.** Every update or delete in a
    DuckLake table writes a delete file next to the data files, and readers apply
    all of them. Over many refreshes refresh time grows: measured on a 5M-row
    merge cache updating ~500k rows per refresh, 78 delete files after 12
    refreshes and refresh time rising from ~1.2 s to ~6.3 s. Compact the table,
-   or rebuild it with an occasional full refresh.
+   or rebuild it with an occasional full rebuild (`flapii cache refresh <path> --full`).
 7. **Bound snapshot growth.** Every refresh is a DuckLake snapshot. Set
-   `retention.keep-last-snapshots` / `max-snapshot-age` and run
-   `flapii cache gc <path>`.
+   `retention.keep-last-snapshots` / `max-snapshot-age` (per cache, or once under
+   `ducklake.retention` for all caches without their own). Retention runs after
+   every refresh and on `flapii cache gc <path>`; expired files are deleted from
+   disk.
 
 The `flapi-cache-tuning` skill in the [Claude Code plugin](./claude-code.md)
 walks through this loop with before/after numbers.
@@ -323,22 +334,39 @@ walks through this loop with before/after numbers.
 ## When it refreshes
 
 - **At startup**: caches are warmed for endpoints that enable them, according to
-  `ducklake.warmup`. With `always` (the default) every populate query runs again.
-  With `if-empty` only tables that do not exist yet are built. With `never` none
-  are, and a missing table answers `503 cache_not_built` until it is built.
-  `--no-cache-warmup` forces `never` for one run, e.g. in CI.
-- **On `cache.schedule`** — per endpoint.
-- **On demand** — `flapii cache refresh /endpoint`.
+  `ducklake.warmup`. With `always` (the default) every populate query runs again
+  (once per cache table, even when several endpoints share it). With `if-empty`
+  only tables that do not exist yet are built. With `never` none are, and a
+  missing table answers `503 cache_not_built` until it is built.
+  `--no-cache-warmup` forces `never` for one run, e.g. in CI. If a warm-up fails
+  over a table an earlier run built, the endpoint keeps serving it (state `stale`).
+- **On `cache.schedule`** — per cache table. The scheduler does not refresh at
+  boot: the first scheduled refresh comes one `schedule` after the last real
+  refresh (this run's warm-up, else the table's newest snapshot, else process
+  start); manual refreshes count. Schedules are checked every
+  `ducklake.scheduler.scan-interval` (default: the shorter of
+  `heartbeat.worker-interval`, which defaults to 60 s, and the shortest
+  `cache.schedule`).
+- **On demand** — `flapii cache refresh /endpoint`. Add `--full` (REST:
+  `?full=true`) for a **full rebuild**: the watermark is erased and the cache
+  table is dropped and rebuilt in the same transaction, so an append cache is
+  rebuilt rather than re-appended. Use it after a template or source change.
+- **After a write** — `invalidate-on-write: true` refreshes before the write's
+  response is sent; `refresh-on-write: true` refreshes in the background after
+  it (coalesced per endpoint). With both, the synchronous refresh wins. MCP tool
+  writes follow the same rules.
 
 - **From a pipeline**: `flapi cache refresh --config flapi.yaml --all` refreshes
   once and exits (`0` ok, `1` a refresh failed, `2` usage). Run it after the
   upstream build. Replicas then attach the same catalog with
   `ducklake.read-only: true`; see [serverless.md](./serverless.md). With a
-  DuckDB-file catalog the one-shot refresh fails with a lock error while any
-  server holds the file open, read-only or not.
+  DuckDB-file catalog the one-shot refresh fails (exit `1`) while any server
+  holds the file open, with `{"error":"a running flapi holds the DuckLake
+  catalog lock; refresh through the server: flapii cache refresh <path>"}`.
+  `flapi cache refresh --full` rebuilds in full.
 
 A normal GET never triggers a refresh. While a cache is still warming, requests
-get **503 with `Retry-After`** rather than an empty result set.
+get **503 `cache_warming` with `Retry-After`** rather than an empty result set.
 
 ## Operating it
 
@@ -349,8 +377,9 @@ get **503 with `Retry-After`** rather than an empty result set.
 ```bash
 flapii cache get /customers        # current configuration and state
 flapii cache list                  # all caches
-flapii cache refresh /customers    # force a refresh now
-flapii cache audit /customers      # snapshot history
+flapii cache refresh /customers    # refresh now
+flapii cache refresh /customers --full   # drop and rebuild from scratch
+flapii cache audit /customers -o table   # refresh history: mode, status, duration, rows, snapshot
 flapii cache gc /customers         # apply retention (path is required)
 ```
 

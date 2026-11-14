@@ -79,7 +79,13 @@ flAPI runs as a unified server providing both REST API and MCP (Model Context Pr
 
 # Validate configuration without starting server
 ./flapi --validate-config
+
+# Print the build version
+./flapi --version
 ```
+
+Once the port is bound the server logs
+`flAPI server listening on http://<host>:<port> (REST API; MCP at http://<host>:<port>/mcp/jsonrpc)`.
 
 ---
 
@@ -222,7 +228,7 @@ Sets the logging verbosity level.
 | Type | string (enum) |
 | Default | `info` |
 | Required | No |
-| Valid values | `debug`, `info`, `warning`, `error` |
+| Valid values | `debug`, `info`, `warning` (or `warn`), `error` |
 | Environment variable | `FLAPI_LOG_LEVEL` |
 
 **Description:**
@@ -234,9 +240,11 @@ Controls the amount of log output. More verbose levels include all messages from
 2. `FLAPI_LOG_LEVEL` environment variable
 3. Built-in default (`info`)
 
-Invalid values cause flapi to exit with a single-line error -- typos
-like `FLAPI_LOG_LEVEL=DEBUG` surface immediately rather than silently
-defaulting to `info`.
+`warn` is accepted as an alias of `warning` everywhere (flag,
+`FLAPI_LOG_LEVEL`, and `log-level:` in `flapi.yaml`). Invalid values cause
+flapi to exit with a single-line error -- typos like `FLAPI_LOG_LEVEL=DEBUG`
+surface immediately rather than silently defaulting to `info`. An unknown
+`log-level:` in the config file stops startup the same way.
 
 | Level | Description |
 |-------|-------------|
@@ -340,17 +348,21 @@ When enabled, exposes REST API endpoints and MCP tools for managing endpoints, t
 | `DELETE /api/v1/_config/endpoints/{path}` | Delete endpoint |
 | `GET /api/v1/_config/endpoints/{path}/template` | Get SQL template |
 | `PUT /api/v1/_config/endpoints/{path}/template` | Update SQL template |
-| `POST /api/v1/_config/endpoints/{path}/cache/refresh` | Force cache refresh |
-| `GET /api/v1/_schema` | Database schema introspection |
-| `POST /api/v1/_ping` | Health check |
+| `POST /api/v1/_config/endpoints/{path}/cache/refresh` | Refresh a cache now (`?full=true`: drop and rebuild) |
+| `GET /api/v1/_config/schema` | Database schema introspection |
+| `GET /api/v1/_config/health` | Health and server version |
+| `GET /api/v1/_config/metrics` | Runtime metrics |
 
-**MCP Tools (18 configuration management tools):**
+The full list is in the [Config Service API Reference](./CONFIG_SERVICE_API_REFERENCE.md).
 
-When config-service is enabled, 18 MCP configuration tools become available:
+**MCP Tools (20 configuration management tools):**
+
+When config-service is enabled, 20 MCP configuration tools become available:
 - **Discovery Tools (5):** `flapi_get_project_config`, `flapi_get_environment`, `flapi_get_filesystem`, `flapi_get_schema`, `flapi_refresh_schema`
 - **Template Tools (4):** `flapi_get_template`, `flapi_update_template`, `flapi_expand_template`, `flapi_test_template`
 - **Endpoint Tools (6):** `flapi_list_endpoints`, `flapi_get_endpoint`, `flapi_create_endpoint`, `flapi_update_endpoint`, `flapi_delete_endpoint`, `flapi_reload_endpoint`
 - **Cache Tools (4):** `flapi_get_cache_status`, `flapi_refresh_cache`, `flapi_get_cache_audit`, `flapi_run_cache_gc`
+- **Metrics (1):** `flapi_get_metrics`
 
 See [MCP Configuration Tools API Reference](./MCP_CONFIG_TOOLS_API.md) for complete tool documentation.
 
@@ -614,6 +626,7 @@ notarisation.
 ```bash
 flapi cache refresh --config flapi.yaml --endpoint /orders --endpoint /customers
 flapi cache refresh --config flapi.yaml --all
+flapi cache refresh --config flapi.yaml --endpoint /orders --full   # drop and rebuild
 ```
 
 Opens DuckDB and the DuckLake catalog read-write, runs each selected cache's populate template exactly
@@ -623,13 +636,24 @@ exits. It opens no port and runs no warm-up, so it fits a Cloud Run Job or an Ai
 `ducklake.read-only: true`.
 
 ```json
-{"refreshed": [{"endpoint": "/orders", "table": "orders_cache", "status": "ok"}], "failed": 0}
+{"failed":0,"refreshed":[{"endpoint":"/orders","schema":"analytics","table":"orders_cache","status":"ok","rows_affected":3,"duration_ms":192}]}
 ```
+
+Each item carries `duration_ms` and `rows_affected` (the sum over the template's
+statements). `--full` erases the incremental watermark and drops the cache table
+before the template runs, in one transaction, so an append cache is rebuilt
+rather than re-appended; the item then also says `"full": true`. The run also
+compacts the catalog when `ducklake.compaction` is due.
+
+If a running server holds the DuckLake catalog (a DuckDB-file catalog is locked
+by the process that has it open), the command prints
+`{"error":"a running flapi holds the DuckLake catalog lock; refresh through the server: flapii cache refresh <path>"}`
+and exits `1`.
 
 | Exit code | Meaning |
 |-----------|---------|
 | `0` | every selected cache refreshed |
-| `1` | at least one refresh failed (the others still ran; see `"status": "failed"`) |
+| `1` | at least one refresh failed (the others still ran; see `"status": "failed"`), or the catalog is locked by a running server |
 | `2` | usage: nothing selected, an unknown endpoint, a non-cached endpoint, or a `read-only` catalog |
 
 `--config` falls back to `FLAPI_CONFIG`, then `flapi.yaml`.
@@ -719,7 +743,7 @@ See [Configuration Reference - Environment Variables](./CONFIG_REFERENCE.md#10-e
 ./flapi -c /etc/flapi/production.yaml \
   --config-service \
   --config-service-token "${CONFIG_SERVICE_SECRET}" \
-  --log-level warning
+  --log-level warn
 ```
 
 For platforms with short startup health-check windows, point the platform liveness check at:
@@ -778,22 +802,24 @@ During cache warmup, `/health/live` returns `200` as soon as the server is liste
 If a cache has **never built** (the warm-up failed), `/health` returns `503` with `"status":
 "degraded"` and a `failed` list naming the table and schema. If a later **refresh** fails over a cache
 that was already built, the endpoint keeps serving the last snapshot and `/health` returns `200` with
-`"status": "degraded"` and a `stale` list. If warm-up was skipped (`--no-cache-warmup`, `warmup: never`,
+`"status": "degraded"` and a `stale` list. This includes a failed warm-up over a table that an earlier
+run built: with `warmup: always`, restarting while the source is unreachable keeps serving the existing
+table and reports it `stale`. If warm-up was skipped (`--no-cache-warmup`, `warmup: never`,
 `read-only`) and a cache table does not exist, `/health` returns `200` with `"status": "degraded"` and an
 `unbuilt` list, and that endpoint answers `503` with `"error": "cache_not_built"`. The error text (SQL, file paths) is written to the server log
 only: `/health` is unauthenticated and never returns it.
 
-A cache counts as **failed** whenever its warm-up at *this* start failed, even if the DuckLake table
-still holds a snapshot from an earlier run: with `warmup: always`, restarting while the source is
-unreachable gives `503` and a `failed` list, not `stale`.
+A cache counts as **failed** only when no table exists to serve: its first build failed. The failure is
+logged once, with the reason.
 
 If a data request has been in flight for `stall-timeout-s` seconds or longer (top-level key, default
 `60`, `0` disables), `/health` returns `503` with `"status": "stalled"`, `"stalled_after_s"` and
 `requests.oldest_ms`. This check runs before the cache checks.
 
-Requests to a cached data endpoint while its cache is starting or failed return `503 Service
-Unavailable` with `Retry-After: 5` and a JSON body containing `"error": "cache_warming"`. flAPI
-does not serve partial or empty results from a half-built cache.
+Requests to a cached data endpoint while its cache is starting return `503 Service
+Unavailable` with `Retry-After: 5` and a JSON body containing `"error": "cache_warming"`; after a failed
+first build the body says `"error": "cache_build_failed"`. flAPI does not serve partial or empty results
+from a half-built cache.
 
 **AWS App Runner example:**
 
@@ -821,7 +847,8 @@ HealthCheckConfiguration:
 
 On receiving a shutdown signal, the server:
 1. Stops accepting new connections
-2. Completes in-flight requests (with timeout)
+2. Completes in-flight requests (with timeout); running cache populate scripts are interrupted
+   (within about 10 s) and no new refresh starts
 3. Closes database connections
 4. Exits cleanly
 

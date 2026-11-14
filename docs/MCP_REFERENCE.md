@@ -170,7 +170,11 @@ mcp:
 > MCP has no port or host of its own: it shares the HTTP server's port and host
 > (`http-port`, `-p/--port`/`FLAPI_PORT`, `--host`/`FLAPI_HOST`). `listChanged` is
 > always advertised as `false` — flAPI has no server-to-client notification
-> transport. The keys `mcp.port`, `mcp.host` and
+> transport. The lists themselves are current: `tools/list`, `resources/list` and
+> `prompts/list` are rebuilt on every endpoint change (create, update, delete,
+> reload; through REST or the `flapi_*` tools), so a client sees the change on its
+> next list call without a restart. Pagination cursors issued before a change are
+> rejected; start the listing again. The keys `mcp.port`, `mcp.host` and
 > `mcp.allow-list-changed-notifications` never took effect; flAPI now warns when
 > any of them is set.
 
@@ -941,7 +945,8 @@ The `inputSchema` for tools is automatically generated from `request` fields:
 | `field-name` | Property name |
 | `description` | Property `description` |
 | `required: true` | Added to `required` array |
-| `validators[].type` | Informs `type` (string by default) |
+| `validators[].type` | Informs `type` (`int` → `integer`, `boolean`, ...; string by default) and bounds (`min` → `minimum`) |
+| `default` | Property `default`, typed like the property (`"10"` on an `int` field becomes `10`) |
 
 **Example Conversion:**
 
@@ -954,6 +959,10 @@ request:
     validators:
       - type: int
         min: 1
+  - field-name: limit
+    default: "10"
+    validators:
+      - type: int
 ```
 
 ```json
@@ -962,8 +971,14 @@ request:
   "type": "object",
   "properties": {
     "customer_id": {
-      "type": "string",
+      "type": "integer",
+      "minimum": 1,
       "description": "Customer identifier"
+    },
+    "limit": {
+      "type": "integer",
+      "default": 10,
+      "description": ""
     }
   },
   "required": ["customer_id"]
@@ -1049,6 +1064,11 @@ INSERT INTO customers (name, email)
 VALUES ('{{{ params.name }}}', '{{{ params.email }}}')
 RETURNING id, name, email
 ```
+
+If the tool's endpoint has a cache with `invalidate-on-write: true`, the cache is refreshed before the
+tool result is returned; with `refresh-on-write: true` it is refreshed in the background after it
+(coalesced per endpoint). With both, only the synchronous refresh runs. These are the same rules as
+for REST writes.
 
 > **Implementation:** `src/mcp_route_handlers.cpp`, `src/endpoint_config_parser.cpp` | **Tests:** `test/cpp/mcp_tool_handler_test.cpp`, `test/integration/test_mcp_methods.py`
 

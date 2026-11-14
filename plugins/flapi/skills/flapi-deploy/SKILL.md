@@ -46,9 +46,14 @@ user-invocable: false
   production, leave the config service off, or set `FLAPI_CONFIG_SERVICE_TOKEN` from a
   secret store.
 - **Without a `cors:` block every origin gets `Access-Control-Allow-Origin: *`.** Set
-  `cors.allow-origins` for browser clients.
-- **Scheduled cache refresh needs `ducklake.scheduler.enabled: true`.** Without it,
-  `cache.schedule` never fires on the server. See `flapi-cache-tuning`.
+  `cors.allow-origins` for browser clients (with auth on, `*` prints `CORS_WILDCARD_WITH_AUTH`).
+- **A top-level `auth:` block now protects every endpoint without its own.** A config
+  that relied on it doing nothing turns open endpoints into 401s on upgrade; opt public
+  ones out with `auth: {enabled: false}`.
+- **The cache scheduler is on by default.** Every `cache.schedule` fires on the server
+  (no refresh at boot: the first one is one schedule after the last real refresh). On
+  replicas or when an external job refreshes, set `ducklake.scheduler.enabled: false`.
+  See `flapi-cache-tuning`.
 
 ## Self-packaging (one binary, `scp` deploy)
 
@@ -95,9 +100,7 @@ ducklake:
   data-path: /var/lib/flapi/cache_data
 ```
 
-`./api --validate-config` currently prints false `Template file does not exist:
-sqls/sqls/<file>.sql` warnings for a bundle. The server itself finds the templates. Validate
-the source tree (`flapi -c my-api/flapi.yaml --validate-config`) instead.
+`./api --validate-config` validates the bundled config (no file paths needed).
 
 ## Offline / pre-installed extensions
 
@@ -169,7 +172,10 @@ startupProbe:
 `/health` body: `status` is `ready`, `degraded` (200 for stale or unbuilt caches; 503 for a
 failed one), `starting` (503) or `stalled` (503), plus `caches{total,ready,failed,unbuilt}`
 and `requests{in_flight,oldest_ms}`. `/health` and `/health/live` need no token. Failed
-cache errors stay in the server log, not in the body.
+cache errors stay in the server log, not in the body. A cached endpoint answers 503 `cache_warming` while
+its first build runs and 503 `cache_build_failed` (`Retry-After: 5`) if it failed; with
+`warmup: always` and an existing table a failed rebuild keeps serving the old data (state
+`stale`).
 
 ## Serverless (Cloud Run, App Runner, Container Apps, Knative)
 
@@ -187,7 +193,14 @@ refreshes succeed, 1 when one failed, and 2 on a usage error such as an unknown 
 ```bash
 flapi cache refresh -c flapi.yaml --all
 flapi cache refresh -c flapi.yaml --endpoint /orders --endpoint /customers
+flapi cache refresh -c flapi.yaml --endpoint /orders --full   # DROP + rebuild, watermark erased
+# {"failed":0,"refreshed":[{"endpoint":"/orders","schema":"analytics","table":"orders_cache",
+#   "status":"ok","rows_affected":1500,"duration_ms":118,"full":true}]}
 ```
+
+If a running server holds the catalog (local DuckDB file), the job exits 1 with an
+`error` saying the DuckLake catalog lock is held and to refresh through the server
+(`flapii cache refresh <path>`). The job also runs a due `ducklake.compaction`.
 
 Replica (the catalog must already exist, or startup fails):
 
@@ -289,12 +302,14 @@ and audit logs are covered in `flapi-operate`.
 |---|---|
 | `FLAPI_CONFIG` | config path when `-c` is not given (also for `flapi cache refresh`) |
 | `FLAPI_PORT` / `FLAPI_HOST` | port / bind address when `-p` / `--host` are not given; they beat `http-port` / `http-host` |
-| `FLAPI_LOG_LEVEL` | `debug`, `info`, `warning`, `error`; beats `log-level`; invalid = exit 1 |
+| `FLAPI_LOG_LEVEL` | `debug`, `info`, `warning` (or `warn`), `error`; beats `log-level`; invalid = exit 1 |
 | `FLAPI_CONFIG_SERVICE_TOKEN` | token for `--config-service` (server) and for `flapii` (client) |
+| `FLAPI_BASE_URL` (or `FLAPI_URL`) | server URL for `flapii` |
 | `FLAPI_CACHE_WARMUP` | `always`, `if-empty`, `never` (`--cache-warmup` / `--no-cache-warmup` win) |
 | `FLAPI_EXTENSION_DIRECTORY`, `FLAPI_EXTENSIONS_OFFLINE` | where extensions live / never download |
 | `FLAPI_NO_TELEMETRY=1`, `DATAZOO_DISABLE_TELEMETRY=1` | telemetry off (as do `--no-telemetry` and `telemetry.enabled: false`) |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `AWS_SESSION_TOKEN`, `AWS_ENDPOINT_URL` | copied into DuckDB's `s3_*` settings at startup |
+| `GOOGLE_*` | NOT applied to DuckDB (startup warning); use an HMAC `CREATE SECRET (TYPE gcs, ...)` in an `init` |
 | `AZURE_STORAGE_CONNECTION_STRING` (or `AZURE_STORAGE_ACCOUNT` + `AZURE_STORAGE_KEY`) | set as DuckDB azure settings at startup (needs the `azure` extension loaded by an `init`); an explicit `CREATE SECRET` is more reliable |
 | anything read as `{{env.X}}` | must match `template.environment-whitelist` |
 
@@ -304,13 +319,14 @@ and audit logs are covered in `flapi-operate`.
    understood.
 2. Check for secrets: no literal credentials in YAML or SQL, and every `{{env.X}}` is
    whitelisted. `.env`, `*.pem` and `*.key` stay out of the tree that is shipped.
-3. Expose the server deliberately. Put `auth:` on every endpoint with non-public data
-   (`flapi-auth`). Set `cors.allow-origins` and `rate_limit`. Leave the config service off,
+3. Expose the server deliberately. Put a global `auth:` in `flapi.yaml` (or one per
+   endpoint) over all non-public data, and check the startup line `Global auth ... applies
+   to N endpoint(s)` (`flapi-auth`). Set `cors.allow-origins` and `rate_limit`. Leave the config service off,
    or protect it with `FLAPI_CONFIG_SERVICE_TOKEN` and keep `/api/v1/_config` off the
    public network.
 4. Choose a cache strategy for the target. Use `if-empty`/`never` with a prebuilt catalog
-   for scale-to-zero. Replicas use `ducklake.read-only: true`. Set
-   `ducklake.scheduler.enabled: true` if anything uses `cache.schedule` (`flapi-cache-design`).
+   for scale-to-zero. Replicas use `ducklake.read-only: true`. The scheduler is on by
+   default; turn it off where an external job refreshes (`flapi-cache-design`).
 5. Build the artifact: `flapi pack --in . --out api --with-extensions`, or an image `FROM
    ghcr.io/datazoode/flapi:v26.10.31-runtime`, or `pip install flapi-io==26.10.31`.
 6. Prove it is self-contained: run it from another directory or a fresh container, then

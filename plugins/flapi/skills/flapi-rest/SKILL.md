@@ -34,16 +34,20 @@ becomes a route.
   `true`, flAPI always wraps your query in `LIMIT <limit> OFFSET <offset>`
   (default `limit=100`), and an inner LIMIT corrupts `total_count` and makes
   `offset` pages come back empty. Set `with-pagination: false` to opt out.
-- **`field-in` does not change where a value is read from.** GET reads the query
-  string and path; POST/PUT/PATCH read the JSON body, then path, then query.
-  `field-in: header` is never read from a header (it only shows in `/doc`).
-- **Enum values go under `allowedValues:`; a string regex goes under `regex:`.**
-  `values:` is a startup error ("Missing required key: allowedValues"); `pattern:`
-  is silently ignored. `field-type:` is read by nothing, so use a validator.
-- **`method: DELETE` never runs your template.** It invalidates the endpoint's
-  cache (200) or answers 405. Write a delete as a POST/PUT/PATCH endpoint.
+- **Where a value is read from:** GET reads the query string and path;
+  POST/PUT/PATCH/DELETE read the JSON body, then path, then query.
+  `field-in: header` reads ONLY the request header (name case-insensitive, any
+  method); a query or body value of the same name does not satisfy it.
+- **Enum values: `allowedValues:` (alias `values:`); string regex: `regex:`
+  (alias `pattern:`).** If both spellings are given, `allowedValues`/`regex` win.
+  `field-type:` does nothing (load warning "has no effect"); use a validator.
+- **`method: DELETE` runs its template through the write path** (validation,
+  transaction, cache handling) and answers 200 `{"rows_affected":n}`.
+- **A 500 never shows SQL:** `{"error":"Internal Server Error","message":"...",
+  "request_id":"req-..."}`; grep the server log for that id.
 - **Endpoint YAML is read at startup**; template `.sql` edits apply on the next
-  request. After changing YAML, restart or `flapii endpoints reload <path>`.
+  request. After changing YAML, restart or `flapii endpoints reload <path>`
+  (a YAML that no longer parses: 400 with a `reason`).
 - **Routes match exactly**: `/customers/` is a 404 for `url-path: /customers`.
 - **The global block is `rate_limit` (underscore); per endpoint it is
   `rate-limit` (hyphen)**, and it needs `enabled: true` (default false).
@@ -55,7 +59,7 @@ url-path: /customers/:id        # required, starts with '/'; ':name' = path para
 method: GET                      # GET (default) | POST | PUT | PATCH | DELETE
 request:
   - field-name: id               # available as params.id
-    field-in: path               # query | path | body | header  (documentation only, see gotchas)
+    field-in: path               # query | path | body | header
     description: Customer key    # shown in /doc and the MCP schema
     required: true               # missing -> 400 "Required field is missing"
     validators:
@@ -202,13 +206,42 @@ WHERE c_custkey = {{ params.id }}
 A missing row is `200 []`, not 404. Several parameters work too:
 `/customers/:id/orders/:order_id` gives `params.id` and `params.order_id`.
 
+## Header parameters (runnable)
+
+```yaml
+# flapi: endpoint group=customers file=by-tenant.yaml
+url-path: /by-tenant
+method: GET
+with-pagination: false
+request:
+  - field-name: X-Tenant
+    field-in: header             # read from the header only; case-insensitive
+    required: true
+    validators:
+      - type: string
+        regex: '^[a-z]{2,10}$'
+template-source: by-tenant.sql
+connection: [customers]
+# flapi: check GET /by-tenant -> 400
+# flapi: check GET /by-tenant?X-Tenant=acme -> 400
+```
+
+```sql
+-- flapi: template group=customers file=by-tenant.sql
+SELECT {{ params.X-Tenant }} AS tenant, count(*) AS customers
+FROM read_parquet('{{{ conn.path }}}')
+```
+
+`curl -H 'x-tenant: acme' .../by-tenant` -> `[{"tenant":"acme","customers":1500}]`.
+
 ## Write endpoints (runnable)
 
-POST, PUT and PATCH are writes (`operation.type: write` is implied). Defaults:
+POST, PUT, PATCH and DELETE are writes (`operation.type: write` is implied). Defaults:
 `transaction: true` (BEGIN/COMMIT, ROLLBACK on error), `validate-before-write:
 true` (missing required fields AND undeclared body keys are 400),
 `returns-data: false` (rows from `RETURNING` are still returned). POST answers
-201, PUT/PATCH 200, body `{"rows_affected": n, "data": [...]}`.
+201, PUT/PATCH/DELETE 200, body `{"rows_affected": n, "data": [...]}`. Without
+`RETURNING`, `n` currently reads 1 however many rows changed; use `RETURNING`.
 
 ```yaml
 # flapi: config group=notes
@@ -306,17 +339,40 @@ connection: [notes]
 SELECT id, title, done FROM notesdb.notes ORDER BY id
 ```
 
+```yaml
+# flapi: endpoint group=notes file=notes-delete.yaml
+url-path: /notes/:id
+method: DELETE
+request:
+  - field-name: id
+    field-in: path
+    required: true
+    validators:
+      - type: int
+        min: 1
+template-source: notes-delete.sql
+connection: [notes]
+# flapi: check DELETE /notes/1 -> 200
+# flapi: check DELETE /notes/abc -> 400
+```
+
+```sql
+-- flapi: template group=notes file=notes-delete.sql
+DELETE FROM notesdb.notes WHERE id = {{ params.id }}
+```
+
 - A write template may hold several `;`-separated statements; each runs as its
   own prepared statement. With `returns-data: true` and a final `SELECT`, that
   SELECT's rows become `data`.
-- A database error (constraint, missing table) is a 500 whose text is scrubbed
-  of interpolated secrets; SQLite/DuckDB lock contention is a 503 + `Retry-After`.
-- Deletes: `url-path: /notes/:id/delete`, `method: POST`, template
-  `DELETE FROM notesdb.notes WHERE id = {{ params.id }};`.
+- A database error (constraint, missing table) is a 500 with the generic body
+  and a `request_id`; the detail is only in the server log under that id.
+  SQLite/DuckDB lock contention is a 503 + `Retry-After`.
 - The `preventSqlInjection` screen rejects string values that contain SQL
   keywords, `--`, `/*`, `1=1`, or a quote next to an operator/parenthesis. Turn it
   off only for fields used exclusively through bound `{{ }}`.
-- Cache write-through (`cache.invalidate-on-write`): see `flapi-cache-design`.
+- Writes on a cached endpoint: `cache.invalidate-on-write: true` refreshes the
+  cache before the response, `refresh-on-write: true` right after it
+  (asynchronously); see `flapi-cache-design`.
 
 ## YAML includes and environment variables
 
@@ -362,19 +418,8 @@ WHERE ({{ params.nation }} IS NULL OR c_nationkey = {{ params.nation }})
 - `{{env.VAR}}` works in any YAML value, only if `VAR` matches a regex in
   `template.environment-whitelist` (root config). An unlisted name stops startup;
   an empty whitelist allows none; `${VAR}` is left as literal text; a
-  `{{env.X}}` inside an included file is not substituted.
-
-```yaml
-template:
-  path: ./sqls
-  environment-whitelist: ['^FLAPI_.*', '^DB_PASSWORD$']
-connections:
-  warehouse:
-    properties:
-      password: '{{env.DB_PASSWORD}}'
-```
-
-In SQL templates the same whitelist applies: `{{{ env.FLAPI_REGION }}}`.
+  `{{env.X}}` inside an included file is not substituted. In SQL templates the
+  same whitelist applies: `{{{ env.FLAPI_REGION }}}` (see `flapi-setup`).
 
 ## Per-endpoint rate limit
 
@@ -391,9 +436,7 @@ Buckets are per route and method. Over the limit: 429, `Retry-After`,
 An endpoint with its own block (even `enabled: false`) ignores the global
 `rate_limit:` block in `flapi.yaml`, which applies to every other endpoint.
 
-## OpenAPI
-
-`GET /doc` serves an HTML page, `GET /doc.yaml` the OpenAPI 3 document built
+`GET /doc` serves Swagger UI, `GET /doc.yaml` the OpenAPI 3 document built
 from every endpoint's `url-path`, `method`, request fields and `description`.
 
 ## Canonical endpoint workflow

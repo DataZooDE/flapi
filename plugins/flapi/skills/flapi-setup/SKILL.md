@@ -18,8 +18,8 @@ user-invocable: false
 
 ## Critical gotchas
 
-- **`project-name`, `project-description` and `template.path` are required.** Leave one out
-  and startup fails with `Missing required key: project-description`.
+- **`project-name` and `template.path` are required** (`project-description` is optional,
+  default empty). Leave one out and startup fails with `Missing required key: ...`.
 - **Paths in `properties` and in `init` resolve differently.** A property value that starts
   with `./` or `../` is resolved against the directory of `flapi.yaml`. A path inside `init`
   SQL (`ATTACH './data/x.sqlite' ...`) is plain DuckDB SQL: it resolves against the
@@ -36,17 +36,21 @@ user-invocable: false
 - **A failing `init` statement stops the server.** All connections share one DuckDB
   instance, and every `init` runs at startup. `CREATE SECRET` that cannot be validated, or an
   `ATTACH` to an unreachable database, means no server, not one broken endpoint.
-- **Log levels are `debug | info | warning | error`.** `warn` is rejected by `--log-level`
-  and `FLAPI_LOG_LEVEL`. In `log-level:` in the config, it falls back to `info`.
+- **Log levels are `debug | info | warning | error`; `warn` is an alias of `warning`**
+  (flag, `FLAPI_LOG_LEVEL` and config). An unknown `log-level:` in the config stops startup.
 - **Unknown top-level keys are ignored with a warning**, for example `rate-limit:` (the
-  global key is `rate_limit`), `port:` or `https:`. Do not ignore the warning. The key has no
-  effect.
+  global key is `rate_limit`), `port:` or `https:`. Known keys that do nothing warn too
+  (`server-name`, `connections.<n>.log-queries/log-parameters/allow`, a request field's
+  `field-type`, `storage:` with a local `template.path`). Do not ignore these warnings.
 - **Credentials never go in YAML.** Put them in `CREATE SECRET` statements in `init` that
   read whitelisted env vars. Prefer `CREATE OR REPLACE SECRET` (temporary). `PERSISTENT`
   writes the secret to `~/.duckdb/stored_secrets`. flAPI's DuckDB also loads every
   persistent secret already stored there.
-- **`flapi --version` prints `1.0`.** That is an argparse default, not the release. Use
-  `pip show flapi-io` to see the installed version.
+- **`flapi --version` prints the build version** (e.g. `26.10.31`; a build from git
+  appends `-<n>-g<sha>`). A running server
+  reports the same in `GET /api/v1/_config/health` -> `server.version`.
+- **GCS: `GOOGLE_*` env vars are not applied to DuckDB** (startup WARNING). Use an HMAC
+  `CREATE SECRET (TYPE gcs, KEY_ID ..., SECRET ...)` in a connection `init`.
 
 ## Install
 
@@ -203,10 +207,10 @@ avoids a read/write deadlock in the SQLite scanner. Override it with
 
 ```yaml
 project-name: my-api                  # required
-project-description: What it serves   # required
+project-description: What it serves   # optional
 http-port: 8080                       # -p / FLAPI_PORT win over this
 http-host: 0.0.0.0                    # --host / FLAPI_HOST win over this
-log-level: info                       # debug | info | warning | error
+log-level: info                       # debug | info | warning (or warn) | error
 log-format: text                      # text | json (one JSON object per line)
 template:
   path: ./sqls                        # required; endpoint YAML + SQL, scanned recursively
@@ -281,7 +285,9 @@ Subcommands: `flapi cache refresh`, `flapi extensions install`, `flapi pack`, `f
 
 `flapii` (the CLI) talks to a running server's config service. Start the server with
 `--config-service`. Then `export FLAPI_CONFIG_SERVICE_TOKEN=<token>` for the client (or
-pass `-t`). The default base URL is `http://localhost:8080` (`-u` or `FLAPI_BASE_URL`).
+pass `-t`). The default base URL is `http://localhost:8080` (`-u`, `FLAPI_BASE_URL`, or
+`FLAPI_URL` when `FLAPI_BASE_URL` is unset). The server logs `flAPI server listening on
+http://<host>:<port> (REST API; MCP at .../mcp/jsonrpc)` once it has bound the port.
 
 ```bash
 export FLAPI_CONFIG_SERVICE_TOKEN=dev-token

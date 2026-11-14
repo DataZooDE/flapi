@@ -43,10 +43,16 @@ flapi --config s3://my-bucket/configs/flapi.yaml
 For Google Cloud Storage:
 
 ```bash
-export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
-
 flapi --config gs://my-bucket/configs/flapi.yaml
 ```
+
+flAPI does **not** use `GOOGLE_APPLICATION_CREDENTIALS` or `GOOGLE_CLOUD_PROJECT`
+for `gs://` (startup logs a warning when they are set), and DuckDB's `httpfs`
+does not read service-account files. The config file is read before any
+connection `init` runs, so loading it from `gs://` works only for an object
+that is readable without credentials. For a private bucket, keep the config in
+S3 or [pack it into the binary](guides/self-packaging.md); data in a private GCS
+bucket is read with an HMAC key, see [Google Cloud Storage](#google-cloud-storage).
 
 ## Supported Storage Backends
 
@@ -54,7 +60,7 @@ flapi --config gs://my-bucket/configs/flapi.yaml
 |---------|------------|----------------|
 | Amazon S3 | `s3://` | AWS credentials (env vars or IAM role) |
 | S3-compatible | `s3://`, `s3a://`, `s3n://` | Same as S3 |
-| Google Cloud Storage | `gs://` | Service account or ADC |
+| Google Cloud Storage | `gs://` | HMAC key in a DuckDB secret (`TYPE gcs`); `GOOGLE_*` variables are not used |
 | Azure Blob Storage | `az://`, `abfs://` | Storage account key or managed identity |
 | HTTPS | `https://` | None (public) or HTTP auth headers |
 | HTTP | `http://` | None (not recommended for production) |
@@ -167,21 +173,33 @@ export AWS_PROFILE=my-profile
 
 ### Google Cloud Storage
 
-**Option 1: Service Account Key**
+DuckDB's `httpfs` reads `gs://` through Google's S3-interoperability API, which
+takes an **HMAC key** (Cloud Storage → Settings → Interoperability). It does not
+use service-account key files, Application Default Credentials or an attached
+service account, and flAPI does not configure GCS from `GOOGLE_APPLICATION_CREDENTIALS`
+or `GOOGLE_CLOUD_PROJECT`: when either is set, startup logs a warning saying so.
 
-```bash
-export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+Create the secret in a connection's `init`, with the values from whitelisted
+environment variables:
+
+```yaml
+template:
+  path: ./sqls
+  environment-whitelist: ['^GCS_HMAC_.*']
+
+connections:
+  events:
+    init: |
+      INSTALL httpfs;
+      LOAD httpfs;
+      CREATE OR REPLACE SECRET gcs_hmac (
+        TYPE gcs,
+        KEY_ID '{{env.GCS_HMAC_KEY_ID}}',
+        SECRET '{{env.GCS_HMAC_SECRET}}'
+      );
+    properties:
+      path: 'gs://my-bucket/events/*.parquet'
 ```
-
-**Option 2: Application Default Credentials**
-
-```bash
-gcloud auth application-default login
-```
-
-**Option 3: Compute Engine/Cloud Run**
-
-Uses the attached service account automatically.
 
 ### Azure Blob Storage
 
@@ -232,7 +250,8 @@ FROM gcr.io/distroless/cc
 
 COPY flapi /flapi
 
-# Config loaded from GCS at runtime
+# Config loaded from GCS at runtime. The object must be readable without
+# credentials (see "Loading Config from GCS"); otherwise pack the config in.
 ENV FLAPI_CONFIG=gs://my-bucket/configs/flapi.yaml
 
 ENTRYPOINT ["/flapi", "--config", "${FLAPI_CONFIG}"]

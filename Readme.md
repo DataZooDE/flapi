@@ -137,7 +137,7 @@ flAPI now supports the **Model Context Protocol (MCP)** in a **unified configura
 - **Typed, structured tool contracts**: tool parameters advertise real types and constraints (int ranges, dates, uuid, enum, …), results carry machine-readable `structuredContent`, an `outputSchema` is learned after first use, and failures return actionable `isError` results the model can self-correct from
 - **Unified Configuration**: Single YAML files can define REST endpoints, MCP tools, and MCP resources
 - **Automatic Detection**: Configuration type is determined by presence of `url-path` (REST), `mcp-tool` (MCP tool), or `mcp-resource` (MCP resource)
-- **Shared Components**: MCP tools and resources use the same SQL templates, parameter validation, authentication, and caching as REST endpoints
+- **Shared Components**: MCP tools and resources use the same SQL templates, parameter validation and caching as REST endpoints; MCP authentication is configured separately in the top-level `mcp.auth` block with per-tool `allowed-roles`
 - **Security Integration**: method authorization enforced on every request, per-tool/resource/prompt RBAC (`allowed-roles`), shadow/dry-run (`_dryRun`), response shaping, per-tool rate limiting, and a tool-description hygiene scanner
 - **Tool Discovery**: automatic tool discovery, pagination, resource templates (`flapi://customers/{id}`), and `x-mcp-header` for per-tenant edge routing
 
@@ -371,8 +371,9 @@ If you have any questions or need help, please [open an issue](https://github.co
 If flAPI misbehaves — an endpoint that will not serve, a cache that will not invalidate,
 an auth flow that will not complete — please
 [open an issue](https://github.com/DataZooDE/flapi/issues). Deployments differ in ways we
-cannot reproduce here, so a report with your config is the fastest path to a fix. Every
-JSON error response carries a `report_issue` link for exactly this reason.
+cannot reproduce here, so a report with your config is the fastest path to a fix. A failed
+request answers `500` with a `request_id`; the details are in the server log under that id,
+so quote the matching log lines in the report.
 
 If it saved you time, a star on the repo helps other people find it.
 

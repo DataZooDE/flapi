@@ -27,7 +27,11 @@ connection: [my-data]
 
 `url-path` may contain path parameters: `/customers/:id` with a matching
 `field-in: path` entry. A field's type comes from its validators (`type: int`
-above); there is no `field-type` key.
+above). `field-type` does nothing; loading warns that it "has no effect".
+
+A `field-in: header` field is read from the request headers, case-insensitively
+(`field-name: X-Tenant` matches `x-tenant: acme`), and only from there: a query
+or body parameter with the same name does not satisfy it.
 
 ## Pagination is on by default
 
@@ -116,6 +120,8 @@ validators:
     min: "2020-01-01"
 ```
 
+`regex` and `allowedValues` are the canonical spellings; `pattern` and `values`
+are accepted as aliases (the canonical key wins if both are present).
 `email`, `uuid` and `time` are also available. Full list and options:
 [CONFIG_REFERENCE § 5](../CONFIG_REFERENCE.md).
 
@@ -140,6 +146,40 @@ flapii endpoints get /customers
 
 If a request 404s, the usual causes are a `url-path` that does not match, a file
 outside `template.path`, or a YAML error at startup — check the server log.
+
+A `500` never carries the SQL or database error. Its body is
+
+```json
+{"error": "Internal Server Error",
+ "message": "The request failed on the server. The details are in the server log under this request id.",
+ "request_id": "req-46788500aef28a89"}
+```
+
+so grep the server log for the `request_id` to see what went wrong.
+
+## Writes, including DELETE
+
+`POST`, `PUT`, `PATCH` and `DELETE` endpoints all run their template as a write:
+parameters are validated, the template is rendered and executed, and the answer
+is `200 {"rows_affected": n}`. A `DELETE` endpoint is written like the others:
+
+```yaml
+# sqls/customer-delete.yaml
+url-path: /customers/:id
+method: DELETE
+request:
+  - field-name: id
+    field-in: path
+    required: true
+    validators:
+      - type: int
+template-source: customer-delete.sql   # DELETE FROM customers WHERE id = {{ params.id }}
+connection: [my-data]
+```
+
+If the endpoint also has a cache, `cache.invalidate-on-write: true` refreshes it
+before the response is sent, and `cache.refresh-on-write: true` refreshes it
+in the background after the response; see [Caching](./caching.md).
 
 ## Common next steps
 

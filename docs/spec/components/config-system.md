@@ -274,9 +274,23 @@ cache:
   table: customers_cache
   schedule: "1h"
 auth:
-  required: true
-  roles: [admin, user]
+  enabled: true
+  type: basic
+  roles: [admin, user]     # caller needs one of them, else 403
+  users: [...]
 ```
+
+**Global auth inheritance.** `ConfigManager::applyGlobalAuthDefault` copies the top-level `auth:` block
+(when `enabled: true`) into every REST endpoint that has no `auth:` block of its own and marks it
+`auth.inherited`. It runs wherever an endpoint is parsed: initial load, reload, and config-service
+creates. An endpoint's own block replaces the global one; `auth: {enabled: false}` opts out.
+
+**Load-time warnings for inert keys.** Keys that are parsed but read by nothing warn instead of being
+silently accepted: `field-type` on a request field, `server-name`, `connections.<n>.log-queries`,
+`log-parameters` and `allow`, unknown top-level keys, and a `storage:` block when `template.path` is
+local (it only configures caching of remote templates). Validators accept `pattern` for `regex` and
+`values` for `allowedValues`; the canonical key wins when both are set. `auth.type: jwt` is normalised
+to `bearer`, `log-level: warn` to `warning`; an unknown `log-level` stops startup.
 
 ### EndpointConfig Struct
 
@@ -309,15 +323,26 @@ struct EndpointConfig {
 The ConfigService API allows runtime configuration changes:
 
 ```
-POST /api/v1/_config/endpoints     - Create endpoint
-PUT  /api/v1/_config/endpoints/:path - Update endpoint
-DELETE /api/v1/_config/endpoints/:path - Delete endpoint
+POST   /api/v1/_config/endpoints        - Create endpoint
+PUT    /api/v1/_config/endpoints/:slug  - Update endpoint
+DELETE /api/v1/_config/endpoints/:slug  - Delete endpoint
 ```
 
-These operations:
-1. Validate the new configuration
-2. Update the EndpointRepository
-3. Optionally persist to disk
+These operations go through the same loader as a YAML file on disk, so `mcp-tool`, validators,
+`rate-limit` and the global-auth default all apply, and they **persist**:
+
+1. **Create** parses the body with the real endpoint loader, writes `<template dir>/<slug>.yaml`, and
+   answers `201 {"status":"created","endpoint","slug","url-path","file"}`. An existing endpoint is
+   `409`, as is any write while serving a packed bundle; a body that does not parse is `400`.
+2. **Update** deep-merges the body onto the endpoint's YAML file and re-parses the result. Changing
+   `url-path`, `method` or the name is `400` (delete and re-create instead); an endpoint built from
+   `{{include}}` files is `409`. A camelCase body is applied in memory only and the answer says
+   `"persisted": false`. The rewritten YAML loses its comments.
+3. **Delete** removes the endpoint and its YAML file.
+
+Errors are JSON `{"error": "..."}`. A reload that fails to parse is `400` with a `reason`; `404` means
+only that the endpoint is unknown. Every change rebuilds the MCP `tools/list`, `resources/list` and
+`prompts/list` answers.
 
 ## Path Resolution
 

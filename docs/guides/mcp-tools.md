@@ -105,9 +105,14 @@ description tells it.
 
 ## Limiting who can call it
 
-Tools honour the same `auth:` and `rate-limit:` blocks as REST endpoints, plus
-per-tool roles. See [Authentication](./authentication.md) and
-[MCP_REFERENCE § Auth](../MCP_REFERENCE.md).
+MCP has its own authentication: the top-level `mcp.auth` block, with per-tool
+`mcp-tool.allowed-roles`. An endpoint's REST `auth:` block (and the inherited
+top-level `auth:`) governs REST requests only; it does not gate `tools/call`, so
+protect a tool that serves the same data with `mcp.auth`. See
+[Authentication](./authentication.md) and [MCP_REFERENCE § Auth](../MCP_REFERENCE.md).
+
+Tool lists follow the configuration: creating, updating, deleting or reloading an
+endpoint rebuilds `tools/list` at once, with no restart.
 
 ## Managing configuration through MCP
 

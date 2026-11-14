@@ -41,6 +41,10 @@ sequenceDiagram
         Auth-->>RCM: 401, short-circuit
         RCM-->>Client: 401 Unauthorized
     end
+    alt Authenticated, but holds none of auth.roles
+        Auth-->>RCM: 403 Forbidden (JSON), short-circuit
+        RCM-->>Client: 403 Forbidden
+    end
     Auth->>Crow: handleDynamicRequest()
 
     Crow->>CM: getEndpointForPathAndMethod("/customers", "GET")
@@ -49,8 +53,8 @@ sequenceDiagram
     Crow->>RH: handleRequest()
 
     RH->>Cache: readinessBlock(endpoint)
-    alt Cache still warming
-        Cache-->>Client: 503 + Retry-After
+    alt Cache warming / build failed / not built
+        Cache-->>Client: 503 + Retry-After (cache_warming | cache_build_failed | cache_not_built)
     end
 
     RH->>RH: Extract params from query/path/body/header
@@ -140,6 +144,11 @@ correlation and REST audit coverage are not tracing features.
 - Returns 401 if authentication fails — and deliberately does **not** complete
   the request itself. The unwind reaches `RequestContextMiddleware`, which writes
   the single audit line. Completing it here emitted two.
+- After a successful authentication, checks `auth.roles`: a principal holding
+  none of them gets `403 {"error":"Forbidden",...}`. An empty list admits any
+  authenticated caller.
+- The endpoint's auth config is either its own `auth:` block or, when it has
+  none, the inherited top-level `auth:` block (resolved at load time).
 
 #### 3. Parameter Extraction (request_handler.cpp)
 
@@ -150,7 +159,10 @@ Parameters are extracted based on `field-in` configuration:
 | `query` | URL query string | `?id=123` |
 | `path` | URL path segments | `/customers/123` |
 | `body` | Request body (JSON) | `{"id": 123}` |
-| `header` | HTTP headers | `X-Custom-Id: 123` |
+| `header` | HTTP headers (case-insensitive name match; GET and writes) | `X-Custom-Id: 123` |
+
+A `header` field is satisfied **only** by a request header; a query or body
+parameter of the same name is not used for it.
 
 ```cpp
 std::map<std::string, std::string> params;
@@ -179,11 +191,7 @@ validators:
 
 Validation failure returns 400 with details:
 ```json
-{
-  "error": "Validation failed",
-  "field": "id",
-  "message": "Value must be a positive integer"
-}
+{"errors": [{"message": "Invalid string format", "field": "name"}]}
 ```
 
 #### 5. Cache readiness (cache_manager.cpp)
@@ -195,8 +203,12 @@ other; it simply reads a table that is already populated. Earlier revisions of
 this document described a per-request hit/miss branch that never existed.
 
 What *does* happen per request is a **readiness check**: if the cache table for
-this endpoint is still warming, `RequestHandler::handleRequest` short-circuits
-with a 503 and a `Retry-After` header rather than serving an empty table.
+this endpoint is not ready, `RequestHandler::handleRequest` short-circuits
+with a 503 and `Retry-After: 5` rather than serving an empty table. The body's
+`error` says why: `cache_warming` (first build running), `cache_build_failed`
+(the first build failed; detail in the server log) or `cache_not_built`
+(warm-up skipped and no table yet). A cache that was built once keeps serving
+its last snapshot when a later refresh fails.
 
 See [components/caching.md](./components/caching.md) for the refresh lifecycle.
 
@@ -442,7 +454,7 @@ MCP responses follow JSON-RPC 2.0 format:
 
 ## Write Operation Flow
 
-Write operations (POST, PUT, DELETE with `operation.type: write`) follow a similar flow with additional considerations:
+Write operations (`POST`, `PUT`, `PATCH`, `DELETE`) follow a similar flow with additional considerations. `DELETE` is a write like the others: its template runs, and it answers `{"rows_affected": n}`.
 
 ### Sequence Diagram
 
@@ -465,19 +477,19 @@ sequenceDiagram
         DuckDB-->>DM: rows_affected
         DM->>DuckDB: COMMIT
 
-        alt Cache invalidation enabled
-            RH->>Cache: invalidateCache(endpoint)
+        alt invalidate-on-write
+            RH->>Cache: refreshCache(endpoint) (synchronous)
+            RH-->>Client: 200 {"rows_affected": n}
+        else refresh-on-write
+            RH-->>Client: 200 {"rows_affected": n}
+            RH->>Cache: refreshCache(endpoint) (async, coalesced per endpoint)
+        else no cache option
+            RH-->>Client: 200 {"rows_affected": n}
         end
-
-        alt Cache refresh enabled
-            RH->>Cache: refreshCache(endpoint)
-        end
-
-        RH-->>Client: 200 OK
     else Failure
         DuckDB-->>DM: Error
         DM->>DuckDB: ROLLBACK
-        RH-->>Client: 500 Error
+        RH-->>Client: 500 {"error","message","request_id"}
     end
 ```
 
@@ -485,15 +497,18 @@ sequenceDiagram
 
 ```yaml
 operation:
-  type: write                    # Marks as write operation
+  type: Write                    # Marks as write operation
   transaction: true              # Wrap in transaction (default)
-  returns_data: true             # Use RETURNING clause
-  validate_before_write: true    # Stricter validation
+  returns-data: true             # Use RETURNING clause
+  validate-before-write: true    # Stricter validation
 
 cache:
-  invalidate_on_write: true      # Clear cache after write
-  refresh_on_write: false        # Optionally refresh immediately
+  invalidate-on-write: true      # Refresh synchronously, before the response
+  refresh-on-write: false        # Or: refresh asynchronously, after the response
 ```
+
+With both set, only the synchronous refresh runs. MCP tool writes follow the
+same rules.
 
 ---
 
@@ -530,8 +545,8 @@ snapshot releases at the end of the full expression and the pointer dangles.
 | 403 | Authorization denied (insufficient roles) |
 | 404 | Endpoint not found |
 | 429 | Rate limit exceeded |
-| 503 | Cache still warming (`Retry-After` set) |
-| 500 | Query execution error, server error |
+| 503 | Cache not ready: `cache_warming`, `cache_build_failed` or `cache_not_built` (`Retry-After: 5`) |
+| 500 | Query execution error, server error. Body: `{"error":"Internal Server Error","message":"…","request_id":"req-…"}`; the detail is only in the server log under that id |
 
 Whatever the outcome, the span records an **enumerated** `error.type` — never a
 free-form exception message, which is the most reliable way to leak customer data

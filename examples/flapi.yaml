@@ -64,7 +64,7 @@ connections:
 # Heartbeat configuration
 heartbeat:
   enabled: true # Whether to enable the heartbeat worker, off by default
-  worker-interval: 10
+  worker-interval: 10  # seconds between endpoint heartbeats (default 60; must be > 0)
 
 # HTTPS enforcement configuration
 # Direct TLS termination by flAPI's embedded server (optional). Production
@@ -142,14 +142,14 @@ ducklake:
   metadata-path: ./data/cache.ducklake  # Path to DuckLake metadata
   data-path: ./data/cache  # Path to DuckLake data files
   retention:
-    keep-last-snapshots: 10  # Keep last 10 snapshots for each table
+    keep-last-snapshots: 10  # Keep last 10 snapshots for each table without its own retention
     max-snapshot-age: 30d    # Delete snapshots older than 30 days
   compaction:
     enabled: true
     schedule: '@daily'  # Run compaction daily
   scheduler:
-    enabled: true
-    scan-interval: 5m  # Check for scheduled cache refreshes every 5 minutes
+    enabled: true      # the default; set false to stop scheduled refreshes
+    scan-interval: 5m  # Check for scheduled cache refreshes every 5 minutes (default: min(worker-interval, shortest cache.schedule))
 
 # ====================================================================================
 # MCP (Model Context Protocol) Support

@@ -1,6 +1,7 @@
 # Example: Delete Order Endpoint (DELETE)
 # This endpoint demonstrates a write operation for deleting records
-# Note: DELETE is handled separately but uses similar write operation concepts
+# Note: method DELETE runs its template through the write path (validation,
+# template, cache handling) and answers 200 {"rows_affected": n}
 
 url-path: /orders/:order_id
 method: DELETE
@@ -27,7 +28,7 @@ connection:
 cache:
   enabled: true
   table: orders_cache
-  invalidate-on-write: true   # Invalidate cache after deletion
+  invalidate-on-write: true   # Refresh the cache before the delete's response
   refresh-on-write: false
 
 auth:

@@ -28,11 +28,13 @@ Designing the cache (mode, templates, deletes) is `flapi-cache-design`.
 - **`rows_affected` is the sum of the DML counts** of all statements in the
   template (the whole template runs as one transaction). A `MERGE` counts every
   matched row, changed or not, so an overlap window inflates it.
-- **Metrics reset on restart; percentiles are histogram bucket upper bounds.**
-  `p50` can read higher than `max`. Use the audit log for history.
-- **A schedule needs `ducklake.scheduler.enabled: true`** and is checked every
-  `heartbeat.worker-interval` seconds (60 with no `heartbeat:` block, 10 when the
-  block exists without the key). `ducklake.scheduler.scan-interval` is never read.
+- **Metrics reset on restart; percentiles are histogram bucket upper bounds,**
+  capped at the observed `max`. Use the audit log for history.
+- **The scheduler is on by default** and checks every
+  `ducklake.scheduler.scan-interval` (default: the shorter of
+  `heartbeat.worker-interval`, 60 s, and the shortest `cache.schedule`; floor 1 s).
+  A schedule shorter than an explicit scan interval is rounded up (startup warns).
+  A cache is due one `schedule` after its last real refresh, not at boot.
 - **A refresh still running when the next one is due is skipped**, not queued.
   A refresh longer than its schedule silently halves the freshness.
 - **A function on the cursor column defeats pushdown.** `WHERE CAST(updated_at AS
@@ -40,24 +42,28 @@ Designing the cache (mode, templates, deletes) is `flapi-cache-design`.
   with a literal of its own type.
 - **SQLite attachments and CSV files never push the watermark down**: DuckDB reads
   every row, then filters. Postgres, Parquet (row-group min/max) and DuckDB tables do.
-- **`compaction.schedule` is not parsed as cron.** With `compaction.enabled: true`
-  and any `schedule`, compaction runs once per 24 h (first time on the first
-  scheduler scan), catalog-wide, and only with `scheduler.enabled: true`.
-- **Retention expires snapshots but never deletes Parquet files**, and only
-  `cache.retention` (per endpoint) is read; `ducklake.retention` is ignored.
-- **Every refresh writes an audit row**, which is its own DuckLake snapshot, even
-  when the refresh changed 0 rows. A 10-second schedule adds ~8,600 snapshots a day.
+- **`compaction.schedule` is an interval (`6h`, `1d`) or `@hourly`, `@daily`,
+  `@midnight`, `@weekly`, not cron** (`0 3 * * *` stops startup). It needs
+  `compaction.enabled: true`, runs once per catalog, and its last run survives
+  restarts.
+- **Snapshots only expire with a retention policy**: `cache.retention`, or the
+  global `ducklake.retention` for caches without their own block. Without one,
+  every full refresh keeps its Parquet copy forever.
+- **The audit log is bounded**: the newest 1000 rows per cache table, and its own
+  snapshots are expired, so a short schedule no longer grows the catalog by itself.
 
 ## 1. Measure
 
 ```bash
 export FLAPI_CONFIG_SERVICE_TOKEN=dev-token
 flapii cache refresh /orders
-flapii cache audit /orders                 # newest first: syncType, status, durationMs, rowsAffected, snapshotId, message
+flapii cache audit /orders -o table        # newest first: mode, status, duration, rows, snapshot
+flapii cache audit /orders                 # JSON: sync_type, status, duration_ms, rows_affected, snapshot_id, message
 flapii metrics --endpoint /orders          # caches[]: last, duration_ms {avg,max}, refreshes, failures, data_age_seconds
 ```
 
-The same over REST (snake_case keys):
+`flapii` prints audit and metrics exactly as the server sends them (snake_case,
+whatever `--json-style` says). The same over REST:
 
 ```bash
 curl -s -H "Authorization: Bearer $FLAPI_CONFIG_SERVICE_TOKEN" \
@@ -84,16 +90,19 @@ Read the numbers:
 
 | Signal | Meaning |
 |---|---|
-| `rowsAffected` ≈ source row count on every refresh | the delta branch is not taken (no cursor, or watermark dropped: see the server log) |
-| `rowsAffected` small but `durationMs` large | the source is still scanned in full: pushdown problem |
-| `durationMs` close to the schedule interval | refreshes start to be skipped |
-| `data_age_seconds` ≫ schedule | scheduler off, refreshes skipped, or failing (`failures`) |
+| `rows_affected` ≈ source row count on every refresh | the delta branch is not taken (no cursor, or watermark dropped: see the server log) |
+| `rows_affected` small but `duration_ms` large | the source is still scanned in full: pushdown problem |
+| `duration_ms` close to the schedule interval | refreshes start to be skipped |
+| `data_age_seconds` ≫ schedule | scheduler disabled, refreshes skipped, or failing (`failures`) |
 
 End to end, without a server (the catalog must not be open elsewhere):
 
 ```bash
 time flapi cache refresh -c flapi.yaml --endpoint /orders
 ```
+
+Its JSON summary carries `duration_ms` and `rows_affected` per endpoint; add
+`--full` to time a rebuild from scratch.
 
 ### Tracing
 
@@ -122,11 +131,10 @@ script (`Processed query:`).
 | Overlap window rereads a lot | Shrink it to the measured maximum lateness |
 | Refresh time ≥ schedule | Lengthen `schedule`, or make the refresh cheaper first |
 | Many tiny refreshes, many small files | `ducklake.data-inlining-row-limit`; `ducklake.compaction` |
-| Metadata / snapshot count keeps growing | `cache.retention`, longer schedule, `flapii cache gc <path>` |
-| Storage keeps growing after retention | delete expired files: `ducklake_cleanup_old_files` (§6) |
+| Metadata / snapshot count, storage keep growing | `cache.retention` or global `ducklake.retention`; `flapii cache gc <path>` |
 | CPU-bound transform, or spilling | `duckdb.threads`, `duckdb.max_memory` |
 | Startup spends minutes warming | `ducklake.warmup: if-empty` with a persistent catalog, or build in CI (`flapi-cache-design`) |
-| Write endpoints slow since write-through | `invalidate-on-write` runs the populate synchronously: make it incremental or drop it |
+| Write endpoints slow since write-through | `invalidate-on-write` runs the populate synchronously: make it incremental, or switch to `refresh-on-write` (after the response) |
 
 ## 3. Push the watermark to the source
 
@@ -209,7 +217,7 @@ SELECT * FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}} ORDER BY c_cust
 
 Three columns instead of eight, and a key predicate Parquet can prune on. For
 merge, a guarded update keeps unchanged rows out of the rewrite and out of
-`rows_affected` (measured: a 1-day overlap re-read 3 rows, `rowsAffected` 1):
+`rows_affected` (measured: a 1-day overlap re-read 3 rows, `rows_affected` 1):
 
 ```sql
 WHEN MATCHED AND (t.name IS DISTINCT FROM s.name OR t.tier IS DISTINCT FROM s.tier
@@ -223,10 +231,10 @@ WHEN MATCHED AND (t.name IS DISTINCT FROM s.name OR t.tier IS DISTINCT FROM s.ti
   it at the source: `max(ingested_at - event_time)` over a week.
 - Every refresh rereads the window: cost ≈ rows in the window × refreshes per day.
   With a 1-hour window and a 1-minute schedule each row is read ~60 times.
-- Keep `durationMs.max` well below the schedule interval (rule of thumb: < 50 %).
-  The first scheduler scan after startup refreshes immediately, right after warm-up.
-- Put `schedule` on one endpoint per table: every endpoint naming the table
-  refreshes it.
+- Keep `duration_ms.max` well below the schedule interval (rule of thumb: < 50 %).
+  After a restart the next scheduled refresh is one schedule after the last real
+  one (warm-up, manual and config-service refreshes count).
+- Endpoints naming the same table share one schedule and one warm-up.
 
 ## 6. Storage: inlining, compaction, retention, cleanup
 
@@ -247,13 +255,11 @@ ducklake:
   data-path: ./cache_data
   data-inlining-row-limit: 1000
   warmup: if-empty
-  scheduler:
-    enabled: true
+  retention:                       # every cache without its own retention block
+    keep-last-snapshots: 48
   compaction:
     enabled: true
     schedule: '@daily'
-heartbeat:
-  worker-interval: 10
 ```
 
 ```yaml
@@ -289,16 +295,17 @@ SELECT * FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}} ORDER BY segmen
   `DATA_INLINING_ROW_LIMIT`: writes up to that many rows are stored in the
   catalog instead of a new Parquet file. DuckLake already inlines small writes
   by default; raise the limit when deltas are larger than that but frequent.
-- **Compaction** runs `ducklake_merge_adjacent_files` on the catalog (see gotchas
-  for when).
-- **Retention** (`cache.retention`) runs after every refresh of that endpoint and
-  on `flapii cache gc <path>`; it expires only this table's snapshots, so time
-  travel to them stops working. Without a retention block `gc` does nothing.
-- **Files of expired snapshots stay on disk.** A full refresh (`CREATE OR REPLACE`)
-  writes a new copy of the table every time. Delete unreferenced files with
-  DuckDB against the catalog while no flAPI writer has it open:
-  `CALL ducklake_cleanup_old_files('cache', older_than => now() - INTERVAL 1 DAY);`
-  (`dry_run => true` lists them first).
+- **Compaction** runs `ducklake_merge_adjacent_files`, `ducklake_rewrite_data_files`
+  and a file cleanup once per catalog when due; the audit log records it as
+  `sync_type` `compaction`. A one-shot `flapi cache refresh` also compacts when due.
+- **Retention** (`cache.retention`, else `ducklake.retention`; an endpoint block
+  replaces the global one) runs after every refresh of that endpoint and on
+  `flapii cache gc <path>`; it expires only this table's snapshots, so time travel
+  to them stops working. Without any retention `gc` does nothing.
+- **Files of expired snapshots are deleted** right after the expiry
+  (`ducklake_cleanup_old_files`), so disk usage follows retention. A full refresh
+  (`CREATE OR REPLACE`) writes a new copy of the table every time: measured, six
+  full refreshes under `keep-last-snapshots: 3` leave 3 Parquet files.
 - **`duckdb.threads` / `duckdb.max_memory`** (any key under `duckdb:` is passed to
   DuckDB as a setting, e.g. `threads: 4`, `max_memory: 2GB`) apply to the whole
   process: serving and refreshing share them. More threads help scans and
@@ -308,17 +315,18 @@ SELECT * FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}} ORDER BY segmen
 ## Canonical tuning loop
 
 1. Baseline: `flapii cache refresh <path>` twice (so the second one is the
-   steady-state delta), then `flapii cache audit <path>`; note `durationMs`,
-   `rowsAffected`, and `flapii metrics --endpoint <path>` (`duration_ms.max`,
+   steady-state delta), then `flapii cache audit <path> -o table`; note
+   `duration_ms`, `rows_affected`, and `flapii metrics --endpoint <path>` (`duration_ms.max`,
    `data_age_seconds`).
 2. Classify with the symptom table: full rescans, no pushdown, wide rows,
    no-op updates, window too wide, schedule too tight, storage growth.
 3. For a slow delta, render it (`flapii templates expand <path> --cache`) and
    `EXPLAIN` it in DuckDB; fix the predicate until the filter is inside the scan node.
 4. Change **one** lever; `flapi -c flapi.yaml --validate-config`; restart if
-   you changed flapi.yaml (a populate template is re-read on each refresh).
+   you changed flapi.yaml (a populate template is re-read on each refresh; after
+   changing what it builds, `flapii cache refresh <path> --full`).
 5. Change the source, refresh twice, re-read the audit: same rows, lower
-   `durationMs`. Check the data is still right (reconcile counts, see `flapi-cache-design`).
-6. Set `schedule` to at least twice `durationMs.max`; add retention and, for
-   large full refreshes, a file cleanup job.
-7. Report before/after `durationMs`, `rowsAffected` and the schedule.
+   `duration_ms`. Check the data is still right (reconcile counts, see `flapi-cache-design`).
+6. Set `schedule` to at least twice `duration_ms.max`; add retention (it also
+   reclaims the files).
+7. Report before/after `duration_ms`, `rows_affected` and the schedule.

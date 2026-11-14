@@ -385,7 +385,7 @@ method: GET                        # HTTP method
 request:
   - field-name: id
     field-in: query               # query, path, header, body
-    required: false               # the type comes from the validator; there is no field-type key
+    required: false               # the type comes from the validator; `field-type` has no effect (startup warns)
     validators:
       - type: int
         min: 1
@@ -412,10 +412,13 @@ mcp-tool:
         type: integer
         description: Customer ID
 
-# Authorization (optional)
+# Authorization (optional). Without this block the top-level `auth:` of
+# flapi.yaml applies; this block REPLACES it (no merge); `auth: {enabled: false}`
+# opts this endpoint out.
 auth:
-  required: true
-  roles: [admin, user]
+  enabled: true
+  type: basic                      # basic | bearer (alias: jwt) | oidc
+  roles: [admin, user]             # caller needs one of them, else 403; empty = any authenticated caller
 ```
 
 **SQL Template with Mustache** (`sqls/endpoint_name.sql`):
@@ -743,11 +746,12 @@ cache:
 ```
 
 **Cache Refresh Lifecycle:**
-1. HeartbeatWorker monitors cache expiration schedules
+1. HeartbeatWorker checks `cache.schedule` (the scheduler is on by default; `ducklake.scheduler.enabled: false` opts out). There is no refresh at boot beyond warm-up: a cache is due one `schedule` after its last refresh
 2. On refresh trigger: run the `template-file` **verbatim**, all statements in one transaction (a failure changes nothing)
-3. Full refresh: the template must write the table itself, e.g. `CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS SELECT ...` (a bare `SELECT` is not wrapped and creates nothing)
+3. Full refresh: the template must write the table itself, e.g. `CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS SELECT ...` (a bare `SELECT` statement is refused before anything runs, and a script that leaves no cache table fails and rolls back)
 4. Incremental: `INSERT INTO ...` (append) or a single-action `MERGE` (merge), behind a `{{^cache.previousSnapshotTimestamp}}` bootstrap that creates the table on the first run
-5. Requests always read the cache table; a GET never triggers a refresh
+5. Requests always read the cache table; a GET never triggers a refresh. A cache whose first build failed answers `503 {"error":"cache_build_failed"}`
+6. Full rebuild on demand: `flapii cache refresh <path> --full` / `?full=true` / `flapi cache refresh --full` drops the table and rebuilds it with the watermark erased
 
 **Materialized Results:**
 - Cache tables live in the DuckLake catalog (`ducklake.metadata-path`), not in `duckdb.db_path`
@@ -786,7 +790,7 @@ duckdb:
     - name: postgres
 
 # Logging (top level, not nested under `server:`)
-log-level: info                     # debug, info, warning, error
+log-level: info                     # debug, info, warning (or warn), error; anything else stops startup
 log-format: text                    # text | json
 
 # MCP server (its own top-level block). No port of its own: MCP is served on
@@ -816,7 +820,7 @@ tracing:
 ```bash
 # Configuration
 FLAPI_CONFIG=path/to/flapi.yaml     # Config file path
-FLAPI_LOG_LEVEL=debug|info|warning|error
+FLAPI_LOG_LEVEL=debug|info|warning|warn|error
 FLAPI_PORT=8080                      # HTTP port (fallback for --port)
 FLAPI_HOST=0.0.0.0                   # Bind address (fallback for --host)
 
@@ -1381,7 +1385,7 @@ Configure with cron expressions or interval schedules.
 
 - Use full refresh (declare neither `primary-key` nor `cursor`) for small datasets
 - Use incremental append (declare a `cursor`) for large append-only data
-- Set appropriate TTL based on data freshness requirements
+- Set `cache.schedule` based on data freshness requirements (there is no TTL)
 - Monitor cache hit rates in logs
 
 ### Memory Management
@@ -1591,8 +1595,8 @@ curl -v "http://localhost:8080/endpoint?id=test"
 **Problem:** Cache data is stale, refresh not triggering
 
 **Causes:**
-- Cache schedule not firing (disabled or incorrect syntax)
-- Template error in cache populate SQL
+- Scheduler opted out (`ducklake.scheduler.enabled: false`; startup warns)
+- Template error in cache populate SQL (a bare `SELECT` is refused: the template must write the table)
 - DuckLake not initialized
 - Cache table doesn't exist
 
@@ -1601,8 +1605,12 @@ curl -v "http://localhost:8080/endpoint?id=test"
 # Check cache configuration
 flapii cache get /endpoint
 
-# Manually force refresh
+# Refresh now, or drop and rebuild from scratch
 flapii cache refresh /endpoint
+flapii cache refresh /endpoint --full
+
+# Refresh history: mode, status, duration, rows, snapshot
+flapii cache audit /endpoint -o table
 
 # Check cache status
 flapii cache list
@@ -1642,8 +1650,8 @@ request:
 ```
 
 ```bash
-# Trigger garbage collection
-flapii cache gc
+# Expire old snapshots per retention and delete their files (path is required)
+flapii cache gc /endpoint
 
 # Check retention policy
 flapii cache get /endpoint | jq '.cache.retention'
@@ -1686,17 +1694,18 @@ flapii config log-level debug
 
 #### Authentication Failures
 
-**Problem:** `401 Unauthorized` or JWT validation errors
+**Problem:** `401 Unauthorized`, `403 Forbidden` or JWT validation errors
 
 **Causes:**
 - Missing or invalid JWT secret
 - Token expired or malformed
-- Auth not enabled for endpoint
+- Auth not enabled for endpoint (or inherited from the top-level `auth:` when the endpoint has no block)
 - Wrong authentication type
+- `403`: authenticated, but the principal holds none of the endpoint's `auth.roles`
 
 **Solution:**
 ```bash
-# Check if auth is enabled for endpoint
+# Check if auth is enabled for endpoint (`inherited: true` = the top-level auth applies)
 flapii endpoints get /endpoint | jq '.auth'
 
 # Verify JWT secret is set
@@ -1709,12 +1718,12 @@ echo $JWT_SECRET  # Must not be empty
 cat flapi.yaml | grep -A 10 "auth:"
 
 # Test without auth (temporary)
-# Remove or set required: false in endpoint config
+# Set `auth: {enabled: false}` on the endpoint (removing the block inherits the top-level auth)
 ```
 
 #### SQL Syntax Errors
 
-**Problem:** `400 Bad Request` or `500 Internal Server Error` with SQL error
+**Problem:** `400 Bad Request` or `500 Internal Server Error`. A 500 body carries only a `request_id`; grep the server log for it to see the SQL error
 
 **Causes:**
 - Invalid SQL generated from template

@@ -221,7 +221,8 @@ connections:
       path: gs://my-bucket/exports/*.parquet
 ```
 
-DuckDB reads `gs://` through `httpfs` with **HMAC keys** (whitelist
+DuckDB reads `gs://` through `httpfs` with **HMAC keys**; `GOOGLE_*` service-account
+variables are not applied to DuckDB (the server logs a WARNING if one is set) (whitelist
 `'^GCS_HMAC_(KEY|SECRET)$'`). On Cloud Run you can mount the bucket as a volume and read the
 local path instead. See `flapi-deploy`.
 
@@ -249,4 +250,4 @@ connections:
 | `init` | `""` | DuckDB SQL run once at startup |
 | `properties` | `{}` | string map exposed to templates as `conn.<key>` |
 | `serialize-access` | auto (true when `init` attaches SQLite) | one query at a time on this connection |
-| `log-queries`, `log-parameters` | `false` | parsed but have no effect today (nothing reads them) |
+| `log-queries`, `log-parameters`, `allow` | `false` | have no effect; a load warning says so |

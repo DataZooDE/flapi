@@ -36,7 +36,9 @@ my-api/
 ├── sqls/
 │   ├── sample.yaml   # an endpoint definition
 │   └── sample.sql    # its SQL template
-└── data/             # put your Parquet/CSV here
+├── data/
+│   └── sample.csv    # the data the sample endpoint reads; add your Parquet/CSV here
+└── common/           # reusable auth / rate-limit snippets
 ```
 
 ## 3. Point it at your data
@@ -90,7 +92,8 @@ WHERE 1=1
 ```
 
 The `WHERE 1=1` idiom lets each filter be added conditionally. The `int`
-validator is what types the field (there is no `field-type` key). There is no
+validator is what types the field (`field-type` has no effect; startup warns if
+you set it). There is no
 `LIMIT`: GET responses are paginated by default (100 rows per page, `?limit=` /
 `?offset=`, `{"next", "total_count", "data"}` in the body), so a `LIMIT` in the
 template would cap what pagination can reach. See

@@ -49,8 +49,8 @@ connection:
 cache:
   enabled: true
   table: customers_cache
-  invalidate-on-write: true   # Invalidate cache after insert
-  refresh-on-write: false     # Don't refresh immediately (can be expensive)
+  invalidate-on-write: true   # Refresh the cache before the insert's response
+  refresh-on-write: false     # true: refresh in the background after the response instead
 
 # Authentication
 auth:

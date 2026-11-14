@@ -58,8 +58,8 @@ curl -s $B -H 'Content-Type: application/json' \
 | Bad JSON | 400 | `-32700` `Parse error: Invalid JSON` |
 | MCP auth on, no/invalid credentials | 401 + `WWW-Authenticate` | `-32000` `Authentication required for method: tools/call` |
 | Caller lacks the tool's `allowed-roles` | 403 (`insufficient_scope`) | `-32000` `Permission denied: ...` |
-| `flapi_*` tool without the config-service bearer token | 200 | `-32603` `Tool execution failed: Authentication required for tool: flapi_x` |
-| Config-service token shorter than 8 characters | 200 | `-32603` `... Authentication token is too short (minimum 8 characters)` |
+| `flapi_*` tool without the config-service token (`X-Config-Token` or `Authorization: Bearer`) | 200 | `-32603` `Tool execution failed: Authentication required for tool: flapi_x` |
+| `flapi_*` tool with a wrong token | 200 | `-32603` `Tool execution failed: Authentication validation failed: Invalid authentication token` |
 | Per-tool rate limit exceeded | 200 | JSON-RPC error, like the RBAC denial |
 | Notification (no `id`) | 202, empty body | none |
 

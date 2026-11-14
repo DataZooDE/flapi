@@ -13,8 +13,8 @@ validators; all of them run.
 | `int` | `integer` | `min`, `max` (inclusive; default INT_MIN / INT_MAX) | the WHOLE value is a 32-bit integer (`12`, `-3`; not `1.0`, `12abc`, `1; DROP`) | `Invalid integer value`, `Integer is less than the minimum allowed value`, `Integer is greater than the maximum allowed value` |
 | `number` | `float`, `double` | none | one plain decimal: `-3`, `1.5`, `.5`, `1e3` (no spaces, hex, `NaN`) | `Value is not a valid number` |
 | `boolean` | `bool` | none | `true`, `false`, `1`, `0`, any case | `Value is not a valid boolean (true, false, 1 or 0)` |
-| `string` | - | `regex` (full match, ECMAScript), `min` / `max` (length; 0 = no limit), `min-length` / `max-length` (same, take precedence) | anything matching | `String is shorter than the minimum allowed length`, `String is longer than the maximum allowed length`, `Invalid string format` |
-| `enum` | - | `allowedValues` (list, **required**, case-sensitive exact match) | one of the list | `Invalid enum value` |
+| `string` | - | `regex` (alias `pattern`; full match, ECMAScript), `min` / `max` (length; 0 = no limit), `min-length` / `max-length` (same, take precedence) | anything matching | `String is shorter than the minimum allowed length`, `String is longer than the maximum allowed length`, `Invalid string format` |
+| `enum` | - | `allowedValues` (alias `values`; list, **required**, case-sensitive exact match) | one of the list | `Invalid enum value` |
 | `email` | - | none | `local@domain.tld` (`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`) | `Invalid email format` |
 | `uuid` | - | none | `8-4-4-4-12` hex, any version | `Invalid UUID format` |
 | `date` | - | `min`, `max` (`YYYY-MM-DD`, inclusive) | `YYYY-MM-DD`, nothing after it | `Invalid date format`, `Date is before the minimum allowed date`, `Date is after the maximum allowed date` |
@@ -23,13 +23,11 @@ validators; all of them run.
 Every type also reads `preventSqlInjection` (default `true`, see below). An
 unknown `type` is accepted at load time and checks nothing.
 
-Keys that are NOT read (copying them does nothing or breaks startup):
-
-| Wrong | Right |
-|---|---|
-| `values: [a, b]` (enum) | `allowedValues: [a, b]` — `values` alone fails startup with `Missing required key: allowedValues` |
-| `pattern: "^x$"` | `regex: "^x$"` |
-| `field-type: int` (on the field) | a validator `- type: int` |
+Spellings: `regex`/`allowedValues` are canonical; `pattern`/`values` are
+accepted aliases (when both are present the canonical key wins). An enum with
+neither fails startup (`Missing required key: allowedValues`). `field-type: int`
+on a field is read by nothing (load warning "`field-type` has no effect"); use
+a validator `- type: int`.
 
 ## Other request-field checks
 

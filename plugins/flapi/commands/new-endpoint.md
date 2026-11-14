@@ -15,8 +15,11 @@ resource, `flapi-testing` for the test, `flapi-auth` if it needs auth).
    parameters (name, location, type, required), response shape, and whether it is
    REST only, MCP only, or both. Default to both REST and an MCP tool for reads.
 3. Write `sqls/<name>.yaml` and `sqls/<name>.sql`:
-   - a validator on EVERY parameter (type, range, regex or enum) - validators are
-     the injection defence, Mustache does no SQL escaping
+   - a validator on EVERY parameter (`int`/`string` with `regex`/`enum` with
+     `allowedValues`, ...) - validators are the injection defence, Mustache does
+     no SQL escaping; `field-type` does nothing (load warning)
+   - `field-in: header` reads the request header (case-insensitive) - a query
+     parameter of the same name does not satisfy it
    - `WHERE 1=1` + `{{#params.x}} AND ... {{/params.x}}` for optional filters
    - triple braces inside quoted string literals, double braces only for validated
      numbers; a bounded default `LIMIT`

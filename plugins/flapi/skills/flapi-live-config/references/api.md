@@ -21,16 +21,16 @@ marked "open". All exist only when the server runs with `--config-service`.
 |---|---|---|---|
 | `GET /api/v1/_config/health` (open) | | Server, database, endpoint count, Arrow, storage, credentials | `health` |
 | `GET /api/v1/_config/project` | | Project name, description and settings (secrets redacted) | `ping`, `project get`, `config show` |
-| `PUT /api/v1/_config/project` | | 501 Not implemented | |
+| `PUT /api/v1/_config/project` | | 405 `Allow: GET` (read-only; edit `flapi.yaml`) | |
 | `GET /api/v1/_config/environment-variables` | | Whitelisted env vars and whether they are set | `config env` |
 | `GET /api/v1/_config/filesystem` | | Template directory tree | `config filesystem` |
 | `GET /api/v1/_config/endpoints` | | All endpoints | `endpoints list` |
-| `POST /api/v1/_config/endpoints` | endpoint JSON | Add an endpoint, in memory only (201) | `endpoints create` |
+| `POST /api/v1/_config/endpoints` | endpoint JSON (YAML keys) | Parse with the real loader, write `<template dir>/<slug>.yaml`; 201 `{"status":"created","endpoint","slug","url-path","file"}`; 409 exists or packed bundle; 400 parse error | `endpoints create` |
 | `GET /api/v1/_config/endpoints/{slug}` | | One endpoint's config | `endpoints get` |
-| `PUT /api/v1/_config/endpoints/{slug}` | endpoint JSON | Replace, in memory only | `endpoints update` |
-| `DELETE /api/v1/_config/endpoints/{slug}` | | Remove, in memory only (file stays, back on restart) | `endpoints delete` |
-| `POST /api/v1/_config/endpoints/{slug}/validate` | raw YAML text | `{"valid":..,"errors":[..],"warnings":[..]}` | `endpoints validate <path> -f file` |
-| `POST /api/v1/_config/endpoints/{slug}/reload` | | Re-read the endpoint's YAML file. 200 `{"success":true}` or 404 `{"success":false}` (not found **or** invalid) | `endpoints reload` |
+| `PUT /api/v1/_config/endpoints/{slug}` | partial JSON with `url-path` (or the `mcp-*` block) | Deep-merge onto the YAML file, re-parse, persist (200 `"status":"updated"`). Changing url-path/method/name 400; `{{include}}` file 409; camelCase body: memory only, `"persisted": false`; body without an identity key: 500 `Missing required field in endpoint config` | `endpoints update` |
+| `DELETE /api/v1/_config/endpoints/{slug}` | | Remove the endpoint and its YAML file | `endpoints delete` |
+| `POST /api/v1/_config/endpoints/{slug}/validate` | raw YAML text | Real parser: `{"valid":..,"errors":[..],"warnings":[..]}` | `endpoints validate <path> -f file` (or YAML on stdin) |
+| `POST /api/v1/_config/endpoints/{slug}/reload` | | Re-read the endpoint's YAML file. 200 `{"success":true}`; 400 with `reason` when it does not parse; 404 only for an unknown endpoint | `endpoints reload` |
 | `GET /api/v1/_config/endpoints/{slug}/parameters` | | Request fields with validators | `endpoints parameters` |
 | `POST /api/v1/_config/endpoints/by-template` | `{"template_path":"/abs/or/rel.sql"}` | Endpoints that use a template file | (hook) |
 | `GET /api/v1/_config/endpoints/{slug}/template` | | `{"template":"..."}` | `templates get` |
@@ -40,25 +40,25 @@ marked "open". All exist only when the server runs with `--config-service`.
 | `GET /api/v1/_config/endpoints/{slug}/cache` | | Cache config | `cache get` |
 | `PUT /api/v1/_config/endpoints/{slug}/cache` | `{"enabled":true,"table":"..","schedule":"10m"}` | Change cache config | `cache update` |
 | `GET\|PUT /api/v1/_config/endpoints/{slug}/cache/template` | `{"template":"..."}` | Cache populate SQL | `cache template`, `cache update-template` |
-| `POST /api/v1/_config/endpoints/{slug}/cache/refresh` | | Refresh now (400 with the error if it fails; 409 `read_only_cache` on a replica) | `cache refresh` |
+| `POST /api/v1/_config/endpoints/{slug}/cache/refresh[?full=true]` | | Refresh now; `?full=true` drops and rebuilds the table, watermark erased. 200 with an empty body; 400 with the error if it fails; 409 `read_only_cache` on a replica | `cache refresh [--full]` |
 | `POST /api/v1/_config/endpoints/{slug}/cache/gc` | | Expire old snapshots per `retention` | `cache gc` |
 | `GET /api/v1/_config/endpoints/{slug}/cache/audit` | | Refresh history: `sync_started_at`, `sync_completed_at`, `duration_ms`, `rows_affected`, `snapshot_id`, `status`, `message` | `cache audit <path>` |
 | `GET /api/v1/_config/cache/audit` | | Same, all endpoints | `cache audit` |
-| `GET /api/v1/_config/schema` | | Attached databases, tables, columns | `schema get` |
+| `GET /api/v1/_config/schema` | | Attached databases, tables, columns; `?tables=true` (optional `&connection=`): table list with `qualified_name`; `?connections=true`: configured connections. Failures 500 | `schema get`, `schema tables`, `schema connections` |
 | `POST /api/v1/_config/schema/refresh` | | Re-read the schema | `schema refresh` |
-| `GET\|PUT /api/v1/_config/log-level` | `{"level":"debug"}` | Runtime log level (`debug`, `info`, `warning`, `error`) | `config log-level get\|set` |
+| `GET\|PUT /api/v1/_config/log-level` | `{"level":"debug"}` | Runtime log level (`debug`, `info`, `warning`, `error`; `warn` is refused here) | `config log-level get\|set` |
 | `GET /api/v1/_config/metrics[?endpoint=/path]` | | Runtime metrics (see `flapi-operate`) | `metrics [-e path]` |
 | `GET /config` | | Whole parsed configuration | |
-| `DELETE /config` | | 500 `Not implemented` (no full reload) | |
+| `DELETE /config` | | 405 `Allow: GET` (no full reload; 401 first without a token) | |
 | `GET /api/v1/doc.yaml` | | OpenAPI document of the endpoints | |
 
-`?tables=true` on `/schema` (behind `flapii schema tables`) currently returns an error
-string, and `?connections=true` (`flapii schema connections`) always returns `[]`.
+Errors from endpoint create, update and delete are JSON `{"error":"..."}`.
 
 ## MCP config tools (`flapi_*`)
 
-Listed in `tools/list` only with `--config-service`. Every call needs
-`Authorization: Bearer <config-service token>` (8+ characters) on the MCP request.
+Listed in `tools/list` only with `--config-service`. Every call needs the config-service
+token on the MCP request: `X-Config-Token` (read first) or `Authorization: Bearer`. Every
+create/update/delete/reload rebuilds `tools/list`, `resources/list` and `prompts/list`.
 Arguments named `path` / `endpoint` take the URL path (`/customers`), not a slug.
 
 | Tool | Required args | Optional | Same as |
@@ -71,7 +71,7 @@ Arguments named `path` / `endpoint` take the URL path (`/customers`), not a slug
 | `flapi_list_endpoints` | | | GET endpoints |
 | `flapi_get_endpoint` | `path` | | GET endpoint |
 | `flapi_create_endpoint` | `path` | `method`, `template-source`, `connection` | **writes `<slug>.yaml`** (and a placeholder SQL if missing) under `template.path` |
-| `flapi_update_endpoint` | `path` | other config fields | PUT endpoint (memory) |
+| `flapi_update_endpoint` | `path` | `method`, `template_source` (nothing else is read) | in memory only, not written to the YAML; prefer the REST `PUT` |
 | `flapi_delete_endpoint` | `path` | | **removes the endpoint's YAML file** too |
 | `flapi_reload_endpoint` | `path` | | POST reload |
 | `flapi_get_template` | `endpoint` | | GET template |

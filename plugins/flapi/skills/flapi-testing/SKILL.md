@@ -29,16 +29,16 @@ against a running server, then HTTP/MCP tests against a running server.
   (bad `url-path`, unknown connection) exit 1. CI that must fail on warnings has
   to grep the output.
 - **Unknown keys inside endpoint files are silently ignored** (`methd:`,
-  `pattern:`, `field-type:`); only unknown TOP-level keys of `flapi.yaml` log a
-  warning. A typo'd optional key validates fine and does nothing.
+  `requird:`); only unknown TOP-level keys of `flapi.yaml` and a few known-inert
+  keys (`field-type`, `server-name`, connection `log-queries`) log a warning. A
+  typo'd optional key validates fine and does nothing.
 - **`flapii templates expand` skips validators and pastes values in**; the real
   request binds `{{ params.x }}` as `?`. Use `templates test` (validates, then
   runs the SQL) or a real HTTP call to see true behaviour.
-- **`flapii endpoints validate` reads only url-path, template-source,
-  connection, cache and the mcp-* names**: request fields and validators are not
-  checked (`values:` instead of `allowedValues:` passes there but stops the
-  server). Its path argument is the endpoint, the file comes from `--file` or
-  stdin.
+- **`flapii endpoints validate` runs the server's real endpoint parser**, so a
+  broken validator (`Missing required key: values (or allowedValues)`) fails
+  there too. Its path argument is the endpoint, the YAML comes from `--file` or
+  stdin (neither: `No YAML given: pass --file <path> or pipe the YAML on stdin`).
 - **Every `flapii` command needs the server started with `--config-service`**
   and the same token in `FLAPI_CONFIG_SERVICE_TOKEN` (or `-t`).
 - **Endpoint YAML is read at startup.** Restart (or `flapii endpoints reload
@@ -58,11 +58,12 @@ echo "exit=$?"
 | Caught (exit 1 or startup error) | Reported as warning (exit 0) | Not checked at all |
 |---|---|---|
 | YAML syntax in `flapi.yaml` or any endpoint file | template file does not exist | SQL syntax, tables, columns |
-| missing `project-name` / `project-description` | `No database connection specified` | Mustache syntax and variable names |
+| missing `project-name` | `No database connection specified` | Mustache syntax and variable names |
 | `{{env.X}}` not in `template.environment-whitelist` | unknown top-level key (log line) | connection `init` SQL, extensions |
 | `url-path` not starting with `/`, no `url-path`/`mcp-*` | security warnings (stderr) | unknown keys inside endpoint files |
-| `connection:` naming an undefined connection | | REST `auth.roles` (never read) |
-| missing required validator keys (`allowedValues`) | | DuckLake / cache SQL |
+| `connection:` naming an undefined connection | `field-type`, other known-inert keys | |
+| missing required validator keys (`allowedValues`/`values`) | | DuckLake / cache SQL |
+| bad `log-level`, `compaction.schedule`, `scan-interval`, OIDC placeholder | | |
 | empty Basic-auth password from an unset env var | | |
 
 Fail CI on warnings too:
@@ -91,8 +92,8 @@ flapii endpoints parameters /customers
 ```
 
 `--params-file params.json` works instead of `--params`. `templates test`
-answers HTTP 400 (shown as `Bad Request`) for a validator failure or a SQL
-error; run the request with curl or check the server log for the message.
+answers HTTP 400 for a validator failure or a SQL error; `flapii` prints
+`[400] Bad Request: <reason>` and the JSON body (`errors`, `error`).
 
 ## The endpoint under test (runnable)
 

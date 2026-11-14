@@ -10,6 +10,84 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   anything. They still load, and startup now logs a warning for each. Handle deleted rows in the merge
   template instead; see [Deletes in merge mode](docs/guides/caching.md#deletes-in-merge-mode).
 
+Authentication and requests:
+
+- **A top-level `auth:` block now protects every endpoint that has no `auth:` block of its own.** Before, it
+  was ignored for REST endpoints. A deployment with global auth enabled now answers 401 on endpoints that were
+  open. An endpoint's own block replaces the global one (no merge); keep an endpoint public with
+  `auth: {enabled: false}`. Startup logs how many endpoints inherit the global block and how many opt out.
+- **`auth.roles` on REST endpoints is enforced.** A caller who authenticates but holds none of the listed roles
+  gets 403 `{"error":"Forbidden",...}`. Before, any authenticated user got through.
+- **`field-in: header` fields are read from the request headers** (case-insensitive), on GET and on writes. A
+  query or body parameter of the same name no longer satisfies them.
+- **`method: DELETE` endpoints run their SQL template** like the other write methods (parameters, validation,
+  cache handling) and answer 200 `{"rows_affected": n}`. Before, a DELETE endpoint only invalidated its cache
+  or answered 405.
+- **A REST 500 answer is JSON and no longer contains the database error:**
+  `{"error":"Internal Server Error","message":"...","request_id":"req-..."}`. The full error is in the server
+  log under that request id.
+- **JSON output of numbers and times changed:** DECIMAL values are exact (for scale 0 with up to 18 digits, or
+  scale up to 6 with up to 9 integer digits) instead of rounded through a double; TIMESTAMP and TIMESTAMPTZ
+  keep microseconds, TIMESTAMP_S/_MS are correct, TIMESTAMP_NS has 9 fractional digits, NULL is `null`.
+- **An unknown `log-level` in the config stops startup** with the list of valid levels.
+- **OIDC:** an `issuer-url` that still contains `{tenant}`, `{realm}` or `{domain}` after the preset is applied
+  stops startup with a message naming the key to set.
+- **GCS:** `GOOGLE_*` environment variables are not used for `gs://` access (DuckDB cannot use service-account
+  credentials); startup now warns. Create an HMAC key and add `CREATE SECRET (TYPE gcs, KEY_ID ..., SECRET ...)`
+  to a connection's `init`.
+
+Caching:
+
+- **The cache scheduler is on by default.** Every `cache.schedule` now runs without
+  `ducklake.scheduler.enabled: true`; set it to `false` to keep the old behaviour (startup warns).
+- **No refresh at startup beyond the warm-up.** A cache's first scheduled refresh is one `schedule` after its
+  last real refresh (this run's warm-up, the newest snapshot, or process start). Manual and config-service
+  refreshes count.
+- **`ducklake.scheduler.scan-interval` is honoured** (default: the shorter of `heartbeat.worker-interval` and the
+  shortest `cache.schedule`, at least 1 s). `heartbeat.worker-interval` defaults to 60 s whether or not a
+  `heartbeat:` block exists (it was 10 s with one). An invalid scan interval or a worker interval of 0 or less
+  stops startup.
+- **`refresh-on-write` now refreshes the cache**, after the response (it did nothing before).
+  `invalidate-on-write` refreshes before the response, as before. With both set, only the synchronous refresh
+  runs. MCP tool writes follow the same rules.
+- **A populate template that is a bare `SELECT` is refused** before it runs, and a template that does not leave
+  the cache table in place fails and rolls back. Before, both "succeeded" and the endpoint then failed.
+- **An endpoint whose cache failed its first build answers 503 `{"error":"cache_build_failed"}`** (with
+  `Retry-After: 5`) instead of `cache_warming`.
+- **`ducklake.compaction.schedule` is parsed:** an interval (`6h`, `1d`) or `@hourly`, `@daily`, `@midnight`,
+  `@weekly`. Anything else (for example a cron expression) stops startup. Before, compaction ran every 24 hours
+  whatever the value.
+- **Global `ducklake.retention` applies** to every cache without its own `retention:` block (an endpoint block
+  replaces it). Caches that kept every snapshot may now expire old ones, so time travel to them stops working.
+- **Expired snapshots' files are deleted** after retention or `cache gc` runs, so disk space is reclaimed.
+- **The cache audit log keeps the newest 1000 rows per cache table.**
+- **Full rebuild drops the table:** `flapii cache refresh <path> --full`, `flapi cache refresh --full` and
+  `POST .../cache/refresh?full=true` erase the watermark and drop the cache table in the same transaction, so an
+  append cache is rebuilt instead of re-appended.
+
+Config service, MCP and CLI:
+
+- **Endpoints created or updated through the config service are written to disk.** `POST
+  /api/v1/_config/endpoints` writes `<template dir>/<slug>.yaml` and answers 201 (409 if it exists, 400 on a
+  parse error). `PUT` merges the change into the YAML file (comments in it are lost); changing `url-path`,
+  `method` or the name answers 400, and endpoints that use `{{include}}` answer 409. `DELETE` removes the YAML
+  file. Error bodies are JSON `{"error": ...}`.
+- **A reload of an endpoint whose YAML is now invalid answers 400** with the reason; 404 means the endpoint is
+  unknown.
+- **`PUT /api/v1/_config/project` and `DELETE /config` answer 405** with `Allow: GET`.
+- **`GET /api/v1/_config/schema?tables=true`** returns tables only (no views), each with `name`, `schema`,
+  `database`, `type`, `connection` and `qualified_name`; filter with `?connection=`. Failures answer 500.
+- **MCP:** `tools/list`, `resources/list` and `prompts/list` follow endpoint changes without a restart; a
+  pagination cursor from before a change is rejected.
+- **Metrics:** a 503 because a cache is not ready is counted as `status.503_cache` and
+  `requests.cache_unavailable`, no longer as a 5xx or a server error.
+- **`flapii` option renames:** `flapii schema get --connection` (no `-c`), `flapii schema get --table`
+  (no `-t`), `flapii cache update --ttl` (no `-t`). `flapii cache refresh --force` is deprecated and is a normal
+  refresh; use `--full` for a full rebuild.
+- **`flapii --json-style` re-cases only configuration documents** (endpoints, MCP tools/resources/prompts, cache
+  config, project, templates list). Data such as metrics, cache audit, schema, health, template expansion and
+  validation is printed exactly as the server sends it, in snake_case (`duration_ms`, `rows_affected`).
+
 ### Added: Claude Code plugin
 
 flAPI now ships a Claude Code plugin:
@@ -39,8 +117,53 @@ report:
 
 Narrow to one endpoint with `?endpoint=/path`.
 
+### Added: authentication, requests and caching
+
+- `auth.type: jwt` is an alias of `bearer`; a global `auth:` block accepts `roles`.
+- OIDC presets take `tenant-id` (or `tenant`), `realm` and `domain`, which fill `{tenant}`, `{realm}` and
+  `{domain}` in the issuer URL; Keycloak's default issuer is `https://{domain}/realms/{realm}`. Provider
+  `azure`, `azure-ad` and `entra` are aliases of `microsoft`.
+- Validators: `enum` accepts `values` or `allowedValues`, `string` accepts `pattern` or `regex`.
+- Log level `warn` is accepted as `warning` (`--log-level`, `FLAPI_LOG_LEVEL`, `log-level:`).
+- `project-description` is optional.
+- Startup warns about keys that have no effect: a request field's `field-type`, `server-name`, and a
+  connection's `log-queries`, `log-parameters` and `allow`.
+- The security audit warns `CORS_WILDCARD_WITH_AUTH` when authentication is on and `cors.allow-origins` is
+  empty or `*`, and `AUTH_BCRYPT_UNSUPPORTED` for bcrypt hashes, which cannot log in. Its advice for passwords
+  is a PBKDF2 hash: `passlib.hash.pbkdf2_sha256.using(rounds=600000).hash(...)`.
+- Full cache rebuild: `flapii cache refresh <path> --full`, `flapi cache refresh --full`,
+  `POST .../cache/refresh?full=true`.
+- `flapi cache refresh` reports `duration_ms` and `rows_affected` per cache (and `"full": true` with `--full`),
+  refreshes a table shared by several endpoints once, and compacts when compaction is due.
+- Startup logs `Cache scheduler on: N scheduled cache(s), checked every X s`, warns when a schedule is shorter
+  than the scan interval, and logs `flAPI server listening on http://<host>:<port> (REST API; MCP at
+  .../mcp/jsonrpc)` once the port is bound.
+- `GET /api/v1/_config/schema?connections=true` lists the configured connections.
+- Config-service endpoint JSON shows `auth.roles` and whether the auth block is `inherited`.
+- MCP tool schemas carry typed `default` values.
+- `flapii` reads `FLAPI_URL` when `FLAPI_BASE_URL` is not set; `flapii cache audit -o table` prints a table;
+  `flapii metrics -o table` shows cache-not-ready 503s separately.
+
 ### Fixed
 
+- **`flapi --version`** and `server.version` in `GET /api/v1/_config/health` show the real build version.
+- **Passwords:** PBKDF2 hashes are no longer flagged by the security audit, and passlib's own encoding as well
+  as standard and URL-safe base64 are accepted.
+- **Config service:** creating an endpoint keeps its `mcp-tool`, validators and `rate-limit`; `endpoints
+  validate` uses the real parser and says what to pass when no YAML was given.
+- **MCP config tools** (`flapi_*`) accept the same tokens as the REST config service and read `X-Config-Token`
+  first, then `Authorization: Bearer`. Startup warns about config tokens shorter than 16 characters.
+- **`flapii` errors** show the status and the server's reason (`[400] Bad Request: ...`) followed by the JSON
+  body, instead of only the status text.
+- **Metrics:** percentiles never exceed the observed maximum.
+- **Caching:** a table shared by several endpoints is warmed once; SIGTERM interrupts running populate
+  scripts so shutdown takes seconds, and no refresh starts while shutting down; a failed warm-up over an
+  existing table keeps serving it (state `stale`); a failed first build is logged once; audit `event_id` values
+  are UUIDs; compaction's last run survives restarts.
+- **`flapi pack`:** `--validate-config` on a packed binary no longer warns about a missing `sqls/sqls`
+  directory.
+- **`flapii project init`** creates the `data/sample.csv` its sample endpoint reads.
+- **`async-after-ms`** is read as a whole number of milliseconds.
 - **Cache audit log:** every refresh now records its real start and end time, `duration_ms`, `rows_affected`
   and the `snapshot_id` it produced. Before, start and end were the same instant and the other three were
   always empty, so refresh time could not be measured.

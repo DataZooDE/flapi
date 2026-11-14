@@ -28,6 +28,9 @@ Tracing does not need to be on for these. With the config service enabled
 - every endpoint and MCP tool: requests, status classes (or tool failures), and
   latency p50/p95/p99/max
 - 401/403/429 rejections
+- `503`s from a cache that is not ready yet (`cache_warming`, `cache_build_failed`,
+  `cache_not_built`), counted separately as `503_cache` / `cache_unavailable`,
+  not as server errors
 - every cache: readiness, last refresh mode, status, duration and rows, and the
   age of the data being served
 
@@ -40,7 +43,8 @@ curl -s -H "Authorization: Bearer $FLAPI_CONFIG_SERVICE_TOKEN" \
 
 An agent connected over MCP can read the same document with the
 `flapi_get_metrics` config tool. Counters start at zero when the process starts
-(`requests.since_unix_ms`). Percentiles are histogram bucket upper bounds, which
+(`requests.since_unix_ms`). Percentiles are histogram bucket upper bounds (capped
+at the observed max), which
 is enough to find the slow endpoint but not for exact SLO reporting. Use traces
 for that. Recording a request costs no allocation once its endpoint has been seen
 (`test/cpp/runtime_metrics_test.cpp`). For the field-by-field format, see
@@ -384,7 +388,13 @@ $ curl -i https://flapi.example/customers/42
 HTTP/1.1 500 Internal Server Error
 X-Request-Id: req-9f2c1a7b8e4d5063
 X-Trace-Id:   4bf92f3577b34da6a3ce929d0e0e4736
+
+{"error":"Internal Server Error","message":"The request failed on the server. The details are in the server log under this request id.","request_id":"req-9f2c1a7b8e4d5063"}
 ```
+
+A REST `500` body never contains SQL, file paths or the database error. The
+detail is written to the server log on a line carrying the same `request_id`, so
+`grep req-9f2c1a7b8e4d5063` on the log finds it.
 
 Quote either in a support request. `X-Request-Id` works with tracing disabled;
 `X-Trace-Id` appears only when a span was produced.

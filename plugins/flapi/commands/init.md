@@ -15,7 +15,8 @@ Use the `flapi-setup` skill for the details; use `flapi-rest` for the first endp
 2. Check the tools: `flapi --version` (install with `pip install flapi-io` if missing,
    which also installs `flapii`).
 3. Scaffold with `flapii project init <dir>` (or write `flapi.yaml` + `sqls/` by hand
-   when the user wants a minimal layout). Then edit `flapi.yaml`:
+   when the user wants a minimal layout). The sample endpoint reads
+   `data/sample.csv`, which init creates, so it answers immediately. Then edit `flapi.yaml`:
    - one connection for the source, with `init:` SQL for the DuckDB extension it needs
    - every `{{env.VAR}}` it uses matched by `template.environment-whitelist`
 4. Create one read endpoint over the real data (YAML + SQL template, validators on

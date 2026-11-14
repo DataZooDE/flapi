@@ -11,8 +11,8 @@ two or more refreshes with source changes in between.
 ## 1. Tombstones (recommended)
 
 Keep `is_deleted` in the cache, update it like any column, filter it when serving.
-One `MERGE`, so `rows_affected` is reported, and the tombstone's `updated_at`
-moves the watermark past the delete. The full worked example is in
+One `MERGE`, and the tombstone's `updated_at` moves the watermark past the
+delete. The full worked example is in
 [SKILL.md](../SKILL.md#incremental-merge-with-deletes-as-tombstones).
 
 ```sql
@@ -67,8 +67,8 @@ WHERE id NOT IN (SELECT id FROM src.orders);
 ```
 
 Put it before the `MERGE` (pattern 2). If the key set is too expensive to read on
-every refresh, run a full rebuild periodically instead (see "Forcing a full
-rebuild" in SKILL.md). `WHEN NOT MATCHED BY SOURCE THEN DELETE` is accepted by
+every refresh, run a full rebuild periodically instead
+(`flapii cache refresh <path> --full`, or `flapi cache refresh ... --full` from a job). `WHEN NOT MATCHED BY SOURCE THEN DELETE` is accepted by
 DuckLake as the single delete action, but only works when the `USING` side is
 the **whole** source, which defeats an incremental refresh.
 
@@ -80,3 +80,29 @@ the **whole** source, which defeats an incremental refresh.
 | `WHEN NOT MATCHED THEN INSERT (*) VALUES (s.*)` | `Parser Error: syntax error at or near "*"` (use `INSERT *`, bare `INSERT`, or a column list) |
 | `MERGE` / `INSERT` into a table that does not exist yet | `Catalog Error: Table with name ... does not exist!` |
 | `cache.delete-handling: soft` | deprecated, no effect (warning at startup) |
+
+## Detecting lost rows
+
+A strict `>` loses late rows silently, and the refresh still
+reports success. Reconcile now and then with an uncached endpoint (cache
+variables are not set there, so name the table: `<alias>.<schema>.<table>`):
+
+```yaml
+# flapi: endpoint group=order-feed file=order-feed-check.yaml
+url-path: /order-feed/check
+template-source: order-feed-check.sql
+connection: [northwind]
+# flapi: check GET /order-feed/check -> 200
+```
+
+```sql
+-- flapi: template group=order-feed file=order-feed-check.sql
+SELECT
+  (SELECT count(*) FROM nw.Orders)          AS source_rows,
+  (SELECT count(*) FROM cache.cache.order_feed) AS cached_rows,
+  (SELECT count(*) FROM nw.Orders
+    WHERE OrderID NOT IN (SELECT OrderID FROM cache.cache.order_feed)) AS missing_rows
+```
+
+`missing_rows > 0` means the cursor is not monotonic or rows arrive late: widen
+the overlap window (it must cover the **maximum** lateness) or switch to merge.

@@ -16,10 +16,12 @@ flAPI config.
 | bad `limit` / `offset` | 400 | plain text `Invalid pagination parameters: ...` |
 | POST write | 201 | `{"rows_affected":n,"data":[RETURNING rows]}` |
 | PUT / PATCH write | 200 | same as POST |
-| SQL / constraint error | 500 | plain text `Internal Server Error: ...` (secrets scrubbed) |
+| DELETE write | 200 | `{"rows_affected":n}` |
+| SQL / constraint error | 500 | `{"error":"Internal Server Error","message":"...","request_id":"req-..."}`; no SQL, no paths (the error is in the server log under `request_id`) |
 | missing / bad credentials | 401 | short or empty text body; `WWW-Authenticate: Basic realm="flAPI"` only when the header is missing |
+| authenticated, none of `auth.roles` | 403 | `{"error":"Forbidden","message":"The authenticated principal does not hold any role this endpoint requires."}` |
 | rate limited | 429 | `Rate limit exceeded. Try again later.` + `Retry-After` |
-| cache still building | 503 | JSON with `cache_warming` / `cache_not_built`, `Retry-After` |
+| cache not ready | 503 | `{"error":"cache_warming" / "cache_not_built" / "cache_build_failed",...}`, `Retry-After: 5` |
 
 Response headers on reads: `X-Total-Count`, `X-Offset`, `X-Limit`, `X-Next`,
 `X-Request-Id`.
@@ -115,6 +117,12 @@ stages:
           auth_type: basic
 ```
 
+A role check: a stage with a user who authenticates but holds none of the
+endpoint's `auth.roles` expects `status_code: 403` and
+`json: {error: Forbidden, message: !anystr}`. Under a global `auth:` block, an
+endpoint with `auth: {enabled: false}` answers 200 without credentials: test
+that too, so a later global change cannot silently close it.
+
 Bearer / OIDC: send the header instead of `auth:`:
 
 ```text
@@ -129,8 +137,11 @@ Bearer / OIDC: send the header instead of `auth:`:
 - `!anything`, `!anystr`, `!anyint`, `!anyfloat`, `!anybool`, `!anylist`,
   `!anydict` match by type.
 - `status_code: [200, 400]` accepts either (use sparingly; it hides regressions).
-- Numbers come back as JSON numbers with full double precision
-  (`711.55999999999994543`); match DOUBLE columns with `!anyfloat` or round in SQL.
+- DOUBLE columns come back with full double precision
+  (`711.55999999999994543`); match them with `!anyfloat` or round in SQL. DECIMAL
+  columns are exact (`1.25`) for scale 0 up to 18 digits, or scale ≤ 6 with ≤ 9
+  integer digits. Timestamps carry microseconds
+  (`2024-01-01T10:00:00.123456Z`), NULL is `null`.
 - Query `params:` values must be strings in Tavern (`limit: "2"`).
 
 ## Running

@@ -92,6 +92,10 @@ or:
 X-Config-Token: <token>
 ```
 
+Any non-empty token configured with `--config-service-token` / `FLAPI_CONFIG_SERVICE_TOKEN` is
+accepted; startup warns when it is shorter than 16 characters. The `flapi_*` MCP config tools take
+the same token: `X-Config-Token` first, then `Authorization: Bearer`.
+
 **Unauthenticated Response:**
 
 ```http
@@ -117,18 +121,21 @@ GET /api/v1/_config/project HTTP/1.1
 Authorization: Bearer <token>
 ```
 
-**Response (200):**
+**Response (200)** (abridged):
 ```json
 {
-  "project-name": "my-api",
-  "project-description": "Customer data API",
-  "server-name": "localhost",
-  "http-port": 8080,
-  "template": {
-    "path": "./sqls"
-  }
+  "name": "my-api",
+  "description": "Customer data API",
+  "template-path": "/srv/api/sqls",
+  "connections": {"customers": {"init": "...", "properties": {"path": "./data/customers.parquet"}}},
+  "auth": {"enabled": false},
+  "ducklake": {"enabled": true, "alias": "cache", "warmup": "always", "read-only": false}
 }
 ```
+
+The project configuration is read-only through this API: `PUT /api/v1/_config/project` answers
+`405 Method Not Allowed` with `Allow: GET` (after the usual `401` for a missing token). Edit
+`flapi.yaml` and restart. The same applies to `DELETE /config` and other non-GET methods on `/config`.
 
 **CLI:** `flapii project get`
 
@@ -178,29 +185,23 @@ GET /api/v1/_config/endpoints HTTP/1.1
 Authorization: Bearer <token>
 ```
 
-**Response (200):**
+**Response (200):** an object keyed by URL path (or MCP name). The list uses camelCase keys;
+`GET /api/v1/_config/endpoints/{slug}` returns the same document with the YAML (hyphenated) keys.
 ```json
-[
-  {
-    "url-path": "/customers",
+{
+  "/customers": {
+    "urlPath": "/customers",
     "method": "GET",
-    "template-source": "customers.sql",
+    "templateSource": "/srv/api/sqls/customers.sql",
     "connection": ["customers-db"],
-    "cache": {
-      "enabled": true,
-      "table": "customers_cache"
-    }
-  },
-  {
-    "mcp-tool": {
-      "name": "get_customers",
-      "description": "Retrieve customer data"
-    },
-    "template-source": "customers.sql",
-    "connection": ["customers-db"]
+    "auth": {"enabled": true, "type": "basic", "roles": [], "inherited": true},
+    "cache": {"enabled": true, "table": "customers_cache", "schema": "analytics", "schedule": "1h"}
   }
-]
+}
 ```
+
+`auth.inherited` is `true` when the endpoint has no `auth:` block of its own and the top-level
+`auth:` applies; `auth.roles` lists the roles the endpoint requires (empty: any authenticated caller).
 
 **CLI:** `flapii endpoints list`
 
@@ -208,7 +209,10 @@ Authorization: Bearer <token>
 
 #### POST /api/v1/_config/endpoints
 
-Create a new endpoint.
+Create a new endpoint. The body goes through the same loader as a YAML file on disk, so
+`mcp-tool`, validators, `rate-limit`, `auth` and `cache` all survive. The endpoint is written to
+`<template dir>/<slug>.yaml` and registered at once, including in MCP `tools/list`. An endpoint
+without an `auth:` block inherits the top-level `auth:`.
 
 **Request:**
 ```http
@@ -237,11 +241,19 @@ Content-Type: application/json
 **Response (201):**
 ```json
 {
-  "success": true,
-  "message": "Endpoint created",
-  "slug": "-orders"
+  "status": "created",
+  "endpoint": "REST endpoint: /orders",
+  "slug": "-orders",
+  "url-path": "/orders",
+  "file": "/srv/api/sqls/orders.yaml"
 }
 ```
+
+| Status | When |
+|--------|------|
+| `201` | created and written to `file` |
+| `400` | invalid JSON, or the configuration does not parse: `{"error": "..."}` |
+| `409` | an endpoint with that path/name already exists (update it with PUT, or delete it first), or the server runs from a packed bundle |
 
 **CLI:** `flapii endpoints create -f endpoint.yaml`
 
@@ -282,7 +294,9 @@ Authorization: Bearer <token>
 
 #### PUT /api/v1/_config/endpoints/{slug}
 
-Update an endpoint configuration.
+Update an endpoint configuration. The body is deep-merged onto the endpoint's YAML file and the
+result is re-parsed and written back, so you can send only the keys you change. Comments in the
+rewritten YAML file are not preserved.
 
 **Request:**
 ```http
@@ -301,10 +315,21 @@ Content-Type: application/json
 **Response (200):**
 ```json
 {
-  "success": true,
-  "message": "Endpoint updated"
+  "status": "updated",
+  "endpoint": "REST endpoint: /customers",
+  "slug": "-customers",
+  "url-path": "/customers",
+  "file": "/srv/api/sqls/customers.yaml"
 }
 ```
+
+| Status | When |
+|--------|------|
+| `200` | updated and persisted |
+| `200` with `"persisted": false` | the body used camelCase keys (`urlPath`, `templateSource`): applied in memory only, with a `warning`; send the YAML (hyphenated) keys to persist |
+| `400` | the update changes `url-path`, `method` or the MCP name (delete and re-create instead), or the result does not parse |
+| `404` | unknown endpoint |
+| `409` | the endpoint's YAML uses `{{include}}` (edit the files by hand), or the server runs from a packed bundle |
 
 **CLI:** `flapii endpoints update /customers -f endpoint.yaml`
 
@@ -320,13 +345,17 @@ DELETE /api/v1/_config/endpoints/-customers HTTP/1.1
 Authorization: Bearer <token>
 ```
 
+Unregisters the endpoint and removes its YAML file.
+
 **Response (200):**
 ```json
 {
-  "success": true,
-  "message": "Endpoint deleted"
+  "status": "deleted",
+  "endpoint": "REST endpoint: /customers"
 }
 ```
+
+Unknown endpoint: `404 {"error": "Endpoint not found"}`.
 
 **CLI:** `flapii endpoints delete /customers --force`
 
@@ -334,7 +363,7 @@ Authorization: Bearer <token>
 
 #### POST /api/v1/_config/endpoints/{slug}/validate
 
-Validate endpoint configuration.
+Validate endpoint configuration with the same parser the server loads files with.
 
 **Request:**
 ```http
@@ -350,14 +379,18 @@ connection: [customers-db]
 
 **Response (200):**
 ```json
-{
-  "valid": true,
-  "errors": [],
-  "warnings": []
-}
+{"valid": true}
 ```
 
-**CLI:** `flapii endpoints validate /customers -f endpoint.yaml`
+**Response (400):**
+```json
+{"valid": false, "errors": ["Parse error: Configuration error at template-source: Missing required key: template-source"]}
+```
+
+An empty body gives `400` with `"No YAML given: send the endpoint YAML as the request body"`.
+
+**CLI:** `flapii endpoints validate /customers -f endpoint.yaml` (or pipe the YAML on stdin; with
+neither, flapii stops with `No YAML given: pass --file <path> or pipe the YAML on stdin`)
 
 ---
 
@@ -375,9 +408,25 @@ Authorization: Bearer <token>
 ```json
 {
   "success": true,
-  "message": "Endpoint reloaded from disk"
+  "message": "Endpoint configuration reloaded successfully"
 }
 ```
+
+A file that no longer loads gives `400` with the reason; the endpoint keeps its previous
+configuration. `404` means only that the endpoint is unknown (a new file is not picked up by
+reload; create it with POST or restart).
+```json
+{
+  "success": false,
+  "message": "Failed to reload endpoint configuration",
+  "reason": "/srv/api/sqls/customers.yaml: Failed to parse YAML: ..."
+}
+```
+
+Every endpoint change (create, update, delete, reload; over REST or the `flapi_*` MCP tools)
+rebuilds the MCP `tools/list`, `resources/list` and `prompts/list` at once. Pagination cursors issued
+before the change are rejected. No `notifications/list_changed` is sent (`listChanged` stays `false`),
+so MCP clients see the change on their next list call.
 
 **CLI:** `flapii endpoints reload /customers`
 
@@ -687,23 +736,34 @@ Content-Type: application/json
 
 #### POST /api/v1/_config/endpoints/{slug}/cache/refresh
 
-Trigger a cache refresh.
+Refresh a cache now. The call returns when the refresh has finished.
+
+**Query Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `full` | `true` (or `1`): full rebuild. The incremental watermark is erased and the cache table is dropped (`DROP TABLE IF EXISTS`) in the same transaction as the populate template, so an append cache is rebuilt rather than re-appended. A template with its own `BEGIN`/`COMMIT` only gets the watermark cleared (a warning is logged). |
 
 **Request:**
 ```http
-POST /api/v1/_config/endpoints/-customers/cache/refresh HTTP/1.1
+POST /api/v1/_config/endpoints/-customers/cache/refresh?full=true HTTP/1.1
 Authorization: Bearer <token>
 ```
 
-**Response (200):**
-```json
-{
-  "success": true,
-  "message": "Cache refresh triggered"
-}
-```
+**Response (200):** empty body. The outcome (mode, status, duration, rows, snapshot) is in the
+audit log below and in `GET /api/v1/_config/metrics`.
 
-**CLI:** `flapii cache refresh /customers`
+| Status | When |
+|--------|------|
+| `200` | refreshed |
+| `400` | cache not enabled, or the refresh failed (`Cache refresh failed: ...`) |
+| `404` | unknown endpoint |
+| `409` | `ducklake.read-only: true` |
+
+A refresh through this API counts as the cache's last refresh for the scheduler: the next scheduled
+refresh is one `schedule` later.
+
+**CLI:** `flapii cache refresh /customers [--full]`
 
 ---
 
@@ -738,11 +798,14 @@ Authorization: Bearer <token>
 ```json
 [
   {
-    "event_id": 1,
+    "event_id": "d774841d-2cfe-4e55-9be3-c29313c8245b",
     "endpoint_path": "/customers",
+    "cache_schema": "analytics",
     "cache_table": "customers_cache",
-    "sync_type": "incremental",
+    "sync_type": "merge",
     "status": "success",
+    "message": "Cache refreshed successfully",
+    "snapshot_id": "9",
     "rows_affected": 42,
     "sync_started_at": "2025-01-10T14:30:00Z",
     "sync_completed_at": "2025-01-10T14:30:05Z",
@@ -765,6 +828,10 @@ Authorization: Bearer <token>
 
 **Response (200):** Array of audit log entries for all endpoints.
 
+`event_id` is a UUIDv4. `sync_type` is the refresh mode (`full`, `append`, `merge`) or
+`compaction`. `rows_affected` is the sum over the template's statements. The log is bounded: the
+newest 1000 rows per cache table are kept.
+
 > **Implementation:** `src/config_service.cpp`, `src/cache_manager.cpp` | **Tests:** `test/integration/test_ducklake_cache.tavern.yaml`, `test/integration/test_ducklake_comprehensive.tavern.yaml`
 
 ---
@@ -779,10 +846,10 @@ Retrieve database schema information.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `tables` | boolean | Return only table list |
-| `connections` | boolean | Return only connection info |
+| `tables` | boolean | Return only the table list (tables, not views) |
+| `connections` | boolean | Return the connections `flapi.yaml` declares |
 | `format` | string | `completion` for flattened format |
-| `connection` | string | Filter by connection name |
+| `connection` | string | Filter by database name (an attached database named like the connection) |
 
 **Request:**
 ```http
@@ -808,7 +875,29 @@ Authorization: Bearer <token>
 }
 ```
 
-**CLI:** `flapii schema get`
+**Response with `?tables=true` (200):**
+```json
+{
+  "tables": [
+    {"name": "ev_cache", "schema": "analytics", "database": "cache", "type": "table",
+     "connection": "", "qualified_name": "cache.analytics.ev_cache"}
+  ]
+}
+```
+
+`connection` is the connection name when the table's database is attached under that name
+(`ATTACH ... AS <connection>`), else empty.
+
+**Response with `?connections=true` (200):** names and a type hint only; connection properties
+(which can hold credentials) are never returned.
+```json
+{"connections": [{"name": "customers", "type": "parquet", "status": "configured"}]}
+```
+
+A failing introspection query answers `500` with the reason.
+
+**CLI:** `flapii schema get [--connection <name>] [--table <name>]`, `flapii schema tables`,
+`flapii schema connections`
 
 ---
 
@@ -876,6 +965,7 @@ Authorization: Bearer <token>
     "since_unix_ms": 1763112000000,
     "total": 1530,
     "server_errors": 2,
+    "cache_unavailable": 3,
     "rejections": { "unauthorized": 4, "forbidden": 0, "rate_limited": 11 },
     "series": [
       {
@@ -883,7 +973,7 @@ Authorization: Bearer <token>
         "method": "GET",
         "route": "/customers",
         "requests": 1210,
-        "status": { "2xx": 1196, "3xx": 0, "4xx": 12, "5xx": 2 },
+        "status": { "2xx": 1193, "3xx": 0, "4xx": 12, "5xx": 2, "503_cache": 3 },
         "latency_ms": { "avg": 3.1, "p50": 2.5, "p95": 10.0, "p99": 25.0, "max": 41.7 },
         "last_request_unix_ms": 1763115600000
       },
@@ -925,7 +1015,12 @@ REST series count status classes. MCP tool series count `failures` (calls whose
 tool result reported an error). Latency is measured server-side around the
 handler. Percentiles are estimated from a fixed histogram (bucket bounds
 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 25, 50, 100, 250, 500 ms, then 1, 2.5, 5, 10, 30
-and 60 s), and each is the **upper bound** of the bucket that contains it.
+and 60 s), and each is the **upper bound** of the bucket that contains it, capped
+at the observed `max`.
+A `503` whose body has an `"error"` starting with `cache_` (`cache_warming`,
+`cache_build_failed`, `cache_not_built`) is a cache that is not ready yet, not a
+server fault: it is counted under `status.503_cache` per series and in
+`requests.cache_unavailable`, and excluded from `5xx` and `server_errors`.
 `rejections` counts every 401, 403 and 429 the server returned, including those
 from middleware before an endpoint ran.
 
@@ -933,8 +1028,8 @@ from middleware before an endpoint ran.
 `starting`, `ready`, `stale` (the last refresh failed and the previous snapshot is
 still served), `failed` or `unbuilt`. A cache that has never been refreshed in
 this process has no `last`, `duration_ms` or `data_age_seconds`. `duration_ms`
-times the populate statement only. `rows_affected` is DuckDB's row count for the
-last statement in the cache template. The same values are written to the cache
+times the populate statement only. `rows_affected` is the sum of the rows written
+by every statement in the cache template. The same values are written to the cache
 audit log, `GET /api/v1/_config/endpoints/{path}/cache/audit`.
 
 **Response (401):**
@@ -954,6 +1049,19 @@ was already full are dropped before export is attempted and are **not** counted
 here.
 
 > **Implementation:** `src/config_service.cpp`, `src/runtime_metrics.cpp`, `src/cache_manager.cpp` | **Tests:** `test/integration/test_config_service_metrics.py`, `test/integration/test_runtime_metrics_and_cache_audit.py`, `test/cpp/runtime_metrics_test.cpp`
+
+---
+
+#### GET /api/v1/_config/health
+
+Server health with details: database, endpoint count, Arrow IPC, storage backends and credential
+status, and the server's build version (`server.version`, the same as `flapi --version`).
+
+```json
+{"status": "healthy", "server": {"name": "flapi", "version": "26.10.31"}, "database": {"status": "connected"}, "endpoints": {"count": 7}}
+```
+
+**CLI:** `flapii health`
 
 ---
 
@@ -993,7 +1101,8 @@ Content-Type: application/json
 }
 ```
 
-**Valid Levels:** `debug`, `info`, `warning`, `error`
+**Valid Levels:** `debug`, `info`, `warning`, `error` (this endpoint and `flapii config log-level set`
+do not accept the `warn` alias that the server flag and `flapi.yaml` accept)
 
 **Response (200):**
 ```json
@@ -1086,13 +1195,13 @@ flapii --version
 |--------|-------|------|---------|-------------|
 | `--config` | `-c` | string | - | Path to flapi.yaml configuration file |
 | `--base-url` | `-u` | string | - | Base URL of the flapi server |
-| `--auth-token` | `-t` | string | - | Bearer token for authentication |
-| `--config-service-token` | - | string | - | Config service authentication token |
+| `--auth-token` | - | string | - | Bearer token for authentication |
+| `--config-service-token` | `-t` | string | - | Config service authentication token |
 | `--timeout` | - | number | - | Request timeout in seconds |
 | `--retries` | - | number | - | Number of retries for failed requests |
 | `--insecure` | - | boolean | `false` | Disable TLS certificate verification |
 | `--output` | `-o` | string | `json` | Output format: `json` or `table` |
-| `--json-style` | - | string | `camel` | JSON key casing: `camel` or `hyphen` |
+| `--json-style` | - | string | `camel` | JSON key casing of config documents: `camel` or `hyphen` (see 3.5) |
 | `--debug-http` | - | boolean | `false` | Enable HTTP debugging |
 | `--quiet` | `-q` | boolean | `false` | Suppress non-error output |
 | `--yes` | `-y` | boolean | `false` | Assume yes for prompts |
@@ -1102,6 +1211,7 @@ flapii --version
 | Variable | Description |
 |----------|-------------|
 | `FLAPI_BASE_URL` | Base URL of the flapi server |
+| `FLAPI_URL` | Base URL, read when `FLAPI_BASE_URL` is unset |
 | `FLAPI_TOKEN` | Bearer authentication token |
 | `FLAPI_CONFIG_SERVICE_TOKEN` | Config service authentication token |
 | `FLAPI_TIMEOUT` | Request timeout in seconds |
@@ -1200,6 +1310,7 @@ project/
 │   ├── sample.yaml
 │   └── sample.sql
 ├── data/
+│   └── sample.csv      # the data the sample endpoint reads
 ├── common/
 └── .gitignore
 ```
@@ -1394,7 +1505,8 @@ flapii cache update /customers -f cache.json
 | Option | Short | Description |
 |--------|-------|-------------|
 | `--enabled` | `-e` | Enable/disable caching |
-| `--schedule` | `-s` | Refresh schedule, e.g. `5m`, `6h` (flAPI has no TTL) |
+| `--schedule` | `-s` | Refresh schedule, e.g. `5m`, `6h` |
+| `--ttl` | - | Not supported: flAPI has no TTL; use `--schedule` |
 | `--table` | - | Cache table name |
 | `--schema` | - | Cache schema name |
 | `--file` | `-f` | JSON config file |
@@ -1424,11 +1536,26 @@ flapii cache update-template /customers -f cache.sql
 
 #### cache refresh
 
-Trigger cache refresh.
+Refresh a cache now (`POST .../cache/refresh`).
 
 ```bash
 flapii cache refresh /customers
-flapii cache refresh /customers --force
+flapii cache refresh /customers --full    # drop the table and rebuild it from scratch (?full=true)
+```
+
+The server answers with an empty body, so flapii reports success only; read the outcome with
+`flapii cache audit /customers -o table` (mode, status, duration, rows, snapshot). `-f/--force` is
+deprecated and hidden: it is a normal refresh and prints a warning.
+
+---
+
+#### cache audit
+
+Show the refresh history of one cache, or of all caches without a path.
+
+```bash
+flapii cache audit /customers -o table
+flapii cache audit                         # all caches, JSON
 ```
 
 ---
@@ -1439,15 +1566,18 @@ Get database schema.
 
 ```bash
 flapii schema get
-flapii schema get -c postgres-db
-flapii schema get -t customers
+flapii schema get --connection postgres-db
+flapii schema get --table customers
 ```
 
 | Option | Short | Description |
 |--------|-------|-------------|
-| `--connection` | `-c` | Specific connection |
-| `--table` | `-t` | Specific table |
+| `--connection` | - | Specific connection |
+| `--table` | - | Specific table |
 | `--database` | `-d` | Specific database |
+
+`--connection` and `--table` have no short form (`-c` is the global `--config`, `-t` the global
+`--config-service-token`).
 
 ---
 
@@ -1457,7 +1587,7 @@ Refresh schema cache.
 
 ```bash
 flapii schema refresh
-flapii schema refresh -c postgres-db --force
+flapii schema refresh --connection postgres-db --force
 ```
 
 ---
@@ -1478,7 +1608,7 @@ List tables.
 
 ```bash
 flapii schema tables
-flapii schema tables -c postgres-db
+flapii schema tables --connection postgres-db
 ```
 
 ---
@@ -1551,9 +1681,15 @@ flapii mcp prompts get analyze_customer
 flapii endpoints list --output json
 ```
 
-**Key Casing:**
+**Key Casing:** `--json-style` re-cases **configuration documents** only: `endpoints list/get`,
+`mcp tools/resources/prompts`, `cache list/get`, `project get`, `templates list`.
 - `--json-style camel` (default): `urlPath`, `templateSource`
 - `--json-style hyphen`: `url-path`, `template-source`
+
+**Data output** is printed exactly as the server sent it, in snake_case, whatever `--json-style`
+says: `metrics`, `cache audit`, `schema`, `health`, `templates expand/test`, `endpoints validate`,
+parameters, `cache gc`, filesystem, environment. Scripts read e.g. `rows_affected`, `duration_ms`,
+`sync_type` from `flapii cache audit`.
 
 #### Table Output
 
@@ -1580,14 +1716,17 @@ Features colored columns and formatted borders.
 | 400 | Bad Request | Display validation error |
 | 401 | Unauthorized | Display auth error, exit 1 |
 | 404 | Not Found | Display not found error |
+| 409 | Conflict | Display the server's reason |
 | 429, 500-504 | Server Error | Auto-retry with backoff |
 
-**Error Response Format:**
+flapii prints errors as `[status] statusText: <server reason>`, followed by the JSON body when there
+is one, e.g. `[404] Not Found: Endpoint not found`.
+
+**Error Response Format** (endpoint create/update/delete):
 
 ```json
 {
-  "error": "Validation failed",
-  "details": ["field-name is required"]
+  "error": "Endpoint already exists: REST endpoint: /orders (update it with PUT, or delete it first)"
 }
 ```
 
@@ -1598,7 +1737,7 @@ Features colored columns and formatted borders.
 export FLAPI_CONFIG_SERVICE_TOKEN="your-token"
 flapii endpoints list
 
-# Option 2: Command-line flag
+# Option 2: Command-line flag (-t is short for --config-service-token)
 flapii -t "your-token" endpoints list
 
 # Option 3: Config service token flag
@@ -1674,7 +1813,9 @@ drifted once: the CLI shipped `-slash-` while the server used `-slash`.
 | 201 | Created - Resource created |
 | 400 | Bad Request - Invalid input |
 | 401 | Unauthorized - Invalid or missing token |
-| 404 | Not Found - Resource doesn't exist |
+| 404 | Not Found - Resource doesn't exist (for reload: only an unknown endpoint) |
+| 405 | Method Not Allowed - read-only resource (`PUT /api/v1/_config/project`, non-GET `/config`); `Allow: GET` |
+| 409 | Conflict - endpoint exists, `{{include}}` in the YAML, packed bundle, or a read-only cache |
 | 500 | Internal Server Error |
 | 501 | Not Implemented |
 | 503 | Service Unavailable |

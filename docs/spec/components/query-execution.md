@@ -149,6 +149,16 @@ struct QueryResult {
 };
 ```
 
+**JSON values** (`QueryResult::decimalToJson`, `convertVectorTimestampToJson`):
+
+- `DECIMAL` is rendered from DuckDB's exact text, not through `double`: scale 0 with at most 18 digits
+  becomes a JSON integer; scale up to 6 with at most 9 integer digits becomes the exact JSON number
+  (`7790.62`, not `7790.61999999999989086`). Wider decimals fall back to the nearest double.
+- `TIMESTAMP` / `TIMESTAMPTZ` keep microseconds (`2024-01-01T10:00:00.123456Z`); `TIMESTAMP_S` and
+  `TIMESTAMP_MS` are decoded in their own unit, `TIMESTAMP_NS` keeps 9 fractional digits; DuckDB's
+  infinities become the strings `"infinity"` / `"-infinity"`.
+- SQL `NULL` is JSON `null`.
+
 ### WriteResult Structure
 
 ```cpp
@@ -299,11 +309,23 @@ Write operations have additional features:
 
 ```yaml
 operation:
-  type: write
+  type: Write
   transaction: true          # Wrap in BEGIN/COMMIT
-  returns_data: true         # Expect RETURNING clause
-  validate_before_write: true
+  returns-data: true         # Expect RETURNING clause
+  validate-before-write: true
 ```
+
+`POST`, `PUT`, `PATCH` and `DELETE` all take this path (`RequestHandler` → `executeWrite`): parameters
+are extracted and validated, the template is rendered, the statements run, and the response is
+`{"rows_affected": n}` or the `RETURNING` rows. `DELETE` used to bypass it (cache invalidation or `405`).
+
+After a successful write to an endpoint with a cache, `cache.invalidate-on-write` refreshes the cache
+synchronously before the response; `cache.refresh-on-write` schedules an asynchronous refresh after the
+response, coalesced per endpoint; with both set only the synchronous refresh runs. MCP tool writes use
+the same rules.
+
+A failure anywhere here is answered with the generic `500` body and a `request_id`; the DuckDB error is
+logged under that id (see [security.md](./security.md#error-responses)).
 
 ```cpp
 WriteResult executeWriteInTransaction(const EndpointConfig& endpoint,

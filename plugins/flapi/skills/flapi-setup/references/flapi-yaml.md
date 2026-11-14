@@ -11,13 +11,13 @@ under `template:`).
 | Key | Default | Notes |
 |---|---|---|
 | `project-name` | **required** | OpenAPI title (`/doc`) |
-| `project-description` | **required** | OpenAPI description |
+| `project-description` | `""` | OpenAPI description (optional) |
 | `http-port` | `8080` | overridden by `-p/--port`, then `FLAPI_PORT` |
 | `http-host` | `0.0.0.0` | overridden by `--host`, then `FLAPI_HOST`; `127.0.0.1` = loopback only |
-| `log-level` | `info` | `debug`, `info`, `warning`, `error`. `--log-level` / `FLAPI_LOG_LEVEL` win. An unknown value here falls back to `info`. |
+| `log-level` | `info` | `debug`, `info`, `warning` (alias `warn`), `error`. `--log-level` / `FLAPI_LOG_LEVEL` win. An unknown value is a startup error. |
 | `log-format` | `text` | `json` = one JSON object per line, carrying `request_id` (and `trace_id` with tracing) |
 | `stall-timeout-s` | `60` | `GET /health` answers 503 `stalled` when a request is older than this; `0` disables |
-| `server-name` | `localhost` | parsed, but has **no effect** today |
+| `server-name` | `localhost` | has **no effect**; a load warning says so |
 | `version` | – | accepted as metadata, not read |
 
 ## template (required)
@@ -71,11 +71,12 @@ startup error. See `flapi-deploy`.
 | `ducklake.override-data-path` | `false` | passed to the DuckLake `ATTACH` |
 | `ducklake.read-only` | `false` | replica: attach read-only, no warm-up / scheduled refresh / retention / compaction; cache mutations return 409 |
 | `ducklake.warmup` | `always` | `always`, `if-empty`, `never`; endpoint `cache.warmup` and `--cache-warmup` override |
-| `ducklake.scheduler.enabled` | `false` | **must be `true` for any endpoint `cache.schedule` to fire.** Without it caches are only built at warm-up or on demand. |
-| `ducklake.scheduler.scan-interval` | – | parsed, but has **no effect**; the scan runs every `heartbeat.worker-interval` seconds |
-| `ducklake.retention.keep-last-snapshots` | – | snapshots kept per table |
-| `ducklake.retention.max-snapshot-age` | – | e.g. `30d` |
-| `ducklake.compaction.enabled` | `false` | merges adjacent files; with a `schedule` set it runs once every 24 h, whatever the value |
+| `ducklake.scheduler.enabled` | `true` | endpoint `cache.schedule`s fire; `false` opts out (startup warning) |
+| `ducklake.scheduler.scan-interval` | min(`heartbeat.worker-interval`, shortest `cache.schedule`), floor 1 s | how often due caches are checked; `<n>[s|m|h|d]`, invalid = load error. Startup logs `Cache scheduler on: N scheduled cache(s), checked every X s` |
+| `ducklake.retention.keep-last-snapshots` | – | snapshots kept per table; applies to every cache without its own `retention` (an endpoint block replaces it) |
+| `ducklake.retention.max-snapshot-age` | – | e.g. `30d`; same inheritance |
+| `ducklake.compaction.enabled` | `false` | with a `schedule`, runs merge / rewrite / cleanup once per catalog when due |
+| `ducklake.compaction.schedule` | – | `<n>[s|m|h|d]` or `@hourly`, `@daily`, `@midnight`, `@weekly`; anything else is a load error. Nothing runs unless `enabled: true` too |
 | `ducklake.data-inlining-row-limit` | – | DuckLake data inlining |
 
 ```yaml
@@ -85,8 +86,6 @@ ducklake:
   metadata-path: ./cache.ducklake
   data-path: ./cache_data
   warmup: if-empty
-  scheduler:
-    enabled: true
   retention:
     keep-last-snapshots: 10
 ```
@@ -98,7 +97,7 @@ Cache design is covered in `flapi-cache-design` and refresh tuning in `flapi-cac
 | Key | Default | Notes |
 |---|---|---|
 | `heartbeat.enabled` | `false` | runs the warm-up GET for endpoints that set their own `heartbeat.enabled: true` |
-| `heartbeat.worker-interval` | `10` (seconds) | the worker's tick. This is also how often scheduled cache refreshes are checked, whether or not `heartbeat.enabled` is set. |
+| `heartbeat.worker-interval` | `60` (seconds) | the worker's tick, with or without a `heartbeat` block; `<= 0` is a load error. Caps the default scheduler scan interval. |
 
 ## mcp
 
@@ -116,9 +115,9 @@ Cache design is covered in `flapi-cache-design` and refresh tuning in `flapi-cac
 
 | Key | Default | Notes |
 |---|---|---|
-| `auth.enabled` (+ `type`, `users`, `jwt-secret`, `jwt-issuer`, `oidc`) | – | global auth; `enabled` is mandatory when the block exists. See `flapi-auth`. |
+| `auth.enabled` (+ `type`, `users`, `roles`, `jwt-secret`, `jwt-issuer`, `oidc`) | – | global auth, inherited by every REST endpoint without its own `auth:` block; `enabled` is mandatory when the block exists. See `flapi-auth`. |
 | `rate_limit.enabled`, `.max`, `.interval` | – | **underscore**; all three are mandatory when the block exists; `key: ip / user / user-or-ip` |
-| `cors.allow-origins` | none: `Access-Control-Allow-Origin: *` | a list; once set, only listed origins get CORS headers; `"*"` allows all |
+| `cors.allow-origins` | none: `Access-Control-Allow-Origin: *` | a list; once set, only listed origins get CORS headers; `"*"` allows all (`CORS_WILDCARD_WITH_AUTH` warning when any auth is on) |
 | `cors.allow-headers`, `cors.allow-methods` | – | lists |
 | `enforce-https.enabled` | `false` | serve TLS directly; needs `ssl-cert-file` and `ssl-key-file`; must be a map |
 
@@ -150,4 +149,4 @@ enforce-https:
 | Key | Notes |
 |---|---|
 | `cache-schema` | fallback schema for cache tables; endpoint `cache.schema` (default `cache`) normally wins |
-| `storage.cache.*` | parsed, but has **no effect** today (nothing reads it) |
+| `storage.cache.*` | caches REMOTE template files (`template.path` on s3://, gs://, az://, https://); with a local `template.path` it has no effect and a load warning says so |

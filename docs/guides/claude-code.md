@@ -59,7 +59,9 @@ The plugin registers a `flapi` MCP server at `$FLAPI_URL/mcp/jsonrpc` (default
 Claude then sees your endpoints as MCP tools. If the server runs with
 `--config-service`, Claude also sees the `flapi_*` config tools. With those it can
 list and edit endpoints, expand templates, refresh caches and read
-`flapi_get_metrics`.
+`flapi_get_metrics`. Every `flapi_*` tool needs the config-service token, which
+this header carries. Endpoint changes show up in `tools/list` at once, without a
+restart.
 
 ```bash
 export FLAPI_CONFIG_SERVICE_TOKEN=$(openssl rand -hex 32)
@@ -76,7 +78,9 @@ directory with a `flapi.yaml` in it or above it), the plugin:
    `FLAPI_BIN` is set. Any errors go back to Claude, which fixes them.
 2. reloads each affected endpoint on the running server, if validation passed and
    `FLAPI_CONFIG_SERVICE_TOKEN` is set. It calls
-   `POST /api/v1/_config/endpoints/{path}/reload` on `FLAPI_URL`.
+   `POST /api/v1/_config/endpoints/{path}/reload` on `FLAPI_URL`. A file that no
+   longer loads is rejected with its reason (the endpoint keeps its previous
+   configuration), and a successful reload also updates the MCP tool list.
 
 If something is missing (no binary, no project, no token, no server), the hook
 does nothing. It never blocks an edit. A newly created endpoint file is not loaded
@@ -84,7 +88,7 @@ yet, so the hook says so: use `flapii endpoints create` or restart the server.
 
 | Variable | Default | Used by |
 |---|---|---|
-| `FLAPI_URL` | `http://localhost:8080` | MCP server, hook |
+| `FLAPI_URL` | `http://localhost:8080` | MCP server, hook, `flapii` (when `FLAPI_BASE_URL` is unset) |
 | `FLAPI_CONFIG_SERVICE_TOKEN` | — | MCP server, hook, `flapii` |
 | `FLAPI_BIN` | `flapi` on `PATH` | hook |
 | `FLAPI_CONFIG` | nearest `flapi.yaml` | hook |

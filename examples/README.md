@@ -340,7 +340,7 @@ ducklake:
     keep-last-snapshots: 10
     max-snapshot-age: 30d
   scheduler:
-    enabled: true
+    enabled: true                 # the default
     scan-interval: 5m             # Check for refresh every 5 minutes
 ```
 

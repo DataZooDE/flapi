@@ -5,7 +5,8 @@ description: >
   auth, OIDC with provider presets (google, microsoft, keycloak, auth0, okta,
   github), roles and the auth context in SQL templates, MCP authentication and
   allowed-roles, OAuth protected-resource metadata, the config-service token,
-  CORS, TLS (enforce-https) and the startup security warnings. Use when a user
+  CORS, TLS (enforce-https) and the startup security warnings. Covers global
+  auth inherited by every endpoint, opt-out, and REST roles (403). Use when a user
   asks to require a login or token, restrict who may call an endpoint or tool,
   debug a 401/403, or harden a deployment.
 version: 26.10.31
@@ -22,58 +23,77 @@ Three independent gates: the endpoint's own `auth:` block (REST), `mcp.auth`
 
 ## Critical gotchas
 
-- **REST auth is per endpoint only.** A top-level `auth:` block in `flapi.yaml`
-  protects no REST endpoint (its `users` and `jwt-secret` are never used); only
-  its `oidc:` sub-block is copied into endpoints that declare `type: oidc` without
-  their own. Put the block in every endpoint, or share it with
-  `{{include:auth from ...}}` (see `flapi-rest`).
-- **The REST types are `basic`, `bearer` and `oidc`.** `type: jwt` matches nothing
-  and refuses every request with 401 (startup warning `AUTH_UNKNOWN_TYPE`).
-  A signed HS256 JWT is `type: bearer`.
-- **REST has no role check and never returns 403.** An `auth.roles:` list on an
-  endpoint is not read; any authenticated user gets 200. Separate audiences with
-  separate endpoints/user lists, or filter in SQL with `auth.roles`. Role-based
-  403s exist only for MCP tools/resources/prompts (`allowed-roles`).
+- **A top-level `auth:` block in `flapi.yaml` protects every REST endpoint that
+  has no `auth:` block of its own.** An endpoint's own block REPLACES the global
+  one (no merge: repeat `users`/`jwt-secret` there). `auth: {enabled: false}` on
+  an endpoint opts it out. Startup logs `Global auth (type 'basic') applies to N
+  endpoint(s) ...; M endpoint(s) opt out ...`. Upgrading a config that had a
+  top-level block: endpoints that were open now answer 401.
+- **The REST types are `basic`, `bearer` and `oidc`; `type: jwt` is an alias of
+  `bearer`.** Any other type refuses every request (`AUTH_UNKNOWN_TYPE`).
+- **`auth.roles` is enforced on REST.** An authenticated caller holding none of
+  the listed roles gets **403** `{"error":"Forbidden","message":...}`; no or
+  wrong credentials stay 401; `roles: []` (or absent) = any authenticated user.
+  The global block accepts `roles` too.
 - **Bearer tokens must carry `sub`, an `iss` equal to `jwt-issuer`, and a `roles`
-  array** (REST rejects a token without `roles`). Set `jwt-issuer`; an empty one
-  matches no token. An expired `exp` is 401. An empty `jwt-secret` (unset env
-  var) refuses all tokens (`AUTH_EMPTY_JWT_SECRET`).
-- **Passwords: use `$pbkdf2-sha256$<iter>$<salt>$<hash>` with URL-safe base64
-  (`-_`, no padding).** bcrypt hashes never verify; passlib's `pbkdf2_sha256`
-  output (`./` alphabet) usually does not either. The startup auditor wrongly
-  prints `AUTH_PLAINTEXT_PASSWORD` for PBKDF2 hashes (and suggests bcrypt);
-  ignore that one line for PBKDF2.
+  array** (it may be empty). Set `jwt-issuer`; an empty one matches no token.
+  An expired `exp` is 401. An empty `jwt-secret` (unset env var) refuses all
+  tokens (`AUTH_EMPTY_JWT_SECRET`).
+- **Passwords: store a PBKDF2-SHA256 hash** `$pbkdf2-sha256$<iter>$<salt>$<hash>`.
+  passlib's `pbkdf2_sha256` output, standard and URL-safe base64 all verify.
+  **bcrypt never verifies** (startup warning `AUTH_BCRYPT_UNSUPPORTED`: that user
+  cannot log in).
 - **With `mcp.auth.enabled: true`, a tool without `allowed-roles` is denied to
-  everyone** (403). `tools/list` still lists every tool.
+  everyone** (403). `tools/list` still lists every tool. MCP uses only
+  `mcp.auth`; the REST `auth:` blocks (global or endpoint) do not apply to it.
 - **Secrets only via whitelisted `{{env.X}}`**; an empty user password from an
   unset variable stops startup, an empty `jwt-secret` does not (it fails closed).
 - **CORS default is `Access-Control-Allow-Origin: *`** (empty `allow-origins`).
-  Set an allowlist for anything browser-facing.
+  With any auth enabled that prints `CORS_WILDCARD_WITH_AUTH`; set an allowlist.
 - **OIDC: `issuer-url` must equal the token's `iss` byte for byte** (Auth0 has a
-  trailing `/`). Presets never substitute `{tenant}`/`{realm}`/`{domain}`.
+  trailing `/`). Preset placeholders `{tenant}`/`{realm}`/`{domain}` are filled
+  from `tenant-id`/`realm`/`domain`; one left over stops startup naming the key.
 
-## Basic auth (runnable)
+## Basic auth with global inheritance (runnable)
 
-Generate a hash (600 000 iterations, 16-byte salt, URL-safe base64):
+Generate a hash with passlib (or the stdlib one-liner below, same format):
 
 ```bash
+python3 -c "from passlib.hash import pbkdf2_sha256; import getpass; print(pbkdf2_sha256.using(rounds=600000).hash(getpass.getpass()))"
 python3 -c "import hashlib,base64,os,sys; s=os.urandom(16); e=lambda b: base64.urlsafe_b64encode(b).decode().rstrip('='); print('\$pbkdf2-sha256\$600000\$'+e(s)+'\$'+e(hashlib.pbkdf2_hmac('sha256',sys.argv[1].encode(),s,600000)))" 'reader-pass'
 ```
 
 ```yaml
-# flapi: endpoint group=basic file=me.yaml allow=CORS_WILDCARD_WITH_AUTH
-url-path: /me
-method: GET
-with-pagination: false
-auth:
+# flapi: config group=basic
+project-name: basic-auth-demo
+template:
+  path: ./sqls
+connections:
+  customers:
+    properties:
+      path: './data/customers.parquet'
+cors:
+  allow-origins: [https://app.example.com]   # "*" with auth -> CORS_WILDCARD_WITH_AUTH
+auth:                                        # applies to every endpoint without its own auth:
   enabled: true
   type: basic
   users:
     - username: reader      # password: reader-pass
       password: '$pbkdf2-sha256$600000$FpkEyJklqXpwdoxWhoRzvw$RA15LygYf0O0yiG8OPQ91NWeeSNqcxTwMl4pRXLcmq0'
       roles: [read]
+    - username: admin       # password: reader-pass (demo only)
+      password: '$pbkdf2-sha256$600000$FpkEyJklqXpwdoxWhoRzvw$RA15LygYf0O0yiG8OPQ91NWeeSNqcxTwMl4pRXLcmq0'
+      roles: [admin]
+```
+
+```yaml
+# flapi: endpoint group=basic file=me.yaml
+url-path: /me
+method: GET
+with-pagination: false
 template-source: me.sql
 connection: [customers]
+# no auth: block -> inherits the global one
 # flapi: check GET /me -> 401
 ```
 
@@ -90,6 +110,8 @@ url-path: /public
 method: GET
 template-source: public.sql
 connection: [customers]
+auth:
+  enabled: false            # opt out of the global block
 # flapi: check GET /public -> 200
 ```
 
@@ -98,12 +120,18 @@ connection: [customers]
 SELECT count(*) AS customers FROM read_parquet('{{{ conn.path }}}')
 ```
 
-A hash is not a secret you must hide, but keep real ones out of git anyway:
+```bash
+curl -i http://localhost:8080/me                      # 401, WWW-Authenticate: Basic realm="flAPI"
+curl -i -u reader:wrong http://localhost:8080/me      # 401
+curl -s -u reader:reader-pass http://localhost:8080/me
+# [{"username":"reader","roles":"read","auth_type":"basic"}]
+```
+
+Keep real hashes out of git with a whitelisted env var:
 
 ```yaml
 template:
   environment-whitelist: ['^FLAPI_.*']   # in flapi.yaml
-# in the endpoint:
 auth:
   enabled: true
   type: basic
@@ -111,13 +139,6 @@ auth:
     - username: admin
       password: '{{env.FLAPI_ADMIN_PASSWORD_HASH}}'   # unset or empty -> flAPI refuses to start
       roles: [admin]
-```
-
-```bash
-curl -i http://localhost:8080/me                      # 401, WWW-Authenticate: Basic realm="flAPI"
-curl -i -u reader:wrong http://localhost:8080/me      # 401
-curl -s -u reader:reader-pass http://localhost:8080/me
-# [{"username":"reader","roles":"read","auth_type":"basic"}]
 ```
 
 Users can also come from AWS Secrets Manager:
@@ -128,7 +149,7 @@ Users can also come from AWS Secrets Manager:
 ```yaml
 auth:
   enabled: true
-  type: bearer
+  type: bearer                             # `jwt` is an alias; auth.type in SQL reads "bearer"
   jwt-secret: '{{env.FLAPI_JWT_SECRET}}'   # >= 32 random bytes
   jwt-issuer: my-issuer                    # token "iss" must equal this
 ```
@@ -156,8 +177,9 @@ auth:
   enabled: true
   type: oidc
   oidc:
-    provider-type: keycloak                      # generic | google | microsoft | keycloak | auth0 | okta | github
-    issuer-url: https://sso.example.com/realms/sales
+    provider-type: keycloak                      # generic | google | microsoft (azure, azure-ad, entra) | keycloak | auth0 | okta | github
+    domain: sso.example.com                      # fills {domain}; issuer https://sso.example.com/realms/sales
+    realm: sales                                 # fills {realm}
     client-id: flapi-api
     allowed-audiences: [flapi-api]               # empty = any audience
     # optional overrides:
@@ -172,26 +194,51 @@ auth:
 Keys discovered from `<issuer-url>/.well-known/openid-configuration`; JWKS
 cached. Other keys read: `client-secret`, `email-claim`, `groups-claim`,
 `scopes`, `enable-client-credentials`, `enable-refresh-tokens` (groups are not
-merged into roles). An `auth.oidc` block in `flapi.yaml` is inherited by every
-endpoint that has `type: oidc` and no `oidc:` of its own (the endpoint still
-needs `enabled: true` and `type: oidc`).
+merged into roles). A global `auth:` block with `type: oidc` protects every
+endpoint without its own block (see the gotchas); an endpoint with `type: oidc`
+and no `oidc:` of its own uses the global `auth.oidc`.
 
 | `provider-type` | Default `issuer-url` (when empty) | `username-claim` (when unset/`sub`) | Roles from |
 |---|---|---|---|
 | `generic` / unset | none, required | `sub` | `roles` |
 | `google` | `https://accounts.google.com` | `email` | `roles` |
-| `microsoft` | `https://login.microsoftonline.com/{tenant}/v2.0` | `preferred_username` | `roles` |
-| `keycloak` | `https://keycloak.example.com/realms/{realm}` | `preferred_username` | `realm_access.roles` |
-| `auth0` | `https://{domain}.auth0.com` | `email` | `roles` |
+| `microsoft` (`azure`, `azure-ad`, `entra`) | `https://login.microsoftonline.com/{tenant}/v2.0` | `preferred_username` | `roles` |
+| `keycloak` | `https://{domain}/realms/{realm}` | `preferred_username` | `realm_access.roles` |
+| `auth0` | `https://{domain}.auth0.com` | `email` | set `roles-claim` / `role-claim-path` (default path `https://your-namespace/roles`) |
 | `okta` | `https://{domain}.okta.com/oauth2/default` | `preferred_username` | `roles` |
 | `github` | `https://github.com` | `login` | `roles` (not real OIDC; logs a warning) |
 
-Always set the real `issuer-url`. For microsoft/keycloak/auth0/okta a real URL
-(without the `{...}` placeholder) makes flAPI log `OIDC configuration error:
-... requires 'issuer-url' with {tenant} placeholder` on first use; validation
-still works, so that log line is harmless.
+Placeholders in the default (or your own) `issuer-url` are substituted from
+`tenant-id` (alias `tenant`), `realm` and `domain`. A placeholder left unfilled
+is a load error, e.g. `OIDC: 'issuer-url' (https://login.microsoftonline.com/{tenant}/v2.0)
+still contains the {tenant} placeholder. Set `tenant-id` ...`. Writing the full
+real `issuer-url` works too.
 
-## Roles and the auth context in SQL
+## Roles: 403 on REST
+
+```yaml
+# endpoint (its own block replaces the global one, so it lists users again)
+auth:
+  enabled: true
+  type: basic
+  roles: [admin]            # caller needs ANY one of these
+  users:
+    - username: reader
+      password: '$pbkdf2-sha256$600000$FpkEyJklqXpwdoxWhoRzvw$RA15LygYf0O0yiG8OPQ91NWeeSNqcxTwMl4pRXLcmq0'
+      roles: [read]
+```
+
+```bash
+curl -s -w ' %{http_code}\n' -u reader:reader-pass http://localhost:8080/admin
+# {"message":"The authenticated principal does not hold any role this endpoint requires.","error":"Forbidden"} 403
+```
+
+The denial is logged as `Authorization denied for user 'reader' on REST
+endpoint: /admin: requires one of the endpoint's roles request_id=req-...`.
+`flapii endpoints get /admin` shows `auth.roles` and `auth.inherited` (true when
+the block came from `flapi.yaml`).
+
+## The auth context in SQL
 
 After authentication the template sees `auth.username`, `auth.roles`
 (comma-joined), `auth.email`, `auth.type`, `auth.authenticated` (`"true"`).
@@ -204,7 +251,7 @@ WHERE owner = '{{ auth.username }}'
    OR list_contains(string_split('{{ auth.roles }}', ','), 'admin')
 ```
 
-That is row filtering (empty result), not a 403. For MCP the same variables are
+That is row filtering (empty result); use `auth.roles` for a 403. For MCP the same variables are
 set from the MCP principal.
 
 ## MCP auth (runnable)
@@ -340,10 +387,12 @@ Printed to stderr as `SECURITY WARNINGS (n)` on every start and on
 
 | Code | Meaning |
 |---|---|
-| `AUTH_PLAINTEXT_PASSWORD` | a user password is neither MD5 hex nor bcrypt (also printed, wrongly, for PBKDF2) |
+| `AUTH_PLAINTEXT_PASSWORD` | a user password is not a hash; the message prints the passlib PBKDF2 one-liner |
 | `AUTH_MD5_PASSWORD` | 32-hex MD5 password: unsalted, migrate to PBKDF2 |
+| `AUTH_BCRYPT_UNSUPPORTED` | bcrypt hash: flAPI cannot verify it, every login as that user is refused |
 | `AUTH_EMPTY_JWT_SECRET` | bearer endpoint with empty `jwt-secret`: all tokens refused |
-| `AUTH_UNKNOWN_TYPE` | `type` is not basic/bearer/oidc: all requests 401 |
+| `AUTH_UNKNOWN_TYPE` | `type` is not basic/bearer/jwt/oidc: all requests 401 |
+| `CORS_WILDCARD_WITH_AUTH` | `cors.allow-origins` empty or `"*"` while any auth is enabled |
 | `MCP_UNAUTHENTICATED_TOOLS` | `mcp.enabled` with tools and `mcp.auth.enabled: false` |
 | `CREDENTIAL_TOO_SHORT_TO_REDACT` | a credential connection property under 4 chars: error detail is withheld |
 
@@ -352,10 +401,11 @@ Printed to stderr as `SECURITY WARNINGS (n)` on every start and on
 1. Pick the gate: REST endpoint `auth:`, `mcp.auth`, or both (they are separate).
 2. Put secrets in env vars matching `template.environment-whitelist`; hash
    Basic passwords with the PBKDF2 one-liner.
-3. Add the `auth:` block to every protected endpoint (an include keeps it in
-   one file); for MCP add `allowed-roles` to every tool.
+3. Put one `auth:` block in `flapi.yaml` (every endpoint inherits it), opt
+   public endpoints out with `auth: {enabled: false}`, add `roles:` where only
+   some users may call; for MCP add `allowed-roles` to every tool.
 4. `flapi -c flapi.yaml --validate-config` and read `SECURITY WARNINGS`.
 5. Prove each path with curl: no credentials -> 401, wrong credentials -> 401,
-   right credentials -> 200; for MCP a role-less caller -> 403.
+   right credentials -> 200, a user without the role -> 403 (REST and MCP).
 6. Lock down CORS, terminate TLS (`enforce-https` or a proxy), and run with a
    strong `FLAPI_CONFIG_SERVICE_TOKEN` or without `--config-service`.

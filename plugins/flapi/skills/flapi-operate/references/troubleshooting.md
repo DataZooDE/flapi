@@ -28,11 +28,12 @@ Likely causes:
 - The file was added after startup. Reload only re-reads files that were loaded.
 - It is an MCP-only YAML (`mcp-tool:` without `url-path:`): no REST route by design.
 - `/api/v1/_config/*` 404: the server runs without `--config-service`.
-- `POST .../reload` 404 `{"success":false}`: endpoint unknown **or** its YAML is now invalid
-  (see the server log line `Validation failed for ...`).
+- `POST .../reload` 404 `{"success":false}`: the endpoint is unknown. A reload of a known
+  endpoint whose YAML is now invalid answers **400** with the parser's `reason`.
 
-Fix: correct `url-path` or the request; restart after adding files; `flapii endpoints reload
-<path>` after editing a loaded one.
+Fix: correct `url-path` or the request; restart after adding files by hand (or create them
+through the config service: `flapii endpoints create`, which also writes the YAML);
+`flapii endpoints reload <path>` after editing a loaded one.
 
 ---
 
@@ -48,9 +49,11 @@ flapii endpoints parameters /customer-lookup     # fields, validators, defaults
 flapii endpoints get /customer-lookup
 ```
 
-Likely causes: the value is outside `min`/`max`, not in `allowedValues`, fails `regex`, a
-required field is missing, or `request-fields-validation: true` rejects an undeclared
-query parameter.
+Likely causes: the value is outside `min`/`max`, not in `allowedValues` (alias `values`),
+fails `regex` (alias `pattern`), a required field is missing, a `field-in: header` field
+was sent as a query or body parameter (header fields are read only from request headers,
+case-insensitively), or `request-fields-validation: true` rejects an undeclared query
+parameter.
 
 Fix: send a valid value, or change the validator and `flapii endpoints reload <path>`.
 Validator syntax: `flapi-rest`.
@@ -62,8 +65,11 @@ Validator syntax: `flapi-rest`.
 401 bodies: `401 Unauthorized` with `WWW-Authenticate: Basic realm="flAPI"` (or Bearer) on an
 endpoint with `auth:`; `Unauthorized: Invalid or missing token` on `/api/v1/_config/*`. MCP
 with `mcp.auth.enabled`: HTTP 401, JSON-RPC `-32000 Authentication required for method: ...`.
-403 only comes from MCP: `Permission denied: Tool 'x' requires one of [analyst]; caller has
-[reader].` (HTTP 403, `insufficient_scope`).
+403 on REST: `{"error":"Forbidden","message":"The authenticated principal does not hold any
+role this endpoint requires."}` when `auth.roles` is set and the caller has none of them
+(log: `Authorization denied for user 'x' on REST endpoint: /y`). 403 on MCP: `Permission
+denied: Tool 'x' requires one of [analyst]; caller has [reader].` (HTTP 403,
+`insufficient_scope`).
 
 Commands:
 ```bash
@@ -75,9 +81,12 @@ flapii metrics                                           # rejections.unauthoriz
 ```
 
 Likely causes: wrong credentials; expired JWT or wrong issuer/secret; a `{{env.X}}` password
-that was empty at startup; the config token passed to an MCP config tool via `X-Config-Token`
-(MCP accepts only `Authorization: Bearer`) or shorter than 8 characters; MCP tool without
-`allowed-roles` while `mcp.auth.enabled: true` (denied by default).
+that was empty at startup; a top-level `auth:` block that every endpoint without its own
+`auth:` inherits (opt out with `auth: {enabled: false}`; startup logs `Global auth (type
+'basic') applies to N endpoint(s)...`); a bcrypt hash (`AUTH_BCRYPT_UNSUPPORTED`: use
+PBKDF2); the wrong config token for an MCP config tool (sent as `X-Config-Token` or
+`Authorization: Bearer`); MCP tool without `allowed-roles` while `mcp.auth.enabled: true`
+(denied by default). 403: the caller's roles miss every role in `auth.roles`.
 
 Fix: see `flapi-auth`.
 
@@ -105,12 +114,15 @@ clients honour `Retry-After`. MCP per-tool limits live in `mcp-tool.rate-limit`.
 
 ## 500 Internal Server Error
 
-Body: `Internal Server Error: Query execution failed: Binder Error: Referenced column
-"no_such_col" not found in FROM clause! ... LINE 1: SELECT * FROM (SELECT no_such_col ...`
+Body (JSON, no SQL, no paths):
+`{"error":"Internal Server Error","message":"The request failed on the server. The details
+are in the server log under this request id.","request_id":"req-46788500aef28a89"}`. The
+log has the DuckDB error under that id, e.g. `Catalog Error: Table with name no_such_table
+does not exist!`.
 
 Commands:
 ```bash
-grep "<X-Request-Id>" server.log                          # error with request_id
+grep "req-46788500aef28a89" server.log                    # the error, by request_id
 flapii config log-level set debug                         # then repeat: logs context + SQL
 flapii templates expand /broken -p '{"id":"1"}'           # the rendered SQL
 flapii templates test /broken -p '{"id":"1"}'             # run it through the server
@@ -138,14 +150,14 @@ Commands:
 curl -s -i "$B/products"                   # body + Retry-After
 curl -s $B/health                          # starting / degraded / stalled
 flapii metrics -e /products                # caches[].state, last.status
-flapii cache audit /products               # message = the populate SQL error
-grep -i "cache build failed\|warmup failed" server.log
+flapii cache audit /products -o table      # status per refresh; JSON message = the error
+grep -i "cache build failed" server.log
 ```
 
 | Body / health | Cause | Fix |
 |---|---|---|
 | `cache_warming` "still being built"; health `starting` | Warm-up in progress | Wait; size the startup probe for the build time |
-| `cache_warming` "failed to build"; health `degraded` (503) | Populate SQL failed | Fix the cache template, `flapii cache refresh <path>` |
+| `cache_build_failed`; health `degraded` (503) | First build failed: SQL error, a bare `SELECT` (`statement N of the template is a bare SELECT`), or the script left no table | Fix the cache template, `flapii cache refresh <path>` |
 | `cache_not_built`; health `degraded` (200) with `unbuilt` | Warm-up skipped | `flapii cache refresh <path>` or drop `--no-cache-warmup` |
 | `The database is busy; retry shortly.` | Lock contention (a write or another process) | Retry; avoid a second process on the same DuckDB/DuckLake |
 | `Server is at capacity. Try again shortly.` | Handler queue full | Find slow queries (metrics), add instances |
@@ -162,13 +174,14 @@ Run it in the foreground and read the last `[ERROR]` lines. `flapi -c flapi.yaml
 |---|---|---|
 | `environment variable DB_PASSWORD referenced as {{env.NAME}} but not whitelisted` | `{{env.X}}` not matched by `template.environment-whitelist` | Add a regex such as `'^DB_.*'` |
 | `Failed to parse YAML: ... yaml-cpp: error at line 2, column 18: illegal map value` (with the file name) | YAML syntax / indentation | Fix that file |
-| `Missing required key: allowedValues` | `values:` used for an enum | Use `allowedValues:` |
-| `Missing required key: project-description` | Required top-level key missing | Add it |
+| `Invalid compaction schedule '0 3 * * *'` | Cron in `ducklake.compaction.schedule` | An interval (`1d`) or `@hourly`/`@daily`/`@midnight`/`@weekly` |
+| `heartbeat.worker-interval must be a positive number of seconds` / `Invalid scheduler scan-interval` | `0`, negative or unparseable | A positive value (`60`, `30s`) |
+| `'issuer-url' (...{tenant}...) still contains the {tenant} placeholder. Set tenant-id` | OIDC preset without `tenant-id` / `realm` / `domain` | Add the key the message names |
 | `has a description that failed strict validation (mcp.strict-descriptions is true)` | Description scanner | Rephrase the description (`flapi-mcp`) |
 | `IO Error: Extension ".../nosuchext.duckdb_extension" not found` | `LOAD` of an extension that is not installed / offline | `INSTALL` it in `init`, or `flapi extensions install -c flapi.yaml` at build time |
 | `Could not set lock on file ".../cache.ducklake": Conflicting lock is held in .../flapi (PID n)` | Another flAPI process (or `flapi cache refresh`) holds the DuckLake | Stop it (`ps -p n`), or give each process its own `metadata-path`; use replicas (`ducklake.read-only`) for scale-out |
 | `the server could not start: bind: Address already in use` | Port taken | `-p <port>` / `FLAPI_PORT`, or stop the other process |
-| `flapi: invalid log level 'warn'` | Wrong level name | `debug`, `info`, `warning`, `error` |
+| `invalid log level 'verbose'; must be one of: debug, info, warning (or warn), error` | Unknown `log-level` | One of those |
 
 Exit code 1 for all of these (not a crash).
 
