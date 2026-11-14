@@ -61,7 +61,7 @@ python3 -c "import hashlib,base64,os,sys; s=os.urandom(16); e=lambda b: base64.u
 ```
 
 ```yaml
-# flapi: endpoint group=basic file=me.yaml
+# flapi: endpoint group=basic file=me.yaml allow=CORS_WILDCARD_WITH_AUTH
 url-path: /me
 method: GET
 with-pagination: false
@@ -220,6 +220,8 @@ connections:
   customers:
     properties:
       path: './data/customers.parquet'
+cors:
+  allow-origins: [https://agent-console.example.com]   # never "*" with auth
 mcp:
   enabled: true
   auth:
