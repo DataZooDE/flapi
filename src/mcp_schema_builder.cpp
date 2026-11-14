@@ -1,6 +1,8 @@
 #include "mcp_schema_builder.hpp"
 
+#include <cstdint>
 #include <limits>
+#include <stdexcept>
 #include <string>
 
 #include "config_manager.hpp"
@@ -90,6 +92,44 @@ void applyValidator(crow::json::wvalue& prop, const ValidatorConfig& v, std::str
     }
 }
 
+// YAML hands every default over as a string, but a schema whose `default`
+// does not match its own `type` ("default": "10" on an integer) is invalid
+// JSON Schema, and clients that pre-fill arguments from it send a string the
+// typed binder then has to coerce. Emit the default in the property's type; a
+// value that does not parse as that type stays a string rather than being
+// silently turned into something the author did not write.
+void setTypedDefault(crow::json::wvalue& prop, const std::string& type, const std::string& value) {
+    if (type == "integer") {
+        try {
+            std::size_t used = 0;
+            const int64_t parsed = std::stoll(value, &used);
+            if (used == value.size()) {
+                prop["default"] = parsed;
+                return;
+            }
+        } catch (const std::exception&) {
+            // not an integer literal: keep the string form below
+        }
+    } else if (type == "number") {
+        try {
+            std::size_t used = 0;
+            const double parsed = std::stod(value, &used);
+            if (used == value.size()) {
+                prop["default"] = parsed;
+                return;
+            }
+        } catch (const std::exception&) {
+            // not a number literal: keep the string form below
+        }
+    } else if (type == "boolean") {
+        if (value == "true" || value == "false") {
+            prop["default"] = (value == "true");
+            return;
+        }
+    }
+    prop["default"] = value;
+}
+
 } // namespace
 
 crow::json::wvalue MCPSchemaBuilder::buildInputSchema(const std::vector<RequestFieldConfig>& fields) {
@@ -120,7 +160,7 @@ crow::json::wvalue MCPSchemaBuilder::buildInputSchema(const std::vector<RequestF
         // shape so existing clients see the same fields.
         prop["description"] = field.description;
         if (!field.defaultValue.empty()) {
-            prop["default"] = field.defaultValue;
+            setTypedDefault(prop, resolved_type, field.defaultValue);
         }
         // MCP 2026-07-28 x-mcp-header annotation: tells the client to mirror this
         // parameter into an Mcp-Param-<name> header for edge routing.

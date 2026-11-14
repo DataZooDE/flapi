@@ -67,6 +67,22 @@ export function handleError(error: unknown, opts: { quiet?: boolean; baseUrl?: s
     return;
   }
 
+  // What the shared HTTP client throws for every non-2xx answer. Its message is
+  // only the status text, so this branch used to fall through to the generic
+  // one below and `templates test` / `cache refresh` printed just "Bad
+  // Request" - the server's reason (a DuckDB error, "Cache is not enabled")
+  // was in the body and never shown.
+  if (error instanceof AxiosResponseError) {
+    const { status, statusText, data } = error.response;
+    const prefix = `[${status}] ${statusText || 'HTTP Error'}`;
+    const detail = messageFromBody(data);
+    Console.error(detail ? `${prefix}: ${detail}` : prefix);
+    if (data && typeof data === 'object') {
+      Console.error(JSON.stringify(data, null, 2));
+    }
+    return;
+  }
+
   if (error instanceof ApiError) {
     Console.error(error.message);
     return;
@@ -82,6 +98,30 @@ export function handleError(error: unknown, opts: { quiet?: boolean; baseUrl?: s
 
 export function isAxiosError(error: unknown): error is AxiosError {
   return axios.isAxiosError(error);
+}
+
+/** The human-readable reason in an error body: a plain-text body, or its message/error/reason field. */
+export function messageFromBody(data: unknown): string | undefined {
+  if (typeof data === 'string') {
+    const trimmed = data.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  if (data && typeof data === 'object') {
+    const body = data as Record<string, unknown>;
+    for (const key of ['error', 'message', 'reason']) {
+      const value = body[key];
+      if (typeof value === 'string' && value.length > 0) {
+        return value;
+      }
+      if (value && typeof value === 'object') {
+        const nested = (value as Record<string, unknown>).message;
+        if (typeof nested === 'string' && nested.length > 0) {
+          return nested;
+        }
+      }
+    }
+  }
+  return undefined;
 }
 
 function extractMessage(error: AxiosError): string {

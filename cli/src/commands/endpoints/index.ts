@@ -2,7 +2,7 @@ import type { Command } from 'commander';
 import type { CliContext } from '../../lib/types';
 import { Console } from '../../lib/console';
 import { handleError } from '../../lib/errors';
-import { renderJson, renderEndpointsTable, renderEndpointTable } from '../../lib/render';
+import { renderJson, renderConfigJson, renderEndpointsTable, renderEndpointTable } from '../../lib/render';
 import { buildEndpointUrl } from '../../lib/url';
 import { applyOutputOverride } from '../../lib/options';
 import { resolvePayload, withPayloadOptions } from '../payload';
@@ -28,7 +28,7 @@ export function registerEndpointCommands(program: Command, ctx: CliContext) {
         const payload = response.data;
         const resolved = applyOutputOverride(ctx.config, options.output);
         if (resolved.output === 'json') {
-          renderJson(payload, resolved.jsonStyle);
+          renderConfigJson(payload, resolved.jsonStyle, 'keyed');
         } else {
           renderEndpointsTable(payload);
         }
@@ -52,7 +52,7 @@ export function registerEndpointCommands(program: Command, ctx: CliContext) {
         const payload = response.data;
         const resolved = applyOutputOverride(ctx.config, options.output);
         if (resolved.output === 'json') {
-          renderJson(payload, resolved.jsonStyle);
+          renderConfigJson(payload, resolved.jsonStyle, 'document');
         } else {
           renderEndpointTable(payload);
         }
@@ -76,7 +76,7 @@ export function registerEndpointCommands(program: Command, ctx: CliContext) {
         const data = response.data;
         const resolved = applyOutputOverride(ctx.config, options.output);
         if (resolved.output === 'json') {
-          renderJson(data, resolved.jsonStyle);
+          renderJson(data);
         } else {
           Console.info(chalk.cyan(`\n🔧 Parameters: ${path}`));
           Console.info(chalk.gray('═'.repeat(60)));
@@ -182,6 +182,14 @@ export function registerEndpointCommands(program: Command, ctx: CliContext) {
           });
         }
 
+        if (yamlContent.trim().length === 0) {
+          // Answered "valid: false" with no errors at all before.
+          spinner.fail(chalk.red(`✗ Endpoint ${path} is invalid`));
+          Console.error('No YAML given: pass --file <path> or pipe the YAML on stdin');
+          process.exitCode = 1;
+          return;
+        }
+
         const result = await validateEndpointConfig(ctx.client, path, yamlContent);
         
         if (result.valid) {
@@ -203,7 +211,7 @@ export function registerEndpointCommands(program: Command, ctx: CliContext) {
 
         const resolved = applyOutputOverride(ctx.config, options.output);
         if (resolved.output === 'json') {
-          renderJson(result, resolved.jsonStyle);
+          renderJson(result);
         }
       } catch (error) {
         spinner.fail(chalk.red(`✗ Failed to validate endpoint ${path}`));

@@ -22,7 +22,7 @@ export function registerInfoCommands(config: Command, ctx: CliContext) {
         const data = response.data;
 
         if (ctx.config.output === 'json') {
-          renderJson(data, ctx.config.jsonStyle);
+          renderJson(data);
         } else {
           Console.info(chalk.cyan('\n🔐 Environment Variables'));
           Console.info(chalk.gray('═'.repeat(60)));
@@ -64,7 +64,7 @@ export function registerInfoCommands(config: Command, ctx: CliContext) {
           Console.info(chalk.cyan('\n📁 Project Filesystem'));
           Console.info(chalk.gray('═'.repeat(60)));
         }
-        renderJson(data, ctx.config.jsonStyle);
+        renderJson(data);
       } catch (error) {
         if (spinner) {
           spinner.fail(chalk.red('✗ Failed to fetch filesystem structure'));

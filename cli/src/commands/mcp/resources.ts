@@ -2,7 +2,7 @@ import type { Command } from 'commander';
 import type { CliContext } from '../../lib/types';
 import { Console } from '../../lib/console';
 import { handleError } from '../../lib/errors';
-import { renderJson, renderMcpResourcesTable } from '../../lib/render';
+import { renderJson, renderConfigJson, renderMcpResourcesTable } from '../../lib/render';
 import chalk from 'chalk';
 
 export function registerMcpResourcesCommand(parent: Command, ctx: CliContext) {
@@ -22,7 +22,7 @@ export function registerMcpResourcesCommand(parent: Command, ctx: CliContext) {
           .filter((entry) => entry.config?.['mcp-resource'] ?? entry.config?.mcpResource);
 
         if (ctx.config.output === 'json') {
-          renderJson(resources.map((entry) => entry.config), ctx.config.jsonStyle);
+          renderConfigJson(resources.map((entry) => entry.config), ctx.config.jsonStyle, 'document');
         } else {
           renderMcpResourcesTable(resources);
         }
@@ -54,12 +54,12 @@ export function registerMcpResourcesCommand(parent: Command, ctx: CliContext) {
         }
 
         if (ctx.config.output === 'json') {
-          renderJson(resource, ctx.config.jsonStyle);
+          renderConfigJson(resource, ctx.config.jsonStyle, 'document');
         } else {
           const resourceConfig = resource['mcp-resource'] ?? resource['mcpResource'] ?? resource;
           Console.info(chalk.cyan(`\n📁 MCP Resource: ${name}`));
           Console.info(chalk.gray('═'.repeat(60)));
-          renderJson(resourceConfig, ctx.config.jsonStyle);
+          renderConfigJson(resourceConfig, ctx.config.jsonStyle, 'document');
         }
       } catch (error) {
         spinner.fail(chalk.red(`✗ Failed to fetch MCP resource ${name}`));

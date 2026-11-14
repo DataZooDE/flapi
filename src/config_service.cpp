@@ -1,3 +1,4 @@
+#include <atomic>
 #include <filesystem>
 #include <optional>
 #include <fstream>
@@ -20,6 +21,9 @@ extern char** environ;
 #define ENV_BLOCK environ
 #endif
 #include "flapi_tracing.hpp"
+#include "request_context.hpp"
+#include "endpoint_config_parser.hpp"
+#include "vfs_adapter.hpp"
 #include "auth_params.hpp"
 #include "json_utils.hpp"
 #include "request_validator.hpp"
@@ -367,13 +371,52 @@ ConfigService::ConfigService(std::shared_ptr<ConfigManager> config_manager,
       project_handler_(std::make_unique<ProjectConfigHandler>(config_manager)),
       doc_generator_(nullptr),
       enabled_(enabled),
-      auth_token_(auth_token) {}
+      auth_token_(auth_token) {
+    // A short token is accepted - REST and the flapi_* MCP tools must agree on
+    // what authenticates, and refusing it on one transport only (as the MCP
+    // tools did below 8 characters) just broke that tool set. Say it is weak
+    // once, where the operator chose it.
+    if (enabled_ && !auth_token_.empty() && auth_token_.size() < kMinRecommendedTokenLength) {
+        CROW_LOG_WARNING << "The config-service token is only " << auth_token_.size()
+                         << " characters long; use at least " << kMinRecommendedTokenLength
+                         << " (omit --config-service-token to have a strong one generated)";
+    }
+}
 
 void ConfigService::setDocGenerator(std::shared_ptr<OpenAPIDocGenerator> doc_gen) {
     doc_generator_ = doc_gen;
 }
 
+std::string ConfigService::RouteTemplateFor(const std::string& url) {
+    // The route TEMPLATE for a config-service URL, for the http.route span
+    // attribute and span name. Only ever applied to a request a config route
+    // matched, so the set of values is the fixed route list below; the one
+    // variable segment, the endpoint slug, is replaced by its placeholder so
+    // no filled path is ever exported.
+    std::string path = url.substr(0, url.find('?'));
+    static const std::string endpoints_prefix = "/api/v1/_config/endpoints/";
+    if (path.rfind(endpoints_prefix, 0) == 0) {
+        const std::string rest = path.substr(endpoints_prefix.size());
+        const auto slash = rest.find('/');
+        const std::string slug = rest.substr(0, slash);
+        if (slug != "by-template" && !slug.empty()) {
+            path = endpoints_prefix + "<string>" +
+                   (slash == std::string::npos ? std::string() : rest.substr(slash));
+        }
+    }
+    return path;
+}
+
 bool ConfigService::validateToken(const crow::request& req) const {
+    // Every config route calls this first, so it is where the route gets its
+    // name: the middleware does not resolve routes, and without this every
+    // config-service span was labelled "POST <unmatched>" - the bucket a
+    // scanner's 404s land in.
+    if (auto* rc = RequestContextScope::current(); rc != nullptr) {
+        rc->route_template_storage = RouteTemplateFor(req.url);
+        rc->route_template = rc->route_template_storage;
+    }
+
     // If service is not enabled, reject all requests
     if (!enabled_) {
         return false;
@@ -437,10 +480,16 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             if (!validateToken(req)) {
                 return crow::response(401, "Unauthorized: Invalid or missing token");
             }
-            if (req.method == crow::HTTPMethod::Get)
+            if (req.method == crow::HTTPMethod::Get) {
                 return project_handler_->getProjectConfig(req);
-            else
-                return project_handler_->updateProjectConfig(req);
+            }
+            // The project document is read-only over this API (edit flapi.yaml
+            // and restart). This answered 501 "Not implemented", which reads as
+            // "coming soon" and is a 5xx a client may retry; 405 + Allow says
+            // the method is not supported on this resource.
+            crow::response res(405, "Method Not Allowed: the project configuration is read-only; edit flapi.yaml");
+            res.set_header("Allow", "GET");
+            return res;
         });
 
     // Environment variables route
@@ -1087,25 +1136,414 @@ crow::response EndpointConfigHandler::listEndpoints(const crow::request& req) {
     }
 }
 
+// ----------------------------------------------------------------------------
+// endpoint_files: YAML persistence shared with the flapi_* MCP tools
+// ----------------------------------------------------------------------------
+namespace endpoint_files {
+
+namespace {
+
+std::string scalarOrEmpty(const YAML::Node& node, const char* key) {
+    if (node && node.IsMap() && node[key] && node[key].IsScalar()) {
+        return node[key].as<std::string>();
+    }
+    return "";
+}
+
+// The endpoint's identity, read from the document the way the loader reads it,
+// so the file name and the duplicate check agree with what will be served.
+EndpointConfig identityOf(const YAML::Node& doc) {
+    EndpointConfig id;
+    id.urlPath = scalarOrEmpty(doc, "url-path");
+    id.method = scalarOrEmpty(doc, "method");
+    if (id.method.empty()) {
+        id.method = "GET";
+    }
+    if (doc["mcp-tool"]) {
+        id.mcp_tool = EndpointConfig::MCPToolInfo{};
+        id.mcp_tool->name = scalarOrEmpty(doc["mcp-tool"], "name");
+    }
+    if (doc["mcp-resource"]) {
+        id.mcp_resource = EndpointConfig::MCPResourceInfo{};
+        id.mcp_resource->name = scalarOrEmpty(doc["mcp-resource"], "name");
+    }
+    if (doc["mcp-prompt"]) {
+        id.mcp_prompt = EndpointConfig::MCPPromptInfo{};
+        id.mcp_prompt->name = scalarOrEmpty(doc["mcp-prompt"], "name");
+    }
+    return id;
+}
+
+std::string emit(const YAML::Node& doc) {
+    YAML::Emitter out;
+    out << doc;
+    return std::string(out.c_str()) + "\n";
+}
+
+bool writeFile(const std::filesystem::path& file, const std::string& content, std::string& error) {
+    std::error_code ec;
+    if (file.has_parent_path()) {
+        std::filesystem::create_directories(file.parent_path(), ec);
+    }
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) {
+        error = "cannot write " + file.string();
+        return false;
+    }
+    out << content;
+    out.close();
+    if (!out) {
+        error = "cannot write " + file.string();
+        return false;
+    }
+    return true;
+}
+
+// Maps merge key by key; anything else (a sequence such as `request`, a
+// scalar) is replaced by the patch's value.
+YAML::Node deepMerge(const YAML::Node& base, const YAML::Node& patch) {
+    if (!base || !base.IsMap() || !patch.IsMap()) {
+        return YAML::Clone(patch);
+    }
+    YAML::Node out = YAML::Clone(base);
+    for (const auto& kv : patch) {
+        const std::string key = kv.first.as<std::string>();
+        if (out[key] && out[key].IsMap() && kv.second.IsMap()) {
+            out[key] = deepMerge(out[key], kv.second);
+        } else {
+            out[key] = YAML::Clone(kv.second);
+        }
+    }
+    return out;
+}
+
+// Parse the file with the loader's parser and validate it exactly as a reload
+// would. On success `outcome.config` is what to publish.
+bool parseAndValidate(ConfigManager& cm, const std::filesystem::path& file, Outcome& outcome) {
+    EndpointConfigParser parser(cm.getYamlParser(), &cm);
+    auto parsed = parser.parseFromFile(file);
+    if (!parsed.success) {
+        outcome.status = 400;
+        outcome.error = parsed.error_message.empty() ? "Invalid endpoint configuration" : parsed.error_message;
+        return false;
+    }
+    const auto validation = cm.validateEndpointConfig(parsed.config);
+    if (!validation.valid) {
+        std::string joined;
+        for (const auto& e : validation.errors) {
+            joined += (joined.empty() ? "" : "; ") + e;
+        }
+        outcome.status = 400;
+        outcome.error = "Invalid endpoint: " + joined;
+        return false;
+    }
+    outcome.config = parsed.config;
+    return true;
+}
+
+// The template-source / cache template-file boundary (#189), checked on the
+// document's own values before anything is written.
+std::string templatePathProblem(const ConfigManager& cm, const YAML::Node& doc) {
+    std::vector<std::string> sources = {scalarOrEmpty(doc, "template-source")};
+    if (doc["cache"]) {
+        sources.push_back(scalarOrEmpty(doc["cache"], "template-file"));
+    }
+    for (const auto& source : sources) {
+        if (source.empty()) {
+            continue;
+        }
+        const auto problem = cm.TemplatePathProblem(source);
+        if (!problem.empty()) {
+            return problem;
+        }
+    }
+    return "";
+}
+
+// A file using flAPI's {{include ...}} directives cannot be loaded, merged and
+// re-emitted as plain YAML without losing them.
+bool usesIncludeDirectives(const std::string& content) {
+    return content.find("{{include") != std::string::npos;
+}
+
+}  // namespace
+
+bool IsCanonicalDocument(const YAML::Node& doc) {
+    return doc && doc.IsMap() &&
+           (doc["url-path"] || doc["mcp-tool"] || doc["mcp-resource"] || doc["mcp-prompt"]);
+}
+
+Outcome CreateFromDocument(ConfigManager& cm, const YAML::Node& doc) {
+    Outcome outcome;
+    if (!IsCanonicalDocument(doc)) {
+        outcome.status = 400;
+        outcome.error = "An endpoint needs url-path, mcp-tool, mcp-resource or mcp-prompt";
+        return outcome;
+    }
+    if (FileProviderFactory::GetBundleContents() != nullptr) {
+        outcome.status = 409;
+        outcome.error = "This server runs from a packed bundle; its configuration is read-only";
+        return outcome;
+    }
+    if (const auto problem = templatePathProblem(cm, doc); !problem.empty()) {
+        outcome.status = 400;
+        outcome.error = problem;
+        return outcome;
+    }
+
+    const EndpointConfig id = identityOf(doc);
+    const auto existing = cm.getEndpoints();
+    for (const auto& ep : *existing) {
+        const bool same_rest = !id.urlPath.empty() && ep.urlPath == id.urlPath && ep.method == id.method;
+        const bool same_name = id.urlPath.empty() && !id.getName().empty() && ep.getName() == id.getName();
+        if (same_rest || same_name) {
+            outcome.status = 409;
+            outcome.error = "Endpoint already exists: " + id.getIdentifier() +
+                            " (update it with PUT, or delete it first)";
+            return outcome;
+        }
+    }
+
+    // File name from the slug, minus the leading '-' a leading '/' becomes -
+    // the same name flapi_create_endpoint gives it.
+    std::string slug = id.getSlug();
+    slug.erase(0, slug.find_first_not_of('-'));
+    if (slug.empty()) {
+        slug = "endpoint";
+    }
+    const std::filesystem::path file = std::filesystem::path(cm.getTemplateConfig().path) / (slug + ".yaml");
+    if (std::filesystem::exists(file)) {
+        outcome.status = 409;
+        outcome.error = "Endpoint file already exists: " + file.string();
+        return outcome;
+    }
+
+    if (!writeFile(file, emit(doc), outcome.error)) {
+        outcome.status = 500;
+        return outcome;
+    }
+    auto cleanup = [&]() {
+        std::error_code ec;
+        std::filesystem::remove(file, ec);
+    };
+    try {
+        if (!parseAndValidate(cm, file, outcome)) {
+            cleanup();
+            return outcome;
+        }
+        cm.addEndpoint(outcome.config);
+    } catch (const std::exception& e) {
+        cleanup();
+        outcome.status = 500;
+        outcome.error = e.what();
+        return outcome;
+    }
+    outcome.ok = true;
+    outcome.status = 201;
+    outcome.file = file.string();
+    CROW_LOG_INFO << "Created endpoint " << outcome.config.getIdentifier() << " in " << file;
+    return outcome;
+}
+
+Outcome UpdateFromPatch(ConfigManager& cm, const EndpointConfig& existing, const YAML::Node& patch) {
+    Outcome outcome;
+    if (FileProviderFactory::GetBundleContents() != nullptr) {
+        outcome.status = 409;
+        outcome.error = "This server runs from a packed bundle; its configuration is read-only";
+        return outcome;
+    }
+
+    std::filesystem::path file = existing.config_file_path;
+    std::string previous;
+    bool had_file = false;
+    YAML::Node base;
+    if (!file.empty() && std::filesystem::exists(file)) {
+        std::ifstream in(file, std::ios::binary);
+        std::stringstream buffer;
+        buffer << in.rdbuf();
+        previous = buffer.str();
+        had_file = true;
+        if (usesIncludeDirectives(previous)) {
+            outcome.status = 409;
+            outcome.error = "The endpoint's YAML (" + file.string() +
+                            ") uses {{include}} directives, which an API update would flatten; "
+                            "edit the file and reload the endpoint instead";
+            return outcome;
+        }
+        base = YAML::Load(previous);
+    } else {
+        // Defined in memory only (created before writes persisted): start the
+        // file from its serialised form.
+        std::string slug = existing.getSlug();
+        slug.erase(0, slug.find_first_not_of('-'));
+        file = std::filesystem::path(cm.getTemplateConfig().path) / ((slug.empty() ? "endpoint" : slug) + ".yaml");
+        base = YAML::Load(cm.serializeEndpointConfigToYaml(existing));
+    }
+
+    const YAML::Node merged = deepMerge(base, patch);
+    if (const auto problem = templatePathProblem(cm, merged); !problem.empty()) {
+        outcome.status = 400;
+        outcome.error = problem;
+        return outcome;
+    }
+    // The update must still name the same endpoint: renaming it is a delete
+    // plus a create, and replaceEndpoint would otherwise silently miss.
+    if (!identityOf(merged).isSameEndpoint(existing) ||
+        (existing.isRESTEndpoint() && identityOf(merged).method != existing.method)) {
+        outcome.status = 400;
+        outcome.error = "The update changes the endpoint's url-path, method or name; delete and re-create it instead";
+        return outcome;
+    }
+
+    auto restore = [&]() {
+        std::error_code ec;
+        if (had_file) {
+            std::string ignored;
+            writeFile(file, previous, ignored);
+        } else {
+            std::filesystem::remove(file, ec);
+        }
+    };
+    if (!writeFile(file, emit(merged), outcome.error)) {
+        outcome.status = 500;
+        restore();
+        return outcome;
+    }
+    try {
+        if (!parseAndValidate(cm, file, outcome)) {
+            restore();
+            return outcome;
+        }
+        if (!cm.replaceEndpoint(outcome.config)) {
+            restore();
+            outcome.status = 404;
+            outcome.error = "Endpoint not found";
+            return outcome;
+        }
+    } catch (const std::exception& e) {
+        restore();
+        outcome.status = 500;
+        outcome.error = e.what();
+        return outcome;
+    }
+    outcome.ok = true;
+    outcome.status = 200;
+    outcome.file = file.string();
+    CROW_LOG_INFO << "Updated endpoint " << outcome.config.getIdentifier() << " in " << file;
+    return outcome;
+}
+
+std::string RemoveEndpointFile(const ConfigManager& cm, const std::string& deleted_file) {
+    if (deleted_file.empty() || FileProviderFactory::GetBundleContents() != nullptr) {
+        return "";
+    }
+    std::error_code ec;
+    const auto template_dir = std::filesystem::weakly_canonical(cm.getTemplateConfig().path, ec);
+    const auto file = std::filesystem::weakly_canonical(deleted_file, ec);
+    const auto rel = file.lexically_relative(template_dir);
+    if (rel.empty() || *rel.begin() == "..") {
+        return "";
+    }
+    std::filesystem::remove(file, ec);
+    if (ec) {
+        return "removed from memory but could not delete " + file.string() + ": " + ec.message();
+    }
+    return "";
+}
+
+std::string ReloadFailureReason(const ConfigManager& cm, const EndpointConfig& endpoint) {
+    if (endpoint.config_file_path.empty()) {
+        return "The endpoint was not loaded from a YAML file, so there is nothing to reload it from";
+    }
+    if (!std::filesystem::exists(endpoint.config_file_path)) {
+        return "YAML file not found: " + endpoint.config_file_path;
+    }
+    const auto validation = cm.validateEndpointConfigFile(endpoint.config_file_path);
+    std::string joined;
+    for (const auto& e : validation.errors) {
+        joined += (joined.empty() ? "" : "; ") + e;
+    }
+    if (!joined.empty()) {
+        return endpoint.config_file_path + ": " + joined;
+    }
+    return "Failed to reload endpoint configuration from " + endpoint.config_file_path;
+}
+
+}  // namespace endpoint_files
+
+namespace {
+
+// A config-service error as JSON, so the CLI can print the reason rather than
+// the bare status text.
+crow::response jsonError(int status, const std::string& message) {
+    crow::json::wvalue body;
+    body["error"] = message;
+    crow::response res(status, body);
+    res.set_header("Content-Type", "application/json");
+    return res;
+}
+
+crow::response persistedResponse(int status, const endpoint_files::Outcome& outcome) {
+    crow::json::wvalue body;
+    body["status"] = status == 201 ? "created" : "updated";
+    body["endpoint"] = outcome.config.getIdentifier();
+    body["slug"] = outcome.config.getSlug();
+    if (!outcome.config.urlPath.empty()) {
+        body["url-path"] = outcome.config.urlPath;
+    }
+    body["file"] = outcome.file;
+    crow::response res(status, body);
+    res.set_header("Content-Type", "application/json");
+    return res;
+}
+
+// The request body as an endpoint document. JSON is YAML, so a JSON body and
+// the YAML file `flapii endpoints create -f x.yaml` read from parse alike.
+std::optional<YAML::Node> bodyAsDocument(const std::string& body) {
+    try {
+        YAML::Node doc = YAML::Load(body);
+        if (doc && doc.IsMap()) {
+            return doc;
+        }
+    } catch (const std::exception&) {
+        // not YAML/JSON
+    }
+    return std::nullopt;
+}
+
+}  // namespace
+
 crow::response EndpointConfigHandler::createEndpoint(const crow::request& req) {
     try {
-        auto json = crow::json::load(req.body);
-        if (!json)
-            return crow::response(400, "Invalid JSON");
-
-        auto endpoint = jsonToEndpointConfig(json);
-        for (const auto& source : {endpoint.templateSource,
-                                   endpoint.cache.template_file.value_or(std::string())}) {
-            const auto problem = config_manager_->TemplatePathProblem(source);
-            if (!problem.empty()) {
-                return crow::response(400, problem);
-            }
+        auto doc = bodyAsDocument(req.body);
+        if (!doc) {
+            return jsonError(400, "Invalid JSON");
         }
-        config_manager_->addEndpoint(endpoint);
-        
-        return crow::response(201);
+
+        // A body with the legacy camelCase keys (urlPath, templateSource) is
+        // what only the JSON deserializer understands; turn it into the YAML
+        // document it describes. A canonical body is used as sent, so nothing
+        // the JSON deserializer does not know - mcp-tool, request validators,
+        // rate-limit - is dropped on the way (it used to be: `flapii endpoints
+        // create -f x.yaml` produced a REST-only endpoint).
+        if (!endpoint_files::IsCanonicalDocument(*doc)) {
+            auto json = crow::json::load(req.body);
+            if (!json) {
+                return jsonError(400, "Invalid JSON");
+            }
+            doc = YAML::Load(config_manager_->serializeEndpointConfigToYaml(jsonToEndpointConfig(json)));
+        }
+
+        // Persisted like flapi_create_endpoint: the YAML is written to the
+        // templates directory, so the endpoint survives a reload and a restart.
+        // This used to change memory only.
+        const auto outcome = endpoint_files::CreateFromDocument(*config_manager_, *doc);
+        if (!outcome.ok) {
+            return jsonError(outcome.status, outcome.error);
+        }
+        return persistedResponse(201, outcome);
     } catch (const std::exception& e) {
-        return crow::response(500, std::string("Internal server error: ") + e.what());
+        return jsonError(500, std::string("Internal server error: ") + e.what());
     }
 }
 
@@ -1145,52 +1583,89 @@ crow::response EndpointConfigHandler::getEndpointConfigBySlug(const crow::reques
     }
 }
 
+crow::response EndpointConfigHandler::updateExisting(const crow::request& req, const EndpointConfig& existing) {
+    auto json = crow::json::load(req.body);
+    auto doc = bodyAsDocument(req.body);
+    if (!json || !doc) {
+        return jsonError(400, "Invalid JSON");
+    }
+
+    if (endpoint_files::IsCanonicalDocument(*doc)) {
+        // Deep-merged onto the endpoint's YAML and re-parsed by the loader, so
+        // the file, memory and the next restart agree. Updates used to change
+        // memory only and were lost on reload.
+        const auto outcome = endpoint_files::UpdateFromPatch(*config_manager_, existing, *doc);
+        if (!outcome.ok) {
+            return jsonError(outcome.status, outcome.error);
+        }
+        return persistedResponse(200, outcome);
+    }
+
+    // Legacy camelCase body: only the JSON deserializer reads it, and its
+    // lossy serialised form must not overwrite a hand-written file (it would
+    // strip validators and annotations). Applied in memory, as before, and
+    // said so.
+    auto updated_config = jsonToEndpointConfig(json, /*merge_existing=*/true);
+    if (!updated_config.isSameEndpoint(existing)) {
+        return jsonError(400, "URL path in config does not match endpoint path");
+    }
+    for (const auto& source : {updated_config.templateSource,
+                               updated_config.cache.template_file.value_or(std::string())}) {
+        const auto problem = config_manager_->TemplatePathProblem(source);
+        if (!problem.empty()) {
+            return jsonError(400, problem);
+        }
+    }
+    if (!config_manager_->replaceEndpoint(updated_config)) {
+        return jsonError(404, "Endpoint not found");
+    }
+    crow::json::wvalue body;
+    body["status"] = "updated";
+    body["persisted"] = false;
+    body["warning"] = "camelCase body applied in memory only; send the YAML (hyphenated) keys to persist";
+    return crow::response(200, body);
+}
+
 crow::response EndpointConfigHandler::updateEndpointConfigBySlug(const crow::request& req, const std::string& slug) {
     try {
-        auto json = crow::json::load(req.body);
-        if (!json) {
-            return crow::response(400, "Invalid JSON");
+        const auto endpoint = findEndpointBySlug(config_manager_, slug);
+        if (!endpoint) {
+            return jsonError(404, "Endpoint not found");
         }
-
-        auto updated_config = jsonToEndpointConfig(json, /*merge_existing=*/true);
-        
-        // Verify slug matches
-        if (updated_config.getSlug() != slug) {
-            return crow::response(400, "Slug in config does not match endpoint slug");
-        }
-        for (const auto& source : {updated_config.templateSource,
-                                   updated_config.cache.template_file.value_or(std::string())}) {
-            const auto problem = config_manager_->TemplatePathProblem(source);
-            if (!problem.empty()) {
-                return crow::response(400, problem);
-            }
-        }
-
-        if (!config_manager_->replaceEndpoint(updated_config)) {
-            return crow::response(404, "Endpoint not found");
-        }
-
-        return crow::response(200);
+        return updateExisting(req, *endpoint);
     } catch (const std::exception& e) {
-        return crow::response(500, std::string("Internal server error: ") + e.what());
+        return jsonError(500, std::string("Internal server error: ") + e.what());
     }
+}
+
+crow::response EndpointConfigHandler::removeExisting(const EndpointConfig& existing) {
+    const std::string file = existing.config_file_path;
+    const std::string name = existing.isRESTEndpoint() ? existing.urlPath : existing.getName();
+    if (!config_manager_->removeEndpointByPath(name)) {
+        return jsonError(404, "Endpoint not found");
+    }
+    // Deleting persists, like flapi_delete_endpoint: the YAML goes too, so the
+    // endpoint does not come back on the next reload or restart.
+    const auto warning = endpoint_files::RemoveEndpointFile(*config_manager_, file);
+    crow::json::wvalue body;
+    body["status"] = "deleted";
+    body["endpoint"] = existing.getIdentifier();
+    if (!warning.empty()) {
+        CROW_LOG_WARNING << "delete " << existing.getIdentifier() << ": " << warning;
+        body["warning"] = warning;
+    }
+    return crow::response(200, body);
 }
 
 crow::response EndpointConfigHandler::deleteEndpointBySlug(const crow::request& req, const std::string& slug) {
     try {
         const auto endpoint = findEndpointBySlug(config_manager_, slug);
         if (!endpoint) {
-            return crow::response(404, "Endpoint not found");
+            return jsonError(404, "Endpoint not found");
         }
-        
-        // Use the endpoint's name for removal
-        if (!config_manager_->removeEndpointByPath(endpoint->getName())) {
-            return crow::response(404, "Endpoint not found");
-        }
-
-        return crow::response(200);
+        return removeExisting(*endpoint);
     } catch (const std::exception& e) {
-        return crow::response(500, std::string("Internal server error: ") + e.what());
+        return jsonError(500, std::string("Internal server error: ") + e.what());
     }
 }
 
@@ -1217,97 +1692,146 @@ EndpointConfig EndpointConfigHandler::jsonToEndpointConfig(const crow::json::rva
     return config_manager_->deserializeEndpointConfig(json, merge_existing);
 }
 
-// Implement remaining endpoint handlers...
 crow::response EndpointConfigHandler::updateEndpointConfig(const crow::request& req, const std::string& path) {
     try {
-        auto json = crow::json::load(req.body);
-        if (!json) {
-            return crow::response(400, "Invalid JSON");
+        const auto endpoint = config_manager_->getEndpointForPath(path);
+        if (!endpoint) {
+            return jsonError(404, "Endpoint not found");
         }
-
-        auto updated_config = jsonToEndpointConfig(json, /*merge_existing=*/true);
-
-        if (updated_config.urlPath != path) {
-            return crow::response(400, "URL path in config does not match endpoint path");
-        }
-        for (const auto& source : {updated_config.templateSource,
-                                   updated_config.cache.template_file.value_or(std::string())}) {
-            const auto problem = config_manager_->TemplatePathProblem(source);
-            if (!problem.empty()) {
-                return crow::response(400, problem);
-            }
-        }
-
-        if (!config_manager_->replaceEndpoint(updated_config)) {
-            return crow::response(404, "Endpoint not found");
-        }
-
-        return crow::response(200);
+        return updateExisting(req, *endpoint);
     } catch (const std::exception& e) {
-        return crow::response(500, std::string("Internal server error: ") + e.what());
+        return jsonError(500, std::string("Internal server error: ") + e.what());
     }
 }
 
 crow::response EndpointConfigHandler::deleteEndpoint(const crow::request& req, const std::string& path) {
     try {
-        if (!config_manager_->removeEndpointByPath(path)) {
-            return crow::response(404, "Endpoint not found");
+        const auto endpoint = config_manager_->getEndpointForPath(path);
+        if (!endpoint) {
+            return jsonError(404, "Endpoint not found");
         }
-
-        return crow::response(200);
+        return removeExisting(*endpoint);
     } catch (const std::exception& e) {
-        return crow::response(500, std::string("Internal server error: ") + e.what());
+        return jsonError(500, std::string("Internal server error: ") + e.what());
     }
 }
 
 crow::response EndpointConfigHandler::validateEndpointConfig(const crow::request& req, const std::string& path) {
+    auto invalid = [](const std::string& message) {
+        crow::json::wvalue response;
+        response["valid"] = false;
+        response["errors"] = crow::json::wvalue::list();
+        response["errors"][0] = message;
+        return crow::response(400, response);
+    };
     try {
         std::string yaml_content = req.body;
-        if (yaml_content.empty()) {
-            return crow::response(400, "Empty request body");
+        if (yaml_content.find_first_not_of(" \t\r\n") == std::string::npos) {
+            // JSON like every other answer here, so a client reading `errors`
+            // shows the reason instead of `valid: false` with nothing under it.
+            return invalid("No YAML given: send the endpoint YAML as the request body");
         }
 
-        auto validation = config_manager_->validateEndpointConfigFromYaml(yaml_content);
-        
+        // Validated with the LOADER's parser, from a file in the directory the
+        // YAML lives in - the endpoint's own directory when it already exists,
+        // the templates directory otherwise - so template-source and
+        // {{include}} resolve exactly as they will when it is loaded. This used
+        // deserializeEndpointConfigFromYaml, which ignored request fields and
+        // validators and resolved template-source against template.path, so it
+        // passed files the server then failed to load, and failed files that
+        // loaded fine.
+        auto doc = bodyAsDocument(yaml_content);
+        ConfigManager::ValidationResult validation{true, {}, {}};
+        std::filesystem::path dir = config_manager_->getTemplateConfig().path;
+        if (doc) {
+            const auto existing = config_manager_->getEndpointForPath(path);
+            if (existing && !existing->config_file_path.empty()) {
+                dir = std::filesystem::path(existing->config_file_path).parent_path();
+            }
+        }
+
+        if (FileProviderFactory::GetBundleContents() != nullptr || !std::filesystem::is_directory(dir)) {
+            // Nowhere to put a scratch file (packed bundle): best effort.
+            validation = config_manager_->validateEndpointConfigFromYaml(yaml_content);
+        } else {
+            static std::atomic<uint64_t> counter{0};
+            const auto scratch = dir / (".flapi-validate-" +
+                std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" +
+                std::to_string(counter.fetch_add(1)) + ".yaml");
+            {
+                std::ofstream out(scratch, std::ios::binary | std::ios::trunc);
+                if (!out.is_open()) {
+                    return invalid("Validation error: cannot write a scratch file in " + dir.string());
+                }
+                out << yaml_content;
+            }
+            validation = config_manager_->validateEndpointConfigFile(scratch);
+            std::error_code ec;
+            std::filesystem::remove(scratch, ec);
+            // The scratch file's name must not leak into the messages.
+            for (auto* list : {&validation.errors, &validation.warnings}) {
+                for (auto& message : *list) {
+                    const auto at = message.find(scratch.string());
+                    if (at != std::string::npos) {
+                        message.replace(at, scratch.string().size(), "<request body>");
+                    }
+                }
+            }
+        }
+
         crow::json::wvalue response;
         response["valid"] = validation.valid;
-        
+
         if (!validation.errors.empty()) {
             response["errors"] = crow::json::wvalue::list();
             for (size_t i = 0; i < validation.errors.size(); ++i) {
                 response["errors"][i] = validation.errors[i];
             }
         }
-        
+
         if (!validation.warnings.empty()) {
             response["warnings"] = crow::json::wvalue::list();
             for (size_t i = 0; i < validation.warnings.size(); ++i) {
                 response["warnings"][i] = validation.warnings[i];
             }
         }
-        
+
         int32_t status_code = validation.valid ? 200 : 400;
         return crow::response(status_code, response);
     } catch (const std::exception& e) {
-        crow::json::wvalue response;
-        response["valid"] = false;
-        response["errors"] = crow::json::wvalue::list();
-        response["errors"][0] = std::string("Validation error: ") + e.what();
-        return crow::response(400, response);
+        return invalid(std::string("Validation error: ") + e.what());
     }
 }
 
 crow::response EndpointConfigHandler::reloadEndpointConfig(const crow::request& req, const std::string& path) {
     try {
-        bool success = config_manager_->reloadEndpointConfig(path);
-        
+        // Known first, so "no such endpoint" (404) and "it exists but its file
+        // is broken" are told apart. Both answered 404 "Failed to reload", so a
+        // typo in the YAML looked like a wrong slug.
+        auto snapshot = config_manager_->getEndpoints();
+        const EndpointConfig* target = nullptr;
+        for (const auto& ep : *snapshot) {
+            if (ep.getName() == path || ep.matchesPath(path)) {
+                target = &ep;
+                break;
+            }
+        }
         crow::json::wvalue response;
+        if (target == nullptr) {
+            response["success"] = false;
+            response["message"] = "Endpoint not found: " + path;
+            return crow::response(404, response);
+        }
+
+        const bool success = config_manager_->reloadEndpointConfig(path);
         response["success"] = success;
-        response["message"] = success ? 
-            "Endpoint configuration reloaded successfully" : 
-            "Failed to reload endpoint configuration";
-        
-        return crow::response(success ? 200 : 404, response);
+        if (success) {
+            response["message"] = "Endpoint configuration reloaded successfully";
+            return crow::response(200, response);
+        }
+        response["message"] = "Failed to reload endpoint configuration";
+        response["reason"] = endpoint_files::ReloadFailureReason(*config_manager_, *target);
+        return crow::response(400, response);
     } catch (const std::exception& e) {
         crow::json::wvalue response;
         response["success"] = false;
@@ -2284,57 +2808,95 @@ crow::response SchemaHandler::getSchema(const crow::request& req) {
         crow::json::wvalue response;
         
         if (connections_only) {
-            // Return connection information
+            // The connections flapi.yaml declares. This was a TODO that always
+            // answered [], so `flapii schema connections` reported none on every
+            // server. Names and a type hint only: properties can hold
+            // credentials and are never returned here.
             response["connections"] = crow::json::wvalue::list();
-            // TODO: Implement actual connection listing
+            static const std::regex attach_type(R"(\(\s*TYPE\s+([A-Za-z_]+))", std::regex::icase);
+            std::vector<std::string> names;
+            for (const auto& [name, _conn] : config_manager_->getConnections()) {
+                names.push_back(name);
+            }
+            std::sort(names.begin(), names.end());
+            size_t idx = 0;
+            for (const auto& name : names) {
+                const auto& conn = config_manager_->getConnections().at(name);
+                std::string type = "duckdb";
+                std::smatch match;
+                if (std::regex_search(conn.init, match, attach_type)) {
+                    type = match[1].str();
+                    std::transform(type.begin(), type.end(), type.begin(),
+                                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                } else if (auto it = conn.properties.find("path"); it != conn.properties.end()) {
+                    const auto ext = std::filesystem::path(it->second).extension().string();
+                    type = ext.empty() ? "file" : ext.substr(1);
+                }
+                crow::json::wvalue entry;
+                entry["name"] = name;
+                entry["type"] = type;
+                entry["status"] = "configured";
+                response["connections"][idx++] = std::move(entry);
+            }
             return crow::response(200, response);
         }
-        
+
         if (tables_only) {
-            // Return table information in the format expected by CLI
-            // Use DuckDB's SHOW TABLES command instead of information_schema to avoid parser issues
-            const std::string tables_query = R"SQL(
-                SELECT 
-                    COALESCE(database, 'main') as schema_name,
-                    name as table_name,
-                    'table' as table_type
+            // duckdb_tables() calls the catalog `database_name`; there is no
+            // `database` column, so this query was a Binder Error on every
+            // server and `flapii schema tables` always failed.
+            //
+            // Tables only, like the full schema below. duckdb_views() is not
+            // used: it parses every view of every attached database, and one
+            // foreign view (northwind's SQLite views quote names as [Order
+            // Details]) fails the whole query with a Parser Error.
+            std::string tables_query = R"SQL(
+                SELECT database_name, schema_name, table_name, 'table' AS table_type
                 FROM duckdb_tables()
-                WHERE database NOT IN ('system', 'temp')
-                ORDER BY database, name
+                WHERE NOT internal AND database_name NOT IN ('system', 'temp')
             )SQL";
-            
+            if (!specific_connection.empty()) {
+                std::string escaped;
+                for (const char c : specific_connection) {
+                    escaped += c;
+                    if (c == '\'') {
+                        escaped += '\'';
+                    }
+                }
+                tables_query += " AND database_name = '" + escaped + "'";
+            }
+            tables_query += " ORDER BY database_name, schema_name, table_name";
+
             try {
                 CROW_LOG_DEBUG << "Executing tables query for schema introspection";
                 auto tables_result = db_manager->executeQuery(tables_query, {}, false);
-            response["tables"] = crow::json::wvalue::list();
-                
+                response["tables"] = crow::json::wvalue::list();
+                const auto& connections = config_manager_->getConnections();
+
                 if (tables_result.data.t() != crow::json::type::Null) {
-                    CROW_LOG_DEBUG << "Tables query returned " << tables_result.data.size() << " rows";
                     size_t idx = 0;
                     for (size_t i = 0; i < tables_result.data.size(); ++i) {
-                        const auto& row = crow::json::load(tables_result.data[i].dump());
-                        
+                        const auto row = crow::json::load(tables_result.data[i].dump());
+                        const std::string database = row["database_name"].s();
+                        const std::string schema = row["schema_name"].s();
+                        const std::string table = row["table_name"].s();
+
                         crow::json::wvalue table_entry;
-                        table_entry["name"] = row["table_name"].s();
-                        table_entry["schema"] = row["schema_name"].s();
+                        table_entry["name"] = table;
+                        table_entry["schema"] = schema;
+                        table_entry["database"] = database;
                         table_entry["type"] = row["table_type"].s();
-                        std::string qualified_name = std::string(row["schema_name"].s()) + "." + std::string(row["table_name"].s());
-                        table_entry["qualified_name"] = qualified_name;
-                        
+                        // An attached database named like a connection is that connection's.
+                        table_entry["connection"] = connections.count(database) ? database : std::string();
+                        table_entry["qualified_name"] = database + "." + schema + "." + table;
                         response["tables"][idx++] = std::move(table_entry);
                     }
-                } else {
-                    CROW_LOG_DEBUG << "Tables query returned null result";
                 }
             } catch (const std::exception& e) {
-                CROW_LOG_ERROR << "Failed to query tables for schema introspection";
                 CROW_LOG_ERROR << "Tables query error: " << e.what();
-                CROW_LOG_ERROR << "Tables query SQL: " << tables_query;
-                // Return empty list on error rather than failing
-                response["tables"] = crow::json::wvalue::list();
-                response["error"] = std::string("Failed to query tables: ") + e.what();
+                return crow::response(500, std::string("Failed to query tables: ") + e.what());
             }
-            
+
             return crow::response(200, response);
         }
 

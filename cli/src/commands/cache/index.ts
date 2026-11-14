@@ -1,8 +1,10 @@
-import type { Command } from 'commander';
+import { Option, type Command } from 'commander';
 import type { CliContext } from '../../lib/types';
 import { Console } from '../../lib/console';
 import { handleError } from '../../lib/errors';
-import { renderJson, renderCacheTable } from '../../lib/render';
+import { renderJson, renderConfigJson, renderCacheTable, renderTable } from '../../lib/render';
+import { cacheAuditRows, describeRefreshResult, refreshQuery } from '../../lib/cacheRender';
+import { applyOutputOverride } from '../../lib/options';
 import { buildEndpointUrl } from '../../lib/url';
 import chalk from 'chalk';
 
@@ -40,7 +42,7 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
         }
 
         if (ctx.config.output === 'json') {
-          renderJson(caches, ctx.config.jsonStyle);
+          renderConfigJson(caches, ctx.config.jsonStyle, 'keyed');
         } else {
           renderCacheTable(caches);
         }
@@ -63,7 +65,7 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
         const cacheConfig = response.data;
 
         if (ctx.config.output === 'json') {
-          renderJson(cacheConfig, ctx.config.jsonStyle);
+          renderConfigJson(cacheConfig, ctx.config.jsonStyle, 'document');
         } else {
           Console.info(chalk.cyan(`\n💾 Cache Configuration: ${path}`));
           Console.info(chalk.gray('═'.repeat(60)));
@@ -92,7 +94,7 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
     .option('-s, --schedule <duration>', 'Refresh schedule, e.g. 5m, 6h')
     .option('--table <table>', 'Cache table name')
     .option('--schema <schema>', 'Cache schema name')
-    .option('-t, --ttl <ttl>', 'Not supported: flAPI has no TTL; use --schedule', undefined)
+    .option('--ttl <ttl>', 'Not supported: flAPI has no TTL; use --schedule', undefined)
     .option('--max-size <size>', 'Not supported by the server')
     .option('--strategy <strategy>', 'Not supported by the server')
     .option('-f, --file <file>', 'JSON file containing cache configuration')
@@ -198,7 +200,7 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
         const template = response.data;
 
         if (ctx.config.output === 'json') {
-          renderJson(template, ctx.config.jsonStyle);
+          renderJson(template);
         } else {
           Console.info(chalk.cyan(`\n📄 Cache Template: ${path}`));
           Console.info(chalk.gray('═'.repeat(60)));
@@ -259,34 +261,33 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
 
   cache
     .command('refresh <path>')
-    .description('Refresh cache for endpoint')
-    .option('-f, --force', 'Force refresh even if not expired')
-    .action(async (path: string, options: { force?: boolean }) => {
+    .description('Refresh cache for endpoint (--full: rebuild from scratch, erasing the watermark)')
+    .option('--full', 'Full rebuild: ignore the incremental watermark and repopulate the whole table')
+    // Kept so existing scripts do not break, but hidden: the server never had a
+    // "force" flag (it sent {force:true}, which was ignored). It is a normal
+    // refresh; --full is the one that changes what happens.
+    .addOption(new Option('-f, --force', 'Deprecated: same as a normal refresh').hideHelp())
+    .action(async (path: string, options: { full?: boolean; force?: boolean }) => {
+      if (options.force && !options.full) {
+        Console.warn('--force is deprecated and does nothing extra; use --full for a full rebuild');
+      }
       const spinner = Console.spinner(`Refreshing cache for ${path}...`);
       try {
-        const payload: any = {};
-        if (options.force) {
-          payload.force = true;
-        }
-
         const endpointUrl = buildEndpointUrl(path, 'cache/refresh');
-        const response = await ctx.client.post(endpointUrl, payload);
+        const query = refreshQuery(options);
+        const response = await ctx.client.post(endpointUrl, {}, query ? { params: query } : undefined);
         spinner.succeed(chalk.green(`✓ Cache for ${path} refreshed successfully`));
         const result = response.data;
+        const lines = describeRefreshResult(result);
 
         if (ctx.config.output === 'json') {
-          renderJson(result, ctx.config.jsonStyle);
+          // An empty body is not data; say what happened instead of printing "".
+          renderJson(result && typeof result === 'object' ? result : { path, refreshed: true, full: Boolean(options.full) });
         } else {
           Console.info(chalk.cyan(`\n🔄 Cache Refresh: ${path}`));
           Console.info(chalk.gray('═'.repeat(60)));
-          Console.info(chalk.green('✓ Cache refreshed successfully'));
-
-          if (result.entries_cleared !== undefined) {
-            Console.info(chalk.blue(`Entries cleared: ${result.entries_cleared}`));
-          }
-          if (result.cache_size !== undefined) {
-            Console.info(chalk.blue(`New cache size: ${result.cache_size}`));
-          }
+          Console.info(chalk.green(options.full ? '✓ Cache fully rebuilt' : '✓ Cache refreshed successfully'));
+          lines.forEach((line) => Console.info(chalk.blue(line)));
         }
       } catch (error) {
         spinner.fail(chalk.red(`✗ Failed to refresh cache for ${path}`));
@@ -309,7 +310,7 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
           Console.info(chalk.cyan(`\n🧹 Cache GC: ${path}`));
           Console.info(chalk.gray('═'.repeat(60)));
         }
-        renderJson(response.data, ctx.config.jsonStyle);
+        renderJson(response.data);
       } catch (error) {
         spinner.fail(chalk.red(`✗ Failed to run cache GC for ${path}`));
         handleError(error, ctx.config);
@@ -320,7 +321,8 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
   cache
     .command('audit [path]')
     .description('Get cache sync audit log (for one endpoint, or all endpoints if no path given)')
-    .action(async (path?: string) => {
+    .option('--output <format>', 'Output format: json or table')
+    .action(async (path: string | undefined, options: { output?: 'json' | 'table' }) => {
       const target = path ? `for ${path}` : '(all endpoints)';
       const spinner = Console.spinner(`Fetching cache audit log ${target}...`);
       try {
@@ -330,11 +332,15 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
         const response = await ctx.client.get(url);
         spinner.succeed(chalk.green(`✓ Cache audit log ${target} retrieved`));
 
-        if (ctx.config.output !== 'json') {
-          Console.info(chalk.cyan(`\n📋 Cache Audit ${target}`));
-          Console.info(chalk.gray('═'.repeat(60)));
+        const resolved = applyOutputOverride(ctx.config, options.output);
+        if (resolved.output === 'json') {
+          renderJson(response.data);
+          return;
         }
-        renderJson(response.data, ctx.config.jsonStyle);
+        // `-o table` printed the JSON too; it is a table of the refreshes now.
+        Console.info(chalk.cyan(`\n📋 Cache Audit ${target}`));
+        Console.info(chalk.gray('═'.repeat(60)));
+        renderTable(cacheAuditRows(response.data, !path));
       } catch (error) {
         spinner.fail(chalk.red(`✗ Failed to fetch cache audit log ${target}`));
         handleError(error, ctx.config);

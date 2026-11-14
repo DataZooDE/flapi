@@ -173,13 +173,20 @@ void APIServer::setupRoutes() {
     CROW_ROUTE(app, "/config")
         .methods("DELETE"_method)
         ([this](const crow::request& req, crow::response& res) {
+            // The token is still checked first, like every /config access.
             if (!configService || !configService->validateToken(req)) {
                 res = crow::response(401, "Unauthorized: configuration access requires the config-service token");
                 res.end();
                 return;
             }
-            CROW_LOG_INFO << "Config refresh requested";
-            res = refreshConfig();
+            // A whole-config refresh does not exist (ConfigManager::refreshConfig
+            // throws "Not implemented"), so this answered 500 - a server fault -
+            // for a request that simply is not supported. 405 says so, and Allow
+            // names what is. Reload one endpoint with
+            // POST /api/v1/_config/endpoints/<slug>/reload instead.
+            res = crow::response(405, "Method Not Allowed: /config supports GET only; reload an endpoint with "
+                                      "POST /api/v1/_config/endpoints/<slug>/reload");
+            res.set_header("Allow", "GET");
             res.end();
         });
 
@@ -481,7 +488,8 @@ void APIServer::handleDynamicRequest(const crow::request& req, crow::response& r
                 std::chrono::steady_clock::now() - t0).count();
         RuntimeMetrics::instance().recordRest(
             method, route_template, res.code,
-            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0));
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0),
+            RuntimeMetrics::isCacheUnavailableResponse(res.code, res.body));
         auto& telemetry = flapi::GlobalTelemetry();
         telemetry.restEndpointServed(method, route_template, res.code, duration_ms, cache_hit);
         if (res.code >= 500) {
@@ -742,6 +750,26 @@ void APIServer::run(int port) {
     // ordered (pool drained, then io_services stopped) and happens while the
     // process is still alive.
     app.signal_clear();
+
+    // Announce the server only once it is actually listening. Crow runs the
+    // tick function on its io loop, which starts after the acceptor is bound,
+    // and by then app.port() is the bound port. main used to log "server
+    // started on port N" right after launching this thread - before the bind -
+    // so an EADDRINUSE printed "started" followed by the error, and the MCP
+    // "ready at" line was printed from a constructor with a hard-coded
+    // localhost:8080 whatever -p said.
+    {
+        auto announced = std::make_shared<std::atomic<bool>>(false);
+        const std::string scheme = https.enabled ? "https" : "http";
+        app.tick(std::chrono::milliseconds(50), [this, announced, scheme, bind_host]() {
+            if (announced->exchange(true)) {
+                return;
+            }
+            const std::string base = scheme + "://" + bind_host + ":" + std::to_string(app.port());
+            CROW_LOG_INFO << "flAPI server listening on " << base
+                          << " (REST API; MCP at " << base << "/mcp/jsonrpc)";
+        });
+    }
 
     // Test-only seam (#143). Holds the process at a NAMED startup point, so a
     // test can signal it there instead of guessing.

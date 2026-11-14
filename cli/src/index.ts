@@ -26,7 +26,7 @@ export async function createCli(argv = process.argv) {
       outputError: (str, write) => write(Console.color('red', str)),
     })
     .option('-c, --config <path>', 'Path to flapi.yaml configuration file')
-    .option('-u, --base-url <url>', 'Base URL of the flapi server', process.env.FLAPI_BASE_URL)
+    .option('-u, --base-url <url>', 'Base URL of the flapi server (env: FLAPI_BASE_URL, or FLAPI_URL)', process.env.FLAPI_BASE_URL ?? process.env.FLAPI_URL)
     .option('--auth-token <token>', 'Bearer token for authentication', process.env.FLAPI_TOKEN)
     .option('-t, --config-service-token <token>', 'Config service authentication token', process.env.FLAPI_CONFIG_SERVICE_TOKEN)
     .option('--timeout <seconds>', 'Request timeout in seconds', process.env.FLAPI_TIMEOUT)
