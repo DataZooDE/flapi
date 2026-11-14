@@ -702,6 +702,10 @@ int main(int argc, char* argv[])
         .help("Refresh every cached endpoint")
         .default_value(false)
         .implicit_value(true);
+    cache_refresh_cmd.add_argument("--full")
+        .help("Force a full rebuild: ignore the incremental watermark and rebuild the table")
+        .default_value(false)
+        .implicit_value(true);
     cache_cmd.add_subparser(cache_refresh_cmd);
     program.add_subparser(cache_cmd);
 
@@ -863,6 +867,7 @@ int main(int argc, char* argv[])
             CacheRefreshOptions options;
             options.endpoints = cache_refresh_cmd.get<std::vector<std::string>>("--endpoint");
             options.all = cache_refresh_cmd.get<bool>("--all");
+            options.full = cache_refresh_cmd.get<bool>("--full");
             rc = RunCacheRefreshCommand(cm, options, std::cout);
         } catch (const std::exception& e) {
             std::cerr << "flapi cache refresh: " << e.what() << "\n";

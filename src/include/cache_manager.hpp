@@ -3,6 +3,7 @@
 #include <string>
 #include <optional>
 #include <chrono>
+#include <atomic>
 #include <map>
 #include <mutex>
 #include <set>
@@ -15,6 +16,14 @@
 namespace flapi {
 
 class DatabaseManager; // Forward declaration
+
+/// How one cache refresh runs. At namespace scope: a nested struct with a default
+/// member initializer cannot be a default argument inside its enclosing class.
+struct CacheRefreshRequest {
+    /// Rebuild from scratch: render with the watermark erased (the template's
+    /// full-load branch) and drop the table first, in the same transaction.
+    bool full = false;
+};
 
 class CacheManager {
 public:
@@ -29,13 +38,53 @@ public:
     bool shouldRefreshCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint);
     bool shouldRefreshCache(std::shared_ptr<ConfigManager> config_manager, const CacheConfig& cacheConfig);
 
-    bool refreshCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
-    void refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string> params);
+    using RefreshOptions = CacheRefreshRequest;
+
+    bool refreshCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string>& params, const RefreshOptions& options = {});
+    void refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string> params, const RefreshOptions& options = {});
     /// The populate SQL the NEXT refresh would run, with the live watermark and
     /// snapshot values - what `flapii templates expand --cache` shows. Fills
     /// `params` with the cache.* context it rendered with. Executes nothing.
+    /// `full` renders it as a forced full rebuild would (no watermark).
     std::string renderRefreshTemplate(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint,
-                                      std::map<std::string, std::string>& params);
+                                      std::map<std::string, std::string>& params, bool full = false);
+    /// The retention policy that applies to a cache: its own `retention` block when it
+    /// sets either key, else the global `ducklake.retention`.
+    static CacheConfig::RetentionConfig effectiveRetention(std::shared_ptr<ConfigManager> config_manager,
+                                                           const CacheConfig& cacheConfig);
+    /// The cached endpoints warm-up builds: one per cache table (endpoints sharing a
+    /// table are built once, preferring one that names a populate template).
+    static std::vector<EndpointConfig> warmupEndpoints(std::shared_ptr<ConfigManager> config_manager);
+
+    /// When this process last finished a refresh of the endpoint's cache table
+    /// (success or failure), if it did.
+    std::optional<std::chrono::system_clock::time_point> lastRefreshCompletedAt(
+        std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint) const;
+    /// Commit time of the newest snapshot that touched the endpoint's cache table.
+    std::optional<std::chrono::system_clock::time_point> newestSnapshotTime(
+        std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint);
+
+    /// Catalog-wide compaction (merge adjacent files, rewrite delete-heavy files,
+    /// delete the replaced files), recorded in the audit log as `compaction`.
+    void performCompaction(std::shared_ptr<ConfigManager> config_manager);
+    /// When compaction last ran, from the audit log.
+    std::optional<std::chrono::system_clock::time_point> lastCompactionTime(std::shared_ptr<ConfigManager> config_manager);
+    /// ducklake.compaction is enabled and its schedule has elapsed since the last run.
+    bool compactionDue(std::shared_ptr<ConfigManager> config_manager, std::chrono::system_clock::time_point now);
+
+    /// Shutdown: refuse new refreshes, stop warm-up, and interrupt the populate
+    /// queries running now (repeatedly, for up to `budget`).
+    void interruptRefreshesForShutdown(std::chrono::milliseconds budget = std::chrono::milliseconds(5000));
+    bool shutdownRequested() const;
+
+    /// Bound the audit log: keep the newest kAuditRowsKept rows per cache table and
+    /// expire all but kAuditSnapshotsKept of the audit table's snapshots.
+    void pruneAuditLog(std::shared_ptr<ConfigManager> config_manager);
+    static constexpr std::size_t kAuditRowsKept = 1000;
+    static constexpr std::size_t kAuditSnapshotsKept = 1;
+    static constexpr int kAuditPruneEvery = 100;
+    /// A random RFC 4122 version-4 UUID: the audit event id.
+    static std::string newEventId();
     static std::string joinStrings(const std::vector<std::string>& values, const std::string& delimiter);
     void addQueryCacheParamsIfNecessary(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
     void performGarbageCollection(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::vector<std::string> previousTableNames);
@@ -54,6 +103,7 @@ public:
         std::string table;
         std::string error;       // internal: logged, never returned to callers
         bool stale = false;      // Ready, but the latest refresh failed (last snapshot still served)
+        bool previous_table = false;  // Starting over a table a previous run built (warm-up: always)
     };
 
     struct CacheReadinessSummary {
@@ -148,6 +198,29 @@ public:
                                      const std::string& cursor_type);
 
 private:
+    /// Delete data files no remaining snapshot references (after an expiry).
+    void cleanupOldFiles(const std::string& catalog);
+    /// Expire all but the newest kAuditSnapshotsKept audit snapshots; true if it ran.
+    bool expireAuditSnapshots(const std::string& catalog);
+
+    /// Publishes the current thread as running a populate script, for shutdown.
+    class ActiveRefreshGuard {
+    public:
+        explicit ActiveRefreshGuard(CacheManager& manager);
+        ~ActiveRefreshGuard();
+        ActiveRefreshGuard(const ActiveRefreshGuard&) = delete;
+        ActiveRefreshGuard& operator=(const ActiveRefreshGuard&) = delete;
+
+    private:
+        CacheManager& manager_;
+        std::thread::id tid_;
+    };
+
+    std::atomic<bool> shutdown_requested_{false};
+    mutable std::mutex active_refresh_mutex_;
+    std::set<std::thread::id> active_refresh_threads_;
+    std::atomic<int> audit_events_since_prune_{0};
+
     struct SnapshotInfo {
         std::optional<std::string> current_snapshot_id;
         std::optional<std::string> current_snapshot_committed_at;

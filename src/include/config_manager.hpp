@@ -27,6 +27,9 @@ namespace flapi {
 
 struct TimeInterval {
     static std::optional<std::chrono::seconds> parseInterval(const std::string& interval);
+    // A maintenance schedule (ducklake.compaction.schedule): an interval as parseInterval
+    // takes it, or one of the shorthands @hourly, @daily, @weekly.
+    static std::optional<std::chrono::seconds> parseSchedule(const std::string& schedule);
 };
 
 struct ConnectionConfig {
@@ -534,8 +537,12 @@ struct CorsConfig {
 };
 
 struct GlobalHeartbeatConfig {
+    // ONE default, whether or not a `heartbeat:` block is present. The block used to
+    // default to 10 s and its absence to 60 s, so adding `heartbeat: {enabled: false}`
+    // silently changed how often cache schedules were checked.
+    static constexpr std::chrono::seconds kDefaultWorkerInterval{60};
     bool enabled = false;
-    std::chrono::seconds workerInterval = std::chrono::seconds(60);
+    std::chrono::seconds workerInterval = kDefaultWorkerInterval;
 };
 
 struct DuckLakeRetentionConfig {
@@ -549,8 +556,12 @@ struct DuckLakeCompactionConfig {
 };
 
 struct DuckLakeSchedulerConfig {
-    bool enabled = false;
-    std::optional<std::string> scan_interval;
+    // ON by default: a `cache.schedule` is itself the opt-in. It used to default to off,
+    // so a schedule silently never fired unless this block also said `enabled: true`.
+    // `enabled: false` written in the config is honoured as an explicit opt-out.
+    bool enabled = true;
+    bool enabled_explicit = false;   // the config wrote `scheduler.enabled`
+    std::optional<std::string> scan_interval;   // validated at load (TimeInterval)
 };
 
 struct DuckLakeConfig {

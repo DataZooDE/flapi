@@ -369,9 +369,15 @@ class TestHeartbeatRequestsAreNotOffloaded:
                     "  table: hb_cache\n"
                     "  schema: main\n"
                     "  schedule: 1s\n"
+                    "  template-file: cached_populate.sql\n"
                     "heartbeat:\n  enabled: true\n")
+        # A populate template must WRITE the cache table; a bare SELECT is
+        # refused (it used to "refresh" successfully while building nothing).
+        with open(os.path.join(sqls, "cached_populate.sql"), "w") as f:
+            f.write("CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS\n"
+                    "SELECT 1 AS n\n")
         with open(os.path.join(sqls, "cached.sql"), "w") as f:
-            f.write("SELECT 1 AS n\n")
+            f.write("SELECT * FROM {{{cache.catalog}}}.{{{cache.schema}}}.{{{cache.table}}}\n")
         with open(os.path.join(s.tmp, "flapi.yaml"), "w") as f:
             f.write(
                 "project-name: heartbeat-offload\n"

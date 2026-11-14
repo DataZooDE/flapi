@@ -2180,9 +2180,18 @@ crow::response CacheConfigHandler::refreshCache(const crow::request& req, const 
         // Prepare empty parameters map for cache refresh
         std::map<std::string, std::string> params;
 
+        // `?full=true` forces a full rebuild of an incremental cache: the watermark is
+        // erased (the template's full-load branch runs) and the table is rebuilt in the
+        // same transaction. Anything else - absent, `false`, `0` - is the usual refresh.
+        CacheManager::RefreshOptions options;
+        if (const char* full = req.url_params.get("full")) {
+            const std::string value(full);
+            options.full = value == "true" || value == "1" || value.empty();
+        }
+
         try {
             // Trigger cache refresh
-            cache_manager->refreshCache(config_manager_, *endpoint, params);
+            cache_manager->refreshCache(config_manager_, *endpoint, params, options);
             return crow::response(200);
         } catch (const std::exception& e) {
             return crow::response(400, std::string("Cache refresh failed: ") + e.what());

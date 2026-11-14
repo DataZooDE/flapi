@@ -7,6 +7,7 @@
 
 #include "duckdb.hpp"
 #include "duckdb/main/capi/capi_internal.hpp"
+#include "duckdb/parser/parser.hpp"
 
 #include "sql_template_processor.hpp"
 #include "sql_utils.hpp"
@@ -548,7 +549,78 @@ QueryResult DatabaseManager::executeDuckLakeQuery(const std::string& query, cons
     return executeQuery(query, params, false);
 }
 
-std::optional<int64_t> DatabaseManager::executeDuckLakeScript(const std::string& script) {
+namespace {
+
+std::string quotePopulateIdentifier(const std::string& name) {
+    std::string out = "\"";
+    for (const char c : name) {
+        if (c == '"') {
+            out += "\"\"";
+        } else {
+            out += c;
+        }
+    }
+    return out + "\"";
+}
+
+std::string quotePopulateLiteral(const std::string& value) {
+    std::string out = "'";
+    for (const char c : value) {
+        out += c;
+        if (c == '\'') {
+            out += '\'';
+        }
+    }
+    return out + "'";
+}
+
+std::string qualifiedTarget(const PopulateTarget& target) {
+    return quotePopulateIdentifier(target.catalog) + "." + quotePopulateIdentifier(target.schema) + "." +
+           quotePopulateIdentifier(target.table);
+}
+
+} // namespace
+
+std::optional<std::size_t> DatabaseManager::FindSelectStatement(const std::string& script) {
+    // DuckDB's own parser, not a regex: `WITH ... INSERT`, `CREATE TABLE ... AS
+    // SELECT` and a SELECT inside a string literal or comment must all read
+    // correctly. A script the standalone parser cannot read (an extension's
+    // syntax) is not judged here; executing it reports whatever is wrong.
+    try {
+        duckdb::Parser parser;
+        parser.ParseQuery(script);
+        for (std::size_t i = 0; i < parser.statements.size(); ++i) {
+            if (parser.statements[i] && parser.statements[i]->type == duckdb::StatementType::SELECT_STATEMENT) {
+                return i + 1;
+            }
+        }
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+std::string DatabaseManager::PopulateSelectError(const PopulateTarget& target, std::size_t statement) {
+    return "cache template must write {{cache.catalog}}.{{cache.schema}}.{{cache.table}} (here " +
+           target.catalog + "." + target.schema + "." + target.table +
+           "), e.g. CREATE OR REPLACE TABLE ... AS SELECT ...; statement " + std::to_string(statement) +
+           " of the template is a bare SELECT, which builds nothing";
+}
+
+std::optional<int64_t> DatabaseManager::executeDuckLakeScript(const std::string& script,
+                                                              const PopulateTarget* target,
+                                                              bool rebuild) {
+    // Refused BEFORE anything runs. A populate template that is (or ends in) a
+    // bare SELECT used to "succeed": the result was materialised - all of it, on
+    // a 10M-row source - and thrown away, nothing was built, the refresh was
+    // recorded as a success, and the endpoint then answered 500 on a missing
+    // table.
+    if (target) {
+        if (const auto select_at = FindSelectStatement(script)) {
+            throw std::runtime_error(PopulateSelectError(*target, *select_at));
+        }
+    }
+
     auto executor = createQueryExecutor();
 
     duckdb_extracted_statements stmts = nullptr;
@@ -613,11 +685,40 @@ std::optional<int64_t> DatabaseManager::executeDuckLakeScript(const std::string&
         }
     };
 
+    // The script must leave its target existing. Asked before COMMIT, inside the
+    // transaction, so a script that built nothing rolls back like any failure.
+    const auto require_target = [&]() {
+        if (!target) {
+            return;
+        }
+        executor.execute("SELECT count(*) FROM duckdb_tables() WHERE database_name = " +
+                             quotePopulateLiteral(target->catalog) + " AND schema_name = " +
+                             quotePopulateLiteral(target->schema) + " AND table_name = " +
+                             quotePopulateLiteral(target->table),
+                         "cache refresh");
+        if (duckdb_row_count(&executor.result) != 1 || duckdb_value_int64(&executor.result, 0, 0) == 0) {
+            throw std::runtime_error("cache template ran but did not create " + target->catalog + "." +
+                                     target->schema + "." + target->table +
+                                     "; it must write {{cache.catalog}}.{{cache.schema}}.{{cache.table}}, "
+                                     "e.g. CREATE OR REPLACE TABLE ... AS SELECT ...");
+        }
+    };
+
     try {
         if (!own_transaction) {
             executor.execute("BEGIN TRANSACTION", "cache refresh");
+            if (rebuild && target) {
+                // Same transaction as the template: readers keep the old
+                // snapshot until COMMIT, and a failing rebuild restores it.
+                executor.execute("DROP TABLE IF EXISTS " + qualifiedTarget(*target), "cache refresh");
+            }
+        } else if (rebuild && target) {
+            CROW_LOG_WARNING << "Full rebuild of " << target->schema << "." << target->table
+                             << ": the template manages its own transaction, so the table is not "
+                                "dropped first; only the watermark is cleared.";
         }
         run();
+        require_target();
         if (!own_transaction) {
             executor.execute("COMMIT", "cache refresh");
         }

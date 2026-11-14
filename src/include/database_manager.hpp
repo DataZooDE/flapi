@@ -82,7 +82,21 @@ public:
     /// none reports one). Any failure rolls the whole script back, so a failed
     /// refresh leaves the cache exactly as it was. A script that manages its own
     /// transaction (contains BEGIN/COMMIT/ROLLBACK) is run as written.
-    std::optional<int64_t> executeDuckLakeScript(const std::string& script);
+    ///
+    /// With a `target` it is a cache populate template, and two more rules hold:
+    /// a SELECT statement anywhere in it is refused before anything runs (a bare
+    /// SELECT builds nothing, and on a large source materialises the whole
+    /// result only to discard it), and the script must leave `target` existing,
+    /// checked before COMMIT so a failure rolls back. `rebuild` drops `target`
+    /// at the start of the same transaction (POST .../cache/refresh?full=true).
+    std::optional<int64_t> executeDuckLakeScript(const std::string& script,
+                                                 const PopulateTarget* target = nullptr,
+                                                 bool rebuild = false);
+    /// 1-based index of the first SELECT statement in `script`, or nullopt
+    /// (also when the script does not parse - execution reports that). Pure.
+    static std::optional<std::size_t> FindSelectStatement(const std::string& script);
+    /// The error a populate template containing a SELECT is refused with.
+    static std::string PopulateSelectError(const PopulateTarget& target, std::size_t statement);
     std::string renderCacheTemplate(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params);
     
     // Write operation methods

@@ -343,7 +343,9 @@ TEST_CASE("CacheManager refreshDuckLakeCache retention SQL generation", "[cache_
         std::string expire;
         for (const auto& query : adapter->executed_queries) {
             if (query.find("ducklake_expire_snapshots") != std::string::npos) {
-                expire = query;
+                if (expire.empty()) {   // the cache table's expiry; the audit table's follows
+                    expire = query;
+                }
             }
         }
         REQUIRE_FALSE(expire.empty());
@@ -438,7 +440,9 @@ TEST_CASE("CacheManager refreshDuckLakeCache retention SQL generation", "[cache_
         std::string expire;
         for (const auto& query : adapter->executed_queries) {
             if (query.find("ducklake_expire_snapshots") != std::string::npos) {
-                expire = query;
+                if (expire.empty()) {   // the cache table's expiry; the audit table's follows
+                    expire = query;
+                }
             }
         }
         REQUIRE_FALSE(expire.empty());
@@ -466,7 +470,9 @@ TEST_CASE("CacheManager refreshDuckLakeCache retention SQL generation", "[cache_
         std::string expire;
         for (const auto& query : adapter->executed_queries) {
             if (query.find("ducklake_expire_snapshots") != std::string::npos) {
-                expire = query;
+                if (expire.empty()) {   // the cache table's expiry; the audit table's follows
+                    expire = query;
+                }
             }
         }
         REQUIRE_FALSE(expire.empty());
@@ -493,7 +499,9 @@ TEST_CASE("CacheManager refreshDuckLakeCache retention SQL generation", "[cache_
         std::string expire;
         for (const auto& query : adapter->executed_queries) {
             if (query.find("ducklake_expire_snapshots") != std::string::npos) {
-                expire = query;
+                if (expire.empty()) {   // the cache table's expiry; the audit table's follows
+                    expire = query;
+                }
             }
         }
         REQUIRE_FALSE(expire.empty());

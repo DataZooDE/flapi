@@ -517,14 +517,29 @@ void ConfigManager::parseDuckLakeConfig() {
             ducklake_config.compaction.enabled = safeGet<bool>(compaction, "enabled", "ducklake.compaction.enabled", false);
             if (compaction["schedule"]) {
                 ducklake_config.compaction.schedule = safeGet<std::string>(compaction, "schedule", "ducklake.compaction.schedule");
+                // Refused at load, like cache.schedule: it used to be checked only for
+                // presence, and compaction ran every 24 h whatever it said.
+                if (!TimeInterval::parseSchedule(*ducklake_config.compaction.schedule)) {
+                    throw ConfigurationError("Invalid compaction schedule '" + *ducklake_config.compaction.schedule +
+                                             "': expected <positive number>[s|m|h|d] or @hourly, @daily, @weekly",
+                                             "ducklake.compaction.schedule");
+                }
             }
         }
 
         if (node["scheduler"]) {
             auto scheduler = node["scheduler"];
-            ducklake_config.scheduler.enabled = safeGet<bool>(scheduler, "enabled", "ducklake.scheduler.enabled", false);
+            if (scheduler["enabled"]) {
+                ducklake_config.scheduler.enabled = safeGet<bool>(scheduler, "enabled", "ducklake.scheduler.enabled", true);
+                ducklake_config.scheduler.enabled_explicit = true;
+            }
             if (scheduler["scan-interval"]) {
                 ducklake_config.scheduler.scan_interval = safeGet<std::string>(scheduler, "scan-interval", "ducklake.scheduler.scan-interval");
+                if (!TimeInterval::parseInterval(*ducklake_config.scheduler.scan_interval)) {
+                    throw ConfigurationError("Invalid scheduler scan-interval '" + *ducklake_config.scheduler.scan_interval +
+                                             "': expected <positive number>[s|m|h|d], e.g. 1s, 30s, 5m",
+                                             "ducklake.scheduler.scan-interval");
+                }
             }
         }
 
@@ -1659,11 +1674,16 @@ void ConfigManager::parseGlobalHeartbeatConfig() {
             CROW_LOG_DEBUG << "Global heartbeat enabled";
         }
 
-        global_heartbeat_config.workerInterval = std::chrono::seconds(
-            safeGet<int>(heartbeat_node, "worker-interval", "heartbeat.worker-interval", 10)
-        );
-        CROW_LOG_DEBUG << "Global heartbeat worker interval: " << global_heartbeat_config.workerInterval.count() << " seconds";
+        const int worker_interval = safeGet<int>(heartbeat_node, "worker-interval", "heartbeat.worker-interval",
+                                                 static_cast<int>(GlobalHeartbeatConfig::kDefaultWorkerInterval.count()));
+        if (worker_interval <= 0) {
+            throw ConfigurationError("heartbeat.worker-interval must be a positive number of seconds",
+                                     "heartbeat.worker-interval");
+        }
+        global_heartbeat_config.workerInterval = std::chrono::seconds(worker_interval);
     }
+    CROW_LOG_INFO << "Heartbeat worker interval: " << global_heartbeat_config.workerInterval.count()
+                  << " s" << (config["heartbeat"] && config["heartbeat"]["worker-interval"] ? "" : " (default)");
 }
 
 // Utility methods
@@ -1985,7 +2005,7 @@ crow::json::wvalue ConfigManager::getFlapiConfig() const {
     }
 
     // Add scheduler configuration
-    if (ducklake_config.scheduler.enabled || ducklake_config.scheduler.scan_interval) {
+    if (ducklake_config.scheduler.enabled_explicit || ducklake_config.scheduler.scan_interval) {
         crow::json::wvalue schedulerJson;
         schedulerJson["enabled"] = ducklake_config.scheduler.enabled;
         if (ducklake_config.scheduler.scan_interval) {

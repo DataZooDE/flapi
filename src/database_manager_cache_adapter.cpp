@@ -31,6 +31,11 @@ std::optional<int64_t> DatabaseManagerCacheAdapter::executeDuckLakeQueryCounting
     return db_manager_->executeDuckLakeScript(query);
 }
 
+std::optional<int64_t> DatabaseManagerCacheAdapter::executePopulateScript(
+    const std::string& script, const PopulateTarget& target, bool rebuild) {
+    return db_manager_->executeDuckLakeScript(script, &target, rebuild);
+}
+
 std::optional<int64_t> extractAffectedRowCount(const std::string& result_json) {
     // A DML statement's result is exactly one row with exactly one column,
     // `Count`. Anything else is not a row count and is not reported as one.

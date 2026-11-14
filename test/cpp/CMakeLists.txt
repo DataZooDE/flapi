@@ -32,6 +32,7 @@ add_executable(flapi_tests
     macho_bundle_test.cpp
     cache_manager_test.cpp
     cache_warmup_mode_test.cpp
+    cache_scheduler_test.cpp
     extension_installer_test.cpp
     ducklake_reader_test.cpp
     bundled_extensions_test.cpp
