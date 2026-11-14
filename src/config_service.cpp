@@ -13,6 +13,7 @@
 #include <openssl/crypto.h>
 
 #include "config_service.hpp"
+#include "mustache_syntax_check.hpp"
 
 #ifdef _WIN32
 #define ENV_BLOCK _environ
@@ -2472,6 +2473,12 @@ crow::response TemplateHandler::updateEndpointTemplate(const crow::request& req,
             return crow::response(404, "Endpoint not found");
         }
 
+        // Refuse a template crow would crash or hang on BEFORE it replaces a
+        // working file: every request re-reads the template from disk.
+        if (const auto syntax = CheckMustacheSyntax(json["template"].s())) {
+            return jsonError(400, "Invalid template " + FormatMustacheSyntaxError(*syntax, endpoint->templateSource));
+        }
+
         // Write the template to file
         auto template_path = resolveTemplatePath(endpoint->templateSource);
         std::error_code mkdir_ec;
@@ -3141,6 +3148,11 @@ crow::response TemplateHandler::updateCacheTemplate(const crow::request& req, co
         }
         if (!endpoint->cache.enabled || !endpoint->cache.template_file) {
             return crow::response(400, "Cache template not configured for this endpoint");
+        }
+
+        if (const auto syntax = CheckMustacheSyntax(json["template"].s())) {
+            return jsonError(400, "Invalid template " +
+                                      FormatMustacheSyntaxError(*syntax, endpoint->cache.template_file.value()));
         }
 
         auto cache_path = resolveTemplatePath(endpoint->cache.template_file.value());

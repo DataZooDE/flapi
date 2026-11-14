@@ -63,6 +63,12 @@ Templates are [Mustache](https://mustache.github.io/). Available variables:
 | `cache.*` | Cache metadata, when caching is enabled |
 | `env.*` | Whitelisted environment variables |
 
+Every `{{#x}}` or `{{^x}}` section needs its `{{/x}}`, closed in reverse order, and `{{{` needs `}}}`.
+flAPI checks this before using a template - at startup, on reload, on a config-service template update,
+in `flapi --validate-config` and on every request - and names the file and line
+(`Invalid template sqls/orders.sql:12:3: ...`). Partials (`{{> x}}`) and set-delimiter tags
+(`{{= =}}`) are not supported.
+
 ### Triple braces vs double braces
 
 This is the rule people get wrong.

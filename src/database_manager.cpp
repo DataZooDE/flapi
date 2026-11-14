@@ -526,11 +526,24 @@ DatabaseManager::AccessLocks DatabaseManager::lockSerialisedAccess(const Endpoin
     return locks;
 }
 
+DatabaseManager::AccessLocks DatabaseManager::lockSerialisedReadAccess(const EndpointConfig& endpoint) {
+    // A cached endpoint with a template-file serves from DuckLake: its serving
+    // template reads the cache table, and the source is touched only by the
+    // populate template. Taking the source's lock here serialised every cached
+    // read behind every other (16 clients: 93 rps, p50 168 ms; 283 rps, p50
+    // 56 ms without it) to protect a connection the read never opens. Without
+    // a template-file the serving template IS the source query, so it locks.
+    if (isCacheEnabled(endpoint) && endpoint.cache.template_file) {
+        return {};
+    }
+    return lockSerialisedAccess(endpoint);
+}
+
 QueryResult DatabaseManager::executeQuery(const EndpointConfig& endpoint, std::map<std::string, std::string>& params, bool with_pagination)
 {
     // #116: a read concurrent with a write wedges a SQLite attachment for good,
     // so on those connections a read waits its turn like a write does.
-    const auto access = lockSerialisedAccess(endpoint);
+    const auto access = lockSerialisedReadAccess(endpoint);
 
     // Reads are collateral damage in SQLite lock contention: a single writer
     // blocks them, and failing a GET because some unrelated POST held a lock is
@@ -791,7 +804,7 @@ std::string DatabaseManager::renderCacheTemplate(const EndpointConfig& endpoint,
 }
 
 std::unique_ptr<QueryExecutor> DatabaseManager::executeQueryRaw(const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
-    const auto access = lockSerialisedAccess(endpoint);
+    const auto access = lockSerialisedReadAccess(endpoint);
     cache_manager->addQueryCacheParamsIfNecessary(config_manager, endpoint, params);
 
     // W3.1 PR B: Arrow-streaming endpoint also takes the prepared path
@@ -844,6 +857,7 @@ QueryResult DatabaseManager::executeQueryWithBindings(
 
     QueryResult result;
     result.data = executor.toJson();
+    result.columns = executor.columnNames();
 
     if (with_pagination) {
         auto countExecutor = createQueryExecutor();
@@ -898,6 +912,7 @@ QueryResult DatabaseManager::executeQuery(const std::string& query,
     // Convert result to JSON using QueryResult
     QueryResult result;
     result.data = executor.toJson();
+    result.columns = executor.columnNames();
     
     // Handle pagination metadata
     if (with_pagination) {

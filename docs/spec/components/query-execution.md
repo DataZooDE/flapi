@@ -149,14 +149,30 @@ struct QueryResult {
 };
 ```
 
+**Template syntax check** (`src/mustache_syntax_check.cpp`): the bundled crow Mustache parser has no
+balance checks of its own - a stray `{{/x}}` crashed the process (SIGSEGV) and an unclosed `{{#x}}` with
+`x` absent looped forever while memory grew. Every template is therefore checked before crow compiles
+it: at load and reload (`EndpointConfigParser`), in `--validate-config`, on a config-service template
+update, and on every render (`SQLTemplateProcessor::compileTemplate`, since a template is re-read from
+disk per request). Rejected: unbalanced or crossed sections, `{{{` not closed by `}}}`, an unterminated
+`{{`, empty tags and section names, partials (`{{> x}}`) and set-delimiter tags (`{{= =}}`). Errors read
+`Invalid template <file>:<line>:<col>: <what>`; at request time the answer is a 500.
+
 **JSON values** (`QueryResult::decimalToJson`, `convertVectorTimestampToJson`):
 
 - `DECIMAL` is rendered from DuckDB's exact text, not through `double`: scale 0 with at most 18 digits
   becomes a JSON integer; scale up to 6 with at most 9 integer digits becomes the exact JSON number
   (`7790.62`, not `7790.61999999999989086`). Wider decimals fall back to the nearest double.
-- `TIMESTAMP` / `TIMESTAMPTZ` keep microseconds (`2024-01-01T10:00:00.123456Z`); `TIMESTAMP_S` and
-  `TIMESTAMP_MS` are decoded in their own unit, `TIMESTAMP_NS` keeps 9 fractional digits; DuckDB's
-  infinities become the strings `"infinity"` / `"-infinity"`.
+- `TIMESTAMP` / `TIMESTAMPTZ` keep microseconds; `TIMESTAMP_S` and `TIMESTAMP_MS` are decoded in their
+  own unit, `TIMESTAMP_NS` keeps 9 fractional digits; DuckDB's infinities become the strings
+  `"infinity"` / `"-infinity"`. Only `TIMESTAMPTZ` (an instant, stored as UTC) carries the `Z`
+  (`2024-01-01T10:00:00.123456Z`); the naive `TIMESTAMP` family has no zone and none is printed
+  (`2024-01-01T10:00:00.123456`).
+- `DOUBLE` / `FLOAT` are printed in their shortest round-trip form (`711.56`, not
+  `711.55999999999994543`; a `FLOAT` `0.1` is `0.1`); an integral value keeps `.0`.
+- Row objects list their keys in `SELECT` column order, in JSON (REST, MCP `tools/call`,
+  `resources/read`) and CSV alike (`QueryResult::dumpData`, which every response path uses instead of
+  `crow::json::wvalue::dump`: a crow object is an unordered map).
 - SQL `NULL` is JSON `null`.
 
 ### WriteResult Structure

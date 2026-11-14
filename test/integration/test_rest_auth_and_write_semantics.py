@@ -440,7 +440,8 @@ class TestExactTypes:
         r = requests.get(f"{server.base}/types", timeout=10)
         assert r.status_code == 200, r.text
         assert '"price":7790.62' in r.text, r.text
-        assert r.json()["data"][0]["ts"] == "2024-05-06T07:08:09.123456Z"
+        # A naive TIMESTAMP carries no zone, so no `Z` (only TIMESTAMPTZ does).
+        assert r.json()["data"][0]["ts"] == "2024-05-06T07:08:09.123456"
 
 
 class TestVersion:

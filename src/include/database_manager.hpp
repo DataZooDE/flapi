@@ -158,6 +158,11 @@ private:
     // connections cannot deadlock against one naming them the other way round.
     using AccessLocks = std::vector<std::unique_lock<std::mutex>>;
     AccessLocks lockSerialisedAccess(const EndpointConfig& endpoint);
+    /// The locks a READ of this endpoint needs: none when it is served from its
+    /// DuckLake cache (cache.enabled with a template-file, so the serving
+    /// template reads the cache table and not the source), else the same as
+    /// lockSerialisedAccess. Writes always take lockSerialisedAccess.
+    AccessLocks lockSerialisedReadAccess(const EndpointConfig& endpoint);
 
     std::mutex access_mutexes_guard;
     std::unordered_map<std::string, std::unique_ptr<std::mutex>> access_mutexes;

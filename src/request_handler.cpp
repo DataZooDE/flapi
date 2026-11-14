@@ -125,12 +125,8 @@ void RequestHandler::handleWriteRequest(const crow::request& req, crow::response
         
         // For write operations, enforce stricter validation if configured
         if (endpoint.operation.validate_before_write) {
-            // Enforce all required fields
-            for (const auto& field : endpoint.request_fields) {
-                if (field.required && params.find(field.fieldName) == params.end()) {
-                    validationErrors.push_back({field.fieldName, "Required field is missing"});
-                }
-            }
+            // Required fields are already enforced by validateRequestParameters;
+            // adding them again here listed every missing field twice.
             
             // Reject unknown parameters when validate-before-write is enabled
             // This helps catch typos and incorrect parameter names (e.g., ProductName vs product_name)
@@ -185,11 +181,13 @@ void RequestHandler::handleWriteRequest(const crow::request& req, crow::response
         response["rows_affected"] = static_cast<int64_t>(writeResult.rows_affected);
         
         // Include returned data if available and configured
-        if (writeResult.returned_data.has_value() && endpoint.operation.returns_data) {
+        if (writeResult.returned_data.has_value()) {
+            // Included even if not explicitly configured (helpful for debugging)
             response["data"] = std::move(*writeResult.returned_data);
-        } else if (writeResult.returned_data.has_value()) {
-            // Include returned data even if not explicitly configured (helpful for debugging)
-            response["data"] = std::move(*writeResult.returned_data);
+        } else if (endpoint.operation.returns_data) {
+            // A RETURNING that matched no row is still an answer: an empty list,
+            // not a missing key a client has to special-case.
+            response["data"] = crow::json::wvalue::list();
         }
         
         res.write(response.dump());
@@ -378,6 +376,12 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
 
         // Execute query for JSON/CSV (existing path)
         QueryResult queryResult = db_manager->executeQuery(endpoint, params, endpoint.with_pagination);
+        // limit=0 asks for the count alone. Its "next page" starts at the same
+        // offset, so `next` pointed at the request itself and a client
+        // following it looped forever.
+        if (limit == 0) {
+            queryResult.next.clear();
+        }
 
         // Handle CSV format
         if (negotiation.format == ResponseFormat::CSV) {
@@ -388,15 +392,15 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
             // JSON format (default)
             res.set_header("Content-Type", "application/json");
 
+            // Assembled by hand around dumpData(): rows keep their SELECT
+            // column order and doubles their shortest form, which a
+            // crow::json::wvalue (an unordered map, 21-digit doubles) loses.
             if (endpoint.with_pagination) {
-                crow::json::wvalue response;
-                response["data"] = std::move(queryResult.data);
-                response["next"] = createNextUrl(req, queryResult);
-                response["total_count"] = queryResult.total_count;
-
-                res.write(response.dump());
+                res.write("{\"data\":" + queryResult.dumpData() +
+                          ",\"next\":" + crow::json::wvalue(createNextUrl(req, queryResult)).dump() +
+                          ",\"total_count\":" + std::to_string(queryResult.total_count) + "}");
             } else {
-                res.write(queryResult.data.dump());
+                res.write(queryResult.dumpData());
             }
         }
 
@@ -497,7 +501,15 @@ std::map<std::string, std::string> RequestHandler::combineParameters(const crow:
         }
     }
 
+    // A repeated query parameter (?x=1&x=2) used to take the first value
+    // silently - a client sending two filters got one. Ambiguous input is a 400.
+    std::set<std::string> seen_query_keys;
     for (const auto& key : req.url_params.keys()) {
+        if (!seen_query_keys.insert(key).second) {
+            throw BadRequestError("Duplicate query parameter: " + key);
+        }
+    }
+    for (const auto& key : seen_query_keys) {
         if (isReservedAuthKey(key)) {
             continue;   // server-injected identity is not client input
         }
@@ -554,8 +566,20 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
             try {
                 auto bodyJson = crow::json::load(req.body);
                 if (bodyJson) {
+                    // A nested number, keeping its fraction: i() truncates 9.99 to 9.
+                    auto jsonNumber = [](const crow::json::rvalue& v) -> crow::json::wvalue {
+                        switch (v.nt()) {
+                            case crow::json::num_type::Floating_point:
+                            case crow::json::num_type::Double_precision_floating_point:
+                                return crow::json::wvalue(v.d());
+                            case crow::json::num_type::Unsigned_integer:
+                                return crow::json::wvalue(v.u());
+                            default:
+                                return crow::json::wvalue(v.i());
+                        }
+                    };
                     // Helper function to convert JSON value to string
-                    auto jsonValueToString = [&bodyJson, &req](const std::string& key) -> std::string {
+                    auto jsonValueToString = [&bodyJson, &req, &jsonNumber](const std::string& key) -> std::string {
                         if (!bodyJson.has(key)) {
                             return "";
                         }
@@ -564,12 +588,10 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
                         if (jsonVal.t() == crow::json::type::String) {
                             value = jsonVal.s();
                         } else if (jsonVal.t() == crow::json::type::Number) {
-                            // Try integer first, then double
-                            try {
-                                value = std::to_string(jsonVal.i());
-                            } catch (...) {
-                                value = std::to_string(jsonVal.d());
-                            }
+                            // The number's own text, exactly as sent. i() lexical-casts and
+                            // stops at the '.', so 9.99 became "9" - and 301.7 then passed an
+                            // `int` validator as 301. The validators decide what is acceptable.
+                            value = static_cast<std::string>(jsonVal);
                         } else if (jsonVal.t() == crow::json::type::True) {
                             value = "true";
                         } else if (jsonVal.t() == crow::json::type::False) {
@@ -591,11 +613,7 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
                                             if (v.t() == crow::json::type::String) {
                                                 tempObj[keyStr] = v.s();
                                             } else if (v.t() == crow::json::type::Number) {
-                                                try {
-                                                    tempObj[keyStr] = v.i();
-                                                } catch (...) {
-                                                    tempObj[keyStr] = v.d();
-                                                }
+                                                tempObj[keyStr] = jsonNumber(v);
                                             } else if (v.t() == crow::json::type::True) {
                                                 tempObj[keyStr] = true;
                                             } else if (v.t() == crow::json::type::False) {
@@ -611,11 +629,7 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
                                             if (v.t() == crow::json::type::String) {
                                                 arr.push_back(crow::json::wvalue(v.s()));
                                             } else if (v.t() == crow::json::type::Number) {
-                                                try {
-                                                    arr.push_back(crow::json::wvalue(v.i()));
-                                                } catch (...) {
-                                                    arr.push_back(crow::json::wvalue(v.d()));
-                                                }
+                                                arr.push_back(jsonNumber(v));
                                             } else if (v.t() == crow::json::type::True) {
                                                 arr.push_back(crow::json::wvalue(true));
                                             } else if (v.t() == crow::json::type::False) {
@@ -626,7 +640,7 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
                                         }
                                         tempObj = crow::json::wvalue(arr);
                                     }
-                                    value = tempObj.dump();
+                                    value = QueryResult::dumpJson(tempObj);   // shortest doubles
                                 } else {
                                     value = "{}";
                                 }
@@ -805,32 +819,31 @@ std::string RequestHandler::convertToCSV(const QueryResult& queryResult)
         return csv.str();
     }
 
-    csvHeaderFromExampleObject(queryResult.data[0], csv);
+    // Columns in SELECT order when the result knows them; the row object
+    // itself is an unordered map.
+    std::vector<std::string> columns = queryResult.columns;
+    if (columns.empty()) {
+        columns = queryResult.data[0].keys();
+    }
+    bool first = true;
+    for (const auto& column : columns) {
+        if (!first) csv << ",";
+        csv << escapeCSV(column);
+        first = false;
+    }
+    csv << "\n";
     for (size_t i = 0; i < queryResult.data.size(); i++) {
-        serializeObjectToCsvLine(queryResult.data[i], csv);
+        const auto& row = queryResult.data[static_cast<unsigned>(i)];
+        first = true;
+        for (const auto& column : columns) {
+            if (!first) csv << ",";
+            csv << QueryResult::dumpJson(row[column]);
+            first = false;
+        }
+        csv << "\n";
     }
 
     return csv.str();
-}
-
-void RequestHandler::csvHeaderFromExampleObject(const crow::json::wvalue& obj, std::ostringstream& csv) {
-    bool first = true;
-    for (const auto& key : obj.keys()) {
-        if (!first) csv << ",";
-        csv << escapeCSV(key);
-        first = false;
-    }
-    csv << "\n";
-}
-
-void RequestHandler::serializeObjectToCsvLine(const crow::json::wvalue& obj, std::ostringstream& csv) {     
-    bool first = true;
-    for (const auto& key : obj.keys()) {
-        if (!first) csv << ",";
-        csv << obj[key].dump();
-        first = false;
-    }
-    csv << "\n";
 }
 
 std::string RequestHandler::escapeCSV(const std::string& str) {

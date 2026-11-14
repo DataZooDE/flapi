@@ -380,7 +380,7 @@ TEST_CASE("RequestHandler: combineWriteParameters preserves empty-string body va
 
         REQUIRE(errors.size() == 1);
         REQUIRE(errors[0].fieldName == "required_name");
-        REQUIRE(errors[0].errorMessage == "String is shorter than the minimum allowed length");
+        REQUIRE(errors[0].errorMessage.rfind("String is shorter than the minimum allowed length (", 0) == 0);
     }
 
     SECTION("Whitespace-only string is preserved (not trimmed)") {

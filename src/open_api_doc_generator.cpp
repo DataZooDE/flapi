@@ -1,4 +1,5 @@
 #include "open_api_doc_generator.hpp"
+#include "mcp_schema_builder.hpp"
 #include <sstream>
 #include <map>
 #include <vector>
@@ -41,86 +42,21 @@ YAML::Node OpenAPIDocGenerator::generateDoc(flapi::FlapiApp& app)
     // Group endpoints by URL path to merge multiple HTTP methods for the same path
     std::map<std::string, std::vector<EndpointConfig>> endpointsByPath;
     for (const auto& endpoint : *configManager->getEndpoints()) {
+        if (!endpoint.isRESTEndpoint()) {
+            continue;   // an MCP-only tool/resource/prompt has no URL to document
+        }
         endpointsByPath[endpoint.urlPath].push_back(endpoint);
     }
-    
+
     // Generate path items, merging multiple methods for the same path
     for (const auto& [path, endpoints] : endpointsByPath) {
         YAML::Node pathItem;
-        
-        // Generate operations for all endpoints with this path
         for (const auto& endpoint : endpoints) {
             std::string method = endpoint.method.empty() ? "get" : endpoint.method;
             std::transform(method.begin(), method.end(), method.begin(), ::tolower);
-            
-            YAML::Node operation;
-            operation["summary"] = "Endpoint for " + endpoint.urlPath;
-            operation["description"] = "Description not available";
-            operation["parameters"] = generateParameters(endpoint.request_fields);
-            operation["responses"]["200"]["description"] = "Successful response";
-            operation["responses"]["200"]["content"]["application/json"]["schema"] = generateResponseSchema(endpoint);
-            
-            if (endpoint.rate_limit.enabled) {
-                operation["x-rate-limit"]["max"] = endpoint.rate_limit.max;
-                operation["x-rate-limit"]["interval"] = endpoint.rate_limit.interval;
-            }
-            
-            // Add security requirement based on auth type
-            if (endpoint.auth.enabled) {
-                operation["security"].push_back(YAML::Node());
-                if (endpoint.auth.type == "basic") {
-                    operation["security"][0]["basicAuth"] = YAML::Node(YAML::NodeType::Sequence);
-                } else {
-                    operation["security"][0]["bearerAuth"] = YAML::Node(YAML::NodeType::Sequence);
-                }
-            }
-            
-            // For write operations, add request body documentation
-            if (endpoint.operation.type == OperationConfig::Write && 
-                (method == "post" || method == "put" || method == "patch")) {
-                YAML::Node requestBody;
-                requestBody["description"] = "Request body with parameters for " + method + " operation";
-                requestBody["required"] = true;
-                YAML::Node content;
-                YAML::Node schema;
-                schema["type"] = "object";
-                YAML::Node properties;
-                for (const auto& field : endpoint.request_fields) {
-                    if (field.fieldIn == "body") {
-                        YAML::Node prop;
-                        prop["type"] = "string"; // Default, could be improved
-                        prop["description"] = field.description;
-                        properties[field.fieldName] = prop;
-                        
-                        if (field.required) {
-                            if (!schema["required"]) {
-                                schema["required"] = YAML::Node(YAML::NodeType::Sequence);
-                            }
-                            schema["required"].push_back(field.fieldName);
-                        }
-                    }
-                }
-                schema["properties"] = properties;
-                content["application/json"]["schema"] = schema;
-                requestBody["content"] = content;
-                operation["requestBody"] = requestBody;
-                
-                // Update response codes for write operations
-                if (method == "post") {
-                    // Create 201 response from 200
-                    YAML::Node createdResponse = operation["responses"]["200"];
-                    createdResponse["description"] = "Created successfully";
-                    operation["responses"]["201"] = createdResponse;
-                    // Remove 200 response
-                    operation["responses"].remove("200");
-                } else if (method == "put" || method == "patch") {
-                    operation["responses"]["200"]["description"] = "Updated successfully";
-                }
-            }
-            
-            pathItem[method] = operation;
+            pathItem[method] = generateOperation(endpoint, method);
         }
-        
+
         // Add DELETE endpoint documentation for cache invalidation if any endpoint has cache enabled
         bool hasCacheEnabled = false;
         for (const auto& endpoint : endpoints) {
@@ -129,15 +65,15 @@ YAML::Node OpenAPIDocGenerator::generateDoc(flapi::FlapiApp& app)
                 break;
             }
         }
-        
-        if (hasCacheEnabled && pathItem["delete"].IsNull()) {
+
+        if (hasCacheEnabled && !pathItem["delete"]) {
             YAML::Node deleteOperation;
             deleteOperation["summary"] = "Invalidate cache for " + path;
             deleteOperation["description"] = "Invalidates the cached data for this endpoint";
-            
+
             deleteOperation["responses"]["200"]["description"] = "Cache successfully invalidated";
             deleteOperation["responses"]["500"]["description"] = "Internal server error while invalidating cache";
-            
+
             // Add security if any endpoint requires auth
             bool requiresAuth = false;
             std::string authType = "basic";
@@ -148,130 +84,240 @@ YAML::Node OpenAPIDocGenerator::generateDoc(flapi::FlapiApp& app)
                     break;
                 }
             }
-            
+
             if (requiresAuth) {
-                deleteOperation["security"].push_back(YAML::Node());
-                if (authType == "basic") {
-                    deleteOperation["security"][0]["basicAuth"] = YAML::Node(YAML::NodeType::Sequence);
-                } else {
-                    deleteOperation["security"][0]["bearerAuth"] = YAML::Node(YAML::NodeType::Sequence);
-                }
+                addSecurity(deleteOperation, authType);
             }
-            
+
             pathItem["delete"] = deleteOperation;
         }
-        
+
         doc["paths"][path] = pathItem;
     }
 
     return doc;
 }
 
-YAML::Node OpenAPIDocGenerator::generatePathItem(const EndpointConfig& endpoint)
-{
-    YAML::Node pathItem;
-    
-    // Generate GET endpoint documentation
-    std::string method = endpoint.method.empty() ? "get" : endpoint.method;
-    std::transform(method.begin(), method.end(), method.begin(), ::tolower);
-    
+namespace {
+
+// A crow JSON value as a YAML node. JSON is YAML, so the dump parses as-is.
+YAML::Node toYaml(const crow::json::wvalue& value) {
+    return YAML::Load(value.dump());
+}
+
+} // namespace
+
+void OpenAPIDocGenerator::addSecurity(YAML::Node& operation, const std::string& auth_type) {
+    YAML::Node requirement;
+    requirement[auth_type == "basic" ? "basicAuth" : "bearerAuth"] = YAML::Node(YAML::NodeType::Sequence);
+    operation["security"].push_back(requirement);
+}
+
+YAML::Node OpenAPIDocGenerator::generateOperation(const EndpointConfig& endpoint, const std::string& method) {
     YAML::Node operation;
     operation["summary"] = "Endpoint for " + endpoint.urlPath;
-    operation["description"] = "Description not available";
-    operation["parameters"] = generateParameters(endpoint.request_fields);
-    operation["responses"]["200"]["description"] = "Successful response";
-    operation["responses"]["200"]["content"]["application/json"]["schema"] = generateResponseSchema(endpoint);
-    
+    // The endpoint's own `description:`, else its MCP tool's. Neither: no key,
+    // rather than the old "Description not available" on every operation.
+    if (!endpoint.description.empty()) {
+        operation["description"] = endpoint.description;
+    } else if (endpoint.mcp_tool && !endpoint.mcp_tool->description.empty()) {
+        operation["description"] = endpoint.mcp_tool->description;
+    }
+
+    const bool is_read = endpoint.operation.type != OperationConfig::Write;
+    YAML::Node parameters = generateParameters(endpoint.request_fields);
+    if (is_read) {
+        addReadParameters(parameters, endpoint);
+    }
+    if (parameters.size() > 0) {
+        operation["parameters"] = parameters;
+    }
+
+        operation["responses"]["200"]["description"] = "Successful response";
+    if (is_read) {
+        operation["responses"]["200"]["content"]["application/json"]["schema"] = generateResponseSchema(endpoint);
+        operation["responses"]["200"]["content"]["text/csv"]["schema"]["type"] = "string";
+        // What every read answers with, whatever its format (request_handler.cpp).
+        const std::vector<std::pair<std::string, std::string>> headers = {
+            {"X-Total-Count", "Total number of rows the query matches, before limit/offset"},
+            {"X-Offset", "The offset this page starts at"},
+            {"X-Limit", "The page size applied"},
+            {"X-Next", "Path and query of the next page; empty on the last page"},
+        };
+        for (const auto& [name, description] : headers) {
+            YAML::Node header;
+            header["description"] = description;
+            header["schema"]["type"] = (name == "X-Next") ? "string" : "integer";
+            operation["responses"]["200"]["headers"][name] = header;
+        }
+    } else {
+        YAML::Node schema;
+        schema["type"] = "object";
+        schema["properties"]["rows_affected"]["type"] = "integer";
+        schema["properties"]["data"]["type"] = "array";
+        schema["properties"]["data"]["items"]["type"] = "object";
+        operation["responses"]["200"]["content"]["application/json"]["schema"] = schema;
+    }
+
+    // Every endpoint validates its input, and says why it refused.
+    {
+        YAML::Node bad;
+        bad["description"] = "Invalid parameters";
+        YAML::Node schema;
+        schema["type"] = "object";
+        schema["properties"]["errors"]["type"] = "array";
+        schema["properties"]["errors"]["items"]["type"] = "object";
+        schema["properties"]["errors"]["items"]["properties"]["field"]["type"] = "string";
+        schema["properties"]["errors"]["items"]["properties"]["message"]["type"] = "string";
+        schema["properties"]["error"]["type"] = "string";
+        bad["content"]["application/json"]["schema"] = schema;
+        operation["responses"]["400"] = bad;
+    }
+
     if (endpoint.rate_limit.enabled) {
         operation["x-rate-limit"]["max"] = endpoint.rate_limit.max;
         operation["x-rate-limit"]["interval"] = endpoint.rate_limit.interval;
     }
-    
-    // Add security requirement based on auth type
-    if (endpoint.auth.enabled) {
-        operation["security"].push_back(YAML::Node());
-        if (endpoint.auth.type == "basic") {
-            operation["security"][0]["basicAuth"] = YAML::Node(YAML::NodeType::Sequence);
-        } else {
-            operation["security"][0]["bearerAuth"] = YAML::Node(YAML::NodeType::Sequence);
-        }
-    }
-    
-    pathItem[method] = operation;
 
-    // Add DELETE endpoint documentation if cache is enabled
-    if (dbManager->isCacheEnabled(endpoint)) {
-        YAML::Node deleteOperation;
-        deleteOperation["summary"] = "Invalidate cache for " + endpoint.urlPath;
-        deleteOperation["description"] = "Invalidates the cached data for this endpoint";
-        
-        // Define responses for DELETE
-        deleteOperation["responses"]["200"]["description"] = "Cache successfully invalidated";
-        deleteOperation["responses"]["500"]["description"] = "Internal server error while invalidating cache";
-        
-        // Add the same security requirements as the GET endpoint
-        if (endpoint.auth.enabled) {
-            deleteOperation["security"].push_back(YAML::Node());
-            if (endpoint.auth.type == "basic") {
-                deleteOperation["security"][0]["basicAuth"] = YAML::Node(YAML::NodeType::Sequence);
-            } else {
-                deleteOperation["security"][0]["bearerAuth"] = YAML::Node(YAML::NodeType::Sequence);
+    if (endpoint.auth.enabled) {
+        addSecurity(operation, endpoint.auth.type);
+    }
+
+    // For write operations, document the JSON body.
+    if (!is_read && (method == "post" || method == "put" || method == "patch" || method == "delete")) {
+        YAML::Node schema;
+        schema["type"] = "object";
+        YAML::Node properties(YAML::NodeType::Map);
+        for (const auto& field : endpoint.request_fields) {
+            if (field.fieldIn == "body") {
+                properties[field.fieldName] = toYaml(MCPSchemaBuilder::buildPropertySchema(field));
+                if (field.required) {
+                    schema["required"].push_back(field.fieldName);
+                }
             }
         }
+        schema["properties"] = properties;
+        if (properties.size() > 0 || method != "delete") {
+            YAML::Node requestBody;
+            requestBody["description"] = "Request body with parameters for " + method + " operation";
+            requestBody["required"] = method != "delete";
+            requestBody["content"]["application/json"]["schema"] = schema;
+            operation["requestBody"] = requestBody;
+        }
 
-        pathItem["delete"] = deleteOperation;
+        if (method == "post") {
+            YAML::Node createdResponse = operation["responses"]["200"];
+            createdResponse["description"] = "Created successfully";
+            operation["responses"]["201"] = createdResponse;
+            operation["responses"].remove("200");
+        } else if (method == "put" || method == "patch") {
+            operation["responses"]["200"]["description"] = "Updated successfully";
+        }
     }
 
-    return pathItem;
+    return operation;
 }
 
 YAML::Node OpenAPIDocGenerator::generateParameters(const std::vector<RequestFieldConfig>& requestFields)
 {
-    YAML::Node parameters;
-    
+    YAML::Node parameters(YAML::NodeType::Sequence);
+
     for (const auto& field : requestFields) {
+        // OpenAPI 3 has no `in: body` parameter: body fields are documented in
+        // the requestBody schema instead.
+        if (field.fieldIn != "query" && field.fieldIn != "path" && field.fieldIn != "header" &&
+            field.fieldIn != "cookie") {
+            continue;
+        }
         YAML::Node parameter;
         parameter["name"] = field.fieldName;
         parameter["in"] = field.fieldIn;
-        parameter["required"] = field.required;
-        parameter["description"] = field.description;
-        
-        // Create schema node
-        YAML::Node schema;
-        schema["type"] = "string"; // Default type, could be improved by inferring from validators
-        
-        // Add default value if present
-        if (!field.defaultValue.empty()) {
-            schema["default"] = field.defaultValue;
+        // A path parameter is always required in OpenAPI.
+        parameter["required"] = field.required || field.fieldIn == "path";
+        if (!field.description.empty()) {
+            parameter["description"] = field.description;
         }
-        
+
+        // The same type, format, bounds, enum, pattern and typed default that
+        // tools/list advertises; the description lives on the parameter.
+        YAML::Node schema = toYaml(MCPSchemaBuilder::buildPropertySchema(field));
+        schema.remove("description");
         parameter["schema"] = schema;
         parameters.push_back(parameter);
     }
-    
+
     return parameters;
+}
+
+void OpenAPIDocGenerator::addReadParameters(YAML::Node& parameters, const EndpointConfig& endpoint) {
+    auto declared = [&](const std::string& name) {
+        for (const auto& field : endpoint.request_fields) {
+            if (field.fieldName == name) {
+                return true;
+            }
+        }
+        return false;
+    };
+    auto add = [&](const std::string& name, const std::string& description, YAML::Node schema) {
+        if (declared(name)) {
+            return;   // the endpoint documents its own
+        }
+        YAML::Node parameter;
+        parameter["name"] = name;
+        parameter["in"] = "query";
+        parameter["required"] = false;
+        parameter["description"] = description;
+        parameter["schema"] = schema;
+        parameters.push_back(parameter);
+    };
+
+    if (endpoint.with_pagination) {
+        YAML::Node limit;
+        limit["type"] = "integer";
+        limit["minimum"] = 0;
+        limit["default"] = 100;
+        add("limit", "Maximum number of rows to return (0 returns only the count headers)", limit);
+        YAML::Node offset;
+        offset["type"] = "integer";
+        offset["minimum"] = 0;
+        offset["default"] = 0;
+        add("offset", "Number of rows to skip", offset);
+    }
+    YAML::Node format;
+    format["type"] = "string";
+    format["enum"].push_back("json");
+    format["enum"].push_back("csv");
+    format["enum"].push_back("arrow");
+    format["default"] = "json";
+    add("format", "Response format; overrides the Accept header", format);
 }
 
 YAML::Node OpenAPIDocGenerator::generateResponseSchema(const EndpointConfig& endpoint)
 {
     YAML::Node schema;
-    
+
     YAML::Node properties = dbManager->describeSelectQuery(endpoint);
-    
+
+    YAML::Node items;
+    items["type"] = "object";
+    // Only when the template could be described: a null here was emitted as
+    // `properties: ~`, which is not a valid schema.
+    if (properties.IsMap() && properties.size() > 0) {
+        items["properties"] = properties;
+    }
+
     if (endpoint.with_pagination) {
         schema["type"] = "object";
         schema["properties"]["data"]["type"] = "array";
-        schema["properties"]["data"]["items"]["type"] = "object";
-        schema["properties"]["data"]["items"]["properties"] = properties;
-        
+        schema["properties"]["data"]["items"] = items;
+
         schema["properties"]["next"]["type"] = "string";
         schema["properties"]["total_count"]["type"] = "integer";
     } else {
         schema["type"] = "array";
-        schema["items"]["type"] = "object";
-        schema["items"]["properties"] = properties;
+        schema["items"] = items;
     }
-    
+
     return schema;
 }
 

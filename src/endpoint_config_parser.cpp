@@ -6,6 +6,7 @@
 #include <stdexcept>
 
 #include "mcp_description_scanner.hpp"
+#include "mustache_syntax_check.hpp"
 
 namespace flapi {
 
@@ -126,7 +127,23 @@ void EndpointConfigParser::parseEndpointFromYaml(
         
         // Parse common fields using ConfigManager helper methods
         parseCommonFields(yaml_node, endpoint_dir, config);
-        
+
+        // A template crow cannot render safely is a load/reload error, never a
+        // request-time crash or hang. Only with a directory: a string parse has
+        // no base to resolve a relative template-source against.
+        if (!endpoint_dir.empty()) {
+            if (!type.is_mcp_prompt) {
+                if (auto error = CheckMustacheTemplateFile(config.templateSource)) {
+                    throw std::runtime_error(*error);
+                }
+            }
+            if (config.cache.template_file) {
+                if (auto error = CheckMustacheTemplateFile(*config.cache.template_file)) {
+                    throw std::runtime_error(*error);
+                }
+            }
+        }
+
         result.success = true;
         
     } catch (const std::exception& e) {
@@ -145,6 +162,7 @@ void EndpointConfigParser::parseRestEndpointFields(
 ) {
     config.urlPath = config_manager_->safeGet<std::string>(yaml_node, "url-path", "url-path");
     config.method = config_manager_->safeGet<std::string>(yaml_node, "method", "method", "GET");
+    config.description = config_manager_->safeGet<std::string>(yaml_node, "description", "description", "");
     config.with_pagination = config_manager_->safeGet<bool>(yaml_node, "with-pagination", "with-pagination", true);
     config.request_fields_validation = config_manager_->safeGet<bool>(yaml_node, "request-fields-validation", "request-fields-validation", false);
     
@@ -152,7 +170,10 @@ void EndpointConfigParser::parseRestEndpointFields(
     // This can be overridden by explicit operation.type in YAML
     std::string method_upper = config.method;
     std::transform(method_upper.begin(), method_upper.end(), method_upper.begin(), ::toupper);
-    if (method_upper == "POST" || method_upper == "PUT" || method_upper == "PATCH") {
+    // DELETE too: REST already runs it through the write path, but an MCP tool
+    // over a DELETE endpoint ran as a query, so the row was deleted while the
+    // tool reported an error and the endpoint's cache was not refreshed.
+    if (method_upper == "POST" || method_upper == "PUT" || method_upper == "PATCH" || method_upper == "DELETE") {
         config.operation.type = OperationConfig::Write;
     }
 }

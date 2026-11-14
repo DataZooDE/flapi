@@ -170,6 +170,10 @@ struct ValidatorConfig {
     std::string regex;
     int min = 0;
     int max = 0;
+    // Bounds of a `number` (float/double) validator. Optional because 0 is a
+    // real bound: unset must stay distinguishable from `min: 0`.
+    std::optional<double> minNumber;
+    std::optional<double> maxNumber;
     std::string minDate;
     std::string maxDate;
     std::string minTime;
@@ -245,6 +249,9 @@ struct OperationConfig {
 struct EndpointConfig {
     std::string urlPath;
     std::string method;
+    // Top-level `description:`. The REST operation's description in /doc.yaml;
+    // an endpoint without one falls back to mcp-tool.description there.
+    std::string description;
     bool request_fields_validation = false;
     std::vector<RequestFieldConfig> request_fields;
     std::string templateSource;

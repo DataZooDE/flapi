@@ -338,7 +338,9 @@ MCPRouteHandlers::MCPRouteHandlers(std::shared_ptr<ConfigManager> config_manager
 
     // Initialize server info with default values (no separate MCP config needed)
     server_info_.name = "flapi-mcp-server";
-    server_info_.version = "0.3.0";
+    // The build version, as /health and --version report it; this was a
+    // hard-coded "0.3.0" that no release had shipped for a long time.
+    server_info_.version = FLAPI_VERSION;
     server_info_.protocol_version = "2025-11-25";
 
     // Initialize server capabilities with all available capabilities
@@ -2123,8 +2125,9 @@ crow::json::wvalue MCPRouteHandlers::readResourceContent(
 
             // An empty result is a valid read ("[]"), not an internal error:
             // it used to throw "Resource query returned no data" -> -32603.
+            // dumpData(): columns in SELECT order, shortest doubles.
             const size_t row_count = query_result.data.size();
-            std::string result_text = row_count > 0 ? query_result.data.dump() : std::string("[]");
+            std::string result_text = row_count > 0 ? query_result.dumpData() : std::string("[]");
 
             // Response shaping: mcp-resource.response, else the same file's
             // mcp-tool.response, and max-rows defaults to a cap either way.

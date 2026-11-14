@@ -42,11 +42,14 @@ void applyValidator(crow::json::wvalue& prop, const ValidatorConfig& v, std::str
         }
     } else if (t == "double" || t == "float" || t == "number") {
         type_out = "number";
-        if (hasLowerBound(v.min)) {
-            prop["minimum"] = v.min;
+        // A number's bounds are doubles, parsed only when set. Reading the int
+        // min/max here emitted their 0/0 struct defaults ("minimum":0,
+        // "maximum":0) on every number, telling a model only 0 fits.
+        if (v.minNumber) {
+            prop["minimum"] = *v.minNumber;
         }
-        if (hasUpperBound(v.max)) {
-            prop["maximum"] = v.max;
+        if (v.maxNumber) {
+            prop["maximum"] = *v.maxNumber;
         }
     } else if (t == "boolean" || t == "bool") {
         type_out = "boolean";
@@ -132,6 +135,37 @@ void setTypedDefault(crow::json::wvalue& prop, const std::string& type, const st
 
 } // namespace
 
+crow::json::wvalue MCPSchemaBuilder::buildPropertySchema(const RequestFieldConfig& field) {
+    crow::json::wvalue prop;
+
+    // Resolve the property type from the validators. An enum-only field, or
+    // a field with no validators, defaults to string so every property is
+    // guaranteed to carry a `type` (JSON Schema, and backward-compatible
+    // with clients that expect one on every parameter).
+    std::string resolved_type = "string";
+    for (const auto& v : field.validators) {
+        std::string vt;
+        applyValidator(prop, v, vt);
+        if (!vt.empty()) {
+            resolved_type = vt;
+        }
+    }
+    prop["type"] = resolved_type;
+
+    // Always emit description (may be empty), matching the prior schema
+    // shape so existing clients see the same fields.
+    prop["description"] = field.description;
+    if (!field.defaultValue.empty()) {
+        setTypedDefault(prop, resolved_type, field.defaultValue);
+    }
+    // MCP 2026-07-28 x-mcp-header annotation: tells the client to mirror this
+    // parameter into an Mcp-Param-<name> header for edge routing.
+    if (!field.mcp_header.empty()) {
+        prop["x-mcp-header"] = field.mcp_header;
+    }
+    return prop;
+}
+
 crow::json::wvalue MCPSchemaBuilder::buildInputSchema(const std::vector<RequestFieldConfig>& fields) {
     crow::json::wvalue schema;
     schema["type"] = "object";
@@ -140,39 +174,10 @@ crow::json::wvalue MCPSchemaBuilder::buildInputSchema(const std::vector<RequestF
     std::vector<std::string> required_fields;
 
     for (const auto& field : fields) {
-        crow::json::wvalue prop;
-
-        // Resolve the property type from the validators. An enum-only field, or
-        // a field with no validators, defaults to string so every property is
-        // guaranteed to carry a `type` (JSON Schema, and backward-compatible
-        // with clients that expect one on every parameter).
-        std::string resolved_type = "string";
-        for (const auto& v : field.validators) {
-            std::string vt;
-            applyValidator(prop, v, vt);
-            if (!vt.empty()) {
-                resolved_type = vt;
-            }
-        }
-        prop["type"] = resolved_type;
-
-        // Always emit description (may be empty), matching the prior schema
-        // shape so existing clients see the same fields.
-        prop["description"] = field.description;
-        if (!field.defaultValue.empty()) {
-            setTypedDefault(prop, resolved_type, field.defaultValue);
-        }
-        // MCP 2026-07-28 x-mcp-header annotation: tells the client to mirror this
-        // parameter into an Mcp-Param-<name> header for edge routing.
-        if (!field.mcp_header.empty()) {
-            prop["x-mcp-header"] = field.mcp_header;
-        }
-
         if (field.required) {
             required_fields.push_back(field.fieldName);
         }
-
-        schema["properties"][field.fieldName] = std::move(prop);
+        schema["properties"][field.fieldName] = buildPropertySchema(field);
     }
 
     if (!required_fields.empty()) {

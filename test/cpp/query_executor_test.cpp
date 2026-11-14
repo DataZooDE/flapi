@@ -796,11 +796,13 @@ TEST_CASE("QueryExecutor serialises DECIMAL exactly and timestamps at full preci
 
     auto doc = crow::json::load(text);
     REQUIRE(doc);
-    REQUIRE(doc["ts"].s() == "2024-05-06T07:08:09.123456Z");
+    // Only TIMESTAMPTZ is an instant and carries the UTC `Z`; the naive
+    // TIMESTAMP family is wall-clock time with no zone.
+    REQUIRE(doc["ts"].s() == "2024-05-06T07:08:09.123456");
     REQUIRE(doc["ts_tz"].s() == "2024-05-06T07:08:09.123456Z");
-    REQUIRE(doc["ts_s"].s() == "2024-05-06T07:08:09.000000Z");
-    REQUIRE(doc["ts_ms"].s() == "2024-05-06T07:08:09.123000Z");
-    REQUIRE(doc["ts_ns"].s() == "2024-05-06T07:08:09.123456789Z");
+    REQUIRE(doc["ts_s"].s() == "2024-05-06T07:08:09.000000");
+    REQUIRE(doc["ts_ms"].s() == "2024-05-06T07:08:09.123000");
+    REQUIRE(doc["ts_ns"].s() == "2024-05-06T07:08:09.123456789");
     REQUIRE(doc["ts_null"].t() == crow::json::type::Null);
 
     duckdb_close(&database);

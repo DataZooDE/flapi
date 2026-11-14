@@ -10,15 +10,15 @@ validators; all of them run.
 
 | `type` | Aliases | Options read | Accepts | Error message |
 |---|---|---|---|---|
-| `int` | `integer` | `min`, `max` (inclusive; default INT_MIN / INT_MAX) | the WHOLE value is a 32-bit integer (`12`, `-3`; not `1.0`, `12abc`, `1; DROP`) | `Invalid integer value`, `Integer is less than the minimum allowed value`, `Integer is greater than the maximum allowed value` |
-| `number` | `float`, `double` | none | one plain decimal: `-3`, `1.5`, `.5`, `1e3` (no spaces, hex, `NaN`) | `Value is not a valid number` |
+| `int` | `integer` | `min`, `max` (inclusive; default INT_MIN / INT_MAX) | the WHOLE value is a 32-bit integer (`12`, `-3`; not `1.0`, `12abc`, `1; DROP`; a JSON body `301.7` too) | `Invalid integer value`, `Integer is less than the minimum allowed value (min N)`, `Integer is greater than the maximum allowed value (max N)` |
+| `number` | `float`, `double` | `min`, `max` (inclusive, decimals allowed; unset = no bound) | one plain decimal: `-3`, `1.5`, `.5`, `1e3` (no spaces, hex, `NaN`) | `Value is not a valid number`, `Number is less than the minimum allowed value (min N)`, `Number is greater than the maximum allowed value (max N)` |
 | `boolean` | `bool` | none | `true`, `false`, `1`, `0`, any case | `Value is not a valid boolean (true, false, 1 or 0)` |
-| `string` | - | `regex` (alias `pattern`; full match, ECMAScript), `min` / `max` (length; 0 = no limit), `min-length` / `max-length` (same, take precedence) | anything matching | `String is shorter than the minimum allowed length`, `String is longer than the maximum allowed length`, `Invalid string format` |
+| `string` | - | `regex` (alias `pattern`; full match, ECMAScript), `min` / `max` (length; 0 = no limit), `min-length` / `max-length` (same, take precedence) | anything matching | `String is shorter than the minimum allowed length (min N)`, `String is longer than the maximum allowed length (max N)`, `Invalid string format` |
 | `enum` | - | `allowedValues` (alias `values`; list, **required**, case-sensitive exact match) | one of the list | `Invalid enum value` |
 | `email` | - | none | `local@domain.tld` (`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`) | `Invalid email format` |
 | `uuid` | - | none | `8-4-4-4-12` hex, any version | `Invalid UUID format` |
-| `date` | - | `min`, `max` (`YYYY-MM-DD`, inclusive) | `YYYY-MM-DD`, nothing after it | `Invalid date format`, `Date is before the minimum allowed date`, `Date is after the maximum allowed date` |
-| `time` | - | `min`, `max` (`HH:MM:SS`, inclusive) | `HH:MM:SS`, 00-23 / 00-59 / 00-59 | `Invalid time format`, `Time is before the minimum allowed time`, `Time is after the maximum allowed time` |
+| `date` | - | `min`, `max` (`YYYY-MM-DD`, inclusive) | `YYYY-MM-DD`, nothing after it | `Invalid date format`, `Date is before the minimum allowed date (min D)`, `Date is after the maximum allowed date (max D)` |
+| `time` | - | `min`, `max` (`HH:MM:SS`, inclusive) | `HH:MM:SS`, 00-23 / 00-59 / 00-59 | `Invalid time format`, `Time is before the minimum allowed time (min T)`, `Time is after the maximum allowed time (max T)` |
 
 Every type also reads `preventSqlInjection` (default `true`, see below). An
 unknown `type` is accepted at load time and checks nothing.
@@ -31,13 +31,16 @@ a validator `- type: int`.
 
 ## Other request-field checks
 
-- `required: true` and the value is absent: `Required field is missing`.
+- `required: true` and the value is absent: `Required field is missing` (listed once).
 - `request-fields-validation: true` on a GET endpoint, or the write default
   `operation.validate-before-write: true`: any parameter that is not a declared
-  `field-name` (other than `limit` / `offset`) is `Unknown parameter not defined
+  `field-name` (other than `limit` / `offset` / `format`) is `Unknown parameter not defined
   in endpoint configuration`.
 - `limit` / `offset` on a paginated GET must be plain non-negative integers;
-  otherwise a plain-text 400 `Invalid pagination parameters: ...`.
+  otherwise a plain-text 400 `Invalid pagination parameters: ...`. `limit=0`
+  returns no rows and `next: ""` (only `total_count` / `X-Total-Count`).
+- A query parameter given twice (`?x=1&x=2`) is a 400
+  `{"error":"Duplicate query parameter: x"}`; it used to take the first value.
 - Values for absent fields are not validated; a field with `default:` is
   validated with its default.
 

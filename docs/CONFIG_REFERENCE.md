@@ -348,6 +348,12 @@ connections:
       ATTACH '/data/snapshot.sqlite' AS snap (TYPE sqlite);
 ```
 
+A **read served from the DuckLake cache** (an endpoint with `cache.enabled` and a `cache.template-file`)
+does not take the lock: its serving template reads the cache table, not the source. The populate
+template and every uncached read still do. A cached endpoint without a `template-file` serves its source
+query, so it keeps the lock. Do not join the source into a cached endpoint's serving template on a
+serialised connection: that read would run unserialised.
+
 An explicit value always wins over the detection.
 - Use environment variable substitution for sensitive values
 
@@ -972,10 +978,14 @@ REST endpoints expose SQL queries as HTTP APIs.
 |-----------|------|---------|-------------|
 | `url-path` | string | **required** | HTTP path (e.g., `/customers`, `/customers/:id`) |
 | `method` | string | `GET` | HTTP method: `GET`, `POST`, `PUT`, `PATCH`, `DELETE` |
+| `description` | string | - | The operation's description in `/doc.yaml`. Without it, `mcp-tool.description` is used; without either, the operation has none |
 | `template-source` | string | **required** | Path to SQL template file |
 | `connection` | array[string] | **required** | Connection name(s) from flapi.yaml |
-| `with-pagination` | boolean | `true` | Wrap the query in `?limit=` (default `100`) / `?offset=` paging; the body is `{"next", "total_count", "data"}` plus `X-Total-Count`/`X-Limit`/`X-Offset`/`X-Next` headers. `limit`/`offset` are reserved; do not use them in the template. `false` returns a bare JSON array |
-| `request-fields-validation` | boolean | `false` | Enable strict field validation |
+| `with-pagination` | boolean | `true` | Wrap the query in `?limit=` (default `100`) / `?offset=` paging; the body is `{"next", "total_count", "data"}` plus `X-Total-Count`/`X-Limit`/`X-Offset`/`X-Next` headers. `limit`/`offset` are reserved; do not use them in the template. `limit=0` returns no rows and an empty `next` (the count only). `false` returns a bare JSON array |
+| `request-fields-validation` | boolean | `false` | Reject (400) a query parameter that is not a declared `field-name`. `limit`, `offset` and `format` are always allowed |
+
+A query parameter given more than once (`?x=1&x=2`) is rejected with 400
+`{"error": "Duplicate query parameter: x"}`; it used to take the first value silently.
 
 **Example:**
 
@@ -1396,10 +1406,28 @@ validators:
 `1`, `0` (any case). `type: integer` is an alias of `int`. A value that does not match is rejected with
 HTTP 400 before any SQL is rendered.
 
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `min` | number | - (no bound) | Smallest allowed value, inclusive (`0.5` is a valid bound) |
+| `max` | number | - (no bound) | Largest allowed value, inclusive |
+
 ```yaml
 validators:
   - type: number
+    min: 0
+    max: 99.99
 ```
+
+Out of range: `Number is less than the minimum allowed value (min 0)` /
+`Number is greater than the maximum allowed value (max 99.99)`. MCP `tools/list` and `/doc.yaml` emit
+`minimum`/`maximum` only for a bound that is set.
+
+A JSON body number reaches the validators as the text the client sent: `9.99` stays `9.99`, and an
+`int` validator rejects `301.7` (`Invalid integer value`) and `5.0`. Before, the fraction was dropped.
+
+Range errors name the limit: `Integer is greater than the maximum allowed value (max 1000)`,
+`String is shorter than the minimum allowed length (min 3)`, `Date is after the maximum allowed date
+(max 2025-12-31)`, and likewise for the other bounds.
 
 ### 5.9 The SQL-injection screen is a safety net, not the defence
 
@@ -1894,7 +1922,9 @@ write path: parameters are extracted and validated, the template is rendered and
 response is `200 {"rows_affected": n}` (or the `RETURNING` rows with `returns-data: true`). `n` is the number
 of rows changed - DuckDB's count, summed over the template's statements; for a `RETURNING` statement, the rows
 it returned - so an `UPDATE` of five rows answers 5 and a `DELETE` that matched nothing answers 0. A `DELETE`
-endpoint is no different — its template is the `DELETE FROM …` statement.
+endpoint is no different — its template is the `DELETE FROM …` statement, and as an MCP tool it is a write
+too (cache maintenance after it, write result). With `returns-data: true` the body always has `data`:
+`[]` when the `RETURNING` matched no row.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|

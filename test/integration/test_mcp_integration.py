@@ -267,7 +267,9 @@ class TestMCPBasicFunctionality:
             # Check server info
             server_info = result["serverInfo"]
             assert server_info["name"] == "flapi-mcp-server"
-            assert server_info["version"] == "0.3.0"
+            # The build version (FLAPI_VERSION), not the stale hard-coded "0.3.0".
+            assert server_info["version"]
+            assert server_info["version"] != "0.3.0"
             
             # Check capabilities
             capabilities = result["capabilities"]

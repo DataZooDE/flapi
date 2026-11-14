@@ -22,9 +22,11 @@ against a running server, then HTTP/MCP tests against a running server.
 ## Critical gotchas
 
 - **`--validate-config` never opens the database or renders a template.** SQL
-  errors, missing tables, Mustache typos, failing connection `init` and wrong
-  column names all pass; they surface as 500s at request time. Always run at
-  least one real request per endpoint.
+  errors, missing tables, misspelt variable names, failing connection `init` and
+  wrong column names all pass; they surface as 500s at request time. Always run
+  at least one real request per endpoint. It does check Mustache *syntax* of every
+  serving and cache template (unbalanced/crossed sections, `{{{` without `}}}`,
+  partials, `{{= =}}`) and exits 1 with `<file>:<line>:<col>`.
 - **A missing template file is only a warning; exit code stays 0.** Errors
   (bad `url-path`, unknown connection) exit 1. CI that must fail on warnings has
   to grep the output.
@@ -214,7 +216,7 @@ stages:
       json:
         errors:
           - field: nation
-            message: Integer is greater than the maximum allowed value
+            message: Integer is greater than the maximum allowed value (max 24)
 ```
 
 Tavern's `json:` must match the whole top-level structure (extra keys in a

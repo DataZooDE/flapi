@@ -291,6 +291,11 @@ Loads and validates the configuration file, checking for:
 - YAML syntax errors
 - Required field presence
 - File references (template files exist)
+- Mustache syntax of every serving template and cache `template-file`: unbalanced or crossed sections
+  (`{{#x}}` / `{{^x}}` without `{{/x}}`, a stray `{{/x}}`), `{{{` not closed by `}}}`, an unterminated
+  `{{`, empty tags, partials (`{{> x}}`) and set-delimiter tags (`{{= =}}`). The error names the file,
+  line and column, e.g. `Invalid template sqls/orders.sql:12:3: '{{/region}}' closes a section that was
+  never opened`. The same check runs at startup (exit 1) and on reload. The SQL itself is not run.
 - Connection configuration validity
 - URL path format compliance
 
