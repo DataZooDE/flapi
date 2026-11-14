@@ -647,6 +647,16 @@ def main() -> int:
         else:
             check_cli(rep, files, "flapii", HelpModel(flapii, "commander"))
 
+    # Claude Code's own validator, when the CLI is installed (it is not in CI).
+    if not args.static_only and shutil.which("claude"):
+        for target in (PLUGIN, REPO):
+            proc = subprocess.run(["claude", "plugin", "validate", str(target)], capture_output=True,
+                                  text=True, timeout=120)
+            if proc.returncode != 0 or "Validation passed" not in proc.stdout + proc.stderr:
+                rep.fail(f"claude plugin validate {rel(target) or '.'}", (proc.stdout + proc.stderr)[-1500:])
+            else:
+                rep.ok(f"claude plugin validate {rel(target) or '.'}")
+
     for line in rep.failures:
         print(line)
     print(f"check_skills: {rep.passes} passed, {len(rep.failures)} failed "
