@@ -95,11 +95,19 @@ open database "embed://data/db.sqlite"`, because the SQLite scanner
 opens the file itself. Ship such a database next to the binary and
 attach it by a real path.
 
+Outside a packed binary, `embed://<path>` resolves to `<config directory>/<path>`.
+The same config therefore runs, and `flapi cache refresh`es, from its source tree
+before you pack it. Paths that leave the config directory are refused.
+
 **DuckLake files live outside the bundle.** A bundle is read-only, so
 a relative `ducklake.metadata-path` / `data-path` is created in the
-runtime working directory (the directory must exist; flAPI does not
-create the parent of `metadata-path`). Point both at a persistent,
-writable location in production.
+runtime working directory. A missing parent of `metadata-path` and a
+missing `data-path` are created (a read-only replica refuses to start
+instead). Point both at a persistent, writable location in production.
+`flapi pack` never bundles the configured catalog, `*.ducklake` or
+`*.ducklake.wal`. Leave anything else out with `--exclude <glob>`. A packed
+binary's `cache refresh` and `extensions install` read the bundled
+`flapi.yaml`.
 
 See [docs/CLI_REFERENCE.md §3](../CLI_REFERENCE.md#3-self-packaging-subcommands)
 and [docs/spec/DESIGN_DECISIONS.md §9](../spec/DESIGN_DECISIONS.md#9-self-packaging-via-appended-zip)

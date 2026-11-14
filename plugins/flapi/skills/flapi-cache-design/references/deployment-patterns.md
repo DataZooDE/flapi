@@ -65,9 +65,14 @@ ducklake:
 
 - The catalog is attached `READ_ONLY`. Implies `warmup: never`; no scheduled
   refresh, retention or compaction; the audit table is not created.
-- `POST .../cache/refresh`, `PUT .../cache` and `POST .../cache/gc` answer
-  `409 {"error":"read_only_cache"}`; so do the matching `flapii cache` commands
-  and MCP config tools.
+- `POST .../cache/refresh`, `PUT .../cache`, `PUT .../cache/template`,
+  `POST .../cache/gc` and `POST /api/v1/_config/cache/drop-table` answer
+  `409 {"error":"read_only_cache"}` with advice for that operation; so do the
+  matching `flapii cache` commands and MCP config tools.
+- A replica started before the writer built a table answers 503
+  `cache_not_built` only until the writer has built it. It checks again at most
+  every 5 s on requests, and on every scheduler scan. `GET /api/v1/_config/project`
+  shows `ducklake.warmup_effective: never`.
 - Every replica's endpoint config must name the same `table` / `schema` and the
   same `alias` as the writer.
 - The writer is `flapi cache refresh` (a job after the upstream build) or one

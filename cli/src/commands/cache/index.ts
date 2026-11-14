@@ -333,6 +333,27 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
     });
 
   cache
+    .command('drop-table <table>')
+    .description(
+      'Drop an obsolete cache table ([schema.]table) that no endpoint uses any more, ' +
+        'e.g. after changing cache.schema; its snapshots are expired and its files deleted',
+    )
+    .action(async (table: string) => {
+      const dot = table.indexOf('.');
+      const body = dot < 0 ? { table } : { schema: table.slice(0, dot), table: table.slice(dot + 1) };
+      const spinner = Console.spinner(`Dropping cache table ${table}...`);
+      try {
+        const response = await ctx.client.post('/api/v1/_config/cache/drop-table', body);
+        spinner.succeed(chalk.green(`✓ Dropped cache table ${table}`));
+        renderJson(response.data);
+      } catch (error) {
+        spinner.fail(chalk.red(`✗ Failed to drop cache table ${table}`));
+        handleError(error, ctx.config);
+        process.exitCode = 1;
+      }
+    });
+
+  cache
     .command('audit [path]')
     .option('--method <method>', 'HTTP method, when several endpoints share the path (GET + POST /orders)')
     .description('Get cache sync audit log (for one endpoint, one cache table with --table, or all)')

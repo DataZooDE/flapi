@@ -240,7 +240,8 @@ flapii cache refresh /products            # build/refresh now, on the running se
 flapii cache refresh /products --full     # drop the table and rebuild from scratch
 flapii cache audit /products -o table     # refresh history with durations, rows, errors
 flapii cache audit                        # all endpoints
-flapii cache gc /products                 # expire snapshots per retention, delete their files
+flapii cache gc /products                 # expire snapshots per retention, delete their files (JSON counts; no_policy without retention)
+flapii cache drop-table old.products_cache  # drop a cache table no endpoint uses (after a schema: change)
 flapi cache refresh -c flapi.yaml --all   # one-shot job; server must NOT be running on this DuckLake
 flapi cache refresh -c flapi.yaml --endpoint /products   # exit 0 ok, 1 failed or catalog locked, 2 usage
 flapi -c flapi.yaml --no-cache-warmup     # start without building caches
@@ -249,7 +250,8 @@ flapi -c flapi.yaml --cache-warmup if-empty   # always | if-empty | never (env F
 
 Over MCP: `flapi_refresh_cache`, `flapi_get_cache_audit`, `flapi_run_cache_gc`,
 `flapi_get_cache_status` (each takes `path`). On a read-only replica
-(`ducklake.read-only: true`) refresh and GC return 409 `read_only_cache`. Designing and
+(`ducklake.read-only: true`) refresh, GC, cache config/template updates and drop-table
+return 409 `read_only_cache`. Compaction history: `GET /api/v1/_config/cache/audit?sync_type=compaction`. Designing and
 tuning caches: `flapi-cache-design`, `flapi-cache-tuning`.
 
 ## Troubleshooting by symptom

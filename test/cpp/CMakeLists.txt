@@ -91,6 +91,7 @@ add_executable(flapi_tests
     runtime_metrics_test.cpp
     test_cluster_c_regressions.cpp
     test_cluster_e2_regressions.cpp
+    test_cluster_f1_regressions.cpp
     test_request_context.cpp
     test_background_span_contract.cpp
     test_trace_context.cpp

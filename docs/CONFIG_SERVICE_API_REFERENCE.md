@@ -134,10 +134,16 @@ Authorization: Bearer <token>
   "template-path": "/srv/api/sqls",
   "connections": {"customers": {"init": "...", "properties": {"path": "./data/customers.parquet"}}},
   "auth": {"enabled": false},
-  "ducklake": {"enabled": true, "alias": "cache", "warmup": "always", "read-only": false},
+  "ducklake": {"enabled": true, "alias": "cache", "metadata-path": "postgres:dbname=lake host=db password=<redacted>",
+               "warmup": "always", "warmup_effective": "always", "read-only": false},
   "bundled": false
 }
 ```
+
+`warmup_effective` is the warm-up that actually runs: `never` on a read-only replica, otherwise the
+`--cache-warmup` / `FLAPI_CACHE_WARMUP` override if set, else `warmup`. `metadata-path` and `data-path`
+are redacted: `password=`, `pwd=`, `*secret*=`, `*token*=`, `api_key=` values and the password of a
+`scheme://user:password@host` URL show as `<redacted>`. The same applies to a resolved `{{env.X}}`.
 
 `bundled` is `true` when the server runs from a packed binary (`flapi pack`): it serves the configuration
 folded into it, so edits to files on disk cannot reach it and its config-service writes are refused. The
@@ -895,6 +901,9 @@ Content-Type: application/json
 }
 ```
 
+On a read-only replica (`ducklake.read-only: true`) this answers `409 read_only_cache` ("the populate
+template belongs to the writer; edit it there"). A replica shares the populate SQL with the writer.
+
 **CLI:** `flapii cache update-template /customers -f cache.sql`
 
 ---
@@ -933,7 +942,9 @@ Authorization: Bearer <token>
 `warning` is present when the refresh ran but not as configured: the cursor watermark did not look like
 `cursor.type` and was dropped, so the refresh loaded the full source (the same text is appended to the
 audit row's `message`).
-`duration_ms`, `rows_affected` and `snapshot_id` are left out when unknown. When a refresh of the same
+`duration_ms`, `rows_affected` and `snapshot_id` are left out when unknown. `snapshot_id` is the snapshot
+this refresh committed; it is absent when the refresh committed none (for example a merge with nothing to
+change). When a refresh of the same
 table is already running (warm-up, the scheduler) nothing is started and the answer is
 `{"status": "already_running", "endpoint": ..., "full": ...}`.
 
@@ -944,7 +955,7 @@ Errors are JSON `{"error": ..., "reason": ...}`:
 | `200` | refreshed, or already running |
 | `400` | cache not enabled (`"error": "Cache is not enabled for this endpoint"`), or the refresh failed (`"error": "Cache refresh failed"`, `"reason"`: the error) |
 | `404` | unknown endpoint (`"error": "Endpoint not found"`) |
-| `409` | `ducklake.read-only: true` |
+| `409` | `ducklake.read-only: true`: `{"error":"read_only_cache","message":"... refresh it from the writer, e.g. `flapi cache refresh`"}` |
 
 A refresh through this API counts as the cache's last refresh for the scheduler: the next scheduled
 refresh is one `schedule` later.
@@ -955,7 +966,11 @@ refresh is one `schedule` later.
 
 #### POST /api/v1/_config/endpoints/{slug}/cache/gc
 
-Run garbage collection on cache snapshots.
+Apply the cache's retention policy now (`cache.retention`, else `ducklake.retention`): expire the
+snapshots it allows, then delete the files no snapshot references any more. Only this table's snapshots
+are expired, including those of earlier incarnations (each CTAS full refresh and `--full` rebuild gives
+the table a new id). A file stays on disk while any retained snapshot can still see it, including another
+table's. It is deleted when that snapshot expires.
 
 **Request:**
 ```http
@@ -965,8 +980,63 @@ Authorization: Bearer <token>
 
 **Response (200):**
 ```json
-"Garbage collection completed"
+{
+  "status": "expired",
+  "expired_snapshots": 3,
+  "files_deleted": 3,
+  "bytes_freed": 1048576,
+  "message": "Expired 3 snapshot(s), deleted 3 file(s), freed 1048576 bytes"
+}
 ```
+
+`status` is `expired`, `nothing_to_expire`, `no_policy` or `error`. `no_policy` has the message
+`no retention policy configured; nothing expired (set cache.retention or ducklake.retention)`.
+`bytes_freed` is the size of the data and delete files the expiry released.
+`warning` is present when snapshots beyond the policy are shared with another table and were kept
+(expiring them would discard that table's data too).
+
+| Status | When |
+|--------|------|
+| `200` | `expired`, `nothing_to_expire`, `no_policy` |
+| `404` | unknown endpoint |
+| `409` | `ducklake.read-only: true` (`read_only_cache`: "snapshots are expired by the writer: ...") |
+| `500` | `status: "error"`; the expiry failed (the audit row has the scrubbed error) |
+
+**CLI:** `flapii cache gc /customers`
+
+---
+
+#### POST /api/v1/_config/cache/drop-table
+
+Drop a cache table that no endpoint uses any more. A changed `schema:` or `table:` leaves the old one
+behind, and no endpoint's retention matches it. The table is dropped. Every snapshot since its first one
+that touched no live table is expired (its own history, the `DROP`, a `CREATE SCHEMA`). Then the files no
+snapshot references are deleted. Snapshots of live tables are left to their own retention. Its last files
+are deleted once those snapshots expire too. An audit row with `sync_type` `drop_table` is recorded.
+
+```http
+POST /api/v1/_config/cache/drop-table HTTP/1.1
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{"schema": "old", "table": "customers_cache"}
+```
+
+`schema` defaults to `main`.
+
+**Response (200):**
+```json
+{"status": "dropped", "schema": "old", "table": "customers_cache", "expired_snapshots": 4,
+ "files_deleted": 2, "bytes_freed": 524288, "message": "Dropped old.customers_cache; ..."}
+```
+
+| Status | When |
+|--------|------|
+| `400` | `invalid_request` (no `table`), or `ducklake_disabled` |
+| `404` | `table_not_found` |
+| `409` | `cache_table_in_use` (a configured endpoint caches into it), `protected_table` (schema `audit`), `read_only_cache` |
+
+**CLI:** `flapii cache drop-table old.customers_cache`
 
 ---
 
@@ -1015,11 +1085,12 @@ Authorization: Bearer <token>
 | Query parameter | Description |
 |---|---|
 | `table` | Optional. One cache table, `schema.table` or `table`: its events whichever endpoint sharing the table triggered them. |
+| `sync_type` | Optional. Only events of this kind: `full`, `append`, `merge`, `garbage_collection`, `compaction`, `drop_table`. Combinable with `table`. Compaction is catalog-wide and filed under no endpoint, so `?sync_type=compaction` is where its history is read. |
 
 **Response (200):** Array of audit log entries for all endpoints (or for `table`).
 
-`event_id` is a UUIDv4. `sync_type` is the refresh mode (`full`, `append`, `merge`) or
-`compaction`. `rows_affected` is the sum over the template's statements. The log is bounded: the
+`event_id` is a UUIDv4. `sync_type` is the refresh mode (`full`, `append`, `merge`),
+`garbage_collection`, `compaction` or `drop_table`. `rows_affected` is the sum over the template's statements. The log is bounded: the
 newest 1000 rows per cache table are kept.
 
 > **Implementation:** `src/config_service.cpp`, `src/cache_manager.cpp` | **Tests:** `test/integration/test_ducklake_cache.tavern.yaml`, `test/integration/test_ducklake_comprehensive.tavern.yaml`
@@ -1217,7 +1288,9 @@ server fault: it is counted under `status.503_cache` per series and in
 `rejections` counts every 401, 403 and 429 the server returned, including those
 from middleware before an endpoint ran.
 
-`caches` lists every cache the server knows about, refreshed or not. `state` is
+`caches` lists every cache the server knows about, refreshed or not. Each row has an `endpoint`: the
+endpoint that last refreshed it, else the first configured endpoint caching into that table. So
+`?endpoint=/x` also matches before the first refresh in this process. `state` is
 `starting`, `ready`, `stale` (the last refresh failed and the previous snapshot is
 still served), `failed` or `unbuilt`. A cache that has never been refreshed in
 this process has no `last` or `duration_ms`; its `data_age_seconds` is the age of the

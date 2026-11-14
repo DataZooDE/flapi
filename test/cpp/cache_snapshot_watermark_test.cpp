@@ -199,7 +199,9 @@ connections:
         bool queried_snapshots = false;
         bool resolved_table = false;
         for (const auto& q : adapter->executed) {
-            if (q.find("ducklake_table_info") != std::string::npos &&
+            // ducklake_table_info, or the metadata catalog's ducklake_table
+            // (every id the table has had, resolved through the schema name).
+            if (q.find("ducklake_table") != std::string::npos &&
                 q.find("table_name = 'a'") != std::string::npos) {
                 resolved_table = true;
             }
@@ -570,7 +572,8 @@ struct TwoTableCatalog {
     std::shared_ptr<DatabaseManager> db;
     std::shared_ptr<CapturingRealAdapter> adapter;
 
-    explicit TwoTableCatalog(const std::string& name) {
+    // `ducklake_extra`: more lines of the ducklake: block, each indented two spaces.
+    explicit TwoTableCatalog(const std::string& name, const std::string& ducklake_extra = "") {
         dir = fs::temp_directory_path() / name;
         fs::remove_all(dir);
         fs::create_directories(dir / "data");
@@ -582,7 +585,8 @@ struct TwoTableCatalog {
                 << "duckdb:\n  db_path: " << (dir / "t.db").string() << "\n\n"
                 << "ducklake:\n  enabled: true\n  alias: cache\n"
                 << "  metadata-path: " << (dir / "metadata.ducklake").string() << "\n"
-                << "  data-path: " << (dir / "data").string() << "\n\n"
+                << "  data-path: " << (dir / "data").string() << "\n"
+                << ducklake_extra << "\n"
                 << "connections:\n  default:\n    init: \"SELECT 1;\"\n";
         }
         config = std::make_shared<ConfigManager>(dir / "config.yaml");
@@ -804,13 +808,13 @@ TEST_CASE("a snapshot shared with another table is never expired",
     }
 }
 
-TEST_CASE("retention is disabled when two schemas hold the same table name",
+TEST_CASE("retention tells two schemas' same-named tables apart",
           "[cache][ducklake][retention]") {
     // ducklake_table_info() exposes table_name and schema_id but no schema
-    // NAME, so `WHERE table_name = 'orders' LIMIT 1` picks an arbitrary one of
-    // s1.orders and s2.orders. That fed a read-only watermark query before; it
-    // now feeds snapshot expiry, where a wrong id deletes another endpoint's
-    // data. Ambiguity must therefore expire NOTHING.
+    // NAME, so this used to disable retention for s2.orders entirely while
+    // s1.orders existed (and to report s1's id as s2's snapshot). The table is
+    // now resolved through the metadata catalog's schema names: s2's own
+    // snapshots expire, and not one of s1's is touched.
     TwoTableCatalog cat("flapi_retention_ambiguous");
     CacheManager cache_manager(cat.adapter);
 
@@ -824,10 +828,22 @@ TEST_CASE("retention is disabled when two schemas hold the same table name",
     }
 
     std::map<std::string, std::string> p;
-    auto total_before = cat.db->executeQuery(
-        "SELECT count(*) AS n FROM ducklake_snapshots('cache')", p, false);
-    const int64_t before =
-        static_cast<int64_t>(crow::json::load(total_before.data.dump())[0]["n"].d());
+    const auto count = [&](const std::string& where) {
+        auto r = cat.db->executeQuery("SELECT count(*) AS n FROM ducklake_snapshots('cache') " + where, p, false);
+        return static_cast<int64_t>(crow::json::load(r.data.dump())[0]["n"].d());
+    };
+    const auto s1_id = [&]() {
+        auto r = cat.db->executeQuery(
+            "SELECT CAST(t.table_id AS VARCHAR) AS id FROM __ducklake_metadata_cache.ducklake_table t "
+            "JOIN __ducklake_metadata_cache.ducklake_schema s ON t.schema_id = s.schema_id "
+            "WHERE s.schema_name = 's1' AND t.table_name = 'orders'", p, false);
+        return std::string(crow::json::load(r.data.dump())[0]["id"].s());
+    }();
+    const std::string touches_s1 =
+        "WHERE list_contains(flatten(map_values(changes)), '" + s1_id + "') "
+        "OR list_contains(flatten(map_values(changes)), 's1.orders')";
+    const int64_t s1_before = count(touches_s1);
+    const int64_t before = count("");
 
     auto endpoint = cachedEndpoint("/orders", "orders");
     endpoint.cache.schema = "s2";
@@ -835,19 +851,12 @@ TEST_CASE("retention is disabled when two schemas hold the same table name",
     std::map<std::string, std::string> params;
     cache_manager.refreshDuckLakeCache(cat.config, endpoint, params);
 
-    SECTION("nothing is expired at all") {
-        auto total_after = cat.db->executeQuery(
-            "SELECT count(*) AS n FROM ducklake_snapshots('cache')", p, false);
-        const int64_t after =
-            static_cast<int64_t>(crow::json::load(total_after.data.dump())[0]["n"].d());
-        REQUIRE(after == before);
+    SECTION("s2's snapshots are expired") {
+        REQUIRE(count("") < before);
     }
 
-    SECTION("no expire call is issued") {
-        for (const auto& q : cat.adapter->executed) {
-            INFO("query: " << q);
-            REQUIRE(q.find("ducklake_expire_snapshots") == std::string::npos);
-        }
+    SECTION("not one of s1's snapshots is touched") {
+        REQUIRE(count(touches_s1) == s1_before);
     }
 }
 
@@ -1043,4 +1052,196 @@ TEST_CASE("a hostile cursor value never reaches the refresh template",
         REQUIRE(it != cat.adapter->captured_params.end());
         REQUIRE(it->second == "zzz");
     }
+}
+
+namespace {
+
+std::size_t parquetFilesUnder(const fs::path& dir) {
+    std::size_t n = 0;
+    if (!fs::exists(dir)) {
+        return 0;
+    }
+    for (const auto& entry : fs::recursive_directory_iterator(dir)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".parquet") {
+            ++n;
+        }
+    }
+    return n;
+}
+
+int64_t snapshotCount(TwoTableCatalog& cat) {
+    std::map<std::string, std::string> p;
+    auto r = cat.db->executeQuery("SELECT count(*) AS n FROM ducklake_snapshots('cache')", p, false);
+    return static_cast<int64_t>(crow::json::load(r.data.dump())[0]["n"].d());
+}
+
+}  // namespace
+
+TEST_CASE("retention expires CTAS full refreshes of a cache in the default `cache` schema",
+          "[cache][ducklake][retention][f1]") {
+    // DuckLake records a create as '"cache".t' - each part optionally quoted, and
+    // `cache` is a keyword - while retention matched only 'cache.t' and the live
+    // table id. Every CREATE OR REPLACE gives the table a new id, so no snapshot
+    // of a default-schema full-refresh cache ever matched: nothing expired and the
+    // disk grew forever. Measured with the file and the Postgres catalog.
+    for (const std::string table : {"full_cache", "order"}) {   // `order`: a keyword table name
+        DYNAMIC_SECTION("table " << table) {
+            TwoTableCatalog cat("flapi_retention_default_schema", "  data-inlining-row-limit: 0\n");
+            CacheManager cache_manager(cat.adapter);
+            const std::string qualified = "cache.cache.\"" + table + "\"";
+            cat.sql("CREATE SCHEMA IF NOT EXISTS cache.cache");
+            for (int i = 1; i <= 5; ++i) {
+                cat.sql("CREATE OR REPLACE TABLE " + qualified + " AS SELECT range AS i FROM range(" +
+                        std::to_string(i * 10) + ")");
+            }
+            REQUIRE(parquetFilesUnder(cat.dir / "data" / "cache") == 5);
+
+            auto endpoint = cachedEndpoint("/full", table);
+            endpoint.cache.schema = "cache";
+            endpoint.cache.retention.keep_last_snapshots = 2;
+            const auto result = cache_manager.performGarbageCollection(cat.config, endpoint, {});
+
+            REQUIRE(result.status == "expired");
+            REQUIRE(result.expired_snapshots == 3);
+            REQUIRE(result.files_deleted == 3);
+            REQUIRE(result.bytes_freed > 0);
+            // The current table's file and the previous refresh's (kept for time travel).
+            REQUIRE(parquetFilesUnder(cat.dir / "data" / "cache") == 2);
+            std::map<std::string, std::string> p;
+            auto rows = cat.db->executeQuery("SELECT count(*) AS n FROM " + qualified, p, false);
+            REQUIRE(crow::json::load(rows.data.dump())[0]["n"].d() == 50);
+        }
+    }
+}
+
+TEST_CASE("retention expires the previous incarnation after a --full rebuild",
+          "[cache][ducklake][retention][f1]") {
+    // A `--full` rebuild of a merge/append cache is DROP + CREATE: a new table id.
+    // The old incarnation's snapshots (`tables_inserted_into=[old id]`, nothing
+    // else) matched neither the name nor the live id, so they were never expired
+    // and every rebuild leaked the previous base files.
+    TwoTableCatalog cat("flapi_retention_rebuild", "  data-inlining-row-limit: 0\n");
+    CacheManager cache_manager(cat.adapter);
+    cat.sql("CREATE SCHEMA IF NOT EXISTS cache.s");
+    cat.sql("CREATE TABLE cache.s.m AS SELECT range AS i FROM range(100)");
+    cat.sql("INSERT INTO cache.s.m SELECT range FROM range(100, 110)");
+    cat.sql("INSERT INTO cache.s.m SELECT range FROM range(110, 120)");
+    // The rebuild, in one transaction as executePopulateScript runs it.
+    cat.sql("BEGIN; DROP TABLE cache.s.m; CREATE TABLE cache.s.m AS SELECT range AS i FROM range(50); COMMIT;");
+    cat.sql("INSERT INTO cache.s.m SELECT range FROM range(50, 60)");
+    cat.sql("INSERT INTO cache.s.m SELECT range FROM range(60, 70)");
+    REQUIRE(parquetFilesUnder(cat.dir / "data" / "s") == 6);
+
+    auto endpoint = cachedEndpoint("/m", "m");
+    endpoint.cache.retention.keep_last_snapshots = 2;
+    const auto result = cache_manager.performGarbageCollection(cat.config, endpoint, {});
+
+    REQUIRE(result.status == "expired");
+    // Every old-incarnation snapshot went, and its three files with it; the live
+    // table still needs all three of its own.
+    REQUIRE(parquetFilesUnder(cat.dir / "data" / "s") == 3);
+    REQUIRE(result.files_deleted == 3);
+    std::map<std::string, std::string> p;
+    auto rows = cat.db->executeQuery("SELECT count(*) AS n FROM cache.s.m", p, false);
+    REQUIRE(crow::json::load(rows.data.dump())[0]["n"].d() == 70);
+}
+
+TEST_CASE("an obsolete cache table can be dropped and its files reclaimed",
+          "[cache][ducklake][retention][f1]") {
+    // Changing `schema:` leaves the old table behind; no endpoint's retention
+    // matches it, so its snapshots and files stayed forever.
+    TwoTableCatalog cat("flapi_drop_obsolete", "  data-inlining-row-limit: 0\n");
+    CacheManager cache_manager(cat.adapter);
+    cat.sql("CREATE SCHEMA IF NOT EXISTS cache.old");
+    cat.sql("CREATE SCHEMA IF NOT EXISTS cache.s");
+    // s.t first: a snapshot of ANOTHER table taken while old.t's files were live
+    // keeps them visible (time travel) until that snapshot expires too.
+    cat.sql("CREATE TABLE cache.s.t AS SELECT range AS i FROM range(10)");
+    cat.sql("CREATE TABLE cache.old.t AS SELECT range AS i FROM range(10)");
+    cat.sql("INSERT INTO cache.old.t SELECT range FROM range(10, 20)");
+    REQUIRE(parquetFilesUnder(cat.dir / "data" / "old") == 2);
+
+    SECTION("drop") {
+        const auto result = cache_manager.dropObsoleteCacheTable(cat.config, "old", "t");
+        REQUIRE(result.status == "dropped");
+        REQUIRE(parquetFilesUnder(cat.dir / "data" / "old") == 0);
+        REQUIRE(parquetFilesUnder(cat.dir / "data" / "s") == 1);
+        std::map<std::string, std::string> p;
+        auto rows = cat.db->executeQuery("SELECT count(*) AS n FROM cache.s.t", p, false);
+        REQUIRE(crow::json::load(rows.data.dump())[0]["n"].d() == 10);
+    }
+
+    SECTION("an unknown table is not_found") {
+        REQUIRE(cache_manager.dropObsoleteCacheTable(cat.config, "old", "nope").status == "not_found");
+    }
+}
+
+TEST_CASE("garbage collection says what it did", "[cache][ducklake][retention][f1]") {
+    TwoTableCatalog cat("flapi_gc_result", "  data-inlining-row-limit: 0\n");
+    CacheManager cache_manager(cat.adapter);
+    cat.sql("CREATE SCHEMA IF NOT EXISTS cache.s");
+    cat.sql("CREATE TABLE cache.s.g AS SELECT 1 AS i");
+
+    SECTION("with no retention policy it expires nothing, and says so") {
+        auto endpoint = cachedEndpoint("/g", "g");
+        const auto result = cache_manager.performGarbageCollection(cat.config, endpoint, {});
+        REQUIRE(result.status == "no_policy");
+        REQUIRE(result.expired_snapshots == 0);
+        REQUIRE(result.message.find("no retention policy configured") != std::string::npos);
+    }
+
+    SECTION("with a policy and nothing old enough") {
+        auto endpoint = cachedEndpoint("/g", "g");
+        endpoint.cache.retention.keep_last_snapshots = 5;
+        const auto before = snapshotCount(cat);
+        const auto result = cache_manager.performGarbageCollection(cat.config, endpoint, {});
+        REQUIRE(result.status == "nothing_to_expire");
+        REQUIRE(snapshotCount(cat) == before);
+    }
+
+    SECTION("snapshots shared with another table are reported, not silently kept") {
+        // One transaction writing g and a second table: the snapshot is shared.
+        cat.sql("CREATE TABLE cache.s.other AS SELECT 1 AS i");
+        for (int i = 0; i < 3; ++i) {
+            cat.sql("BEGIN; INSERT INTO cache.s.g VALUES (" + std::to_string(i) +
+                    "); INSERT INTO cache.s.other VALUES (1); COMMIT;");
+        }
+        cat.sql("INSERT INTO cache.s.g VALUES (99)");
+        auto endpoint = cachedEndpoint("/g", "g");
+        endpoint.cache.retention.keep_last_snapshots = 1;
+        const auto result = cache_manager.performGarbageCollection(cat.config, endpoint, {});
+        REQUIRE(result.warning.find("shared with another table") != std::string::npos);
+        REQUIRE(result.message.find("shared with another table") != std::string::npos);
+    }
+}
+
+TEST_CASE("compaction passes ducklake.compaction.delete-threshold to the rewrite",
+          "[cache][ducklake][compaction][f1]") {
+    // DuckLake rewrites a data file only above 95% deleted rows by default, and a
+    // merge cache's delete files did not get there: compaction left 52 files and
+    // 24 delete files as it found them while refreshes slowed down.
+    TwoTableCatalog cat("flapi_compaction_threshold",
+                        "  data-inlining-row-limit: 0\n  compaction:\n    enabled: true\n    delete-threshold: 0.2\n");
+    REQUIRE(cat.config->getDuckLakeConfig().compaction.delete_threshold == 0.2);
+    CacheManager cache_manager(cat.adapter);
+    cat.sql("CREATE SCHEMA IF NOT EXISTS cache.s");
+    cat.sql("CREATE TABLE cache.s.d AS SELECT range AS i FROM range(1000)");
+    cat.sql("DELETE FROM cache.s.d WHERE i < 300");   // 30% deleted: below the default, above 0.2
+
+    cache_manager.performCompaction(cat.config);
+
+    bool passed = false;
+    for (const auto& q : cat.adapter->executed) {
+        if (q.find("ducklake_rewrite_data_files") != std::string::npos &&
+            q.find("delete_threshold => 0.2") != std::string::npos) {
+            passed = true;
+        }
+    }
+    REQUIRE(passed);
+    std::map<std::string, std::string> p;
+    auto info = cat.db->executeQuery(
+        "SELECT delete_file_count FROM ducklake_table_info('cache') WHERE table_name = 'd'", p, false);
+    REQUIRE(crow::json::load(info.data.dump())[0]["delete_file_count"].d() == 0);
+    auto rows = cat.db->executeQuery("SELECT count(*) AS n FROM cache.s.d", p, false);
+    REQUIRE(crow::json::load(rows.data.dump())[0]["n"].d() == 700);
 }

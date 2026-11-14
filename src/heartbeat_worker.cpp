@@ -75,6 +75,21 @@ bool HeartbeatWorker::RefreshDue(std::optional<std::chrono::system_clock::time_p
 
 void HeartbeatWorker::logSchedulerSetup(std::chrono::seconds scan_interval) {
     const auto& ducklake = config_manager->getDuckLakeConfig();
+    // When compaction next runs. It is catalog-wide and audited under no endpoint,
+    // so nothing else said whether a configured schedule was alive at all.
+    if (ducklake.enabled && ducklake.compaction.enabled && ducklake.compaction.schedule &&
+        ShouldRunCacheMaintenance(ducklake)) {
+        if (const auto interval = TimeInterval::parseSchedule(*ducklake.compaction.schedule)) {
+            if (auto cache_manager = api_server.getCacheManager()) {
+                const auto last = cache_manager->lastCompactionTime(config_manager);
+                const auto next = last.value_or(std::chrono::system_clock::now()) + *interval;
+                CROW_LOG_INFO << "DuckLake compaction every " << *ducklake.compaction.schedule << "; last run "
+                              << (last ? CacheManager::formatUtcTimestamp(*last) + " UTC" : std::string("never"))
+                              << ", next due " << CacheManager::formatUtcTimestamp(next) << " UTC"
+                              << " (history: GET /api/v1/_config/cache/audit?sync_type=compaction)";
+            }
+        }
+    }
     const auto endpoints = config_manager->getEndpoints();
     std::size_t scheduled = 0;
     for (const auto& endpoint : *endpoints) {
@@ -142,6 +157,13 @@ void HeartbeatWorker::workerLoop() {
         }
 
         if (running && std::chrono::steady_clock::now() >= next_scan) {
+            // A read-only replica runs no schedule, but the writer builds tables
+            // it may be waiting for (503 cache_not_built until it notices).
+            if (config_manager->getDuckLakeConfig().read_only) {
+                if (auto cache_manager = api_server.getCacheManager()) {
+                    cache_manager->recheckReadOnlyCaches(config_manager, /*force=*/true);
+                }
+            }
             performDuckLakeScheduledTasks();
             // Recomputed: the config service can add or change a schedule at runtime.
             scan_interval = CacheScanInterval(config_manager->getDuckLakeConfig(),

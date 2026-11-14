@@ -593,6 +593,10 @@ struct DuckLakeRetentionConfig {
 struct DuckLakeCompactionConfig {
     bool enabled = false;
     std::optional<std::string> schedule;
+    // ducklake.compaction.delete-threshold: the fraction of deleted rows (0 < x <= 1)
+    // above which ducklake_rewrite_data_files rewrites a data file. Unset = DuckLake's
+    // default (0.95), which a merge cache's delete files rarely reach.
+    std::optional<double> delete_threshold;
 };
 
 struct DuckLakeSchedulerConfig {
@@ -633,6 +637,14 @@ class EndpointConfigParser;
 class ConfigLoader;
 class EndpointRepository;
 class IFileProvider;
+
+/// Mask the credentials in a connection string or DSN, wherever it appears in
+/// `text`: libpq/ODBC `key=value` pairs whose key names a secret (password,
+/// passwd, pwd, secret, token, api_key, ...; also `PGPASSWORD=`) and the
+/// password of a `scheme://user:password@host` URL. Everything else - host,
+/// database, user - is kept, so the value stays recognisable. For logs and
+/// every config API answer that shows a DuckLake metadata-path or data-path.
+std::string RedactConnectionSecrets(const std::string& text);
 
 class ConfigManager {
     // Allow EndpointConfigParser to access protected parsing methods

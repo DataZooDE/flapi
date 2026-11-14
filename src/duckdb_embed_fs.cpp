@@ -1,6 +1,7 @@
 #include "duckdb_embed_fs.hpp"
 
 #include "database_manager.hpp"
+#include <crow.h>
 #include "vfs_adapter.hpp"
 
 #include "duckdb.hpp"
@@ -230,9 +231,53 @@ bool EmbeddedFileSystem::FileExists(const std::string& filename,
     return result;
 }
 
-bool RegisterEmbeddedFileSystem() {
+DirectoryEmbedFileSystem::DirectoryEmbedFileSystem(std::filesystem::path root)
+    : _root(std::filesystem::weakly_canonical(std::move(root))),
+      _local(::duckdb::FileSystem::CreateLocal()) {}
+
+bool DirectoryEmbedFileSystem::CanHandleFile(const std::string& fpath) {
+    return HasEmbedScheme(fpath);
+}
+
+std::string DirectoryEmbedFileSystem::MapPath(const std::string& path) const {
+    // The bundle holds the config tree, so `embed://<rel>` names <config dir>/<rel>.
+    // Nothing outside it: a packed binary could not reach `embed://../x` either.
+    const std::string rel = StripEmbedScheme(path);
+    const std::filesystem::path relative(rel);
+    if (rel.empty() || relative.is_absolute()) {
+        throw ::duckdb::IOException("embed://: not a path inside the configuration directory: " + path);
+    }
+    const auto mapped = (_root / relative).lexically_normal();
+    const auto back = mapped.lexically_relative(_root);
+    if (back.empty() || *back.begin() == "..") {
+        throw ::duckdb::IOException("embed://: path escapes the configuration directory: " + path);
+    }
+    return mapped.string();
+}
+
+::duckdb::unique_ptr<::duckdb::FileHandle> DirectoryEmbedFileSystem::OpenFile(
+        const std::string& path,
+        ::duckdb::FileOpenFlags flags,
+        ::duckdb::optional_ptr<::duckdb::FileOpener> opener) {
+    // The handle belongs to the local filesystem, so every read, seek and size
+    // call on it goes there directly (VirtualFileSystem dispatches by handle).
+    return _local->OpenFile(MapPath(path), flags, opener);
+}
+
+::duckdb::vector<::duckdb::OpenFileInfo> DirectoryEmbedFileSystem::Glob(
+        const std::string& path,
+        ::duckdb::FileOpener* opener) {
+    return _local->Glob(MapPath(path), opener);
+}
+
+bool DirectoryEmbedFileSystem::FileExists(const std::string& filename,
+                                          ::duckdb::optional_ptr<::duckdb::FileOpener> opener) {
+    return _local->FileExists(MapPath(filename), opener);
+}
+
+bool RegisterEmbeddedFileSystem(const std::string& config_dir) {
     auto entries = FileProviderFactory::GetBundleContents();
-    if (entries == nullptr) {
+    if (entries == nullptr && config_dir.empty()) {
         return false;
     }
 
@@ -253,7 +298,16 @@ bool RegisterEmbeddedFileSystem() {
     }
 
     auto& fs = ::duckdb::FileSystem::GetFileSystem(*conn_wrapper->context);
-    fs.RegisterSubSystem(::duckdb::make_uniq<EmbeddedFileSystem>(entries));
+    if (entries != nullptr) {
+        fs.RegisterSubSystem(::duckdb::make_uniq<EmbeddedFileSystem>(entries));
+    } else {
+        // No bundle: a config written for `flapi pack` (read_csv('embed://data/x.csv'))
+        // must also run from its source tree - a one-shot refresh there failed
+        // "No files found that match embed://...". Same paths, read from disk.
+        fs.RegisterSubSystem(::duckdb::make_uniq<DirectoryEmbedFileSystem>(config_dir));
+        CROW_LOG_INFO << "No bundle in this binary: embed:// paths resolve against the configuration directory "
+                      << config_dir;
+    }
 
     duckdb_disconnect(&conn);
     return true;

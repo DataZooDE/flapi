@@ -48,12 +48,28 @@ namespace {
 /// refresh's mode/status/duration/rows/snapshot, and how old the served data
 /// is. Read from CacheManager's in-memory stats, never from DuckLake, so the
 /// metrics endpoint stays cheap and works while the catalog is busy.
-crow::json::wvalue buildCacheMetricsJson(const std::string& endpoint_filter) {
+crow::json::wvalue buildCacheMetricsJson(const std::shared_ptr<ConfigManager>& config_manager,
+                                         const std::string& endpoint_filter) {
     std::vector<crow::json::wvalue> rows;
     auto db_manager = DatabaseManager::getInstance();
     auto cache_manager = db_manager ? db_manager->getCacheManager() : nullptr;
     if (!cache_manager) {
         return crow::json::wvalue(rows);
+    }
+    // Which endpoints cache into each table, from the CONFIG. The endpoint used to
+    // come only from refresh stats, so before the first refresh in a process
+    // `--endpoint /x` matched nothing and the unfiltered rows had no `endpoint`.
+    std::map<std::string, std::vector<std::string>> config_endpoints;
+    if (config_manager) {
+        const std::string alias = config_manager->getDuckLakeConfig().alias;
+        for (const auto& endpoint : *config_manager->getEndpoints()) {
+            if (!endpoint.cache.enabled || endpoint.cache.table.empty()) {
+                continue;
+            }
+            const std::string schema = endpoint.cache.schema.empty() ? "main" : endpoint.cache.schema;
+            config_endpoints[alias + "." + schema + "." + endpoint.cache.table].push_back(
+                endpoint.urlPath.empty() ? endpoint.getName() : endpoint.urlPath);
+        }
     }
     const auto states = cache_manager->getReadinessStates();
     std::map<std::string, CacheManager::CacheRefreshStats> by_table;
@@ -68,17 +84,29 @@ crow::json::wvalue buildCacheMetricsJson(const std::string& endpoint_filter) {
     for (const auto& [name, stats] : by_table) { tables.insert(name); }
     for (const auto& name : tables) {
         const auto stats_it = by_table.find(name);
-        if (!endpoint_filter.empty() &&
-            (stats_it == by_table.end() || stats_it->second.endpoint_path != endpoint_filter)) {
-            continue;
+        const auto config_it = config_endpoints.find(name);
+        if (!endpoint_filter.empty()) {
+            const bool by_stats = stats_it != by_table.end() && stats_it->second.endpoint_path == endpoint_filter;
+            const bool by_config =
+                config_it != config_endpoints.end() &&
+                std::find(config_it->second.begin(), config_it->second.end(), endpoint_filter) !=
+                    config_it->second.end();
+            if (!by_stats && !by_config) {
+                continue;
+            }
         }
         crow::json::wvalue row;
         row["cache"] = name;
+        if (config_it != config_endpoints.end() && !config_it->second.empty()) {
+            row["endpoint"] = config_it->second.front();
+        }
         const auto state_it = states.find(name);
         row["state"] = state_it != states.end() ? state_it->second : std::string("unknown");
         if (stats_it != by_table.end()) {
             const auto& st = stats_it->second;
-            row["endpoint"] = st.endpoint_path;
+            if (!st.endpoint_path.empty()) {
+                row["endpoint"] = st.endpoint_path;
+            }
             row["refreshes"] = st.refreshes;
             row["failures"] = st.failures;
             row["last"]["mode"] = st.last_sync_type;
@@ -200,7 +228,7 @@ crow::json::wvalue buildMetricsJson(const std::shared_ptr<ConfigManager>& config
     }
 
     metrics["requests"] = RuntimeMetrics::instance().toJson(filter);
-    metrics["caches"] = buildCacheMetricsJson(filter);
+    metrics["caches"] = buildCacheMetricsJson(config_manager, filter);
 
     return metrics;
 }
@@ -892,6 +920,17 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             return cache_handler_->performGarbageCollection(req, key);
         });
 
+    // Drop an obsolete cache table (left behind by a changed `schema:`/`table:`):
+    // its snapshots are expired and its files deleted too.
+    CROW_ROUTE(app, "/api/v1/_config/cache/drop-table")
+        .methods("POST"_method)
+        ([this](const crow::request& req) {
+            if (!validateToken(req)) {
+                return unauthorizedResponse();
+            }
+            return cache_handler_->dropCacheTable(req);
+        });
+
     // DuckLake audit routes
     CROW_ROUTE(app, "/api/v1/_config/endpoints/<string>/cache/audit")
         .methods("GET"_method)
@@ -913,7 +952,9 @@ CROW_ROUTE(app, "/api/v1/_config/cache/audit")
                 return unauthorizedResponse();
             }
             const char* table = req.url_params.get("table");
-            return audit_handler_->getAllCacheAuditLogs(table != nullptr ? table : "");
+            const char* sync_type = req.url_params.get("sync_type");
+            return audit_handler_->getAllCacheAuditLogs(table != nullptr ? table : "",
+                                                        sync_type != nullptr ? sync_type : "");
         });
 
     // Schema routes
@@ -1217,7 +1258,7 @@ crow::response AuditLogHandler::getCacheAuditLog(const std::string& path) {
     }
 }
 
-crow::response AuditLogHandler::getAllCacheAuditLogs(const std::string& table) {
+crow::response AuditLogHandler::getAllCacheAuditLogs(const std::string& table, const std::string& sync_type) {
     try {
         const auto& ducklake_config = config_manager_->getDuckLakeConfig();
         if (!ducklake_config.enabled) {
@@ -1227,7 +1268,7 @@ crow::response AuditLogHandler::getAllCacheAuditLogs(const std::string& table) {
         auto db_manager = DatabaseManager::getInstance();
         const std::string catalog = ducklake_config.alias;
         
-        std::string audit_query = buildAuditQuery(catalog, "", table);
+        std::string audit_query = buildAuditQuery(catalog, "", table, sync_type);
         std::map<std::string, std::string> params;
         auto result = db_manager->executeDuckLakeQuery(audit_query, params);
         
@@ -1239,7 +1280,8 @@ crow::response AuditLogHandler::getAllCacheAuditLogs(const std::string& table) {
 
 std::string AuditLogHandler::buildAuditQuery(const std::string& catalog,
                                                const std::string& endpoint_filter,
-                                               const std::string& table_filter) const {
+                                               const std::string& table_filter,
+                                               const std::string& sync_type_filter) const {
     std::ostringstream query;
     query << R"(
         SELECT event_id, endpoint_path, cache_table, cache_schema, sync_type, status, message,
@@ -1261,7 +1303,7 @@ std::string AuditLogHandler::buildAuditQuery(const std::string& catalog,
             }
         }
         query << "\n        WHERE endpoint_path = '" << escaped_filter << "'";
-    } else if (!table_filter.empty()) {
+    } else if (!table_filter.empty() || !sync_type_filter.empty()) {
         // Per cache TABLE: several endpoints can share one, and a refresh is
         // filed under whichever endpoint triggered it - the per-endpoint view
         // showed only part of that table's history.
@@ -1272,12 +1314,21 @@ std::string AuditLogHandler::buildAuditQuery(const std::string& catalog,
             }
             return out + "'";
         };
-        const auto dot = table_filter.find('.');
-        if (dot == std::string::npos) {
-            query << "\n        WHERE cache_table = " << quote(table_filter);
-        } else {
-            query << "\n        WHERE cache_schema = " << quote(table_filter.substr(0, dot))
-                  << " AND cache_table = " << quote(table_filter.substr(dot + 1));
+        std::vector<std::string> conditions;
+        if (!table_filter.empty()) {
+            const auto dot = table_filter.find('.');
+            if (dot == std::string::npos) {
+                conditions.push_back("cache_table = " + quote(table_filter));
+            } else {
+                conditions.push_back("cache_schema = " + quote(table_filter.substr(0, dot)) +
+                                     " AND cache_table = " + quote(table_filter.substr(dot + 1)));
+            }
+        }
+        if (!sync_type_filter.empty()) {
+            conditions.push_back("sync_type = " + quote(sync_type_filter));
+        }
+        for (std::size_t i = 0; i < conditions.size(); ++i) {
+            query << (i == 0 ? "\n        WHERE " : " AND ") << conditions[i];
         }
     }
     
@@ -3105,11 +3156,12 @@ crow::response CacheConfigHandler::getCacheConfig(const crow::request& req, cons
 namespace {
 
 // ducklake.read-only: this instance serves a catalog another process writes.
-crow::response readOnlyCacheResponse() {
+// The message names what to do INSTEAD for this operation: "refresh it from the
+// writer" was the answer to a garbage collection and a template edit as well.
+crow::response readOnlyCacheResponse(const std::string& advice) {
     crow::json::wvalue body;
     body["error"] = "read_only_cache";
-    body["message"] = "The DuckLake catalog is attached read-only (ducklake.read-only); "
-                      "refresh it from the writer, e.g. `flapi cache refresh`";
+    body["message"] = "The DuckLake catalog is attached read-only (ducklake.read-only); " + advice;
     crow::response response(409, body);
     response.set_header("Content-Type", "application/json");
     return response;
@@ -3119,7 +3171,7 @@ crow::response readOnlyCacheResponse() {
 
 crow::response CacheConfigHandler::updateCacheConfig(const crow::request& req, const std::string& path) {
     if (config_manager_->getDuckLakeConfig().read_only) {
-        return readOnlyCacheResponse();
+        return readOnlyCacheResponse("change the cache configuration on the writer instance");
     }
     try {
         auto json = crow::json::load(req.body);
@@ -3234,6 +3286,11 @@ crow::response TemplateHandler::getCacheTemplate(const crow::request& req, const
 }
 
 crow::response TemplateHandler::updateCacheTemplate(const crow::request& req, const std::string& path) {
+    // A replica shares the populate SQL with the writer (same config tree, often
+    // the same volume); overwriting it from here changed what the WRITER runs.
+    if (config_manager_->getDuckLakeConfig().read_only) {
+        return readOnlyCacheResponse("the populate template belongs to the writer; edit it there");
+    }
     try {
         auto json = crow::json::load(req.body);
         if (!json || !json.has("template")) {
@@ -3274,7 +3331,7 @@ crow::response TemplateHandler::updateCacheTemplate(const crow::request& req, co
 
 crow::response CacheConfigHandler::refreshCache(const crow::request& req, const std::string& path) {
     if (config_manager_->getDuckLakeConfig().read_only) {
-        return readOnlyCacheResponse();
+        return readOnlyCacheResponse("refresh it from the writer, e.g. `flapi cache refresh`");
     }
     // JSON both ways. The success answer used to be an empty 200 and the errors
     // plain text, so `flapii cache refresh` had nothing to print.
@@ -3364,9 +3421,85 @@ crow::response CacheConfigHandler::refreshCache(const crow::request& req, const 
     }
 }
 
+crow::response CacheConfigHandler::dropCacheTable(const crow::request& req) {
+    const auto answer = [](int status, crow::json::wvalue body) {
+        crow::response res(status, body);
+        res.set_header("Content-Type", "application/json");
+        return res;
+    };
+    const auto error = [&answer](int status, const std::string& code, const std::string& message) {
+        crow::json::wvalue body;
+        body["error"] = code;
+        body["message"] = message;
+        return answer(status, std::move(body));
+    };
+    if (config_manager_->getDuckLakeConfig().read_only) {
+        return readOnlyCacheResponse("drop the table from the writer instance");
+    }
+    if (!config_manager_->getDuckLakeConfig().enabled) {
+        return error(400, "ducklake_disabled", "DuckLake is not enabled (ducklake.enabled)");
+    }
+    auto json = crow::json::load(req.body);
+    if (!json || json.t() != crow::json::type::Object || !json.has("table") ||
+        json["table"].t() != crow::json::type::String || json["table"].s().size() == 0) {
+        return error(400, "invalid_request", R"(expected {"schema": "<schema>", "table": "<table>"})");
+    }
+    const std::string table = json["table"].s();
+    std::string schema = "main";
+    if (json.has("schema")) {
+        if (json["schema"].t() != crow::json::type::String) {
+            return error(400, "invalid_request", "`schema` must be a string");
+        }
+        schema = json["schema"].s();
+    }
+    if (schema == "audit") {
+        return error(409, "protected_table", "the audit schema is flapi's own and cannot be dropped");
+    }
+    // Only an OBSOLETE table: one no configured endpoint caches into. Dropping a
+    // live cache would turn its endpoint into a 503 until the next refresh.
+    for (const auto& endpoint : *config_manager_->getEndpoints()) {
+        if (!endpoint.cache.enabled || endpoint.cache.table.empty()) {
+            continue;
+        }
+        const std::string ep_schema = endpoint.cache.schema.empty() ? "main" : endpoint.cache.schema;
+        if (ep_schema == schema && endpoint.cache.table == table) {
+            return error(409, "cache_table_in_use",
+                         schema + "." + table + " is the cache table of " +
+                             (endpoint.urlPath.empty() ? endpoint.getName() : endpoint.urlPath) +
+                             "; only a table no endpoint uses can be dropped");
+        }
+    }
+    auto db_manager = DatabaseManager::getInstance();
+    auto cache_manager = db_manager ? db_manager->getCacheManager() : nullptr;
+    if (!cache_manager) {
+        return error(500, "internal_error", "Cache manager is not initialized");
+    }
+    try {
+        const auto result = cache_manager->dropObsoleteCacheTable(config_manager_, schema, table);
+        if (result.status == "not_found") {
+            return error(404, "table_not_found", result.message);
+        }
+        crow::json::wvalue body;
+        body["status"] = result.status;
+        body["schema"] = schema;
+        body["table"] = table;
+        body["expired_snapshots"] = static_cast<int64_t>(result.expired_snapshots);
+        body["files_deleted"] = static_cast<int64_t>(result.files_deleted);
+        body["bytes_freed"] = result.bytes_freed;
+        body["message"] = result.message;
+        if (!result.warning.empty()) {
+            body["warning"] = result.warning;
+        }
+        return answer(200, std::move(body));
+    } catch (const std::exception& e) {
+        return error(500, "drop_failed", e.what());
+    }
+}
+
 crow::response CacheConfigHandler::performGarbageCollection(const crow::request& req, const std::string& path) {
     if (config_manager_->getDuckLakeConfig().read_only) {
-        return readOnlyCacheResponse();
+        return readOnlyCacheResponse("snapshots are expired by the writer: its refreshes apply the retention "
+                                     "policy, or run the garbage collection against the writer");
     }
     try {
         // Find the endpoint
@@ -3386,9 +3519,22 @@ crow::response CacheConfigHandler::performGarbageCollection(const crow::request&
         }
 
         try {
-            // Trigger garbage collection
-            cache_manager->performGarbageCollection(config_manager_, *endpoint, {});
-            return crow::response(200, "Garbage collection completed");
+            // JSON, with what it did. It used to answer the text "Garbage collection
+            // completed" whether it expired anything or not - including with no
+            // retention policy at all, when it never does.
+            const auto result = cache_manager->performGarbageCollection(config_manager_, *endpoint, {});
+            crow::json::wvalue body;
+            body["status"] = result.status;
+            body["expired_snapshots"] = static_cast<int64_t>(result.expired_snapshots);
+            body["files_deleted"] = static_cast<int64_t>(result.files_deleted);
+            body["bytes_freed"] = result.bytes_freed;
+            body["message"] = result.message;
+            if (!result.warning.empty()) {
+                body["warning"] = result.warning;
+            }
+            crow::response res(result.status == "error" ? 500 : 200, body);
+            res.set_header("Content-Type", "application/json");
+            return res;
         } catch (const std::exception& e) {
             return crow::response(400, std::string("Garbage collection failed: ") + e.what());
         }

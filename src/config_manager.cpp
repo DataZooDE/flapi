@@ -454,7 +454,10 @@ void ConfigManager::parseTemplateConfig() {
         if (FileProviderFactory::GetBundleContents() != nullptr) {
             template_config.path = joined.string();
         } else {
-            template_config.path = std::filesystem::absolute(joined).string();
+            // Normalised AFTER absolute(): with a relative base path, `../sqls`
+            // stayed `/cwd/../sqls`, and every template under it then "contained
+            // path traversal" in --validate-config.
+            template_config.path = std::filesystem::absolute(joined).lexically_normal().string();
         }
         CROW_LOG_DEBUG << "Template Path: " << template_config.path;
 
@@ -587,6 +590,15 @@ void ConfigManager::parseDuckLakeConfig() {
                 if (!ducklake_config.compaction.enabled) {
                     CROW_LOG_WARNING << "ducklake.compaction.schedule has no effect unless compaction.enabled: true";
                 }
+            }
+            if (compaction["delete-threshold"]) {
+                const double threshold = safeGet<double>(compaction, "delete-threshold", "ducklake.compaction.delete-threshold");
+                if (!(threshold > 0.0 && threshold <= 1.0)) {
+                    throw ConfigurationError("Invalid compaction delete-threshold " + std::to_string(threshold) +
+                                             ": expected a fraction of deleted rows, 0 < x <= 1 (e.g. 0.2)",
+                                             "ducklake.compaction.delete-threshold");
+                }
+                ducklake_config.compaction.delete_threshold = threshold;
             }
         }
 
@@ -2231,6 +2243,18 @@ std::string ConfigManager::loadMCPInstructions() const {
     return "";
 }
 
+std::string RedactConnectionSecrets(const std::string& text) {
+    static const std::regex url_password(R"(([A-Za-z][A-Za-z0-9+.\-]*://[^:/@\s'"]*):([^@\s'"]*)@)");
+    // A key naming a secret, `=`, then a single-quoted value or one running to
+    // the next separator (space, `;`, `&`, quote).
+    static const std::regex key_value(
+        R"(\b([A-Za-z_]*(?:password|passwd|secret|token|api_?key|access_?key)[A-Za-z_]*|pwd)(\s*=\s*)('(?:[^'\\]|\\.)*'|[^\s;&'"]+))",
+        std::regex::icase);
+    std::string out = std::regex_replace(text, url_password, "$1:<redacted>@");
+    out = std::regex_replace(out, key_value, "$1$2<redacted>");
+    return out;
+}
+
 // JSON configuration methods
 crow::json::wvalue ConfigManager::getFlapiConfig() const {
     crow::json::wvalue result;
@@ -2271,11 +2295,25 @@ crow::json::wvalue ConfigManager::getFlapiConfig() const {
     crow::json::wvalue ducklakeJson;
     ducklakeJson["enabled"] = ducklake_config.enabled;
     ducklakeJson["alias"] = ducklake_config.alias;
-    ducklakeJson["metadata-path"] = ducklake_config.metadata_path;
-    ducklakeJson["data-path"] = ducklake_config.data_path;
+    // A Postgres/MySQL metadata-path is a DSN with `password=...`, and both paths
+    // may be RESOLVED {{env.X}} values - this answered the secret in clear.
+    ducklakeJson["metadata-path"] = RedactConnectionSecrets(ducklake_config.metadata_path);
+    ducklakeJson["data-path"] = RedactConnectionSecrets(ducklake_config.data_path);
     ducklakeJson["override-data-path"] = ducklake_config.override_data_path;
     ducklakeJson["read-only"] = ducklake_config.read_only;
     ducklakeJson["warmup"] = CacheWarmupModeToString(ducklake_config.warmup);
+    // What actually happens: a read-only replica never warms (it cannot build),
+    // and --cache-warmup / FLAPI_CACHE_WARMUP override the file. `warmup` alone
+    // showed "always" on a replica that warms nothing.
+    {
+        CacheWarmupMode effective = ducklake_config.warmup;
+        if (ducklake_config.read_only) {
+            effective = CacheWarmupMode::Never;
+        } else if (cache_warmup_override) {
+            effective = *cache_warmup_override;
+        }
+        ducklakeJson["warmup_effective"] = CacheWarmupModeToString(effective);
+    }
 
     // Add data inlining configuration
     if (ducklake_config.data_inlining_row_limit) {
@@ -2300,6 +2338,9 @@ crow::json::wvalue ConfigManager::getFlapiConfig() const {
         compactionJson["enabled"] = ducklake_config.compaction.enabled;
         if (ducklake_config.compaction.schedule) {
             compactionJson["schedule"] = ducklake_config.compaction.schedule.value();
+        }
+        if (ducklake_config.compaction.delete_threshold) {
+            compactionJson["delete-threshold"] = ducklake_config.compaction.delete_threshold.value();
         }
         ducklakeJson["compaction"] = std::move(compactionJson);
     }
@@ -3306,11 +3347,23 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
         result.valid = false;
         result.errors.emplace_back("template-source cannot be empty");
     } else {
-        // Security check: detect path traversal attempts
-        if (PathValidator::ContainsTraversal(config.templateSource)) {
-            result.warnings.emplace_back("Template source contains path traversal sequences: " + config.templateSource);
-            result.warnings.emplace_back("Template file does not exist (path traversal detected)");
+        // Traversal means ESCAPING template.path, not a `..` somewhere in the
+        // configured path: `template.path: ../sqls` flagged every template it
+        // held - and then claimed the existing files did not exist.
+        const std::string normalised = std::filesystem::path(config.templateSource).lexically_normal().string();
+        std::string escape;
+        if (FileProviderFactory::GetBundleContents() != nullptr) {
+            if (PathValidator::ContainsTraversal(normalised)) {
+                escape = "template path '" + config.templateSource + "' is outside the templates directory";
+            }
         } else {
+            escape = TemplatePathProblem(normalised);
+        }
+        if (!escape.empty()) {
+            result.warnings.emplace_back("Template source escapes template.path (" + getTemplatePath() +
+                                         "): " + escape);
+        }
+        {
             std::string reported;
             if (!templateFileExists(config.templateSource, reported)) {
                 result.warnings.emplace_back("Template file does not exist: " + reported);

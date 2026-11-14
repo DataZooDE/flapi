@@ -1,10 +1,12 @@
 #include "cache_refresh_command.hpp"
 
 #include <crow.h>
+#include <filesystem>
 
 #include "cache_manager.hpp"
 #include "config_manager.hpp"
 #include "database_manager.hpp"
+#include "duckdb_embed_fs.hpp"
 
 namespace flapi {
 
@@ -28,8 +30,12 @@ bool IsCatalogLockError(const std::string& message) {
 }
 
 std::string CatalogLockMessage(const std::string& endpoint_path) {
+    // The holder may be read-only replicas, which cannot refresh at all - so
+    // "refresh through the server" alone was a dead end there.
     return "a running flapi holds the DuckLake catalog lock; refresh through the server: flapii cache refresh " +
-           (endpoint_path.empty() ? std::string("<path>") : endpoint_path);
+           (endpoint_path.empty() ? std::string("<path>") : endpoint_path) +
+           " (if the holders are read-only replicas, stop the replicas, or use a Postgres/SQLite/MySQL "
+           "DuckLake catalog, which a writer and replicas can share)";
 }
 
 int RunCacheRefreshCommand(std::shared_ptr<ConfigManager> config_manager,
@@ -80,6 +86,10 @@ int RunCacheRefreshCommand(std::shared_ptr<ConfigManager> config_manager,
         }
         throw;
     }
+    // embed:// for the populate SQL: the bundle's when packed, else the config
+    // directory. The one-shot never registered it, so a packed binary's refresh
+    // of a read_csv('embed://...') cache failed too.
+    RegisterEmbeddedFileSystem(std::filesystem::absolute(config_manager->getBasePath().empty() ? std::string(".") : config_manager->getBasePath()).string());
     auto cache_manager = db_manager->getCacheManager();
     cache_manager->initializeAuditTables(config_manager);
 

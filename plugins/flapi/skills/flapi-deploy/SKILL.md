@@ -72,6 +72,7 @@ SOURCE_DATE_EPOCH=1700000000 flapi pack --in ./my-api --out api   # bit-identica
 | `--with-extensions` | install the config's extensions (`core_functions`, `duckdb.default-extensions`, `INSTALL`s in `connections.*.init`) for this platform and embed them under `.flapi/extensions/` |
 | `--extensions-dir DIR` | embed an already filled extension directory instead (another platform) |
 | `--allow-secrets` | bundle secret-looking files anyway (testing only) |
+| `--exclude GLOB` | repeatable: leave matching files out (`*` within a segment, `**` across; a name without `/` matches at any depth). The configured DuckLake catalog, `*.ducklake` and `*.ducklake.wal` are always left out |
 | `--skip-validation` | pack an unvalidated config |
 | `--macos-append` | macOS only: append after `__LINKEDIT` instead of writing the reserved `__FLAPI/__bundle` segment. The result is ad-hoc signed and **not notarisable**. |
 
@@ -82,7 +83,9 @@ bundle goes into a reserved 16 MiB Mach-O segment, and the binary is re-signed s
 notarisable. A larger bundle is an error (the segment size is fixed at build time).
 
 A bundle-ready config reads its data with `embed://`, and keeps writable state outside the
-bundle:
+bundle. `embed://data/x` also works unpacked: it resolves against the config directory, so the
+same tree runs before `pack`. A packed binary's `flapi cache refresh` reads the bundled
+`flapi.yaml`:
 
 ```yaml
 project-name: packed-api
@@ -218,8 +221,12 @@ ducklake:
   read-only: true                        # no warm-up/refresh/retention/compaction; mutations -> 409
 ```
 
-On a replica, `POST /api/v1/_config/endpoints/{slug}/cache/refresh` answers 409
-`read_only_cache`, and endpoints read the snapshot the writer committed.
+On a replica, `POST /api/v1/_config/endpoints/{slug}/cache/refresh` (and every other cache
+mutation, including `PUT .../cache/template`) answers 409 `read_only_cache`. Endpoints read the
+snapshot the writer committed, and a table the writer builds after the replica started is
+served within about 5 s. A DuckDB-file catalog serves one process: a replica that finds it locked
+fails with `another process holds the lock on the DuckDB-file catalog`. Use Postgres/SQLite/MySQL.
+A `password=` in the `metadata-path` DSN is shown as `<redacted>` in logs and config API answers.
 
 Fast startup: use the `-runtime` image with `FLAPI_EXTENSIONS_OFFLINE=1`, or
 `flapi pack --with-extensions`. CI smoke test without touching data: `flapi --validate-config`

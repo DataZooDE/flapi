@@ -137,6 +137,12 @@ public:
     /// whole build.
     static std::string PopulateSelectError(const PopulateTarget& target, std::size_t statement,
                                            std::size_t statement_count = 0);
+    /// Create the local metadata-path parent and data-path directories DuckLake
+    /// needs (a read-only replica only checks them). The problem, or nullopt.
+    static std::optional<std::string> PrepareDuckLakeDirectories(const DuckLakeConfig& ducklake);
+    /// The DuckLake attach failure as reported: credentials redacted, and a lock
+    /// conflict on a DuckDB-file catalog explained.
+    static std::string DuckLakeAttachErrorMessage(const DuckLakeConfig& ducklake, const std::string& raw);
     std::string renderCacheTemplate(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params);
     
     // Write operation methods
@@ -216,6 +222,8 @@ private:
     // shutdown() detaches and checkpoints only when it is set: a startup that
     // failed part-way wrote nothing, so there is nothing to flush (#145).
     bool initialized = false;
+    // The DuckLake catalog was attached (so shutdown detaches it).
+    bool ducklake_attached_ = false;
     std::mutex db_mutex; // Mutex for thread safety
     std::shared_ptr<CacheManager> cache_manager;
     std::shared_ptr<SQLTemplateProcessor> sql_processor;

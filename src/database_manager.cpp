@@ -1,4 +1,5 @@
 #include <stdexcept>
+#include <filesystem>
 #include <cstdio>
 #include <sstream>
 #include <algorithm>
@@ -15,6 +16,7 @@
 #include "sql_template_processor.hpp"
 #include "sql_utils.hpp"
 #include "database_manager.hpp"
+#include "cache_refresh_command.hpp"
 #include "extension_installer.hpp"
 #include <chrono>
 #include <thread>
@@ -89,7 +91,9 @@ void DatabaseManager::closeDatabaseLocked(bool graceful) {
     if (graceful && config_manager) {
         std::string error;
         const auto& ducklake_config = config_manager->getDuckLakeConfig();
-        if (ducklake_config.enabled) {
+        // Only what was attached: a one-shot refresh that lost the lock race
+        // printed "Failed to detach DuckLake catalog ... database not found".
+        if (ducklake_config.enabled && ducklake_attached_) {
             const std::string detach = "DETACH " + ducklake_config.alias + ";";
             if (run(detach.c_str(), error)) {
                 CROW_LOG_INFO << "Detached DuckLake catalog: " << ducklake_config.alias;
@@ -108,6 +112,7 @@ void DatabaseManager::closeDatabaseLocked(bool graceful) {
     duckdb_close(&db);
     db = nullptr;
     initialized = false;
+    ducklake_attached_ = false;
     CROW_LOG_DEBUG << "DatabaseManager: closed database";
 }
 
@@ -140,6 +145,90 @@ DatabaseManager::~DatabaseManager() {
     if (db) {
         duckdb_close(&db);
     }
+}
+
+namespace {
+
+// The local filesystem path a DuckLake metadata-path names, if it names one:
+// a bare path, or one behind a `duckdb:` / `sqlite:` prefix. Postgres/MySQL DSNs
+// and object-store URLs have no local parent directory to prepare.
+std::optional<std::filesystem::path> localCatalogFile(const std::string& metadata_path) {
+    std::string path = metadata_path;
+    for (const char* prefix : {"duckdb:", "sqlite:"}) {
+        if (path.rfind(prefix, 0) == 0) {
+            path = path.substr(std::string(prefix).size());
+            break;
+        }
+    }
+    if (path.empty() || path.find("://") != std::string::npos) {
+        return std::nullopt;
+    }
+    const auto colon = path.find(':');
+    // `postgres:dbname=...`, `mysql:...`; a Windows drive letter (`C:`) is local.
+    if (colon != std::string::npos && colon != 1) {
+        return std::nullopt;
+    }
+    return std::filesystem::path(path);
+}
+
+bool isLocalDirectory(const std::string& data_path) {
+    return !data_path.empty() && data_path.find("://") == std::string::npos;
+}
+
+} // namespace
+
+std::optional<std::string> DatabaseManager::PrepareDuckLakeDirectories(const DuckLakeConfig& ducklake) {
+    namespace fs = std::filesystem;
+    std::vector<fs::path> needed;
+    if (const auto file = localCatalogFile(ducklake.metadata_path)) {
+        const auto parent = file->parent_path();
+        if (!parent.empty()) {
+            needed.push_back(parent);
+        }
+    }
+    if (isLocalDirectory(ducklake.data_path)) {
+        needed.push_back(fs::path(ducklake.data_path));
+    }
+    for (const auto& dir : needed) {
+        std::error_code ec;
+        if (fs::is_directory(dir, ec)) {
+            continue;
+        }
+        if (ducklake.read_only) {
+            return "directory " + RedactConnectionSecrets(dir.string()) +
+                   " does not exist (ducklake.read-only: a replica does not create the catalog; "
+                   "start the writer first or fix metadata-path/data-path)";
+        }
+        fs::create_directories(dir, ec);
+        if (ec) {
+            return "cannot create directory " + RedactConnectionSecrets(dir.string()) + ": " + ec.message();
+        }
+        CROW_LOG_INFO << "Created DuckLake directory " << RedactConnectionSecrets(dir.string());
+    }
+    return std::nullopt;
+}
+
+std::string DatabaseManager::DuckLakeAttachErrorMessage(const DuckLakeConfig& ducklake, const std::string& raw) {
+    // The raw error quotes the whole ATTACH statement, metadata-path DSN included
+    // - `password=...` and all - and went to the log and stderr in clear.
+    std::string detail = RedactConnectionSecrets(raw);
+    if (!ducklake.metadata_path.empty()) {
+        const std::string redacted = RedactConnectionSecrets(ducklake.metadata_path);
+        for (std::size_t pos = detail.find(ducklake.metadata_path); pos != std::string::npos;
+             pos = detail.find(ducklake.metadata_path, pos + redacted.size())) {
+            detail.replace(pos, ducklake.metadata_path.size(), redacted);
+        }
+    }
+    if (IsCatalogLockError(raw)) {
+        // A DuckDB-file catalog is single-process: a replica cannot open it while
+        // the writer (or another replica) holds it. The raw IO error said neither.
+        return "Failed to attach DuckLake catalog: another process holds the lock on the DuckDB-file catalog " +
+               RedactConnectionSecrets(ducklake.metadata_path) +
+               ". A DuckDB-file catalog serves one process at a time: stop the other flapi (the writer or a "
+               "read-only replica), or use a Postgres/SQLite/MySQL DuckLake catalog to run a writer with "
+               "read-only replicas. (" + detail + ")";
+    }
+    return "Failed to attach DuckLake catalog: " + detail;
 }
 
 void DatabaseManager::initializeDBManagerFromConfig(std::shared_ptr<ConfigManager> config_manager) {
@@ -194,10 +283,18 @@ void DatabaseManager::initializeDBManagerFromConfig(std::shared_ptr<ConfigManage
 
             attach_stmt += ");";
 
+            // A missing parent directory used to surface as DuckDB's garbled
+            // "...path +" IO error. A writer creates what it needs; a read-only
+            // replica must not create an empty catalog, so it says what is missing.
+            if (const auto problem = PrepareDuckLakeDirectories(ducklake_config)) {
+                throw std::runtime_error("Failed to attach DuckLake catalog: " + *problem);
+            }
+
             try {
                 executeInitStatement(attach_stmt);
+                ducklake_attached_ = true;
             } catch (const std::exception& e) {
-                throw std::runtime_error(std::string("Failed to attach DuckLake catalog: ") + e.what());
+                throw std::runtime_error(DuckLakeAttachErrorMessage(ducklake_config, e.what()));
             }
         }
 

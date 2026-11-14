@@ -106,6 +106,7 @@ ducklake:
   compaction:
     enabled: true
     schedule: "24h"            # interval, or @hourly / @daily / @midnight / @weekly
+    delete-threshold: 0.2      # rewrite files with >20% deleted rows (DuckLake default 0.95)
   scheduler:
     enabled: true              # the default; false opts out (startup warns)
     scan-interval: "1m"        # default: min(heartbeat.worker-interval, shortest cache.schedule)
@@ -333,18 +334,32 @@ unreferenced files, so disk space is reclaimed. The audit log is bounded too:
 the newest 1000 `sync_events` rows per cache table are kept, and audit
 snapshots are expired together with the cache's.
 
-```cpp
-void pruneSnapshots(const std::string& table, const RetentionConfig& retention) {
-    if (retention.keep_last_snapshots.has_value()) {
-        // Keep only last N snapshots
-        deleteOldSnapshots(table, *retention.keep_last_snapshots);
-    }
-    if (retention.max_snapshot_age.has_value()) {
-        // Delete snapshots older than max age
-        deleteSnapshotsOlderThan(table, *retention.max_snapshot_age);
-    }
-}
-```
+Retention is per table (`CacheManager::applyRetention` -> `buildExpireSql`):
+expiry names explicit snapshot ids, never a catalog-wide `older_than`. A
+snapshot is this table's when its `changes` name one of the keys from
+`CacheManager::tableChangeKeys`:
+
+- `schema.table` and the form DuckLake writes into `tables_created`: each part
+  through `KeywordHelper::WriteOptionallyQuoted`, so the default schema `cache`
+  (a keyword) is `'"cache".t'`;
+- **every table id the table has had**: CTAS full refreshes and `--full`
+  rebuilds give it a new id each time. The ids come from
+  `__ducklake_metadata_<alias>.ducklake_table` joined to `ducklake_schema` by
+  schema NAME, which `ducklake_table_info()` does not expose. A same-named
+  table in another schema is therefore not confused with this one. When the
+  metadata tables cannot be read, the code falls back to the live id and an
+  ambiguous name disables expiry.
+
+Only snapshots that touched no other LIVE table are expired. Shared ones are
+kept and reported (WARNING, audit message, GC `warning`). The newest snapshot
+of the table is always kept. A data file is deleted only when no remaining
+snapshot can see it, including another table's snapshots taken while it was
+live. A table with many interleaved writers therefore frees files when those
+writers' snapshots expire too.
+
+`POST /api/v1/_config/cache/drop-table` drops a table no endpoint uses
+(`CacheManager::dropObsoleteCacheTable`). It then expires every snapshot since
+the table's first one that touched no live table, and deletes the freed files.
 
 ## Cache Invalidation
 
@@ -375,8 +390,12 @@ POST /api/v1/_config/endpoints/{path}/cache/refresh
 # A template with its own BEGIN/COMMIT only gets the watermark cleared (warning).
 POST /api/v1/_config/endpoints/{path}/cache/refresh?full=true
 
-# Expire old snapshots per the endpoint's retention policy
+# Expire old snapshots per the endpoint's retention policy; JSON answer
+# {status, expired_snapshots, files_deleted, bytes_freed, message}
 POST /api/v1/_config/endpoints/{path}/cache/gc
+
+# Drop a cache table no endpoint uses (left by a changed schema:/table:)
+POST /api/v1/_config/cache/drop-table   {"schema": "old", "table": "t"}
 ```
 
 ### Programmatic
@@ -415,8 +434,13 @@ sequenceDiagram
 Refreshes run off the request path (warm-up, HeartbeatWorker schedule, config
 service / `flapii cache refresh`, `flapi cache refresh`). Each one writes a row to
 `<alias>.audit.sync_events` with `duration_ms`, `rows_affected` and
-`snapshot_id`, and updates the in-memory roll-up served under `caches` by
+`snapshot_id` (the snapshot that refresh committed; null when it committed
+none), and updates the in-memory roll-up served under `caches` by
 `GET /api/v1/_config/metrics`.
+
+Time travel in a serving template (`AT (VERSION => n)`) to a snapshot that does
+not exist or was expired answers `404 {"error":"snapshot_not_found"}`, not 500
+(`RequestHandler`, DuckLake "No snapshot found at version|timestamp").
 
 ## Readiness during warmup
 
@@ -452,13 +476,23 @@ then the CLI/env override, then `cache.warmup`, then `ducklake.warmup`.
 gives each item's `duration_ms`, `rows_affected` and, with `--full`,
 `"full": true`; it also compacts when compaction is due. If a running server
 holds the catalog lock it prints
-`{"error":"a running flapi holds the DuckLake catalog lock; refresh through the server: flapii cache refresh <path>"}`
-and exits 1. On SIGTERM a server interrupts running populate scripts and
+`{"error":"a running flapi holds the DuckLake catalog lock; refresh through the server: flapii cache refresh <path> (if the holders are read-only replicas, stop the replicas, or use a Postgres/SQLite/MySQL DuckLake catalog, which a writer and replicas can share)"}`
+and exits 1. A server or replica that cannot attach a locked DuckDB-file catalog
+fails with `Failed to attach DuckLake catalog: another process holds the lock ...`
+(`DatabaseManager::DuckLakeAttachErrorMessage`, credentials redacted). A missing
+local metadata directory or `data-path` is created first
+(`PrepareDuckLakeDirectories`). A replica refuses to start without them. On SIGTERM a server interrupts running populate scripts and
 refuses new refreshes.
 Replicas set `ducklake.read-only: true`. The catalog is then attached
 `READ_ONLY`, `HeartbeatWorker::ShouldRunCacheMaintenance` returns false (no
-scheduled refresh, retention or compaction), and `CacheConfigHandler` answers
-`409 read_only_cache` to refresh, update and GC.
+scheduled refresh, retention or compaction). `CacheConfigHandler` answers
+`409 read_only_cache` to refresh, cache config update, GC, cache template
+update and drop-table, each with its own advice. A replica cannot build a
+table, so `CacheManager::recheckReadOnlyCaches` looks again for one that is not
+ready. This happens at most every 5 s per table from `readinessBlock` on the
+request path, and forced on every HeartbeatWorker scan. It marks the table Ready
+once the writer has built it in the shared catalog, which must be
+Postgres/SQLite/MySQL, because a DuckDB-file catalog serves one process.
 
 ## Source Files
 

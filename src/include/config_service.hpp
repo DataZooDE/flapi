@@ -109,12 +109,16 @@ public:
     crow::response getCacheAuditLog(const std::string& path);
     /// `table` ("schema.table" or "table"): only that cache table's events,
     /// whichever endpoint sharing it triggered them.
-    crow::response getAllCacheAuditLogs(const std::string& table = "");
+    /// `sync_type` (full | append | merge | garbage_collection | compaction):
+    /// only events of that kind - compaction is catalog-wide, filed under no
+    /// endpoint, so this is where its history is read.
+    crow::response getAllCacheAuditLogs(const std::string& table = "", const std::string& sync_type = "");
 
 private:
     std::shared_ptr<ConfigManager> config_manager_;
     std::string buildAuditQuery(const std::string& catalog, const std::string& endpoint_filter = "",
-                                const std::string& table_filter = "") const;
+                                const std::string& table_filter = "",
+                                const std::string& sync_type_filter = "") const;
 };
 
 /**
@@ -192,6 +196,9 @@ public:
     crow::response updateCacheConfig(const crow::request& req, const std::string& path);
     crow::response refreshCache(const crow::request& req, const std::string& path);
     crow::response performGarbageCollection(const crow::request& req, const std::string& path);
+    /// POST /api/v1/_config/cache/drop-table {"schema","table"}: drop a cache table
+    /// no endpoint uses any more, expire its snapshots and delete its files.
+    crow::response dropCacheTable(const crow::request& req);
 
 private:
     std::shared_ptr<ConfigManager> config_manager_;

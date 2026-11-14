@@ -336,11 +336,16 @@ What usually makes a refresh shorter, biggest win first:
    merge cache updating ~500k rows per refresh, 78 delete files after 12
    refreshes and refresh time rising from ~1.2 s to ~6.3 s. Compact the table,
    or rebuild it with an occasional full rebuild (`flapii cache refresh <path> --full`).
+   Compaction rewrites a file only above DuckLake's 95% deleted rows by default. Set
+   `ducklake.compaction.delete-threshold` (e.g. `0.2`) so it does.
 7. **Bound snapshot growth.** Every refresh is a DuckLake snapshot. Set
    `retention.keep-last-snapshots` / `max-snapshot-age` (per cache, or once under
    `ducklake.retention` for all caches without their own). Retention runs after
    every refresh and on `flapii cache gc <path>`; expired files are deleted from
-   disk.
+   disk. That includes the earlier incarnations a full refresh or `--full` rebuild
+   leaves behind. A file goes only when no kept snapshot of any table still sees
+   it. After changing `cache.schema`, drop the old table with
+   `flapii cache drop-table <old-schema>.<table>`.
 
 The `flapi-cache-tuning` skill in the [Claude Code plugin](./claude-code.md)
 walks through this loop with before/after numbers.
@@ -394,8 +399,12 @@ flapii cache list                  # all caches
 flapii cache refresh /customers    # refresh now
 flapii cache refresh /customers --full   # drop and rebuild from scratch
 flapii cache audit /customers -o table   # refresh history: mode, status, duration, rows, snapshot
-flapii cache gc /customers         # apply retention (path is required)
+flapii cache gc /customers         # apply retention (path is required); JSON: status, expired_snapshots, files_deleted, bytes_freed
+flapii cache drop-table old.customers_cache   # drop a table no endpoint uses any more
 ```
+
+`cache gc` answers `"status": "no_policy"` when the cache has no retention policy (nothing is expired).
+Time travel to a snapshot that retention expired answers `404 snapshot_not_found`.
 
 ## How it works
 

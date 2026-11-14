@@ -41,6 +41,15 @@ bool ParsePlainNonNegativeInt(const std::string& text, int64_t& out) {
     return true;
 }
 
+// DuckLake's answers to time travel (`AT (VERSION => n)` / `AT (TIMESTAMP => t)`)
+// to a snapshot that never existed or that retention has expired.
+bool isSnapshotNotFoundMessage(const std::string& message) {
+    return message.find("No snapshot found at version") != std::string::npos ||
+           message.find("No snapshot found at timestamp") != std::string::npos ||
+           message.find("does not exist at version") != std::string::npos ||
+           message.find("does not exist at timestamp") != std::string::npos;
+}
+
 void writeInternalError(crow::response& res) {
     crow::json::wvalue body;
     body["error"] = "Internal Server Error";
@@ -430,6 +439,21 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
             res.set_header("Content-Type", "application/json");
             crow::json::wvalue body;
             body["error"] = "The database is busy; retry shortly.";
+            res.write(body.dump());
+            res.end();
+            return;
+        }
+        // Time travel on a cached endpoint to a snapshot that does not exist (or
+        // that retention expired) is the caller asking for something absent, not
+        // a server fault: it was a 500.
+        if (endpoint.cache.enabled && isSnapshotNotFoundMessage(e.what())) {
+            CROW_LOG_INFO << "time travel to an unknown snapshot: " << e.what();
+            res.code = 404;
+            res.set_header("Content-Type", "application/json");
+            crow::json::wvalue body;
+            body["error"] = "snapshot_not_found";
+            body["message"] = "The requested cache snapshot does not exist; it may have been expired by the "
+                              "retention policy";
             res.write(body.dump());
             res.end();
             return;

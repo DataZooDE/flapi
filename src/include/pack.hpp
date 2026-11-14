@@ -8,6 +8,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace flapi {
 
@@ -57,12 +58,32 @@ struct PackOptions {
     // A filled DuckDB extension directory to embed under kBundledExtensionsPrefix.
     // The packed binary uses it as its extension directory and starts offline.
     std::optional<std::filesystem::path> extensions_dir;
+
+    // Paths (relative to `in_dir`, forward slashes) or globs NOT to bundle:
+    // `--exclude <glob>` plus the configured DuckLake metadata/data paths.
+    // `*` stays within a path segment, `**` crosses them, `?` is one character; a
+    // pattern without `/` also matches a bare file or directory name at any
+    // depth, and a match on a directory excludes everything below it.
+    // kDefaultPackExcludes are always applied on top.
+    std::vector<std::string> exclude_globs;
 };
+
+// Never bundled: a DuckLake catalog is runtime state (the bundle is read-only and
+// nothing ever opens these from it), and it is often the largest thing in the tree.
+inline const std::vector<std::string>& DefaultPackExcludes() {
+    static const std::vector<std::string> defaults{"*.ducklake", "*.ducklake.wal", "*.ducklake.files"};
+    return defaults;
+}
+
+// Whether `rel_path` matches one of `globs` (see PackOptions::exclude_globs).
+bool MatchesPackExclude(const std::string& rel_path, const std::vector<std::string>& globs);
 
 struct PackResult {
     std::filesystem::path output;
     std::size_t entry_count = 0;
     std::uint64_t archive_size = 0;
+    // Files left out by an exclude (default, DuckLake or --exclude).
+    std::vector<std::string> excluded;
 };
 
 // Pack `in_dir` (recursively) into a self-contained executable at
