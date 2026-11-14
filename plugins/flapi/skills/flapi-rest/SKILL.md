@@ -382,6 +382,10 @@ DELETE FROM notesdb.notes WHERE id = {{ params.id }}
 - Writes on a cached endpoint: `cache.invalidate-on-write: true` refreshes the
   cache before the response, `refresh-on-write: true` right after it
   (asynchronously); see `flapi-cache-design`.
+- **Same `url-path`, several methods** (one YAML per method): config-service routes
+  need `?method=` (`flapii endpoints reload <path> --method POST`), else 400
+  `Ambiguous`; or reload by file (`--file`). An `mcp-tool:` on a write endpoint makes
+  an MCP write tool that agents call unconfirmed: add `mcp.auth` (`flapi-mcp`).
 
 ## YAML includes and environment variables
 

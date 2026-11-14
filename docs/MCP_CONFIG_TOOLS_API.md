@@ -21,7 +21,7 @@ All tools use JSON-RPC 2.0 protocol with MCP error codes for standardized error 
 To enable config MCP tools:
 ```bash
 ./flapi --config-service
-./flapi --config-service --config-service-token "your-token"  # With authentication
+./flapi --config-service --config-service-token "your-token-of-16-plus-chars"  # With authentication
 ```
 
 When `--config-service` is NOT enabled:

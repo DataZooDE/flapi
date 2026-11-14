@@ -90,7 +90,7 @@ not the `SECURITY WARNINGS` banner; add `|SECURITY WARNINGS` to fail on those.
 ## Layer 2: template checks (server running)
 
 ```bash
-export FLAPI_CONFIG_SERVICE_TOKEN=dev-token
+export FLAPI_CONFIG_SERVICE_TOKEN=dev-token-0123456789
 flapi -c flapi.yaml --config-service &        # same token picked up from the env
 
 flapii templates expand /customers --params '{"nation":"5"}'          # JSON {"expanded": "..."}

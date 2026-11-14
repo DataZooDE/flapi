@@ -134,8 +134,8 @@ These variables are available in a cache template:
 | Variable | Contains |
 |---|---|
 | `{{cache.catalog}}` `{{cache.schema}}` `{{cache.table}}` | Where to write |
-| `{{cache.snapshotTimestamp}}` `{{cache.snapshotId}}` | This refresh |
-| `{{cache.previousSnapshotTimestamp}}` `{{cache.previousSnapshotId}}` | The incremental watermark. With a `cursor:` the timestamp is `max(<cursor>)` over the cached rows, in the cursor's own type; both are absent when no watermark can be read, so a guarded template loads in full. See CONFIG_REFERENCE. |
+| `{{cache.snapshotTimestamp}}` `{{cache.snapshotId}}` | The newest snapshot that wrote this table **before** this refresh started (commit time in UTC, id), i.e. the last refresh that changed it. Not this refresh's own snapshot: that id is in the audit row afterwards. Not a watermark. |
+| `{{cache.previousSnapshotTimestamp}}` `{{cache.previousSnapshotId}}` | The incremental watermark. With a `cursor:` the timestamp is `max(<cursor>)` over the cached rows, in the cursor's own type; without one (full mode) it is the same commit time as `snapshotTimestamp`. The timestamp is absent when no watermark can be read, so a guarded template loads in full; the id is absent only for a table no snapshot has touched yet. `--full` erases both. See CONFIG_REFERENCE. |
 | `{{cache.cursorColumn}}` `{{cache.cursorType}}` | Your declared cursor |
 | `{{cache.primaryKeys}}` | Your declared key |
 | `{{params.cacheMode}}` | `full`, `append` or `merge` |
@@ -169,8 +169,9 @@ bare for an integer cursor.
 **Late rows.** A row that arrives with a cursor value below the watermark is
 skipped by a strict `>`, permanently. If your source has late rows, re-read an
 overlap window: `AND updated_at >= TIMESTAMP '{{{cache.previousSnapshotTimestamp}}}' - INTERVAL 10 MINUTE`.
-The window must cover the **maximum** lateness; a row later than the window is
-still lost. What the re-read rows do depends on the mode:
+The window must be at least the **maximum** lateness plus a margin; a row later
+than the window is still lost, and with `>` instead of `>=` so is a row exactly at
+the edge. What the re-read rows do depends on the mode:
 
 - **Merge** collapses them on the key, so the overlap is safe.
 - **Append + overlap duplicates the whole window on every refresh**, even when
@@ -179,11 +180,15 @@ still lost. What the re-read rows do depends on the mode:
 
   ```sql
     AND updated_at >= TIMESTAMP '{{{cache.previousSnapshotTimestamp}}}' - INTERVAL 10 MINUTE
-    AND id NOT IN (
-      SELECT id FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
-      WHERE updated_at >= TIMESTAMP '{{{cache.previousSnapshotTimestamp}}}' - INTERVAL 10 MINUTE
+    AND NOT EXISTS (
+      SELECT 1 FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS c
+      WHERE c.id = s.id
+        AND c.updated_at >= TIMESTAMP '{{{cache.previousSnapshotTimestamp}}}' - INTERVAL 10 MINUTE
     )
   ```
+
+  (`s` is the source alias.) Use `NOT EXISTS` rather than `id NOT IN (...)`: a single
+  NULL id makes `NOT IN` match no row, so every re-read row is silently dropped.
 
 To check that nothing was lost, run a reconcile query from time to time against
 the source and the cache table:
@@ -289,8 +294,9 @@ The tombstones keep the watermark advancing, at the cost of storing deleted rows
 If the source hard-deletes rows and keeps no trace, an incremental cache cannot
 see the delete. Use a full refresh for that table. You can also reconcile
 periodically: a scheduled full refresh, or
-`DELETE FROM <cache> WHERE id NOT IN (SELECT id FROM source)` if the key set is
-cheap to read. The cache keys `delete-handling` and `rollback-window` are
+`DELETE FROM <cache> AS c WHERE NOT EXISTS (SELECT 1 FROM source s WHERE s.id = c.id)`
+if the key set is cheap to read (not `NOT IN`, which deletes nothing once the
+source has a NULL id). The cache keys `delete-handling` and `rollback-window` are
 deprecated and have no effect.
 
 ## Measuring and tuning refresh time

@@ -28,8 +28,18 @@ Designing the cache (mode, templates, deletes) is `flapi-cache-design`.
 - **`rows_affected` is the sum of the DML counts** of all statements in the
   template (the whole template runs as one transaction). A `MERGE` counts every
   matched row, changed or not, so an overlap window inflates it.
-- **Metrics reset on restart; percentiles are estimates** interpolated inside a
-  histogram bucket (~25% wide), capped at the observed `max`. Use the audit log for history.
+- **Metrics reset on restart; percentiles are estimates**: the server finds the
+  quantile's histogram bucket (ten per decade, ~25% wide) and interpolates linearly
+  inside it, capped at the observed `max`; `flapii metrics -o table` marks them `~`.
+  Use the audit log for history.
+- **`data-inlining-row-limit` is not a speed knob for big deltas.** Raised to
+  200000 with ~112k-row merge deltas, refreshes went from 118 ms to 11.9-23.7 s
+  (60-100x slower). Keep it at or below a few thousand rows, and never at or above
+  the delta size on a big table.
+- **Merge caches slow down with every refresh** (measured on 10M rows: 175 → 377 ms
+  over 8 refreshes, ~30 ms each) because delete files pile up, and default
+  compaction does not rewrite them. Set `ducklake.compaction.delete-threshold` and
+  rebuild with `--full` now and then (§6).
 - **A `cursor.type` that does not match the column drops the watermark:** every refresh
   then loads the full source. `flapii templates expand <path> --cache` shows
   `watermark_dropped_reason`, the refresh answer a `warning`, the audit row's `message` too.
@@ -58,7 +68,7 @@ Designing the cache (mode, templates, deletes) is `flapi-cache-design`.
 ## 1. Measure
 
 ```bash
-export FLAPI_CONFIG_SERVICE_TOKEN=dev-token
+export FLAPI_CONFIG_SERVICE_TOKEN=dev-token-0123456789
 flapii cache refresh /orders
 flapii cache audit /orders -o table        # newest first: mode, status, duration, rows, snapshot
 flapii cache audit /orders                 # JSON: sync_type, status, duration_ms, rows_affected, snapshot_id, message
@@ -133,9 +143,10 @@ script (`Processed query:`).
 | Merge rewrites rows that did not change | `WHEN MATCHED AND (t.a IS DISTINCT FROM s.a OR ...) THEN UPDATE` |
 | Overlap window rereads a lot | Shrink it to the measured maximum lateness |
 | Refresh time ≥ schedule | Lengthen `schedule`, or make the refresh cheaper first |
-| Many tiny refreshes, many small files | `ducklake.data-inlining-row-limit`; `ducklake.compaction` |
+| Many tiny refreshes (tens to a few thousand rows), many small files | `ducklake.data-inlining-row-limit` up to a few thousand; `ducklake.compaction`. Never raise inlining to the size of a large delta (60-100x slower merges) |
 | Metadata / snapshot count, storage keep growing | `cache.retention` or global `ducklake.retention`; `flapii cache gc <path>` (JSON: `expired_snapshots`, `files_deleted`, `bytes_freed`); an old table after a `schema:` change: `flapii cache drop-table <schema>.<table>` |
-| Merge refreshes slow down, delete files pile up | `ducklake.compaction.delete-threshold: 0.2` (DuckLake rewrites only above 0.95 by default) |
+| Incremental (merge) refresh time grows every refresh | Delete files pile up: `ducklake.compaction.delete-threshold: 0.2` (DuckLake's default rewrites only above 0.95 deleted; measured: rewrites to 0 delete files) plus a periodic `flapii cache refresh <path> --full` (476 ms on 10M rows, then back to the fast baseline) |
+| Out of memory / swapping during a full rebuild | Size `duckdb.max_memory` for the CTAS: 10M rows x 10 columns peaked at ~4 GB RSS (a merge refresh ~1.5 GB) |
 | CPU-bound transform, or spilling | `duckdb.threads`, `duckdb.max_memory` |
 | Startup spends minutes warming | `ducklake.warmup: if-empty` with a persistent catalog, or build in CI (`flapi-cache-design`) |
 | Write endpoints slow since write-through | `invalidate-on-write` runs the populate synchronously: make it incremental, or switch to `refresh-on-write` (after the response) |
@@ -181,6 +192,15 @@ Not pushed down, a separate `FILTER` node sits **above** the scan
   its scanner pushes filters by default (`pg_experimental_filter_pushdown`).
 - Index (Postgres) or partition/cluster (BigQuery, Parquet sort order) the source
   on the cursor column.
+
+**A filter inside the Parquet scan is necessary, not sufficient.** Row groups are
+skipped only when their min/max on the cursor column exclude the watermark, i.e.
+when the file is sorted or clustered on the cursor. Measured: the same delta took
+173 ms on an unsorted file and 105 ms on a sorted one, with an identical `EXPLAIN`.
+Check what was really read with `EXPLAIN ANALYZE` (rows scanned per node) or
+`tracing.db_profiling: summary` (`flapi.db.bytes_read`), and the row-group ranges with
+`SELECT row_group_id, stats_min, stats_max FROM parquet_metadata('f.parquet') WHERE
+path_in_schema = '<cursor>'`. Write the source with `ORDER BY <cursor>` to fix it.
 
 ## 4. Project, then merge only real changes
 
@@ -231,8 +251,10 @@ WHEN MATCHED AND (t.name IS DISTINCT FROM s.name OR t.tier IS DISTINCT FROM s.ti
 
 ## 5. Overlap window and schedule
 
-- The window must cover the **maximum** lateness you observe, no more. Measure
-  it at the source: `max(ingested_at - event_time)` over a week.
+- The window must be at least the **maximum** lateness you observe plus a margin,
+  and both the window predicate and the anti-join use `>=` (with `>` a row exactly
+  at the window edge is lost; see `flapi-cache-design`). Measure lateness at the
+  source: `max(ingested_at - event_time)` over a week.
 - Every refresh rereads the window: cost ≈ rows in the window × refreshes per day.
   With a 1-hour window and a 1-minute schedule each row is read ~60 times.
 - Keep `duration_ms.max` well below the schedule interval (rule of thumb: < 50 %).
@@ -264,6 +286,7 @@ ducklake:
   compaction:
     enabled: true
     schedule: '@daily'
+    delete-threshold: 0.2          # rewrite files with > 20% deleted rows (merge caches)
 ```
 
 ```yaml
@@ -298,12 +321,17 @@ SELECT * FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}} ORDER BY segmen
 - **`data-inlining-row-limit`** is passed to DuckLake's `ATTACH` as
   `DATA_INLINING_ROW_LIMIT`: writes up to that many rows are stored in the
   catalog instead of a new Parquet file. DuckLake already inlines small writes
-  by default; raise the limit when deltas are larger than that but frequent.
+  by default. Raise it only for frequent deltas of hundreds to a few thousand
+  rows; inlined rows are slow to merge into, and a limit at or above a large
+  delta made merge refreshes 60-100x slower (118 ms → 11.9-23.7 s at ~112k rows).
 - **Compaction** runs `ducklake_merge_adjacent_files`, `ducklake_rewrite_data_files`
   and a file cleanup once per catalog when due; the audit log records it as
   `sync_type` `compaction` (read it with `GET /api/v1/_config/cache/audit?sync_type=compaction`).
   A one-shot `flapi cache refresh` also compacts when due. `compaction.delete-threshold`
-  (0 < x <= 1) is the share of deleted rows above which a file is rewritten.
+  (0 < x <= 1) is the share of deleted rows above which a file is rewritten; DuckLake's
+  default is 0.95, so a merge cache's delete files are otherwise never rewritten and
+  every refresh gets slower. `0.2` rewrote them to 0 delete files in the measurement
+  above; a periodic `--full` rebuild resets the table completely.
 - **Retention** (`cache.retention`, else `ducklake.retention`; an endpoint block
   replaces the global one) runs after every refresh of that endpoint and on
   `flapii cache gc <path>`; it expires only this table's snapshots, so time travel
@@ -319,7 +347,9 @@ SELECT * FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}} ORDER BY segmen
 - **`duckdb.threads` / `duckdb.max_memory`** (any key under `duckdb:` is passed to
   DuckDB as a setting, e.g. `threads: 4`, `max_memory: 2GB`) apply to the whole
   process: serving and refreshing share them. More threads help scans and
-  aggregates; a memory limit makes large merges spill instead of failing.
+  aggregates; a memory limit makes large merges spill instead of failing. A full CTAS
+  of 10M rows x 10 columns peaked at ~4 GB RSS, a merge refresh of the same table at
+  ~1.5 GB: size `max_memory` (and the container) for the full rebuild, not the delta.
 
 
 ## Canonical tuning loop

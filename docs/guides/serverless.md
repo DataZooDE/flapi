@@ -80,23 +80,55 @@ Replicas attach the same catalog read-only:
 ducklake:
   enabled: true
   alias: cache
-  metadata-path: postgres:dbname=flapi host=10.0.0.5   # or a DuckDB-file catalog
+  metadata-path: postgres:dbname=flapi host=10.0.0.5 user=flapi   # password from PGPASSWORD
   data-path: gs://my-api-data/cache/
   read-only: true          # no warm-up, no refresh/retention/compaction, 409 on mutations
 ```
+
+- Replicas need the writer's `connections:` **names** (the properties can be
+  placeholders: a replica never runs a populate template) and the same endpoint
+  YAMLs. A replica logs `Cache scheduler off` by itself; it needs no
+  `ducklake.scheduler.enabled: false`.
+- Put the Postgres password in `PGPASSWORD`, not in the DSN. (A `password=` in
+  `metadata-path` is shown as `<redacted>` in logs and config API answers.)
+- With a Postgres catalog the writer can run while replicas serve: each commit is
+  visible on a replica's next read, and a table first built after a replica started
+  is served within about 5 s (verified with a writer refreshing every second, no
+  failed reads).
 
 A Postgres catalog costs network round trips on every query, so put it in
 the same region on a machine that is not shared-core, and measure p50 before
 choosing this over § 2.
 
-**A DuckDB-file catalog cannot be shared with a running fleet.** A DuckDB file
-takes an exclusive lock, and a replica holds it for its whole life even with
-`read-only: true`. While any server has the file open, the one-shot writer
-fails (exit `1`) with `{"error":"a running flapi holds the DuckLake catalog lock;
-refresh through the server: flapii cache refresh <path>"}`. The writer can only run when no replica holds
-the file (between deploys, with the fleet scaled to zero), and the replicas
-must start after it finishes. For a writer that runs while replicas serve, use
-a Postgres catalog.
+**A DuckDB-file catalog is shared by replicas only.** Several read-only replicas
+can open the same file, but a writer cannot open it while any replica holds it:
+the one-shot fails (exit `1`) with `{"error":"a running flapi holds the DuckLake
+catalog lock; ..."}`. A replica cannot start while a writer server holds it
+either. So the writer runs only between deploys or with the fleet scaled to
+zero, and the replicas start after it finishes. For a writer that runs while
+replicas serve, use a Postgres catalog.
+
+### Prebuilding the catalog in CI
+
+```bash
+flapi cache refresh -c flapi.yaml --all     # writes ./state/cache.ducklake + ./state/cache_data/
+```
+
+- **The catalog stores its data path as an absolute path.** Copied anywhere else,
+  startup fails with `DATA_PATH parameter ... does not match existing data path in
+  the catalog`. Build at the absolute path the server uses, or set
+  `ducklake.override-data-path: true`.
+- Relative `metadata-path` / `data-path` resolve against the config directory (in
+  the image below: `/app/config`), but against the working directory for a packed
+  binary.
+- `embed://data/x` works unpacked too (it resolves against the config directory),
+  and a packed binary's `./api cache refresh --all` uses its bundle, so one config
+  prebuilds before and after `flapi pack`. `pack` never bundles the DuckLake catalog
+  or its data path.
+- **A shipped catalog older than its `schedule` is refreshed at the first scheduler
+  scan after every cold start.** On scale-to-zero set
+  `ducklake.scheduler.enabled: false` (the job refreshes) or a schedule longer than
+  the catalog's age, together with `ducklake.warmup: if-empty` or `never`.
 
 ## 4. Fast, offline startup
 
@@ -109,6 +141,10 @@ and sets `FLAPI_EXTENSION_DIRECTORY`:
 FROM ghcr.io/datazoode/flapi:<version>-runtime
 COPY flapi.yaml /app/config/flapi.yaml
 COPY sqls/ /app/config/sqls/
+COPY data/ /app/config/data/
+# a catalog prebuilt in CI (flapi.yaml: metadata-path ./state/cache.ducklake,
+# data-path ./state/cache_data, override-data-path: true, warmup: if-empty)
+COPY state/ /app/config/state/
 ENV FLAPI_CONFIG=/app/config/flapi.yaml FLAPI_EXTENSIONS_OFFLINE=1
 ```
 

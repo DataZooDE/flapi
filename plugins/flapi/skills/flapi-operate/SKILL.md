@@ -33,8 +33,9 @@ user-invocable: false
 - **A GET never builds a cache.** With `--no-cache-warmup` or `warmup: never`, an endpoint is
   503 `cache_not_built` until something refreshes it (`flapii cache refresh <path>`,
   schedule, or `flapi cache refresh`).
-- **Metrics need the config service**, and reset on restart. Percentiles are bucket upper
-  bounds (100 us ... 60 s), capped at the observed `max`. A cache 503 (`cache_warming`,
+- **Metrics need the config service**, and reset on restart. Percentiles are estimates,
+  interpolated linearly inside a histogram bucket (ten per decade, 100 us ... 60 s, ~25%
+  wide) and capped at the observed `max`. A cache 503 (`cache_warming`,
   `cache_not_built`, `cache_build_failed`) counts as `503_cache` per series and as
   `requests.cache_unavailable`, **not** as `5xx` / `server_errors`; other 503s (busy,
   capacity) and MCP tool failures still count as server errors.

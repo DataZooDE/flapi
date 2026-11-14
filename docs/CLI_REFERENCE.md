@@ -382,7 +382,7 @@ See [MCP Configuration Tools API Reference](./MCP_CONFIG_TOOLS_API.md) for compl
 ./flapi --config-service
 
 # Enable with custom token
-./flapi --config-service --config-service-token "my-secure-token"
+./flapi --config-service --config-service-token "my-secure-token-0123456789"
 ```
 
 ---

@@ -254,6 +254,7 @@ every endpoint.
 |---|---|---|
 | Parquet / CSV / JSON file, glob | `parquet` / built-in CSV / `json` | `read_parquet('{{{ conn.path }}}')`, `read_csv(...)`, `read_json(...)` |
 | SQLite | `sqlite` (default) | `ATTACH ... (TYPE sqlite, READ_ONLY)` in init, then `nw.Table` |
+| DuckDB file | built-in | `ATTACH ... (READ_ONLY)`; this **locks the file against every other writer** while the server runs. Written by another process: attach in the populate template + atomic rename (references) |
 | Postgres | `postgres` (default) | `CREATE SECRET (TYPE postgres ...)` + `ATTACH '' AS pg (TYPE postgres, SECRET ...)` |
 | MySQL | `mysql` (core, **not** a default) | `CREATE SECRET (TYPE mysql ...)` + `ATTACH '' AS my (TYPE mysql, SECRET ...)` |
 | BigQuery | `bigquery` (**community**) | `ATTACH 'project=<id>' AS bq (TYPE bigquery, READ_ONLY)` |
@@ -290,7 +291,7 @@ pass `-t`). The default base URL is `http://localhost:8080` (`-u`, `FLAPI_BASE_U
 http://<host>:<port> (REST API; MCP at .../mcp/jsonrpc)` once it has bound the port.
 
 ```bash
-export FLAPI_CONFIG_SERVICE_TOKEN=dev-token
+export FLAPI_CONFIG_SERVICE_TOKEN=dev-token-0123456789
 flapi -c flapi.yaml --config-service &
 flapii ping
 flapii endpoints list

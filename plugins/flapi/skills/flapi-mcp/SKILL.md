@@ -263,6 +263,27 @@ SELECT ProductName, UnitPrice FROM nw.Products ORDER BY UnitPrice DESC LIMIT 10
   `redact-columns`; an empty result is `"text":"[]"`.
 - `allowed-roles` works on `mcp-resource` and `mcp-prompt` as on tools.
 
+## Write tools (create, update, delete)
+
+A POST/PUT/PATCH/DELETE endpoint with an `mcp-tool:` block is a write tool: the
+arguments are its body and path fields, and the tool runs the write template
+(`flapi-rest`). **An MCP client calls it without asking anyone**: flAPI sends no
+read-only/destructive hint, so the agent only knows from the description. Say "Writes
+data" in it, enable `mcp.auth` and give every write tool `allowed-roles`.
+
+Runnable CRUD example (REST + MCP, basic auth, `allowed-roles`) and the calls:
+[references/write-tools.md](references/write-tools.md).
+
+- Path and body fields become tool arguments with the validators' types
+  (`id` integer, `done` boolean). A failed write (duplicate key) is a tool result
+  with `"isError": true` and the database error text, not a JSON-RPC error.
+- `mcp.auth` covers the MCP side only; the REST routes of the same files need
+  `auth:` (endpoint or global, `flapi-auth`).
+- Several methods on one `url-path` (GET + POST `/tasks`): config-service routes for
+  that path need `?method=` (`flapii endpoints reload /tasks --method POST`, likewise `get`, `update`, `delete`);
+  without it the answer is 400 `Ambiguous: /tasks is served by GET (...), POST (...)`.
+  `flapii endpoints reload --file sqls/tasks-create.yaml` reloads by file instead.
+
 ## Calling it with curl
 
 ```bash

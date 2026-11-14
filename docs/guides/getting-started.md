@@ -117,7 +117,7 @@ Open <http://localhost:8080/doc> for a Swagger UI generated from your config, an
 > service, which is off by default. Start with it enabled:
 >
 > ```bash
-> export FLAPI_CONFIG_SERVICE_TOKEN=dev-token
+> export FLAPI_CONFIG_SERVICE_TOKEN=dev-token-0123456789
 > flapi -c ./flapi.yaml --config-service
 > ```
 >

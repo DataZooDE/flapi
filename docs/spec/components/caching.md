@@ -199,8 +199,8 @@ WHEN NOT MATCHED THEN INSERT *
 | `{{cache.schema}}` | Cache schema name |
 | `{{cache.catalog}}` | Cache catalog (DuckLake alias) |
 | `{{cache.previousSnapshotTimestamp}}` | Incremental watermark: `max(<cursor>)` over the cached rows when a `cursor:` is configured, else the last refresh's commit timestamp. See CONFIG_REFERENCE for why the commit timestamp alone loses rows. |
-| `{{cache.snapshotTimestamp}}` / `{{cache.snapshotId}}` | The table's newest snapshot when this refresh started |
-| `{{cache.previousSnapshotId}}` | Snapshot id of the last completed refresh (for time travel) |
+| `{{cache.snapshotTimestamp}}` / `{{cache.snapshotId}}` | The table's newest snapshot when this refresh started (the last refresh that wrote it); kept with `--full` |
+| `{{cache.previousSnapshotId}}` | The same snapshot id (for time travel); kept when only the cursor watermark is dropped, erased with `--full` |
 | `{{cache.cursorColumn}}` / `{{cache.cursorType}}` | The declared cursor |
 | `{{cache.primaryKeys}}` | The declared primary key, comma-joined |
 | `{{cache.schedule}}` | The declared schedule |

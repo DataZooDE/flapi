@@ -2019,14 +2019,14 @@ is one, e.g. `[404] Not Found: Endpoint not found`.
 
 ```bash
 # Option 1: Environment variable
-export FLAPI_CONFIG_SERVICE_TOKEN="your-token"
+export FLAPI_CONFIG_SERVICE_TOKEN="your-token-of-16-plus-chars"
 flapii endpoints list
 
 # Option 2: Command-line flag (-t is short for --config-service-token)
-flapii -t "your-token" endpoints list
+flapii -t "your-token-of-16-plus-chars" endpoints list
 
 # Option 3: Config service token flag
-flapii --config-service-token "your-token" endpoints list
+flapii --config-service-token "your-token-of-16-plus-chars" endpoints list
 ```
 
 ---

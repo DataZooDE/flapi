@@ -99,6 +99,64 @@ SQLite connections automatically. Set `serialize-access: false` only if you have
 that concurrent access is safe. A SQLite file **cannot** be read from a packed bundle
 (`embed://`), because SQLite opens a real file. See `flapi-deploy`.
 
+## DuckDB file (another process writes it)
+
+```yaml
+connections:
+  warehouse:
+    init: |
+      ATTACH IF NOT EXISTS '/srv/data/warehouse.duckdb' AS src (READ_ONLY);
+```
+
+This works for a file nobody else writes. **A DuckDB file is locked by the process
+that opens it, even `READ_ONLY`**: while the server runs, the process that builds
+the file gets `IO Error: Could not set lock on file ... Conflicting lock is held in
+.../flapi (PID n)`, for the server's whole lifetime. Detaching does not help: a
+`DETACH` at the end of a populate template fails because the template runs as one
+transaction.
+
+### DuckDB file as a cache source
+
+What works (verified on v26.10.31), best first:
+
+1. **The populate template attaches the file itself, and the writer publishes by
+   atomic rename.** No `ATTACH` in `init`; the template starts with a DETACH/ATTACH
+   (accepted at the start of the refresh transaction), so every refresh opens the
+   newest file:
+
+   ```yaml
+   connections:
+     warehouse:
+       properties:
+         path: /srv/data/warehouse.duckdb
+   ```
+
+   ```sql
+   DETACH DATABASE IF EXISTS src;
+   ATTACH IF NOT EXISTS '{{{conn.path}}}' AS src (READ_ONLY);
+   {{^cache.previousSnapshotTimestamp}}
+   CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS
+   SELECT id, ts, kind FROM src.events;
+   {{/cache.previousSnapshotTimestamp}}
+   {{#cache.previousSnapshotTimestamp}}
+   INSERT INTO {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
+   SELECT id, ts, kind FROM src.events
+   WHERE ts > TIMESTAMP '{{{cache.previousSnapshotTimestamp}}}';   -- late rows: flapi-cache-design
+   {{/cache.previousSnapshotTimestamp}}
+   ```
+
+   The server still holds the file between refreshes, so the writer never writes it
+   in place: it builds a copy and renames it over the original
+   (`cp warehouse.duckdb next.duckdb && duckdb next.duckdb -c "..." && mv next.duckdb
+   warehouse.duckdb`, same filesystem). The server keeps reading the old inode until
+   the next refresh re-attaches. A relative `path` property is rendered as an
+   absolute path under the config directory.
+2. **Export drops.** The writer exports Parquet/CSV (`COPY ... TO 'x.parquet'`) into
+   a versioned path and the connection reads files (`read_parquet`); no lock at all.
+3. **A multi-client database** (Postgres, MySQL) as the source.
+4. **Write through flAPI**: a write endpoint (`flapi-rest`) owns the file and other
+   processes POST to it.
+
 ## Postgres
 
 ```yaml

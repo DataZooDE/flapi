@@ -50,10 +50,14 @@ user-invocable: false
 - **A top-level `auth:` block now protects every endpoint without its own.** A config
   that relied on it doing nothing turns open endpoints into 401s on upgrade; opt public
   ones out with `auth: {enabled: false}`.
-- **The cache scheduler is on by default.** Every `cache.schedule` fires on the server
-  (no refresh at boot: the first one is one schedule after the last real refresh). On
-  replicas or when an external job refreshes, set `ducklake.scheduler.enabled: false`.
-  See `flapi-cache-tuning`.
+- **The cache scheduler is on by default.** Every `cache.schedule` fires on the server,
+  one schedule after the newest snapshot. A shipped catalog older than its schedule is
+  therefore refreshed at the first scan after **every** cold start. On a writer server
+  that an external job refreshes (or on scale-to-zero), set
+  `ducklake.scheduler.enabled: false`. Read-only replicas switch it off themselves.
+- **A prebuilt DuckLake catalog stores an absolute `data_path`.** Moved to another
+  directory or image path it fails to attach (`DATA_PATH parameter ... does not match
+  existing data path in the catalog`) unless `ducklake.override-data-path: true`.
 
 ## Self-packaging (one binary, `scp` deploy)
 
@@ -72,7 +76,7 @@ SOURCE_DATE_EPOCH=1700000000 flapi pack --in ./my-api --out api   # bit-identica
 | `--with-extensions` | install the config's extensions (`core_functions`, `duckdb.default-extensions`, `INSTALL`s in `connections.*.init`) for this platform and embed them under `.flapi/extensions/` |
 | `--extensions-dir DIR` | embed an already filled extension directory instead (another platform) |
 | `--allow-secrets` | bundle secret-looking files anyway (testing only) |
-| `--exclude GLOB` | repeatable: leave matching files out (`*` within a segment, `**` across; a name without `/` matches at any depth). The configured DuckLake catalog, `*.ducklake` and `*.ducklake.wal` are always left out |
+| `--exclude GLOB` | repeatable: leave matching files out (`*` within a segment, `**` across; a name without `/` matches at any depth). The configured DuckLake `metadata-path` (+ `.wal`), its `data-path`, and any `*.ducklake` / `*.ducklake.wal` are always left out (`Excluded N file(s) (DuckLake catalog / --exclude)`) |
 | `--skip-validation` | pack an unvalidated config |
 | `--macos-append` | macOS only: append after `__LINKEDIT` instead of writing the reserved `__FLAPI/__bundle` segment. The result is ad-hoc signed and **not notarisable**. |
 
@@ -84,8 +88,10 @@ notarisable. A larger bundle is an error (the segment size is fixed at build tim
 
 A bundle-ready config reads its data with `embed://`, and keeps writable state outside the
 bundle. `embed://data/x` also works unpacked: it resolves against the config directory, so the
-same tree runs before `pack`. A packed binary's `flapi cache refresh` reads the bundled
-`flapi.yaml`:
+same tree runs (and prebuilds its cache) before `pack`. A packed binary's `./api cache
+refresh --all` (no `-c`) reads the bundled config and data. Relative `ducklake` paths
+resolve against the config directory unpacked, but against the **working directory** when
+packed:
 
 ```yaml
 project-name: packed-api
@@ -143,12 +149,17 @@ A relative property path (`./data/x.parquet`) resolves against the mounted confi
 Mount read-only, and put a DuckLake catalog or `duckdb.db_path` on a writable volume with
 absolute paths.
 
-Bake the config into an image:
+Bake the config, its data and a prebuilt cache into an image (in CI first: `flapi cache
+refresh -c flapi.yaml --all` with `metadata-path: ./state/cache.ducklake`, `data-path:
+./state/cache_data`, `override-data-path: true`, `warmup: if-empty`; relative paths resolve
+against `/app/config`):
 
 ```dockerfile
 FROM ghcr.io/datazoode/flapi:v26.10.31-runtime
 COPY flapi.yaml /app/config/flapi.yaml
 COPY sqls/ /app/config/sqls/
+COPY data/ /app/config/data/
+COPY state/ /app/config/state/
 ENV FLAPI_CONFIG=/app/config/flapi.yaml FLAPI_EXTENSIONS_OFFLINE=1
 HEALTHCHECK CMD ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /health/live HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q live <&3"]
 ```
@@ -224,9 +235,19 @@ ducklake:
 On a replica, `POST /api/v1/_config/endpoints/{slug}/cache/refresh` (and every other cache
 mutation, including `PUT .../cache/template`) answers 409 `read_only_cache`. Endpoints read the
 snapshot the writer committed, and a table the writer builds after the replica started is
-served within about 5 s. A DuckDB-file catalog serves one process: a replica that finds it locked
-fails with `another process holds the lock on the DuckDB-file catalog`. Use Postgres/SQLite/MySQL.
-A `password=` in the `metadata-path` DSN is shown as `<redacted>` in logs and config API answers.
+served within about 5 s. Replicas log `Cache scheduler off` and need no
+`scheduler.enabled: false`. They need the writer's `connections:` names (placeholder
+properties are fine) and the same endpoint YAMLs.
+
+- **DuckDB-file catalog:** several replicas can share it, but a writer cannot open it while
+  a replica holds it (the one-shot exits 1), and a replica does not start while a writer
+  server holds it (`another process holds the lock on the DuckDB-file catalog`). Ship it
+  prebuilt, or refresh between deploys.
+- **Postgres catalog** for a writer that runs while replicas serve (verified: each commit
+  visible on the replicas' next read, no failed reads):
+  `metadata-path: postgres:dbname=flapi host=10.0.0.5 user=flapi` with the password in
+  `PGPASSWORD`. A `password=` in the DSN is shown as `<redacted>` in logs and config API
+  answers, but keep it out of YAML.
 
 Fast startup: use the `-runtime` image with `FLAPI_EXTENSIONS_OFFLINE=1`, or
 `flapi pack --with-extensions`. CI smoke test without touching data: `flapi --validate-config`
@@ -332,8 +353,9 @@ and audit logs are covered in `flapi-operate`.
    or protect it with `FLAPI_CONFIG_SERVICE_TOKEN` and keep `/api/v1/_config` off the
    public network.
 4. Choose a cache strategy for the target. Use `if-empty`/`never` with a prebuilt catalog
-   for scale-to-zero. Replicas use `ducklake.read-only: true`. The scheduler is on by
-   default; turn it off where an external job refreshes (`flapi-cache-design`).
+   for scale-to-zero (`override-data-path: true` if the catalog moved). Replicas use
+   `ducklake.read-only: true`. The scheduler is on by default; turn it off on a writer
+   server an external job refreshes, and on scale-to-zero (`flapi-cache-design`).
 5. Build the artifact: `flapi pack --in . --out api --with-extensions`, or an image `FROM
    ghcr.io/datazoode/flapi:v26.10.31-runtime`, or `pip install flapi-io==26.10.31`.
 6. Prove it is self-contained: run it from another directory or a fresh container, then

@@ -68,7 +68,7 @@ startup error. See `flapi-deploy`.
 | `ducklake.alias` | `cache` | catalog name used in templates (`{{cache.catalog}}`) |
 | `ducklake.metadata-path` | – | a DuckDB file (`./cache.ducklake`) or e.g. `postgres:dbname=...` for a shared catalog |
 | `ducklake.data-path` | – | local dir or object-store URL for the Parquet data files |
-| `ducklake.override-data-path` | `false` | passed to the DuckLake `ATTACH` |
+| `ducklake.override-data-path` | `false` | `OVERRIDE_DATA_PATH` on the DuckLake `ATTACH`: needed to open a catalog prebuilt at another absolute path (the catalog records its data path) |
 | `ducklake.read-only` | `false` | replica: attach read-only, no warm-up / scheduled refresh / retention / compaction; cache mutations return 409 |
 | `ducklake.warmup` | `always` | `always`, `if-empty`, `never`; endpoint `cache.warmup` and `--cache-warmup` override |
 | `ducklake.scheduler.enabled` | `true` | endpoint `cache.schedule`s fire; `false` opts out (startup warning) |
@@ -77,7 +77,7 @@ startup error. See `flapi-deploy`.
 | `ducklake.retention.max-snapshot-age` | – | e.g. `30d`; same inheritance |
 | `ducklake.compaction.enabled` | `false` | with a `schedule`, runs merge / rewrite / cleanup once per catalog when due |
 | `ducklake.compaction.schedule` | – | `<n>[s|m|h|d]` or `@hourly`, `@daily`, `@midnight`, `@weekly`; anything else is a load error. Nothing runs unless `enabled: true` too |
-| `ducklake.data-inlining-row-limit` | – | DuckLake data inlining |
+| `ducklake.data-inlining-row-limit` | – | DuckLake data inlining; a few thousand at most (large values make big merges 60-100x slower) |
 
 ```yaml
 ducklake:

@@ -27,30 +27,57 @@ flapi cache refresh -c flapi.yaml --endpoint /orders --full   # drop and rebuild
 
 ## The DuckDB-file catalog lock
 
-A DuckDB-file `metadata-path` is opened by one writing process at a time. While a
-server has it attached, `flapi cache refresh` on the same file exits 1 with a
-JSON `error` that says a running server holds the DuckLake catalog lock and to
-refresh through it (`flapii cache refresh <path>`),
-and a writer cannot attach while read-only replicas hold it either. So with a file catalog:
+A DuckDB-file `metadata-path` takes a file lock. Verified on v26.10.31:
+
+| Already running | Then | Result |
+|---|---|---|
+| a writer server | `flapi cache refresh` (one-shot) | exit 1, `error`: the catalog lock is held by a running server; refresh through it (`flapii cache refresh <path>`) |
+| a writer server | a replica server (`read-only: true`) | does not start: `another process holds the lock on the DuckDB-file catalog` |
+| one or more replicas | another replica | starts; replicas share the file |
+| one or more replicas | a writer (one-shot or server) | refused (exit 1); stop the replicas first |
+
+So with a file catalog:
 
 - refresh through the running server (`flapii cache refresh <path>`, the
   schedule), or
-- stop the server, run the one-shot, start it again, or
-- build the catalog in CI and ship it.
+- stop the server (or every replica), run the one-shot, start them again, or
+- build the catalog in CI and ship it, or
+- move the catalog to Postgres (or MySQL / SQLite), which a live writer and
+  replicas share.
 
 ## Prebuilt cache in CI / for serverless
 
 ```bash
 flapi -c flapi.yaml --validate-config
-flapi cache refresh -c flapi.yaml --all        # build cache.ducklake + cache_data/
-# package cache.ducklake and cache_data/ with the config (image layer, volume, bucket)
+flapi cache refresh -c flapi.yaml --all        # build ./state/cache.ducklake + ./state/cache_data/
+# ship state/ with the config (image layer, volume, bucket)
 ```
+
+- **The catalog stores an ABSOLUTE `data_path`.** Opened from anywhere else, startup
+  fails with `DATA_PATH parameter "<new>" does not match existing data path in the
+  catalog "<old>"`. Either build at the same absolute path the server will use, or
+  set `ducklake.override-data-path: true` on the server (verified: a catalog built in
+  one directory and copied to another serves after that).
+- Relative `metadata-path` / `data-path` resolve against the **config directory**
+  for an unpacked config (also for `flapi cache refresh -c dir/flapi.yaml` run from
+  elsewhere), and against the **working directory** for a packed binary.
+- `embed://data/x.parquet` resolves against the config directory when the config is
+  not packed, and a packed binary's `./api cache refresh --all` reads its bundled
+  config and data, so the same `embed://` config prebuilds before and after `flapi
+  pack`. `pack` always leaves the configured catalog, its `.wal`, the data path and
+  any `*.ducklake` out of the bundle; `--exclude GLOB` drops more.
 
 At runtime set `ducklake.warmup: if-empty` (start serving what is there, build only
 missing tables) or `never` (never build at startup; a missing table answers `503
 cache_not_built` and `/health` says `degraded` with an `unbuilt` list). On a
-scale-to-zero platform `always` repeats the full load on every cold start. See
-`flapi-deploy` for images and `flapi pack`.
+scale-to-zero platform `always` repeats the full load on every cold start.
+
+**Cold starts and the schedule.** The next refresh is due one `schedule` after the
+newest snapshot. A shipped catalog older than its schedule is therefore refreshed
+at the first scheduler scan after startup (verified: 5 s after start with
+`schedule: 5s`), on every cold start. On scale-to-zero either set
+`ducklake.scheduler.enabled: false` (an external job refreshes), or use a schedule
+longer than the catalog's age at deploy time.
 
 ## Read-only replicas on a shared catalog
 
@@ -58,13 +85,16 @@ scale-to-zero platform `always` repeats the full load on every cold start. See
 ducklake:
   enabled: true
   alias: cache
-  metadata-path: postgres:dbname=flapi host=10.0.0.5
+  metadata-path: postgres:dbname=flapi host=10.0.0.5 user=flapi   # PGPASSWORD from the environment
   data-path: s3://my-bucket/flapi-cache/
   read-only: true
 ```
 
 - The catalog is attached `READ_ONLY`. Implies `warmup: never`; no scheduled
-  refresh, retention or compaction; the audit table is not created.
+  refresh (startup logs `Cache scheduler off: the DuckLake catalog is read-only`),
+  retention or compaction; the audit table is not created. A replica needs no
+  `scheduler.enabled: false`; that setting is for a **writer server** that an
+  external job refreshes instead.
 - `POST .../cache/refresh`, `PUT .../cache`, `PUT .../cache/template`,
   `POST .../cache/gc` and `POST /api/v1/_config/cache/drop-table` answer
   `409 {"error":"read_only_cache"}` with advice for that operation; so do the
@@ -73,12 +103,19 @@ ducklake:
   `cache_not_built` only until the writer has built it. It checks again at most
   every 5 s on requests, and on every scheduler scan. `GET /api/v1/_config/project`
   shows `ducklake.warmup_effective: never`.
-- Every replica's endpoint config must name the same `table` / `schema` and the
-  same `alias` as the writer.
+- Replicas need the **same `connections:` names** as the writer (an endpoint naming
+  an unknown connection fails validation: `Connection 'items' not found`), though
+  the properties can be placeholders since a replica never runs a populate
+  template, and the same endpoint YAMLs (`table`, `schema`) and `alias`.
+- Postgres catalog: `metadata-path: postgres:dbname=... host=... user=...` with the
+  password in `PGPASSWORD` (libpq reads it). A `password=` in the DSN is redacted
+  (`<redacted>`) in logs and config API answers, but keep it out of YAML anyway.
 - The writer is `flapi cache refresh` (a job after the upstream build) or one
-  ordinary server. Credentials for Postgres and object storage come from the
-  environment or a `CREATE SECRET` in a connection `init` (`flapi-setup`).
+  ordinary server. Credentials for object storage come from the environment or a
+  `CREATE SECRET` in a connection `init` (`flapi-setup`).
 
-Verified with a DuckDB-file catalog (replica serves, refresh answers 409). A
-Postgres catalog with a live writer was not exercised here: check that replicas
-pick up the writer's new snapshots in your setup before relying on it.
+Verified with a Postgres 16 catalog and a live writer server refreshing every
+second: a replica served each new snapshot on its next read (300 of 300 reads
+200 during the refreshes), and a table the writer first built after the replica
+started was served within a second. With a DuckDB-file catalog, two replicas
+served side by side and the writer was refused, as in the table above.

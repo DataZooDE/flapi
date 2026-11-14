@@ -43,10 +43,14 @@ triggers a refresh.
   UPDATE/DELETE action`. Keep tombstones (below) or run a separate `DELETE`.
 - **`INSERT (*) VALUES (s.*)` is not DuckDB.** Write `WHEN NOT MATCHED THEN INSERT *`,
   bare `INSERT` (by name), or list the columns.
-- **A populate template must write the table.** A template that is (or ends in)
-  a bare `SELECT` is refused before it runs: `cache template must write
-  {{cache.catalog}}.{{cache.schema}}.{{cache.table}} ... statement N of the template
-  is a bare SELECT`. A script that runs but leaves no table also fails and rolls back.
+- **A populate template must write the table, and no statement may be a bare
+  `SELECT`.** Any bare `SELECT` (first, middle or last) is refused before anything
+  runs: `statement N of M is a bare SELECT; its result is discarded` or `cache
+  template must write {{cache.catalog}}.{{cache.schema}}.{{cache.table}} ...`. So a
+  `SELECT error(...)` guard never fires; write it as `CREATE OR REPLACE TEMP TABLE _chk
+  AS SELECT CASE WHEN <bad state> THEN error('...') END;` (recipe:
+  [references/template-variables.md](references/template-variables.md#guards-and-proving-a-rollback)).
+  A script that runs but leaves no table also fails and rolls back.
   Without `template-file`, the endpoint's `template-source` is the populate SQL: a
   single `SELECT` there is materialised (`CREATE OR REPLACE TABLE ... AS`) as a full
   refresh whatever the inferred mode, and startup warns. Declare `template-file` for
@@ -79,7 +83,7 @@ triggers a refresh.
 | Rows that are updated (orders, customers) | merge | Updates replace by key |
 | Rows that are also deleted, with a delete flag or `deleted_at` | merge + tombstones | The delete moves the cursor |
 | Rows hard-deleted with no trace | full, or merge + key reconciliation | A delta query cannot see a missing row |
-| Late-arriving rows (cursor below the watermark) | merge with an overlap window | Re-read rows collapse on the key |
+| Late-arriving rows (cursor below the watermark) | append + overlap window + anti-join (no key), or merge + overlap window | The anti-join drops re-read rows; under merge they collapse on the key |
 
 The **cursor** must increase on every insert (append) or every change (merge),
 in the column's own type, and should be indexed or partitioned at the source.
@@ -142,16 +146,23 @@ WHERE 1=1
 ORDER BY ProductID
 ```
 
-Without `template-file` the **serving** template is also used as the populate
-SQL, which is a bare `SELECT` and is refused (`503 cache_build_failed`). Always
-set `template-file`.
+Without `template-file` the **serving** template is materialised as a full
+refresh (startup warns). A serving template that reads the cache table, as here,
+cannot build itself (`503 cache_build_failed`). Always set `template-file`.
+
+**Source in a DuckDB file?** `ATTACH ... (READ_ONLY)` in a connection `init` holds a
+lock that stops every other process writing that file for the server's lifetime,
+and a `DETACH` at the end of a populate template fails (one transaction). Use the
+DETACH/ATTACH-at-the-start + atomic-rename pattern in `flapi-setup`
+[references/connections.md](../flapi-setup/references/connections.md#duckdb-file-as-a-cache-source).
 
 ## Incremental append
 
 `{{cache.previousSnapshotTimestamp}}` is the watermark: `max(<cursor column>)`
 over the rows already cached, in the cursor's own type. It is **absent** when the
 table does not exist, is empty, or the value does not look like `cursor.type`.
-Then the `{{^...}}` branch rebuilds the table in full.
+Then the `{{^...}}` branch rebuilds the table in full. (Without a `cursor:` it is
+the commit time of the newest snapshot that wrote this table, not a data value.)
 
 ```yaml
 # flapi: endpoint group=order-feed file=order-feed.yaml
@@ -190,10 +201,6 @@ SELECT * FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
 ORDER BY OrderID DESC
 ```
 
-**Detect lost rows**: a strict `>` loses late rows silently while the refresh reports
-success. Reconcile with an uncached check endpoint:
-[references/delete-patterns.md](references/delete-patterns.md#detecting-lost-rows).
-
 - **Quote the watermark for its type**: bare for an integer, `TIMESTAMP '{{{cache.previousSnapshotTimestamp}}}'`
   for a timestamp, `DATE '...'` for a date. Use triple braces inside quotes.
 - **Bootstrap with `CREATE OR REPLACE`, not "create empty then insert".** The
@@ -203,21 +210,31 @@ success. Reconcile with an uncached check endpoint:
   the cached rows: duplicates in append mode. The `{{^...}}` CTAS / `{{#...}}`
   delta split rebuilds instead. (Under merge either form is idempotent.)
 - **Late rows.** A strict `>` skips a row that arrives later with a cursor value
-  at or below the watermark. Either accept that, or re-read an overlap window and
-  drop what is already cached (append has no key, so the anti-join is yours):
+  at or below the watermark, and the refresh still reports success. Either accept
+  that, or re-read an overlap window and drop what is already cached (append has no
+  key, so the anti-join is yours). Use `>=` in **both** predicates: with `>` a row
+  exactly at the window edge (lateness = window) is lost forever; the anti-join
+  keeps `>=` idempotent.
 
 ```sql
 INSERT INTO {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
 SELECT id, ts, kind FROM src.events AS s
-WHERE s.ts > TIMESTAMP '{{{cache.previousSnapshotTimestamp}}}' - INTERVAL 10 MINUTE
-  AND s.id NOT IN (
-    SELECT id FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
-    WHERE ts > TIMESTAMP '{{{cache.previousSnapshotTimestamp}}}' - INTERVAL 10 MINUTE);
+WHERE s.ts >= TIMESTAMP '{{{cache.previousSnapshotTimestamp}}}' - INTERVAL 10 MINUTE
+  AND NOT EXISTS (
+    SELECT 1 FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS c
+    WHERE c.id = s.id
+      AND c.ts >= TIMESTAMP '{{{cache.previousSnapshotTimestamp}}}' - INTERVAL 10 MINUTE);
 ```
 
-  Without the `NOT IN` an overlap window duplicates the whole window on **every**
-  refresh. Size the window to the maximum lateness (see `flapi-cache-tuning`);
-  merge mode makes overlap idempotent without the anti-join.
+  Without the anti-join an overlap window duplicates the whole window on **every**
+  refresh. Use `NOT EXISTS`, not `NOT IN`: one NULL id in the subquery makes `NOT IN`
+  match nothing, so every late row is silently dropped. Size the window to the
+  measured maximum lateness plus a margin (`flapi-cache-tuning`); merge mode makes
+  overlap idempotent without the anti-join. Verified: a row exactly at the edge is
+  loaded with `>=`, and an unchanged source re-reads 0 rows.
+- **Detect lost rows and duplicates** with an uncached check endpoint (row counts,
+  missing keys, `dup_rows`, a content checksum on both sides):
+  [references/delete-patterns.md](references/delete-patterns.md#detecting-lost-rows).
 
 ## Incremental merge, with deletes as tombstones
 
@@ -305,11 +322,9 @@ WHERE NOT is_deleted
 ORDER BY id
 ```
 
-- **Count only real changes.** `rows_affected` counts every matched row, so an
-  overlap window reports re-read rows as updates. Guard the update:
-  `WHEN MATCHED AND (t.name IS DISTINCT FROM s.name OR t.tier IS DISTINCT FROM s.tier
-  OR t.updated_at IS DISTINCT FROM s.updated_at OR t.is_deleted IS DISTINCT FROM s.is_deleted) THEN UPDATE SET ...`
-  (still one action, so DuckLake accepts it; unchanged rows are not rewritten).
+- **Count only real changes.** `rows_affected` counts every matched row; guard with
+  `WHEN MATCHED AND (t.name IS DISTINCT FROM s.name OR ...) THEN UPDATE SET ...`
+  (still one action; unchanged rows are not rewritten).
 - **`>=` is right for merge**: a re-read boundary row collapses on the key, and it
   closes the "second row at exactly the watermark" gap. In append mode `>=`
   duplicates. For late rows in merge mode, subtract an overlap window
@@ -319,17 +334,11 @@ ORDER BY id
 
 ## Forcing a full rebuild
 
-```bash
-flapii cache refresh /customers --full                  # running server (POST .../cache/refresh?full=true)
-flapi cache refresh -c flapi.yaml --endpoint /customers --full   # one-shot, no server
-```
-
-`--full` erases the watermark **and** drops the cache table in the same
-transaction, so the `{{^cache.previousSnapshotTimestamp}}` branch rebuilds it from
-scratch (an append cache is rebuilt, not re-appended). Readers keep the old
-snapshot until the commit, and a failed rebuild restores it. The audit row keeps
-the YAML's mode label (`append`/`merge`). Details:
-[references/write-through-and-rebuild.md](references/write-through-and-rebuild.md#forcing-a-full-rebuild).
+`flapii cache refresh <path> --full` (server) or `flapi cache refresh -c flapi.yaml
+--endpoint <path> --full` (one-shot) erases the watermark **and** drops the table in
+the refresh's transaction, so the `{{^...}}` branch rebuilds from scratch (an append
+cache is rebuilt, not re-appended); a failed rebuild restores the old snapshot.
+Details: [references/write-through-and-rebuild.md](references/write-through-and-rebuild.md#forcing-a-full-rebuild).
 
 ## The serving template
 
@@ -340,8 +349,10 @@ the YAML's mode label (`append`/`merge`). Details:
 - `limit` / `offset` are reserved for pagination, which wraps your query; do not
   write `LIMIT {{ params.limit }}` in a serving template.
 - Time travel: `AT (VERSION => n)` (a catalog snapshot id, e.g. from
-  `snapshot_id` in the audit log) or `AT (TIMESTAMP => TIMESTAMP '...')`. A
-  version that retention expired fails with `No snapshot found at version n` (500).
+  `snapshot_id` in the audit log) or `AT (TIMESTAMP => TIMESTAMP '...')` inside a
+  section. An expired or unknown version or timestamp answers `404
+  snapshot_not_found`. Snapshot listing endpoint, timestamp parameters (a bound
+  `AT (TIMESTAMP => ?)` does not work), UTC: [references/time-travel.md](references/time-travel.md).
 
 ## When a refresh runs
 
@@ -356,74 +367,60 @@ the YAML's mode label (`append`/`merge`). Details:
 - The config-service slug is the path with `/` → `-` and a literal `-` → `~1`:
   `/orders` is `-orders`, `/order-feed` is `-order~1feed`. `flapii` encodes it for you.
 - A refresh of a table that is already refreshing is skipped, not queued.
-- A failed refresh changes nothing: the previous snapshot keeps serving. Do not
-  add your own `BEGIN` / `COMMIT` to a populate template (with one, `--full` can
-  only clear the watermark, not drop the table, and warns).
-- While a cache has never been built, its endpoint answers `503` with
-  `Retry-After: 5`: `cache_warming` (building), `cache_build_failed` (the first
-  build failed) or `cache_not_built` (warm-up skipped and no table yet). `/health`
-  reports `degraded` with `unbuilt` / `failed` lists. A **later** failed refresh
-  (including a failed warm-up over an existing table) keeps serving the last
-  snapshot and marks the cache `stale`.
+- A failed refresh changes nothing. Do not add your own `BEGIN` / `COMMIT` to a
+  populate template (`--full` then only clears the watermark, and warns).
+- Never built: `503` + `Retry-After: 5` with `cache_warming`, `cache_build_failed`
+  or `cache_not_built`; `/health` is `degraded`. A **later** failed refresh keeps
+  serving the last snapshot and marks the cache `stale`.
 
 ## Write-through: refresh after a write
 
-Give the POST/PUT/PATCH/DELETE endpoint its own `cache:` block with the same
-`table` and `template-file`, plus one of:
-
-| Key | When the populate SQL runs | Use when |
-|---|---|---|
-| `invalidate-on-write: true` | synchronously, before the response | the caller must read its own write |
-| `refresh-on-write: true` | after the response, coalesced per endpoint | write latency matters more than read-your-write |
-
-Both set means synchronous only. REST and MCP tool writes follow the same rules.
-The write endpoint answers 503 until the cache is first built. Runnable example:
-[references/write-through-and-rebuild.md](references/write-through-and-rebuild.md).
+Give the POST/PUT/PATCH/DELETE endpoint its own `cache:` block with the same `table`
+and `template-file`, plus `invalidate-on-write: true` (populate runs before the
+response: read-your-write) or `refresh-on-write: true` (after the response,
+coalesced). Example: [references/write-through-and-rebuild.md](references/write-through-and-rebuild.md).
 
 ## Replicas and prebuilt caches
 
 - `ducklake.read-only: true` makes an instance a replica of a catalog another
-  process writes: no warm-up, schedule, retention or compaction, and cache
-  refresh/update/template/gc/drop-table answer `409 read_only_cache`. A cache the
-  writer builds later is picked up within about 5 s.
-- The writer can be a job: `flapi cache refresh -c flapi.yaml --all` (exit `0` ok,
-  `1` a refresh failed or the catalog is locked, `2` usage).
-- **A DuckDB-file catalog is locked by the process that opened it for writing**:
-  the one-shot fails while a server has it open, and a writer and live replicas
-  cannot share it. A live fleet needs a Postgres (multi-client) catalog; a file
-  catalog can be built in CI and shipped, with `warmup: if-empty` / `never`.
+  process writes: no warm-up, schedule (it logs `Cache scheduler off`), retention or
+  compaction; cache mutations answer `409 read_only_cache`. A table the writer
+  builds later is served within about 5 s. Replicas need the writer's
+  `connections:` names (placeholders are fine) and the same endpoint YAMLs.
+- **DuckDB-file catalog**: several replicas can share it, but no writer can open it
+  while a replica holds it, and no replica starts while a writer server holds it.
+  Build it in CI and ship it, or use a Postgres catalog for a live writer
+  (verified: each commit visible on the replicas' next read, 0 errors).
 
-Recipes: [references/deployment-patterns.md](references/deployment-patterns.md).
+Writer jobs, the lock, prebuilt catalogs (absolute `data_path`!), replica config:
+[references/deployment-patterns.md](references/deployment-patterns.md).
 
 ## Snapshots, time travel, retention
 
 - Every committed write to the cache table is a DuckLake snapshot; the audit row
-  of each refresh records its `snapshot_id`. A 0-row incremental refresh creates
-  none for the table, and its `snapshot_id` is then null (the audit row itself is
-  a snapshot of `audit.sync_events`). Time travel to an expired or unknown
-  version answers `404 snapshot_not_found`.
-- `cache.retention.keep-last-snapshots: N` / `max-snapshot-age: 7d` expire this
-  table's old snapshots **after every refresh**; `flapii cache gc <path>` applies
-  the same policy on demand. Expired versions can no longer be time-travelled.
-- `ducklake.retention` (global, same keys) applies to every cache without its own
-  `retention:`; an endpoint block replaces it (no merge).
-- Expiry covers every incarnation of the table: each CTAS full refresh and
-  `--full` rebuild makes a new table id, and the old ones' snapshots go too.
-  After an expiry the files no snapshot references are deleted, so disk space is
-  reclaimed. A file another table's kept snapshot can still see stays until that
-  snapshot expires. An old table left by a `schema:` change:
-  `flapii cache drop-table <schema>.<table>`. The audit log is bounded too (newest 1000 rows per cache table).
-- `ducklake.compaction: {enabled: true, schedule: 1d}` (or `@hourly`, `@daily`,
-  `@midnight`, `@weekly`; not cron) merges small files once per catalog; the
-  audit log shows it as `sync_type` `compaction`
+  records its `snapshot_id` (null for a 0-row refresh, which writes none). The
+  audit log keeps the ids of expired snapshots: list the live ones
+  ([references/time-travel.md](references/time-travel.md)).
+- `cache.retention.keep-last-snapshots: N` / `max-snapshot-age: 7d` (or global
+  `ducklake.retention` for caches without their own block; no merge) expire this
+  table's old snapshots, every incarnation a CTAS or `--full` left included,
+  **after every refresh**, then delete the unreferenced files. Verified in the
+  default schema `cache` and across `--full`: five CTAS refreshes under
+  `keep-last-snapshots: 2` leave 2 data files. `flapii cache gc <path>` runs it on
+  demand: `{status, expired_snapshots, files_deleted, bytes_freed}` (`no_policy`
+  without retention).
+- A table left behind by a `table:`/`schema:` change: `flapii cache drop-table
+  <schema>.<table>` (409 `cache_table_in_use` while an endpoint still names it).
+- `ducklake.compaction: {enabled: true, schedule: 1d}` (interval or `@daily` etc.,
+  not cron) merges small files once per catalog; audit `sync_type` `compaction`
   (`GET /api/v1/_config/cache/audit?sync_type=compaction`). `delete-threshold: 0.2`
-  makes it rewrite files with more than 20% deleted rows (merge caches).
+  rewrites files with more than 20% deleted rows (merge caches; `flapi-cache-tuning`).
 
 ## Developing the populate SQL
 
 ```bash
-export FLAPI_CONFIG_SERVICE_TOKEN=dev-token
-flapi -c flapi.yaml --config-service --config-service-token dev-token --log-level debug
+export FLAPI_CONFIG_SERVICE_TOKEN=dev-token-0123456789
+flapi -c flapi.yaml --config-service --config-service-token dev-token-0123456789 --log-level debug
 flapii cache get /customers                 # table, schema, cursor, primary key, template file
 flapii cache template /customers            # the populate SQL the server reads
 flapii templates expand /customers --cache  # rendered with the live watermark, not executed
@@ -436,33 +433,19 @@ flapii cache audit /customers -o table      # mode, status, duration_ms, rows, s
 ```
 
 - The populate file is re-read on every refresh: editing it on disk works too.
-- The audit log is data: `flapii` prints it exactly as the server sends it,
-  snake_case (`duration_ms`, `rows_affected`, `snapshot_id`, `message`), whatever
-  `--json-style` says.
-- A successful `flapii cache refresh` prints the mode, rows, duration and snapshot
-  of the refresh. A failed one prints `[400] Bad Request: Cache refresh failed` and
-  the JSON body, whose `reason` is the DuckDB error; the audit row's `message` has it too.
-- `--log-level debug` logs every rendered statement (`Processed query:`), the
-  only way to see the populate SQL after Mustache.
-- `flapii templates expand <path> --cache` renders the **populate** template with
-  the live watermark and snapshot variables, without executing it (returns
-  `target`, `mode`, `expanded`, `variables`): check which branch the next refresh
-  takes. Without `--cache` it renders the serving template. A template with an
-  unclosed `{{#section}}` is a 400 naming `<file>:<line>:<col>`.
-- `?target=cache&validate_only=1` (curl above; the plugin hook calls it after every
-  edit) also CHECKS that rendering without running it: per-statement parse errors,
-  the bare-SELECT rule, and binder errors (unknown columns) from preparing each
-  statement in a rolled-back transaction. The `CREATE TABLE IF NOT EXISTS ... AS
-  ... WHERE false` bootstrap is created there `WITH NO DATA`, so the MERGE after it
-  is bound even before the first build. `MERGE INTOO`, `SELEC oops;` and `c_bogus`
-  used to pass and fail at the next refresh.
-- A bare SELECT before the last statement (a guard) is refused with "statement N of
-  M is a bare SELECT; its result is discarded. Wrap a check in CREATE OR REPLACE TEMP
-  TABLE _chk AS SELECT ...".
-- `flapii cache template` / `update-template` need `template-file`; without it they
-  answer `400 Cache template not configured`.
+- `templates expand <path> --cache` renders the **populate** template with the live
+  watermark (`target`, `mode`, `expanded`, `variables`) without running it: check
+  which branch the next refresh takes. `?target=cache&validate_only=1` (the plugin
+  hook calls it after every edit) also parses and binds each statement in a
+  rolled-back transaction: syntax errors, unknown columns and the bare-SELECT rule
+  show up before the next refresh.
+- A failed `flapii cache refresh` prints `[400] Bad Request: Cache refresh failed`
+  with a `reason` (the DuckDB error); the audit row's `message` has it too.
+  `--log-level debug` logs every rendered statement (`Processed query:`).
 - Prove the incremental branch: refresh, change the source, refresh again, and
   check that the second audit row is the mode you expect with a small `rows_affected`.
+  More (audit fields, guards, proving a rollback):
+  [references/template-variables.md](references/template-variables.md#developing-and-checking-a-populate-template).
 
 ## Canonical cache workflow
 

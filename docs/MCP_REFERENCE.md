@@ -195,7 +195,7 @@ The MCP server exposes two categories of tools:
 ```bash
 ./flapi --config-service
 # or with custom token
-./flapi --config-service --config-service-token "your-token"
+./flapi --config-service --config-service-token "your-token-of-16-plus-chars"
 ```
 
 **Note:** Without the `--config-service` flag, only declarative tools are available in `tools/list` responses.
