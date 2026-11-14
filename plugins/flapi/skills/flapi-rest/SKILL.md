@@ -74,7 +74,8 @@ request:
 template-source: customer.sql    # relative to this YAML file
 connection: [customers]          # first entry feeds {{ conn.* }}
 with-pagination: false           # default true
-request-fields-validation: true  # GET: reject query params not declared (limit/offset allowed)
+request-fields-validation: true  # GET: reject query params not declared (limit/offset/format allowed)
+description: One customer by id  # the operation's description in /doc.yaml
 ```
 
 Validator types and options: [references/validators.md](references/validators.md).
@@ -154,8 +155,11 @@ curl 'http://localhost:8080/customers?format=csv'   # or Accept: text/csv; Arrow
 ```
 
 `limit`/`offset` must be plain non-negative integers (else 400). `next` is
-empty on the last page. With `with-pagination: false` the body is a bare JSON
-array and no count query runs.
+empty on the last page and for `limit=0` (count only). With
+`with-pagination: false` the body is a bare JSON array and no count query runs.
+A query parameter given twice (`?x=1&x=2`) is a 400. Row keys (JSON and CSV)
+follow the `SELECT` column order; doubles print in shortest form; a naive
+`TIMESTAMP` has no `Z` (only `TIMESTAMPTZ` does).
 
 ### The section idiom (when the SQL itself must change)
 
@@ -171,6 +175,10 @@ WHERE 1=1
 ```
 
 `{{#x}}` renders when `x` is present and non-empty, `{{^x}}` when it is absent.
+Every section needs its `{{/x}}` (closed in reverse order) and `{{{` needs `}}}`;
+an unbalanced template fails startup, reload, a template PUT and
+`--validate-config` with `Invalid template <file>:<line>:<col>: ...`. Partials
+(`{{> x}}`) and `{{= =}}` are refused.
 Values inside sections are interpolated, never bound: keep them to `int`,
 `number`, `enum` or strict-`regex` fields, and put string values in quotes
 with triple braces (`'{{{ params.code }}}'`) only after such a validator.
@@ -438,7 +446,10 @@ An endpoint with its own block (even `enabled: false`) ignores the global
 `rate_limit:` block in `flapi.yaml`, which applies to every other endpoint.
 
 `GET /doc` serves Swagger UI, `GET /doc.yaml` the OpenAPI 3 document built
-from every endpoint's `url-path`, `method`, request fields and `description`.
+from every endpoint's `url-path`, `method`, request fields (typed from their
+validators, with bounds; body fields in the request body) and its top-level
+`description:` (else `mcp-tool.description`), plus `limit`/`offset`/`format`,
+the 400 response and the `X-*` headers.
 
 ## Canonical endpoint workflow
 

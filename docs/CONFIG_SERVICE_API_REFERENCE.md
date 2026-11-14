@@ -556,6 +556,16 @@ Content-Type: application/json
 }
 ```
 
+**Response (400):** the template is not valid Mustache (an unbalanced or crossed section, `{{{` not closed
+by `}}}`, an unterminated `{{`, an empty tag, a partial or a set-delimiter tag). The file is not written:
+
+```json
+{"error": "Invalid template sqls/customers.sql:3:1: section '{{#params.id}}' is never closed (missing '{{/params.id}}')"}
+```
+
+`PUT .../cache/template` answers the same way for the cache template, and a reload of an endpoint whose
+template on disk is invalid answers 400 with that message in `reason`.
+
 **CLI:** `flapii templates update /customers -f template.sql`
 
 ---

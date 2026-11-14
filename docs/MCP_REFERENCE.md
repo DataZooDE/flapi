@@ -239,12 +239,15 @@ curl -X POST http://localhost:8080/mcp/jsonrpc \
     },
     "serverInfo": {
       "name": "flapi-mcp-server",
-      "version": "0.3.0"
+      "version": "26.10.31"
     },
     "instructions": "# flapi MCP Server\n..."
   }
 }
 ```
+
+`serverInfo.version` is the flAPI build version (what `flapi --version` prints); it used to be a fixed
+`"0.3.0"`.
 
 The response includes an `Mcp-Session-Id` header that must be included in subsequent requests.
 
@@ -262,7 +265,7 @@ curl http://localhost:8080/mcp/health
 {
   "status": "healthy",
   "server": "flapi-mcp-server",
-  "version": "0.3.0",
+  "version": "26.10.31",
   "protocol_version": "2025-11-25",
   "mcp_available": true,
   "tools_available": true,
@@ -426,7 +429,7 @@ Establishes a new MCP session and negotiates capabilities.
     },
     "serverInfo": {
       "name": "flapi-mcp-server",
-      "version": "0.3.0"
+      "version": "26.10.31"
     },
     "instructions": "..."
   }

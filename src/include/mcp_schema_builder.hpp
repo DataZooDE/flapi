@@ -31,6 +31,11 @@ struct RequestFieldConfig;
 class MCPSchemaBuilder {
 public:
     static crow::json::wvalue buildInputSchema(const std::vector<RequestFieldConfig>& fields);
+
+    // One field's property schema (type, format, bounds, enum, pattern, typed
+    // default, description). buildInputSchema is built from these; the OpenAPI
+    // generator reuses it so /doc.yaml and tools/list type parameters alike.
+    static crow::json::wvalue buildPropertySchema(const RequestFieldConfig& field);
 };
 
 } // namespace flapi

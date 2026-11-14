@@ -45,6 +45,29 @@ Authentication and requests:
   credentials); startup now warns. Create an HMAC key and add `CREATE SECRET (TYPE gcs, KEY_ID ..., SECRET ...)`
   to a connection's `init`.
 
+Templates, requests and responses:
+
+- **A template with unbalanced Mustache sections is a configuration error.** A stray `{{/x}}` crashed the
+  server and an unclosed `{{#x}}` hung it (and grew memory without bound). Now unbalanced or crossed
+  sections, `{{{` not closed by `}}}`, an unterminated `{{`, empty tags, partials (`{{> x}}`) and
+  set-delimiter tags (`{{= =}}`) stop startup, fail a reload (400) and a config-service template update
+  (400, file unchanged), and make `--validate-config` exit 1, each naming `<file>:<line>:<col>`. A
+  template edited on disk without a reload answers 500 instead of crashing. A template that used partials
+  or `{{= =}}` must be rewritten without them.
+- **JSON body numbers keep their value.** `9.99` was stored as `9`, and `301.7` passed an `int` validator
+  as `301`. An `int` field now rejects any non-integer, including `5.0` and `1e3`.
+- **`number` validators read `min` and `max`** (decimals allowed) and enforce them. A config that set them
+  (ignored until now) may now reject requests.
+- **A query parameter given twice (`?x=1&x=2`) is a 400** `{"error":"Duplicate query parameter: x"}`. Before,
+  the first value was used.
+- **A `method: DELETE` endpoint is a write**, also as an MCP tool: the tool reports the write result and the
+  endpoint's cache is maintained. Before, the row was deleted but the tool reported an error.
+- **Validator range messages name the limit**: `Integer is greater than the maximum allowed value (max 1000)`
+  (also for string length, number, date and time bounds). Clients that compare the exact text must update.
+- **Response formatting:** row keys (JSON and CSV) follow the `SELECT` column order; `DOUBLE`/`FLOAT` print
+  in shortest form (`711.56`, not `711.55999999999994543`); a naive `TIMESTAMP` has no `Z` suffix (only
+  `TIMESTAMPTZ` does). Applies to REST, MCP `tools/call` and `resources/read`.
+
 Caching:
 
 - **The cache scheduler is on by default.** Every `cache.schedule` now runs without
@@ -178,6 +201,21 @@ Narrow to one endpoint with `?endpoint=/path`.
   `flapii metrics -o table` shows cache-not-ready 503s separately.
 
 ### Fixed
+
+- **MCP `tools/list`** no longer advertises `"minimum":0,"maximum":0` on every `number` parameter; bounds
+  appear only when set. MCP `initialize` reports the build version instead of `0.3.0`.
+- **Pagination:** `limit=0` returns the count with an empty `next` (it pointed at itself), and `?format=csv`
+  is accepted under `request-fields-validation: true`.
+- **Writes:** with `returns-data: true`, a `RETURNING` that matched no row answers `"data": []` instead of
+  omitting `data`; a missing required field is listed once in `errors`, not twice.
+- **`/doc.yaml`** types parameters from their validators (with bounds and typed defaults), documents body
+  fields in the request body, adds `limit`/`offset`/`format`, the 400 response and the `X-Total-Count`,
+  `X-Offset`, `X-Limit`, `X-Next` headers, and uses the endpoint's new `description:` key (or its MCP tool
+  description) instead of "Description not available". An undescribable result no longer emits
+  `properties: ~`.
+- **Cached reads on a `serialize-access` connection run in parallel.** A read served from the DuckLake cache
+  (endpoint with `cache.template-file`) no longer waits for the source connection's lock (16 clients:
+  93 -> 283 requests/s in our measurement, the same as with `serialize-access: false`).
 
 - **`flapi --version`** and `server.version` in `GET /api/v1/_config/health` show the real build version.
 - **Passwords:** PBKDF2 hashes are no longer flagged by the security audit, and passlib's own encoding as well

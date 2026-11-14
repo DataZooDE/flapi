@@ -1,5 +1,6 @@
 #include <regex>
 #include "config_manager.hpp"
+#include "mustache_syntax_check.hpp"
 #include "extension_installer.hpp"
 #include "redaction.hpp"
 #include "endpoint_config_parser.hpp"
@@ -1149,9 +1150,18 @@ void ConfigManager::parseEndpointValidators(const YAML::Node& req, RequestFieldC
             if (validatorConfig.type == "int" || validatorConfig.type == "integer") {
                 validatorConfig.min = safeGet<int>(validator, "min", "validators.min", std::numeric_limits<int>::min());
                 validatorConfig.max = safeGet<int>(validator, "max", "validators.max", std::numeric_limits<int>::max());
+            } else if (validatorConfig.type == "number" || validatorConfig.type == "float" ||
+                       validatorConfig.type == "double") {
+                // Parsed as double: `min: 0.5` is a meaningful bound for a number.
+                if (validator["min"]) {
+                    validatorConfig.minNumber = safeGet<double>(validator, "min", "validators.min");
+                }
+                if (validator["max"]) {
+                    validatorConfig.maxNumber = safeGet<double>(validator, "max", "validators.max");
+                }
             } else if (validatorConfig.type == "string") {
-                // `pattern` is the documented spelling; `regex` the original one.
-                // Both are accepted; `regex` wins when a validator carries both.
+                // `regex` is the documented spelling; `pattern` an accepted alias.
+                // `regex` wins when a validator carries both.
                 validatorConfig.regex = safeGet<std::string>(validator, "regex", "validators.regex",
                     safeGet<std::string>(validator, "pattern", "validators.pattern", ""));
                 validatorConfig.min = safeGet<int>(validator, "min", "validators.min", 0);
@@ -2264,6 +2274,9 @@ crow::json::wvalue ConfigManager::serializeEndpointConfig(const EndpointConfig& 
     if (config.isRESTEndpoint()) {
         set("url-path", "urlPath", config.urlPath);
         set("method", "method", config.method);
+        if (!config.description.empty()) {
+            set("description", "description", config.description);
+        }
         set("template-source", "templateSource", config.templateSource);
 
         if (!config.connection.empty()) {
@@ -2310,6 +2323,13 @@ crow::json::wvalue ConfigManager::serializeEndpointConfig(const EndpointConfig& 
             } else if (validator.type == "int" || validator.type == "integer") {
                 validatorJson["min"] = validator.min;
                 validatorJson["max"] = validator.max;
+            } else if (validator.type == "number" || validator.type == "float" || validator.type == "double") {
+                if (validator.minNumber) {
+                    validatorJson["min"] = *validator.minNumber;
+                }
+                if (validator.maxNumber) {
+                    validatorJson["max"] = *validator.maxNumber;
+                }
             } else if (validator.type == "enum") {
                 crow::json::wvalue::list allowed;
                 for (const auto& v : validator.allowedValues) {
@@ -2468,6 +2488,13 @@ ValidatorConfig validatorFromJson(const crow::json::rvalue& v) {
     if (out.type == "int" || out.type == "integer") {
         out.min = v.has("min") ? static_cast<int>(v["min"].i()) : std::numeric_limits<int>::min();
         out.max = v.has("max") ? static_cast<int>(v["max"].i()) : std::numeric_limits<int>::max();
+    } else if (out.type == "number" || out.type == "float" || out.type == "double") {
+        if (v.has("min")) {
+            out.minNumber = v["min"].d();
+        }
+        if (v.has("max")) {
+            out.maxNumber = v["max"].d();
+        }
     } else if (out.type == "string") {
         out.regex = v.has("regex") ? str("regex") : str("pattern");
         out.min = v.has("min-length") ? static_cast<int>(v["min-length"].i())
@@ -2538,6 +2565,11 @@ EndpointConfig ConfigManager::deserializeEndpointConfig(const crow::json::rvalue
 
     config.urlPath = url_path;
     config.method = std::move(method);
+    if (json.has("description") && json["description"].t() == crow::json::type::String) {
+        config.description = json["description"].s();
+    } else if (base) {
+        config.description = base->description;
+    }
     auto templateKey = requireStringField(json, {"template-source", "templateSource", "template_source"});
     config.templateSource = json[templateKey].s();
     if (!firstExistingKey(json, {"connection", "connections"}).empty()) {
@@ -3077,6 +3109,21 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
         return false;
     };
 
+    // The same candidates as templateFileExists; the first that exists is checked.
+    auto templateSyntaxError = [this](const std::string& source) -> std::optional<std::string> {
+        const std::filesystem::path as_is(source);
+        std::vector<std::filesystem::path> candidates{as_is};
+        if (!as_is.is_absolute()) {
+            candidates.push_back(std::filesystem::path(template_config.path) / as_is);
+        }
+        for (const auto& candidate : candidates) {
+            if (auto error = CheckMustacheTemplateFile(candidate.string())) {
+                return error;
+            }
+        }
+        return std::nullopt;
+    };
+
     // Validate template source. NOT for an MCP prompt: it carries its template
     // inline and touches no database, and the loader already knows that (it skips
     // the template-source parse). This held every prompt to the REST rule, so
@@ -3100,6 +3147,10 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
             std::string reported;
             if (!templateFileExists(config.templateSource, reported)) {
                 result.warnings.emplace_back("Template file does not exist: " + reported);
+            } else if (auto syntax = templateSyntaxError(config.templateSource)) {
+                // crow would segfault or hang rendering it; an error, not a warning.
+                result.valid = false;
+                result.errors.push_back(*syntax);
             }
         }
     }
@@ -3124,6 +3175,9 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
         std::string reported;
         if (!templateFileExists(config.cache.template_file.value(), reported)) {
             result.warnings.emplace_back("Cache template file does not exist: " + reported);
+        } else if (auto syntax = templateSyntaxError(config.cache.template_file.value())) {
+            result.valid = false;
+            result.errors.push_back(*syntax);
         }
     }
     

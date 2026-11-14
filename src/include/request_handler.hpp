@@ -44,8 +44,6 @@ private:
     bool validateRequestParameters(const std::vector<RequestFieldConfig>& requestFields, const std::map<std::string, std::string>& params);
     void parsePaginationParams(std::map<std::string, std::string>& params);
     std::string convertToCSV(const QueryResult& queryResult);
-    void csvHeaderFromExampleObject(const crow::json::wvalue& obj, std::ostringstream& csv);
-    void serializeObjectToCsvLine(const crow::json::wvalue& obj, std::ostringstream& csv);
     std::string escapeCSV(const std::string& str);
     std::string createNextUrl(const crow::request& req, const QueryResult& queryResult);
 

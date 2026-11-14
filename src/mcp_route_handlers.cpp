@@ -338,7 +338,9 @@ MCPRouteHandlers::MCPRouteHandlers(std::shared_ptr<ConfigManager> config_manager
 
     // Initialize server info with default values (no separate MCP config needed)
     server_info_.name = "flapi-mcp-server";
-    server_info_.version = "0.3.0";
+    // The build version, as /health and --version report it; this was a
+    // hard-coded "0.3.0" that no release had shipped for a long time.
+    server_info_.version = FLAPI_VERSION;
     server_info_.protocol_version = "2025-11-25";
 
     // Initialize server capabilities with all available capabilities
@@ -2069,13 +2071,9 @@ crow::json::wvalue MCPRouteHandlers::readResourceContent(
             if (query_result.data.size() > 0) {
                 // Get the result as a JSON string
                 std::string result_text;
-                if (resource_config.mcp_resource->mime_type == "application/json" ||
-                    resource_config.mcp_resource->mime_type.find("json") != std::string::npos) {
-                    result_text = query_result.data.dump();
-                } else {
-                    // For text/plain, convert JSON to a readable text format
-                    result_text = query_result.data.dump(); // For now, use JSON format
-                }
+                // dumpData(): columns in SELECT order, shortest doubles. For
+                // text/plain too, for now.
+                result_text = query_result.dumpData();
 
                 // Convert the result to MCP resource content format
                 crow::json::wvalue content_item;

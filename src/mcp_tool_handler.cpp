@@ -562,12 +562,10 @@ QueryResult MCPToolHandler::executeQueryWithEndpoint(const EndpointConfig& endpo
 std::string MCPToolHandler::formatResult(const QueryResult& query_result,
                                        const std::string& format) const {
     // For now, return JSON format
-    if (format == "application/json" || format.find("json") != std::string::npos) {
-        return query_result.data.dump();
-    } else {
-        // Default to JSON
-        return query_result.data.dump();
-    }
+    // JSON for every format, for now. dumpData() keeps the SELECT column
+    // order and prints doubles in their shortest form, like the REST path.
+    (void)format;
+    return query_result.dumpData();
 }
 
 

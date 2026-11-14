@@ -284,7 +284,7 @@ Real `tools/call` result (trimmed):
   without it. `DELETE /mcp/jsonrpc` with the header closes it.
 - **A bad argument is a tool error, not a protocol error**: HTTP 200 with
   `"isError":true` and text like `Invalid arguments for tool 'customer_lookup': nation:
-  Integer is greater than the maximum allowed value`. An unknown tool is JSON-RPC `-32602`
+  Integer is greater than the maximum allowed value (max 24)`. An unknown tool is JSON-RPC `-32602`
   `Tool not found: x`.
 - **Dry-run:** add `"_dryRun": true` to `arguments`. Validators, roles and rate limits still
   run; the SQL does not. The result text is `{"dry_run":true,"tool_name":...,"rendered_sql":...,"parameters":{...}}`.

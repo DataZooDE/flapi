@@ -12,6 +12,26 @@
 
 namespace flapi {
 
+namespace {
+
+// A bound as the operator wrote it: 0.5, not 0.500000.
+std::string formatBound(double value) {
+    std::ostringstream out;
+    out << std::setprecision(17) << value;
+    std::string text = out.str();
+    // Shortest text that reads back as the same double.
+    for (int precision = 1; precision <= 17; ++precision) {
+        std::ostringstream candidate;
+        candidate << std::setprecision(precision) << value;
+        if (std::stod(candidate.str()) == value) {
+            return candidate.str();
+        }
+    }
+    return text;
+}
+
+} // namespace
+
 std::vector<ValidationError> RequestValidator::validateRequestParameters(const std::vector<RequestFieldConfig>& requestFields, 
                                                                          const std::map<std::string, std::string>& params) {
     std::vector<ValidationError> errors;
@@ -60,7 +80,7 @@ std::vector<ValidationError> RequestValidator::validateField(const RequestFieldC
         } else if (validator.type == "number" || validator.type == "float" || validator.type == "double") {
             // Classified as bindable (which skips the SQL screen below), so it must actually
             // be a number: `0 OR true` passed for a `{{{ params.amount }}}` site (#192).
-            auto numberErrors = validateNumber(field.fieldName, value);
+            auto numberErrors = validateNumber(field.fieldName, value, validator);
             errors.insert(errors.end(), numberErrors.begin(), numberErrors.end());
         } else if (validator.type == "boolean" || validator.type == "bool") {
             auto boolErrors = validateBoolean(field.fieldName, value);
@@ -119,14 +139,33 @@ std::vector<ValidationError> RequestValidator::validateField(const RequestFieldC
     return errors;
 }
 
-std::vector<ValidationError> RequestValidator::validateNumber(const std::string& fieldName, const std::string& value) {
+std::vector<ValidationError> RequestValidator::validateNumber(const std::string& fieldName, const std::string& value,
+                                                              const ValidatorConfig& validator) {
     // The whole string must be one plain decimal number: optional sign, digits with an
     // optional fraction (or a leading '.'), optional exponent. No spaces, no hex, no NaN.
     static const std::regex number(R"(^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$)");
     if (!std::regex_match(value, number)) {
         return {{fieldName, "Value is not a valid number"}};
     }
-    return {};
+    std::vector<ValidationError> errors;
+    if (validator.minNumber || validator.maxNumber) {
+        double parsed = 0;
+        try {
+            parsed = std::stod(value);
+        } catch (const std::exception&) {
+            // Matched the grammar but out of double range (1e999).
+            return {{fieldName, "Value is not a valid number"}};
+        }
+        if (validator.minNumber && parsed < *validator.minNumber) {
+            errors.push_back({fieldName, "Number is less than the minimum allowed value (min " +
+                                             formatBound(*validator.minNumber) + ")"});
+        }
+        if (validator.maxNumber && parsed > *validator.maxNumber) {
+            errors.push_back({fieldName, "Number is greater than the maximum allowed value (max " +
+                                             formatBound(*validator.maxNumber) + ")"});
+        }
+    }
+    return errors;
 }
 
 std::vector<ValidationError> RequestValidator::validateBoolean(const std::string& fieldName, const std::string& value) {
@@ -141,10 +180,10 @@ std::vector<ValidationError> RequestValidator::validateBoolean(const std::string
 std::vector<ValidationError> RequestValidator::validateString(const std::string& fieldName, const std::string& value, const ValidatorConfig& validator) {
     std::vector<ValidationError> errors;
     if (validator.min > 0 && static_cast<int>(value.size()) < validator.min) {
-        errors.push_back({fieldName, "String is shorter than the minimum allowed length"});
+        errors.push_back({fieldName, "String is shorter than the minimum allowed length (min " + std::to_string(validator.min) + ")"});
     }
     if (validator.max > 0 && static_cast<int>(value.size()) > validator.max) {
-        errors.push_back({fieldName, "String is longer than the maximum allowed length"});
+        errors.push_back({fieldName, "String is longer than the maximum allowed length (max " + std::to_string(validator.max) + ")"});
     }
     if (!validator.regex.empty()) {
         std::regex pattern(validator.regex);
@@ -169,10 +208,10 @@ std::vector<ValidationError> RequestValidator::validateInt(const std::string& fi
             return errors;
         }
         if (intValue < validator.min) {
-            errors.push_back({fieldName, "Integer is less than the minimum allowed value"});
+            errors.push_back({fieldName, "Integer is less than the minimum allowed value (min " + std::to_string(validator.min) + ")"});
         }
         if (intValue > validator.max) {
-            errors.push_back({fieldName, "Integer is greater than the maximum allowed value"});
+            errors.push_back({fieldName, "Integer is greater than the maximum allowed value (max " + std::to_string(validator.max) + ")"});
         }
     } catch (const std::exception&) {
         errors.push_back({fieldName, "Invalid integer value"});
@@ -222,7 +261,7 @@ std::vector<ValidationError> RequestValidator::validateDate(const std::string& f
         std::istringstream minSs(validator.minDate);
         minSs >> std::get_time(&minTm, "%Y-%m-%d");
         if (!minSs.fail() && date < std::chrono::system_clock::from_time_t(std::mktime(&minTm))) {
-            errors.push_back({fieldName, "Date is before the minimum allowed date"});
+            errors.push_back({fieldName, "Date is before the minimum allowed date (min " + validator.minDate + ")"});
         }
     }
 
@@ -231,7 +270,7 @@ std::vector<ValidationError> RequestValidator::validateDate(const std::string& f
         std::istringstream maxSs(validator.maxDate);
         maxSs >> std::get_time(&maxTm, "%Y-%m-%d");
         if (!maxSs.fail() && date > std::chrono::system_clock::from_time_t(std::mktime(&maxTm))) {
-            errors.push_back({fieldName, "Date is after the maximum allowed date"});
+            errors.push_back({fieldName, "Date is after the maximum allowed date (max " + validator.maxDate + ")"});
         }
     }
 
@@ -266,7 +305,7 @@ std::vector<ValidationError> RequestValidator::validateTime(const std::string& f
         std::istringstream minSs(validator.minTime);
         minSs >> std::get_time(&minTm, "%H:%M:%S");
         if (!minSs.fail() && time < std::chrono::seconds(minTm.tm_hour * 3600 + minTm.tm_min * 60 + minTm.tm_sec)) {
-            errors.push_back({fieldName, "Time is before the minimum allowed time"});
+            errors.push_back({fieldName, "Time is before the minimum allowed time (min " + validator.minTime + ")"});
         }
     }
 
@@ -275,7 +314,7 @@ std::vector<ValidationError> RequestValidator::validateTime(const std::string& f
         std::istringstream maxSs(validator.maxTime);
         maxSs >> std::get_time(&maxTm, "%H:%M:%S");
         if (!maxSs.fail() && time > std::chrono::seconds(maxTm.tm_hour * 3600 + maxTm.tm_min * 60 + maxTm.tm_sec)) {
-            errors.push_back({fieldName, "Time is after the maximum allowed time"});
+            errors.push_back({fieldName, "Time is after the maximum allowed time (max " + validator.maxTime + ")"});
         }
     }
 
@@ -385,9 +424,11 @@ std::vector<ValidationError> RequestValidator::validateRequestFields(
         knownFields.insert(field.fieldName);
     }
     
-    // Add pagination parameters as they are always allowed
+    // Pagination and the response-format selector are always allowed: they
+    // are flAPI's own query parameters, not the endpoint's.
     knownFields.insert("offset");
     knownFields.insert("limit");
+    knownFields.insert("format");
     
     // Check each parameter against known fields. The `__auth_*` prefix is
     // reserved for the auth-context injection performed by APIServer; those

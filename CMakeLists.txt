@@ -363,6 +363,7 @@ add_library(flapi-lib STATIC
     src/selfpath.cpp
     src/sql_parameter_classifier.cpp
     src/sql_template_processor.cpp
+    src/mustache_syntax_check.cpp
     src/template_secrets.cpp
     src/sql_utils.cpp
     src/mcp_tool_handler.cpp
