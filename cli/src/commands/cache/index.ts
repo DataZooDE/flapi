@@ -276,8 +276,14 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
         const endpointUrl = buildEndpointUrl(path, 'cache/refresh');
         const query = refreshQuery(options);
         const response = await ctx.client.post(endpointUrl, {}, query ? { params: query } : undefined);
-        spinner.succeed(chalk.green(`✓ Cache for ${path} refreshed successfully`));
         const result = response.data;
+        // Another refresh of the same table (warm-up, the scheduler) was in flight.
+        const alreadyRunning = result && typeof result === 'object' && result.status === 'already_running';
+        if (alreadyRunning) {
+          spinner.warn(chalk.yellow(`A refresh of ${path} is already running; not started again`));
+        } else {
+          spinner.succeed(chalk.green(`✓ Cache for ${path} refreshed successfully`));
+        }
         const lines = describeRefreshResult(result);
 
         if (ctx.config.output === 'json') {
@@ -286,7 +292,9 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
         } else {
           Console.info(chalk.cyan(`\n🔄 Cache Refresh: ${path}`));
           Console.info(chalk.gray('═'.repeat(60)));
-          Console.info(chalk.green(options.full ? '✓ Cache fully rebuilt' : '✓ Cache refreshed successfully'));
+          if (!alreadyRunning) {
+            Console.info(chalk.green(options.full ? '✓ Cache fully rebuilt' : '✓ Cache refreshed successfully'));
+          }
           lines.forEach((line) => Console.info(chalk.blue(line)));
         }
       } catch (error) {

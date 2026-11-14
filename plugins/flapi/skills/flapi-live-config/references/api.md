@@ -40,7 +40,7 @@ marked "open". All exist only when the server runs with `--config-service`.
 | `GET /api/v1/_config/endpoints/{slug}/cache` | | Cache config | `cache get` |
 | `PUT /api/v1/_config/endpoints/{slug}/cache` | `{"enabled":true,"table":"..","schedule":"10m"}` | Change cache config | `cache update` |
 | `GET\|PUT /api/v1/_config/endpoints/{slug}/cache/template` | `{"template":"..."}` | Cache populate SQL | `cache template`, `cache update-template` |
-| `POST /api/v1/_config/endpoints/{slug}/cache/refresh[?full=true]` | | Refresh now; `?full=true` drops and rebuilds the table, watermark erased. 200 with an empty body; 400 with the error if it fails; 409 `read_only_cache` on a replica | `cache refresh [--full]` |
+| `POST /api/v1/_config/endpoints/{slug}/cache/refresh[?full=true]` | | Refresh now; `?full=true` drops and rebuilds the table, watermark erased. 200 `{"status":"refreshed","endpoint","mode","full","duration_ms","rows_affected","snapshot_id"}` (`"already_running"` if one is in flight); 400 `{"error":"Cache refresh failed","reason":...}` if it fails; 409 `read_only_cache` on a replica | `cache refresh [--full]` |
 | `POST /api/v1/_config/endpoints/{slug}/cache/gc` | | Expire old snapshots per `retention` | `cache gc` |
 | `GET /api/v1/_config/endpoints/{slug}/cache/audit` | | Refresh history: `sync_started_at`, `sync_completed_at`, `duration_ms`, `rows_affected`, `snapshot_id`, `status`, `message` | `cache audit <path>` |
 | `GET /api/v1/_config/cache/audit` | | Same, all endpoints | `cache audit` |

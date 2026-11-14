@@ -195,6 +195,55 @@ class TestPopulateTemplate:
             stop(s)
 
 
+    def test_without_template_file_the_endpoint_select_is_materialised(self):
+        # No template-file: the serving template is the populate SQL. A bare
+        # SELECT there used to build nothing, then (with the bare-SELECT
+        # refusal) failed the cache; it is materialised as a full refresh.
+        body = ("url-path: /raw\nmethod: GET\ntemplate-source: raw_cache.sql\nconnection: [src]\n"
+                "cache:\n  enabled: true\n  table: raw_cache\n  schema: main\n"
+                "  primary-key: [id]\n  cursor:\n    column: id\n    type: integer\n")
+        root = make_root(config("  warmup: never\n"), {
+            "raw": (body, "SELECT * FROM read_csv('{{{conn.path}}}') ORDER BY id\n"),
+        })
+        s = start(root)
+        try:
+            wait_ready(s)
+            assert "cache on /raw has no template-file" in read_log(s)
+            r = post_refresh(s, "raw")
+            assert r.status_code == 200, r.text
+            assert r.headers["Content-Type"].startswith("application/json")
+            result = r.json()
+            assert result["status"] == "refreshed", result
+            assert result["mode"] == "full", "materialised whatever cursor/primary-key imply"
+            assert result["full"] is False
+            assert result["rows_affected"] == 3
+            assert result["duration_ms"] >= 0
+            assert result["snapshot_id"]
+            assert result["endpoint"] == "/raw"
+            served = requests.get(f"{s.base}/raw", timeout=10)
+            assert served.status_code == 200, served.text
+            assert audit(s, "raw")[0]["sync_type"] == "full"
+        finally:
+            stop(s)
+
+    def test_refresh_errors_are_json(self):
+        root = make_root(config("  warmup: never\n"), {
+            "sel": endpoint("sel", "sel_cache", "SELECT * FROM read_csv('{{{conn.path}}}')\n"),
+        })
+        s = start(root)
+        try:
+            wait_ready(s)
+            r = post_refresh(s, "sel")
+            assert r.status_code == 400
+            assert r.json()["error"] == "Cache refresh failed"
+            assert "bare SELECT" in r.json()["reason"]
+            missing = post_refresh(s, "nope")
+            assert missing.status_code == 404
+            assert missing.json()["error"] == "Endpoint not found"
+        finally:
+            stop(s)
+
+
 class TestScheduler:
     def test_a_schedule_fires_without_the_scheduler_flag(self):
         # No `scheduler:` block at all. The schedule used to never fire.

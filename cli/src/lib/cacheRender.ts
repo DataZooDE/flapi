@@ -43,6 +43,7 @@ export function describeRefreshResult(result: unknown): string[] {
   if (rows !== undefined) lines.push(`Rows: ${String(rows)}`);
   if (duration !== undefined) lines.push(`Duration: ${String(duration)} ms`);
   if (snapshot !== undefined) lines.push(`Snapshot: ${String(snapshot)}`);
+  if (r.full === true) lines.push('Full rebuild: yes');
   const message = pick('message');
   if (lines.length === 0 && message !== undefined) lines.push(String(message));
   return lines;

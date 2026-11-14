@@ -750,14 +750,32 @@ POST /api/v1/_config/endpoints/-customers/cache/refresh?full=true HTTP/1.1
 Authorization: Bearer <token>
 ```
 
-**Response (200):** empty body. The outcome (mode, status, duration, rows, snapshot) is in the
-audit log below and in `GET /api/v1/_config/metrics`.
+**Response (200):** the stats this refresh recorded (the same values as the newest audit row):
+
+```json
+{
+  "status": "refreshed",
+  "endpoint": "/customers",
+  "mode": "merge",
+  "full": true,
+  "duration_ms": 412,
+  "rows_affected": 37,
+  "snapshot_id": "12"
+}
+```
+
+`mode` is the mode that ran (`full`, `append` or `merge`; `full` for a cache without `template-file`).
+`duration_ms`, `rows_affected` and `snapshot_id` are left out when unknown. When a refresh of the same
+table is already running (warm-up, the scheduler) nothing is started and the answer is
+`{"status": "already_running", "endpoint": ..., "full": ...}`.
+
+Errors are JSON `{"error": ..., "reason": ...}`:
 
 | Status | When |
 |--------|------|
-| `200` | refreshed |
-| `400` | cache not enabled, or the refresh failed (`Cache refresh failed: ...`) |
-| `404` | unknown endpoint |
+| `200` | refreshed, or already running |
+| `400` | cache not enabled (`"error": "Cache is not enabled for this endpoint"`), or the refresh failed (`"error": "Cache refresh failed"`, `"reason"`: the error) |
+| `404` | unknown endpoint (`"error": "Endpoint not found"`) |
 | `409` | `ducklake.read-only: true` |
 
 A refresh through this API counts as the cache's last refresh for the scheduler: the next scheduled
@@ -1543,8 +1561,9 @@ flapii cache refresh /customers
 flapii cache refresh /customers --full    # drop the table and rebuild it from scratch (?full=true)
 ```
 
-The server answers with an empty body, so flapii reports success only; read the outcome with
-`flapii cache audit /customers -o table` (mode, status, duration, rows, snapshot). `-f/--force` is
+flapii prints the outcome the server returns: mode, status, rows, duration and snapshot (and
+`Full rebuild: yes` with `--full`); `-o json` prints the response body. The history is in
+`flapii cache audit /customers -o table`. `-f/--force` is
 deprecated and hidden: it is a normal refresh and prints a warning.
 
 ---

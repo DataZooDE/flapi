@@ -2684,21 +2684,33 @@ crow::response CacheConfigHandler::refreshCache(const crow::request& req, const 
     if (config_manager_->getDuckLakeConfig().read_only) {
         return readOnlyCacheResponse();
     }
+    // JSON both ways. The success answer used to be an empty 200 and the errors
+    // plain text, so `flapii cache refresh` had nothing to print.
+    const auto refreshError = [](int status, const std::string& error, const std::string& reason) {
+        crow::json::wvalue body;
+        body["error"] = error;
+        if (!reason.empty()) {
+            body["reason"] = reason;
+        }
+        crow::response res(status, body);
+        res.set_header("Content-Type", "application/json");
+        return res;
+    };
     try {
         // Find the endpoint
         auto endpoint = config_manager_->getEndpointForPath(path);
         if (!endpoint) {
-            return crow::response(404, "Endpoint not found");
+            return refreshError(404, "Endpoint not found", path);
         }
 
         if (!endpoint->cache.enabled) {
-            return crow::response(400, "Cache is not enabled for this endpoint");
+            return refreshError(400, "Cache is not enabled for this endpoint", path);
         }
 
         auto db_manager = DatabaseManager::getInstance();
         auto cache_manager = db_manager->getCacheManager();
         if (!cache_manager) {
-            return crow::response(500, "Cache manager is not initialized");
+            return refreshError(500, "Cache manager is not initialized", "");
         }
 
         // Prepare empty parameters map for cache refresh
@@ -2713,15 +2725,47 @@ crow::response CacheConfigHandler::refreshCache(const crow::request& req, const 
             options.full = value == "true" || value == "1" || value.empty();
         }
 
+        bool ran = false;
         try {
-            // Trigger cache refresh
-            cache_manager->refreshCache(config_manager_, *endpoint, params, options);
-            return crow::response(200);
+            ran = cache_manager->refreshCache(config_manager_, *endpoint, params, options);
         } catch (const std::exception& e) {
-            return crow::response(400, std::string("Cache refresh failed: ") + e.what());
+            return refreshError(400, "Cache refresh failed", e.what());
         }
+
+        crow::json::wvalue body;
+        body["endpoint"] = endpoint->urlPath.empty() ? endpoint->getName() : endpoint->urlPath;
+        body["full"] = options.full;
+        if (!ran) {
+            // Another refresh of the same table (warm-up, the scheduler) is in
+            // flight; it was not run twice.
+            body["status"] = "already_running";
+        } else {
+            body["status"] = "refreshed";
+            // The stats this refresh just recorded (CacheManager::recordSyncEvent).
+            const std::string schema = endpoint->cache.schema.empty() ? "main" : endpoint->cache.schema;
+            for (const auto& stats : cache_manager->getRefreshStats()) {
+                if (stats.catalog != config_manager_->getDuckLakeConfig().alias || stats.schema != schema ||
+                    stats.table != endpoint->cache.table) {
+                    continue;
+                }
+                body["mode"] = stats.last_sync_type;
+                if (stats.last_duration_ms) {
+                    body["duration_ms"] = *stats.last_duration_ms;
+                }
+                if (stats.last_rows_affected) {
+                    body["rows_affected"] = *stats.last_rows_affected;
+                }
+                if (stats.last_snapshot_id) {
+                    body["snapshot_id"] = *stats.last_snapshot_id;
+                }
+                break;
+            }
+        }
+        crow::response res(200, body);
+        res.set_header("Content-Type", "application/json");
+        return res;
     } catch (const std::exception& e) {
-        return crow::response(500, std::string("Internal server error: ") + e.what());
+        return refreshError(500, "Internal server error", e.what());
     }
 }
 

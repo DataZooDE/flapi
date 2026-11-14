@@ -427,8 +427,9 @@ flapii cache audit /customers -o table      # mode, status, duration_ms, rows, s
 - The audit log is data: `flapii` prints it exactly as the server sends it,
   snake_case (`duration_ms`, `rows_affected`, `snapshot_id`, `message`), whatever
   `--json-style` says.
-- A failed `flapii cache refresh` prints `[400] Bad Request: Cache refresh failed:
-  <the DuckDB error>`; the same text is in the audit row's `message`.
+- A successful `flapii cache refresh` prints the mode, rows, duration and snapshot
+  of the refresh. A failed one prints `[400] Bad Request: Cache refresh failed` and
+  the JSON body, whose `reason` is the DuckDB error; the audit row's `message` has it too.
 - `--log-level debug` logs every rendered statement (`Processed query:`), the
   only way to see the populate SQL after Mustache.
 - `flapii templates expand <path> --cache` renders the **populate** template with
