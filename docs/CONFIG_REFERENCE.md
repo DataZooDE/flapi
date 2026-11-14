@@ -432,7 +432,7 @@ deleted from disk (or the bucket) rather than left behind.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `ducklake.compaction.enabled` | boolean | `false` | Enable automatic compaction. Needs a `schedule` as well |
-| `ducklake.compaction.schedule` | string | - | How often: an interval (`30m`, `6h`, `1d`) or `@hourly`, `@daily`, `@midnight`, `@weekly`. Anything else (including a cron expression) stops startup with an error naming the key |
+| `ducklake.compaction.schedule` | string | - | How often: an interval (`30m`, `6h`, `1d`) or `@hourly`, `@daily`, `@midnight`, `@weekly`. Anything else (including a cron expression) stops startup with an error naming the key. Without `compaction.enabled: true` it has no effect, and startup warns |
 
 Compaction runs once per catalog per period: `ducklake_merge_adjacent_files`, `ducklake_rewrite_data_files`
 and a file cleanup. Each run writes an audit row with `sync_type` `compaction`, and when it last ran

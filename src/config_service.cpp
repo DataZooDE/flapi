@@ -732,7 +732,14 @@ void ConfigService::registerRoutes(FlapiApp& app) {
                 }
                 
                 std::string level_str = json["level"].s();
-                
+                std::transform(level_str.begin(), level_str.end(), level_str.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                // `warn` is what --log-level, FLAPI_LOG_LEVEL and `log-level:` accept;
+                // this was the one path that refused it.
+                if (level_str == "warn") {
+                    level_str = "warning";
+                }
+
                 // Validate and set log level
                 if (level_str == "debug") {
                     crow::logger::setLogLevel(crow::LogLevel::Debug);
@@ -747,7 +754,7 @@ void ConfigService::registerRoutes(FlapiApp& app) {
                     crow::logger::setLogLevel(crow::LogLevel::Error);
                     current_log_level_ = "error";
                 } else {
-                    return crow::response(400, "Invalid log level. Use: debug, info, warning, error");
+                    return crow::response(400, "Invalid log level. Use: debug, info, warning (or warn), error");
                 }
                 
                 CROW_LOG_INFO << "Log level changed to: " << current_log_level_;
@@ -1268,6 +1275,63 @@ bool usesIncludeDirectives(const std::string& content) {
 
 }  // namespace
 
+std::string FileStemFor(const EndpointConfig& endpoint) {
+    // url-path segments joined with '_' (/made-by-cli -> made-by-cli,
+    // /a/b -> a_b, /customers/:id -> customers_id), else the MCP name. It used to
+    // be the slug, whose escaping gave made~1by~1cli.yaml.
+    const std::string source = !endpoint.urlPath.empty() ? endpoint.urlPath : endpoint.getName();
+    std::string stem;
+    bool pending_separator = false;
+    for (const char c : source) {
+        const bool keep = std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_' || c == '.';
+        if (!keep) {
+            pending_separator = !stem.empty();
+            continue;
+        }
+        if (pending_separator) {
+            stem += '_';
+            pending_separator = false;
+        }
+        stem += c;
+    }
+    while (!stem.empty() && stem.front() == '.') {
+        stem.erase(0, 1);   // never a hidden file, never ".."
+    }
+    return stem.empty() ? std::string("endpoint") : stem;
+}
+
+std::string FileDeclaring(const ConfigManager& cm, const std::string& url_path, const std::string& method) {
+    std::error_code ec;
+    const std::filesystem::path dir = cm.getTemplateConfig().path;
+    if (!std::filesystem::is_directory(dir, ec)) {
+        return "";
+    }
+    for (std::filesystem::recursive_directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        const auto ext = it->path().extension();
+        if (!it->is_regular_file(ec) || (ext != ".yaml" && ext != ".yml")) {
+            continue;
+        }
+        try {
+            const YAML::Node doc = YAML::LoadFile(it->path().string());
+            if (!doc || !doc.IsMap() || scalarOrEmpty(doc, "url-path") != url_path) {
+                continue;
+            }
+            std::string declared = scalarOrEmpty(doc, "method");
+            if (declared.empty()) {
+                declared = "GET";
+            }
+            std::transform(declared.begin(), declared.end(), declared.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+            if (declared == method) {
+                return it->path().string();
+            }
+        } catch (const std::exception&) {
+            // Not plain YAML (e.g. {{include}} directives); the loader judges it.
+        }
+    }
+    return "";
+}
+
 bool IsCanonicalDocument(const YAML::Node& doc) {
     return doc && doc.IsMap() &&
            (doc["url-path"] || doc["mcp-tool"] || doc["mcp-resource"] || doc["mcp-prompt"]);
@@ -1304,14 +1368,25 @@ Outcome CreateFromDocument(ConfigManager& cm, const YAML::Node& doc) {
         }
     }
 
-    // File name from the slug, minus the leading '-' a leading '/' becomes -
-    // the same name flapi_create_endpoint gives it.
-    std::string slug = id.getSlug();
-    slug.erase(0, slug.find_first_not_of('-'));
-    if (slug.empty()) {
-        slug = "endpoint";
+    // A YAML in the templates directory may declare the endpoint without being
+    // loaded (written after startup, not reloaded): `flapii endpoints create -f
+    // sqls/x.yaml` then wrote a second copy, and the next start had two files
+    // for one url-path+method.
+    if (!id.urlPath.empty()) {
+        std::string method = id.method;
+        std::transform(method.begin(), method.end(), method.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+        if (const auto other = FileDeclaring(cm, id.urlPath, method); !other.empty()) {
+            outcome.status = 409;
+            outcome.error = "Endpoint already exists: " + id.method + " " + id.urlPath + " is declared in " + other +
+                            " (reload it, or update it with PUT)";
+            return outcome;
+        }
     }
-    const std::filesystem::path file = std::filesystem::path(cm.getTemplateConfig().path) / (slug + ".yaml");
+
+    // A readable file name - the same one flapi_create_endpoint gives it.
+    const std::filesystem::path file =
+        std::filesystem::path(cm.getTemplateConfig().path) / (FileStemFor(id) + ".yaml");
     if (std::filesystem::exists(file)) {
         outcome.status = 409;
         outcome.error = "Endpoint file already exists: " + file.string();
@@ -1374,9 +1449,7 @@ Outcome UpdateFromPatch(ConfigManager& cm, const EndpointConfig& existing, const
     } else {
         // Defined in memory only (created before writes persisted): start the
         // file from its serialised form.
-        std::string slug = existing.getSlug();
-        slug.erase(0, slug.find_first_not_of('-'));
-        file = std::filesystem::path(cm.getTemplateConfig().path) / ((slug.empty() ? "endpoint" : slug) + ".yaml");
+        file = std::filesystem::path(cm.getTemplateConfig().path) / (FileStemFor(existing) + ".yaml");
         base = YAML::Load(cm.serializeEndpointConfigToYaml(existing));
     }
 
@@ -1465,6 +1538,18 @@ std::string ReloadFailureReason(const ConfigManager& cm, const EndpointConfig& e
     }
     if (!joined.empty()) {
         return endpoint.config_file_path + ": " + joined;
+    }
+    try {
+        auto& mutable_cm = const_cast<ConfigManager&>(cm);   // the parser API is non-const; nothing is changed
+        EndpointConfigParser parser(mutable_cm.getYamlParser(), &mutable_cm);
+        const auto parsed = parser.parseFromFile(endpoint.config_file_path);
+        if (parsed.success) {
+            if (const auto duplicate = cm.DuplicateEndpointProblem(parsed.config); !duplicate.empty()) {
+                return duplicate;
+            }
+        }
+    } catch (const std::exception&) {
+        // fall through to the generic reason
     }
     return "Failed to reload endpoint configuration from " + endpoint.config_file_path;
 }
@@ -1590,7 +1675,24 @@ crow::response EndpointConfigHandler::updateExisting(const crow::request& req, c
         return jsonError(400, "Invalid JSON");
     }
 
-    if (endpoint_files::IsCanonicalDocument(*doc)) {
+    // A partial body in the YAML (hyphenated) spelling - `{"template-source":
+    // "x.sql"}`, `{"method": "POST"}` - is a patch like a full document: the
+    // target supplies url-path. It used to fall into the legacy camelCase path
+    // below, which requires url-path and template-source, and answered 500
+    // "Missing required field in endpoint config".
+    const bool legacy_keys = [&]() {
+        for (const auto& entry : *doc) {
+            const std::string key = entry.first.as<std::string>("");
+            for (const char c : key) {
+                if (c == '_' || (c >= 'A' && c <= 'Z')) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }();
+
+    if (endpoint_files::IsCanonicalDocument(*doc) || !legacy_keys) {
         // Deep-merged onto the endpoint's YAML and re-parsed by the loader, so
         // the file, memory and the next restart agree. Updates used to change
         // memory only and were lost on reload.
@@ -1605,7 +1707,25 @@ crow::response EndpointConfigHandler::updateExisting(const crow::request& req, c
     // lossy serialised form must not overwrite a hand-written file (it would
     // strip validators and annotations). Applied in memory, as before, and
     // said so.
-    auto updated_config = jsonToEndpointConfig(json, /*merge_existing=*/true);
+    // The target supplies what a partial camelCase body leaves out.
+    crow::json::wvalue completed(json);
+    if (!json.has("urlPath") && !json.has("url_path") && !json.has("url-path")) {
+        completed["urlPath"] = existing.urlPath;
+    }
+    if (!json.has("templateSource") && !json.has("template_source") && !json.has("template-source")) {
+        completed["templateSource"] = existing.templateSource;
+    }
+    if (!json.has("method") && !json.has("Method")) {
+        completed["method"] = existing.method;
+    }
+    const auto completed_json = crow::json::load(completed.dump());
+    EndpointConfig updated_config;
+    try {
+        updated_config = jsonToEndpointConfig(completed_json, /*merge_existing=*/true);
+    } catch (const std::exception& e) {
+        // A body the deserializer cannot read is the caller's error, not ours.
+        return jsonError(400, std::string("Invalid endpoint configuration: ") + e.what());
+    }
     if (!updated_config.isSameEndpoint(existing)) {
         return jsonError(400, "URL path in config does not match endpoint path");
     }
@@ -1817,8 +1937,11 @@ crow::response EndpointConfigHandler::reloadEndpointConfig(const crow::request& 
             }
         }
         crow::json::wvalue response;
+        // `error` like create/update/delete answer, so a client reads every
+        // config-service failure the same way; `message`/`reason` stay.
         if (target == nullptr) {
             response["success"] = false;
+            response["error"] = "Endpoint not found: " + path;
             response["message"] = "Endpoint not found: " + path;
             return crow::response(404, response);
         }
@@ -1830,11 +1953,13 @@ crow::response EndpointConfigHandler::reloadEndpointConfig(const crow::request& 
             return crow::response(200, response);
         }
         response["message"] = "Failed to reload endpoint configuration";
+        response["error"] = "Failed to reload endpoint configuration";
         response["reason"] = endpoint_files::ReloadFailureReason(*config_manager_, *target);
         return crow::response(400, response);
     } catch (const std::exception& e) {
         crow::json::wvalue response;
         response["success"] = false;
+        response["error"] = std::string("Reload error: ") + e.what();
         response["message"] = std::string("Reload error: ") + e.what();
         return crow::response(500, response);
     }

@@ -100,9 +100,9 @@ The MCP client discovers available tools and calls a specific configuration tool
 }
 ```
 
-`flapi_create_endpoint` writes `<slug>.yaml` and (if absent) a placeholder `<template-source>` file
-under the templates directory, so `flapi_update_template`, `flapi_reload_endpoint` and a restart all
-find the endpoint. `template-source` defaults to `<slug>.sql` and must stay inside the templates
+`flapi_create_endpoint` writes a YAML named after the url-path (`/orders` -> `orders.yaml`, `/a/b` ->
+`a_b.yaml`) and (if absent) a placeholder `<template-source>` file under the templates directory, so `flapi_update_template`, `flapi_reload_endpoint` and a restart all
+find the endpoint. `template-source` defaults to `<file name>.sql` and must stay inside the templates
 directory; `connection` must name a connection from the configuration. `flapi_delete_endpoint` removes
 the endpoint's YAML file (never its SQL template), so a deleted endpoint does not return on restart.
 
@@ -540,8 +540,8 @@ if err != nil {
 
 // Now safe to update
 result, err := client.CallTool("flapi_update_endpoint", map[string]interface{}{
-  "path": "customers",
-  "method": "POST",
+  "path": "/customers",
+  "config": map[string]interface{}{"template-source": "customers_v2.sql"},
 })
 ```
 

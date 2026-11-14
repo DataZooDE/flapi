@@ -399,25 +399,32 @@ Create a new REST endpoint (requires authentication).
 
 ### flapi_update_endpoint
 
-Modify an existing endpoint configuration (requires authentication).
+Modify an existing endpoint configuration (requires authentication). The change goes through the same
+merge-and-persist path as `PUT /api/v1/_config/endpoints/{slug}`: it is deep-merged onto the
+endpoint's YAML file, re-parsed, written and swapped in, so it survives a reload and a restart.
 
 **Authentication:** Required
 
 **Parameters:**
 - `path` (string, required): Endpoint path to update
-- `method` (string, optional): New HTTP method
-- `template_source` (string, optional): New template filename
+- `config` (object, optional): endpoint keys to change, in the YAML spelling, e.g.
+  `{"template-source": "customers_v2.sql", "cache": {"schedule": "10m"}}`
+- any other top-level key is merged the same way (`template-source`, `connection`, ...);
+  `template_source` is accepted for `template-source`
+
+Changing `url-path`, `method` or the name is refused (delete and re-create); an endpoint built from
+`{{include}}` files is refused too.
 
 **Response (Success):**
 ```json
 {
   "status": "success",
-  "path": "customers",
+  "path": "/customers",
   "message": "Endpoint updated successfully",
-  "previous_method": "GET",
-  "new_method": "POST",
-  "previous_template": "customers.sql",
-  "new_template": "customers_create.sql"
+  "file": "/srv/api/sqls/customers.yaml",
+  "persisted": true,
+  "method": "GET",
+  "template_source": "/srv/api/sqls/customers_v2.sql"
 }
 ```
 

@@ -7,6 +7,7 @@ import { handleError, messageFromBody } from '../../src/lib/errors';
 import { loadConfig } from '../../src/lib/config';
 import { PROJECT_TEMPLATES } from '../../src/commands/project/templates';
 import { requestRows } from '../../src/commands/metrics';
+import { normalizeLogLevel } from '../../src/commands/config/log-level';
 
 const mockInfo = vi.fn();
 const mockError = vi.fn();
@@ -98,6 +99,17 @@ describe('cache refresh and audit', () => {
       'Duration: 12 ms',
       'Snapshot: 7',
     ]);
+    // The body POST .../cache/refresh answers with.
+    expect(describeRefreshResult({
+      status: 'refreshed', endpoint: '/a', mode: 'full', full: true, duration_ms: 3, rows_affected: 10, snapshot_id: '2',
+    })).toEqual(['Mode: full', 'Status: refreshed', 'Rows: 10', 'Duration: 3 ms', 'Snapshot: 2', 'Full rebuild: yes']);
+  });
+
+  it('accepts warn as an alias of warning for the runtime log level', () => {
+    expect(normalizeLogLevel('warn')).toBe('warning');
+    expect(normalizeLogLevel('WARNING')).toBe('warning');
+    expect(normalizeLogLevel('debug')).toBe('debug');
+    expect(normalizeLogLevel('verbose')).toBeUndefined();
   });
 
   it('reduces audit rows to the table columns', () => {

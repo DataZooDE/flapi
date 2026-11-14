@@ -48,8 +48,8 @@ user-invocable: false
 - **SIGTERM interrupts running populate scripts** (shutdown within ~10 s); later refreshes
   are refused while shutting down. The interrupted refresh rolls back.
 - **Log levels are `debug`, `info`, `warning` (or `warn`), `error`**, on `--log-level`,
-  `FLAPI_LOG_LEVEL` and `log-level:`. An unknown value in the config stops startup. The
-  runtime `flapii config log-level set` still needs `warning` (it rejects `warn`).
+  `FLAPI_LOG_LEVEL` and `log-level:`, and on the runtime `flapii config log-level set` /
+  `PUT /api/v1/_config/log-level`. An unknown value in the config stops startup.
 - **`flapi --version`** and `server.version` in `GET /api/v1/_config/health` give the real
   build version: quote it in a bug report.
 

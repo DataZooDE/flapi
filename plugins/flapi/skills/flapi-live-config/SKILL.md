@@ -167,7 +167,7 @@ older docs is wrong (404).
 | A new endpoint YAML file | **Restart**, or create it through `flapii endpoints create -f` instead of writing the file |
 | A renamed or moved YAML file | Restart |
 | `flapi.yaml` (connections, `template`, `auth`, `ducklake`, `mcp`, `rate_limit`) | **Restart**. There is no full-config reload: `DELETE /config` is 405 (`Allow: GET`) |
-| Log level | `flapii config log-level set <debug\|info\|warning\|error>` (until restart; `warn` is refused here, unlike `--log-level`) |
+| Log level | `flapii config log-level set <debug\|info\|warning\|error>` (until restart; `warn` is accepted as `warning`) |
 
 The scheduler reads each endpoint's `cache.schedule` on every tick, so a reloaded schedule
 applies from the next tick.

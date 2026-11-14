@@ -70,6 +70,14 @@ std::string ReloadFailureReason(const ConfigManager& cm, const EndpointConfig& e
 /// deserializer understands.
 bool IsCanonicalDocument(const YAML::Node& doc);
 
+/// The YAML file name (without extension) for a new endpoint: the url-path
+/// segments joined with '_' (/a/b -> a_b), else the MCP name.
+std::string FileStemFor(const EndpointConfig& endpoint);
+
+/// A YAML file in the templates directory that declares url-path + method
+/// (METHOD upper case), loaded or not; "" when none does.
+std::string FileDeclaring(const ConfigManager& cm, const std::string& url_path, const std::string& method);
+
 }  // namespace endpoint_files
 
 /**

@@ -46,7 +46,7 @@ marked "open". All exist only when the server runs with `--config-service`.
 | `GET /api/v1/_config/cache/audit` | | Same, all endpoints | `cache audit` |
 | `GET /api/v1/_config/schema` | | Attached databases, tables, columns; `?tables=true` (optional `&connection=`): table list with `qualified_name`; `?connections=true`: configured connections. Failures 500 | `schema get`, `schema tables`, `schema connections` |
 | `POST /api/v1/_config/schema/refresh` | | Re-read the schema | `schema refresh` |
-| `GET\|PUT /api/v1/_config/log-level` | `{"level":"debug"}` | Runtime log level (`debug`, `info`, `warning`, `error`; `warn` is refused here) | `config log-level get\|set` |
+| `GET\|PUT /api/v1/_config/log-level` | `{"level":"debug"}` | Runtime log level (`debug`, `info`, `warning`, `error`; `warn` = `warning`) | `config log-level get\|set` |
 | `GET /api/v1/_config/metrics[?endpoint=/path]` | | Runtime metrics (see `flapi-operate`) | `metrics [-e path]` |
 | `GET /config` | | Whole parsed configuration | |
 | `DELETE /config` | | 405 `Allow: GET` (no full reload; 401 first without a token) | |
@@ -70,8 +70,8 @@ Arguments named `path` / `endpoint` take the URL path (`/customers`), not a slug
 | `flapi_refresh_schema` | | | POST schema/refresh |
 | `flapi_list_endpoints` | | | GET endpoints |
 | `flapi_get_endpoint` | `path` | | GET endpoint |
-| `flapi_create_endpoint` | `path` | `method`, `template-source`, `connection` | **writes `<slug>.yaml`** (and a placeholder SQL if missing) under `template.path` |
-| `flapi_update_endpoint` | `path` | `method`, `template_source` (nothing else is read) | in memory only, not written to the YAML; prefer the REST `PUT` |
+| `flapi_create_endpoint` | `path` | `method`, `template-source`, `connection` | **writes `<name>.yaml`** (`/a/b` -> `a_b.yaml`; and a placeholder SQL if missing) under `template.path` |
+| `flapi_update_endpoint` | `path` | `config` (endpoint keys, YAML spelling), or the keys at top level (`template-source`/`template_source`, `connection`, ...) | **merged into the YAML and persisted**, like REST `PUT`; changing url-path/method is refused |
 | `flapi_delete_endpoint` | `path` | | **removes the endpoint's YAML file** too |
 | `flapi_reload_endpoint` | `path` | | POST reload |
 | `flapi_get_template` | `endpoint` | | GET template |

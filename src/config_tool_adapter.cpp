@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <fstream>
 #include <filesystem>
 #include "config_tool_adapter.hpp"
@@ -61,6 +62,12 @@ const SchemaField kTemplateSource{"template-source", "string",
                                   "replace it with flapi_update_template.", false};
 const SchemaField kConnection{"connection", "array",
                               "Connection name(s) from the configuration, e.g. [\"my-data\"].", false};
+const SchemaField kUpdateConfig{"config", "object",
+                                "Endpoint keys to change, in the YAML spelling, e.g. "
+                                "{\"template-source\": \"x.sql\", \"cache\": {\"schedule\": \"10m\"}}. "
+                                "Deep-merged onto the endpoint's YAML file and written to it, like "
+                                "PUT /api/v1/_config/endpoints/{slug}. Top-level keys other than path "
+                                "are merged the same way.", false};
 const SchemaField kContent{"content", "string", "The full SQL template text.", true};
 const SchemaField kParams{"params", "object",
                           "Template parameters, as a name/value object.", false};
@@ -291,8 +298,10 @@ void ConfigToolAdapter::registerEndpointTools() {
     // flapi_update_endpoint - Update endpoint configuration
     tools_["flapi_update_endpoint"] = ConfigToolDef{
         "flapi_update_endpoint",
-        "Update the configuration of an existing endpoint. Preserves any settings not explicitly changed.",
-        build_schema({kPath}),
+        "Update the configuration of an existing endpoint. The change is merged into its YAML file "
+        "(persisted, like PUT /api/v1/_config/endpoints/{slug}); settings not mentioned are kept. "
+        "url-path, method and name cannot change: delete and re-create instead.",
+        build_schema({kPath, kTemplateSource, kConnection, kUpdateConfig}),
         build_basic_schema()
     };
     tool_auth_required_["flapi_update_endpoint"] = true;
@@ -1020,12 +1029,18 @@ ConfigToolResult ConfigToolAdapter::executeCreateEndpoint(const crow::json::wval
             }
         }
 
-        // File names from the slug, minus the leading '-' a leading '/' becomes.
-        std::string slug = new_endpoint.getSlug();
-        slug.erase(0, slug.find_first_not_of('-'));
-        if (slug.empty()) {
-            slug = "endpoint";
+        {
+            std::string upper = method;
+            std::transform(upper.begin(), upper.end(), upper.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+            if (const auto other = endpoint_files::FileDeclaring(*config_manager_, path, upper); !other.empty()) {
+                return createErrorResult(-32603, "Endpoint already exists: " + upper + " " + path +
+                                                     " is declared in " + other + " (reload it instead)");
+            }
         }
+
+        // Readable file names, the same as POST /api/v1/_config/endpoints gives.
+        const std::string slug = endpoint_files::FileStemFor(new_endpoint);
         if (template_source.empty()) {
             template_source = slug + ".sql";
         }
@@ -1137,47 +1152,58 @@ ConfigToolResult ConfigToolAdapter::executeUpdateEndpoint(const crow::json::wval
             return createErrorResult(-32603, error_detail.dump());
         }
 
-        // Create updated copy
-        EndpointConfig updated = *ep;
-        std::string original_method = ep->method;
-        std::string original_template = ep->templateSource;
-
-        // Update optional fields if provided
-        if (args.count("method")) {
-            auto val_str = args["method"].dump();
-            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
-                updated.method = val_str.substr(1, val_str.length() - 2);
+        // The same merge + persist path as REST PUT (endpoint_files::UpdateFromPatch).
+        // This used to read only `method` and `template_source` and change memory
+        // only, so the next reload or restart undid it - and every other key the
+        // agent sent was silently ignored.
+        YAML::Node patch = YAML::Load(args.dump());
+        if (!patch || !patch.IsMap()) {
+            return createErrorResult(-32602, "Arguments must be an object");
+        }
+        patch.remove("path");
+        if (patch["config"]) {
+            if (!patch["config"].IsMap()) {
+                return createErrorResult(-32602, "config must be an object of endpoint keys");
+            }
+            const YAML::Node config = patch["config"];
+            patch.remove("config");
+            for (const auto& entry : config) {
+                patch[entry.first.as<std::string>()] = entry.second;
             }
         }
-
-        if (args.count("template_source")) {
-            auto val_str = args["template_source"].dump();
-            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
-                updated.templateSource = val_str.substr(1, val_str.length() - 2);
-            }
-            // The same boundary flapi_create_endpoint enforces: an endpoint's template
-            // must stay inside the templates directory.
-            const auto problem = config_manager_->TemplatePathProblem(updated.templateSource);
-            if (!problem.empty()) {
-                return createErrorResult(-32602, problem);
-            }
+        if (patch["template_source"]) {
+            patch["template-source"] = patch["template_source"];
+            patch.remove("template_source");
+        }
+        if (patch["method"]) {
+            std::string method = patch["method"].as<std::string>("");
+            std::transform(method.begin(), method.end(), method.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+            patch["method"] = method;
+        }
+        if (patch.size() == 0) {
+            return createErrorResult(-32602, "Nothing to update: pass endpoint keys, e.g. config: {\"template-source\": \"x.sql\"}");
         }
 
-        // Replace the endpoint
-        config_manager_->replaceEndpoint(updated);
+        const auto outcome = endpoint_files::UpdateFromPatch(*config_manager_, *ep, patch);
+        if (!outcome.ok) {
+            crow::json::wvalue error_detail;
+            error_detail["error"] = "Failed to update endpoint";
+            error_detail["path"] = path;
+            error_detail["reason"] = outcome.error;
+            return createErrorResult(outcome.status == 400 ? -32602 : -32603, error_detail.dump());
+        }
 
         crow::json::wvalue result;
         result["status"] = "success";
         result["path"] = path;
         result["message"] = "Endpoint updated successfully";
-        result["previous_method"] = original_method;
-        result["new_method"] = updated.method;
-        if (original_template != updated.templateSource) {
-            result["previous_template"] = original_template;
-            result["new_template"] = updated.templateSource;
-        }
+        result["file"] = outcome.file;
+        result["persisted"] = true;
+        result["method"] = outcome.config.method;
+        result["template_source"] = outcome.config.templateSource;
 
-        CROW_LOG_INFO << "flapi_update_endpoint: updated endpoint " << path << " - method: " << original_method << " -> " << updated.method;
+        CROW_LOG_INFO << "flapi_update_endpoint: updated endpoint " << path << " in " << outcome.file;
         return createSuccessResult(result.dump());
     } catch (const std::exception& e) {
         CROW_LOG_ERROR << "flapi_update_endpoint failed for path '" << path << "': " << e.what();

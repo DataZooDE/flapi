@@ -331,13 +331,18 @@ DELETE /api/v1/_config/endpoints/:slug  - Delete endpoint
 These operations go through the same loader as a YAML file on disk, so `mcp-tool`, validators,
 `rate-limit` and the global-auth default all apply, and they **persist**:
 
-1. **Create** parses the body with the real endpoint loader, writes `<template dir>/<slug>.yaml`, and
+1. **Create** parses the body with the real endpoint loader, writes `<template dir>/<name>.yaml` (the
+   url-path segments joined with `_`, `endpoint_files::FileStemFor`), and
    answers `201 {"status":"created","endpoint","slug","url-path","file"}`. An existing endpoint is
-   `409`, as is any write while serving a packed bundle; a body that does not parse is `400`.
+   `409` (also when any YAML in the templates directory declares the same url-path and method), as is
+   any write while serving a packed bundle; a body that does not parse is `400`. Loading two files that
+   serve the same url-path and method is a startup error naming both (`DuplicateEndpointProblem`); a
+   reload that would create such a pair fails with that reason.
 2. **Update** deep-merges the body onto the endpoint's YAML file and re-parses the result. Changing
    `url-path`, `method` or the name is `400` (delete and re-create instead); an endpoint built from
-   `{{include}}` files is `409`. A camelCase body is applied in memory only and the answer says
-   `"persisted": false`. The rewritten YAML loses its comments.
+   `{{include}}` files is `409`. A partial body (`{"template-source": "x.sql"}`) is a patch like any
+   other: url-path comes from the target. A camelCase body is applied in memory only and the answer says
+   `"persisted": false`; what it leaves out (url-path, template-source, method) is taken from the target. The rewritten YAML loses its comments.
 3. **Delete** removes the endpoint and its YAML file.
 
 Errors are JSON `{"error": "..."}`. A reload that fails to parse is `400` with a `reason`; `404` means

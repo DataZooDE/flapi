@@ -778,6 +778,10 @@ public:
 
     void refreshConfig();
     void addEndpoint(const EndpointConfig& endpoint);
+    /// "" or why `candidate` may not be added: another loaded endpoint (from a
+    /// different YAML file) already serves the same url-path and method. Both
+    /// files are named.
+    std::string DuplicateEndpointProblem(const EndpointConfig& candidate) const;
     bool removeEndpointByPath(const std::string& path);
     bool replaceEndpoint(const EndpointConfig& endpoint);
     

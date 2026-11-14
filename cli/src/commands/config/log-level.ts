@@ -10,6 +10,21 @@ const VALID_LOG_LEVELS = ['debug', 'info', 'warning', 'error'] as const;
 type LogLevel = typeof VALID_LOG_LEVELS[number];
 
 /**
+ * Accepted spellings that are not canonical level names. `warn` is what the
+ * --log-level flag, FLAPI_LOG_LEVEL and `log-level:` in flapi.yaml accept.
+ */
+const LOG_LEVEL_ALIASES: Record<string, LogLevel> = { warn: 'warning' };
+
+/** The canonical level for `input` (case-insensitive, aliases resolved), or undefined. */
+export function normalizeLogLevel(input: string): LogLevel | undefined {
+  const lower = input.trim().toLowerCase();
+  if ((VALID_LOG_LEVELS as readonly string[]).includes(lower)) {
+    return lower as LogLevel;
+  }
+  return LOG_LEVEL_ALIASES[lower];
+}
+
+/**
  * Register log-level subcommands under config command
  */
 export function registerLogLevelCommands(configCmd: Command, ctx: CliContext) {
@@ -44,12 +59,13 @@ export function registerLogLevelCommands(configCmd: Command, ctx: CliContext) {
   // Set log level
   logLevel
     .command('set <level>')
-    .description('Set backend log level (debug, info, warning, error)')
-    .action(async (level: string) => {
+    .description('Set backend log level (debug, info, warning|warn, error)')
+    .action(async (input: string) => {
       // Validate log level
-      if (!VALID_LOG_LEVELS.includes(level as LogLevel)) {
-        Console.error(`Invalid log level: ${level}`);
-        Console.info(`Valid levels: ${VALID_LOG_LEVELS.join(', ')}`);
+      const level = normalizeLogLevel(input);
+      if (!level) {
+        Console.error(`Invalid log level: ${input}`);
+        Console.info(`Valid levels: ${VALID_LOG_LEVELS.join(', ')} (alias: warn = warning)`);
         process.exit(1);
       }
 
@@ -94,7 +110,7 @@ export function registerLogLevelCommands(configCmd: Command, ctx: CliContext) {
             description = 'General informational messages';
             break;
           case 'warning':
-            description = 'Warning messages only';
+            description = 'Warning messages only (alias: warn)';
             break;
           case 'error':
             description = 'Error messages only';

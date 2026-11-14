@@ -85,13 +85,26 @@ Caching:
 
 Config service, MCP and CLI:
 
+- **Two endpoint files with the same `url-path` and `method` stop startup**, with an error naming both files.
+  Before, both loaded and only one answered. A reload that would create such a pair fails (400, with the
+  reason), and creating an endpoint that a YAML file in the templates directory already declares - loaded or
+  not - answers 409 instead of writing a second copy.
+- **Created endpoint files get readable names:** `/made-by-cli` is `made-by-cli.yaml` and `/a/b` is `a_b.yaml`
+  (REST `POST .../endpoints` and MCP `flapi_create_endpoint`); before, the slug escaping gave
+  `made~1by~1cli.yaml`. A name that is taken answers 409.
+- **MCP `flapi_update_endpoint` persists:** the change is merged into the endpoint's YAML like REST `PUT`, and
+  takes any endpoint key (`config: {...}` or top-level keys). Before, it read only `method` and
+  `template_source` and changed memory only. Changing the method is now refused, as with `PUT`.
+
 - **Endpoints created or updated through the config service are written to disk.** `POST
   /api/v1/_config/endpoints` writes `<template dir>/<slug>.yaml` and answers 201 (409 if it exists, 400 on a
   parse error). `PUT` merges the change into the YAML file (comments in it are lost); changing `url-path`,
   `method` or the name answers 400, and endpoints that use `{{include}}` answer 409. `DELETE` removes the YAML
   file. Error bodies are JSON `{"error": ...}`.
 - **A reload of an endpoint whose YAML is now invalid answers 400** with the reason; 404 means the endpoint is
-  unknown.
+  unknown. Reload errors carry an `error` field like create/update/delete.
+- **A partial `PUT /api/v1/_config/endpoints/{slug}`** (`{"template-source": "x.sql"}`) merges onto the
+  endpoint; it answered 500 `Missing required field in endpoint config`. A body that cannot be read is 400.
 - **`PUT /api/v1/_config/project` and `DELETE /config` answer 405** with `Allow: GET`.
 - **`GET /api/v1/_config/schema?tables=true`** returns tables only (no views), each with `name`, `schema`,
   `database`, `type`, `connection` and `qualified_name`; filter with `?connection=`. Failures answer 500.
@@ -142,7 +155,9 @@ Narrow to one endpoint with `?endpoint=/path`.
   `{domain}` in the issuer URL; Keycloak's default issuer is `https://{domain}/realms/{realm}`. Provider
   `azure`, `azure-ad` and `entra` are aliases of `microsoft`.
 - Validators: `enum` accepts `values` or `allowedValues`, `string` accepts `pattern` or `regex`.
-- Log level `warn` is accepted as `warning` (`--log-level`, `FLAPI_LOG_LEVEL`, `log-level:`).
+- Log level `warn` is accepted as `warning` (`--log-level`, `FLAPI_LOG_LEVEL`, `log-level:`, and at runtime
+  `PUT /api/v1/_config/log-level` / `flapii config log-level set warn`).
+- `ducklake.compaction.schedule` without `compaction.enabled: true` logs that it has no effect.
 - `project-description` is optional.
 - Startup warns about keys that have no effect: a request field's `field-type`, `server-name`, and a
   connection's `log-queries`, `log-parameters` and `allow`.

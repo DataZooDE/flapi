@@ -580,8 +580,11 @@ void ConfigManager::parseDuckLakeConfig() {
                 // presence, and compaction ran every 24 h whatever it said.
                 if (!TimeInterval::parseSchedule(*ducklake_config.compaction.schedule)) {
                     throw ConfigurationError("Invalid compaction schedule '" + *ducklake_config.compaction.schedule +
-                                             "': expected <positive number>[s|m|h|d] or @hourly, @daily, @weekly",
+                                             "': expected <positive number>[s|m|h|d] or @hourly, @daily, @midnight, @weekly",
                                              "ducklake.compaction.schedule");
+                }
+                if (!ducklake_config.compaction.enabled) {
+                    CROW_LOG_WARNING << "ducklake.compaction.schedule has no effect unless compaction.enabled: true";
                 }
             }
         }
@@ -1036,6 +1039,12 @@ void ConfigManager::loadEndpointConfig(const std::string& config_file) {
             CROW_LOG_DEBUG << "\t\tTemplate Source: " << endpoint.templateSource;
         }
         
+        // Two files serving the same url-path and method used to load silently,
+        // both listed, and only one answered - whichever routing found first.
+        if (const auto duplicate = DuplicateEndpointProblem(endpoint); !duplicate.empty()) {
+            throw std::runtime_error(duplicate);
+        }
+
         // Add to endpoints list
         mutateEndpointsVoid([&](std::vector<EndpointConfig>& eps) { eps.push_back(endpoint); });
 
@@ -2713,6 +2722,25 @@ void ConfigManager::refreshConfig() {
     throw std::runtime_error("Not implemented");
 }
 
+std::string ConfigManager::DuplicateEndpointProblem(const EndpointConfig& candidate) const {
+    if (candidate.urlPath.empty()) {
+        return "";
+    }
+    const auto snapshot = endpointsSnapshot();
+    for (const auto& ep : *snapshot) {
+        if (ep.urlPath != candidate.urlPath || ep.method != candidate.method) {
+            continue;
+        }
+        if (!candidate.config_file_path.empty() && ep.config_file_path == candidate.config_file_path) {
+            continue;   // the same file, e.g. a reload of it
+        }
+        return "Duplicate endpoint " + candidate.method + " " + candidate.urlPath + ": declared in " +
+               (ep.config_file_path.empty() ? std::string("(in memory)") : ep.config_file_path) + " and " +
+               (candidate.config_file_path.empty() ? std::string("(in memory)") : candidate.config_file_path);
+    }
+    return "";
+}
+
 void ConfigManager::addEndpoint(const EndpointConfig& endpoint) {
     mutateEndpointsVoid([&](std::vector<EndpointConfig>& eps) { eps.push_back(endpoint); });
     // Also add to repository for unified access
@@ -3242,6 +3270,16 @@ bool ConfigManager::reloadEndpointConfig(const std::string& slug_or_path) {
             return false;
         }
         
+        // The reloaded file must not now claim another endpoint's url-path+method.
+        {
+            EndpointConfig probe = parse_result.config;
+            probe.config_file_path = it->config_file_path.empty() ? yaml_file.string() : it->config_file_path;
+            if (const auto duplicate = DuplicateEndpointProblem(probe); !duplicate.empty()) {
+                CROW_LOG_ERROR << "Failed to reload endpoint: " << duplicate;
+                return false;
+            }
+        }
+
         // Publish the reloaded configuration through copy-modify-swap. Matching
         // by name again rather than by index: the table may have been mutated by
         // another thread while this file was being parsed.

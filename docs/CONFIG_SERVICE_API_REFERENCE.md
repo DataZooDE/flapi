@@ -211,8 +211,10 @@ Authorization: Bearer <token>
 
 Create a new endpoint. The body goes through the same loader as a YAML file on disk, so
 `mcp-tool`, validators, `rate-limit`, `auth` and `cache` all survive. The endpoint is written to
-`<template dir>/<slug>.yaml` and registered at once, including in MCP `tools/list`. An endpoint
-without an `auth:` block inherits the top-level `auth:`.
+A file named after the url-path (`/orders` -> `orders.yaml`, `/a/b` -> `a_b.yaml`; an MCP-only endpoint after its name) in the templates directory
+and registered at once, including in MCP `tools/list`. An endpoint without an `auth:` block inherits
+the top-level `auth:`. `409` when that file exists, when a loaded endpoint has the same url-path and
+method, or when any YAML file in the templates directory already declares them (loaded or not).
 
 **Request:**
 ```http
@@ -295,7 +297,8 @@ Authorization: Bearer <token>
 #### PUT /api/v1/_config/endpoints/{slug}
 
 Update an endpoint configuration. The body is deep-merged onto the endpoint's YAML file and the
-result is re-parsed and written back, so you can send only the keys you change. Comments in the
+result is re-parsed and written back, so you can send only the keys you change - `{"template-source":
+"customers-v2.sql"}` is a complete request; the url-path comes from `{slug}`. Comments in the
 rewritten YAML file are not preserved.
 
 **Request:**
@@ -326,8 +329,8 @@ Content-Type: application/json
 | Status | When |
 |--------|------|
 | `200` | updated and persisted |
-| `200` with `"persisted": false` | the body used camelCase keys (`urlPath`, `templateSource`): applied in memory only, with a `warning`; send the YAML (hyphenated) keys to persist |
-| `400` | the update changes `url-path`, `method` or the MCP name (delete and re-create instead), or the result does not parse |
+| `200` with `"persisted": false` | the body used camelCase keys (`urlPath`, `templateSource`): applied in memory only, with a `warning`; send the YAML (hyphenated) keys to persist. Keys it leaves out come from the endpoint |
+| `400` | the update changes `url-path`, `method` or the MCP name (delete and re-create instead), the result does not parse, or the body cannot be read as an endpoint configuration (`{"error": ...}`; this was a 500 for a partial camelCase body) |
 | `404` | unknown endpoint |
 | `409` | the endpoint's YAML uses `{{include}}` (edit the files by hand), or the server runs from a packed bundle |
 
@@ -418,10 +421,15 @@ reload; create it with POST or restart).
 ```json
 {
   "success": false,
+  "error": "Failed to reload endpoint configuration",
   "message": "Failed to reload endpoint configuration",
   "reason": "/srv/api/sqls/customers.yaml: Failed to parse YAML: ..."
 }
 ```
+
+Every reload error carries `error`, like create, update and delete (`404`: `"error": "Endpoint not
+found: ..."`). A reload whose file now declares another endpoint's url-path and method fails with
+`"reason": "Duplicate endpoint GET /x: declared in ... and ..."`.
 
 Every endpoint change (create, update, delete, reload; over REST or the `flapi_*` MCP tools)
 rebuilds the MCP `tools/list`, `resources/list` and `prompts/list` at once. Pagination cursors issued
@@ -1119,8 +1127,8 @@ Content-Type: application/json
 }
 ```
 
-**Valid Levels:** `debug`, `info`, `warning`, `error` (this endpoint and `flapii config log-level set`
-do not accept the `warn` alias that the server flag and `flapi.yaml` accept)
+**Valid Levels:** `debug`, `info`, `warning`, `error`, case-insensitive; `warn` is accepted as
+`warning`, as with `--log-level`, `FLAPI_LOG_LEVEL` and `flapi.yaml`. The answer names the canonical level.
 
 **Response (200):**
 ```json
@@ -1132,7 +1140,7 @@ do not accept the `warn` alias that the server flag and `flapi.yaml` accept)
 
 **CLI:** `flapii config log-level set debug`
 
-> **Implementation:** `src/config_service.cpp` | **Tests:** `test/integration/test_mcp_methods.py` (GET only), *PUT not tested*
+> **Implementation:** `src/config_service.cpp` | **Tests:** `test/integration/test_mcp_methods.py` (GET only), PUT: `test/integration/test_config_service_followups.py`
 
 ---
 
@@ -1287,7 +1295,7 @@ flapii config log-level set <level>
 flapii config log-level list
 ```
 
-**Levels:** `debug`, `info`, `warning`, `error`
+**Levels:** `debug`, `info`, `warning` (alias `warn`), `error`; `list` shows the alias.
 
 ---
 
