@@ -163,7 +163,15 @@ url-path: /customers/
 {{include:request from customer-common.yaml}}
 {{include:auth from customer-common.yaml}}
 {{include:connection from customer-common.yaml}}
-{{include:template-source from customer-common.yaml}}
+
+# Served from its DuckLake cache: customers_cache.sql builds the table,
+# customers-rest.sql reads it
+template-source: customers-rest.sql
+cache:
+  enabled: true
+  table: customers_rest_cache
+  schema: analytics
+  template-file: customers_cache.sql
 ```
 
 ### Input Validators
