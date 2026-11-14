@@ -240,8 +240,9 @@ POST, PUT, PATCH and DELETE are writes (`operation.type: write` is implied). Def
 `transaction: true` (BEGIN/COMMIT, ROLLBACK on error), `validate-before-write:
 true` (missing required fields AND undeclared body keys are 400),
 `returns-data: false` (rows from `RETURNING` are still returned). POST answers
-201, PUT/PATCH/DELETE 200, body `{"rows_affected": n, "data": [...]}`. Without
-`RETURNING`, `n` currently reads 1 however many rows changed; use `RETURNING`.
+201, PUT/PATCH/DELETE 200, body `{"rows_affected": n, "data": [...]}`. `n` is the
+rows changed (summed over the statements; with `RETURNING`, the rows returned), so
+a DELETE that matched nothing answers 0.
 
 ```yaml
 # flapi: config group=notes

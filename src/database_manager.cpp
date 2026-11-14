@@ -794,7 +794,7 @@ std::unique_ptr<QueryExecutor> DatabaseManager::executeQueryRaw(const EndpointCo
     std::map<std::string, std::string> bind_values = params;
     auto prepared = sql_processor->loadAndProcessTemplatePrepared(endpoint, params);
 
-    auto executor = std::make_unique<QueryExecutor>(db);
+    auto executor = std::make_unique<QueryExecutor>(db, session_default_order_);
     if (prepared.bindings.empty()) {
         executor->execute(prepared.sql);
     } else {
@@ -1006,15 +1006,22 @@ WriteResult DatabaseManager::executeWrite(QueryExecutor& executor, const Endpoin
     for (size_t i = 0; i < statementsToExecute; ++i) {
         runStatement(i, "write operation statement " + std::to_string(i + 1));
 
-        int64_t currentRows = executor.rowCount();
-        if (currentRows > 0) {
-            result.rows_affected = currentRows;
-        }
-
         std::string currentStatement = trim(statements[i]);
         std::string upperStatement = currentStatement;
         std::transform(upperStatement.begin(), upperStatement.end(), upperStatement.begin(), ::toupper);
         bool hasReturningClause = upperStatement.find("RETURNING") != std::string::npos;
+
+        // rows_affected is what the DML changed, summed over the statements.
+        // It used to be the RESULT's row count - and a DML statement without
+        // RETURNING answers with ONE row (a BIGINT column named Count), so an
+        // UPDATE of 5 rows and a DELETE of a missing id both reported 1.
+        // With RETURNING the result is the changed rows themselves.
+        if (hasReturningClause) {
+            result.rows_affected += static_cast<int64_t>(executor.rowCount());
+        } else if (executor.columnCount() == 1 && executor.rowCount() == 1 &&
+                   std::string(duckdb_column_name(&executor.result, 0)) == "Count") {
+            result.rows_affected += duckdb_value_int64(&executor.result, 0, 0);
+        }
 
         if (hasReturningClause && executor.columnCount() > 0 && executor.rowCount() > 0) {
             result.returned_data = executor.toJson();

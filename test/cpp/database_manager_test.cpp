@@ -462,3 +462,30 @@ TEST_CASE_METHOD(TestFixture, "secrets lookup does not interpret the username as
         REQUIRE(password == "pw");
     }
 }
+
+// Regression (#211): without RETURNING a DML statement answers ONE row (a BIGINT
+// `Count`), and that row count was reported, so an UPDATE of 5 rows and a DELETE
+// of a missing id both said rows_affected = 1.
+TEST_CASE_METHOD(TestFixture, "DatabaseManager executeWrite reports DuckDB's changed-row count", "[database_manager]") {
+    db_manager->executeQuery("CREATE TABLE test_count (id INTEGER, name VARCHAR)", {}, false);
+    db_manager->executeQuery("INSERT INTO test_count SELECT i, 'n' FROM range(5) t(i)", {}, false);
+
+    EndpointConfig endpoint;
+    endpoint.templateSource = (templates_dir / "count_test.sql").string();
+    endpoint.operation.type = OperationConfig::Write;
+    endpoint.connection.push_back("default");
+    const auto write = [&](const std::string& sql) {
+        std::ofstream template_file(templates_dir / "count_test.sql");
+        template_file << sql;
+        template_file.close();
+        std::map<std::string, std::string> params;
+        return db_manager->executeWrite(endpoint, params);
+    };
+
+    CHECK(write("UPDATE test_count SET name = 'x'").rows_affected == 5);
+    CHECK(write("DELETE FROM test_count WHERE id = 999").rows_affected == 0);
+    CHECK(write("UPDATE test_count SET name = 'y' WHERE id < 2 RETURNING id").rows_affected == 2);
+    CHECK(write("UPDATE test_count SET name = 'z' WHERE id = 999 RETURNING id").rows_affected == 0);
+    // Summed over the statements of a multi-statement template.
+    CHECK(write("DELETE FROM test_count WHERE id = 4; INSERT INTO test_count VALUES (10, 'a'), (11, 'b')").rows_affected == 3);
+}

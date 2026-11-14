@@ -23,6 +23,9 @@ Authentication and requests:
 - **`method: DELETE` endpoints run their SQL template** like the other write methods (parameters, validation,
   cache handling) and answer 200 `{"rows_affected": n}`. Before, a DELETE endpoint only invalidated its cache
   or answered 405.
+- **Write endpoints report the real `rows_affected`:** the number of rows the statements changed (summed over a
+  multi-statement template; with `RETURNING`, the rows returned). Before, a statement without `RETURNING`
+  always reported 1 - an `UPDATE` of five rows and a `DELETE` of a missing id alike.
 - **A REST 500 answer is JSON and no longer contains the database error:**
   `{"error":"Internal Server Error","message":"...","request_id":"req-..."}`. The full error is in the server
   log under that request id.

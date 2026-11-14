@@ -161,7 +161,10 @@ so grep the server log for the `request_id` to see what went wrong.
 
 `POST`, `PUT`, `PATCH` and `DELETE` endpoints all run their template as a write:
 parameters are validated, the template is rendered and executed, and the answer
-is `200 {"rows_affected": n}`. A `DELETE` endpoint is written like the others:
+is `200 {"rows_affected": n}`. `n` is the number of rows the statements changed
+(DuckDB's count, summed over a multi-statement template; with `RETURNING`, the
+number of returned rows), so a `DELETE` of a missing id answers `0`. A `DELETE`
+endpoint is written like the others:
 
 ```yaml
 # sqls/customer-delete.yaml

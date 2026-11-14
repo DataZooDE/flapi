@@ -1867,7 +1867,9 @@ Read operations (queries) are the default for `GET`, `HEAD`, and `OPTIONS` metho
 
 Write operations are auto-detected for `POST`, `PUT`, `PATCH`, and `DELETE` methods. All four run the
 write path: parameters are extracted and validated, the template is rendered and executed, and the
-response is `200 {"rows_affected": n}` (or the `RETURNING` rows with `returns-data: true`). A `DELETE`
+response is `200 {"rows_affected": n}` (or the `RETURNING` rows with `returns-data: true`). `n` is the number
+of rows changed - DuckDB's count, summed over the template's statements; for a `RETURNING` statement, the rows
+it returned - so an `UPDATE` of five rows answers 5 and a `DELETE` that matched nothing answers 0. A `DELETE`
 endpoint is no different — its template is the `DELETE FROM …` statement.
 
 | Parameter | Type | Default | Description |
