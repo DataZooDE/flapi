@@ -63,6 +63,8 @@ private:
     static crow::json::wvalue convertVectorVarcharToJson(const duckdb_vector &vector, const idx_t row_idx);
     static crow::json::wvalue convertVectorJsonToJson(const duckdb_vector &vector, const idx_t row_idx);
     static crow::json::wvalue convertVectorDecimalToJson(const duckdb_vector &vector, const idx_t row_idx);
+    // Exact JSON for a DECIMAL value (see the definition for the limits).
+    static crow::json::wvalue decimalToJson(const duckdb_decimal& decimal);
     static crow::json::wvalue convertVectorTimestampToJson(const duckdb_vector &vector, const idx_t row_idx);
     static crow::json::wvalue convertVectorDateToJson(const duckdb_vector &vector, const idx_t row_idx);
     static crow::json::wvalue convertVectorTimeToJson(const duckdb_vector &vector, const idx_t row_idx);

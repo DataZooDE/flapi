@@ -72,11 +72,21 @@ std::string base64UrlEncode(const std::vector<unsigned char>& bytes) {
     return out;
 }
 
-std::vector<unsigned char> base64UrlDecode(const std::string& s) {
+// Decodes every base64 dialect a PBKDF2 MCF string is found in:
+//   - URL-safe ('-' '_'), which hashWithDefaults() emits;
+//   - passlib's "ab64" ('.' for '+', '/' kept, no padding), which
+//     passlib.hash.pbkdf2_sha256 emits - the header promises that format;
+//   - standard ('+' '/'), with or without '=' padding.
+// The alphabets agree on the first 62 symbols, so accepting all of them is
+// unambiguous.
+std::vector<unsigned char> base64UrlDecode(std::string s) {
+    while (!s.empty() && s.back() == '=') {
+        s.pop_back();
+    }
     static const std::int8_t kTable[256] = {
         -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
         -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,62,62,63,
         52,53,54,55,56,57,58,59,60,61,-1,-1,-1,-1,-1,-1,
         -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,
         15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,63,

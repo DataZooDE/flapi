@@ -4,34 +4,66 @@
 
 namespace flapi {
 
+namespace {
+
+void replaceAll(std::string& text, const std::string& from, const std::string& to) {
+    if (to.empty()) {
+        return;
+    }
+    std::size_t pos = 0;
+    while ((pos = text.find(from, pos)) != std::string::npos) {
+        text.replace(pos, from.size(), to);
+        pos += to.size();
+    }
+}
+
+}  // namespace
+
+std::string OIDCProviderPresets::normalizeProviderType(const std::string& provider_type) {
+    // The docs call Microsoft Entra ID / Azure AD `azure`; the code called it
+    // `microsoft`, and `azure` fell through as an unknown provider.
+    if (provider_type == "azure" || provider_type == "azure-ad" || provider_type == "entra") {
+        return "microsoft";
+    }
+    return provider_type;
+}
+
+void OIDCProviderPresets::substitutePlaceholders(OIDCConfig& config) {
+    replaceAll(config.issuer_url, "{tenant}", config.tenant_id);
+    replaceAll(config.issuer_url, "{tenant-id}", config.tenant_id);
+    replaceAll(config.issuer_url, "{realm}", config.realm);
+    replaceAll(config.issuer_url, "{domain}", config.domain);
+}
+
 bool OIDCProviderPresets::applyPreset(OIDCConfig& config) {
+    config.provider_type = normalizeProviderType(config.provider_type);
+
+    bool recognised = true;
     if (config.provider_type.empty() || config.provider_type == "generic") {
         // Generic OIDC: issuer_url must be provided
-        return false;
-    }
-
-    if (config.provider_type == "google") {
+        recognised = false;
+    } else if (config.provider_type == "google") {
         applyGooglePreset(config);
-        return true;
     } else if (config.provider_type == "microsoft") {
         applyMicrosoftPreset(config);
-        return true;
     } else if (config.provider_type == "keycloak") {
         applyKeycloakPreset(config);
-        return true;
     } else if (config.provider_type == "auth0") {
         applyAuth0Preset(config);
-        return true;
     } else if (config.provider_type == "okta") {
         applyOktaPreset(config);
-        return true;
     } else if (config.provider_type == "github") {
         applyGitHubPreset(config);
-        return true;
+    } else {
+        CROW_LOG_WARNING << "Unknown OIDC provider type: " << config.provider_type;
+        recognised = false;
     }
 
-    CROW_LOG_WARNING << "Unknown OIDC provider type: " << config.provider_type;
-    return false;
+    // After the preset: it may have supplied the issuer-url template whose
+    // placeholders these fill. Nothing substituted them before, so a preset
+    // issuer-url was never a usable URL.
+    substitutePlaceholders(config);
+    return recognised;
 }
 
 void OIDCProviderPresets::applyGooglePreset(OIDCConfig& config) {
@@ -75,7 +107,7 @@ void OIDCProviderPresets::applyMicrosoftPreset(OIDCConfig& config) {
         if (config.issuer_url.empty()) {
             config.issuer_url = "https://login.microsoftonline.com/{tenant}/v2.0";
         }
-        CROW_LOG_INFO << "Microsoft preset requires tenant substitution in issuer_url: "
+        CROW_LOG_DEBUG << "Microsoft preset requires tenant substitution in issuer_url: "
                       << config.issuer_url;
     }
 
@@ -109,9 +141,9 @@ void OIDCProviderPresets::applyKeycloakPreset(OIDCConfig& config) {
     // Example: https://keycloak.example.com/realms/myrealm
     if (config.issuer_url.empty() || config.issuer_url.find("{") != std::string::npos) {
         if (config.issuer_url.empty()) {
-            config.issuer_url = "https://keycloak.example.com/realms/{realm}";
+            config.issuer_url = "https://{domain}/realms/{realm}";
         }
-        CROW_LOG_INFO << "Keycloak preset requires realm substitution in issuer_url: "
+        CROW_LOG_DEBUG << "Keycloak preset requires realm substitution in issuer_url: "
                       << config.issuer_url;
     }
 
@@ -156,7 +188,7 @@ void OIDCProviderPresets::applyAuth0Preset(OIDCConfig& config) {
         if (config.issuer_url.empty()) {
             config.issuer_url = "https://{domain}.auth0.com";
         }
-        CROW_LOG_INFO << "Auth0 preset requires domain substitution in issuer_url: "
+        CROW_LOG_DEBUG << "Auth0 preset requires domain substitution in issuer_url: "
                       << config.issuer_url;
     }
 
@@ -194,7 +226,7 @@ void OIDCProviderPresets::applyOktaPreset(OIDCConfig& config) {
         if (config.issuer_url.empty()) {
             config.issuer_url = "https://{domain}.okta.com/oauth2/default";
         }
-        CROW_LOG_INFO << "Okta preset requires domain substitution in issuer_url: "
+        CROW_LOG_DEBUG << "Okta preset requires domain substitution in issuer_url: "
                       << config.issuer_url;
     }
 
@@ -260,17 +292,18 @@ void OIDCProviderPresets::applyGitHubPreset(OIDCConfig& config) {
                    << ", username_claim=" << config.username_claim;
 }
 
-std::string OIDCProviderPresets::getRequiredParameters(const std::string& provider_type) {
+std::string OIDCProviderPresets::getRequiredParameters(const std::string& raw_provider_type) {
+    const std::string provider_type = normalizeProviderType(raw_provider_type);
     if (provider_type == "google") {
         return "Requires: client-id, allowed-audiences\nOptional: client-secret (for client credentials)";
     } else if (provider_type == "microsoft") {
-        return "Requires: client-id, issuer-url with {tenant} placeholder\nOptional: client-secret";
+        return "Requires: client-id, and tenant-id (or a literal issuer-url)\nOptional: client-secret";
     } else if (provider_type == "keycloak") {
-        return "Requires: client-id, issuer-url with {realm} placeholder\nOptional: client-secret, role-claim-path";
+        return "Requires: client-id, and domain + realm (or a literal issuer-url)\nOptional: client-secret, role-claim-path";
     } else if (provider_type == "auth0") {
-        return "Requires: client-id, issuer-url with {domain} placeholder\nOptional: client-secret, role-claim-path";
+        return "Requires: client-id, and domain (or a literal issuer-url)\nOptional: client-secret, role-claim-path";
     } else if (provider_type == "okta") {
-        return "Requires: client-id, issuer-url with {domain} placeholder\nOptional: client-secret";
+        return "Requires: client-id, and domain (or a literal issuer-url)\nOptional: client-secret";
     } else if (provider_type == "github") {
         return "Requires: client-id\nOptional: client-secret";
     } else {
@@ -279,39 +312,37 @@ std::string OIDCProviderPresets::getRequiredParameters(const std::string& provid
 }
 
 std::string OIDCProviderPresets::validateProviderConfig(const OIDCConfig& config) {
-    if (config.provider_type.empty() || config.provider_type == "generic") {
-        // Generic OIDC requires issuer_url
-        if (config.issuer_url.empty()) {
-            return "Generic OIDC requires 'issuer-url' to be specified";
-        }
-        return "";  // Valid
+    // Runs on a config the preset has been applied to, so placeholders that
+    // had a value are already substituted. What is checked is the RESULT:
+    // a real issuer URL is valid however it was written. The previous check
+    // demanded that the {tenant}/{realm}/{domain} placeholder still be
+    // present - which nothing ever substituted - so a correct, literal
+    // issuer URL logged "OIDC configuration error" on every handler.
+    const std::string provider = normalizeProviderType(config.provider_type);
+
+    if (config.issuer_url.empty()) {
+        return (provider.empty() || provider == "generic")
+                   ? "Generic OIDC requires 'issuer-url' to be specified"
+                   : provider + " OIDC requires 'issuer-url' to be specified";
     }
 
-    if (config.provider_type == "microsoft") {
-        if (config.issuer_url.empty() || config.issuer_url.find("{tenant}") == std::string::npos) {
-            return "Microsoft Azure AD requires 'issuer-url' with {tenant} placeholder "
-                   "(e.g., https://login.microsoftonline.com/{tenant}/v2.0)";
+    for (const auto& placeholder : extractPlaceholders(config.issuer_url)) {
+        std::string key = placeholder;
+        if (placeholder == "tenant" || placeholder == "tenant-id") {
+            key = "tenant-id";
         }
-    } else if (config.provider_type == "keycloak") {
-        if (config.issuer_url.empty() || config.issuer_url.find("{realm}") == std::string::npos) {
-            return "Keycloak requires 'issuer-url' with {realm} placeholder "
-                   "(e.g., https://keycloak.example.com/realms/{realm})";
-        }
-    } else if (config.provider_type == "auth0") {
-        if (config.issuer_url.empty() || config.issuer_url.find("{domain}") == std::string::npos) {
-            return "Auth0 requires 'issuer-url' with {domain} placeholder "
-                   "(e.g., https://{domain}.auth0.com)";
-        }
-    } else if (config.provider_type == "okta") {
-        if (config.issuer_url.empty() || config.issuer_url.find("{domain}") == std::string::npos) {
-            return "Okta requires 'issuer-url' with {domain} placeholder "
-                   "(e.g., https://{domain}.okta.com/oauth2/default)";
-        }
+        return "'issuer-url' (" + config.issuer_url + ") still contains the {" + placeholder +
+               "} placeholder. Set `" + key + "` in the oidc block, or write the provider's "
+               "real issuer URL into `issuer-url`.";
+    }
+
+    if (provider.empty() || provider == "generic") {
+        return "";  // Valid
     }
 
     // All providers require client_id
     if (config.client_id.empty()) {
-        return config.provider_type + " OIDC requires 'client-id' to be specified";
+        return provider + " OIDC requires 'client-id' to be specified";
     }
 
     return "";  // Valid

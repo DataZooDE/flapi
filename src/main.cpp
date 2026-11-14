@@ -580,7 +580,9 @@ int main(int argc, char* argv[])
     }
 #endif
 
-    static argparse::ArgumentParser program("flapi");
+    // The version argparse prints for --version; without it argparse's own
+    // default ("1.0") was printed, whatever the build.
+    static argparse::ArgumentParser program("flapi", FLAPI_VERSION);
 
     program.add_argument("-c", "--config")
         .help("Path to the flapi.yaml configuration file")
@@ -596,7 +598,7 @@ int main(int argc, char* argv[])
         .default_value(std::string(""));
 
     program.add_argument("--log-level")
-        .help("Set the log level (debug, info, warning, error)")
+        .help("Set the log level (debug, info, warning|warn, error)")
         .default_value(std::string("info"));
 
     program.add_argument("--validate-config")
@@ -994,13 +996,17 @@ int main(int argc, char* argv[])
             cmd_host = env;
         }
     }
+    // `warn` is what most loggers (and the docs) call it; crow says `warning`.
+    if (log_level == "warn") {
+        log_level = "warning";
+    }
     // Validate log_level. Invalid values are an error, not a silent
     // fallback -- typos like FLAPI_LOG_LEVEL=DEBUG should surface
     // immediately, not run the server at the wrong verbosity.
     if (log_level != "debug" && log_level != "info" &&
         log_level != "warning" && log_level != "error") {
         std::cerr << "flapi: invalid log level '" << log_level
-                  << "'; must be one of: debug, info, warning, error\n";
+                  << "'; must be one of: debug, info, warning (or warn), error\n";
         return 1;
     }
     bool config_service_enabled = program.get<bool>("--config-service");

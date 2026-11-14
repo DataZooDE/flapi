@@ -78,6 +78,9 @@ private:
 public:
     static std::string md5Hash(const std::string& input);
     static bool verifyPassword(const std::string& provided_password, const std::string& stored_password);
+    // True when `required` is empty or `held` contains at least one of them.
+    static bool hasRequiredRole(const std::vector<std::string>& required,
+                                const std::vector<std::string>& held);
 };
 
 } // namespace flapi

@@ -6,6 +6,7 @@
 #include <crow/http_request.h>
 #include <crow/http_response.h>
 #include <crow/utility.h>
+#include <crow/json.h>
 #include <algorithm>
 #include <cstring>
 #include <jwt-cpp/jwt.h>
@@ -25,7 +26,7 @@ namespace {
 // keeps the value a bounded enumeration rather than free-form config text.
 const char* staticAuthKind(const std::string& configured) {
     if (configured == "basic")  { return "basic"; }
-    if (configured == "bearer") { return "bearer"; }
+    if (configured == "bearer" || configured == "jwt") { return "bearer"; }
     if (configured == "oidc")   { return "oidc"; }
     return "none";
 }
@@ -193,7 +194,9 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
     if (endpoint->auth.type == "basic") {
         ctx.auth_type = "basic";
         ctx.authenticated = authenticateBasic(auth_header, *endpoint, ctx);
-    } else if (endpoint->auth.type == "bearer") {
+    } else if (endpoint->auth.type == "bearer" || endpoint->auth.type == "jwt") {
+        // `jwt` is normalised to `bearer` at load; accepted here as well for
+        // endpoints constructed in code.
         ctx.auth_type = "bearer";
         ctx.authenticated = authenticateBearer(auth_header, *endpoint, ctx);
     } else if (endpoint->auth.type == "oidc") {
@@ -216,8 +219,38 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
             rc->auth_kind = staticAuthKind(endpoint->auth.type);
             rc->principal = ctx.username;
         }
+        // Authorisation, after authentication: `auth.roles` was documented
+        // and never parsed nor checked, so a principal lacking every listed
+        // role got 200. Any one listed role suffices. 403, not 401: the
+        // credentials are valid, retrying with them cannot help.
+        if (!hasRequiredRole(endpoint->auth.roles, ctx.roles)) {
+            CROW_LOG_INFO << "Authorization denied for user '" << ctx.username << "' on "
+                          << endpoint->getIdentifier() << ": requires one of the endpoint's roles";
+            res.code = 403;
+            res.set_header("Content-Type", "application/json");
+            crow::json::wvalue body;
+            body["error"] = "Forbidden";
+            body["message"] = "The authenticated principal does not hold any role this endpoint requires.";
+            res.body = body.dump();
+            res.end();
+            flapi::GlobalTelemetry().authEnforced(auth_kind, /*allow=*/false);
+            return;
+        }
     }
     flapi::GlobalTelemetry().authEnforced(auth_kind, ctx.authenticated);
+}
+
+bool AuthMiddleware::hasRequiredRole(const std::vector<std::string>& required,
+                                     const std::vector<std::string>& held) {
+    if (required.empty()) {
+        return true;
+    }
+    for (const auto& role : held) {
+        if (std::find(required.begin(), required.end(), role) != required.end()) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool AuthMiddleware::authenticateBasic(const std::string& auth_header, const EndpointConfig& endpoint, context& ctx) {

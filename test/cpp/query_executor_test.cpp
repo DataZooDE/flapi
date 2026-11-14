@@ -763,5 +763,48 @@ TEST_CASE("QueryExecutor::interrupt stops an in-flight query", "[query_executor]
     duckdb_close(&database);
 }
 
+
+TEST_CASE("QueryExecutor serialises DECIMAL exactly and timestamps at full precision",
+          "[query_executor][decimal][timestamp]") {
+    duckdb_database database;
+    REQUIRE(duckdb_open(NULL, &database) == DuckDBSuccess);
+
+    QueryExecutor executor(database);
+    executor.execute(R"(
+        SELECT
+            7790.62::DECIMAL(10, 2)                            AS price,
+            0.1::DECIMAL(4, 1)                                 AS tenth,
+            -12.345678::DECIMAL(12, 6)                         AS six_places,
+            42::DECIMAL(10, 0)                                 AS whole,
+            CAST(7790.62 AS DECIMAL(38, 2))                    AS wide,
+            '2024-05-06 07:08:09.123456'::TIMESTAMP            AS ts,
+            '2024-05-06 07:08:09.123456+00'::TIMESTAMPTZ       AS ts_tz,
+            '2024-05-06 07:08:09'::TIMESTAMP_S                 AS ts_s,
+            '2024-05-06 07:08:09.123'::TIMESTAMP_MS            AS ts_ms,
+            '2024-05-06 07:08:09.123456789'::TIMESTAMP_NS      AS ts_ns,
+            NULL::TIMESTAMP                                    AS ts_null
+    )");
+
+    const std::string text = executor.toJson()[0].dump();
+    INFO(text);
+    REQUIRE(text.find("\"price\":7790.62") != std::string::npos);
+    REQUIRE(text.find("\"tenth\":0.1") != std::string::npos);
+    REQUIRE(text.find("\"six_places\":-12.345678") != std::string::npos);
+    REQUIRE(text.find("\"whole\":42") != std::string::npos);
+    REQUIRE(text.find("\"wide\":7790.62") != std::string::npos);
+    REQUIRE(text.find("7790.6199") == std::string::npos);
+
+    auto doc = crow::json::load(text);
+    REQUIRE(doc);
+    REQUIRE(doc["ts"].s() == "2024-05-06T07:08:09.123456Z");
+    REQUIRE(doc["ts_tz"].s() == "2024-05-06T07:08:09.123456Z");
+    REQUIRE(doc["ts_s"].s() == "2024-05-06T07:08:09.000000Z");
+    REQUIRE(doc["ts_ms"].s() == "2024-05-06T07:08:09.123000Z");
+    REQUIRE(doc["ts_ns"].s() == "2024-05-06T07:08:09.123456789Z");
+    REQUIRE(doc["ts_null"].t() == crow::json::type::Null);
+
+    duckdb_close(&database);
+}
+
 }  // namespace test
 }  // namespace flapi

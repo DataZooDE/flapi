@@ -6,30 +6,18 @@
 #include <cctype>
 
 #include "config_manager.hpp"
+#include "password_hasher.hpp"
 
 namespace flapi {
 
 namespace {
 
-bool isBcryptPrefix(const std::string& password) {
-    if (password.size() < 4) {
-        return false;
-    }
-    if (password[0] != '$' || password[1] != '2' || password[3] != '$') {
-        return false;
-    }
-    const char variant = password[2];
-    return variant == 'a' || variant == 'b' || variant == 'y';
-}
-
-bool isMd5HexDigest(const std::string& password) {
-    if (password.size() != 32) {
-        return false;
-    }
-    return std::all_of(password.begin(), password.end(), [](char c) {
-        return std::isxdigit(static_cast<unsigned char>(c)) != 0;
-    });
-}
+// How to produce a hash flAPI verifies. flAPI ships no hashing command, so
+// point at passlib, whose pbkdf2_sha256 output PasswordHasher accepts as is.
+constexpr const char* kHashAdvice =
+    "Store a PBKDF2-SHA256 hash instead, e.g. "
+    "python3 -c \"from passlib.hash import pbkdf2_sha256; import getpass; "
+    "print(pbkdf2_sha256.using(rounds=600000).hash(getpass.getpass()))\"";
 
 void scanUsers(const std::vector<AuthUser>& users,
                const std::string& location,
@@ -39,15 +27,23 @@ void scanUsers(const std::vector<AuthUser>& users,
         if (code == "AUTH_PLAINTEXT_PASSWORD") {
             out.push_back({
                 code,
-                "User '" + user.username + "' has a plaintext password. "
-                "Use bcrypt instead (see flapii auth hash, when available).",
+                "User '" + user.username + "' has a plaintext password. " + kHashAdvice + ".",
                 location
             });
         } else if (code == "AUTH_MD5_PASSWORD") {
             out.push_back({
                 code,
                 "User '" + user.username + "' has an MD5-hashed password. "
-                "MD5 is cryptographically broken; migrate to bcrypt.",
+                "MD5 is cryptographically broken. " + kHashAdvice + ".",
+                location
+            });
+        } else if (code == "AUTH_BCRYPT_UNSUPPORTED") {
+            // flAPI recognises bcrypt but cannot verify it (PasswordHasher
+            // refuses rather than fail open), so this user can never log in.
+            out.push_back({
+                code,
+                "User '" + user.username + "' has a bcrypt password hash, which flAPI does "
+                "not verify: every login as this user is refused. " + kHashAdvice + ".",
                 location
             });
         }
@@ -60,11 +56,19 @@ std::string SecurityAuditor::classifyPassword(const std::string& password) {
     if (password.empty()) {
         return {};
     }
-    if (isBcryptPrefix(password)) {
-        return {};
-    }
-    if (isMd5HexDigest(password)) {
-        return "AUTH_MD5_PASSWORD";
+    // The SAME classifier the verifier uses. The auditor had its own, which
+    // knew bcrypt and MD5 but not PBKDF2 - so the recommended format was
+    // reported as a plaintext password, and bcrypt (which the verifier
+    // refuses) was reported as fine.
+    switch (PasswordHasher::classifyFormat(password)) {
+        case PasswordFormat::Pbkdf2Sha256:
+            return {};
+        case PasswordFormat::BcryptUnsupported:
+            return "AUTH_BCRYPT_UNSUPPORTED";
+        case PasswordFormat::Md5Deprecated:
+            return "AUTH_MD5_PASSWORD";
+        case PasswordFormat::PlaintextDeprecated:
+            return "AUTH_PLAINTEXT_PASSWORD";
     }
     return "AUTH_PLAINTEXT_PASSWORD";
 }
@@ -72,7 +76,28 @@ std::string SecurityAuditor::classifyPassword(const std::string& password) {
 std::vector<SecurityWarning> SecurityAuditor::audit(const ConfigManager& config) const {
     std::vector<SecurityWarning> warnings;
 
+    // The top-level `auth:` block, once. Endpoints that inherit it carry a
+    // copy of it and are skipped below, so one bad global user is reported
+    // once rather than once per endpoint.
+    if (config.isAuthEnabled()) {
+        const auto& global = config.getGlobalAuthConfig();
+        scanUsers(global.users, "auth", warnings);
+        if (global.type == "bearer" && global.jwt_secret.empty()) {
+            warnings.push_back({
+                "AUTH_EMPTY_JWT_SECRET",
+                "The global auth block declares bearer auth with an EMPTY jwt-secret, so "
+                "every token would verify. This usually means the environment variable "
+                "it interpolates is unset. Authentication is refused at runtime until a "
+                "secret is configured.",
+                "auth"
+            });
+        }
+    }
+
     for (const auto& endpoint : *config.getEndpoints()) {
+        if (endpoint.auth.inherited) {
+            continue;
+        }
         scanUsers(endpoint.auth.users, "endpoint " + endpoint.getIdentifier(), warnings);
 
         // An empty HMAC key is not a weak secret, it is no secret: a token
@@ -129,6 +154,32 @@ std::vector<SecurityWarning> SecurityAuditor::audit(const ConfigManager& config)
                 "Anyone reaching the server can invoke any MCP tool. "
                 "Enable mcp.auth.enabled and configure users or JWT before exposing this server.",
                 "mcp"
+            });
+        }
+    }
+
+    // A wildcard CORS origin on an authenticated server lets any web page make
+    // cross-origin requests to it and read the responses whenever the page can
+    // present a credential (a token it holds, or one a user pastes). The
+    // allowlist is empty by default, and empty means "*" (cors_policy.cpp).
+    {
+        const auto& origins = config.getCorsConfig().allow_origins;
+        const bool wildcard = origins.empty() ||
+            std::find(origins.begin(), origins.end(), "*") != origins.end();
+        bool any_auth = config.isAuthEnabled() || mcp.auth.enabled;
+        for (const auto& endpoint : *config.getEndpoints()) {
+            any_auth = any_auth || endpoint.auth.enabled;
+        }
+        if (wildcard && any_auth) {
+            warnings.push_back({
+                "CORS_WILDCARD_WITH_AUTH",
+                std::string("CORS allows every origin (") +
+                    (origins.empty() ? "no cors.allow-origins set, which defaults to \"*\""
+                                     : "cors.allow-origins contains \"*\"") +
+                    ") while authentication is enabled. Any web page can call this "
+                    "server cross-origin with a credential it holds and read the response. "
+                    "List the origins that may call it in cors.allow-origins.",
+                "cors"
             });
         }
     }

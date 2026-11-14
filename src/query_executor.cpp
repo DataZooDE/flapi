@@ -8,6 +8,7 @@
 #include <crow.h>
 #include <fmt/core.h>
 #include <sstream>
+#include <limits>
 #include <stdexcept>
 #include <algorithm>
 #include <array>
@@ -733,21 +734,111 @@ crow::json::wvalue QueryResult::convertVectorDecimalToJson(const duckdb_vector &
     }
 
     auto decimal = duckdb_decimal {decimal_width, decimal_scale, hugeint};
-    double value = duckdb_decimal_to_double(decimal);
-    
-    return crow::json::wvalue(value);
+    return decimalToJson(decimal);
+}
+
+crow::json::wvalue QueryResult::decimalToJson(const duckdb_decimal& decimal) {
+    // A DECIMAL is exact; going through `double` and crow's "%.21g" made
+    // 7790.62 come out as 7790.61999999999989086. The JSON text is built from
+    // DuckDB's own exact rendering of the value instead.
+    auto value = duckdb_create_decimal(decimal);
+    DuckDBString rendered(duckdb_value_to_string(value));
+    duckdb_destroy_value(&value);
+    const std::string text = rendered.to_string();
+
+    std::size_t integer_digits = 0;
+    bool seen_point = false;
+    bool leading = true;
+    for (const char c : text) {
+        if (c == '.') {
+            seen_point = true;
+        } else if (c >= '0' && c <= '9' && !seen_point) {
+            if (leading && c == '0') {
+                continue;
+            }
+            leading = false;
+            ++integer_digits;
+        }
+    }
+
+    if (decimal.scale == 0 && integer_digits <= 18) {
+        // An integer-valued decimal: emitted as an exact JSON integer.
+        return crow::json::wvalue(static_cast<std::int64_t>(std::stoll(text)));
+    }
+    // A JSON number built from the exact text. crow prints such a number with
+    // "%f" (six decimals, trailing zeros trimmed), which reproduces the text
+    // exactly while it has at most six decimals and the six-decimal rendering
+    // stays within double's 15 exact significant digits.
+    if (decimal.scale <= 6 && integer_digits + 6 <= 15) {
+        auto parsed = crow::json::load(text);
+        if (parsed) {
+            return crow::json::wvalue(parsed);
+        }
+    }
+    // Beyond what a double holds exactly: the closest double, as before. A
+    // string would be exact but would change the column's JSON type for its
+    // largest values only, which breaks typed clients in production and not
+    // in tests.
+    return crow::json::wvalue(duckdb_decimal_to_double(decimal));
 }
 
 crow::json::wvalue QueryResult::convertVectorTimestampToJson(const duckdb_vector &vector, const idx_t row_idx) {
-    auto data = (duckdb_timestamp *)duckdb_vector_get_data(vector);
-    auto ts = duckdb_from_timestamp(data[row_idx]);
+    auto validity = duckdb_vector_get_validity(vector);
+    if (!duckdb_validity_row_is_valid(validity, row_idx)) {
+        return crow::json::wvalue(nullptr);
+    }
 
-    // Javascript ISO 8601
-    std::string iso_8601 = fmt::format("{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}.{:03d}Z", 
-                                        ts.date.year, ts.date.month, ts.date.day, ts.time.hour, 
-                                        ts.time.min, ts.time.sec, ts.time.micros / 1000);
+    // Every TIMESTAMP variant is an int64 count, but of a different unit.
+    // They were all decoded as microseconds - TIMESTAMP_S and _MS came out
+    // near 1970 - and printed to milliseconds, dropping the microseconds of
+    // a plain TIMESTAMP.
+    auto type = duckdb_vector_get_column_type(vector);
+    const auto type_id = duckdb_get_type_id(type);
+    duckdb_destroy_logical_type(&type);
 
-    return crow::json::wvalue(iso_8601);
+    const std::int64_t raw = static_cast<const std::int64_t *>(duckdb_vector_get_data(vector))[row_idx];
+    // DuckDB's +/-infinity are +/-INT64_MAX in every unit; test before the
+    // unit conversion below can overflow them.
+    if (raw == std::numeric_limits<std::int64_t>::max() || raw == -std::numeric_limits<std::int64_t>::max()) {
+        return crow::json::wvalue(raw > 0 ? std::string("infinity") : std::string("-infinity"));
+    }
+    std::int64_t micros = raw;
+    std::int64_t sub_micro_nanos = -1;   // >= 0 only for TIMESTAMP_NS
+    switch (type_id) {
+        case DUCKDB_TYPE_TIMESTAMP_S:
+            micros = raw * 1000000;
+            break;
+        case DUCKDB_TYPE_TIMESTAMP_MS:
+            micros = raw * 1000;
+            break;
+        case DUCKDB_TYPE_TIMESTAMP_NS: {
+            // Floor division, so pre-1970 instants keep a non-negative remainder.
+            micros = raw / 1000;
+            sub_micro_nanos = raw % 1000;
+            if (sub_micro_nanos < 0) {
+                sub_micro_nanos += 1000;
+                micros -= 1;
+            }
+            break;
+        }
+        default:
+            break;
+    }
+
+    duckdb_timestamp ts_value;
+    ts_value.micros = micros;
+    auto ts = duckdb_from_timestamp(ts_value);
+
+    // ISO 8601 with the full stored precision: microseconds, or nanoseconds
+    // for TIMESTAMP_NS.
+    if (sub_micro_nanos >= 0) {
+        return crow::json::wvalue(fmt::format("{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}.{:06d}{:03d}Z",
+                                              ts.date.year, ts.date.month, ts.date.day, ts.time.hour,
+                                              ts.time.min, ts.time.sec, ts.time.micros, sub_micro_nanos));
+    }
+    return crow::json::wvalue(fmt::format("{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}.{:06d}Z",
+                                          ts.date.year, ts.date.month, ts.date.day, ts.time.hour,
+                                          ts.time.min, ts.time.sec, ts.time.micros));
 }
 
 crow::json::wvalue QueryResult::convertVectorDateToJson(const duckdb_vector &vector, const idx_t row_idx) {

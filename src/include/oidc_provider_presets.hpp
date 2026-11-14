@@ -35,6 +35,13 @@ public:
      */
     static std::string validateProviderConfig(const OIDCConfig& config);
 
+    /// `azure` / `azure-ad` / `entra` -> `microsoft`; anything else unchanged.
+    static std::string normalizeProviderType(const std::string& provider_type);
+
+    /// Replaces {tenant} / {realm} / {domain} in issuer_url with tenant_id /
+    /// realm / domain, where those are set.
+    static void substitutePlaceholders(OIDCConfig& config);
+
 private:
     /**
      * Apply Google Workspace preset

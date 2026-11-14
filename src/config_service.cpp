@@ -745,7 +745,7 @@ void ConfigService::registerRoutes(FlapiApp& app) {
             // Server status
             health["status"] = "healthy";
             health["server"]["name"] = "flapi";
-            health["server"]["version"] = "1.0.0";
+            health["server"]["version"] = FLAPI_VERSION;
 
             // Database status
             auto db_manager = DatabaseManager::getInstance();
