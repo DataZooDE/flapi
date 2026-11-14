@@ -10,6 +10,7 @@
 #include "oidc_provider_presets.hpp"
 #include "vfs_adapter.hpp"
 #include "path_validator.hpp"
+#include "password_hasher.hpp"
 #include <cctype>
 #include <stdexcept>
 #include <filesystem>
@@ -22,6 +23,22 @@
 #include <crow/logging.h>
 
 namespace flapi {
+
+namespace {
+// `type: basci` matched no authenticator, so every request got 401 and nothing
+// was logged anywhere. An enabled block naming a scheme flAPI does not have is
+// a configuration error, at load and at reload. `type` is the NORMALISED value
+// (`jwt` has already become `bearer`).
+void RequireKnownAuthType(const std::string& type, const std::string& location) {
+    if (type.empty() || type == "basic" || type == "bearer" || type == "oidc") {
+        return;
+    }
+    throw ConfigurationError(
+        "AUTH_UNKNOWN_TYPE: " + location + " has auth type '" + type +
+            "', which is not a scheme flAPI supports. Valid types: basic, bearer, jwt (alias of bearer), oidc.",
+        "auth.type");
+}
+}  // namespace
 
 std::optional<CacheWarmupMode> ParseCacheWarmupMode(const std::string& value) {
     if (value == "always") {
@@ -860,7 +877,11 @@ void ConfigManager::parseMCPConfig() {
     if (mcp["auth"]) {
         auto auth = mcp["auth"];
         mcp_config.auth.enabled = safeGet<bool>(auth, "enabled", "mcp.auth.enabled", false);
-        mcp_config.auth.type = safeGet<std::string>(auth, "type", "mcp.auth.type", "bearer");
+        mcp_config.auth.type = normalizeAuthType(safeGet<std::string>(auth, "type", "mcp.auth.type", "bearer"));
+        PasswordVerificationCache::instance().clear();
+        if (mcp_config.auth.enabled) {
+            RequireKnownAuthType(mcp_config.auth.type, "mcp.auth");
+        }
 
         // RFC 9728 protected-resource metadata (optional; derived at runtime
         // from the request host when canonical-resource-uri is unset).
@@ -1269,6 +1290,7 @@ bool DeclaresCredentials(const YAML::Node& auth_node) {
     return false;
 }
 
+
 }  // namespace
 
 void ConfigManager::inheritGlobalCredentials(AuthConfig& auth, bool declares_credentials,
@@ -1373,6 +1395,9 @@ void ConfigManager::parseEndpointAuth(const YAML::Node& endpoint_config, Endpoin
                              "(write `enabled: false` to turn it off)";
         }
         endpoint.auth.type = normalizeAuthType(safeGet<std::string>(auth_node, "type", "auth.type", ""));
+        // Remembered Basic-auth verifications belong to the configuration they
+        // were made under; any (re)parse of an auth block starts them afresh.
+        PasswordVerificationCache::instance().clear();
         endpoint.auth.roles = safeGet<std::vector<std::string>>(auth_node, "roles", "auth.roles", std::vector<std::string>());
         if (auth_node["jwt-secret"]) {
             endpoint.auth.jwt_secret = safeGet<std::string>(auth_node, "jwt-secret", "auth.jwt-secret");
@@ -1450,6 +1475,9 @@ void ConfigManager::parseEndpointAuth(const YAML::Node& endpoint_config, Endpoin
             (endpoint.urlPath.empty() ? endpoint.templateSource
                                       : (endpoint.method.empty() ? std::string("GET") : endpoint.method) + " " +
                                             endpoint.urlPath);
+        if (endpoint.auth.enabled) {
+            RequireKnownAuthType(endpoint.auth.type, location);
+        }
         inheritGlobalCredentials(endpoint.auth, DeclaresCredentials(auth_node),
                                  static_cast<bool>(auth_node["roles"]), location);
         if (endpoint.auth.enabled) {
@@ -1761,6 +1789,7 @@ void ConfigManager::parseRateLimitConfig() {
 // Auth configuration methods
 void ConfigManager::parseAuthConfig() {
     CROW_LOG_INFO << "Parsing auth configuration";
+    PasswordVerificationCache::instance().clear();
     if (config["auth"]) {
         auto auth_node = config["auth"];
         // Same rule as an endpoint block (DeclaresAuthentication). A missing
@@ -1811,6 +1840,7 @@ void ConfigManager::parseAuthConfig() {
             CROW_LOG_INFO << "Global OIDC configuration parsed: issuer=" << global_auth_config.oidc->issuer_url;
         }
         if (auth_enabled) {
+            RequireKnownAuthType(global_auth_config.type, "Top-level `auth:`");
             warnIgnoredAuthKeys(auth_node, global_auth_config.type, "Top-level `auth:`");
         }
     }
@@ -2879,6 +2909,10 @@ EndpointConfig ConfigManager::deserializeEndpointConfig(const crow::json::rvalue
         }
         if (authJson.has("type")) {
             config.auth.type = normalizeAuthType(authJson["type"].s());
+        }
+        PasswordVerificationCache::instance().clear();
+        if (config.auth.enabled) {
+            RequireKnownAuthType(config.auth.type, "Endpoint " + config.method + " " + config.urlPath);
         }
         if (authJson.has("roles")) {
             config.auth.roles.clear();

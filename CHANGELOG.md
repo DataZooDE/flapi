@@ -54,6 +54,11 @@ Authentication and requests:
 - **GCS:** `GOOGLE_*` environment variables are not used for `gs://` access (DuckDB cannot use service-account
   credentials); startup now warns. Create an HMAC key and add `CREATE SECRET (TYPE gcs, KEY_ID ..., SECRET ...)`
   to a connection's `init`.
+- **An unknown `auth.type` stops startup and is refused on reload** with `AUTH_UNKNOWN_TYPE`, naming the
+  endpoint and the valid types (`basic`, `bearer`, `jwt` as an alias of bearer, `oidc`). This applies to
+  endpoint blocks, the top-level `auth:` block and `mcp.auth.type` when enabled. Before, a typo such as
+  `type: basci` loaded, answered 401 to every request and logged nothing. Fix the spelling. `mcp.auth.type:
+  jwt` now works as an alias, too.
 
 Templates, requests and responses:
 
@@ -217,6 +222,21 @@ Config service, MCP and CLI:
 - **`flapii --json-style` re-cases only configuration documents** (endpoints, MCP tools/resources/prompts, cache
   config, project, templates list). Data such as metrics, cache audit, schema, health, template expansion and
   validation is printed exactly as the server sends it, in snake_case (`duration_ms`, `rows_affected`).
+- **MCP `tools/call` failures no longer return the error text.** A SQL or template failure is a result with
+  `isError: true` and `Tool execution failed on the server. The details are in the server log under request_id
+  req-...`, like a REST 500. It used to return the database error, the SQL and absolute template paths. Read the
+  detail from the server log. Bad arguments keep their specific messages.
+- **MCP with `mcp.auth`: refused credentials answer `The credentials sent were not accepted.`** (still HTTP 401,
+  `-32000`) instead of `Authentication required for method: ...`, which is now only sent when no credentials
+  were sent. Clients that matched the old text for a bad or expired token must be updated.
+- **The Claude Code plugin's MCP server sends the config token as `X-Config-Token`**, and `Authorization:
+  Bearer ${FLAPI_MCP_TOKEN}` for `mcp.auth`. Set `FLAPI_MCP_TOKEN` if your server has `mcp.auth` on; before, the
+  config token went in `Authorization` and every call was a 401 once `mcp.auth` was enabled.
+- **Write responses list `rows_affected` first, then `data`, whose rows keep the `RETURNING` column order.**
+  An MCP write result always has `data` (`[]` when no row came back). Clients that parse JSON are unaffected.
+- **Metrics latency is measured from the start of the request** and so includes authentication (a Basic-auth
+  endpoint's PBKDF2 check), rate limiting and middleware rejections. Latencies are rounded to three decimals.
+  Numbers for authenticated endpoints are higher than before because they are now what clients see.
 
 ### Added: compaction on demand, `--method` for one-shot refreshes
 
@@ -367,6 +387,25 @@ Narrow to one endpoint with `?endpoint=/path`.
   away and names, in `pinned_by`, the endpoint whose policy keeps the rest.
 - **Catalog-wide compaction audit rows** have an empty `cache_schema` (it was `main`).
 
+- **SECURITY: Basic auth re-derived PBKDF2 (~165 ms of CPU) on every request,** wrong passwords included, so
+  a flood of bad passwords was a cheap denial of service. A successful check is now remembered for 5 minutes
+  (bounded to 10 000 entries, keyed by an HMAC under a per-process random key; no password is stored); a wrong
+  password is never remembered; a changed hash or any auth (re)load invalidates it. At most half the cores
+  derive PBKDF2 at once, and a request that waits more than 2 s for a slot is refused. Repeat requests with
+  the right password drop from ~165 ms to ~1.5 ms.
+- **Logs:** every Crow `Response: ...` access line has its `request_id` (only 500s had one), and with
+  `log-format: json` the startup lines written while the configuration is read are JSON as well.
+- **MCP `structuredContent.rows`** keep the SELECT column order (the keys were scrambled), and doubles keep
+  their shortest form.
+- **`flapii --version`** prints the package version. **`-q/--quiet`** shows no spinners or progress lines but
+  still reports a failure, in one line (it used to print the spinner's "Failed" line and hide the reason). An
+  error body that only repeats the message is no longer printed a second time.
+- **Claude Code hook:** it checks without the token (`GET /doc.yaml`'s project name) that `FLAPI_URL` is this
+  project's server before sending the token there; says "restart the server first" when `flapi.yaml`'s
+  `ducklake`/`auth`/`mcp` settings changed since the server started; unloads an endpoint YAML a shell command
+  deleted (`rm`, `git rm`, `mv`) via `reload-file`, and says so when the server cannot; gives no sample value
+  to a parameter used inside `AT (...)`; never reports a failing sample run as "cache not built"; and says a
+  dropped watermark means the next refresh would load the full source.
 - **SECURITY: DuckLake catalog credentials were shown in clear.** A Postgres or MySQL `metadata-path` with
   `password=...` (including a resolved `{{env.X}}`) appeared in `GET /api/v1/_config/project` and in startup
   attach errors. Passwords, secrets, tokens and URL `user:password@` parts are now `<redacted>`.

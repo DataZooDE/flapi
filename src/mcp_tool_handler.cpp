@@ -93,6 +93,12 @@ void applyMcpAuthContext(std::map<std::string, std::string>& params,
 
 MCPToolExecutionResult MCPToolHandler::executeTool(const MCPToolCallRequest& request) {
     const auto t0 = std::chrono::steady_clock::now();
+    // The metric is the request's latency as the client sees it: from the
+    // first middleware, so MCP authentication (a PBKDF2 check under Basic) is
+    // inside it. A task worker thread has no request in scope and measures
+    // the execution alone.
+    const auto* request_ctx = RequestContextScope::current();
+    const auto metric_t0 = request_ctx != nullptr ? request_ctx->t0 : t0;
     MCPToolExecutionResult result = executeToolImpl(request);
     const double duration_ms =
         std::chrono::duration<double, std::milli>(
@@ -102,7 +108,7 @@ MCPToolExecutionResult MCPToolHandler::executeTool(const MCPToolCallRequest& req
     flapi::GlobalTelemetry().mcpToolCalled(request.tool_name, result.success, duration_ms);
     RuntimeMetrics::instance().recordMcpTool(
         request.tool_name, result.success,
-        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0),
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - metric_t0),
         result.failure_kind == MCPToolExecutionResult::FailureKind::PermissionDenied);
     return result;
 }
@@ -344,16 +350,11 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
             // synchronously, refresh-on-write in the background.
             RequestHandler::handleCacheAfterWrite(db_manager, *endpoint_config);
 
-            // Format write result
-            crow::json::wvalue write_response;
-            write_response["rows_affected"] = static_cast<int64_t>(write_result.rows_affected);
-            
-            if (write_result.returned_data.has_value() && endpoint_config->operation.returns_data) {
-                write_response["data"] = std::move(*write_result.returned_data);
-            } else if (write_result.returned_data.has_value()) {
-                // Include returned data even if not explicitly configured
-                write_response["data"] = std::move(*write_result.returned_data);
-            }
+            // Same body as the REST write, keys in RETURNING column order; and
+            // `data` always present, [] when nothing came back, so a client
+            // reading structuredContent never has to special-case its absence.
+            const std::string write_response =
+                RequestHandler::formatWriteResultJson(write_result, /*always_include_data=*/true);
 
             // Create metadata
             std::unordered_map<std::string, std::string> metadata;
@@ -363,7 +364,7 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
             metadata["execution_time_ms"] = "0"; // Simplified
 
             emit_audit("success", static_cast<std::int64_t>(write_result.rows_affected));
-            return createSuccessResult(write_response.dump(), metadata);
+            return createSuccessResult(write_response, metadata);
         } else {
             // Execute read query
         QueryResult query_result = executeQueryWithEndpoint(*endpoint_config, params);
@@ -419,8 +420,26 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
         const std::string public_detail =
             publicErrorMessage("Tool execution error", e.what(), secrets);
         CROW_LOG_ERROR << "for tool " << request.tool_name << ": " << public_detail;
-        return createErrorResult(public_detail,
-                                 MCPToolExecutionResult::FailureKind::ExecutionError);
+        // What reaches the CALLER is what a REST client gets for the same
+        // failure. A bad argument the model can fix keeps its message; anything
+        // else is a generic line plus the request id. The detail used to go
+        // back verbatim: absolute template paths, "Invalid template
+        // /srv/app/sqls/x.sql:4:1 ...", the failing SQL - a map of the
+        // deployment for anyone allowed to call a tool. It stays in the log
+        // line above, which carries the same request id.
+        if (dynamic_cast<const BadRequestError*>(&e) != nullptr) {
+            return createErrorResult(public_detail, MCPToolExecutionResult::FailureKind::InvalidArguments);
+        }
+        if (isLockContentionMessage(e.what())) {
+            return createErrorResult("The database is busy; retry shortly.",
+                                     MCPToolExecutionResult::FailureKind::ExecutionError);
+        }
+        std::string generic = "Tool execution failed on the server. The details are in the server log";
+        if (const auto* rc = RequestContextScope::current()) {
+            generic += " under request_id " + std::string(rc->requestIdView());
+        }
+        generic += ".";
+        return createErrorResult(generic, MCPToolExecutionResult::FailureKind::ExecutionError);
     }
 }
 

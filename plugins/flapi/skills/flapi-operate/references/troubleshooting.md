@@ -67,7 +67,10 @@ Validator syntax: `flapi-rest`.
 
 401 bodies: `401 Unauthorized` with `WWW-Authenticate: Basic realm="flAPI"` (or Bearer) on an
 endpoint with `auth:`; `Unauthorized: Invalid or missing token` on `/api/v1/_config/*`. MCP
-with `mcp.auth.enabled`: HTTP 401, JSON-RPC `-32000 Authentication required for method: ...`.
+with `mcp.auth.enabled`: HTTP 401, JSON-RPC `-32000 Authentication required for method: ...`
+when no credentials were sent, `-32000 The credentials sent were not accepted.` when they were
+refused (an expired or wrongly signed JWT). Every request answering 401 for every user: check
+`auth.type` - an unknown scheme (`basci`) is now a load/reload error (`AUTH_UNKNOWN_TYPE`).
 403 on REST: `{"error":"Forbidden","message":"The authenticated principal does not hold any
 role this endpoint requires."}` when `auth.roles` is set and the caller has none of them
 (log: `Authorization denied for user 'x' on REST endpoint: /y`). 403 on MCP: `Permission

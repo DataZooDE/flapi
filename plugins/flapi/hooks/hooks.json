@@ -1,9 +1,19 @@
 {
-  "description": "Validate flAPI config after Claude edits YAML/SQL, then hot-reload the affected endpoints on a running config-service server.",
+  "description": "Validate flAPI config after Claude edits YAML/SQL, then hot-reload the affected endpoints on a running config-service server; unload endpoint YAMLs a shell command deleted.",
   "hooks": {
     "PostToolUse": [
       {
         "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/validate_and_reload.py\"",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",

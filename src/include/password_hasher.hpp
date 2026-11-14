@@ -1,8 +1,11 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 
 namespace flapi {
 
@@ -46,6 +49,62 @@ public:
     // Inspect what shape `stored` is. Pure function, exported for tests
     // and for the startup auditor's deprecation warnings.
     static PasswordFormat classifyFormat(const std::string& stored);
+};
+
+// Basic auth sends the password on EVERY request, and a PBKDF2 hash at the
+// default 600,000 iterations costs ~165 ms of CPU to check. Without a cache
+// every request paid it, and a flood of wrong passwords was a cheap CPU
+// denial of service.
+//
+// verifyCredentials() is PasswordHasher::verify() plus two guards:
+//   - SUCCESSFUL PBKDF2 verifications are remembered for a short TTL, keyed by
+//     HMAC-SHA256(process-random key, user, password, stored hash). The
+//     plaintext password is never stored; the key dies with the process. The
+//     stored hash is part of the key, so a changed password can never match
+//     an old entry, and clear() (called whenever auth config is parsed, i.e.
+//     on every load and reload) drops everything. Failures are never cached:
+//     a wrong password is checked in full every time.
+//   - At most maxConcurrentDerivations() PBKDF2 derivations run at once. A
+//     caller that cannot get a slot within the wait budget is REFUSED (fail
+//     closed), so wrong-password traffic cannot occupy every worker thread.
+// Bounded: at most kMaxEntries entries; expired ones are swept first, then
+// arbitrary ones are evicted.
+class PasswordVerificationCache {
+public:
+    static constexpr std::size_t kMaxEntries = 10'000;
+    static constexpr std::chrono::seconds kTtl{300};
+
+    static PasswordVerificationCache& instance();
+
+    // True when `password` verifies against `stored` for `username`.
+    bool verifyCredentials(const std::string& username, const std::string& password,
+                           const std::string& stored);
+
+    // Forget every remembered verification (config load/reload).
+    void clear();
+
+    // Test/observability seams.
+    std::size_t size() const;
+    std::uint64_t hits() const;
+    std::uint64_t derivations() const;
+    std::uint64_t refusedBusy() const;
+    static unsigned maxConcurrentDerivations();
+    // Tests only: pretend entries were verified `age` ago.
+    void ageEntriesForTest(std::chrono::seconds age);
+
+private:
+    PasswordVerificationCache();
+    std::string keyFor(const std::string& username, const std::string& password,
+                       const std::string& stored) const;
+    void remember(const std::string& key);
+
+    using Clock = std::chrono::steady_clock;
+    std::string _hmac_key;
+    mutable std::mutex _mutex;
+    std::unordered_map<std::string, Clock::time_point> _entries;
+    std::uint64_t _hits = 0;
+    std::uint64_t _derivations = 0;
+    std::uint64_t _refused_busy = 0;
 };
 
 } // namespace flapi

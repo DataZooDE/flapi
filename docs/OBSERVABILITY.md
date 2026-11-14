@@ -404,7 +404,12 @@ Quote either in a support request. `X-Request-Id` works with tracing disabled;
 
 `trace_id` and `span_id` appear in the audit log and in application log lines
 emitted while serving a request, so a trace can be joined to an audit entry and
-to the log. With `log-format: json` the log is directly ingestible.
+to the log. With `log-format: json` the log is directly ingestible, from the
+first startup line on: lines logged while the configuration is read are held
+and written once it has said which format it wants. Crow's own access line
+(`Response: <conn> <url> <status> ...`) carries the `request_id` too, for
+every outcome: a 200 from an offloaded handler, and a 401/403/429 a middleware
+answered before any handler ran.
 
 ```yaml
 log-level: info

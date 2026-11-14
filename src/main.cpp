@@ -1116,6 +1116,13 @@ int main(int argc, char* argv[])
                   << "'; must be one of: debug, info, warning (or warn), error\n";
         return 1;
     }
+    // Installed BEFORE anything is logged, holding its lines until the
+    // configuration says which `log-format` it wants (setFormat below). Lines
+    // logged while reading the configuration used to bypass it: with
+    // `log-format: json` the first ~30 startup lines were plain text.
+    static flapi::FlapiLogHandler log_handler(flapi::FlapiLogHandler::Format::Text, /*hold=*/true);
+    crow::logger::setHandler(&log_handler);
+
     bool config_service_enabled = program.get<bool>("--config-service");
     std::string config_service_token = program.get<std::string>("--config-service-token");
     bool no_telemetry = program.get<bool>("--no-telemetry");
@@ -1157,6 +1164,8 @@ int main(int argc, char* argv[])
     } catch (const std::exception& e) {
         CROW_LOG_ERROR << "Configuration error: " << e.what();
         CROW_LOG_ERROR << "flAPI cannot start until the configuration is valid.";
+        // The format is unknown (the configuration did not load): text.
+        log_handler.setFormat(flapi::FlapiLogHandler::Format::Text);
         return 1;
     }
     config_manager->setCacheWarmupOverride(warmup_override);
@@ -1205,13 +1214,12 @@ int main(int argc, char* argv[])
         }
     }
 
-    // Install the correlating log handler. Every existing CROW_LOG_* call site -
-    // and every future one - gains the request id without being touched.
-    static flapi::FlapiLogHandler log_handler(
-        config_manager && config_manager->getLogFormat() == "json"
-            ? flapi::FlapiLogHandler::Format::Json
-            : flapi::FlapiLogHandler::Format::Text);
-    crow::logger::setHandler(&log_handler);
+    // Settle the correlating log handler's format and write out what it held.
+    // Every existing CROW_LOG_* call site - and every future one - gains the
+    // request id without being touched.
+    log_handler.setFormat(config_manager && config_manager->getLogFormat() == "json"
+                              ? flapi::FlapiLogHandler::Format::Json
+                              : flapi::FlapiLogHandler::Format::Text);
 
     // Surface configuration-level security warnings (plaintext passwords, MCP without auth, etc.)
     // Runs in both --validate-config mode and normal server start; never aborts startup.

@@ -1944,6 +1944,15 @@ template `LIMIT {{ params.limit }}` would break REST paging (`?limit=2&offset=2`
 | `-32603` | Internal error | Server-side error | Check server logs |
 | `-32001` | Authentication required | Method requires auth | Provide Authorization header |
 | `-32000` | Session error | Session-related issue | Re-initialize session |
+| `-32000` (HTTP 401) | `Authentication required for method: <m>` | `mcp.auth` on, no credentials sent | Send `Authorization` |
+| `-32000` (HTTP 401) | `The credentials sent were not accepted.` | `mcp.auth` on, credentials refused (bad or expired JWT, wrong password) | Fix the credential |
+
+A `tools/call` whose SQL or template fails is a result with `"isError": true` and the text
+`Tool execution failed on the server. The details are in the server log under request_id req-...`,
+the same contract as a REST 500. The database error, the SQL and template paths are in the server
+log line carrying that id, never in the result. A bad argument (validator) or a `BadRequestError`
+keeps its specific, actionable message. `structuredContent.rows` carries the rows with their keys
+in SELECT / RETURNING column order; a write's result always has `data` (`[]` when no row came back).
 
 ---
 

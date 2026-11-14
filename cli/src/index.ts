@@ -15,6 +15,7 @@ import { registerCacheCommands } from './commands/cache';
 import { registerSchemaCommands } from './commands/schema';
 import type { CliContext, FlapiiConfig } from './lib/types';
 import type { AxiosInstance } from 'axios';
+import packageJson from '../package.json';
 
 export async function createCli(argv = process.argv) {
   const program = new Command();
@@ -22,6 +23,7 @@ export async function createCli(argv = process.argv) {
   program
     .name('flapii')
     .description('CLI client for flapi ConfigService')
+    .version(packageJson.version, '-V, --version', 'Print the flapii version')
     .configureOutput({
       outputError: (str, write) => write(Console.color('red', str)),
     })
@@ -37,6 +39,11 @@ export async function createCli(argv = process.argv) {
     .option('--debug-http', 'Enable HTTP request/response debugging', false)
     .option('-q, --quiet', 'Suppress non-error output', false)
     .option('-y, --yes', 'Assume yes for prompts', false);
+
+  // Before any command runs, so its spinners and progress lines see it.
+  program.hook('preAction', () => {
+    Console.setQuiet(Boolean(program.opts().quiet));
+  });
 
   let cachedConfig: FlapiiConfig | undefined;
   let cachedClient: AxiosInstance | undefined;

@@ -52,11 +52,12 @@ curl -s $B -H 'Content-Type: application/json' \
 | What happened | HTTP | JSON-RPC |
 |---|---|---|
 | Invalid argument (validator) | 200 | `result.isError: true`, text `Invalid arguments for tool 'x': field: message` |
-| SQL failed | 200 | `result.isError: true`, text `Tool execution error: Query execution failed: ...` |
+| SQL failed | 200 | `result.isError: true`, text `Tool execution failed on the server. The details are in the server log under request_id req-...` (the SQL error, file paths and template locations stay in the log line with that id) |
 | Unknown tool | 200 | error `-32602` `Tool not found: x` |
 | Unknown method | 200 | `-32601` |
 | Bad JSON | 400 | `-32700` `Parse error: Invalid JSON` |
-| MCP auth on, no/invalid credentials | 401 + `WWW-Authenticate` | `-32000` `Authentication required for method: tools/call` |
+| MCP auth on, no credentials | 401 + `WWW-Authenticate` | `-32000` `Authentication required for method: tools/call` |
+| MCP auth on, credentials refused (bad/expired JWT, wrong password) | 401 + `WWW-Authenticate` | `-32000` `The credentials sent were not accepted.` |
 | Caller lacks the tool's `allowed-roles` | 403 (`insufficient_scope`) | `-32000` `Permission denied: ...` |
 | `flapi_*` tool without the config-service token (`X-Config-Token` or `Authorization: Bearer`) | 200 | `-32603` `Tool execution failed: Authentication required for tool: flapi_x` |
 | `flapi_*` tool with a wrong token | 200 | `-32603` `Tool execution failed: Authentication validation failed: Invalid authentication token` |

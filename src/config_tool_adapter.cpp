@@ -1510,7 +1510,7 @@ ConfigToolResult ConfigToolAdapter::executeGetMetrics(const crow::json::wvalue& 
     if (!error_msg.empty()) {
         return createErrorResult(-32602, error_msg);
     }
-    return ConfigToolResult{true, buildMetricsJson(config_manager_, filter).dump(), "", 0};
+    return ConfigToolResult{true, QueryResult::dumpJson(buildMetricsJson(config_manager_, filter)), "", 0};
 }
 
 ConfigToolResult ConfigToolAdapter::executeRunCacheGC(const crow::json::wvalue& args) {

@@ -129,8 +129,10 @@ DELETE FROM tasksdb.tasks WHERE id = {{ params.id }}
 MCP=http://localhost:8080/mcp/jsonrpc
 curl -s -u agent:reader-pass $MCP -H 'Content-Type: application/json' -d \
   '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_task","arguments":{"id":3,"title":"ship"}}}'
-# {"result":{"content":[{"type":"text","text":"{\"data\":[{\"id\":3,\"title\":\"ship\",\"done\":false}],\"rows_affected\":1}"}],
+# {"result":{"content":[{"type":"text","text":"{\"rows_affected\":1,\"data\":[{\"id\":3,\"title\":\"ship\",\"done\":false}]}"}],
 #  "structuredContent":{"rows":{"rows_affected":1,"data":[...]}}},...}
-# set_task_done {"id":3,"done":true} -> same shape; delete_task {"id":3} -> {"rows_affected":1}, again -> 0
+# set_task_done {"id":3,"done":true} -> same shape; delete_task {"id":3} -> {"rows_affected":1,"data":[]},
+# again -> {"rows_affected":0,"data":[]}
+# Row keys keep the RETURNING column order; `data` is always present ([] when no row came back).
 ```
 

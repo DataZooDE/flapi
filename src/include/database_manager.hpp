@@ -32,6 +32,9 @@ struct ColumnInfo {
 struct WriteResult {
     int64_t rows_affected = 0;
     std::optional<crow::json::wvalue> returned_data;  // For RETURNING clauses in INSERT/UPDATE/DELETE
+    // returned_data's column names in RETURNING order: crow's object is an
+    // unordered map, so the rows alone cannot be serialized in column order.
+    std::vector<std::string> returned_columns;
     std::string last_insert_id;  // For cases where we need to track the last inserted ID
 };
 

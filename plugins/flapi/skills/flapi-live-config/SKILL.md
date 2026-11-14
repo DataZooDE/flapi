@@ -124,7 +124,9 @@ ORDER BY nation
 | `--json-style <camel\|hyphen>` | — | `camel` | Re-cases config documents only (see gotchas) |
 | `--timeout <s>`, `--retries <n>` | `FLAPI_TIMEOUT`, `FLAPI_RETRIES` | | |
 | `--insecure` | `FLAPI_VERIFY_TLS=false` | | Skip TLS verification |
-| `--debug-http`, `-q, --quiet`, `-y, --yes` | | | |
+| `-q, --quiet` | | | No spinners or progress/success lines; the data a command prints and a failure (one line: `[status] reason`) still come out, exit code 1 on failure |
+| `--debug-http`, `-y, --yes` | | | |
+| `-V, --version` | | | Prints the `flapii` package version |
 | `-c, --config <path>` | `FLAPI_CONFIG` | `./flapi.yaml`, searched upward | Local file `flapii` reads client settings from; rarely needed |
 
 `flapii` takes the **URL path** (`/customers`) or MCP name, and encodes the slug itself.
@@ -191,7 +193,7 @@ applies from the next tick.
 
 After Claude edits a `.yaml`, `.yml` or `.sql` file under a directory with `flapi.yaml`, or
 under the `template.path` of the config `FLAPI_CONFIG` names (a `../sqls` shared by a writer
-and a replica) (`plugins/flapi/hooks/validate_and_reload.py`, PostToolUse on Edit/Write/MultiEdit):
+and a replica) (`plugins/flapi/hooks/validate_and_reload.py`, PostToolUse on Edit/Write/MultiEdit, and on Bash for step 6):
 
 1. If `flapi` is on `PATH` or `FLAPI_BIN` is set: `flapi -c <flapi.yaml> --validate-config
    --no-telemetry`. On failure the output goes back to Claude (exit 2). `SECURITY WARNINGS`
@@ -199,8 +201,12 @@ and a replica) (`plugins/flapi/hooks/validate_and_reload.py`, PostToolUse on Edi
 2. `flapi.yaml` itself: Claude is told to restart the server (it is not hot-reloaded). A file
    outside `template.path` is only validated (an endpoint YAML there is reported as not loaded).
 3. If `FLAPI_CONFIG_SERVICE_TOKEN` is set and the server at `FLAPI_URL` (else
-   `FLAPI_BASE_URL`) answers: a server running from a packed bundle (`"bundled": true` in
-   `GET /api/v1/_config/project`), or one whose `template-path` is another directory, is not
+   `FLAPI_BASE_URL`) answers: first, WITHOUT the token, `GET /doc.yaml` must name this
+   `flapi.yaml`'s `project-name` - otherwise the hook names the URL and project it found and
+   sends nothing there. Then a server running from a packed bundle (`"bundled": true` in
+   `GET /api/v1/_config/project`), one whose `template-path` is another directory, or one
+   started before `flapi.yaml` changed when its `ducklake.enabled/alias/read-only`,
+   `auth.enabled` or `mcp.enabled` differ from the file ("restart the server first"), is not
    reloaded - the hook says why. Otherwise a YAML file is reloaded BY FILE with
    `POST /api/v1/_config/endpoints/reload-file` - which also loads a new file, handles
    MCP-only files, and changes exactly that file's endpoint when another file shares the
@@ -213,10 +219,20 @@ and a replica) (`plugins/flapi/hooks/validate_and_reload.py`, PostToolUse on Edi
    is checked too - and a cache `template-file` with `?target=cache&validate_only=1` (live
    watermark, parsed per statement, bare-SELECT rule, bound in a rolled-back transaction).
    Parse/bind errors and reload failures (400/409 with the server's reason) go back to Claude
-   (exit 2); the message names the parameter sets checked. A cached endpoint whose cache
-   table does not exist yet is a note: "cache not built yet; run `flapii cache refresh <path>`".
+   (exit 2); the message names the parameter sets checked. A parameter used inside
+   `AT (VERSION => ...)` / `AT (TIMESTAMP => ...)` gets no sample (an invented snapshot does
+   not exist). A cached endpoint whose cache table does not exist yet (on the no-parameter
+   run) is a note: "cache not built yet; run `flapii cache refresh <path>`"; a failing
+   sample run is reported as an error, never as "not built". A dropped watermark during
+   validation is a note: the next refresh would load the full source.
 5. A 401/403 is reported as a rejected `FLAPI_CONFIG_SERVICE_TOKEN` (exit 2); no server
    running is a silent no-op, as is a missing token.
+6. PostToolUse on Bash: a command that deleted an endpoint YAML under `template.path` (`rm`,
+   `git rm`, `unlink`, `trash`, `mv` elsewhere) -> the file goes to `reload-file`, which
+   unloads what it declared (`200 {"status":"removed","removed":[...]}`), and the hook
+   reports them. The same happens for an Edit/Write whose YAML no longer exists. A 404 means
+   nothing was loaded from that file (an older server also answers 404 and keeps serving the
+   file's endpoints until it restarts).
 
 Keep `flapi` on `PATH` so step 1 catches invalid YAML before the server sees it.
 

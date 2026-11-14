@@ -266,6 +266,10 @@ void APIServer::setupRoutes() {
                 crow::response* res;
                 const crow::request* req;
                 std::shared_ptr<void> keepalive;
+                // Made ambient again on the io thread while the response is
+                // completed, so Crow's "Response:" line for it - written there -
+                // carries the request id like every other line of the request.
+                RequestContext* rc = nullptr;
                 int code = 500;
                 std::string body = "Internal Server Error";
                 crow::ci_map headers;
@@ -311,7 +315,7 @@ void APIServer::setupRoutes() {
                         return;
                     }
                     asio::post(*req->io_service,
-                               [res = res, keepalive = keepalive, code = code,
+                               [res = res, keepalive = keepalive, rc = rc, code = code,
                                 body = std::move(body),
                                 headers = std::move(headers),
 #ifdef CROW_ENABLE_COMPRESSION
@@ -329,7 +333,11 @@ void APIServer::setupRoutes() {
 #endif
                                    res->skip_body = skip_body;
                                    res->manual_length_header = manual_length_header;
+                                   RequestContextScope::activate(rc);
                                    res->end();
+                                   // finish() normally released it already;
+                                   // never leave it set on the io thread.
+                                   RequestContextScope::clearIf(rc);
                                });
                 }
             };
@@ -342,7 +350,7 @@ void APIServer::setupRoutes() {
             // release advertises.
             const bool queued = handlerPool->submit(
                 [this, &req, &res, rc, &mw, keepalive]() mutable {
-                    Completer completer{&res, &req, keepalive};
+                    Completer completer{&res, &req, keepalive, rc};
 
                     RequestContextScope::activate(rc);
                     const auto span_activation = mw.span.activateOnThisThread();
@@ -440,7 +448,12 @@ void APIServer::setupHeartbeat() {
 
 void APIServer::handleDynamicRequest(const crow::request& req, crow::response& res)
 {
-    const auto t0 = std::chrono::steady_clock::now();
+    // Latency is measured from the START of the request (the first
+    // middleware), not from here. Starting the clock in the handler left out
+    // everything before it - Basic auth's PBKDF2 alone is ~165 ms - so the
+    // metrics reported 1.5 ms while clients waited 200 ms.
+    const auto* request_ctx = RequestContextScope::current();
+    const auto t0 = request_ctx != nullptr ? request_ctx->t0 : std::chrono::steady_clock::now();
     std::string path = req.url;
     // Match endpoint by both path and HTTP method
     std::string method = crow::method_name(req.method);
