@@ -239,7 +239,8 @@ class TestPopulateTemplate:
             assert "bare SELECT" in r.json()["reason"]
             missing = post_refresh(s, "nope")
             assert missing.status_code == 404
-            assert missing.json()["error"] == "Endpoint not found"
+            # The method-aware resolver names the path it could not find.
+            assert missing.json()["error"].startswith("Endpoint not found")
         finally:
             stop(s)
 
