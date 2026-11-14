@@ -13,6 +13,7 @@ add_executable(flapi_tests
     bundle_locator_test.cpp
     auth_middleware_test.cpp
     auth_roles_inheritance_test.cpp
+    auth_cors_ergonomics_test.cpp
     config_parsing_fixes_test.cpp
     config_manager_test.cpp
     config_manager_yaml_validation_test.cpp

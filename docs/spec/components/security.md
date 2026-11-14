@@ -190,14 +190,22 @@ auth:
 holding any one listed role suffices. A principal with none of them gets `403`
 `{"error":"Forbidden","message":"The authenticated principal does not hold any role this endpoint requires."}`
 and an info log line `Authorization denied for user '<name>' on <endpoint>`. A failed authentication is
-`401`. MCP tools are authorised separately, by `mcp-tool.allowed-roles`.
+`401` with the endpoint scheme's challenge (`AuthMiddleware::challengeFor`: `Basic realm="flAPI"`, or
+`Bearer realm="flAPI"` plus `error="invalid_token"` when a bearer token was refused) and a JSON body
+`{"error":"Unauthorized","message":...}`; the audit line's `auth_kind` is the endpoint's scheme. MCP tools
+are authorised separately, by `mcp-tool.allowed-roles`.
 
 ### Global Auth and Per-Endpoint Override
 
 The top-level `auth:` block is the default for every REST endpoint **without its own `auth:` block**
 (`ConfigManager::applyGlobalAuthDefault`, applied at load, on reload, and to endpoints created through
 the config service). Such an endpoint is marked `inherited`, which the config service reports as
-`auth.inherited`. An endpoint block replaces the global one outright — nothing is merged. Inside any
+`auth.inherited`. An endpoint block that names a `type` or credentials replaces the global one outright —
+nothing is merged. A block that names neither (`roles:` only) takes the global type and credentials and
+keeps its own roles (`ConfigManager::inheritGlobalCredentials`, marked `credentials_inherited`; the YAML
+serialiser then writes its roles but not the type); with no enabled global block, or with credentials but
+no `type`, loading fails with `AUTH_NO_TYPE`. Keys the chosen type never reads are named in a load warning
+(`ConfigManager::warnIgnoredAuthKeys`, also for the global block and `mcp.auth`). Inside any
 `auth:` block (global or endpoint) `enabled` defaults to `true` when the block configures authentication
 (it sets `type`, `roles`, `users`, `jwt-secret`, `jwt-issuer`, `oidc` or `from-aws-secretmanager`), else to `false`; only an explicit `enabled: false` turns it off or opts an
 endpoint out (`parseEndpointAuth`, `parseAuthConfig`, `DeclaresAuthentication`; the effective value is
@@ -223,6 +231,17 @@ auth:
 `SecurityAuditor` warns `CORS_WILDCARD_WITH_AUTH` when any authentication is enabled and
 `cors.allow-origins` is empty or contains `*`: every origin then gets `Access-Control-Allow-Origin: *`,
 so a hostile page can call the API with a credential the browser holds and read the answer.
+
+Preflights: Crow answers `OPTIONS` as soon as the request line is parsed, before any header is read, so
+middlewares used to see a preflight without `Origin` and dropped every `Access-Control-Allow-*` header.
+`FlapiApp` specialises `handle_initial`/`handle` (`src/cors_middleware.cpp`) to defer the OPTIONS answer
+until the request is complete; `FlapiCorsMiddleware` then sets Allow-Origin, Allow-Methods, Allow-Headers
+(configured list, else the requested headers echoed, else `*` plus `Authorization, Content-Type,
+X-Config-Token, Mcp-Session-Id` when auth is on), `Access-Control-Max-Age: 600` and `Vary: Origin`.
+
+The auditor names REST endpoints with their method (`endpoint GET /orders`) and reports
+`AUTH_EMPTY_JWT_SECRET` for the global block, an endpoint and `mcp.auth`: authentication fails closed and
+every token is refused.
 
 ## Input Validation
 

@@ -922,6 +922,11 @@ void ConfigManager::parseMCPConfig() {
                 CROW_LOG_DEBUG << "MCP Method Auth: " << method_name << " required=" << (required ? "true" : "false");
             }
         }
+        if (mcp_config.auth.enabled) {
+            // mcp.auth has ONE scheme too: users under bearer, or jwt-secret
+            // under basic, used to be dropped without a word.
+            warnIgnoredAuthKeys(auth, mcp_config.auth.type, "mcp.auth");
+        }
     } else if (mcp_config.enabled) {
         CROW_LOG_DEBUG << "MCP authentication not configured, auth is disabled by default";
     }
@@ -1229,7 +1234,90 @@ bool DeclaresAuthentication(const YAML::Node& auth_node) {
     return false;
 }
 
+// Keys that say HOW to authenticate: a scheme or credentials. A block without
+// any of them (`roles:` only, or just `enabled: true`) has nothing to check a
+// request against on its own.
+bool DeclaresCredentials(const YAML::Node& auth_node) {
+    for (const char* key : {"type", "users", "jwt-secret", "jwt-issuer", "oidc",
+                            "from-aws-secretmanager"}) {
+        if (auth_node[key]) {
+            return true;
+        }
+    }
+    return false;
+}
+
 }  // namespace
+
+void ConfigManager::inheritGlobalCredentials(AuthConfig& auth, bool declares_credentials,
+                                             bool declares_roles, const std::string& location) const {
+    if (!auth.enabled) {
+        return;
+    }
+    if (declares_credentials) {
+        if (auth.type.empty()) {
+            // Users or a secret without a scheme: no authenticator matches an
+            // empty type, so every request would be refused with 401.
+            throw ConfigurationError(
+                "AUTH_NO_TYPE: " + location + " configures authentication credentials but no `type`. "
+                "Set `type: basic`, `bearer` or `oidc`.",
+                "auth.type");
+        }
+        return;
+    }
+    // `auth: {roles: [admin]}` used to end up with type "" - an endpoint that
+    // answered 401 to every request, valid credentials included, without a
+    // word at startup. It means "the global credentials, and these roles".
+    if (!auth_enabled) {
+        throw ConfigurationError(
+            "AUTH_NO_TYPE: " + location + " enables authentication but names no `type` or credentials, "
+            "and there is no enabled top-level `auth:` block to inherit them from. Set `type:` (basic, "
+            "bearer or oidc) with its credentials on the endpoint, or configure the top-level `auth:` block.",
+            "auth.type");
+    }
+    const std::vector<std::string> own_roles = auth.roles;
+    auth.type = global_auth_config.type;
+    auth.users = global_auth_config.users;
+    auth.jwt_secret = global_auth_config.jwt_secret;
+    auth.jwt_issuer = global_auth_config.jwt_issuer;
+    auth.oidc = global_auth_config.oidc;
+    auth.from_aws_secretmanager = global_auth_config.from_aws_secretmanager;
+    auth.roles = declares_roles ? own_roles : global_auth_config.roles;
+    auth.credentials_inherited = true;
+    CROW_LOG_INFO << location << ": `auth:` names no type or credentials, so it uses the top-level "
+                  << "`auth:` block (type '" << auth.type << "')"
+                  << (declares_roles ? " with its own roles" : "");
+}
+
+void ConfigManager::warnIgnoredAuthKeys(const YAML::Node& auth_node, const std::string& type,
+                                        const std::string& location) {
+    if (!auth_node || !auth_node.IsMap()) {
+        return;
+    }
+    // What each scheme reads. Anything else in this list is set but unread.
+    std::vector<const char*> unread;
+    if (type == "basic") {
+        unread = {"jwt-secret", "jwt-issuer", "oidc"};
+    } else if (type == "bearer") {
+        unread = {"users", "oidc", "from-aws-secretmanager"};
+    } else if (type == "oidc") {
+        unread = {"users", "jwt-secret", "jwt-issuer", "from-aws-secretmanager"};
+    } else {
+        return;
+    }
+    std::string names;
+    for (const char* key : unread) {
+        if (auth_node[key]) {
+            names += (names.empty() ? "" : ", ") + std::string(key);
+        }
+    }
+    if (names.empty()) {
+        return;
+    }
+    CROW_LOG_WARNING << location << ": auth type '" << type << "' ignores " << names
+                     << ". One authentication scheme applies per block; these keys have no effect. "
+                        "Remove them, or change `type:` to the scheme they belong to.";
+}
 
 void ConfigManager::applyGlobalAuthDefault(EndpointConfig& endpoint) const {
     // The top-level `auth:` block is the default for every endpoint that does
@@ -1334,6 +1422,16 @@ void ConfigManager::parseEndpointAuth(const YAML::Node& endpoint_config, Endpoin
                 endpoint.auth.users.push_back(auth_user);
                 CROW_LOG_DEBUG << "\t\t\tAdded user: " << auth_user.username << " with " << auth_user.roles.size() << " roles";
             }
+        }
+
+        const std::string location = "Endpoint " +
+            (endpoint.urlPath.empty() ? endpoint.templateSource
+                                      : (endpoint.method.empty() ? std::string("GET") : endpoint.method) + " " +
+                                            endpoint.urlPath);
+        inheritGlobalCredentials(endpoint.auth, DeclaresCredentials(auth_node),
+                                 static_cast<bool>(auth_node["roles"]), location);
+        if (endpoint.auth.enabled) {
+            warnIgnoredAuthKeys(auth_node, endpoint.auth.type, location);
         }
     }
 }
@@ -1689,6 +1787,9 @@ void ConfigManager::parseAuthConfig() {
             CROW_LOG_INFO << "Parsing global OIDC configuration";
             global_auth_config.oidc = parseOIDCConfigNode(auth_node["oidc"]);
             CROW_LOG_INFO << "Global OIDC configuration parsed: issuer=" << global_auth_config.oidc->issuer_url;
+        }
+        if (auth_enabled) {
+            warnIgnoredAuthKeys(auth_node, global_auth_config.type, "Top-level `auth:`");
         }
     }
 }
@@ -2684,6 +2785,17 @@ EndpointConfig ConfigManager::deserializeEndpointConfig(const crow::json::rvalue
                 config.auth.roles.push_back(role.s());
             }
         }
+        // Same rule as YAML (inheritGlobalCredentials): a block without a type
+        // takes the top-level credentials. A GET-then-PUT of such an endpoint
+        // sends the inherited type back; that keeps inheriting too.
+        const bool resends_inherited_type = base && base->auth.credentials_inherited &&
+                                            config.auth.type == base->auth.type;
+        config.auth.credentials_inherited = false;
+        if (config.auth.enabled && (config.auth.type.empty() || resends_inherited_type)) {
+            inheritGlobalCredentials(config.auth, /*declares_credentials=*/false,
+                                     authJson.has("roles") || resends_inherited_type,
+                                     "Endpoint " + config.method + " " + config.urlPath);
+        }
     } else if (!base || auth_inherited_in_json || base->auth.inherited) {
         // No auth of its own: inherit the global block (re-applied so a PUT
         // picks up the current global config rather than a stale copy).
@@ -2919,7 +3031,11 @@ std::string ConfigManager::serializeEndpointConfigToYaml(const EndpointConfig& c
         out << YAML::Key << "auth" << YAML::Value << YAML::BeginMap;
         out << YAML::Key << "enabled" << YAML::Value << config.auth.enabled;
         if (config.auth.enabled) {
-            out << YAML::Key << "type" << YAML::Value << config.auth.type;
+            // An inherited type is not written, so the file keeps inheriting
+            // the top-level block (and does not freeze one copy of it).
+            if (!config.auth.credentials_inherited) {
+                out << YAML::Key << "type" << YAML::Value << config.auth.type;
+            }
             if (!config.auth.roles.empty()) {
                 out << YAML::Key << "roles" << YAML::Value << YAML::Flow << config.auth.roles;
             }

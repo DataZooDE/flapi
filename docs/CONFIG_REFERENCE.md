@@ -560,6 +560,17 @@ service without one. An endpoint's own block **replaces** the global one (the tw
 `auth: {enabled: false}` on an endpoint opts it out. An endpoint block that leaves out `enabled` but
 configures authentication (`type`, `roles`, `users`, `jwt-*`, ...) is ON, not an opt-out. Startup logs
 `Global auth (type '<type>') applies to N endpoint(s) without their own auth: block; M endpoint(s) opt out with auth: {enabled: false}`.
+
+An enabled endpoint block that names **no scheme and no credentials** (no `type`, `users`, `jwt-secret`,
+`jwt-issuer`, `oidc` or `from-aws-secretmanager` — typically `roles:` only) takes the global block's type
+and credentials and applies its own `roles` on top. Without an enabled global block it fails to load with
+`AUTH_NO_TYPE`; so does a block that has credentials but no `type`. Keys the chosen type never reads
+(`users:` under `bearer`, `jwt-secret:` under `basic`, ...) produce a load warning naming them — one scheme
+applies per block, and the same goes for the global block and `mcp.auth`.
+
+**401 responses** carry the configured scheme's challenge — `WWW-Authenticate: Basic realm="flAPI"` for
+basic, `Bearer realm="flAPI"` for bearer and oidc, with `error="invalid_token"` when a bearer token was sent
+and refused — and a JSON body `{"error":"Unauthorized","message":"..."}`, like the 403.
 The config service reports each endpoint's `auth.roles` and `auth.inherited`. MCP tools are not covered:
 they use `mcp.auth` (§2.6).
 
@@ -634,6 +645,12 @@ Cross-Origin Resource Sharing. With no `cors` block, or an empty `allow-origins`
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `cors.allow-origins` | array | `[]` (= `*`) | List of allowed `Origin:` values. Empty or absent sends `Access-Control-Allow-Origin: *` |
+| `cors.allow-headers` | array | `[]` | `Access-Control-Allow-Headers` on preflights. Empty (or `*`) echoes the headers the browser asked for in `Access-Control-Request-Headers` |
+| `cors.allow-methods` | array | `[]` (= GET, POST, PUT, PATCH, DELETE) | `Access-Control-Allow-Methods` on preflights |
+
+A response whose `Access-Control-Allow-Origin` echoes an allow-listed origin also carries `Vary: Origin`.
+
+**Preflights.** An `OPTIONS` request with `Origin` and `Access-Control-Request-Method` (REST paths and `/mcp/jsonrpc` alike) answers `204` with, for an allowed origin: `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods`, `Access-Control-Allow-Headers`, `Access-Control-Max-Age: 600` and `Vary: Origin`. Without `cors.allow-headers`, the requested headers are echoed; a preflight that requests none gets `*`, plus `Authorization, Content-Type, X-Config-Token, Mcp-Session-Id` by name when any authentication is enabled (`*` does not cover `Authorization` in browsers). A disallowed origin gets no `Access-Control-Allow-*` header.
 
 **Example:**
 
@@ -646,7 +663,7 @@ cors:
 
 `flapii project init` does not generate a `cors` block, so a new project answers every origin with `*`. Set an explicit allow-list before exposing an authenticated API to browsers.
 
-> **Implementation:** `src/cors_middleware.cpp`, `src/cors_policy.cpp` | **Tests:** `test/cpp/cors_policy_test.cpp`, `test/integration/test_cors_allowlist.py`
+> **Implementation:** `src/cors_middleware.cpp`, `src/cors_policy.cpp` | **Tests:** `test/cpp/cors_policy_test.cpp`, `test/cpp/auth_cors_ergonomics_test.cpp`, `test/integration/test_cors_allowlist.py`, `test/integration/test_cors_preflight_and_auth_challenge.py`
 
 ### 2.9.2 Audit Log
 

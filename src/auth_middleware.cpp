@@ -153,6 +153,38 @@ void AuthMiddleware::initializeAwsSecretsManager() {
     }
 }
 
+std::string AuthMiddleware::challengeFor(const std::string& auth_type, bool credentials_sent) {
+    if (auth_type == "basic") {
+        return "Basic realm=\"flAPI\"";
+    }
+    if (auth_type == "bearer" || auth_type == "jwt" || auth_type == "oidc") {
+        // RFC 6750 §3.1: a request that carried a token which was refused
+        // says so; one that carried none gets the bare challenge.
+        return credentials_sent ? "Bearer realm=\"flAPI\", error=\"invalid_token\""
+                                : "Bearer realm=\"flAPI\"";
+    }
+    // No scheme that could ever succeed (a load warning names it). Still a
+    // valid challenge, so clients see a 401 that conforms to RFC 9110.
+    return "Basic realm=\"flAPI\"";
+}
+
+namespace {
+
+// Every 401 the same shape: the configured scheme's challenge and the JSON
+// body a 403 already had. The body used to be Crow's plain "401 Unauthorized".
+void rejectUnauthorized(crow::response& res, const std::string& auth_type, bool credentials_sent,
+                        const std::string& message) {
+    res.code = 401;
+    res.set_header("WWW-Authenticate", AuthMiddleware::challengeFor(auth_type, credentials_sent));
+    res.set_header("Content-Type", "application/json");
+    crow::json::wvalue body;
+    body["error"] = "Unauthorized";
+    body["message"] = message;
+    res.body = body.dump();
+}
+
+}  // namespace
+
 void AuthMiddleware::before_handle(crow::request& req, crow::response& res, context& ctx) {
     if (!config_manager) return;
 
@@ -175,15 +207,18 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
     auto auth_header = req.get_header_value("Authorization");
     if (auth_header.empty()) {
         CROW_LOG_DEBUG << "No Authorization header found";
-        res.code = 401;
-        res.set_header("WWW-Authenticate", "Basic realm=\"flAPI\"");
+        // The challenge and the audit name the endpoint's OWN scheme. Both
+        // used to say basic whatever the endpoint was configured for, which
+        // sent bearer clients looking for a password prompt.
+        rejectUnauthorized(res, endpoint->auth.type, /*credentials_sent=*/false,
+                           "This endpoint requires authentication; no Authorization header was sent.");
         // Record the outcome for the audit line. Completion itself is NOT done
         // here: Crow runs every middleware's after_handle during the
         // short-circuit unwind (crow/middleware.h:151-155), so
         // RequestContextMiddleware::after_handle still runs for this 401.
         // Completing here as well emitted the line twice.
         if (auto* rc = RequestContextScope::current()) {
-            rc->auth_kind = "basic";
+            rc->auth_kind = staticAuthKind(endpoint->auth.type);
             rc->principal = "anonymous";
         }
         res.end();
@@ -206,7 +241,11 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
 
     if (!ctx.authenticated) {
         CROW_LOG_DEBUG << "Authentication failed";
-        res.code = 401;
+        // invalid_token only when a token was actually presented; a Basic
+        // header sent to a bearer endpoint gets the bare challenge.
+        const bool token_sent = auth_header.rfind("Bearer ", 0) == 0;
+        rejectUnauthorized(res, endpoint->auth.type, token_sent,
+                           "The credentials sent were not accepted.");
         // As above: record only. after_handle still runs for this response.
         if (auto* rc = RequestContextScope::current()) {
             rc->auth_kind = staticAuthKind(endpoint->auth.type);

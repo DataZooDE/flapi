@@ -50,6 +50,16 @@ void scanUsers(const std::vector<AuthUser>& users,
     }
 }
 
+// "endpoint GET /orders": the path alone is ambiguous when GET and POST
+// /orders are separate endpoints with separate auth blocks.
+std::string endpointLocation(const EndpointConfig& endpoint) {
+    if (!endpoint.urlPath.empty()) {
+        const std::string method = endpoint.method.empty() ? "GET" : endpoint.method;
+        return "endpoint " + method + " " + endpoint.urlPath;
+    }
+    return "endpoint " + endpoint.getIdentifier();
+}
+
 } // namespace
 
 std::string SecurityAuditor::classifyPassword(const std::string& password) {
@@ -85,20 +95,24 @@ std::vector<SecurityWarning> SecurityAuditor::audit(const ConfigManager& config)
         if (global.type == "bearer" && global.jwt_secret.empty()) {
             warnings.push_back({
                 "AUTH_EMPTY_JWT_SECRET",
-                "The global auth block declares bearer auth with an EMPTY jwt-secret, so "
-                "every token would verify. This usually means the environment variable "
-                "it interpolates is unset. Authentication is refused at runtime until a "
-                "secret is configured.",
+                "The global auth block declares bearer auth with an EMPTY jwt-secret. "
+                "Authentication fails closed: every token is refused until a secret is "
+                "configured. This usually means the environment variable it interpolates "
+                "is unset.",
                 "auth"
             });
         }
     }
 
     for (const auto& endpoint : *config.getEndpoints()) {
+        // Inherited credentials are the global block's, reported above once.
         if (endpoint.auth.inherited) {
             continue;
         }
-        scanUsers(endpoint.auth.users, "endpoint " + endpoint.getIdentifier(), warnings);
+        const std::string location = endpointLocation(endpoint);
+        if (!endpoint.auth.credentials_inherited) {
+            scanUsers(endpoint.auth.users, location, warnings);
+        }
 
         // An empty HMAC key is not a weak secret, it is no secret: a token
         // signed with the empty key verifies, so any caller can mint one
@@ -114,11 +128,10 @@ std::vector<SecurityWarning> SecurityAuditor::audit(const ConfigManager& config)
             endpoint.auth.jwt_secret.empty()) {
             warnings.push_back({
                 "AUTH_EMPTY_JWT_SECRET",
-                "Endpoint declares bearer auth with an EMPTY jwt-secret, so every "
-                "token would verify. This usually means the environment variable "
-                "it interpolates is unset. Authentication is refused at runtime "
-                "until a secret is configured.",
-                "endpoint " + endpoint.getIdentifier()
+                "Endpoint declares bearer auth with an EMPTY jwt-secret. Authentication "
+                "fails closed: every token is refused until a secret is configured. This "
+                "usually means the environment variable it interpolates is unset.",
+                location
             });
         }
 
@@ -135,13 +148,25 @@ std::vector<SecurityWarning> SecurityAuditor::audit(const ConfigManager& config)
                 "Endpoint declares auth type '" + endpoint.auth.type +
                 "', which is not one of basic, bearer or oidc. No authenticator "
                 "matches, so every request to this endpoint is refused with 401.",
-                "endpoint " + endpoint.getIdentifier()
+                location
             });
         }
     }
 
     const auto& mcp = config.getMCPConfig();
     scanUsers(mcp.auth.users, "mcp.auth", warnings);
+
+    // The MCP authenticator refuses an empty key too (mcp_auth_handler.cpp),
+    // but only at request time; say it at startup like for REST.
+    if (mcp.auth.enabled && mcp.auth.type == "bearer" && mcp.auth.jwt_secret.empty()) {
+        warnings.push_back({
+            "AUTH_EMPTY_JWT_SECRET",
+            "mcp.auth declares bearer auth with an EMPTY jwt-secret. Authentication "
+            "fails closed: every MCP token is refused until a secret is configured. "
+            "This usually means the environment variable it interpolates is unset.",
+            "mcp.auth"
+        });
+    }
 
     if (mcp.enabled && !mcp.auth.enabled) {
         const bool any_mcp_tool = std::any_of(

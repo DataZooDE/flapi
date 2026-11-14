@@ -31,6 +31,14 @@ Three independent gates: the endpoint's own `auth:` block (REST), `mcp.auth`
   i.e. open); only an explicit `enabled: false` turns auth off. Startup logs `Global auth (type 'basic') applies to N
   endpoint(s) ...; M endpoint(s) opt out ...`. Upgrading a config that had a
   top-level block: endpoints that were open now answer 401.
+- **Exception: a block with no scheme and no credentials (`auth: {roles: [admin]}`)
+  inherits the global type and credentials** and applies its own roles. With no
+  enabled global block that is a load error `AUTH_NO_TYPE`; so is `users:` or a
+  secret without `type:`. One scheme per block (and per `mcp.auth`): keys the
+  type ignores (`users:` under bearer, `jwt-secret:` under basic) log a warning.
+- **A 401 names the endpoint's scheme**: `WWW-Authenticate: Basic realm="flAPI"`
+  or `Bearer realm="flAPI"` (`, error="invalid_token"` for a refused token), body
+  `{"error":"Unauthorized","message":...}`.
 - **The REST types are `basic`, `bearer` and `oidc`; `type: jwt` is an alias of
   `bearer`.** Any other type refuses every request (`AUTH_UNKNOWN_TYPE`).
 - **`auth.roles` is enforced on REST.** An authenticated caller holding none of
@@ -52,6 +60,10 @@ Three independent gates: the endpoint's own `auth:` block (REST), `mcp.auth`
   unset variable stops startup, an empty `jwt-secret` does not (it fails closed).
 - **CORS default is `Access-Control-Allow-Origin: *`** (empty `allow-origins`).
   With any auth enabled that prints `CORS_WILDCARD_WITH_AUTH`; set an allowlist.
+  Preflights (`OPTIONS` + `Access-Control-Request-Method`, REST and
+  `/mcp/jsonrpc`) answer 204 with Allow-Origin, Allow-Methods, Allow-Headers
+  (requested headers echoed unless `cors.allow-headers` is set), Max-Age 600 and
+  `Vary: Origin`.
 - **OIDC: `issuer-url` must equal the token's `iss` byte for byte** (Auth0 has a
   trailing `/`). Preset placeholders `{tenant}`/`{realm}`/`{domain}` are filled
   from `tenant-id`/`realm`/`domain`; one left over stops startup naming the key.
@@ -392,7 +404,7 @@ Printed to stderr as `SECURITY WARNINGS (n)` on every start and on
 | `AUTH_PLAINTEXT_PASSWORD` | a user password is not a hash; the message prints the passlib PBKDF2 one-liner |
 | `AUTH_MD5_PASSWORD` | 32-hex MD5 password: unsalted, migrate to PBKDF2 |
 | `AUTH_BCRYPT_UNSUPPORTED` | bcrypt hash: flAPI cannot verify it, every login as that user is refused |
-| `AUTH_EMPTY_JWT_SECRET` | bearer endpoint with empty `jwt-secret`: all tokens refused |
+| `AUTH_EMPTY_JWT_SECRET` | bearer endpoint, global block or `mcp.auth` with empty `jwt-secret`: fails closed, every token is refused |
 | `AUTH_UNKNOWN_TYPE` | `type` is not basic/bearer/jwt/oidc: all requests 401 |
 | `CORS_WILDCARD_WITH_AUTH` | `cors.allow-origins` empty or `"*"` while any auth is enabled |
 | `MCP_UNAUTHENTICATED_TOOLS` | `mcp.enabled` with tools and `mcp.auth.enabled: false` |
