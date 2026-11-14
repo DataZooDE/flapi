@@ -24,6 +24,11 @@ class EndpointConfigHandler;
 class ProjectConfigHandler;
 class OpenAPIDocGenerator;
 
+/// The GET /api/v1/_config/metrics body (tracing, arrow, endpoints, requests,
+/// caches). `filter` = an endpoint path or MCP tool name narrows `requests`
+/// and `caches`; empty means everything. Shared with the flapi_get_metrics tool.
+crow::json::wvalue buildMetricsJson(const std::shared_ptr<ConfigManager>& config_manager, const std::string& filter = "");
+
 /**
  * Handler for DuckLake audit log operations
  * Responsibility: Retrieve cache synchronization audit logs

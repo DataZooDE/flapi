@@ -1,0 +1,9 @@
+# term<TAB>why. A term may appear only on a line that also says "deprecated" or "no effect".
+rollback-window	parsed but never read; deprecated
+delete-handling	parsed but never read; deprecated; handle deletes in the MERGE template
+rollbackWindow	parsed but never read; deprecated
+deleteHandling	parsed but never read; deprecated
+currentSnapshotTimestamp	not a template variable; use cache.snapshotTimestamp
+refresh: incremental	there is no refresh: key; the mode is inferred from cursor / primary-key
+refresh: full	there is no refresh: key; the mode is inferred from cursor / primary-key
+flapii cache refresh --endpoint	flapii takes the path as an argument: flapii cache refresh <path> (the server one-shot is flapi cache refresh --endpoint)

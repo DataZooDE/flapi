@@ -1437,8 +1437,8 @@ cache:
 |-----------|------|---------|-------------|
 | `cache.retention.keep-last-snapshots` | integer | - | Number of snapshots to keep |
 | `cache.retention.max-snapshot-age` | string | - | Maximum snapshot age (e.g., `7d`, `2h`) |
-| `cache.rollback-window` | string | - | Time window for rollback capability |
-| `cache.delete-handling` | string | - | Delete mode: `soft` or `hard` |
+| `cache.rollback-window` | string | - | **Deprecated, no effect.** Parsed but never read; startup logs a warning. Use DuckLake time travel over retained snapshots instead. |
+| `cache.delete-handling` | string | - | **Deprecated, no effect.** Parsed but never read; startup logs a warning. Handle deletes in the cache template (see [Deletes in merge mode](guides/caching.md#deletes-in-merge-mode)). |
 
 **Example:**
 
@@ -1454,8 +1454,6 @@ cache:
   retention:
     keep-last-snapshots: 5
     max-snapshot-age: 14d
-  rollback-window: 2d
-  delete-handling: soft
 ```
 
 ### 6.5 Cache Template Variables
@@ -2063,8 +2061,8 @@ flAPI supports both hyphenated and camelCase naming for backward compatibility:
 | `prevent-sql-injection` | `preventSqlInjection` |
 | `allowed-values` | `allowedValues` |
 | `returns-data` | `returnsData` |
-| `rollback-window` | `rollbackWindow` |
-| `delete-handling` | `deleteHandling` |
+| `rollback-window` (deprecated, no effect) | `rollbackWindow` |
+| `delete-handling` (deprecated, no effect) | `deleteHandling` |
 
 **Recommendation:** Use hyphenated naming for consistency.
 

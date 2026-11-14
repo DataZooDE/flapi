@@ -4,6 +4,8 @@
 #include <sstream>
 #include <regex>
 #include <algorithm>
+#include <chrono>
+#include <set>
 
 #include <yaml-cpp/yaml.h>
 
@@ -28,10 +30,121 @@ extern char** environ;
 #include "cache_manager.hpp"
 #include "sql_template_processor.hpp"
 #include "arrow_metrics.hpp"
+#include "runtime_metrics.hpp"
 #include "vfs_health_checker.hpp"
 #include "credential_manager.hpp"
 
 namespace flapi {
+
+namespace {
+
+/// Per-cache refresh roll-up for the metrics response: readiness, the last
+/// refresh's mode/status/duration/rows/snapshot, and how old the served data
+/// is. Read from CacheManager's in-memory stats, never from DuckLake, so the
+/// metrics endpoint stays cheap and works while the catalog is busy.
+crow::json::wvalue buildCacheMetricsJson(const std::string& endpoint_filter) {
+    std::vector<crow::json::wvalue> rows;
+    auto db_manager = DatabaseManager::getInstance();
+    auto cache_manager = db_manager ? db_manager->getCacheManager() : nullptr;
+    if (!cache_manager) {
+        return crow::json::wvalue(rows);
+    }
+    const auto states = cache_manager->getReadinessStates();
+    std::map<std::string, CacheManager::CacheRefreshStats> by_table;
+    for (const auto& stats : cache_manager->getRefreshStats()) {
+        by_table[stats.catalog + "." + stats.schema + "." + stats.table] = stats;
+    }
+    const auto now = std::chrono::system_clock::now();
+    // Every known cache appears, refreshed or not: an unbuilt cache with no
+    // refresh yet is exactly what an operator is looking for.
+    std::set<std::string> tables;
+    for (const auto& [name, state] : states) { tables.insert(name); }
+    for (const auto& [name, stats] : by_table) { tables.insert(name); }
+    for (const auto& name : tables) {
+        const auto stats_it = by_table.find(name);
+        if (!endpoint_filter.empty() &&
+            (stats_it == by_table.end() || stats_it->second.endpoint_path != endpoint_filter)) {
+            continue;
+        }
+        crow::json::wvalue row;
+        row["cache"] = name;
+        const auto state_it = states.find(name);
+        row["state"] = state_it != states.end() ? state_it->second : std::string("unknown");
+        if (stats_it != by_table.end()) {
+            const auto& st = stats_it->second;
+            row["endpoint"] = st.endpoint_path;
+            row["refreshes"] = st.refreshes;
+            row["failures"] = st.failures;
+            row["last"]["mode"] = st.last_sync_type;
+            row["last"]["status"] = st.last_status;
+            if (st.last_duration_ms) { row["last"]["duration_ms"] = *st.last_duration_ms; }
+            if (st.last_rows_affected) { row["last"]["rows_affected"] = *st.last_rows_affected; }
+            if (st.last_snapshot_id) { row["last"]["snapshot_id"] = *st.last_snapshot_id; }
+            if (st.last_completed_at) {
+                row["last"]["completed_at"] = CacheManager::formatUtcTimestamp(*st.last_completed_at);
+            }
+            const int64_t timed = st.refreshes;  // refreshes with a duration (all of them, since timing landed)
+            row["duration_ms"]["avg"] = timed > 0 ? st.total_duration_ms / timed : 0;
+            row["duration_ms"]["max"] = st.max_duration_ms;
+            if (st.last_success_at) {
+                row["data_age_seconds"] = static_cast<int64_t>(
+                    std::chrono::duration_cast<std::chrono::seconds>(now - *st.last_success_at).count());
+            }
+        }
+        rows.push_back(std::move(row));
+    }
+    return crow::json::wvalue(rows);
+}
+
+} // namespace
+
+crow::json::wvalue buildMetricsJson(const std::shared_ptr<ConfigManager>& config_manager, const std::string& filter) {
+    crow::json::wvalue metrics;
+
+    // Tracing. Exported vs dropped is the signal that matters: a
+    // collector that is down must show up here rather than as a trace
+    // that quietly has holes in it.
+    metrics["tracing"]["enabled"] = Tracing().isEnabled();
+    metrics["tracing"]["spans_exported"] =
+        static_cast<std::int64_t>(Tracing().spansExported());
+    metrics["tracing"]["spans_submitted"] =
+        static_cast<std::int64_t>(Tracing().spansSubmitted());
+    metrics["tracing"]["spans_dropped"] =
+        static_cast<std::int64_t>(Tracing().spansDropped());
+    // Only ever non-zero with tracing.flush.blocking_timeout_ms set. A
+    // rising value means the collector is costing callers latency AND
+    // still losing spans - the worst of both, and a signal to raise the
+    // budget or stop blocking.
+    metrics["tracing"]["spans_flush_timeouts"] =
+        static_cast<std::int64_t>(Tracing().flushTimeouts());
+
+    // Arrow IPC serialization counters, which already existed but were
+    // only reachable through /mcp/health.
+    const auto& arrow = ArrowMetrics::instance();
+    metrics["arrow"]["total_requests"] =
+        static_cast<std::int64_t>(arrow.counters.totalRequests.load());
+    metrics["arrow"]["successful_requests"] =
+        static_cast<std::int64_t>(arrow.counters.successfulRequests.load());
+    metrics["arrow"]["failed_requests"] =
+        static_cast<std::int64_t>(arrow.counters.failedRequests.load());
+    metrics["arrow"]["total_rows"] =
+        static_cast<std::int64_t>(arrow.counters.totalRows.load());
+    metrics["arrow"]["active_streams"] =
+        static_cast<std::int64_t>(arrow.gauges.activeStreams.load());
+
+    // Endpoint inventory, pinned so a concurrent config change cannot
+    // race the read.
+    if (config_manager) {
+        metrics["endpoints"]["count"] =
+            static_cast<std::int64_t>(config_manager->endpointsSnapshot()->size());
+    }
+
+    metrics["requests"] = RuntimeMetrics::instance().toJson(filter);
+    metrics["caches"] = buildCacheMetricsJson(filter);
+
+    return metrics;
+}
+
 
 // ============================================================================
 // Handler Class Implementations
@@ -604,45 +717,9 @@ void ConfigService::registerRoutes(FlapiApp& app) {
                 return crow::response(401, R"({"error":"Unauthorized"})");
             }
 
-            crow::json::wvalue metrics;
-
-            // Tracing. Exported vs dropped is the signal that matters: a
-            // collector that is down must show up here rather than as a trace
-            // that quietly has holes in it.
-            metrics["tracing"]["enabled"] = Tracing().isEnabled();
-            metrics["tracing"]["spans_exported"] =
-                static_cast<std::int64_t>(Tracing().spansExported());
-            metrics["tracing"]["spans_submitted"] =
-                static_cast<std::int64_t>(Tracing().spansSubmitted());
-            metrics["tracing"]["spans_dropped"] =
-                static_cast<std::int64_t>(Tracing().spansDropped());
-            // Only ever non-zero with tracing.flush.blocking_timeout_ms set. A
-            // rising value means the collector is costing callers latency AND
-            // still losing spans - the worst of both, and a signal to raise the
-            // budget or stop blocking.
-            metrics["tracing"]["spans_flush_timeouts"] =
-                static_cast<std::int64_t>(Tracing().flushTimeouts());
-
-            // Arrow IPC serialization counters, which already existed but were
-            // only reachable through /mcp/health.
-            const auto& arrow = ArrowMetrics::instance();
-            metrics["arrow"]["total_requests"] =
-                static_cast<std::int64_t>(arrow.counters.totalRequests.load());
-            metrics["arrow"]["successful_requests"] =
-                static_cast<std::int64_t>(arrow.counters.successfulRequests.load());
-            metrics["arrow"]["failed_requests"] =
-                static_cast<std::int64_t>(arrow.counters.failedRequests.load());
-            metrics["arrow"]["total_rows"] =
-                static_cast<std::int64_t>(arrow.counters.totalRows.load());
-            metrics["arrow"]["active_streams"] =
-                static_cast<std::int64_t>(arrow.gauges.activeStreams.load());
-
-            // Endpoint inventory, pinned so a concurrent config change cannot
-            // race the read.
-            if (config_manager) {
-                metrics["endpoints"]["count"] =
-                    static_cast<std::int64_t>(config_manager->endpointsSnapshot()->size());
-            }
+            // ?endpoint=/path narrows the requests and caches blocks to one route / tool.
+            const char* filter_param = req.url_params.get("endpoint");
+            crow::json::wvalue metrics = buildMetricsJson(config_manager, filter_param ? filter_param : "");
 
             crow::response res(200, metrics.dump());
             res.set_header("Content-Type", "application/json");

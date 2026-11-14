@@ -840,13 +840,19 @@ Authorization: Bearer <token>
 
 #### GET /api/v1/_config/metrics
 
-Get runtime counters for span export, Arrow streaming and endpoint count.
+Get runtime metrics: per-endpoint and per-MCP-tool request counts, errors and
+latency; 401/403/429 rejections; per-cache refresh duration, rows and data age;
+span export and Arrow counters.
 
 **Request:**
 ```http
 GET /api/v1/_config/metrics HTTP/1.1
 Authorization: Bearer <token>
 ```
+
+| Query parameter | Description |
+|---|---|
+| `endpoint` | Optional. An endpoint path (`/customers`) or MCP tool name. Narrows `requests.series` and `caches` to it. |
 
 **Response (200):**
 ```json
@@ -865,9 +871,71 @@ Authorization: Bearer <token>
   },
   "endpoints": {
     "count": 18
-  }
+  },
+  "requests": {
+    "since_unix_ms": 1763112000000,
+    "total": 1530,
+    "server_errors": 2,
+    "rejections": { "unauthorized": 4, "forbidden": 0, "rate_limited": 11 },
+    "series": [
+      {
+        "protocol": "rest",
+        "method": "GET",
+        "route": "/customers",
+        "requests": 1210,
+        "status": { "2xx": 1196, "3xx": 0, "4xx": 12, "5xx": 2 },
+        "latency_ms": { "avg": 3.1, "p50": 2.5, "p95": 10.0, "p99": 25.0, "max": 41.7 },
+        "last_request_unix_ms": 1763115600000
+      },
+      {
+        "protocol": "mcp",
+        "tool": "customer_lookup",
+        "requests": 320,
+        "failures": 0,
+        "latency_ms": { "avg": 4.0, "p50": 5.0, "p95": 10.0, "p99": 10.0, "max": 9.2 },
+        "last_request_unix_ms": 1763115590000
+      }
+    ]
+  },
+  "caches": [
+    {
+      "cache": "cache.analytics.customers_cache",
+      "state": "ready",
+      "endpoint": "/customers",
+      "refreshes": 24,
+      "failures": 0,
+      "last": {
+        "mode": "merge",
+        "status": "success",
+        "duration_ms": 812,
+        "rows_affected": 37,
+        "snapshot_id": "118",
+        "completed_at": "2026-11-14 10:00:00.812"
+      },
+      "duration_ms": { "avg": 790, "max": 1404 },
+      "data_age_seconds": 412
+    }
+  ]
 }
 ```
+
+`requests` series are keyed by **route template** (never a filled path), so their
+number is bounded by your endpoints. Unmatched paths share the route `<unmatched>`.
+REST series count status classes. MCP tool series count `failures` (calls whose
+tool result reported an error). Latency is measured server-side around the
+handler. Percentiles are estimated from a fixed histogram (bucket bounds
+0.1, 0.25, 0.5, 1, 2.5, 5, 10, 25, 50, 100, 250, 500 ms, then 1, 2.5, 5, 10, 30
+and 60 s), and each is the **upper bound** of the bucket that contains it.
+`rejections` counts every 401, 403 and 429 the server returned, including those
+from middleware before an endpoint ran.
+
+`caches` lists every cache the server knows about, refreshed or not. `state` is
+`starting`, `ready`, `stale` (the last refresh failed and the previous snapshot is
+still served), `failed` or `unbuilt`. A cache that has never been refreshed in
+this process has no `last`, `duration_ms` or `data_age_seconds`. `duration_ms`
+times the populate statement only. `rows_affected` is DuckDB's row count for the
+last statement in the cache template. The same values are written to the cache
+audit log, `GET /api/v1/_config/endpoints/{path}/cache/audit`.
 
 **Response (401):**
 ```json
@@ -876,7 +944,8 @@ Authorization: Bearer <token>
 }
 ```
 
-All counters are cumulative since process start. `endpoints.count` is present only
+All counters are cumulative since process start (`requests.since_unix_ms`) and
+are not persisted across restarts. `endpoints.count` is present only
 when a configuration is loaded.
 
 `spans_dropped` counts failed export batches. A rising value means the collector
@@ -884,7 +953,7 @@ is slow or unreachable. Note its scope: spans discarded because the batch queue
 was already full are dropped before export is attempted and are **not** counted
 here.
 
-> **Implementation:** `src/config_service.cpp` | **Tests:** `test/integration/test_config_service_metrics.py`
+> **Implementation:** `src/config_service.cpp`, `src/runtime_metrics.cpp`, `src/cache_manager.cpp` | **Tests:** `test/integration/test_config_service_metrics.py`, `test/integration/test_runtime_metrics_and_cache_audit.py`, `test/cpp/runtime_metrics_test.cpp`
 
 ---
 

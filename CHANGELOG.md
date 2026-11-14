@@ -4,6 +4,50 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Upgrade notes
+
+- **Cache keys `rollback-window` and `delete-handling` are deprecated.** They were accepted but never did
+  anything. They still load, and startup now logs a warning for each. Handle deleted rows in the merge
+  template instead; see [Deletes in merge mode](docs/guides/caching.md#deletes-in-merge-mode).
+
+### Added: Claude Code plugin
+
+flAPI now ships a Claude Code plugin:
+
+```
+/plugin marketplace add DataZooDE/flapi
+/plugin install flapi@flapi
+```
+
+- Ten skills cover setup, REST endpoints, MCP tools, authentication, cache design, cache refresh-time tuning,
+  testing, live configuration, deployment and operations.
+- Seven slash commands: `/flapi:init`, `/flapi:new-endpoint`, `/flapi:add-cache`, `/flapi:auth-setup`,
+  `/flapi:deploy-check`, `/flapi:diagnose` and `/flapi:metrics`.
+- An MCP server entry for your running flAPI.
+- A hook that validates your config after every edit and hot-reloads the affected endpoints.
+
+See [docs/guides/claude-code.md](docs/guides/claude-code.md).
+
+### Added: runtime metrics
+
+`GET /api/v1/_config/metrics`, the new `flapii metrics` command and the new `flapi_get_metrics` MCP tool now
+report:
+
+- request counts, status classes and latency (p50/p95/p99/max) for every endpoint and MCP tool
+- 401/403/429 rejection counts
+- for every cache: readiness, last refresh mode/status/duration/rows, and the age of the data served
+
+Narrow to one endpoint with `?endpoint=/path`.
+
+### Fixed
+
+- **Cache audit log:** every refresh now records its real start and end time, `duration_ms`, `rows_affected`
+  and the `snapshot_id` it produced. Before, start and end were the same instant and the other three were
+  always empty, so refresh time could not be measured.
+- **Global `rate_limit:`:** `rate_limit: {enabled: false}` stopped startup with `bad conversion`, because `max`
+  and `interval` were required even with the limiter off. They now default to 100 and 60, as on endpoints.
+  A malformed value names its key.
+
 ## v26.10.31 — security hardening, and serverless startup without data or network on the boot path
 
 ### Upgrade notes — these changes can turn a request or a config that worked into an error

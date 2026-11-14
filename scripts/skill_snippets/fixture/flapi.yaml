@@ -1,0 +1,22 @@
+# Default project for check_skills.py snippet groups that bring no flapi.yaml
+# of their own. data/ is linked to examples/data at run time.
+project-name: skill-snippet-fixture
+project-description: Fixture for verifying the flAPI Claude Code plugin's examples
+template:
+  path: ./sqls
+  environment-whitelist:
+    - '^FLAPI_.*'
+connections:
+  customers:
+    properties:
+      path: './data/customers.parquet'
+  northwind:
+    init: |
+      INSTALL sqlite;
+      LOAD sqlite;
+      ATTACH IF NOT EXISTS './data/northwind.sqlite' AS nw (TYPE sqlite, READ_ONLY);
+ducklake:
+  enabled: true
+  alias: cache
+  metadata-path: ./cache.ducklake
+  data-path: ./cache_data

@@ -37,7 +37,30 @@ Architecture and design (the "how it works" tree):
   - [observability.md](docs/spec/components/observability.md) - Request identity, spans, capture tiers
 
 Task-first guides (`docs/guides/`): getting-started, rest-endpoints, mcp-tools,
-caching, authentication, cloud-storage, yaml-includes, self-packaging.
+caching, authentication, cloud-storage, yaml-includes, self-packaging,
+serverless, claude-code.
+
+### Claude Code plugin (`plugins/flapi/`)
+
+flAPI ships a Claude Code plugin from this repo (`.claude-plugin/marketplace.json`
+-> `plugins/flapi/`): 10 skills (`skills/flapi-*/SKILL.md`), 7 slash commands
+(`commands/`), an MCP server entry (`.mcp.json`) and a validate-and-reload hook
+(`hooks/`). Load it in-repo with `claude --plugin-dir ./plugins/flapi`.
+
+- **Update the skill in the same PR as the feature.** A new config key, CLI flag,
+  template variable or behaviour change is not done until the skill that teaches it
+  says so.
+- `make check-skills` (CI: `cli-integration` job) checks every YAML key against the
+  parser, every `flapi`/`flapii` command and option against `--help`, every
+  `{{cache.*}}` variable, the version stamp, and runs every tagged example through
+  `--validate-config` and a live server. Tag runnable examples
+  (`# flapi: endpoint group=g file=x.yaml`, `-- flapi: template ...`,
+  `# flapi: check GET /x -> 200`); see `scripts/check_skills.py`.
+- Version: `plugin.json`, every SKILL.md `version:` and `**flAPI:** v...` banner
+  equal the newest `## vX.Y.Z` heading in CHANGELOG.md. Bump them in the release-prep
+  commit.
+- Deprecated or wrong facts the skills must not teach are listed in
+  `scripts/skill_snippets/forbidden.txt`.
 
 Reference:
 - [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md) - Configuration file format
@@ -1355,7 +1378,7 @@ Configure with cron expressions or interval schedules.
 ### Cache Strategy
 
 - Use full refresh (declare neither `primary-key` nor `cursor`) for small datasets
-- Use incremental refresh (`refresh: incremental`) for large append-only data
+- Use incremental append (declare a `cursor`) for large append-only data
 - Set appropriate TTL based on data freshness requirements
 - Monitor cache hit rates in logs
 
@@ -1425,6 +1448,10 @@ Versioning: `v*` tags (e.g., `v0.5.0`). Tag push triggers the full release pipel
 ### Release Steps
 
 1. Ensure all CI builds pass on `main` (`gh run list`)
+   - In the release-prep commit, after rolling `## Unreleased` into `## v{version}`,
+     stamp the Claude Code plugin: `python3 scripts/check_skills.py --set-version {version}`
+     (rewrites plugin.json, every SKILL.md `version:` and banner), then
+     `python3 scripts/check_skills.py --static-only` must pass.
 2. Tag and push: `git tag v{version} && git push origin v{version}`
 3. `.github/workflows/build.yaml` triggers on `v*` tag push (there is no separate `release.yaml`):
    - Downloads build artifacts (4 flapi server + 4 flapii CLI binaries)

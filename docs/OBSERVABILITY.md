@@ -20,6 +20,37 @@ Even with tracing disabled, every response carries `X-Request-Id`, and that id
 appears in the audit log and in every application log line emitted while serving
 that request. A support report quoting the header is enough to find the request.
 
+### Runtime metrics
+
+Tracing does not need to be on for these. With the config service enabled
+(`--config-service`), flAPI keeps cheap in-process counters for:
+
+- every endpoint and MCP tool: requests, status classes (or tool failures), and
+  latency p50/p95/p99/max
+- 401/403/429 rejections
+- every cache: readiness, last refresh mode, status, duration and rows, and the
+  age of the data being served
+
+```bash
+flapii metrics                        # JSON (default); add -o table for tables
+flapii metrics --endpoint /customers  # one endpoint or MCP tool
+curl -s -H "Authorization: Bearer $FLAPI_CONFIG_SERVICE_TOKEN" \
+     "http://localhost:8080/api/v1/_config/metrics?endpoint=/customers"
+```
+
+An agent connected over MCP can read the same document with the
+`flapi_get_metrics` config tool. Counters start at zero when the process starts
+(`requests.since_unix_ms`). Percentiles are histogram bucket upper bounds, which
+is enough to find the slow endpoint but not for exact SLO reporting. Use traces
+for that. Recording a request costs no allocation once its endpoint has been seen
+(`test/cpp/runtime_metrics_test.cpp`). For the field-by-field format, see
+[CONFIG_SERVICE_API_REFERENCE § 2.6](CONFIG_SERVICE_API_REFERENCE.md#get-apiv1_configmetrics).
+
+Cache refreshes are also written durably to the cache audit log
+(`flapii cache audit [path]`), with `duration_ms`, `rows_affected` and
+`snapshot_id` per refresh. Use it to track refresh time over days rather than
+since the last restart.
+
 ## 2. Turning tracing on
 
 ```yaml
@@ -389,7 +420,9 @@ curl -s -H "Authorization: Bearer $FLAPI_CONFIG_SERVICE_TOKEN" \
                "spans_dropped": 0, "spans_flush_timeouts": 0 },
   "arrow":   { "total_requests": 12, "successful_requests": 12, "failed_requests": 0,
                "total_rows": 48210, "active_streams": 0 },
-  "endpoints": { "count": 18 }
+  "endpoints": { "count": 18 },
+  "requests": { "...": "see Runtime metrics above" },
+  "caches": [ "..." ]
 }
 ```
 

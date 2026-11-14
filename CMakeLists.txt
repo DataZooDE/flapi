@@ -351,6 +351,7 @@ add_library(flapi-lib STATIC
     src/request_validator.cpp
     src/rate_limit_key_builder.cpp
     src/rate_limit_middleware.cpp
+    src/runtime_metrics.cpp
     src/mcp_authorization_policy.cpp
     src/mcp_description_scanner.cpp
     src/mcp_dry_run.cpp

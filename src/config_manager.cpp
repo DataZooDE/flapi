@@ -1266,6 +1266,21 @@ void ConfigManager::parseEndpointCache(const YAML::Node& endpoint_config, const 
         endpoint.cache.cursor = cursor;
     }
 
+    // `rollback-window` and `delete-handling` are DEPRECATED: they were parsed
+    // and echoed back by the config service, but nothing ever read them, so an
+    // operator who set `delete-handling: soft` got no delete handling at all.
+    // They stay parsed so existing configs and config-service round trips keep
+    // working, and say so loudly at load time instead of silently doing nothing.
+    for (const char* deprecated : {"rollback-window", "rollbackWindow", "delete-handling", "deleteHandling"}) {
+        if (cache_node[deprecated]) {
+            CROW_LOG_WARNING << "Endpoint " << endpoint.urlPath << ": cache key `" << deprecated
+                             << "` is deprecated and has no effect. "
+                             << (std::string(deprecated).rfind("delete", 0) == 0
+                                     ? "Handle deletes in the cache template (see the MERGE delete pattern in docs/guides/caching.md)."
+                                     : "Use DuckLake time travel over retained snapshots instead (docs/guides/caching.md).");
+        }
+    }
+
     if (cache_node["rollback-window"]) {
         endpoint.cache.rollback_window = safeGet<std::string>(cache_node, "rollback-window", "cache.rollback-window");
     } else if (cache_node["rollbackWindow"]) {
@@ -1442,11 +1457,15 @@ void ConfigManager::parseRateLimitConfig() {
     CROW_LOG_INFO << "Parsing rate limit configuration";
     if (config["rate_limit"]) {
         auto rate_limit_node = config["rate_limit"];
-        rate_limit_config.enabled = rate_limit_node["enabled"].as<bool>();
-        rate_limit_config.max = rate_limit_node["max"].as<int>();
-        rate_limit_config.interval = rate_limit_node["interval"].as<int>();
+        // Same defaults and named errors as the endpoint-level `rate-limit:`.
+        // These were bare .as<>() calls, so `rate_limit: {enabled: false}` -
+        // switching the limiter OFF - stopped startup with "bad conversion"
+        // and no key name, because `max` and `interval` were absent.
+        rate_limit_config.enabled = safeGet<bool>(rate_limit_node, "enabled", "rate_limit.enabled", false);
+        rate_limit_config.max = safeGet<int>(rate_limit_node, "max", "rate_limit.max", 100);
+        rate_limit_config.interval = safeGet<int>(rate_limit_node, "interval", "rate_limit.interval", 60);
         if (rate_limit_node["key"]) {
-            rate_limit_config.key_strategy = rate_limit_node["key"].as<std::string>();
+            rate_limit_config.key_strategy = safeGet<std::string>(rate_limit_node, "key", "rate_limit.key");
         }
         CROW_LOG_DEBUG << "Rate Limit: enabled=" << rate_limit_config.enabled
                        << ", max=" << rate_limit_config.max

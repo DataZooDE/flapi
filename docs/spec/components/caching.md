@@ -85,10 +85,11 @@ cache:
     column: updated_at         # Change tracking column
     type: timestamp
   retention:
-    keep_last_snapshots: 10    # Max snapshots to keep
-    max_snapshot_age: "7d"     # Max age of snapshots
-  invalidate_on_write: true    # Clear on write operations
-  refresh_on_write: false      # Refresh after writes
+    keep-last-snapshots: 10    # Max snapshots to keep
+    max-snapshot-age: "7d"     # Max age of snapshots
+  invalidate-on-write: true    # Clear on write operations
+  refresh-on-write: false      # Refresh after writes (REST writes only)
+  template-file: customers_cache.sql  # The populate SQL
 ```
 
 ### Global DuckLake Config
@@ -97,17 +98,17 @@ cache:
 ducklake:
   enabled: true
   alias: cache                 # Database alias
-  metadata_path: ./cache/metadata
-  data_path: ./cache/data
+  metadata-path: ./cache/metadata
+  data-path: ./cache/data
   retention:
-    keep_last_snapshots: 100
-    max_snapshot_age: "30d"
+    keep-last-snapshots: 100
+    max-snapshot-age: "30d"
   compaction:
     enabled: true
     schedule: "24h"
   scheduler:
     enabled: true
-    scan_interval: "1m"
+    scan-interval: "1m"
 ```
 
 ## Cache Modes
@@ -118,7 +119,7 @@ Replaces entire cache table on each refresh:
 
 ```sql
 -- Cache populate template (full refresh)
-CREATE OR REPLACE TABLE {{cache.schema}}.{{cache.table}} AS
+CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS
 SELECT * FROM read_parquet('{{{ conn.path }}}')
 ```
 
@@ -133,11 +134,17 @@ Adds new rows since last refresh:
 
 ```sql
 -- Cache populate template (incremental append)
-INSERT INTO {{cache.schema}}.{{cache.table}}
-SELECT * FROM source_table
-{{#cache.previousSnapshotTimestamp}}
-WHERE created_at > TIMESTAMP '{{cache.previousSnapshotTimestamp}}'
+-- First run: no watermark, so create the (empty) table before inserting.
+{{^cache.previousSnapshotTimestamp}}
+CREATE TABLE IF NOT EXISTS {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS
+SELECT * FROM source_table WHERE false;
 {{/cache.previousSnapshotTimestamp}}
+INSERT INTO {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
+SELECT * FROM source_table
+WHERE 1=1
+{{#cache.previousSnapshotTimestamp}}
+  AND created_at > TIMESTAMP '{{cache.previousSnapshotTimestamp}}'
+{{/cache.previousSnapshotTimestamp}};
 ```
 
 **Use when:**
@@ -151,11 +158,16 @@ Handles inserts, updates, and deletes:
 
 ```sql
 -- Cache populate template (incremental merge)
-MERGE INTO {{cache.schema}}.{{cache.table}} AS target
+{{^cache.previousSnapshotTimestamp}}
+CREATE TABLE IF NOT EXISTS {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS
+SELECT * FROM source_table WHERE false;
+{{/cache.previousSnapshotTimestamp}}
+MERGE INTO {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS target
 USING (
     SELECT * FROM source_table
+    WHERE 1=1
     {{#cache.previousSnapshotTimestamp}}
-    WHERE updated_at > TIMESTAMP '{{cache.previousSnapshotTimestamp}}'
+    AND updated_at > TIMESTAMP '{{cache.previousSnapshotTimestamp}}'
     {{/cache.previousSnapshotTimestamp}}
 ) AS source
 ON target.id = source.id
@@ -164,9 +176,11 @@ WHEN NOT MATCHED THEN INSERT *
 ```
 
 **Use when:**
-- Data changes frequently
-- Need to track updates/deletes
-- Complex change detection needed
+- Rows are updated in place (customers, orders)
+- Deletes are visible in the source (a soft-delete flag or `deleted_at` that
+  bumps the cursor), handled with `WHEN MATCHED AND source.is_deleted THEN DELETE`.
+  A hard delete leaves no row for the delta to carry, so it is invisible to
+  any incremental mode.
 
 ## Cache Template Variables
 
@@ -176,7 +190,12 @@ WHEN NOT MATCHED THEN INSERT *
 | `{{cache.schema}}` | Cache schema name |
 | `{{cache.catalog}}` | Cache catalog (DuckLake alias) |
 | `{{cache.previousSnapshotTimestamp}}` | Incremental watermark: `max(<cursor>)` over the cached rows when a `cursor:` is configured, else the last refresh's commit timestamp. See CONFIG_REFERENCE for why the commit timestamp alone loses rows. |
-| `{{cache.currentSnapshotTimestamp}}` | Current refresh timestamp |
+| `{{cache.snapshotTimestamp}}` / `{{cache.snapshotId}}` | The table's newest snapshot when this refresh started |
+| `{{cache.previousSnapshotId}}` | Snapshot id of the last completed refresh (for time travel) |
+| `{{cache.cursorColumn}}` / `{{cache.cursorType}}` | The declared cursor |
+| `{{cache.primaryKeys}}` | The declared primary key, comma-joined |
+| `{{cache.schedule}}` | The declared schedule |
+| `{{params.cacheMode}}` | `full`, `append` or `merge` |
 
 ## HeartbeatWorker
 
@@ -306,8 +325,8 @@ Caches can be invalidated:
 
 ```yaml
 cache:
-  invalidate_on_write: true  # Clear cache after writes
-  refresh_on_write: true     # Or immediately refresh
+  invalidate-on-write: true  # Clear cache after writes
+  refresh-on-write: true     # Or immediately refresh (REST writes; MCP writes only invalidate)
 ```
 
 ### Via API
@@ -316,8 +335,8 @@ cache:
 # Force cache refresh
 POST /api/v1/_config/endpoints/{path}/cache/refresh
 
-# Invalidate cache (next request will refresh)
-DELETE /api/v1/_config/endpoints/{path}/cache
+# Expire old snapshots per the endpoint's retention policy
+POST /api/v1/_config/endpoints/{path}/cache/gc
 ```
 
 ### Programmatic
@@ -328,39 +347,36 @@ cache_manager->invalidateCache(endpoint);
 
 ## Request Flow with Cache
 
+A cached endpoint's serving template reads the cache table. There is no
+per-request hit/miss decision and no fallback to the source: a request either
+reads the materialised table or, while the table is not ready, gets a 503 (see
+below).
+
 ```mermaid
 sequenceDiagram
     participant Client
     participant RH as RequestHandler
     participant CM as CacheManager
-    participant QE as QueryExecutor
     participant DuckDB
 
     Client->>RH: GET /customers?id=123
-
-    RH->>CM: isCacheEnabled(endpoint)
-    CM-->>RH: true
-
-    RH->>CM: getCachedResult(endpoint, params)
-    CM->>DuckDB: SELECT * FROM cache.customers_cache WHERE id=123
-
-    alt Cache hit
-        DuckDB-->>CM: Result
-        CM-->>RH: QueryResult (from_cache=true)
-        RH-->>Client: 200 OK (cached)
-    else Cache miss
-        DuckDB-->>CM: No result
-        CM-->>RH: null
-
-        RH->>QE: executeQuery(sql, params)
-        QE->>DuckDB: SELECT * FROM source...
-        DuckDB-->>QE: Result
-        QE-->>RH: QueryResult
-
-        RH->>CM: updateCache(endpoint, result)
+    RH->>CM: readinessBlock(endpoint)
+    alt cache starting / not built
+        CM-->>RH: blocked (cache_warming | cache_not_built)
+        RH-->>Client: 503 + Retry-After
+    else ready (or stale: last refresh failed, previous snapshot served)
+        CM-->>RH: none
+        RH->>DuckDB: serving template over cache.<schema>.<table>
+        DuckDB-->>RH: rows
         RH-->>Client: 200 OK
     end
 ```
+
+Refreshes run off the request path (warm-up, HeartbeatWorker schedule, config
+service / `flapii cache refresh`, `flapi cache refresh`). Each one writes a row to
+`<alias>.audit.sync_events` with `duration_ms`, `rows_affected` and
+`snapshot_id`, and updates the in-memory roll-up served under `caches` by
+`GET /api/v1/_config/metrics`.
 
 ## Readiness during warmup
 

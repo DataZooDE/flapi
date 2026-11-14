@@ -79,7 +79,47 @@ public:
     // Audit functionality
     void initializeAuditTables(std::shared_ptr<ConfigManager> config_manager);
     void ensureCacheSchemaExists(const std::string& catalog, const std::string& schema);
-    void recordSyncEvent(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::string& sync_type, const std::string& status, const std::string& message = "");
+    /// What a sync event measured. Every field is optional: an event that
+    /// failed before its write ran has no row count, and a GC has no snapshot.
+    struct SyncEventDetails {
+        std::optional<std::chrono::system_clock::time_point> started_at;
+        std::optional<std::chrono::system_clock::time_point> completed_at;
+        std::optional<int64_t> rows_affected;
+        std::optional<std::string> snapshot_id;
+    };
+    void recordSyncEvent(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::string& sync_type, const std::string& status, const std::string& message = "", const SyncEventDetails& details = {});
+    /// In-memory roll-up of every refresh this process ran, per cache table,
+    /// for GET /api/v1/_config/metrics. Kept beside the audit table rather than
+    /// read from it so the metrics endpoint never queries DuckLake.
+    struct CacheRefreshStats {
+        std::string endpoint_path;
+        std::string catalog;
+        std::string schema;
+        std::string table;
+        std::string last_sync_type;
+        std::string last_status;
+        std::optional<int64_t> last_duration_ms;
+        std::optional<int64_t> last_rows_affected;
+        std::optional<std::string> last_snapshot_id;
+        std::optional<std::chrono::system_clock::time_point> last_completed_at;
+        std::optional<std::chrono::system_clock::time_point> last_success_at;
+        int64_t refreshes = 0;
+        int64_t failures = 0;
+        int64_t total_duration_ms = 0;
+        int64_t max_duration_ms = 0;
+    };
+    std::vector<CacheRefreshStats> getRefreshStats() const;
+    /// Readiness of every cache as a JSON-ready state name
+    /// (starting | ready | stale | failed | unbuilt), keyed by catalog.schema.table.
+    std::map<std::string, std::string> getReadinessStates() const;
+
+    /// The INSERT that records one sync event. Pure, for tests.
+    static std::string buildSyncEventInsert(const std::string& catalog, const std::string& event_id,
+                                            const EndpointConfig& endpoint, const std::string& sync_type,
+                                            const std::string& status, const std::string& message,
+                                            const SyncEventDetails& details);
+    /// `YYYY-MM-DD HH:MM:SS.mmm` in UTC, the form a DuckDB TIMESTAMP literal takes.
+    static std::string formatUtcTimestamp(std::chrono::system_clock::time_point tp);
 
     /// True when `value` is a plausible watermark for a cursor of
     /// `cursor_type`, and therefore safe to interpolate into a template that
@@ -233,6 +273,11 @@ private:
 
     mutable std::mutex readiness_mutex_;
     std::map<CacheKey, CacheReadiness> readiness_;
+
+    void updateRefreshStats(const CacheKey& key, const std::string& endpoint_path, const std::string& sync_type,
+                            const std::string& status, const SyncEventDetails& details);
+    mutable std::mutex refresh_stats_mutex_;
+    std::map<CacheKey, CacheRefreshStats> refresh_stats_;
 
     mutable std::mutex inflight_mutex_;
     std::set<CacheKey> inflight_refreshes_;

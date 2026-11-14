@@ -1,0 +1,12 @@
+{
+  "name": "flapi",
+  "description": "Build, cache, secure, deploy and operate SQL-to-API services with flAPI: REST endpoints and MCP tools from SQL + YAML, DuckLake caching (full / append / merge) and refresh-time tuning, auth, single-binary deploys, metrics and diagnosis.",
+  "version": "26.10.31",
+  "author": {
+    "name": "DataZoo GmbH",
+    "url": "https://github.com/DataZooDE"
+  },
+  "homepage": "https://flapi.io",
+  "repository": "https://github.com/DataZooDE/flapi",
+  "license": "BUSL-1.1"
+}

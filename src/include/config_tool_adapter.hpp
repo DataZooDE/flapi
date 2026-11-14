@@ -178,6 +178,7 @@ private:
     ConfigToolResult executeGetCacheStatus(const crow::json::wvalue& args);
     ConfigToolResult executeRefreshCache(const crow::json::wvalue& args);
     ConfigToolResult executeGetCacheAudit(const crow::json::wvalue& args);
+    ConfigToolResult executeGetMetrics(const crow::json::wvalue& args);
     ConfigToolResult executeRunCacheGC(const crow::json::wvalue& args);
 
     // Helper methods

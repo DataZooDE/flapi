@@ -1,0 +1,312 @@
+{
+  "runs": 3,
+  "per_run": [
+    {
+      "http_req_waiting": {
+        "avg": 582.1774770219745,
+        "med": 606.4458790000001,
+        "p(95)": 1299.0359781,
+        "p(99)": 1955.9270628999896,
+        "max": 2704.61023
+      },
+      "http_req_duration": {
+        "avg": 616.5651677336043,
+        "med": 640.983009,
+        "p(95)": 1334.90269235,
+        "p(99)": 1973.215042869994,
+        "max": 2708.070885
+      },
+      "flapi_read_duration": {
+        "avg": 708.2424002462741,
+        "med": 651.977977,
+        "p(95)": 1296.8672026,
+        "p(99)": 1918.99445312,
+        "max": 2431.080204
+      },
+      "flapi_read_param_duration": {
+        "avg": 725.17741533871,
+        "med": 649.4185460000001,
+        "p(95)": 1442.78826225,
+        "p(99)": 2018.1572862000003,
+        "max": 2448.985522
+      },
+      "flapi_paged_duration": {
+        "avg": 718.7398883406252,
+        "med": 650.8278515,
+        "p(95)": 1353.5647641,
+        "p(99)": 2036.7697414900003,
+        "max": 2264.798843
+      },
+      "flapi_arrow_duration": {
+        "avg": 898.9015195490198,
+        "med": 828.037981,
+        "p(95)": 1688.4442127999998,
+        "p(99)": 2338.6749655000012,
+        "max": 2704.61023
+      },
+      "flapi_mcp_duration": {
+        "avg": 0.34189818644067793,
+        "med": 0.2992825,
+        "p(95)": 0.53897375,
+        "p(99)": 1.679088150000004,
+        "max": 2.279807
+      },
+      "flapi_health_duration": {
+        "avg": 0.19277133333333352,
+        "med": 0.136188,
+        "p(95)": 0.29061399999999993,
+        "p(99)": 1.0975177200000192,
+        "max": 5.308413
+      },
+      "flapi_unmatched_duration": {
+        "avg": 0.3712138860759493,
+        "med": 0.181754,
+        "p(95)": 1.1333351999999997,
+        "p(99)": 3.3830195399999967,
+        "max": 5.69241
+      },
+      "throughput_rps": 47.85011056021369,
+      "iterations": 2958,
+      "error_rate": 0,
+      "server_peak_rss_kib": 1849248
+    },
+    {
+      "http_req_waiting": {
+        "avg": 486.09973983198984,
+        "med": 472.8171505,
+        "p(95)": 1074.322484,
+        "p(99)": 1448.969662,
+        "max": 1907.723798
+      },
+      "http_req_duration": {
+        "avg": 521.0019206890111,
+        "med": 506.832802,
+        "p(95)": 1110.9217214999999,
+        "p(99)": 1471.74457025,
+        "max": 1929.03652
+      },
+      "flapi_read_duration": {
+        "avg": 612.7507049056984,
+        "med": 584.8993525,
+        "p(95)": 1085.5867061499998,
+        "p(99)": 1453.2947925699998,
+        "max": 1888.002019
+      },
+      "flapi_read_param_duration": {
+        "avg": 609.4898145372058,
+        "med": 574.360182,
+        "p(95)": 1097.5043335,
+        "p(99)": 1515.9592395,
+        "max": 1757.258841
+      },
+      "flapi_paged_duration": {
+        "avg": 608.2415364087408,
+        "med": 584.778063,
+        "p(95)": 1104.7948913999992,
+        "p(99)": 1357.2596585200001,
+        "max": 1581.859595
+      },
+      "flapi_arrow_duration": {
+        "avg": 769.3531414532374,
+        "med": 729.77305,
+        "p(95)": 1244.42643375,
+        "p(99)": 1588.1603780100002,
+        "max": 1907.723798
+      },
+      "flapi_mcp_duration": {
+        "avg": 0.3426838100358423,
+        "med": 0.284188,
+        "p(95)": 0.43917899999999876,
+        "p(99)": 0.8589873199999979,
+        "max": 11.725125
+      },
+      "flapi_health_duration": {
+        "avg": 0.14373008457711445,
+        "med": 0.1221915,
+        "p(95)": 0.22236309999999995,
+        "p(99)": 0.5709505300000002,
+        "max": 1.73214
+      },
+      "flapi_unmatched_duration": {
+        "avg": 0.191743213592233,
+        "med": 0.15832,
+        "p(95)": 0.29900869999999985,
+        "p(99)": 1.396290360000004,
+        "max": 1.570604
+      },
+      "throughput_rps": 57.17952960123259,
+      "iterations": 3476,
+      "error_rate": 0,
+      "server_peak_rss_kib": 1933404
+    },
+    {
+      "http_req_waiting": {
+        "avg": 459.8613133757493,
+        "med": 439.7136305,
+        "p(95)": 1112.8169536999994,
+        "p(99)": 1398.8330579699998,
+        "max": 1689.052164
+      },
+      "http_req_duration": {
+        "avg": 494.9370697356942,
+        "med": 473.9132535,
+        "p(95)": 1144.5291193999997,
+        "p(99)": 1435.0810118599998,
+        "max": 1715.581041
+      },
+      "flapi_read_duration": {
+        "avg": 581.8362618162447,
+        "med": 575.913529,
+        "p(95)": 1176.0971104000002,
+        "p(99)": 1440.23273019,
+        "max": 1675.028017
+      },
+      "flapi_read_param_duration": {
+        "avg": 580.9470451747574,
+        "med": 579.8773415,
+        "p(95)": 1129.64472585,
+        "p(99)": 1339.7088584600006,
+        "max": 1509.569354
+      },
+      "flapi_paged_duration": {
+        "avg": 567.4767665059669,
+        "med": 562.589746,
+        "p(95)": 1105.9534564999997,
+        "p(99)": 1413.6714268399994,
+        "max": 1535.355338
+      },
+      "flapi_arrow_duration": {
+        "avg": 763.408617383803,
+        "med": 746.9965285,
+        "p(95)": 1323.5980445999996,
+        "p(99)": 1568.121734050001,
+        "max": 1689.052164
+      },
+      "flapi_mcp_duration": {
+        "avg": 0.29106486885245914,
+        "med": 0.264561,
+        "p(95)": 0.41884520000000014,
+        "p(99)": 0.8743548799999967,
+        "max": 1.688418
+      },
+      "flapi_health_duration": {
+        "avg": 0.13653379279279282,
+        "med": 0.122547,
+        "p(95)": 0.20190119999999998,
+        "p(99)": 0.3226632299999999,
+        "max": 1.73206
+      },
+      "flapi_unmatched_duration": {
+        "avg": 0.17829215306122445,
+        "med": 0.15739799999999998,
+        "p(95)": 0.22245519999999996,
+        "p(99)": 0.4812819300000015,
+        "max": 1.751818
+      },
+      "throughput_rps": 60.29918250431737,
+      "iterations": 3670,
+      "error_rate": 0,
+      "server_peak_rss_kib": 1847880
+    }
+  ],
+  "median": {
+    "http_req_waiting.avg": 486.09973983198984,
+    "http_req_waiting.med": 472.8171505,
+    "http_req_waiting.p(95)": 1112.8169536999994,
+    "http_req_waiting.p(99)": 1448.969662,
+    "http_req_waiting.max": 1907.723798,
+    "http_req_duration.avg": 521.0019206890111,
+    "http_req_duration.med": 506.832802,
+    "http_req_duration.p(95)": 1144.5291193999997,
+    "http_req_duration.p(99)": 1471.74457025,
+    "http_req_duration.max": 1929.03652,
+    "flapi_read_duration.avg": 612.7507049056984,
+    "flapi_read_duration.med": 584.8993525,
+    "flapi_read_duration.p(95)": 1176.0971104000002,
+    "flapi_read_duration.p(99)": 1453.2947925699998,
+    "flapi_read_duration.max": 1888.002019,
+    "flapi_read_param_duration.avg": 609.4898145372058,
+    "flapi_read_param_duration.med": 579.8773415,
+    "flapi_read_param_duration.p(95)": 1129.64472585,
+    "flapi_read_param_duration.p(99)": 1515.9592395,
+    "flapi_read_param_duration.max": 1757.258841,
+    "flapi_paged_duration.avg": 608.2415364087408,
+    "flapi_paged_duration.med": 584.778063,
+    "flapi_paged_duration.p(95)": 1105.9534564999997,
+    "flapi_paged_duration.p(99)": 1413.6714268399994,
+    "flapi_paged_duration.max": 1581.859595,
+    "flapi_arrow_duration.avg": 769.3531414532374,
+    "flapi_arrow_duration.med": 746.9965285,
+    "flapi_arrow_duration.p(95)": 1323.5980445999996,
+    "flapi_arrow_duration.p(99)": 1588.1603780100002,
+    "flapi_arrow_duration.max": 1907.723798,
+    "flapi_mcp_duration.avg": 0.34189818644067793,
+    "flapi_mcp_duration.med": 0.284188,
+    "flapi_mcp_duration.p(95)": 0.43917899999999876,
+    "flapi_mcp_duration.p(99)": 0.8743548799999967,
+    "flapi_mcp_duration.max": 2.279807,
+    "flapi_health_duration.avg": 0.14373008457711445,
+    "flapi_health_duration.med": 0.122547,
+    "flapi_health_duration.p(95)": 0.22236309999999995,
+    "flapi_health_duration.p(99)": 0.5709505300000002,
+    "flapi_health_duration.max": 1.73214,
+    "flapi_unmatched_duration.avg": 0.191743213592233,
+    "flapi_unmatched_duration.med": 0.15832,
+    "flapi_unmatched_duration.p(95)": 0.29900869999999985,
+    "flapi_unmatched_duration.p(99)": 1.396290360000004,
+    "flapi_unmatched_duration.max": 1.751818,
+    "throughput_rps": 57.17952960123259,
+    "error_rate": 0,
+    "server_peak_rss_kib": 1849248
+  },
+  "spread_pct": {
+    "http_req_waiting.avg": 25.16,
+    "http_req_waiting.med": 35.26,
+    "http_req_waiting.p(95)": 20.19,
+    "http_req_waiting.p(99)": 38.45,
+    "http_req_waiting.max": 53.23,
+    "http_req_duration.avg": 23.35,
+    "http_req_duration.med": 32.96,
+    "http_req_duration.p(95)": 19.57,
+    "http_req_duration.p(99)": 36.56,
+    "http_req_duration.max": 51.45,
+    "flapi_read_duration.avg": 20.63,
+    "flapi_read_duration.med": 13.0,
+    "flapi_read_duration.p(95)": 17.96,
+    "flapi_read_duration.p(99)": 32.94,
+    "flapi_read_duration.max": 40.05,
+    "flapi_read_param_duration.avg": 23.66,
+    "flapi_read_param_duration.med": 12.94,
+    "flapi_read_param_duration.p(95)": 30.57,
+    "flapi_read_param_duration.p(99)": 44.75,
+    "flapi_read_param_duration.max": 53.46,
+    "flapi_paged_duration.avg": 24.87,
+    "flapi_paged_duration.med": 15.09,
+    "flapi_paged_duration.p(95)": 22.49,
+    "flapi_paged_duration.p(99)": 48.07,
+    "flapi_paged_duration.max": 46.11,
+    "flapi_arrow_duration.avg": 17.61,
+    "flapi_arrow_duration.med": 13.15,
+    "flapi_arrow_duration.p(95)": 33.55,
+    "flapi_arrow_duration.p(99)": 48.52,
+    "flapi_arrow_duration.max": 53.23,
+    "flapi_mcp_duration.avg": 15.1,
+    "flapi_mcp_duration.med": 12.22,
+    "flapi_mcp_duration.p(95)": 27.35,
+    "flapi_mcp_duration.p(99)": 93.79,
+    "flapi_mcp_duration.max": 440.24,
+    "flapi_health_duration.avg": 39.13,
+    "flapi_health_duration.med": 11.42,
+    "flapi_health_duration.p(95)": 39.9,
+    "flapi_health_duration.p(99)": 135.71,
+    "flapi_health_duration.max": 206.47,
+    "flapi_unmatched_duration.avg": 100.61,
+    "flapi_unmatched_duration.med": 15.38,
+    "flapi_unmatched_duration.p(95)": 304.63,
+    "flapi_unmatched_duration.p(99)": 207.82,
+    "flapi_unmatched_duration.max": 235.29,
+    "throughput_rps": 21.77,
+    "error_rate": 0.0,
+    "server_peak_rss_kib": 4.62
+  }
+}

@@ -1,4 +1,5 @@
 #include "mcp_tool_handler.hpp"
+#include "runtime_metrics.hpp"
 #include "request_context.hpp"
 #include <chrono>
 #include <sstream>
@@ -98,6 +99,9 @@ MCPToolExecutionResult MCPToolHandler::executeTool(const MCPToolCallRequest& req
     // Bounded, registered tool name + success/duration only — never arguments,
     // SQL, or results.
     flapi::GlobalTelemetry().mcpToolCalled(request.tool_name, result.success, duration_ms);
+    RuntimeMetrics::instance().recordMcpTool(
+        request.tool_name, result.success,
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0));
     return result;
 }
 

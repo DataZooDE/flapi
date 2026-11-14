@@ -241,6 +241,20 @@ node dist/index.js cache refresh /customers/ --force \
   --base-url http://localhost:8080 --config examples/flapi.yaml
 ```
 
+Cache refresh history (duration, rows, snapshot per refresh):
+```bash
+node dist/index.js cache audit /customers --base-url http://localhost:8080
+```
+
+### Metrics
+Runtime metrics since server start: per-endpoint and per-MCP-tool requests,
+errors and latency (p50/p95/p99), 401/403/429 rejections, and per-cache refresh
+duration, rows and data age:
+```bash
+node dist/index.js metrics --output table --base-url http://localhost:8080
+node dist/index.js metrics --endpoint /customers   # one endpoint or MCP tool
+```
+
 ### Schema
 Get database schema information:
 ```bash

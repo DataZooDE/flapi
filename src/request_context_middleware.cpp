@@ -1,5 +1,6 @@
 #include "request_context_middleware.hpp"
 #include "in_flight_registry.hpp"
+#include "runtime_metrics.hpp"
 
 #include "audit_logger.hpp"
 #include "config_manager.hpp"
@@ -288,6 +289,9 @@ void RequestContextMiddleware::finish(crow::response& res, context& ctx) {
     }
     ctx.finished = true;
     ctx.rc.status_code = res.code;
+    // Every request passes here, including those a middleware rejected before
+    // any handler ran - the only place a 401/403/429 can be counted once.
+    RuntimeMetrics::instance().recordRejection(res.code);
 
     // Instrumentation must never fail a request, and must never leave the
     // ambient pointer set on a pooled worker. Clearing happens whatever the

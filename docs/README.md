@@ -35,6 +35,7 @@ New to flAPI? Start with [Getting started](./guides/getting-started.md).
 | Turn an endpoint into an MCP tool | [guides/mcp-tools.md](./guides/mcp-tools.md) |
 | Look up an MCP method, error code or capability | [MCP_REFERENCE.md](./MCP_REFERENCE.md) |
 | Manage configuration through MCP tools | [MCP_CONFIG_TOOLS_API.md](./MCP_CONFIG_TOOLS_API.md) · [MCP_CONFIG_INTEGRATION.md](./MCP_CONFIG_INTEGRATION.md) |
+| Build, cache and run flAPI with Claude Code (plugin: skills, slash commands, MCP, hooks) | [guides/claude-code.md](./guides/claude-code.md) |
 
 ### Make it fast
 
@@ -42,6 +43,8 @@ New to flAPI? Start with [Getting started](./guides/getting-started.md).
 |---|---|
 | Cache an expensive query | [guides/caching.md](./guides/caching.md) |
 | Choose full refresh vs incremental | [guides/caching.md#choosing-a-refresh-strategy](./guides/caching.md#choosing-a-refresh-strategy) |
+| Handle deleted rows in an incremental cache | [guides/caching.md#deletes-in-merge-mode](./guides/caching.md#deletes-in-merge-mode) |
+| Measure and shorten cache refresh time | [guides/caching.md#measuring-and-tuning-refresh-time](./guides/caching.md#measuring-and-tuning-refresh-time) |
 | Understand cache snapshots and time travel | [spec/components/caching.md](./spec/components/caching.md) |
 | Run on Cloud Run / scale-to-zero without loading data at startup | [guides/serverless.md](./guides/serverless.md) |
 
@@ -57,6 +60,7 @@ New to flAPI? Start with [Getting started](./guides/getting-started.md).
 
 | Goal | Start here |
 |---|---|
+| See request counts, error rates, latency and cache refresh times | [OBSERVABILITY.md § Runtime metrics](./OBSERVABILITY.md#runtime-metrics) · `flapii metrics` |
 | Trace requests, find a slow one, join logs to traces | [OBSERVABILITY.md](./OBSERVABILITY.md) |
 | See where the time went inside a query | [OBSERVABILITY.md § 4](./OBSERVABILITY.md#4-seeing-inside-a-slow-query) |
 | Get an id out of a failed request | [OBSERVABILITY.md § 7](./OBSERVABILITY.md#7-getting-an-id-out-of-a-failed-request) |

@@ -5,6 +5,7 @@ import { createApiClient } from './lib/http';
 import { handleError } from './lib/errors';
 import { registerPingCommand } from './commands/ping';
 import { registerHealthCommand } from './commands/health';
+import { registerMetricsCommand } from './commands/metrics';
 import { registerConfigCommands } from './commands/config';
 import { registerProjectCommands } from './commands/project';
 import { registerEndpointCommands } from './commands/endpoints';
@@ -57,6 +58,7 @@ export async function createCli(argv = process.argv) {
 
   registerPingCommand(program, ctx);
   registerHealthCommand(program, ctx);
+  registerMetricsCommand(program, ctx);
   registerConfigCommands(program, ctx);
   registerProjectCommands(program, ctx);
   registerEndpointCommands(program, ctx);

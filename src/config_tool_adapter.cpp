@@ -365,6 +365,27 @@ void ConfigToolAdapter::registerCacheTools() {
         return this->executeGetCacheAudit(args);
     };
 
+    // flapi_get_metrics - Runtime metrics (requests, latency, caches)
+    {
+        crow::json::wvalue schema;
+        schema["type"] = "object";
+        schema["properties"]["endpoint"]["type"] = "string";
+        schema["properties"]["endpoint"]["description"] =
+            "Optional endpoint path (e.g. /customers) or MCP tool name to narrow the result to";
+        tools_["flapi_get_metrics"] = ConfigToolDef{
+            "flapi_get_metrics",
+            "Runtime metrics since server start: per-endpoint and per-MCP-tool request counts, error counts and "
+            "latency (avg/p50/p95/p99/max, ms), 401/403/429 rejections, and per-cache readiness, last refresh "
+            "mode/status/duration/rows and data age. Use it to find slow or failing endpoints and slow or stale caches.",
+            std::move(schema),
+            build_basic_schema()
+        };
+    }
+    tool_auth_required_["flapi_get_metrics"] = true;
+    tool_handlers_["flapi_get_metrics"] = [this](const crow::json::wvalue& args) {
+        return this->executeGetMetrics(args);
+    };
+
     // flapi_run_cache_gc - Trigger garbage collection
     tools_["flapi_run_cache_gc"] = ConfigToolDef{
         "flapi_run_cache_gc",
@@ -573,7 +594,8 @@ std::string ConfigToolAdapter::validateArguments(const std::string& tool_name,
         {"flapi_get_cache_status", {"path"}},
         {"flapi_refresh_cache", {"path"}},
         {"flapi_get_cache_audit", {"path"}},
-        {"flapi_run_cache_gc", {"path"}}
+        {"flapi_run_cache_gc", {"path"}},
+        {"flapi_get_metrics", {}}
     };
 
     // Find required parameters for this tool
@@ -1400,6 +1422,18 @@ ConfigToolResult ConfigToolAdapter::executeGetCacheAudit(const crow::json::wvalu
     AuditLogHandler handler(config_manager_);
     return fromHandler("flapi_get_cache_audit",
                        handler.getCacheAuditLog(endpoint_path), &secrets);
+}
+
+ConfigToolResult ConfigToolAdapter::executeGetMetrics(const crow::json::wvalue& args) {
+    if (!config_manager_) {
+        return createErrorResult(-32603, "Configuration service unavailable");
+    }
+    std::string error_msg;
+    const std::string filter = extractStringParam(args, "endpoint", false, error_msg);
+    if (!error_msg.empty()) {
+        return createErrorResult(-32602, error_msg);
+    }
+    return ConfigToolResult{true, buildMetricsJson(config_manager_, filter).dump(), "", 0};
 }
 
 ConfigToolResult ConfigToolAdapter::executeRunCacheGC(const crow::json::wvalue& args) {

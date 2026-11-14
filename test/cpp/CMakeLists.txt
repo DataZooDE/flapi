@@ -81,6 +81,7 @@ add_executable(flapi_tests
     test_flapi_telemetry.cpp
     alloc_counter.cpp
     test_alloc_budget.cpp
+    runtime_metrics_test.cpp
     test_request_context.cpp
     test_background_span_contract.cpp
     test_trace_context.cpp

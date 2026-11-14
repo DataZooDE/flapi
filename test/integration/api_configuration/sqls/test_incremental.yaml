@@ -16,7 +16,6 @@ cache:
   retention:
     keep-last-snapshots: 3
     max-snapshot-age: 2h
-  delete-handling: soft
   template-file: test_cache.sql
 
 auth:

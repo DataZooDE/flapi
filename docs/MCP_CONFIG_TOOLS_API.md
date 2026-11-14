@@ -527,64 +527,67 @@ Trigger manual cache refresh for an endpoint (requires authentication).
 
 ### flapi_get_cache_audit
 
-Get audit log of cache operations and refresh history.
-
-**Authentication:** Not required
+Read an endpoint's cache sync log from `<alias>.audit.sync_events`, newest first
+(at most 100 rows). Requires authentication.
 
 **Parameters:**
-- `path` (string, required): Endpoint path
+- `path` (string, required): endpoint path, e.g. `/customers`
 
-**Response (Success):**
+**Response (Success):** the audit rows, as returned by
+`GET /api/v1/_config/endpoints/{path}/cache/audit`:
 ```json
-{
-  "path": "customers",
-  "cache_table": "customers_cache",
-  "audit_log": [
-    {
-      "timestamp": "1704067200",
-      "event": "cache_refreshed",
-      "status": "success"
-    },
-    {
-      "timestamp": "1704063600",
-      "event": "cache_status_checked",
-      "status": "success"
-    }
-  ],
-  "message": "Cache audit log retrieved successfully"
-}
+[
+  {
+    "event_id": "evt_1763114400_1804289383",
+    "endpoint_path": "/customers",
+    "cache_table": "customers_cache",
+    "cache_schema": "analytics",
+    "sync_type": "merge",
+    "status": "success",
+    "message": "Cache refreshed successfully",
+    "snapshot_id": "118",
+    "rows_affected": 37,
+    "sync_started_at": "2026-11-14 10:00:00.000",
+    "sync_completed_at": "2026-11-14 10:00:00.812",
+    "duration_ms": 812
+  }
+]
 ```
+
+`sync_type` is `full`, `append`, `merge` or `garbage_collection`. `duration_ms`
+times the populate statement (or the snapshot expiry for GC). `rows_affected` is
+DuckDB's row count for the last statement of the cache template, or `null` when
+that statement reports none. `snapshot_id` is the DuckLake snapshot the refresh
+produced. Times are UTC.
 
 ---
 
 ### flapi_run_cache_gc
 
-Trigger garbage collection to clean up old cache snapshots (requires authentication).
-
-**Authentication:** Required
+Expire one endpoint's old cache snapshots according to its own `retention`
+policy. Requires authentication.
 
 **Parameters:**
-- `path` (string, optional): Endpoint path for targeted GC (if omitted, runs globally)
+- `path` (string, **required**): endpoint path. There is no all-endpoints form;
+  call it once per cached endpoint.
 
-**Response (Success - Endpoint-specific):**
-```json
-{
-  "status": "Garbage collection triggered",
-  "path": "customers",
-  "timestamp": "1704067200",
-  "message": "Cache garbage collection for endpoint scheduled"
-}
-```
+**Response (Success):** the handler's JSON status. A GC run is also recorded in
+the audit log as `sync_type: garbage_collection`.
 
-**Response (Success - Global):**
-```json
-{
-  "status": "Garbage collection triggered",
-  "scope": "all_caches",
-  "timestamp": "1704067200",
-  "message": "Global cache garbage collection has been scheduled"
-}
-```
+---
+
+### flapi_get_metrics
+
+Runtime metrics since server start: per-endpoint and per-MCP-tool request counts,
+error counts and latency, 401/403/429 rejections, and per-cache readiness, last
+refresh mode/status/duration/rows and data age. Requires authentication.
+
+**Parameters:**
+- `endpoint` (string, optional): an endpoint path or MCP tool name to narrow
+  `requests.series` and `caches` to
+
+**Response (Success):** the same document as
+[`GET /api/v1/_config/metrics`](CONFIG_SERVICE_API_REFERENCE.md#get-apiv1_configmetrics).
 
 ---
 

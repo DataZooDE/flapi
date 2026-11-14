@@ -1,7 +1,9 @@
 #pragma once
 
 #include <string>
+#include <cstdint>
 #include <map>
+#include <optional>
 
 namespace flapi {
 
@@ -43,6 +45,22 @@ public:
      * @return QueryResult containing the query results
      */
     virtual QueryResult executeDuckLakeQueryWithResult(const std::string& query) = 0;
+
+    /**
+     * Execute a DuckLake write (the rendered cache populate template) and
+     * report how many rows it wrote, when DuckDB says so.
+     *
+     * DuckDB answers CTAS / INSERT / MERGE / UPDATE / DELETE with a single
+     * `Count` row; for a multi-statement template that is the LAST
+     * statement's count. Anything else (DDL, a SELECT, no result) yields
+     * nullopt rather than a guess. The default keeps test doubles that only
+     * implement executeDuckLakeQuery working.
+     */
+    virtual std::optional<int64_t> executeDuckLakeQueryCountingRows(
+        const std::string& query, const std::map<std::string, std::string>& params = {}) {
+        executeDuckLakeQuery(query, params);
+        return std::nullopt;
+    }
 };
 
 } // namespace flapi

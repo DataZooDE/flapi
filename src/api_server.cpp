@@ -6,6 +6,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "api_server.hpp"
+#include "runtime_metrics.hpp"
 #include "handler_pool.hpp"
 #include "in_flight_registry.hpp"
 #include "request_context.hpp"
@@ -478,6 +479,9 @@ void APIServer::handleDynamicRequest(const crow::request& req, crow::response& r
         const double duration_ms =
             std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - t0).count();
+        RuntimeMetrics::instance().recordRest(
+            method, route_template, res.code,
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0));
         auto& telemetry = flapi::GlobalTelemetry();
         telemetry.restEndpointServed(method, route_template, res.code, duration_ms, cache_hit);
         if (res.code >= 500) {

@@ -6,6 +6,7 @@
 #include <crow.h>
 #include <regex>
 #include <ctime>
+#include <cstdio>
 #include <cstdlib>
 #include <exception>
 #include <tuple>
@@ -419,10 +420,22 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
 
     const std::string rendered = db_adapter_->renderCacheTemplate(endpoint, cacheConfig, params);
 
+    // Timed around the populate statement only - what an operator tuning a
+    // slow refresh can change - so the audit's duration_ms is comparable
+    // across refreshes and does not include the snapshot/watermark lookups.
+    SyncEventDetails details;
+    details.started_at = std::chrono::system_clock::now();
     try {
-        db_adapter_->executeDuckLakeQuery(rendered, params);
-        recordSyncEvent(config_manager, endpoint, determineCacheMode(cacheConfig), "success", "Cache refreshed successfully");
+        details.rows_affected = db_adapter_->executeDuckLakeQueryCountingRows(rendered, params);
+        details.completed_at = std::chrono::system_clock::now();
+        const SnapshotInfo after = fetchSnapshotInfo(catalog, schema, table);
+        if (after.current_snapshot_id) {
+            details.snapshot_id = *after.current_snapshot_id;
+        }
+        recordSyncEvent(config_manager, endpoint, determineCacheMode(cacheConfig), "success",
+                        "Cache refreshed successfully", details);
     } catch (const std::exception& ex) {
+        details.completed_at = std::chrono::system_clock::now();
         // Scrubbed before it is RECORDED. A failed refresh's DuckDB error
         // quotes the rendered cache template, and this writes it into
         // cache.audit.sync_events - i.e. into DuckLake Parquet files, often
@@ -434,7 +447,7 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
         // worse than the log leak that was fixed alongside it.
         const auto secrets = collectTemplateSecrets(config_manager.get(), endpoint, params);
         recordSyncEvent(config_manager, endpoint, determineCacheMode(cacheConfig), "error",
-                        publicErrorMessage("Cache refresh failed", ex.what(), secrets));
+                        publicErrorMessage("Cache refresh failed", ex.what(), secrets), details);
         throw;
     }
 
@@ -1073,16 +1086,20 @@ void CacheManager::performGarbageCollection(std::shared_ptr<ConfigManager> confi
                         "No snapshots eligible for expiry");
         return;
     }
+    SyncEventDetails details;
+    details.started_at = std::chrono::system_clock::now();
     try {
         db_adapter_->executeDuckLakeQuery(expireSql, params);
-        recordSyncEvent(config_manager, endpoint, "garbage_collection", "success", "Expired old snapshots");
+        details.completed_at = std::chrono::system_clock::now();
+        recordSyncEvent(config_manager, endpoint, "garbage_collection", "success", "Expired old snapshots", details);
     } catch (const std::exception& ex) {
+        details.completed_at = std::chrono::system_clock::now();
         CROW_LOG_WARNING << "Failed to expire snapshots for " << params["schema"] << "." << params["table"] << ": " << ex.what();
         // Same reasoning as the refresh path above: this is persisted.
         std::map<std::string, std::string> no_params;
         const auto secrets = collectTemplateSecrets(config_manager.get(), endpoint, no_params);
         recordSyncEvent(config_manager, endpoint, "garbage_collection", "error",
-                        publicErrorMessage("Garbage collection failed", ex.what(), secrets));
+                        publicErrorMessage("Garbage collection failed", ex.what(), secrets), details);
     }
 }
 
@@ -1144,42 +1161,132 @@ void CacheManager::ensureCacheSchemaExists(const std::string& catalog, const std
     }
 }
 
-void CacheManager::recordSyncEvent(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::string& sync_type, const std::string& status, const std::string& message) {
+std::string CacheManager::formatUtcTimestamp(std::chrono::system_clock::time_point tp) {
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(tp.time_since_epoch()).count();
+    const std::time_t secs = static_cast<std::time_t>(ms / 1000);
+    std::tm utc{};
+#if defined(_WIN32)
+    gmtime_s(&utc, &secs);
+#else
+    gmtime_r(&secs, &utc);
+#endif
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d.%03d",
+                  utc.tm_year + 1900, utc.tm_mon + 1, utc.tm_mday,
+                  utc.tm_hour, utc.tm_min, utc.tm_sec, static_cast<int>(ms % 1000));
+    return std::string(buf);
+}
+
+std::string CacheManager::buildSyncEventInsert(const std::string& catalog, const std::string& event_id,
+                                               const EndpointConfig& endpoint, const std::string& sync_type,
+                                               const std::string& status, const std::string& message,
+                                               const SyncEventDetails& details) {
+    const auto& cacheConfig = endpoint.cache;
+    const auto quote = [](const std::string& v) { return "'" + escapeSqlLiteral(v) + "'"; };
+    const auto ts = [&](const std::optional<std::chrono::system_clock::time_point>& tp) {
+        // A missing instant falls back to "now" so the row still sorts where
+        // it happened, exactly as every event was recorded before timing existed.
+        return tp ? "TIMESTAMP " + quote(formatUtcTimestamp(*tp)) : std::string("CAST(CURRENT_TIMESTAMP AS TIMESTAMP)");
+    };
+
+    std::string duration = "NULL";
+    if (details.started_at && details.completed_at) {
+        const auto d = std::chrono::duration_cast<std::chrono::milliseconds>(
+            *details.completed_at - *details.started_at).count();
+        duration = std::to_string(d < 0 ? 0 : d);
+    }
+    const std::string rows = details.rows_affected ? std::to_string(*details.rows_affected) : "NULL";
+    const std::string snapshot = details.snapshot_id ? quote(*details.snapshot_id) : "NULL";
+
+    return "INSERT INTO " + catalog + ".audit.sync_events "
+           "(event_id, endpoint_path, cache_table, cache_schema, sync_type, status, message, "
+           "snapshot_id, rows_affected, sync_started_at, sync_completed_at, duration_ms) VALUES (" +
+           quote(event_id) + ", " +
+           quote(endpoint.urlPath) + ", " +
+           quote(cacheConfig.table) + ", " +
+           quote(cacheConfig.schema.empty() ? "main" : cacheConfig.schema) + ", " +
+           quote(sync_type) + ", " +
+           quote(status) + ", " +
+           quote(message) + ", " +
+           snapshot + ", " + rows + ", " +
+           ts(details.started_at) + ", " + ts(details.completed_at) + ", " + duration + ")";
+}
+
+void CacheManager::updateRefreshStats(const CacheKey& key, const std::string& endpoint_path, const std::string& sync_type,
+                                      const std::string& status, const SyncEventDetails& details) {
+    // GC is not a refresh; counting it would dilute refresh durations.
+    if (sync_type == "garbage_collection") {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(refresh_stats_mutex_);
+    auto& stats = refresh_stats_[key];
+    stats.endpoint_path = endpoint_path;
+    stats.catalog = key.catalog;
+    stats.schema = key.schema;
+    stats.table = key.table;
+    stats.last_sync_type = sync_type;
+    stats.last_status = status;
+    stats.last_rows_affected = details.rows_affected;
+    stats.last_snapshot_id = details.snapshot_id;
+    stats.last_completed_at = details.completed_at;
+    stats.refreshes += 1;
+    if (status != "success") {
+        stats.failures += 1;
+    } else {
+        stats.last_success_at = details.completed_at;
+    }
+    stats.last_duration_ms.reset();
+    if (details.started_at && details.completed_at) {
+        const int64_t d = std::max<int64_t>(0, std::chrono::duration_cast<std::chrono::milliseconds>(
+            *details.completed_at - *details.started_at).count());
+        stats.last_duration_ms = d;
+        stats.total_duration_ms += d;
+        stats.max_duration_ms = std::max(stats.max_duration_ms, d);
+    }
+}
+
+std::vector<CacheManager::CacheRefreshStats> CacheManager::getRefreshStats() const {
+    std::lock_guard<std::mutex> lock(refresh_stats_mutex_);
+    std::vector<CacheRefreshStats> out;
+    out.reserve(refresh_stats_.size());
+    for (const auto& [key, stats] : refresh_stats_) {
+        out.push_back(stats);
+    }
+    return out;
+}
+
+std::map<std::string, std::string> CacheManager::getReadinessStates() const {
+    std::lock_guard<std::mutex> lock(readiness_mutex_);
+    std::map<std::string, std::string> out;
+    for (const auto& [key, r] : readiness_) {
+        std::string state;
+        switch (r.state) {
+            case ReadinessState::Starting: state = "starting"; break;
+            case ReadinessState::Ready: state = r.stale ? "stale" : "ready"; break;
+            case ReadinessState::Failed: state = "failed"; break;
+            case ReadinessState::Unbuilt: state = "unbuilt"; break;
+        }
+        out[key.catalog + "." + key.schema + "." + key.table] = state;
+    }
+    return out;
+}
+
+void CacheManager::recordSyncEvent(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::string& sync_type, const std::string& status, const std::string& message, const SyncEventDetails& details) {
+    // In-memory stats first and unconditionally: they do not depend on the
+    // audit table existing, or on the INSERT below succeeding.
+    updateRefreshStats(cacheKeyForEndpoint(config_manager, endpoint), endpoint.urlPath, sync_type, status, details);
+
     const auto& ducklakeConfig = config_manager->getDuckLakeConfig();
     if (!ducklakeConfig.enabled) {
         return;
     }
 
-    const std::string catalog = ducklakeConfig.alias;
-    const std::string auditSchema = "audit";
-    const auto& cacheConfig = endpoint.cache;
-    
-    std::string insertSQL = R"(
-        INSERT INTO )" + catalog + "." + auditSchema + R"(.sync_events 
-        (endpoint_path, cache_table, cache_schema, sync_type, status, message)
-        VALUES (?, ?, ?, ?, ?, ?)
-    )";
-
     try {
-        // For now, use a simple query approach - in production, prepared statements would be better
-        std::string escapedMessage = message;
-        std::replace(escapedMessage.begin(), escapedMessage.end(), '\'', '"');
-        
-        std::string eventId = "evt_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(rand());
-        std::string insertQuery = "INSERT INTO " + catalog + "." + auditSchema + ".sync_events " +
-            "(event_id, endpoint_path, cache_table, cache_schema, sync_type, status, message, sync_started_at, sync_completed_at) VALUES (" +
-            "'" + eventId + "', " +
-            "'" + endpoint.urlPath + "', " +
-            "'" + cacheConfig.table + "', " +
-            "'" + (cacheConfig.schema.empty() ? "main" : cacheConfig.schema) + "', " +
-            "'" + sync_type + "', " +
-            "'" + status + "', " +
-            "'" + escapedMessage + "', " +
-            "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)";
-
+        const std::string eventId = "evt_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(rand());
+        const std::string insertQuery = buildSyncEventInsert(ducklakeConfig.alias, eventId, endpoint,
+                                                             sync_type, status, message, details);
         std::map<std::string, std::string> params;
         db_adapter_->executeDuckLakeQuery(insertQuery, params);
-
     } catch (const std::exception& ex) {
         CROW_LOG_WARNING << "Failed to record sync event: " << ex.what();
     }

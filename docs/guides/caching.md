@@ -93,31 +93,122 @@ These variables are available in a cache template:
 | `{{cache.primaryKeys}}` | Your declared key |
 | `{{params.cacheMode}}` | `full`, `append` or `merge` |
 
-Append:
+Incremental templates must also create the table on their first run. `INSERT`
+and `MERGE` fail if the target does not exist yet. On the first run (and
+whenever no watermark can be read) `cache.previousSnapshotTimestamp` is absent,
+so an inverted section `{{^…}}` can create the empty table, and the predicate
+sits behind `WHERE 1=1` so that nothing dangles when it is left out.
+
+Append (`cursor: {column: id, type: integer}`):
 
 ```sql
+{{^cache.previousSnapshotTimestamp}}
+CREATE TABLE IF NOT EXISTS {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS
+SELECT * FROM source_events WHERE false;
+{{/cache.previousSnapshotTimestamp}}
 INSERT INTO {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
 SELECT * FROM source_events
-WHERE {{#cache.previousSnapshotTimestamp}} event_time > TIMESTAMP '{{cache.previousSnapshotTimestamp}}' {{/cache.previousSnapshotTimestamp}}
+WHERE 1=1
+{{#cache.previousSnapshotTimestamp}}
+  AND id > {{cache.previousSnapshotTimestamp}}
+{{/cache.previousSnapshotTimestamp}};
 ```
 
-Wrapping the predicate in `{{#cache.previousSnapshotTimestamp}}` matters: on the
-very first run there is no previous snapshot, and the section renders empty so
-the first load takes everything.
+With a cursor, the watermark is `max(<cursor>)` over the rows already cached, in
+the cursor's own type. Quote it for a timestamp cursor
+(`AND updated_at > TIMESTAMP '{{cache.previousSnapshotTimestamp}}'`) and leave it
+bare for an integer cursor. Rows that arrive late, with a cursor value below the
+watermark, are skipped by a strict `>`. If your source has late rows, re-read an
+overlap window (`AND updated_at > TIMESTAMP '…' - INTERVAL 10 MINUTE`) and use
+merge mode, so the re-read rows replace themselves instead of duplicating.
 
-Merge:
+Merge (`primary-key: [id]`, `cursor: {column: updated_at, type: timestamp}`):
+
+```sql
+{{^cache.previousSnapshotTimestamp}}
+CREATE TABLE IF NOT EXISTS {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS
+SELECT * FROM source_customers WHERE false;
+{{/cache.previousSnapshotTimestamp}}
+MERGE INTO {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS t
+USING (
+  SELECT * FROM source_customers
+  WHERE 1=1
+  {{#cache.previousSnapshotTimestamp}}
+    AND updated_at > TIMESTAMP '{{cache.previousSnapshotTimestamp}}'
+  {{/cache.previousSnapshotTimestamp}}
+) AS s
+ON t.id = s.id
+WHEN MATCHED THEN UPDATE SET name = s.name, email = s.email, updated_at = s.updated_at
+WHEN NOT MATCHED THEN INSERT *;
+```
+
+DuckDB's form is `INSERT *` (or `INSERT BY NAME`), not `INSERT (*) VALUES (s.*)`.
+
+### Deletes in merge mode
+
+flAPI does not detect deleted source rows. An incremental refresh only sees rows
+the source still returns. Model deletes in the data and handle them in the
+`MERGE`. The usual source signal is a soft-delete flag (or a `deleted_at`
+column) that bumps the cursor when it is set:
 
 ```sql
 MERGE INTO {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS t
 USING (
   SELECT * FROM source_customers
-  WHERE {{#cache.previousSnapshotTimestamp}} updated_at > TIMESTAMP '{{cache.previousSnapshotTimestamp}}' {{/cache.previousSnapshotTimestamp}}
+  WHERE 1=1
+  {{#cache.previousSnapshotTimestamp}}
+    AND updated_at > TIMESTAMP '{{cache.previousSnapshotTimestamp}}'
+  {{/cache.previousSnapshotTimestamp}}
 ) AS s
 ON t.id = s.id
-WHEN MATCHED THEN UPDATE SET
-  name = s.name, email = s.email, updated_at = s.updated_at
-WHEN NOT MATCHED THEN INSERT (*) VALUES (s.*);
+WHEN MATCHED AND s.is_deleted THEN DELETE
+WHEN MATCHED THEN UPDATE SET name = s.name, updated_at = s.updated_at, is_deleted = s.is_deleted
+WHEN NOT MATCHED AND NOT s.is_deleted THEN INSERT *;
 ```
+
+If the source hard-deletes rows and keeps no trace, an incremental cache cannot
+see the delete. Use a full refresh for that table. You can also reconcile
+periodically: a scheduled full refresh, or
+`DELETE FROM <cache> WHERE id NOT IN (SELECT id FROM source)` if the key set is
+cheap to read. The cache keys `delete-handling` and `rollback-window` are
+deprecated and have no effect.
+
+## Measuring and tuning refresh time
+
+Every refresh is recorded in the cache audit log, along with how long the
+populate statement took and how many rows it wrote:
+
+```bash
+flapii cache audit /customers     # sync_type, status, duration_ms, rows_affected, snapshot_id
+flapii metrics --endpoint /customers   # last/avg/max refresh duration, data age, state
+```
+
+Without a running server, time the one-shot refresh:
+`time flapi cache refresh -c flapi.yaml --endpoint /customers`.
+
+What usually makes a refresh shorter, biggest win first:
+
+1. **Go incremental.** If only a fraction of rows changes between refreshes, a
+   cursor turns "re-read everything" into "read the delta".
+2. **Push the watermark to the source.** The `WHERE` predicate on the cursor must
+   reach the source system (Postgres, BigQuery, Parquet min/max statistics) so
+   the source reads only the delta. Check with `EXPLAIN` on the rendered SQL
+   (`flapii templates expand`). A function wrapped around the cursor column
+   usually stops the pushdown.
+3. **Select only the columns you serve.** `SELECT *` from a wide source table
+   moves data that nothing reads.
+4. **Fit the schedule to the duration.** A refresh that takes most of its
+   `schedule` interval leaves no headroom. Overlapping refreshes of the same
+   table are skipped, not queued.
+5. **Keep small deltas cheap.** Frequent small refreshes create many small files.
+   `ducklake.data-inlining-row-limit` keeps small inserts in the catalog, and
+   `ducklake.compaction` merges files on a schedule.
+6. **Bound snapshot growth.** Every refresh is a DuckLake snapshot. Set
+   `retention.keep-last-snapshots` / `max-snapshot-age` and run
+   `flapii cache gc <path>`.
+
+The `flapi-cache-tuning` skill in the [Claude Code plugin](./claude-code.md)
+walks through this loop with before/after numbers.
 
 ## When it refreshes
 
