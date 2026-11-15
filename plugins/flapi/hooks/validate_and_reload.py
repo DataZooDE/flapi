@@ -480,7 +480,10 @@ def main_config_stale(base: str, cfg: Path, project: dict) -> str | None:
         mtime = cfg.stat().st_mtime
     except OSError:
         return None
-    if uptime is not None and mtime <= time.time() - uptime + 1:
+    # Skip the comparison only for a file clearly older than the server. The margin
+    # (uptime_s is rounded) must err towards comparing: an edit made within a second of
+    # startup is still a change, and the comparison below finds no diff if nothing differs.
+    if uptime is not None and mtime < time.time() - uptime - 2:
         return None   # not touched since the server started
     compared = {"ducklake": ("enabled", "alias", "read-only"), "auth": ("enabled",), "mcp": ("enabled",)}
     in_file = top_level_scalars(cfg, tuple(compared))

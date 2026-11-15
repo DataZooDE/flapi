@@ -380,6 +380,13 @@ def test_hook_sends_no_token_to_another_projects_server(server, tmp_path):
         httpd.shutdown()
 
 
+def _uptime(server):
+    # /health is 503 once an earlier test leaves a cache degraded; the body still has uptime_s.
+    r = requests.get(f"{server.base}/health", timeout=5)
+    assert r.status_code in (200, 503), r.text
+    return float(r.json()["uptime_s"])
+
+
 def test_hook_says_restart_when_flapi_yaml_changed_under_the_server(server):
     """G2 12(b): a changed ducklake/auth/mcp block needs a restart, not a reload."""
     cfg = os.path.join(server.writer, "flapi.yaml")
@@ -387,6 +394,9 @@ def test_hook_says_restart_when_flapi_yaml_changed_under_the_server(server):
     try:
         with open(cfg, "w") as f:
             f.write(original.replace("ducklake:\n  enabled: true", "ducklake:\n  enabled: false"))
+        # The worst case CI hit: an edit within a second of server start must still count.
+        started = time.time() - _uptime(server)
+        os.utime(cfg, (started + 0.5, started + 0.5))
         code, context, err = run_hook(server, os.path.join(server.sqls, "items.sql"))
         assert code == 0, err
         assert "Restart the server first" in context, context
