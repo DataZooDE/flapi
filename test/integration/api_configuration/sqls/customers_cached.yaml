@@ -85,7 +85,7 @@ cache:
   retention:
     keep-last-snapshots: 3
     max-snapshot-age: 1h
-  template-file: customers-get.sql
+  template-file: customers_cached_populate.sql
 
 # Authentication required
 auth:

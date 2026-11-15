@@ -79,7 +79,13 @@ flAPI runs as a unified server providing both REST API and MCP (Model Context Pr
 
 # Validate configuration without starting server
 ./flapi --validate-config
+
+# Print the build version
+./flapi --version
 ```
+
+Once the port is bound the server logs
+`flAPI server listening on http://<host>:<port> (REST API; MCP at http://<host>:<port>/mcp/jsonrpc)`.
 
 ---
 
@@ -222,7 +228,7 @@ Sets the logging verbosity level.
 | Type | string (enum) |
 | Default | `info` |
 | Required | No |
-| Valid values | `debug`, `info`, `warning`, `error` |
+| Valid values | `debug`, `info`, `warning` (or `warn`), `error` |
 | Environment variable | `FLAPI_LOG_LEVEL` |
 
 **Description:**
@@ -234,9 +240,11 @@ Controls the amount of log output. More verbose levels include all messages from
 2. `FLAPI_LOG_LEVEL` environment variable
 3. Built-in default (`info`)
 
-Invalid values cause flapi to exit with a single-line error -- typos
-like `FLAPI_LOG_LEVEL=DEBUG` surface immediately rather than silently
-defaulting to `info`.
+`warn` is accepted as an alias of `warning` everywhere (flag,
+`FLAPI_LOG_LEVEL`, and `log-level:` in `flapi.yaml`). Invalid values cause
+flapi to exit with a single-line error -- typos like `FLAPI_LOG_LEVEL=DEBUG`
+surface immediately rather than silently defaulting to `info`. An unknown
+`log-level:` in the config file stops startup the same way.
 
 | Level | Description |
 |-------|-------------|
@@ -283,6 +291,11 @@ Loads and validates the configuration file, checking for:
 - YAML syntax errors
 - Required field presence
 - File references (template files exist)
+- Mustache syntax of every serving template and cache `template-file`: unbalanced or crossed sections
+  (`{{#x}}` / `{{^x}}` without `{{/x}}`, a stray `{{/x}}`), `{{{` not closed by `}}}`, an unterminated
+  `{{`, empty tags, partials (`{{> x}}`) and set-delimiter tags (`{{= =}}`). The error names the file,
+  line and column, e.g. `Invalid template sqls/orders.sql:12:3: '{{/region}}' closes a section that was
+  never opened`. The same check runs at startup (exit 1) and on reload. The SQL itself is not run.
 - Connection configuration validity
 - URL path format compliance
 
@@ -340,17 +353,21 @@ When enabled, exposes REST API endpoints and MCP tools for managing endpoints, t
 | `DELETE /api/v1/_config/endpoints/{path}` | Delete endpoint |
 | `GET /api/v1/_config/endpoints/{path}/template` | Get SQL template |
 | `PUT /api/v1/_config/endpoints/{path}/template` | Update SQL template |
-| `POST /api/v1/_config/endpoints/{path}/cache/refresh` | Force cache refresh |
-| `GET /api/v1/_schema` | Database schema introspection |
-| `POST /api/v1/_ping` | Health check |
+| `POST /api/v1/_config/endpoints/{path}/cache/refresh` | Refresh a cache now (`?full=true`: drop and rebuild) |
+| `GET /api/v1/_config/schema` | Database schema introspection |
+| `GET /api/v1/_config/health` | Health and server version |
+| `GET /api/v1/_config/metrics` | Runtime metrics |
 
-**MCP Tools (18 configuration management tools):**
+The full list is in the [Config Service API Reference](./CONFIG_SERVICE_API_REFERENCE.md).
 
-When config-service is enabled, 18 MCP configuration tools become available:
+**MCP Tools (20 configuration management tools):**
+
+When config-service is enabled, 20 MCP configuration tools become available:
 - **Discovery Tools (5):** `flapi_get_project_config`, `flapi_get_environment`, `flapi_get_filesystem`, `flapi_get_schema`, `flapi_refresh_schema`
 - **Template Tools (4):** `flapi_get_template`, `flapi_update_template`, `flapi_expand_template`, `flapi_test_template`
 - **Endpoint Tools (6):** `flapi_list_endpoints`, `flapi_get_endpoint`, `flapi_create_endpoint`, `flapi_update_endpoint`, `flapi_delete_endpoint`, `flapi_reload_endpoint`
 - **Cache Tools (4):** `flapi_get_cache_status`, `flapi_refresh_cache`, `flapi_get_cache_audit`, `flapi_run_cache_gc`
+- **Metrics (1):** `flapi_get_metrics`
 
 See [MCP Configuration Tools API Reference](./MCP_CONFIG_TOOLS_API.md) for complete tool documentation.
 
@@ -365,7 +382,7 @@ See [MCP Configuration Tools API Reference](./MCP_CONFIG_TOOLS_API.md) for compl
 ./flapi --config-service
 
 # Enable with custom token
-./flapi --config-service --config-service-token "my-secure-token"
+./flapi --config-service --config-service-token "my-secure-token-0123456789"
 ```
 
 ---
@@ -489,7 +506,7 @@ for the architectural rationale.
 
 ```
 flapi pack --in <config-dir> --out <new-binary> [--with-extensions | --extensions-dir <dir>]
-           [--allow-secrets] [--macos-append] [--skip-validation]
+           [--exclude <glob>]... [--allow-secrets] [--macos-append] [--skip-validation]
 ```
 
 | Option | Required | Description |
@@ -497,6 +514,7 @@ flapi pack --in <config-dir> --out <new-binary> [--with-extensions | --extension
 | `--in` | yes | Directory containing `flapi.yaml` and friends. Walked recursively. |
 | `--out` | yes | Path for the bundled output binary. Overwritten if it exists. |
 | `--allow-secrets` | no | Bypass the default secret deny list. Testing only -- production users must never set this. |
+| `--exclude` | no | Do not bundle files matching this glob, relative to `--in`; repeatable. `*` stays within a path segment, `**` crosses segments, `?` matches one character. A pattern without `/` matches a file or directory name at any depth, and a matching directory excludes everything below it (`--exclude scratch --exclude 'data/raw/**'`). |
 | `--skip-validation` | no | Skip the config validation `pack` otherwise runs first (the same checks as `--validate-config`). Without it, an invalid `<in>/flapi.yaml` is refused and no output file is written. |
 | `--macos-append` | no | macOS only: append the archive after `__LINKEDIT` instead of overwriting the reserved `__FLAPI/__bundle` segment. **Not notarisable.** |
 | `--with-extensions` | no | Install the DuckDB extensions the config needs (`core_functions`, `duckdb.default-extensions`, every `INSTALL` in `connections.*.init`) **for the platform `pack` runs on**, and embed them. Fails without writing output if any cannot be installed. |
@@ -511,6 +529,11 @@ with no network access. Precedence: `duckdb.extension_directory` in the config >
 Extensions are platform-specific, so pack on (or `--extensions-dir` for) the target platform. On macOS
 they usually exceed the 16 MiB reserved segment; raise `FLAPI_RESERVED_BUNDLE_MIB` at build time or use
 `--macos-append`.
+
+**Never bundled: the DuckLake catalog.** The configured `ducklake.metadata-path` (and its `.wal`) and
+`data-path`, when they lie inside `--in`, and any `*.ducklake`, `*.ducklake.wal` or `*.ducklake.files`
+are left out. They are runtime state that a bundle never opens. `pack` prints
+`Excluded N file(s) (DuckLake catalog / --exclude), e.g. <path>`.
 
 **Default secret deny list** (refusal with non-zero exit, unless
 `--allow-secrets`):
@@ -614,7 +637,15 @@ notarisation.
 ```bash
 flapi cache refresh --config flapi.yaml --endpoint /orders --endpoint /customers
 flapi cache refresh --config flapi.yaml --all
+flapi cache refresh --config flapi.yaml --endpoint /orders --full   # drop and rebuild
+flapi cache refresh --config flapi.yaml --endpoint /orders --method GET
 ```
+
+`--endpoint` picks the endpoint on that path **that has a cache**: a cached `GET /orders` beside an
+uncached `POST /orders` refreshes the GET (it used to pick whichever loaded first and fail with
+`has no cache`, exit `2`). Several cached endpoints on one path and table are one cache. `--method`
+narrows the choice; it is needed only when cached endpoints on the path use different tables
+(`ambiguous: ... pass --method GET|POST`, exit `2`).
 
 Opens DuckDB and the DuckLake catalog read-write, runs each selected cache's populate template exactly
 as the server would (same watermark and merge semantics, same retention), prints a JSON summary and
@@ -623,16 +654,38 @@ exits. It opens no port and runs no warm-up, so it fits a Cloud Run Job or an Ai
 `ducklake.read-only: true`.
 
 ```json
-{"refreshed": [{"endpoint": "/orders", "table": "orders_cache", "status": "ok"}], "failed": 0}
+{"failed":0,"refreshed":[{"endpoint":"/orders","schema":"analytics","table":"orders_cache","status":"ok","rows_affected":3,"duration_ms":192}]}
 ```
+
+Each item carries `duration_ms` and `rows_affected` (the sum over the template's
+statements). `--full` erases the incremental watermark and drops the cache table
+before the template runs, in one transaction, so an append cache is rebuilt
+rather than re-appended; the item then also says `"full": true`. The run also
+compacts the catalog when `ducklake.compaction` is due.
+
+If a running server holds the DuckLake catalog (a DuckDB-file catalog is locked
+by the process that has it open), the command prints
+`{"error":"a running flapi holds the DuckLake catalog lock; refresh through the server: flapii cache refresh <path> (if the holders are read-only replicas, stop the replicas, or use a Postgres/SQLite/MySQL DuckLake catalog, which a writer and replicas can share)"}`
+and exits `1`.
+
+In a packed binary the command reads the **bundled** config: `--config` defaults to the bundled
+`flapi.yaml`, and `embed://` paths in the populate SQL read the bundle. Outside a packed binary,
+`embed://<path>` resolves to `<config directory>/<path>`, so a config written for `flapi pack` also
+refreshes from its source tree.
 
 | Exit code | Meaning |
 |-----------|---------|
 | `0` | every selected cache refreshed |
-| `1` | at least one refresh failed (the others still ran; see `"status": "failed"`) |
-| `2` | usage: nothing selected, an unknown endpoint, a non-cached endpoint, or a `read-only` catalog |
+| `1` | at least one refresh failed (the others still ran; see `"status": "failed"`), or the catalog is locked by a running server |
+| `2` | usage: an argument the command does not know, nothing selected, an unknown endpoint, a non-cached endpoint, or a `read-only` catalog |
 
-`--config` falls back to `FLAPI_CONFIG`, then `flapi.yaml`.
+`--config` falls back to `FLAPI_CONFIG`, then `flapi.yaml`. `--log-level` (default `warning`) and
+`--no-telemetry` are accepted after the subcommand too (`flapi cache refresh --all --no-telemetry`); the
+one-shot sends no telemetry either way.
+
+A refresh whose cursor watermark does not look like `cursor.type` (e.g. `type: integer` over a VARCHAR
+column) drops the watermark and loads the full source; the audit row's `message` says so
+(`Cache refreshed successfully; warning: ...`), as does the server's refresh answer (`warning`).
 
 ### `flapi extensions install` -- pre-install DuckDB extensions
 
@@ -649,7 +702,8 @@ Installs into `--dir` (default: `FLAPI_EXTENSION_DIRECTORY`, then DuckDB's own d
 any extension failed, after reporting every failure. Run it at image build time; at runtime set
 `FLAPI_EXTENSION_DIRECTORY` to the same directory and, to make a missing extension a startup error
 rather than a download, `FLAPI_EXTENSIONS_OFFLINE=1`. The extension directory is keyed by DuckDB version and
-platform, so install with the same `flapi` binary you ship.
+platform, so install with the same `flapi` binary you ship. In a packed binary, `flapi extensions install` with
+no names and no `--config` installs what the bundled `flapi.yaml` needs.
 
 ---
 
@@ -719,7 +773,7 @@ See [Configuration Reference - Environment Variables](./CONFIG_REFERENCE.md#10-e
 ./flapi -c /etc/flapi/production.yaml \
   --config-service \
   --config-service-token "${CONFIG_SERVICE_SECRET}" \
-  --log-level warning
+  --log-level warn
 ```
 
 For platforms with short startup health-check windows, point the platform liveness check at:
@@ -760,8 +814,22 @@ flAPI always registers two unauthenticated health endpoints. They do not require
 
 | Endpoint | Purpose | Response |
 |----------|---------|----------|
-| `GET /health/live` | Liveness: process is up and the listener is accepting connections | `200 {"status":"live"}` |
-| `GET /health` | Readiness: cache-enabled endpoints are ready to serve | `200` when ready, `503` while starting or degraded |
+| `GET /health/live` | Liveness: process is up and the listener is accepting connections | `200 {"status":"live"}`; `503 {"status":"fatal"}` when the database was invalidated |
+| `GET /health` | Readiness: cache-enabled endpoints are ready to serve | `200` with `status` `ready`, or `degraded` (a `stale` or `unbuilt` cache); `503` with `status` `starting`, `degraded` (a `failed` first build) or `stalled` |
+
+**An invalidated database is fatal.** An internal DuckDB error can invalidate the whole database; every
+later query then fails with `database has been invalidated` until the process restarts. flAPI detects it
+on the first such error, logs it once at `critical` level with the cause, and from then on BOTH
+`/health` and `/health/live` answer
+
+```json
+503 {"status": "fatal", "reason": "<the DuckDB error, at most 300 characters>", "message": "The database has been invalidated ... flapi must be restarted; GET /health shows the cause."}
+```
+
+so a supervisor or liveness probe restarts it. Data and config-service requests answer `503`
+`{"error":"database_invalidated","message":...}` (`Retry-After: 30`) instead of a `500` each. The one
+known trigger, two refreshes attaching the same alias in parallel, cannot happen any more: refreshes
+are serialised per catalog.
 
 During cache warmup, `/health/live` returns `200` as soon as the server is listening, while
 `/health` returns:
@@ -769,7 +837,7 @@ During cache warmup, `/health/live` returns `200` as soon as the server is liste
 ```json
 {
   "status": "starting",
-  "caches": {"total": 4, "ready": 1, "failed": 0},
+  "caches": {"total": 4, "ready": 1, "stale": 0, "failed": 0, "unbuilt": 0},
   "pending": [{"schema": "cache", "table": "customers_cache"}],
   "uptime_s": 7
 }
@@ -778,14 +846,31 @@ During cache warmup, `/health/live` returns `200` as soon as the server is liste
 If a cache has **never built** (the warm-up failed), `/health` returns `503` with `"status":
 "degraded"` and a `failed` list naming the table and schema. If a later **refresh** fails over a cache
 that was already built, the endpoint keeps serving the last snapshot and `/health` returns `200` with
-`"status": "degraded"` and a `stale` list. If warm-up was skipped (`--no-cache-warmup`, `warmup: never`,
+`"status": "degraded"` and a `stale` list. This includes a failed warm-up over a table that an earlier
+run built: with `warmup: always`, restarting while the source is unreachable keeps serving the existing
+table and reports it `stale`. If warm-up was skipped (`--no-cache-warmup`, `warmup: never`,
 `read-only`) and a cache table does not exist, `/health` returns `200` with `"status": "degraded"` and an
-`unbuilt` list, and that endpoint answers `503` with `"error": "cache_not_built"`. The error text (SQL, file paths) is written to the server log
+`unbuilt` list, and that endpoint answers `503` with `"error": "cache_not_built"` (on a read-only
+replica the message says the writer has not built it yet). The readiness list follows endpoint
+changes: a reload, create, update or delete that names a new cache table adds it as `unbuilt` (or
+`ready` when the table exists), and a table no endpoint names any more is dropped from `/health` and
+`caches.total` (a stale `failed` entry used to stay until restart). The error text (SQL, file paths) is written to the server log
 only: `/health` is unauthenticated and never returns it.
 
-Requests to a cached data endpoint while its cache is starting or failed return `503 Service
-Unavailable` with `Retry-After: 5` and a JSON body containing `"error": "cache_warming"`. flAPI
-does not serve partial or empty results from a half-built cache.
+A cache counts as **failed** only when no table exists to serve: its first build failed. The failure is
+logged once, with the reason.
+
+`caches.ready` counts caches that are ready and current; a `stale` cache (serving its last snapshot
+while refreshes fail) is counted in `caches.stale` only, no longer in `ready`.
+
+If a data request has been in flight for `stall-timeout-s` seconds or longer (top-level key, default
+`60`, `0` disables), `/health` returns `503` with `"status": "stalled"`, `"stalled_after_s"` and
+`requests.oldest_ms`. This check runs before the cache checks.
+
+Requests to a cached data endpoint while its cache is starting return `503 Service
+Unavailable` with `Retry-After: 5` and a JSON body containing `"error": "cache_warming"`; after a failed
+first build the body says `"error": "cache_build_failed"`. flAPI does not serve partial or empty results
+from a half-built cache.
 
 **AWS App Runner example:**
 
@@ -813,7 +898,8 @@ HealthCheckConfiguration:
 
 On receiving a shutdown signal, the server:
 1. Stops accepting new connections
-2. Completes in-flight requests (with timeout)
+2. Completes in-flight requests (with timeout); running cache populate scripts are interrupted
+   (within about 10 s) and no new refresh starts
 3. Closes database connections
 4. Exits cleanly
 

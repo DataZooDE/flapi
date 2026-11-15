@@ -327,6 +327,7 @@ add_library(flapi-lib STATIC
     src/auth_middleware.cpp
     src/cache_manager.cpp
     src/cache_refresh_command.cpp
+    src/database_health.cpp
     src/extension_installer.cpp
     src/database_manager_cache_adapter.cpp
     src/duckdb_embed_fs.cpp
@@ -351,6 +352,7 @@ add_library(flapi-lib STATIC
     src/request_validator.cpp
     src/rate_limit_key_builder.cpp
     src/rate_limit_middleware.cpp
+    src/runtime_metrics.cpp
     src/mcp_authorization_policy.cpp
     src/mcp_description_scanner.cpp
     src/mcp_dry_run.cpp
@@ -362,6 +364,7 @@ add_library(flapi-lib STATIC
     src/selfpath.cpp
     src/sql_parameter_classifier.cpp
     src/sql_template_processor.cpp
+    src/mustache_syntax_check.cpp
     src/template_secrets.cpp
     src/sql_utils.cpp
     src/mcp_tool_handler.cpp

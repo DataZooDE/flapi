@@ -166,7 +166,12 @@ Protocol handshake and capability negotiation:
 
 ### tools/list
 
-Lists available tools derived from endpoint configurations:
+Lists available tools derived from endpoint configurations. The tool, resource
+and prompt lists are rebuilt on every endpoint change (create, update, delete or
+reload, through the REST config service or the `flapi_*` tools), so they never
+lag the loaded configuration; cursors issued before a change are rejected.
+`listChanged` stays `false`: no notification is sent. Property types and typed
+`default` values come from the field's validators.
 
 ```json
 // Response
@@ -181,7 +186,7 @@ Lists available tools derived from endpoint configurations:
           "type": "object",
           "properties": {
             "id": { "type": "integer", "description": "Customer ID" },
-            "limit": { "type": "integer", "description": "Max results" }
+            "limit": { "type": "integer", "description": "Max results", "default": 100 }
           }
         }
       }

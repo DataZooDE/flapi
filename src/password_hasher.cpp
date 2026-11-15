@@ -4,12 +4,17 @@
 #include <cctype>
 #include <cstring>
 #include <random>
+#include <semaphore>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 
+#include <crow/logging.h>
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
+#include <openssl/hmac.h>
+#include <openssl/rand.h>
 
 namespace flapi {
 
@@ -72,11 +77,21 @@ std::string base64UrlEncode(const std::vector<unsigned char>& bytes) {
     return out;
 }
 
-std::vector<unsigned char> base64UrlDecode(const std::string& s) {
+// Decodes every base64 dialect a PBKDF2 MCF string is found in:
+//   - URL-safe ('-' '_'), which hashWithDefaults() emits;
+//   - passlib's "ab64" ('.' for '+', '/' kept, no padding), which
+//     passlib.hash.pbkdf2_sha256 emits - the header promises that format;
+//   - standard ('+' '/'), with or without '=' padding.
+// The alphabets agree on the first 62 symbols, so accepting all of them is
+// unambiguous.
+std::vector<unsigned char> base64UrlDecode(std::string s) {
+    while (!s.empty() && s.back() == '=') {
+        s.pop_back();
+    }
     static const std::int8_t kTable[256] = {
         -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
         -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,62,62,63,
         52,53,54,55,56,57,58,59,60,61,-1,-1,-1,-1,-1,-1,
         -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,
         15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,63,
@@ -237,6 +252,175 @@ bool PasswordHasher::verify(const std::string& provided, const std::string& stor
             return provided == stored;
     }
     return false;
+}
+
+// ---------------------------------------------------------------------------
+// PasswordVerificationCache
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// How long a caller waits for a derivation slot before it is refused. Long
+// enough that a legitimate burst queues instead of failing, short enough that
+// a flood cannot park worker threads indefinitely.
+constexpr std::chrono::milliseconds kDerivationWait{2000};
+
+std::counting_semaphore<1024>& derivationSlots() {
+    static std::counting_semaphore<1024> slots(
+        static_cast<std::ptrdiff_t>(PasswordVerificationCache::maxConcurrentDerivations()));
+    return slots;
+}
+
+void appendLengthPrefixed(std::string& out, const std::string& field) {
+    // Length-prefixed, not ':'-joined: a password may contain ':' and the
+    // fields must not be able to slide into each other.
+    const auto n = static_cast<std::uint64_t>(field.size());
+    for (int shift = 56; shift >= 0; shift -= 8) {
+        out.push_back(static_cast<char>((n >> shift) & 0xFF));
+    }
+    out += field;
+}
+
+}  // namespace
+
+PasswordVerificationCache& PasswordVerificationCache::instance() {
+    static PasswordVerificationCache cache;
+    return cache;
+}
+
+PasswordVerificationCache::PasswordVerificationCache() {
+    unsigned char key[32];
+    if (RAND_bytes(key, sizeof(key)) == 1) {
+        _hmac_key.assign(reinterpret_cast<const char*>(key), sizeof(key));
+    }
+    // An empty key disables caching (keyFor returns ""), never weakens it.
+}
+
+unsigned PasswordVerificationCache::maxConcurrentDerivations() {
+    // Half the cores, at least one: the other half (and the io threads Crow
+    // keeps beyond that) stay free to serve requests that need no PBKDF2.
+    const unsigned hw = std::thread::hardware_concurrency();
+    const unsigned half = hw / 2;
+    return half > 0 ? (half < 1024 ? half : 1024) : 1;
+}
+
+std::string PasswordVerificationCache::keyFor(const std::string& username, const std::string& password,
+                                              const std::string& stored) const {
+    if (_hmac_key.empty()) {
+        return "";
+    }
+    std::string message;
+    message.reserve(username.size() + password.size() + stored.size() + 24);
+    appendLengthPrefixed(message, username);
+    appendLengthPrefixed(message, password);
+    appendLengthPrefixed(message, stored);
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int digest_len = 0;
+    const bool ok = HMAC(EVP_sha256(), _hmac_key.data(), static_cast<int>(_hmac_key.size()),
+                         reinterpret_cast<const unsigned char*>(message.data()), message.size(),
+                         digest, &digest_len) != nullptr && digest_len > 0;
+    // The message held the plaintext password; do not leave it on the heap.
+    OPENSSL_cleanse(message.data(), message.size());
+    if (!ok) {
+        return "";
+    }
+    return std::string(reinterpret_cast<const char*>(digest), digest_len);
+}
+
+void PasswordVerificationCache::remember(const std::string& key) {
+    const auto now = Clock::now();
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (_entries.size() >= kMaxEntries && _entries.find(key) == _entries.end()) {
+        for (auto it = _entries.begin(); it != _entries.end();) {
+            it = (now - it->second >= kTtl) ? _entries.erase(it) : std::next(it);
+        }
+        // Still full of live entries: evict an arbitrary one (hash order).
+        while (_entries.size() >= kMaxEntries) {
+            _entries.erase(_entries.begin());
+        }
+    }
+    _entries[key] = now;
+}
+
+bool PasswordVerificationCache::verifyCredentials(const std::string& username, const std::string& password,
+                                                  const std::string& stored) {
+    if (PasswordHasher::classifyFormat(stored) != PasswordFormat::Pbkdf2Sha256) {
+        // MD5 and plaintext are cheap to check and bcrypt never verifies;
+        // nothing to save by caching them.
+        return PasswordHasher{}.verify(password, stored);
+    }
+
+    const std::string key = keyFor(username, password, stored);
+    if (!key.empty()) {
+        std::lock_guard<std::mutex> lock(_mutex);
+        auto it = _entries.find(key);
+        if (it != _entries.end()) {
+            if (Clock::now() - it->second < kTtl) {
+                ++_hits;
+                return true;
+            }
+            _entries.erase(it);
+        }
+    }
+
+    auto& slots = derivationSlots();
+    if (!slots.try_acquire_for(kDerivationWait)) {
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            ++_refused_busy;
+        }
+        CROW_LOG_WARNING << "Basic auth: too many password checks in progress; refusing the request "
+                            "rather than queueing it (PBKDF2 concurrency limit "
+                         << maxConcurrentDerivations() << ")";
+        return false;
+    }
+    bool ok = false;
+    try {
+        ok = PasswordHasher{}.verify(password, stored);
+    } catch (...) {
+        ok = false;
+    }
+    slots.release();
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        ++_derivations;
+    }
+    if (ok && !key.empty()) {
+        remember(key);
+    }
+    return ok;
+}
+
+void PasswordVerificationCache::clear() {
+    std::lock_guard<std::mutex> lock(_mutex);
+    _entries.clear();
+}
+
+std::size_t PasswordVerificationCache::size() const {
+    std::lock_guard<std::mutex> lock(_mutex);
+    return _entries.size();
+}
+
+std::uint64_t PasswordVerificationCache::hits() const {
+    std::lock_guard<std::mutex> lock(_mutex);
+    return _hits;
+}
+
+std::uint64_t PasswordVerificationCache::derivations() const {
+    std::lock_guard<std::mutex> lock(_mutex);
+    return _derivations;
+}
+
+std::uint64_t PasswordVerificationCache::refusedBusy() const {
+    std::lock_guard<std::mutex> lock(_mutex);
+    return _refused_busy;
+}
+
+void PasswordVerificationCache::ageEntriesForTest(std::chrono::seconds age) {
+    std::lock_guard<std::mutex> lock(_mutex);
+    for (auto& [key, at] : _entries) {
+        at -= age;
+    }
 }
 
 } // namespace flapi

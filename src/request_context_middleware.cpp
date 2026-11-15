@@ -1,5 +1,7 @@
 #include "request_context_middleware.hpp"
+#include "flapi_log_handler.hpp"
 #include "in_flight_registry.hpp"
+#include "runtime_metrics.hpp"
 
 #include "audit_logger.hpp"
 #include "config_manager.hpp"
@@ -174,6 +176,7 @@ void RequestContextMiddleware::setConfigManager(std::shared_ptr<ConfigManager> c
 void RequestContextMiddleware::before_handle(crow::request& req, crow::response& res, context& ctx) {
     ctx.started = true;
     ctx.finished = false;
+    FlapiLogHandler::resetPendingResponse();
     ctx.rc = RequestContext{};
     ctx.rc.t0 = std::chrono::steady_clock::now();
     RequestContext::mintRequestId(ctx.rc.request_id);
@@ -288,6 +291,13 @@ void RequestContextMiddleware::finish(crow::response& res, context& ctx) {
     }
     ctx.finished = true;
     ctx.rc.status_code = res.code;
+    // Crow's own "Response:" line for a request a middleware refused is
+    // written AFTER this (the short-circuit unwind runs after_handle first),
+    // when the context is no longer ambient; hand it the id.
+    FlapiLogHandler::noteRequestFinished(&ctx.rc, ctx.rc.requestIdView());
+    // Every request passes here, including those a middleware rejected before
+    // any handler ran - the only place a 401/403/429 can be counted once.
+    RuntimeMetrics::instance().recordRejection(res.code);
 
     // Instrumentation must never fail a request, and must never leave the
     // ambient pointer set on a pooled worker. Clearing happens whatever the

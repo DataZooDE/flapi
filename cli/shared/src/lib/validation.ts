@@ -8,9 +8,10 @@ import { buildEndpointUrl } from './url';
 export async function validateEndpointConfig(
   client: AxiosInstance,
   slug: string,
-  yamlContent: string
+  yamlContent: string,
+  method?: string
 ): Promise<ValidationResult> {
-  const url = buildEndpointUrl(slug, 'validate');
+  const url = buildEndpointUrl(slug, 'validate', method);
   
   const response = await client.post(url, yamlContent, {
     headers: {
@@ -31,16 +32,50 @@ export async function validateEndpointConfig(
  */
 export async function reloadEndpointConfig(
   client: AxiosInstance,
-  slug: string
+  slug: string,
+  method?: string
 ): Promise<ReloadResult> {
-  const url = buildEndpointUrl(slug, 'reload');
+  const url = buildEndpointUrl(slug, 'reload', method);
   
-  const response = await client.post(url);
+  // 400 = the endpoint exists but its YAML does not load (the reason says
+  // why); 404 = no such endpoint, which is an error the caller reports.
+  const response = await client.post(url, undefined, {
+    validateStatus: (status) => status === 200 || status === 400,
+  });
 
+  const reason = typeof response.data?.reason === 'string' ? response.data.reason : undefined;
+  // An ambiguous slug (several methods on one path) answers 400 with only
+  // {"error": ...}; without this fallback the CLI printed an empty message.
+  const message = response.data?.message ?? response.data?.error ?? '';
   return {
-    success: response.data.success ?? false,
-    message: response.data.message ?? '',
+    success: response.data?.success ?? false,
+    message: reason ? `${message}: ${reason}` : message,
+    reason,
   };
+}
+
+/**
+ * Reload (or load, when nothing is loaded from it yet) every endpoint a YAML
+ * file declares: POST /api/v1/_config/endpoints/reload-file. The way a NEW
+ * hand-written endpoint file goes live without a restart, and the way to
+ * address one of several endpoints sharing a url-path by its file.
+ */
+export async function reloadEndpointFile(
+  client: AxiosInstance,
+  file: string
+): Promise<ReloadResult & { endpoints: string[]; loaded: boolean }> {
+  const response = await client.post(
+    '/api/v1/_config/endpoints/reload-file',
+    { file },
+    { validateStatus: (status) => status === 200 || status === 201 || status === 400 || status === 409 },
+  );
+  const data = response.data ?? {};
+  const endpoints = Array.isArray(data.endpoints) ? data.endpoints.map(String) : [];
+  const success = Boolean(data.success);
+  const message = success
+    ? `${data.message ?? 'Reloaded'}: ${endpoints.join(', ')}`
+    : String(data.error ?? data.message ?? `HTTP ${response.status}`);
+  return { success, message, endpoints, loaded: data.status === 'loaded' };
 }
 
 /**

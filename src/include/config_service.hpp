@@ -24,6 +24,84 @@ class EndpointConfigHandler;
 class ProjectConfigHandler;
 class OpenAPIDocGenerator;
 
+/// The GET /api/v1/_config/metrics body (tracing, arrow, endpoints, requests,
+/// caches). `filter` = an endpoint path or MCP tool name narrows `requests`
+/// and `caches`; empty means everything. Shared with the flapi_get_metrics tool.
+crow::json::wvalue buildMetricsJson(const std::shared_ptr<ConfigManager>& config_manager, const std::string& filter = "");
+
+/// Endpoint YAML persistence shared by the REST config service and the flapi_*
+/// MCP tools, so a create/update/delete over either survives a reload and a
+/// restart the same way. Every write goes through the LOADER's parser
+/// (EndpointConfigParser::parseFromFile), so what is served is exactly what a
+/// restart would load from the file - mcp-tool, request validators, cache and
+/// all - with template paths resolved against the YAML's own directory.
+namespace endpoint_files {
+
+struct Outcome {
+    bool ok = false;
+    int status = 500;          // HTTP status for the REST caller
+    std::string error;         // why, when !ok
+    EndpointConfig config;     // the parsed endpoint, when ok
+    std::string file;          // the YAML written
+};
+
+/// Create: `doc` is the endpoint document (the YAML file's content). Written to
+/// <template dir>/<slug>.yaml, parsed, validated and added; the file is removed
+/// again on any failure. 409 when the endpoint or the file already exists.
+Outcome CreateFromDocument(ConfigManager& cm, const YAML::Node& doc);
+
+/// Update: `patch` is deep-merged onto the endpoint's YAML (maps merge,
+/// everything else is replaced), written, re-parsed and swapped in; the old
+/// file is restored on failure. Keys the patch omits - auth users, validators -
+/// are kept, the same PUT semantics as deserializeEndpointConfig(merge).
+Outcome UpdateFromPatch(ConfigManager& cm, const EndpointConfig& existing, const YAML::Node& patch);
+
+/// Remove a deleted endpoint's YAML, only when it lies inside the templates
+/// directory. The SQL template is left alone. Returns "" or a warning.
+std::string RemoveEndpointFile(const ConfigManager& cm, const std::string& file);
+
+/// Why reloadEndpointConfig() failed for an endpoint that exists: the missing
+/// file, the parse error or the validation errors.
+std::string ReloadFailureReason(const ConfigManager& cm, const EndpointConfig& endpoint);
+
+/// True when the document names its endpoint with the canonical (YAML) keys -
+/// url-path / mcp-tool / mcp-resource / mcp-prompt - rather than the legacy
+/// camelCase JSON spellings (urlPath, templateSource) only the JSON
+/// deserializer understands.
+bool IsCanonicalDocument(const YAML::Node& doc);
+
+/// The YAML file name (without extension) for a new endpoint: the url-path
+/// segments joined with '_' (/a/b -> a_b), else the MCP name.
+std::string FileStemFor(const EndpointConfig& endpoint);
+
+/// A YAML file in the templates directory, not currently loaded, that declares
+/// the same route (shape, as the duplicate check compares) and method; "" when
+/// none does.
+std::string FileDeclaring(const ConfigManager& cm, const std::string& url_path, const std::string& method);
+
+/// A YAML file in the templates directory that declares the MCP tool,
+/// resource or prompt `name`, loaded or not; "" when none does.
+std::string FileDeclaringMcpName(const ConfigManager& cm, const std::string& name);
+
+}  // namespace endpoint_files
+
+/// What a config-service slug route (+ optional ?method=) names. Several
+/// endpoints may share a url-path (GET /orders + POST /orders): with no
+/// method that is a 400 "ambiguous", never an arbitrary pick.
+struct SlugTarget {
+    bool ok = false;
+    bool found = false;          // at least one endpoint matched
+    int status = 404;
+    std::string error;
+    std::string key;             // ConfigManager::EndpointKey() of the target
+};
+/// With `cached_only` (the /cache/* routes) only endpoints that have a cache
+/// count towards ambiguity: a cached GET beside an uncached POST names the GET.
+SlugTarget ResolveSlugTarget(const ConfigManager& cm, const std::string& slug, const char* method_param,
+                             bool cached_only = false);
+/// "%3A" -> ':' in a slug path segment (the CLI's encodeURIComponent).
+std::string DecodeSlugSegment(const std::string& slug);
+
 /**
  * Handler for DuckLake audit log operations
  * Responsibility: Retrieve cache synchronization audit logs
@@ -33,11 +111,18 @@ public:
     explicit AuditLogHandler(std::shared_ptr<ConfigManager> config_manager);
     
     crow::response getCacheAuditLog(const std::string& path);
-    crow::response getAllCacheAuditLogs();
+    /// `table` ("schema.table" or "table"): only that cache table's events,
+    /// whichever endpoint sharing it triggered them.
+    /// `sync_type` (full | append | merge | garbage_collection | compaction):
+    /// only events of that kind - compaction is catalog-wide, filed under no
+    /// endpoint, so this is where its history is read.
+    crow::response getAllCacheAuditLogs(const std::string& table = "", const std::string& sync_type = "");
 
 private:
     std::shared_ptr<ConfigManager> config_manager_;
-    std::string buildAuditQuery(const std::string& catalog, const std::string& endpoint_filter = "") const;
+    std::string buildAuditQuery(const std::string& catalog, const std::string& endpoint_filter = "",
+                                const std::string& table_filter = "",
+                                const std::string& sync_type_filter = "") const;
 };
 
 /**
@@ -115,6 +200,10 @@ public:
     crow::response updateCacheConfig(const crow::request& req, const std::string& path);
     crow::response refreshCache(const crow::request& req, const std::string& path);
     crow::response performGarbageCollection(const crow::request& req, const std::string& path);
+    /// POST /api/v1/_config/cache/drop-table {"schema","table"}: drop a cache table
+    /// no endpoint uses any more, expire its snapshots and delete its files.
+    crow::response dropCacheTable(const crow::request& req);
+    crow::response compactCache(const crow::request& req);
 
 private:
     std::shared_ptr<ConfigManager> config_manager_;
@@ -143,6 +232,8 @@ public:
     
     crow::response validateEndpointConfig(const crow::request& req, const std::string& path);
     crow::response reloadEndpointConfig(const crow::request& req, const std::string& path);
+    // POST /endpoints/reload-file {"file": "..."}: reload or load one YAML.
+    crow::response reloadEndpointFile(const crow::request& req);
     crow::response getEndpointParameters(const crow::request& req, const std::string& path);
     crow::response findEndpointsByTemplate(const crow::request& req, const std::string& template_path);
     
@@ -151,6 +242,10 @@ public:
     EndpointConfig jsonToEndpointConfig(const crow::json::rvalue& json, bool merge_existing = false);
 
 private:
+    // Shared by the slug- and path-addressed PUT / DELETE.
+    crow::response updateExisting(const crow::request& req, const EndpointConfig& existing);
+    crow::response removeExisting(const EndpointConfig& existing);
+
     std::shared_ptr<ConfigManager> config_manager_;
 };
 
@@ -176,6 +271,10 @@ private:
  */
 class ConfigService {
 public:
+    // Below this length the token is still accepted (by REST and MCP alike),
+    // but a warning is logged at startup.
+    static constexpr std::size_t kMinRecommendedTokenLength = 16;
+
     explicit ConfigService(std::shared_ptr<ConfigManager> config_manager, 
                           bool enabled = false,
                           const std::string& auth_token = "");
@@ -185,6 +284,9 @@ public:
     
     bool isEnabled() const { return enabled_; }
     bool validateToken(const crow::request& req) const;
+    // The bounded route template ("/api/v1/_config/endpoints/<string>/reload")
+    // for a config-service request URL; used to label its span.
+    static std::string RouteTemplateFor(const std::string& url);
 
     std::shared_ptr<ConfigManager> config_manager;
     

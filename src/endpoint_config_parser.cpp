@@ -6,6 +6,7 @@
 #include <stdexcept>
 
 #include "mcp_description_scanner.hpp"
+#include "mustache_syntax_check.hpp"
 
 namespace flapi {
 
@@ -126,7 +127,23 @@ void EndpointConfigParser::parseEndpointFromYaml(
         
         // Parse common fields using ConfigManager helper methods
         parseCommonFields(yaml_node, endpoint_dir, config);
-        
+
+        // A template crow cannot render safely is a load/reload error, never a
+        // request-time crash or hang. Only with a directory: a string parse has
+        // no base to resolve a relative template-source against.
+        if (!endpoint_dir.empty()) {
+            if (!type.is_mcp_prompt) {
+                if (auto error = CheckMustacheTemplateFile(config.templateSource)) {
+                    throw std::runtime_error(*error);
+                }
+            }
+            if (config.cache.template_file) {
+                if (auto error = CheckMustacheTemplateFile(*config.cache.template_file)) {
+                    throw std::runtime_error(*error);
+                }
+            }
+        }
+
         result.success = true;
         
     } catch (const std::exception& e) {
@@ -144,7 +161,26 @@ void EndpointConfigParser::parseRestEndpointFields(
     EndpointConfig& config
 ) {
     config.urlPath = config_manager_->safeGet<std::string>(yaml_node, "url-path", "url-path");
-    config.method = config_manager_->safeGet<std::string>(yaml_node, "method", "method", "GET");
+    // Canonical (trimmed, upper-case, empty -> GET) from here on, and only the
+    // five methods routing knows. `method: get` used to load as "get": the
+    // duplicate check compared it case-sensitively against a protected `GET`
+    // on the same route and let it in, while routing upper-cases both and
+    // could pick it - an open copy answering the protected URL.
+    // `method:` with no value is YAML null: the default, like `method: ''`.
+    const std::string raw_method = (yaml_node["method"] && yaml_node["method"].IsNull())
+        ? std::string("GET")
+        : config_manager_->safeGet<std::string>(yaml_node, "method", "method", "GET");
+    if (auto problem = ConfigManager::HttpMethodProblem(raw_method, config.urlPath); !problem.empty()) {
+        throw std::runtime_error(problem);
+    }
+    config.method = ConfigManager::CanonicalHttpMethod(raw_method);
+    // A url-path the router cannot match literally (`/customers/{cid}`) used
+    // to load and then crash every request that reached it in the route scan.
+    if (auto problem = RouteTranslator::urlPathProblem(config.urlPath); !problem.empty()) {
+        throw std::runtime_error(problem);
+    }
+    config.allow_shadowing = config_manager_->safeGet<bool>(yaml_node, "allow-shadowing", "allow-shadowing", false);
+    config.description = config_manager_->safeGet<std::string>(yaml_node, "description", "description", "");
     config.with_pagination = config_manager_->safeGet<bool>(yaml_node, "with-pagination", "with-pagination", true);
     config.request_fields_validation = config_manager_->safeGet<bool>(yaml_node, "request-fields-validation", "request-fields-validation", false);
     
@@ -152,7 +188,10 @@ void EndpointConfigParser::parseRestEndpointFields(
     // This can be overridden by explicit operation.type in YAML
     std::string method_upper = config.method;
     std::transform(method_upper.begin(), method_upper.end(), method_upper.begin(), ::toupper);
-    if (method_upper == "POST" || method_upper == "PUT" || method_upper == "PATCH") {
+    // DELETE too: REST already runs it through the write path, but an MCP tool
+    // over a DELETE endpoint ran as a query, so the row was deleted while the
+    // tool reported an error and the endpoint's cache was not refreshed.
+    if (method_upper == "POST" || method_upper == "PUT" || method_upper == "PATCH" || method_upper == "DELETE") {
         config.operation.type = OperationConfig::Write;
     }
 }
@@ -233,8 +272,9 @@ void EndpointConfigParser::parseMcpToolFields(
         tool_info.rate_limit.interval = config_manager_->safeGet<int>(rl, "interval", "mcp-tool.rate-limit.interval", 60);
     }
 
-    // MCP 2026-07-28 Tasks: async / async-after (a duration in ms, or a plain
-    // integer of milliseconds).
+    // MCP 2026-07-28 Tasks: async / async-after-ms. async-after-ms is a plain
+    // integer number of milliseconds (`async-after-ms: 5000`); a duration
+    // string such as "5s" is NOT accepted and fails the load as a type error.
     tool_info.async = config_manager_->safeGet<bool>(mcp_tool_node, "async", "mcp-tool.async", false);
     tool_info.async_after_ms = config_manager_->safeGet<int>(mcp_tool_node, "async-after-ms", "mcp-tool.async-after-ms", 0);
 
@@ -260,6 +300,21 @@ void EndpointConfigParser::parseMcpResourceFields(
             roles.push_back(role_node.as<std::string>());
         }
         resource_info.allowed_roles = std::move(roles);
+    }
+
+    // Response shaping, the same keys as mcp-tool.response. Optional so that
+    // "unset" can fall back to the file's mcp-tool.response at read time.
+    if (auto response_node = mcp_resource_node["response"]; response_node.IsDefined()) {
+        if (auto mr = response_node["max-rows"]; mr.IsDefined()) {
+            resource_info.response.max_rows = mr.as<std::size_t>();
+        }
+        if (auto rc = response_node["redact-columns"]; rc.IsDefined()) {
+            std::vector<std::string> columns;
+            for (const auto& column : rc) {
+                columns.push_back(column.as<std::string>());
+            }
+            resource_info.response.redact_columns = std::move(columns);
+        }
     }
 
     config.mcp_resource = resource_info;

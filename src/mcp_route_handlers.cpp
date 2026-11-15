@@ -263,6 +263,50 @@ std::string MCPRouteHandlers::buildWwwAuthenticate(const crow::request& http_req
     return value;
 }
 
+namespace {
+
+// The JSON-RPC error of a refused MCP call. A request that SENT credentials
+// which were refused (a bad or expired JWT, a wrong password) is told so in
+// the words REST uses; "Authentication required" sent a client that had
+// authenticated looking for a missing header. Built with wvalue so a method
+// name cannot break out of the string.
+std::string mcpAuthFailureError(const crow::request& http_req, const std::string& what) {
+    // A scheme with nothing after it ("Bearer ", which a client sends when the
+    // variable holding its token is empty) is no credential at all.
+    std::string header = http_req.get_header_value("Authorization");
+    const auto space = header.find(' ');
+    const bool credentials_sent =
+        space != std::string::npos && header.find_first_not_of(' ', space) != std::string::npos;
+    crow::json::wvalue err;
+    err["code"] = -32000;
+    err["message"] = credentials_sent ? std::string("The credentials sent were not accepted.")
+                                      : "Authentication required for " + what;
+    return err.dump();
+}
+
+// A successful tools/call result: the rows as a text block and, when they are
+// JSON, as structuredContent too. The rows go in as the TEXT the tool handler
+// produced (columns in SELECT/RETURNING order, shortest doubles); routing them
+// through a wvalue scrambled the keys of every row object.
+std::string toolSuccessResultJson(const std::string& result_text) {
+    mcp::ContentResponse content_response;
+    content_response.addText(result_text);
+    std::string out = content_response.toJson().dump();
+    const auto rows = crow::json::load(result_text);
+    if (!rows) {
+        return out;
+    }
+    std::string structured = "{\"rows\":" + result_text;
+    if (rows.t() == crow::json::type::List) {
+        structured += ",\"row_count\":" + std::to_string(rows.size());
+    }
+    structured += '}';
+    const auto close = out.find_last_of('}');
+    return out.substr(0, close) + ",\"structuredContent\":" + structured + out.substr(close);
+}
+
+}  // namespace
+
 // ========== End helper functions ==========
 
 MCPRouteHandlers::MCPRouteHandlers(std::shared_ptr<ConfigManager> config_manager,
@@ -338,7 +382,9 @@ MCPRouteHandlers::MCPRouteHandlers(std::shared_ptr<ConfigManager> config_manager
 
     // Initialize server info with default values (no separate MCP config needed)
     server_info_.name = "flapi-mcp-server";
-    server_info_.version = "0.3.0";
+    // The build version, as /health and --version report it; this was a
+    // hard-coded "0.3.0" that no release had shipped for a long time.
+    server_info_.version = FLAPI_VERSION;
     server_info_.protocol_version = "2025-11-25";
 
     // Initialize server capabilities with all available capabilities
@@ -357,7 +403,9 @@ MCPRouteHandlers::MCPRouteHandlers(std::shared_ptr<ConfigManager> config_manager
 
     CROW_LOG_INFO << "MCP Route Handlers initialized with " << tool_definitions_.size() << " tools and "
                   << resource_definitions_.size() << " resources";
-    CROW_LOG_INFO << "flAPI MCP server ready at: http://localhost:" << (port_ > 0 ? std::to_string(port_) : "8080") << "/mcp/jsonrpc";
+    // No "ready at" line here: this runs before the port is known or bound.
+    // APIServer::run announces the real host:port (and /mcp/jsonrpc) once the
+    // listener is up.
     CROW_LOG_INFO << "Transport type: Streamable HTTP, URL ready to paste into MCP inspector tool";
 }
 
@@ -534,7 +582,7 @@ void MCPRouteHandlers::registerRoutes(flapi::FlapiApp& app, int port) {
                             CROW_LOG_WARNING << "MCP initialize: authentication required but failed";
                             MCPResponse mcp_response;
                             mcp_response.id = mcp_request->id;
-                            mcp_response.error = "{\"code\":-32000,\"message\":\"Authentication required for initialize\"}";
+                            mcp_response.error = mcpAuthFailureError(req, "initialize");
                             mcp_response.http_status = 401;
                             mcp_response.www_authenticate = buildWwwAuthenticate(req, /*insufficient_scope=*/false);
                             return createJsonRpcResponse(*mcp_request, mcp_response, session_id);
@@ -543,8 +591,7 @@ void MCPRouteHandlers::registerRoutes(flapi::FlapiApp& app, int port) {
                         CROW_LOG_WARNING << "MCP method " << mcp_request->method << " requires authentication";
                         MCPResponse mcp_response;
                         mcp_response.id = mcp_request->id;
-                        mcp_response.error = "{\"code\":-32000,\"message\":\"Authentication required for method: " +
-                                           mcp_request->method + "\"}";
+                        mcp_response.error = mcpAuthFailureError(req, "method: " + mcp_request->method);
                         // RFC 9728 / RFC 6750: an authentication challenge is HTTP
                         // 401 with a WWW-Authenticate header so an OAuth client can
                         // discover the authorization server and start its flow.
@@ -771,15 +818,8 @@ std::string MCPRouteHandlers::getCachedOutputSchema(const std::string& tool_name
 
 void MCPRouteHandlers::refreshMCPEntities() {
     try {
+        // Clears learned output schemas and bumps the cursor generation too.
         discoverMCPEntitiesImpl();
-        {
-            std::lock_guard<std::mutex> lock(output_schema_mu_);
-            output_schema_cache_.clear();  // schemas may change with the config
-        }
-        // Invalidate outstanding pagination cursors: a cursor minted against the
-        // previous list must not silently page over a changed one.
-        entity_generation_.fetch_add(1, std::memory_order_relaxed);
-        CROW_LOG_INFO << "MCP entities refreshed: " << tool_definitions_.size() << " tools, " << resource_definitions_.size() << " resources";
     } catch (const std::exception& e) {
         CROW_LOG_WARNING << "Failed to refresh MCP entities: " << e.what();
         CROW_LOG_DEBUG << "Continuing with existing MCP definitions";
@@ -966,6 +1006,53 @@ void MCPRouteHandlers::addSessionHeaderToResponse(crow::response& resp,
 
 crow::response MCPRouteHandlers::createJsonRpcResponse(const MCPRequest& request, const MCPResponse& mcp_response,
                                                        const std::optional<std::string>& session_id) const {
+    // A result is spliced into the envelope as TEXT, not re-parsed into a
+    // wvalue: crow's object is an unordered map, so a round trip scrambled the
+    // row keys of structuredContent (and printed doubles with 21 digits) after
+    // the tool handler had serialized them in column order.
+    if (mcp_response.error.empty()) {
+        auto parsed = crow::json::load(mcp_response.result);
+        const bool is_object = parsed && parsed.t() == crow::json::type::Object;
+        const bool can_splice = parsed && (!request.modern_era ||
+                                           (is_object && !parsed.has("resultType") && !parsed.has("_meta")));
+        if (can_splice) {
+            std::string result_text = mcp_response.result;
+            if (request.modern_era) {
+                crow::json::wvalue extra;
+                const bool is_task = parsed.has("task") && request.method == "tools/call";
+                extra["resultType"] = is_task ? "task" : "complete";
+                extra["_meta"][flapi::mcp::constants::META_SERVER_INFO]["name"] = server_info_.name;
+                extra["_meta"][flapi::mcp::constants::META_SERVER_INFO]["version"] = server_info_.version;
+                const std::string& m = request.method;
+                if (m == "server/discover") {
+                    extra["ttlMs"] = 3600000;
+                    extra["cacheScope"] = "public";
+                } else if (m == "tools/list" || m == "prompts/list" || m == "resources/list"
+                           || m == "resources/templates/list" || m == "resources/read") {
+                    extra["ttlMs"] = 300000;
+                    extra["cacheScope"] = "private";
+                }
+                const std::string members = extra.dump();   // "{...}"
+                const auto close = result_text.find_last_of('}');
+                const bool empty_object = parsed.size() == 0;
+                result_text = result_text.substr(0, close) + (empty_object ? "" : ",") +
+                              members.substr(1, members.size() - 2) + result_text.substr(close);
+            }
+            const std::string id_text = (request.id_present && !request.id_raw.empty())
+                ? crow::json::wvalue(crow::json::load(request.id_raw)).dump()
+                : std::string("null");
+            auto response = crow::response(mcp_response.http_status,
+                                           "{\"jsonrpc\":\"2.0\",\"id\":" + id_text +
+                                               ",\"result\":" + result_text + "}");
+            response.set_header("Content-Type", "application/json");
+            if (!mcp_response.www_authenticate.empty()) {
+                response.set_header("WWW-Authenticate", mcp_response.www_authenticate);
+            }
+            addSessionHeaderToResponse(response, session_id);
+            return response;
+        }
+    }
+
     crow::json::wvalue response_json;
     response_json["jsonrpc"] = "2.0";
 
@@ -1054,24 +1141,30 @@ std::vector<crow::json::wvalue> MCPRouteHandlers::getResourceDefinitionsFromConf
     return getResourceDefinitionsImpl();
 }
 
-void MCPRouteHandlers::discoverMCPEntitiesImpl() {
+void MCPRouteHandlers::discoverMCPEntitiesImpl() const {
     CROW_LOG_DEBUG << "Starting MCP entity discovery...";
+    // Held for the whole rebuild, so two concurrent rediscoveries cannot finish
+    // out of order (an older snapshot's lists overwriting a newer one's), and a
+    // reader never sees a half-built list: the new lists are built aside and
+    // swapped in in one step.
     std::lock_guard<std::mutex> lock(state_mutex_);
 
-    tool_definitions_.clear();
-    resource_definitions_.clear();
+    std::vector<crow::json::wvalue> tools;
+    std::vector<crow::json::wvalue> resources;
 
-    const auto endpoints = config_manager_->getEndpoints();   // pinned snapshot
-    CROW_LOG_INFO << "Found " << endpoints->size() << " total endpoints in config manager";
+    auto endpoints = config_manager_->getEndpoints();   // pinned snapshot
+    CROW_LOG_DEBUG << "Found " << endpoints->size() << " total endpoints in config manager";
 
     for (const auto& endpoint : *endpoints) {
         if (endpoint.isMCPTool()) {
             CROW_LOG_DEBUG << "Adding MCP tool: " << (endpoint.mcp_tool ? endpoint.mcp_tool->name : "null");
-            tool_definitions_.push_back(endpointToMCPToolDefinition(endpoint));
+            tools.push_back(endpointToMCPToolDefinition(endpoint));
         }
-        if (endpoint.isMCPResource()) {
+        // A uri-templated resource has no concrete uri to read: its flapi://<name>
+        // 404s. It is advertised in resources/templates/list only.
+        if (endpoint.isMCPResource() && endpoint.mcp_resource->uri_template.empty()) {
             CROW_LOG_DEBUG << "Adding MCP resource: " << (endpoint.mcp_resource ? endpoint.mcp_resource->name : "null");
-            resource_definitions_.push_back(endpointToMCPResourceDefinition(endpoint));
+            resources.push_back(endpointToMCPResourceDefinition(endpoint));
         }
     }
 
@@ -1090,25 +1183,62 @@ void MCPRouteHandlers::discoverMCPEntitiesImpl() {
                 tool_def["description"] = tool.description;
                 tool_def["inputSchema"] = crow::json::load(tool.input_schema.dump());
                 tool_def["outputSchema"] = crow::json::load(tool.output_schema.dump());
-                tool_definitions_.push_back(std::move(tool_def));
+                tools.push_back(std::move(tool_def));
             }
-            CROW_LOG_INFO << "Loaded " << config_tools.size() << " config tools";
+            CROW_LOG_DEBUG << "Loaded " << config_tools.size() << " config tools";
         } catch (const std::exception& e) {
             CROW_LOG_WARNING << "Failed to load config tools: " << e.what();
         }
     }
 
+    tool_definitions_ = std::move(tools);
+    resource_definitions_ = std::move(resources);
+    discovered_snapshot_ = std::move(endpoints);
+    {
+        std::lock_guard<std::mutex> schema_lock(output_schema_mu_);
+        output_schema_cache_.clear();  // a tool's result shape may have changed
+    }
+    // Invalidate outstanding pagination cursors: a cursor minted against the
+    // previous list must not silently page over a changed one.
+    entity_generation_.fetch_add(1, std::memory_order_relaxed);
+
     CROW_LOG_INFO << "Discovered " << tool_definitions_.size() << " MCP tools and "
                    << resource_definitions_.size() << " MCP resources";
 }
 
+void MCPRouteHandlers::ensureEntitiesFresh() const {
+    const auto current = config_manager_->getEndpoints();
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (current == discovered_snapshot_) {
+            return;
+        }
+    }
+    // The table changed since tools/list was last built: an endpoint was
+    // created, updated, deleted or reloaded. These lists were built once at
+    // startup, so after a reload tools/list kept the old description and
+    // schema, and resources/list never showed a resource added at runtime.
+    //
+    // There is no notifications/tools/list_changed to send: flAPI has no
+    // server-to-client stream and advertises listChanged: false. Clients see
+    // the change on their next list call, and an old pagination cursor is
+    // rejected because the generation moves.
+    try {
+        discoverMCPEntitiesImpl();
+    } catch (const std::exception& e) {
+        CROW_LOG_WARNING << "Failed to refresh MCP entities: " << e.what();
+    }
+}
+
 std::vector<crow::json::wvalue> MCPRouteHandlers::getToolDefinitionsImpl() const {
+    ensureEntitiesFresh();
     std::lock_guard<std::mutex> lock(state_mutex_);
     CROW_LOG_DEBUG << "getToolDefinitionsImpl returning " << tool_definitions_.size() << " tools from member variable";
     return tool_definitions_;
 }
 
 std::vector<crow::json::wvalue> MCPRouteHandlers::getResourceDefinitionsImpl() const {
+    ensureEntitiesFresh();
     std::lock_guard<std::mutex> lock(state_mutex_);
     return resource_definitions_;
 }
@@ -1348,7 +1478,7 @@ MCPResponse MCPRouteHandlers::handleInitializeRequest(const MCPRequest& request,
         auth_context = auth_handler_->authenticate(http_req);
         if (!auth_context) {
             CROW_LOG_WARNING << "MCP initialize: authentication required but failed";
-            response.error = "{\"code\":-32000,\"message\":\"Authentication required for initialize\"}";
+            response.error = mcpAuthFailureError(http_req, "initialize");
             response.http_status = 401;
             response.www_authenticate = buildWwwAuthenticate(http_req, /*insufficient_scope=*/false);
             return response;
@@ -1506,9 +1636,13 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
         if (tool_name.find("flapi_") == 0) {
             // Config tool - use ConfigToolAdapter
             if (config_tool_adapter_) {
-                // Extract auth token from request if present
-                std::string auth_token;
-                if (http_req.headers.count("Authorization") > 0) {
+                // The config-service token. X-Config-Token first, as the REST
+                // config service accepts it: with MCP auth enabled the
+                // Authorization header already carries the MCP credential, and
+                // one header cannot carry both - reading only Bearer made the
+                // flapi_* tools unusable exactly when MCP was secured.
+                std::string auth_token = http_req.get_header_value("X-Config-Token");
+                if (auth_token.empty() && http_req.headers.count("Authorization") > 0) {
                     auto auth_header = http_req.get_header_value("Authorization");
                     if (auth_header.find("Bearer ") == 0) {
                         auth_token = auth_header.substr(7);
@@ -1523,6 +1657,12 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                     content_response.addText(config_result.result);
                     crow::json::wvalue mcp_result = content_response.toJson();
                     response.result = mcp_result.dump();
+                } else if (config_result.error_code == -32001) {
+                    // A missing/rejected config-service token is an AUTH error,
+                    // not an internal one: -32603 "Tool execution failed:
+                    // Authentication validation failed" sent clients looking for
+                    // a server bug. -32001 is the adapter's auth code.
+                    response.error = formatJsonRpcError(-32001, config_result.error_message);
                 } else {
                     // Config-service (flapi_*) tools are management operations;
                     // their failures stay JSON-RPC errors (isError is reserved for
@@ -1613,22 +1753,12 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                             interruptActiveExecutor(tid);
                         });
                         auto r = handler->executeTool(tool_request);
-                        mcp::ContentResponse cr;
                         if (r.success) {
-                            cr.addText(r.result);
-                            auto rows = crow::json::load(r.result);
-                            if (rows) {
-                                crow::json::wvalue sc;
-                                sc["rows"] = crow::json::wvalue(rows);
-                                if (rows.t() == crow::json::type::List) {
-                                    sc["row_count"] = static_cast<int64_t>(rows.size());
-                                }
-                                cr.setStructuredContent(std::move(sc));
-                            }
-                        } else {
-                            cr.addText(r.error_message);
-                            cr.setError(true);
+                            return toolSuccessResultJson(r.result);
                         }
+                        mcp::ContentResponse cr;
+                        cr.addText(r.error_message);
+                        cr.setError(true);
                         return cr.toJson().dump();
                     };
 
@@ -1682,24 +1812,29 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                     // serialized rows are also attached as structuredContent so
                     // a client gets machine-readable JSON without re-parsing the
                     // text block.
-                    mcp::ContentResponse content_response;
-                    content_response.addText(result.result);
-
-                    auto parsed_rows = crow::json::load(result.result);
-                    if (parsed_rows) {
-                        crow::json::wvalue structured;
-                        structured["rows"] = crow::json::wvalue(parsed_rows);
-                        if (parsed_rows.t() == crow::json::type::List) {
-                            structured["row_count"] = static_cast<int64_t>(parsed_rows.size());
-                        }
+                    const auto dry = result.metadata.find("dry_run");
+                    const bool is_dry_run = dry != result.metadata.end() && dry->second == "true";
+                    auto parsed_rows = is_dry_run ? crow::json::load(result.result) : crow::json::rvalue();
+                    if (parsed_rows && is_dry_run) {
+                        // A dry run returned no rows: `rows` stays the array the
+                        // outputSchema promises (it was the preview OBJECT), and
+                        // the preview fields sit beside it.
+                        mcp::ContentResponse content_response;
+                        content_response.addText(result.result);
+                        crow::json::wvalue structured(parsed_rows);
+                        structured["rows"] = crow::json::wvalue::list();
+                        structured["row_count"] = 0;
                         content_response.setStructuredContent(std::move(structured));
+                        response.result = content_response.toJson().dump();
+                    } else {
+                        response.result = toolSuccessResultJson(result.result);
                     }
                     // Learn this tool's outputSchema from the real result columns
-                    // so a subsequent tools/list can advertise it.
-                    cacheOutputSchemaFromRows(tool_name, result.result);
-
-                    crow::json::wvalue mcp_result = content_response.toJson();
-                    response.result = mcp_result.dump();
+                    // so a subsequent tools/list can advertise it - never from a
+                    // dry-run preview, whose shape is not the tool's.
+                    if (!is_dry_run) {
+                        cacheOutputSchemaFromRows(tool_name, result.result);
+                    }
                 } else if (result.failure_kind == MCPToolExecutionResult::FailureKind::NotFound) {
                     // Unknown tool is a protocol-level error the model cannot fix.
                     response.error = formatJsonRpcError(-32602, result.error_message);
@@ -1734,8 +1869,14 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
             }
         }
     } catch (const std::exception& e) {
+        // Detail to the log only, like the tool's own failures (see
+        // MCPToolHandler::executeToolImpl): it can name files and SQL.
         CROW_LOG_ERROR << "Tool call error: " << e.what();
-        response.error = formatJsonRpcError(-32603, "Tool call error: " + std::string(e.what()));
+        std::string message = "Tool call failed on the server. The details are in the server log";
+        if (const auto* rc = RequestContextScope::current()) {
+            message += " under request_id " + std::string(rc->requestIdView());
+        }
+        response.error = formatJsonRpcError(-32603, message + ".");
     }
 
     return response;
@@ -1854,6 +1995,20 @@ MCPResponse MCPRouteHandlers::handleResourcesReadRequest(const MCPRequest& reque
 
         CROW_LOG_DEBUG << "Reading resource: " << resource_config->mcp_resource->name;
 
+        // Defaults + the field validators, exactly as tools/call runs them. The
+        // uri-template values used to reach the template unvalidated, so a
+        // field's regex/enum - the guard in front of `{{{ params.x }}}` - did
+        // not apply on this surface. Runs before the auth injection below, so
+        // the injected `__auth_*` are not mistaken for unknown parameters.
+        if (const auto invalid = validateMcpParams(*resource_config, bound_params); !invalid.empty()) {
+            CROW_LOG_WARNING << "MCP resources/read rejected for '"
+                             << resource_config->mcp_resource->name << "': " << invalid;
+            response.error = formatJsonRpcError(
+                -32602, "Invalid parameters for resource '" + resource_config->mcp_resource->name +
+                            "': " + invalid);
+            return response;
+        }
+
         if (auto cache_manager = db_manager_->getCacheManager()) {
             if (auto readiness = cache_manager->readinessBlock(config_manager_, *resource_config)) {
                 auto body = CacheManager::readinessBlockJson(*readiness);
@@ -1965,6 +2120,27 @@ bool matchUriTemplate(const std::string& tmpl, const std::string& uri,
 
 } // namespace
 
+ResponseShape resourceResponseShape(const EndpointConfig& endpoint) {
+    ResponseShape shape;
+    const auto& own = endpoint.mcp_resource->response;
+    const EndpointConfig::MCPToolInfo::ResponseShape* tool =
+        endpoint.mcp_tool ? &endpoint.mcp_tool->response : nullptr;
+
+    shape.max_rows = own.max_rows;
+    if (!shape.max_rows && tool != nullptr) {
+        shape.max_rows = tool->max_rows;
+    }
+    if (!shape.max_rows) {
+        shape.max_rows = EndpointConfig::MCPResourceInfo::kDefaultMaxRows;
+    }
+    if (own.redact_columns) {
+        shape.redact_columns = *own.redact_columns;
+    } else if (tool != nullptr) {
+        shape.redact_columns = tool->redact_columns;
+    }
+    return shape;
+}
+
 // Resource functionality implementation
 std::optional<EndpointConfig> MCPRouteHandlers::findResourceByURI(
     const std::string& uri, std::map<std::string, std::string>& bound_params) const {
@@ -2025,31 +2201,37 @@ crow::json::wvalue MCPRouteHandlers::readResourceContent(
             std::map<std::string, std::string> query_params = params;
             auto query_result = db_manager_->executeQuery(resource_config, query_params, false);
 
-            // Check if the query result structure has the data we need
-            if (query_result.data.size() > 0) {
-                // Get the result as a JSON string
-                std::string result_text;
-                if (resource_config.mcp_resource->mime_type == "application/json" ||
-                    resource_config.mcp_resource->mime_type.find("json") != std::string::npos) {
-                    result_text = query_result.data.dump();
-                } else {
-                    // For text/plain, convert JSON to a readable text format
-                    result_text = query_result.data.dump(); // For now, use JSON format
-                }
+            // An empty result is a valid read ("[]"), not an internal error:
+            // it used to throw "Resource query returned no data" -> -32603.
+            // dumpData(): columns in SELECT order, shortest doubles.
+            const size_t row_count = query_result.data.size();
+            std::string result_text = row_count > 0 ? query_result.dumpData() : std::string("[]");
 
-                // Convert the result to MCP resource content format
-                crow::json::wvalue content_item;
-                content_item["uri"] = reported_uri;
-                content_item["mimeType"] = resource_config.mcp_resource->mime_type;
-                content_item["text"] = result_text;
-
-                crow::json::wvalue contents_array = crow::json::wvalue::list();
-                contents_array[0] = std::move(content_item);
-
-                result["contents"] = std::move(contents_array);
-            } else {
-                throw std::runtime_error("Resource query returned no data");
+            // Response shaping: mcp-resource.response, else the same file's
+            // mcp-tool.response, and max-rows defaults to a cap either way.
+            const auto shape = resourceResponseShape(resource_config);
+            const bool truncated = shape.max_rows.has_value() && row_count > *shape.max_rows;
+            if (!shape.isNoOp() && row_count > 0) {
+                result_text = MCPResponseShaper().shape(result_text, shape);
             }
+
+            // Convert the result to MCP resource content format
+            crow::json::wvalue content_item;
+            content_item["uri"] = reported_uri;
+            content_item["mimeType"] = resource_config.mcp_resource->mime_type;
+            content_item["text"] = result_text;
+            if (truncated) {
+                // Said in the result, not only the log, so the reader knows it
+                // holds a prefix and how to get the rest.
+                content_item["_meta"]["truncated"] = true;
+                content_item["_meta"]["row_count"] = static_cast<int64_t>(row_count);
+                content_item["_meta"]["max_rows"] = static_cast<int64_t>(*shape.max_rows);
+            }
+
+            crow::json::wvalue contents_array = crow::json::wvalue::list();
+            contents_array[0] = std::move(content_item);
+
+            result["contents"] = std::move(contents_array);
         } else {
             // Fallback: return a simple resource representation
             crow::json::wvalue content_item;
@@ -2076,6 +2258,10 @@ MCPResponse MCPRouteHandlers::handlePromptsListRequest(const MCPRequest& request
     // NOTE: http_req is available here for authentication when needed
 
     try {
+        // Prompts are read from the live table below; this only moves the
+        // pagination generation when the table changed, so a prompts/list
+        // cursor from before a config change is rejected like the others.
+        ensureEntitiesFresh();
         // Collect all prompt definitions first so pagination has a stable count.
         std::vector<crow::json::wvalue> prompt_defs;
         const auto endpoints = config_manager_->getEndpoints();   // pinned snapshot

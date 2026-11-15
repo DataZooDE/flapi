@@ -16,7 +16,6 @@ method: GET                      # GET, POST, PUT, DELETE, PATCH
 request:
   - field-name: id
     field-in: query              # query | path | body | header
-    field-type: int
     required: false
     validators:
       - type: int
@@ -27,7 +26,29 @@ connection: [my-data]
 ```
 
 `url-path` may contain path parameters: `/customers/:id` with a matching
-`field-in: path` entry.
+`field-in: path` entry. A field's type comes from its validators (`type: int`
+above). `field-type` does nothing; loading warns that it "has no effect".
+
+A `field-in: header` field is read from the request headers, case-insensitively
+(`field-name: X-Tenant` matches `x-tenant: acme`), and only from there: a query
+or body parameter with the same name does not satisfy it.
+
+## Pagination is on by default
+
+`with-pagination` defaults to `true`. flAPI wraps your query, and every GET
+response is an object, not a bare array:
+
+```json
+{"next": "/customers?offset=4&limit=2", "total_count": 10, "data": [ ... ]}
+```
+
+The page size defaults to **100** rows; `?limit=` and `?offset=` choose a page,
+and the same values come back in the `X-Total-Count`, `X-Limit`, `X-Offset` and
+`X-Next` headers. **`limit` and `offset` are reserved for this.** Do not declare
+them as request fields and do not use `{{ params.limit }}` in a template: a
+template `LIMIT {{ params.limit }}` applies the limit *before* flAPI's offset, so
+`?limit=2&offset=2` returns `"data": []`. Set `with-pagination: false` if you
+want to return a bare array and control `LIMIT` yourself.
 
 The full key list is in [CONFIG_REFERENCE § 3](../CONFIG_REFERENCE.md).
 
@@ -41,6 +62,12 @@ Templates are [Mustache](https://mustache.github.io/). Available variables:
 | `conn.*` | Properties of the connection(s) you listed |
 | `cache.*` | Cache metadata, when caching is enabled |
 | `env.*` | Whitelisted environment variables |
+
+Every `{{#x}}` or `{{^x}}` section needs its `{{/x}}`, closed in reverse order, and `{{{` needs `}}}`.
+flAPI checks this before using a template - at startup, on reload, on a config-service template update,
+in `flapi --validate-config` and on every request - and names the file and line
+(`Invalid template sqls/orders.sql:12:3: ...`). Partials (`{{> x}}`) and set-delimiter tags
+(`{{= =}}`) are not supported.
 
 ### Triple braces vs double braces
 
@@ -69,13 +96,12 @@ WHERE 1=1
   AND price >= {{ params.min_price }}
 {{/params.min_price}}
 ORDER BY created_at DESC
-LIMIT {{#params.limit}}{{ params.limit }}{{/params.limit}}{{^params.limit}}100{{/params.limit}}
 ```
 
 `WHERE 1=1` means every filter can be appended with `AND` regardless of which
 ones are present. `{{#x}}…{{/x}}` renders only when `x` is present;
-`{{^x}}…{{/x}}` renders only when it is absent — which is how the `LIMIT` above
-gets a default.
+`{{^x}}…{{/x}}` renders only when it is absent (for a default value). There is no
+`LIMIT` here: pagination adds it (see above).
 
 ## Validators
 
@@ -91,15 +117,17 @@ validators:
   - type: string
     min-length: 1
     max-length: 200
-    pattern: "^[a-zA-Z0-9_]+$"
+    regex: "^[a-zA-Z0-9_]+$"
 
   - type: enum
-    values: [active, inactive, pending]
+    allowedValues: [active, inactive, pending]
 
   - type: date
     min: "2020-01-01"
 ```
 
+`regex` and `allowedValues` are the canonical spellings; `pattern` and `values`
+are accepted as aliases (the canonical key wins if both are present).
 `email`, `uuid` and `time` are also available. Full list and options:
 [CONFIG_REFERENCE § 5](../CONFIG_REFERENCE.md).
 
@@ -113,8 +141,9 @@ will fail to connect.
 # Render the template without running it
 flapii templates expand /customers --params '{"id":"123"}'
 
-# Validate the YAML before the server sees it
-flapii endpoints validate sqls/customers.yaml
+# Validate the YAML before the server sees it: the argument is the endpoint's
+# url-path, the YAML comes from --file (or stdin)
+flapii endpoints validate /customers --file sqls/customers.yaml
 
 # Check what the server actually loaded
 flapii endpoints list
@@ -123,6 +152,45 @@ flapii endpoints get /customers
 
 If a request 404s, the usual causes are a `url-path` that does not match, a file
 outside `template.path`, or a YAML error at startup — check the server log.
+
+A `500` never carries the SQL or database error. Its body is
+
+```json
+{"error": "Internal Server Error",
+ "message": "The request failed on the server. The details are in the server log under this request id.",
+ "request_id": "req-46788500aef28a89"}
+```
+
+so grep the server log for the `request_id` to see what went wrong.
+
+## Writes, including DELETE
+
+`POST`, `PUT`, `PATCH` and `DELETE` endpoints all run their template as a write:
+parameters are validated, the template is rendered and executed, and the answer
+is `200 {"rows_affected": n}`. `n` is the number of rows the statements changed
+(DuckDB's count, summed over a multi-statement template; with `RETURNING`, the
+number of returned rows), so a `DELETE` of a missing id answers `0`. Rows a
+`RETURNING` sends back come as `"data"` after `rows_affected`, their keys in the
+`RETURNING` column order (`[]` with `returns-data: true` and no row). A `DELETE`
+endpoint is written like the others:
+
+```yaml
+# sqls/customer-delete.yaml
+url-path: /customers/:id
+method: DELETE
+request:
+  - field-name: id
+    field-in: path
+    required: true
+    validators:
+      - type: int
+template-source: customer-delete.sql   # DELETE FROM customers WHERE id = {{ params.id }}
+connection: [my-data]
+```
+
+If the endpoint also has a cache, `cache.invalidate-on-write: true` refreshes it
+before the response is sent, and `cache.refresh-on-write: true` refreshes it
+in the background after the response; see [Caching](./caching.md).
 
 ## Common next steps
 

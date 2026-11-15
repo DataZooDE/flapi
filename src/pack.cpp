@@ -92,7 +92,31 @@ void AppendArchive(const std::filesystem::path& path,
               static_cast<std::streamsize>(bytes.size()));
 }
 
-ArchiveEntries CollectEntries(const std::filesystem::path& in_dir, bool allow_secrets) {
+std::regex PackGlobToRegex(const std::string& glob) {
+    std::string out;
+    for (std::size_t i = 0; i < glob.size(); ++i) {
+        const char c = glob[i];
+        if (c == '*') {
+            if (i + 1 < glob.size() && glob[i + 1] == '*') {
+                out += ".*";
+                ++i;
+            } else {
+                out += "[^/]*";
+            }
+        } else if (c == '?') {
+            out += "[^/]";
+        } else if (std::string(".+^$()[]{}|\\").find(c) != std::string::npos) {
+            out += '\\';
+            out += c;
+        } else {
+            out += c;
+        }
+    }
+    return std::regex(out);
+}
+
+ArchiveEntries CollectEntries(const std::filesystem::path& in_dir, bool allow_secrets,
+                              const std::vector<std::string>& excludes, std::vector<std::string>& excluded) {
     if (!std::filesystem::exists(in_dir)) {
         throw PackError("input directory does not exist: " + in_dir.string());
     }
@@ -113,6 +137,13 @@ ArchiveEntries CollectEntries(const std::filesystem::path& in_dir, bool allow_se
                             " (symlinks are not followed; copy the file into the tree instead)");
         }
         if (!dir_entry.is_regular_file()) {
+            continue;
+        }
+
+        // Before the secret check: an excluded file is not bundled, so it cannot
+        // leak, and a catalog that happens to sit under secrets/ must not block.
+        if (MatchesPackExclude(rel_str, excludes)) {
+            excluded.push_back(rel_str);
             continue;
         }
 
@@ -175,6 +206,44 @@ void CopyExecutableBits(const std::filesystem::path& src,
 
 }  // namespace
 
+bool MatchesPackExclude(const std::string& rel_path, const std::vector<std::string>& globs) {
+    for (std::string glob : globs) {
+        while (glob.size() > 1 && glob.back() == '/') {
+            glob.pop_back();
+        }
+        if (glob.rfind("./", 0) == 0) {
+            glob = glob.substr(2);
+        }
+        if (glob.empty()) {
+            continue;
+        }
+        const std::regex re = PackGlobToRegex(glob);
+        const bool anywhere = glob.find('/') == std::string::npos;
+        // The path itself and every directory above it: excluding `cache_data`
+        // excludes cache_data/a/b.parquet.
+        std::string::size_type end = 0;
+        while (true) {
+            end = rel_path.find('/', end);
+            const std::string prefix = end == std::string::npos ? rel_path : rel_path.substr(0, end);
+            if (std::regex_match(prefix, re)) {
+                return true;
+            }
+            if (anywhere) {
+                const auto slash = prefix.rfind('/');
+                const std::string name = slash == std::string::npos ? prefix : prefix.substr(slash + 1);
+                if (std::regex_match(name, re)) {
+                    return true;
+                }
+            }
+            if (end == std::string::npos) {
+                break;
+            }
+            ++end;
+        }
+    }
+    return false;
+}
+
 bool IsSecretExcluded(const std::string& rel_path) {
     for (const auto& re : SecretPatterns()) {
         if (std::regex_search(rel_path, re)) {
@@ -190,7 +259,10 @@ PackResult Pack(const std::filesystem::path& in_dir,
     // Collect (and validate against the secret deny list) BEFORE doing any
     // I/O on the output. Otherwise a rejected `.env` leaves a multi-GB
     // half-written binary sitting in the user's tmp dir.
-    auto entries = CollectEntries(in_dir, options.allow_secrets);
+    std::vector<std::string> excludes = DefaultPackExcludes();
+    excludes.insert(excludes.end(), options.exclude_globs.begin(), options.exclude_globs.end());
+    std::vector<std::string> excluded;
+    auto entries = CollectEntries(in_dir, options.allow_secrets, excludes, excluded);
     if (options.extensions_dir) {
         AddExtensionEntries(*options.extensions_dir, entries);
     }
@@ -205,6 +277,7 @@ PackResult Pack(const std::filesystem::path& in_dir,
     r.output = out_path;
     r.entry_count = entries.size();
     r.archive_size = archive.size();
+    r.excluded = std::move(excluded);
 
     // Try the reserved-segment path on macOS (kReservedSegment mode).
     // The Mach-O parser lives on every platform, so we can probe for

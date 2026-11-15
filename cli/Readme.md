@@ -49,11 +49,11 @@ npm exec --prefix cli flapii -- --help
 ### Configuration
 flapii reads configuration from (highest precedence first):
 1) CLI flags (e.g., `--base-url`, `--config`)
-2) Environment variables (`FLAPI_BASE_URL`, `FLAPI_CONFIG`, `FLAPI_TOKEN`, ...)
+2) Environment variables (`FLAPI_BASE_URL` or `FLAPI_URL`, `FLAPI_CONFIG`, `FLAPI_TOKEN`, ...)
 3) YAML file (`flapi.yaml`) discovered in CWD/parents or `~/.config/flapii/flapi.yaml`.
 
 Common env vars:
-- `FLAPI_BASE_URL` (default: `http://localhost:8080`)
+- `FLAPI_BASE_URL` (default: `http://localhost:8080`); `FLAPI_URL` is read when it is unset
 - `FLAPI_CONFIG` (path to `flapi.yaml`)
 - `FLAPI_TOKEN` (bearer token if your server requires auth)
 - `FLAPI_CONFIG_SERVICE_TOKEN` (config service authentication token)
@@ -63,11 +63,12 @@ Global options (partial):
 --config <path>         Path to flapi.yaml
 --base-url <url>        Base URL of the server (default http://localhost:8080)
 --auth-token <token>    Bearer token
+-t, --config-service-token <token>  Config service token
 --timeout <seconds>     Request timeout (default 10)
 --retries <count>       Retries for failed requests (default 2)
 --insecure              Disable TLS verification
 --output <json|table>   Output format (default json)
---json-style <camel|hyphen> JSON key casing for display
+--json-style <camel|hyphen> JSON key casing of config documents
 ```
 
 ### Quick Start
@@ -100,7 +101,7 @@ node dist/index.js config log-level get \
   --base-url http://localhost:8080 \
   --config-service-token YOUR_TOKEN
 
-# Set log level (debug, info, warning, error)
+# Set log level (debug, info, warning, error; the server flag also accepts warn)
 node dist/index.js config log-level set debug \
   --base-url http://localhost:8080 \
   --config-service-token YOUR_TOKEN
@@ -235,10 +236,26 @@ node dist/index.js cache update /customers/ \
   --base-url http://localhost:8080 --config examples/flapi.yaml
 ```
 
-Refresh endpoint cache:
+Refresh endpoint cache (add `--full` to drop the table and rebuild it from scratch):
 ```bash
-node dist/index.js cache refresh /customers/ --force \
+node dist/index.js cache refresh /customers/ \
   --base-url http://localhost:8080 --config examples/flapi.yaml
+node dist/index.js cache refresh /customers/ --full \
+  --base-url http://localhost:8080 --config examples/flapi.yaml
+```
+
+Cache refresh history (mode, status, duration, rows, snapshot per refresh):
+```bash
+node dist/index.js cache audit /customers --output table --base-url http://localhost:8080
+```
+
+### Metrics
+Runtime metrics since server start: per-endpoint and per-MCP-tool requests,
+errors and latency (p50/p95/p99), 401/403/429 rejections, cache-not-ready 503s
+(counted apart from server errors), and per-cache refresh duration, rows and data age:
+```bash
+node dist/index.js metrics --output table --base-url http://localhost:8080
+node dist/index.js metrics --endpoint /customers   # one endpoint or MCP tool
 ```
 
 ### Schema
@@ -269,10 +286,14 @@ node dist/index.js schema tables --connection bigquery-lakehouse \
 ### Output & Styling
 - `--output json` prints machine-readable JSON (useful for scripting)
 - `--output table` prints styled tables and panels for humans
-- `--json-style` controls key casing for display (`camel` or `hyphen`)
+- `--json-style` re-cases configuration documents only (`endpoints list/get`, `mcp tools/resources/prompts`,
+  `cache list/get`, `project get`, `templates list`); data output (`metrics`, `cache audit`, `schema`,
+  `health`, `templates expand/test`, `endpoints validate`, ...) is printed exactly as the server sent
+  it, in snake_case
+- Errors print as `[status] statusText: <server reason>`, followed by the JSON body when there is one
 
 ### Troubleshooting
-- Server not reachable: verify `--base-url` or `FLAPI_BASE_URL`
+- Server not reachable: verify `--base-url`, `FLAPI_BASE_URL` or `FLAPI_URL`
 - Config not found: pass `--config` or set `FLAPI_CONFIG`
 - JSON parsing in scripts: always add `--output json`
 

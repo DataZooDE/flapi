@@ -1,0 +1,25 @@
+{
+  "name": "flapi",
+  "description": "The flAPI plugin for Claude Code: skills, slash commands, an MCP server entry and a validate-and-reload hook for building and running SQL-to-API services with flAPI.",
+  "owner": {
+    "name": "DataZoo GmbH",
+    "url": "https://github.com/DataZooDE"
+  },
+  "plugins": [
+    {
+      "name": "flapi",
+      "source": "./plugins/flapi",
+      "description": "Build, cache, secure, deploy and operate SQL-to-API services with flAPI: REST endpoints and MCP tools from SQL + YAML, DuckLake caching (full / append / merge) and refresh-time tuning, auth, single-binary deploys, metrics and diagnosis.",
+      "keywords": [
+        "flapi",
+        "duckdb",
+        "rest-api",
+        "mcp",
+        "sql",
+        "ducklake",
+        "caching",
+        "claude-code"
+      ]
+    }
+  ]
+}

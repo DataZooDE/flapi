@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <fstream>
 #include <filesystem>
 #include "config_tool_adapter.hpp"
@@ -54,13 +55,26 @@ const SchemaField kPath{"path", "string",
                         "The endpoint's url-path, e.g. \"/customers/\".", true};
 const SchemaField kEndpoint{"endpoint", "string",
                             "The endpoint's url-path, e.g. \"/customers/\".", true};
-const SchemaField kMethod{"method", "string", "HTTP method (default GET).", false};
+const SchemaField kMethod{"method", "string", "HTTP method: GET (default), POST, PUT, PATCH or DELETE.", false};
+const SchemaField kAuth{"auth", "object",
+                        "The endpoint's auth, the same shape as a YAML `auth:` block, e.g. "
+                        "{\"enabled\": true, \"type\": \"basic\", \"roles\": [\"admin\"], \"users\": [...]}. "
+                        "Without it the endpoint inherits the top-level auth block, or is open.", false};
+const SchemaField kMethodSelect{"method", "string",
+                                "HTTP method, needed when several endpoints share the path "
+                                "(GET /orders + POST /orders).", false};
 const SchemaField kTemplateSource{"template-source", "string",
                                   "SQL template file name, relative to the templates directory "
                                   "(default: <slug>.sql). Created with a placeholder query if absent; "
                                   "replace it with flapi_update_template.", false};
 const SchemaField kConnection{"connection", "array",
                               "Connection name(s) from the configuration, e.g. [\"my-data\"].", false};
+const SchemaField kUpdateConfig{"config", "object",
+                                "Endpoint keys to change, in the YAML spelling, e.g. "
+                                "{\"template-source\": \"x.sql\", \"cache\": {\"schedule\": \"10m\"}}. "
+                                "Deep-merged onto the endpoint's YAML file and written to it, like "
+                                "PUT /api/v1/_config/endpoints/{slug}. Top-level keys other than path "
+                                "are merged the same way.", false};
 const SchemaField kContent{"content", "string", "The full SQL template text.", true};
 const SchemaField kParams{"params", "object",
                           "Template parameters, as a name/value object.", false};
@@ -92,6 +106,41 @@ crow::json::wvalue build_schema(std::initializer_list<SchemaField> fields) {
     }
     return schema;
 }
+
+
+// The endpoint a flapi_* tool names: `path` plus an optional `method`. Several
+// endpoints may share a url-path (GET + POST /orders); without a method that
+// is an error naming the choices, never the first match - by path alone
+// reload reloaded the other file and delete removed both.
+ConfigManager::EndpointRef resolveToolEndpoint(const ConfigManager& cm, const crow::json::wvalue& args,
+                                               const std::string& path, std::string& error) {
+    std::string method;
+    if (const auto parsed = crow::json::load(args.dump());
+        parsed && parsed.t() == crow::json::type::Object && parsed.has("method") &&
+        parsed["method"].t() == crow::json::type::String) {
+        method = parsed["method"].s();
+        std::transform(method.begin(), method.end(), method.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    }
+    if (!method.empty()) {
+        return cm.getEndpointForKey(method + " " + path);
+    }
+    std::string methods;
+    int shared = 0;
+    for (const auto& ep : *cm.getEndpoints()) {
+        if (!ep.urlPath.empty() && ep.urlPath == path) {
+            ++shared;
+            methods += (methods.empty() ? "" : "|") + ConfigManager::EndpointKey(ep).substr(
+                0, ConfigManager::EndpointKey(ep).find(' '));
+        }
+    }
+    if (shared > 1) {
+        error = "Ambiguous: " + path + " is served by several endpoints; pass method (" + methods + ")";
+        return {};
+    }
+    return cm.getEndpointForPath(path);
+}
+
 
 }  // namespace
 
@@ -267,7 +316,7 @@ void ConfigToolAdapter::registerEndpointTools() {
     tools_["flapi_get_endpoint"] = ConfigToolDef{
         "flapi_get_endpoint",
         "Get the complete configuration for a specific endpoint including validators, cache settings, and auth requirements",
-        build_schema({kPath}),
+        build_schema({kPath, kMethodSelect}),
         build_basic_schema()
     };
     tool_auth_required_["flapi_get_endpoint"] = true;
@@ -280,7 +329,7 @@ void ConfigToolAdapter::registerEndpointTools() {
         "flapi_create_endpoint",
         "Create a new endpoint and write its configuration (and an initial SQL template) under the "
         "templates directory, so flapi_update_template, flapi_reload_endpoint and restarts keep it.",
-        build_schema({kPath, kMethod, kTemplateSource, kConnection}),
+        build_schema({kPath, kMethod, kTemplateSource, kConnection, kAuth}),
         build_basic_schema()
     };
     tool_auth_required_["flapi_create_endpoint"] = true;
@@ -291,8 +340,10 @@ void ConfigToolAdapter::registerEndpointTools() {
     // flapi_update_endpoint - Update endpoint configuration
     tools_["flapi_update_endpoint"] = ConfigToolDef{
         "flapi_update_endpoint",
-        "Update the configuration of an existing endpoint. Preserves any settings not explicitly changed.",
-        build_schema({kPath}),
+        "Update the configuration of an existing endpoint. The change is merged into its YAML file "
+        "(persisted, like PUT /api/v1/_config/endpoints/{slug}); settings not mentioned are kept. "
+        "url-path, method and name cannot change: delete and re-create instead.",
+        build_schema({kPath, kMethodSelect, kTemplateSource, kConnection, kUpdateConfig}),
         build_basic_schema()
     };
     tool_auth_required_["flapi_update_endpoint"] = true;
@@ -304,7 +355,7 @@ void ConfigToolAdapter::registerEndpointTools() {
     tools_["flapi_delete_endpoint"] = ConfigToolDef{
         "flapi_delete_endpoint",
         "Delete an endpoint by its path. The endpoint becomes unavailable for API calls immediately.",
-        build_schema({kPath}),
+        build_schema({kPath, kMethodSelect}),
         build_basic_schema()
     };
     tool_auth_required_["flapi_delete_endpoint"] = true;
@@ -316,7 +367,7 @@ void ConfigToolAdapter::registerEndpointTools() {
     tools_["flapi_reload_endpoint"] = ConfigToolDef{
         "flapi_reload_endpoint",
         "Reload an endpoint configuration from disk without restarting the server. Useful after manual YAML edits.",
-        build_schema({kPath}),
+        build_schema({kPath, kMethodSelect}),
         build_basic_schema()
     };
     tool_auth_required_["flapi_reload_endpoint"] = true;
@@ -363,6 +414,27 @@ void ConfigToolAdapter::registerCacheTools() {
     tool_auth_required_["flapi_get_cache_audit"] = true;
     tool_handlers_["flapi_get_cache_audit"] = [this](const crow::json::wvalue& args) {
         return this->executeGetCacheAudit(args);
+    };
+
+    // flapi_get_metrics - Runtime metrics (requests, latency, caches)
+    {
+        crow::json::wvalue schema;
+        schema["type"] = "object";
+        schema["properties"]["endpoint"]["type"] = "string";
+        schema["properties"]["endpoint"]["description"] =
+            "Optional endpoint path (e.g. /customers) or MCP tool name to narrow the result to";
+        tools_["flapi_get_metrics"] = ConfigToolDef{
+            "flapi_get_metrics",
+            "Runtime metrics since server start: per-endpoint and per-MCP-tool request counts, error counts and "
+            "latency (avg/p50/p95/p99/max, ms), 401/403/429 rejections, and per-cache readiness, last refresh "
+            "mode/status/duration/rows and data age. Use it to find slow or failing endpoints and slow or stale caches.",
+            std::move(schema),
+            build_basic_schema()
+        };
+    }
+    tool_auth_required_["flapi_get_metrics"] = true;
+    tool_handlers_["flapi_get_metrics"] = [this](const crow::json::wvalue& args) {
+        return this->executeGetMetrics(args);
     };
 
     // flapi_run_cache_gc - Trigger garbage collection
@@ -476,7 +548,9 @@ ConfigToolResult ConfigToolAdapter::executeTool(const std::string& tool_name,
     // Check authentication if required
     if (isAuthenticationRequired(tool_name)) {
         if (auth_token.empty()) {
-            return createErrorResult(-32001, "Authentication required for tool: " + tool_name);
+            return createErrorResult(-32001, "Authentication required for tool: " + tool_name +
+                                                 " - send the config-service token in the X-Config-Token "
+                                                 "header (or Authorization: Bearer when MCP auth is off)");
         }
 
         // Format first - a cheap, non-secret-dependent reject for obviously
@@ -493,7 +567,9 @@ ConfigToolResult ConfigToolAdapter::executeTool(const std::string& tool_name,
         }
         if (!token_error.empty()) {
             CROW_LOG_WARNING << "Tool execution denied - auth validation failed for " << tool_name << ": " << token_error;
-            return createErrorResult(-32001, "Authentication validation failed: " + token_error);
+            return createErrorResult(-32001, "Config-service token rejected for tool " + tool_name + ": " +
+                                                 token_error + " (X-Config-Token must be the server's "
+                                                 "--config-service-token)");
         }
     }
 
@@ -573,7 +649,8 @@ std::string ConfigToolAdapter::validateArguments(const std::string& tool_name,
         {"flapi_get_cache_status", {"path"}},
         {"flapi_refresh_cache", {"path"}},
         {"flapi_get_cache_audit", {"path"}},
-        {"flapi_run_cache_gc", {"path"}}
+        {"flapi_run_cache_gc", {"path"}},
+        {"flapi_get_metrics", {}}
     };
 
     // Find required parameters for this tool
@@ -908,7 +985,11 @@ ConfigToolResult ConfigToolAdapter::executeGetEndpoint(const crow::json::wvalue&
         }
 
         // Find the endpoint
-        auto ep = config_manager_->getEndpointForPath(endpoint_path);
+        std::string ambiguity;
+        auto ep = resolveToolEndpoint(*config_manager_, args, endpoint_path, ambiguity);
+        if (!ambiguity.empty()) {
+            return createErrorResult(-32602, ambiguity);
+        }
         if (!ep) {
             return createErrorResult(-32603, "Endpoint not found: " + endpoint_path);
         }
@@ -960,11 +1041,17 @@ ConfigToolResult ConfigToolAdapter::executeCreateEndpoint(const crow::json::wval
         if (!error_msg.empty()) {
             return createErrorResult(-32602, error_msg);
         }
-
-        method = extractStringParam(args, "method", false, error_msg);
-        if (method.empty()) {
-            method = "GET";
+        if (const auto problem = RouteTranslator::urlPathProblem(path); !problem.empty()) {
+            return createErrorResult(-32602, problem);
         }
+
+        // Canonical and one of the five, as the YAML loader and REST create
+        // require: "get" used to be stored as written.
+        const std::string raw_method = extractStringParam(args, "method", false, error_msg);
+        if (const auto problem = ConfigManager::HttpMethodProblem(raw_method, path); !problem.empty()) {
+            return createErrorResult(-32602, problem);
+        }
+        method = ConfigManager::CanonicalHttpMethod(raw_method);
 
         // `template-source` is what the YAML key and the docs call it; the
         // underscore spelling was the only one read, and neither was declared.
@@ -973,37 +1060,37 @@ ConfigToolResult ConfigToolAdapter::executeCreateEndpoint(const crow::json::wval
             template_source = extractStringParam(args, "template_source", false, error_msg);
         }
 
-        // Check if endpoint already exists
-        if (config_manager_->getEndpointForPath(path) != nullptr) {
-            crow::json::wvalue error_detail;
-            error_detail["error"] = "Endpoint already exists";
-            error_detail["path"] = path;
-            error_detail["hint"] = "Use flapi_update_endpoint to modify existing endpoint, or delete it first with flapi_delete_endpoint";
-            return createErrorResult(-32603, error_detail.dump());
-        }
-
-        // Create new endpoint configuration
-        EndpointConfig new_endpoint;
-        new_endpoint.urlPath = path;
-        new_endpoint.method = method;
+        // The endpoint as a YAML document, created through the same path as
+        // POST /api/v1/_config/endpoints: written, parsed by the loader (so a
+        // top-level auth block is inherited and `auth` is read exactly as in
+        // a file), checked for duplicates and overlapping routes, then added.
+        YAML::Node doc;
+        doc["url-path"] = path;
+        doc["method"] = method;
 
         if (args.count("connection")) {
             auto parsed = crow::json::load(args["connection"].dump());
             if (parsed && parsed.t() == crow::json::type::List) {
                 for (const auto& item : parsed) {
-                    new_endpoint.connection.push_back(item.s());
+                    doc["connection"].push_back(std::string(item.s()));
                 }
             } else if (parsed && parsed.t() == crow::json::type::String) {
-                new_endpoint.connection.push_back(parsed.s());
+                doc["connection"].push_back(std::string(parsed.s()));
             }
         }
-
-        // File names from the slug, minus the leading '-' a leading '/' becomes.
-        std::string slug = new_endpoint.getSlug();
-        slug.erase(0, slug.find_first_not_of('-'));
-        if (slug.empty()) {
-            slug = "endpoint";
+        if (args.count("auth")) {
+            const YAML::Node auth = YAML::Load(args["auth"].dump());
+            if (!auth || !auth.IsMap()) {
+                return createErrorResult(-32602, "auth must be an object, the same shape as an endpoint's `auth:` block");
+            }
+            doc["auth"] = auth;
         }
+
+        EndpointConfig identity;
+        identity.urlPath = path;
+        identity.method = method;
+        // Readable file names, the same as POST /api/v1/_config/endpoints gives.
+        const std::string slug = endpoint_files::FileStemFor(identity);
         if (template_source.empty()) {
             template_source = slug + ".sql";
         }
@@ -1022,45 +1109,35 @@ ConfigToolResult ConfigToolAdapter::executeCreateEndpoint(const crow::json::wval
                     "template-source must be a relative path inside the templates directory: " + template_source);
             }
         }
-        new_endpoint.templateSource = template_source;
+        doc["template-source"] = template_source;
 
-        // Persist, so reload and a restart find it. Files are written first and
-        // removed again if the endpoint does not validate or cannot be added.
+        // A placeholder template, so the endpoint loads; removed again if the
+        // endpoint is not created.
         const std::filesystem::path template_dir = config_manager_->getTemplateConfig().path;
         const std::filesystem::path sql_file = template_dir / template_source;
-        const std::filesystem::path yaml_file = template_dir / (slug + ".yaml");
-        if (std::filesystem::exists(yaml_file)) {
-            return createErrorResult(-32603, "Endpoint file already exists: " + yaml_file.string());
-        }
         const bool created_sql = !std::filesystem::exists(sql_file);
         if (created_sql) {
             std::filesystem::create_directories(sql_file.parent_path());
             std::ofstream sql(sql_file);
             sql << "SELECT 1 AS placeholder\n";
         }
-        new_endpoint.config_file_path = yaml_file.string();
-        auto cleanup = [&]() {
-            std::error_code ec;
-            std::filesystem::remove(yaml_file, ec);
+        const auto outcome = endpoint_files::CreateFromDocument(*config_manager_, doc);
+        if (!outcome.ok) {
             if (created_sql) {
+                std::error_code ec;
                 std::filesystem::remove(sql_file, ec);
             }
-        };
-        try {
-            const auto validation = config_manager_->validateEndpointConfig(new_endpoint);
-            if (!validation.valid) {
-                cleanup();
-                std::string joined;
-                for (const auto& e : validation.errors) {
-                    joined += (joined.empty() ? "" : "; ") + e;
-                }
-                return createErrorResult(-32602, "Invalid endpoint: " + joined);
+            crow::json::wvalue error_detail;
+            // The reason names the endpoint it conflicts with, when it does.
+            error_detail["error"] = outcome.status == 409 ? "Endpoint already exists" : "Failed to create endpoint";
+            error_detail["path"] = path;
+            error_detail["method"] = method;
+            error_detail["reason"] = outcome.error;
+            if (outcome.status == 409) {
+                error_detail["hint"] = "Use flapi_update_endpoint to modify the existing endpoint, or delete it first "
+                                       "with flapi_delete_endpoint";
             }
-            config_manager_->persistEndpointConfigToFile(new_endpoint, yaml_file);
-            config_manager_->addEndpoint(new_endpoint);
-        } catch (...) {
-            cleanup();
-            throw;
+            return createErrorResult(outcome.status == 400 ? -32602 : -32603, error_detail.dump());
         }
 
         crow::json::wvalue result;
@@ -1068,7 +1145,17 @@ ConfigToolResult ConfigToolAdapter::executeCreateEndpoint(const crow::json::wval
         result["path"] = path;
         result["method"] = method;
         result["template_source"] = template_source;
+        result["file"] = outcome.file;
         result["message"] = "Endpoint created successfully";
+        result["auth"] = outcome.config.auth.enabled ? outcome.config.auth.type : std::string("none");
+        if (!outcome.config.auth.enabled) {
+            // Said in the result as well as the log: an agent creating an
+            // endpoint should know it answers anyone.
+            result["warning"] = "The endpoint is unauthenticated: anyone who can reach the server can call it. "
+                                "Pass `auth` to protect it.";
+            CROW_LOG_WARNING << "flapi_create_endpoint: created " << method << " " << path
+                             << " WITHOUT authentication";
+        }
 
         CROW_LOG_INFO << "flapi_create_endpoint: created endpoint " << path << " with method " << method;
         return createSuccessResult(result.dump());
@@ -1106,7 +1193,11 @@ ConfigToolResult ConfigToolAdapter::executeUpdateEndpoint(const crow::json::wval
         }
 
         // Find existing endpoint
-        auto ep = config_manager_->getEndpointForPath(path);
+        std::string ambiguity;
+        auto ep = resolveToolEndpoint(*config_manager_, args, path, ambiguity);
+        if (!ambiguity.empty()) {
+            return createErrorResult(-32602, ambiguity);
+        }
         if (!ep) {
             crow::json::wvalue error_detail;
             error_detail["error"] = "Endpoint not found";
@@ -1115,47 +1206,52 @@ ConfigToolResult ConfigToolAdapter::executeUpdateEndpoint(const crow::json::wval
             return createErrorResult(-32603, error_detail.dump());
         }
 
-        // Create updated copy
-        EndpointConfig updated = *ep;
-        std::string original_method = ep->method;
-        std::string original_template = ep->templateSource;
-
-        // Update optional fields if provided
-        if (args.count("method")) {
-            auto val_str = args["method"].dump();
-            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
-                updated.method = val_str.substr(1, val_str.length() - 2);
+        // The same merge + persist path as REST PUT (endpoint_files::UpdateFromPatch).
+        // This used to read only `method` and `template_source` and change memory
+        // only, so the next reload or restart undid it - and every other key the
+        // agent sent was silently ignored.
+        YAML::Node patch = YAML::Load(args.dump());
+        if (!patch || !patch.IsMap()) {
+            return createErrorResult(-32602, "Arguments must be an object");
+        }
+        patch.remove("path");
+        if (patch["config"]) {
+            if (!patch["config"].IsMap()) {
+                return createErrorResult(-32602, "config must be an object of endpoint keys");
+            }
+            const YAML::Node config = patch["config"];
+            patch.remove("config");
+            for (const auto& entry : config) {
+                patch[entry.first.as<std::string>()] = entry.second;
             }
         }
-
-        if (args.count("template_source")) {
-            auto val_str = args["template_source"].dump();
-            if (val_str.length() >= 2 && val_str[0] == '"' && val_str[val_str.length()-1] == '"') {
-                updated.templateSource = val_str.substr(1, val_str.length() - 2);
-            }
-            // The same boundary flapi_create_endpoint enforces: an endpoint's template
-            // must stay inside the templates directory.
-            const auto problem = config_manager_->TemplatePathProblem(updated.templateSource);
-            if (!problem.empty()) {
-                return createErrorResult(-32602, problem);
-            }
+        if (patch["template_source"]) {
+            patch["template-source"] = patch["template_source"];
+            patch.remove("template_source");
+        }
+        if (patch.size() == 0) {
+            return createErrorResult(-32602, "Nothing to update: pass endpoint keys, e.g. config: {\"template-source\": \"x.sql\"}");
         }
 
-        // Replace the endpoint
-        config_manager_->replaceEndpoint(updated);
+        const auto outcome = endpoint_files::UpdateFromPatch(*config_manager_, *ep, patch);
+        if (!outcome.ok) {
+            crow::json::wvalue error_detail;
+            error_detail["error"] = "Failed to update endpoint";
+            error_detail["path"] = path;
+            error_detail["reason"] = outcome.error;
+            return createErrorResult(outcome.status == 400 ? -32602 : -32603, error_detail.dump());
+        }
 
         crow::json::wvalue result;
         result["status"] = "success";
         result["path"] = path;
         result["message"] = "Endpoint updated successfully";
-        result["previous_method"] = original_method;
-        result["new_method"] = updated.method;
-        if (original_template != updated.templateSource) {
-            result["previous_template"] = original_template;
-            result["new_template"] = updated.templateSource;
-        }
+        result["file"] = outcome.file;
+        result["persisted"] = true;
+        result["method"] = outcome.config.method;
+        result["template_source"] = outcome.config.templateSource;
 
-        CROW_LOG_INFO << "flapi_update_endpoint: updated endpoint " << path << " - method: " << original_method << " -> " << updated.method;
+        CROW_LOG_INFO << "flapi_update_endpoint: updated endpoint " << path << " in " << outcome.file;
         return createSuccessResult(result.dump());
     } catch (const std::exception& e) {
         CROW_LOG_ERROR << "flapi_update_endpoint failed for path '" << path << "': " << e.what();
@@ -1191,7 +1287,11 @@ ConfigToolResult ConfigToolAdapter::executeDeleteEndpoint(const crow::json::wval
         }
 
         // Verify endpoint exists
-        auto ep = config_manager_->getEndpointForPath(path);
+        std::string ambiguity;
+        auto ep = resolveToolEndpoint(*config_manager_, args, path, ambiguity);
+        if (!ambiguity.empty()) {
+            return createErrorResult(-32602, ambiguity);
+        }
         if (!ep) {
             crow::json::wvalue error_detail;
             error_detail["error"] = "Endpoint not found";
@@ -1205,7 +1305,7 @@ ConfigToolResult ConfigToolAdapter::executeDeleteEndpoint(const crow::json::wval
         const std::string deleted_file = ep->config_file_path;
 
         // Remove the endpoint
-        bool removed = config_manager_->removeEndpointByPath(path);
+        bool removed = config_manager_->removeEndpoint(*ep);
         if (!removed) {
             crow::json::wvalue error_detail;
             error_detail["error"] = "Failed to delete endpoint";
@@ -1218,18 +1318,10 @@ ConfigToolResult ConfigToolAdapter::executeDeleteEndpoint(const crow::json::wval
         // Deleting persists: remove the endpoint's YAML so it does not come back
         // on the next start or reload. Only that file, and only from inside the
         // templates directory; the SQL template is left alone.
-        if (!deleted_file.empty()) {
-            std::error_code ec;
-            const auto template_dir = std::filesystem::weakly_canonical(config_manager_->getTemplateConfig().path, ec);
-            const auto file = std::filesystem::weakly_canonical(deleted_file, ec);
-            const auto rel = file.lexically_relative(template_dir);
-            if (!rel.empty() && *rel.begin() != "..") {
-                std::filesystem::remove(file, ec);
-                if (ec) {
-                    CROW_LOG_WARNING << "flapi_delete_endpoint: removed " << path
-                                     << " from memory but could not delete " << file << ": " << ec.message();
-                }
-            }
+        // Shared with REST DELETE /api/v1/_config/endpoints/<slug>.
+        const auto file_warning = endpoint_files::RemoveEndpointFile(*config_manager_, deleted_file);
+        if (!file_warning.empty()) {
+            CROW_LOG_WARNING << "flapi_delete_endpoint " << path << ": " << file_warning;
         }
 
         crow::json::wvalue result;
@@ -1274,7 +1366,11 @@ ConfigToolResult ConfigToolAdapter::executeReloadEndpoint(const crow::json::wval
         }
 
         // Verify endpoint exists
-        auto ep = config_manager_->getEndpointForPath(path);
+        std::string ambiguity;
+        auto ep = resolveToolEndpoint(*config_manager_, args, path, ambiguity);
+        if (!ambiguity.empty()) {
+            return createErrorResult(-32602, ambiguity);
+        }
         if (!ep) {
             crow::json::wvalue error_detail;
             error_detail["error"] = "Endpoint not found";
@@ -1287,11 +1383,12 @@ ConfigToolResult ConfigToolAdapter::executeReloadEndpoint(const crow::json::wval
         std::string original_template = ep->templateSource;
 
         // Reload the endpoint configuration from disk
-        bool reloaded = config_manager_->reloadEndpointConfig(path);
+        bool reloaded = config_manager_->reloadEndpointConfig(ConfigManager::EndpointKey(*ep));
         if (!reloaded) {
             crow::json::wvalue error_detail;
             error_detail["error"] = "Failed to reload endpoint configuration from disk";
             error_detail["path"] = path;
+            error_detail["reason"] = endpoint_files::ReloadFailureReason(*config_manager_, *ep);
             error_detail["hint"] = "Verify that endpoint YAML file exists and is valid";
             return createErrorResult(-32603, error_detail.dump());
         }
@@ -1400,6 +1497,18 @@ ConfigToolResult ConfigToolAdapter::executeGetCacheAudit(const crow::json::wvalu
     AuditLogHandler handler(config_manager_);
     return fromHandler("flapi_get_cache_audit",
                        handler.getCacheAuditLog(endpoint_path), &secrets);
+}
+
+ConfigToolResult ConfigToolAdapter::executeGetMetrics(const crow::json::wvalue& args) {
+    if (!config_manager_) {
+        return createErrorResult(-32603, "Configuration service unavailable");
+    }
+    std::string error_msg;
+    const std::string filter = extractStringParam(args, "endpoint", false, error_msg);
+    if (!error_msg.empty()) {
+        return createErrorResult(-32602, error_msg);
+    }
+    return ConfigToolResult{true, QueryResult::dumpJson(buildMetricsJson(config_manager_, filter)), "", 0};
 }
 
 ConfigToolResult ConfigToolAdapter::executeRunCacheGC(const crow::json::wvalue& args) {
@@ -1562,97 +1671,42 @@ bool ConfigToolAdapter::tokenMatchesConfigured(const std::string& auth_token) co
         return false;
     }
 
-    // Accept both "<scheme> <token>" and a bare token, matching what
-    // validateAuthToken permits.
-    std::string presented = auth_token;
-    const size_t space_pos = auth_token.find(' ');
-    if (space_pos != std::string::npos) {
-        presented = auth_token.substr(space_pos + 1);
-    }
-
     // Constant time, so the comparison cannot be turned into an oracle that
     // reveals the token a character at a time. Length is compared first and
     // that does leak the length; CRYPTO_memcmp needs equal sizes.
-    if (presented.size() != expected_auth_token_.size()) {
-        return false;
+    auto equals = [this](const std::string& presented) {
+        if (presented.size() != expected_auth_token_.size()) {
+            return false;
+        }
+        return CRYPTO_memcmp(presented.data(), expected_auth_token_.data(),
+                             presented.size()) == 0;
+    };
+
+    // The value as presented first (what REST compares), then the part after a
+    // "<scheme> " prefix, so both a bare token and "Bearer <token>" work.
+    if (equals(auth_token)) {
+        return true;
     }
-    return CRYPTO_memcmp(presented.data(), expected_auth_token_.data(),
-                         presented.size()) == 0;
+    const size_t space_pos = auth_token.find(' ');
+    return space_pos != std::string::npos && equals(auth_token.substr(space_pos + 1));
 }
 
 std::string ConfigToolAdapter::validateAuthToken(const std::string& auth_token) {
-    // Check for empty token
+    // Only the checks the REST config service applies too (its token check
+    // compares the presented value and nothing else). This used to demand
+    // >= 8 characters, a Base64 alphabet and a known scheme name, so a token
+    // REST accepted - `--config-service-token abc123`, or one containing `!` -
+    // was refused by every flapi_* tool with "too short" / "invalid
+    // characters". One secret now gates both transports identically; a weak
+    // token is warned about at startup instead of being refused on one of them.
     if (auth_token.empty()) {
         return "Authentication token is required";
     }
-
-    // Minimum token length check
-    if (auth_token.length() < 8) {
-        return "Authentication token is too short (minimum 8 characters)";
-    }
-
-    // Maximum token length check (prevent DoS via huge tokens)
+    // Bounded so a huge header cannot make the comparison costly.
     if (auth_token.length() > 4096) {
         return "Authentication token is too long (maximum 4096 characters)";
     }
-
-    // Parse token format
-    size_t space_pos = auth_token.find(' ');
-
-    if (space_pos == std::string::npos) {
-        // No space found - could be a raw token, check if it looks like a valid token
-        // Should contain only alphanumeric, dash, underscore, dot, or equals sign (for Base64)
-        for (char c : auth_token) {
-            if (!std::isalnum(c) && c != '-' && c != '_' && c != '.' && c != '=' && c != ':') {
-                return "Authentication token contains invalid characters";
-            }
-        }
-        // Raw token format is valid (API tokens, simple tokens)
-        CROW_LOG_DEBUG << "Token validation: raw token format accepted";
-        return "";
-    }
-
-    // Token has a scheme prefix (Bearer, Basic, Token, etc.)
-    std::string scheme = auth_token.substr(0, space_pos);
-    std::string token_value = auth_token.substr(space_pos + 1);
-
-    // Validate scheme
-    if (scheme != "Bearer" && scheme != "Basic" && scheme != "Token" && scheme != "API-Key") {
-        return "Unsupported authentication scheme: " + scheme +
-               " (supported: Bearer, Basic, Token, API-Key)";
-    }
-
-    // Validate token value is not empty
-    if (token_value.empty()) {
-        return scheme + " token cannot be empty";
-    }
-
-    // Bearer tokens should contain Base64 characters
-    if (scheme == "Bearer" || scheme == "Basic") {
-        for (char c : token_value) {
-            if (!std::isalnum(c) && c != '+' && c != '/' && c != '-' && c != '_' && c != '=') {
-                return scheme + " token contains invalid Base64 characters";
-            }
-        }
-    }
-
-    // Validate token value length (minimum and maximum)
-    if (token_value.length() < 4) {
-        return scheme + " token is too short (minimum 4 characters)";
-    }
-
-    if (token_value.length() > 2048) {
-        return scheme + " token is too long (maximum 2048 characters)";
-    }
-
-    // For Bearer tokens, ensure the Base64 length is valid
-    if (scheme == "Bearer" && token_value.length() % 4 != 0 && token_value.find('=') == std::string::npos) {
-        // Note: Base64 can have padding variations, so we're lenient here
-        CROW_LOG_DEBUG << "Bearer token Base64 length may need padding validation";
-    }
-
-    CROW_LOG_INFO << "Token validation successful: scheme=" << scheme << ", token_length=" << token_value.length();
-    return "";  // Token is valid
+    return "";
 }
 
 }  // namespace flapi

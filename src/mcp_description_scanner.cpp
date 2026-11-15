@@ -27,7 +27,10 @@ std::string toLower(const std::string& s) {
     return out;
 }
 
-bool containsPromptInjectionPhrase(const std::string& description_lower) {
+// The matched phrase and its byte offset, or nullptr. Named in the message:
+// "contains a phrase commonly used..." left the author to guess which one -
+// `system:` in "Reads the billing system: totals" is easy to miss.
+const char* findPromptInjectionPhrase(const std::string& description_lower, std::size_t& offset) {
     // Phrases observed in the prompt-injection corpus. Kept short and
     // anchored so legitimate uses of common words like "ignore" don't
     // trip the detector.
@@ -39,12 +42,15 @@ bool containsPromptInjectionPhrase(const std::string& description_lower) {
         "system:",
         "you are now",
     };
+    const char* first = nullptr;
     for (const char* phrase : kPhrases) {
-        if (description_lower.find(phrase) != std::string::npos) {
-            return true;
+        const auto at = description_lower.find(phrase);
+        if (at != std::string::npos && (first == nullptr || at < offset)) {
+            first = phrase;
+            offset = at;
         }
     }
-    return false;
+    return first;
 }
 
 } // namespace
@@ -72,12 +78,14 @@ std::vector<DescriptionIssue> MCPDescriptionScanner::scan(const std::string& des
         });
     }
 
-    if (containsPromptInjectionPhrase(toLower(description))) {
+    std::size_t offset = 0;
+    if (const char* phrase = findPromptInjectionPhrase(toLower(description), offset)) {
         issues.push_back({
             "DESCRIPTION_PROMPT_INJECTION",
-            "MCP tool description contains a phrase commonly used in prompt-injection "
-            "attempts (e.g., 'ignore previous instructions', 'system:'). If this is "
-            "intentional copy, rephrase; otherwise treat the YAML as compromised."
+            std::string("MCP tool description contains '") + phrase + "' at offset " +
+                std::to_string(offset) +
+                ", a phrase commonly used in prompt-injection attempts. If this is "
+                "intentional copy, rephrase; otherwise treat the YAML as compromised."
         });
     }
 

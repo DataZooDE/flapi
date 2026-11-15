@@ -93,5 +93,23 @@ TEST_CASE("PasswordHasher: verify is constant-time-ish across stored format",
     REQUIRE_FALSE(hasher.verify("wrong", pbkdf2));
 }
 
+
+TEST_CASE("PasswordHasher: accepts passlib's ab64 and standard base64 encodings",
+          "[security][password][passlib]") {
+    // passlib.hash.pbkdf2_sha256 writes salt and digest in "ab64": standard
+    // base64 with '.' for '+' and no padding. Vectors computed with
+    // hashlib.pbkdf2_hmac('sha256', b'correct horse', salt, 1000), with a salt
+    // chosen so that the encoding contains '.' / '+'.
+    PasswordHasher hasher;
+    const std::string ab64 =
+        "$pbkdf2-sha256$1000$....AQID.AARIjNEVWZ3iA$hK0WL5EIFIQeq3GChnG.dHp7OjTY5QJhSA3DQVVfOu4";
+    const std::string standard =
+        "$pbkdf2-sha256$1000$++++AQID+AARIjNEVWZ3iA==$hK0WL5EIFIQeq3GChnG+dHp7OjTY5QJhSA3DQVVfOu4=";
+    REQUIRE(hasher.verify("correct horse", ab64));
+    REQUIRE_FALSE(hasher.verify("correct horsf", ab64));
+    REQUIRE(hasher.verify("correct horse", standard));
+    REQUIRE_FALSE(hasher.verify("wrong", standard));
+}
+
 } // namespace test
 } // namespace flapi

@@ -15,13 +15,27 @@ public:
     RequestHandler(std::shared_ptr<DatabaseManager> db_manager, std::shared_ptr<ConfigManager> config_manager);
     void handleRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams, const std::map<std::string, std::string>& authParams = {});
 
+    // Cache maintenance after a successful write (REST and MCP):
+    //   invalidate-on-write -> refresh synchronously, before the response;
+    //   refresh-on-write    -> refresh asynchronously, the response does not wait.
+    static void handleCacheAfterWrite(const std::shared_ptr<DatabaseManager>& db_manager,
+                                      const EndpointConfig& endpoint);
+
+    // A write's response body, `{"rows_affected":N,"data":[...]}`, with the
+    // RETURNING rows' keys in column order and doubles in shortest form (a
+    // wvalue dump scrambles the keys). `data` is present when rows came back,
+    // and as [] when `always_include_data` is set and none did.
+    static std::string formatWriteResultJson(const WriteResult& result, bool always_include_data);
+
+    // Fills `field-in: header` fields from the request headers (case-insensitive).
+    static void applyHeaderFields(const crow::request& req, const EndpointConfig& endpoint,
+                                  std::map<std::string, std::string>& params);
+
 private:
     std::map<std::string, std::string> defaultParams;
 
-    void handleDeleteRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams);
     void handleGetRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams, const std::map<std::string, std::string>& authParams);
     void handleWriteRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams, const std::map<std::string, std::string>& authParams);
-    void handleCacheAfterWrite(const EndpointConfig& endpoint, const WriteResult& writeResult);
 
     bool isCacheDetailsRequest(const crow::request& req, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams);
 
@@ -36,8 +50,6 @@ private:
     bool validateRequestParameters(const std::vector<RequestFieldConfig>& requestFields, const std::map<std::string, std::string>& params);
     void parsePaginationParams(std::map<std::string, std::string>& params);
     std::string convertToCSV(const QueryResult& queryResult);
-    void csvHeaderFromExampleObject(const crow::json::wvalue& obj, std::ostringstream& csv);
-    void serializeObjectToCsvLine(const crow::json::wvalue& obj, std::ostringstream& csv);
     std::string escapeCSV(const std::string& str);
     std::string createNextUrl(const crow::request& req, const QueryResult& queryResult);
 

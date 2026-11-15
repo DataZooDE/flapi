@@ -91,8 +91,8 @@ def test_valid_FLAPI_LOG_LEVEL_is_honoured(tmp_path: pathlib.Path):
     )
     # Debug-level should emit the "ConfigLoader initialized" line that
     # info-level suppresses.
-    combined = res.stdout + res.stderr
-    assert "[DEBUG" in combined, "no DEBUG lines visible at FLAPI_LOG_LEVEL=debug"
+    combined = (res.stdout + res.stderr).lower()  # [DEBUG   ] (crow) or [debug] (flapi text format)
+    assert "[debug" in combined, "no DEBUG lines visible at FLAPI_LOG_LEVEL=debug"
 
 
 def test_CLI_log_level_wins_over_env(tmp_path: pathlib.Path):
@@ -103,9 +103,9 @@ def test_CLI_log_level_wins_over_env(tmp_path: pathlib.Path):
         env_overrides={"FLAPI_LOG_LEVEL": "debug"},
     )
     assert res.returncode == 0, res.stderr
-    combined = res.stdout + res.stderr
+    combined = (res.stdout + res.stderr).lower()  # [DEBUG   ] (crow) or [debug] (flapi text format)
     # CLI said `error`, so no DEBUG lines should appear despite the env.
-    assert "[DEBUG" not in combined, (
+    assert "[debug" not in combined, (
         "CLI --log-level should have suppressed debug output but didn't"
     )
 

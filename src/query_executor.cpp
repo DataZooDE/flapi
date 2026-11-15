@@ -1,4 +1,5 @@
 #include "query_executor.hpp"
+#include "database_health.hpp"
 #include "flapi_tracing.hpp"
 #include "trace_semconv.hpp"
 #include "duckdb_raii.hpp"
@@ -7,7 +8,10 @@
 #include "prepared_value_converter.hpp"
 #include <crow.h>
 #include <fmt/core.h>
+#include <cmath>
+#include <cstdlib>
 #include <sstream>
+#include <limits>
 #include <stdexcept>
 #include <algorithm>
 #include <array>
@@ -92,6 +96,34 @@ struct ActiveExecGuard {
 QueryExecutor::QueryExecutor(duckdb_database db) : has_result(false) {
     if (duckdb_connect(db, &conn) == DuckDBError) {
         throw std::runtime_error("Failed to create database connection");
+    }
+}
+
+QueryExecutor::QueryExecutor(duckdb_database db, const std::optional<std::string>& session_default_order)
+    : QueryExecutor(db) {
+    if (!session_default_order) {
+        return;
+    }
+    std::string literal = "'";
+    for (const char c : *session_default_order) {
+        literal += c;
+        if (c == '\'') {
+            literal += '\'';
+        }
+    }
+    literal += "'";
+    duckdb_result set_result;
+    const bool ok = duckdb_query(conn, ("SET SESSION default_order = " + literal).c_str(), &set_result) == DuckDBSuccess;
+    std::string error;
+    if (!ok) {
+        const char* message = duckdb_result_error(&set_result);
+        error = message ? message : "unknown error";
+    }
+    duckdb_destroy_result(&set_result);
+    if (!ok) {
+        // The delegating constructor has completed, so the destructor runs and
+        // disconnects.
+        throw std::runtime_error("Failed to set default_order: " + error);
     }
 }
 
@@ -365,6 +397,7 @@ void QueryExecutor::execute(const std::string& query, const std::string& context
         duckdb_destroy_result(&result);
         // Enumerated, never the DuckDB message: that string routinely contains
         // fragments of the failing SQL, i.e. customer data.
+        DatabaseHealth::NoteDatabaseError(error_message);
         span.setError("query_failed");
         throw std::runtime_error("Query execution failed" + context_msg + ": " + error_message);
     }
@@ -401,6 +434,7 @@ void QueryExecutor::executePrepared(duckdb_prepared_statement stmt,
         duckdb_destroy_result(&result);
         // Enumerated, never the DuckDB message: it routinely contains fragments
         // of the failing SQL, i.e. customer data.
+        DatabaseHealth::NoteDatabaseError(error_message);
         span.setError("query_failed");
         throw std::runtime_error("Prepared statement execution failed" + context_msg + ": " + error_message);
     }
@@ -481,6 +515,7 @@ void QueryExecutor::executeWithBindings(const std::string& sql,
         const char* err = duckdb_prepare_error(stmt);
         std::string err_str = err ? err : "(no detail)";
         duckdb_destroy_prepare(&stmt);
+        DatabaseHealth::NoteDatabaseError(err_str);
         std::string context_msg = context.empty() ? "" : " during " + context;
         throw std::runtime_error("Prepare failed" + context_msg + ": " + err_str);
     }
@@ -519,6 +554,99 @@ crow::json::wvalue QueryExecutor::toJson() const {
 }
 
 // ------------------------------------------------------------------------------------------------
+std::string QueryResult::formatDouble(double value) {
+    if (!std::isfinite(value)) {
+        return "null";   // what crow emits; JSON has no NaN/Infinity
+    }
+    // fmt's "{}" is the shortest round-trip form (Dragonbox). Not std::to_chars:
+    // libc++ ships floating-point to_chars only from macOS 13.3.
+    std::string text = fmt::format("{}", value);
+    if (text.find_first_of(".eE") == std::string::npos) {
+        text += ".0";
+    }
+    return text;
+}
+
+std::string QueryResult::normaliseNumberText(const std::string& text) {
+    if (text.find_first_of(".eE") == std::string::npos) {
+        return text;   // an integer, exact already
+    }
+    char* end = nullptr;
+    const double value = std::strtod(text.c_str(), &end);
+    if (end == text.c_str() || *end != '\0') {
+        return text;
+    }
+    return formatDouble(value);
+}
+
+namespace {
+
+void appendJson(const crow::json::wvalue& value, std::string& out, const std::vector<std::string>* row_keys,
+                bool inside_top_list) {
+    switch (value.t()) {
+        case crow::json::type::Number:
+            out += QueryResult::normaliseNumberText(value.dump());
+            return;
+        case crow::json::type::List: {
+            out += '[';
+            for (std::size_t i = 0; i < value.size(); ++i) {
+                if (i > 0) {
+                    out += ',';
+                }
+                appendJson(value[static_cast<unsigned>(i)], out, row_keys, true);
+            }
+            out += ']';
+            return;
+        }
+        case crow::json::type::Object: {
+            std::vector<std::string> keys = value.keys();
+            // A result row: its columns in SELECT order. Only when the row has
+            // exactly those keys, so a nested struct is never reordered by them.
+            if (inside_top_list && row_keys != nullptr && row_keys->size() == keys.size()) {
+                bool all_present = true;
+                for (const auto& key : *row_keys) {
+                    if (value.count(key) == 0) {
+                        all_present = false;
+                        break;
+                    }
+                }
+                if (all_present) {
+                    keys = *row_keys;
+                }
+            }
+            out += '{';
+            bool first = true;
+            for (const auto& key : keys) {
+                if (!first) {
+                    out += ',';
+                }
+                first = false;
+                out += '"';
+                crow::json::escape(key, out);
+                out += "\":";
+                appendJson(value[key], out, nullptr, false);
+            }
+            out += '}';
+            return;
+        }
+        default:
+            out += value.dump();
+            return;
+    }
+}
+
+} // namespace
+
+std::string QueryResult::dumpJson(const crow::json::wvalue& value, const std::vector<std::string>* row_keys) {
+    std::string out;
+    appendJson(value, out, row_keys, false);
+    return out;
+}
+
+std::string QueryResult::dumpData() const {
+    return dumpJson(data, columns.empty() ? nullptr : &columns);
+}
+
 crow::json::wvalue QueryResult::convertResultToJson(const duckdb_result& result) {
     auto [names, types] = extractNamesAndTypes(const_cast<duckdb_result&>(result));
 
@@ -595,8 +723,20 @@ crow::json::wvalue QueryResult::convertVectorEntryToJson(const duckdb_vector &ve
             return convertVectorEntryToJson<std::int64_t>(vector, row_idx);
         case DUCKDB_TYPE_HUGEINT:
             return convertVectorHugeintToJson(vector, row_idx);
-        case DUCKDB_TYPE_FLOAT:
-            return convertVectorEntryToJson<float>(vector, row_idx);
+        case DUCKDB_TYPE_FLOAT: {
+            // As the double the float's shortest text denotes (0.1f -> 0.1, not
+            // 0.10000000149011612). crow would print a float with "%f": six
+            // decimals, so 1e-7 became 0.0.
+            auto validity = duckdb_vector_get_validity(vector);
+            if (!duckdb_validity_row_is_valid(validity, row_idx)) {
+                return crow::json::wvalue(nullptr);
+            }
+            const float value = static_cast<const float*>(duckdb_vector_get_data(vector))[row_idx];
+            if (!std::isfinite(value)) {
+                return crow::json::wvalue(static_cast<double>(value));
+            }
+            return crow::json::wvalue(std::strtod(fmt::format("{}", value).c_str(), nullptr));
+        }
         case DUCKDB_TYPE_DOUBLE:
             return convertVectorEntryToJson<double>(vector, row_idx);
         case DUCKDB_TYPE_VARCHAR:
@@ -733,21 +873,114 @@ crow::json::wvalue QueryResult::convertVectorDecimalToJson(const duckdb_vector &
     }
 
     auto decimal = duckdb_decimal {decimal_width, decimal_scale, hugeint};
-    double value = duckdb_decimal_to_double(decimal);
-    
-    return crow::json::wvalue(value);
+    return decimalToJson(decimal);
+}
+
+crow::json::wvalue QueryResult::decimalToJson(const duckdb_decimal& decimal) {
+    // A DECIMAL is exact; going through `double` and crow's "%.21g" made
+    // 7790.62 come out as 7790.61999999999989086. The JSON text is built from
+    // DuckDB's own exact rendering of the value instead.
+    auto value = duckdb_create_decimal(decimal);
+    DuckDBString rendered(duckdb_value_to_string(value));
+    duckdb_destroy_value(&value);
+    const std::string text = rendered.to_string();
+
+    std::size_t integer_digits = 0;
+    bool seen_point = false;
+    bool leading = true;
+    for (const char c : text) {
+        if (c == '.') {
+            seen_point = true;
+        } else if (c >= '0' && c <= '9' && !seen_point) {
+            if (leading && c == '0') {
+                continue;
+            }
+            leading = false;
+            ++integer_digits;
+        }
+    }
+
+    if (decimal.scale == 0 && integer_digits <= 18) {
+        // An integer-valued decimal: emitted as an exact JSON integer.
+        return crow::json::wvalue(static_cast<std::int64_t>(std::stoll(text)));
+    }
+    // A JSON number built from the exact text. crow prints such a number with
+    // "%f" (six decimals, trailing zeros trimmed), which reproduces the text
+    // exactly while it has at most six decimals and the six-decimal rendering
+    // stays within double's 15 exact significant digits.
+    if (decimal.scale <= 6 && integer_digits + 6 <= 15) {
+        auto parsed = crow::json::load(text);
+        if (parsed) {
+            return crow::json::wvalue(parsed);
+        }
+    }
+    // Beyond what a double holds exactly: the closest double, as before. A
+    // string would be exact but would change the column's JSON type for its
+    // largest values only, which breaks typed clients in production and not
+    // in tests.
+    return crow::json::wvalue(duckdb_decimal_to_double(decimal));
 }
 
 crow::json::wvalue QueryResult::convertVectorTimestampToJson(const duckdb_vector &vector, const idx_t row_idx) {
-    auto data = (duckdb_timestamp *)duckdb_vector_get_data(vector);
-    auto ts = duckdb_from_timestamp(data[row_idx]);
+    auto validity = duckdb_vector_get_validity(vector);
+    if (!duckdb_validity_row_is_valid(validity, row_idx)) {
+        return crow::json::wvalue(nullptr);
+    }
 
-    // Javascript ISO 8601
-    std::string iso_8601 = fmt::format("{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}.{:03d}Z", 
-                                        ts.date.year, ts.date.month, ts.date.day, ts.time.hour, 
-                                        ts.time.min, ts.time.sec, ts.time.micros / 1000);
+    // Every TIMESTAMP variant is an int64 count, but of a different unit.
+    // They were all decoded as microseconds - TIMESTAMP_S and _MS came out
+    // near 1970 - and printed to milliseconds, dropping the microseconds of
+    // a plain TIMESTAMP.
+    auto type = duckdb_vector_get_column_type(vector);
+    const auto type_id = duckdb_get_type_id(type);
+    duckdb_destroy_logical_type(&type);
 
-    return crow::json::wvalue(iso_8601);
+    const std::int64_t raw = static_cast<const std::int64_t *>(duckdb_vector_get_data(vector))[row_idx];
+    // DuckDB's +/-infinity are +/-INT64_MAX in every unit; test before the
+    // unit conversion below can overflow them.
+    if (raw == std::numeric_limits<std::int64_t>::max() || raw == -std::numeric_limits<std::int64_t>::max()) {
+        return crow::json::wvalue(raw > 0 ? std::string("infinity") : std::string("-infinity"));
+    }
+    std::int64_t micros = raw;
+    std::int64_t sub_micro_nanos = -1;   // >= 0 only for TIMESTAMP_NS
+    switch (type_id) {
+        case DUCKDB_TYPE_TIMESTAMP_S:
+            micros = raw * 1000000;
+            break;
+        case DUCKDB_TYPE_TIMESTAMP_MS:
+            micros = raw * 1000;
+            break;
+        case DUCKDB_TYPE_TIMESTAMP_NS: {
+            // Floor division, so pre-1970 instants keep a non-negative remainder.
+            micros = raw / 1000;
+            sub_micro_nanos = raw % 1000;
+            if (sub_micro_nanos < 0) {
+                sub_micro_nanos += 1000;
+                micros -= 1;
+            }
+            break;
+        }
+        default:
+            break;
+    }
+
+    duckdb_timestamp ts_value;
+    ts_value.micros = micros;
+    auto ts = duckdb_from_timestamp(ts_value);
+
+    // ISO 8601 with the full stored precision: microseconds, or nanoseconds
+    // for TIMESTAMP_NS. Only TIMESTAMPTZ is an instant (stored as UTC) and
+    // carries the `Z`; a plain TIMESTAMP is a wall-clock value with no zone,
+    // and a `Z` on it told every client it was UTC.
+    const char* zone = type_id == DUCKDB_TYPE_TIMESTAMP_TZ ? "Z" : "";
+    if (sub_micro_nanos >= 0) {
+        return crow::json::wvalue(fmt::format("{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}.{:06d}{:03d}{}",
+                                              ts.date.year, ts.date.month, ts.date.day, ts.time.hour,
+                                              ts.time.min, ts.time.sec, ts.time.micros, sub_micro_nanos, zone));
+    }
+    return crow::json::wvalue(fmt::format("{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}.{:06d}{}",
+                                          ts.date.year, ts.date.month, ts.date.day, ts.time.hour,
+                                          ts.time.min, ts.time.sec, ts.time.micros, zone));
 }
 
 crow::json::wvalue QueryResult::convertVectorDateToJson(const duckdb_vector &vector, const idx_t row_idx) {

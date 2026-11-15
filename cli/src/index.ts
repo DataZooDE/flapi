@@ -5,6 +5,7 @@ import { createApiClient } from './lib/http';
 import { handleError } from './lib/errors';
 import { registerPingCommand } from './commands/ping';
 import { registerHealthCommand } from './commands/health';
+import { registerMetricsCommand } from './commands/metrics';
 import { registerConfigCommands } from './commands/config';
 import { registerProjectCommands } from './commands/project';
 import { registerEndpointCommands } from './commands/endpoints';
@@ -14,6 +15,7 @@ import { registerCacheCommands } from './commands/cache';
 import { registerSchemaCommands } from './commands/schema';
 import type { CliContext, FlapiiConfig } from './lib/types';
 import type { AxiosInstance } from 'axios';
+import packageJson from '../package.json';
 
 export async function createCli(argv = process.argv) {
   const program = new Command();
@@ -21,11 +23,12 @@ export async function createCli(argv = process.argv) {
   program
     .name('flapii')
     .description('CLI client for flapi ConfigService')
+    .version(packageJson.version, '-V, --version', 'Print the flapii version')
     .configureOutput({
       outputError: (str, write) => write(Console.color('red', str)),
     })
     .option('-c, --config <path>', 'Path to flapi.yaml configuration file')
-    .option('-u, --base-url <url>', 'Base URL of the flapi server', process.env.FLAPI_BASE_URL)
+    .option('-u, --base-url <url>', 'Base URL of the flapi server (env: FLAPI_BASE_URL, or FLAPI_URL)', process.env.FLAPI_BASE_URL ?? process.env.FLAPI_URL)
     .option('--auth-token <token>', 'Bearer token for authentication', process.env.FLAPI_TOKEN)
     .option('-t, --config-service-token <token>', 'Config service authentication token', process.env.FLAPI_CONFIG_SERVICE_TOKEN)
     .option('--timeout <seconds>', 'Request timeout in seconds', process.env.FLAPI_TIMEOUT)
@@ -36,6 +39,11 @@ export async function createCli(argv = process.argv) {
     .option('--debug-http', 'Enable HTTP request/response debugging', false)
     .option('-q, --quiet', 'Suppress non-error output', false)
     .option('-y, --yes', 'Assume yes for prompts', false);
+
+  // Before any command runs, so its spinners and progress lines see it.
+  program.hook('preAction', () => {
+    Console.setQuiet(Boolean(program.opts().quiet));
+  });
 
   let cachedConfig: FlapiiConfig | undefined;
   let cachedClient: AxiosInstance | undefined;
@@ -57,6 +65,7 @@ export async function createCli(argv = process.argv) {
 
   registerPingCommand(program, ctx);
   registerHealthCommand(program, ctx);
+  registerMetricsCommand(program, ctx);
   registerConfigCommands(program, ctx);
   registerProjectCommands(program, ctx);
   registerEndpointCommands(program, ctx);

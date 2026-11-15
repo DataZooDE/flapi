@@ -2,6 +2,7 @@
 #include "flapi_tracing.hpp"
 #include "trace_semconv.hpp"
 #include "vfs_adapter.hpp"
+#include "mustache_syntax_check.hpp"
 #include <stdexcept>
 #include <filesystem>
 
@@ -14,6 +15,7 @@ std::string SQLTemplateProcessor::loadAndProcessTemplate(const EndpointConfig& e
     std::string templatePath = getFullTemplatePath(endpoint.templateSource);
     CROW_LOG_DEBUG << "Template path: " << templatePath;
     std::string templateContent = loadTemplateContent(templatePath);
+    RequireValidMustacheSyntax(templateContent, templatePath);
     crow::mustache::context ctx = createTemplateContext(endpoint, params);
     return processTemplate(templateContent, ctx);
 }
@@ -33,6 +35,9 @@ PreparedQueryRender SQLTemplateProcessor::loadAndProcessTemplatePrepared(
     const std::string templatePath = getFullTemplatePath(endpoint.templateSource);
     CROW_LOG_DEBUG << "Prepared template path: " << templatePath;
     const std::string templateContent = loadTemplateContent(templatePath);
+    // Checked on the SOURCE, so an error names the file and a line the
+    // operator can find; the rewritten text is checked again at compile.
+    RequireValidMustacheSyntax(templateContent, templatePath);
 
     PreparedTemplateRewriter rewriter;
     SqlParameterClassifier classifier;
@@ -69,6 +74,20 @@ PreparedQueryRender SQLTemplateProcessor::loadAndProcessTemplatePrepared(
     return out;
 }
 
+PreparedQueryRender SQLTemplateProcessor::processTemplatePrepared(const std::string& templateContent,
+                                                                  const EndpointConfig& endpoint,
+                                                                  std::map<std::string, std::string>& params) {
+    RequireValidMustacheSyntax(templateContent, endpoint.templateSource);
+    PreparedTemplateRewriter rewriter;
+    SqlParameterClassifier classifier;
+    auto rewrite = rewriter.rewrite(templateContent, endpoint.request_fields, classifier);
+    crow::mustache::context ctx = createTemplateContext(endpoint, params);
+    PreparedQueryRender out;
+    out.sql = processTemplate(rewrite.rewritten_template, ctx);
+    out.bindings = std::move(rewrite.bindings);
+    return out;
+}
+
 std::string SQLTemplateProcessor::loadAndProcessTemplate(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params) {
     std::string templatePath;
     if (cacheConfig.template_file) {
@@ -79,6 +98,7 @@ std::string SQLTemplateProcessor::loadAndProcessTemplate(const EndpointConfig& e
         CROW_LOG_DEBUG << "Using endpoint template file: " << templatePath;
     }
     std::string templateContent = loadTemplateContent(templatePath);
+    RequireValidMustacheSyntax(templateContent, templatePath);
     crow::mustache::context ctx = createTemplateContext(endpoint, params);
     return processTemplate(templateContent, ctx);
 }
@@ -91,6 +111,11 @@ std::string SQLTemplateProcessor::processTemplate(const std::string& templateCon
 }
 
 crow::mustache::template_t SQLTemplateProcessor::compileTemplate(const std::string& templateSource) {
+    // The one road into crow::mustache::compile. Templates are re-read from
+    // disk on every render, so a file edited after load (without a reload)
+    // reaches this point unchecked; crow itself would segfault or hang on an
+    // unbalanced section (see mustache_syntax_check.hpp).
+    RequireValidMustacheSyntax(templateSource, "");
     return crow::mustache::compile(templateSource);
 }
 

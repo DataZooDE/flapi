@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   renderConfig,
   renderJson,
+  renderConfigJson,
   renderEndpointTable,
   renderEndpointsTable,
   renderMcpToolsTable,
@@ -83,8 +84,8 @@ describe('render.ts', () => {
     expect(tableCall).toContain('Value');
   });
 
-  it('applies camel style to JSON output', () => {
-    renderJson({ 'foo-bar': { 'baz-qux': 1 } }, 'camel');
+  it('applies camel style to config JSON output', () => {
+    renderConfigJson({ 'foo-bar': { 'baz-qux': 1 } }, 'camel');
     expect(mockInfo).toHaveBeenCalledWith(
       JSON.stringify(
         {
@@ -98,8 +99,8 @@ describe('render.ts', () => {
     );
   });
 
-  it('applies hyphen style to JSON output', () => {
-    renderJson({ fooBar: { bazQux: 1 } }, 'hyphen');
+  it('applies hyphen style to config JSON output', () => {
+    renderConfigJson({ fooBar: { bazQux: 1 } }, 'hyphen');
     expect(mockInfo).toHaveBeenCalledWith(
       JSON.stringify(
         {

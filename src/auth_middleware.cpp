@@ -6,6 +6,7 @@
 #include <crow/http_request.h>
 #include <crow/http_response.h>
 #include <crow/utility.h>
+#include <crow/json.h>
 #include <algorithm>
 #include <cstring>
 #include <jwt-cpp/jwt.h>
@@ -25,7 +26,7 @@ namespace {
 // keeps the value a bounded enumeration rather than free-form config text.
 const char* staticAuthKind(const std::string& configured) {
     if (configured == "basic")  { return "basic"; }
-    if (configured == "bearer") { return "bearer"; }
+    if (configured == "bearer" || configured == "jwt") { return "bearer"; }
     if (configured == "oidc")   { return "oidc"; }
     return "none";
 }
@@ -33,6 +34,7 @@ const char* staticAuthKind(const std::string& configured) {
 #include "password_hasher.hpp"
 #include "database_manager.hpp"
 #include "flapi_telemetry.hpp"
+#include "runtime_metrics.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/types/blob.hpp"
 #include "oidc_provider_presets.hpp"
@@ -152,6 +154,38 @@ void AuthMiddleware::initializeAwsSecretsManager() {
     }
 }
 
+std::string AuthMiddleware::challengeFor(const std::string& auth_type, bool credentials_sent) {
+    if (auth_type == "basic") {
+        return "Basic realm=\"flAPI\"";
+    }
+    if (auth_type == "bearer" || auth_type == "jwt" || auth_type == "oidc") {
+        // RFC 6750 §3.1: a request that carried a token which was refused
+        // says so; one that carried none gets the bare challenge.
+        return credentials_sent ? "Bearer realm=\"flAPI\", error=\"invalid_token\""
+                                : "Bearer realm=\"flAPI\"";
+    }
+    // No scheme that could ever succeed (a load warning names it). Still a
+    // valid challenge, so clients see a 401 that conforms to RFC 9110.
+    return "Basic realm=\"flAPI\"";
+}
+
+namespace {
+
+// Every 401 the same shape: the configured scheme's challenge and the JSON
+// body a 403 already had. The body used to be Crow's plain "401 Unauthorized".
+void rejectUnauthorized(crow::response& res, const std::string& auth_type, bool credentials_sent,
+                        const std::string& message) {
+    res.code = 401;
+    res.set_header("WWW-Authenticate", AuthMiddleware::challengeFor(auth_type, credentials_sent));
+    res.set_header("Content-Type", "application/json");
+    crow::json::wvalue body;
+    body["error"] = "Unauthorized";
+    body["message"] = message;
+    res.body = body.dump();
+}
+
+}  // namespace
+
 void AuthMiddleware::before_handle(crow::request& req, crow::response& res, context& ctx) {
     if (!config_manager) return;
 
@@ -168,23 +202,44 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
 
     CROW_LOG_DEBUG << "Auth enabled for endpoint: " << req.url;
 
+    // A 401/403 from here never reaches the handler, which is where a REST
+    // series is recorded, so these rejections were counted globally only and
+    // never against their route. Named and recorded here instead.
+    const std::string method_name = crow::method_name(req.method);
+    const std::string route = endpoint->urlPath;
+    if (auto* rc = RequestContextScope::current()) {
+        rc->route_template_storage = route;
+        rc->route_template = rc->route_template_storage;
+    }
+    const auto record_rejection = [&](int status) {
+        const auto* rc = RequestContextScope::current();
+        const auto started = rc != nullptr ? rc->t0 : std::chrono::steady_clock::now();
+        RuntimeMetrics::instance().recordRest(
+            method_name, route, status,
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started));
+    };
+
     // auth_kind is the endpoint's configured scheme (enum, never a secret).
     const std::string auth_kind = endpoint->auth.type;
 
     auto auth_header = req.get_header_value("Authorization");
     if (auth_header.empty()) {
         CROW_LOG_DEBUG << "No Authorization header found";
-        res.code = 401;
-        res.set_header("WWW-Authenticate", "Basic realm=\"flAPI\"");
+        // The challenge and the audit name the endpoint's OWN scheme. Both
+        // used to say basic whatever the endpoint was configured for, which
+        // sent bearer clients looking for a password prompt.
+        rejectUnauthorized(res, endpoint->auth.type, /*credentials_sent=*/false,
+                           "This endpoint requires authentication; no Authorization header was sent.");
         // Record the outcome for the audit line. Completion itself is NOT done
         // here: Crow runs every middleware's after_handle during the
         // short-circuit unwind (crow/middleware.h:151-155), so
         // RequestContextMiddleware::after_handle still runs for this 401.
         // Completing here as well emitted the line twice.
         if (auto* rc = RequestContextScope::current()) {
-            rc->auth_kind = "basic";
+            rc->auth_kind = staticAuthKind(endpoint->auth.type);
             rc->principal = "anonymous";
         }
+        record_rejection(401);
         res.end();
         flapi::GlobalTelemetry().authEnforced(auth_kind, /*allow=*/false);
         return;
@@ -193,7 +248,9 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
     if (endpoint->auth.type == "basic") {
         ctx.auth_type = "basic";
         ctx.authenticated = authenticateBasic(auth_header, *endpoint, ctx);
-    } else if (endpoint->auth.type == "bearer") {
+    } else if (endpoint->auth.type == "bearer" || endpoint->auth.type == "jwt") {
+        // `jwt` is normalised to `bearer` at load; accepted here as well for
+        // endpoints constructed in code.
         ctx.auth_type = "bearer";
         ctx.authenticated = authenticateBearer(auth_header, *endpoint, ctx);
     } else if (endpoint->auth.type == "oidc") {
@@ -203,12 +260,17 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
 
     if (!ctx.authenticated) {
         CROW_LOG_DEBUG << "Authentication failed";
-        res.code = 401;
+        // invalid_token only when a token was actually presented; a Basic
+        // header sent to a bearer endpoint gets the bare challenge.
+        const bool token_sent = auth_header.rfind("Bearer ", 0) == 0;
+        rejectUnauthorized(res, endpoint->auth.type, token_sent,
+                           "The credentials sent were not accepted.");
         // As above: record only. after_handle still runs for this response.
         if (auto* rc = RequestContextScope::current()) {
             rc->auth_kind = staticAuthKind(endpoint->auth.type);
             rc->principal = ctx.username.empty() ? "anonymous" : ctx.username;
         }
+        record_rejection(401);
         res.end();
     } else {
         CROW_LOG_DEBUG << "Authentication successful for user: " << ctx.username;
@@ -216,8 +278,39 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
             rc->auth_kind = staticAuthKind(endpoint->auth.type);
             rc->principal = ctx.username;
         }
+        // Authorisation, after authentication: `auth.roles` was documented
+        // and never parsed nor checked, so a principal lacking every listed
+        // role got 200. Any one listed role suffices. 403, not 401: the
+        // credentials are valid, retrying with them cannot help.
+        if (!hasRequiredRole(endpoint->auth.roles, ctx.roles)) {
+            CROW_LOG_INFO << "Authorization denied for user '" << ctx.username << "' on "
+                          << endpoint->getIdentifier() << ": requires one of the endpoint's roles";
+            res.code = 403;
+            res.set_header("Content-Type", "application/json");
+            crow::json::wvalue body;
+            body["error"] = "Forbidden";
+            body["message"] = "The authenticated principal does not hold any role this endpoint requires.";
+            res.body = body.dump();
+            record_rejection(403);
+            res.end();
+            flapi::GlobalTelemetry().authEnforced(auth_kind, /*allow=*/false);
+            return;
+        }
     }
     flapi::GlobalTelemetry().authEnforced(auth_kind, ctx.authenticated);
+}
+
+bool AuthMiddleware::hasRequiredRole(const std::vector<std::string>& required,
+                                     const std::vector<std::string>& held) {
+    if (required.empty()) {
+        return true;
+    }
+    for (const auto& role : held) {
+        if (std::find(required.begin(), required.end(), role) != required.end()) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool AuthMiddleware::authenticateBasic(const std::string& auth_header, const EndpointConfig& endpoint, context& ctx) {
@@ -251,7 +344,7 @@ bool AuthMiddleware::authenticateBasic(const std::string& auth_header, const End
 bool AuthMiddleware::authenticateInlineUsers(const std::string& username, const std::string& password,
                                           const EndpointConfig& endpoint, context& ctx) {
     for (const auto& user : endpoint.auth.users) {
-        if (user.username == username && verifyPassword(password, user.password)) {
+        if (user.username == username && verifyCredentials(username, password, user.password)) {
             ctx.username = username;
             ctx.roles = user.roles;
             return true;
@@ -274,7 +367,7 @@ bool AuthMiddleware::authenticateAwsSecrets(const std::string& username, const s
         }
 
         auto [stored_password, roles] = result.value();
-        if (verifyPassword(password, stored_password)) 
+        if (verifyCredentials(username, password, stored_password))
         {
             ctx.username = username;
             for (const auto& role : roles) {
@@ -342,6 +435,14 @@ bool AuthMiddleware::verifyPassword(const std::string& provided_password, const 
     // deprecation warnings; the runtime keeps accepting legacy hashes so
     // existing configs do not break on upgrade.
     return PasswordHasher{}.verify(provided_password, stored_password);
+}
+
+bool AuthMiddleware::verifyCredentials(const std::string& username, const std::string& provided_password,
+                                       const std::string& stored_password) {
+    // Same verdict as verifyPassword, with successful PBKDF2 checks remembered
+    // and concurrent derivations capped (see PasswordVerificationCache).
+    return PasswordVerificationCache::instance().verifyCredentials(username, provided_password,
+                                                                   stored_password);
 }
 
 bool AuthMiddleware::authenticateBearer(const std::string& auth_header, const EndpointConfig& endpoint, context& ctx) {

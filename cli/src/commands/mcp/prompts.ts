@@ -2,7 +2,7 @@ import type { Command } from 'commander';
 import type { CliContext } from '../../lib/types';
 import { Console } from '../../lib/console';
 import { handleError } from '../../lib/errors';
-import { renderJson, renderMcpPromptsTable } from '../../lib/render';
+import { renderJson, renderConfigJson, renderMcpPromptsTable } from '../../lib/render';
 import chalk from 'chalk';
 
 export function registerMcpPromptsCommand(parent: Command, ctx: CliContext) {
@@ -22,7 +22,7 @@ export function registerMcpPromptsCommand(parent: Command, ctx: CliContext) {
           .filter((entry) => entry.config?.['mcp-prompt'] ?? entry.config?.mcpPrompt);
 
         if (ctx.config.output === 'json') {
-          renderJson(prompts.map((entry) => entry.config), ctx.config.jsonStyle);
+          renderConfigJson(prompts.map((entry) => entry.config), ctx.config.jsonStyle, 'document');
         } else {
           renderMcpPromptsTable(prompts);
         }
@@ -54,12 +54,12 @@ export function registerMcpPromptsCommand(parent: Command, ctx: CliContext) {
         }
 
         if (ctx.config.output === 'json') {
-          renderJson(prompt, ctx.config.jsonStyle);
+          renderConfigJson(prompt, ctx.config.jsonStyle, 'document');
         } else {
           const promptConfig = prompt['mcp-prompt'] ?? prompt['mcpPrompt'] ?? prompt;
           Console.info(chalk.cyan(`\n💬 MCP Prompt: ${name}`));
           Console.info(chalk.gray('═'.repeat(60)));
-          renderJson(promptConfig, ctx.config.jsonStyle);
+          renderConfigJson(promptConfig, ctx.config.jsonStyle, 'document');
         }
       } catch (error) {
         spinner.fail(chalk.red(`✗ Failed to fetch MCP prompt ${name}`));

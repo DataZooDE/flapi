@@ -24,8 +24,14 @@
 #include "rate_limit_middleware.hpp"
 #include "auth_middleware.hpp"
 #include "config_tool_adapter.hpp"
+#include "mcp_response_shaper.hpp"
 
 namespace flapi {
+
+/// The shaping resources/read applies: mcp-resource.response, else the same
+/// file's mcp-tool.response, with max-rows defaulting to
+/// MCPResourceInfo::kDefaultMaxRows. Never a no-op cap-wise.
+ResponseShape resourceResponseShape(const EndpointConfig& endpoint);
 
 /**
  * MCPRouteHandlers provides HTTP route handlers for MCP (Model Context Protocol) endpoints.
@@ -104,7 +110,15 @@ private:
     // Tool and resource discovery from unified configuration. A single
     // implementation (discoverMCPEntitiesImpl) populates tool_definitions_ /
     // resource_definitions_; callers read them via the *FromConfig accessors.
-    void discoverMCPEntitiesImpl();
+    //
+    // The definitions are rebuilt whenever the endpoint table changes. Every
+    // mutation (create/update/delete over REST or MCP, reload, filesystem
+    // reload) publishes a NEW copy-on-write snapshot, so comparing the pinned
+    // snapshot against the one the definitions were built from catches all of
+    // them without each mutation site having to remember to notify MCP.
+    void discoverMCPEntitiesImpl() const;
+    // Rediscover iff the endpoint snapshot changed since the last discovery.
+    void ensureEntitiesFresh() const;
     std::vector<crow::json::wvalue> getToolDefinitionsFromConfig() const;
     std::vector<crow::json::wvalue> getResourceDefinitionsFromConfig() const;
     std::vector<crow::json::wvalue> getToolDefinitionsImpl() const;
@@ -203,12 +217,17 @@ private:
     // Server state
     MCPServerInfo server_info_;
     MCPServerCapabilities capabilities_;
-    std::vector<crow::json::wvalue> tool_definitions_;
-    std::vector<crow::json::wvalue> resource_definitions_;
-    // Bumped on every refreshMCPEntities(); embedded in pagination cursors so a
-    // cursor minted before a config reload is rejected rather than silently
-    // paging over a changed list.
-    std::atomic<uint64_t> entity_generation_{0};
+    // Mutable: rebuilt lazily from const request handlers (ensureEntitiesFresh).
+    mutable std::vector<crow::json::wvalue> tool_definitions_;
+    mutable std::vector<crow::json::wvalue> resource_definitions_;
+    // The endpoint snapshot the definitions above were built from. Held (not
+    // just its address) so the vector cannot be freed and a new snapshot
+    // allocated at the same address, which would hide a change.
+    mutable std::shared_ptr<const std::vector<EndpointConfig>> discovered_snapshot_;
+    // Bumped on every rediscovery; embedded in pagination cursors so a cursor
+    // minted before a config change is rejected rather than silently paging
+    // over a changed list.
+    mutable std::atomic<uint64_t> entity_generation_{0};
     mutable std::mutex state_mutex_;
 
     // Per-tool outputSchema learned from the first successful tools/call result

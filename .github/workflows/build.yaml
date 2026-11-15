@@ -492,6 +492,16 @@ jobs:
         npm ci
         npm run test:integration
 
+    # The Claude Code plugin under plugins/flapi/ is checked against the same
+    # binary and CLI: config keys vs the parser, flapi/flapii commands and
+    # options vs --help, cache template variables, the version stamp, and every
+    # tagged example through --validate-config and a live server.
+    - name: Check the Claude Code plugin (make check-skills)
+      run: |
+        python3 -m pip install --quiet pyyaml
+        python3 -m py_compile plugins/flapi/hooks/validate_and_reload.py
+        python3 scripts/check_skills.py --flapi build/release/flapi --flapii "node cli/dist/index.js"
+
   # -------------------------------------------------------------------------------------------------
   # Smoke Tests — start each platform binary and verify HTTP health before any release
   # -------------------------------------------------------------------------------------------------

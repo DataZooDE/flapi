@@ -44,6 +44,13 @@ public:
     // params take the placeholder route.
     PreparedQueryRender loadAndProcessTemplatePrepared(
         const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
+    // The same rendering for template TEXT that is not (yet) on disk: the
+    // editor's unsaved candidate in template/expand?validate_only. Validating
+    // the pasted rendering instead reported binder errors (`c = ALFKI`) for SQL
+    // that never runs.
+    PreparedQueryRender processTemplatePrepared(const std::string& templateContent,
+                                                const EndpointConfig& endpoint,
+                                                std::map<std::string, std::string>& params);
 
 private:
     std::shared_ptr<ConfigManager> config_manager;

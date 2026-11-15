@@ -1,8 +1,10 @@
 #pragma once
 
 #include <string>
+#include <functional>
 #include <optional>
 #include <chrono>
+#include <atomic>
 #include <map>
 #include <mutex>
 #include <set>
@@ -15,6 +17,14 @@
 namespace flapi {
 
 class DatabaseManager; // Forward declaration
+
+/// How one cache refresh runs. At namespace scope: a nested struct with a default
+/// member initializer cannot be a default argument inside its enclosing class.
+struct CacheRefreshRequest {
+    /// Rebuild from scratch: render with the watermark erased (the template's
+    /// full-load branch) and drop the table first, in the same transaction.
+    bool full = false;
+};
 
 class CacheManager {
 public:
@@ -29,11 +39,108 @@ public:
     bool shouldRefreshCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint);
     bool shouldRefreshCache(std::shared_ptr<ConfigManager> config_manager, const CacheConfig& cacheConfig);
 
-    bool refreshCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
-    void refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string> params);
+    using RefreshOptions = CacheRefreshRequest;
+
+    bool refreshCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string>& params, const RefreshOptions& options = {});
+    void refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string> params, const RefreshOptions& options = {});
+    /// The populate SQL the NEXT refresh would run, with the live watermark and
+    /// snapshot values - what `flapii templates expand --cache` shows. Fills
+    /// `params` with the cache.* context it rendered with. Executes nothing.
+    /// `full` renders it as a forced full rebuild would (no watermark).
+    /// The params key renderRefreshTemplate sets (after rendering, never in the
+    /// template context) when it dropped the cursor watermark, with the reason.
+    static constexpr const char* kWatermarkDroppedReasonKey = "watermarkDroppedReason";
+    std::string renderRefreshTemplate(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint,
+                                      std::map<std::string, std::string>& params, bool full = false);
+    /// The retention policy that applies to a cache: its own `retention` block when it
+    /// sets either key, else the global `ducklake.retention`.
+    static CacheConfig::RetentionConfig effectiveRetention(std::shared_ptr<ConfigManager> config_manager,
+                                                           const CacheConfig& cacheConfig);
+    /// The cached endpoints warm-up builds: one per cache table (endpoints sharing a
+    /// table are built once, preferring one that names a populate template).
+    static std::vector<EndpointConfig> warmupEndpoints(std::shared_ptr<ConfigManager> config_manager);
+
+    /// When this process last finished a refresh of the endpoint's cache table
+    /// (success or failure), if it did.
+    std::optional<std::chrono::system_clock::time_point> lastRefreshCompletedAt(
+        std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint) const;
+    /// Commit time of the newest snapshot that touched the endpoint's cache table.
+    std::optional<std::chrono::system_clock::time_point> newestSnapshotTime(
+        std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint);
+    /// How old the SERVED data of catalog.schema.table is: the last successful
+    /// refresh this process ran, else the newest snapshot in the catalog (looked
+    /// up once and remembered). After a restart whose first refresh failed the
+    /// old snapshot is still served, and its age used to be reported as absent.
+    std::optional<std::chrono::system_clock::time_point> dataTimestamp(
+        const std::string& catalog, const std::string& schema, const std::string& table);
+
+    /// Catalog-wide compaction (merge adjacent files, rewrite delete-heavy files,
+    /// delete the replaced files), recorded in the audit log as `compaction`.
+    struct CompactionResult {
+        std::string status;   // "compacted" | "error" | "skipped" (disabled / read-only)
+        std::optional<std::int64_t> files_rewritten;  // when DuckLake reports it
+        std::int64_t duration_ms = 0;
+        std::string message;
+    };
+    /// `schema`/`table` empty: the whole catalog (the scheduled job). Otherwise
+    /// only that table's files are merged and rewritten. Runs whether or not
+    /// `compaction.enabled` is set - that switch is the SCHEDULE; an explicit
+    /// call (POST /api/v1/_config/cache/compact) is the operator asking.
+    CompactionResult performCompaction(std::shared_ptr<ConfigManager> config_manager,
+                                       const std::string& schema = "", const std::string& table = "");
+    /// When compaction last ran, from the audit log.
+    std::optional<std::chrono::system_clock::time_point> lastCompactionTime(std::shared_ptr<ConfigManager> config_manager);
+    /// ducklake.compaction is enabled and its schedule has elapsed since the last run.
+    bool compactionDue(std::shared_ptr<ConfigManager> config_manager, std::chrono::system_clock::time_point now);
+
+    /// Shutdown: refuse new refreshes, stop warm-up, and interrupt the populate
+    /// queries running now (repeatedly, for up to `budget`).
+    // Held for every write to the DuckLake catalog flapi makes on its own:
+    // populate scripts (with their retention), compaction, garbage collection,
+    // dropping an obsolete table, and the cache-target validation that executes
+    // a template's ATTACH/DETACH. One at a time per catalog.
+    //
+    // Two refreshes of DIFFERENT tables used to run in parallel on the one
+    // DuckDB instance. Attach names are instance-wide, so two populate scripts
+    // that both `DETACH DATABASE IF EXISTS src; ATTACH ... AS src` (the recipe
+    // the caching skill taught) collided with "INTERNAL Error: Database name
+    // src was already used by a different database for this meta transaction",
+    // which INVALIDATES the database: every later query failed until restart.
+    // Same-table duplicates are still coalesced before this lock is taken
+    // (refreshCache answers false), so they do not queue up behind it.
+    std::unique_lock<std::mutex> lockCatalogWrites();
+
+    void interruptRefreshesForShutdown(std::chrono::milliseconds budget = std::chrono::milliseconds(5000));
+    bool shutdownRequested() const;
+
+    /// Bound the audit log: keep the newest kAuditRowsKept rows per cache table and
+    /// expire all but kAuditSnapshotsKept of the audit table's snapshots.
+    void pruneAuditLog(std::shared_ptr<ConfigManager> config_manager);
+    static constexpr std::size_t kAuditRowsKept = 1000;
+    static constexpr std::size_t kAuditSnapshotsKept = 1;
+    static constexpr int kAuditPruneEvery = 100;
+    /// A random RFC 4122 version-4 UUID: the audit event id.
+    static std::string newEventId();
     static std::string joinStrings(const std::vector<std::string>& values, const std::string& delimiter);
     void addQueryCacheParamsIfNecessary(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
-    void performGarbageCollection(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::vector<std::string> previousTableNames);
+    /// What a garbage collection did, for the GC route's JSON answer.
+    struct GarbageCollectionResult {
+        /// expired | nothing_to_expire | no_policy | error
+        std::string status;
+        std::size_t expired_snapshots = 0;
+        std::size_t files_deleted = 0;
+        std::int64_t bytes_freed = 0;
+        std::string message;
+        std::string warning;
+        // drop-table: the endpoints whose retained snapshots still pin some of
+        // the dropped table's files, each with the policy that keeps them.
+        std::vector<std::string> pinned_by;
+    };
+    /// Drop a cache table no endpoint uses, expire its snapshots and delete its
+    /// files. status: dropped | not_found.
+    GarbageCollectionResult dropObsoleteCacheTable(std::shared_ptr<ConfigManager> config_manager,
+                                                   const std::string& schema, const std::string& table);
+    GarbageCollectionResult performGarbageCollection(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::vector<std::string> previousTableNames);
 
     enum class ReadinessState {
         Starting,
@@ -49,6 +156,8 @@ public:
         std::string table;
         std::string error;       // internal: logged, never returned to callers
         bool stale = false;      // Ready, but the latest refresh failed (last snapshot still served)
+        bool previous_table = false;  // Starting over a table a previous run built (warm-up: always)
+        bool replica = false;    // set by readinessBlock() on a read-only replica (message wording)
     };
 
     struct CacheReadinessSummary {
@@ -64,6 +173,13 @@ public:
     };
 
     void initializeReadiness(std::shared_ptr<ConfigManager> config_manager);
+    // Brings readiness and refresh stats in step with the cache tables the
+    // loaded endpoints name, after the endpoint table changed (reload,
+    // reload-file, create, update, delete): entries for tables no endpoint names
+    // any more are dropped, and a newly named table starts `ready` when it
+    // already exists in the catalog, else `unbuilt` (503 cache_not_built until a
+    // refresh builds it). Tables still named keep their state.
+    void syncReadinessWithEndpoints(std::shared_ptr<ConfigManager> config_manager);
     void markCacheStarting(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint);
     void markCacheReady(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint);
     void markCacheFailed(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::string& error);
@@ -71,7 +187,16 @@ public:
     // Whether the cache table exists in the DuckLake catalog. A failed lookup reads as "no".
     bool cacheTableExists(const std::string& catalog, const std::string& schema, const std::string& table);
     CacheReadiness getEndpointReadiness(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint) const;
-    std::optional<CacheReadiness> readinessBlock(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint) const;
+    /// Non-const: on a read-only replica an unbuilt cache is re-checked here
+    /// (throttled) - the writer may have built it since.
+    std::optional<CacheReadiness> readinessBlock(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint);
+    /// Read-only replicas only: every cache not Ready (unbuilt, failed, or
+    /// starting with no refresh in flight) whose table now exists in the shared
+    /// catalog becomes Ready. `force` skips the per-table throttle. Returns how
+    /// many became Ready. A no-op on a writer, whose own refreshes set readiness.
+    std::size_t recheckReadOnlyCaches(std::shared_ptr<ConfigManager> config_manager, bool force = false);
+    /// Minimum time between two re-checks of one table on the request path.
+    static constexpr std::chrono::seconds kReadOnlyRecheckInterval{5};
     static crow::json::wvalue readinessBlockJson(const CacheReadiness& readiness);
     static crow::response readinessBlockResponse(const CacheReadiness& readiness);
     CacheReadinessSummary getReadinessSummary() const;
@@ -79,7 +204,59 @@ public:
     // Audit functionality
     void initializeAuditTables(std::shared_ptr<ConfigManager> config_manager);
     void ensureCacheSchemaExists(const std::string& catalog, const std::string& schema);
-    void recordSyncEvent(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::string& sync_type, const std::string& status, const std::string& message = "");
+    /// What a sync event measured. Every field is optional: an event that
+    /// failed before its write ran has no row count, and a GC has no snapshot.
+    struct SyncEventDetails {
+        std::optional<std::chrono::system_clock::time_point> started_at;
+        std::optional<std::chrono::system_clock::time_point> completed_at;
+        std::optional<int64_t> rows_affected;
+        std::optional<std::string> snapshot_id;
+        // Set when the refresh ran but not as configured - today: the cursor
+        // watermark was dropped (cursor.type mismatch) and it loaded the full
+        // source. Carried into the audit message and the refresh answer.
+        std::optional<std::string> warning;
+        // The refresh loaded the whole source: a forced --full / ?full=true, a
+        // full-mode cache, or an incremental cache with no watermark yet (the
+        // bootstrap). Column `full` of the audit table; unset reads as false.
+        // An optional, not `bool full = false`: a default member initializer
+        // here breaks the `= {}` default argument of recordSyncEvent (GCC).
+        std::optional<bool> full;
+    };
+    void recordSyncEvent(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::string& sync_type, const std::string& status, const std::string& message = "", const SyncEventDetails& details = {});
+    /// In-memory roll-up of every refresh this process ran, per cache table,
+    /// for GET /api/v1/_config/metrics. Kept beside the audit table rather than
+    /// read from it so the metrics endpoint never queries DuckLake.
+    struct CacheRefreshStats {
+        std::string endpoint_path;
+        std::string catalog;
+        std::string schema;
+        std::string table;
+        std::string last_sync_type;
+        std::string last_status;
+        std::optional<int64_t> last_duration_ms;
+        std::optional<int64_t> last_rows_affected;
+        std::optional<std::string> last_snapshot_id;
+        std::optional<std::chrono::system_clock::time_point> last_completed_at;
+        std::optional<std::chrono::system_clock::time_point> last_success_at;
+        std::optional<std::string> last_warning;
+        bool last_full = false;
+        int64_t refreshes = 0;
+        int64_t failures = 0;
+        int64_t total_duration_ms = 0;
+        int64_t max_duration_ms = 0;
+    };
+    std::vector<CacheRefreshStats> getRefreshStats() const;
+    /// Readiness of every cache as a JSON-ready state name
+    /// (starting | ready | stale | failed | unbuilt), keyed by catalog.schema.table.
+    std::map<std::string, std::string> getReadinessStates() const;
+
+    /// The INSERT that records one sync event. Pure, for tests.
+    static std::string buildSyncEventInsert(const std::string& catalog, const std::string& event_id,
+                                            const EndpointConfig& endpoint, const std::string& sync_type,
+                                            const std::string& status, const std::string& message,
+                                            const SyncEventDetails& details);
+    /// `YYYY-MM-DD HH:MM:SS.mmm` in UTC, the form a DuckDB TIMESTAMP literal takes.
+    static std::string formatUtcTimestamp(std::chrono::system_clock::time_point tp);
 
     /// True when `value` is a plausible watermark for a cursor of
     /// `cursor_type`, and therefore safe to interpolate into a template that
@@ -103,6 +280,47 @@ public:
                                      const std::string& cursor_type);
 
 private:
+    /// Delete data files no remaining snapshot references (after an expiry).
+    std::size_t cleanupOldFiles(const std::string& catalog);
+    /// Total bytes of the data and delete files the catalog still references.
+    std::optional<std::int64_t> referencedFileBytes(const std::string& catalog);
+
+    /// What one retention pass did: run after a refresh and by manual GC.
+    struct RetentionOutcome {
+        std::size_t expired_snapshots = 0;
+        std::size_t files_deleted = 0;
+        std::int64_t bytes_freed = 0;
+        /// Set when the policy could not do what it says (shared snapshots, an
+        /// unresolvable table); logged at WARNING and put in the audit message.
+        std::string warning;
+        std::string error;
+    };
+    /// `before_expiry` runs once the candidates are known (with the warning, if
+    /// any) and before anything is expired.
+    RetentionOutcome applyRetention(const std::string& catalog, const std::string& schema,
+                                    const std::string& table, const CacheConfig::RetentionConfig& retention,
+                                    const std::function<void(const std::string&)>& before_expiry = {});
+    /// Expire all but the newest kAuditSnapshotsKept audit snapshots; true if it ran.
+    bool expireAuditSnapshots(const std::string& catalog);
+
+    /// Publishes the current thread as running a populate script, for shutdown.
+    class ActiveRefreshGuard {
+    public:
+        explicit ActiveRefreshGuard(CacheManager& manager);
+        ~ActiveRefreshGuard();
+        ActiveRefreshGuard(const ActiveRefreshGuard&) = delete;
+        ActiveRefreshGuard& operator=(const ActiveRefreshGuard&) = delete;
+
+    private:
+        CacheManager& manager_;
+        std::thread::id tid_;
+    };
+
+    std::atomic<bool> shutdown_requested_{false};
+    mutable std::mutex active_refresh_mutex_;
+    std::set<std::thread::id> active_refresh_threads_;
+    std::atomic<int> audit_events_since_prune_{0};
+
     struct SnapshotInfo {
         std::optional<std::string> current_snapshot_id;
         std::optional<std::string> current_snapshot_committed_at;
@@ -117,6 +335,14 @@ private:
     /// Quote a name as a SQL identifier.
     static std::string quoteIdentifier(const std::string& name);
 
+    /// The (quoted) name of the metadata database DuckLake attaches for `catalog`.
+    static std::string metadataCatalog(const std::string& catalog);
+
+    /// How `changes.tables_created` names schema.table: the bare form, plus the
+    /// form DuckLake actually writes (each part optionally quoted, so the default
+    /// schema `cache` - a keyword - appears as '"cache".t').
+    static std::vector<std::string> tableNameKeys(const std::string& schema, const std::string& table);
+
     /// The largest cursor value actually present in the cache table, returned
     /// RAW - escaping belongs at interpolation, where the template author's
     /// choice of `{{{ }}}` versus `{{ }}` decides the quoting. Empty when the
@@ -126,11 +352,16 @@ private:
                                      const std::string& schema,
                                      const std::string& table,
                                      const std::string& cursor_column,
-                                     const std::string& cursor_type);
+                                     const std::string& cursor_type,
+                                     std::string* dropped_reason = nullptr);
 
     /// The names by which `catalog`'s `changes` map refers to
     /// `schema`.`table`: its numeric table id (for row changes) and
-    /// `schema.table` (for creates).
+    /// `schema.table` (for creates). Every id the table has had - a full refresh
+    /// (CREATE OR REPLACE) and a `--full` rebuild each make a new one - resolved
+    /// through the schema NAME from the metadata catalog's ducklake_table /
+    /// ducklake_schema, so dropped incarnations stay expirable and a same-named
+    /// table in another schema is never confused with this one.
     ///
     /// Resolved as its own query rather than inlined as a correlated
     /// subquery, because DuckDB refuses a subquery inside a lambda body
@@ -186,6 +417,8 @@ private:
         /// "nothing expirable" look identical from the outside, and the
         /// second means a configured policy silently never fires.
         std::size_t shared = 0;
+        /// The table could not be resolved unambiguously, so nothing was considered.
+        bool unresolved = false;
     };
 
     ExpiryCandidates expirableSnapshotIds(const std::string& catalog,
@@ -208,7 +441,8 @@ private:
                                const std::string& schema,
                                const std::string& table,
                                std::optional<std::size_t> keep_last,
-                               const std::string& older_than_sql);
+                               const std::string& older_than_sql,
+                               ExpiryCandidates* report = nullptr);
 
     static std::string determineCacheMode(const CacheConfig& cacheConfig);
 
@@ -233,9 +467,24 @@ private:
 
     mutable std::mutex readiness_mutex_;
     std::map<CacheKey, CacheReadiness> readiness_;
+    // Read-only replicas: when each table was last re-checked (readiness_mutex_).
+    std::map<CacheKey, std::chrono::steady_clock::time_point> readonly_rechecked_at_;
+    /// One table's read-only re-check; true when it became Ready.
+    bool recheckReadOnlyKey(const CacheKey& key, bool force);
+
+    void updateRefreshStats(const CacheKey& key, const std::string& endpoint_path, const std::string& sync_type,
+                            const std::string& status, const SyncEventDetails& details);
+    mutable std::mutex refresh_stats_mutex_;
+    std::map<CacheKey, CacheRefreshStats> refresh_stats_;
+    // dataTimestamp's catalog lookups, by table; an entry may hold nullopt.
+    std::map<CacheKey, std::optional<std::chrono::system_clock::time_point>> snapshot_time_memo_;
+    std::optional<std::chrono::system_clock::time_point> newestSnapshotTimeForKey(const CacheKey& key);
 
     mutable std::mutex inflight_mutex_;
     std::set<CacheKey> inflight_refreshes_;
+
+    // See lockCatalogWrites().
+    std::mutex catalog_write_mutex_;
 };
 
 } // namespace flapi

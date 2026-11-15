@@ -4,6 +4,555 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Upgrade notes
+
+- **Endpoints whose routes differ only in parameter names are duplicates.** `GET /items/:id` and
+  `GET /items/:item_id` match the same requests; both used to load and load order decided which one answered,
+  so an endpoint with `auth: {enabled: false}` could shadow an authenticated one. Startup, reload and create now
+  refuse the second one with `Duplicate endpoint GET /items/:item_id (same route as /items/:id)`.
+- **SECURITY: request routing picks the most specific route, never the first one loaded.** Overlapping
+  routes of one method (`/customers/7` and `/customers/:id`, `/a/:x/b` and `/:z/:x/b`) were resolved by
+  directory order, and a reload moved the file to the end, so an open endpoint could answer a protected
+  endpoint's URLs and a reload could flip a live URL from 401 to 200. Now, segment by segment from the left,
+  a literal beats a `:param`, and rate limiting, auth and the handler always resolve the same endpoint.
+  Endpoint files load in sorted path order.
+- **SECURITY: overlapping routes whose more specific endpoint has looser auth are refused** (since
+  widened to any auth difference, see below). Startup,
+  reload, reload-file, create and update now fail with `Overlapping routes with different auth: GET
+  /customers/7 (open) takes precedence over GET /customers/:id (basic, roles [admin]) for /customers/7 ...`
+  (409 from the config service and the MCP tools). Set `allow-shadowing: true` on the more specific endpoint
+  if it is meant to answer those URLs. Allowed overlaps with different auth log a WARNING, with equal auth
+  an INFO line. A configuration that relied on the old first-match order may now stop at startup: fix the
+  routes or the auth, or opt in.
+- **SECURITY: overlapping routes are refused whenever their auth differs, in either direction.** A
+  protected literal over an open `:param` route (`/customers/7` with basic auth beside an open
+  `/customers/:id`) used to load with a WARNING, but it protects only the string `7`:
+  `/customers/07` and `/customers/+7` reached the open endpoint and returned the same row without
+  credentials. Such a pair is now refused like the reverse, unless the more specific endpoint sets
+  `allow-shadowing: true`. The message says which endpoint wins for which URLs and that the other still
+  serves every other URL its pattern matches. To protect a record, give both routes the same auth or filter
+  rows by `auth.*` inside the general endpoint. **A configuration with a protected literal over an open or
+  differently protected general route now stops at startup**: fix the auth or add `allow-shadowing: true`
+  to the literal.
+- **SECURITY: "same auth" includes the identity source.** Overlap checks compared only enabled, type and
+  roles, so a literal with its own `guest` user (or another `jwt-secret`, `jwt-issuer`, OIDC issuer /
+  audience / client, or AWS secret) counted as the same auth and served the protected URL to guest. Users
+  (name, password, per-user roles), a digest of `jwt-secret`, `jwt-issuer`, the OIDC settings (including `scopes`,
+  `verify-expiration` and `clock-skew-seconds`) and the `from-aws-secretmanager` source are now compared; any difference is "different auth" and refused as
+  above. Messages name the differing field (`auth differs in: users`), never a secret.
+- **`url-path` refuses `.` and `..` segments and a repeated `:param` name** (`/a/../b`, `/a/:id/b/:id`).
+  A non-ASCII character in a url-path is now named whole with its code point (`'é' (U+00E9)`) instead of
+  a broken byte.
+- **The plugin hook passes `Overlapping routes with different auth` warnings** from `--validate-config`
+  (an `allow-shadowing` split) to Claude as context, next to SECURITY WARNINGS.
+- **SECURITY: `method` is normalised and limited to GET, POST, PUT, PATCH, DELETE.** It is trimmed and
+  upper-cased at every entry point (endpoint files, the config service, `flapii endpoints create`, the MCP
+  `flapi_create_endpoint` / `flapi_update_endpoint` tools); empty means GET. `method: get` beside a protected
+  `GET` on the same route used to load (the duplicate check compared case-sensitively) and could answer
+  without credentials; it is now `Duplicate endpoint GET ...`. Any other method (`HEAD`, `FETCH`, ...) is a
+  load error / 400 naming the endpoint; such endpoints were never routable. A PUT or MCP update with
+  `"method": "get"` on a GET endpoint is no change and succeeds (the REST PUT used to answer 400).
+- **`url-path` is validated.** Segments must be literals of `A-Z a-z 0-9 . _ ~ -` or `:name`; one trailing
+  `/` is allowed, `//` is not. `url-path: /customers/{cid}` used to pass `--validate-config` and then hang
+  every request that reached it in the route scan (health checks included); it is now a load error / 400
+  that suggests `:cid`. Literal segments are matched literally (`.` used to match any character).
+- **MCP `flapi_create_endpoint` takes an `auth` argument** (the shape of a YAML `auth:` block), creates the
+  endpoint through the same loader as `POST /api/v1/_config/endpoints` (so a top-level `auth:` block is
+  inherited and duplicate/overlap checks apply), names the conflicting endpoint when it refuses, and
+  reports `"auth"` plus a `"warning"` (and a log line) when the new endpoint is unauthenticated. Creating
+  `POST /x` beside `GET /x`, or `/x/7` beside `/x/:id`, is no longer refused as "Endpoint already exists"
+  (it still is when the file it would write, e.g. `x.yaml`, exists).
+- **Cache keys `rollback-window` and `delete-handling` are deprecated.** They were accepted but never did
+  anything. They still load, and startup now logs a warning for each. Handle deleted rows in the merge
+  template instead; see [Deletes in merge mode](docs/guides/caching.md#deletes-in-merge-mode).
+
+Authentication and requests:
+
+- **A top-level `auth:` block now protects every endpoint that has no `auth:` block of its own.** Before, it
+  was ignored for REST endpoints. A deployment with global auth enabled now answers 401 on endpoints that were
+  open. An endpoint's own block replaces the global one (no merge); keep an endpoint public with
+  `auth: {enabled: false}`. Startup logs how many endpoints inherit the global block and how many opt out.
+- **SECURITY: an `auth:` block without `enabled` is on when it configures authentication.** A block that sets
+  `type`, `roles`, `users`, `jwt-secret`, `jwt-issuer`, `oidc` or `from-aws-secretmanager` but no `enabled`
+  used to default to `enabled: false`: such an endpoint was open, and under a global `auth:` block it counted
+  as an opt-out. It now requires authentication; only an explicit `enabled: false` turns auth off. Endpoints
+  configured this way that answered without credentials now answer 401. The same rule applies to the
+  top-level block, which used to fail startup without `enabled`. Startup logs the effective setting.
+- **`auth.roles` on REST endpoints is enforced.** A caller who authenticates but holds none of the listed roles
+  gets 403 `{"error":"Forbidden",...}`. Before, any authenticated user got through.
+- **An endpoint `auth:` block with no `type` and no credentials (e.g. `roles:` only) uses the top-level
+  block's type and credentials** and applies its own roles on top. Before, it had type `""` and answered
+  401 to every request. Without an enabled top-level block such a block now stops startup with
+  `AUTH_NO_TYPE`, and so does a block with `users:` or a secret but no `type:` (both refused every request
+  before).
+- **401 responses carry a JSON body** `{"error":"Unauthorized","message":"..."}` instead of the plain text
+  `401 Unauthorized`, and a `WWW-Authenticate` challenge for the endpoint's own scheme: `Bearer realm="flAPI"`
+  for bearer and OIDC endpoints (with `error="invalid_token"` when a token was refused), `Basic
+  realm="flAPI"` for basic. Before, every endpoint challenged `Basic`, and a refused token got no challenge.
+  Clients that matched the old text or the Basic challenge on bearer endpoints must be updated.
+- **`field-in: header` fields are read from the request headers** (case-insensitive), on GET and on writes. A
+  query or body parameter of the same name no longer satisfies them.
+- **`method: DELETE` endpoints run their SQL template** like the other write methods (parameters, validation,
+  cache handling) and answer 200 `{"rows_affected": n}`. Before, a DELETE endpoint only invalidated its cache
+  or answered 405.
+- **Write endpoints report the real `rows_affected`:** the number of rows the statements changed (summed over a
+  multi-statement template; with `RETURNING`, the rows returned). Before, a statement without `RETURNING`
+  always reported 1 - an `UPDATE` of five rows and a `DELETE` of a missing id alike.
+- **A REST 500 answer is JSON and no longer contains the database error:**
+  `{"error":"Internal Server Error","message":"...","request_id":"req-..."}`. The full error is in the server
+  log under that request id.
+- **JSON output of numbers and times changed:** DECIMAL values are exact (for scale 0 with up to 18 digits, or
+  scale up to 6 with up to 9 integer digits) instead of rounded through a double; TIMESTAMP and TIMESTAMPTZ
+  keep microseconds, TIMESTAMP_S/_MS are correct, TIMESTAMP_NS has 9 fractional digits, NULL is `null`.
+- **An unknown `log-level` in the config stops startup** with the list of valid levels.
+- **OIDC:** an `issuer-url` that still contains `{tenant}`, `{realm}` or `{domain}` after the preset is applied
+  stops startup with a message naming the key to set.
+- **GCS:** `GOOGLE_*` environment variables are not used for `gs://` access (DuckDB cannot use service-account
+  credentials); startup now warns. Create an HMAC key and add `CREATE SECRET (TYPE gcs, KEY_ID ..., SECRET ...)`
+  to a connection's `init`.
+- **An unknown `auth.type` stops startup and is refused on reload** with `AUTH_UNKNOWN_TYPE`, naming the
+  endpoint and the valid types (`basic`, `bearer`, `jwt` as an alias of bearer, `oidc`). This applies to
+  endpoint blocks, the top-level `auth:` block and `mcp.auth.type` when enabled. Before, a typo such as
+  `type: basci` loaded, answered 401 to every request and logged nothing. Fix the spelling. `mcp.auth.type:
+  jwt` now works as an alias, too.
+
+Templates, requests and responses:
+
+- **A template with unbalanced Mustache sections is a configuration error.** A stray `{{/x}}` crashed the
+  server and an unclosed `{{#x}}` hung it (and grew memory without bound). Now unbalanced or crossed
+  sections, `{{{` not closed by `}}}`, an unterminated `{{`, empty tags, partials (`{{> x}}`) and
+  set-delimiter tags (`{{= =}}`) stop startup, fail a reload (400) and a config-service template update
+  (400, file unchanged), and make `--validate-config` exit 1, each naming `<file>:<line>:<col>`. A
+  template edited on disk without a reload answers 500 instead of crashing. A template that used partials
+  or `{{= =}}` must be rewritten without them.
+- **JSON body numbers keep their value.** `9.99` was stored as `9`, and `301.7` passed an `int` validator
+  as `301`. An `int` field now rejects any non-integer, including `5.0` and `1e3`.
+- **`number` validators read `min` and `max`** (decimals allowed) and enforce them. A config that set them
+  (ignored until now) may now reject requests.
+- **A query parameter given twice (`?x=1&x=2`) is a 400** `{"error":"Duplicate query parameter: x"}`. Before,
+  the first value was used.
+- **A `method: DELETE` endpoint is a write**, also as an MCP tool: the tool reports the write result and the
+  endpoint's cache is maintained. Before, the row was deleted but the tool reported an error.
+- **Validator range messages name the limit**: `Integer is greater than the maximum allowed value (max 1000)`
+  (also for string length, number, date and time bounds). Clients that compare the exact text must update.
+- **`template/expand?validate_only=1` binds the SQL that runs, statement by statement.** It used to EXPLAIN
+  the pasted rendering as one string; it now validates the prepared rendering (typed `{{ params.x }}` as `?`),
+  parses each statement separately and binds it in a rolled-back transaction. A template that was reported
+  valid can now be `valid: false` (a binder error inside a rendered section, a broken second statement), and
+  one that was reported invalid only because of pasted values (`c = ALFKI`) is now valid. Errors carry
+  `statement` and `kind`; a cached endpoint reading a cache not built yet is a `cache_not_built` warning, not an
+  error.
+- **`template/expand?target=cache` of a template with a Mustache syntax error is a 400** naming
+  `<file>:<line>:<col>`; it was a 500.
+- **The bare-SELECT refusal of a populate template is worded for a guard:** a SELECT before the last statement
+  is refused with "cache template statement N of M is a bare SELECT; its result is discarded. Wrap a check in
+  CREATE OR REPLACE TEMP TABLE _chk AS SELECT ...". Clients that compare the old text must update.
+- **Response formatting:** row keys (JSON and CSV) follow the `SELECT` column order; `DOUBLE`/`FLOAT` print
+  in shortest form (`711.56`, not `711.55999999999994543`); a naive `TIMESTAMP` has no `Z` suffix (only
+  `TIMESTAMPTZ` does). Applies to REST, MCP `tools/call` and `resources/read`.
+
+Caching:
+
+- **Cache refreshes run one at a time per DuckLake catalog.** A refresh of another table waits for the running
+  one (scheduled, manual, warm-up, one-shot and write-triggered alike); a second refresh of the same table still
+  answers `already_running` at once. Compaction, garbage collection, `drop-table` and
+  `?target=cache&validate_only=1` take the same lock. A manual refresh can therefore take longer to answer
+  while another cache refreshes.
+- **`/health/live` answers 503 `{"status":"fatal","reason":...}` when the DuckDB database has been
+  invalidated** by an internal error, and so does `/health`; data and config-service requests answer 503
+  `database_invalidated` (they were a 500 each, forever). A liveness probe now restarts such a process.
+- **The `full` field of a refresh answer is what the refresh did**: `true` also for a full-mode cache and for an
+  incremental cache's first build, not only for `?full=true`. The audit table gets a `full` column
+  (added to existing catalogs by the writer at start); the audit routes return it.
+- **The cache scheduler is on by default.** Every `cache.schedule` now runs without
+  `ducklake.scheduler.enabled: true`; set it to `false` to keep the old behaviour (startup warns).
+- **No refresh at startup beyond the warm-up.** A cache's first scheduled refresh is one `schedule` after its
+  last real refresh (this run's warm-up, the newest snapshot, or process start). Manual and config-service
+  refreshes count.
+- **`ducklake.scheduler.scan-interval` is honoured** (default: the shorter of `heartbeat.worker-interval` and the
+  shortest `cache.schedule`, at least 1 s). `heartbeat.worker-interval` defaults to 60 s whether or not a
+  `heartbeat:` block exists (it was 10 s with one). An invalid scan interval or a worker interval of 0 or less
+  stops startup.
+- **`refresh-on-write` now refreshes the cache**, after the response (it did nothing before).
+  `invalidate-on-write` refreshes before the response, as before. With both set, only the synchronous refresh
+  runs. MCP tool writes follow the same rules.
+- **A populate template that is a bare `SELECT` is refused** before it runs, and a template that does not leave
+  the cache table in place fails and rolls back. Before, both "succeeded" and the endpoint then failed.
+- **A cache without `template-file` materialises the endpoint template.** Its `template-source` was the populate
+  SQL and, as a bare `SELECT`, built nothing. When it renders to a single `SELECT` it now runs as
+  `CREATE OR REPLACE TABLE <cache table> AS <select>`: a full refresh every time, whatever `primary-key` and
+  `cursor` imply (audited as `full`). Startup warns `cache on <endpoint> has no template-file`. Declare
+  `template-file` for incremental refreshes.
+- **An endpoint whose cache failed its first build answers 503 `{"error":"cache_build_failed"}`** (with
+  `Retry-After: 5`) instead of `cache_warming`.
+- **`ducklake.compaction.schedule` is parsed:** an interval (`6h`, `1d`) or `@hourly`, `@daily`, `@midnight`,
+  `@weekly`. Anything else (for example a cron expression) stops startup. Before, compaction ran every 24 hours
+  whatever the value.
+- **Global `ducklake.retention` applies** to every cache without its own `retention:` block (an endpoint block
+  replaces it). Caches that kept every snapshot may now expire old ones, so time travel to them stops working.
+- **Expired snapshots' files are deleted** after retention or `cache gc` runs, so disk space is reclaimed.
+- **The cache audit log keeps the newest 1000 rows per cache table.**
+- **`POST .../cache/refresh` answers JSON:** `{"status":"refreshed","endpoint","mode","full","duration_ms",
+  "rows_affected","snapshot_id"}` (or `"status":"already_running"` when a refresh of that table is in flight),
+  and errors as `{"error":...,"reason":...}`. Before, success was an empty 200 and errors plain text.
+  `flapii cache refresh` prints these fields.
+- **Full rebuild drops the table:** `flapii cache refresh <path> --full`, `flapi cache refresh --full` and
+  `POST .../cache/refresh?full=true` erase the watermark and drop the cache table in the same transaction, so an
+  append cache is rebuilt instead of re-appended.
+- **Retention now expires what it should, so more history goes.** It never matched a cache in the default
+  schema `cache` (DuckLake records the create as `'"cache".t'`) or with a keyword table name, nor the earlier
+  incarnations of a cache (each CTAS full refresh and each `--full` rebuild makes a new table id). Such caches
+  kept every snapshot and file; under `keep-last-snapshots` / `max-snapshot-age` they now keep only what the
+  policy says, and time travel to the expired snapshots stops working.
+- **`POST .../cache/gc` answers JSON** `{"status":"expired"|"nothing_to_expire"|"no_policy"|"error",
+  "expired_snapshots","files_deleted","bytes_freed","message"}` instead of the text "Garbage collection
+  completed", and a failed GC is HTTP 500 (was 200). Without a retention policy it is `no_policy`.
+- **`snapshot_id` in the refresh answer and the audit is the snapshot that refresh committed**, or absent/null
+  when it committed none or it is unknown. It used to be a guess (often another schema's table, or a previous
+  refresh).
+- **A read-only replica answers 409 `read_only_cache` to `PUT .../cache/template`** (it overwrote the
+  writer's populate SQL). The 409 messages now say what to do for each operation.
+- **Time travel to an unknown or expired snapshot on a cached endpoint is 404**
+  `{"error":"snapshot_not_found"}` (was 500).
+- **New key `ducklake.compaction.delete-threshold`** (0 < x <= 1): a value outside that range stops startup.
+
+- **SECURITY: MCP `resources/read` validates uri-template values.** A value bound from
+  `flapi://customers/{id}` now gets the field's `default:` and validators (regex, enum, int, ...) and the
+  unknown-parameter check, like `tools/call`; a failing value answers `-32602`. Before, it reached the template
+  unvalidated. A `{var}` without a matching `request:` field is now refused as an unknown parameter: declare it.
+- **`resources/read` is capped at 1000 rows by default** (`mcp-resource.response.max-rows`, else the file's
+  `mcp-tool.response.max-rows`); a capped read carries `_meta.truncated`. `redact-columns` applies too.
+- **A config-service slug served by several endpoints needs `?method=`** (`GET /orders` + `POST /orders`):
+  without it every `/api/v1/_config/endpoints/{slug}/...` route answers 400 "Ambiguous ... specify
+  ?method=GET|POST" instead of acting on one of them. `flapii` takes `--method`; the `flapi_*` endpoint tools
+  take `method`. `GET /api/v1/_config/endpoints` keys such endpoints `"GET /orders"` / `"POST /orders"`
+  (a path served once keeps its plain key).
+- **Two files with the same MCP tool, resource or prompt name stop startup** (and fail a reload), with an
+  error naming both files. Before, both loaded and `tools/call` ran whichever came first.
+- **Config-service 401s are JSON** `{"error": "Unauthorized: missing or invalid config-service token ..."}` on
+  every route (most answered plain text). A `flapi_*` MCP tool without a valid token answers JSON-RPC `-32001`
+  naming `X-Config-Token` (it was `-32603 "Tool execution failed: ..."`).
+- **`template/expand` and MCP `_dryRun` show the SQL that runs:** a typed `{{ params.x }}` is a `?` with its value
+  in the new `bindings` list, instead of the value pasted in. `_dryRun` `parameters` are typed (`3`, not `"3"`)
+  and `structuredContent.rows` is `[]`.
+- **Metrics:** MCP role denials no longer count as tool `failures` or `server_errors` (they are `rejected`).
+  Percentiles are interpolated inside finer buckets (ten per decade) instead of reporting the bucket's upper
+  bound, so p50/p95/p99 values change. `/health` `caches.ready` no longer counts stale caches (see
+  `caches.stale`).
+- **`flapi cache refresh`** exits `2` (not `1`) for an argument it does not know.
+- **`flapii config validate`** checks the `template.path` of `--config` (or `./flapi.yaml`) instead of
+  `examples/sqls`, and fails when the config cannot be read.
+
+Config service, MCP and CLI:
+
+- **Two endpoint files with the same `url-path` and `method` stop startup**, with an error naming both files.
+  Before, both loaded and only one answered. A reload that would create such a pair fails (400, with the
+  reason), and creating an endpoint that a YAML file in the templates directory already declares - loaded or
+  not - answers 409 instead of writing a second copy.
+- **Created endpoint files get readable names:** `/made-by-cli` is `made-by-cli.yaml` and `/a/b` is `a_b.yaml`
+  (REST `POST .../endpoints` and MCP `flapi_create_endpoint`); before, the slug escaping gave
+  `made~1by~1cli.yaml`. A name that is taken answers 409.
+- **MCP `flapi_update_endpoint` persists:** the change is merged into the endpoint's YAML like REST `PUT`, and
+  takes any endpoint key (`config: {...}` or top-level keys). Before, it read only `method` and
+  `template_source` and changed memory only. Changing the method is now refused, as with `PUT`.
+
+- **Endpoints created or updated through the config service are written to disk.** `POST
+  /api/v1/_config/endpoints` writes `<template dir>/<slug>.yaml` and answers 201 (409 if it exists, 400 on a
+  parse error). `PUT` merges the change into the YAML file (comments in it are lost); changing `url-path`,
+  `method` or the name answers 400, and endpoints that use `{{include}}` answer 409. `DELETE` removes the YAML
+  file. Error bodies are JSON `{"error": ...}`.
+- **A reload of an endpoint whose YAML is now invalid answers 400** with the reason; 404 means the endpoint is
+  unknown. Reload errors carry an `error` field like create/update/delete.
+- **A partial `PUT /api/v1/_config/endpoints/{slug}`** (`{"template-source": "x.sql"}`) merges onto the
+  endpoint; it answered 500 `Missing required field in endpoint config`. A body that cannot be read is 400.
+- **`PUT /api/v1/_config/project` and `DELETE /config` answer 405** with `Allow: GET`.
+- **`GET /api/v1/_config/schema?tables=true`** returns tables only (no views), each with `name`, `schema`,
+  `database`, `type`, `connection` and `qualified_name`; filter with `?connection=`. Failures answer 500.
+- **MCP:** `tools/list`, `resources/list` and `prompts/list` follow endpoint changes without a restart; a
+  pagination cursor from before a change is rejected.
+- **Metrics:** a 503 because a cache is not ready is counted as `status.503_cache` and
+  `requests.cache_unavailable`, no longer as a 5xx or a server error.
+- **`flapii` option renames:** `flapii schema get --connection` (no `-c`), `flapii schema get --table`
+  (no `-t`), `flapii cache update --ttl` (no `-t`). `flapii cache refresh --force` is deprecated and is a normal
+  refresh; use `--full` for a full rebuild.
+- **`flapii --json-style` re-cases only configuration documents** (endpoints, MCP tools/resources/prompts, cache
+  config, project, templates list). Data such as metrics, cache audit, schema, health, template expansion and
+  validation is printed exactly as the server sends it, in snake_case (`duration_ms`, `rows_affected`).
+- **MCP `tools/call` failures no longer return the error text.** A SQL or template failure is a result with
+  `isError: true` and `Tool execution failed on the server. The details are in the server log under request_id
+  req-...`, like a REST 500. It used to return the database error, the SQL and absolute template paths. Read the
+  detail from the server log. Bad arguments keep their specific messages.
+- **MCP with `mcp.auth`: refused credentials answer `The credentials sent were not accepted.`** (still HTTP 401,
+  `-32000`) instead of `Authentication required for method: ...`, which is now only sent when no credentials
+  were sent. Clients that matched the old text for a bad or expired token must be updated.
+- **The Claude Code plugin's MCP server sends the config token as `X-Config-Token`**, and `Authorization:
+  Bearer ${FLAPI_MCP_TOKEN}` for `mcp.auth`. Set `FLAPI_MCP_TOKEN` if your server has `mcp.auth` on; before, the
+  config token went in `Authorization` and every call was a 401 once `mcp.auth` was enabled.
+- **Write responses list `rows_affected` first, then `data`, whose rows keep the `RETURNING` column order.**
+  An MCP write result always has `data` (`[]` when no row came back). Clients that parse JSON are unaffected.
+- **Metrics latency is measured from the start of the request** and so includes authentication (a Basic-auth
+  endpoint's PBKDF2 check), rate limiting and middleware rejections. Latencies are rounded to three decimals.
+  Numbers for authenticated endpoints are higher than before because they are now what clients see.
+
+### Added: compaction on demand, `--method` for one-shot refreshes
+
+- **`flapii cache compact [path]`** / **`POST /api/v1/_config/cache/compact`** run DuckLake compaction now, for
+  the whole catalog or one endpoint's cache table, whatever `compaction.schedule` says. The answer is
+  `{status, duration_ms, files_rewritten?}`; 409 on a read-only replica. A scheduled run now logs
+  `DuckLake compaction is due ...` when it starts.
+- **`flapi cache refresh --method <M>`** picks one of several cached endpoints on a path.
+
+### Added: checking cache templates before the refresh does
+
+- **`POST .../template/expand?target=cache&validate_only=1`** checks the cache populate template without running
+  it: rendered with the live watermark, split into statements, parse errors reported per statement, the
+  bare-SELECT rule applied, and every statement bound in a transaction that is rolled back (a `CREATE TABLE ...
+  AS` bootstrap is created there `WITH NO DATA`, so the MERGE after it is checked before the first build).
+  `MERGE INTOO`, `SELEC oops;`, an unknown column and a bare SELECT used to pass every check and fail at the
+  next refresh. Answer: `{valid, statements, errors[{statement, type, kind, message}], warnings, expanded}`.
+- **`GET /api/v1/_config/project` has `bundled`**: `true` when the server runs from a packed binary.
+- **The Claude Code hook validates, not just renders:** cache templates with the new check, serving templates
+  with `validate_only` also with a sample value for each typed request field (so SQL inside `{{#params.x}}` is
+  checked), naming the parameter sets it checked. A cache not built yet is a note ("run `flapii cache refresh
+  <path>`"); a packed server or one serving another `template.path` is not reloaded, and the hook says so.
+  `FLAPI_CONFIG` now also covers files under its `template.path` outside the config's directory.
+- **`flapii` says a request timed out** ("request timed out after Ns; the server may still be working (a refresh
+  keeps running); raise --timeout and check `flapii cache audit <path>`") instead of "Cannot reach flAPI ... Is
+  it running?".
+
+### Added: reload by file, and safer MCP resources
+
+- **`POST /api/v1/_config/endpoints/reload-file {"file": "<yaml>"}`** (`flapii endpoints reload --file <yaml>`)
+  reloads every endpoint a YAML declares and LOADS a hand-written file the server has not loaded yet - a new
+  endpoint goes live without a restart. `flapii endpoints create -f` of a file already in `template.path`
+  answers 409 and points to it. The Claude Code plugin hook uses it, then renders the affected templates and
+  reports render/SQL errors, a rejected token, `SECURITY WARNINGS`, and "restart the server" for `flapi.yaml`.
+- **`mcp-resource.response`** (`max-rows`, `redact-columns`).
+- **`?method=`** on every config-service endpoint route, `--method` on the `flapii` commands.
+- **`GET /api/v1/_config/cache/audit?table=schema.table`** (`flapii cache audit --table`): one cache table's
+  refreshes, whichever endpoint sharing it triggered them; `flapii cache audit -o table` shows the message.
+- **A dropped cursor watermark is reported:** when the watermark does not look like `cursor.type`, the refresh
+  answer has a `warning`, the audit row's message says so, and `template/expand?target=cache` returns
+  `watermark_dropped_reason`.
+- **Metrics:** a `rejected` count per series (REST 401/403 now attributed to their route; MCP role denials);
+  `flapii metrics -o table` shows p50 and rejected. `/health` reports `caches.stale`; a cache's
+  `data_age_seconds` falls back to the newest snapshot after a restart.
+
+### Added: Claude Code plugin
+
+flAPI now ships a Claude Code plugin:
+
+```
+/plugin marketplace add DataZooDE/flapi
+/plugin install flapi@flapi
+```
+
+- Ten skills cover setup, REST endpoints, MCP tools, authentication, cache design, cache refresh-time tuning,
+  testing, live configuration, deployment and operations.
+- Seven slash commands: `/flapi:init`, `/flapi:new-endpoint`, `/flapi:add-cache`, `/flapi:auth-setup`,
+  `/flapi:deploy-check`, `/flapi:diagnose` and `/flapi:metrics`.
+- An MCP server entry for your running flAPI.
+- A hook that validates your config after every edit and hot-reloads the affected endpoints.
+
+See [docs/guides/claude-code.md](docs/guides/claude-code.md).
+
+### Added: runtime metrics
+
+`GET /api/v1/_config/metrics`, the new `flapii metrics` command and the new `flapi_get_metrics` MCP tool now
+report:
+
+- request counts, status classes and latency (p50/p95/p99/max) for every endpoint and MCP tool
+- 401/403/429 rejection counts
+- for every cache: readiness, last refresh mode/status/duration/rows, and the age of the data served
+
+Narrow to one endpoint with `?endpoint=/path`.
+
+### Added: authentication, requests and caching
+
+- `auth.type: jwt` is an alias of `bearer`; a global `auth:` block accepts `roles`.
+- OIDC presets take `tenant-id` (or `tenant`), `realm` and `domain`, which fill `{tenant}`, `{realm}` and
+  `{domain}` in the issuer URL; Keycloak's default issuer is `https://{domain}/realms/{realm}`. Provider
+  `azure`, `azure-ad` and `entra` are aliases of `microsoft`.
+- Validators: `enum` accepts `values` or `allowedValues`, `string` accepts `pattern` or `regex`.
+- Log level `warn` is accepted as `warning` (`--log-level`, `FLAPI_LOG_LEVEL`, `log-level:`, and at runtime
+  `PUT /api/v1/_config/log-level` / `flapii config log-level set warn`).
+- `ducklake.compaction.schedule` without `compaction.enabled: true` logs that it has no effect.
+- `project-description` is optional.
+- Startup warns about keys that have no effect: a request field's `field-type`, `server-name`, and a
+  connection's `log-queries`, `log-parameters` and `allow`.
+- The security audit warns `CORS_WILDCARD_WITH_AUTH` when authentication is on and `cors.allow-origins` is
+  empty or `*`, and `AUTH_BCRYPT_UNSUPPORTED` for bcrypt hashes, which cannot log in. Its advice for passwords
+  is a PBKDF2 hash: `passlib.hash.pbkdf2_sha256.using(rounds=600000).hash(...)`.
+- Full cache rebuild: `flapii cache refresh <path> --full`, `flapi cache refresh --full`,
+  `POST .../cache/refresh?full=true`.
+- `flapi cache refresh` reports `duration_ms` and `rows_affected` per cache (and `"full": true` with `--full`),
+  refreshes a table shared by several endpoints once, and compacts when compaction is due.
+- Startup logs `Cache scheduler on: N scheduled cache(s), checked every X s`, warns when a schedule is shorter
+  than the scan interval, and logs `flAPI server listening on http://<host>:<port> (REST API; MCP at
+  .../mcp/jsonrpc)` once the port is bound.
+- `GET /api/v1/_config/schema?connections=true` lists the configured connections.
+- Config-service endpoint JSON shows `auth.roles` and whether the auth block is `inherited`.
+- MCP tool schemas carry typed `default` values.
+- `flapii` reads `FLAPI_URL` when `FLAPI_BASE_URL` is not set; `flapii cache audit -o table` prints a table;
+  `flapii metrics -o table` shows cache-not-ready 503s separately.
+
+### Added: cache retention, replicas and packaging
+
+- Drop an obsolete cache table (one left behind by a changed `schema:`/`table:`) with
+  `flapii cache drop-table [schema.]table` or `POST /api/v1/_config/cache/drop-table {"schema","table"}`.
+  Its snapshots are expired and its files deleted. A table an endpoint still uses is refused with 409.
+- `ducklake.compaction.delete-threshold`: the share of deleted rows above which compaction rewrites a data
+  file (DuckLake's default, 0.95, is rarely reached by merge caches).
+- `GET /api/v1/_config/cache/audit?sync_type=compaction` (any `sync_type`, combinable with `?table=`) shows
+  compaction history. Startup logs when compaction is next due.
+- `GET /api/v1/_config/project` shows `ducklake.warmup_effective` (`never` on a read-only replica).
+- A read-only replica serves a cache as soon as the writer has built it. It checks again at most every 5 s on
+  requests, and on every scheduler scan. Before, a replica started before the build answered 503
+  `cache_not_built` until restarted.
+- `flapi pack --exclude <glob>` (repeatable). The configured DuckLake catalog (`metadata-path`, its `.wal`,
+  `data-path`) and `*.ducklake`, `*.ducklake.wal`, `*.ducklake.files` are never bundled.
+- `embed://<path>` works outside a packed binary: it resolves against the configuration directory, so a
+  config written for `flapi pack` also runs from its source tree.
+- A missing local DuckLake metadata directory or `data-path` is created. A read-only replica that finds one
+  missing stops and says so.
+
+### Fixed
+
+- **Two concurrent refreshes could invalidate the database until restart.** Populate templates that
+  `DETACH DATABASE IF EXISTS src; ATTACH ... AS src (READ_ONLY)` (the recipe the caching skill taught) ran in
+  parallel for different tables and collided on the alias: `INTERNAL Error: Database name src was already used
+  by a different database for this meta transaction`, after which every request failed with
+  `database has been invalidated` while `/health` stayed 200. Refreshes are serialised per catalog, and an
+  invalidation from any cause now makes the health probes fail (see Upgrade notes).
+- **The cache readiness registry follows endpoint changes.** A reload that changed `cache.table` made the GET a
+  500 (it is 503 `cache_not_built` until built, or served when the table exists), and the old table's entry -
+  including a `failed` one - stayed in `/health` (`caches.total` too) until restart.
+- **`?target=cache&validate_only=1` executes a template's `ATTACH ... (READ_ONLY)`**, so statements reading the
+  attached source are checked instead of failing with `schema src does not exist`; it detaches what it
+  attached. A writable `ATTACH` is not executed and is reported `not_checked`.
+- **A cached `GET /orders` beside an uncached `POST /orders`:** `flapi cache refresh --endpoint /orders` picked
+  the POST and failed with `has no cache` (exit 2), and the config-service `/cache/*` routes answered
+  `Ambiguous`. Only endpoints with a cache count now.
+- **Time travel to a snapshot from before the cache's schema existed** answers 404 `snapshot_not_found`, not 500.
+- **Read-only replicas:** a cache the writer has not built says so (`the writer has not built it yet`), not
+  `warm-up skipped`; a replica that cannot attach its catalog says to start the writer first, and
+  `DuckLake catalog attached read-only` is logged only after the attach succeeded.
+- **`reload-file` of a deleted endpoint YAML** unloads the endpoints it declared (200 `"status":"removed"`)
+  instead of answering 404 and leaving the routes loaded.
+- **`drop-table`** applies the retention of live tables whose snapshots still pin the dropped table's files right
+  away and names, in `pinned_by`, the endpoint whose policy keeps the rest.
+- **Catalog-wide compaction audit rows** have an empty `cache_schema` (it was `main`).
+
+- **SECURITY: Basic auth re-derived PBKDF2 (~165 ms of CPU) on every request,** wrong passwords included, so
+  a flood of bad passwords was a cheap denial of service. A successful check is now remembered for 5 minutes
+  (bounded to 10 000 entries, keyed by an HMAC under a per-process random key; no password is stored); a wrong
+  password is never remembered; a changed hash or any auth (re)load invalidates it. At most half the cores
+  derive PBKDF2 at once, and a request that waits more than 2 s for a slot is refused. Repeat requests with
+  the right password drop from ~165 ms to ~1.5 ms.
+- **Logs:** every Crow `Response: ...` access line has its `request_id` (only 500s had one), and with
+  `log-format: json` the startup lines written while the configuration is read are JSON as well.
+- **MCP `structuredContent.rows`** keep the SELECT column order (the keys were scrambled), and doubles keep
+  their shortest form.
+- **`flapii --version`** prints the package version. **`-q/--quiet`** shows no spinners or progress lines but
+  still reports a failure, in one line (it used to print the spinner's "Failed" line and hide the reason). An
+  error body that only repeats the message is no longer printed a second time.
+- **Claude Code hook:** it checks without the token (`GET /doc.yaml`'s project name) that `FLAPI_URL` is this
+  project's server before sending the token there; says "restart the server first" when `flapi.yaml`'s
+  `ducklake`/`auth`/`mcp` settings changed since the server started; unloads an endpoint YAML a shell command
+  deleted (`rm`, `git rm`, `mv`) via `reload-file`, and says so when the server cannot; gives no sample value
+  to a parameter used inside `AT (...)`; never reports a failing sample run as "cache not built"; and says a
+  dropped watermark means the next refresh would load the full source.
+- **SECURITY: DuckLake catalog credentials were shown in clear.** A Postgres or MySQL `metadata-path` with
+  `password=...` (including a resolved `{{env.X}}`) appeared in `GET /api/v1/_config/project` and in startup
+  attach errors. Passwords, secrets, tokens and URL `user:password@` parts are now `<redacted>`.
+- **Packed binaries:** `flapi cache refresh` and `flapi extensions install` read the bundled `flapi.yaml`.
+  They used to fail with "Could not open file: flapi.yaml". The one-shot refresh resolves `embed://` paths too.
+- **Retention with a same-named table in another schema** works for each table. Before, retention was off for
+  both.
+- **GC and retention report what they could not expire.** Snapshots that are shared with another table are
+  logged as a WARNING and noted in the audit message.
+- **Lock conflicts on a DuckDB-file catalog explain themselves:** stop the other process, or use a
+  Postgres/SQLite/MySQL catalog for a writer with replicas. The one-shot refresh no longer prints a spurious
+  "Failed to detach DuckLake catalog".
+- **`--validate-config` with `template.path: ../sqls`** no longer reports path traversal or missing files
+  for templates that exist. It warns only when a template is outside `template.path`.
+- **`GET /api/v1/_config/metrics?endpoint=/x`** lists the endpoint's cache before its first refresh, and every
+  cache row names its `endpoint`.
+
+- **CORS preflights:** with `cors.allow-origins` set, an `OPTIONS` preflight from an allowed origin answered
+  204 without any `Access-Control-Allow-*` header (REST paths and `/mcp/jsonrpc`), so browsers blocked every
+  authenticated or JSON cross-origin call. Preflights now get `Access-Control-Allow-Origin`, `-Methods`,
+  `-Headers` (the requested headers, unless `cors.allow-headers` is set; `Authorization`, `Content-Type`,
+  `X-Config-Token` and `Mcp-Session-Id` by name when auth is on and none were requested), `-Max-Age: 600` and
+  `Vary: Origin`. Responses that echo an allowed origin also carry `Vary: Origin`.
+- **Auth config:** keys the chosen auth type never reads (`users:` under `bearer`, `jwt-secret:` under
+  `basic`, ...) in an endpoint block, the top-level block or `mcp.auth` are named in a load warning; one
+  scheme applies per block. The audit line of a 401 names the endpoint's scheme instead of always `basic`.
+- **Security audit:** endpoint locations include the method (`endpoint GET /orders`), an empty
+  `mcp.auth.jwt-secret` is reported as `AUTH_EMPTY_JWT_SECRET` at startup, and that warning says what happens:
+  authentication fails closed and every token is refused.
+- **Config service, shared url-paths:** reloading the `POST /orders` file replaced `GET /orders` and answered
+  200 with the change not applied; `DELETE` of one removed both; `PUT` updated the first. Each now acts on the
+  endpoint named by slug + `?method=` (reload: on that endpoint's file).
+- **`resources/list` no longer lists uri-templated resources** (their `flapi://<name>` could not be read); they
+  are in `resources/templates/list`. An empty resource result is `"[]"`, not `-32603`.
+- **`POST .../endpoints/by-template`** also finds endpoints whose cache `template-file` is that file
+  (`role: cache.template-file`).
+- **`flapii`:** a `:` in a path (`/products/:id`) is sent literally (the server also decodes `%3A`); a 401 after
+  sending a token says the token was rejected; `endpoints list -o table` shows `REST+Tool` and the connection of
+  MCP-only tools and resources.
+- **`flapii project init`:** include comments use `../common/...` (resolved from `sqls/`), the scaffolded
+  `auth.yaml` has `enabled: true`, `.gitignore` no longer ignores `data/`, and `sample.sql` has no `LIMIT 100`
+  (it broke pagination totals).
+- **`flapi cache refresh`** accepts `--log-level` and `--no-telemetry` after the subcommand.
+- **Messages:** a failing connection `init` at startup names the connection (`connection 'x' init: ...`); the
+  description scanner names the matched phrase and its offset; the cursor-watermark warning says "an integer";
+  the GCS credentials warning appears only when the configuration uses `gs://` or GCS; a rejected
+  config-service token is logged.
+- **MCP `tools/list`** no longer advertises `"minimum":0,"maximum":0` on every `number` parameter; bounds
+  appear only when set. MCP `initialize` reports the build version instead of `0.3.0`.
+- **Pagination:** `limit=0` returns the count with an empty `next` (it pointed at itself), and `?format=csv`
+  is accepted under `request-fields-validation: true`.
+- **Writes:** with `returns-data: true`, a `RETURNING` that matched no row answers `"data": []` instead of
+  omitting `data`; a missing required field is listed once in `errors`, not twice.
+- **`/doc.yaml`** types parameters from their validators (with bounds and typed defaults), documents body
+  fields in the request body, adds `limit`/`offset`/`format`, the 400 response and the `X-Total-Count`,
+  `X-Offset`, `X-Limit`, `X-Next` headers, and uses the endpoint's new `description:` key (or its MCP tool
+  description) instead of "Description not available". An undescribable result no longer emits
+  `properties: ~`.
+- **Cached reads on a `serialize-access` connection run in parallel.** A read served from the DuckLake cache
+  (endpoint with `cache.template-file`) no longer waits for the source connection's lock (16 clients:
+  93 -> 283 requests/s in our measurement, the same as with `serialize-access: false`).
+
+- **`flapi --version`** and `server.version` in `GET /api/v1/_config/health` show the real build version.
+- **Passwords:** PBKDF2 hashes are no longer flagged by the security audit, and passlib's own encoding as well
+  as standard and URL-safe base64 are accepted.
+- **Config service:** creating an endpoint keeps its `mcp-tool`, validators and `rate-limit`; `endpoints
+  validate` uses the real parser and says what to pass when no YAML was given.
+- **MCP config tools** (`flapi_*`) accept the same tokens as the REST config service and read `X-Config-Token`
+  first, then `Authorization: Bearer`. Startup warns about config tokens shorter than 16 characters.
+- **`flapii` errors** show the status and the server's reason (`[400] Bad Request: ...`) followed by the JSON
+  body, instead of only the status text.
+- **Metrics:** percentiles never exceed the observed maximum.
+- **Caching:** a table shared by several endpoints is warmed once; SIGTERM interrupts running populate
+  scripts so shutdown takes seconds, and no refresh starts while shutting down; a failed warm-up over an
+  existing table keeps serving it (state `stale`); a failed first build is logged once; audit `event_id` values
+  are UUIDs; compaction's last run survives restarts.
+- **`flapi pack`:** `--validate-config` on a packed binary no longer warns about a missing `sqls/sqls`
+  directory.
+- **`flapii project init`** creates the `data/sample.csv` its sample endpoint reads.
+- **`async-after-ms`** is read as a whole number of milliseconds.
+- **Cache audit log:** every refresh now records its real start and end time, `duration_ms`, `rows_affected`
+  and the `snapshot_id` it produced. Before, start and end were the same instant and the other three were
+  always empty, so refresh time could not be measured.
+- **`duckdb.default_order: DESC` with DuckLake:** every commit into the DuckLake catalog failed
+  (`Failed to flush changes into DuckLake: Could not convert string '...' to INT64`), so no cache was built and
+  no audit event was recorded. DuckLake reads a table's columns with a bare `ORDER BY` on its own connection,
+  and the global DESC reversed them. With DuckLake enabled, `default_order` is now applied per flAPI connection.
+- **Global `rate_limit:`:** `rate_limit: {enabled: false}` stopped startup with `bad conversion`, because `max`
+  and `interval` were required even with the limiter off. They now default to 100 and 60, as on endpoints.
+  A malformed value names its key.
+
 ## v26.10.31 — security hardening, and serverless startup without data or network on the boot path
 
 ### Upgrade notes — these changes can turn a request or a config that worked into an error

@@ -1,13 +1,17 @@
 #include <algorithm>
 #include <cctype>
 #include <sstream>
+#include <functional>
+#include <locale>
 #include <fstream>
 #include <stdexcept>
 #include <crow.h>
 #include <regex>
 #include <ctime>
+#include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <random>
 #include <tuple>
 
 #include "cache_manager.hpp"
@@ -15,6 +19,9 @@
 
 #include "database_manager.hpp"
 #include "database_manager_cache_adapter.hpp"
+#include "query_executor.hpp"
+
+#include "duckdb/parser/keyword_helper.hpp"
 
 namespace flapi {
 
@@ -42,10 +49,13 @@ void CacheManager::warmUpCaches(std::shared_ptr<ConfigManager> config_manager) {
     const auto& cache_schema = config_manager->getCacheSchema();
 
     std::map<std::string, std::string> params;
-    for (auto &endpoint : *config_manager->getEndpoints()) 
+    for (const auto& endpoint : warmupEndpoints(config_manager))
     {
-        // Warmup: refresh caches only for endpoints with cache enabled and a table defined
-        if (endpoint.cache.enabled && !endpoint.cache.table.empty()) {
+        if (shutdown_requested_.load()) {
+            CROW_LOG_INFO << "Shutdown requested; abandoning the remaining cache warm-up";
+            break;
+        }
+        {
             const auto mode = config_manager->getEffectiveCacheWarmupMode(endpoint);
             if (mode != CacheWarmupMode::Always) {
                 const CacheKey key = cacheKeyForEndpoint(config_manager, endpoint);
@@ -64,6 +74,17 @@ void CacheManager::warmUpCaches(std::shared_ptr<ConfigManager> config_manager) {
                 }
             }
             markCacheStarting(config_manager, endpoint);
+            if (mode == CacheWarmupMode::Always) {
+                // A restart while the source is down must not take the endpoint
+                // offline when DuckLake still holds the table a previous run built:
+                // a failed rebuild then leaves it served as `stale`, exactly as a
+                // failed scheduled refresh does. It used to become `failed` (503).
+                const CacheKey key = cacheKeyForEndpoint(config_manager, endpoint);
+                if (cacheTableExists(key.catalog, key.schema, key.table)) {
+                    std::lock_guard<std::mutex> lock(readiness_mutex_);
+                    readiness_[key].previous_table = true;
+                }
+            }
             try {
                 if (refreshCache(config_manager, endpoint, params)) {
                     markCacheReady(config_manager, endpoint);
@@ -72,16 +93,45 @@ void CacheManager::warmUpCaches(std::shared_ptr<ConfigManager> config_manager) {
                         std::this_thread::sleep_for(std::chrono::milliseconds(10));
                     }
                 }
-            } catch (const std::exception& ex) {
-                CROW_LOG_ERROR << "Cache warmup failed for " << endpoint.cache.table << ": " << ex.what();
-                markCacheFailed(config_manager, endpoint, ex.what());
+            } catch (const std::exception&) {
+                // Already marked failed and logged by refreshCache(). Logging and
+                // marking again here wrote "Cache build failed" twice per failure.
             } catch (...) {
-                CROW_LOG_ERROR << "Cache warmup failed for " << endpoint.cache.table << ": unknown error";
-                markCacheFailed(config_manager, endpoint, "unknown error");
             }
         }
     }
     CROW_LOG_INFO << "Finished warming up endpoint caches! Let's go!";
+}
+
+std::vector<EndpointConfig> CacheManager::warmupEndpoints(std::shared_ptr<ConfigManager> config_manager) {
+    // ONE warm-up per cache table. A GET endpoint and the write endpoint beside it
+    // commonly share a cache table, and each used to build it in turn - the same
+    // populate query two or three times at startup. Readiness is keyed by table
+    // already, so the duplicates bought nothing.
+    //
+    // When several endpoints share a table, the one that names a populate
+    // template wins; otherwise the first in load order.
+    std::vector<EndpointConfig> out;
+    std::map<CacheKey, std::size_t> index;
+    const auto endpoints = config_manager->getEndpoints();
+    for (const auto& endpoint : *endpoints) {
+        if (!endpoint.cache.enabled || endpoint.cache.table.empty()) {
+            continue;
+        }
+        const CacheKey key = cacheKeyForEndpoint(config_manager, endpoint);
+        const auto it = index.find(key);
+        if (it == index.end()) {
+            index.emplace(key, out.size());
+            out.push_back(endpoint);
+            continue;
+        }
+        if (!out[it->second].cache.hasTemplate() && endpoint.cache.hasTemplate()) {
+            out[it->second] = endpoint;
+        }
+        CROW_LOG_DEBUG << "Cache " << key.schema << "." << key.table << " is shared by "
+                       << endpoint.urlPath << "; warmed once";
+    }
+    return out;
 }
 
 std::thread CacheManager::warmUpCachesAsync(std::shared_ptr<ConfigManager> config_manager) {
@@ -113,7 +163,7 @@ bool CacheManager::shouldRefreshCache(std::shared_ptr<ConfigManager> config_mana
         return false;
     }
 
-bool CacheManager::refreshCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
+bool CacheManager::refreshCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string>& params, const RefreshOptions& options) {
     const CacheKey key = cacheKeyForEndpoint(config_manager, endpoint);
     if (!enterRefresh(key)) {
         CROW_LOG_INFO << "Skipping duplicate in-flight cache refresh for " << key.schema << "." << key.table;
@@ -121,7 +171,11 @@ bool CacheManager::refreshCache(std::shared_ptr<ConfigManager> config_manager, c
     }
 
     try {
-        refreshDuckLakeCache(config_manager, endpoint, params);
+        // After the duplicate check, so a second request for the SAME table is
+        // coalesced rather than queued; a refresh of another table waits here.
+        auto catalog_lock = lockCatalogWrites();
+        refreshDuckLakeCache(config_manager, endpoint, params, options);
+        catalog_lock.unlock();
         markCacheReady(config_manager, endpoint);
         leaveRefresh(key);
         return true;
@@ -158,6 +212,55 @@ void CacheManager::initializeReadiness(std::shared_ptr<ConfigManager> config_man
     }
 }
 
+void CacheManager::syncReadinessWithEndpoints(std::shared_ptr<ConfigManager> config_manager) {
+    std::set<CacheKey> named;
+    for (const auto& endpoint : *config_manager->getEndpoints()) {
+        if (endpoint.cache.enabled && !endpoint.cache.table.empty()) {
+            named.insert(cacheKeyForEndpoint(config_manager, endpoint));
+        }
+    }
+    std::vector<CacheKey> added;
+    {
+        std::lock_guard<std::mutex> lock(readiness_mutex_);
+        for (auto it = readiness_.begin(); it != readiness_.end();) {
+            if (named.count(it->first) == 0) {
+                CROW_LOG_INFO << "Cache " << it->first.schema << "." << it->first.table
+                              << " is no longer used by any endpoint; dropped from readiness";
+                readonly_rechecked_at_.erase(it->first);
+                it = readiness_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        for (const auto& key : named) {
+            if (readiness_.count(key) == 0) {
+                added.push_back(key);
+            }
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(refresh_stats_mutex_);
+        for (auto it = refresh_stats_.begin(); it != refresh_stats_.end();) {
+            it = named.count(it->first) == 0 ? refresh_stats_.erase(it) : std::next(it);
+        }
+        for (auto it = snapshot_time_memo_.begin(); it != snapshot_time_memo_.end();) {
+            it = named.count(it->first) == 0 ? snapshot_time_memo_.erase(it) : std::next(it);
+        }
+    }
+    for (const auto& key : added) {
+        // Outside the lock: a catalog query.
+        const bool exists = cacheTableExists(key.catalog, key.schema, key.table);
+        std::lock_guard<std::mutex> lock(readiness_mutex_);
+        if (readiness_.count(key) != 0) {
+            continue;   // a refresh got there first
+        }
+        readiness_[key] = CacheReadiness{exists ? ReadinessState::Ready : ReadinessState::Unbuilt, key.catalog,
+                                         key.schema, key.table, ""};
+        CROW_LOG_INFO << "Cache " << key.schema << "." << key.table << " is new to this server: "
+                      << (exists ? "the table exists, serving it" : "not built yet (503 cache_not_built until a refresh)");
+    }
+}
+
 void CacheManager::markCacheStarting(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint) {
     const CacheKey key = cacheKeyForEndpoint(config_manager, endpoint);
     std::lock_guard<std::mutex> lock(readiness_mutex_);
@@ -177,9 +280,12 @@ void CacheManager::markCacheFailed(std::shared_ptr<ConfigManager> config_manager
     // offline: the last snapshot is still there and still correct, just not fresh. Only a
     // cache that never built (Starting) becomes Failed (HTTP 503).
     const auto previous = readiness_.find(key);
-    const bool was_built = previous != readiness_.end() && previous->second.state == ReadinessState::Ready;
+    const bool was_built = previous != readiness_.end() &&
+                           (previous->second.state == ReadinessState::Ready || previous->second.previous_table);
     if (was_built) {
         auto stale = previous->second;
+        stale.state = ReadinessState::Ready;
+        stale.previous_table = false;
         stale.stale = true;
         stale.error = error;
         readiness_[key] = std::move(stale);
@@ -236,7 +342,7 @@ CacheManager::CacheReadiness CacheManager::getEndpointReadiness(std::shared_ptr<
     return getReadinessForKey(cacheKeyForEndpoint(config_manager, endpoint));
 }
 
-std::optional<CacheManager::CacheReadiness> CacheManager::readinessBlock(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint) const {
+std::optional<CacheManager::CacheReadiness> CacheManager::readinessBlock(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint) {
     if (!endpoint.cache.enabled || endpoint.cache.table.empty()) {
         return std::nullopt;
     }
@@ -245,14 +351,90 @@ std::optional<CacheManager::CacheReadiness> CacheManager::readinessBlock(std::sh
     if (readiness.state == ReadinessState::Ready) {
         return std::nullopt;
     }
+    // A read-only replica never refreshes, so nothing local ever clears Unbuilt:
+    // a replica started before the writer built the table answered 503
+    // cache_not_built FOREVER. The writer may have built it since - look.
+    if (config_manager->getDuckLakeConfig().read_only &&
+        recheckReadOnlyKey(cacheKeyForEndpoint(config_manager, endpoint), /*force=*/false)) {
+        return std::nullopt;
+    }
+    readiness.replica = config_manager->getDuckLakeConfig().read_only;
     return readiness;
+}
+
+bool CacheManager::recheckReadOnlyKey(const CacheKey& key, bool force) {
+    {
+        std::lock_guard<std::mutex> lock(readiness_mutex_);
+        const auto it = readiness_.find(key);
+        if (it == readiness_.end() || it->second.state == ReadinessState::Ready) {
+            return false;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        auto& last = readonly_rechecked_at_[key];
+        // Throttled: every request to an unbuilt cache would otherwise list the
+        // catalog's tables.
+        if (!force && last.time_since_epoch().count() != 0 && now - last < kReadOnlyRecheckInterval) {
+            return false;
+        }
+        last = now;
+    }
+    {
+        // A table whose warm-up is still running is the warm-up's to settle.
+        std::lock_guard<std::mutex> lock(inflight_mutex_);
+        if (inflight_refreshes_.count(key) > 0) {
+            return false;
+        }
+    }
+    if (!cacheTableExists(key.catalog, key.schema, key.table)) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(readiness_mutex_);
+    auto it = readiness_.find(key);
+    if (it == readiness_.end() || it->second.state == ReadinessState::Ready) {
+        return false;
+    }
+    it->second = CacheReadiness{ReadinessState::Ready, key.catalog, key.schema, key.table, ""};
+    CROW_LOG_INFO << "Cache " << key.schema << "." << key.table
+                  << " now exists in the shared catalog (built by the writer); serving it";
+    return true;
+}
+
+std::size_t CacheManager::recheckReadOnlyCaches(std::shared_ptr<ConfigManager> config_manager, bool force) {
+    if (!config_manager->getDuckLakeConfig().read_only) {
+        return 0;
+    }
+    std::vector<CacheKey> keys;
+    {
+        std::lock_guard<std::mutex> lock(readiness_mutex_);
+        for (const auto& [key, readiness] : readiness_) {
+            if (readiness.state != ReadinessState::Ready) {
+                keys.push_back(key);
+            }
+        }
+    }
+    std::size_t became_ready = 0;
+    for (const auto& key : keys) {
+        if (recheckReadOnlyKey(key, force)) {
+            ++became_ready;
+        }
+    }
+    return became_ready;
 }
 
 crow::json::wvalue CacheManager::readinessBlockJson(const CacheReadiness& readiness) {
     crow::json::wvalue errorResponse;
-    errorResponse["error"] = readiness.state == ReadinessState::Unbuilt ? "cache_not_built" : "cache_warming";
+    // Three situations, three names: a client (or an operator reading a 503) must be
+    // able to tell "wait" from "this will not fix itself".
+    errorResponse["error"] = readiness.state == ReadinessState::Unbuilt  ? "cache_not_built"
+                           : readiness.state == ReadinessState::Failed   ? "cache_build_failed"
+                                                                         : "cache_warming";
     errorResponse["table"] = readiness.table;
-    if (readiness.state == ReadinessState::Unbuilt) {
+    if (readiness.state == ReadinessState::Unbuilt && readiness.replica) {
+        // A replica never builds a cache: "warm-up skipped" sent operators
+        // looking for a warm-up setting on an instance that cannot warm up.
+        errorResponse["message"] = "Cache for this endpoint has not been built yet: this is a read-only replica, "
+                                   "and the writer has not built it yet";
+    } else if (readiness.state == ReadinessState::Unbuilt) {
         errorResponse["message"] = "Cache for this endpoint has not been built (warm-up skipped)";
     } else if (readiness.state == ReadinessState::Failed) {
         // No `detail`: it carried the raw DuckDB error (SQL, file paths, connection
@@ -297,6 +479,19 @@ CacheManager::CacheReadinessSummary CacheManager::getReadinessSummary() const {
     return summary;
 }
 
+std::unique_lock<std::mutex> CacheManager::lockCatalogWrites() {
+    std::unique_lock<std::mutex> lock(catalog_write_mutex_, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        const auto waited_from = std::chrono::steady_clock::now();
+        lock.lock();
+        CROW_LOG_DEBUG << "Waited "
+                       << std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now() - waited_from).count()
+                       << " ms for another cache refresh/maintenance task on the catalog";
+    }
+    return lock;
+}
+
 bool CacheManager::enterRefresh(const CacheKey& key) {
     std::lock_guard<std::mutex> lock(inflight_mutex_);
     auto [it, inserted] = inflight_refreshes_.insert(key);
@@ -308,15 +503,15 @@ void CacheManager::leaveRefresh(const CacheKey& key) {
     inflight_refreshes_.erase(key);
 }
 
-void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string> params) {
+std::string CacheManager::renderRefreshTemplate(std::shared_ptr<ConfigManager> config_manager,
+                                                const EndpointConfig& endpoint,
+                                                std::map<std::string, std::string>& params,
+                                                bool full) {
     const auto& cacheConfig = endpoint.cache;
     const auto& ducklakeConfig = config_manager->getDuckLakeConfig();
     const std::string catalog = ducklakeConfig.alias;
     const std::string schema = cacheConfig.schema.empty() ? "main" : cacheConfig.schema;
     const std::string table = cacheConfig.table;
-
-    // Ensure cache schema exists before processing cache template
-    ensureCacheSchemaExists(catalog, schema);
 
     SnapshotInfo snapshot = fetchSnapshotInfo(catalog, schema, table);
 
@@ -374,10 +569,11 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
     //
     // Falls back to the snapshot timestamp when the table is new or empty, so
     // a first refresh still renders its incremental section the same way.
+    std::string watermark_dropped_reason;
     if (cacheConfig.hasCursor()) {
         const std::string watermark =
             fetchCursorWatermark(catalog, schema, table, cacheConfig.cursor->column,
-                                 cacheConfig.cursor->type);
+                                 cacheConfig.cursor->type, &watermark_dropped_reason);
         if (!watermark.empty()) {
             params["previousSnapshotTimestamp"] = watermark;
         } else {
@@ -406,6 +602,15 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
         }
     }
 
+    if (full) {
+        // A forced full rebuild: no watermark, so `{{^cache.previousSnapshotTimestamp}}`
+        // renders the template's full-load branch. Both the timestamp and the id go -
+        // an incremental template may key on either. cache.snapshotId stays: it is the
+        // table's current version, not a watermark.
+        params.erase("previousSnapshotTimestamp");
+        params.erase("previousSnapshotId");
+    }
+
     if (cacheConfig.schedule) {
         params["cacheSchedule"] = cacheConfig.schedule.value();
     }
@@ -417,12 +622,104 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
         params["primaryKeys"] = joinStrings(cacheConfig.primary_keys, ",");
     }
 
-    const std::string rendered = db_adapter_->renderCacheTemplate(endpoint, cacheConfig, params);
+    // Rendering consumes the cache.* entries (they move into the template
+    // context); hand the caller the values it rendered with.
+    const auto rendered_with = params;
+    std::string rendered = db_adapter_->renderCacheTemplate(endpoint, cacheConfig, params);
+    params = rendered_with;
+    // After rendering: the reason is for the caller (expand --cache, the
+    // refresh answer, the audit row), not a template variable. It used to be
+    // in the server log only, so a cache silently reloaded in full every time.
+    if (!watermark_dropped_reason.empty() && !full) {
+        params[kWatermarkDroppedReasonKey] = watermark_dropped_reason;
+    }
+    return rendered;
+}
 
+void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, std::map<std::string, std::string> params, const RefreshOptions& options) {
+    const auto& cacheConfig = endpoint.cache;
+    const auto& ducklakeConfig = config_manager->getDuckLakeConfig();
+    const std::string catalog = ducklakeConfig.alias;
+    const std::string schema = cacheConfig.schema.empty() ? "main" : cacheConfig.schema;
+    const std::string table = cacheConfig.table;
+
+    // Ensure cache schema exists before processing cache template
+    ensureCacheSchemaExists(catalog, schema);
+
+    std::string rendered = renderRefreshTemplate(config_manager, endpoint, params, options.full);
+    std::string sync_type = determineCacheMode(cacheConfig);
+    if (!cacheConfig.template_file) {
+        // No template-file: the populate SQL is the endpoint's SERVING template,
+        // which is normally a bare SELECT over the source. That used to run, build
+        // nothing and record success; the bare-SELECT refusal then made such a
+        // cache `failed` (503). It is materialised instead - a full refresh
+        // whatever mode the cursor/primary-key imply, since a serving template has
+        // no incremental branch. An explicit template-file is still refused a bare
+        // SELECT (executeDuckLakeScript). The load-time warning says so.
+        if (auto materialised = DatabaseManager::MaterialiseSelect(rendered, PopulateTarget{catalog, schema, table})) {
+            rendered = std::move(*materialised);
+            sync_type = "full";
+        }
+    }
+    if (options.full) {
+        CROW_LOG_INFO << "Full rebuild of " << schema << "." << table
+                      << " requested: the watermark is cleared and the table is rebuilt from scratch";
+    }
+
+    // Timed around the populate statement only - what an operator tuning a
+    // slow refresh can change - so the audit's duration_ms is comparable
+    // across refreshes and does not include the snapshot/watermark lookups.
+    SyncEventDetails details;
+    // Rendered without a watermark means the template's full-load branch ran.
+    details.full = options.full || sync_type == "full" || params.count("previousSnapshotTimestamp") == 0;
+    // The table's newest snapshot BEFORE the populate: if it is still the newest
+    // afterwards, this refresh committed nothing and has no snapshot of its own.
+    const std::optional<std::string> snapshot_before =
+        fetchSnapshotInfo(catalog, schema, table).current_snapshot_id;
+    details.started_at = std::chrono::system_clock::now();
     try {
-        db_adapter_->executeDuckLakeQuery(rendered, params);
-        recordSyncEvent(config_manager, endpoint, determineCacheMode(cacheConfig), "success", "Cache refreshed successfully");
+        if (shutdown_requested_.load()) {
+            throw std::runtime_error("server is shutting down; refresh not started");
+        }
+        {
+            // Published for the duration of the populate script, so a shutdown can
+            // interrupt it instead of waiting minutes for a warm-up query to end.
+            ActiveRefreshGuard active(*this);
+            details.rows_affected = db_adapter_->executePopulateScript(
+                rendered, PopulateTarget{catalog, schema, table}, options.full);
+        }
+        details.completed_at = std::chrono::system_clock::now();
+        // Only a snapshot this refresh COMMITTED is reported. The id used to be
+        // whatever the (name-only, so possibly another schema's) table lookup
+        // matched first - every audit row and refresh answer carried the first
+        // CTAS id. Unknown or unchanged is reported as null, never guessed.
+        const SnapshotInfo after = fetchSnapshotInfo(catalog, schema, table);
+        if (after.current_snapshot_id && after.current_snapshot_id != snapshot_before &&
+            after.current_snapshot_id->rfind("snapshot_", 0) != 0) {
+            details.snapshot_id = *after.current_snapshot_id;
+        }
+        std::string message = "Cache refreshed successfully";
+        if (const auto it = params.find(kWatermarkDroppedReasonKey); it != params.end()) {
+            details.warning = it->second;
+            message += "; warning: " + it->second;
+        }
+        // Retention is PLANNED before the audit row is written, so a policy that
+        // could not do what it says is in the audit message, not only in the log;
+        // it EXPIRES after, so the newest audit snapshot (the one expiry keeps)
+        // sees only this refresh's files and pins nothing older.
+        const auto retention = effectiveRetention(config_manager, cacheConfig);
+        if (retention.keep_last_snapshots || retention.max_snapshot_age) {
+            applyRetention(catalog, schema, table, retention, [&](const std::string& warning) {
+                if (!warning.empty()) {
+                    message += "; retention: " + warning;
+                }
+                recordSyncEvent(config_manager, endpoint, sync_type, "success", message, details);
+            });
+        } else {
+            recordSyncEvent(config_manager, endpoint, sync_type, "success", message, details);
+        }
     } catch (const std::exception& ex) {
+        details.completed_at = std::chrono::system_clock::now();
         // Scrubbed before it is RECORDED. A failed refresh's DuckDB error
         // quotes the rendered cache template, and this writes it into
         // cache.audit.sync_events - i.e. into DuckLake Parquet files, often
@@ -433,41 +730,117 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
         // out; this was the one that persisted it AT REST, which is strictly
         // worse than the log leak that was fixed alongside it.
         const auto secrets = collectTemplateSecrets(config_manager.get(), endpoint, params);
-        recordSyncEvent(config_manager, endpoint, determineCacheMode(cacheConfig), "error",
-                        publicErrorMessage("Cache refresh failed", ex.what(), secrets));
+        recordSyncEvent(config_manager, endpoint, sync_type, "error",
+                        publicErrorMessage("Cache refresh failed", ex.what(), secrets), details);
         throw;
     }
+}
 
-    // trigger retention expiry if requested
-    if (cacheConfig.retention.keep_last_snapshots || cacheConfig.retention.max_snapshot_age) {
-        // BOTH policies go through buildExpireSql, which expires explicit
-        // per-table version ids.
-        //
-        // The age branch used to emit
-        //   CALL ducklake_expire_snapshots(cat, older_than => <ts>)
-        // which has no per-table form: it acts on the whole CATALOG, and every
-        // cached endpoint shares one. So a single endpoint configuring
-        // `max-snapshot-age` destroyed every other endpoint's history and its
-        // incremental watermark - the same defect the count branch beside it
-        // had just been fixed for. Fixing one branch and leaving its sibling
-        // is the pattern this whole round exists to break.
-        std::string older_than_sql;
-        if (cacheConfig.retention.max_snapshot_age) {
-            older_than_sql = "CAST(CURRENT_TIMESTAMP AS TIMESTAMP) - INTERVAL '" +
-                             escapeSqlLiteral(cacheConfig.retention.max_snapshot_age.value()) + "'";
-        }
-        const std::string expireSql = buildExpireSql(
-            catalog, schema, table,
-            cacheConfig.retention.keep_last_snapshots, older_than_sql);
-        if (expireSql.empty()) {
-            return;   // nothing this endpoint may expire yet
-        }
-        try {
-            db_adapter_->executeDuckLakeQuery(expireSql, params);
-        } catch (const std::exception& ex) {
-            CROW_LOG_WARNING << "Failed to expire DuckLake snapshots for " << schema << "." << table << ": " << ex.what();
-        }
+CacheManager::RetentionOutcome CacheManager::applyRetention(const std::string& catalog,
+                                                            const std::string& schema,
+                                                            const std::string& table,
+                                                            const CacheConfig::RetentionConfig& retention,
+                                                            const std::function<void(const std::string&)>& before_expiry) {
+    // The endpoint's own policy, else ducklake.retention.
+    //
+    // BOTH policies go through buildExpireSql, which expires explicit per-table
+    // version ids. The age branch used to emit
+    //   CALL ducklake_expire_snapshots(cat, older_than => <ts>)
+    // which has no per-table form: it acts on the whole CATALOG, and every
+    // cached endpoint shares one.
+    RetentionOutcome outcome;
+    std::string older_than_sql;
+    if (retention.max_snapshot_age) {
+        older_than_sql = "CAST(CURRENT_TIMESTAMP AS TIMESTAMP) - INTERVAL '" +
+                         escapeSqlLiteral(retention.max_snapshot_age.value()) + "'";
     }
+    ExpiryCandidates candidates;
+    const std::string expireSql = buildExpireSql(
+        catalog, schema, table, retention.keep_last_snapshots, older_than_sql, &candidates);
+    if (candidates.shared > 0) {
+        // A configured policy that cannot do what it says must be visible: this
+        // was INFO, so a table whose snapshots were all shared grew silently.
+        outcome.warning = std::to_string(candidates.shared) + " snapshot(s) of " + schema + "." + table +
+                          " beyond the retention policy are shared with another table and were kept";
+        CROW_LOG_WARNING << "Retention: " << outcome.warning;
+    } else if (candidates.unresolved) {
+        outcome.warning = "the table could not be resolved unambiguously in the catalog; nothing was expired";
+        CROW_LOG_WARNING << "Retention for " << schema << "." << table << ": " << outcome.warning;
+    }
+    if (before_expiry) {
+        before_expiry(outcome.warning);
+    }
+    if (expireSql.empty()) {
+        return outcome;   // nothing this endpoint may expire yet
+    }
+    const auto bytes_before = referencedFileBytes(catalog);
+    try {
+        db_adapter_->executeDuckLakeQuery(expireSql, {});
+        outcome.expired_snapshots = candidates.expirable.size();
+        expireAuditSnapshots(catalog);   // they pin this table's expired files
+        const auto bytes_after = referencedFileBytes(catalog);
+        if (bytes_before && bytes_after && *bytes_before >= *bytes_after) {
+            outcome.bytes_freed = *bytes_before - *bytes_after;
+        }
+        outcome.files_deleted = cleanupOldFiles(catalog);
+    } catch (const std::exception& ex) {
+        outcome.error = ex.what();
+        CROW_LOG_WARNING << "Failed to expire DuckLake snapshots for " << schema << "." << table << ": " << ex.what();
+    }
+    return outcome;
+}
+
+std::optional<std::int64_t> CacheManager::referencedFileBytes(const std::string& catalog) {
+    // Bytes of every data and delete file a snapshot still references. Expiry
+    // removes the rows of the files it releases, so before minus after is what a
+    // garbage collection freed (the files are deleted by cleanup_old_files next).
+    try {
+        const std::string meta = metadataCatalog(catalog);
+        auto result = db_adapter_->executeDuckLakeQueryWithResult(
+            "SELECT CAST((SELECT coalesce(sum(file_size_bytes), 0) FROM " + meta + ".ducklake_data_file) + "
+            "(SELECT coalesce(sum(file_size_bytes), 0) FROM " + meta + ".ducklake_delete_file) AS BIGINT) AS bytes");
+        auto rows = crow::json::load(result.data.dump());
+        if (rows && rows.t() == crow::json::type::List && rows.size() == 1 && rows[0].has("bytes") &&
+            rows[0]["bytes"].t() == crow::json::type::Number) {
+            return static_cast<std::int64_t>(rows[0]["bytes"].d());
+        }
+    } catch (const std::exception& ex) {
+        CROW_LOG_DEBUG << "Could not measure DuckLake file sizes: " << ex.what();
+    }
+    return std::nullopt;
+}
+
+CacheConfig::RetentionConfig CacheManager::effectiveRetention(std::shared_ptr<ConfigManager> config_manager,
+                                                              const CacheConfig& cacheConfig) {
+    // The endpoint's block wins as a whole: setting only `keep-last-snapshots` on an
+    // endpoint must not inherit a global `max-snapshot-age` it did not ask for.
+    if (cacheConfig.retention.keep_last_snapshots || cacheConfig.retention.max_snapshot_age) {
+        return cacheConfig.retention;
+    }
+    CacheConfig::RetentionConfig global;
+    const auto& ducklake = config_manager->getDuckLakeConfig().retention;
+    global.keep_last_snapshots = ducklake.keep_last_snapshots;
+    global.max_snapshot_age = ducklake.max_snapshot_age;
+    return global;
+}
+
+std::size_t CacheManager::cleanupOldFiles(const std::string& catalog) {
+    // Expiry only UNREFERENCES data files; until ducklake_cleanup_old_files runs they
+    // stay on disk (or in the bucket) forever, so retention reclaimed no space. The
+    // call is catalog-wide, which is safe: it deletes only files no remaining
+    // snapshot of any table references. It answers one row per deleted file.
+    try {
+        auto result = db_adapter_->executeDuckLakeQueryWithResult(
+            "CALL ducklake_cleanup_old_files('" + escapeSqlLiteral(catalog) + "', cleanup_all => true)");
+        auto rows = crow::json::load(result.data.dump());
+        if (rows && rows.t() == crow::json::type::List) {
+            return rows.size();
+        }
+    } catch (const std::exception& ex) {
+        CROW_LOG_WARNING << "Failed to delete expired DuckLake data files in catalog '" << catalog
+                         << "': " << ex.what();
+    }
+    return 0;
 }
 
 bool CacheManager::isPlausibleWatermark(const std::string& value,
@@ -510,7 +883,8 @@ std::string CacheManager::fetchCursorWatermark(const std::string& catalog,
                                                const std::string& schema,
                                                const std::string& table,
                                                const std::string& cursor_column,
-                                               const std::string& cursor_type) {
+                                               const std::string& cursor_type,
+                                               std::string* dropped_reason) {
     if (cursor_column.empty()) {
         return {};
     }
@@ -529,11 +903,18 @@ std::string CacheManager::fetchCursorWatermark(const std::string& catalog,
                 // Dropped, not escaped. The caller then erases the watermark
                 // and the refresh takes its full-load branch, which is always
                 // correct and merely slower - see isPlausibleWatermark.
-                CROW_LOG_WARNING
-                    << "The cursor watermark read from " << schema << "." << table
-                    << " does not look like a " << cursor_type
-                    << "; it will not be interpolated into the refresh template and "
-                       "this refresh loads the full source.";
+                const std::string article =
+                    (!cursor_type.empty() && std::string("aeiouAEIOU").find(cursor_type[0]) != std::string::npos)
+                        ? "an " : "a ";
+                const std::string reason =
+                    "the cursor watermark read from " + schema + "." + table + " (" + cursor_column +
+                    ") does not look like " + article + cursor_type +
+                    " (cursor.type); it was not interpolated and this refresh loaded the full source - "
+                    "set cursor.type to the column's type";
+                CROW_LOG_WARNING << "The " << reason.substr(4);
+                if (dropped_reason != nullptr) {
+                    *dropped_reason = reason;
+                }
                 return {};
             }
 
@@ -645,8 +1026,12 @@ std::optional<std::vector<std::string>> CacheManager::liveTableChangeKeys(
                                     "schema/table name; retention will expire nothing.";
                 return std::nullopt;
             }
-            keys.push_back(std::string(name_rows[i]["schema_name"].s()) + "." +
-                           std::string(name_rows[i]["table_name"].s()));
+            // Both the bare and the quoted form DuckLake writes into
+            // `tables_created` - see tableNameKeys.
+            for (auto& name_key : tableNameKeys(name_rows[i]["schema_name"].s(),
+                                                name_rows[i]["table_name"].s())) {
+                keys.push_back(std::move(name_key));
+            }
         }
     } catch (const std::exception& ex) {
         CROW_LOG_WARNING << "Could not list the tables in DuckLake catalog '" << catalog
@@ -658,24 +1043,87 @@ std::optional<std::vector<std::string>> CacheManager::liveTableChangeKeys(
     return keys;
 }
 
+std::string CacheManager::metadataCatalog(const std::string& catalog) {
+    // DuckLake attaches its metadata database under this fixed name, whatever the
+    // backend (DuckDB file, Postgres, SQLite, MySQL).
+    return quoteIdentifier("__ducklake_metadata_" + catalog);
+}
+
+std::vector<std::string> CacheManager::tableNameKeys(const std::string& schema, const std::string& table) {
+    // `tables_created` names a table as DuckLake WRITES it: each part through
+    // KeywordHelper::WriteOptionallyQuoted. So the default schema `cache` - a
+    // keyword - is recorded as '"cache".orders', and matching only the bare
+    // 'cache.orders' made every full-refresh snapshot of every default-schema
+    // cache invisible to retention: nothing ever expired and the disk grew
+    // forever. Measured on DuckDB 1.5.5. The bare form is kept as well, in case
+    // a DuckLake version writes it unquoted.
+    std::vector<std::string> keys;
+    keys.push_back(schema + "." + table);
+    const std::string quoted = ::duckdb::KeywordHelper::WriteOptionallyQuoted(schema) + "." +
+                               ::duckdb::KeywordHelper::WriteOptionallyQuoted(table);
+    if (quoted != keys.front()) {
+        keys.push_back(quoted);
+    }
+    return keys;
+}
+
 std::vector<std::string> CacheManager::tableChangeKeys(const std::string& catalog,
                                                        const std::string& schema,
                                                        const std::string& table,
                                                        bool strict) {
     // `changes` is a MAP(VARCHAR, VARCHAR[]) that names tables by id for row
     // changes and by `schema.table` for creates, so both forms count.
-    std::vector<std::string> keys;
-    keys.push_back(schema + "." + table);
+    std::vector<std::string> keys = tableNameKeys(schema, table);
+
+    // Every table id this schema.table has had, LIVE AND DROPPED, resolved
+    // through the schema NAME.
+    //
+    // A full refresh is a CREATE OR REPLACE, and a `--full` rebuild of a merge
+    // cache a DROP + CREATE: each gives the table a new id. Matching only the
+    // live id left every earlier incarnation's snapshots - `tables_inserted_into`
+    // = [old id], nothing else - unmatched, so they were never expirable and each
+    // rebuild leaked the previous base files (~240 MB each, measured). The
+    // metadata catalog's ducklake_table keeps one row per incarnation (until
+    // expiry removes it), joined to ducklake_schema for the name that
+    // ducklake_table_info() does not expose.
+    try {
+        const std::string meta = metadataCatalog(catalog);
+        const std::string query =
+            "SELECT DISTINCT CAST(t.table_id AS VARCHAR) AS table_id FROM " + meta +
+            ".ducklake_table t JOIN " + meta + ".ducklake_schema s ON t.schema_id = s.schema_id "
+            "WHERE s.schema_name = '" + escapeSqlLiteral(schema) + "' AND t.table_name = '" +
+            escapeSqlLiteral(table) + "' ORDER BY 1";
+        auto result = db_adapter_->executeDuckLakeQueryWithResult(query);
+        auto rows = crow::json::load(result.data.dump());
+        if (rows && rows.t() == crow::json::type::List) {
+            for (std::size_t i = 0; i < rows.size(); ++i) {
+                if (!(rows[i].has("table_id") && rows[i]["table_id"].t() == crow::json::type::String)) {
+                    if (strict) {
+                        CROW_LOG_WARNING << "DuckLake metadata returned a table row without a readable "
+                                            "table_id for " << schema << "." << table
+                                         << "; retention will expire nothing this cycle.";
+                        return {};
+                    }
+                    continue;
+                }
+                keys.push_back(rows[i]["table_id"].s());
+            }
+            return keys;
+        }
+    } catch (const std::exception& ex) {
+        CROW_LOG_DEBUG << "DuckLake metadata tables not readable for " << schema << "." << table
+                       << " (" << ex.what() << "); resolving the live table id only";
+    }
+
+    // Fallback: the live table id by name only.
     try {
         // ducklake_table_info() carries table_name and schema_id but NOT a
         // schema NAME, so `WHERE table_name = 'orders' LIMIT 1` over a catalog
         // holding s1.orders and s2.orders returns an arbitrary one of them.
         // Verified on DuckDB 1.5.5: two rows differing only in schema_id.
         //
-        // Survivable while this fed a read-only watermark query. It now feeds
-        // snapshot EXPIRY, where a wrong id means deleting another endpoint's
-        // data - so an ambiguous lookup resolves to NOTHING, and callers that
-        // would destroy data do nothing at all.
+        // An ambiguous lookup on the destructive path resolves to NOTHING, and
+        // callers that would destroy data do nothing at all.
         const std::string query =
             "SELECT CAST(table_id AS VARCHAR) AS table_id FROM ducklake_table_info('" +
             escapeSqlLiteral(catalog) + "') WHERE table_name = '" +
@@ -683,19 +1131,22 @@ std::vector<std::string> CacheManager::tableChangeKeys(const std::string& catalo
         auto result = db_adapter_->executeDuckLakeQueryWithResult(query);
         auto rows = crow::json::load(result.data.dump());
         if (rows && rows.t() == crow::json::type::List) {
-            if (rows.size() > 1 && strict) {
-                CROW_LOG_WARNING
-                    << "DuckLake catalog '" << catalog << "' holds " << rows.size()
-                    << " tables named '" << table << "' in different schemas, and "
-                       "ducklake_table_info() exposes no schema name to tell them "
-                       "apart. Snapshot retention for " << schema << "." << table
-                    << " is disabled rather than risk expiring another table's "
-                       "snapshots; rename one of the cache tables to re-enable it.";
-                return {};
+            if (rows.size() > 1) {
+                if (strict) {
+                    CROW_LOG_WARNING
+                        << "DuckLake catalog '" << catalog << "' holds " << rows.size()
+                        << " tables named '" << table << "' in different schemas, and "
+                           "its metadata tables could not be read to tell them apart. "
+                           "Snapshot retention for " << schema << "." << table
+                        << " is disabled rather than risk expiring another table's "
+                           "snapshots.";
+                    return {};
+                }
+                // Ambiguous: the name keys alone. A guessed id here used to be
+                // reported as the refresh's snapshot_id (always the first table's).
+                return keys;
             }
-            // Best-effort takes the first match, which is what this did
-            // before it fed anything destructive.
-            if (rows.size() >= 1 && rows[0].has("table_id") &&
+            if (rows.size() == 1 && rows[0].has("table_id") &&
                 rows[0]["table_id"].t() == crow::json::type::String) {
                 keys.push_back(rows[0]["table_id"].s());
             }
@@ -760,7 +1211,8 @@ CacheManager::ExpiryCandidates CacheManager::expirableSnapshotIds(
         if (keys.empty()) {
             // The table could not be identified unambiguously. Expiring on a
             // guess is destructive, so expire nothing - see tableChangeKeys.
-            return {};
+            out.unresolved = true;
+            return out;
         }
 
         // "Touched nothing but this table": every entry in the snapshot's
@@ -892,7 +1344,8 @@ std::string CacheManager::buildExpireSql(const std::string& catalog,
                                          const std::string& schema,
                                          const std::string& table,
                                          std::optional<std::size_t> keep_last,
-                                         const std::string& older_than_sql) {
+                                         const std::string& older_than_sql,
+                                         ExpiryCandidates* report) {
     // `keep-last-snapshots: 0` is not a retention policy, but it must not
     // disable an accompanying `max-snapshot-age` either - which is what
     // returning here did when both keys were set.
@@ -905,18 +1358,13 @@ std::string CacheManager::buildExpireSql(const std::string& catalog,
 
     const auto candidates =
         expirableSnapshotIds(catalog, schema, table, keep_last, older_than_sql);
+    if (report != nullptr) {
+        *report = candidates;
+    }
     const auto& expire_ids = candidates.expirable;
     if (expire_ids.empty()) {
         // "Nothing old enough" and "nothing expirable" look identical from
-        // outside, and the second means a configured policy silently never
-        // fires. Say which it is.
-        if (candidates.shared > 0) {
-            CROW_LOG_INFO << "Retention for " << schema << "." << table
-                          << " expired nothing: " << candidates.shared
-                          << " eligible snapshot(s) are shared with another cached "
-                             "table and cannot be expired without discarding its "
-                             "data too.";
-        }
+        // outside; the caller (applyRetention) reports `shared` as a warning.
         return {};
     }
 
@@ -1041,49 +1489,229 @@ void CacheManager::addQueryCacheParamsIfNecessary(std::shared_ptr<ConfigManager>
     params["cacheTable"] = cacheConfig.table;
 }
 
-void CacheManager::performGarbageCollection(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::vector<std::string> previousTableNames) {
+CacheManager::GarbageCollectionResult CacheManager::performGarbageCollection(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::vector<std::string> previousTableNames) {
+    GarbageCollectionResult result;
     const auto& cacheConfig = endpoint.cache;
-    if (!cacheConfig.retention.keep_last_snapshots && !cacheConfig.retention.max_snapshot_age) {
-        return;
+    const auto retention = effectiveRetention(config_manager, cacheConfig);
+    if (!retention.keep_last_snapshots && !retention.max_snapshot_age) {
+        // It used to answer "Garbage collection completed" here, having done
+        // nothing: GC obeys the retention policy, and there is none.
+        result.status = "no_policy";
+        result.message = "no retention policy configured; nothing expired "
+                         "(set cache.retention or ducklake.retention)";
+        return result;
     }
 
-    std::map<std::string, std::string> params;
-    params["catalog"] = config_manager->getDuckLakeConfig().alias;
-    params["schema"] = cacheConfig.schema.empty() ? "main" : cacheConfig.schema;
-    params["table"] = cacheConfig.table;
+    const std::string catalog = config_manager->getDuckLakeConfig().alias;
+    const std::string schema = cacheConfig.schema.empty() ? "main" : cacheConfig.schema;
+    const std::string table = cacheConfig.table;
+    auto catalog_lock = lockCatalogWrites();
 
-    // Manual GC obeys the endpoint's OWN retention policy, per table.
-    //
-    // It used to be
-    //   CALL ducklake_expire_snapshots(cat,
-    //        older_than => CURRENT_TIMESTAMP - INTERVAL '1 day')
-    // - catalog-wide, so one `flapii cache gc` destroyed every other
-    // endpoint's history and incremental watermark, against a HARDCODED
-    // one-day cutoff that ignored the configured `max-snapshot-age` entirely.
-    std::string older_than_sql;
-    if (cacheConfig.retention.max_snapshot_age) {
-        older_than_sql = "CAST(CURRENT_TIMESTAMP AS TIMESTAMP) - INTERVAL '" +
-                         escapeSqlLiteral(cacheConfig.retention.max_snapshot_age.value()) + "'";
-    }
-    const std::string expireSql = buildExpireSql(
-        params["catalog"], params["schema"], params["table"],
-        cacheConfig.retention.keep_last_snapshots, older_than_sql);
-    if (expireSql.empty()) {
-        recordSyncEvent(config_manager, endpoint, "garbage_collection", "success",
-                        "No snapshots eligible for expiry");
-        return;
-    }
-    try {
-        db_adapter_->executeDuckLakeQuery(expireSql, params);
-        recordSyncEvent(config_manager, endpoint, "garbage_collection", "success", "Expired old snapshots");
-    } catch (const std::exception& ex) {
-        CROW_LOG_WARNING << "Failed to expire snapshots for " << params["schema"] << "." << params["table"] << ": " << ex.what();
-        // Same reasoning as the refresh path above: this is persisted.
+    // Manual GC obeys the endpoint's OWN retention policy, per table - see
+    // applyRetention. It used to be a catalog-wide `older_than` expiry against
+    // a HARDCODED one-day cutoff.
+    SyncEventDetails details;
+    details.started_at = std::chrono::system_clock::now();
+    const auto outcome = applyRetention(catalog, schema, table, retention);
+    details.completed_at = std::chrono::system_clock::now();
+    result.expired_snapshots = outcome.expired_snapshots;
+    result.files_deleted = outcome.files_deleted;
+    result.bytes_freed = outcome.bytes_freed;
+    result.warning = outcome.warning;
+
+    if (!outcome.error.empty()) {
+        result.status = "error";
         std::map<std::string, std::string> no_params;
         const auto secrets = collectTemplateSecrets(config_manager.get(), endpoint, no_params);
-        recordSyncEvent(config_manager, endpoint, "garbage_collection", "error",
-                        publicErrorMessage("Garbage collection failed", ex.what(), secrets));
+        result.message = publicErrorMessage("Garbage collection failed", outcome.error, secrets);
+        recordSyncEvent(config_manager, endpoint, "garbage_collection", "error", result.message, details);
+        return result;
     }
+    result.status = outcome.expired_snapshots > 0 ? "expired" : "nothing_to_expire";
+    std::ostringstream message;
+    if (outcome.expired_snapshots > 0) {
+        message << "Expired " << outcome.expired_snapshots << " snapshot(s), deleted "
+                << outcome.files_deleted << " file(s), freed " << outcome.bytes_freed << " bytes";
+    } else {
+        message << "No snapshots eligible for expiry";
+    }
+    if (!outcome.warning.empty()) {
+        message << "; warning: " << outcome.warning;
+    }
+    result.message = message.str();
+    recordSyncEvent(config_manager, endpoint, "garbage_collection", "success", result.message, details);
+    return result;
+}
+
+CacheManager::GarbageCollectionResult CacheManager::dropObsoleteCacheTable(
+        std::shared_ptr<ConfigManager> config_manager, const std::string& schema, const std::string& table) {
+    GarbageCollectionResult result;
+    const std::string catalog = config_manager->getDuckLakeConfig().alias;
+    auto catalog_lock = lockCatalogWrites();
+    if (!cacheTableExists(catalog, schema, table)) {
+        result.status = "not_found";
+        result.message = "no table " + schema + "." + table + " in DuckLake catalog '" + catalog + "'";
+        return result;
+    }
+    // A table left behind by a changed `schema:` (or `table:`) is nobody's to
+    // expire: no endpoint's retention matches it, so its snapshots and files
+    // stayed forever.
+    //
+    // The table's first snapshot opens the window in which its files were live.
+    std::optional<std::int64_t> first_snapshot;
+    try {
+        auto first = db_adapter_->executeDuckLakeQueryWithResult(
+            "SELECT min(snapshot_id) AS id FROM ducklake_snapshots('" + escapeSqlLiteral(catalog) + "') WHERE " +
+            tableSnapshotPredicate(tableChangeKeys(catalog, schema, table, /*strict=*/true)));
+        auto rows = crow::json::load(first.data.dump());
+        if (rows && rows.t() == crow::json::type::List && rows.size() == 1 && rows[0].has("id") &&
+            rows[0]["id"].t() == crow::json::type::Number) {
+            first_snapshot = static_cast<std::int64_t>(rows[0]["id"].d());
+        }
+    } catch (const std::exception& ex) {
+        CROW_LOG_DEBUG << "No first snapshot for " << schema << "." << table << ": " << ex.what();
+    }
+    db_adapter_->executeDuckLakeQuery("DROP TABLE " + quoteIdentifier(catalog) + "." + quoteIdentifier(schema) +
+                                          "." + quoteIdentifier(table), {});
+    CROW_LOG_INFO << "Dropped obsolete cache table " << schema << "." << table;
+    result.status = "dropped";
+
+    // Recorded BEFORE the expiry, filed under no endpoint like compaction: its
+    // snapshot is then the newest, so the DROP's own snapshot (which could see
+    // every other table's files of that moment) is no longer the catalog's
+    // latest and can be expired too.
+    EndpointConfig maintenance;
+    recordSyncEvent(config_manager, maintenance, "drop_table", "success",
+                    "Dropped obsolete cache table " + schema + "." + table);
+
+    // A file stays on disk while ANY snapshot that could see it survives. Every
+    // snapshot since the table's first that touched no LIVE table - the dropped
+    // table's own history, the DROP, a `CREATE SCHEMA` for the new `schema:` - is
+    // nobody's history any more. Snapshots of live tables are left to those
+    // tables' own retention (they release this table's files as they expire).
+    const auto live = liveTableChangeKeys(catalog);
+    if (first_snapshot && live) {
+        std::ostringstream touches_live;
+        if (live->empty()) {
+            touches_live << "false";
+        } else {
+            touches_live << "len(list_filter(flatten(map_values(changes)), x -> ";
+            for (std::size_t i = 0; i < live->size(); ++i) {
+                touches_live << (i > 0 ? " OR " : "") << "x = '" << escapeSqlLiteral((*live)[i]) << "'";
+            }
+            touches_live << ")) > 0";
+        }
+        try {
+            auto window = db_adapter_->executeDuckLakeQueryWithResult(
+                "SELECT snapshot_id FROM ducklake_snapshots('" + escapeSqlLiteral(catalog) + "') "
+                "WHERE snapshot_id >= " + std::to_string(*first_snapshot) +
+                " AND snapshot_id < (SELECT max(snapshot_id) FROM ducklake_snapshots('" +
+                escapeSqlLiteral(catalog) + "')) AND NOT (" + touches_live.str() + ") ORDER BY snapshot_id");
+            auto rows = crow::json::load(window.data.dump());
+            std::vector<std::int64_t> ids;
+            if (rows && rows.t() == crow::json::type::List) {
+                for (std::size_t i = 0; i < rows.size(); ++i) {
+                    if (rows[i].has("snapshot_id") && rows[i]["snapshot_id"].t() == crow::json::type::Number) {
+                        ids.push_back(static_cast<std::int64_t>(rows[i]["snapshot_id"].d()));
+                    }
+                }
+            }
+            const auto bytes_before = referencedFileBytes(catalog);
+            if (!ids.empty()) {
+                std::ostringstream sql;
+                sql << "CALL ducklake_expire_snapshots('" << escapeSqlLiteral(catalog) << "', versions => [";
+                for (std::size_t i = 0; i < ids.size(); ++i) {
+                    sql << (i > 0 ? ", " : "") << ids[i];
+                }
+                sql << "])";
+                db_adapter_->executeDuckLakeQuery(sql.str(), {});
+                result.expired_snapshots = ids.size();
+            }
+            expireAuditSnapshots(catalog);   // audit snapshots of that window pin the files too
+
+            // What is left in the window touched a live table, so it is that
+            // table's history and its retention decides. Applied NOW rather than
+            // at that table's next refresh, so the dropped table's files go as
+            // soon as the policy allows; whatever the policy still keeps is named.
+            std::set<std::pair<std::string, std::string>> seen;
+            for (const auto& endpoint : *config_manager->getEndpoints()) {
+                if (!endpoint.cache.enabled || endpoint.cache.table.empty()) {
+                    continue;
+                }
+                const std::string ep_schema = endpoint.cache.schema.empty() ? "main" : endpoint.cache.schema;
+                if (!seen.insert({ep_schema, endpoint.cache.table}).second) {
+                    continue;
+                }
+                const auto keys = tableChangeKeys(catalog, ep_schema, endpoint.cache.table, /*strict=*/true);
+                if (keys.empty()) {
+                    continue;
+                }
+                const auto pinning = [&]() -> std::int64_t {
+                    auto counted = db_adapter_->executeDuckLakeQueryWithResult(
+                        "SELECT count(*) AS n FROM ducklake_snapshots('" + escapeSqlLiteral(catalog) + "') "
+                        "WHERE snapshot_id >= " + std::to_string(*first_snapshot) +
+                        " AND snapshot_id < (SELECT max(snapshot_id) FROM ducklake_snapshots('" +
+                        escapeSqlLiteral(catalog) + "')) AND " + tableSnapshotPredicate(keys));
+                    auto rows = crow::json::load(counted.data.dump());
+                    if (rows && rows.t() == crow::json::type::List && rows.size() == 1 && rows[0].has("n") &&
+                        rows[0]["n"].t() == crow::json::type::Number) {
+                        return static_cast<std::int64_t>(rows[0]["n"].d());
+                    }
+                    return 0;
+                };
+                if (pinning() == 0) {
+                    continue;
+                }
+                const auto retention = effectiveRetention(config_manager, endpoint.cache);
+                const bool has_policy = retention.keep_last_snapshots || retention.max_snapshot_age;
+                if (has_policy) {
+                    result.expired_snapshots +=
+                        applyRetention(catalog, ep_schema, endpoint.cache.table, retention).expired_snapshots;
+                }
+                const auto still = pinning();
+                if (still == 0) {
+                    continue;
+                }
+                std::ostringstream holder;
+                holder << (endpoint.urlPath.empty() ? endpoint.getName() : endpoint.urlPath) << " (" << ep_schema
+                       << "." << endpoint.cache.table << ": " << still << " snapshot(s) kept by ";
+                if (retention.keep_last_snapshots) {
+                    holder << "retention keep-last-snapshots " << *retention.keep_last_snapshots;
+                } else if (retention.max_snapshot_age) {
+                    holder << "retention max-snapshot-age " << *retention.max_snapshot_age;
+                } else {
+                    holder << "no retention policy; set cache.retention or ducklake.retention";
+                }
+                holder << ")";
+                result.pinned_by.push_back(holder.str());
+            }
+            const auto bytes_after = referencedFileBytes(catalog);
+            if (bytes_before && bytes_after && *bytes_before >= *bytes_after) {
+                result.bytes_freed = *bytes_before - *bytes_after;
+            }
+            result.files_deleted = cleanupOldFiles(catalog);
+        } catch (const std::exception& ex) {
+            result.warning = std::string("snapshot expiry failed: ") + ex.what();
+            CROW_LOG_WARNING << "Could not expire the snapshots of dropped table " << schema << "." << table
+                             << ": " << ex.what();
+        }
+    } else {
+        result.warning = "the dropped table's snapshots could not be identified; nothing was expired";
+    }
+    std::ostringstream message;
+    message << "Dropped " << schema << "." << table << "; expired " << result.expired_snapshots
+            << " snapshot(s), deleted " << result.files_deleted << " file(s), freed " << result.bytes_freed
+            << " bytes";
+    if (!result.pinned_by.empty()) {
+        // Which endpoint's retention holds what is left, not a generic "later".
+        message << "; files the dropped table shares with snapshots still retained by ";
+        for (std::size_t i = 0; i < result.pinned_by.size(); ++i) {
+            message << (i > 0 ? ", " : "") << result.pinned_by[i];
+        }
+        message << " are deleted when that retention expires those snapshots";
+    }
+    result.message = message.str();
+    return result;
 }
 
 void CacheManager::initializeAuditTables(std::shared_ptr<ConfigManager> config_manager) {
@@ -1112,15 +1740,27 @@ void CacheManager::initializeAuditTables(std::shared_ptr<ConfigManager> config_m
             rows_affected BIGINT,
             sync_started_at TIMESTAMP,
             sync_completed_at TIMESTAMP,
-            duration_ms BIGINT
+            duration_ms BIGINT,
+            "full" BOOLEAN       -- the refresh loaded the whole source (a keyword: quoted)
         )
     )";
+    // Catalogs created before the column existed.
+    const std::string addFullColumnSQL = "ALTER TABLE " + catalog + "." + auditSchema +
+                                         ".sync_events ADD COLUMN IF NOT EXISTS \"full\" BOOLEAN";
 
     try {
         std::map<std::string, std::string> params;
         db_adapter_->executeDuckLakeQuery(createSchemaSQL, params);
         db_adapter_->executeDuckLakeQuery(createAuditTableSQL, params);
+        try {
+            db_adapter_->executeDuckLakeQuery(addFullColumnSQL, params);
+        } catch (const std::exception& ex) {
+            CROW_LOG_WARNING << "Could not add the `full` column to the cache audit table: " << ex.what();
+        }
         CROW_LOG_INFO << "Initialized DuckLake audit tables in " << catalog << "." << auditSchema;
+        // Bound whatever a previous run accumulated: the FIRST event this process
+        // records prunes. Not here - it would delay warm-up on every start.
+        audit_events_since_prune_.store(kAuditPruneEvery - 1);
     } catch (const std::exception& ex) {
         CROW_LOG_ERROR << "Failed to initialize audit tables: " << ex.what();
     }
@@ -1144,45 +1784,482 @@ void CacheManager::ensureCacheSchemaExists(const std::string& catalog, const std
     }
 }
 
-void CacheManager::recordSyncEvent(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::string& sync_type, const std::string& status, const std::string& message) {
+std::string CacheManager::formatUtcTimestamp(std::chrono::system_clock::time_point tp) {
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(tp.time_since_epoch()).count();
+    const std::time_t secs = static_cast<std::time_t>(ms / 1000);
+    std::tm utc{};
+#if defined(_WIN32)
+    gmtime_s(&utc, &secs);
+#else
+    gmtime_r(&secs, &utc);
+#endif
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d.%03d",
+                  utc.tm_year + 1900, utc.tm_mon + 1, utc.tm_mday,
+                  utc.tm_hour, utc.tm_min, utc.tm_sec, static_cast<int>(ms % 1000));
+    return std::string(buf);
+}
+
+std::string CacheManager::buildSyncEventInsert(const std::string& catalog, const std::string& event_id,
+                                               const EndpointConfig& endpoint, const std::string& sync_type,
+                                               const std::string& status, const std::string& message,
+                                               const SyncEventDetails& details) {
+    const auto& cacheConfig = endpoint.cache;
+    const auto quote = [](const std::string& v) { return "'" + escapeSqlLiteral(v) + "'"; };
+    const auto ts = [&](const std::optional<std::chrono::system_clock::time_point>& tp) {
+        // A missing instant falls back to "now" so the row still sorts where
+        // it happened, exactly as every event was recorded before timing existed.
+        return tp ? "TIMESTAMP " + quote(formatUtcTimestamp(*tp)) : std::string("CAST(CURRENT_TIMESTAMP AS TIMESTAMP)");
+    };
+
+    std::string duration = "NULL";
+    if (details.started_at && details.completed_at) {
+        const auto d = std::chrono::duration_cast<std::chrono::milliseconds>(
+            *details.completed_at - *details.started_at).count();
+        duration = std::to_string(d < 0 ? 0 : d);
+    }
+    const std::string rows = details.rows_affected ? std::to_string(*details.rows_affected) : "NULL";
+    const std::string snapshot = details.snapshot_id ? quote(*details.snapshot_id) : "NULL";
+
+    // A catalog-wide job (compaction, a dropped table's bookkeeping) has no
+    // table: its schema stays empty too, rather than defaulting to "main".
+    const std::string schema = cacheConfig.table.empty() ? cacheConfig.schema
+                             : cacheConfig.schema.empty() ? std::string("main")
+                                                          : cacheConfig.schema;
+    return "INSERT INTO " + catalog + ".audit.sync_events "
+           "(event_id, endpoint_path, cache_table, cache_schema, sync_type, status, message, "
+           "snapshot_id, rows_affected, sync_started_at, sync_completed_at, duration_ms, \"full\") VALUES (" +
+           quote(event_id) + ", " +
+           quote(endpoint.urlPath) + ", " +
+           quote(cacheConfig.table) + ", " +
+           quote(schema) + ", " +
+           quote(sync_type) + ", " +
+           quote(status) + ", " +
+           quote(message) + ", " +
+           snapshot + ", " + rows + ", " +
+           ts(details.started_at) + ", " + ts(details.completed_at) + ", " + duration + ", " +
+           (details.full.value_or(false) ? "true" : "false") + ")";
+}
+
+void CacheManager::updateRefreshStats(const CacheKey& key, const std::string& endpoint_path, const std::string& sync_type,
+                                      const std::string& status, const SyncEventDetails& details) {
+    // GC and compaction are not refreshes; counting them would dilute refresh
+    // durations (and compaction has no cache table to file them under).
+    if (sync_type == "garbage_collection" || sync_type == "compaction") {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(refresh_stats_mutex_);
+    auto& stats = refresh_stats_[key];
+    stats.endpoint_path = endpoint_path;
+    stats.catalog = key.catalog;
+    stats.schema = key.schema;
+    stats.table = key.table;
+    stats.last_sync_type = sync_type;
+    stats.last_status = status;
+    stats.last_rows_affected = details.rows_affected;
+    stats.last_snapshot_id = details.snapshot_id;
+    stats.last_completed_at = details.completed_at;
+    stats.last_warning = details.warning;
+    stats.last_full = details.full.value_or(false);
+    stats.refreshes += 1;
+    if (status != "success") {
+        stats.failures += 1;
+    } else {
+        stats.last_success_at = details.completed_at;
+    }
+    stats.last_duration_ms.reset();
+    if (details.started_at && details.completed_at) {
+        const int64_t d = std::max<int64_t>(0, std::chrono::duration_cast<std::chrono::milliseconds>(
+            *details.completed_at - *details.started_at).count());
+        stats.last_duration_ms = d;
+        stats.total_duration_ms += d;
+        stats.max_duration_ms = std::max(stats.max_duration_ms, d);
+    }
+}
+
+std::vector<CacheManager::CacheRefreshStats> CacheManager::getRefreshStats() const {
+    std::lock_guard<std::mutex> lock(refresh_stats_mutex_);
+    std::vector<CacheRefreshStats> out;
+    out.reserve(refresh_stats_.size());
+    for (const auto& [key, stats] : refresh_stats_) {
+        out.push_back(stats);
+    }
+    return out;
+}
+
+std::map<std::string, std::string> CacheManager::getReadinessStates() const {
+    std::lock_guard<std::mutex> lock(readiness_mutex_);
+    std::map<std::string, std::string> out;
+    for (const auto& [key, r] : readiness_) {
+        std::string state;
+        switch (r.state) {
+            case ReadinessState::Starting: state = "starting"; break;
+            case ReadinessState::Ready: state = r.stale ? "stale" : "ready"; break;
+            case ReadinessState::Failed: state = "failed"; break;
+            case ReadinessState::Unbuilt: state = "unbuilt"; break;
+        }
+        out[key.catalog + "." + key.schema + "." + key.table] = state;
+    }
+    return out;
+}
+
+void CacheManager::recordSyncEvent(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint, const std::string& sync_type, const std::string& status, const std::string& message, const SyncEventDetails& details) {
+    // In-memory stats first and unconditionally: they do not depend on the
+    // audit table existing, or on the INSERT below succeeding.
+    updateRefreshStats(cacheKeyForEndpoint(config_manager, endpoint), endpoint.urlPath, sync_type, status, details);
+
     const auto& ducklakeConfig = config_manager->getDuckLakeConfig();
     if (!ducklakeConfig.enabled) {
         return;
     }
 
-    const std::string catalog = ducklakeConfig.alias;
-    const std::string auditSchema = "audit";
-    const auto& cacheConfig = endpoint.cache;
-    
-    std::string insertSQL = R"(
-        INSERT INTO )" + catalog + "." + auditSchema + R"(.sync_events 
-        (endpoint_path, cache_table, cache_schema, sync_type, status, message)
-        VALUES (?, ?, ?, ?, ?, ?)
-    )";
-
     try {
-        // For now, use a simple query approach - in production, prepared statements would be better
-        std::string escapedMessage = message;
-        std::replace(escapedMessage.begin(), escapedMessage.end(), '\'', '"');
-        
-        std::string eventId = "evt_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(rand());
-        std::string insertQuery = "INSERT INTO " + catalog + "." + auditSchema + ".sync_events " +
-            "(event_id, endpoint_path, cache_table, cache_schema, sync_type, status, message, sync_started_at, sync_completed_at) VALUES (" +
-            "'" + eventId + "', " +
-            "'" + endpoint.urlPath + "', " +
-            "'" + cacheConfig.table + "', " +
-            "'" + (cacheConfig.schema.empty() ? "main" : cacheConfig.schema) + "', " +
-            "'" + sync_type + "', " +
-            "'" + status + "', " +
-            "'" + escapedMessage + "', " +
-            "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)";
-
+        const std::string eventId = newEventId();
+        const std::string insertQuery = buildSyncEventInsert(ducklakeConfig.alias, eventId, endpoint,
+                                                             sync_type, status, message, details);
         std::map<std::string, std::string> params;
         db_adapter_->executeDuckLakeQuery(insertQuery, params);
-
     } catch (const std::exception& ex) {
         CROW_LOG_WARNING << "Failed to record sync event: " << ex.what();
+        return;
     }
+
+    // Every INSERT above is a DuckLake snapshot. With a 10 s schedule that is 8640
+    // a day, forever, and every refresh's snapshot lookups scan them all - a 0-row
+    // refresh measured 27 ms on a fresh catalog and 56 ms a few thousand events
+    // later. Amortised: one prune per kAuditPruneEvery events.
+    if (audit_events_since_prune_.fetch_add(1) + 1 >= kAuditPruneEvery) {
+        audit_events_since_prune_.store(0);
+        pruneAuditLog(config_manager);
+    }
+}
+
+void CacheManager::pruneAuditLog(std::shared_ptr<ConfigManager> config_manager) {
+    const auto& ducklake = config_manager->getDuckLakeConfig();
+    if (!ducklake.enabled || ducklake.read_only) {
+        return;
+    }
+    const std::string catalog = ducklake.alias;
+    const std::string table = quoteIdentifier(catalog) + ".audit.sync_events";
+    try {
+        // Rows: the newest kAuditRowsKept per cache table (garbage collection and
+        // compaction events included, under their own table/blank keys).
+        db_adapter_->executeDuckLakeQuery(
+            "DELETE FROM " + table + " WHERE event_id IN (SELECT event_id FROM ("
+            "SELECT event_id, row_number() OVER (PARTITION BY cache_schema, cache_table "
+            "ORDER BY sync_completed_at DESC NULLS LAST, event_id DESC) AS rn FROM " + table +
+            ") WHERE rn > " + std::to_string(kAuditRowsKept) + ")", {});
+    } catch (const std::exception& ex) {
+        CROW_LOG_WARNING << "Failed to prune the cache audit log: " << ex.what();
+        return;
+    }
+
+    if (expireAuditSnapshots(catalog)) {
+        cleanupOldFiles(catalog);
+    }
+}
+
+bool CacheManager::expireAuditSnapshots(const std::string& catalog) {
+    // History of the audit table is worth nothing, and its snapshots are what grows
+    // the catalog. Worse, each one PINS the cache files visible at its version: an
+    // audit INSERT committed between two full refreshes kept the older refresh's
+    // parquet alive after retention expired that refresh's own snapshot - measured,
+    // five refreshes under keep-last-snapshots: 1 left all five files on disk.
+    // Same per-table, exclusive-only expiry as a cache table, so a snapshot shared
+    // with anything else is never touched.
+    const std::string expire_sql = buildExpireSql(catalog, "audit", "sync_events", kAuditSnapshotsKept, "");
+    if (expire_sql.empty()) {
+        return false;
+    }
+    try {
+        db_adapter_->executeDuckLakeQuery(expire_sql, {});
+        return true;
+    } catch (const std::exception& ex) {
+        CROW_LOG_WARNING << "Failed to expire cache audit snapshots: " << ex.what();
+        return false;
+    }
+}
+
+std::string CacheManager::newEventId() {
+    // A random (version 4) UUID. The id used to be `evt_<epoch seconds>_<rand()>`
+    // with rand() never seeded, so every process produced the same sequence and two
+    // events in the same second of two runs collided.
+    static thread_local std::mt19937_64 rng{[] {
+        std::random_device rd;
+        std::seed_seq seq{rd(), rd(), rd(), rd(),
+                          static_cast<unsigned>(std::chrono::high_resolution_clock::now().time_since_epoch().count())};
+        return std::mt19937_64(seq);
+    }()};
+    std::uniform_int_distribution<uint64_t> dist;
+    uint64_t hi = dist(rng);
+    uint64_t lo = dist(rng);
+    hi = (hi & 0xFFFFFFFFFFFF0FFFULL) | 0x0000000000004000ULL;   // version 4
+    lo = (lo & 0x3FFFFFFFFFFFFFFFULL) | 0x8000000000000000ULL;   // RFC 4122 variant
+    char buf[37];
+    std::snprintf(buf, sizeof(buf), "%08x-%04x-%04x-%04x-%012llx",
+                  static_cast<unsigned>(hi >> 32), static_cast<unsigned>((hi >> 16) & 0xFFFF),
+                  static_cast<unsigned>(hi & 0xFFFF), static_cast<unsigned>(lo >> 48),
+                  static_cast<unsigned long long>(lo & 0xFFFFFFFFFFFFULL));
+    return std::string(buf);
+}
+
+CacheManager::ActiveRefreshGuard::ActiveRefreshGuard(CacheManager& manager)
+    : manager_(manager), tid_(std::this_thread::get_id()) {
+    std::lock_guard<std::mutex> lock(manager_.active_refresh_mutex_);
+    manager_.active_refresh_threads_.insert(tid_);
+}
+
+CacheManager::ActiveRefreshGuard::~ActiveRefreshGuard() {
+    std::lock_guard<std::mutex> lock(manager_.active_refresh_mutex_);
+    manager_.active_refresh_threads_.erase(tid_);
+}
+
+void CacheManager::interruptRefreshesForShutdown(std::chrono::milliseconds budget) {
+    // SIGTERM used to wait for whatever populate query was running - a warm-up
+    // measured ~80 s - because the warm-up thread and the scheduler are joined
+    // before the catalog is detached. They are interrupted instead (the same
+    // duckdb_interrupt mechanism MCP cancellation uses, #111): the refresh fails,
+    // its transaction rolls back, and the previous snapshot is what the next start
+    // serves.
+    shutdown_requested_.store(true);
+    const auto deadline = std::chrono::steady_clock::now() + budget;
+    bool logged = false;
+    while (true) {
+        std::vector<std::thread::id> threads;
+        {
+            std::lock_guard<std::mutex> lock(active_refresh_mutex_);
+            threads.assign(active_refresh_threads_.begin(), active_refresh_threads_.end());
+        }
+        if (threads.empty()) {
+            return;
+        }
+        if (!logged) {
+            CROW_LOG_INFO << "Shutdown: interrupting " << threads.size() << " running cache refresh(es)";
+            logged = true;
+        }
+        // Repeated, not once: a script runs statement by statement, and an interrupt
+        // landing between two of them has nothing to cancel.
+        for (const auto& tid : threads) {
+            interruptActiveExecutor(tid);
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            CROW_LOG_WARNING << "Shutdown: a cache refresh is still running after the interrupt budget";
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+}
+
+bool CacheManager::shutdownRequested() const {
+    return shutdown_requested_.load();
+}
+
+std::optional<std::chrono::system_clock::time_point> CacheManager::lastRefreshCompletedAt(
+        std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint) const {
+    const CacheKey key = cacheKeyForEndpoint(config_manager, endpoint);
+    std::lock_guard<std::mutex> lock(refresh_stats_mutex_);
+    const auto it = refresh_stats_.find(key);
+    if (it == refresh_stats_.end()) {
+        return std::nullopt;
+    }
+    return it->second.last_completed_at;
+}
+
+std::optional<std::chrono::system_clock::time_point> CacheManager::newestSnapshotTime(
+        std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint) {
+    return newestSnapshotTimeForKey(cacheKeyForEndpoint(config_manager, endpoint));
+}
+
+std::optional<std::chrono::system_clock::time_point> CacheManager::dataTimestamp(
+        const std::string& catalog, const std::string& schema, const std::string& table) {
+    const CacheKey key{catalog, schema, table};
+    {
+        std::lock_guard<std::mutex> lock(refresh_stats_mutex_);
+        const auto it = refresh_stats_.find(key);
+        if (it != refresh_stats_.end() && it->second.last_success_at) {
+            return it->second.last_success_at;
+        }
+        const auto memo = snapshot_time_memo_.find(key);
+        if (memo != snapshot_time_memo_.end()) {
+            return memo->second;
+        }
+    }
+    // Outside the lock: a catalog query. Once per table per process, so the
+    // metrics endpoint stays cheap.
+    const auto found = newestSnapshotTimeForKey(key);
+    std::lock_guard<std::mutex> lock(refresh_stats_mutex_);
+    snapshot_time_memo_[key] = found;
+    return found;
+}
+
+std::optional<std::chrono::system_clock::time_point> CacheManager::newestSnapshotTimeForKey(const CacheKey& key) {
+    try {
+        const std::string query =
+            "SELECT CAST(epoch_ms(snapshot_time) AS BIGINT) AS ms FROM ducklake_snapshots('" +
+            escapeSqlLiteral(key.catalog) + "') WHERE " +
+            tableSnapshotPredicate(tableChangeKeys(key.catalog, key.schema, key.table, /*strict=*/false)) +
+            " ORDER BY snapshot_id DESC LIMIT 1";
+        auto result = db_adapter_->executeDuckLakeQueryWithResult(query);
+        auto rows = crow::json::load(result.data.dump());
+        if (rows && rows.t() == crow::json::type::List && rows.size() > 0 && rows[0].has("ms") &&
+            rows[0]["ms"].t() == crow::json::type::Number) {
+            return std::chrono::system_clock::time_point(
+                std::chrono::milliseconds(static_cast<int64_t>(rows[0]["ms"].d())));
+        }
+    } catch (const std::exception& ex) {
+        CROW_LOG_DEBUG << "No snapshot time for " << key.schema << "." << key.table << ": " << ex.what();
+    }
+    return std::nullopt;
+}
+
+namespace {
+// The audit row a catalog-wide maintenance task is filed under: no endpoint, no table.
+EndpointConfig catalogMaintenanceEndpoint() {
+    EndpointConfig endpoint;
+    endpoint.urlPath = "";
+    endpoint.cache.table = "";
+    endpoint.cache.schema = "";
+    return endpoint;
+}
+} // namespace
+
+CacheManager::CompactionResult CacheManager::performCompaction(std::shared_ptr<ConfigManager> config_manager,
+                                                               const std::string& schema,
+                                                               const std::string& table) {
+    CompactionResult out;
+    const auto& ducklake = config_manager->getDuckLakeConfig();
+    if (!ducklake.enabled || ducklake.read_only) {
+        out.status = "skipped";
+        out.message = !ducklake.enabled ? "DuckLake is not enabled" : "the catalog is attached read-only";
+        return out;
+    }
+    const std::string catalog = escapeSqlLiteral(ducklake.alias);
+    const bool one_table = !table.empty();
+    const std::string table_schema = schema.empty() ? "main" : schema;
+    auto catalog_lock = lockCatalogWrites();
+    CROW_LOG_INFO << "Running DuckLake compaction for "
+                  << (one_table ? "table " + table_schema + "." + table : "catalog: " + ducklake.alias);
+
+    SyncEventDetails details;
+    details.started_at = std::chrono::system_clock::now();
+    std::vector<std::string> failures;
+    // Once per CATALOG. It used to loop over cached endpoints and run the same
+    // catalog-wide call once for each of them.
+    //
+    //  - merge_adjacent_files: the small files every incremental refresh adds;
+    //  - rewrite_data_files: files whose rows are mostly deleted, which is what a
+    //    merge-mode cache accumulates (each UPDATE is a delete plus an insert);
+    //  - cleanup_old_files: the files the two above replaced. Without it compaction
+    //    only ADDED files to disk.
+    // delete_threshold: DuckLake rewrites a file only above 95% deleted rows by
+    // default, and a merge cache's delete files did not get there - measured,
+    // compaction left 52 files and 24 delete files exactly as it found them while
+    // each refresh got ~30 ms slower.
+    std::string target_args = "'" + catalog + "'";
+    if (one_table) {
+        target_args += ", '" + escapeSqlLiteral(table) + "', schema => '" + escapeSqlLiteral(table_schema) + "'";
+    }
+    std::string rewrite_args = target_args;
+    if (ducklake.compaction.delete_threshold) {
+        std::ostringstream threshold;
+        threshold.imbue(std::locale::classic());
+        threshold << *ducklake.compaction.delete_threshold;
+        rewrite_args += ", delete_threshold => " + threshold.str();
+    }
+    std::optional<std::int64_t> files_rewritten;
+    // DuckLake answers merge/rewrite with one row per table it touched; the
+    // count of files it replaced is the column whose name says so, when the
+    // installed version reports one.
+    const auto count_rewritten = [&files_rewritten](const QueryResult& result) {
+        auto rows = crow::json::load(result.data.dump());
+        if (!rows || rows.t() != crow::json::type::List) {
+            return;
+        }
+        for (const auto& row : rows) {
+            if (row.t() != crow::json::type::Object) {
+                continue;
+            }
+            for (const auto& column : row.keys()) {
+                if ((column == "files_processed" || column == "files_rewritten" || column == "files_merged") &&
+                    row[column].t() == crow::json::type::Number) {
+                    files_rewritten = files_rewritten.value_or(0) + static_cast<std::int64_t>(row[column].d());
+                }
+            }
+        }
+    };
+    for (const std::string& sql : {std::string("CALL ducklake_merge_adjacent_files(") + target_args + ")",
+                                   std::string("CALL ducklake_rewrite_data_files(") + rewrite_args + ")"}) {
+        try {
+            count_rewritten(db_adapter_->executeDuckLakeQueryWithResult(sql));
+        } catch (const std::exception& ex) {
+            CROW_LOG_WARNING << "DuckLake compaction step failed (" << sql << "): " << ex.what();
+            failures.push_back(ex.what());
+        }
+    }
+    try {
+        db_adapter_->executeDuckLakeQuery("CALL ducklake_cleanup_old_files('" + catalog + "', cleanup_all => true)", {});
+    } catch (const std::exception& ex) {
+        CROW_LOG_WARNING << "DuckLake compaction step failed (cleanup_old_files): " << ex.what();
+        failures.push_back(ex.what());
+    }
+    details.completed_at = std::chrono::system_clock::now();
+    out.duration_ms = std::max<std::int64_t>(
+        0, std::chrono::duration_cast<std::chrono::milliseconds>(*details.completed_at - *details.started_at).count());
+    out.files_rewritten = files_rewritten;
+    const std::string subject = one_table ? table_schema + "." + table : "catalog " + ducklake.alias;
+    out.status = failures.empty() ? "compacted" : "error";
+    out.message = failures.empty() ? "Compacted " + subject : "Compaction of " + subject + " failed: " + failures.front();
+    // Filed under the table it compacted; a catalog-wide run under no table AND
+    // no schema (it used to be recorded as schema "main").
+    EndpointConfig filed_under = catalogMaintenanceEndpoint();
+    if (one_table) {
+        filed_under.cache.schema = table_schema;
+        filed_under.cache.table = table;
+    }
+    recordSyncEvent(config_manager, filed_under, "compaction", failures.empty() ? "success" : "error",
+                    out.message, details);
+    CROW_LOG_INFO << "DuckLake compaction of " << subject << " finished"
+                  << (failures.empty() ? "" : " with errors");
+    return out;
+}
+
+std::optional<std::chrono::system_clock::time_point> CacheManager::lastCompactionTime(
+        std::shared_ptr<ConfigManager> config_manager) {
+    // From the audit log, so the cadence survives restarts and the one-shot
+    // `flapi cache refresh` (a fresh process every time) can tell whether
+    // compaction is due.
+    const auto& ducklake = config_manager->getDuckLakeConfig();
+    if (!ducklake.enabled) {
+        return std::nullopt;
+    }
+    try {
+        auto result = db_adapter_->executeDuckLakeQueryWithResult(
+            "SELECT CAST(epoch_ms(max(sync_completed_at)) AS BIGINT) AS ms FROM " +
+            quoteIdentifier(ducklake.alias) + ".audit.sync_events WHERE sync_type = 'compaction' AND cache_table = ''");
+        auto rows = crow::json::load(result.data.dump());
+        if (rows && rows.t() == crow::json::type::List && rows.size() > 0 && rows[0].has("ms") &&
+            rows[0]["ms"].t() == crow::json::type::Number) {
+            return std::chrono::system_clock::time_point(
+                std::chrono::milliseconds(static_cast<int64_t>(rows[0]["ms"].d())));
+        }
+    } catch (const std::exception& ex) {
+        CROW_LOG_DEBUG << "No previous compaction recorded: " << ex.what();
+    }
+    return std::nullopt;
+}
+
+bool CacheManager::compactionDue(std::shared_ptr<ConfigManager> config_manager,
+                                 std::chrono::system_clock::time_point now) {
+    const auto& compaction = config_manager->getDuckLakeConfig().compaction;
+    if (!compaction.enabled || !compaction.schedule) {
+        return false;
+    }
+    const auto interval = TimeInterval::parseSchedule(*compaction.schedule);
+    if (!interval) {
+        return false;
+    }
+    const auto last = lastCompactionTime(config_manager);
+    return !last || now - *last >= *interval;
 }
 
 std::optional<std::chrono::seconds> TimeInterval::parseInterval(const std::string& interval) {
@@ -1218,6 +2295,22 @@ std::optional<std::chrono::seconds> TimeInterval::parseInterval(const std::strin
     } catch (const std::exception&) {
         return std::nullopt;
     }
+}
+
+std::optional<std::chrono::seconds> TimeInterval::parseSchedule(const std::string& schedule) {
+    // The cron-style shorthands the examples and CONFIG_REFERENCE already used for
+    // compaction. Full cron expressions are not supported: a maintenance task needs a
+    // cadence, not a wall-clock alignment.
+    if (schedule == "@hourly") {
+        return std::chrono::seconds(3600);
+    }
+    if (schedule == "@daily" || schedule == "@midnight") {
+        return std::chrono::seconds(86400);
+    }
+    if (schedule == "@weekly") {
+        return std::chrono::seconds(7 * 86400);
+    }
+    return parseInterval(schedule);
 }
 
 } // namespace flapi

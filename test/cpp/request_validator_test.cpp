@@ -189,13 +189,13 @@ TEST_CASE("RequestValidator: validateString min/max length", "[request_validator
         errors = validator.validateRequestParameters({field}, params);
         REQUIRE(errors.size() == 1);
         REQUIRE(errors[0].fieldName == "username");
-        REQUIRE(errors[0].errorMessage == "String is shorter than the minimum allowed length");
+        REQUIRE(errors[0].errorMessage.rfind("String is shorter than the minimum allowed length (", 0) == 0);
 
         // Invalid: single character
         params["username"] = "a";
         errors = validator.validateRequestParameters({field}, params);
         REQUIRE(errors.size() == 1);
-        REQUIRE(errors[0].errorMessage == "String is shorter than the minimum allowed length");
+        REQUIRE(errors[0].errorMessage.rfind("String is shorter than the minimum allowed length (", 0) == 0);
     }
 
     SECTION("String maximum length enforcement") {
@@ -226,13 +226,13 @@ TEST_CASE("RequestValidator: validateString min/max length", "[request_validator
         errors = validator.validateRequestParameters({field}, params);
         REQUIRE(errors.size() == 1);
         REQUIRE(errors[0].fieldName == "bio");
-        REQUIRE(errors[0].errorMessage == "String is longer than the maximum allowed length");
+        REQUIRE(errors[0].errorMessage.rfind("String is longer than the maximum allowed length (", 0) == 0);
 
         // Invalid: significantly exceeds maximum
         params["bio"] = "this is a very long string that exceeds the limit";
         errors = validator.validateRequestParameters({field}, params);
         REQUIRE(errors.size() == 1);
-        REQUIRE(errors[0].errorMessage == "String is longer than the maximum allowed length");
+        REQUIRE(errors[0].errorMessage.rfind("String is longer than the maximum allowed length (", 0) == 0);
     }
 
     SECTION("String min and max length combined") {
@@ -268,13 +268,13 @@ TEST_CASE("RequestValidator: validateString min/max length", "[request_validator
         params["password"] = "short";
         errors = validator.validateRequestParameters({field}, params);
         REQUIRE(errors.size() == 1);
-        REQUIRE(errors[0].errorMessage == "String is shorter than the minimum allowed length");
+        REQUIRE(errors[0].errorMessage.rfind("String is shorter than the minimum allowed length (", 0) == 0);
 
         // Invalid: too long
         params["password"] = "123456789012345678901";  // 21 chars
         errors = validator.validateRequestParameters({field}, params);
         REQUIRE(errors.size() == 1);
-        REQUIRE(errors[0].errorMessage == "String is longer than the maximum allowed length");
+        REQUIRE(errors[0].errorMessage.rfind("String is longer than the maximum allowed length (", 0) == 0);
     }
 
     SECTION("Empty string validation") {
@@ -295,7 +295,7 @@ TEST_CASE("RequestValidator: validateString min/max length", "[request_validator
         auto errors = validator.validateRequestParameters({field}, params);
         REQUIRE(errors.size() == 1);
         REQUIRE(errors[0].fieldName == "name");
-        REQUIRE(errors[0].errorMessage == "String is shorter than the minimum allowed length");
+        REQUIRE(errors[0].errorMessage.rfind("String is shorter than the minimum allowed length (", 0) == 0);
     }
 
     SECTION("No length constraints (min=0, max=0)") {
@@ -348,7 +348,7 @@ TEST_CASE("RequestValidator: validateInt", "[request_validator]") {
         auto errors = validator.validateRequestParameters({field}, params);
         REQUIRE(errors.size() == 1);
         REQUIRE(errors[0].fieldName == "age");
-        REQUIRE(errors[0].errorMessage == "Integer is greater than the maximum allowed value");
+        REQUIRE(errors[0].errorMessage.rfind("Integer is greater than the maximum allowed value (", 0) == 0);
     }
 }
 
@@ -431,7 +431,7 @@ TEST_CASE("RequestValidator: validateDate", "[request_validator]") {
         auto errors = validator.validateRequestParameters({field}, params);
         REQUIRE(errors.size() == 1);
         REQUIRE(errors[0].fieldName == "date");
-        REQUIRE(errors[0].errorMessage == "Date is after the maximum allowed date");
+        REQUIRE(errors[0].errorMessage.rfind("Date is after the maximum allowed date (", 0) == 0);
     }
 }
 
@@ -460,7 +460,7 @@ TEST_CASE("RequestValidator: validateTime", "[request_validator]") {
         auto errors = validator.validateRequestParameters({field}, params);
         REQUIRE(errors.size() == 1);
         REQUIRE(errors[0].fieldName == "time");
-        REQUIRE(errors[0].errorMessage == "Time is after the maximum allowed time");
+        REQUIRE(errors[0].errorMessage.rfind("Time is after the maximum allowed time (", 0) == 0);
     }
 }
 

@@ -25,7 +25,7 @@ connections:
     init: |
       INSTALL 'bigquery' FROM community;
       LOAD 'bigquery';
-    # Connection-specific properties (accessible in templates via {{ context.conn.property_name }})
+    # Connection-specific properties (accessible in templates via {{ conn.property_name }})
     properties:
       project_id: 'd-kaercher-lakehouse'
 
@@ -64,7 +64,7 @@ connections:
 # Heartbeat configuration
 heartbeat:
   enabled: true # Whether to enable the heartbeat worker, off by default
-  worker-interval: 10
+  worker-interval: 10  # seconds between endpoint heartbeats (default 60; must be > 0)
 
 # HTTPS enforcement configuration
 # Direct TLS termination by flAPI's embedded server (optional). Production
@@ -75,9 +75,8 @@ enforce-https:
   # ssl-cert-file: './ssl/cert.pem'
   # ssl-key-file: './ssl/key.pem'
 
-# CORS allow-list. The historic wildcard '*' is permitted but the
-# startup auditor warns if it is combined with auth.enabled: true
-# (credential-bearing requests across origins).
+# CORS allow-list. The wildcard '*' lets any origin call the API from a
+# browser; list your real origins in production, especially with auth enabled.
 cors:
   allow-origins:
     - '*'   # dev/demo default; replace with a real allow-list for production
@@ -143,14 +142,14 @@ ducklake:
   metadata-path: ./data/cache.ducklake  # Path to DuckLake metadata
   data-path: ./data/cache  # Path to DuckLake data files
   retention:
-    keep-last-snapshots: 10  # Keep last 10 snapshots for each table
+    keep-last-snapshots: 10  # Keep last 10 snapshots for each table without its own retention
     max-snapshot-age: 30d    # Delete snapshots older than 30 days
   compaction:
     enabled: true
     schedule: '@daily'  # Run compaction daily
   scheduler:
-    enabled: true
-    scan-interval: 5m  # Check for scheduled cache refreshes every 5 minutes
+    enabled: true      # the default; set false to stop scheduled refreshes
+    scan-interval: 5m  # Check for scheduled cache refreshes every 5 minutes (default: min(worker-interval, shortest cache.schedule))
 
 # ====================================================================================
 # MCP (Model Context Protocol) Support

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "flapi": {
+      "type": "http",
+      "url": "${FLAPI_URL:-http://localhost:8080}/mcp/jsonrpc",
+      "headers": {
+        "X-Config-Token": "${FLAPI_CONFIG_SERVICE_TOKEN:-}",
+        "Authorization": "Bearer ${FLAPI_MCP_TOKEN:-}"
+      }
+    }
+  }
+}

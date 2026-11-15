@@ -35,12 +35,19 @@ resolve to the in-memory bundle. If no bundle is present
 local filesystem unchanged — existing operators see no behaviour
 change.
 
-**Secrets stay out of the bundle.** `flapi pack` refuses files
-matching `*.env` / `.env.*`, `secrets/*`, `*.pem`, `*.key` by default (case-insensitively), and never follows symlinks. The
-override (`--allow-secrets`) is for testing only. Credentials
-come from the environment at runtime (`AWS_*`, `GOOGLE_*`,
-`AZURE_*`, `FLAPI_CONFIG_SERVICE_TOKEN`, `{{env.VAR}}` YAML
-interpolation).
+**Secrets stay out of the bundle.** `flapi pack` **refuses** — it
+stops with exit code 1 and writes no output, it does not skip the
+file — when the input tree contains a file matching `*.env` /
+`.env.*`, `secrets/*`, `*.pem` or `*.key` (matched
+case-insensitively, so `Server.PEM` and `SECRETS/token` count; see
+`src/pack.cpp`). The override (`--allow-secrets`) is for testing
+only. Pack refuses the same way for any **symlink** in the tree
+(symlinks are not followed; copy the file in instead) and for
+anything under **`.flapi/`**, which is reserved for files pack adds
+itself (`--with-extensions`). Credentials come from the environment
+at runtime (`AWS_*`, `AZURE_*`, `FLAPI_CONFIG_SERVICE_TOKEN`,
+`{{env.VAR}}` YAML interpolation); for GCS see
+[cloud storage](./cloud-storage.md).
 
 **Reproducible builds.** Set `SOURCE_DATE_EPOCH` before
 `flapi pack` and the output is byte-identical across runs:
@@ -63,6 +70,45 @@ oversized bundles exit non-zero with a corrective error. A
 the Linux/Windows append-after-EOF layout but the result is
 intentionally not notarisable.
 
+**Data files: use `embed://`, not relative paths.** A relative path
+in a bundled config resolves against the **runtime working
+directory**, not the bundle: a connection with
+`path: './data/c.parquet'` fails with `No files found that match the
+pattern "<cwd>/data/c.parquet"` when the binary runs elsewhere. Address
+bundled data through the `embed://` filesystem instead:
+
+```yaml
+connections:
+  cities:
+    properties:
+      path: 'embed://data/c.parquet'   # bundle-relative
+```
+
+```sql
+SELECT * FROM read_parquet('{{{ conn.path }}}')
+```
+
+`embed://` serves files to DuckDB table functions (`read_parquet`,
+`read_csv`, ...). It does **not** work for `ATTACH`: `ATTACH
+'embed://data/db.sqlite' AS s (TYPE sqlite)` fails with `Unable to
+open database "embed://data/db.sqlite"`, because the SQLite scanner
+opens the file itself. Ship such a database next to the binary and
+attach it by a real path.
+
+Outside a packed binary, `embed://<path>` resolves to `<config directory>/<path>`.
+The same config therefore runs, and `flapi cache refresh`es, from its source tree
+before you pack it. Paths that leave the config directory are refused.
+
+**DuckLake files live outside the bundle.** A bundle is read-only, so
+a relative `ducklake.metadata-path` / `data-path` is created in the
+runtime working directory. A missing parent of `metadata-path` and a
+missing `data-path` are created (a read-only replica refuses to start
+instead). Point both at a persistent, writable location in production.
+`flapi pack` never bundles the configured catalog, `*.ducklake` or
+`*.ducklake.wal`. Leave anything else out with `--exclude <glob>`. A packed
+binary's `cache refresh` and `extensions install` read the bundled
+`flapi.yaml`.
+
 See [docs/CLI_REFERENCE.md §3](../CLI_REFERENCE.md#3-self-packaging-subcommands)
 and [docs/spec/DESIGN_DECISIONS.md §9](../spec/DESIGN_DECISIONS.md#9-self-packaging-via-appended-zip)
 for full reference + rationale.
@@ -73,7 +119,7 @@ for full reference + rationale.
 - [CLI_REFERENCE § 3](../CLI_REFERENCE.md#3-self-packaging-subcommands) — every subcommand and flag
 
 > **The secret deny list matches filenames, not content.** `*.env`, `secrets/*`,
-> `*.pem` and `*.key` are refused by name, case-sensitively — but a credential
+> `*.pem` and `*.key` are refused by name, case-insensitively — but a credential
 > written inline in a `flapi.yaml` is packed like any other text. Keep secrets in
 > environment variables and reference them with `{{env.VAR}}`; see
 > [reusing config and reading the environment](./yaml-includes.md).

@@ -351,12 +351,14 @@ class TestVFSPathSecurity:
                 timeout=30
             )
 
-            # Current behavior: validation passes with warning about file not found
-            # The traversal path doesn't actually read /etc/passwd
-            # Verify that:
-            # 1. The warning mentions the file doesn't exist
-            # 2. No actual sensitive data (like "root:") appears in output
-            assert "does not exist" in result.stdout.lower(), "Should warn about missing file"
+            # A source that leaves template.path is named as such. When the
+            # resolved path happens to exist (sqls/../../../etc/passwd from a
+            # temp dir is the real /etc/passwd) there is no "does not exist"
+            # warning, but the escape warning is always there - and the file
+            # is never read either way.
+            out = result.stdout.lower()
+            assert "escapes template.path" in out or "does not exist" in out, \
+                "Should warn about a template source outside template.path"
             assert "root:" not in result.stdout, "Should not read /etc/passwd content"
 
 

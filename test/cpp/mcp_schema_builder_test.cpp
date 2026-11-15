@@ -141,11 +141,39 @@ TEST_CASE("MCPSchemaBuilder: required fields are listed", "[mcp][schema]") {
     REQUIRE(s["required"][0].s() == "a");
 }
 
-TEST_CASE("MCPSchemaBuilder: default value is projected", "[mcp][schema]") {
-    RequestFieldConfig f = makeField("limit", "int");
-    f.defaultValue = "100";
-    auto s = parse(MCPSchemaBuilder::buildInputSchema({f}));
-    REQUIRE(s["properties"]["limit"]["default"].s() == "100");
+TEST_CASE("MCPSchemaBuilder: default value is projected in the property's type", "[mcp][schema]") {
+    SECTION("int default is a JSON integer, not the string \"100\"") {
+        RequestFieldConfig f = makeField("limit", "int");
+        f.defaultValue = "100";
+        auto s = parse(MCPSchemaBuilder::buildInputSchema({f}));
+        REQUIRE(s["properties"]["limit"]["default"].t() == crow::json::type::Number);
+        REQUIRE(s["properties"]["limit"]["default"].i() == 100);
+    }
+    SECTION("number default is a JSON number") {
+        RequestFieldConfig f = makeField("ratio", "double");
+        f.defaultValue = "0.5";
+        auto s = parse(MCPSchemaBuilder::buildInputSchema({f}));
+        REQUIRE(s["properties"]["ratio"]["default"].t() == crow::json::type::Number);
+        REQUIRE(s["properties"]["ratio"]["default"].d() == 0.5);
+    }
+    SECTION("boolean default is a JSON boolean") {
+        RequestFieldConfig f = makeField("flag", "boolean");
+        f.defaultValue = "true";
+        auto s = parse(MCPSchemaBuilder::buildInputSchema({f}));
+        REQUIRE(s["properties"]["flag"]["default"].t() == crow::json::type::True);
+    }
+    SECTION("string default stays a string") {
+        RequestFieldConfig f = makeField("name", "string");
+        f.defaultValue = "42";
+        auto s = parse(MCPSchemaBuilder::buildInputSchema({f}));
+        REQUIRE(s["properties"]["name"]["default"].s() == "42");
+    }
+    SECTION("an int default that is not an integer literal is kept verbatim") {
+        RequestFieldConfig f = makeField("limit", "int");
+        f.defaultValue = "10abc";
+        auto s = parse(MCPSchemaBuilder::buildInputSchema({f}));
+        REQUIRE(s["properties"]["limit"]["default"].s() == "10abc");
+    }
 }
 
 TEST_CASE("MCPSchemaBuilder: mcp-header becomes x-mcp-header annotation", "[mcp][schema]") {

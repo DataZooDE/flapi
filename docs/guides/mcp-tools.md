@@ -81,14 +81,38 @@ An agent's context is expensive, and a wide result set wastes it.
 mcp-tool:
   name: get_customers
   response:
-    redact-columns: [email, tax_id]     # removed before the agent sees them
+    redact-columns: [email, tax_id]     # values replaced with "<redacted>"
+    max-rows: 50                        # rows after the 50th are dropped
 ```
+
+Both are applied to the result **after** the query has run
+(`src/mcp_response_shaper.cpp`), and only for MCP calls; the REST endpoint is
+unaffected.
+
+- `redact-columns` keeps the column and replaces each of its values with the
+  string `"<redacted>"`. The agent still sees that the column exists.
+- `max-rows` truncates **silently**: the database still computes and returns the
+  full result, flAPI drops the rows after the cap, and `structuredContent.row_count`
+  reports the truncated count. Nothing in the response says rows were cut. Put a
+  `LIMIT` or a filter in the template when the cost is the query itself.
+
+**There is no default row limit for MCP calls.** A REST request is paginated
+(100 rows unless `?limit=` says otherwise); a `tools/call` returns every row the
+template produces. A `limit` (and `offset`) argument **is honoured even when it is
+not in the tool's input schema**, so an agent can page through a result with
+`{"limit": 20, "offset": 40}`; it just has no way to know that unless the
+description tells it.
 
 ## Limiting who can call it
 
-Tools honour the same `auth:` and `rate-limit:` blocks as REST endpoints, plus
-per-tool roles. See [Authentication](./authentication.md) and
-[MCP_REFERENCE § Auth](../MCP_REFERENCE.md).
+MCP has its own authentication: the top-level `mcp.auth` block, with per-tool
+`mcp-tool.allowed-roles`. An endpoint's REST `auth:` block (and the inherited
+top-level `auth:`) governs REST requests only; it does not gate `tools/call`, so
+protect a tool that serves the same data with `mcp.auth`. See
+[Authentication](./authentication.md) and [MCP_REFERENCE § Auth](../MCP_REFERENCE.md).
+
+Tool lists follow the configuration: creating, updating, deleting or reloading an
+endpoint rebuilds `tools/list` at once, with no restart.
 
 ## Managing configuration through MCP
 

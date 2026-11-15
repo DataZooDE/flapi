@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+
 #include <crow.h>
 #include <chrono>
 #include <filesystem>
@@ -27,6 +29,9 @@ namespace flapi {
 
 struct TimeInterval {
     static std::optional<std::chrono::seconds> parseInterval(const std::string& interval);
+    // A maintenance schedule (ducklake.compaction.schedule): an interval as parseInterval
+    // takes it, or one of the shorthands @hourly, @daily, @weekly.
+    static std::optional<std::chrono::seconds> parseSchedule(const std::string& schedule);
 };
 
 struct ConnectionConfig {
@@ -105,7 +110,14 @@ struct OIDCConfig {
     std::string client_secret;                        // Client secret (from env if needed)
 
     // Provider type for presets
-    std::string provider_type = "generic";            // "google", "microsoft", "keycloak", etc.
+    std::string provider_type = "generic";            // "google", "microsoft" (alias "azure"), "keycloak", etc.
+
+    // Values substituted into the preset issuer-url placeholders:
+    // {tenant} <- tenant-id (Microsoft), {realm} <- realm (Keycloak),
+    // {domain} <- domain (Keycloak host, Auth0, Okta).
+    std::string tenant_id;
+    std::string realm;
+    std::string domain;
 
     // Token validation
     std::vector<std::string> allowed_audiences;       // Expected 'aud' claims
@@ -138,6 +150,21 @@ struct AuthConfig {
     std::string jwt_secret;
     std::string jwt_issuer;
     std::optional<OIDCConfig> oidc;                   // NEW: OIDC configuration
+    // Roles the authenticated principal must hold (any one of them). Empty
+    // means "any authenticated principal". Enforced by AuthMiddleware with 403.
+    std::vector<std::string> roles;
+    // The endpoint carries its own `auth:` block (YAML) / `auth` object (JSON).
+    // An endpoint WITHOUT one inherits the top-level `auth:` block.
+    bool declared = false;
+    // This config was copied from the top-level `auth:` block rather than
+    // written on the endpoint. Serialisers leave it out, so persisting an
+    // endpoint does not freeze the global credentials into its file.
+    bool inherited = false;
+    // The endpoint declares its own block but only roles (or other non-
+    // credential keys): type and credentials come from the top-level block
+    // (ConfigManager::inheritGlobalCredentials). Serialisers then write the
+    // roles but not the inherited type.
+    bool credentials_inherited = false;
 };
 
 struct ValidatorConfig {
@@ -145,6 +172,10 @@ struct ValidatorConfig {
     std::string regex;
     int min = 0;
     int max = 0;
+    // Bounds of a `number` (float/double) validator. Optional because 0 is a
+    // real bound: unset must stay distinguishable from `min: 0`.
+    std::optional<double> minNumber;
+    std::optional<double> maxNumber;
     std::string minDate;
     std::string maxDate;
     std::string minTime;
@@ -220,11 +251,20 @@ struct OperationConfig {
 struct EndpointConfig {
     std::string urlPath;
     std::string method;
+    // Top-level `description:`. The REST operation's description in /doc.yaml;
+    // an endpoint without one falls back to mcp-tool.description there.
+    std::string description;
     bool request_fields_validation = false;
     std::vector<RequestFieldConfig> request_fields;
     std::string templateSource;
     std::vector<std::string> connection;
     bool with_pagination = true;
+    // `allow-shadowing: true`: this endpoint may take precedence over a less
+    // specific, overlapping route of the same method whose effective auth
+    // differs in any way (scheme, roles, users, secrets, issuers), in either
+    // direction (`/customers/7` open beside `/customers/:id` protected, or the
+    // other way round). Without it that combination is refused at load.
+    bool allow_shadowing = false;
     RateLimitConfig rate_limit;
     AuthConfig auth;
     CacheConfig cache;
@@ -288,6 +328,17 @@ struct EndpointConfig {
         // other field) before executing. When empty the resource is a static
         // "flapi://<name>" URI.
         std::string uri_template;
+
+        // Response shaping (mcp-resource.response), like mcp-tool.response.
+        // Unset falls back to the same file's mcp-tool.response, and max-rows
+        // then to kDefaultMaxRows: a resource is read whole, with no LIMIT the
+        // caller can pass, so an uncapped read of a big table went to the
+        // model in full (16282 rows / 3.5 MB measured).
+        static constexpr std::size_t kDefaultMaxRows = 1000;
+        struct ResponseShape {
+            std::optional<std::size_t> max_rows;
+            std::optional<std::vector<std::string>> redact_columns;
+        } response;
     };
 
     struct MCPPromptInfo {
@@ -418,6 +469,10 @@ struct EndpointConfig {
                 }
                 if (!urlPath.empty() && urlPath[0] != '/') {
                     errors.push_back("url-path must start with /");
+                } else if (!urlPath.empty()) {
+                    if (auto problem = RouteTranslator::urlPathProblem(urlPath); !problem.empty()) {
+                        errors.push_back(problem);
+                    }
                 }
                 break;
             case Type::MCP_Tool:
@@ -534,8 +589,12 @@ struct CorsConfig {
 };
 
 struct GlobalHeartbeatConfig {
+    // ONE default, whether or not a `heartbeat:` block is present. The block used to
+    // default to 10 s and its absence to 60 s, so adding `heartbeat: {enabled: false}`
+    // silently changed how often cache schedules were checked.
+    static constexpr std::chrono::seconds kDefaultWorkerInterval{60};
     bool enabled = false;
-    std::chrono::seconds workerInterval = std::chrono::seconds(60);
+    std::chrono::seconds workerInterval = kDefaultWorkerInterval;
 };
 
 struct DuckLakeRetentionConfig {
@@ -546,11 +605,19 @@ struct DuckLakeRetentionConfig {
 struct DuckLakeCompactionConfig {
     bool enabled = false;
     std::optional<std::string> schedule;
+    // ducklake.compaction.delete-threshold: the fraction of deleted rows (0 < x <= 1)
+    // above which ducklake_rewrite_data_files rewrites a data file. Unset = DuckLake's
+    // default (0.95), which a merge cache's delete files rarely reach.
+    std::optional<double> delete_threshold;
 };
 
 struct DuckLakeSchedulerConfig {
-    bool enabled = false;
-    std::optional<std::string> scan_interval;
+    // ON by default: a `cache.schedule` is itself the opt-in. It used to default to off,
+    // so a schedule silently never fired unless this block also said `enabled: true`.
+    // `enabled: false` written in the config is honoured as an explicit opt-out.
+    bool enabled = true;
+    bool enabled_explicit = false;   // the config wrote `scheduler.enabled`
+    std::optional<std::string> scan_interval;   // validated at load (TimeInterval)
 };
 
 struct DuckLakeConfig {
@@ -582,6 +649,14 @@ class EndpointConfigParser;
 class ConfigLoader;
 class EndpointRepository;
 class IFileProvider;
+
+/// Mask the credentials in a connection string or DSN, wherever it appears in
+/// `text`: libpq/ODBC `key=value` pairs whose key names a secret (password,
+/// passwd, pwd, secret, token, api_key, ...; also `PGPASSWORD=`) and the
+/// password of a `scheme://user:password@host` URL. Everything else - host,
+/// database, user - is kept, so the value stays recognisable. For logs and
+/// every config API answer that shows a DuckLake metadata-path or data-path.
+std::string RedactConnectionSecrets(const std::string& text);
 
 class ConfigManager {
     // Allow EndpointConfigParser to access protected parsing methods
@@ -739,14 +814,64 @@ public:
     bool isTelemetryEnabled() const { return telemetry_enabled; }
     double getTelemetrySampleRate() const { return telemetry_sample_rate; }
     const AuthConfig& getGlobalAuthConfig() const { return global_auth_config; }
+    // `jwt` -> `bearer`; every other value unchanged.
+    static std::string normalizeAuthType(const std::string& type);
+    // Copy the top-level `auth:` block onto an endpoint that declares none
+    // (auth.declared == false), when global auth is enabled. No-op otherwise.
+    void applyGlobalAuthDefault(EndpointConfig& endpoint) const;
+    // An enabled endpoint `auth:` block that names no scheme and no credentials
+    // (typically `roles:` only) takes the top-level block's type and
+    // credentials, keeping its own roles when it lists any. Without an enabled
+    // top-level block, or with credentials but no `type`, it throws
+    // AUTH_NO_TYPE: such an endpoint could only ever answer 401.
+    void inheritGlobalCredentials(AuthConfig& auth, bool declares_credentials, bool declares_roles,
+                                  const std::string& location) const;
+    // Load-time warning naming keys the chosen auth type never reads
+    // (`users:` under bearer, `jwt-secret:` under basic, ...).
+    static void warnIgnoredAuthKeys(const YAML::Node& auth_node, const std::string& type,
+                                    const std::string& location);
 
     // Load MCP server instructions (inline or from file)
     std::string loadMCPInstructions() const;
 
     void refreshConfig();
     void addEndpoint(const EndpointConfig& endpoint);
+    /// "" or why `candidate` may not be added: another loaded endpoint (from a
+    /// different YAML file) already serves the same url-path and method. Both
+    /// files are named.
+    ///
+    /// Also refuses a route that overlaps another endpoint's route for the
+    /// same method (both can match one request path) when the more specific
+    /// when their effective auth differs in any way - enabled, scheme, roles,
+    /// or the identity source (users and their passwords, jwt-secret,
+    /// jwt-issuer, OIDC issuer/audience/client, AWS secret) - unless the more
+    /// specific endpoint sets `allow-shadowing: true`. Secrets are compared as
+    /// digests and never appear in the message.
+    ///
+    /// `replacing`: the endpoint an update replaces, which is not compared.
+    std::string DuplicateEndpointProblem(const EndpointConfig& candidate,
+                                         const EndpointConfig* replacing = nullptr) const;
+    /// Logs every allowed overlap of `candidate` with a loaded endpoint: a
+    /// WARNING when their auth differs (naming both and which one answers the
+    /// overlapping requests), INFO when it is the same.
+    void LogRouteOverlaps(const EndpointConfig& candidate, const EndpointConfig* replacing = nullptr) const;
+    /// The HTTP method as flapi stores and compares it: trimmed, upper-case,
+    /// empty -> GET. Does not judge it; see HttpMethodProblem.
+    static std::string CanonicalHttpMethod(const std::string& method);
+    /// "" or why `method` (as written) is not one of GET, POST, PUT, PATCH,
+    /// DELETE. `endpoint` names the endpoint in the message.
+    static std::string HttpMethodProblem(const std::string& method, const std::string& endpoint);
+    /// The route a url-path compiles to, parameter names discarded:
+    /// `/customers/:id` and `/customers/:cid` have the same shape.
+    static std::string RouteShape(const std::string& url_path);
     bool removeEndpointByPath(const std::string& path);
     bool replaceEndpoint(const EndpointConfig& endpoint);
+
+    /// `listener` runs after every change of the loaded endpoint table (create,
+    /// update, delete, reload, reload-file, the MCP config tools), on the thread
+    /// that made it and outside the table's lock. The cache manager uses it to
+    /// keep its readiness registry in step with the cache tables endpoints name.
+    void addEndpointsChangedListener(std::function<void()> listener);
     
     std::unordered_map<std::string, std::string> getPropertiesForTemplates(const std::string& connectionName) const;
 
@@ -779,10 +904,41 @@ public:
     // File persistence (only for programmatic creation/export - destroys formatting)
     void persistEndpointConfigToFile(const EndpointConfig& config, const std::filesystem::path& file_path) const;
     
-    // Reload endpoint from disk (after external edit)
+    // Reload endpoint from disk (after external edit). `slug_or_path` may also
+    // be an EndpointKey() ("POST /orders"), which names one of several
+    // endpoints sharing a url-path.
     bool reloadEndpointConfig(const std::string& slug_or_path);
 
+    /// "METHOD /path" for a REST endpoint, the MCP name otherwise: unique per
+    /// loaded endpoint, unlike the url-path (GET /orders and POST /orders).
+    static std::string EndpointKey(const EndpointConfig& endpoint);
+    /// Look an endpoint up by EndpointKey(), falling back to a url-path / MCP
+    /// name (the first match, as getEndpointForPath does).
+    EndpointRef getEndpointForKey(const std::string& key) const;
+
+    /// Reload every endpoint declared in `file`, or LOAD it when no loaded
+    /// endpoint comes from it (a hand-written YAML added after startup).
+    struct FileReloadResult {
+        bool ok = false;
+        int status = 200;              // 200 reloaded, 201 newly loaded, 4xx on error
+        std::string error;
+        bool loaded_new = false;
+        std::vector<std::string> endpoints;   // EndpointKey() of each published endpoint
+        std::vector<std::string> removed;     // EndpointKey() of each endpoint unloaded (file deleted)
+        std::vector<std::string> warnings;
+    };
+    FileReloadResult reloadEndpointFile(const std::filesystem::path& file);
+
+    /// Remove exactly this endpoint (url-path AND method, or MCP name), not
+    /// every endpoint whose path matches - removeEndpointByPath("/orders")
+    /// removed GET and POST alike.
+    bool removeEndpoint(const EndpointConfig& endpoint);
+
     void warnOnUnknownTopLevelKeys() const;
+    // Warns about keys that are parsed but acted on by nothing (server-name,
+    // storage: with a local template path, connections.*.log-queries /
+    // log-parameters / allow).
+    void warnOnInertKeys() const;
     void printConfig() const;
     static void printYamlNode(const YAML::Node& node, int indent = 0);
 
@@ -841,20 +997,36 @@ protected:
     // Every writer must go through here; nothing mutates a published vector.
     template <typename Fn>
     auto mutateEndpoints(Fn&& mutate) -> decltype(mutate(std::declval<std::vector<EndpointConfig>&>())) {
-        std::lock_guard<MovableMutex> guard(endpoints_mutex);
-        auto next = std::make_shared<std::vector<EndpointConfig>>(*endpoints_snapshot);
-        auto result = mutate(*next);
-        endpoints_snapshot = std::shared_ptr<const std::vector<EndpointConfig>>(std::move(next));
+        std::vector<std::function<void()>> listeners;
+        auto result = [&]() {
+            std::lock_guard<MovableMutex> guard(endpoints_mutex);
+            auto next = std::make_shared<std::vector<EndpointConfig>>(*endpoints_snapshot);
+            auto r = mutate(*next);
+            endpoints_snapshot = std::shared_ptr<const std::vector<EndpointConfig>>(std::move(next));
+            listeners = endpoints_changed_listeners;
+            return r;
+        }();
+        notifyEndpointsChanged(listeners);
         return result;
     }
 
     template <typename Fn>
     void mutateEndpointsVoid(Fn&& mutate) {
-        std::lock_guard<MovableMutex> guard(endpoints_mutex);
-        auto next = std::make_shared<std::vector<EndpointConfig>>(*endpoints_snapshot);
-        mutate(*next);
-        endpoints_snapshot = std::shared_ptr<const std::vector<EndpointConfig>>(std::move(next));
+        std::vector<std::function<void()>> listeners;
+        {
+            std::lock_guard<MovableMutex> guard(endpoints_mutex);
+            auto next = std::make_shared<std::vector<EndpointConfig>>(*endpoints_snapshot);
+            mutate(*next);
+            endpoints_snapshot = std::shared_ptr<const std::vector<EndpointConfig>>(std::move(next));
+            listeners = endpoints_changed_listeners;
+        }
+        notifyEndpointsChanged(listeners);
     }
+
+    // Called (outside the lock) after every published change of the endpoint
+    // table; see addEndpointsChangedListener().
+    std::vector<std::function<void()>> endpoints_changed_listeners;
+    static void notifyEndpointsChanged(const std::vector<std::function<void()>>& listeners);
     std::filesystem::path base_path;
     DuckDBConfig duckdb_config;
     TemplateConfig template_config;

@@ -22,7 +22,7 @@ export function registerHealthCommand(program: Command, ctx: CliContext) {
         const data = response.data;
 
         if (ctx.config.output === 'json') {
-          renderJson(data, ctx.config.jsonStyle);
+          renderJson(data);
         } else {
           Console.info(chalk.cyan('\n❤️  Server Health'));
           Console.info(chalk.gray('═'.repeat(60)));
@@ -31,7 +31,7 @@ export function registerHealthCommand(program: Command, ctx: CliContext) {
           Console.info(
             chalk.bold.blue('Status: ') + (healthy ? chalk.green(status) : chalk.yellow(status)),
           );
-          renderJson(data, ctx.config.jsonStyle);
+          renderJson(data);
         }
       } catch (error) {
         if (spinner) {

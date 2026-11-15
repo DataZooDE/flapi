@@ -32,6 +32,9 @@ struct ColumnInfo {
 struct WriteResult {
     int64_t rows_affected = 0;
     std::optional<crow::json::wvalue> returned_data;  // For RETURNING clauses in INSERT/UPDATE/DELETE
+    // returned_data's column names in RETURNING order: crow's object is an
+    // unordered map, so the rows alone cannot be serialized in column order.
+    std::vector<std::string> returned_columns;
     std::string last_insert_id;  // For cases where we need to track the last inserted ID
 };
 
@@ -76,6 +79,73 @@ public:
     // The executor owns the duckdb_result and must remain alive while accessing it
     std::unique_ptr<QueryExecutor> executeQueryRaw(const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
     QueryResult executeDuckLakeQuery(const std::string& query, const std::map<std::string, std::string>& params = {});
+    /// Run a (possibly multi-statement) DuckLake script - a rendered cache
+    /// populate template - in ONE transaction, statement by statement, and
+    /// return the sum of the row counts its DML statements report (nullopt if
+    /// none reports one). Any failure rolls the whole script back, so a failed
+    /// refresh leaves the cache exactly as it was. A script that manages its own
+    /// transaction (contains BEGIN/COMMIT/ROLLBACK) is run as written.
+    ///
+    /// With a `target` it is a cache populate template, and two more rules hold:
+    /// a SELECT statement anywhere in it is refused before anything runs (a bare
+    /// SELECT builds nothing, and on a large source materialises the whole
+    /// result only to discard it), and the script must leave `target` existing,
+    /// checked before COMMIT so a failure rolls back. `rebuild` drops `target`
+    /// at the start of the same transaction (POST .../cache/refresh?full=true).
+    std::optional<int64_t> executeDuckLakeScript(const std::string& script,
+                                                 const PopulateTarget* target = nullptr,
+                                                 bool rebuild = false);
+    /// 1-based index of the first SELECT statement in `script`, or nullopt
+    /// (also when the script does not parse - execution reports that). Pure.
+    /// `statement_count`, when given, receives the number of statements parsed.
+    static std::optional<std::size_t> FindSelectStatement(const std::string& script,
+                                                          std::size_t* statement_count = nullptr);
+    /// The statements of `script`, split on top-level `;` (string literals,
+    /// quoted identifiers, dollar quotes and comments respected), each without
+    /// its terminator; whitespace/comment-only pieces are dropped. Splitting is
+    /// lexical only, so a statement that does not parse still gets its own
+    /// number - the parser rejects the whole script at its first error. Pure.
+    static std::vector<std::string> SplitStatements(const std::string& script);
+
+    /// One finding of validateScript, `statement` 1-based (0: the script as a whole).
+    struct ScriptIssue {
+        std::size_t statement = 0;
+        std::string type;      // parse | bare_select | bind | cache_not_built | not_checked
+        std::string message;
+    };
+    struct ScriptValidation {
+        std::size_t statements = 0;
+        std::vector<ScriptIssue> errors;
+        std::vector<ScriptIssue> warnings;
+    };
+    /// Checks a rendered script WITHOUT running it (template/expand?validate_only):
+    /// each statement is parsed by the connection's parser, then prepared - bound
+    /// and planned, which is what EXPLAIN checks: unknown tables and columns,
+    /// type errors - inside a transaction that is always rolled back. Only a
+    /// plain CREATE TABLE/SCHEMA without AS (no data) is executed there, so a
+    /// later statement that writes the table it creates can be bound; no DML and
+    /// no query ever runs. With `populate` it is a cache populate template and
+    /// the bare-SELECT rule applies. A table that does not exist because an
+    /// earlier statement would create it is a warning (not_checked), as is the
+    /// cache table `cache_table` before its first build (cache_not_built).
+    ScriptValidation validateScript(const std::string& script, const PopulateTarget* populate,
+                                    const PopulateTarget* cache_table);
+    /// The error a populate template containing a SELECT is refused with.
+    // A script that is exactly one SELECT, as `CREATE OR REPLACE TABLE <target>
+    // AS <select>`; nullopt for anything else. Used for a cache with no
+    // template-file, whose populate SQL is the endpoint's serving template.
+    static std::optional<std::string> MaterialiseSelect(const std::string& script, const PopulateTarget& target);
+    /// `statement_count` (0: unknown) tells a bare SELECT before the last
+    /// statement - a guard whose result is discarded - from one that is the
+    /// whole build.
+    static std::string PopulateSelectError(const PopulateTarget& target, std::size_t statement,
+                                           std::size_t statement_count = 0);
+    /// Create the local metadata-path parent and data-path directories DuckLake
+    /// needs (a read-only replica only checks them). The problem, or nullopt.
+    static std::optional<std::string> PrepareDuckLakeDirectories(const DuckLakeConfig& ducklake);
+    /// The DuckLake attach failure as reported: credentials redacted, and a lock
+    /// conflict on a DuckDB-file catalog explained.
+    static std::string DuckLakeAttachErrorMessage(const DuckLakeConfig& ducklake, const std::string& raw);
     std::string renderCacheTemplate(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params);
     
     // Write operation methods
@@ -133,6 +203,11 @@ private:
     // connections cannot deadlock against one naming them the other way round.
     using AccessLocks = std::vector<std::unique_lock<std::mutex>>;
     AccessLocks lockSerialisedAccess(const EndpointConfig& endpoint);
+    /// The locks a READ of this endpoint needs: none when it is served from its
+    /// DuckLake cache (cache.enabled with a template-file, so the serving
+    /// template reads the cache table and not the source), else the same as
+    /// lockSerialisedAccess. Writes always take lockSerialisedAccess.
+    AccessLocks lockSerialisedReadAccess(const EndpointConfig& endpoint);
 
     std::mutex access_mutexes_guard;
     std::unordered_map<std::string, std::unique_ptr<std::mutex>> access_mutexes;
@@ -142,10 +217,16 @@ private:
 
     duckdb_database db; // Database handle
 
+    // duckdb.default_order, applied per connection when DuckLake is enabled
+    // (see createAndInitializeDuckDBConfig); empty otherwise.
+    std::optional<std::string> session_default_order_;
+
     // True only once initializeDBManagerFromConfig() has run to completion.
     // shutdown() detaches and checkpoints only when it is set: a startup that
     // failed part-way wrote nothing, so there is nothing to flush (#145).
     bool initialized = false;
+    // The DuckLake catalog was attached (so shutdown detaches it).
+    bool ducklake_attached_ = false;
     std::mutex db_mutex; // Mutex for thread safety
     std::shared_ptr<CacheManager> cache_manager;
     std::shared_ptr<SQLTemplateProcessor> sql_processor;

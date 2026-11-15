@@ -3,6 +3,7 @@
 #include <duckdb.h>
 #include <crow.h>
 #include <stdexcept>
+#include <optional>
 #include <string>
 #include <map>
 #include <thread>
@@ -50,8 +51,30 @@ public:
     crow::json::wvalue data;
     std::string next = "";
     int64_t total_count = -1;
+    // The result's column names in SELECT order. crow's object is an
+    // unordered map, so `data` alone cannot say which column came first.
+    std::vector<std::string> columns;
 
     static crow::json::wvalue convertResultToJson(const duckdb_result& result);
+
+    // `data` as JSON text: row keys in `columns` order and every double in
+    // its shortest round-trip form (crow prints 21 significant digits, so
+    // 711.56 came out as 711.55999999999994543). Use this, not data.dump().
+    std::string dumpData() const;
+
+    // Any JSON value, doubles in shortest round-trip form. `row_keys`, when
+    // given, orders the keys of every object directly inside a list.
+    static std::string dumpJson(const crow::json::wvalue& value,
+                                const std::vector<std::string>* row_keys = nullptr);
+
+    // One double as JSON: shortest text that reads back as the same value,
+    // with ".0" kept on integral values so the column stays a float to
+    // typed clients.
+    static std::string formatDouble(double value);
+
+    // One JSON number as dump() printed it, re-formatted with formatDouble
+    // when it is a floating-point number; integers pass through unchanged.
+    static std::string normaliseNumberText(const std::string& text);
     
 private:
     static std::tuple<std::vector<std::string>, std::vector<duckdb_type>> extractNamesAndTypes(duckdb_result& result);
@@ -63,6 +86,8 @@ private:
     static crow::json::wvalue convertVectorVarcharToJson(const duckdb_vector &vector, const idx_t row_idx);
     static crow::json::wvalue convertVectorJsonToJson(const duckdb_vector &vector, const idx_t row_idx);
     static crow::json::wvalue convertVectorDecimalToJson(const duckdb_vector &vector, const idx_t row_idx);
+    // Exact JSON for a DECIMAL value (see the definition for the limits).
+    static crow::json::wvalue decimalToJson(const duckdb_decimal& decimal);
     static crow::json::wvalue convertVectorTimestampToJson(const duckdb_vector &vector, const idx_t row_idx);
     static crow::json::wvalue convertVectorDateToJson(const duckdb_vector &vector, const idx_t row_idx);
     static crow::json::wvalue convertVectorTimeToJson(const duckdb_vector &vector, const idx_t row_idx);
@@ -106,6 +131,8 @@ private:
 class QueryExecutor {
 public:
     QueryExecutor(duckdb_database db);
+    // Also applies `SET SESSION default_order` on the new connection.
+    QueryExecutor(duckdb_database db, const std::optional<std::string>& session_default_order);
     ~QueryExecutor();
     
     void execute(const std::string& query, const std::string& context = "");
@@ -127,6 +154,13 @@ public:
     
     idx_t rowCount() const { return has_result ? duckdb_row_count(&result) : 0; }
     idx_t columnCount() const { return has_result ? duckdb_column_count(&result) : 0; }
+    std::vector<std::string> columnNames() const {
+        std::vector<std::string> names;
+        for (idx_t i = 0; i < columnCount(); i++) {
+            names.emplace_back(duckdb_column_name(const_cast<duckdb_result*>(&result), i));
+        }
+        return names;
+    }
     
     crow::json::wvalue toJson() const;
 

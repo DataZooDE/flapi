@@ -6,6 +6,8 @@
 #include <yaml-cpp/yaml.h>
 
 #include "api_server.hpp"
+#include "database_health.hpp"
+#include "runtime_metrics.hpp"
 #include "handler_pool.hpp"
 #include "in_flight_registry.hpp"
 #include "request_context.hpp"
@@ -172,13 +174,20 @@ void APIServer::setupRoutes() {
     CROW_ROUTE(app, "/config")
         .methods("DELETE"_method)
         ([this](const crow::request& req, crow::response& res) {
+            // The token is still checked first, like every /config access.
             if (!configService || !configService->validateToken(req)) {
                 res = crow::response(401, "Unauthorized: configuration access requires the config-service token");
                 res.end();
                 return;
             }
-            CROW_LOG_INFO << "Config refresh requested";
-            res = refreshConfig();
+            // A whole-config refresh does not exist (ConfigManager::refreshConfig
+            // throws "Not implemented"), so this answered 500 - a server fault -
+            // for a request that simply is not supported. 405 says so, and Allow
+            // names what is. Reload one endpoint with
+            // POST /api/v1/_config/endpoints/<slug>/reload instead.
+            res = crow::response(405, "Method Not Allowed: /config supports GET only; reload an endpoint with "
+                                      "POST /api/v1/_config/endpoints/<slug>/reload");
+            res.set_header("Allow", "GET");
             res.end();
         });
 
@@ -257,6 +266,10 @@ void APIServer::setupRoutes() {
                 crow::response* res;
                 const crow::request* req;
                 std::shared_ptr<void> keepalive;
+                // Made ambient again on the io thread while the response is
+                // completed, so Crow's "Response:" line for it - written there -
+                // carries the request id like every other line of the request.
+                RequestContext* rc = nullptr;
                 int code = 500;
                 std::string body = "Internal Server Error";
                 crow::ci_map headers;
@@ -302,7 +315,7 @@ void APIServer::setupRoutes() {
                         return;
                     }
                     asio::post(*req->io_service,
-                               [res = res, keepalive = keepalive, code = code,
+                               [res = res, keepalive = keepalive, rc = rc, code = code,
                                 body = std::move(body),
                                 headers = std::move(headers),
 #ifdef CROW_ENABLE_COMPRESSION
@@ -320,7 +333,11 @@ void APIServer::setupRoutes() {
 #endif
                                    res->skip_body = skip_body;
                                    res->manual_length_header = manual_length_header;
+                                   RequestContextScope::activate(rc);
                                    res->end();
+                                   // finish() normally released it already;
+                                   // never leave it set on the io thread.
+                                   RequestContextScope::clearIf(rc);
                                });
                 }
             };
@@ -333,7 +350,7 @@ void APIServer::setupRoutes() {
             // release advertises.
             const bool queued = handlerPool->submit(
                 [this, &req, &res, rc, &mw, keepalive]() mutable {
-                    Completer completer{&res, &req, keepalive};
+                    Completer completer{&res, &req, keepalive, rc};
 
                     RequestContextScope::activate(rc);
                     const auto span_activation = mw.span.activateOnThisThread();
@@ -431,7 +448,12 @@ void APIServer::setupHeartbeat() {
 
 void APIServer::handleDynamicRequest(const crow::request& req, crow::response& res)
 {
-    const auto t0 = std::chrono::steady_clock::now();
+    // Latency is measured from the START of the request (the first
+    // middleware), not from here. Starting the clock in the handler left out
+    // everything before it - Basic auth's PBKDF2 alone is ~165 ms - so the
+    // metrics reported 1.5 ms while clients waited 200 ms.
+    const auto* request_ctx = RequestContextScope::current();
+    const auto t0 = request_ctx != nullptr ? request_ctx->t0 : std::chrono::steady_clock::now();
     std::string path = req.url;
     // Match endpoint by both path and HTTP method
     std::string method = crow::method_name(req.method);
@@ -478,6 +500,10 @@ void APIServer::handleDynamicRequest(const crow::request& req, crow::response& r
         const double duration_ms =
             std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - t0).count();
+        RuntimeMetrics::instance().recordRest(
+            method, route_template, res.code,
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0),
+            RuntimeMetrics::isCacheUnavailableResponse(res.code, res.body));
         auto& telemetry = flapi::GlobalTelemetry();
         telemetry.restEndpointServed(method, route_template, res.code, duration_ms, cache_hit);
         if (res.code >= 500) {
@@ -533,7 +559,27 @@ void APIServer::handleDynamicRequest(const crow::request& req, crow::response& r
         auth_params["__auth_roles"] = roles;
     }
 
+    // A database invalidated by an internal error fails every query until the
+    // process restarts; say so (503) instead of a 500 per request. Checked
+    // after the request too: the request that hit the invalidation answers the
+    // same way.
+    const auto fatal_response = [&res]() {
+        res.code = 503;
+        res.set_header("Content-Type", "application/json");
+        res.set_header("Retry-After", "30");
+        res.body = DatabaseHealth::FatalResponseJson();
+    };
+    if (DatabaseHealth::IsFatal()) {
+        fatal_response();
+        res.end();
+        emit_telemetry(endpoint->urlPath, false);
+        return;
+    }
+
     requestHandler.handleRequest(req, res, *endpoint, pathParams, auth_params);
+    if (res.code >= 500 && DatabaseHealth::IsFatal()) {
+        fatal_response();
+    }
 
     // flapi has no per-request cache hit/miss signal (the "cache" is a
     // materialized DuckLake table the template queries); the honest bounded
@@ -563,13 +609,35 @@ crow::response APIServer::refreshConfig() {
     }
 }
 
+namespace {
+// An invalidated DuckDB never recovers in-process (DatabaseHealth), so even
+// LIVENESS fails: a supervisor that only probes /health/live must restart it.
+std::optional<crow::response> fatalHealthResponse() {
+    const auto reason = DatabaseHealth::FatalReason();
+    if (!reason) {
+        return std::nullopt;
+    }
+    crow::json::wvalue health;
+    health["status"] = "fatal";
+    health["reason"] = *reason;
+    health["message"] = DatabaseHealth::FatalMessage();
+    return crow::response(503, health);
+}
+}  // namespace
+
 crow::response APIServer::getLiveHealth() {
+    if (auto fatal = fatalHealthResponse()) {
+        return std::move(*fatal);
+    }
     crow::json::wvalue health;
     health["status"] = "live";
     return crow::response(200, health);
 }
 
 crow::response APIServer::getHealth() {
+    if (auto fatal = fatalHealthResponse()) {
+        return std::move(*fatal);
+    }
     crow::json::wvalue health;
     const auto uptime = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::steady_clock::now() - startedAt);
@@ -582,7 +650,11 @@ crow::response APIServer::getHealth() {
     }
 
     health["caches"]["total"] = summary.total;
-    health["caches"]["ready"] = summary.ready;
+    // `ready` excludes `stale` (serving the last snapshot while refreshes
+    // fail): a stale cache was counted as ready, so the numbers said all was
+    // well while `status` said degraded.
+    health["caches"]["ready"] = summary.ready - summary.stale;
+    health["caches"]["stale"] = summary.stale;
     health["caches"]["failed"] = summary.failed;
     health["caches"]["unbuilt"] = summary.unbuilt;
 
@@ -738,6 +810,26 @@ void APIServer::run(int port) {
     // ordered (pool drained, then io_services stopped) and happens while the
     // process is still alive.
     app.signal_clear();
+
+    // Announce the server only once it is actually listening. Crow runs the
+    // tick function on its io loop, which starts after the acceptor is bound,
+    // and by then app.port() is the bound port. main used to log "server
+    // started on port N" right after launching this thread - before the bind -
+    // so an EADDRINUSE printed "started" followed by the error, and the MCP
+    // "ready at" line was printed from a constructor with a hard-coded
+    // localhost:8080 whatever -p said.
+    {
+        auto announced = std::make_shared<std::atomic<bool>>(false);
+        const std::string scheme = https.enabled ? "https" : "http";
+        app.tick(std::chrono::milliseconds(50), [this, announced, scheme, bind_host]() {
+            if (announced->exchange(true)) {
+                return;
+            }
+            const std::string base = scheme + "://" + bind_host + ":" + std::to_string(app.port());
+            CROW_LOG_INFO << "flAPI server listening on " << base
+                          << " (REST API; MCP at " << base << "/mcp/jsonrpc)";
+        });
+    }
 
     // Test-only seam (#143). Holds the process at a NAMED startup point, so a
     // test can signal it there instead of guessing.
@@ -945,6 +1037,14 @@ void APIServer::stop() {
 
     if (!drained_) {
         drained_ = true;
+        // Interrupt running cache refreshes FIRST. The heartbeat join below, the
+        // handler-pool drain (a config-service refresh) and main's warm-up join all
+        // wait for them, and a warm-up populate query held SIGTERM for ~80 s.
+        if (dbManager) {
+            if (auto cache_manager = dbManager->getCacheManager()) {
+                cache_manager->interruptRefreshesForShutdown();
+            }
+        }
         heartbeatWorker->stop();
 
     // Before app.stop(), not after. The pool's shutdown drains rather than

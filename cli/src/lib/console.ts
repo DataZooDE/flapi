@@ -7,13 +7,28 @@ import figures from 'figures';
 
 export type Spinner = Ora;
 
+// -q/--quiet: no spinners and no progress or success chatter. The data a
+// command prints (Console.info) and errors still come out.
+let quiet = false;
+
 export const Console = {
+  setQuiet(value: boolean) {
+    quiet = value;
+  },
+
+  isQuiet(): boolean {
+    return quiet;
+  },
+
   color(color: keyof typeof colorette, text: string) {
     const fn = colorette[color];
     return typeof fn === 'function' ? fn(text) : text;
   },
 
   success(message: string) {
+    if (quiet) {
+      return;
+    }
     console.log(chalk.green(`${figures.tick} ${message}`));
   },
 
@@ -22,6 +37,9 @@ export const Console = {
   },
 
   warn(message: string) {
+    if (quiet) {
+      return;
+    }
     console.log(chalk.yellow(`${figures.warning} ${message}`));
   },
 
@@ -33,6 +51,9 @@ export const Console = {
     return ora({
       text: chalk.blue(text),
       spinner: 'dots',
+      // Silent: start/succeed/fail print nothing. The command's error, if
+      // any, is still reported once by handleError.
+      isSilent: quiet,
     }).start();
   },
 

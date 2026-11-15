@@ -157,7 +157,7 @@ should not bake in.
 | `FLAPI_CONFIG_SERVICE_TOKEN` | startup | Bearer token for the management API (fallback for `--config-service-token`) | CLI > env > auto-generate |
 | `FLAPI_NO_TELEMETRY` | startup | Disable PostHog telemetry (fallback for `--no-telemetry`) | CLI > env > config-file > enabled |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` | startup, query time | S3 credentials (DuckDB `httpfs`) | env only |
-| `GOOGLE_APPLICATION_CREDENTIALS` / `GOOGLE_CLOUD_PROJECT` | startup, query time | GCS credentials (DuckDB `httpfs`) | env only |
+| `GOOGLE_APPLICATION_CREDENTIALS` / `GOOGLE_CLOUD_PROJECT` | startup | Detected and logged only. flAPI does **not** configure GCS for DuckDB from them, and DuckDB `httpfs` does not read a service-account file: GCS access needs an HMAC key in a DuckDB secret (`CREATE SECRET (TYPE gcs, KEY_ID '…', SECRET '…')`, e.g. in a connection's `init`) | — |
 | `AZURE_STORAGE_CONNECTION_STRING` / `AZURE_STORAGE_ACCOUNT` / `AZURE_STORAGE_KEY` | startup, query time | Azure Blob credentials | env only |
 | `{{env.VARNAME}}` in YAML | startup (config parse) | Interpolated into any string field | requires `environment-whitelist` entry |
 
@@ -182,12 +182,12 @@ The list of known keys is `ConfigManager::KnownTopLevelKeys()` in `src/config_ma
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `project-name` | string | - | Human-readable project name |
-| `project-description` | string | - | Project description |
-| `server-name` | string | `"localhost"` | Server hostname for generated URLs |
+| `project-description` | string | `""` | Project description (optional) |
+| `server-name` | string | - | **No effect**: nothing reads it, and startup warns. The bind address is `http-host` |
 | `http-port` | integer | `8080` | HTTP server port (overridable via `--port` / `FLAPI_PORT`) |
-| `log-level` | string | `info` | Log verbosity: `debug`, `info`, `warning`, `error`. Overridable via `--log-level` / `FLAPI_LOG_LEVEL`. |
+| `log-level` | string | `info` | Log verbosity: `debug`, `info`, `warning` (or `warn`), `error`. Overridable via `--log-level` / `FLAPI_LOG_LEVEL` (both also accept `warn`). Any other value stops startup. |
 | `tracing` | map | disabled | OpenTelemetry tracing. Off by default; see [OBSERVABILITY.md](OBSERVABILITY.md). |
-| `log-format` | string | `text` | `text` for human-readable lines, `json` for one JSON object per line. Both carry `request_id` (and `trace_id` once tracing is enabled) for lines emitted while serving a request. |
+| `log-format` | string | `text` | `text` for human-readable lines, `json` for one JSON object per line, from the first startup line on (lines logged while the configuration is read are held until it says which format). Both carry `request_id` (and `trace_id` once tracing is enabled) for lines emitted while serving a request, Crow's `Response: ...` access line included. |
 | `stall-timeout-s` | int | `60` | Readiness (`GET /health`) returns `503` when a request has been in flight longer than this. `0` disables it. Guards against a backend that stops answering without failing — a wedged connection leaves the process, DuckDB and every other connection healthy, so a `SELECT 1` probe passes while the endpoint is dead. Raise it if you serve deliberately long synchronous queries; the usual answer to those is the MCP Tasks extension. |
 | `http-host` | string | `"0.0.0.0"` | Bind address (overridable via `--host` / `FLAPI_HOST`); use `127.0.0.1` to restrict to loopback |
 
@@ -218,7 +218,6 @@ The list of known keys is `ConfigManager::KnownTopLevelKeys()` in `src/config_ma
 ```yaml
 project-name: Customer API
 project-description: REST API for customer data access
-server-name: api.example.com
 http-host: 0.0.0.0
 http-port: 8080
 ```
@@ -280,9 +279,9 @@ Connections define data sources accessible in SQL templates.
 |-----------|------|---------|-------------|
 | `connections.<name>` | object | - | Connection configuration keyed by unique name |
 | `connections.<name>.init` | string | - | SQL initialization commands (load extensions, create secrets) |
-| `connections.<name>.log-queries` | boolean | `false` | Log SQL queries to this connection |
-| `connections.<name>.log-parameters` | boolean | `false` | Log parameter values |
-| `connections.<name>.allow` | string | - | Access control list |
+| `connections.<name>.log-queries` | boolean | - | **No effect**: nothing reads it; startup warns |
+| `connections.<name>.log-parameters` | boolean | - | **No effect**: nothing reads it; startup warns |
+| `connections.<name>.allow` | string | - | **No effect**: nothing reads it; startup warns |
 | `connections.<name>.serialize-access` | boolean | auto | Run one query at a time on this connection. Auto-detected for SQLite attachments; see below |
 | `connections.<name>.properties` | object | - | Custom key-value properties accessible in templates |
 
@@ -312,7 +311,6 @@ connections:
     init: |
       INSTALL 'bigquery' FROM community;
       LOAD 'bigquery';
-    log-queries: true
     properties:
       project_id: my-gcp-project
 ```
@@ -350,6 +348,12 @@ connections:
       ATTACH '/data/snapshot.sqlite' AS snap (TYPE sqlite);
 ```
 
+A **read served from the DuckLake cache** (an endpoint with `cache.enabled` and a `cache.template-file`)
+does not take the lock: its serving template reads the cache table, not the source. The populate
+template and every uncached read still do. A cached endpoint without a `template-file` serves its source
+query, so it keeps the lock. Do not join the source into a cached endpoint's serving template on a
+serialised connection: that read would run unserialised.
+
 An explicit value always wins over the detection.
 - Use environment variable substitution for sensitive values
 
@@ -365,7 +369,7 @@ Configures the embedded DuckDB database engine.
 | `duckdb.access_mode` | string | `READ_WRITE` | Database access mode: `READ_WRITE` or `READ_ONLY` |
 | `duckdb.threads` | integer | auto | Number of threads for query parallelism |
 | `duckdb.max_memory` | string | auto | Memory limit (e.g., `4GB`, `512MB`) |
-| `duckdb.default_order` | string | - | Default sort order: `ASC` or `DESC` |
+| `duckdb.default_order` | string | - | Default sort order: `ASC` or `DESC`. With `ducklake.enabled` it is set per flAPI connection, not globally, because DuckLake's own catalog queries need the ascending default |
 | `duckdb.default-extensions` | list | `[httpfs, ducklake, fts, json, postgres, sqlite, parquet]` | Extensions installed and loaded at startup. `[]` loads none. A scalar is refused. |
 | `duckdb.<setting>` | any | - | Any DuckDB configuration setting |
 
@@ -403,11 +407,12 @@ Configures DuckLake for snapshot-based caching with time-travel capabilities.
 |-----------|------|---------|-------------|
 | `ducklake.enabled` | boolean | `false` | Enable DuckLake caching system |
 | `ducklake.alias` | string | `"cache"` | Catalog alias for DuckLake tables |
-| `ducklake.metadata-path` | string | - | Directory for DuckLake metadata |
-| `ducklake.data-path` | string | - | Directory for DuckLake data files |
-| `ducklake.data-inlining-row-limit` | integer | - | Maximum rows to inline in metadata |
+| `ducklake.metadata-path` | string | - | DuckLake metadata catalog: a DuckDB file path, or `sqlite:`/`postgres:`/`mysql:` connection string. A missing parent directory of a local file is created (a read-only replica refuses to start instead). Shown redacted (`password=<redacted>`) in config API answers and logs |
+| `ducklake.data-path` | string | - | Directory (or object-store prefix) for DuckLake data files; a missing local directory is created |
+| `ducklake.data-inlining-row-limit` | integer | - | Maximum rows to inline in metadata. Keep it to a few thousand: at or above the size of a large merge delta (~112k rows at 200000) refreshes were 60-100x slower |
+| `ducklake.override-data-path` | boolean | `false` | Attach with `OVERRIDE_DATA_PATH`: use this `data-path` although the catalog recorded another one. A catalog stores its data path as an absolute path, so a catalog prebuilt elsewhere (CI, another directory, another image path) otherwise fails with `DATA_PATH parameter ... does not match existing data path in the catalog` |
 | `ducklake.warmup` | string | `always` | When caches are built at startup: `always` (re-run every populate query), `if-empty` (only tables that do not exist yet), `never` (none). See below. |
-| `ducklake.read-only` | boolean | `false` | Attach the catalog `READ_ONLY`, for replicas serving a catalog another process writes. Implies `warmup: never`, no scheduled refresh, retention or compaction, and `409` from the config service's cache mutations. |
+| `ducklake.read-only` | boolean | `false` | Attach the catalog `READ_ONLY`, for replicas serving a catalog another process writes. Implies `warmup: never`, no scheduled refresh, retention or compaction, and `409` from the config service's cache mutations. A cache not yet built is checked again (at most every 5 s on requests, and on every scheduler scan) and served once the writer has built it; that needs a shared Postgres/SQLite/MySQL catalog while the writer runs: several replicas can share a DuckDB-file catalog, but no writer can open it while one of them holds it, and a replica does not start while a writer server holds it. A replica needs the writer's `connections:` names (placeholder properties are fine) and logs that its scheduler is off. |
 
 **Warm-up.** `if-empty` suits a persistent `db_path` or a shared catalog: a restart serves what is already
 there. With `never`, a cache whose table does not exist is **unbuilt**: its endpoint answers `503`
@@ -423,19 +428,51 @@ endpoint `cache.warmup` > `ducklake.warmup`.
 | `ducklake.retention.keep-last-snapshots` | integer | - | Number of snapshots to retain per table |
 | `ducklake.retention.max-snapshot-age` | string | - | Delete snapshots older than this (e.g., `30d`, `7d`) |
 
+The global block is the default for every cache that has **no `retention:` block of its own**. An
+endpoint's `cache.retention` replaces it as a whole (the two are not merged). Retention runs after each
+refresh and on `…/cache/gc`; once snapshots are expired, flAPI also runs
+`ducklake_cleanup_old_files(<catalog>, cleanup_all => true)`, so the data files they referenced are
+deleted from disk (or the bucket) rather than left behind. Expiry is per table and covers every
+incarnation of it: a CTAS full refresh or a `--full` rebuild creates a new table id, and the old ones'
+snapshots expire too. A file is deleted only once no remaining snapshot of any table can see it, so
+after a `--full` the old copy stays until the last snapshot before the rebuild leaves the window
+(`keep-last-snapshots: N`: N-1 more refreshes that write).
+To remove a table no endpoint uses any more (for example after changing `cache.schema`), call
+`POST /api/v1/_config/cache/drop-table` (`flapii cache drop-table schema.table`).
+
 **Compaction Configuration:**
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `ducklake.compaction.enabled` | boolean | `false` | Enable automatic compaction |
-| `ducklake.compaction.schedule` | string | - | Cron schedule (e.g., `@daily`, `@hourly`) |
+| `ducklake.compaction.enabled` | boolean | `false` | Enable automatic compaction. Needs a `schedule` as well |
+| `ducklake.compaction.schedule` | string | - | How often: an interval (`30m`, `6h`, `1d`) or `@hourly`, `@daily`, `@midnight`, `@weekly`. Anything else (including a cron expression) stops startup with an error naming the key. Without `compaction.enabled: true` it has no effect, and startup warns |
+| `ducklake.compaction.delete-threshold` | number | DuckLake's `0.95` | Fraction of deleted rows (`0 < x <= 1`) above which `ducklake_rewrite_data_files` rewrites a data file. A merge cache's delete files rarely reach DuckLake's default, so refreshes slow down as they pile up. Set about refreshes between compactions × the share of rows a refresh changes (1% x 5 = `0.05`); `0.2` never triggered with 1% deltas. Out of range stops startup |
+
+Compaction runs once per catalog per period: `ducklake_merge_adjacent_files`, `ducklake_rewrite_data_files`
+and a file cleanup. Each run writes an audit row with `sync_type` `compaction`, and when it last ran
+survives a restart. A one-shot `flapi cache refresh` also compacts when compaction is due. Startup logs
+`DuckLake compaction every <schedule>; last run ...; next due ...`, and each run logs
+`DuckLake compaction is due (schedule ...); running it now`. Its history is
+`GET /api/v1/_config/cache/audit?sync_type=compaction`; a catalog-wide run's row has an empty
+`cache_table` and `cache_schema`. To compact now, whatever the schedule (and even with
+`compaction.enabled: false`): `flapii cache compact [path]` / `POST /api/v1/_config/cache/compact`.
 
 **Scheduler Configuration:**
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `ducklake.scheduler.enabled` | boolean | `false` | Enable cache refresh scheduler |
-| `ducklake.scheduler.scan-interval` | string | - | Check interval (e.g., `5m`, `1h`) |
+| `ducklake.scheduler.enabled` | boolean | `true` | Run `cache.schedule` refreshes. On by default; `false` turns scheduled refreshes off (startup logs a warning naming how many caches are affected) |
+| `ducklake.scheduler.scan-interval` | string | see below | How often the scheduler checks which caches are due (`1s`, `30s`, `5m`). An invalid value stops startup |
+
+Without `scan-interval`, schedules are checked every `min(heartbeat.worker-interval, shortest cache.schedule)`,
+never more often than once a second. Startup logs `Cache scheduler on: N scheduled cache(s), checked every X s`,
+and warns about any `cache.schedule` shorter than the scan interval (it then refreshes at most once per
+scan). Endpoints that share one cache table share one schedule.
+
+**No refresh at boot.** Startup warm-up builds the caches (see `warmup` above); the scheduler does not
+refresh them again straight away. A cache's first scheduled refresh is one `schedule` after its last real
+refresh — this run's warm-up, else the newest snapshot in the catalog, else process start. A refresh through
+the config service counts as a real refresh.
 
 **Example:**
 
@@ -452,9 +489,13 @@ ducklake:
     enabled: true
     schedule: '@daily'
   scheduler:
-    enabled: true
-    scan-interval: 5m
+    scan-interval: 30s
 ```
+
+**Audit log.** Every refresh and compaction writes a row to the catalog's `audit.sync_events` table
+(`event_id` is a UUIDv4). Its `full` column (BOOLEAN) is `true` for a refresh that loaded the whole
+source: a forced `--full`, a full-mode cache, or an incremental cache's first build. It is bounded: the newest 1000 rows per cache table are kept, and older audit
+snapshots are expired together with the cache's own.
 
 > **Implementation:** `src/cache_manager.cpp` | **Tests:** `test/cpp/database_manager_ducklake_test.cpp`, `test/integration/test_ducklake_cache.tavern.yaml`
 
@@ -480,7 +521,7 @@ Configures the Model Context Protocol (MCP) server.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `mcp.auth.enabled` | boolean | `false` | Enable MCP authentication |
-| `mcp.auth.type` | string | - | Auth type: `basic`, `bearer`, `oidc` |
+| `mcp.auth.type` | string | - | Auth type: `basic`, `bearer` (alias `jwt`), `oidc`. Anything else fails to load when `mcp.auth.enabled` (`AUTH_UNKNOWN_TYPE`) |
 | `mcp.auth.methods.<method>.required` | boolean | `true` | Per-method authentication requirement |
 
 > **Deny-by-default RBAC:** when `mcp.auth.enabled: true`, every MCP tool MUST declare `mcp-tool.allowed-roles`. A tool without that list refuses every call with `Permission denied`. This prevents a freshly-added tool from being callable by any authenticated user. Endpoints without `mcp.auth.enabled` keep working without role config — the `flapii project init` demo path stays simple.
@@ -515,6 +556,8 @@ mcp:
 **Notes:**
 - MCP server is auto-enabled when endpoints define `mcp-tool`, `mcp-resource`, or `mcp-prompt`
 - Use `instructions-file` for large instruction sets, `instructions` for inline content
+- `tools/list`, `resources/list` and `prompts/list` are rebuilt whenever an endpoint is created, updated, deleted or reloaded (over REST or MCP); no restart is needed. Cursors from an older list are rejected. The server does not send a `list_changed` notification, so clients re-list on their own
+- The top-level REST `auth:` block does not protect MCP; MCP uses `mcp.auth`
 
 > **Implementation:** `src/mcp_server.cpp`, `src/mcp_route_handlers.cpp`, `src/mcp_authorization_policy.cpp`, `src/mcp_description_scanner.cpp`, `src/mcp_dry_run.cpp`, `src/mcp_response_shaper.cpp`, `src/mcp_tool_rate_limiter.cpp` | **Tests:** `test/integration/test_mcp_rbac.py`, `test_mcp_dry_run.py`, `test_mcp_description_hygiene.py`, `test_mcp_response_shaping.py`, `test_mcp_per_tool_rate_limit.py`
 
@@ -524,18 +567,59 @@ Global authentication settings that apply to all endpoints unless overridden.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `auth.enabled` | boolean | `false` | Enable authentication globally |
-| `auth.type` | string | - | Default auth type: `basic`, `jwt`, `bearer`, `oidc` |
+| `auth.enabled` | boolean | `true` if the block sets `type`, `roles`, `users`, `jwt-secret`, `jwt-issuer`, `oidc` or `from-aws-secretmanager`, else `false` | Enable authentication for every REST endpoint without its own `auth:` block. The same default applies inside an endpoint's `auth:` block; only `enabled: false` turns it off |
+| `auth.type` | string | - | Default auth type: `basic`, `bearer` (alias `jwt`), `oidc`. Anything else fails to load (`AUTH_UNKNOWN_TYPE`) |
 | `auth.jwt-secret` | string | - | JWT signing key |
 | `auth.jwt-issuer` | string | - | Expected JWT issuer claim |
 | `auth.users` | array | - | User list for basic auth |
+| `auth.roles` | array[string] | `[]` | Roles a caller must hold (any one of them). Empty = any authenticated caller |
+
+**Inheritance.** A top-level `auth:` block with `enabled: true` applies to every REST endpoint that has
+**no `auth:` block of its own** — at startup, on reload, and to endpoints created through the config
+service without one. An endpoint's own block **replaces** the global one (the two are not merged), and
+`auth: {enabled: false}` on an endpoint opts it out. An endpoint block that leaves out `enabled` but
+configures authentication (`type`, `roles`, `users`, `jwt-*`, ...) is ON, not an opt-out. Startup logs
+`Global auth (type '<type>') applies to N endpoint(s) without their own auth: block; M endpoint(s) opt out with auth: {enabled: false}`.
+
+An enabled endpoint block that names **no scheme and no credentials** (no `type`, `users`, `jwt-secret`,
+`jwt-issuer`, `oidc` or `from-aws-secretmanager` — typically `roles:` only) takes the global block's type
+and credentials and applies its own `roles` on top. Without an enabled global block it fails to load with
+`AUTH_NO_TYPE`; so does a block that has credentials but no `type`. Keys the chosen type never reads
+(`users:` under `bearer`, `jwt-secret:` under `basic`, ...) produce a load warning naming them — one scheme
+applies per block, and the same goes for the global block and `mcp.auth`.
+
+An enabled block whose `type` is not a scheme flAPI has (a typo such as `basci`) fails to load, and is
+refused on reload, with `AUTH_UNKNOWN_TYPE: Endpoint GET /x has auth type 'basci', which is not a scheme
+flAPI supports. Valid types: basic, bearer, jwt (alias of bearer), oidc.` The same applies to the global
+block and to `mcp.auth.type` (which also accepts `jwt`). Such a block used to answer 401 to every request
+and log nothing.
+
+**Basic-auth cost.** A PBKDF2 hash at 600 000 iterations costs ~165 ms of CPU to check, and Basic auth
+sends the password with every request. flAPI remembers a **successful** check for 5 minutes (at most
+10 000 entries, keyed by an HMAC of user, password and stored hash under a per-process random key; no
+password is stored), so only the first request with a given password pays it. A wrong password is
+checked in full every time and never remembered; a changed hash never matches an old entry; every load
+or reload of an `auth:` block empties the cache. At most half the cores derive PBKDF2 at once; a request
+that waits more than 2 s for a slot is refused (401) and the log says why, so a flood of wrong passwords
+cannot occupy every worker.
+
+**401 responses** carry the configured scheme's challenge — `WWW-Authenticate: Basic realm="flAPI"` for
+basic, `Bearer realm="flAPI"` for bearer and oidc, with `error="invalid_token"` when a bearer token was sent
+and refused — and a JSON body `{"error":"Unauthorized","message":"..."}`, like the 403.
+The config service reports each endpoint's `auth.roles` and `auth.inherited`. MCP tools are not covered:
+they use `mcp.auth` (§2.6).
 
 **Password hashing for `auth.users[*].password`:**
-flAPI accepts three formats and detects them by prefix:
+flAPI detects the format by prefix:
 
-- `$pbkdf2-sha256$<iter>$<base64-salt>$<base64-hash>` — **recommended.** Modular Crypt Format (MCF) string compatible with Python `passlib` and any other PBKDF2-SHA256 generator. flAPI uses OpenSSL `PKCS5_PBKDF2_HMAC` with 600 000 iterations (OWASP 2023 minimum), 16-byte random salt, 32-byte derived key.
+- `$pbkdf2-sha256$<iter>$<salt>$<hash>` — **recommended.** Modular Crypt Format (MCF) string, as written by Python `passlib` (its ab64 encoding, standard and URL-safe base64 are all accepted). Generate one with `python3 -c "from passlib.hash import pbkdf2_sha256; import getpass; print(pbkdf2_sha256.using(rounds=600000).hash(getpass.getpass()))"`. flAPI's own hashes use OpenSSL `PKCS5_PBKDF2_HMAC` with 600 000 iterations (OWASP 2023 minimum), 16-byte random salt, 32-byte derived key.
+- `$2a$` / `$2b$` / `$2y$` (bcrypt) — **not supported.** Every login as that user is refused; the startup auditor reports `AUTH_BCRYPT_UNSUPPORTED`.
 - 32-character lowercase hex — interpreted as MD5. Still accepted, but the startup auditor emits a **deprecation warning** (MD5 has no salt and is fast to brute-force).
-- Anything else — interpreted as plaintext. Accepted for local demos; the startup auditor emits a deprecation warning.
+- Anything else — interpreted as plaintext. Accepted for local demos; the startup auditor emits `AUTH_PLAINTEXT_PASSWORD`.
+
+The auditor also warns `CORS_WILDCARD_WITH_AUTH` when any authentication is enabled while
+`cors.allow-origins` is empty or contains `*`: any web page could then call the server cross-origin with a
+credential the browser holds and read the answer. List your origins in `cors.allow-origins` (§2.9.1).
 
 See [Section 7: Authentication](#7-authentication) for detailed configuration options.
 
@@ -591,11 +675,17 @@ enforce-https:
 
 ### 2.9.1 CORS
 
-Cross-Origin Resource Sharing. The legacy wildcard `*` is gone — the default is same-origin only, and operators opt into a config-driven allowlist.
+Cross-Origin Resource Sharing. With no `cors` block, or an empty `allow-origins` list, every response carries `Access-Control-Allow-Origin: *` (`src/cors_policy.cpp`, `CorsPolicy::resolveAllowedOrigin`). Set an allow-list to restrict it: a request whose `Origin` is in the list gets that origin echoed back, any other origin (and a request without `Origin`) gets no `Access-Control-Allow-Origin` header. A `*` entry anywhere in the list means wildcard again.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `cors.allow-origins` | array | `[]` | List of allowed `Origin:` values. Use `["*"]` only for demos / local development |
+| `cors.allow-origins` | array | `[]` (= `*`) | List of allowed `Origin:` values. Empty or absent sends `Access-Control-Allow-Origin: *` |
+| `cors.allow-headers` | array | `[]` | `Access-Control-Allow-Headers` on preflights. Empty (or `*`) echoes the headers the browser asked for in `Access-Control-Request-Headers` |
+| `cors.allow-methods` | array | `[]` (= GET, POST, PUT, PATCH, DELETE) | `Access-Control-Allow-Methods` on preflights |
+
+A response whose `Access-Control-Allow-Origin` echoes an allow-listed origin also carries `Vary: Origin`.
+
+**Preflights.** An `OPTIONS` request with `Origin` and `Access-Control-Request-Method` (REST paths and `/mcp/jsonrpc` alike) answers `204` with, for an allowed origin: `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods`, `Access-Control-Allow-Headers`, `Access-Control-Max-Age: 600` and `Vary: Origin`. Without `cors.allow-headers`, the requested headers are echoed; a preflight that requests none gets `*`, plus `Authorization, Content-Type, X-Config-Token, Mcp-Session-Id` by name when any authentication is enabled (`*` does not cover `Authorization` in browsers). A disallowed origin gets no `Access-Control-Allow-*` header.
 
 **Example:**
 
@@ -606,9 +696,9 @@ cors:
     - https://staging.example.com
 ```
 
-`flapii project init` ships a `cors.allow-origins: ["*"]` in the generated `flapi.yaml` so first-run experiences stay friction-free; the startup auditor emits a warning when `*` is combined with `auth.enabled: true` (credential-bearing requests across origins).
+`flapii project init` does not generate a `cors` block, so a new project answers every origin with `*`. Set an explicit allow-list before exposing an authenticated API to browsers.
 
-> **Implementation:** `src/cors_middleware.cpp`, `src/cors_policy.cpp` | **Tests:** `test/cpp/cors_policy_test.cpp`, `test/integration/test_cors_allowlist.py`
+> **Implementation:** `src/cors_middleware.cpp`, `src/cors_policy.cpp` | **Tests:** `test/cpp/cors_policy_test.cpp`, `test/cpp/auth_cors_ergonomics_test.cpp`, `test/integration/test_cors_allowlist.py`, `test/integration/test_cors_preflight_and_auth_challenge.py`
 
 ### 2.9.2 Audit Log
 
@@ -645,15 +735,18 @@ Each event is a single JSON line of the shape:
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `heartbeat.enabled` | boolean | `false` | Enable global heartbeat worker |
-| `heartbeat.worker-interval` | integer | `60` | Check interval in seconds |
+| `heartbeat.worker-interval` | integer | `60` | Check interval in seconds. `60` with or without a `heartbeat:` block; `0` or a negative value stops startup |
 
 **Example:**
 
 ```yaml
 heartbeat:
   enabled: true
-  worker-interval: 10
+  worker-interval: 30
 ```
+
+`worker-interval` also bounds how often cache schedules are checked when
+`ducklake.scheduler.scan-interval` is not set (see [§2.5](#25-ducklake-configuration)).
 
 Both keys are global. An endpoint opts in with its own `heartbeat:` block (see
 [§3 Endpoint Configuration](#3-endpoint-configuration)); the global block
@@ -744,7 +837,12 @@ connection:
   - local-data
 ```
 
-Or configure the template base path as a remote URL:
+> **Known limitation:** a remote `template.path` (an `s3://`, `gs://`, `az://` or `https://` directory) does not work
+> yet. flAPI lists the template directory on the local filesystem, so startup fails with
+> `Template path does not exist or is not a directory`. Keep the endpoint YAML and SQL templates on local disk
+> (or bundle them with `flapi pack`). Data files and DuckLake data paths on cloud storage do work.
+
+The intended form, once supported:
 
 ```yaml
 # flapi.yaml - templates from HTTPS
@@ -760,7 +858,7 @@ template:
 | `http://` | HTTP URLs (not recommended) | None required |
 | `s3://` | Amazon S3 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` |
 | `s3a://`, `s3n://` | S3-compatible storage | Same as S3 |
-| `gs://` | Google Cloud Storage | `GOOGLE_APPLICATION_CREDENTIALS` |
+| `gs://` | Google Cloud Storage | HMAC key in a DuckDB secret (`TYPE gcs`); `GOOGLE_*` variables are not used |
 | `az://`, `abfs://` | Azure Blob Storage | `AZURE_STORAGE_ACCOUNT`, `AZURE_STORAGE_KEY` |
 | `file://` | Local filesystem | None required |
 
@@ -808,10 +906,28 @@ export AWS_SESSION_TOKEN=your-session-token
 
 **Google Cloud Storage:**
 
-```bash
-export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
-# Or use application default credentials
-gcloud auth application-default login
+flAPI reads `GOOGLE_APPLICATION_CREDENTIALS` / `GOOGLE_CLOUD_PROJECT` only to log
+that they are set (`src/credential_manager.cpp`, `CredentialManager::configureDuckDB`
+applies nothing for GCS). DuckDB's `httpfs` authenticates to GCS with an **HMAC
+key**, not a service-account JSON file or application-default credentials. Create
+the key in the Cloud Console (Cloud Storage → Settings → Interoperability) and
+register it as a DuckDB secret, for example in the connection's `init`, reading
+the values from environment variables (whitelist them, e.g. `'^GCS_HMAC_.*'` under
+`template.environment-whitelist`):
+
+```yaml
+connections:
+  gcs-data:
+    init: |
+      INSTALL httpfs;
+      LOAD httpfs;
+      CREATE OR REPLACE SECRET gcs_hmac (
+        TYPE gcs,
+        KEY_ID '{{env.GCS_HMAC_KEY_ID}}',
+        SECRET '{{env.GCS_HMAC_SECRET}}'
+      );
+    properties:
+      path: 'gs://my-bucket/data/*.parquet'
 ```
 
 **Azure Blob Storage:**
@@ -894,12 +1010,17 @@ REST endpoints expose SQL queries as HTTP APIs.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `url-path` | string | **required** | HTTP path (e.g., `/customers`, `/customers/:id`) |
-| `method` | string | `GET` | HTTP method: `GET`, `POST`, `PUT`, `PATCH`, `DELETE` |
+| `url-path` | string | **required** | HTTP path (e.g., `/customers`, `/customers/:id`). Rules below |
+| `method` | string | `GET` | HTTP method: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, in any case (trimmed and stored upper-case; empty means `GET`). Anything else is a load error naming the endpoint |
+| `allow-shadowing` | boolean | `false` | Let this endpoint answer the URLs it shares with a less specific, overlapping route of the same method whose effective auth differs in any way (looser or stricter). Without it that combination is refused (see *Route precedence*) |
+| `description` | string | - | The operation's description in `/doc.yaml`. Without it, `mcp-tool.description` is used; without either, the operation has none |
 | `template-source` | string | **required** | Path to SQL template file |
 | `connection` | array[string] | **required** | Connection name(s) from flapi.yaml |
-| `with-pagination` | boolean | `true` | Enable pagination (adds `limit`/`offset`) |
-| `request-fields-validation` | boolean | `false` | Enable strict field validation |
+| `with-pagination` | boolean | `true` | Wrap the query in `?limit=` (default `100`) / `?offset=` paging; the body is `{"next", "total_count", "data"}` plus `X-Total-Count`/`X-Limit`/`X-Offset`/`X-Next` headers. `limit`/`offset` are reserved; do not use them in the template. `limit=0` returns no rows and an empty `next` (the count only). `false` returns a bare JSON array |
+| `request-fields-validation` | boolean | `false` | Reject (400) a query parameter that is not a declared `field-name`. `limit`, `offset` and `format` are always allowed |
+
+A query parameter given more than once (`?x=1&x=2`) is rejected with 400
+`{"error": "Duplicate query parameter: x"}`; it used to take the first value silently.
 
 **Example:**
 
@@ -930,6 +1051,66 @@ URL path parameters use the `:param` syntax and are automatically extracted:
 url-path: /customers/:id/orders/:order_id
 # Available as: params.id, params.order_id
 ```
+
+**url-path rules** (checked at load, by `--validate-config`, and by create/update; a
+violation is a load error / 400 naming the endpoint):
+
+- starts with `/`; `/` alone is allowed, and so is one trailing `/` (`/customers/`),
+  which is then part of the route (`/customers` is a different route);
+- every segment is either a literal of `A-Z a-z 0-9 . _ ~ -` or a parameter `:name`
+  (`name` = letters, digits, `_`, not starting with a digit); each parameter name
+  appears once per path (`/a/:id/b/:id` is refused);
+- no `.` or `..` segment (`/a/../b`): clients and proxies resolve them before the
+  request arrives, so the route would never match what was written;
+- no empty segments (`//`), no `{id}` (write `:id`), no `*`, `(`, `[`, `+`, `?`, `|`, `^`,
+  `$`, `\`, `<`, `>`, `%` or spaces. Routes are matched exactly and case-sensitively.
+
+**Route precedence.** Two endpoints of the same method may have *overlapping* routes:
+`/customers/7` and `/customers/:id`, or `/a/:x/b` and `/:z/:x/b`, both match some
+URLs. Such a URL is answered by the **most specific** route: compare segments left to
+right; at the first position where one route has a literal and the other a `:param`,
+the literal wins. This never depends on file order or reloads, and rate limiting, auth
+and the request handler always resolve the same endpoint. Routes with the same shape
+(`/customers/:id` and `/customers/:cid`, same method in any case) are duplicates and
+stop startup.
+
+When overlapping endpoints have different **effective** auth (after inheriting the
+top-level `auth:` block), startup, reload, reload-file, create and update refuse the
+pair, **in either direction** - an open literal over a protected `:param` route and a
+protected literal over an open one alike. Auth is compared on `enabled`, `type`
+(`jwt` = `bearer`), `roles` **and the identity source**: `users` (username, password,
+per-user roles), `jwt-secret` (compared as a digest), `jwt-issuer`, the `oidc` issuer,
+client, audiences, claims, `scopes`, `verify-expiration` and `clock-skew-seconds`, and
+the `from-aws-secretmanager` secret and region. Any difference counts, including a
+re-hashed password with a new salt or a provider preset against its spelled-out
+`issuer-url` (copy the block byte for byte, or use a YAML include); secret values never
+appear in the message:
+
+```
+Overlapping routes with different auth: GET /customers/7 (basic, roles [admin]) takes
+precedence over GET /customers/:id (open) for /customers/7 (auth differs in: enabled);
+/customers/:id still serves every other URL its pattern matches, including other
+spellings of the same value such as /customers/07 - a literal route protects that
+exact path string, not a record (declared in ... and ...).
+```
+
+**A literal route protects only that exact path string.** Path parameters are matched
+as text and the SQL usually casts them, so `/customers/07`, `/customers/+7` (and
+`/customers/7.0` for a float column) reach `/customers/:id` and select the same row
+as the protected `/customers/7`. To protect a record, either give both routes the same
+auth, or protect the general endpoint and filter rows by the caller inside its
+template:
+
+```sql
+-- /customers/:id, auth: basic with users admin (roles [admin]) and guest (roles [guest])
+SELECT * FROM customers
+WHERE id = {{{ params.id }}}
+  AND (id <> 7 OR list_contains(string_split('{{ auth.roles }}', ','), 'admin'))
+```
+
+Set `allow-shadowing: true` on the **more specific** endpoint only when the split is
+intended; the overlap is then logged as a WARNING (which the plugin hook passes on to
+Claude). Overlaps with the same auth log an INFO line.
 
 ### 3.2 MCP Tools
 
@@ -969,9 +1150,12 @@ MCP resources expose data as readable resources for AI models.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `mcp-resource.name` | string | **required** | Unique resource name |
+| `mcp-resource.name` | string | **required** | Unique resource name (two files with the same name fail the load) |
 | `mcp-resource.description` | string | **required** | Resource description |
 | `mcp-resource.mime-type` | string | `application/json` | Content MIME type |
+| `mcp-resource.uri-template` | string | - | `flapi://customers/{id}`: a parameterised resource, listed in `resources/templates/list` only. Each `{var}` must be a `request:` field; its validators run on `resources/read` |
+| `mcp-resource.response.max-rows` | integer | the file's `mcp-tool.response.max-rows`, else `1000` | Cap the rows a read returns; a capped read carries `_meta.truncated` |
+| `mcp-resource.response.redact-columns` | array[string] | the file's `mcp-tool.response.redact-columns` | Columns replaced by `"<redacted>"` |
 
 **Example:**
 
@@ -980,6 +1164,9 @@ mcp-resource:
   name: customer_schema
   description: Customer database schema and field definitions
   mime-type: application/json
+  response:
+    max-rows: 200          # default 1000
+    redact-columns: [email]
 
 template-source: schema-query.sql
 connection:
@@ -1058,6 +1245,18 @@ connection:
   - customers-parquet
 ```
 
+**Server errors.** A request that fails inside flAPI (a SQL error, a missing table, a bind failure)
+returns `500` with a fixed JSON body and no SQL, file paths or database detail:
+
+```json
+{"error": "Internal Server Error",
+ "message": "The request failed on the server. The details are in the server log under this request id.",
+ "request_id": "req-46788500aef28a89"}
+```
+
+The real error is logged with the same `request_id` (also sent as the `X-Request-Id` header); grep the
+server log for it.
+
 **Includable Sections:**
 - `request`
 - `auth`
@@ -1085,6 +1284,7 @@ Each request parameter is defined with the following properties:
 | `required` | boolean | `false` | Whether parameter is mandatory |
 | `default` | string | - | Default value if not provided |
 | `validators` | array | - | Array of validator configurations |
+| `field-type` | string | - | **No effect**: nothing reads it, and loading warns. Constrain the value with a validator (`- type: int`) instead |
 
 **Example:**
 
@@ -1119,19 +1319,25 @@ The `field-in` property specifies where the parameter is extracted from:
 | `body` | Request body (JSON) | `POST /customers` with JSON body |
 | `header` | HTTP header | `X-Customer-ID: 123` |
 
+A `header` field is read from the request's headers, matched case-insensitively (`field-name: X-Tenant`
+accepts `x-tenant: acme`), on GET and on write methods alike. Only the header counts: a query-string or
+body parameter of the same name does **not** satisfy a `header` field, and a missing required header is a
+`400 Required field is missing`. In the template the value is `params.<field-name>` as written in the
+config.
+
 ### 4.3 Default Values
 
 Default values are used when a parameter is not provided:
 
 ```yaml
 request:
-  - field-name: limit
+  - field-name: days
     field-in: query
-    default: "100"
+    default: "30"
     validators:
       - type: int
         min: 1
-        max: 1000
+        max: 365
 
   - field-name: sort_order
     field-in: query
@@ -1142,6 +1348,7 @@ request:
 ```
 
 **Notes:**
+- Do not declare `limit` or `offset`: on a paginated endpoint (the default) they are reserved for pagination (§3)
 - Defaults are always strings in YAML; validators handle type conversion
 - Defaults are applied before validation
 
@@ -1181,7 +1388,7 @@ Validates string values with optional pattern and length constraints.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `type` | string | - | Must be `string` |
-| `regex` | string | - | Regex pattern (full match required) |
+| `regex` | string | - | Regex pattern (full match required). `pattern` is accepted as an alias; if both are given, `regex` wins |
 | `min` | integer | - | Minimum string length |
 | `max` | integer | - | Maximum string length |
 | `preventSqlInjection` | boolean | `true` | Enable SQL injection prevention |
@@ -1204,7 +1411,7 @@ Validates against a list of allowed values.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `type` | string | - | Must be `enum` |
-| `allowedValues` | array[string] | **required** | List of valid values |
+| `allowedValues` | array[string] | **required** | List of valid values. `values` is accepted as an alias; if both are given, `allowedValues` wins |
 | `preventSqlInjection` | boolean | `true` | Enable SQL injection prevention |
 
 **Example:**
@@ -1294,21 +1501,59 @@ validators:
 `1`, `0` (any case). `type: integer` is an alias of `int`. A value that does not match is rejected with
 HTTP 400 before any SQL is rendered.
 
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `min` | number | - (no bound) | Smallest allowed value, inclusive (`0.5` is a valid bound) |
+| `max` | number | - (no bound) | Largest allowed value, inclusive |
+
 ```yaml
 validators:
   - type: number
+    min: 0
+    max: 99.99
 ```
+
+Out of range: `Number is less than the minimum allowed value (min 0)` /
+`Number is greater than the maximum allowed value (max 99.99)`. MCP `tools/list` and `/doc.yaml` emit
+`minimum`/`maximum` only for a bound that is set.
+
+A JSON body number reaches the validators as the text the client sent: `9.99` stays `9.99`, and an
+`int` validator rejects `301.7` (`Invalid integer value`) and `5.0`. Before, the fraction was dropped.
+
+Range errors name the limit: `Integer is greater than the maximum allowed value (max 1000)`,
+`String is shorter than the minimum allowed length (min 3)`, `Date is after the maximum allowed date
+(max 2025-12-31)`, and likewise for the other bounds.
 
 ### 5.9 The SQL-injection screen is a safety net, not the defence
 
 Every string-like field (and any field without a bound type) is screened for SQL keywords, comment markers
 and, when the value contains a single quote, SQL-shaped tokens next to it (operators, `or`/`and`/`like`, a
 parenthesis, ...) after collapsing all whitespace. That is a heuristic: it can be evaded by a payload it
-does not know. **Use `{{ params.x }}` (double braces): flAPI binds it as a prepared-statement parameter, so
-the value can never change the SQL.** `{{{ params.x }}}` interpolates the value as text; reserve it for
-identifiers and fragments you validate with an `enum` or a strict `regex`. Set `preventSqlInjection: false`
-on a field only when it is used exclusively through `{{ }}` and legitimately contains such characters
-(e.g. a free-text name with an apostrophe and parentheses).
+does not know. **A bare `{{ params.x }}` (double braces, no quotes) is bound as a prepared-statement
+parameter, so the value can never change the SQL — but only when all of these hold**
+(`src/prepared_template_rewriter.cpp`, `src/sql_parameter_classifier.cpp`):
+
+- the reference is **outside** every `{{#...}}` / `{{^...}}` section. Inside a section it is rendered as
+  text (HTML-escaped, unquoted), exactly like any other Mustache value;
+- the field is declared under `request:` and has a validator whose `type` is one of `int`/`integer`,
+  `number`/`float`/`double`, `boolean`/`bool`, `date`, `time`, `string`, `uuid`, `email` or `enum`. A
+  field without such a validator is rendered as text;
+- the reference is **not** inside a SQL string literal. flAPI replaces the tag with `?` wherever it
+  stands, so `'{{ params.x }}'` becomes the literal `'?'`, not a placeholder, and the request fails with
+  `500` (the server log, under the response's `request_id`, says `Failed to bind parameter`). Write `WHERE name = {{ params.name }}`, without quotes; the bound value
+  is typed (`VARCHAR` for string-like validators), so no quotes are needed.
+
+```sql
+-- bound: outside a section, typed field, no quotes
+WHERE name = {{ params.name }}
+-- NOT bound: inside a section; quote it with triple braces and rely on the validator
+{{#params.city}} AND city = '{{{ params.city }}}' {{/params.city}}
+```
+
+`{{{ params.x }}}` always interpolates the value as text; reserve it for identifiers and fragments you
+validate with an `enum` or a strict `regex`, and for optional filters inside sections. Set
+`preventSqlInjection: false` on a field only when every reference to it is a bound `{{ }}` and it
+legitimately contains such characters (e.g. a free-text name with an apostrophe and parentheses).
 
 > **Implementation:** `src/request_validator.cpp` | **Tests:** `test/cpp/request_validator_test.cpp`, `test/integration/test_customers.tavern.yaml`, `test/integration/test_validator_hardening.py`
 
@@ -1326,7 +1571,7 @@ DuckLake caching enables snapshot-based query result caching with automatic refr
 | `cache.table` | string | **required** | Cache table name |
 | `cache.schema` | string | `"cache"` | DuckDB schema name |
 | `cache.schedule` | string | - | Refresh schedule (e.g., `5m`, `1h`, `30s`) |
-| `cache.template-file` | string | - | Custom cache refresh SQL template |
+| `cache.template-file` | string | - | Cache populate SQL template. Without it the endpoint's `template-source` is materialised with a full refresh (startup warns) |
 | `cache.warmup` | string | - | Overrides `ducklake.warmup` for this endpoint: `always`, `if-empty` or `never` |
 
 **Schedule Format:**
@@ -1366,13 +1611,47 @@ Content-Type: application/json
 }
 ```
 
-If the **first build** fails, the endpoint continues to return `503` (without the failure detail, which
-is only in the server log). This is intentional: a cached endpoint must never return `200` with empty or
-partial results from a half-built cache. A failing **refresh** of a cache that was already built does not
-take the endpoint offline: it keeps serving the last snapshot (see `/health`: `stale`).
+If the **first build** fails, the endpoint keeps returning `503` with `Retry-After: 5`, now saying so:
+
+```json
+{
+  "error": "cache_build_failed",
+  "message": "Cache for this endpoint failed to build",
+  "table": "customers_cache"
+}
+```
+
+The failure detail is only in the server log, logged once. This is intentional: a cached endpoint must
+never return `200` with empty or partial results from a half-built cache. A failing **refresh** of a cache
+that was already built does not take the endpoint offline: it keeps serving the last snapshot (see
+`/health`: `stale`). That includes a restart with `warmup: always` whose rebuild fails while the table
+from the previous run still exists.
+
+**The populate template must build the table.** A cache template whose statement is a bare `SELECT` is
+refused before it runs (`cache template must write {{cache.catalog}}.{{cache.schema}}.{{cache.table}} …
+statement N of the template is a bare SELECT, which builds nothing`; a SELECT before the last statement,
+e.g. a guard, is refused with `statement N of M is a bare SELECT; its result is discarded. Wrap a check in
+CREATE OR REPLACE TEMP TABLE _chk AS SELECT ...`). After the script has run, the
+cache table must exist; if it does not, the refresh fails and is rolled back. Write a
+`CREATE OR REPLACE TABLE … AS SELECT …`, an `INSERT INTO …` or a `MERGE INTO …`.
+
+Without `cache.template-file` the endpoint's `template-source` is the populate SQL. If it renders to a single
+`SELECT` it is materialised as `CREATE OR REPLACE TABLE <catalog>.<schema>.<table> AS <select>` - a full
+refresh every time, whatever `primary-key`/`cursor` imply (audited as `full`) - and startup warns
+`cache on <endpoint> has no template-file: ...`. The bare-`SELECT` refusal applies only to an explicit
+`template-file`.
+
+Shared tables (several endpoints with the same `cache.table`) are warmed once, not once per endpoint.
+
+**Full rebuild.** `POST /api/v1/_config/endpoints/{slug}/cache/refresh?full=true`,
+`flapi cache refresh --full` and `flapii cache refresh <path> --full` erase the incremental watermark
+**and** drop the cache table (`DROP TABLE IF EXISTS`) in the same transaction, so the template's full-load
+branch rebuilds it from scratch — an append cache is rebuilt, not appended to twice. A template that
+manages its own `BEGIN`/`COMMIT` only gets the watermark cleared (a warning says so).
 
 When warm-up is skipped (`warmup: never`, or `read-only`) and the cache table does not exist, the
-endpoint returns `503` with `"error": "cache_not_built"` until a refresh builds it.
+endpoint returns `503` with `"error": "cache_not_built"` until a refresh builds it. On a read-only
+replica, the writer's refresh counts: the replica notices the new table within about 5 s.
 
 `cache.schedule` must be `<positive number>[s|m|h|d]` (at most 10 years); anything else stops startup.
 
@@ -1437,8 +1716,14 @@ cache:
 |-----------|------|---------|-------------|
 | `cache.retention.keep-last-snapshots` | integer | - | Number of snapshots to keep |
 | `cache.retention.max-snapshot-age` | string | - | Maximum snapshot age (e.g., `7d`, `2h`) |
-| `cache.rollback-window` | string | - | Time window for rollback capability |
-| `cache.delete-handling` | string | - | Delete mode: `soft` or `hard` |
+
+Without its own `retention:` block a cache uses `ducklake.retention`; with one, the endpoint's block
+replaces the global one entirely. Expired snapshots' data files are deleted from storage afterwards.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `cache.rollback-window` | string | - | **Deprecated, no effect.** Parsed but never read; startup logs a warning. Use DuckLake time travel over retained snapshots instead. |
+| `cache.delete-handling` | string | - | **Deprecated, no effect.** Parsed but never read; startup logs a warning. Handle deletes in the cache template (see [Deletes in merge mode](guides/caching.md#deletes-in-merge-mode)). |
 
 **Example:**
 
@@ -1454,8 +1739,6 @@ cache:
   retention:
     keep-last-snapshots: 5
     max-snapshot-age: 14d
-  rollback-window: 2d
-  delete-handling: soft
 ```
 
 ### 6.5 Cache Template Variables
@@ -1468,8 +1751,8 @@ Special variables available in cache-enabled SQL templates:
 | `{{cache.schema}}` | Cache schema name |
 | `{{cache.catalog}}` | DuckLake catalog alias |
 | `{{cache.previousSnapshotTimestamp}}` | The watermark for an incremental refresh. With a `cursor:` configured it is `max(<cursor column>)` over the rows actually cached; without one it falls back to the commit timestamp of this table's last completed refresh. |
-| `{{cache.snapshotTimestamp}}` | Commit time of this table's last completed refresh. **Not** the same value as `previousSnapshotTimestamp` when a `cursor:` is configured — see below. Do not use it as an incremental watermark. |
-| `{{cache.previousSnapshotId}}` | Snapshot id of that refresh. Absent — along with `previousSnapshotTimestamp` — when a `cursor:` is configured but no watermark can be read (a new or empty cache table), so a template guarded on either renders its full-load branch. |
+| `{{cache.snapshotTimestamp}}` / `{{cache.snapshotId}}` | Commit time (UTC) and id of the newest snapshot that wrote this table before this refresh, i.e. its last refresh that changed rows (a 0-row refresh writes none). Read before this refresh writes anything, so it is never this refresh's own snapshot. **Not** the same value as `previousSnapshotTimestamp` when a `cursor:` is configured — see below. Do not use it as an incremental watermark. Kept with `--full`. |
+| `{{cache.previousSnapshotId}}` | The same snapshot id. Absent for a table no snapshot has touched yet, and with `--full`. It is **kept** when a `cursor:` is configured but no watermark can be read (an empty cache table, a value that does not match `cursor.type`): there only `previousSnapshotTimestamp` is erased, so guard the full-load branch on `{{^cache.previousSnapshotTimestamp}}`. |
 
 > `{{cache.currentSnapshotTimestamp}}` appeared in an earlier version of this
 > table and has never existed — the implemented name is
@@ -1527,7 +1810,7 @@ Special variables available in cache-enabled SQL templates:
 INSERT INTO {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
 SELECT * FROM source_table
 {{#cache.previousSnapshotTimestamp}}
-WHERE updated_at > TIMESTAMP '{{cache.previousSnapshotTimestamp}}'
+WHERE updated_at > TIMESTAMP '{{{cache.previousSnapshotTimestamp}}}'
 {{/cache.previousSnapshotTimestamp}}
 ```
 
@@ -1537,7 +1820,28 @@ WHERE updated_at > TIMESTAMP '{{cache.previousSnapshotTimestamp}}'
 
 ## 7. Authentication
 
-Authentication can be configured globally (in flapi.yaml) or per-endpoint (in endpoint YAML).
+Authentication can be configured globally (in flapi.yaml) or per-endpoint (in endpoint YAML). A global
+block applies to every endpoint without its own `auth:` block; an endpoint's block replaces it, and
+`auth: {enabled: false}` opts an endpoint out (§2.7).
+
+**Roles.** Every method below accepts `auth.roles`, a list of role names. A caller who authenticates but
+holds none of them gets **`403`** `{"error":"Forbidden","message":"The authenticated principal does not hold any role this endpoint requires."}`;
+an unauthenticated caller gets `401`. An empty or missing `roles` list admits any authenticated caller.
+Basic-auth users get their roles from `users[].roles`; JWT/OIDC callers from the token's roles claim.
+
+```yaml
+auth:
+  enabled: true
+  type: basic
+  roles: [admin]          # reader below authenticates, then gets 403
+  users:
+    - username: admin
+      password: '{{env.ADMIN_PASSWORD}}'
+      roles: [admin]
+    - username: reader
+      password: '{{env.READER_PASSWORD}}'
+      roles: [read]
+```
 
 ### 7.1 Basic Authentication
 
@@ -1574,7 +1878,7 @@ JSON Web Token authentication.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `auth.enabled` | boolean | Enable authentication |
-| `auth.type` | string | Must be `jwt` |
+| `auth.type` | string | `jwt` — an alias of `bearer` (§7.3); both behave identically |
 | `auth.jwt-secret` | string | Secret key for JWT validation |
 | `auth.jwt-issuer` | string | Expected issuer claim |
 
@@ -1590,7 +1894,7 @@ auth:
 
 ### 7.3 Bearer Authentication
 
-Bearer token authentication (similar to JWT).
+Bearer token authentication with an HS256-signed JWT. `type: jwt` is the same method under another name.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -1615,10 +1919,13 @@ OpenID Connect authentication with external identity providers.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `auth.oidc.issuer-url` | string | **required** | OIDC provider URL |
+| `auth.oidc.issuer-url` | string | preset / **required** for `generic` | OIDC provider URL. May contain `{tenant}`, `{realm}`, `{domain}` placeholders |
 | `auth.oidc.client-id` | string | **required** | OAuth client ID |
 | `auth.oidc.client-secret` | string | - | OAuth client secret |
-| `auth.oidc.provider-type` | string | `generic` | Provider: `google`, `microsoft`, `keycloak`, `generic` |
+| `auth.oidc.provider-type` | string | `generic` | Provider: `google`, `microsoft` (aliases `azure`, `azure-ad`, `entra`), `keycloak`, `auth0`, `okta`, `github`, `generic` |
+| `auth.oidc.tenant-id` | string | - | Substituted for `{tenant}` in `issuer-url` (alias key `tenant`). Microsoft's default issuer is `https://login.microsoftonline.com/{tenant}/v2.0` |
+| `auth.oidc.realm` | string | - | Substituted for `{realm}`. Keycloak's default issuer is `https://{domain}/realms/{realm}` |
+| `auth.oidc.domain` | string | - | Substituted for `{domain}` (Keycloak host, Auth0/Okta tenant name) |
 | `auth.oidc.allowed-audiences` | array[string] | - | Acceptable `aud` claims |
 | `auth.oidc.verify-expiration` | boolean | `true` | Verify token expiration |
 | `auth.oidc.clock-skew-seconds` | integer | `300` | Allowed clock skew |
@@ -1639,15 +1946,30 @@ auth:
   enabled: true
   type: oidc
   oidc:
-    issuer-url: https://login.microsoftonline.com/tenant-id/v2.0
+    provider-type: microsoft        # or azure / entra
+    tenant-id: '{{env.AZURE_TENANT_ID}}'
     client-id: '{{env.AZURE_CLIENT_ID}}'
     client-secret: '{{env.AZURE_CLIENT_SECRET}}'
-    provider-type: microsoft
     allowed-audiences:
       - api://my-api
     roles-claim: roles
+```
+
+```yaml
+# Keycloak: issuer becomes https://kc.example.com/realms/acme
+auth:
+  enabled: true
+  type: oidc
+  oidc:
+    provider-type: keycloak
+    domain: kc.example.com
+    realm: acme
+    client-id: my-api
     role-claim-path: realm_access.roles
 ```
+
+A placeholder left in `issuer-url` after substitution stops startup with an error naming the key to set,
+e.g. `'issuer-url' (https://login.microsoftonline.com/{tenant}/v2.0) still contains the {tenant} placeholder. Set tenant-id in the oidc block, or write the provider's real issuer URL into issuer-url.`
 
 ### 7.5 AWS Secrets Manager
 
@@ -1693,7 +2015,14 @@ Read operations (queries) are the default for `GET`, `HEAD`, and `OPTIONS` metho
 
 ### 8.2 Write Operations
 
-Write operations are auto-detected for `POST`, `PUT`, `PATCH`, and `DELETE` methods.
+Write operations are auto-detected for `POST`, `PUT`, `PATCH`, and `DELETE` methods. All four run the
+write path: parameters are extracted and validated, the template is rendered and executed, and the
+response is `200 {"rows_affected": n}` (or the `RETURNING` rows with `returns-data: true`). `n` is the number
+of rows changed - DuckDB's count, summed over the template's statements; for a `RETURNING` statement, the rows
+it returned - so an `UPDATE` of five rows answers 5 and a `DELETE` that matched nothing answers 0. A `DELETE`
+endpoint is no different — its template is the `DELETE FROM …` statement, and as an MCP tool it is a write
+too (cache maintenance after it, write result). With `returns-data: true` the body always has `data`:
+`[]` when the `RETURNING` matched no row.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -1716,9 +2045,16 @@ operation:
 
 # Additional cache settings for write endpoints
 cache:
-  invalidate-on-write: true   # Invalidate cache after write
-  refresh-on-write: false     # Immediately refresh cache after write
+  invalidate-on-write: true   # refresh the cache synchronously, before the response
 ```
+
+| Key | When the cache is refreshed |
+|-----|------------------------------|
+| `cache.invalidate-on-write: true` | **Synchronously**, after the write and before the response is sent. The caller's next read sees the change |
+| `cache.refresh-on-write: true` | **Asynchronously**, after the response is sent. Bursts of writes are coalesced into one refresh per endpoint |
+| both | Synchronous only (as `invalidate-on-write`) |
+
+MCP tool calls that write follow the same rules.
 
 > **Implementation:** `src/request_handler.cpp`, `src/query_executor.cpp` | **Tests:** `test/integration/test_write_operations.tavern.yaml`
 
@@ -1735,8 +2071,12 @@ SQL templates use Mustache syntax for dynamic query generation.
 ```sql
 SELECT * FROM table
 WHERE id = {{ params.id }}        -- with `validators: [{type: int}]` → bound as int64
-LIMIT {{ params.limit }}
 ```
+
+The placeholder is only used **outside** `{{#...}}`/`{{^...}}` sections and **outside** SQL string
+literals: inside a section the value is rendered as text, and `'{{ params.x }}'` turns into the literal
+`'?'` (the request then fails with `500`; the server log says `Failed to bind parameter`). See
+[§5.9](#59-the-sql-injection-screen-is-a-safety-net-not-the-defence).
 
 **Triple Braces `{{{ }}}`** - Renders the raw value with no HTML entity escaping; **always** flows through Mustache, never through the prepared path. Use inside single-quoted SQL string literals, inside `LIKE` patterns, or anywhere the value participates in the SQL text itself:
 
@@ -1781,7 +2121,9 @@ WHERE 1=1
 **Inverted Sections (if not exists or falsy):**
 
 ```sql
-LIMIT {{#params.limit}}{{ params.limit }}{{/params.limit}}{{^params.limit}}100{{/params.limit}}
+{{^params.status}}
+  AND status <> 'archived'
+{{/params.status}}
 ```
 
 ### 9.4 Best Practices
@@ -1814,9 +2156,12 @@ Use triple braces (`{{{ params.X }}}`) when the value participates in the SQL te
 **3. Provide Default Values:**
 
 ```sql
-ORDER BY created_at {{#params.order}}{{ params.order }}{{/params.order}}{{^params.order}}DESC{{/params.order}}
-LIMIT {{#params.limit}}{{ params.limit }}{{/params.limit}}{{^params.limit}}100{{/params.limit}}
+ORDER BY created_at {{#params.order}}{{{ params.order }}}{{/params.order}}{{^params.order}}DESC{{/params.order}}
 ```
+
+Do **not** do this for `limit`/`offset`. With `with-pagination: true` (the default) they are reserved:
+flAPI wraps the query and applies `?limit=`/`?offset=` itself (100 rows per page by default). A template
+`LIMIT {{ params.limit }}` runs before flAPI's offset, so `?limit=2&offset=2` returns `"data": []`.
 
 **4. Use Connection Properties for File Paths:**
 
@@ -1881,7 +2226,6 @@ template:
 # Project metadata
 project-name: Customer API
 project-description: REST and MCP API for customer data
-server-name: api.example.com
 http-port: 8080
 
 # Template configuration
@@ -1899,7 +2243,6 @@ connections:
     init: |
       INSTALL postgres;
       LOAD postgres;
-    log-queries: false
     properties:
       host: '{{env.DB_HOST}}'
       port: '5432'
@@ -1927,9 +2270,9 @@ ducklake:
   retention:
     keep-last-snapshots: 10
     max-snapshot-age: 30d
+  # The scheduler is on by default; scan-interval only overrides how often it checks.
   scheduler:
-    enabled: true
-    scan-interval: 5m
+    scan-interval: 1m
 
 # MCP server (shares the HTTP port)
 mcp:
@@ -2063,8 +2406,8 @@ flAPI supports both hyphenated and camelCase naming for backward compatibility:
 | `prevent-sql-injection` | `preventSqlInjection` |
 | `allowed-values` | `allowedValues` |
 | `returns-data` | `returnsData` |
-| `rollback-window` | `rollbackWindow` |
-| `delete-handling` | `deleteHandling` |
+| `rollback-window` (deprecated, no effect) | `rollbackWindow` |
+| `delete-handling` (deprecated, no effect) | `deleteHandling` |
 
 **Recommendation:** Use hyphenated naming for consistency.
 
@@ -2076,14 +2419,18 @@ flAPI supports both hyphenated and camelCase naming for backward compatibility:
 |---------------|---------------|
 | `http-port` | `8080` |
 | `http-host` | `"0.0.0.0"` |
-| `server-name` | `"localhost"` |
 | `duckdb.db_path` | `:memory:` |
 | `duckdb.access_mode` | `READ_WRITE` |
 | `ducklake.alias` | `"cache"` |
 | `ducklake.enabled` | `false` |
+| `ducklake.scheduler.enabled` | `true` |
+| `ducklake.scheduler.scan-interval` | `min(heartbeat.worker-interval, shortest cache.schedule)`, at least 1 s |
+| `ducklake.compaction.enabled` | `false` |
 | `mcp.enabled` | `true` |
 | `mcp.auth.enabled` | `false` |
-| `auth.enabled` | `false` |
+| `auth.enabled` | `true` when the `auth:` block configures authentication, else `false` |
+| `auth.roles` | `[]` (any authenticated caller) |
+| `project-description` | `""` |
 | `rate_limit.enabled` | `false` |
 | `rate_limit.max` | `100` |
 | `rate_limit.interval` | `60` |

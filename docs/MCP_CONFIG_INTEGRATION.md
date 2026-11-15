@@ -48,7 +48,7 @@ The ConfigToolAdapter and MCP configuration tools are **only initialized when th
 ```bash
 ./flapi --config-service
 ```
-Result: ConfigToolAdapter is instantiated and 18 config tools are available via MCP (`tools/list` includes `flapi_*` tools)
+Result: ConfigToolAdapter is instantiated and 20 config tools are available via MCP (`tools/list` includes `flapi_*` tools)
 
 **Server With Config Service Disabled (Default):**
 ```bash
@@ -100,9 +100,9 @@ The MCP client discovers available tools and calls a specific configuration tool
 }
 ```
 
-`flapi_create_endpoint` writes `<slug>.yaml` and (if absent) a placeholder `<template-source>` file
-under the templates directory, so `flapi_update_template`, `flapi_reload_endpoint` and a restart all
-find the endpoint. `template-source` defaults to `<slug>.sql` and must stay inside the templates
+`flapi_create_endpoint` writes a YAML named after the url-path (`/orders` -> `orders.yaml`, `/a/b` ->
+`a_b.yaml`) and (if absent) a placeholder `<template-source>` file under the templates directory, so `flapi_update_template`, `flapi_reload_endpoint` and a restart all
+find the endpoint. `template-source` defaults to `<file name>.sql` and must stay inside the templates
 directory; `connection` must name a connection from the configuration. `flapi_delete_endpoint` removes
 the endpoint's YAML file (never its SQL template), so a deleted endpoint does not return on restart.
 
@@ -195,84 +195,34 @@ The ConfigToolResult is converted to JSON-RPC format:
 
 ### Authentication Architecture
 
+Every `flapi_*` config tool, read or write, requires the config-service token, exactly like the REST
+config service:
+
 ```
-MCP Request with Auth Token
+MCP tools/call flapi_*
         ↓
-executeTool() checks auth requirement
+token = X-Config-Token header, else Authorization: Bearer <token>
         ↓
-    ├─ Auth NOT required → Execute tool
-    │
-    └─ Auth REQUIRED:
-        ├─ Token missing? → Error -32001
-        ├─ validateAuthToken():
-        │   ├─ Check token non-empty (8+ chars)
-        │   ├─ Check token not too long (4096 max)
-        │   ├─ Parse scheme (Bearer, Basic, Token, API-Key)
-        │   ├─ Validate scheme recognized
-        │   └─ Validate token value format
-        │
-        └─ Token valid? → Execute tool
-           Invalid? → Error -32001
+    ├─ no token        → "Authentication required for tool: <name>"
+    ├─ token mismatch  → "Authentication validation failed: Invalid authentication token"
+    └─ token matches   → execute the tool
 ```
 
-### Authentication Token Formats
+The token is the one set with `--config-service-token` or `FLAPI_CONFIG_SERVICE_TOKEN`. Any
+non-empty token is accepted as the configured value (there is no format rule); startup warns when it
+is shorter than 16 characters. Failures come back as JSON-RPC error `-32603` with the message above.
 
-**Bearer Token (JWT)**
+```http
+X-Config-Token: <token>
 ```
-Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+
+or:
+
+```http
+Authorization: Bearer <token>
 ```
-- Validation: Non-empty, Base64 characters only
 
-**Basic Auth (Credentials)**
-```
-Authorization: Basic dXNlcm5hbWU6cGFzc3dvcmQ=
-```
-- Validation: Non-empty, Base64 characters only
-
-**Token Auth (API Key)**
-```
-Authorization: Token abc123def456
-```
-- Validation: Non-empty, alphanumeric + hyphens/underscores
-
-**API Key**
-```
-Authorization: API-Key my-secret-key-12345
-```
-- Validation: Non-empty, alphanumeric + hyphens/underscores
-
-### Authentication Requirements by Tool
-
-**No Authentication Required:**
-- All Phase 1 (Discovery) tools
-- All Phase 2 read operations (get_template)
-- All Phase 3 read operations (list_endpoints, get_endpoint)
-- All Phase 4 read operations (get_cache_status, get_cache_audit)
-
-**Authentication Required:**
-- Phase 2 write: flapi_update_template
-- Phase 3 write: flapi_create_endpoint, flapi_update_endpoint, flapi_delete_endpoint, flapi_reload_endpoint
-- Phase 4 write: flapi_refresh_cache, flapi_run_cache_gc
-
-### Integration with ConfigManager Auth
-
-The ConfigToolAdapter enforces its own token validation independently of ConfigManager. The token is validated for format and structure but not cryptographically verified (that's typically done by an auth middleware at a higher level).
-
-For production deployments, integrate with AuthMiddleware:
-
-```cpp
-// In MCPRouteHandlers::before_handle
-AuthMiddleware::context auth_context;
-auth_middleware.before_handle(request, response, auth_context);
-
-// Use auth_context in MCP handler
-if (!auth_context.authenticated) {
-  return error(-32001, "Authentication required");
-}
-
-// Pass authenticated token to ConfigToolAdapter
-config_tool_adapter_->executeTool(tool_name, args, auth_context.auth_token);
-```
+Endpoint-backed MCP tools are separate: they use the `mcp.auth` block of `flapi.yaml`, not this token.
 
 ---
 
@@ -306,7 +256,7 @@ Error message contains JSON object with:
 | -32601 | Tool/handler not found | Check tool name spelling |
 | -32602 | Invalid parameters | Validate required params, types |
 | -32603 | Internal server error | Check logs, verify resource state |
-| -32001 | Auth required/invalid | Provide valid authentication token |
+| -32603 | Config tool auth required/invalid ("Authentication required for tool", "Authentication validation failed") | Send the config-service token (`X-Config-Token` or `Authorization: Bearer`) |
 
 ### Error Handling in Tool Implementation
 
@@ -590,8 +540,8 @@ if err != nil {
 
 // Now safe to update
 result, err := client.CallTool("flapi_update_endpoint", map[string]interface{}{
-  "path": "customers",
-  "method": "POST",
+  "path": "/customers",
+  "config": map[string]interface{}{"template-source": "customers_v2.sql"},
 })
 ```
 
@@ -714,9 +664,9 @@ Typical tool execution latency:
 
 1. **Parameter injection**: All user input validated via `validateArguments()` and `extractStringParam()`
 2. **Path traversal**: Protected by `isValidEndpointPath()` checking for "..", backslashes, URL encoding
-3. **Token validation**: Format checking prevents malformed tokens
+3. **Token validation**: the token must equal the configured config-service token (every `flapi_*` tool)
 4. **Exception disclosure**: Error messages include context but not stack traces
-5. **Configuration modification**: Auth required for all write operations
+5. **Configuration access**: the token is required for every config tool, reads included
 
 ### Best Practices
 

@@ -16,23 +16,23 @@ url-path: /customers/
 # Include shared rate limiting
 {{include:rate-limit from customer-common.yaml}}
 
-# Include shared connection and template
+# Include shared connection. The template is REST-specific: it reads the
+# cache table the cache block below builds, not the parquet file.
 {{include:connection from customer-common.yaml}}
-{{include:template-source from customer-common.yaml}}
+template-source: customers-rest.sql
 
 # REST-specific configuration
 with-pagination: true
 
-# Optional: REST-specific DuckLake caching
+# REST-specific DuckLake caching. customers_cache.sql builds the table
+# (CREATE OR REPLACE TABLE ... AS SELECT: a full refresh, since neither
+# primary-key nor cursor is declared) and customers-rest.sql serves from it.
 cache:
   enabled: true
   table: customers_rest_cache
   schema: analytics
   schedule: 5m
-  primary-key: [id]
-  cursor:
-    column: registration_date
-    type: date
+  template-file: customers_cache.sql
   retention:
     keep-last-snapshots: 3
     max-snapshot-age: 7d

@@ -812,3 +812,41 @@ TEST_CASE("an explicit setting overrides the heuristic both ways",
         REQUIRE_FALSE(conn.serialisesAccess());
     }
 }
+
+TEST_CASE("Global rate_limit block needs only the keys it uses", "[config_manager][rate_limit]") {
+    // `rate_limit: {enabled: false}` used to stop startup with a bare
+    // "bad conversion": max and interval were read unconditionally.
+    SECTION("disabled without max/interval loads with defaults") {
+        flapi::test::TempTestConfig temp(R"(
+project-name: rl
+project-description: rl
+template:
+  path: ./sqls
+rate_limit:
+  enabled: false
+)", "global_rate_limit_disabled");
+        auto mgr = temp.createConfigManager();
+        const auto& rl = mgr->getRateLimitConfig();
+        REQUIRE_FALSE(rl.enabled);
+        REQUIRE(rl.max == 100);
+        REQUIRE(rl.interval == 60);
+    }
+
+    SECTION("a malformed value names its key") {
+        flapi::test::TempTestConfig temp(R"(
+project-name: rl
+project-description: rl
+template:
+  path: ./sqls
+rate_limit:
+  enabled: true
+  max: lots
+)", "global_rate_limit_bad");
+        try {
+            temp.createConfigManager();
+            FAIL("expected a configuration error");
+        } catch (const std::exception& e) {
+            REQUIRE(std::string(e.what()).find("max") != std::string::npos);
+        }
+    }
+}

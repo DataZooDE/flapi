@@ -156,17 +156,16 @@ connection-prod:
 cache:
   enabled: true
   table: customers_cache
-  schema: analytics  # Optional: defaults to 'main'
+  schema: analytics  # Optional: defaults to 'cache'
   schedule: 5m
-  primary-key: [id]  # Primary key for incremental merge operations
-  cursor:
-    column: registration_date  # Cursor column for incremental append
-    type: date
-  rollback-window: 2d  # Allow rollback within 2 days
+  # primary-key + cursor = incremental merge; cursor alone = append; neither = full.
+  # customers_cache.sql is a full rebuild, so neither is declared here; an
+  # incremental mode needs a template-file with an incremental branch
+  # (docs/guides/caching.md).
   retention:
     keep-last-snapshots: 5
     max-snapshot-age: 14d
-  delete-handling: soft  # How to handle deleted records
+  template-file: customers_cache.sql  # The SQL that populates the cache
 
 # High-Performance DuckLake Caching
 cache-performance:
@@ -174,15 +173,11 @@ cache-performance:
   table: customers_perf_cache
   schema: analytics
   schedule: 1m
-  primary-key: [id]
-  cursor:
-    column: registration_date
-    type: date
+  # No cursor / primary-key: a full refresh (see customers_cache.sql)
   retention:
     keep-last-snapshots: 10
     max-snapshot-age: 7d
-  delete-handling: hard
-  template-file: customers_cache.sql  # Optional: custom cache template
+  template-file: customers_cache.sql  # The SQL that populates the cache
 
 # Development Caching (disabled for testing)
 cache-dev:

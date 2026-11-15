@@ -21,6 +21,8 @@ stages:
         content-type: "application/json"
       json:
         rows_affected: 1
+        # returns-data: true always answers `data`, [] when nothing came back
+        data: []
 
   - name: Test PUT endpoint updates record
     request:

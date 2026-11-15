@@ -230,26 +230,19 @@ bool CredentialManager::configureDuckDB() {
         }
     }
 
-    // Configure GCS if credentials are available
-    if (_gcs_credentials.has_value()) {
+    // GCS: nothing is applied to DuckDB, and the log says so. DuckDB's httpfs
+    // reads gs:// through Google's S3-interoperability API, which takes an
+    // HMAC key pair (a DuckDB secret of TYPE gcs); it does not read a
+    // service-account key file. GOOGLE_APPLICATION_CREDENTIALS therefore has
+    // no effect on gs:// reads - and startup used to log "GCS credentials
+    // configured", which sent operators looking everywhere but here.
+    if (_gcs_credentials.has_value() && _gcs_referenced) {
         const auto& creds = _gcs_credentials.value();
-
-        try {
-            // GCS credentials are typically handled via GOOGLE_APPLICATION_CREDENTIALS
-            // DuckDB's httpfs extension will automatically use these
-            // But we can set project ID if available
-            if (!creds.project_id.empty()) {
-                // Note: DuckDB may not have a direct setting for GCS project
-                // The project is typically inferred from credentials
-                CROW_LOG_DEBUG << "GCS project ID: " << creds.project_id;
-            }
-
-            CROW_LOG_INFO << "GCS credentials configured (using environment)";
-        } catch (const std::exception& e) {
-            CROW_LOG_ERROR << "Error configuring GCS credentials: " << e.what();
-            errors += "GCS: " + std::string(e.what()) + "; ";
-            success = false;
-        }
+        CROW_LOG_WARNING << "GCS: " << (creds.key_file.empty() ? "a Google Cloud project" : "GOOGLE_APPLICATION_CREDENTIALS")
+                         << " is set, but DuckDB's httpfs does not use service-account credentials, "
+                            "so gs:// access is NOT configured from it. Create an HMAC key and add "
+                            "`CREATE SECRET (TYPE gcs, KEY_ID '...', SECRET '...')` to a connection's "
+                            "`init` (with the values from {{env.NAME}}).";
     }
 
     // Configure Azure if credentials are available
@@ -302,7 +295,8 @@ void CredentialManager::logCredentialStatus() const {
 
     if (_gcs_credentials.has_value()) {
         const auto& creds = _gcs_credentials.value();
-        CROW_LOG_INFO << "  GCS: configured (type: " << credentialTypeToString(creds.type)
+        CROW_LOG_INFO << "  GCS: detected in the environment, NOT applied to DuckDB (type: "
+                      << credentialTypeToString(creds.type)
                       << ", key_file: " << (creds.key_file.empty() ? "not set" : "****")
                       << ", project: " << (creds.project_id.empty() ? "not set" : creds.project_id)
                       << ")";

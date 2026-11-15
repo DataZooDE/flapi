@@ -20,6 +20,42 @@ Even with tracing disabled, every response carries `X-Request-Id`, and that id
 appears in the audit log and in every application log line emitted while serving
 that request. A support report quoting the header is enough to find the request.
 
+### Runtime metrics
+
+Tracing does not need to be on for these. With the config service enabled
+(`--config-service`), flAPI keeps cheap in-process counters for:
+
+- every endpoint and MCP tool: requests, status classes (or tool failures),
+  `rejected` (401/403 on the route, MCP role denials - not failures, not server
+  errors), and latency p50/p95/p99/max
+- 401/403/429 rejections
+- `503`s from a cache that is not ready yet (`cache_warming`, `cache_build_failed`,
+  `cache_not_built`), counted separately as `503_cache` / `cache_unavailable`,
+  not as server errors
+- every cache: readiness, last refresh mode, status, duration and rows, and the
+  age of the data being served
+
+```bash
+flapii metrics                        # JSON (default); add -o table for tables
+flapii metrics --endpoint /customers  # one endpoint or MCP tool
+curl -s -H "Authorization: Bearer $FLAPI_CONFIG_SERVICE_TOKEN" \
+     "http://localhost:8080/api/v1/_config/metrics?endpoint=/customers"
+```
+
+An agent connected over MCP can read the same document with the
+`flapi_get_metrics` config tool. Counters start at zero when the process starts
+(`requests.since_unix_ms`). Percentiles are estimates: interpolated inside a
+histogram bucket (ten buckets per decade, ~25% wide) and capped at the observed
+max, which is enough to find the slow endpoint but not for exact SLO reporting. Use traces
+for that. Recording a request costs no allocation once its endpoint has been seen
+(`test/cpp/runtime_metrics_test.cpp`). For the field-by-field format, see
+[CONFIG_SERVICE_API_REFERENCE § 2.6](CONFIG_SERVICE_API_REFERENCE.md#get-apiv1_configmetrics).
+
+Cache refreshes are also written durably to the cache audit log
+(`flapii cache audit [path]`), with `duration_ms`, `rows_affected` and
+`snapshot_id` per refresh. Use it to track refresh time over days rather than
+since the last restart.
+
 ## 2. Turning tracing on
 
 ```yaml
@@ -353,7 +389,13 @@ $ curl -i https://flapi.example/customers/42
 HTTP/1.1 500 Internal Server Error
 X-Request-Id: req-9f2c1a7b8e4d5063
 X-Trace-Id:   4bf92f3577b34da6a3ce929d0e0e4736
+
+{"error":"Internal Server Error","message":"The request failed on the server. The details are in the server log under this request id.","request_id":"req-9f2c1a7b8e4d5063"}
 ```
+
+A REST `500` body never contains SQL, file paths or the database error. The
+detail is written to the server log on a line carrying the same `request_id`, so
+`grep req-9f2c1a7b8e4d5063` on the log finds it.
 
 Quote either in a support request. `X-Request-Id` works with tracing disabled;
 `X-Trace-Id` appears only when a span was produced.
@@ -362,7 +404,12 @@ Quote either in a support request. `X-Request-Id` works with tracing disabled;
 
 `trace_id` and `span_id` appear in the audit log and in application log lines
 emitted while serving a request, so a trace can be joined to an audit entry and
-to the log. With `log-format: json` the log is directly ingestible.
+to the log. With `log-format: json` the log is directly ingestible, from the
+first startup line on: lines logged while the configuration is read are held
+and written once it has said which format it wants. Crow's own access line
+(`Response: <conn> <url> <status> ...`) carries the `request_id` too, for
+every outcome: a 200 from an offloaded handler, and a 401/403/429 a middleware
+answered before any handler ran.
 
 ```yaml
 log-level: info
@@ -389,7 +436,9 @@ curl -s -H "Authorization: Bearer $FLAPI_CONFIG_SERVICE_TOKEN" \
                "spans_dropped": 0, "spans_flush_timeouts": 0 },
   "arrow":   { "total_requests": 12, "successful_requests": 12, "failed_requests": 0,
                "total_rows": 48210, "active_streams": 0 },
-  "endpoints": { "count": 18 }
+  "endpoints": { "count": 18 },
+  "requests": { "...": "see Runtime metrics above" },
+  "caches": [ "..." ]
 }
 ```
 

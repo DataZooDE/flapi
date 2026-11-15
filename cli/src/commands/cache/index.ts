@@ -1,8 +1,10 @@
-import type { Command } from 'commander';
+import { Option, type Command } from 'commander';
 import type { CliContext } from '../../lib/types';
 import { Console } from '../../lib/console';
 import { handleError } from '../../lib/errors';
-import { renderJson, renderCacheTable } from '../../lib/render';
+import { renderJson, renderConfigJson, renderCacheTable, renderTable } from '../../lib/render';
+import { cacheAuditRows, describeRefreshResult, refreshQuery } from '../../lib/cacheRender';
+import { applyOutputOverride } from '../../lib/options';
 import { buildEndpointUrl } from '../../lib/url';
 import chalk from 'chalk';
 
@@ -40,7 +42,7 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
         }
 
         if (ctx.config.output === 'json') {
-          renderJson(caches, ctx.config.jsonStyle);
+          renderConfigJson(caches, ctx.config.jsonStyle, 'keyed');
         } else {
           renderCacheTable(caches);
         }
@@ -53,17 +55,18 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
 
   cache
     .command('get <path>')
+    .option('--method <method>', 'HTTP method, when several endpoints share the path (GET + POST /orders)')
     .description('Get cache configuration for endpoint')
-    .action(async (path: string) => {
+    .action(async (path: string, options: { method?: string }) => {
       const spinner = Console.spinner(`Fetching cache config for ${path}...`);
       try {
-        const endpointUrl = buildEndpointUrl(path, 'cache');
+        const endpointUrl = buildEndpointUrl(path, 'cache', options.method);
         const response = await ctx.client.get(endpointUrl);
         spinner.succeed(chalk.green(`✓ Cache config for ${path} retrieved`));
         const cacheConfig = response.data;
 
         if (ctx.config.output === 'json') {
-          renderJson(cacheConfig, ctx.config.jsonStyle);
+          renderConfigJson(cacheConfig, ctx.config.jsonStyle, 'document');
         } else {
           Console.info(chalk.cyan(`\n💾 Cache Configuration: ${path}`));
           Console.info(chalk.gray('═'.repeat(60)));
@@ -87,17 +90,18 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
 
   cache
     .command('update <path>')
+    .option('--method <method>', 'HTTP method, when several endpoints share the path (GET + POST /orders)')
     .description('Update cache configuration')
     .option('-e, --enabled <enabled>', 'Enable/disable caching (true/false)')
     .option('-s, --schedule <duration>', 'Refresh schedule, e.g. 5m, 6h')
     .option('--table <table>', 'Cache table name')
     .option('--schema <schema>', 'Cache schema name')
-    .option('-t, --ttl <ttl>', 'Not supported: flAPI has no TTL; use --schedule', undefined)
+    .option('--ttl <ttl>', 'Not supported: flAPI has no TTL; use --schedule', undefined)
     .option('--max-size <size>', 'Not supported by the server')
     .option('--strategy <strategy>', 'Not supported by the server')
     .option('-f, --file <file>', 'JSON file containing cache configuration')
     .option('--stdin', 'Read cache configuration from stdin')
-    .action(async (path: string, options: {
+    .action(async (path: string, options: { method?: string;
       enabled?: string;
       schedule?: string;
       table?: string;
@@ -176,7 +180,7 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
 
       const spinner = Console.spinner(`Updating cache config for ${path}...`);
       try {
-        const endpointUrl = buildEndpointUrl(path, 'cache');
+        const endpointUrl = buildEndpointUrl(path, 'cache', options.method);
         await ctx.client.put(endpointUrl, cacheConfig);
         spinner.succeed(chalk.green(`✓ Cache config for ${path} updated successfully`));
       } catch (error) {
@@ -188,17 +192,18 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
 
   cache
     .command('template <path>')
+    .option('--method <method>', 'HTTP method, when several endpoints share the path (GET + POST /orders)')
     .description('Get cache template for endpoint')
-    .action(async (path: string) => {
+    .action(async (path: string, options: { method?: string }) => {
       const spinner = Console.spinner(`Fetching cache template for ${path}...`);
       try {
-        const endpointUrl = buildEndpointUrl(path, 'cache/template');
+        const endpointUrl = buildEndpointUrl(path, 'cache/template', options.method);
         const response = await ctx.client.get(endpointUrl);
         spinner.succeed(chalk.green(`✓ Cache template for ${path} retrieved`));
         const template = response.data;
 
         if (ctx.config.output === 'json') {
-          renderJson(template, ctx.config.jsonStyle);
+          renderJson(template);
         } else {
           Console.info(chalk.cyan(`\n📄 Cache Template: ${path}`));
           Console.info(chalk.gray('═'.repeat(60)));
@@ -213,10 +218,11 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
 
   cache
     .command('update-template <path>')
+    .option('--method <method>', 'HTTP method, when several endpoints share the path (GET + POST /orders)')
     .description('Update cache template')
     .option('-f, --file <file>', 'File containing cache template')
     .option('--stdin', 'Read cache template from stdin')
-    .action(async (path: string, options: { file?: string; stdin?: boolean }) => {
+    .action(async (path: string, options: { method?: string; file?: string; stdin?: boolean }) => {
       if (options.file && options.stdin) {
         Console.error('Cannot specify both --file and --stdin');
         process.exitCode = 1;
@@ -245,7 +251,7 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
 
       const spinner = Console.spinner(`Updating cache template for ${path}...`);
       try {
-        const endpointUrl = buildEndpointUrl(path, 'cache/template');
+        const endpointUrl = buildEndpointUrl(path, 'cache/template', options.method);
         await ctx.client.put(endpointUrl, {
           template: templateContent
         });
@@ -259,34 +265,42 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
 
   cache
     .command('refresh <path>')
-    .description('Refresh cache for endpoint')
-    .option('-f, --force', 'Force refresh even if not expired')
-    .action(async (path: string, options: { force?: boolean }) => {
+    .option('--method <method>', 'HTTP method, when several endpoints share the path (GET + POST /orders)')
+    .description('Refresh cache for endpoint (--full: rebuild from scratch, erasing the watermark)')
+    .option('--full', 'Full rebuild: ignore the incremental watermark and repopulate the whole table')
+    // Kept so existing scripts do not break, but hidden: the server never had a
+    // "force" flag (it sent {force:true}, which was ignored). It is a normal
+    // refresh; --full is the one that changes what happens.
+    .addOption(new Option('-f, --force', 'Deprecated: same as a normal refresh').hideHelp())
+    .action(async (path: string, options: { method?: string; full?: boolean; force?: boolean }) => {
+      if (options.force && !options.full) {
+        Console.warn('--force is deprecated and does nothing extra; use --full for a full rebuild');
+      }
       const spinner = Console.spinner(`Refreshing cache for ${path}...`);
       try {
-        const payload: any = {};
-        if (options.force) {
-          payload.force = true;
-        }
-
-        const endpointUrl = buildEndpointUrl(path, 'cache/refresh');
-        const response = await ctx.client.post(endpointUrl, payload);
-        spinner.succeed(chalk.green(`✓ Cache for ${path} refreshed successfully`));
+        const endpointUrl = buildEndpointUrl(path, 'cache/refresh', options.method);
+        const query = refreshQuery(options);
+        const response = await ctx.client.post(endpointUrl, {}, query ? { params: query } : undefined);
         const result = response.data;
+        // Another refresh of the same table (warm-up, the scheduler) was in flight.
+        const alreadyRunning = result && typeof result === 'object' && result.status === 'already_running';
+        if (alreadyRunning) {
+          spinner.warn(chalk.yellow(`A refresh of ${path} is already running; not started again`));
+        } else {
+          spinner.succeed(chalk.green(`✓ Cache for ${path} refreshed successfully`));
+        }
+        const lines = describeRefreshResult(result);
 
         if (ctx.config.output === 'json') {
-          renderJson(result, ctx.config.jsonStyle);
+          // An empty body is not data; say what happened instead of printing "".
+          renderJson(result && typeof result === 'object' ? result : { path, refreshed: true, full: Boolean(options.full) });
         } else {
           Console.info(chalk.cyan(`\n🔄 Cache Refresh: ${path}`));
           Console.info(chalk.gray('═'.repeat(60)));
-          Console.info(chalk.green('✓ Cache refreshed successfully'));
-
-          if (result.entries_cleared !== undefined) {
-            Console.info(chalk.blue(`Entries cleared: ${result.entries_cleared}`));
+          if (!alreadyRunning) {
+            Console.info(chalk.green(options.full ? '✓ Cache fully rebuilt' : '✓ Cache refreshed successfully'));
           }
-          if (result.cache_size !== undefined) {
-            Console.info(chalk.blue(`New cache size: ${result.cache_size}`));
-          }
+          lines.forEach((line) => Console.info(chalk.blue(line)));
         }
       } catch (error) {
         spinner.fail(chalk.red(`✗ Failed to refresh cache for ${path}`));
@@ -297,11 +311,12 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
 
   cache
     .command('gc <path>')
+    .option('--method <method>', 'HTTP method, when several endpoints share the path (GET + POST /orders)')
     .description('Run garbage collection on cache snapshots (DuckLake)')
-    .action(async (path: string) => {
+    .action(async (path: string, options: { method?: string }) => {
       const spinner = Console.spinner(`Running cache GC for ${path}...`);
       try {
-        const endpointUrl = buildEndpointUrl(path, 'cache/gc');
+        const endpointUrl = buildEndpointUrl(path, 'cache/gc', options.method);
         const response = await ctx.client.post(endpointUrl, {});
         spinner.succeed(chalk.green(`✓ Cache GC for ${path} completed`));
 
@@ -309,7 +324,7 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
           Console.info(chalk.cyan(`\n🧹 Cache GC: ${path}`));
           Console.info(chalk.gray('═'.repeat(60)));
         }
-        renderJson(response.data, ctx.config.jsonStyle);
+        renderJson(response.data);
       } catch (error) {
         spinner.fail(chalk.red(`✗ Failed to run cache GC for ${path}`));
         handleError(error, ctx.config);
@@ -318,23 +333,81 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
     });
 
   cache
+    .command('drop-table <table>')
+    .description(
+      'Drop an obsolete cache table ([schema.]table) that no endpoint uses any more, ' +
+        'e.g. after changing cache.schema; its snapshots are expired and its files deleted',
+    )
+    .action(async (table: string) => {
+      const dot = table.indexOf('.');
+      const body = dot < 0 ? { table } : { schema: table.slice(0, dot), table: table.slice(dot + 1) };
+      const spinner = Console.spinner(`Dropping cache table ${table}...`);
+      try {
+        const response = await ctx.client.post('/api/v1/_config/cache/drop-table', body);
+        spinner.succeed(chalk.green(`✓ Dropped cache table ${table}`));
+        renderJson(response.data);
+      } catch (error) {
+        spinner.fail(chalk.red(`✗ Failed to drop cache table ${table}`));
+        handleError(error, ctx.config);
+        process.exitCode = 1;
+      }
+    });
+
+  cache
+    .command('compact [path]')
+    .option('--method <method>', 'HTTP method, when several endpoints on the path have a cache')
+    .description(
+      'Run DuckLake compaction now (merge small files, rewrite delete-heavy ones, delete the replaced files): ' +
+        'the whole catalog, or only the cache table of [path]',
+    )
+    .action(async (path: string | undefined, options: { method?: string }) => {
+      const target = path ? `for ${path}` : 'for the catalog';
+      const body: Record<string, string> = {};
+      if (path) {
+        body.endpoint = path.startsWith('/') ? path : `/${path}`;
+        if (options.method) {
+          body.method = options.method.toUpperCase();
+        }
+      }
+      const spinner = Console.spinner(`Compacting ${target}...`);
+      try {
+        const response = await ctx.client.post('/api/v1/_config/cache/compact', body);
+        spinner.succeed(chalk.green(`✓ Compacted ${target}`));
+        renderJson(response.data);
+      } catch (error) {
+        spinner.fail(chalk.red(`✗ Failed to compact ${target}`));
+        handleError(error, ctx.config);
+        process.exitCode = 1;
+      }
+    });
+
+  cache
     .command('audit [path]')
-    .description('Get cache sync audit log (for one endpoint, or all endpoints if no path given)')
-    .action(async (path?: string) => {
-      const target = path ? `for ${path}` : '(all endpoints)';
+    .option('--method <method>', 'HTTP method, when several endpoints share the path (GET + POST /orders)')
+    .description('Get cache sync audit log (for one endpoint, one cache table with --table, or all)')
+    .option('--table <table>', 'One cache table ([schema.]table), whichever endpoint sharing it refreshed it')
+    .option('--output <format>', 'Output format: json or table')
+    .action(async (path: string | undefined, options: { method?: string; table?: string; output?: 'json' | 'table' }) => {
+      const target = path ? `for ${path}` : options.table ? `for table ${options.table}` : '(all endpoints)';
       const spinner = Console.spinner(`Fetching cache audit log ${target}...`);
       try {
         const url = path
-          ? buildEndpointUrl(path, 'cache/audit')
-          : '/api/v1/_config/cache/audit';
+          ? buildEndpointUrl(path, 'cache/audit', options.method)
+          : options.table
+            ? `/api/v1/_config/cache/audit?table=${encodeURIComponent(options.table)}`
+            : '/api/v1/_config/cache/audit';
         const response = await ctx.client.get(url);
         spinner.succeed(chalk.green(`✓ Cache audit log ${target} retrieved`));
 
-        if (ctx.config.output !== 'json') {
-          Console.info(chalk.cyan(`\n📋 Cache Audit ${target}`));
-          Console.info(chalk.gray('═'.repeat(60)));
+        const resolved = applyOutputOverride(ctx.config, options.output);
+        if (resolved.output === 'json') {
+          renderJson(response.data);
+          return;
         }
-        renderJson(response.data, ctx.config.jsonStyle);
+        // `-o table` printed the JSON too; it is a table of the refreshes now.
+        Console.info(chalk.cyan(`\n📋 Cache Audit ${target}`));
+        Console.info(chalk.gray('═'.repeat(60)));
+        renderTable(cacheAuditRows(response.data, !path));
       } catch (error) {
         spinner.fail(chalk.red(`✗ Failed to fetch cache audit log ${target}`));
         handleError(error, ctx.config);

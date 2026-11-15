@@ -70,15 +70,25 @@ export function slugToPath(slug: string): string {
   return path;
 }
 
-export function buildEndpointUrl(path: string, suffix = ''): string {
+/**
+ * The config-service URL of an endpoint, `suffix` appended (e.g. 'reload').
+ * `method` adds `?method=`: several endpoints may share a url-path
+ * (GET /orders + POST /orders), and the server answers 400 "ambiguous" for
+ * such a slug without it.
+ *
+ * ':' stays literal (a legal path character, RFC 3986 pchar): encoded as %3A
+ * the slug of /products/:id reached an older server undecoded and 404'd.
+ */
+export function buildEndpointUrl(path: string, suffix = '', method?: string): string {
   const slug = pathToSlug(path);
-  const encoded = encodeURIComponent(slug);
+  const encoded = encodeURIComponent(slug).replace(/%3A/gi, ':');
   const base = `/api/v1/_config/endpoints/${encoded}`;
+  const query = method ? `?method=${encodeURIComponent(method.toUpperCase())}` : '';
 
   if (!suffix) {
-    return base;
+    return `${base}${query}`;
   }
 
   const normalizedSuffix = suffix.replace(/^\/+/g, '');
-  return `${base}/${normalizedSuffix}`;
+  return `${base}/${normalizedSuffix}${query}`;
 }

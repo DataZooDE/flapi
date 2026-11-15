@@ -12,6 +12,9 @@ add_executable(flapi_tests
     audit_logger_test.cpp
     bundle_locator_test.cpp
     auth_middleware_test.cpp
+    auth_roles_inheritance_test.cpp
+    auth_cors_ergonomics_test.cpp
+    config_parsing_fixes_test.cpp
     config_manager_test.cpp
     config_manager_yaml_validation_test.cpp
     config_manager_path_resolution_test.cpp
@@ -25,6 +28,7 @@ add_executable(flapi_tests
     config_service_schema_test.cpp
     config_tool_adapter_test.cpp
     database_manager_test.cpp
+    database_manager_default_order_test.cpp
     embedded_archive_file_provider_test.cpp
     endpoint_config_parser_test.cpp
     extended_yaml_parser_test.cpp
@@ -32,6 +36,7 @@ add_executable(flapi_tests
     macho_bundle_test.cpp
     cache_manager_test.cpp
     cache_warmup_mode_test.cpp
+    cache_scheduler_test.cpp
     extension_installer_test.cpp
     ducklake_reader_test.cpp
     bundled_extensions_test.cpp
@@ -58,6 +63,8 @@ add_executable(flapi_tests
     security_auditor_test.cpp
     sql_parameter_classifier_test.cpp
     sql_template_processor_test.cpp
+    round1_e1_regression_test.cpp
+    round1_f2_template_validation_test.cpp
     sql_utils_test.cpp
     test_duckdb_raii.cpp
     test_json_utils.cpp
@@ -81,6 +88,13 @@ add_executable(flapi_tests
     test_flapi_telemetry.cpp
     alloc_counter.cpp
     test_alloc_budget.cpp
+    runtime_metrics_test.cpp
+    route_shape_duplicate_test.cpp
+    route_precedence_test.cpp
+    test_cluster_c_regressions.cpp
+    test_cluster_e2_regressions.cpp
+    test_cluster_g1_regressions.cpp
+    test_cluster_f1_regressions.cpp
     test_request_context.cpp
     test_background_span_contract.cpp
     test_trace_context.cpp
@@ -90,6 +104,7 @@ add_executable(flapi_tests
     test_in_flight_registry.cpp
     test_http_client_tracing.cpp
     test_flapi_log_handler.cpp
+    g2_auth_metrics_logging_test.cpp
     test_endpoint_snapshot.cpp
     test_route_translator_perf.cpp
 )

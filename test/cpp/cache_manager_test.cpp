@@ -23,6 +23,7 @@
 #define private public
 #include "../../src/include/cache_manager.hpp"
 #include "../../src/include/query_executor.hpp"
+#include "../../src/include/database_manager_cache_adapter.hpp"
 #undef private
 #include "test_utils.hpp"
 
@@ -126,6 +127,24 @@ public:
         }
     }
 
+    /// What the populate statement reports as written rows (nullopt: DuckDB
+    /// returned no `Count`, e.g. a DDL-only template).
+    std::optional<int64_t> rows_to_report;
+
+    std::optional<int64_t> executeDuckLakeQueryCountingRows(
+        const std::string& query, const std::map<std::string, std::string>& params) override {
+        executeDuckLakeQuery(query, params);
+        // The populate statement commits a snapshot: what the catalog reports
+        // from here on, when the test sets it.
+        if (snapshot_ids_after_populate) {
+            snapshot_ids = *snapshot_ids_after_populate;
+        }
+        return rows_to_report;
+    }
+
+    /// The snapshot list once the populate statement ran (nullopt: unchanged).
+    std::optional<std::vector<std::int64_t>> snapshot_ids_after_populate;
+
     // Snapshot ids the next ducklake_snapshots() query should report, newest
     // first. Empty means "no snapshots", which is the common state early in a
     // cache's life.
@@ -184,7 +203,10 @@ public:
             names.data = crow::json::wvalue(std::move(name_rows));
             return names;
         }
-        if (query.find("ducklake_table_info") != std::string::npos) {
+        // The metadata catalog's table history (every id schema.table has had)
+        // answers the same shape as ducklake_table_info.
+        if (query.find("ducklake_table_info") != std::string::npos ||
+            query.find(".ducklake_table t") != std::string::npos) {
             if (fail_table_listing) {
                 throw std::runtime_error("catalog unavailable");
             }
@@ -332,7 +354,9 @@ TEST_CASE("CacheManager refreshDuckLakeCache retention SQL generation", "[cache_
         std::string expire;
         for (const auto& query : adapter->executed_queries) {
             if (query.find("ducklake_expire_snapshots") != std::string::npos) {
-                expire = query;
+                if (expire.empty()) {   // the cache table's expiry; the audit table's follows
+                    expire = query;
+                }
             }
         }
         REQUIRE_FALSE(expire.empty());
@@ -427,7 +451,9 @@ TEST_CASE("CacheManager refreshDuckLakeCache retention SQL generation", "[cache_
         std::string expire;
         for (const auto& query : adapter->executed_queries) {
             if (query.find("ducklake_expire_snapshots") != std::string::npos) {
-                expire = query;
+                if (expire.empty()) {   // the cache table's expiry; the audit table's follows
+                    expire = query;
+                }
             }
         }
         REQUIRE_FALSE(expire.empty());
@@ -455,7 +481,9 @@ TEST_CASE("CacheManager refreshDuckLakeCache retention SQL generation", "[cache_
         std::string expire;
         for (const auto& query : adapter->executed_queries) {
             if (query.find("ducklake_expire_snapshots") != std::string::npos) {
-                expire = query;
+                if (expire.empty()) {   // the cache table's expiry; the audit table's follows
+                    expire = query;
+                }
             }
         }
         REQUIRE_FALSE(expire.empty());
@@ -482,7 +510,9 @@ TEST_CASE("CacheManager refreshDuckLakeCache retention SQL generation", "[cache_
         std::string expire;
         for (const auto& query : adapter->executed_queries) {
             if (query.find("ducklake_expire_snapshots") != std::string::npos) {
-                expire = query;
+                if (expire.empty()) {   // the cache table's expiry; the audit table's follows
+                    expire = query;
+                }
             }
         }
         REQUIRE_FALSE(expire.empty());
@@ -882,4 +912,152 @@ cache:
     REQUIRE(readiness.state == CacheManager::ReadinessState::Failed);
     REQUIRE(readiness.error == "heartbeat refresh failed");
     REQUIRE(adapter->refresh_count.load() >= 1);
+}
+
+namespace {
+const char* kDuckLakeAuditConfig = R"(
+project-name: audit-test
+project-description: Audit timing test
+http-port: 8080
+template:
+  path: ./sqls
+ducklake:
+  enabled: true
+  alias: cache
+  metadata-path: ./cache.ducklake
+  data-path: ./cache_data
+connections:
+  test:
+    properties:
+      path: ./data.parquet
+)";
+}
+
+TEST_CASE("CacheManager records refresh timing, rows and snapshot in the audit", "[cache_manager][audit]") {
+    TempTestConfig temp(kDuckLakeAuditConfig, "cache_audit_timing");
+    auto config_manager = temp.createConfigManager();
+
+    auto adapter = std::make_shared<RecordingCacheAdapter>();
+    adapter->rows_to_report = 42;
+    adapter->snapshot_ids = {};
+    adapter->snapshot_ids_after_populate = std::vector<std::int64_t>{7};
+    CacheManager cache_manager(adapter);
+
+    EndpointConfig endpoint;
+    endpoint.urlPath = "/orders";
+    endpoint.cache.enabled = true;
+    endpoint.cache.table = "orders_cache";
+    endpoint.cache.schema = "analytics";
+
+    std::map<std::string, std::string> params;
+    cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
+
+    const auto insert = std::find_if(adapter->executed_queries.begin(), adapter->executed_queries.end(),
+        [](const std::string& q) { return q.find("audit.sync_events") != std::string::npos &&
+                                          q.find("INSERT") != std::string::npos; });
+    REQUIRE(insert != adapter->executed_queries.end());
+    CHECK(insert->find("'full'") != std::string::npos);
+    CHECK(insert->find("'success'") != std::string::npos);
+    CHECK(insert->find(", 42, ") != std::string::npos);   // rows_affected
+    CHECK(insert->find("'7'") != std::string::npos);      // snapshot_id
+    CHECK(insert->find("TIMESTAMP '") != std::string::npos);
+    CHECK(insert->find("CURRENT_TIMESTAMP") == std::string::npos);
+}
+
+TEST_CASE("A refresh that committed no snapshot records no snapshot_id", "[cache_manager][audit]") {
+    // The audit and the refresh answer used to carry whatever snapshot the
+    // table lookup found newest - a guessed id, or a PREVIOUS refresh's. A
+    // refresh that committed nothing has no snapshot of its own: null.
+    TempTestConfig temp(kDuckLakeAuditConfig, "cache_audit_no_snapshot");
+    auto config_manager = temp.createConfigManager();
+
+    auto adapter = std::make_shared<RecordingCacheAdapter>();
+    adapter->rows_to_report = 0;
+    adapter->snapshot_ids = {7};   // before AND after: nothing was committed
+    CacheManager cache_manager(adapter);
+
+    EndpointConfig endpoint;
+    endpoint.urlPath = "/orders";
+    endpoint.cache.enabled = true;
+    endpoint.cache.table = "orders_cache";
+    endpoint.cache.schema = "analytics";
+
+    std::map<std::string, std::string> params;
+    cache_manager.refreshDuckLakeCache(config_manager, endpoint, params);
+
+    const auto insert = std::find_if(adapter->executed_queries.begin(), adapter->executed_queries.end(),
+        [](const std::string& q) { return q.find("audit.sync_events") != std::string::npos &&
+                                          q.find("INSERT") != std::string::npos; });
+    REQUIRE(insert != adapter->executed_queries.end());
+    CHECK(insert->find("'7'") == std::string::npos);
+    for (const auto& stats : cache_manager.getRefreshStats()) {
+        CHECK_FALSE(stats.last_snapshot_id.has_value());
+    }
+}
+
+TEST_CASE("CacheManager failed refresh still records a duration", "[cache_manager][audit]") {
+    TempTestConfig temp(kDuckLakeAuditConfig, "cache_audit_failure");
+    auto config_manager = temp.createConfigManager();
+
+    EndpointConfig endpoint;
+    endpoint.urlPath = "/orders";
+    endpoint.cache.enabled = true;
+    endpoint.cache.table = "orders_cache";
+
+    // Fail only the populate statement, not the audit INSERT that follows.
+    struct FailingPopulate : RecordingCacheAdapter {
+        std::optional<int64_t> executeDuckLakeQueryCountingRows(
+            const std::string& query, const std::map<std::string, std::string>&) override {
+            executed_queries.push_back(query);
+            throw std::runtime_error("boom");
+        }
+    };
+    auto failing = std::make_shared<FailingPopulate>();
+    CacheManager failing_manager(failing);
+    std::map<std::string, std::string> params;
+    REQUIRE_THROWS(failing_manager.refreshDuckLakeCache(config_manager, endpoint, params));
+
+    const auto insert = std::find_if(failing->executed_queries.begin(), failing->executed_queries.end(),
+        [](const std::string& q) { return q.find("audit.sync_events") != std::string::npos; });
+    REQUIRE(insert != failing->executed_queries.end());
+    CHECK(insert->find("'error'") != std::string::npos);
+    // rows and snapshot unknown, duration measured
+    CHECK(insert->find("NULL, NULL, TIMESTAMP") != std::string::npos);
+    CHECK(insert->substr(insert->size() - 6).find("NULL") == std::string::npos);
+}
+
+TEST_CASE("buildSyncEventInsert escapes values and computes duration", "[cache_manager][audit]") {
+    EndpointConfig endpoint;
+    endpoint.urlPath = "/it's";
+    endpoint.cache.table = "t";
+    endpoint.cache.schema = "";  // empty falls back to main
+
+    CacheManager::SyncEventDetails details;
+    const auto start = std::chrono::system_clock::time_point(std::chrono::milliseconds(1'700'000'000'000));
+    details.started_at = start;
+    details.completed_at = start + std::chrono::milliseconds(1234);
+    details.rows_affected = 5;
+
+    const auto sql = CacheManager::buildSyncEventInsert("cache", "evt_1", endpoint, "append", "success",
+                                                        "it's done", details);
+    CHECK(sql.find("'/it''s'") != std::string::npos);
+    CHECK(sql.find("'it''s done'") != std::string::npos);
+    CHECK(sql.find("'main'") != std::string::npos);
+    CHECK(sql.find("TIMESTAMP '2023-11-14 22:13:20.000'") != std::string::npos);
+    CHECK(sql.find("TIMESTAMP '2023-11-14 22:13:21.234'") != std::string::npos);
+    CHECK(sql.find(", 1234, false)") != std::string::npos);   // duration_ms, full
+    CHECK(sql.find("NULL, 5, ") != std::string::npos);
+
+    CacheManager::SyncEventDetails none;
+    const auto bare = CacheManager::buildSyncEventInsert("cache", "evt_2", endpoint, "full", "success", "", none);
+    CHECK(bare.find("CAST(CURRENT_TIMESTAMP AS TIMESTAMP), NULL, false)") != std::string::npos);
+}
+
+TEST_CASE("extractAffectedRowCount reads only a DML Count row", "[cache_manager][audit]") {
+    CHECK(extractAffectedRowCount(R"([{"Count":12}])") == std::optional<int64_t>(12));
+    CHECK_FALSE(extractAffectedRowCount(R"([])").has_value());
+    CHECK_FALSE(extractAffectedRowCount(R"([{"Count":1},{"Count":2}])").has_value());
+    CHECK_FALSE(extractAffectedRowCount(R"([{"Count":1,"x":2}])").has_value());
+    CHECK_FALSE(extractAffectedRowCount(R"([{"id":1}])").has_value());
+    CHECK_FALSE(extractAffectedRowCount("not json").has_value());
 }

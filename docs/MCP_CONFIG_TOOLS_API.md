@@ -4,12 +4,13 @@ Complete reference for all 20 MCP configuration management tools in flAPI. These
 
 ## Overview
 
-The Configuration Service exposes 20 MCP tools organized into 4 functional categories:
+The Configuration Service exposes 20 MCP tools organized into 5 functional categories:
 
 - **Discovery Tools (5)**: Read-only introspection of project configuration
 - **Template Tools (4)**: SQL template management and testing
 - **Endpoint Tools (6)**: CRUD operations for REST endpoints
 - **Cache Tools (4)**: Cache status and management operations
+- **Metrics Tool (1)**: `flapi_get_metrics`, runtime request and cache metrics
 
 All tools use JSON-RPC 2.0 protocol with MCP error codes for standardized error handling.
 
@@ -20,7 +21,7 @@ All tools use JSON-RPC 2.0 protocol with MCP error codes for standardized error 
 To enable config MCP tools:
 ```bash
 ./flapi --config-service
-./flapi --config-service --config-service-token "your-token"  # With authentication
+./flapi --config-service --config-service-token "your-token-of-16-plus-chars"  # With authentication
 ```
 
 When `--config-service` is NOT enabled:
@@ -30,7 +31,15 @@ When `--config-service` is NOT enabled:
 
 **Error Codes:** See [MCP Reference § Appendix B](./MCP_REFERENCE.md#appendix-b-error-reference) for complete MCP error reference.
 
-**Authentication:** See [Configuration Reference § 7](./CONFIG_REFERENCE.md#7-authentication) for all authentication schemes and setup.
+**Authentication:** every `flapi_*` tool, read or write, needs the config-service token
+(`--config-service-token` / `FLAPI_CONFIG_SERVICE_TOKEN`), sent as `X-Config-Token: <token>` (read
+first) or `Authorization: Bearer <token>`. Any non-empty token works as the configured value; startup
+warns below 16 characters. Without it a call fails with `Authentication required for tool: <name>`;
+with a wrong one, `Authentication validation failed: Invalid authentication token`. Endpoint-backed
+MCP tools use `mcp.auth` in `flapi.yaml` instead.
+
+Endpoint changes made with these tools (create, update, delete, reload) rebuild `tools/list`,
+`resources/list` and `prompts/list` immediately; no restart and no notification.
 
 ---
 
@@ -42,7 +51,7 @@ Read-only tools for introspecting project configuration and database schema.
 
 Get project metadata and configuration information.
 
-**Authentication:** Not required
+**Authentication:** Required (config-service token)
 
 **Parameters:** None
 
@@ -69,7 +78,7 @@ Get project metadata and configuration information.
 
 Get whitelisted environment variables available to templates.
 
-**Authentication:** Not required
+**Authentication:** Required (config-service token)
 
 **Parameters:** None
 
@@ -95,7 +104,7 @@ Get whitelisted environment variables available to templates.
 
 Get directory structure of template and configuration files.
 
-**Authentication:** Not required
+**Authentication:** Required (config-service token)
 
 **Parameters:** None
 
@@ -125,7 +134,7 @@ Get directory structure of template and configuration files.
 
 Get database schema information for all configured connections.
 
-**Authentication:** Not required
+**Authentication:** Required (config-service token)
 
 **Parameters:** None
 
@@ -159,7 +168,7 @@ Get database schema information for all configured connections.
 
 Refresh database schema cache by querying all connections.
 
-**Authentication:** Not required
+**Authentication:** Required (config-service token)
 
 **Parameters:** None
 
@@ -182,7 +191,7 @@ Tools for managing and testing SQL templates with Mustache syntax.
 
 Retrieve the SQL template content for an endpoint.
 
-**Authentication:** Not required
+**Authentication:** Required (config-service token)
 
 **Parameters:**
 - `endpoint` (string, required): Endpoint identifier or filename (e.g., "customers")
@@ -241,7 +250,7 @@ Update the SQL template content for an endpoint (requires authentication).
 
 Test Mustache template expansion with sample parameters.
 
-**Authentication:** Not required
+**Authentication:** Required (config-service token)
 
 **Parameters:**
 - `endpoint` (string, required): Endpoint identifier
@@ -262,7 +271,7 @@ Test Mustache template expansion with sample parameters.
 
 Validate template syntax and Mustache syntax.
 
-**Authentication:** Not required
+**Authentication:** Required (config-service token)
 
 **Parameters:**
 - `endpoint` (string, required): Endpoint identifier
@@ -295,7 +304,7 @@ CRUD operations for REST endpoint configuration (path, method, template, cache).
 
 List all configured REST and MCP endpoints.
 
-**Authentication:** Not required
+**Authentication:** Required (config-service token)
 
 **Parameters:** None
 
@@ -326,7 +335,7 @@ List all configured REST and MCP endpoints.
 
 Get complete configuration for a specific endpoint.
 
-**Authentication:** Not required
+**Authentication:** Required (config-service token)
 
 **Parameters:**
 - `path` (string, required): Endpoint path
@@ -390,25 +399,32 @@ Create a new REST endpoint (requires authentication).
 
 ### flapi_update_endpoint
 
-Modify an existing endpoint configuration (requires authentication).
+Modify an existing endpoint configuration (requires authentication). The change goes through the same
+merge-and-persist path as `PUT /api/v1/_config/endpoints/{slug}`: it is deep-merged onto the
+endpoint's YAML file, re-parsed, written and swapped in, so it survives a reload and a restart.
 
 **Authentication:** Required
 
 **Parameters:**
 - `path` (string, required): Endpoint path to update
-- `method` (string, optional): New HTTP method
-- `template_source` (string, optional): New template filename
+- `config` (object, optional): endpoint keys to change, in the YAML spelling, e.g.
+  `{"template-source": "customers_v2.sql", "cache": {"schedule": "10m"}}`
+- any other top-level key is merged the same way (`template-source`, `connection`, ...);
+  `template_source` is accepted for `template-source`
+
+Changing `url-path`, `method` or the name is refused (delete and re-create); an endpoint built from
+`{{include}}` files is refused too.
 
 **Response (Success):**
 ```json
 {
   "status": "success",
-  "path": "customers",
+  "path": "/customers",
   "message": "Endpoint updated successfully",
-  "previous_method": "GET",
-  "new_method": "POST",
-  "previous_template": "customers.sql",
-  "new_template": "customers_create.sql"
+  "file": "/srv/api/sqls/customers.yaml",
+  "persisted": true,
+  "method": "GET",
+  "template_source": "/srv/api/sqls/customers_v2.sql"
 }
 ```
 
@@ -475,7 +491,7 @@ Monitor and manage DuckLake cache for endpoints.
 
 Get cache status and configuration for an endpoint.
 
-**Authentication:** Not required
+**Authentication:** Required (config-service token)
 
 **Parameters:**
 - `path` (string, required): Endpoint path
@@ -512,79 +528,83 @@ Trigger manual cache refresh for an endpoint (requires authentication).
 **Parameters:**
 - `path` (string, required): Endpoint path
 
+The refresh runs before the call returns. There is no full-rebuild argument; use
+`POST /api/v1/_config/endpoints/{slug}/cache/refresh?full=true` or `flapii cache refresh <path> --full`.
+
 **Response (Success):**
 ```json
-{
-  "path": "customers",
-  "status": "Cache refresh triggered",
-  "cache_table": "customers_cache",
-  "timestamp": "1704067200",
-  "message": "Cache refresh has been scheduled"
-}
+{"tool": "flapi_refresh_cache", "status": "ok"}
 ```
+
+Read the outcome with `flapi_get_cache_audit` or `flapi_get_metrics`.
 
 ---
 
 ### flapi_get_cache_audit
 
-Get audit log of cache operations and refresh history.
-
-**Authentication:** Not required
+Read an endpoint's cache sync log from `<alias>.audit.sync_events`, newest first
+(at most 100 rows). Requires authentication.
 
 **Parameters:**
-- `path` (string, required): Endpoint path
+- `path` (string, required): endpoint path, e.g. `/customers`
 
-**Response (Success):**
+**Response (Success):** the audit rows, as returned by
+`GET /api/v1/_config/endpoints/{path}/cache/audit`:
 ```json
-{
-  "path": "customers",
-  "cache_table": "customers_cache",
-  "audit_log": [
-    {
-      "timestamp": "1704067200",
-      "event": "cache_refreshed",
-      "status": "success"
-    },
-    {
-      "timestamp": "1704063600",
-      "event": "cache_status_checked",
-      "status": "success"
-    }
-  ],
-  "message": "Cache audit log retrieved successfully"
-}
+[
+  {
+    "event_id": "evt_1763114400_1804289383",
+    "endpoint_path": "/customers",
+    "cache_table": "customers_cache",
+    "cache_schema": "analytics",
+    "sync_type": "merge",
+    "status": "success",
+    "message": "Cache refreshed successfully",
+    "snapshot_id": "118",
+    "rows_affected": 37,
+    "sync_started_at": "2026-11-14 10:00:00.000",
+    "sync_completed_at": "2026-11-14 10:00:00.812",
+    "duration_ms": 812
+  }
+]
 ```
+
+`sync_type` is `full`, `append`, `merge` or `garbage_collection`. `duration_ms`
+times the populate statement (or the snapshot expiry for GC). `rows_affected` is
+DuckDB's row count for the last statement of the cache template, or `null` when
+that statement reports none. `snapshot_id` is the DuckLake snapshot the refresh
+produced. Times are UTC.
 
 ---
 
 ### flapi_run_cache_gc
 
-Trigger garbage collection to clean up old cache snapshots (requires authentication).
-
-**Authentication:** Required
+Expire one endpoint's old cache snapshots according to its own `retention`
+policy. Requires authentication.
 
 **Parameters:**
-- `path` (string, optional): Endpoint path for targeted GC (if omitted, runs globally)
+- `path` (string, **required**): endpoint path. There is no all-endpoints form;
+  call it once per cached endpoint.
 
-**Response (Success - Endpoint-specific):**
-```json
-{
-  "status": "Garbage collection triggered",
-  "path": "customers",
-  "timestamp": "1704067200",
-  "message": "Cache garbage collection for endpoint scheduled"
-}
-```
+**Response (Success):** the handler's JSON status. A GC run is also recorded in
+the audit log as `sync_type: garbage_collection`.
 
-**Response (Success - Global):**
-```json
-{
-  "status": "Garbage collection triggered",
-  "scope": "all_caches",
-  "timestamp": "1704067200",
-  "message": "Global cache garbage collection has been scheduled"
-}
-```
+---
+
+## Metrics Tool
+
+### flapi_get_metrics
+
+Runtime metrics since server start: per-endpoint and per-MCP-tool request counts,
+error counts and latency, 401/403/429 rejections, and per-cache readiness, last
+refresh mode/status/duration/rows and data age. Requires authentication.
+
+**Parameters:**
+- `endpoint` (string, optional): an endpoint path or MCP tool name to narrow
+  `requests.series` and `caches` to
+
+**Response (Success):** the same document as
+[`GET /api/v1/_config/metrics`](CONFIG_SERVICE_API_REFERENCE.md#get-apiv1_configmetrics).
 
 ---
 
@@ -652,7 +672,7 @@ Configuration tools do not have built-in rate limiting but respect server-level 
 
 4. **Handle structured errors**: Parse error responses for `hint` field to guide users
 
-5. **Authenticate with correct scheme**: Use `Bearer` for JWT tokens, `Basic` for credentials, `Token` for API keys
+5. **Send the config-service token**: `X-Config-Token: <token>` or `Authorization: Bearer <token>` on every call
 
 6. **Reload after configuration changes**: Use `flapi_reload_endpoint` to apply changes without server restart
 

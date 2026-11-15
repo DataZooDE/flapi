@@ -580,7 +580,9 @@ int main(int argc, char* argv[])
     }
 #endif
 
-    static argparse::ArgumentParser program("flapi");
+    // The version argparse prints for --version; without it argparse's own
+    // default ("1.0") was printed, whatever the build.
+    static argparse::ArgumentParser program("flapi", FLAPI_VERSION);
 
     program.add_argument("-c", "--config")
         .help("Path to the flapi.yaml configuration file")
@@ -596,7 +598,7 @@ int main(int argc, char* argv[])
         .default_value(std::string(""));
 
     program.add_argument("--log-level")
-        .help("Set the log level (debug, info, warning, error)")
+        .help("Set the log level (debug, info, warning|warn, error)")
         .default_value(std::string("info"));
 
     program.add_argument("--validate-config")
@@ -663,6 +665,12 @@ int main(int argc, char* argv[])
     pack_cmd.add_argument("--extensions-dir")
         .help("Embed this already filled extension directory instead (e.g. for another platform)")
         .default_value(std::string(""));
+    pack_cmd.add_argument("--exclude")
+        .help("Do not bundle files matching this glob (relative to --in; * within a segment, ** across; "
+              "a name without / matches at any depth); repeatable. The DuckLake catalog "
+              "(metadata-path, data-path, *.ducklake, *.ducklake.wal) is always excluded.")
+        .append()
+        .default_value(std::vector<std::string>{});
     pack_cmd.add_argument("--skip-validation")
         .help("Pack without validating the config first. A bundle built from an "
               "invalid config fails at startup on every host it is copied to.")
@@ -698,8 +706,25 @@ int main(int argc, char* argv[])
         .help("URL path of a cached endpoint; repeatable")
         .append()
         .default_value(std::vector<std::string>{});
+    cache_refresh_cmd.add_argument("--method")
+        .help("HTTP method of the --endpoint, when several endpoints on that path have a cache")
+        .default_value(std::string(""));
     cache_refresh_cmd.add_argument("--all")
         .help("Refresh every cached endpoint")
+        .default_value(false)
+        .implicit_value(true);
+    cache_refresh_cmd.add_argument("--full")
+        .help("Force a full rebuild: ignore the incremental watermark and rebuild the table")
+        .default_value(false)
+        .implicit_value(true);
+    // The global flags, accepted after the subcommand too: argparse scopes
+    // options to the parser they follow, so `flapi cache refresh --all
+    // --no-telemetry` was rejected as an unknown argument.
+    cache_refresh_cmd.add_argument("--log-level")
+        .help("Set the log level (debug, info, warning|warn, error); default warning")
+        .default_value(std::string(""));
+    cache_refresh_cmd.add_argument("--no-telemetry")
+        .help("Disable telemetry (the one-shot sends none; accepted for symmetry)")
         .default_value(false)
         .implicit_value(true);
     cache_cmd.add_subparser(cache_refresh_cmd);
@@ -726,6 +751,20 @@ int main(int argc, char* argv[])
         program.parse_args(argc, argv);
     } catch (const std::runtime_error& err) {
         std::cerr << err.what() << std::endl;
+        // `flapi cache refresh` documents 2 for a usage error (0 ok, 1 a refresh
+        // failed); a parse error there exited 1, indistinguishable from a
+        // failed refresh in a cron job's exit code.
+        bool cache_command = false;
+        for (int i = 1; i < argc; ++i) {
+            if (std::string(argv[i]) == "cache") {
+                cache_command = true;
+                break;
+            }
+        }
+        if (cache_command) {
+            std::cerr << cache_refresh_cmd;
+            return 2;
+        }
         std::cerr << program;
         return 1;
     }
@@ -804,7 +843,44 @@ int main(int argc, char* argv[])
             } else if (!extensions_dir.empty()) {
                 opts.extensions_dir = std::filesystem::path(extensions_dir);
             }
+            opts.exclude_globs = pack_cmd.get<std::vector<std::string>>("--exclude");
+            // The configured DuckLake catalog: runtime state that a bundle never
+            // opens, and often the largest thing in the tree.
+            for (const char* name : {"flapi.yaml", "flapi.yml"}) {
+                const auto candidate = std::filesystem::path(in_dir) / name;
+                if (!std::filesystem::exists(candidate)) {
+                    continue;
+                }
+                try {
+                    crow::logger::setLogLevel(crow::LogLevel::Warning);
+                    const auto cm = initializeConfig(candidate.string());
+                    const auto& ducklake = cm->getDuckLakeConfig();
+                    const auto root = std::filesystem::weakly_canonical(std::filesystem::path(in_dir));
+                    for (const auto& configured : {ducklake.metadata_path, ducklake.metadata_path + ".wal",
+                                                   ducklake.data_path}) {
+                        const auto colon = configured.find(':');
+                        if (configured.empty() || (colon != std::string::npos && colon != 1)) {
+                            continue;   // a DSN or URL, not a file in the tree
+                        }
+                        std::filesystem::path path(configured);
+                        if (path.is_relative()) {
+                            path = std::filesystem::path(cm->getBasePath()) / path;
+                        }
+                        const auto rel = std::filesystem::weakly_canonical(path).lexically_relative(root);
+                        if (!rel.empty() && *rel.begin() != "..") {
+                            opts.exclude_globs.push_back(rel.generic_string());
+                        }
+                    }
+                } catch (const std::exception&) {
+                    // Validation (above) reports a broken config; the defaults still apply.
+                }
+                break;
+            }
             const auto result = Pack(in_dir, out_path, opts);
+            if (!result.excluded.empty()) {
+                std::cout << "Excluded " << result.excluded.size()
+                          << " file(s) (DuckLake catalog / --exclude), e.g. " << result.excluded.front() << "\n";
+            }
             if (!installed_extensions.empty()) {
                 std::filesystem::remove_all(installed_extensions);
             }
@@ -857,12 +933,39 @@ int main(int argc, char* argv[])
             config_path = (env != nullptr && *env != '\0') ? env : "flapi.yaml";
         }
         crow::logger::setLogLevel(crow::LogLevel::Warning);
+        {
+            std::string level = cache_refresh_cmd.get<std::string>("--log-level");
+            if (level.empty() && program.is_used("--log-level")) {
+                level = program.get<std::string>("--log-level");
+            }
+            std::transform(level.begin(), level.end(), level.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (level == "debug") {
+                crow::logger::setLogLevel(crow::LogLevel::Debug);
+            } else if (level == "info") {
+                crow::logger::setLogLevel(crow::LogLevel::Info);
+            } else if (level == "error") {
+                crow::logger::setLogLevel(crow::LogLevel::Error);
+            } else if (!level.empty() && level != "warning" && level != "warn") {
+                crow::json::wvalue body;
+                body["error"] = "invalid --log-level '" + level + "': use debug, info, warning|warn or error";
+                std::cout << body.dump() << std::endl;
+                return 2;
+            }
+        }
+        // The bundle first: a packed binary's `cache refresh` read flapi.yaml from
+        // the working directory ("Could not open file: flapi.yaml") because the
+        // subcommand ran before the server path registered it. With a bundle,
+        // the default flapi.yaml is the bundled one.
+        detectAndRegisterEmbeddedBundle();
         int rc = 0;
         try {
             auto cm = initializeConfig(config_path);
             CacheRefreshOptions options;
             options.endpoints = cache_refresh_cmd.get<std::vector<std::string>>("--endpoint");
             options.all = cache_refresh_cmd.get<bool>("--all");
+            options.full = cache_refresh_cmd.get<bool>("--full");
+            options.method = cache_refresh_cmd.get<std::string>("--method");
             rc = RunCacheRefreshCommand(cm, options, std::cout);
         } catch (const std::exception& e) {
             std::cerr << "flapi cache refresh: " << e.what() << "\n";
@@ -894,7 +997,13 @@ int main(int argc, char* argv[])
             }
             specs.push_back(*spec);
         }
-        const auto config_path = extensions_install_cmd.get<std::string>("--config");
+        // As for `cache refresh`: a packed binary reads its own bundled config,
+        // and with no names and no --config installs what the bundled flapi.yaml needs.
+        detectAndRegisterEmbeddedBundle();
+        auto config_path = extensions_install_cmd.get<std::string>("--config");
+        if (config_path.empty() && specs.empty() && FileProviderFactory::GetBundleContents() != nullptr) {
+            config_path = "flapi.yaml";
+        }
         if (!config_path.empty()) {
             try {
                 crow::logger::setLogLevel(crow::LogLevel::Warning);
@@ -994,15 +1103,26 @@ int main(int argc, char* argv[])
             cmd_host = env;
         }
     }
+    // `warn` is what most loggers (and the docs) call it; crow says `warning`.
+    if (log_level == "warn") {
+        log_level = "warning";
+    }
     // Validate log_level. Invalid values are an error, not a silent
     // fallback -- typos like FLAPI_LOG_LEVEL=DEBUG should surface
     // immediately, not run the server at the wrong verbosity.
     if (log_level != "debug" && log_level != "info" &&
         log_level != "warning" && log_level != "error") {
         std::cerr << "flapi: invalid log level '" << log_level
-                  << "'; must be one of: debug, info, warning, error\n";
+                  << "'; must be one of: debug, info, warning (or warn), error\n";
         return 1;
     }
+    // Installed BEFORE anything is logged, holding its lines until the
+    // configuration says which `log-format` it wants (setFormat below). Lines
+    // logged while reading the configuration used to bypass it: with
+    // `log-format: json` the first ~30 startup lines were plain text.
+    static flapi::FlapiLogHandler log_handler(flapi::FlapiLogHandler::Format::Text, /*hold=*/true);
+    crow::logger::setHandler(&log_handler);
+
     bool config_service_enabled = program.get<bool>("--config-service");
     std::string config_service_token = program.get<std::string>("--config-service-token");
     bool no_telemetry = program.get<bool>("--no-telemetry");
@@ -1044,6 +1164,8 @@ int main(int argc, char* argv[])
     } catch (const std::exception& e) {
         CROW_LOG_ERROR << "Configuration error: " << e.what();
         CROW_LOG_ERROR << "flAPI cannot start until the configuration is valid.";
+        // The format is unknown (the configuration did not load): text.
+        log_handler.setFormat(flapi::FlapiLogHandler::Format::Text);
         return 1;
     }
     config_manager->setCacheWarmupOverride(warmup_override);
@@ -1092,13 +1214,12 @@ int main(int argc, char* argv[])
         }
     }
 
-    // Install the correlating log handler. Every existing CROW_LOG_* call site -
-    // and every future one - gains the request id without being touched.
-    static flapi::FlapiLogHandler log_handler(
-        config_manager && config_manager->getLogFormat() == "json"
-            ? flapi::FlapiLogHandler::Format::Json
-            : flapi::FlapiLogHandler::Format::Text);
-    crow::logger::setHandler(&log_handler);
+    // Settle the correlating log handler's format and write out what it held.
+    // Every existing CROW_LOG_* call site - and every future one - gains the
+    // request id without being touched.
+    log_handler.setFormat(config_manager && config_manager->getLogFormat() == "json"
+                              ? flapi::FlapiLogHandler::Format::Json
+                              : flapi::FlapiLogHandler::Format::Text);
 
     // Surface configuration-level security warnings (plaintext passwords, MCP without auth, etc.)
     // Runs in both --validate-config mode and normal server start; never aborts startup.
@@ -1166,11 +1287,29 @@ int main(int argc, char* argv[])
     // If a bundle was detected at startup, register the embed:// FS
     // on the DuckDB instance so `read_csv('embed://...')` and similar
     // calls inside SQL templates can resolve to the in-memory archive.
-    if (RegisterEmbeddedFileSystem()) {
+    if (RegisterEmbeddedFileSystem(std::filesystem::absolute(config_manager->getBasePath().empty() ? std::string(".") : config_manager->getBasePath()).string())) {
         CROW_LOG_INFO << "Registered embed:// DuckDB filesystem";
     }
 
-    // Configure cloud credentials in DuckDB after database is initialized
+    // Configure cloud credentials in DuckDB after database is initialized.
+    // The GCS caveat is logged only when something here reads gs:// or GCS.
+    {
+        const auto mentions_gcs = [](std::string text) {
+            std::transform(text.begin(), text.end(), text.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return text.find("gs://") != std::string::npos || text.find("gcs") != std::string::npos;
+        };
+        bool referenced = mentions_gcs(config_manager->getTemplatePath()) ||
+                          mentions_gcs(config_manager->getDuckLakeConfig().metadata_path) ||
+                          mentions_gcs(config_manager->getDuckLakeConfig().data_path);
+        for (const auto& [name, connection] : config_manager->getConnections()) {
+            referenced = referenced || mentions_gcs(connection.getInit());
+            for (const auto& [key, value] : connection.properties) {
+                referenced = referenced || mentions_gcs(value);
+            }
+        }
+        flapi::getGlobalCredentialManager().setGcsReferenced(referenced);
+    }
     configureCloudCredentialsInDuckDB();
 
     // Verify storage health at startup
@@ -1242,7 +1381,10 @@ int main(int argc, char* argv[])
         }
     });
 
-    CROW_LOG_INFO << "flAPI unified server started - REST API and MCP on port " << config_manager->getHttpPort();
+    // Not "started": the bind has not happened yet (it fails later, on the
+    // server thread, with EADDRINUSE). APIServer::run logs "listening on" once
+    // it has succeeded.
+    CROW_LOG_DEBUG << "flAPI server thread launched for port " << config_manager->getHttpPort();
 
     std::thread warmup_thread;
     if (auto cache_manager = DatabaseManager::getInstance()->getCacheManager()) {

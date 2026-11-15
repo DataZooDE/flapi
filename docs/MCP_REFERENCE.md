@@ -170,7 +170,11 @@ mcp:
 > MCP has no port or host of its own: it shares the HTTP server's port and host
 > (`http-port`, `-p/--port`/`FLAPI_PORT`, `--host`/`FLAPI_HOST`). `listChanged` is
 > always advertised as `false` — flAPI has no server-to-client notification
-> transport. The keys `mcp.port`, `mcp.host` and
+> transport. The lists themselves are current: `tools/list`, `resources/list` and
+> `prompts/list` are rebuilt on every endpoint change (create, update, delete,
+> reload; through REST or the `flapi_*` tools), so a client sees the change on its
+> next list call without a restart. Pagination cursors issued before a change are
+> rejected; start the listing again. The keys `mcp.port`, `mcp.host` and
 > `mcp.allow-list-changed-notifications` never took effect; flAPI now warns when
 > any of them is set.
 
@@ -184,14 +188,14 @@ The MCP server exposes two categories of tools:
 
 2. **Configuration Management Tools** (Only when `--config-service` flag is used)
    - `flapi_*` tools for runtime management of endpoints, templates, caches
-   - 18 tools organized in 4 categories: Discovery, Template, Endpoint, Cache
+   - 20 tools in 5 categories: Discovery (5), Template (4), Endpoint (6), Cache (4), Metrics (1: `flapi_get_metrics`)
    - See [MCP Configuration Tools API Reference](./MCP_CONFIG_TOOLS_API.md)
 
 **To enable configuration tools:**
 ```bash
 ./flapi --config-service
 # or with custom token
-./flapi --config-service --config-service-token "your-token"
+./flapi --config-service --config-service-token "your-token-of-16-plus-chars"
 ```
 
 **Note:** Without the `--config-service` flag, only declarative tools are available in `tools/list` responses.
@@ -235,12 +239,15 @@ curl -X POST http://localhost:8080/mcp/jsonrpc \
     },
     "serverInfo": {
       "name": "flapi-mcp-server",
-      "version": "0.3.0"
+      "version": "26.10.31"
     },
     "instructions": "# flapi MCP Server\n..."
   }
 }
 ```
+
+`serverInfo.version` is the flAPI build version (what `flapi --version` prints); it used to be a fixed
+`"0.3.0"`.
 
 The response includes an `Mcp-Session-Id` header that must be included in subsequent requests.
 
@@ -258,7 +265,7 @@ curl http://localhost:8080/mcp/health
 {
   "status": "healthy",
   "server": "flapi-mcp-server",
-  "version": "0.3.0",
+  "version": "26.10.31",
   "protocol_version": "2025-11-25",
   "mcp_available": true,
   "tools_available": true,
@@ -422,7 +429,7 @@ Establishes a new MCP session and negotiates capabilities.
     },
     "serverInfo": {
       "name": "flapi-mcp-server",
-      "version": "0.3.0"
+      "version": "26.10.31"
     },
     "instructions": "..."
   }
@@ -602,10 +609,18 @@ Set `arguments._dryRun: true` to run the validate → render → plan pipeline w
 ```json
 {
   "dry_run": true,
-  "rendered_sql": "SELECT 42 AS customer_id, 'fake' AS name",
-  "params": {"id": "42"}
+  "tool_name": "customer_lookup",
+  "rendered_sql": "SELECT ? AS customer_id, 'fake' AS name",
+  "bindings": [{"position": 1, "name": "id", "type": "integer", "value": 42}],
+  "parameters": {"id": 42}
 }
 ```
+
+`rendered_sql` is the statement the tool would RUN: a `{{ params.x }}` whose field has a typed
+validator is a `?` and its value is listed in `bindings` (`value: null` when absent). `parameters` is
+typed by the field's validators (an `int` field is `42`, not `"42"`). `structuredContent` holds the same
+fields plus `"rows": []` and `"row_count": 0`, so `rows` is always an array; a dry run never teaches the
+tool's `outputSchema`.
 
 The dry-run path does NOT skip validators, role checks, or rate limits — it skips only the SQL execution step. A caller that lacks the role to invoke the tool gets the same `Permission denied` from a dry-run as from a real call.
 
@@ -654,7 +669,10 @@ Lists all available MCP resources.
 | `resources[].mimeType` | string | Content MIME type |
 | `resources[].uri` | string | Resource URI |
 
-> **Implementation:** `src/mcp_route_handlers.cpp` | **Tests:** `test/integration/test_mcp_integration.py`
+A resource with a `uri-template` has no concrete URI to read, so it is listed only by
+`resources/templates/list`, not here.
+
+> **Implementation:** `src/mcp_route_handlers.cpp` | **Tests:** `test/integration/test_mcp_integration.py`, `test/integration/test_cluster_e2_config_mcp.py`
 
 ---
 
@@ -697,7 +715,20 @@ Reads the content of an MCP resource.
 }
 ```
 
-> **Implementation:** `src/mcp_route_handlers.cpp`, `src/mcp_content_types.cpp` | **Tests:** `test/integration/test_mcp_integration.py`
+**Parameters are validated as on `tools/call`.** The values a `uri-template` binds
+(`flapi://customers/{id}`) get the field's `default:`, then its validators (regex, enum, int, ...) and
+the unknown-parameter check, before the template renders. A value that fails answers `-32602 "Invalid
+parameters for resource '<name>': <field>: <reason>"`. Before, the bound values reached the template
+unvalidated - a `{{{ params.id }}}` was open to injection on this surface only. Declare every
+`{var}` as a `request:` field.
+
+**The result is shaped.** `mcp-resource.response` takes `max-rows` and `redact-columns` like
+`mcp-tool.response`; without it the same file's `mcp-tool.response` applies, and `max-rows` defaults
+to **1000**. A capped read says so on the content item:
+`"_meta": {"truncated": true, "row_count": 16282, "max_rows": 1000}`. An empty result is
+`"text": "[]"` (it was a `-32603` internal error).
+
+> **Implementation:** `src/mcp_route_handlers.cpp`, `src/mcp_content_types.cpp` | **Tests:** `test/integration/test_mcp_integration.py`, `test/integration/test_cluster_e2_config_mcp.py`
 
 ---
 
@@ -917,7 +948,7 @@ request:
     required: false
     validators:
       - type: enum
-        values: ["active", "inactive", "pending"]
+        allowedValues: ["active", "inactive", "pending"]
 
 template-source: customer-lookup.sql
 connection:
@@ -941,7 +972,8 @@ The `inputSchema` for tools is automatically generated from `request` fields:
 | `field-name` | Property name |
 | `description` | Property `description` |
 | `required: true` | Added to `required` array |
-| `validators[].type` | Informs `type` (string by default) |
+| `validators[].type` | Informs `type` (`int` → `integer`, `boolean`, ...; string by default) and bounds (`min` → `minimum`) |
+| `default` | Property `default`, typed like the property (`"10"` on an `int` field becomes `10`) |
 
 **Example Conversion:**
 
@@ -954,6 +986,10 @@ request:
     validators:
       - type: int
         min: 1
+  - field-name: limit
+    default: "10"
+    validators:
+      - type: int
 ```
 
 ```json
@@ -962,8 +998,14 @@ request:
   "type": "object",
   "properties": {
     "customer_id": {
-      "type": "string",
+      "type": "integer",
+      "minimum": 1,
       "description": "Customer identifier"
+    },
+    "limit": {
+      "type": "integer",
+      "default": 10,
+      "description": ""
     }
   },
   "required": ["customer_id"]
@@ -1049,6 +1091,11 @@ INSERT INTO customers (name, email)
 VALUES ('{{{ params.name }}}', '{{{ params.email }}}')
 RETURNING id, name, email
 ```
+
+If the tool's endpoint has a cache with `invalidate-on-write: true`, the cache is refreshed before the
+tool result is returned; with `refresh-on-write: true` it is refreshed in the background after it
+(coalesced per endpoint). With both, only the synchronous refresh runs. These are the same rules as
+for REST writes.
 
 > **Implementation:** `src/mcp_route_handlers.cpp`, `src/endpoint_config_parser.cpp` | **Tests:** `test/cpp/mcp_tool_handler_test.cpp`, `test/integration/test_mcp_methods.py`
 
@@ -1278,7 +1325,7 @@ mcp:
     enabled: true
     type: oidc
     oidc:
-      provider-type: auth0  # or: okta, google, azure, generic
+      provider-type: auth0  # or: okta, google, microsoft (alias azure), keycloak, github, generic
       issuer-url: "https://your-tenant.auth0.com/"
       client-id: "your-client-id"
       client-secret: "{{env.OIDC_CLIENT_SECRET}}"
@@ -1295,7 +1342,7 @@ mcp:
 | Auth0 | `auth0` | JWKS URL, claims mapping |
 | Okta | `okta` | JWKS URL, claims mapping |
 | Google | `google` | JWKS URL, claims mapping |
-| Azure AD | `azure` | JWKS URL, claims mapping |
+| Microsoft Entra ID (Azure AD) | `microsoft` (alias `azure`) | JWKS URL, claims mapping |
 | Generic | `generic` | Manual configuration |
 
 ### 8.4 Per-Method Auth
@@ -1736,8 +1783,11 @@ visible to every intermediary.
 - **`listChanged`** is advertised as `false` (flAPI has no notification transport).
 - **`completion/complete`** results are wrapped under a `completion` key.
 - **Resource templates:** `mcp-resource.uri-template` (e.g. `flapi://customers/{id}`)
-  exposes a resource in `resources/templates/list` and binds path variables on
-  `resources/read`.
+  exposes a resource in `resources/templates/list` (and not in `resources/list`) and
+  binds path variables on `resources/read`, validated by the matching `request:` fields.
+- **Names are unique per kind:** two files declaring the same MCP tool, resource or
+  prompt name fail the load (and a reload / `reload-file`), naming both files. A tool
+  and a resource may share a name.
 
 ---
 
@@ -1839,16 +1889,7 @@ request:
     required: false
     validators:
       - type: enum
-        values: ["active", "inactive", "pending"]
-
-  - field-name: limit
-    field-in: query
-    description: Maximum results to return
-    required: false
-    validators:
-      - type: int
-        min: 1
-        max: 100
+        allowedValues: ["active", "inactive", "pending"]
 
 template-source: customer-lookup.sql
 connection:
@@ -1884,8 +1925,11 @@ WHERE 1=1
   AND status = '{{{ params.status }}}'
 {{/params.status}}
 ORDER BY created_at DESC
-LIMIT {{#params.limit}}{{ params.limit }}{{/params.limit}}{{^params.limit}}25{{/params.limit}}
 ```
+
+No `limit` field and no `LIMIT`: over REST the endpoint is paginated (`?limit=`/`?offset=`, 100 rows
+by default), and an MCP `tools/call` honours `limit`/`offset` arguments without declaring them. A
+template `LIMIT {{ params.limit }}` would break REST paging (`?limit=2&offset=2` returns no rows).
 
 ---
 
@@ -1900,6 +1944,15 @@ LIMIT {{#params.limit}}{{ params.limit }}{{/params.limit}}{{^params.limit}}25{{/
 | `-32603` | Internal error | Server-side error | Check server logs |
 | `-32001` | Authentication required | Method requires auth | Provide Authorization header |
 | `-32000` | Session error | Session-related issue | Re-initialize session |
+| `-32000` (HTTP 401) | `Authentication required for method: <m>` | `mcp.auth` on, no credentials sent | Send `Authorization` |
+| `-32000` (HTTP 401) | `The credentials sent were not accepted.` | `mcp.auth` on, credentials refused (bad or expired JWT, wrong password) | Fix the credential |
+
+A `tools/call` whose SQL or template fails is a result with `"isError": true` and the text
+`Tool execution failed on the server. The details are in the server log under request_id req-...`,
+the same contract as a REST 500. The database error, the SQL and template paths are in the server
+log line carrying that id, never in the result. A bad argument (validator) or a `BadRequestError`
+keeps its specific, actionable message. `structuredContent.rows` carries the rows with their keys
+in SELECT / RETURNING column order; a write's result always has `data` (`[]` when no row came back).
 
 ---
 

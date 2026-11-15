@@ -88,4 +88,114 @@ std::string MCPDryRun::formatResult(const std::string& tool_name,
     return payload.dump();
 }
 
+namespace {
+
+const char* typeName(SqlParameterType type) {
+    switch (type) {
+        case SqlParameterType::Integer: return "integer";
+        case SqlParameterType::Double:  return "double";
+        case SqlParameterType::Boolean: return "boolean";
+        case SqlParameterType::Date:    return "date";
+        case SqlParameterType::Time:    return "time";
+        case SqlParameterType::Varchar: return "varchar";
+    }
+    return "varchar";
+}
+
+const RequestFieldConfig* findField(const std::vector<RequestFieldConfig>& fields, const std::string& name) {
+    for (const auto& f : fields) {
+        if (f.fieldName == name) {
+            return &f;
+        }
+    }
+    return nullptr;
+}
+
+}  // namespace
+
+crow::json::wvalue MCPDryRun::typedParameter(const std::string& value, const RequestFieldConfig* field) {
+    if (field != nullptr) {
+        const auto bind = SqlParameterClassifier().classify(*field);
+        try {
+            std::size_t used = 0;
+            switch (bind.type) {
+                case SqlParameterType::Integer: {
+                    const long long n = std::stoll(value, &used);
+                    if (used == value.size()) {
+                        return crow::json::wvalue(static_cast<int64_t>(n));
+                    }
+                    break;
+                }
+                case SqlParameterType::Double: {
+                    const double d = std::stod(value, &used);
+                    if (used == value.size()) {
+                        return crow::json::wvalue(d);
+                    }
+                    break;
+                }
+                case SqlParameterType::Boolean:
+                    if (value == "true" || value == "false") {
+                        return crow::json::wvalue(value == "true");
+                    }
+                    break;
+                default:
+                    break;
+            }
+        } catch (const std::exception&) {
+            // not a number after all: echoed as the string it is
+        }
+    }
+    return crow::json::wvalue(value);
+}
+
+crow::json::wvalue MCPDryRun::bindingsJson(const std::vector<PreparedBindingSpec>& bindings,
+                                           const std::map<std::string, std::string>& values,
+                                           const std::vector<RequestFieldConfig>& fields,
+                                           const TemplateSecrets& secrets) {
+    crow::json::wvalue list = crow::json::wvalue::list();
+    for (std::size_t i = 0; i < bindings.size(); ++i) {
+        const auto& b = bindings[i];
+        crow::json::wvalue entry;
+        entry["position"] = static_cast<int64_t>(i + 1);
+        entry["name"] = b.field_name;
+        entry["type"] = typeName(b.type);
+        const auto it = values.find(b.field_name);
+        if (it == values.end()) {
+            entry["value"] = nullptr;
+        } else if (isCredentialKey(b.field_name)) {
+            entry["value"] = "<redacted>";
+        } else {
+            const std::string scrubbed = secrets.withhold() ? std::string("<redacted>") : secrets.scrub(it->second);
+            entry["value"] = scrubbed == it->second ? typedParameter(it->second, findField(fields, b.field_name))
+                                                    : crow::json::wvalue(scrubbed);
+        }
+        list[i] = std::move(entry);
+    }
+    return list;
+}
+
+std::string MCPDryRun::formatResult(const std::string& tool_name,
+                                    const std::string& rendered_sql,
+                                    const std::map<std::string, std::string>& parameters,
+                                    const std::vector<PreparedBindingSpec>& bindings,
+                                    const std::vector<RequestFieldConfig>& fields,
+                                    const TemplateSecrets& secrets) {
+    crow::json::wvalue payload;
+    payload["dry_run"] = true;
+    payload["tool_name"] = tool_name;
+    payload["rendered_sql"] = rendered_sql;
+    payload["bindings"] = bindingsJson(bindings, parameters, fields, secrets);
+
+    crow::json::wvalue params_obj = crow::json::wvalue::object();
+    for (const auto& [k, v] : parameters) {
+        if (isCredentialKey(k)) {
+            params_obj[k] = std::string("<redacted>");
+        } else {
+            params_obj[k] = typedParameter(v, findField(fields, k));
+        }
+    }
+    payload["parameters"] = std::move(params_obj);
+    return payload.dump();
+}
+
 } // namespace flapi

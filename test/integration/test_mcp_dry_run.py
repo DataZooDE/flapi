@@ -234,8 +234,11 @@ class TestDryRunMode:
         inner = json.loads(inner_text)
         assert inner["dry_run"] is True, inner
         assert "rendered_sql" in inner, inner
-        # The rendered SQL must contain the substituted id literal.
-        assert "42" in inner["rendered_sql"], inner["rendered_sql"]
+        # The rendered SQL is what runs: the typed id is a bound `?`, and its
+        # value is listed in `bindings` (it used to be pasted into the SQL).
+        assert "?" in inner["rendered_sql"], inner["rendered_sql"]
+        assert inner["bindings"][0]["value"] == 42, inner
+        assert inner["parameters"]["id"] == 42, inner
 
     def test_normal_call_does_not_emit_dry_run_payload(self, dry_run_server):
         # Sanity: a regular call still works against the in-mem connection

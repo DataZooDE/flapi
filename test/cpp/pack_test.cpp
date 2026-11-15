@@ -3,6 +3,7 @@
 #include "bundle_locator.hpp"
 #include "pack.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -373,4 +374,43 @@ TEST_CASE("Pack refuses a missing extension directory", "[pack][extensions]") {
     opts.extensions_dir = input.path() / "does-not-exist";
     TempFilePath out;
     REQUIRE_THROWS_AS(Pack(input.path(), out.path(), opts), PackError);
+}
+
+TEST_CASE("Pack leaves the DuckLake catalog and --exclude globs out", "[pack][exclude]") {
+    // A DuckLake catalog is runtime state that a bundle never opens, and often
+    // the largest thing in the tree: it was bundled as dead weight.
+    TempDir host_dir;
+    TempDir input;
+    PopulateSampleTree(input);
+    input.WriteFile("cache.ducklake", "catalog");
+    input.WriteFile("cache.ducklake.wal", "wal");
+    input.WriteFile("cache_data/main/t/ducklake-1.parquet", "parquet");
+    input.WriteFile("scratch/notes.txt", "notes");
+
+    PackOptions opts;
+    opts.host_binary_override = WriteFakeHost(host_dir);
+    opts.source_date_epoch = 0;
+    opts.exclude_globs = {"cache_data", "scratch/*.txt"};
+
+    TempFilePath out;
+    auto result = Pack(input.path(), out.path(), opts);
+    REQUIRE(result.entry_count == 4);   // just the sample tree
+    std::vector<std::string> excluded = result.excluded;
+    std::sort(excluded.begin(), excluded.end());
+    REQUIRE(excluded == std::vector<std::string>{"cache.ducklake", "cache.ducklake.wal",
+                                                 "cache_data/main/t/ducklake-1.parquet", "scratch/notes.txt"});
+}
+
+TEST_CASE("Pack exclude globs", "[pack][exclude]") {
+    const std::vector<std::string> globs{"*.ducklake", "data/big/**", "logs/"};
+    REQUIRE(MatchesPackExclude("cache.ducklake", globs));
+    REQUIRE(MatchesPackExclude("deep/dir/cache.ducklake", globs));   // no `/`: any depth
+    REQUIRE(MatchesPackExclude("data/big/a/b.parquet", globs));
+    REQUIRE(MatchesPackExclude("logs/today.log", globs));            // a directory, trailing `/`
+    REQUIRE_FALSE(MatchesPackExclude("data/small.csv", globs));
+    REQUIRE_FALSE(MatchesPackExclude("cache.ducklake.txt", globs));
+    REQUIRE_FALSE(MatchesPackExclude("flapi.yaml", globs));
+    // `*` stays inside one segment.
+    REQUIRE_FALSE(MatchesPackExclude("a/b/c.txt", {"a/*.txt"}));
+    REQUIRE(MatchesPackExclude("a/c.txt", {"a/*.txt"}));
 }

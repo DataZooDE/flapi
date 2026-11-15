@@ -55,7 +55,7 @@ Templates have access to these variables:
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `params.*` | Request parameters | `params.id`, `params.limit` |
+| `params.*` | Request parameters | `params.id`, `params.status` |
 | `conn.*` | Connection properties | `conn.path`, `conn.host` |
 | `env.*` | Environment variables | `env.API_KEY` |
 | `cache.*` | Cache metadata | `cache.table`, `cache.previousSnapshotTimestamp` |
@@ -63,18 +63,20 @@ Templates have access to these variables:
 
 ### Template Syntax
 
-**Triple Braces (String Escaping):**
+**Triple Braces (raw text, no escaping):**
 ```sql
--- Escapes quotes for safe string interpolation
+-- Inserts the value as-is; quotes are NOT doubled
 WHERE name = '{{{ params.name }}}'
--- Input: O'Brien → Output: 'O''Brien'
+-- Input: O'Brien → Output: 'O'Brien'  (a syntax error; a crafted value is injection)
 ```
+Only the validator (and the SQL-injection screen) stands between the value and the SQL here.
 
-**Double Braces (Raw Output):**
+**Double Braces (bound or HTML-escaped):**
 ```sql
--- No escaping, for numbers and identifiers
-LIMIT {{ params.limit }}
--- Input: 100 → Output: 100
+-- Outside a section, on a field with a typed validator: replaced by `?` and bound
+WHERE id = {{ params.id }}
+-- Inside a {{#...}} section, or without a typed validator: HTML-escaped text
+-- Input: O'Brien → Output: O&#39;Brien
 ```
 
 **Conditional Sections:**
@@ -92,8 +94,10 @@ LIMIT {{ params.limit }}
 
 **Default Values:**
 ```sql
-LIMIT {{#params.limit}}{{ params.limit }}{{/params.limit}}{{^params.limit}}100{{/params.limit}}
+AND region = '{{#params.region}}{{{ params.region }}}{{/params.region}}{{^params.region}}EU{{/params.region}}'
 ```
+`limit`/`offset` are reserved for pagination (`with-pagination`, on by default); a template
+`LIMIT {{ params.limit }}` runs before flAPI's offset and breaks paging.
 
 ### Processing Flow
 
@@ -144,6 +148,32 @@ struct QueryResult {
     crow::json::wvalue toJson() const;
 };
 ```
+
+**Template syntax check** (`src/mustache_syntax_check.cpp`): the bundled crow Mustache parser has no
+balance checks of its own - a stray `{{/x}}` crashed the process (SIGSEGV) and an unclosed `{{#x}}` with
+`x` absent looped forever while memory grew. Every template is therefore checked before crow compiles
+it: at load and reload (`EndpointConfigParser`), in `--validate-config`, on a config-service template
+update, and on every render (`SQLTemplateProcessor::compileTemplate`, since a template is re-read from
+disk per request). Rejected: unbalanced or crossed sections, `{{{` not closed by `}}}`, an unterminated
+`{{`, empty tags and section names, partials (`{{> x}}`) and set-delimiter tags (`{{= =}}`). Errors read
+`Invalid template <file>:<line>:<col>: <what>`; at request time the answer is a 500.
+
+**JSON values** (`QueryResult::decimalToJson`, `convertVectorTimestampToJson`):
+
+- `DECIMAL` is rendered from DuckDB's exact text, not through `double`: scale 0 with at most 18 digits
+  becomes a JSON integer; scale up to 6 with at most 9 integer digits becomes the exact JSON number
+  (`7790.62`, not `7790.61999999999989086`). Wider decimals fall back to the nearest double.
+- `TIMESTAMP` / `TIMESTAMPTZ` keep microseconds; `TIMESTAMP_S` and `TIMESTAMP_MS` are decoded in their
+  own unit, `TIMESTAMP_NS` keeps 9 fractional digits; DuckDB's infinities become the strings
+  `"infinity"` / `"-infinity"`. Only `TIMESTAMPTZ` (an instant, stored as UTC) carries the `Z`
+  (`2024-01-01T10:00:00.123456Z`); the naive `TIMESTAMP` family has no zone and none is printed
+  (`2024-01-01T10:00:00.123456`).
+- `DOUBLE` / `FLOAT` are printed in their shortest round-trip form (`711.56`, not
+  `711.55999999999994543`; a `FLOAT` `0.1` is `0.1`); an integral value keeps `.0`.
+- Row objects list their keys in `SELECT` column order, in JSON (REST, MCP `tools/call`,
+  `resources/read`) and CSV alike (`QueryResult::dumpData`, which every response path uses instead of
+  `crow::json::wvalue::dump`: a crow object is an unordered map).
+- SQL `NULL` is JSON `null`.
 
 ### WriteResult Structure
 
@@ -295,11 +325,23 @@ Write operations have additional features:
 
 ```yaml
 operation:
-  type: write
+  type: Write
   transaction: true          # Wrap in BEGIN/COMMIT
-  returns_data: true         # Expect RETURNING clause
-  validate_before_write: true
+  returns-data: true         # Expect RETURNING clause
+  validate-before-write: true
 ```
+
+`POST`, `PUT`, `PATCH` and `DELETE` all take this path (`RequestHandler` → `executeWrite`): parameters
+are extracted and validated, the template is rendered, the statements run, and the response is
+`{"rows_affected": n}` or the `RETURNING` rows. `DELETE` used to bypass it (cache invalidation or `405`).
+
+After a successful write to an endpoint with a cache, `cache.invalidate-on-write` refreshes the cache
+synchronously before the response; `cache.refresh-on-write` schedules an asynchronous refresh after the
+response, coalesced per endpoint; with both set only the synchronous refresh runs. MCP tool writes use
+the same rules.
+
+A failure anywhere here is answered with the generic `500` body and a `request_id`; the DuckDB error is
+logged under that id (see [security.md](./security.md#error-responses)).
 
 ```cpp
 WriteResult executeWriteInTransaction(const EndpointConfig& endpoint,

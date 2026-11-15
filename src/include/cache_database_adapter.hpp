@@ -1,7 +1,9 @@
 #pragma once
 
 #include <string>
+#include <cstdint>
 #include <map>
+#include <optional>
 
 namespace flapi {
 
@@ -9,6 +11,13 @@ namespace flapi {
 struct EndpointConfig;
 struct CacheConfig;
 class QueryResult;
+
+/// The table a cache populate template is required to write.
+struct PopulateTarget {
+    std::string catalog;
+    std::string schema;
+    std::string table;
+};
 
 /**
  * Interface for database operations used by CacheManager.
@@ -43,6 +52,40 @@ public:
      * @return QueryResult containing the query results
      */
     virtual QueryResult executeDuckLakeQueryWithResult(const std::string& query) = 0;
+
+    /**
+     * Execute a DuckLake write (the rendered cache populate template) and
+     * report how many rows it wrote, when DuckDB says so.
+     *
+     * DuckDB answers CTAS / INSERT / MERGE / UPDATE / DELETE with a single
+     * `Count` row; for a multi-statement template that is the LAST
+     * statement's count. Anything else (DDL, a SELECT, no result) yields
+     * nullopt rather than a guess. The default keeps test doubles that only
+     * implement executeDuckLakeQuery working.
+     */
+    virtual std::optional<int64_t> executeDuckLakeQueryCountingRows(
+        const std::string& query, const std::map<std::string, std::string>& params = {}) {
+        executeDuckLakeQuery(query, params);
+        return std::nullopt;
+    }
+
+    /**
+     * Execute a rendered cache populate template that must build `target`.
+     *
+     * The real implementation refuses a template containing a bare SELECT before
+     * running anything, fails (and rolls back) a script that did not leave
+     * `target` existing, and with `rebuild` drops `target` inside the same
+     * transaction first so the template's full-load branch rebuilds it from
+     * scratch. The default delegates to executeDuckLakeQueryCountingRows so test
+     * doubles keep working unchanged.
+     */
+    virtual std::optional<int64_t> executePopulateScript(const std::string& script,
+                                                         const PopulateTarget& target,
+                                                         bool rebuild) {
+        (void)target;
+        (void)rebuild;
+        return executeDuckLakeQueryCountingRows(script, {});
+    }
 };
 
 } // namespace flapi

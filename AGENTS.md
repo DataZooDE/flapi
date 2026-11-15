@@ -37,7 +37,30 @@ Architecture and design (the "how it works" tree):
   - [observability.md](docs/spec/components/observability.md) - Request identity, spans, capture tiers
 
 Task-first guides (`docs/guides/`): getting-started, rest-endpoints, mcp-tools,
-caching, authentication, cloud-storage, yaml-includes, self-packaging.
+caching, authentication, cloud-storage, yaml-includes, self-packaging,
+serverless, claude-code.
+
+### Claude Code plugin (`plugins/flapi/`)
+
+flAPI ships a Claude Code plugin from this repo (`.claude-plugin/marketplace.json`
+-> `plugins/flapi/`): 10 skills (`skills/flapi-*/SKILL.md`), 7 slash commands
+(`commands/`), an MCP server entry (`.mcp.json`) and a validate-and-reload hook
+(`hooks/`). Load it in-repo with `claude --plugin-dir ./plugins/flapi`.
+
+- **Update the skill in the same PR as the feature.** A new config key, CLI flag,
+  template variable or behaviour change is not done until the skill that teaches it
+  says so.
+- `make check-skills` (CI: `cli-integration` job) checks every YAML key against the
+  parser, every `flapi`/`flapii` command and option against `--help`, every
+  `{{cache.*}}` variable, the version stamp, and runs every tagged example through
+  `--validate-config` and a live server. Tag runnable examples
+  (`# flapi: endpoint group=g file=x.yaml`, `-- flapi: template ...`,
+  `# flapi: check GET /x -> 200`); see `scripts/check_skills.py`.
+- Version: `plugin.json`, every SKILL.md `version:` and `**flAPI:** v...` banner
+  equal the newest `## vX.Y.Z` heading in CHANGELOG.md. Bump them in the release-prep
+  commit.
+- Deprecated or wrong facts the skills must not teach are listed in
+  `scripts/skill_snippets/forbidden.txt`.
 
 Reference:
 - [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md) - Configuration file format
@@ -212,7 +235,7 @@ connections:
 
 **Key Points:**
 - Properties are custom per connection type (file path vs. database credentials)
-- Environment variables supported via `{{env.VAR_NAME}}` (must match `template.environment-whitelist` in flapi.yaml; an unlisted one stops startup; empty whitelist = none; `{{env.VAR}}` is NOT supported)
+- Environment variables supported via `{{env.VAR_NAME}}` (must match `template.environment-whitelist` in flapi.yaml; an unlisted one stops startup; empty whitelist = none; `${VAR}` is NOT supported - only `{{env.VAR}}`, with optional spaces inside the braces)
 - Loaded once at startup, reused for all requests
 - Available in templates as `conn.property_name`
 
@@ -273,8 +296,9 @@ WHERE 1=1
   AND price >= {{ params.min_price }}
 {{/params.min_price}}
 ORDER BY created_at DESC
-LIMIT {{#params.limit}}{{ params.limit }}{{/params.limit}}{{^params.limit}}100{{/params.limit}}
 ```
+
+> **Pagination owns `limit`/`offset`.** GET endpoints are paginated by default (`with-pagination: true`, 100 rows per page, body `{next, total_count, data}`), and `?limit=`/`?offset=` are reserved for it. Never write `LIMIT {{ params.limit }}` in a template: it applies before flAPI's offset, so `?limit=2&offset=2` returns `data: []`.
 
 ### 4. Validators
 
@@ -290,12 +314,12 @@ validators:
   - type: string
     min-length: 1
     max-length: 200
-    pattern: "^[a-zA-Z0-9_]+$"
+    regex: "^[a-zA-Z0-9_]+$"
 
   - type: email
   - type: uuid
   - type: enum
-    values: ["active", "inactive", "pending"]
+    allowedValues: ["active", "inactive", "pending"]
   - type: date
     min: "2020-01-01"
     max: "2025-12-31"
@@ -332,7 +356,7 @@ cache:
 - `{{cache.table}}` - Cache table name
 - `{{cache.schema}}` - Schema name
 - `{{cache.previousSnapshotTimestamp}}` - Last refresh time
-- `{{cache.currentSnapshotTimestamp}}` - This refresh time
+- `{{cache.snapshotTimestamp}}` - This refresh time (`{{cache.currentSnapshotTimestamp}}` does not exist and renders empty)
 
 **Snapshot Lifecycle:**
 ```
@@ -361,8 +385,7 @@ method: GET                        # HTTP method
 request:
   - field-name: id
     field-in: query               # query, path, header, body
-    field-type: int
-    required: false
+    required: false               # the type comes from the validator; `field-type` has no effect (startup warns)
     validators:
       - type: int
         min: 1
@@ -389,15 +412,18 @@ mcp-tool:
         type: integer
         description: Customer ID
 
-# Authorization (optional)
+# Authorization (optional). Without this block the top-level `auth:` of
+# flapi.yaml applies; this block REPLACES it (no merge); `auth: {enabled: false}`
+# opts this endpoint out.
 auth:
-  required: true
-  roles: [admin, user]
+  enabled: true
+  type: basic                      # basic | bearer (alias: jwt) | oidc
+  roles: [admin, user]             # caller needs one of them, else 403; empty = any authenticated caller
 ```
 
 **SQL Template with Mustache** (`sqls/endpoint_name.sql`):
 ```sql
-SELECT * FROM read_parquet('{{ context.conn.path }}')
+SELECT * FROM read_parquet('{{{ conn.path }}}')
 WHERE 1=1
 {{#params.id}}
   AND customer_id = {{ params.id }}
@@ -409,8 +435,9 @@ WHERE 1=1
 
 Template variables available:
 - `params.*`: Query/path/body parameters from request
-- `context.conn.*`: Connection properties (paths, credentials)
-- `context.auth.*`: Authentication context
+- `conn.*`: Connection properties (paths, credentials) of the endpoint's first connection
+- `auth.*`: Authentication context (`auth.username`, `auth.roles`, `auth.email`, `auth.type`, `auth.authenticated`)
+- `context.conn.*` / `context.auth.*` do **not** exist and render as empty strings
 
 ### 6. Self-Packaging (single-binary deploy)
 
@@ -484,15 +511,14 @@ WHERE 1=1
   AND column2 = {{{ params.filter2 }}}
 {{/params.filter2}}
 ORDER BY created_at DESC
-LIMIT {{#params.limit}}{{ params.limit }}{{/params.limit}}{{^params.limit}}100{{/params.limit}}
 ```
 
 **Why This Works:**
 - `WHERE 1=1` allows adding any number of AND conditions
 - Each condition wrapped in conditional section (only rendered if parameter exists)
-- Default applied if parameter not specified (see LIMIT)
+- No `LIMIT`: default pagination adds it (see the warning in §3)
 - Triple braces for strings, double for numbers
-- No SQL injection risk (validators + escaping)
+- Injection defence is the validator (plus prepared-statement binding for a bare `{{ params.x }}` outside sections); neither brace form escapes SQL
 
 ### Template Variable Types
 
@@ -511,9 +537,10 @@ LIMIT {{#params.limit}}{{ params.limit }}{{/params.limit}}{{^params.limit}}100{{
 
 **Default Values:**
 ```sql
-LIMIT {{#params.limit}}{{ params.limit }}{{/params.limit}}{{^params.limit}}100{{/params.limit}}
--- Use params.limit if provided, otherwise default to 100
+AND region = '{{#params.region}}{{{ params.region }}}{{/params.region}}{{^params.region}}EU{{/params.region}}'
+-- Use params.region if provided, otherwise default to EU
 ```
+(Not for `limit`/`offset`: those are reserved for pagination.)
 
 **Connection Properties:**
 ```sql
@@ -526,7 +553,7 @@ SELECT * FROM read_parquet('{{{ conn.path }}}')
 INSERT INTO {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
 SELECT * FROM source
 {{#cache.previousSnapshotTimestamp}}
-WHERE updated_at > TIMESTAMP '{{cache.previousSnapshotTimestamp}}'
+WHERE updated_at > TIMESTAMP '{{{cache.previousSnapshotTimestamp}}}'
 {{/cache.previousSnapshotTimestamp}}
 -- Only refresh rows changed since last snapshot
 ```
@@ -715,20 +742,20 @@ cache:
   schedule: 6h                     # how often to refresh
   # Mode is INFERRED from primary-key/cursor - there is no `refresh:` key.
   table: cache_table_name          # Where to store cached results
-  refresh_query: |                 # Optional: custom refresh query
-    SELECT * FROM external_source
+  template-file: cache_populate.sql  # The populate SQL (there is no refresh_query key)
 ```
 
 **Cache Refresh Lifecycle:**
-1. HeartbeatWorker monitors cache expiration schedules
-2. On refresh trigger: execute refresh query
-3. Full refresh: `REPLACE INTO cache_table SELECT ...`
-4. Incremental: `INSERT INTO cache_table SELECT ...`
-5. Subsequent requests serve from cache until TTL expires
+1. HeartbeatWorker checks `cache.schedule` (the scheduler is on by default; `ducklake.scheduler.enabled: false` opts out). There is no refresh at boot beyond warm-up: a cache is due one `schedule` after its last refresh
+2. On refresh trigger: run the `template-file` **verbatim**, all statements in one transaction (a failure changes nothing)
+3. Full refresh: the template must write the table itself, e.g. `CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS SELECT ...` (a bare `SELECT` statement is refused before anything runs, and a script that leaves no cache table fails and rolls back)
+4. Incremental: `INSERT INTO ...` (append) or a single-action `MERGE` (merge), behind a `{{^cache.previousSnapshotTimestamp}}` bootstrap that creates the table on the first run
+5. Requests always read the cache table; a GET never triggers a refresh. A cache whose first build failed answers `503 {"error":"cache_build_failed"}`
+6. Full rebuild on demand: `flapii cache refresh <path> --full` / `?full=true` / `flapi cache refresh --full` drops the table and rebuilds it with the watermark erased
 
 **Materialized Results:**
-- Cache tables stored in DuckDB local database
-- Results materialized as Parquet internally
+- Cache tables live in the DuckLake catalog (`ducklake.metadata-path`), not in `duckdb.db_path`
+- Data is written as Parquet files under `ducklake.data-path`
 - Fast serving from local storage (millisecond latency)
 
 ## Configuration Reference
@@ -763,7 +790,7 @@ duckdb:
     - name: postgres
 
 # Logging (top level, not nested under `server:`)
-log-level: info                     # debug, info, warn, error
+log-level: info                     # debug, info, warning (or warn), error; anything else stops startup
 log-format: text                    # text | json
 
 # MCP server (its own top-level block). No port of its own: MCP is served on
@@ -793,7 +820,7 @@ tracing:
 ```bash
 # Configuration
 FLAPI_CONFIG=path/to/flapi.yaml     # Config file path
-FLAPI_LOG_LEVEL=debug|info|warn|error
+FLAPI_LOG_LEVEL=debug|info|warning|warn|error
 FLAPI_PORT=8080                      # HTTP port (fallback for --port)
 FLAPI_HOST=0.0.0.0                   # Bind address (fallback for --host)
 
@@ -980,7 +1007,9 @@ method: GET
 request:
   - field-name: param1
     field-in: query
-    field-type: string
+    validators:
+      - type: string
+        max-length: 100
 template-source: my_endpoint.sql
 connection: [data-source]
 ```
@@ -988,7 +1017,7 @@ connection: [data-source]
 2. **Create SQL template** (`sqls/my_endpoint.sql`):
 ```sql
 SELECT * FROM table
-WHERE column = '{{ params.param1 }}'
+WHERE column = {{ params.param1 }}   -- bound as a prepared parameter: no quotes
 ```
 
 3. **Test locally**:
@@ -1103,8 +1132,8 @@ make run-debug
 - Templates use Mustache syntax: `{{ variable_name }}`
 - Available variables:
   - `params.*` - Request parameters
-  - `context.conn.*` - Connection properties
-  - `context.auth.*` - Auth context
+  - `conn.*` - Connection properties
+  - `auth.*` - Auth context
 - Test template rendering locally before deployment
 
 ### Debugging a Failed Request
@@ -1355,8 +1384,8 @@ Configure with cron expressions or interval schedules.
 ### Cache Strategy
 
 - Use full refresh (declare neither `primary-key` nor `cursor`) for small datasets
-- Use incremental refresh (`refresh: incremental`) for large append-only data
-- Set appropriate TTL based on data freshness requirements
+- Use incremental append (declare a `cursor`) for large append-only data
+- Set `cache.schedule` based on data freshness requirements (there is no TTL)
 - Monitor cache hit rates in logs
 
 ### Memory Management
@@ -1425,12 +1454,16 @@ Versioning: `v*` tags (e.g., `v0.5.0`). Tag push triggers the full release pipel
 ### Release Steps
 
 1. Ensure all CI builds pass on `main` (`gh run list`)
+   - In the release-prep commit, after rolling `## Unreleased` into `## v{version}`,
+     stamp the Claude Code plugin: `python3 scripts/check_skills.py --set-version {version}`
+     (rewrites plugin.json, every SKILL.md `version:` and banner), then
+     `python3 scripts/check_skills.py --static-only` must pass.
 2. Tag and push: `git tag v{version} && git push origin v{version}`
 3. `.github/workflows/build.yaml` triggers on `v*` tag push (there is no separate `release.yaml`):
    - Downloads build artifacts (4 flapi server + 4 flapii CLI binaries)
-   - Creates archive assets (`.tar.gz` for Unix, `.zip` for Windows)
+   - Creates archive assets for the **flapi server only** (`.tar.gz` for Unix, `.zip` for Windows)
    - Builds **4** `flapi_io` Python wheels via `bin-to-wheel`, each bundling both the flapi and flapii binaries for that platform
-   - Creates the GitHub Release with the archives and wheels
+   - Creates the GitHub Release with the 4 server archives, the wheels and `server.json`. The flapii binaries are **not** attached as standalone release assets; they ship only inside the `flapi-io` wheels (the `flapii-*` names in the table above are CI artifact names)
    - Publishes the `flapi-io` wheels to PyPI via trusted publishing (OIDC)
 
 ### PyPI Trusted Publishing Setup
@@ -1562,8 +1595,8 @@ curl -v "http://localhost:8080/endpoint?id=test"
 **Problem:** Cache data is stale, refresh not triggering
 
 **Causes:**
-- Cache schedule not firing (disabled or incorrect syntax)
-- Template error in cache populate SQL
+- Scheduler opted out (`ducklake.scheduler.enabled: false`; startup warns)
+- Template error in cache populate SQL (a bare `SELECT` is refused: the template must write the table)
 - DuckLake not initialized
 - Cache table doesn't exist
 
@@ -1572,8 +1605,12 @@ curl -v "http://localhost:8080/endpoint?id=test"
 # Check cache configuration
 flapii cache get /endpoint
 
-# Manually force refresh
+# Refresh now, or drop and rebuild from scratch
 flapii cache refresh /endpoint
+flapii cache refresh /endpoint --full
+
+# Refresh history: mode, status, duration, rows, snapshot
+flapii cache audit /endpoint -o table
 
 # Check cache status
 flapii cache list
@@ -1613,8 +1650,8 @@ request:
 ```
 
 ```bash
-# Trigger garbage collection
-flapii cache gc
+# Expire old snapshots per retention and delete their files (path is required)
+flapii cache gc /endpoint
 
 # Check retention policy
 flapii cache get /endpoint | jq '.cache.retention'
@@ -1657,17 +1694,18 @@ flapii config log-level debug
 
 #### Authentication Failures
 
-**Problem:** `401 Unauthorized` or JWT validation errors
+**Problem:** `401 Unauthorized`, `403 Forbidden` or JWT validation errors
 
 **Causes:**
 - Missing or invalid JWT secret
 - Token expired or malformed
-- Auth not enabled for endpoint
+- Auth not enabled for endpoint (or inherited from the top-level `auth:` when the endpoint has no block)
 - Wrong authentication type
+- `403`: authenticated, but the principal holds none of the endpoint's `auth.roles`
 
 **Solution:**
 ```bash
-# Check if auth is enabled for endpoint
+# Check if auth is enabled for endpoint (`inherited: true` = the top-level auth applies)
 flapii endpoints get /endpoint | jq '.auth'
 
 # Verify JWT secret is set
@@ -1680,12 +1718,12 @@ echo $JWT_SECRET  # Must not be empty
 cat flapi.yaml | grep -A 10 "auth:"
 
 # Test without auth (temporary)
-# Remove or set required: false in endpoint config
+# Set `auth: {enabled: false}` on the endpoint (removing the block inherits the top-level auth)
 ```
 
 #### SQL Syntax Errors
 
-**Problem:** `400 Bad Request` or `500 Internal Server Error` with SQL error
+**Problem:** `400 Bad Request` or `500 Internal Server Error`. A 500 body carries only a `request_id`; grep the server log for it to see the SQL error
 
 **Causes:**
 - Invalid SQL generated from template

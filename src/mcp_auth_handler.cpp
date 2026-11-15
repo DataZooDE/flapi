@@ -92,7 +92,7 @@ std::optional<MCPSession::AuthContext> MCPAuthHandler::authenticateBasic(
     for (const auto& user : mcp_auth.users) {
         if (user.username == username) {
             // Use AuthMiddleware's password verification (supports MD5 hashing)
-            if (AuthMiddleware::verifyPassword(password, user.password)) {
+            if (AuthMiddleware::verifyCredentials(username, password, user.password)) {
                 MCPSession::AuthContext ctx;
                 ctx.authenticated = true;
                 ctx.username = username;

@@ -116,7 +116,7 @@ auth:
     REQUIRE_FALSE(hasWarning(warnings, "AUTH_PLAINTEXT_PASSWORD"));
 }
 
-TEST_CASE("SecurityAuditor: bcrypt password produces no warning", "[security][audit][password]") {
+TEST_CASE("SecurityAuditor: bcrypt password is reported as unverifiable, not as plaintext", "[security][audit][password]") {
     std::string config_content = R"(
 project-name: bcrypt-project
 project-description: Endpoint configured with bcrypt password hash
@@ -154,6 +154,8 @@ auth:
 
     REQUIRE_FALSE(hasWarning(warnings, "AUTH_PLAINTEXT_PASSWORD"));
     REQUIRE_FALSE(hasWarning(warnings, "AUTH_MD5_PASSWORD"));
+    // PasswordHasher refuses bcrypt, so this user can never log in: say so.
+    REQUIRE(hasWarning(warnings, "AUTH_BCRYPT_UNSUPPORTED"));
 }
 
 TEST_CASE("SecurityAuditor: MCP tool without auth is flagged", "[security][audit][mcp]") {
@@ -295,6 +297,128 @@ auth:
         REQUIRE_FALSE(w.code.empty());
         REQUIRE_FALSE(w.message.empty());
     }
+}
+
+
+TEST_CASE("SecurityAuditor: PBKDF2 hashes are not reported as plaintext", "[security][audit][password]") {
+    REQUIRE(SecurityAuditor::classifyPassword(
+                "$pbkdf2-sha256$600000$c2FsdHNhbHRzYWx0c2FsdA$aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaGhhc2g")
+            .empty());
+    // passlib's ab64 form too
+    REQUIRE(SecurityAuditor::classifyPassword(
+                "$pbkdf2-sha256$1000$....AQID.AARIjNEVWZ3iA$hK0WL5EIFIQeq3GChnG.dHp7OjTY5QJhSA3DQVVfOu4")
+            .empty());
+    REQUIRE(SecurityAuditor::classifyPassword("hunter2") == "AUTH_PLAINTEXT_PASSWORD");
+    REQUIRE(SecurityAuditor::classifyPassword("68675fbd5f8a9f03341659489a70944f") == "AUTH_MD5_PASSWORD");
+    // bcrypt is recognised but never verifies: report it, do not bless it
+    REQUIRE(SecurityAuditor::classifyPassword("$2b$12$Qz5e9p1m2n3o4p5q6r7s8eABCDEFGHIJKLMNOPQRSTUVWXYZabcd") ==
+            "AUTH_BCRYPT_UNSUPPORTED");
+}
+
+TEST_CASE("SecurityAuditor: advice names a real way to make a PBKDF2 hash", "[security][audit][password]") {
+    TempTestConfig temp(R"(
+project-name: advice
+template:
+  path: ./sqls
+connections:
+  test:
+    properties:
+      path: ./data.parquet
+)", "audit_advice");
+    temp.writeEndpoint("e.yaml", R"(
+url-path: /e
+template-source: e.sql
+connection: [test]
+auth:
+  enabled: true
+  type: basic
+  users:
+    - username: u
+      password: plain-text-pw
+)");
+    temp.writeSqlTemplate("e.sql", "SELECT 1");
+    auto cm = temp.createConfigManager();
+    auto warnings = SecurityAuditor{}.audit(*cm);
+    auto it = std::find_if(warnings.begin(), warnings.end(),
+                           [](const SecurityWarning& w) { return w.code == "AUTH_PLAINTEXT_PASSWORD"; });
+    REQUIRE(it != warnings.end());
+    REQUIRE(it->message.find("pbkdf2_sha256") != std::string::npos);
+    REQUIRE(it->message.find("bcrypt") == std::string::npos);
+    REQUIRE(it->message.find("flapii auth hash") == std::string::npos);
+}
+
+TEST_CASE("SecurityAuditor: wildcard CORS with auth is flagged", "[security][audit][cors]") {
+    const std::string base = R"(
+project-name: cors-audit
+template:
+  path: ./sqls
+connections:
+  test:
+    properties:
+      path: ./data.parquet
+)";
+    SECTION("explicit * with global auth") {
+        TempTestConfig temp(base + R"(
+cors:
+  allow-origins: ["*"]
+auth:
+  enabled: true
+  type: basic
+  users:
+    - username: u
+      password: $pbkdf2-sha256$1000$....AQID.AARIjNEVWZ3iA$hK0WL5EIFIQeq3GChnG.dHp7OjTY5QJhSA3DQVVfOu4
+)", "audit_cors_star");
+        auto cm = temp.createConfigManager();
+        REQUIRE(hasWarning(SecurityAuditor{}.audit(*cm), "CORS_WILDCARD_WITH_AUTH"));
+    }
+    SECTION("an allowlist with auth is fine") {
+        TempTestConfig temp(base + R"(
+cors:
+  allow-origins: ["https://app.example.com"]
+auth:
+  enabled: true
+  type: basic
+  users:
+    - username: u
+      password: $pbkdf2-sha256$1000$....AQID.AARIjNEVWZ3iA$hK0WL5EIFIQeq3GChnG.dHp7OjTY5QJhSA3DQVVfOu4
+)", "audit_cors_list");
+        auto cm = temp.createConfigManager();
+        REQUIRE_FALSE(hasWarning(SecurityAuditor{}.audit(*cm), "CORS_WILDCARD_WITH_AUTH"));
+    }
+    SECTION("wildcard without any auth is not flagged") {
+        TempTestConfig temp(base + R"(
+cors:
+  allow-origins: ["*"]
+)", "audit_cors_noauth");
+        auto cm = temp.createConfigManager();
+        REQUIRE_FALSE(hasWarning(SecurityAuditor{}.audit(*cm), "CORS_WILDCARD_WITH_AUTH"));
+    }
+}
+
+TEST_CASE("SecurityAuditor: global users are audited once, not per inheriting endpoint", "[security][audit][global]") {
+    TempTestConfig temp(R"(
+project-name: global-audit
+template:
+  path: ./sqls
+connections:
+  test:
+    properties:
+      path: ./data.parquet
+auth:
+  enabled: true
+  type: basic
+  users:
+    - username: u
+      password: plain-text-pw
+)", "audit_global_once");
+    temp.writeSqlTemplate("e.sql", "SELECT 1");
+    temp.writeEndpoint("a.yaml", "url-path: /a\ntemplate-source: e.sql\nconnection: [test]\n");
+    temp.writeEndpoint("b.yaml", "url-path: /b\ntemplate-source: e.sql\nconnection: [test]\n");
+    auto cm = temp.createConfigManager();
+    auto warnings = SecurityAuditor{}.audit(*cm);
+    const auto n = std::count_if(warnings.begin(), warnings.end(),
+                                 [](const SecurityWarning& w) { return w.code == "AUTH_PLAINTEXT_PASSWORD"; });
+    REQUIRE(n == 1);
 }
 
 } // namespace test

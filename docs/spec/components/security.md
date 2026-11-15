@@ -76,14 +76,16 @@ public:
 
 ### Authentication Types
 
-#### JWT Authentication
+#### Bearer / JWT Authentication
+
+`type: jwt` is an alias of `type: bearer` (normalised at load, `ConfigManager::normalizeAuthType`).
 
 ```yaml
 auth:
   enabled: true
-  type: jwt
-  jwt_secret: '{{env.JWT_SECRET}}'
-  jwt_issuer: my-app
+  type: bearer            # or jwt
+  jwt-secret: '{{env.JWT_SECRET}}'
+  jwt-issuer: my-app
 ```
 
 **Token validation:**
@@ -123,6 +125,25 @@ auth:
 Authorization: Basic YWRtaW46cGFzc3dvcmQ=
 ```
 
+**Stored passwords** (`src/password_hasher.cpp`): `$pbkdf2-sha256$…` MCF strings are verified
+(passlib's ab64 alphabet as well as standard and URL-safe base64). bcrypt hashes are recognised and
+**always refused** — the verifier never fails open on a format it cannot check — and the startup
+auditor (`src/security_auditor.cpp`) reports them as `AUTH_BCRYPT_UNSUPPORTED`. MD5 hex and
+plaintext still verify but are reported. The auditor's advice for all of them is
+`pbkdf2_sha256.using(rounds=600000).hash(...)` from passlib.
+
+**Verification cache** (`PasswordVerificationCache`, `src/password_hasher.cpp`): Basic auth
+(REST and `mcp.auth`) goes through `AuthMiddleware::verifyCredentials`, which remembers a
+*successful* PBKDF2 check for 5 minutes. The key is HMAC-SHA256 under a per-process random key
+over user, password and stored hash (length-prefixed), so no password is kept and a changed hash
+never matches; failures are never cached; at most 10 000 entries (expired ones swept first, then
+arbitrary eviction); every parse of an auth block (load, reload, config-service update) clears
+it. Derivations are capped at half the cores; a caller that cannot get a slot within 2 s is
+refused (fail closed). Before this every request paid ~165 ms of CPU, wrong passwords included.
+
+An enabled auth block with an unknown `type` is a load/reload error (`AUTH_UNKNOWN_TYPE`), not
+an endpoint that refuses everyone.
+
 #### OIDC Authentication (src/oidc_auth_handler.cpp)
 
 ```yaml
@@ -130,14 +151,18 @@ auth:
   enabled: true
   type: oidc
   oidc:
-    provider_type: google          # or microsoft, keycloak, generic
-    issuer_url: https://accounts.google.com
-    client_id: '{{env.GOOGLE_CLIENT_ID}}'
-    allowed_audiences:
+    provider-type: google          # or microsoft (azure, azure-ad, entra), keycloak, auth0, okta, github, generic
+    issuer-url: https://accounts.google.com
+    client-id: '{{env.GOOGLE_CLIENT_ID}}'
+    allowed-audiences:
       - my-app-client-id
-    username_claim: email
-    roles_claim: groups
+    username-claim: email
+    roles-claim: groups
 ```
+
+Presets with a templated issuer take `tenant-id` (alias `tenant`), `realm` and `domain`, which replace
+`{tenant}`, `{realm}` and `{domain}` in `issuer-url` (`OIDCProviderPresets::substitutePlaceholders`).
+A placeholder still present after substitution is a startup error naming the key to set.
 
 **OIDC components:**
 - `OIDCDiscoveryClient` - Fetches `.well-known/openid-configuration`
@@ -149,8 +174,8 @@ auth:
 ```yaml
 auth:
   enabled: true
-  from_aws_secretmanager:
-    secret_name: my-app/api-users
+  from-aws-secretmanager:
+    secret-name: my-app/api-users
     region: us-east-1
 ```
 
@@ -166,42 +191,95 @@ Endpoints can require specific roles:
 # sqls/admin_report.yaml
 url-path: /admin/report
 auth:
-  required: true
+  enabled: true
+  type: basic
   roles: [admin]       # Only admin role can access
+  users: [...]
 ```
 
-**Role checking:**
-```cpp
-bool checkRoles(const context& ctx, const EndpointConfig& endpoint) {
-    if (!endpoint.auth.required) return true;
-    if (endpoint.auth.roles.empty()) return ctx.authenticated;
+**Role checking** happens in `AuthMiddleware::before_handle`, right after a successful authentication
+(`AuthMiddleware::hasRequiredRole`): an empty `roles` list admits any authenticated principal; otherwise
+holding any one listed role suffices. A principal with none of them gets `403`
+`{"error":"Forbidden","message":"The authenticated principal does not hold any role this endpoint requires."}`
+and an info log line `Authorization denied for user '<name>' on <endpoint>`. A failed authentication is
+`401` with the endpoint scheme's challenge (`AuthMiddleware::challengeFor`: `Basic realm="flAPI"`, or
+`Bearer realm="flAPI"` plus `error="invalid_token"` when a bearer token was refused) and a JSON body
+`{"error":"Unauthorized","message":...}`; the audit line's `auth_kind` is the endpoint's scheme. MCP tools
+are authorised separately, by `mcp-tool.allowed-roles`.
 
-    for (const auto& required_role : endpoint.auth.roles) {
-        if (std::find(ctx.roles.begin(), ctx.roles.end(), required_role)
-            != ctx.roles.end()) {
-            return true;
-        }
-    }
-    return false;
-}
-```
+### Global Auth and Per-Endpoint Override
 
-### Per-Endpoint Auth Override
-
-Each endpoint can override global auth settings:
+The top-level `auth:` block is the default for every REST endpoint **without its own `auth:` block**
+(`ConfigManager::applyGlobalAuthDefault`, applied at load, on reload, and to endpoints created through
+the config service). Such an endpoint is marked `inherited`, which the config service reports as
+`auth.inherited`. An endpoint block that names a `type` or credentials replaces the global one outright —
+nothing is merged. A block that names neither (`roles:` only) takes the global type and credentials and
+keeps its own roles (`ConfigManager::inheritGlobalCredentials`, marked `credentials_inherited`; the YAML
+serialiser then writes its roles but not the type); with no enabled global block, or with credentials but
+no `type`, loading fails with `AUTH_NO_TYPE`. Keys the chosen type never reads are named in a load warning
+(`ConfigManager::warnIgnoredAuthKeys`, also for the global block and `mcp.auth`). Inside any
+`auth:` block (global or endpoint) `enabled` defaults to `true` when the block configures authentication
+(it sets `type`, `roles`, `users`, `jwt-secret`, `jwt-issuer`, `oidc` or `from-aws-secretmanager`), else to `false`; only an explicit `enabled: false` turns it off or opts an
+endpoint out (`parseEndpointAuth`, `parseAuthConfig`, `DeclaresAuthentication`; the effective value is
+logged):
 
 ```yaml
-# Public endpoint (no auth)
+# Public endpoint (no auth), even with a global auth: block
 url-path: /public/status
 auth:
-  required: false
+  enabled: false
 
 # Protected endpoint with specific roles
 url-path: /admin/users
 auth:
-  required: true
+  enabled: true
+  type: basic
   roles: [admin]
+  users: [...]
 ```
+
+### Route precedence and shadowing
+
+An endpoint's auth protects its own route entry. A request is resolved once per layer
+(rate limit, auth, handler), all through `ConfigManager::findEndpoint`, which picks the
+most specific matching route of the request's method - a literal segment beats a
+`:param`, left to right - independent of load order, so the three layers never disagree.
+Endpoints that could let an open route answer a protected one's URLs are refused at
+admission:
+
+- same route shape + same method (`/x/:id` vs `/x/:cid`; `get` vs `GET`): duplicate;
+- overlapping routes whose effective auth differs in any way, in either direction:
+  `Overlapping routes with different auth`, unless the more specific endpoint sets
+  `allow-shadowing: true` (then a WARNING). The comparison covers enabled, type, roles
+  and the identity source - users (name, password digest, per-user roles), a SHA-256
+  digest of `jwt-secret`, `jwt-issuer`, OIDC issuer/client/audiences/claims, and the
+  `from-aws-secretmanager` source; messages name the differing field, never a value.
+  A stricter literal is refused too: it protects one path string, while other spellings
+  of the same value (`/customers/07`, `/customers/+7`) still reach the general route;
+- `url-path` segments outside `[A-Za-z0-9._~-]+` / `:name`, `.` / `..` segments, a
+  repeated `:name`, and methods other than the
+  five REST methods: load error / 400. Literal segments are regex-escaped, and a route
+  that fails to compile matches nothing rather than crashing the worker.
+
+Route matching is exact and case-sensitive: trailing-slash, case, `//`, `%3A` and `HEAD`
+variants do not reach a different endpoint.
+
+### CORS and credentials
+
+`SecurityAuditor` warns `CORS_WILDCARD_WITH_AUTH` when any authentication is enabled and
+`cors.allow-origins` is empty or contains `*`: every origin then gets `Access-Control-Allow-Origin: *`,
+so a hostile page can call the API with a credential the browser holds and read the answer.
+
+Preflights: Crow answers `OPTIONS` as soon as the request line is parsed, before any header is read, so
+middlewares used to see a preflight without `Origin` and dropped every `Access-Control-Allow-*` header.
+`FlapiApp` specialises `handle_initial`/`handle` (`src/cors_middleware.cpp`) to defer the OPTIONS answer
+until the request is complete; `FlapiCorsMiddleware` then sets Allow-Origin, Allow-Methods, Allow-Headers
+(configured list, else the requested headers echoed, else `*` plus `Authorization, Content-Type,
+X-Config-Token, Mcp-Session-Id` when auth is on), `Access-Control-Max-Age: 600` and `Vary: Origin`.
+
+The auditor names REST endpoints with their method (`endpoint GET /orders`) and reports
+`AUTH_EMPTY_JWT_SECRET` for the global block, an endpoint and `mcp.auth`: authentication fails closed and
+every token is refused.
 
 ## Input Validation
 
@@ -231,10 +309,10 @@ private:
 | Type | Options | Example |
 |------|---------|---------|
 | `int` | `min`, `max` | `min: 1, max: 1000` |
-| `string` | `min-length`, `max-length`, `pattern` | `max-length: 200` |
+| `string` | `min-length`, `max-length`, `regex` (alias `pattern`) | `max-length: 200` |
 | `email` | - | Validates email format |
 | `uuid` | - | Validates UUID format |
-| `enum` | `values` | `values: [active, inactive]` |
+| `enum` | `allowedValues` (alias `values`) | `allowedValues: [active, inactive]` |
 | `date` | `min`, `max` | `min: 2020-01-01` |
 | `time` | `min`, `max` | `min: 09:00:00` |
 
@@ -259,14 +337,14 @@ request:
     field-in: query
     validators:
       - type: enum
-        values: [active, inactive, pending]
+        allowedValues: [active, inactive, pending]
 
   - field-name: name
     field-in: body
     validators:
       - type: string
         max-length: 200
-        pattern: "^[a-zA-Z0-9 ]+$"
+        regex: "^[a-zA-Z0-9 ]+$"
 ```
 
 ### SQL Injection Prevention
@@ -286,26 +364,28 @@ When enabled, rejects inputs containing:
 
 ### Triple Braces for Strings
 
-Triple braces `{{{ }}}` escape quotes for safe SQL interpolation:
+Triple braces `{{{ }}}` insert the value **unescaped**. They do not double
+quotes, so they are only as safe as the field's validator:
 
 ```sql
 -- Template
 WHERE name = '{{{ params.name }}}'
 
 -- Input: O'Brien
--- Output: WHERE name = 'O''Brien'
+-- Output: WHERE name = 'O'Brien'     (syntax error; a crafted value is injection)
 ```
 
 ### Double Braces for Numbers
 
-Double braces `{{ }}` for numeric values (no escaping):
+Outside a `{{#...}}` section, on a field with a typed validator, `{{ }}` is
+replaced by `?` and bound as a prepared-statement parameter. Elsewhere it is
+HTML-escaped text (`'` becomes `&#39;`), which is not SQL escaping:
 
 ```sql
--- Template
-LIMIT {{ params.limit }}
+-- Template (field `id` has `validators: [{type: int}]`)
+WHERE id = {{ params.id }}
 
--- Input: 100
--- Output: LIMIT 100
+-- Executed as: WHERE id = ?   with the value bound as an integer
 ```
 
 ### Safe Query Pattern
@@ -314,10 +394,10 @@ LIMIT {{ params.limit }}
 SELECT * FROM customers
 WHERE 1=1
 {{#params.name}}
-  AND name = '{{{ params.name }}}'   -- String: escaped
+  AND name = '{{{ params.name }}}'   -- String: raw text, relies on the validator
 {{/params.name}}
 {{#params.id}}
-  AND id = {{ params.id }}           -- Number: raw
+  AND id = {{ params.id }}           -- Number: HTML-escaped text (inside a section, not bound)
 {{/params.id}}
 ```
 
@@ -342,11 +422,13 @@ Request arrives
   - Reject SQL injection attempts
   - Reject if invalid → 400
     ↓
-[Layer 4: Template Escaping]
-  - Triple braces escape quotes
-  - Prevents injection in SQL
+[Layer 4: Template Rendering]
+  - Typed {{ }} outside sections become bound ? parameters
+  - Everything else is text: quoting discipline + validators
     ↓
 [Query Execution]
+  - Any failure → 500 with a fixed body + request_id;
+    SQL, paths and database errors go to the server log only
     ↓
 [Layer 5: Telemetry Egress]
   - Redact credential-shaped keys, then clamp
@@ -354,6 +436,20 @@ Request arrives
   - Enumerated error types, never exception messages
   - Values only at the payload tier, only from declared fields
 ```
+
+### Error responses
+
+A request that fails inside flAPI answers `500` with a JSON body that carries no SQL, no file paths and
+no database error text (`src/request_handler.cpp`):
+
+```json
+{"error": "Internal Server Error",
+ "message": "The request failed on the server. The details are in the server log under this request id.",
+ "request_id": "req-46788500aef28a89"}
+```
+
+The detail is logged with the same request id, which is also the `X-Request-Id` response header, so an
+operator can find it and a caller learns nothing about the schema.
 
 ### Layer 5: Telemetry egress
 
@@ -380,6 +476,15 @@ because those names were chosen deliberately and silently redacting every field
 containing them would surprise. A short exact-match exception set keeps LLM token
 counters (`max_tokens`, `token_count`) readable, since this is an MCP tool
 surface.
+
+**DuckLake catalog paths.** A Postgres/MySQL `ducklake.metadata-path` is a DSN
+with `password=...`, often a resolved `{{env.X}}`. `RedactConnectionSecrets`
+(`src/config_manager.cpp`) masks `password`/`passwd`/`pwd`/`*secret*`/`*token*`/
+`api_key`/`access_key` values and the password of a `scheme://user:pw@host` URL.
+It applies to `metadata-path` / `data-path` in `GET /api/v1/_config/project`
+(`ConfigManager::getFlapiConfig`, also behind `/config`) and to the DuckLake
+attach error (`DatabaseManager::DuckLakeAttachErrorMessage`), which quoted the
+whole `ATTACH` statement in the log and on stderr.
 
 **Redaction** (`src/redaction.cpp`) applies two denylists. The credential stems
 are unconditional — they do not depend on the operator's list being complete —
@@ -429,7 +534,7 @@ rate_limit:
 **Per-endpoint override:**
 ```yaml
 url-path: /expensive-endpoint
-rate_limit:
+rate-limit:
   enabled: true
   max: 10
   interval: 60
@@ -444,7 +549,7 @@ mcp:
   auth:
     enabled: true
     type: bearer
-    jwt_secret: '{{env.MCP_JWT_SECRET}}'
+    jwt-secret: '{{env.MCP_JWT_SECRET}}'
     methods:
       tools/call:
         required: true
@@ -500,7 +605,8 @@ Two mechanisms enforce this:
    credential flapi understands is read from a documented
    environment variable -- never from a bundled YAML field:
    - AWS S3:    `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION`
-   - GCS:       `GOOGLE_APPLICATION_CREDENTIALS` / `GOOGLE_CLOUD_PROJECT`
+   - GCS:       an HMAC key in a `CREATE SECRET (TYPE gcs, …)` in a connection `init`, its
+                values from `{{env.NAME}}` (`GOOGLE_*` variables are detected but not applied)
    - Azure:     `AZURE_STORAGE_CONNECTION_STRING` / `AZURE_STORAGE_ACCOUNT` / `AZURE_STORAGE_KEY`
    - Mgmt API:  `FLAPI_CONFIG_SERVICE_TOKEN`
    - JWT:       configured via `{{env.JWT_SECRET}}` against a

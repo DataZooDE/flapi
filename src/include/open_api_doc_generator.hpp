@@ -25,8 +25,11 @@ private:
     std::shared_ptr<ConfigManager> configManager;
     std::shared_ptr<DatabaseManager> dbManager;
     
-    YAML::Node generatePathItem(const EndpointConfig& endpoint);
+    YAML::Node generateOperation(const EndpointConfig& endpoint, const std::string& method);
     YAML::Node generateParameters(const std::vector<RequestFieldConfig>& requestFields);
+    // limit/offset (paginated reads) and format, unless the endpoint declares them.
+    void addReadParameters(YAML::Node& parameters, const EndpointConfig& endpoint);
+    void addSecurity(YAML::Node& operation, const std::string& auth_type);
     YAML::Node generateResponseSchema(const EndpointConfig& endpoint);
     
     // Config service specific documentation

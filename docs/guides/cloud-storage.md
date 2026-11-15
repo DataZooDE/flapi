@@ -27,10 +27,34 @@ WHERE event_date >= '{{{ params.since }}}'
 LIMIT 1000
 ```
 
-Credentials come from the environment (`AWS_ACCESS_KEY_ID`,
-`AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, and the Google/Azure equivalents), never
-from the config file. Glob patterns work, and DuckDB pushes filters down, so a
-partitioned layout is read selectively rather than wholesale.
+S3 and Azure credentials come from the environment (`AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY`, `AWS_REGION`; `AZURE_STORAGE_CONNECTION_STRING` or
+`AZURE_STORAGE_ACCOUNT` + `AZURE_STORAGE_KEY`), never from the config file: flAPI
+sets the matching DuckDB settings at startup.
+
+**GCS is different.** flAPI does not configure GCS from `GOOGLE_APPLICATION_CREDENTIALS`
+or `GOOGLE_CLOUD_PROJECT` (it only logs that they are set), and DuckDB's `httpfs`
+does not use a service-account file. It needs an HMAC key (Cloud Storage →
+Settings → Interoperability) in a DuckDB secret, for example in the connection's
+`init`, with the values taken from whitelisted environment variables:
+
+```yaml
+connections:
+  events:
+    init: |
+      INSTALL httpfs;
+      LOAD httpfs;
+      CREATE OR REPLACE SECRET gcs_hmac (
+        TYPE gcs,
+        KEY_ID '{{env.GCS_HMAC_KEY_ID}}',
+        SECRET '{{env.GCS_HMAC_SECRET}}'
+      );
+    properties:
+      path: 'gs://my-bucket/events/*.parquet'
+```
+
+Glob patterns work, and DuckDB pushes filters down, so a partitioned layout is
+read selectively rather than wholesale.
 
 ## 2. Load the configuration itself from a bucket
 

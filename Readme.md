@@ -6,6 +6,11 @@ Write a SQL template and a few lines of YAML; flAPI serves it as a REST endpoint
 
 ![overview of flAPI](https://i.imgur.com/m7UVZlR.png)
 
+> **Using Claude Code?** Install the flAPI plugin, and Claude can scaffold projects, write endpoints and MCP
+> tools, design and tune caches, and deploy and debug flAPI for you:
+> `/plugin marketplace add DataZooDE/flapi` then `/plugin install flapi@flapi`. See
+> [Claude Code plugin](#-claude-code-plugin).
+
 ## ⚡ Features
 
 - **Automatic API Generation**: Create APIs for your datasets without coding
@@ -132,7 +137,7 @@ flAPI now supports the **Model Context Protocol (MCP)** in a **unified configura
 - **Typed, structured tool contracts**: tool parameters advertise real types and constraints (int ranges, dates, uuid, enum, …), results carry machine-readable `structuredContent`, an `outputSchema` is learned after first use, and failures return actionable `isError` results the model can self-correct from
 - **Unified Configuration**: Single YAML files can define REST endpoints, MCP tools, and MCP resources
 - **Automatic Detection**: Configuration type is determined by presence of `url-path` (REST), `mcp-tool` (MCP tool), or `mcp-resource` (MCP resource)
-- **Shared Components**: MCP tools and resources use the same SQL templates, parameter validation, authentication, and caching as REST endpoints
+- **Shared Components**: MCP tools and resources use the same SQL templates, parameter validation and caching as REST endpoints; MCP authentication is configured separately in the top-level `mcp.auth` block with per-tool `allowed-roles`
 - **Security Integration**: method authorization enforced on every request, per-tool/resource/prompt RBAC (`allowed-roles`), shadow/dry-run (`_dryRun`), response shaping, per-tool rate limiting, and a tool-description hygiene scanner
 - **Tool Discovery**: automatic tool discovery, pagination, resource templates (`flapi://customers/{id}`), and `x-mcp-header` for per-tenant edge routing
 
@@ -240,6 +245,32 @@ links to the reference and to the implementation notes.
 | Stop copy-pasting config blocks | [Reusing config and reading the environment](docs/guides/yaml-includes.md) |
 | Deploy one self-contained binary | [Shipping one self-contained binary](docs/guides/self-packaging.md) |
 | Trace requests and keep an audit trail | [Observability](docs/OBSERVABILITY.md) |
+| Let Claude Code build and run it with me | [Using flAPI with Claude Code](docs/guides/claude-code.md) |
+
+## 🤖 Claude Code plugin
+
+The repository is also a Claude Code plugin marketplace:
+
+```
+/plugin marketplace add DataZooDE/flapi
+/plugin install flapi@flapi
+```
+
+| Phase | Skills |
+|---|---|
+| Setup | `flapi-setup`: install, project init, connections, env whitelist, validation |
+| Develop | `flapi-rest`, `flapi-mcp`, `flapi-auth`, `flapi-testing`, `flapi-live-config` |
+| Caching | `flapi-cache-design`: full / append / merge, deletes, write-through, replicas, prebuilt caches, time travel. `flapi-cache-tuning`: measuring and shortening refresh time |
+| Deploy | `flapi-deploy`: `flapi pack`, Docker, Cloud Run, offline extensions |
+| Operate | `flapi-operate`: health, runtime metrics, logs, tracing, troubleshooting |
+
+Slash commands: `/flapi:init`, `/flapi:new-endpoint`, `/flapi:add-cache`, `/flapi:auth-setup`,
+`/flapi:deploy-check`, `/flapi:diagnose`, `/flapi:metrics`.
+
+The plugin also registers your running flAPI as an MCP server, and adds a hook that validates and
+hot-reloads config after each edit. Every example in the skills is checked against the real binary in CI.
+See [docs/guides/claude-code.md](docs/guides/claude-code.md). To try local changes:
+`claude --plugin-dir ./plugins/flapi`.
 
 ## 🏭 Building from source
 The source code of flAPI is written in C++ and closely resembles the [DuckDB build process](https://duckdb.org/docs/dev/building/overview). A good documentation of the build process is the GitHub action in [`build.yaml`](.github/workflows/build.yaml). In essecence a few prerequisites need to be met:
@@ -340,8 +371,9 @@ If you have any questions or need help, please [open an issue](https://github.co
 If flAPI misbehaves — an endpoint that will not serve, a cache that will not invalidate,
 an auth flow that will not complete — please
 [open an issue](https://github.com/DataZooDE/flapi/issues). Deployments differ in ways we
-cannot reproduce here, so a report with your config is the fastest path to a fix. Every
-JSON error response carries a `report_issue` link for exactly this reason.
+cannot reproduce here, so a report with your config is the fastest path to a fix. A failed
+request answers `500` with a `request_id`; the details are in the server log under that id,
+so quote the matching log lines in the report.
 
 If it saved you time, a star on the repo helps other people find it.
 

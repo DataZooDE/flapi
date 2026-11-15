@@ -151,7 +151,13 @@ public:
      */
     void logCredentialStatus() const;
 
+    /// Whether the configuration reads gs:// / GCS at all. The "GCS is not
+    /// applied" warning is only useful then; it was printed whenever
+    /// GOOGLE_CLOUD_PROJECT was set, which on a GCP host is always.
+    void setGcsReferenced(bool referenced) { _gcs_referenced = referenced; }
+
 private:
+    bool _gcs_referenced = true;
     std::optional<S3Credentials> _s3_credentials;
     std::optional<GCSCredentials> _gcs_credentials;
     std::optional<AzureCredentials> _azure_credentials;

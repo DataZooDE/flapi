@@ -11,6 +11,11 @@ export function toCamelCaseKeys<T extends JsonObject>(input: T): JsonObject {
   return transformKeys(input, (key) => camelCase(key));
 }
 
+/** One field name in the requested `--json-style`. */
+export function renameKey(key: string, style: 'camel' | 'hyphen'): string {
+  return style === 'camel' ? camelCase(key) : kebabCase(key);
+}
+
 function transformKeys(obj: JsonObject, transform: (key: string) => string): JsonObject {
   const result: JsonObject = {};
   for (const [key, value] of Object.entries(obj)) {

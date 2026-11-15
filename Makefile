@@ -428,6 +428,14 @@ check-invariants:
 
 .PHONY: check-invariants
 
+# The Claude Code plugin (plugins/flapi/) against the real parser, binaries and
+# CLI. Needs build/release/flapi and cli/dist (npm --prefix cli run build) and PyYAML.
+check-skills:
+	@python3 -m py_compile plugins/flapi/hooks/validate_and_reload.py
+	@python3 scripts/check_skills.py --flapi $(RELEASE_DIR)/flapi
+
+.PHONY: check-skills
+
 # ---------------------------------------------------------------- load testing
 # See test/load/README.md for what these gates can and cannot resolve.
 K6_BIN ?= k6

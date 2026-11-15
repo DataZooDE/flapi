@@ -5,6 +5,7 @@
 #include "content_negotiation.hpp"
 #include "arrow_serializer.hpp"
 #include "query_executor.hpp"
+#include "request_context.hpp"
 
 #include <iostream>
 #include <map>
@@ -12,6 +13,11 @@
 #include "crow/json.h"
 #include <sstream>
 #include <algorithm>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <set>
+#include <thread>
 
 namespace flapi {
 
@@ -33,6 +39,39 @@ bool ParsePlainNonNegativeInt(const std::string& text, int64_t& out) {
     }
     out = value;
     return true;
+}
+
+// DuckLake's answers to time travel (`AT (VERSION => n)` / `AT (TIMESTAMP => t)`)
+// to a snapshot that never existed or that retention has expired.
+bool isSnapshotNotFoundMessage(const std::string& message) {
+    return message.find("No snapshot found at version") != std::string::npos ||
+           message.find("No snapshot found at timestamp") != std::string::npos ||
+           message.find("does not exist at version") != std::string::npos ||
+           message.find("does not exist at timestamp") != std::string::npos;
+}
+
+// `AT (VERSION => n)` for a snapshot from before the cache's schema existed:
+// DuckDB names the schema, not the version - "Table with name "sales.t" does
+// not exist because schema "sales" does not exist" - so it was a 500. A ready
+// cache's schema exists NOW (readiness gates the request), so on a cached
+// endpoint this is the past being asked for.
+bool isSchemaBeforeSnapshotMessage(const std::string& message, const EndpointConfig& endpoint) {
+    const std::string schema = endpoint.cache.schema.empty() ? "main" : endpoint.cache.schema;
+    return message.find("does not exist because schema \"" + schema + "\" does not exist") != std::string::npos;
+}
+
+void writeInternalError(crow::response& res) {
+    crow::json::wvalue body;
+    body["error"] = "Internal Server Error";
+    body["message"] = "The request failed on the server. The details are in the server log "
+                      "under this request id.";
+    if (const auto* rc = RequestContextScope::current()) {
+        body["request_id"] = std::string(rc->requestIdView());
+    }
+    res.code = 500;
+    res.set_header("Content-Type", "application/json");
+    res.body = body.dump();
+    res.end();
 }
 
 }  // namespace
@@ -73,10 +112,12 @@ void RequestHandler::handleRequest(const crow::request& req, crow::response& res
         case crow::HTTPMethod::Post:
         case crow::HTTPMethod::Put:
         case crow::HTTPMethod::Patch:
-            handleWriteRequest(req, res, endpoint, pathParams, authParams);
-            break;
         case crow::HTTPMethod::Delete:
-            handleDeleteRequest(req, res, endpoint, pathParams);
+            // DELETE runs its template like every other write. It used to skip
+            // the template entirely: a cached endpoint got its cache refreshed
+            // ("Cache invalidated"), anything else got 405, and the row the
+            // caller asked to delete was never touched.
+            handleWriteRequest(req, res, endpoint, pathParams, authParams);
             break;
         default:
             res.code = 405;
@@ -103,12 +144,8 @@ void RequestHandler::handleWriteRequest(const crow::request& req, crow::response
         
         // For write operations, enforce stricter validation if configured
         if (endpoint.operation.validate_before_write) {
-            // Enforce all required fields
-            for (const auto& field : endpoint.request_fields) {
-                if (field.required && params.find(field.fieldName) == params.end()) {
-                    validationErrors.push_back({field.fieldName, "Required field is missing"});
-                }
-            }
+            // Required fields are already enforced by validateRequestParameters;
+            // adding them again here listed every missing field twice.
             
             // Reject unknown parameters when validate-before-write is enabled
             // This helps catch typos and incorrect parameter names (e.g., ProductName vs product_name)
@@ -156,21 +193,9 @@ void RequestHandler::handleWriteRequest(const crow::request& req, crow::response
         }
         
         // Handle cache operations after successful write
-        handleCacheAfterWrite(endpoint, writeResult);
+        handleCacheAfterWrite(db_manager, endpoint);
         
-        // Build response body
-        crow::json::wvalue response;
-        response["rows_affected"] = static_cast<int64_t>(writeResult.rows_affected);
-        
-        // Include returned data if available and configured
-        if (writeResult.returned_data.has_value() && endpoint.operation.returns_data) {
-            response["data"] = std::move(*writeResult.returned_data);
-        } else if (writeResult.returned_data.has_value()) {
-            // Include returned data even if not explicitly configured (helpful for debugging)
-            response["data"] = std::move(*writeResult.returned_data);
-        }
-        
-        res.write(response.dump());
+        res.write(formatWriteResultJson(writeResult, endpoint.operation.returns_data));
         res.end();
         return;
         
@@ -208,39 +233,15 @@ void RequestHandler::handleWriteRequest(const crow::request& req, crow::response
         const std::string public_detail =
             publicErrorMessage("Error handling write request", e.what(), secrets);
         CROW_LOG_ERROR << public_detail;
-        res.code = 500;
-        // A database error quotes the statement that failed, which IS the
-        // rendered template - so this returned whatever the template
-        // interpolated: `{{{conn.password}}}`, `{{{env.API_KEY}}}`, a
-        // credential-valued default. The MCP path was fixed for exactly this
-        // and justified by "MCP is unauthenticated by default"; REST auth is
-        // per-endpoint and equally optional, so an endpoint without an
-        // `auth:` block leaked the same secrets through the same mechanism.
-        // Same collector, same scrub, both surfaces.
-        res.body = publicErrorMessage("Internal Server Error", e.what(), secrets);
-        res.end();
+        // The body carries NO part of the failure text. A database error
+        // quotes the statement that failed, which IS the rendered template,
+        // and names absolute file paths ("No files found that match the
+        // pattern /srv/app/data/x.parquet"). Secret scrubbing (above, for the
+        // log) removes credentials but not the SQL or the paths, which map the
+        // deployment for anyone who can trigger an error. The detail stays in
+        // the server log, which carries the same request id as this body.
+        writeInternalError(res);
         return;
-    }
-}
-
-void RequestHandler::handleDeleteRequest(const crow::request& req, crow::response& res, const EndpointConfig& endpoint, const std::map<std::string, std::string>& pathParams) {
-    if (db_manager->isCacheEnabled(endpoint)) {
-        auto ret = db_manager->invalidateCache(endpoint);
-        if (ret) {
-            res.code = 200;
-            res.body = "Cache invalidated";
-            res.end();
-        }
-        else {
-            res.code = 500;
-            res.body = "Internal Server Error";
-            res.end();
-        }
-    }
-    else {
-        res.code = 405;
-        res.body = "Method not allowed";
-        res.end();
     }
 }
 
@@ -380,6 +381,12 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
 
         // Execute query for JSON/CSV (existing path)
         QueryResult queryResult = db_manager->executeQuery(endpoint, params, endpoint.with_pagination);
+        // limit=0 asks for the count alone. Its "next page" starts at the same
+        // offset, so `next` pointed at the request itself and a client
+        // following it looped forever.
+        if (limit == 0) {
+            queryResult.next.clear();
+        }
 
         // Handle CSV format
         if (negotiation.format == ResponseFormat::CSV) {
@@ -390,15 +397,15 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
             // JSON format (default)
             res.set_header("Content-Type", "application/json");
 
+            // Assembled by hand around dumpData(): rows keep their SELECT
+            // column order and doubles their shortest form, which a
+            // crow::json::wvalue (an unordered map, 21-digit doubles) loses.
             if (endpoint.with_pagination) {
-                crow::json::wvalue response;
-                response["data"] = std::move(queryResult.data);
-                response["next"] = createNextUrl(req, queryResult);
-                response["total_count"] = queryResult.total_count;
-
-                res.write(response.dump());
+                res.write("{\"data\":" + queryResult.dumpData() +
+                          ",\"next\":" + crow::json::wvalue(createNextUrl(req, queryResult)).dump() +
+                          ",\"total_count\":" + std::to_string(queryResult.total_count) + "}");
             } else {
-                res.write(queryResult.data.dump());
+                res.write(queryResult.dumpData());
             }
         }
 
@@ -432,6 +439,22 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
             res.end();
             return;
         }
+        // Time travel on a cached endpoint to a snapshot that does not exist (or
+        // that retention expired) is the caller asking for something absent, not
+        // a server fault: it was a 500.
+        if (endpoint.cache.enabled &&
+            (isSnapshotNotFoundMessage(e.what()) || isSchemaBeforeSnapshotMessage(e.what(), endpoint))) {
+            CROW_LOG_INFO << "time travel to an unknown snapshot: " << e.what();
+            res.code = 404;
+            res.set_header("Content-Type", "application/json");
+            crow::json::wvalue body;
+            body["error"] = "snapshot_not_found";
+            body["message"] = "The requested cache snapshot does not exist; it may have been expired by the "
+                              "retention policy";
+            res.write(body.dump());
+            res.end();
+            return;
+        }
         // Scrubbed BEFORE it is logged, not just before it is returned.
         // A DuckDB error quotes the failing statement, and logs are shipped,
         // indexed and read by people who are not entitled to the
@@ -440,17 +463,14 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
         const std::string public_detail =
             publicErrorMessage("Error handling request", e.what(), secrets);
         CROW_LOG_ERROR << public_detail;
-        res.code = 500;
-        // A database error quotes the statement that failed, which IS the
-        // rendered template - so this returned whatever the template
-        // interpolated: `{{{conn.password}}}`, `{{{env.API_KEY}}}`, a
-        // credential-valued default. The MCP path was fixed for exactly this
-        // and justified by "MCP is unauthenticated by default"; REST auth is
-        // per-endpoint and equally optional, so an endpoint without an
-        // `auth:` block leaked the same secrets through the same mechanism.
-        // Same collector, same scrub, both surfaces.
-        res.body = publicErrorMessage("Internal Server Error", e.what(), secrets);
-        res.end();
+        // The body carries NO part of the failure text. A database error
+        // quotes the statement that failed, which IS the rendered template,
+        // and names absolute file paths ("No files found that match the
+        // pattern /srv/app/data/x.parquet"). Secret scrubbing (above, for the
+        // log) removes credentials but not the SQL or the paths, which map the
+        // deployment for anyone who can trigger an error. The detail stays in
+        // the server log, which carries the same request id as this body.
+        writeInternalError(res);
         return;
     }
 }
@@ -502,13 +522,45 @@ std::map<std::string, std::string> RequestHandler::combineParameters(const crow:
         }
     }
 
+    // A repeated query parameter (?x=1&x=2) used to take the first value
+    // silently - a client sending two filters got one. Ambiguous input is a 400.
+    std::set<std::string> seen_query_keys;
     for (const auto& key : req.url_params.keys()) {
+        if (!seen_query_keys.insert(key).second) {
+            throw BadRequestError("Duplicate query parameter: " + key);
+        }
+    }
+    for (const auto& key : seen_query_keys) {
         if (isReservedAuthKey(key)) {
             continue;   // server-injected identity is not client input
         }
         params[key] = req.url_params.get(key);
     }
+    applyHeaderFields(req, endpoint, params);
     return params;
+}
+
+void RequestHandler::applyHeaderFields(const crow::request& req, const EndpointConfig& endpoint,
+                                       std::map<std::string, std::string>& params) {
+    // `field-in: header` fields come from the request HEADERS. They were read
+    // from the query string instead, so a declared header was never seen and
+    // a same-named query parameter stood in for it. A header field is now
+    // satisfied only by the header (or its configured default): a query
+    // parameter must not be able to impersonate e.g. a gateway-set tenant id.
+    // Crow's header map is case-insensitive, as HTTP header names are.
+    for (const auto& field : endpoint.request_fields) {
+        if (field.fieldIn != "header" || isReservedAuthKey(field.fieldName)) {
+            continue;
+        }
+        const std::string value = req.get_header_value(field.fieldName);
+        if (!value.empty()) {
+            params[field.fieldName] = value;
+        } else if (!field.defaultValue.empty()) {
+            params[field.fieldName] = field.defaultValue;
+        } else {
+            params.erase(field.fieldName);
+        }
+    }
 }
 
 std::map<std::string, std::string> RequestHandler::combineWriteParameters(const crow::request& req,
@@ -524,17 +576,31 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
         params[key] = value;
     }
 
-    // Extract parameters from JSON body (highest precedence for write operations)
-    if (req.method == crow::HTTPMethod::Post || 
-        req.method == crow::HTTPMethod::Put || 
-        req.method == crow::HTTPMethod::Patch) {
+    // Extract parameters from JSON body (highest precedence for write operations).
+    // A DELETE body is optional; most clients send the key in the path or query.
+    if (req.method == crow::HTTPMethod::Post ||
+        req.method == crow::HTTPMethod::Put ||
+        req.method == crow::HTTPMethod::Patch ||
+        req.method == crow::HTTPMethod::Delete) {
         
         if (!req.body.empty()) {
             try {
                 auto bodyJson = crow::json::load(req.body);
                 if (bodyJson) {
+                    // A nested number, keeping its fraction: i() truncates 9.99 to 9.
+                    auto jsonNumber = [](const crow::json::rvalue& v) -> crow::json::wvalue {
+                        switch (v.nt()) {
+                            case crow::json::num_type::Floating_point:
+                            case crow::json::num_type::Double_precision_floating_point:
+                                return crow::json::wvalue(v.d());
+                            case crow::json::num_type::Unsigned_integer:
+                                return crow::json::wvalue(v.u());
+                            default:
+                                return crow::json::wvalue(v.i());
+                        }
+                    };
                     // Helper function to convert JSON value to string
-                    auto jsonValueToString = [&bodyJson, &req](const std::string& key) -> std::string {
+                    auto jsonValueToString = [&bodyJson, &req, &jsonNumber](const std::string& key) -> std::string {
                         if (!bodyJson.has(key)) {
                             return "";
                         }
@@ -543,12 +609,10 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
                         if (jsonVal.t() == crow::json::type::String) {
                             value = jsonVal.s();
                         } else if (jsonVal.t() == crow::json::type::Number) {
-                            // Try integer first, then double
-                            try {
-                                value = std::to_string(jsonVal.i());
-                            } catch (...) {
-                                value = std::to_string(jsonVal.d());
-                            }
+                            // The number's own text, exactly as sent. i() lexical-casts and
+                            // stops at the '.', so 9.99 became "9" - and 301.7 then passed an
+                            // `int` validator as 301. The validators decide what is acceptable.
+                            value = static_cast<std::string>(jsonVal);
                         } else if (jsonVal.t() == crow::json::type::True) {
                             value = "true";
                         } else if (jsonVal.t() == crow::json::type::False) {
@@ -570,11 +634,7 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
                                             if (v.t() == crow::json::type::String) {
                                                 tempObj[keyStr] = v.s();
                                             } else if (v.t() == crow::json::type::Number) {
-                                                try {
-                                                    tempObj[keyStr] = v.i();
-                                                } catch (...) {
-                                                    tempObj[keyStr] = v.d();
-                                                }
+                                                tempObj[keyStr] = jsonNumber(v);
                                             } else if (v.t() == crow::json::type::True) {
                                                 tempObj[keyStr] = true;
                                             } else if (v.t() == crow::json::type::False) {
@@ -590,11 +650,7 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
                                             if (v.t() == crow::json::type::String) {
                                                 arr.push_back(crow::json::wvalue(v.s()));
                                             } else if (v.t() == crow::json::type::Number) {
-                                                try {
-                                                    arr.push_back(crow::json::wvalue(v.i()));
-                                                } catch (...) {
-                                                    arr.push_back(crow::json::wvalue(v.d()));
-                                                }
+                                                arr.push_back(jsonNumber(v));
                                             } else if (v.t() == crow::json::type::True) {
                                                 arr.push_back(crow::json::wvalue(true));
                                             } else if (v.t() == crow::json::type::False) {
@@ -605,7 +661,7 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
                                         }
                                         tempObj = crow::json::wvalue(arr);
                                     }
-                                    value = tempObj.dump();
+                                    value = QueryResult::dumpJson(tempObj);   // shortest doubles
                                 } else {
                                     value = "{}";
                                 }
@@ -656,36 +712,134 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
         }
     }
 
+    applyHeaderFields(req, endpoint, params);
     return params;
 }
 
-void RequestHandler::handleCacheAfterWrite(const EndpointConfig& endpoint, const WriteResult& writeResult) {
-    // Only process if cache is enabled for this endpoint
-    if (!db_manager->isCacheEnabled(endpoint)) {
+namespace {
+
+// One background worker for refresh-on-write. A write must not wait for the
+// refresh (that is what invalidate-on-write is for), but a detached thread per
+// write could still be running DuckDB while statics are torn down at exit, and
+// a burst of writes would start a refresh each. A single worker, joined on
+// destruction, with refreshes coalesced per endpoint, avoids both.
+class AsyncCacheRefresher {
+public:
+    static AsyncCacheRefresher& instance() {
+        static AsyncCacheRefresher refresher;
+        return refresher;
+    }
+
+    void schedule(std::shared_ptr<DatabaseManager> db_manager, const EndpointConfig& endpoint) {
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            if (_stopping) {
+                return;
+            }
+            std::string key = endpoint.getIdentifier();
+            if (!_queued.insert(key).second) {
+                return;   // already pending; that refresh will see this write too
+            }
+            _jobs.push_back(Job{std::move(db_manager), endpoint, std::move(key)});
+            if (!_worker.joinable()) {
+                _worker = std::thread([this] { run(); });
+            }
+        }
+        _cv.notify_one();
+    }
+
+    ~AsyncCacheRefresher() {
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            _stopping = true;
+            _jobs.clear();
+        }
+        _cv.notify_all();
+        if (_worker.joinable()) {
+            _worker.join();
+        }
+    }
+
+private:
+    struct Job {
+        std::shared_ptr<DatabaseManager> db_manager;
+        EndpointConfig endpoint;
+        std::string key;
+    };
+
+    void run() {
+        while (true) {
+            Job job;
+            {
+                std::unique_lock<std::mutex> lock(_mutex);
+                _cv.wait(lock, [this] { return _stopping || !_jobs.empty(); });
+                if (_stopping) {
+                    return;
+                }
+                job = std::move(_jobs.front());
+                _jobs.pop_front();
+                _queued.erase(job.key);
+            }
+            try {
+                if (job.db_manager->invalidateCache(job.endpoint)) {
+                    CROW_LOG_DEBUG << "Cache refreshed after write (async) for endpoint: " << job.key;
+                } else {
+                    CROW_LOG_WARNING << "Asynchronous cache refresh after write failed for endpoint: " << job.key;
+                }
+            } catch (const std::exception& e) {
+                CROW_LOG_WARNING << "Asynchronous cache refresh after write failed for endpoint "
+                                 << job.key << ": " << e.what();
+            }
+        }
+    }
+
+    std::mutex _mutex;
+    std::condition_variable _cv;
+    std::deque<Job> _jobs;
+    std::set<std::string> _queued;
+    std::thread _worker;
+    bool _stopping = false;
+};
+
+}  // namespace
+
+std::string RequestHandler::formatWriteResultJson(const WriteResult& result, bool always_include_data) {
+    std::string out = "{\"rows_affected\":" + std::to_string(result.rows_affected);
+    if (result.returned_data.has_value()) {
+        // Included even if not explicitly configured (helpful for debugging).
+        out += ",\"data\":";
+        out += QueryResult::dumpJson(*result.returned_data,
+                                     result.returned_columns.empty() ? nullptr : &result.returned_columns);
+    } else if (always_include_data) {
+        // A RETURNING that matched no row is still an answer: an empty list,
+        // not a missing key a client has to special-case.
+        out += ",\"data\":[]";
+    }
+    out += '}';
+    return out;
+}
+
+void RequestHandler::handleCacheAfterWrite(const std::shared_ptr<DatabaseManager>& db_manager,
+                                           const EndpointConfig& endpoint) {
+    if (!db_manager || !db_manager->isCacheEnabled(endpoint)) {
         return;
     }
-    
-    // Invalidate cache if configured
+
+    // invalidate-on-write: refresh NOW, before the response, so a read issued
+    // after this write's response sees the write.
     if (endpoint.cache.invalidate_on_write) {
         db_manager->invalidateCache(endpoint);
         CROW_LOG_DEBUG << "Cache invalidated after write operation for endpoint: " << endpoint.getIdentifier();
+        return;   // already fresh; a second, asynchronous refresh would be redundant
     }
-    
-    // Refresh cache if configured
+
+    // refresh-on-write: refresh in the background; the response does not
+    // wait. This was a no-op that only logged.
     if (endpoint.cache.refresh_on_write) {
-        // Note: Cache refresh typically involves running the cache sync
-        // For now, we'll trigger a manual refresh via the cache manager
-        // This may need to be enhanced based on the actual cache refresh mechanism
-        auto cache_manager = db_manager->getCacheManager();
-        if (cache_manager) {
-            // The actual refresh mechanism would depend on CacheManager's API
-            // For now, we'll log that refresh was requested
-            CROW_LOG_DEBUG << "Cache refresh requested after write operation for endpoint: " << endpoint.getIdentifier();
-            // In a full implementation, we would call a refresh method here
-            // cache_manager->refreshCacheForEndpoint(endpoint);
-        }
+        AsyncCacheRefresher::instance().schedule(db_manager, endpoint);
+        CROW_LOG_DEBUG << "Cache refresh scheduled after write operation for endpoint: " << endpoint.getIdentifier();
     }
-    
+
     // If neither option is set, let the heartbeat handle refresh naturally
 }
 
@@ -702,32 +856,31 @@ std::string RequestHandler::convertToCSV(const QueryResult& queryResult)
         return csv.str();
     }
 
-    csvHeaderFromExampleObject(queryResult.data[0], csv);
+    // Columns in SELECT order when the result knows them; the row object
+    // itself is an unordered map.
+    std::vector<std::string> columns = queryResult.columns;
+    if (columns.empty()) {
+        columns = queryResult.data[0].keys();
+    }
+    bool first = true;
+    for (const auto& column : columns) {
+        if (!first) csv << ",";
+        csv << escapeCSV(column);
+        first = false;
+    }
+    csv << "\n";
     for (size_t i = 0; i < queryResult.data.size(); i++) {
-        serializeObjectToCsvLine(queryResult.data[i], csv);
+        const auto& row = queryResult.data[static_cast<unsigned>(i)];
+        first = true;
+        for (const auto& column : columns) {
+            if (!first) csv << ",";
+            csv << QueryResult::dumpJson(row[column]);
+            first = false;
+        }
+        csv << "\n";
     }
 
     return csv.str();
-}
-
-void RequestHandler::csvHeaderFromExampleObject(const crow::json::wvalue& obj, std::ostringstream& csv) {
-    bool first = true;
-    for (const auto& key : obj.keys()) {
-        if (!first) csv << ",";
-        csv << escapeCSV(key);
-        first = false;
-    }
-    csv << "\n";
-}
-
-void RequestHandler::serializeObjectToCsvLine(const crow::json::wvalue& obj, std::ostringstream& csv) {     
-    bool first = true;
-    for (const auto& key : obj.keys()) {
-        if (!first) csv << ",";
-        csv << obj[key].dump();
-        first = false;
-    }
-    csv << "\n";
 }
 
 std::string RequestHandler::escapeCSV(const std::string& str) {

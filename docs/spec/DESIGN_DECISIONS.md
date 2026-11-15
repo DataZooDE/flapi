@@ -125,8 +125,8 @@ Type getType() const {
 - Familiar to many developers
 
 **Implementation:**
-- Triple braces `{{{ }}}` - HTML-escaped output (safe for strings)
-- Double braces `{{ }}` - Raw output (for numbers, identifiers)
+- Triple braces `{{{ }}}` - raw output, no escaping of any kind (used inside quoted string literals; the validator is the defence)
+- Double braces `{{ }}` - HTML-escaped output; outside a section and on a field with a typed validator it is replaced by `?` and bound as a prepared-statement parameter
 - Sections `{{#param}}...{{/param}}` - Conditional rendering
 
 **Example:**
@@ -136,7 +136,6 @@ WHERE 1=1
 {{#params.id}}
   AND customer_id = {{{ params.id }}}
 {{/params.id}}
-LIMIT {{ params.limit }}
 ```
 
 **Tradeoffs:**
@@ -291,6 +290,10 @@ MCPResponse dispatchMCPRequest(const MCPRequest& request) {
 2. **Triple braces** - Quote escaping in templates
 3. **Parameterized queries** - Where applicable
 4. **Input constraints** - Length limits, allowed characters
+5. **Authorisation** - `auth.roles` is enforced (`403`); a top-level `auth:` block protects every
+   endpoint that does not declare its own (§12)
+6. **Opaque server errors** - a `500` carries only a `request_id`; the SQL, paths and database error
+   go to the server log under that id, never to the caller
 
 **Implementation:**
 ```yaml
@@ -299,7 +302,7 @@ request:
     validators:
       - type: string
         max-length: 200
-        pattern: "^[a-zA-Z0-9 ]+$"
+        regex: "^[a-zA-Z0-9 ]+$"
 ```
 
 **Tradeoffs:**
@@ -680,6 +683,39 @@ reads versioned Parquet in place ([guides/serverless.md](../guides/serverless.md
 
 ---
 
+## 12. Configured Means Enforced: Inheriting Auth, Scheduling by Default
+
+**Context:** Several keys were documented, parsed and then read by nothing: a top-level `auth:` block
+protected no endpoint, `auth.roles` was never checked, `ducklake.scheduler` defaulted to off so a
+`cache.schedule` silently never ran, `scheduler.scan-interval` and `ducklake.retention` were ignored.
+A config that *reads* as protected and scheduled must *be* protected and scheduled.
+
+**Decision:**
+- The top-level `auth:` block is the default for every REST endpoint without its own block. An
+  endpoint block **replaces** it rather than merging, so what an endpoint file says is the whole
+  truth for that endpoint; `auth: {enabled: false}` is the explicit opt-out. Startup logs how many
+  endpoints inherit and how many opt out.
+- `auth.roles` is checked after authentication; failing it is `403`, never `401`, because retrying
+  with the same credentials cannot help.
+- The cache scheduler is on by default; `ducklake.scheduler.enabled: false` turns it off with a
+  warning. `scan-interval` defaults to the shortest schedule so a `10s` schedule is not silently a
+  minute. There is no refresh at boot beyond warm-up: the first scheduled refresh is one schedule
+  after the last real one.
+- `ducklake.retention` is the default for caches without their own, again replaced, not merged.
+- Keys that still do nothing (`field-type`, `server-name`, connection `log-queries`, …) warn at load.
+
+**Tradeoffs:**
+- (+) No silent gap between the config and the running server
+- (-) Upgrading changes behaviour: endpoints under an enabled global block start answering `401`,
+  and schedules that never ran start running. Both are listed as upgrade notes in the changelog.
+- (-) Replace-not-merge means an endpoint that wants one extra role restates the whole block.
+
+**Source files:** `src/config_manager.cpp` (`applyGlobalAuthDefault`, `parseDuckLakeConfig`),
+`src/auth_middleware.cpp` (`hasRequiredRole`), `src/heartbeat_worker.cpp` (`CacheScanInterval`,
+`logSchedulerSetup`), `src/cache_manager.cpp` (`effectiveRetention`)
+
+---
+
 ## Summary
 
 These design decisions prioritize:
@@ -691,5 +727,6 @@ These design decisions prioritize:
 6. **Deployability** - One artifact ships everything (#9 self-packaging)
 7. **Observability** - One request identity across traces, audit and logs (#10)
 8. **Elasticity** - Nothing heavy on the boot path; batch data is produced once and read in place (#11)
+9. **Honesty** - A key that is configured is enforced, or warns that it is not (#12)
 
 For implementation details, see the [component documentation](./components/).

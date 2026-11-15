@@ -1,13 +1,17 @@
 #include <regex>
 #include "config_manager.hpp"
+#include "route_translator.hpp"
+#include "mustache_syntax_check.hpp"
 #include "extension_installer.hpp"
 #include "redaction.hpp"
 #include "endpoint_config_parser.hpp"
 #include "config_loader.hpp"
 #include "endpoint_repository.hpp"
 #include "caching_file_provider.hpp"
+#include "oidc_provider_presets.hpp"
 #include "vfs_adapter.hpp"
 #include "path_validator.hpp"
+#include "password_hasher.hpp"
 #include <cctype>
 #include <stdexcept>
 #include <filesystem>
@@ -18,8 +22,26 @@
 #include <crow.h>
 #include <iomanip>
 #include <crow/logging.h>
+#include <openssl/sha.h>
+#include <array>
 
 namespace flapi {
+
+namespace {
+// `type: basci` matched no authenticator, so every request got 401 and nothing
+// was logged anywhere. An enabled block naming a scheme flAPI does not have is
+// a configuration error, at load and at reload. `type` is the NORMALISED value
+// (`jwt` has already become `bearer`).
+void RequireKnownAuthType(const std::string& type, const std::string& location) {
+    if (type.empty() || type == "basic" || type == "bearer" || type == "oidc") {
+        return;
+    }
+    throw ConfigurationError(
+        "AUTH_UNKNOWN_TYPE: " + location + " has auth type '" + type +
+            "', which is not a scheme flAPI supports. Valid types: basic, bearer, jwt (alias of bearer), oidc.",
+        "auth.type");
+}
+}  // namespace
 
 std::optional<CacheWarmupMode> ParseCacheWarmupMode(const std::string& value) {
     if (value == "always") {
@@ -151,6 +173,22 @@ void ConfigManager::loadConfig() {
                     }
                 }
             });
+        }
+
+        if (auth_enabled) {
+            const auto snapshot = endpointsSnapshot();
+            std::size_t inherited = 0;
+            std::size_t opted_out = 0;
+            for (const auto& ep : *snapshot) {
+                if (ep.auth.inherited) {
+                    ++inherited;
+                } else if (ep.auth.declared && !ep.auth.enabled) {
+                    ++opted_out;
+                }
+            }
+            CROW_LOG_INFO << "Global auth (type '" << global_auth_config.type << "') applies to "
+                          << inherited << " endpoint(s) without their own `auth:` block; "
+                          << opted_out << " endpoint(s) opt out with `auth: {enabled: false}`";
         }
 
         CROW_LOG_INFO << "Configuration loaded successfully";
@@ -294,6 +332,36 @@ void ConfigManager::warnOnUnknownTopLevelKeys() const {
     }
 }
 
+void ConfigManager::warnOnInertKeys() const {
+    // Keys that are parsed - so they are not "unknown" (#160) - but that no
+    // code acts on. An operator who sets one believes it does something.
+    // Warn, do not fail: none of them changes how a working config behaves.
+    if (config["server-name"]) {
+        CROW_LOG_WARNING << "Configuration key `server-name` has no effect: nothing reads it. "
+                            "Remove it; the HTTP bind address is `http-host`.";
+    }
+    if (config["storage"] && !PathSchemeUtils::IsRemotePath(template_config.path)) {
+        CROW_LOG_WARNING << "Configuration block `storage:` has no effect: it only configures "
+                            "the cache for REMOTE template paths (s3://, gs://, az://, https://), "
+                            "and `template.path` is local.";
+    }
+    const auto connections_node = config["connections"];
+    if (connections_node && connections_node.IsMap()) {
+        for (const auto& connection : connections_node) {
+            if (!connection.second.IsMap()) {
+                continue;
+            }
+            const std::string name = connection.first.as<std::string>();
+            for (const char* key : {"log-queries", "log-parameters", "allow"}) {
+                if (connection.second[key]) {
+                    CROW_LOG_WARNING << "Configuration key `connections." << name << "." << key
+                                     << "` has no effect: nothing reads it. Remove it.";
+                }
+            }
+        }
+    }
+}
+
 void ConfigManager::parseMainConfig() {
     try {
         CROW_LOG_INFO << "Parsing main configuration";
@@ -330,12 +398,23 @@ void ConfigManager::parseMainConfig() {
         warnOnUnknownTopLevelKeys();
 
         project_name = safeGet<std::string>(config, "project-name", "project-name");
-        project_description = safeGet<std::string>(config, "project-description", "project-description");
+        project_description = safeGet<std::string>(config, "project-description", "project-description", "");
         server_name = safeGet<std::string>(config, "server-name", "server-name", "localhost");
         http_port = safeGet<int>(config, "http-port", "http-port", 8080);
         http_host = safeGet<std::string>(config, "http-host", "http-host", "0.0.0.0");
         // Top-level and kebab-case, matching http-port / http-host.
         log_level = safeGet<std::string>(config, "log-level", "log-level", "info");
+        if (log_level == "warn") {
+            log_level = "warning";
+        }
+        // An unknown level used to fall through set_log_level() to info,
+        // silently - the same value on the command line is a startup error.
+        if (log_level != "debug" && log_level != "info" &&
+            log_level != "warning" && log_level != "error") {
+            throw ConfigurationError("invalid log level '" + log_level +
+                                         "'; must be one of: debug, info, warning (or warn), error",
+                                     "log-level");
+        }
         stall_timeout_s = safeGet<int>(config, "stall-timeout-s", "stall-timeout-s", 60);
         if (stall_timeout_s < 0) {
             throw std::runtime_error("stall-timeout-s must be 0 (disabled) or positive; got "
@@ -361,6 +440,7 @@ void ConfigManager::parseMainConfig() {
         parseStorageConfig();
         parseTemplateConfig();
         parseGlobalHeartbeatConfig();
+        warnOnInertKeys();
 
         if (config["cache-schema"]) {
             cache_schema = safeGet<std::string>(config, "cache-schema", "cache-schema");
@@ -394,7 +474,10 @@ void ConfigManager::parseTemplateConfig() {
         if (FileProviderFactory::GetBundleContents() != nullptr) {
             template_config.path = joined.string();
         } else {
-            template_config.path = std::filesystem::absolute(joined).string();
+            // Normalised AFTER absolute(): with a relative base path, `../sqls`
+            // stayed `/cwd/../sqls`, and every template under it then "contained
+            // path traversal" in --validate-config.
+            template_config.path = std::filesystem::absolute(joined).lexically_normal().string();
         }
         CROW_LOG_DEBUG << "Template Path: " << template_config.path;
 
@@ -517,14 +600,41 @@ void ConfigManager::parseDuckLakeConfig() {
             ducklake_config.compaction.enabled = safeGet<bool>(compaction, "enabled", "ducklake.compaction.enabled", false);
             if (compaction["schedule"]) {
                 ducklake_config.compaction.schedule = safeGet<std::string>(compaction, "schedule", "ducklake.compaction.schedule");
+                // Refused at load, like cache.schedule: it used to be checked only for
+                // presence, and compaction ran every 24 h whatever it said.
+                if (!TimeInterval::parseSchedule(*ducklake_config.compaction.schedule)) {
+                    throw ConfigurationError("Invalid compaction schedule '" + *ducklake_config.compaction.schedule +
+                                             "': expected <positive number>[s|m|h|d] or @hourly, @daily, @midnight, @weekly",
+                                             "ducklake.compaction.schedule");
+                }
+                if (!ducklake_config.compaction.enabled) {
+                    CROW_LOG_WARNING << "ducklake.compaction.schedule has no effect unless compaction.enabled: true";
+                }
+            }
+            if (compaction["delete-threshold"]) {
+                const double threshold = safeGet<double>(compaction, "delete-threshold", "ducklake.compaction.delete-threshold");
+                if (!(threshold > 0.0 && threshold <= 1.0)) {
+                    throw ConfigurationError("Invalid compaction delete-threshold " + std::to_string(threshold) +
+                                             ": expected a fraction of deleted rows, 0 < x <= 1 (e.g. 0.2)",
+                                             "ducklake.compaction.delete-threshold");
+                }
+                ducklake_config.compaction.delete_threshold = threshold;
             }
         }
 
         if (node["scheduler"]) {
             auto scheduler = node["scheduler"];
-            ducklake_config.scheduler.enabled = safeGet<bool>(scheduler, "enabled", "ducklake.scheduler.enabled", false);
+            if (scheduler["enabled"]) {
+                ducklake_config.scheduler.enabled = safeGet<bool>(scheduler, "enabled", "ducklake.scheduler.enabled", true);
+                ducklake_config.scheduler.enabled_explicit = true;
+            }
             if (scheduler["scan-interval"]) {
                 ducklake_config.scheduler.scan_interval = safeGet<std::string>(scheduler, "scan-interval", "ducklake.scheduler.scan-interval");
+                if (!TimeInterval::parseInterval(*ducklake_config.scheduler.scan_interval)) {
+                    throw ConfigurationError("Invalid scheduler scan-interval '" + *ducklake_config.scheduler.scan_interval +
+                                             "': expected <positive number>[s|m|h|d], e.g. 1s, 30s, 5m",
+                                             "ducklake.scheduler.scan-interval");
+                }
             }
         }
 
@@ -770,7 +880,11 @@ void ConfigManager::parseMCPConfig() {
     if (mcp["auth"]) {
         auto auth = mcp["auth"];
         mcp_config.auth.enabled = safeGet<bool>(auth, "enabled", "mcp.auth.enabled", false);
-        mcp_config.auth.type = safeGet<std::string>(auth, "type", "mcp.auth.type", "bearer");
+        mcp_config.auth.type = normalizeAuthType(safeGet<std::string>(auth, "type", "mcp.auth.type", "bearer"));
+        PasswordVerificationCache::instance().clear();
+        if (mcp_config.auth.enabled) {
+            RequireKnownAuthType(mcp_config.auth.type, "mcp.auth");
+        }
 
         // RFC 9728 protected-resource metadata (optional; derived at runtime
         // from the request host when canonical-resource-uri is unset).
@@ -845,6 +959,11 @@ void ConfigManager::parseMCPConfig() {
                 CROW_LOG_DEBUG << "MCP Method Auth: " << method_name << " required=" << (required ? "true" : "false");
             }
         }
+        if (mcp_config.auth.enabled) {
+            // mcp.auth has ONE scheme too: users under bearer, or jwt-secret
+            // under basic, used to be dropped without a word.
+            warnIgnoredAuthKeys(auth, mcp_config.auth.type, "mcp.auth");
+        }
     } else if (mcp_config.enabled) {
         CROW_LOG_DEBUG << "MCP authentication not configured, auth is disabled by default";
     }
@@ -888,6 +1007,9 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
         if (!prefix.empty() && prefix.back() != '/') {
             prefix += '/';
         }
+        // Sorted, so the load order (and with it the order of log lines and
+        // load errors) is the same on every machine.
+        std::vector<std::string> names;
         for (const auto& [name, _data] : *bundle) {
             if (!prefix.empty() && name.rfind(prefix, 0) != 0) {
                 continue;
@@ -897,6 +1019,10 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
             if (extension != ".yaml" && extension != ".yml") {
                 continue;
             }
+            names.push_back(name);
+        }
+        std::sort(names.begin(), names.end());
+        for (const auto& name : names) {
             total_yaml_files++;
             size_t endpoints_before = endpointsSnapshot()->size();
             loadEndpointConfig(name);
@@ -905,17 +1031,26 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
             }
         }
     } else if (std::filesystem::exists(template_path) && std::filesystem::is_directory(template_path)) {
+        // Sorted by path: recursive_directory_iterator order is whatever the
+        // file system returns (creation order on tmpfs), and routing used to
+        // depend on it. It no longer does, but load errors and log lines
+        // should still come out the same everywhere.
+        std::vector<std::filesystem::path> files;
         for (const auto& entry : std::filesystem::recursive_directory_iterator(template_path)) {
             if (entry.is_regular_file()) {
                 auto extension = entry.path().extension();
                 if (extension == ".yaml" || extension == ".yml") {
-                    total_yaml_files++;
-                    size_t endpoints_before = endpointsSnapshot()->size();
-                    loadEndpointConfig(entry.path().string());
-                    if (endpointsSnapshot()->size() > endpoints_before) {
-                        loaded_endpoints++;
-                    }
+                    files.push_back(entry.path());
                 }
+            }
+        }
+        std::sort(files.begin(), files.end());
+        for (const auto& file : files) {
+            total_yaml_files++;
+            size_t endpoints_before = endpointsSnapshot()->size();
+            loadEndpointConfig(file.string());
+            if (endpointsSnapshot()->size() > endpoints_before) {
+                loaded_endpoints++;
             }
         }
     } else {
@@ -962,6 +1097,13 @@ void ConfigManager::loadEndpointConfig(const std::string& config_file) {
             CROW_LOG_DEBUG << "\t\tTemplate Source: " << endpoint.templateSource;
         }
         
+        // Two files serving the same url-path and method used to load silently,
+        // both listed, and only one answered - whichever routing found first.
+        if (const auto duplicate = DuplicateEndpointProblem(endpoint); !duplicate.empty()) {
+            throw std::runtime_error(duplicate);
+        }
+        LogRouteOverlaps(endpoint);
+
         // Add to endpoints list
         mutateEndpointsVoid([&](std::vector<EndpointConfig>& eps) { eps.push_back(endpoint); });
 
@@ -995,6 +1137,14 @@ void ConfigManager::parseEndpointRequestFields(const YAML::Node& endpoint_config
             }
             
             field.mcp_header = safeGet<std::string>(req, "mcp-header", "request.mcp-header", "");
+
+            // `field-type` appears in older examples but nothing reads it: it
+            // neither types nor validates the value. Say so at load.
+            if (req["field-type"]) {
+                CROW_LOG_WARNING << "Request field `" << field.fieldName
+                                 << "`: `field-type` has no effect (nothing reads it). "
+                                    "Use `validators:` (e.g. `- type: int`) to constrain the value.";
+            }
 
             parseEndpointValidators(req, field);
 
@@ -1058,8 +1208,20 @@ void ConfigManager::parseEndpointValidators(const YAML::Node& req, RequestFieldC
             if (validatorConfig.type == "int" || validatorConfig.type == "integer") {
                 validatorConfig.min = safeGet<int>(validator, "min", "validators.min", std::numeric_limits<int>::min());
                 validatorConfig.max = safeGet<int>(validator, "max", "validators.max", std::numeric_limits<int>::max());
+            } else if (validatorConfig.type == "number" || validatorConfig.type == "float" ||
+                       validatorConfig.type == "double") {
+                // Parsed as double: `min: 0.5` is a meaningful bound for a number.
+                if (validator["min"]) {
+                    validatorConfig.minNumber = safeGet<double>(validator, "min", "validators.min");
+                }
+                if (validator["max"]) {
+                    validatorConfig.maxNumber = safeGet<double>(validator, "max", "validators.max");
+                }
             } else if (validatorConfig.type == "string") {
-                validatorConfig.regex = safeGet<std::string>(validator, "regex", "validators.regex", "");
+                // `regex` is the documented spelling; `pattern` an accepted alias.
+                // `regex` wins when a validator carries both.
+                validatorConfig.regex = safeGet<std::string>(validator, "regex", "validators.regex",
+                    safeGet<std::string>(validator, "pattern", "validators.pattern", ""));
                 validatorConfig.min = safeGet<int>(validator, "min", "validators.min", 0);
                 validatorConfig.max = safeGet<int>(validator, "max", "validators.max", 0);
                 if (validator["min-length"]) {
@@ -1069,7 +1231,14 @@ void ConfigManager::parseEndpointValidators(const YAML::Node& req, RequestFieldC
                     validatorConfig.max = safeGet<int>(validator, "max-length", "validators.max-length", validatorConfig.max);
                 }
             } else if (validatorConfig.type == "enum") {
-                validatorConfig.allowedValues = safeGet<std::vector<std::string>>(validator, "allowedValues", "validators.allowedValues");
+                // `values` is the documented spelling; `allowedValues` the original.
+                if (validator["allowedValues"]) {
+                    validatorConfig.allowedValues = safeGet<std::vector<std::string>>(validator, "allowedValues", "validators.allowedValues");
+                } else if (validator["values"]) {
+                    validatorConfig.allowedValues = safeGet<std::vector<std::string>>(validator, "values", "validators.values");
+                } else {
+                    throw ConfigurationError("Missing required key: values (or allowedValues)", "validators.values");
+                }
             } else if (validatorConfig.type == "date") {
                 validatorConfig.minDate = safeGet<std::string>(validator, "min", "validators.min", "");
                 validatorConfig.maxDate = safeGet<std::string>(validator, "max", "validators.max", "");
@@ -1102,12 +1271,154 @@ void ConfigManager::parseEndpointRateLimit(const YAML::Node& endpoint_config, En
     }
 }
 
+std::string ConfigManager::normalizeAuthType(const std::string& type) {
+    // `jwt` is what the docs and the shipped customer example call HS256 bearer
+    // tokens; it matched no authenticator and so refused every request with 401.
+    if (type == "jwt") {
+        return "bearer";
+    }
+    return type;
+}
+
+namespace {
+
+// Keys that only mean something when authentication is on. A block that sets
+// any of them and leaves out `enabled` wants authentication: `enabled` used to
+// default to false there, so `auth: {type: basic, users: [...]}` left the
+// endpoint OPEN - and, under a global auth block, counted it as an opt-out.
+// Only an explicit `enabled: false` turns authentication off.
+bool DeclaresAuthentication(const YAML::Node& auth_node) {
+    for (const char* key : {"type", "roles", "users", "jwt-secret", "jwt-issuer", "oidc",
+                            "from-aws-secretmanager"}) {
+        if (auth_node[key]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Keys that say HOW to authenticate: a scheme or credentials. A block without
+// any of them (`roles:` only, or just `enabled: true`) has nothing to check a
+// request against on its own.
+bool DeclaresCredentials(const YAML::Node& auth_node) {
+    for (const char* key : {"type", "users", "jwt-secret", "jwt-issuer", "oidc",
+                            "from-aws-secretmanager"}) {
+        if (auth_node[key]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+
+}  // namespace
+
+void ConfigManager::inheritGlobalCredentials(AuthConfig& auth, bool declares_credentials,
+                                             bool declares_roles, const std::string& location) const {
+    if (!auth.enabled) {
+        return;
+    }
+    if (declares_credentials) {
+        if (auth.type.empty()) {
+            // Users or a secret without a scheme: no authenticator matches an
+            // empty type, so every request would be refused with 401.
+            throw ConfigurationError(
+                "AUTH_NO_TYPE: " + location + " configures authentication credentials but no `type`. "
+                "Set `type: basic`, `bearer` or `oidc`.",
+                "auth.type");
+        }
+        return;
+    }
+    // `auth: {roles: [admin]}` used to end up with type "" - an endpoint that
+    // answered 401 to every request, valid credentials included, without a
+    // word at startup. It means "the global credentials, and these roles".
+    if (!auth_enabled) {
+        throw ConfigurationError(
+            "AUTH_NO_TYPE: " + location + " enables authentication but names no `type` or credentials, "
+            "and there is no enabled top-level `auth:` block to inherit them from. Set `type:` (basic, "
+            "bearer or oidc) with its credentials on the endpoint, or configure the top-level `auth:` block.",
+            "auth.type");
+    }
+    const std::vector<std::string> own_roles = auth.roles;
+    auth.type = global_auth_config.type;
+    auth.users = global_auth_config.users;
+    auth.jwt_secret = global_auth_config.jwt_secret;
+    auth.jwt_issuer = global_auth_config.jwt_issuer;
+    auth.oidc = global_auth_config.oidc;
+    auth.from_aws_secretmanager = global_auth_config.from_aws_secretmanager;
+    auth.roles = declares_roles ? own_roles : global_auth_config.roles;
+    auth.credentials_inherited = true;
+    CROW_LOG_INFO << location << ": `auth:` names no type or credentials, so it uses the top-level "
+                  << "`auth:` block (type '" << auth.type << "')"
+                  << (declares_roles ? " with its own roles" : "");
+}
+
+void ConfigManager::warnIgnoredAuthKeys(const YAML::Node& auth_node, const std::string& type,
+                                        const std::string& location) {
+    if (!auth_node || !auth_node.IsMap()) {
+        return;
+    }
+    // What each scheme reads. Anything else in this list is set but unread.
+    std::vector<const char*> unread;
+    if (type == "basic") {
+        unread = {"jwt-secret", "jwt-issuer", "oidc"};
+    } else if (type == "bearer") {
+        unread = {"users", "oidc", "from-aws-secretmanager"};
+    } else if (type == "oidc") {
+        unread = {"users", "jwt-secret", "jwt-issuer", "from-aws-secretmanager"};
+    } else {
+        return;
+    }
+    std::string names;
+    for (const char* key : unread) {
+        if (auth_node[key]) {
+            names += (names.empty() ? "" : ", ") + std::string(key);
+        }
+    }
+    if (names.empty()) {
+        return;
+    }
+    CROW_LOG_WARNING << location << ": auth type '" << type << "' ignores " << names
+                     << ". One authentication scheme applies per block; these keys have no effect. "
+                        "Remove them, or change `type:` to the scheme they belong to.";
+}
+
+void ConfigManager::applyGlobalAuthDefault(EndpointConfig& endpoint) const {
+    // The top-level `auth:` block is the default for every endpoint that does
+    // not declare its own. Before this it protected nothing: only the endpoint
+    // block was ever checked, so `auth: {enabled: true, ...}` in flapi.yaml
+    // left every endpoint open while reading as a protected server.
+    if (endpoint.auth.declared || !auth_enabled) {
+        return;
+    }
+    endpoint.auth = global_auth_config;
+    endpoint.auth.enabled = true;
+    endpoint.auth.declared = false;
+    endpoint.auth.inherited = true;
+}
+
 void ConfigManager::parseEndpointAuth(const YAML::Node& endpoint_config, EndpointConfig& endpoint) {
     CROW_LOG_DEBUG << "\tParsing endpoint auth configuration";
-    if (endpoint_config["auth"]) {
+    if (!endpoint_config["auth"]) {
+        applyGlobalAuthDefault(endpoint);
+        return;
+    }
+    {
         auto auth_node = endpoint_config["auth"];
-        endpoint.auth.enabled = safeGet<bool>(auth_node, "enabled", "auth.enabled", false);
-        endpoint.auth.type = safeGet<std::string>(auth_node, "type", "auth.type", "");
+        endpoint.auth.declared = true;
+        endpoint.auth.inherited = false;
+        endpoint.auth.enabled = safeGet<bool>(auth_node, "enabled", "auth.enabled",
+                                              DeclaresAuthentication(auth_node));
+        if (!auth_node["enabled"] && endpoint.auth.enabled) {
+            CROW_LOG_INFO << "Endpoint " << (endpoint.urlPath.empty() ? endpoint.templateSource : endpoint.urlPath)
+                          << ": `auth:` has no `enabled` key but configures authentication, so it is ON "
+                             "(write `enabled: false` to turn it off)";
+        }
+        endpoint.auth.type = normalizeAuthType(safeGet<std::string>(auth_node, "type", "auth.type", ""));
+        // Remembered Basic-auth verifications belong to the configuration they
+        // were made under; any (re)parse of an auth block starts them afresh.
+        PasswordVerificationCache::instance().clear();
+        endpoint.auth.roles = safeGet<std::vector<std::string>>(auth_node, "roles", "auth.roles", std::vector<std::string>());
         if (auth_node["jwt-secret"]) {
             endpoint.auth.jwt_secret = safeGet<std::string>(auth_node, "jwt-secret", "auth.jwt-secret");
         }
@@ -1178,6 +1489,19 @@ void ConfigManager::parseEndpointAuth(const YAML::Node& endpoint_config, Endpoin
                 endpoint.auth.users.push_back(auth_user);
                 CROW_LOG_DEBUG << "\t\t\tAdded user: " << auth_user.username << " with " << auth_user.roles.size() << " roles";
             }
+        }
+
+        const std::string location = "Endpoint " +
+            (endpoint.urlPath.empty() ? endpoint.templateSource
+                                      : (endpoint.method.empty() ? std::string("GET") : endpoint.method) + " " +
+                                            endpoint.urlPath);
+        if (endpoint.auth.enabled) {
+            RequireKnownAuthType(endpoint.auth.type, location);
+        }
+        inheritGlobalCredentials(endpoint.auth, DeclaresCredentials(auth_node),
+                                 static_cast<bool>(auth_node["roles"]), location);
+        if (endpoint.auth.enabled) {
+            warnIgnoredAuthKeys(auth_node, endpoint.auth.type, location);
         }
     }
 }
@@ -1266,6 +1590,21 @@ void ConfigManager::parseEndpointCache(const YAML::Node& endpoint_config, const 
         endpoint.cache.cursor = cursor;
     }
 
+    // `rollback-window` and `delete-handling` are DEPRECATED: they were parsed
+    // and echoed back by the config service, but nothing ever read them, so an
+    // operator who set `delete-handling: soft` got no delete handling at all.
+    // They stay parsed so existing configs and config-service round trips keep
+    // working, and say so loudly at load time instead of silently doing nothing.
+    for (const char* deprecated : {"rollback-window", "rollbackWindow", "delete-handling", "deleteHandling"}) {
+        if (cache_node[deprecated]) {
+            CROW_LOG_WARNING << "Endpoint " << endpoint.urlPath << ": cache key `" << deprecated
+                             << "` is deprecated and has no effect. "
+                             << (std::string(deprecated).rfind("delete", 0) == 0
+                                     ? "Handle deletes in the cache template (see the MERGE delete pattern in docs/guides/caching.md)."
+                                     : "Use DuckLake time travel over retained snapshots instead (docs/guides/caching.md).");
+        }
+    }
+
     if (cache_node["rollback-window"]) {
         endpoint.cache.rollback_window = safeGet<std::string>(cache_node, "rollback-window", "cache.rollback-window");
     } else if (cache_node["rollbackWindow"]) {
@@ -1298,6 +1637,14 @@ void ConfigManager::parseEndpointCache(const YAML::Node& endpoint_config, const 
         } else {
             endpoint.cache.template_file = (endpoint_dir / template_file_path).string();
         }
+    }
+
+    if (endpoint.cache.enabled && !endpoint.cache.table.empty() && !endpoint.cache.template_file) {
+        const std::string name = !endpoint.urlPath.empty() ? endpoint.urlPath : endpoint.templateSource;
+        CROW_LOG_WARNING << "cache on " << name
+                         << " has no template-file: its endpoint template is materialised with a full refresh; "
+                            "declare template-file for incremental refreshes and read the cache table from "
+                            "template-source";
     }
 
     CROW_LOG_DEBUG << "\t\tCache Enabled: " << (endpoint.cache.enabled ? "true" : "false");
@@ -1442,11 +1789,15 @@ void ConfigManager::parseRateLimitConfig() {
     CROW_LOG_INFO << "Parsing rate limit configuration";
     if (config["rate_limit"]) {
         auto rate_limit_node = config["rate_limit"];
-        rate_limit_config.enabled = rate_limit_node["enabled"].as<bool>();
-        rate_limit_config.max = rate_limit_node["max"].as<int>();
-        rate_limit_config.interval = rate_limit_node["interval"].as<int>();
+        // Same defaults and named errors as the endpoint-level `rate-limit:`.
+        // These were bare .as<>() calls, so `rate_limit: {enabled: false}` -
+        // switching the limiter OFF - stopped startup with "bad conversion"
+        // and no key name, because `max` and `interval` were absent.
+        rate_limit_config.enabled = safeGet<bool>(rate_limit_node, "enabled", "rate_limit.enabled", false);
+        rate_limit_config.max = safeGet<int>(rate_limit_node, "max", "rate_limit.max", 100);
+        rate_limit_config.interval = safeGet<int>(rate_limit_node, "interval", "rate_limit.interval", 60);
         if (rate_limit_node["key"]) {
-            rate_limit_config.key_strategy = rate_limit_node["key"].as<std::string>();
+            rate_limit_config.key_strategy = safeGet<std::string>(rate_limit_node, "key", "rate_limit.key");
         }
         CROW_LOG_DEBUG << "Rate Limit: enabled=" << rate_limit_config.enabled
                        << ", max=" << rate_limit_config.max
@@ -1458,15 +1809,24 @@ void ConfigManager::parseRateLimitConfig() {
 // Auth configuration methods
 void ConfigManager::parseAuthConfig() {
     CROW_LOG_INFO << "Parsing auth configuration";
+    PasswordVerificationCache::instance().clear();
     if (config["auth"]) {
         auto auth_node = config["auth"];
-        auth_enabled = auth_node["enabled"].as<bool>();
+        // Same rule as an endpoint block (DeclaresAuthentication). A missing
+        // `enabled` used to be a yaml-cpp conversion error at startup.
+        auth_enabled = safeGet<bool>(auth_node, "enabled", "auth.enabled", DeclaresAuthentication(auth_node));
+        if (!auth_node["enabled"]) {
+            CROW_LOG_INFO << "Global `auth:` has no `enabled` key: authentication is "
+                          << (auth_enabled ? "ON (it configures authentication; write `enabled: false` to turn it off)"
+                                           : "OFF (it configures nothing)");
+        }
         CROW_LOG_DEBUG << "Auth enabled: " << auth_enabled;
 
         if (auth_node["type"]) {
-            global_auth_config.type = auth_node["type"].as<std::string>();
+            global_auth_config.type = normalizeAuthType(auth_node["type"].as<std::string>());
             CROW_LOG_DEBUG << "Auth type: " << global_auth_config.type;
         }
+        global_auth_config.roles = safeGet<std::vector<std::string>>(auth_node, "roles", "auth.roles", std::vector<std::string>());
         if (auth_node["jwt-secret"]) {
             global_auth_config.jwt_secret = auth_node["jwt-secret"].as<std::string>();
         }
@@ -1480,6 +1840,11 @@ void ConfigManager::parseAuthConfig() {
                 AuthUser auth_user;
                 auth_user.username = user["username"].as<std::string>();
                 auth_user.password = user["password"].as<std::string>();
+                if (auth_user.username.empty() || auth_user.password.empty()) {
+                    throw std::runtime_error(
+                        "auth.users: a user has an empty username or password. If it comes from "
+                        "{{env.NAME}}, that variable is unset or empty.");
+                }
                 if (user["roles"]) {
                     auth_user.roles = user["roles"].as<std::vector<std::string>>();
                 }
@@ -1493,6 +1858,10 @@ void ConfigManager::parseAuthConfig() {
             CROW_LOG_INFO << "Parsing global OIDC configuration";
             global_auth_config.oidc = parseOIDCConfigNode(auth_node["oidc"]);
             CROW_LOG_INFO << "Global OIDC configuration parsed: issuer=" << global_auth_config.oidc->issuer_url;
+        }
+        if (auth_enabled) {
+            RequireKnownAuthType(global_auth_config.type, "Top-level `auth:`");
+            warnIgnoredAuthKeys(auth_node, global_auth_config.type, "Top-level `auth:`");
         }
     }
 }
@@ -1520,6 +1889,19 @@ OIDCConfig ConfigManager::parseOIDCConfigNode(const YAML::Node& oidc_node, const
     if (oidc_node["provider-type"]) {
         oidc_config.provider_type = oidc_node["provider-type"].as<std::string>();
         CROW_LOG_DEBUG << log_prefix << "OIDC provider type: " << oidc_config.provider_type;
+    }
+
+    // Preset placeholder values ({tenant}, {realm}, {domain} in issuer-url).
+    if (oidc_node["tenant-id"]) {
+        oidc_config.tenant_id = oidc_node["tenant-id"].as<std::string>();
+    } else if (oidc_node["tenant"]) {
+        oidc_config.tenant_id = oidc_node["tenant"].as<std::string>();
+    }
+    if (oidc_node["realm"]) {
+        oidc_config.realm = oidc_node["realm"].as<std::string>();
+    }
+    if (oidc_node["domain"]) {
+        oidc_config.domain = oidc_node["domain"].as<std::string>();
     }
 
     // Token validation settings
@@ -1573,6 +1955,20 @@ OIDCConfig ConfigManager::parseOIDCConfigNode(const YAML::Node& oidc_node, const
     // JWKS caching
     if (oidc_node["jwks-cache-hours"]) {
         oidc_config.jwks_cache_hours = oidc_node["jwks-cache-hours"].as<int>();
+    }
+
+    // Validate at LOAD, against the preset as it will be applied at request
+    // time. Before, a preset issuer-url with an unsubstitutable placeholder
+    // was only logged ("OIDC configuration error") on the first request and
+    // every token was then refused - a config that read as protected and
+    // could authenticate nobody.
+    {
+        OIDCConfig effective = oidc_config;
+        OIDCProviderPresets::applyPreset(effective);
+        const std::string problem = OIDCProviderPresets::validateProviderConfig(effective);
+        if (!problem.empty()) {
+            throw ConfigurationError(log_prefix + "OIDC: " + problem, "auth.oidc");
+        }
     }
 
     return oidc_config;
@@ -1640,11 +2036,16 @@ void ConfigManager::parseGlobalHeartbeatConfig() {
             CROW_LOG_DEBUG << "Global heartbeat enabled";
         }
 
-        global_heartbeat_config.workerInterval = std::chrono::seconds(
-            safeGet<int>(heartbeat_node, "worker-interval", "heartbeat.worker-interval", 10)
-        );
-        CROW_LOG_DEBUG << "Global heartbeat worker interval: " << global_heartbeat_config.workerInterval.count() << " seconds";
+        const int worker_interval = safeGet<int>(heartbeat_node, "worker-interval", "heartbeat.worker-interval",
+                                                 static_cast<int>(GlobalHeartbeatConfig::kDefaultWorkerInterval.count()));
+        if (worker_interval <= 0) {
+            throw ConfigurationError("heartbeat.worker-interval must be a positive number of seconds",
+                                     "heartbeat.worker-interval");
+        }
+        global_heartbeat_config.workerInterval = std::chrono::seconds(worker_interval);
     }
+    CROW_LOG_INFO << "Heartbeat worker interval: " << global_heartbeat_config.workerInterval.count()
+                  << " s" << (config["heartbeat"] && config["heartbeat"]["worker-interval"] ? "" : " (default)");
 }
 
 // Utility methods
@@ -1824,35 +2225,77 @@ std::shared_ptr<const std::vector<EndpointConfig>> ConfigManager::endpointsSnaps
     return endpoints_snapshot;
 }
 
-const EndpointConfig* ConfigManager::findEndpoint(const std::vector<EndpointConfig>& endpoints,
-                                                  const std::string& path) {
+namespace {
+
+// Of the endpoints in `endpoints` that match `path` (and `accept`), the one
+// that answers it: the most specific route (RouteTranslator::compareSpecificity),
+// never simply the first in the table. First-match made precedence depend on
+// load order - recursive_directory_iterator order, and a reload moved the
+// file to the end - so an open `/customers/7` or `/:z/:x/b` could answer the
+// URLs of a protected `/customers/:id` or `/a/:x/b`, and a reload of the
+// protected file could flip a live URL from 401 to 200. Every request-time
+// lookup (rate limit, auth, the handler) goes through here, so all three
+// always resolve the same endpoint.
+template <typename Accept>
+const EndpointConfig* mostSpecificMatch(const std::vector<EndpointConfig>& endpoints, const std::string& path,
+                                        Accept accept) {
+    const EndpointConfig* best = nullptr;
     for (const auto& endpoint : endpoints) {
-        if (endpoint.matchesPath(path)) {
-            return &endpoint;
+        if (!accept(endpoint) || !endpoint.matchesPath(path)) {
+            continue;
+        }
+        if (best == nullptr) {
+            best = &endpoint;
+            continue;
+        }
+        // MCP-only entries match by name and have no route to compare.
+        if (endpoint.isRESTEndpoint() && best->isRESTEndpoint() &&
+            RouteTranslator::compareSpecificity(endpoint.urlPath, best->urlPath) < 0) {
+            best = &endpoint;
         }
     }
-    return nullptr;
+    return best;
+}
+
+}  // namespace
+
+const EndpointConfig* ConfigManager::findEndpoint(const std::vector<EndpointConfig>& endpoints,
+                                                  const std::string& path) {
+    return mostSpecificMatch(endpoints, path, [](const EndpointConfig&) { return true; });
 }
 
 const EndpointConfig* ConfigManager::findEndpoint(const std::vector<EndpointConfig>& endpoints,
                                                   const std::string& path,
                                                   const std::string& httpMethod) {
-    // Mirrors getEndpointForPathAndMethod exactly: case-insensitive, empty
-    // endpoint method means GET.
-    std::string methodUpper = httpMethod;
-    std::transform(methodUpper.begin(), methodUpper.end(), methodUpper.begin(), ::toupper);
+    // Case-insensitive, empty means GET - on both sides, for endpoints built
+    // in code; the parsers already store the canonical form.
+    const std::string wanted = CanonicalHttpMethod(httpMethod);
+    return mostSpecificMatch(endpoints, path, [&](const EndpointConfig& endpoint) {
+        return CanonicalHttpMethod(endpoint.method) == wanted;
+    });
+}
 
-    for (const auto& endpoint : endpoints) {
-        if (!endpoint.matchesPath(path)) {
-            continue;
-        }
-        std::string endpointMethod = endpoint.method.empty() ? "GET" : endpoint.method;
-        std::transform(endpointMethod.begin(), endpointMethod.end(), endpointMethod.begin(), ::toupper);
-        if (endpointMethod == methodUpper) {
-            return &endpoint;
+std::string ConfigManager::CanonicalHttpMethod(const std::string& method) {
+    const auto first = method.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) {
+        return "GET";
+    }
+    const auto last = method.find_last_not_of(" \t\r\n");
+    std::string out = method.substr(first, last - first + 1);
+    std::transform(out.begin(), out.end(), out.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    return out;
+}
+
+std::string ConfigManager::HttpMethodProblem(const std::string& method, const std::string& endpoint) {
+    const std::string canonical = CanonicalHttpMethod(method);
+    for (const char* allowed : {"GET", "POST", "PUT", "PATCH", "DELETE"}) {
+        if (canonical == allowed) {
+            return "";
         }
     }
-    return nullptr;
+    return "Endpoint " + endpoint + ": method '" + method +
+           "' is not supported; use one of GET, POST, PUT, PATCH, DELETE";
 }
 std::string ConfigManager::getBasePath() const { return base_path.string(); }
 
@@ -1890,6 +2333,18 @@ std::string ConfigManager::loadMCPInstructions() const {
 
     // No instructions configured
     return "";
+}
+
+std::string RedactConnectionSecrets(const std::string& text) {
+    static const std::regex url_password(R"(([A-Za-z][A-Za-z0-9+.\-]*://[^:/@\s'"]*):([^@\s'"]*)@)");
+    // A key naming a secret, `=`, then a single-quoted value or one running to
+    // the next separator (space, `;`, `&`, quote).
+    static const std::regex key_value(
+        R"(\b([A-Za-z_]*(?:password|passwd|secret|token|api_?key|access_?key)[A-Za-z_]*|pwd)(\s*=\s*)('(?:[^'\\]|\\.)*'|[^\s;&'"]+))",
+        std::regex::icase);
+    std::string out = std::regex_replace(text, url_password, "$1:<redacted>@");
+    out = std::regex_replace(out, key_value, "$1$2<redacted>");
+    return out;
 }
 
 // JSON configuration methods
@@ -1932,11 +2387,25 @@ crow::json::wvalue ConfigManager::getFlapiConfig() const {
     crow::json::wvalue ducklakeJson;
     ducklakeJson["enabled"] = ducklake_config.enabled;
     ducklakeJson["alias"] = ducklake_config.alias;
-    ducklakeJson["metadata-path"] = ducklake_config.metadata_path;
-    ducklakeJson["data-path"] = ducklake_config.data_path;
+    // A Postgres/MySQL metadata-path is a DSN with `password=...`, and both paths
+    // may be RESOLVED {{env.X}} values - this answered the secret in clear.
+    ducklakeJson["metadata-path"] = RedactConnectionSecrets(ducklake_config.metadata_path);
+    ducklakeJson["data-path"] = RedactConnectionSecrets(ducklake_config.data_path);
     ducklakeJson["override-data-path"] = ducklake_config.override_data_path;
     ducklakeJson["read-only"] = ducklake_config.read_only;
     ducklakeJson["warmup"] = CacheWarmupModeToString(ducklake_config.warmup);
+    // What actually happens: a read-only replica never warms (it cannot build),
+    // and --cache-warmup / FLAPI_CACHE_WARMUP override the file. `warmup` alone
+    // showed "always" on a replica that warms nothing.
+    {
+        CacheWarmupMode effective = ducklake_config.warmup;
+        if (ducklake_config.read_only) {
+            effective = CacheWarmupMode::Never;
+        } else if (cache_warmup_override) {
+            effective = *cache_warmup_override;
+        }
+        ducklakeJson["warmup_effective"] = CacheWarmupModeToString(effective);
+    }
 
     // Add data inlining configuration
     if (ducklake_config.data_inlining_row_limit) {
@@ -1962,11 +2431,14 @@ crow::json::wvalue ConfigManager::getFlapiConfig() const {
         if (ducklake_config.compaction.schedule) {
             compactionJson["schedule"] = ducklake_config.compaction.schedule.value();
         }
+        if (ducklake_config.compaction.delete_threshold) {
+            compactionJson["delete-threshold"] = ducklake_config.compaction.delete_threshold.value();
+        }
         ducklakeJson["compaction"] = std::move(compactionJson);
     }
 
     // Add scheduler configuration
-    if (ducklake_config.scheduler.enabled || ducklake_config.scheduler.scan_interval) {
+    if (ducklake_config.scheduler.enabled_explicit || ducklake_config.scheduler.scan_interval) {
         crow::json::wvalue schedulerJson;
         schedulerJson["enabled"] = ducklake_config.scheduler.enabled;
         if (ducklake_config.scheduler.scan_interval) {
@@ -2012,11 +2484,25 @@ crow::json::wvalue ConfigManager::getEndpointsConfig() const {
     // Pin the snapshot: this is reachable from the config service on a request
     // thread, concurrently with a writer swapping the table.
     const auto snapshot = endpointsSnapshot();
+    std::map<std::string, int> per_path;
+    for (const auto& endpoint : *snapshot) {
+        if (!endpoint.urlPath.empty()) {
+            ++per_path[endpoint.urlPath];
+        }
+    }
     for (const auto& endpoint : *snapshot) {
         // An MCP tool/resource/prompt has no url-path. Keying by it put every one
         // of them on "" so only the last survived and the CLI could not list the
         // rest; they are keyed by their MCP name instead.
-        const std::string key = endpoint.urlPath.empty() ? endpoint.getName() : endpoint.urlPath;
+        //
+        // A url-path several endpoints share (GET + POST /orders) is keyed
+        // "METHOD /path" for each of them: keyed by the path alone, all but the
+        // last were dropped from the listing. A path served once keeps its
+        // plain key, so existing clients see the same shape.
+        std::string key = endpoint.urlPath.empty() ? endpoint.getName() : endpoint.urlPath;
+        if (!endpoint.urlPath.empty() && per_path[endpoint.urlPath] > 1) {
+            key = EndpointKey(endpoint);
+        }
         endpointsJson[key] = serializeEndpointConfig(endpoint, EndpointJsonStyle::CamelCase);
     }
     return endpointsJson;
@@ -2036,6 +2522,9 @@ crow::json::wvalue ConfigManager::serializeEndpointConfig(const EndpointConfig& 
     if (config.isRESTEndpoint()) {
         set("url-path", "urlPath", config.urlPath);
         set("method", "method", config.method);
+        if (!config.description.empty()) {
+            set("description", "description", config.description);
+        }
         set("template-source", "templateSource", config.templateSource);
 
         if (!config.connection.empty()) {
@@ -2047,7 +2536,24 @@ crow::json::wvalue ConfigManager::serializeEndpointConfig(const EndpointConfig& 
         }
 
         set("with-pagination", "withPagination", config.with_pagination);
+        if (config.allow_shadowing) {
+            set("allow-shadowing", "allowShadowing", true);
+        }
         set("request-fields-validation", "requestFieldsValidation", config.request_fields_validation);
+    } else {
+        // An MCP-only tool/resource runs a template on a connection too; both
+        // were left out, so `flapii endpoints list` showed every resource on
+        // connection "N/A".
+        if (!config.templateSource.empty()) {
+            set("template-source", "templateSource", config.templateSource);
+        }
+        if (!config.connection.empty()) {
+            auto connection_list = crow::json::wvalue::list();
+            for (const auto& conn : config.connection) {
+                connection_list.push_back(conn);
+            }
+            json["connection"] = std::move(connection_list);
+        }
     }
 
     std::vector<crow::json::wvalue> requestFields;
@@ -2082,6 +2588,13 @@ crow::json::wvalue ConfigManager::serializeEndpointConfig(const EndpointConfig& 
             } else if (validator.type == "int" || validator.type == "integer") {
                 validatorJson["min"] = validator.min;
                 validatorJson["max"] = validator.max;
+            } else if (validator.type == "number" || validator.type == "float" || validator.type == "double") {
+                if (validator.minNumber) {
+                    validatorJson["min"] = *validator.minNumber;
+                }
+                if (validator.maxNumber) {
+                    validatorJson["max"] = *validator.maxNumber;
+                }
             } else if (validator.type == "enum") {
                 crow::json::wvalue::list allowed;
                 for (const auto& v : validator.allowedValues) {
@@ -2114,6 +2627,18 @@ crow::json::wvalue ConfigManager::serializeEndpointConfig(const EndpointConfig& 
     crow::json::wvalue authJson;
     authJson["enabled"] = config.auth.enabled;
     authJson["type"] = config.auth.type;
+    {
+        auto roles = crow::json::wvalue::list();
+        for (const auto& role : config.auth.roles) {
+            roles.push_back(role);
+        }
+        authJson["roles"] = std::move(roles);
+    }
+    // Marks auth copied from the top-level `auth:` block. A client that sends
+    // this object back unchanged keeps the endpoint inheriting; without the
+    // marker a GET-then-PUT round trip would turn inheritance into a
+    // declaration (and `enabled: false` into a silent opt-out).
+    authJson["inherited"] = config.auth.inherited;
     if (config.auth.from_aws_secretmanager) {
         crow::json::wvalue awsJson;
         awsJson[(style == EndpointJsonStyle::HyphenCase) ? "secret-name" : "secretName"] = config.auth.from_aws_secretmanager->secret_name;
@@ -2228,14 +2753,23 @@ ValidatorConfig validatorFromJson(const crow::json::rvalue& v) {
     if (out.type == "int" || out.type == "integer") {
         out.min = v.has("min") ? static_cast<int>(v["min"].i()) : std::numeric_limits<int>::min();
         out.max = v.has("max") ? static_cast<int>(v["max"].i()) : std::numeric_limits<int>::max();
+    } else if (out.type == "number" || out.type == "float" || out.type == "double") {
+        if (v.has("min")) {
+            out.minNumber = v["min"].d();
+        }
+        if (v.has("max")) {
+            out.maxNumber = v["max"].d();
+        }
     } else if (out.type == "string") {
-        out.regex = str("regex");
+        out.regex = v.has("regex") ? str("regex") : str("pattern");
         out.min = v.has("min-length") ? static_cast<int>(v["min-length"].i())
                                       : (v.has("min") ? static_cast<int>(v["min"].i()) : 0);
         out.max = v.has("max-length") ? static_cast<int>(v["max-length"].i())
                                       : (v.has("max") ? static_cast<int>(v["max"].i()) : 0);
     } else if (out.type == "enum") {
-        const char* key = v.has("allowedValues") ? "allowedValues" : (v.has("allowed-values") ? "allowed-values" : nullptr);
+        const char* key = v.has("allowedValues") ? "allowedValues"
+                        : (v.has("allowed-values") ? "allowed-values"
+                        : (v.has("values") ? "values" : nullptr));
         if (key) {
             for (const auto& item : v[key]) {
                 out.allowedValues.push_back(item.s());
@@ -2281,7 +2815,15 @@ EndpointConfig ConfigManager::deserializeEndpointConfig(const crow::json::rvalue
     auto urlKey = requireStringField(json, {"url-path", "urlPath", "url_path"});
     const std::string url_path = json[urlKey].s();
     auto methodKey = firstExistingKey(json, {"method", "Method"});
-    std::string method = methodKey.empty() ? std::string("GET") : std::string(json[methodKey].s());
+    const std::string raw_method = methodKey.empty() ? std::string("GET") : std::string(json[methodKey].s());
+    // The same canonical form and the same five methods as the YAML loader.
+    if (auto problem = HttpMethodProblem(raw_method, url_path); !problem.empty()) {
+        throw std::runtime_error(problem);
+    }
+    if (auto problem = RouteTranslator::urlPathProblem(url_path); !problem.empty()) {
+        throw std::runtime_error(problem);
+    }
+    std::string method = CanonicalHttpMethod(raw_method);
 
     // PUT semantics: start from the endpoint being replaced, so what the JSON cannot
     // carry (auth users and their passwords - never serialised -, per-field defaults,
@@ -2296,12 +2838,19 @@ EndpointConfig ConfigManager::deserializeEndpointConfig(const crow::json::rvalue
 
     config.urlPath = url_path;
     config.method = std::move(method);
+    if (json.has("description") && json["description"].t() == crow::json::type::String) {
+        config.description = json["description"].s();
+    } else if (base) {
+        config.description = base->description;
+    }
     auto templateKey = requireStringField(json, {"template-source", "templateSource", "template_source"});
     config.templateSource = json[templateKey].s();
     if (!firstExistingKey(json, {"connection", "connections"}).empty()) {
         config.connection = getList({"connection", "connections"});
     }
     config.with_pagination = getBool({"with-pagination", "withPagination", "with_pagination"}, base ? base->with_pagination : true);
+    config.allow_shadowing = getBool({"allow-shadowing", "allowShadowing", "allow_shadowing"},
+                                     base ? base->allow_shadowing : false);
     config.request_fields_validation = getBool({"request-fields-validation", "requestFieldsValidation"},
                                                base ? base->request_fields_validation : false);
 
@@ -2413,17 +2962,55 @@ EndpointConfig ConfigManager::deserializeEndpointConfig(const crow::json::rvalue
         }
     }
 
-    if (json.has("auth")) {
+    const bool auth_inherited_in_json =
+        json.has("auth") && json["auth"].has("inherited") &&
+        json["auth"]["inherited"].t() == crow::json::type::True;
+    if (json.has("auth") && !auth_inherited_in_json) {
         const auto& authJson = json["auth"];
-        // enabled/type from the JSON; users, roles and secrets (never serialised) stay.
+        // enabled/type/roles from the JSON; users and secrets (never serialised) stay.
+        if (base && base->auth.inherited) {
+            // Turning an inherited config into a declared one: start clean so
+            // the global users/secrets are not frozen into this endpoint.
+            config.auth = AuthConfig{};
+        }
+        config.auth.declared = true;
+        config.auth.inherited = false;
         if (authJson.has("enabled")) {
             config.auth.enabled = authJson["enabled"].b();
-        } else if (!base) {
-            config.auth.enabled = false;
+        } else if (!base || !base->auth.declared) {
+            // A block that configures authentication is on unless it says
+            // `enabled: false` (DeclaresAuthentication, for YAML).
+            config.auth.enabled = authJson.has("type") || authJson.has("roles");
         }
         if (authJson.has("type")) {
-            config.auth.type = authJson["type"].s();
+            config.auth.type = normalizeAuthType(authJson["type"].s());
         }
+        PasswordVerificationCache::instance().clear();
+        if (config.auth.enabled) {
+            RequireKnownAuthType(config.auth.type, "Endpoint " + config.method + " " + config.urlPath);
+        }
+        if (authJson.has("roles")) {
+            config.auth.roles.clear();
+            for (const auto& role : authJson["roles"]) {
+                config.auth.roles.push_back(role.s());
+            }
+        }
+        // Same rule as YAML (inheritGlobalCredentials): a block without a type
+        // takes the top-level credentials. A GET-then-PUT of such an endpoint
+        // sends the inherited type back; that keeps inheriting too.
+        const bool resends_inherited_type = base && base->auth.credentials_inherited &&
+                                            config.auth.type == base->auth.type;
+        config.auth.credentials_inherited = false;
+        if (config.auth.enabled && (config.auth.type.empty() || resends_inherited_type)) {
+            inheritGlobalCredentials(config.auth, /*declares_credentials=*/false,
+                                     authJson.has("roles") || resends_inherited_type,
+                                     "Endpoint " + config.method + " " + config.urlPath);
+        }
+    } else if (!base || auth_inherited_in_json || base->auth.inherited) {
+        // No auth of its own: inherit the global block (re-applied so a PUT
+        // picks up the current global config rather than a stale copy).
+        config.auth = AuthConfig{};
+        applyGlobalAuthDefault(config);
     }
 
     auto rateKey = firstExistingKey(json, {"rate-limit", "rateLimit"});
@@ -2455,6 +3042,353 @@ EndpointConfig ConfigManager::deserializeEndpointConfig(const crow::json::rvalue
 // Other methods
 void ConfigManager::refreshConfig() {
     throw std::runtime_error("Not implemented");
+}
+
+std::string ConfigManager::RouteShape(const std::string& url_path) {
+    // The regex RouteTranslator compiles, with parameter names discarded: two
+    // url-paths with the same shape match the same requests.
+    std::vector<std::string> ignored_names;
+    return RouteTranslator::translateRoutePath(url_path, ignored_names);
+}
+
+namespace {
+
+// An endpoint's effective auth (inheritance already applied), reduced to what
+// decides who gets in: enabled, scheme, roles AND the identity source the
+// credentials are checked against. Two basic blocks with different users, or
+// bearer blocks with different secrets, admit different people even when
+// scheme and roles match - comparing only those let a literal route with its
+// own `guest` user serve the protected endpoint's URL to guest. Secret values
+// (passwords, jwt-secret, client-secret) are held only as SHA-256 digests and
+// are never part of a message.
+struct AuthSignature {
+    bool enabled = false;
+    std::string type;
+    std::vector<std::string> roles;   // sorted
+    std::vector<std::string> users;   // sorted "name\x1fdigest(password)\x1froles"
+    std::string jwt_secret_digest;
+    std::string jwt_issuer;
+    std::string oidc;                 // issuer/audience/client fields, joined
+    std::string aws_secret;           // from-aws-secretmanager source, joined
+
+    bool operator==(const AuthSignature& other) const { return differences(other).empty(); }
+
+    // The names of the parts that differ ("type", "users", "jwt-secret", ...),
+    // never their values.
+    std::vector<std::string> differences(const AuthSignature& other) const {
+        std::vector<std::string> out;
+        if (enabled != other.enabled) {
+            out.emplace_back("enabled");
+            return out;
+        }
+        if (!enabled) {
+            return out;
+        }
+        const auto check = [&](bool same, const char* name) {
+            if (!same) {
+                out.emplace_back(name);
+            }
+        };
+        check(type == other.type, "type");
+        check(roles == other.roles, "roles");
+        check(users == other.users, "users");
+        check(jwt_secret_digest == other.jwt_secret_digest, "jwt-secret");
+        check(jwt_issuer == other.jwt_issuer, "jwt-issuer");
+        check(oidc == other.oidc, "oidc");
+        check(aws_secret == other.aws_secret, "from-aws-secretmanager");
+        return out;
+    }
+};
+
+std::string digestOf(const std::string& secret) {
+    if (secret.empty()) {
+        return "";
+    }
+    std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
+    ::SHA256(reinterpret_cast<const unsigned char*>(secret.data()), secret.size(), digest.data());
+    return std::string(reinterpret_cast<const char*>(digest.data()), digest.size());
+}
+
+std::vector<std::string> sortedUnique(std::vector<std::string> values) {
+    std::sort(values.begin(), values.end());
+    values.erase(std::unique(values.begin(), values.end()), values.end());
+    return values;
+}
+
+std::string joined(const std::vector<std::string>& parts) {
+    std::string out;
+    for (const auto& part : parts) {
+        out += part;
+        out += '\x1f';
+    }
+    return out;
+}
+
+AuthSignature authSignature(const EndpointConfig& ep) {
+    AuthSignature sig;
+    sig.enabled = ep.auth.enabled;
+    if (!sig.enabled) {
+        return sig;
+    }
+    const auto& auth = ep.auth;
+    sig.type = auth.type == "jwt" ? std::string("bearer") : auth.type;
+    sig.roles = sortedUnique(auth.roles);
+    for (const auto& user : auth.users) {
+        sig.users.push_back(joined({user.username, digestOf(user.password), joined(sortedUnique(user.roles))}));
+    }
+    std::sort(sig.users.begin(), sig.users.end());
+    sig.jwt_secret_digest = digestOf(auth.jwt_secret);
+    sig.jwt_issuer = auth.jwt_issuer;
+    if (auth.oidc) {
+        const auto& o = *auth.oidc;
+        sig.oidc = joined({o.issuer_url, o.client_id, digestOf(o.client_secret), o.provider_type, o.tenant_id,
+                           o.realm, o.domain, joined(sortedUnique(o.allowed_audiences)), o.username_claim,
+                           o.roles_claim, o.groups_claim, o.role_claim_path,
+                           // token-validation settings decide who gets in as much as the issuer does
+                           o.verify_expiration ? "exp" : "no-exp", std::to_string(o.clock_skew_seconds),
+                           joined(sortedUnique(o.scopes))});
+    }
+    if (auth.from_aws_secretmanager) {
+        const auto& s = *auth.from_aws_secretmanager;
+        sig.aws_secret = joined({s.secret_name, s.region, s.secret_id, s.secret_key, s.secret_table});
+    }
+    return sig;
+}
+
+std::string describeAuth(const AuthSignature& sig) {
+    if (!sig.enabled) {
+        return "open";
+    }
+    std::string out = sig.type.empty() ? std::string("auth") : sig.type;
+    if (!sig.roles.empty()) {
+        out += ", roles [";
+        for (std::size_t i = 0; i < sig.roles.size(); ++i) {
+            out += (i == 0 ? "" : ", ") + sig.roles[i];
+        }
+        out += "]";
+    }
+    return out;
+}
+
+// A request path both routes match, for the messages: the winner's literals
+// filled into the loser's parameters (`/customers/7`, `/a/{x}/b`).
+std::string sampleOverlapPath(const std::string& winner, const std::string& loser) {
+    std::vector<std::string> w;
+    std::vector<std::string> l;
+    for (const auto* route : {&winner, &loser}) {
+        auto& out = route == &winner ? w : l;
+        std::size_t start = 1;
+        while (true) {
+            const auto end = route->find('/', start);
+            out.push_back(route->substr(start, end == std::string::npos ? std::string::npos : end - start));
+            if (end == std::string::npos) {
+                break;
+            }
+            start = end + 1;
+        }
+    }
+    std::string path;
+    for (std::size_t i = 0; i < w.size() && i < l.size(); ++i) {
+        const bool w_param = w[i].size() > 1 && w[i].front() == ':';
+        const bool l_param = l[i].size() > 1 && l[i].front() == ':';
+        const std::string& literal = !w_param ? w[i] : (!l_param ? l[i] : w[i]);
+        path += "/" + (w_param && l_param ? "{" + w[i].substr(1) + "}" : literal);
+    }
+    return path;
+}
+
+struct RouteOverlap {
+    const EndpointConfig* winner;
+    const EndpointConfig* loser;
+    AuthSignature winner_auth;
+    AuthSignature loser_auth;
+};
+
+std::optional<RouteOverlap> overlapOf(const EndpointConfig& candidate, const EndpointConfig& ep) {
+    if (candidate.urlPath.empty() || ep.urlPath.empty() ||
+        ConfigManager::CanonicalHttpMethod(candidate.method) != ConfigManager::CanonicalHttpMethod(ep.method) ||
+        !RouteTranslator::routesOverlap(candidate.urlPath, ep.urlPath)) {
+        return std::nullopt;
+    }
+    const int order = RouteTranslator::compareSpecificity(candidate.urlPath, ep.urlPath);
+    if (order == 0) {
+        return std::nullopt;   // the same shape: a duplicate, reported as such
+    }
+    RouteOverlap overlap;
+    overlap.winner = order < 0 ? &candidate : &ep;
+    overlap.loser = order < 0 ? &ep : &candidate;
+    overlap.winner_auth = authSignature(*overlap.winner);
+    overlap.loser_auth = authSignature(*overlap.loser);
+    return overlap;
+}
+
+// Another request path the LESS specific route answers although it names the
+// same record as the winner's literal (`/customers/07` for `/customers/7`), or
+// "" when no obvious one exists. Path parameters are matched as strings and
+// the SQL usually casts or compares loosely, so a literal route protects one
+// path string, not one record.
+std::string otherSpelling(const std::string& winner, const std::string& loser) {
+    const std::string sample = sampleOverlapPath(winner, loser);
+    std::vector<std::string> w;
+    std::vector<std::string> l;
+    std::vector<std::string> out;
+    for (const auto& [route, parts] : {std::pair<const std::string*, std::vector<std::string>*>{&winner, &w},
+                                       {&loser, &l}, {&sample, &out}}) {
+        std::size_t start = 1;
+        while (true) {
+            const auto end = route->find('/', start);
+            parts->push_back(route->substr(start, end == std::string::npos ? std::string::npos : end - start));
+            if (end == std::string::npos) {
+                break;
+            }
+            start = end + 1;
+        }
+    }
+    for (std::size_t i = 0; i < w.size() && i < l.size() && i < out.size(); ++i) {
+        const bool w_literal = w[i].empty() || w[i].front() != ':';
+        const bool l_param = l[i].size() > 1 && l[i].front() == ':';
+        if (!w_literal || !l_param || w[i].empty()) {
+            continue;
+        }
+        const std::string& lit = w[i];
+        if (std::all_of(lit.begin(), lit.end(), [](unsigned char c) { return std::isdigit(c) != 0; })) {
+            out[i] = "0" + lit;
+        } else {
+            auto alt = lit;
+            const auto letter = std::find_if(alt.begin(), alt.end(), [](unsigned char c) { return std::isalpha(c); });
+            if (letter == alt.end()) {
+                continue;
+            }
+            *letter = std::isupper(static_cast<unsigned char>(*letter)) ? std::tolower(*letter) : std::toupper(*letter);
+            out[i] = alt;
+        }
+        std::string path;
+        for (const auto& part : out) {
+            path += "/" + part;
+        }
+        return path;
+    }
+    return "";
+}
+
+std::string describeOverlap(const RouteOverlap& o) {
+    const std::string method = ConfigManager::CanonicalHttpMethod(o.winner->method);
+    std::string text = method + " " + o.winner->urlPath + " (" + describeAuth(o.winner_auth) +
+                       ") takes precedence over " + method + " " + o.loser->urlPath + " (" +
+                       describeAuth(o.loser_auth) + ") for " + sampleOverlapPath(o.winner->urlPath, o.loser->urlPath);
+    const auto differs = o.winner_auth.differences(o.loser_auth);
+    if (differs.empty()) {
+        return text;
+    }
+    text += " (auth differs in:";
+    for (std::size_t i = 0; i < differs.size(); ++i) {
+        text += (i == 0 ? " " : ", ") + differs[i];
+    }
+    text += "); " + o.loser->urlPath + " still serves every other URL its pattern matches, including other " +
+            "spellings of the same value";
+    const auto other = otherSpelling(o.winner->urlPath, o.loser->urlPath);
+    if (!other.empty()) {
+        text += " such as " + other;
+    }
+    text += " - a literal route protects that exact path string, not a record";
+    return text;
+}
+
+bool skippedFor(const EndpointConfig& ep, const EndpointConfig& candidate, const EndpointConfig* replacing) {
+    if (!candidate.config_file_path.empty() && ep.config_file_path == candidate.config_file_path) {
+        return true;   // the same file, e.g. a reload of it
+    }
+    // The endpoint an update replaces is not a conflict with its new version.
+    return replacing != nullptr && ConfigManager::EndpointKey(ep) == ConfigManager::EndpointKey(*replacing) &&
+           ep.config_file_path == replacing->config_file_path;
+}
+
+}  // namespace
+
+std::string ConfigManager::DuplicateEndpointProblem(const EndpointConfig& candidate,
+                                                    const EndpointConfig* replacing) const {
+    const auto where = [](const EndpointConfig& ep) {
+        return ep.config_file_path.empty() ? std::string("(in memory)") : ep.config_file_path;
+    };
+    // An MCP name is the tool/resource/prompt's whole identity to a client:
+    // two `northwind_order` tools loaded silently and tools/call ran whichever
+    // came first. Checked per kind - a tool and a resource may share a name.
+    const auto same_name = [](const auto& a, const auto& b) {
+        return a.has_value() && b.has_value() && !a->name.empty() && a->name == b->name;
+    };
+    const std::string candidate_method = CanonicalHttpMethod(candidate.method);
+    const auto snapshot = endpointsSnapshot();
+    for (const auto& ep : *snapshot) {
+        if (skippedFor(ep, candidate, replacing)) {
+            continue;
+        }
+        // Compared as the ROUTE the router compiles, not as text: `/customers/:id`
+        // and `/customers/:cid` match exactly the same requests. Compared as
+        // strings both loaded, and after a restart load order decided which one
+        // served - an endpoint with `auth: {enabled: false}` could shadow the
+        // authenticated one and answer without credentials. Methods are
+        // compared canonically for the same reason: `get` is routed as GET.
+        if (!candidate.urlPath.empty() && !ep.urlPath.empty() && CanonicalHttpMethod(ep.method) == candidate_method &&
+            RouteShape(ep.urlPath) == RouteShape(candidate.urlPath)) {
+            const std::string same_path = ep.urlPath == candidate.urlPath
+                ? candidate.urlPath
+                : candidate.urlPath + " (same route as " + ep.urlPath + ")";
+            return "Duplicate endpoint " + candidate_method + " " + same_path + ": declared in " +
+                   where(ep) + " and " + where(candidate);
+        }
+        // Overlapping routes (`/customers/7` and `/customers/:id`): the more
+        // specific one answers the URLs both match, the other one every other
+        // URL its pattern matches. Refused in EITHER direction when their auth
+        // differs at all, unless the winner opts in: an open literal serves a
+        // protected record, and a protected literal (`/customers/7` over an open
+        // `/customers/:id`) protects only that string - `/customers/07` and
+        // `/customers/+7` still reach the open endpoint and name the same row.
+        if (const auto overlap = overlapOf(candidate, ep)) {
+            if (!(overlap->winner_auth == overlap->loser_auth) && !overlap->winner->allow_shadowing) {
+                return "Overlapping routes with different auth: " + describeOverlap(*overlap) + " (declared in " +
+                       where(*overlap->winner) + " and " + where(*overlap->loser) +
+                       "). Give both the same auth, make the routes disjoint, filter rows by auth.* inside " +
+                       overlap->loser->urlPath + ", or set `allow-shadowing: true` on " + overlap->winner->urlPath +
+                       " if this split is intended";
+            }
+        }
+        const char* kind = nullptr;
+        std::string name;
+        if (same_name(ep.mcp_tool, candidate.mcp_tool)) {
+            kind = "tool";
+            name = candidate.mcp_tool->name;
+        } else if (same_name(ep.mcp_resource, candidate.mcp_resource)) {
+            kind = "resource";
+            name = candidate.mcp_resource->name;
+        } else if (same_name(ep.mcp_prompt, candidate.mcp_prompt)) {
+            kind = "prompt";
+            name = candidate.mcp_prompt->name;
+        }
+        if (kind != nullptr) {
+            return std::string("Duplicate MCP ") + kind + " name '" + name + "': declared in " +
+                   where(ep) + " and " + where(candidate);
+        }
+    }
+    return "";
+}
+
+void ConfigManager::LogRouteOverlaps(const EndpointConfig& candidate, const EndpointConfig* replacing) const {
+    const auto snapshot = endpointsSnapshot();
+    for (const auto& ep : *snapshot) {
+        if (skippedFor(ep, candidate, replacing)) {
+            continue;
+        }
+        const auto overlap = overlapOf(candidate, ep);
+        if (!overlap) {
+            continue;
+        }
+        if (overlap->winner_auth == overlap->loser_auth) {
+            CROW_LOG_INFO << "Overlapping routes (same auth): " << describeOverlap(*overlap);
+        } else {
+            CROW_LOG_WARNING << "Overlapping routes with different auth: " << describeOverlap(*overlap)
+                             << (overlap->winner->allow_shadowing ? " (allow-shadowing: true)" : "");
+        }
+    }
 }
 
 void ConfigManager::addEndpoint(const EndpointConfig& endpoint) {
@@ -2514,7 +3448,10 @@ bool ConfigManager::replaceEndpoint(const EndpointConfig& endpoint) {
     // endpoint_repository has its own locking. Decide inside, act outside.
     const bool replaced = mutateEndpoints([&](std::vector<EndpointConfig>& eps) -> bool {
         for (auto& candidate : eps) {
-            if (endpoint.isSameEndpoint(candidate)) {
+            // The method too: isSameEndpoint compares the url-path only, so a
+            // PUT to POST /orders replaced GET /orders when it came first.
+            if (endpoint.isSameEndpoint(candidate) &&
+                (!endpoint.isRESTEndpoint() || EndpointKey(endpoint) == EndpointKey(candidate))) {
                 candidate = endpoint;
                 return true;
             }
@@ -2560,7 +3497,10 @@ std::string ConfigManager::serializeEndpointConfigToYaml(const EndpointConfig& c
     // REST endpoint fields
     if (config.isRESTEndpoint()) {
         out << YAML::Key << "url-path" << YAML::Value << config.urlPath;
-        out << YAML::Key << "method" << YAML::Value << config.method;
+        out << YAML::Key << "method" << YAML::Value << CanonicalHttpMethod(config.method);
+        if (config.allow_shadowing) {
+            out << YAML::Key << "allow-shadowing" << YAML::Value << true;
+        }
     }
     
     // MCP Tool fields
@@ -2627,10 +3567,23 @@ std::string ConfigManager::serializeEndpointConfigToYaml(const EndpointConfig& c
     }
     
     // Auth configuration
-    if (config.auth.enabled) {
+    // Inherited auth is NOT written: the file keeps inheriting the global
+    // block. A declared `enabled: false` IS written - it is an explicit opt-out
+    // from the global block, and dropping it would re-protect the endpoint on
+    // the next load (or protect it with something other than intended).
+    if (!config.auth.inherited && (config.auth.enabled || config.auth.declared)) {
         out << YAML::Key << "auth" << YAML::Value << YAML::BeginMap;
-        out << YAML::Key << "enabled" << YAML::Value << true;
-        out << YAML::Key << "type" << YAML::Value << config.auth.type;
+        out << YAML::Key << "enabled" << YAML::Value << config.auth.enabled;
+        if (config.auth.enabled) {
+            // An inherited type is not written, so the file keeps inheriting
+            // the top-level block (and does not freeze one copy of it).
+            if (!config.auth.credentials_inherited) {
+                out << YAML::Key << "type" << YAML::Value << config.auth.type;
+            }
+            if (!config.auth.roles.empty()) {
+                out << YAML::Key << "roles" << YAML::Value << YAML::Flow << config.auth.roles;
+            }
+        }
         out << YAML::EndMap;
     }
     
@@ -2670,7 +3623,16 @@ EndpointConfig ConfigManager::deserializeEndpointConfigFromYaml(const std::strin
     // Parse REST endpoint
     if (is_rest_endpoint) {
         config.urlPath = node["url-path"].as<std::string>();
-        config.method = node["method"] ? node["method"].as<std::string>() : "GET";
+        const std::string raw_method =
+            (node["method"] && !node["method"].IsNull()) ? node["method"].as<std::string>() : "GET";
+        if (auto problem = HttpMethodProblem(raw_method, config.urlPath); !problem.empty()) {
+            throw std::runtime_error(problem);
+        }
+        config.method = CanonicalHttpMethod(raw_method);
+        if (auto problem = RouteTranslator::urlPathProblem(config.urlPath); !problem.empty()) {
+            throw std::runtime_error(problem);
+        }
+        config.allow_shadowing = node["allow-shadowing"] && node["allow-shadowing"].as<bool>();
     }
     
     // Parse MCP Tool
@@ -2742,6 +3704,63 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
         result.errors.insert(result.errors.end(), self_errors.begin(), self_errors.end());
     }
     
+    // Whether a template file exists, and the path to name when it does not.
+    //
+    // The parser has ALREADY resolved the path against the YAML's directory.
+    // Prepending template.path to that unconditionally double-prefixed every
+    // relative one - in a packed bundle all paths are relative archive keys, so
+    // `--validate-config` warned "Template file does not exist:
+    // sqls/sqls/x.sql" for every endpoint of a bundle that served fine - and it
+    // looked only at the disk, never in the bundle. The resolved path is tried
+    // first; template.path/<source> only for a source parsed without a
+    // directory (validateEndpointConfigFromYaml).
+    auto templateFileExists = [this](const std::string& source, std::string& reported) {
+        const std::filesystem::path as_is(source);
+        std::vector<std::filesystem::path> candidates{as_is};
+        if (!as_is.is_absolute()) {
+            candidates.push_back(std::filesystem::path(template_config.path) / as_is);
+        }
+        const bool bundled = FileProviderFactory::GetBundleContents() != nullptr;
+        for (const auto& candidate : candidates) {
+            std::error_code ec;
+            if (std::filesystem::exists(candidate, ec)) {
+                return true;
+            }
+            if (bundled) {
+                try {
+                    if (FileProviderFactory::CreateProvider(candidate.string())->FileExists(candidate.string())) {
+                        return true;
+                    }
+                } catch (const std::exception&) {
+                    // not resolvable through the bundle either
+                }
+            }
+        }
+        // Name the as-is path when it already lies under template.path (it was
+        // resolved), the prefixed one otherwise - never a doubled prefix.
+        const std::string prefix = std::filesystem::path(template_config.path).lexically_normal().string();
+        const std::string normal = as_is.lexically_normal().string();
+        reported = (as_is.is_absolute() || (!prefix.empty() && normal.rfind(prefix, 0) == 0))
+                       ? as_is.string()
+                       : candidates.back().string();
+        return false;
+    };
+
+    // The same candidates as templateFileExists; the first that exists is checked.
+    auto templateSyntaxError = [this](const std::string& source) -> std::optional<std::string> {
+        const std::filesystem::path as_is(source);
+        std::vector<std::filesystem::path> candidates{as_is};
+        if (!as_is.is_absolute()) {
+            candidates.push_back(std::filesystem::path(template_config.path) / as_is);
+        }
+        for (const auto& candidate : candidates) {
+            if (auto error = CheckMustacheTemplateFile(candidate.string())) {
+                return error;
+            }
+        }
+        return std::nullopt;
+    };
+
     // Validate template source. NOT for an MCP prompt: it carries its template
     // inline and touches no database, and the loader already knows that (it skips
     // the template-source parse). This held every prompt to the REST rule, so
@@ -2757,26 +3776,34 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
         result.valid = false;
         result.errors.emplace_back("template-source cannot be empty");
     } else {
-        // Security check: detect path traversal attempts
-        if (PathValidator::ContainsTraversal(config.templateSource)) {
-            result.warnings.emplace_back("Template source contains path traversal sequences: " + config.templateSource);
-            result.warnings.emplace_back("Template file does not exist (path traversal detected)");
-        } else {
-            // Check if template file exists
-            // Note: config.templateSource is already resolved relative to YAML file directory during parsing
-            std::filesystem::path template_path(config.templateSource);
-
-            // If path is not absolute, prepend template_config.path
-            if (!template_path.is_absolute()) {
-                template_path = std::filesystem::path(template_config.path) / template_path;
+        // Traversal means ESCAPING template.path, not a `..` somewhere in the
+        // configured path: `template.path: ../sqls` flagged every template it
+        // held - and then claimed the existing files did not exist.
+        const std::string normalised = std::filesystem::path(config.templateSource).lexically_normal().string();
+        std::string escape;
+        if (FileProviderFactory::GetBundleContents() != nullptr) {
+            if (PathValidator::ContainsTraversal(normalised)) {
+                escape = "template path '" + config.templateSource + "' is outside the templates directory";
             }
-
-            if (!std::filesystem::exists(template_path)) {
-                result.warnings.emplace_back("Template file does not exist: " + template_path.string());
+        } else {
+            escape = TemplatePathProblem(normalised);
+        }
+        if (!escape.empty()) {
+            result.warnings.emplace_back("Template source escapes template.path (" + getTemplatePath() +
+                                         "): " + escape);
+        }
+        {
+            std::string reported;
+            if (!templateFileExists(config.templateSource, reported)) {
+                result.warnings.emplace_back("Template file does not exist: " + reported);
+            } else if (auto syntax = templateSyntaxError(config.templateSource)) {
+                // crow would segfault or hang rendering it; an error, not a warning.
+                result.valid = false;
+                result.errors.push_back(*syntax);
             }
         }
     }
-    
+
     // Validate connections. A prompt has no database, so "none specified" is not a
     // finding for it - but a connection it DOES name must still exist.
     if (config.connection.empty()) {
@@ -2791,19 +3818,15 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
             }
         }
     }
-    
+
     // Validate cache template if specified
     if (config.cache.enabled && config.cache.template_file) {
-        // Note: config.cache.template_file is already resolved relative to YAML file directory during parsing
-        std::filesystem::path cache_template_path(config.cache.template_file.value());
-        
-        // If path is not absolute, prepend template_config.path
-        if (!cache_template_path.is_absolute()) {
-            cache_template_path = std::filesystem::path(template_config.path) / cache_template_path;
-        }
-        
-        if (!std::filesystem::exists(cache_template_path)) {
-            result.warnings.emplace_back("Cache template file does not exist: " + cache_template_path.string());
+        std::string reported;
+        if (!templateFileExists(config.cache.template_file.value(), reported)) {
+            result.warnings.emplace_back("Cache template file does not exist: " + reported);
+        } else if (auto syntax = templateSyntaxError(config.cache.template_file.value())) {
+            result.valid = false;
+            result.errors.push_back(*syntax);
         }
     }
     
@@ -2880,32 +3903,239 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfigFile(const 
     }
 }
 
-// Reload endpoint from disk (after external edit)
-// Note: This method modifies the endpoints vector. Ensure proper synchronization if called from multiple threads.
-bool ConfigManager::reloadEndpointConfig(const std::string& slug_or_path) {
-    // Pin the table for the read phase: `it` must stay valid across the parse
-    // below, which can take a while and runs concurrently with other requests.
-    auto snapshot = endpointsSnapshot();
+std::string ConfigManager::EndpointKey(const EndpointConfig& endpoint) {
+    if (endpoint.urlPath.empty()) {
+        return endpoint.getName();
+    }
+    std::string method = endpoint.method.empty() ? std::string("GET") : endpoint.method;
+    std::transform(method.begin(), method.end(), method.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    return method + " " + endpoint.urlPath;
+}
 
-    // Try to find existing endpoint by URL path or MCP name
-    auto it = std::find_if(snapshot->begin(), snapshot->end(), [&](const EndpointConfig& ep) {
-        return ep.getName() == slug_or_path || ep.matchesPath(slug_or_path);
-    });
-    
-    if (it == snapshot->end()) {
+ConfigManager::EndpointRef ConfigManager::getEndpointForKey(const std::string& key) const {
+    auto snapshot = endpointsSnapshot();
+    for (const auto& ep : *snapshot) {
+        if (EndpointKey(ep) == key) {
+            return EndpointRef(snapshot, &ep);
+        }
+    }
+    // "METHOD /path" naming a templated path (/orders/:id addressed as
+    // "GET /orders/7") resolves by route match, method included.
+    const auto space = key.find(' ');
+    if (space != std::string::npos && key.find('/') == space + 1) {
+        return EndpointRef(snapshot, findEndpoint(*snapshot, key.substr(space + 1), key.substr(0, space)));
+    }
+    return EndpointRef(snapshot, findEndpoint(*snapshot, key));
+}
+
+void ConfigManager::addEndpointsChangedListener(std::function<void()> listener) {
+    std::lock_guard<MovableMutex> guard(endpoints_mutex);
+    endpoints_changed_listeners.push_back(std::move(listener));
+}
+
+void ConfigManager::notifyEndpointsChanged(const std::vector<std::function<void()>>& listeners) {
+    for (const auto& listener : listeners) {
+        // A listener's failure must not turn a successful reload into an error.
+        try {
+            listener();
+        } catch (const std::exception& ex) {
+            CROW_LOG_WARNING << "Endpoint change listener failed: " << ex.what();
+        } catch (...) {
+            CROW_LOG_WARNING << "Endpoint change listener failed";
+        }
+    }
+}
+
+bool ConfigManager::removeEndpoint(const EndpointConfig& endpoint) {
+    const std::string key = EndpointKey(endpoint);
+    const auto removed = mutateEndpoints(
+        [&](std::vector<EndpointConfig>& eps) -> std::vector<EndpointConfig> {
+            std::vector<EndpointConfig> taken;
+            auto it = std::stable_partition(eps.begin(), eps.end(),
+                                            [&](const EndpointConfig& ep) { return EndpointKey(ep) != key; });
+            taken.assign(std::make_move_iterator(it), std::make_move_iterator(eps.end()));
+            eps.erase(it, eps.end());
+            return taken;
+        });
+    if (endpoint_repository) {
+        for (const auto& ep : removed) {
+            if (ep.isRESTEndpoint()) {
+                endpoint_repository->removeRestEndpoint(ep.urlPath, ep.method);
+            } else if (!ep.getName().empty()) {
+                endpoint_repository->removeMCPEndpoint(ep.getName());
+            }
+        }
+    }
+    return !removed.empty();
+}
+
+namespace {
+
+std::string canonicalOrSelf(const std::filesystem::path& p) {
+    std::error_code ec;
+    auto canonical = std::filesystem::weakly_canonical(p, ec);
+    return ec ? std::filesystem::absolute(p).lexically_normal().string() : canonical.string();
+}
+
+}  // namespace
+
+ConfigManager::FileReloadResult ConfigManager::reloadEndpointFile(const std::filesystem::path& file) {
+    FileReloadResult result;
+    const std::string wanted = canonicalOrSelf(file);
+    if (!std::filesystem::exists(file)) {
+        // A deleted endpoint file: unload what it declared. It used to answer
+        // 404 and leave the endpoints loaded - a route still served from a file
+        // that no longer exists, 500-ing once its template went with it.
+        std::vector<EndpointConfig> removed;
+        mutateEndpointsVoid([&](std::vector<EndpointConfig>& eps) {
+            removed.clear();
+            auto it = std::stable_partition(eps.begin(), eps.end(), [&](const EndpointConfig& ep) {
+                return ep.config_file_path.empty() || canonicalOrSelf(ep.config_file_path) != wanted;
+            });
+            removed.assign(it, eps.end());
+            eps.erase(it, eps.end());
+        });
+        if (removed.empty()) {
+            result.status = 404;
+            result.error = "YAML file not found: " + file.string();
+            return result;
+        }
+        for (const auto& ep : removed) {
+            if (endpoint_repository) {
+                if (ep.isRESTEndpoint()) {
+                    endpoint_repository->removeRestEndpoint(ep.urlPath, ep.method);
+                } else if (!ep.getName().empty()) {
+                    endpoint_repository->removeMCPEndpoint(ep.getName());
+                }
+            }
+            result.removed.push_back(EndpointKey(ep));
+        }
+        result.ok = true;
+        result.status = 200;
+        CROW_LOG_INFO << "Endpoint file " << file << " was deleted; unloaded " << removed.size() << " endpoint(s)";
+        return result;
+    }
+
+    // Validate the file first
+    ValidationResult validation = validateEndpointConfigFile(file);
+    if (!validation.valid) {
+        std::string joined;
+        for (const auto& e : validation.errors) {
+            joined += (joined.empty() ? "" : "; ") + e;
+        }
+        result.status = 400;
+        result.error = file.string() + ": " + joined;
+        CROW_LOG_ERROR << "Validation failed for " << file << ": " << joined;
+        return result;
+    }
+
+    try {
+        EndpointConfigParser parser(yaml_parser, this);
+        auto parse_result = parser.parseFromFile(file);
+        if (!parse_result.success) {
+            result.status = 400;
+            result.error = parse_result.error_message.find("Not a valid endpoint configuration") != std::string::npos
+                ? file.string() + " is not an endpoint file (no url-path, mcp-tool, mcp-resource or mcp-prompt)"
+                : file.string() + ": " + parse_result.error_message;
+            return result;
+        }
+        EndpointConfig fresh = parse_result.config;
+
+        // The file's identity, so the duplicate check skips the endpoint this
+        // file already holds - and only that one.
+        {
+            const auto snapshot = endpointsSnapshot();
+            for (const auto& ep : *snapshot) {
+                if (!ep.config_file_path.empty() && canonicalOrSelf(ep.config_file_path) == wanted) {
+                    fresh.config_file_path = ep.config_file_path;
+                    break;
+                }
+            }
+        }
+        if (const auto duplicate = DuplicateEndpointProblem(fresh); !duplicate.empty()) {
+            result.status = 409;
+            result.error = duplicate;
+            CROW_LOG_ERROR << "Failed to reload " << file << ": " << duplicate;
+            return result;
+        }
+        LogRouteOverlaps(fresh);
+
+        // Replace by FILE, not by name. Matching by url-path replaced the first
+        // endpoint with that path, so reloading the POST /orders file overwrote
+        // GET /orders and answered 200 - the POST change silently not applied.
+        std::vector<EndpointConfig> replaced;
+        mutateEndpointsVoid([&](std::vector<EndpointConfig>& eps) {
+            replaced.clear();
+            const auto from_file = [&](const EndpointConfig& ep) {
+                return !ep.config_file_path.empty() && canonicalOrSelf(ep.config_file_path) == wanted;
+            };
+            // Back where it was: a reload used to move the endpoint to the end
+            // of the table, which - with first-match routing - changed which
+            // endpoint answered overlapping URLs. Routing no longer depends on
+            // order, but listings should not reshuffle on every reload either.
+            const auto position = static_cast<std::size_t>(
+                std::find_if(eps.begin(), eps.end(), from_file) - eps.begin());
+            auto it = std::stable_partition(eps.begin(), eps.end(),
+                                            [&](const EndpointConfig& ep) { return !from_file(ep); });
+            replaced.assign(it, eps.end());
+            eps.erase(it, eps.end());
+            eps.insert(eps.begin() + static_cast<std::ptrdiff_t>(std::min(position, eps.size())), fresh);
+        });
+
+        if (endpoint_repository) {
+            for (const auto& ep : replaced) {
+                if (ep.isRESTEndpoint()) {
+                    endpoint_repository->removeRestEndpoint(ep.urlPath, ep.method);
+                } else if (!ep.getName().empty()) {
+                    endpoint_repository->removeMCPEndpoint(ep.getName());
+                }
+            }
+            endpoint_repository->addEndpoint(fresh);
+        }
+
+        result.ok = true;
+        result.loaded_new = replaced.empty();
+        result.status = result.loaded_new ? 201 : 200;
+        result.endpoints.push_back(EndpointKey(fresh));
+        for (const auto& w : validation.warnings) {
+            result.warnings.push_back(w);
+        }
+        for (const auto& w : parse_result.warnings) {
+            result.warnings.push_back(w);
+        }
+        CROW_LOG_INFO << (result.loaded_new ? "Loaded new endpoint configuration from: "
+                                            : "Reloaded endpoint configuration from: ")
+                      << file;
+        for (const auto& warning : result.warnings) {
+            CROW_LOG_WARNING << "  - " << warning;
+        }
+        return result;
+    } catch (const std::exception& e) {
+        result.status = 400;
+        result.error = file.string() + ": " + e.what();
+        CROW_LOG_ERROR << "Failed to reload endpoint: " << e.what();
+        return result;
+    }
+}
+
+// Reload endpoint from disk (after external edit)
+bool ConfigManager::reloadEndpointConfig(const std::string& slug_or_path) {
+    const auto target = getEndpointForKey(slug_or_path);
+    if (!target) {
         CROW_LOG_WARNING << "Endpoint not found for reload: " << slug_or_path;
         return false;
     }
-    
+
     // Get the YAML configuration file path
     std::filesystem::path yaml_file;
-    if (!it->config_file_path.empty()) {
+    if (!target->config_file_path.empty()) {
         // Use the stored config file path (set during initial load by EndpointConfigParser)
-        yaml_file = it->config_file_path;
+        yaml_file = target->config_file_path;
     } else {
         // Fallback for endpoints loaded before the refactoring (derive from templateSource)
-        yaml_file = std::filesystem::path(template_config.path) / it->templateSource;
-        
+        yaml_file = std::filesystem::path(template_config.path) / target->templateSource;
+
         // If templateSource is a .sql file, look for the corresponding .yaml file
         if (yaml_file.extension() == ".sql") {
             auto yaml_candidate = yaml_file;
@@ -2924,62 +4154,12 @@ bool ConfigManager::reloadEndpointConfig(const std::string& slug_or_path) {
             }
         }
     }
-    
-    if (!std::filesystem::exists(yaml_file)) {
-        CROW_LOG_ERROR << "YAML file not found for reload: " << yaml_file;
-        return false;
+
+    const auto result = reloadEndpointFile(yaml_file);
+    if (!result.ok) {
+        CROW_LOG_ERROR << "Failed to reload endpoint " << slug_or_path << ": " << result.error;
     }
-    
-    // Validate the file first
-    ValidationResult validation = validateEndpointConfigFile(yaml_file);
-    if (!validation.valid) {
-        CROW_LOG_ERROR << "Validation failed for " << yaml_file << ":";
-        for (const auto& error : validation.errors) {
-            CROW_LOG_ERROR << "  - " << error;
-        }
-        return false;
-    }
-    
-    try {
-        // Use EndpointConfigParser for consistent path resolution
-        EndpointConfigParser parser(yaml_parser, this);
-        auto parse_result = parser.parseFromFile(yaml_file);
-        
-        if (!parse_result.success) {
-            CROW_LOG_ERROR << "Failed to parse endpoint config: " << parse_result.error_message;
-            return false;
-        }
-        
-        // Publish the reloaded configuration through copy-modify-swap. Matching
-        // by name again rather than by index: the table may have been mutated by
-        // another thread while this file was being parsed.
-        const std::string target_name = it->getName();
-        mutateEndpointsVoid([&](std::vector<EndpointConfig>& eps) {
-            for (auto& ep : eps) {
-                if (ep.getName() == target_name) {
-                    ep = parse_result.config;
-                    return;
-                }
-            }
-            // Gone since we looked - treat the reload as an addition.
-            eps.push_back(parse_result.config);
-        });
-        
-        CROW_LOG_INFO << "Reloaded endpoint configuration from: " << yaml_file;
-        
-        // Log warnings if any (from both validation and parsing)
-        for (const auto& warning : validation.warnings) {
-            CROW_LOG_WARNING << "  - " << warning;
-        }
-        for (const auto& warning : parse_result.warnings) {
-            CROW_LOG_WARNING << "  - " << warning;
-        }
-        
-        return true;
-    } catch (const std::exception& e) {
-        CROW_LOG_ERROR << "Failed to reload endpoint: " << e.what();
-        return false;
-    }
+    return result.ok;
 }
 
 // Template method implementations

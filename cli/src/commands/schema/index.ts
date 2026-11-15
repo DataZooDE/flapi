@@ -13,8 +13,8 @@ export function registerSchemaCommands(program: Command, ctx: CliContext) {
   schema
     .command('get')
     .description('Get database schema information')
-    .option('-c, --connection <connection>', 'Specific connection to introspect')
-    .option('-t, --table <table>', 'Specific table to introspect')
+    .option('--connection <connection>', 'Specific connection to introspect')
+    .option('--table <table>', 'Specific table to introspect')
     .option('-d, --database <database>', 'Specific database to introspect')
     .action(async (options: {
       connection?: string;
@@ -52,7 +52,7 @@ export function registerSchemaCommands(program: Command, ctx: CliContext) {
         const schemaData = response.data;
 
         if (ctx.config.output === 'json') {
-          renderJson(schemaData, ctx.config.jsonStyle);
+          renderJson(schemaData);
         } else {
           Console.info(chalk.cyan('\n🗃️  Database Schema'));
           Console.info(chalk.gray('═'.repeat(60)));
@@ -94,7 +94,7 @@ export function registerSchemaCommands(program: Command, ctx: CliContext) {
   schema
     .command('refresh')
     .description('Refresh database schema information')
-    .option('-c, --connection <connection>', 'Specific connection to refresh')
+    .option('--connection <connection>', 'Specific connection to refresh')
     .option('-f, --force', 'Force refresh even if not needed')
     .action(async (options: {
       connection?: string;
@@ -122,7 +122,7 @@ export function registerSchemaCommands(program: Command, ctx: CliContext) {
         const result = response.data;
 
         if (ctx.config.output === 'json') {
-          renderJson(result, ctx.config.jsonStyle);
+          renderJson(result);
         } else {
           Console.info(chalk.cyan('\n🔄 Schema Refresh'));
           Console.info(chalk.gray('═'.repeat(60)));
@@ -165,7 +165,7 @@ export function registerSchemaCommands(program: Command, ctx: CliContext) {
         const schemaData = response.data;
 
         if (ctx.config.output === 'json') {
-          renderJson(schemaData, ctx.config.jsonStyle);
+          renderJson(schemaData);
         } else {
           Console.info(chalk.cyan('\n🔗 Database Connections'));
           Console.info(chalk.gray('═'.repeat(60)));
@@ -196,7 +196,7 @@ export function registerSchemaCommands(program: Command, ctx: CliContext) {
   schema
     .command('tables')
     .description('List tables in database connections')
-    .option('-c, --connection <connection>', 'Specific connection to list tables for')
+    .option('--connection <connection>', 'Specific connection to list tables for')
     .action(async (options: { connection?: string }) => {
       let spinner;
       if (ctx.config.output !== 'json') {
@@ -217,7 +217,7 @@ export function registerSchemaCommands(program: Command, ctx: CliContext) {
         const schemaData = response.data;
 
         if (ctx.config.output === 'json') {
-          renderJson(schemaData, ctx.config.jsonStyle);
+          renderJson(schemaData);
         } else {
           Console.info(chalk.cyan('\n📋 Database Tables'));
           Console.info(chalk.gray('═'.repeat(60)));
