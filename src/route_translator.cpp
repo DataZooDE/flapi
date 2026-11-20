@@ -290,6 +290,26 @@ bool RouteTranslator::routesOverlap(const std::string& a, const std::string& b) 
     return true;
 }
 
+bool RouteTranslator::routeCovers(const std::string& general, const std::string& specific) {
+    const auto sg = routeSegments(general);
+    const auto ss = routeSegments(specific);
+    if (sg.size() != ss.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < sg.size(); ++i) {
+        if (sg[i].param) {
+            // A parameter matches one or more characters, never the empty
+            // segment after a trailing slash.
+            if (!ss[i].param && ss[i].text.empty()) {
+                return false;
+            }
+        } else if (ss[i].param || sg[i].text != ss[i].text) {
+            return false;
+        }
+    }
+    return true;
+}
+
 int RouteTranslator::compareSpecificity(const std::string& a, const std::string& b) {
     const auto sa = routeSegments(a);
     const auto sb = routeSegments(b);

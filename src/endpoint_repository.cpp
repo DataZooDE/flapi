@@ -1,6 +1,8 @@
 #include "endpoint_repository.hpp"
 #include <crow/logging.h>
 #include <algorithm>
+#include <mutex>
+#include <shared_mutex>
 
 namespace flapi {
 
@@ -28,6 +30,7 @@ std::string EndpointRepository::extractMCPName(const EndpointConfig& endpoint) {
 }
 
 void EndpointRepository::addEndpoint(const EndpointConfig& endpoint) {
+    std::unique_lock<std::shared_mutex> lock(_mutex);
     if (isRestEndpoint(endpoint)) {
         std::string key = makeRestKey(endpoint.urlPath, endpoint.method);
         rest_endpoints_[key] = endpoint;
@@ -45,6 +48,7 @@ void EndpointRepository::addEndpoint(const EndpointConfig& endpoint) {
 std::optional<EndpointConfig> EndpointRepository::getEndpointByRestPath(
     const std::string& url_path,
     const std::string& method) const {
+    std::shared_lock<std::shared_mutex> lock(_mutex);
 
     std::string key = makeRestKey(url_path, method);
     auto it = rest_endpoints_.find(key);
@@ -58,6 +62,7 @@ std::optional<EndpointConfig> EndpointRepository::getEndpointByRestPath(
 
 std::optional<EndpointConfig> EndpointRepository::getEndpointByMCPName(
     const std::string& name) const {
+    std::shared_lock<std::shared_mutex> lock(_mutex);
 
     auto it = mcp_endpoints_.find(name);
 
@@ -69,6 +74,7 @@ std::optional<EndpointConfig> EndpointRepository::getEndpointByMCPName(
 }
 
 std::vector<EndpointConfig> EndpointRepository::getAllEndpoints() const {
+    std::shared_lock<std::shared_mutex> lock(_mutex);
     std::vector<EndpointConfig> result;
 
     // Add all REST endpoints
@@ -96,6 +102,7 @@ std::vector<EndpointConfig> EndpointRepository::getAllEndpoints() const {
 }
 
 std::vector<EndpointConfig> EndpointRepository::getAllRestEndpoints() const {
+    std::shared_lock<std::shared_mutex> lock(_mutex);
     std::vector<EndpointConfig> result;
 
     for (const auto& pair : rest_endpoints_) {
@@ -106,6 +113,7 @@ std::vector<EndpointConfig> EndpointRepository::getAllRestEndpoints() const {
 }
 
 std::vector<EndpointConfig> EndpointRepository::getAllMCPEndpoints() const {
+    std::shared_lock<std::shared_mutex> lock(_mutex);
     std::vector<EndpointConfig> result;
 
     for (const auto& pair : mcp_endpoints_) {
@@ -132,18 +140,21 @@ std::vector<EndpointConfig> EndpointRepository::findEndpoints(
 bool EndpointRepository::hasRestEndpoint(
     const std::string& url_path,
     const std::string& method) const {
+    std::shared_lock<std::shared_mutex> lock(_mutex);
 
     std::string key = makeRestKey(url_path, method);
     return rest_endpoints_.find(key) != rest_endpoints_.end();
 }
 
 bool EndpointRepository::hasMCPEndpoint(const std::string& name) const {
+    std::shared_lock<std::shared_mutex> lock(_mutex);
     return mcp_endpoints_.find(name) != mcp_endpoints_.end();
 }
 
 bool EndpointRepository::removeRestEndpoint(
     const std::string& url_path,
     const std::string& method) {
+    std::unique_lock<std::shared_mutex> lock(_mutex);
 
     std::string key = makeRestKey(url_path, method);
     size_t removed = rest_endpoints_.erase(key);
@@ -156,6 +167,7 @@ bool EndpointRepository::removeRestEndpoint(
 }
 
 bool EndpointRepository::removeMCPEndpoint(const std::string& name) {
+    std::unique_lock<std::shared_mutex> lock(_mutex);
     size_t removed = mcp_endpoints_.erase(name);
 
     if (removed > 0) {
@@ -166,12 +178,14 @@ bool EndpointRepository::removeMCPEndpoint(const std::string& name) {
 }
 
 void EndpointRepository::clear() {
+    std::unique_lock<std::shared_mutex> lock(_mutex);
     rest_endpoints_.clear();
     mcp_endpoints_.clear();
     CROW_LOG_DEBUG << "Cleared all endpoints from repository";
 }
 
 size_t EndpointRepository::count() const {
+    std::shared_lock<std::shared_mutex> lock(_mutex);
     size_t rest_count = rest_endpoints_.size();
     size_t mcp_count = mcp_endpoints_.size();
 
@@ -189,10 +203,12 @@ size_t EndpointRepository::count() const {
 }
 
 size_t EndpointRepository::countRestEndpoints() const {
+    std::shared_lock<std::shared_mutex> lock(_mutex);
     return rest_endpoints_.size();
 }
 
 size_t EndpointRepository::countMCPEndpoints() const {
+    std::shared_lock<std::shared_mutex> lock(_mutex);
     return mcp_endpoints_.size();
 }
 

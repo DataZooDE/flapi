@@ -1,6 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_all.hpp>
 #include "endpoint_repository.hpp"
+#include <atomic>
+#include <thread>
 
 using namespace flapi;
 
@@ -488,4 +490,39 @@ TEST_CASE("EndpointRepository edge cases", "[endpoints][repository]") {
         REQUIRE(repo.countRestEndpoints() == 1);
         REQUIRE(repo.countMCPEndpoints() == 0);
     }
+}
+
+TEST_CASE("EndpointRepository tolerates concurrent writers and readers", "[endpoints][repository][threads]") {
+    // ConfigManager updates it from REST, MCP and reload threads; run under
+    // TSan this is the data race the unlocked maps had.
+    EndpointRepository repo;
+    std::atomic<bool> stop{false};
+    std::vector<std::thread> threads;
+    for (int w = 0; w < 4; ++w) {
+        threads.emplace_back([&repo, w] {
+            for (int i = 0; i < 300; ++i) {
+                const auto path = "/w" + std::to_string(w) + "/" + std::to_string(i % 20);
+                repo.addEndpoint(createRestEndpoint(path));
+                repo.removeRestEndpoint("/w" + std::to_string(w) + "/" + std::to_string((i + 7) % 20), "GET");
+            }
+        });
+    }
+    for (int r = 0; r < 4; ++r) {
+        threads.emplace_back([&repo, &stop] {
+            while (!stop.load()) {
+                (void) repo.getAllEndpoints();
+                (void) repo.count();
+                (void) repo.hasRestEndpoint("/w0/1", "GET");
+                (void) repo.findEndpoints([](const EndpointConfig& ep) { return !ep.urlPath.empty(); });
+            }
+        });
+    }
+    for (int i = 0; i < 4; ++i) {
+        threads[i].join();
+    }
+    stop = true;
+    for (std::size_t i = 4; i < threads.size(); ++i) {
+        threads[i].join();
+    }
+    REQUIRE(repo.countRestEndpoints() <= 80);
 }

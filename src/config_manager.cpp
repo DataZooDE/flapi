@@ -12,6 +12,7 @@
 #include "vfs_adapter.hpp"
 #include "path_validator.hpp"
 #include "password_hasher.hpp"
+#include <tuple>
 #include <cctype>
 #include <stdexcept>
 #include <filesystem>
@@ -3061,11 +3062,58 @@ namespace {
 // own `guest` user serve the protected endpoint's URL to guest. Secret values
 // (passwords, jwt-secret, client-secret) are held only as SHA-256 digests and
 // are never part of a message.
+// One `auth.users[]` entry. `stored` is the password as configured (plaintext,
+// MD5 or PBKDF2 hash); it is only ever compared, never part of a message.
+struct UserSig {
+    std::string name;
+    std::string roles;
+    std::string stored;
+
+    bool operator<(const UserSig& o) const {
+        return std::tie(name, roles, stored) < std::tie(o.name, o.roles, o.stored);
+    }
+};
+
+// Whether two stored passwords admit the same secret. Equal strings do. A
+// salted hash cannot be compared with another salted hash (PBKDF2 is one-way:
+// two salts of one password look like two passwords), but a PLAINTEXT entry
+// can be verified against the other's hash or digest - the migration case,
+// `password: s3cret` on one endpoint and its hash on the other. Anything that
+// cannot be proven the same counts as different (fail closed).
+bool StoredPasswordsEquivalent(const std::string& a, const std::string& b) {
+    if (a == b) {
+        return true;
+    }
+    const auto is_plain = [](const std::string& v) {
+        return !v.empty() && PasswordHasher::classifyFormat(v) == PasswordFormat::PlaintextDeprecated;
+    };
+    if (is_plain(a)) {
+        return PasswordHasher{}.verify(a, b);
+    }
+    if (is_plain(b)) {
+        return PasswordHasher{}.verify(b, a);
+    }
+    return false;
+}
+
+bool UsersEquivalent(const std::vector<UserSig>& a, const std::vector<UserSig>& b) {
+    if (a.size() != b.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if (a[i].name != b[i].name || a[i].roles != b[i].roles ||
+            !StoredPasswordsEquivalent(a[i].stored, b[i].stored)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 struct AuthSignature {
     bool enabled = false;
     std::string type;
     std::vector<std::string> roles;   // sorted
-    std::vector<std::string> users;   // sorted "name\x1fdigest(password)\x1froles"
+    std::vector<UserSig> users;       // sorted; compared by UsersEquivalent
     std::string jwt_secret_digest;
     std::string jwt_issuer;
     std::string oidc;                 // issuer/audience/client fields, joined
@@ -3091,7 +3139,7 @@ struct AuthSignature {
         };
         check(type == other.type, "type");
         check(roles == other.roles, "roles");
-        check(users == other.users, "users");
+        check(UsersEquivalent(users, other.users), "users");
         check(jwt_secret_digest == other.jwt_secret_digest, "jwt-secret");
         check(jwt_issuer == other.jwt_issuer, "jwt-issuer");
         check(oidc == other.oidc, "oidc");
@@ -3134,15 +3182,25 @@ AuthSignature authSignature(const EndpointConfig& ep) {
     sig.type = auth.type == "jwt" ? std::string("bearer") : auth.type;
     sig.roles = sortedUnique(auth.roles);
     for (const auto& user : auth.users) {
-        sig.users.push_back(joined({user.username, digestOf(user.password), joined(sortedUnique(user.roles))}));
+        sig.users.push_back({user.username, joined(sortedUnique(user.roles)), user.password});
     }
     std::sort(sig.users.begin(), sig.users.end());
     sig.jwt_secret_digest = digestOf(auth.jwt_secret);
     sig.jwt_issuer = auth.jwt_issuer;
     if (auth.oidc) {
-        const auto& o = *auth.oidc;
-        sig.oidc = joined({o.issuer_url, o.client_id, digestOf(o.client_secret), o.provider_type, o.tenant_id,
-                           o.realm, o.domain, joined(sortedUnique(o.allowed_audiences)), o.username_claim,
+        // The provider as requests will see it: the preset applied, as
+        // AuthMiddleware does per request, so `provider-type: keycloak` with a
+        // domain and realm is the same provider as the spelled-out issuer-url
+        // with the claim settings the preset fills in. provider-type, tenant-id,
+        // realm and domain only feed that preset and are not compared on their
+        // own. email-claim, jwks-cache-hours, enable-client-credentials and
+        // enable-refresh-tokens do not decide who is admitted (a display claim,
+        // a key-cache lifetime and two token-endpoint flows), so they are not
+        // part of the identity either.
+        OIDCConfig o = *auth.oidc;
+        OIDCProviderPresets::applyPreset(o);
+        sig.oidc = joined({o.issuer_url, o.client_id, digestOf(o.client_secret),
+                           joined(sortedUnique(o.allowed_audiences)), o.username_claim,
                            o.roles_claim, o.groups_claim, o.role_claim_path,
                            // token-validation settings decide who gets in as much as the issuer does
                            o.verify_expiration ? "exp" : "no-exp", std::to_string(o.clock_skew_seconds),
@@ -3294,6 +3352,42 @@ std::string describeOverlap(const RouteOverlap& o) {
     return text;
 }
 
+bool skippedFor(const EndpointConfig& ep, const EndpointConfig& candidate, const EndpointConfig* replacing);
+
+// Whether another endpoint already answers every URL the winner shares with the
+// loser, with the winner's own auth: then the winner changes nothing for the
+// loser's callers. Three levels: protected `/a/:x/:y`, open `/a/b/:y`
+// (allow-shadowing) and open `/a/b/c` - `/a/b/c` is judged against `/a/b/:y`,
+// which answers it today, not against `/a/:x/:y`. The middle route must cover
+// the winner, beat the loser, lose to the winner and carry the same auth.
+// Only endpoints already known are considered, so the middle route has to be
+// loaded (or created) before the literal.
+bool answeredByEquivalentRoute(const RouteOverlap& o, const EndpointConfig& candidate,
+                               const EndpointConfig* replacing,
+                               const std::vector<EndpointConfig>& known) {
+    const std::string method = ConfigManager::CanonicalHttpMethod(o.winner->method);
+    const auto fits = [&](const EndpointConfig& mid) {
+        if (&mid == o.winner || &mid == o.loser || mid.urlPath.empty() ||
+            ConfigManager::CanonicalHttpMethod(mid.method) != method ||
+            !RouteTranslator::routeCovers(mid.urlPath, o.winner->urlPath) ||
+            RouteTranslator::compareSpecificity(o.winner->urlPath, mid.urlPath) >= 0 ||
+            !RouteTranslator::routesOverlap(mid.urlPath, o.loser->urlPath) ||
+            RouteTranslator::compareSpecificity(mid.urlPath, o.loser->urlPath) >= 0) {
+            return false;
+        }
+        return authSignature(mid) == o.winner_auth;
+    };
+    if (fits(candidate)) {
+        return true;
+    }
+    for (const auto& mid : known) {
+        if (!skippedFor(mid, candidate, replacing) && fits(mid)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool skippedFor(const EndpointConfig& ep, const EndpointConfig& candidate, const EndpointConfig* replacing) {
     if (!candidate.config_file_path.empty() && ep.config_file_path == candidate.config_file_path) {
         return true;   // the same file, e.g. a reload of it
@@ -3344,7 +3438,8 @@ std::string ConfigManager::DuplicateEndpointProblem(const EndpointConfig& candid
         // `/customers/:id`) protects only that string - `/customers/07` and
         // `/customers/+7` still reach the open endpoint and name the same row.
         if (const auto overlap = overlapOf(candidate, ep)) {
-            if (!(overlap->winner_auth == overlap->loser_auth) && !overlap->winner->allow_shadowing) {
+            if (!(overlap->winner_auth == overlap->loser_auth) && !overlap->winner->allow_shadowing &&
+                !answeredByEquivalentRoute(*overlap, candidate, replacing, *snapshot)) {
                 return "Overlapping routes with different auth: " + describeOverlap(*overlap) + " (declared in " +
                        where(*overlap->winner) + " and " + where(*overlap->loser) +
                        "). Give both the same auth, make the routes disjoint, filter rows by auth.* inside " +
@@ -3384,6 +3479,10 @@ void ConfigManager::LogRouteOverlaps(const EndpointConfig& candidate, const Endp
         }
         if (overlap->winner_auth == overlap->loser_auth) {
             CROW_LOG_INFO << "Overlapping routes (same auth): " << describeOverlap(*overlap);
+        } else if (!overlap->winner->allow_shadowing &&
+                   answeredByEquivalentRoute(*overlap, candidate, replacing, *snapshot)) {
+            CROW_LOG_INFO << "Overlapping routes (the winner's auth is already what a more general route "
+                          << "answers with): " << describeOverlap(*overlap);
         } else {
             CROW_LOG_WARNING << "Overlapping routes with different auth: " << describeOverlap(*overlap)
                              << (overlap->winner->allow_shadowing ? " (allow-shadowing: true)" : "");
@@ -3423,8 +3522,9 @@ bool ConfigManager::removeEndpointByPath(const std::string& path) {
             return taken;
         });
 
-    // Repository updates happen outside the lock: endpoint_repository has its own
-    // locking, and holding two locks in an unspecified order invites a deadlock.
+    // Repository updates happen outside the endpoints lock: EndpointRepository
+    // takes its own shared_mutex, and holding two locks in an unspecified order
+    // invites a deadlock.
     if (endpoint_repository) {
         for (const auto& endpoint : removed) {
             if (endpoint.isRESTEndpoint()) {
@@ -3445,7 +3545,7 @@ bool ConfigManager::removeEndpointByPath(const std::string& path) {
 bool ConfigManager::replaceEndpoint(const EndpointConfig& endpoint) {
     // The repository update is deliberately kept OUT of the copy-modify-swap
     // lambda: that lambda may be retried or run under the endpoints mutex, and
-    // endpoint_repository has its own locking. Decide inside, act outside.
+    // EndpointRepository takes its own shared_mutex. Decide inside, act outside.
     const bool replaced = mutateEndpoints([&](std::vector<EndpointConfig>& eps) -> bool {
         for (auto& candidate : eps) {
             // The method too: isSameEndpoint compares the url-path only, so a
