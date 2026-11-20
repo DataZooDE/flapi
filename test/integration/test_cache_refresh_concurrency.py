@@ -185,8 +185,14 @@ class TestConcurrentRefreshSharedAlias:
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
             answers = list(pool.map(lambda _n: refresh(server, "orders"), range(4)))
         codes = sorted(r.status_code for r in answers)
-        assert all(c == 200 for c in codes), [(r.status_code, r.text) for r in answers]
         # At least one ran; the duplicates that arrived while it ran were
-        # coalesced (reported, not re-run).
-        bodies = [r.json() for r in answers]
-        assert any(b.get("status") == "refreshed" for b in bodies), bodies
+        # coalesced: answered 409 + Retry-After, not run again (#218).
+        assert set(codes) <= {200, 409}, [(r.status_code, r.text) for r in answers]
+        bodies = [r.json() for r in answers if r.status_code == 200]
+        assert any(b.get("status") == "refreshed" for b in bodies), [(r.status_code, r.text) for r in answers]
+        # A skipped refresh is never a 200 (it used to be 200 {"status":"already_running"}).
+        assert all(b.get("status") == "refreshed" for b in bodies), [(r.status_code, r.text) for r in answers]
+        for r in answers:
+            if r.status_code == 409:
+                assert r.json()["status"] == "already_running", r.text
+                assert int(r.headers["Retry-After"]) >= 1, dict(r.headers)
