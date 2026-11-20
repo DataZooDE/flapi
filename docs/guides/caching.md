@@ -398,6 +398,48 @@ walks through this loop with before/after numbers.
 A normal GET never triggers a refresh. While a cache is still warming, requests
 get **503 `cache_warming` with `Retry-After`** rather than an empty result set.
 
+## A source published by rename (small cached stats endpoint)
+
+A writer that publishes a DuckDB file by atomic rename (write `next.duckdb`, `os.replace` it over
+`source.duckdb`) leaves a server that attached the file once, at startup (a connection `init`
+`ATTACH ... (READ_ONLY)`), reading the OLD inode until it restarts. An uncached endpoint that reads that
+alias never sees the update. The supported pattern is a small cached endpoint whose populate template
+**re-attaches** on every refresh:
+
+```yaml
+# sqls/source_stats.yaml
+url-path: /source-stats
+method: GET
+template-source: source_stats.sql
+connection: [source]
+cache:
+  enabled: true
+  table: source_stats
+  schedule: 5m
+  template-file: source_stats_cache.sql
+```
+
+```sql
+-- sqls/source_stats_cache.sql: the refresh re-attaches, so it reads the file now at the path
+DETACH DATABASE IF EXISTS src_stats;
+ATTACH '{{{conn.path}}}' AS src_stats (READ_ONLY);
+CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS
+SELECT count(*) AS orders, max(updated_at) AS newest FROM src_stats.orders;
+```
+
+```sql
+-- sqls/source_stats.sql
+SELECT * FROM {{{cache.catalog}}}.{{{cache.schema}}}.{{{cache.table}}}
+```
+
+Use a dedicated alias (`src_stats`) that no `init` attaches: an attach is process-wide, so a shared alias is
+detached under whatever else reads it. Serve the data from the cache table (or a cached endpoint of its
+own) rather than from an uncached template that reads the alias: an uncached template runs on every request
+and sees the alias only if something attached it, and the plugin hook warns about exactly that.
+Validating such a populate template (`?target=cache&validate_only=1`) against an alias the server attached
+BEFORE a rename answers a `stale` warning instead of a bind error: the check ran against the old file,
+and the refresh, which re-attaches, reads the new one.
+
 ## Operating it
 
 `flapii` talks to the running server's config service, so start flAPI with
@@ -415,6 +457,13 @@ flapii cache drop-table old.customers_cache   # drop a table no endpoint uses an
 ```
 
 `cache gc` answers `"status": "no_policy"` when the cache has no retention policy (nothing is expired).
+When it expires nothing because ANOTHER cached table's retained snapshot can still see this table's old
+files, it says so: `pinned_by` names that endpoint and its policy, `pinned_bytes` is what it holds, and the
+files are deleted when that table's retention expires those snapshots.
+
+A refresh requested while one of the same table is already running (the scheduler, warm-up, another
+request) is not started again: `POST .../cache/refresh` answers `409` with `Retry-After` and
+`{"status":"already_running"}`, and `flapii cache refresh` exits non-zero with the same message.
 Time travel to a snapshot that retention expired answers `404 snapshot_not_found`.
 
 ## How it works

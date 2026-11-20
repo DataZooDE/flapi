@@ -750,7 +750,7 @@ and then checked, **never run**:
 4. for `target=cache`, an `ATTACH ... (READ_ONLY)` in the template is executed, so the statements that
    read the attached database are checked against it (they used to fail with `schema src does not exist`).
    A `DETACH` is executed only for a database this check attached; a database the server already has
-   attached is used as it is. Everything the check attached is detached again afterwards. An `ATTACH`
+   attached is used as it is (a `not_checked` warning, or `stale` if its file was replaced since). Everything the check attached is detached again afterwards. An `ATTACH`
    without `READ_ONLY` is not executed: it is a `not_checked` warning, and so is every statement that
    reads its alias. The check waits for a running cache refresh (they share the catalog lock), so it can
    never collide with a refresh attaching the same alias.
@@ -783,6 +783,7 @@ and then checked, **never run**:
 |---|---|
 | `cache_not_built` | The statement reads or writes the endpoint's cache table, which does not exist yet: run `flapii cache refresh <path>`. Not an error |
 | `not_checked` | The statement uses a table an earlier statement would create and this check could not (e.g. `CREATE INDEX`), or its parameter types could not be determined |
+| `stale` | `target=cache`: the template's `ATTACH ... AS alias` names a database the server attached earlier (connection `init`) from a file that has since been replaced by an atomic rename (detected on Linux: the file the server holds open has been unlinked from its path). The check ran against the OLD file; a bind error in a statement reading that alias is reported as this warning instead, because the next refresh re-attaches and may succeed. Not an error |
 | `watermark_dropped` | `target=cache`: the `watermark_dropped_reason` of the plain expansion |
 | `undefined_variable` | Serving template: a `{{ name }}` the context may not define |
 
@@ -978,8 +979,11 @@ audit row's `message`).
 `duration_ms`, `rows_affected` and `snapshot_id` are left out when unknown. `snapshot_id` is the snapshot
 this refresh committed; it is absent when the refresh committed none (for example a merge with nothing to
 change). When a refresh of the same
-table is already running (warm-up, the scheduler) nothing is started and the answer is
-`{"status": "already_running", "endpoint": ..., "full": ...}`.
+table is already running (warm-up, the scheduler, another request) nothing is started and the answer is
+**`409`** with a `Retry-After: 5` header and the body
+`{"status": "already_running", "endpoint": ..., "full": ...}`. It used to be a `200` with that body, which a
+script could not tell from a refresh that ran. A client that only needs the cache to be fresh can wait
+`Retry-After` seconds and ask again; `flapii cache refresh` reports it and exits non-zero.
 
 `full` is `true` when the refresh loaded the whole source: `?full=true`, a full-mode cache (no
 `cursor`), or an incremental cache's first build (no watermark yet). It used to echo `?full=` only.
@@ -987,7 +991,7 @@ The audit row records the same value (column `full`).
 
 Refreshes run **one at a time per DuckLake catalog** - populate script, retention and audit row - and so
 do compaction, garbage collection, `drop-table` and `?target=cache&validate_only=1`. A refresh of another
-table waits for the running one; a second refresh of the SAME table answers `already_running` at once.
+table waits for the running one; a second refresh of the SAME table answers `409 already_running` at once.
 Two populate templates that `DETACH DATABASE IF EXISTS src; ATTACH ... AS src` used to run in parallel
 and collide on the alias ("Database name src was already used by a different database for this meta
 transaction"), which invalidates the DuckDB database (see `503 database_invalidated` below).
@@ -1046,6 +1050,13 @@ Authorization: Bearer <token>
 `bytes_freed` is the size of the data and delete files the expiry released.
 `warning` is present when snapshots beyond the policy are shared with another table and were kept
 (expiring them would discard that table's data too).
+`pinned_by` and `pinned_bytes` are present when files this table no longer needs (an old incarnation's, or
+superseded by a later refresh) are still on disk because ANOTHER table's retained snapshot can see them: one
+`pinned_by` entry per such endpoint, e.g. `"/orders (main.orders_cache: 3 snapshot(s) kept by no retention
+policy; set cache.retention or ducklake.retention)"`, and `pinned_bytes` is the size of those files. The
+status stays `nothing_to_expire` (nothing of THIS table was left to expire); the files go when that table's
+retention expires its snapshots. Without them the answer read `nothing_to_expire` / 0 bytes while the disk
+still held the old files.
 
 | Status | When |
 |--------|------|

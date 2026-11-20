@@ -408,7 +408,7 @@ coalesced). Example: [references/write-through-and-rebuild.md](references/write-
   applies the retention of live tables whose snapshots still pin the dropped table's
   files right away, and `pinned_by` names the endpoint whose policy keeps the rest.
 - Refreshes run one at a time per catalog (a refresh of another table waits; one of the
-  same table answers `already_running`). Still give each populate template its own
+  same table answers `409 already_running` with `Retry-After`). Still give each populate template its own
   ATTACH alias: an attach is process-wide.
 - The audit row's `full` says the refresh loaded the whole source (`--full`, full mode,
   or the first incremental build).

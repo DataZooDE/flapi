@@ -3651,8 +3651,14 @@ crow::response CacheConfigHandler::refreshCache(const crow::request& req, const 
         body["full"] = options.full;
         if (!ran) {
             // Another refresh of the same table (warm-up, the scheduler) is in
-            // flight; it was not run twice.
+            // flight; it was not run twice. 409, not 200: nothing was refreshed,
+            // which a script cannot tell from a refresh that ran. Retry-After is
+            // how long to wait before asking again (as for cache_warming).
             body["status"] = "already_running";
+            crow::response skipped(409, body);
+            skipped.set_header("Content-Type", "application/json");
+            skipped.set_header("Retry-After", "5");
+            return skipped;
         } else {
             body["status"] = "refreshed";
             // The stats this refresh just recorded (CacheManager::recordSyncEvent).
@@ -3876,6 +3882,16 @@ crow::response CacheConfigHandler::performGarbageCollection(const crow::request&
             body["message"] = result.message;
             if (!result.warning.empty()) {
                 body["warning"] = result.warning;
+            }
+            if (!result.pinned_by.empty()) {
+                // Files this table no longer needs that ANOTHER table's retained
+                // snapshots still pin, and who holds them.
+                body["pinned_bytes"] = result.pinned_bytes;
+                crow::json::wvalue pinned = crow::json::wvalue::list();
+                for (std::size_t i = 0; i < result.pinned_by.size(); ++i) {
+                    pinned[i] = result.pinned_by[i];
+                }
+                body["pinned_by"] = std::move(pinned);
             }
             crow::response res(result.status == "error" ? 500 : 200, body);
             res.set_header("Content-Type", "application/json");

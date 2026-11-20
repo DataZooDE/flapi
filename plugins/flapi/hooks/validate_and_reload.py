@@ -285,6 +285,64 @@ def time_travel_params(sql: str) -> set[str]:
     return names
 
 
+_ATTACH_AS = re.compile(
+    r"\bATTACH\s+(?:DATABASE\s+)?(?:IF\s+NOT\s+EXISTS\s+)?(?:'(?:[^']|'')*'|\"[^\"]*\"|\S+)"
+    r"\s+AS\s+(?:\"([^\"]+)\"|([A-Za-z_][A-Za-z0-9_]*))", re.IGNORECASE)
+_TEMPLATE_FILE = re.compile(r"^\s*template-file:\s*['\"]?([^\s'\"#]+)", re.MULTILINE)
+_STRING_LITERAL = re.compile(r"'(?:[^']|'')*'")
+
+
+def attached_aliases(sql: str) -> set[str]:
+    """Aliases `ATTACH '<file>' AS alias` declares in a script (lower-cased)."""
+    return {(m.group(1) or m.group(2)).lower() for m in _ATTACH_AS.finditer(sql)}
+
+
+def reads_alias(sql: str, alias: str) -> bool:
+    """Whether the SQL qualifies a name with `alias.` (string literals ignored)."""
+    code = _STRING_LITERAL.sub("''", sql)
+    return re.search(r"(?<![\w.])\"?" + re.escape(alias) + r"\"?\s*\.\s*[\w\"]", code,
+                     re.IGNORECASE) is not None
+
+
+def populate_templates(templates: Path) -> dict[str, str]:
+    """Every cache populate template (`template-file:` of an endpoint YAML) under template.path."""
+    found: dict[str, str] = {}
+    try:
+        yamls = sorted(p for p in templates.rglob("*") if p.suffix.lower() in (".yaml", ".yml"))
+    except OSError:
+        return found
+    for yaml_file in yamls:
+        try:
+            text = yaml_file.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for name in _TEMPLATE_FILE.findall(text):
+            body = template_text(templates, name)
+            if body:
+                found[name] = body
+    return found
+
+
+def populate_only_alias_note(serve_sql: str, populates: dict[str, str], config_text: str = "") -> str | None:
+    """A note when an UNCACHED template reads an alias only a populate template attaches.
+
+    A populate template's ATTACH runs on refresh, and a rename-published
+    source is re-attached there - but the endpoint that serves requests runs
+    on every request and sees the alias only if something attached it (the
+    connection's `init`, or a refresh that happened to run first). Aliases
+    the connection `init` attaches (flapi.yaml) are fine.
+    """
+    from_config = attached_aliases(config_text)
+    for name, populate in sorted(populates.items()):
+        for alias in sorted(attached_aliases(populate) - from_config):
+            if reads_alias(serve_sql, alias):
+                return (f"the template reads `{alias}.`, which only the cache populate template {name} attaches "
+                        f"(ATTACH ... AS {alias}); an uncached endpoint does not see it until a refresh has "
+                        f"run, and never sees a rename-published update. Serve it from a cached endpoint "
+                        f"whose populate re-attaches {alias}, or attach {alias} in the connection's init")
+    return None
+
+
 def template_text(templates: Path | None, source: str) -> str:
     if not source:
         return ""
@@ -321,8 +379,28 @@ def sample_params(base: str, token: str, key: str, templates: Path | None = None
     return samples
 
 
+def uncached_alias_note(base: str, token: str, key: str, templates: Path | None,
+                        cfg: Path | None) -> str | None:
+    """populate_only_alias_note for a loaded endpoint that has no cache."""
+    if templates is None:
+        return None
+    path, method_query = key_to_url(key, "")
+    try:
+        _, body = request("GET", f"{base}{path}" + (f"?{method_query}" if method_query else ""), token)
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    if (body.get("cache") or {}).get("enabled"):
+        return None
+    serve_sql = template_text(templates, str(body.get("template-source") or ""))
+    try:
+        config_text = cfg.read_text(encoding="utf-8") if cfg else ""
+    except OSError:
+        config_text = ""
+    return populate_only_alias_note(serve_sql, populate_templates(templates), config_text)
+
+
 def render(base: str, token: str, key: str, cache: bool,
-           templates: Path | None = None) -> tuple[list[str], list[str]]:
+           templates: Path | None = None, cfg: Path | None = None) -> tuple[list[str], list[str]]:
     """Validate one endpoint's template without running it: (errors, notes)."""
     path, method_query = key_to_url(key, "template/expand")
     query = "&".join(q for q in (method_query, "target=cache" if cache else "", "validate_only=1") if q)
@@ -356,7 +434,7 @@ def render(base: str, token: str, key: str, cache: bool,
             elif kind == "watermark_dropped" and first_run:
                 notes.append(f"{what}: warning: {warning.get('message')} - the next refresh would load "
                              "the full source")
-            elif kind == "not_checked" and first_run:
+            elif kind in ("not_checked", "stale") and first_run:
                 notes.append(f"{what}: warning: {warning.get('message')}")
         if body.get("valid") is False:
             problems = []
@@ -376,6 +454,10 @@ def render(base: str, token: str, key: str, cache: bool,
                 errors.append(f"{what} [{label}]: " + "; ".join(problems))
     if not_built:
         notes.append(f"{what}: cache not built yet; run `flapii cache refresh {url_path_of(key)}`")
+    if not cache:
+        note = uncached_alias_note(base, token, key, templates, cfg)
+        if note:
+            notes.append(f"{what}: warning: {note}")
     if not errors and not cache:
         notes.append(f"{what}: checked with " + " and ".join(label for label, _ in param_sets))
     return errors, notes
@@ -746,7 +828,7 @@ def main() -> int:
                     to_render.append((key, True))
         render_errors: list[str] = []
         for key, cache in to_render:
-            errors, render_notes = render(base, token, key, cache, templates)
+            errors, render_notes = render(base, token, key, cache, templates, cfg)
             render_errors.extend(errors)
             notes.extend(render_notes)
     except TokenRejected as exc:

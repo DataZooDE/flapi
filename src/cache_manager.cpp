@@ -1539,6 +1539,10 @@ CacheManager::GarbageCollectionResult CacheManager::performGarbageCollection(std
         return result;
     }
     result.status = outcome.expired_snapshots > 0 ? "expired" : "nothing_to_expire";
+    // What the expiry could not free: old files another table's retained
+    // snapshots still pin. Without this the answer read "nothing to expire" / 0
+    // bytes while the disk still held them.
+    scanPinnedFiles(config_manager, catalog, schema, table, result);
     std::ostringstream message;
     if (outcome.expired_snapshots > 0) {
         message << "Expired " << outcome.expired_snapshots << " snapshot(s), deleted "
@@ -1549,9 +1553,150 @@ CacheManager::GarbageCollectionResult CacheManager::performGarbageCollection(std
     if (!outcome.warning.empty()) {
         message << "; warning: " << outcome.warning;
     }
+    if (!result.pinned_by.empty()) {
+        message << "; " << result.pinned_bytes << " bytes of old files stay on disk, pinned by snapshots retained by ";
+        for (std::size_t i = 0; i < result.pinned_by.size(); ++i) {
+            message << (i > 0 ? ", " : "") << result.pinned_by[i];
+        }
+        message << "; they are deleted when that retention expires those snapshots";
+    }
     result.message = message.str();
     recordSyncEvent(config_manager, endpoint, "garbage_collection", "success", result.message, details);
     return result;
+}
+
+std::string CacheManager::describePinHolder(std::shared_ptr<ConfigManager> config_manager,
+                                            const EndpointConfig& endpoint, const std::string& endpoint_schema,
+                                            std::int64_t snapshots) const {
+    const auto retention = effectiveRetention(config_manager, endpoint.cache);
+    std::ostringstream holder;
+    holder << (endpoint.urlPath.empty() ? endpoint.getName() : endpoint.urlPath) << " (" << endpoint_schema << "."
+           << endpoint.cache.table << ": " << snapshots << " snapshot(s) kept by ";
+    if (retention.keep_last_snapshots) {
+        holder << "retention keep-last-snapshots " << *retention.keep_last_snapshots;
+    } else if (retention.max_snapshot_age) {
+        holder << "retention max-snapshot-age " << *retention.max_snapshot_age;
+    } else {
+        holder << "no retention policy; set cache.retention or ducklake.retention";
+    }
+    holder << ")";
+    return holder.str();
+}
+
+void CacheManager::scanPinnedFiles(std::shared_ptr<ConfigManager> config_manager, const std::string& catalog,
+                                   const std::string& schema, const std::string& table,
+                                   GarbageCollectionResult& result) {
+    // The same question drop-table answers for a dropped table, asked of a live
+    // one: which retained snapshots of OTHER cached tables can still see files
+    // this table no longer needs. A superseded data/delete file (end_snapshot
+    // set) stays in the metadata, and on disk, while ANY snapshot in
+    // [begin_snapshot, end_snapshot) survives.
+    struct Pinned {
+        std::int64_t begin;
+        std::int64_t end;
+        std::int64_t bytes;
+    };
+    const auto read_ids = [&](const std::string& predicate) {
+        std::vector<std::int64_t> ids;
+        auto answer = db_adapter_->executeDuckLakeQueryWithResult(
+            "SELECT snapshot_id FROM ducklake_snapshots('" + escapeSqlLiteral(catalog) + "') WHERE " + predicate);
+        auto rows = crow::json::load(answer.data.dump());
+        if (rows && rows.t() == crow::json::type::List) {
+            for (std::size_t i = 0; i < rows.size(); ++i) {
+                if (rows[i].has("snapshot_id") && rows[i]["snapshot_id"].t() == crow::json::type::Number) {
+                    ids.push_back(static_cast<std::int64_t>(rows[i]["snapshot_id"].d()));
+                }
+            }
+        }
+        return ids;
+    };
+    const auto any_in = [](const std::vector<std::int64_t>& ids, const Pinned& file) {
+        return std::any_of(ids.begin(), ids.end(),
+                           [&](std::int64_t id) { return id >= file.begin && id < file.end; });
+    };
+    try {
+        const auto own_keys = tableChangeKeys(catalog, schema, table, /*strict=*/true);
+        if (own_keys.empty()) {
+            return;   // not identifiable: report nothing rather than guess
+        }
+        const std::string meta = metadataCatalog(catalog);
+        const std::string incarnations =
+            "SELECT t.table_id FROM " + meta + ".ducklake_table t JOIN " + meta +
+            ".ducklake_schema s ON s.schema_id = t.schema_id WHERE t.table_name = '" + escapeSqlLiteral(table) +
+            "' AND s.schema_name = '" + escapeSqlLiteral(schema) + "'";
+        auto answer = db_adapter_->executeDuckLakeQueryWithResult(
+            "SELECT CAST(begin_snapshot AS BIGINT) AS b, CAST(end_snapshot AS BIGINT) AS e, "
+            "CAST(file_size_bytes AS BIGINT) AS bytes FROM " + meta + ".ducklake_data_file "
+            "WHERE end_snapshot IS NOT NULL AND table_id IN (" + incarnations + ") "
+            "UNION ALL SELECT CAST(begin_snapshot AS BIGINT), CAST(end_snapshot AS BIGINT), "
+            "CAST(file_size_bytes AS BIGINT) FROM " + meta + ".ducklake_delete_file "
+            "WHERE end_snapshot IS NOT NULL AND table_id IN (" + incarnations + ")");
+        auto files = crow::json::load(answer.data.dump());
+        std::vector<Pinned> superseded;
+        if (files && files.t() == crow::json::type::List) {
+            for (std::size_t i = 0; i < files.size(); ++i) {
+                if (files[i].has("b") && files[i].has("e") && files[i].has("bytes") &&
+                    files[i]["b"].t() == crow::json::type::Number && files[i]["e"].t() == crow::json::type::Number &&
+                    files[i]["bytes"].t() == crow::json::type::Number) {
+                    superseded.push_back({static_cast<std::int64_t>(files[i]["b"].d()),
+                                          static_cast<std::int64_t>(files[i]["e"].d()),
+                                          static_cast<std::int64_t>(files[i]["bytes"].d())});
+                }
+            }
+        }
+        if (superseded.empty()) {
+            return;
+        }
+        // Files this table's own retained snapshots still see are its retention's
+        // doing, not another table's.
+        const auto own_ids = read_ids(tableSnapshotPredicate(own_keys));
+        std::vector<Pinned> candidates;
+        for (const auto& file : superseded) {
+            if (!any_in(own_ids, file)) {
+                candidates.push_back(file);
+            }
+        }
+        if (candidates.empty()) {
+            return;
+        }
+        std::set<std::pair<std::string, std::string>> seen{{schema, table}};
+        std::set<std::size_t> pinned_files;
+        for (const auto& endpoint : *config_manager->getEndpoints()) {
+            if (!endpoint.cache.enabled || endpoint.cache.table.empty()) {
+                continue;
+            }
+            const std::string ep_schema = endpoint.cache.schema.empty() ? "main" : endpoint.cache.schema;
+            if (!seen.insert({ep_schema, endpoint.cache.table}).second) {
+                continue;
+            }
+            const auto keys = tableChangeKeys(catalog, ep_schema, endpoint.cache.table, /*strict=*/true);
+            if (keys.empty()) {
+                continue;
+            }
+            std::int64_t pinning_snapshots = 0;
+            for (const auto id : read_ids(tableSnapshotPredicate(keys))) {
+                bool pins = false;
+                for (std::size_t f = 0; f < candidates.size(); ++f) {
+                    if (id >= candidates[f].begin && id < candidates[f].end) {
+                        pinned_files.insert(f);
+                        pins = true;
+                    }
+                }
+                pinning_snapshots += pins ? 1 : 0;
+            }
+            if (pinning_snapshots > 0) {
+                result.pinned_by.push_back(describePinHolder(config_manager, endpoint, ep_schema, pinning_snapshots));
+            }
+        }
+        for (const auto index : pinned_files) {
+            result.pinned_bytes += candidates[index].bytes;
+        }
+    } catch (const std::exception& ex) {
+        CROW_LOG_DEBUG << "Could not scan the files of " << schema << "." << table
+                       << " that other tables' snapshots pin: " << ex.what();
+        result.pinned_by.clear();
+        result.pinned_bytes = 0;
+    }
 }
 
 CacheManager::GarbageCollectionResult CacheManager::dropObsoleteCacheTable(
@@ -1683,18 +1828,7 @@ CacheManager::GarbageCollectionResult CacheManager::dropObsoleteCacheTable(
                 if (still == 0) {
                     continue;
                 }
-                std::ostringstream holder;
-                holder << (endpoint.urlPath.empty() ? endpoint.getName() : endpoint.urlPath) << " (" << ep_schema
-                       << "." << endpoint.cache.table << ": " << still << " snapshot(s) kept by ";
-                if (retention.keep_last_snapshots) {
-                    holder << "retention keep-last-snapshots " << *retention.keep_last_snapshots;
-                } else if (retention.max_snapshot_age) {
-                    holder << "retention max-snapshot-age " << *retention.max_snapshot_age;
-                } else {
-                    holder << "no retention policy; set cache.retention or ducklake.retention";
-                }
-                holder << ")";
-                result.pinned_by.push_back(holder.str());
+                result.pinned_by.push_back(describePinHolder(config_manager, endpoint, ep_schema, still));
             }
             const auto bytes_after = referencedFileBytes(catalog);
             if (bytes_before && bytes_after && *bytes_before >= *bytes_after) {
