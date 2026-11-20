@@ -210,6 +210,7 @@ void CacheManager::initializeReadiness(std::shared_ptr<ConfigManager> config_man
         const CacheKey key = cacheKeyForEndpoint(config_manager, endpoint);
         readiness_[key] = CacheReadiness{ReadinessState::Starting, key.catalog, key.schema, key.table, ""};
     }
+    CROW_LOG_INFO << "Cache readiness initialised for " << readiness_.size() << " cache table(s)";
 }
 
 void CacheManager::syncReadinessWithEndpoints(std::shared_ptr<ConfigManager> config_manager) {
