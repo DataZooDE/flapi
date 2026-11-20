@@ -3,7 +3,7 @@ import type { CliContext } from '../../lib/types';
 import { Console } from '../../lib/console';
 import { handleError } from '../../lib/errors';
 import { renderJson, renderConfigJson, renderCacheTable, renderTable } from '../../lib/render';
-import { cacheAuditRows, describeRefreshResult, refreshQuery } from '../../lib/cacheRender';
+import { cacheAuditRows, describeRefreshResult, refreshQuery, skippedRefresh } from '../../lib/cacheRender';
 import { applyOutputOverride } from '../../lib/options';
 import { buildEndpointUrl } from '../../lib/url';
 import chalk from 'chalk';
@@ -282,13 +282,7 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
         const query = refreshQuery(options);
         const response = await ctx.client.post(endpointUrl, {}, query ? { params: query } : undefined);
         const result = response.data;
-        // Another refresh of the same table (warm-up, the scheduler) was in flight.
-        const alreadyRunning = result && typeof result === 'object' && result.status === 'already_running';
-        if (alreadyRunning) {
-          spinner.warn(chalk.yellow(`A refresh of ${path} is already running; not started again`));
-        } else {
-          spinner.succeed(chalk.green(`✓ Cache for ${path} refreshed successfully`));
-        }
+        spinner.succeed(chalk.green(`✓ Cache for ${path} refreshed successfully`));
         const lines = describeRefreshResult(result);
 
         if (ctx.config.output === 'json') {
@@ -297,12 +291,22 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
         } else {
           Console.info(chalk.cyan(`\n🔄 Cache Refresh: ${path}`));
           Console.info(chalk.gray('═'.repeat(60)));
-          if (!alreadyRunning) {
-            Console.info(chalk.green(options.full ? '✓ Cache fully rebuilt' : '✓ Cache refreshed successfully'));
-          }
+          Console.info(chalk.green(options.full ? '✓ Cache fully rebuilt' : '✓ Cache refreshed successfully'));
           lines.forEach((line) => Console.info(chalk.blue(line)));
         }
       } catch (error) {
+        // Another refresh of the same table (warm-up, the scheduler) is in
+        // flight: the server answers 409 + Retry-After and starts nothing.
+        const skipped = skippedRefresh(error);
+        if (skipped) {
+          const wait = skipped.retryAfter ? `; retry in ${skipped.retryAfter}s` : '';
+          spinner.warn(chalk.yellow(`A refresh of ${path} is already running; not started again${wait}`));
+          if (ctx.config.output === 'json') {
+            renderJson(skipped.body);
+          }
+          process.exitCode = 1;
+          return;
+        }
         spinner.fail(chalk.red(`✗ Failed to refresh cache for ${path}`));
         handleError(error, ctx.config);
         process.exitCode = 1;

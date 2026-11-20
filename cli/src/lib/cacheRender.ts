@@ -57,3 +57,20 @@ export function describeRefreshResult(result: unknown): string[] {
 export function refreshQuery(options: { full?: boolean; force?: boolean }): Record<string, string> | undefined {
   return options.full ? { full: 'true' } : undefined;
 }
+
+/**
+ * A refresh the server skipped because one of the same table was already
+ * running answers 409 `{"status":"already_running"}` with `Retry-After`. That
+ * is not a failure of this refresh, so the CLI says so (and exits non-zero: it
+ * did not refresh anything). Returns undefined for any other error.
+ */
+export function skippedRefresh(error: unknown): { retryAfter?: number; body: Record<string, unknown> } | undefined {
+  const response = (error as { response?: { status?: number; data?: unknown; headers?: Record<string, unknown> } })?.response;
+  const data = response?.data;
+  if (response?.status !== 409 || !data || typeof data !== 'object' || (data as Record<string, unknown>).status !== 'already_running') {
+    return undefined;
+  }
+  const raw = response.headers?.['retry-after'] ?? response.headers?.['Retry-After'];
+  const seconds = Number(raw);
+  return { retryAfter: Number.isFinite(seconds) && seconds > 0 ? seconds : undefined, body: data as Record<string, unknown> };
+}

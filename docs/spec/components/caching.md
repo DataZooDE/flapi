@@ -296,7 +296,7 @@ DuckLake catalog on its own: a populate script with its retention and audit row
 (`refreshCache`), compaction, garbage collection, `drop-table`, and the cache-target
 `validate_only` check that executes a template's READ_ONLY `ATTACH`. The duplicate
 check comes first, so a second refresh of the SAME table is still coalesced
-(`refreshCache` returns false, `already_running`) instead of queueing; a refresh of
+(`refreshCache` returns false; the route answers `409 already_running` with `Retry-After`) instead of queueing; a refresh of
 another table waits for the lock.
 
 Attach names are instance-wide in DuckDB. Two populate templates that each run
