@@ -157,22 +157,72 @@ void RequireValidMustacheSyntax(const std::string& body, const std::string& labe
     }
 }
 
-std::optional<std::string> CheckMustacheTemplateFile(const std::string& path) {
+std::vector<MustacheVariable> CollectMustacheVariables(const std::string& body) {
+    std::vector<MustacheVariable> out;
+    std::size_t current = 0;
+    while (true) {
+        const std::size_t tag_start = body.find(kOpen, current);
+        if (tag_start == std::string::npos) {
+            break;
+        }
+        const std::size_t idx = tag_start + kDelimiterSize;
+        const std::size_t close = body.find(kClose, idx);
+        if (close == std::string::npos || close == idx) {
+            break;
+        }
+        current = close + kDelimiterSize;
+
+        std::size_t name_begin = idx;
+        switch (body[idx]) {
+            case '#':
+            case '^':
+            case '&':
+                name_begin = idx + 1;
+                break;
+            case '{':
+                name_begin = idx + 1;
+                current++;   // the third brace
+                break;
+            case '/':
+            case '!':
+            case '>':
+            case '=':
+                continue;
+            default:
+                break;
+        }
+        std::string name = TrimSpaces(body, name_begin, close);
+        if (name.empty()) {
+            continue;
+        }
+        const auto at = ErrorAt(body, tag_start, "");
+        out.push_back(MustacheVariable{std::move(name), at.line, at.column});
+    }
+    return out;
+}
+
+std::optional<std::string> ReadTemplateText(const std::string& path) {
     if (path.empty() || PathValidator::IsRemotePath(path)) {
         return std::nullopt;
     }
-    std::string content;
     try {
         auto provider = FileProviderFactory::CreateProvider(path);
         if (!provider->FileExists(path)) {
             return std::nullopt;
         }
-        content = provider->ReadFile(path);
+        return provider->ReadFile(path);
     } catch (const std::exception&) {
         // Unreadable here is reported by the existence checks, not as syntax.
         return std::nullopt;
     }
-    if (const auto error = CheckMustacheSyntax(content)) {
+}
+
+std::optional<std::string> CheckMustacheTemplateFile(const std::string& path) {
+    const auto content = ReadTemplateText(path);
+    if (!content) {
+        return std::nullopt;
+    }
+    if (const auto error = CheckMustacheSyntax(*content)) {
         return "Invalid template " + FormatMustacheSyntaxError(*error, path);
     }
     return std::nullopt;

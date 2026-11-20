@@ -274,7 +274,9 @@ Results are serialized to JSON and returned:
 }
 ```
 
-Every response also carries `X-Request-Id`, and `X-Trace-Id` when a span was
+Every response also carries `X-Request-Id` (set in `before_handle` and re-asserted in
+`after_handle`, because the MCP handlers return a fresh `crow::response` that replaces the one
+`before_handle` stamped), and `X-Trace-Id` when a span was
 produced. `X-Trace-Id` is the **caller's** trace id when they supplied a valid
 `traceparent`, so both sides join on one value.
 

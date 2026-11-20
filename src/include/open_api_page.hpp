@@ -12,7 +12,7 @@ const std::string openapi_page_template = R"(
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Swagger UI for {{projectName}}</title>
-    <link rel="stylesheet" type="text/css" href="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui.css">
+    <link rel="stylesheet" type="text/css" href="/doc/assets/swagger-ui.css">
     <style>
         body {
             margin: 0;
@@ -27,8 +27,8 @@ const std::string openapi_page_template = R"(
 </head>
 <body>
     <div id="swagger-ui"></div>
-    <script src="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui-bundle.js"></script>
-    <script src="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui-standalone-preset.js"></script>
+    <script src="/doc/assets/swagger-ui-bundle.js"></script>
+    <script src="/doc/assets/swagger-ui-standalone-preset.js"></script>
     <script>
         window.onload = function() {
             const currentOrigin = window.location.origin;

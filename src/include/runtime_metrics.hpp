@@ -103,6 +103,13 @@ public:
     void recordMcpTool(std::string_view tool_name, bool success, std::chrono::microseconds duration,
                        bool rejected = false);
 
+    /// One async MCP task reaching a terminal state. `duration` is END TO END:
+    /// submit to finish, queue wait included - the tool series times a task's
+    /// execution only, because a worker has no request in scope. `success` is
+    /// false for a failed task. Reported as protocol "mcp_task" and left out of
+    /// the totals (the call is already counted by its tool series).
+    void recordMcpTask(std::string_view tool_name, bool success, std::chrono::microseconds duration);
+
     /// Rejections recorded for every request, including those stopped by
     /// middleware before any handler ran.
     void recordRejection(int status_code);

@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace flapi {
 
@@ -37,6 +38,23 @@ std::string FormatMustacheSyntaxError(const MustacheSyntaxError& error, const st
 // Throws std::invalid_argument("Invalid template <label>:<line>:<col>: ...")
 // when CheckMustacheSyntax reports a problem.
 void RequireValidMustacheSyntax(const std::string& body, const std::string& label);
+
+// A variable or section name used by a template, located in the source.
+struct MustacheVariable {
+    std::string name;        // as written, spaces trimmed: "params.id"
+    std::size_t line = 1;    // 1-based
+    std::size_t column = 1;  // 1-based
+};
+
+// Every variable (`{{x}}`, `{{{x}}}`, `{{&x}}`) and section (`{{#x}}`, `{{^x}}`)
+// name in `body`, in source order. Closing tags, comments, partials and
+// delimiter tags name nothing. Meant for a body CheckMustacheSyntax accepted; a
+// malformed tag ends the scan instead of being reported.
+std::vector<MustacheVariable> CollectMustacheVariables(const std::string& body);
+
+// The template's text from the local disk or the embedded bundle; nullopt when
+// it does not exist, is unreadable, or is remote (s3://, https://...).
+std::optional<std::string> ReadTemplateText(const std::string& path);
 
 // Reads a template from the local disk or the embedded bundle and checks it.
 // Returns the formatted error, or nullopt when the template is fine, does not

@@ -34,7 +34,12 @@ public:
         std::string tool_name;
         std::string principal;   // owner; tasks/get is re-checked against this
         Status status = Status::Working;
-        std::chrono::steady_clock::time_point created_at;
+        std::chrono::steady_clock::time_point created_at;   // submit time
+        // Terminal-state time (default-constructed while the task is working and
+        // for tasks recovered from the store). finished_at - created_at is the
+        // END-TO-END latency, queue wait included; it is reported as the
+        // `mcp_task` series of RuntimeMetrics.
+        std::chrono::steady_clock::time_point finished_at{};
         int64_t ttl_ms = 0;
         int64_t poll_interval_ms = 0;
         std::string result_json;  // MCP tool result envelope, when Completed
@@ -98,6 +103,9 @@ private:
     void workerLoop();
     void sweepExpiredLocked();
     static std::string newTaskId();
+
+    // Stamps finished_at and records the end-to-end latency. Caller holds mu_.
+    void markFinishedLocked(Entry& entry);
 
     // Persistence helpers (no-ops when sql_exec_ is null).
     void persistTask(const Task& t);

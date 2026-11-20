@@ -15,6 +15,7 @@
 #include "config_service.hpp"
 #include "sql_utils.hpp"
 #include "mustache_syntax_check.hpp"
+#include "yaml_text_patch.hpp"
 
 #ifdef _WIN32
 #define ENV_BLOCK _environ
@@ -2045,7 +2046,18 @@ Outcome UpdateFromPatch(ConfigManager& cm, const EndpointConfig& existing, const
             std::filesystem::remove(file, ec);
         }
     };
-    if (!writeFile(file, emit(merged), outcome.error)) {
+    // Patched into the existing text where possible, so the file keeps its
+    // comments; a plain re-emit (which drops them) only when it cannot be.
+    std::string new_text;
+    if (had_file) {
+        if (auto patched = PatchYamlPreservingComments(previous, base, merged)) {
+            new_text = std::move(*patched);
+        }
+    }
+    if (new_text.empty()) {
+        new_text = emit(merged);
+    }
+    if (!writeFile(file, new_text, outcome.error)) {
         outcome.status = 500;
         restore();
         return outcome;
