@@ -490,3 +490,20 @@ TEST_CASE("countSqlPlaceholders - unclosed string is fail-safe", "[sql_utils][pl
     // a server-side error rather than a security-relevant bind skew.
     REQUIRE(countSqlPlaceholders("SELECT 'unterminated ? string") == 0);
 }
+
+// =============================================================================
+// IDENTIFIER / LITERAL QUOTING (#198)
+// =============================================================================
+
+TEST_CASE("QuoteIdentifier wraps and doubles quotes", "[sql_utils][quoting]") {
+    REQUIRE(flapi::sql::QuoteIdentifier("my-lake") == "\"my-lake\"");
+    REQUIRE(flapi::sql::QuoteIdentifier("cache") == "\"cache\"");
+    REQUIRE(flapi::sql::QuoteIdentifier("a\"b") == "\"a\"\"b\"");
+    REQUIRE(flapi::sql::QuoteIdentifier("") == "\"\"");
+}
+
+TEST_CASE("EscapeSqlLiteral doubles single quotes", "[sql_utils][quoting]") {
+    REQUIRE(flapi::sql::EscapeSqlLiteral("it's") == "it''s");
+    REQUIRE(flapi::sql::EscapeSqlLiteral("plain") == "plain");
+    REQUIRE(flapi::sql::EscapeSqlLiteral("'") == "''");
+}

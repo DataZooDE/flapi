@@ -69,6 +69,12 @@ public:
     duckdb_connection getConnection(); 
     
     bool isCacheEnabled(const EndpointConfig& endpoint);
+
+    /// The serialised-access locks of `endpoint`'s connections (see
+    /// lockSerialisedAccess), held until the returned guard is released. Empty
+    /// guard when no connection serialises. For a cache populate (#216): take
+    /// it AFTER the catalog write lock, never before.
+    std::shared_ptr<void> holdSerialisedAccess(const EndpointConfig& endpoint);
     bool invalidateCache(const EndpointConfig& endpoint);
     
     QueryResult executeQuery(const EndpointConfig& endpoint, std::map<std::string, std::string>& params, bool with_pagination = true);
@@ -220,6 +226,14 @@ private:
     // duckdb.default_order, applied per connection when DuckLake is enabled
     // (see createAndInitializeDuckDBConfig); empty otherwise.
     std::optional<std::string> session_default_order_;
+
+    // The effective DuckDB TimeZone (#212): the user's `duckdb.TimeZone` (any
+    // key case) or UTC. Applied with SET GLOBAL once the engine is open;
+    // `session_time_zone_fallback_` is set only when that failed (ICU not
+    // loadable), and then each flapi connection tries a per-session SET.
+    std::string effective_time_zone_ = "UTC";
+    std::optional<std::string> session_time_zone_fallback_;
+    void applyTimeZone();
 
     // True only once initializeDBManagerFromConfig() has run to completion.
     // shutdown() detaches and checkpoints only when it is set: a startup that

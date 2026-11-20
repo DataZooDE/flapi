@@ -15,6 +15,7 @@
 #include <tuple>
 
 #include "cache_manager.hpp"
+#include "sql_utils.hpp"
 #include "template_secrets.hpp"
 
 #include "database_manager.hpp"
@@ -709,6 +710,13 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
             throw std::runtime_error("server is shutting down; refresh not started");
         }
         {
+            // The populate READS the source: on a SQLite attachment a concurrent
+            // write (a POST whose refresh-on-write is what usually starts this)
+            // wedges it or fails the populate with "database is locked" (#216).
+            // Taken after the catalog write lock refreshCache() already holds,
+            // always in that order, so a write - which releases its source
+            // lock before it triggers a refresh - cannot deadlock against us.
+            const auto source_access = db_adapter_->lockSourceAccess(endpoint);
             // Published for the duration of the populate script, so a shutdown can
             // interrupt it instead of waiting minutes for a warm-up query to end.
             ActiveRefreshGuard active(*this);
@@ -970,35 +978,11 @@ std::string CacheManager::fetchCursorWatermark(const std::string& catalog,
 }
 
 std::string CacheManager::escapeSqlLiteral(const std::string& value) {
-    // Doubling is the whole of SQL string escaping. These literals are built
-    // by us, but the values inside them - a cursor watermark, a table name, a
-    // configured interval - come from upstream data or user config.
-    std::string out;
-    out.reserve(value.size());
-    for (const char c : value) {
-        if (c == '\'') {
-            out += "''";
-        } else {
-            out += c;
-        }
-    }
-    return out;
+    return sql::EscapeSqlLiteral(value);
 }
 
 std::string CacheManager::quoteIdentifier(const std::string& name) {
-    std::string out = "\"";
-    for (const char c : name) {
-        // Doubling, not tripling: appending "" and then falling through to
-        // append the character again produced three quotes and invalid SQL
-        // for any legitimately quoted identifier containing one.
-        if (c == '"') {
-            out += "\"\"";
-        } else {
-            out += c;
-        }
-    }
-    out += '"';
-    return out;
+    return sql::QuoteIdentifier(name);
 }
 
 std::optional<std::vector<std::string>> CacheManager::liveTableChangeKeys(
@@ -1751,11 +1735,11 @@ void CacheManager::initializeAuditTables(std::shared_ptr<ConfigManager> config_m
     const std::string auditSchema = "audit";
     
     // Create audit schema if it doesn't exist
-    std::string createSchemaSQL = "CREATE SCHEMA IF NOT EXISTS " + catalog + "." + auditSchema;
+    std::string createSchemaSQL = "CREATE SCHEMA IF NOT EXISTS " + quoteIdentifier(catalog) + "." + quoteIdentifier(auditSchema);
     
     // Create sync_events audit table (DuckLake doesn't support PRIMARY KEY constraints)
     std::string createAuditTableSQL = R"(
-        CREATE TABLE IF NOT EXISTS )" + catalog + "." + auditSchema + R"(.sync_events (
+        CREATE TABLE IF NOT EXISTS )" + quoteIdentifier(catalog) + "." + quoteIdentifier(auditSchema) + R"(.sync_events (
             event_id VARCHAR,
             endpoint_path VARCHAR NOT NULL,
             cache_table VARCHAR NOT NULL,
@@ -1772,7 +1756,7 @@ void CacheManager::initializeAuditTables(std::shared_ptr<ConfigManager> config_m
         )
     )";
     // Catalogs created before the column existed.
-    const std::string addFullColumnSQL = "ALTER TABLE " + catalog + "." + auditSchema +
+    const std::string addFullColumnSQL = "ALTER TABLE " + quoteIdentifier(catalog) + "." + quoteIdentifier(auditSchema) +
                                          ".sync_events ADD COLUMN IF NOT EXISTS \"full\" BOOLEAN";
 
     try {
@@ -1799,7 +1783,7 @@ void CacheManager::ensureCacheSchemaExists(const std::string& catalog, const std
         return;
     }
     
-    std::string createSchemaSQL = "CREATE SCHEMA IF NOT EXISTS " + catalog + "." + schema;
+    std::string createSchemaSQL = "CREATE SCHEMA IF NOT EXISTS " + quoteIdentifier(catalog) + "." + quoteIdentifier(schema);
     
     try {
         std::map<std::string, std::string> params;
@@ -1853,7 +1837,7 @@ std::string CacheManager::buildSyncEventInsert(const std::string& catalog, const
     const std::string schema = cacheConfig.table.empty() ? cacheConfig.schema
                              : cacheConfig.schema.empty() ? std::string("main")
                                                           : cacheConfig.schema;
-    return "INSERT INTO " + catalog + ".audit.sync_events "
+    return "INSERT INTO " + quoteIdentifier(catalog) + ".audit.sync_events "
            "(event_id, endpoint_path, cache_table, cache_schema, sync_type, status, message, "
            "snapshot_id, rows_affected, sync_started_at, sync_completed_at, duration_ms, \"full\") VALUES (" +
            quote(event_id) + ", " +

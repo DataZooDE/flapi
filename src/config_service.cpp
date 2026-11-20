@@ -13,6 +13,7 @@
 #include <openssl/crypto.h>
 
 #include "config_service.hpp"
+#include "sql_utils.hpp"
 #include "mustache_syntax_check.hpp"
 
 #ifdef _WIN32
@@ -1456,7 +1457,7 @@ std::string AuditLogHandler::buildAuditQuery(const std::string& catalog,
         SELECT event_id, endpoint_path, cache_table, cache_schema, sync_type, status, message,
                snapshot_id, rows_affected, sync_started_at, sync_completed_at, duration_ms,
                coalesce("full", false) AS "full"
-        FROM )" << catalog << R"(.audit.sync_events)";
+        FROM )" << sql::QuoteIdentifier(catalog) << R"(.audit.sync_events)";
     
     if (!endpoint_filter.empty()) {
         // Quote-doubled. The caller's endpoint path reaches here, and a

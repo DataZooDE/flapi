@@ -3,6 +3,7 @@
 #include <string>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <optional>
 
 namespace flapi {
@@ -85,6 +86,24 @@ public:
         (void)target;
         (void)rebuild;
         return executeDuckLakeQueryCountingRows(script, {});
+    }
+
+    /**
+     * Hold the serialised-access locks of `endpoint`'s source connections
+     * (a SQLite attachment tolerates no concurrent reader and writer, #116)
+     * until the returned guard is destroyed. A populate reads that source, so
+     * it takes them like any other reader (#216).
+     *
+     * LOCK ORDER: the catalog write lock (CacheManager::lockCatalogWrites) is
+     * always taken BEFORE this one. No path takes a source lock and then asks
+     * for the catalog lock (a write releases its source lock before the
+     * refresh-on-write / invalidate-on-write refresh starts).
+     *
+     * The default holds nothing, so test doubles keep working unchanged.
+     */
+    virtual std::shared_ptr<void> lockSourceAccess(const EndpointConfig& endpoint) {
+        (void)endpoint;
+        return nullptr;
     }
 };
 
