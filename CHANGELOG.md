@@ -6,6 +6,31 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ### Upgrade notes
 
+- **DuckDB's session `TimeZone` is `UTC` unless you set it.** Left alone, DuckDB takes the host zone (`TZ`,
+  `/etc/localtime`) once its ICU extension loads, which happens lazily on the first query that needs it. A
+  server in `Asia/Tokyo` then answered `now()::TIMESTAMP`, `date_trunc` and `TIMESTAMPTZ` -> `TIMESTAMP` casts
+  nine hours off, from some minutes after startup. flAPI now applies `SET GLOBAL TimeZone` right after the
+  engine opens and logs `DuckDB TimeZone: UTC`. Set `duckdb: {TimeZone: Europe/Berlin}` (key case does not
+  matter) to choose another zone; if the host zone is what you relied on, set it explicitly there. If ICU
+  cannot be loaded at that point (offline image without it) a warning says so and each connection tries its
+  own `SET`.
+- **`DECIMAL` values with more than 15 significant digits are JSON strings.** `DECIMAL(38,9)` `12345678901234567890.123456789`
+  used to be rounded to the nearest double (`12345678901234567168`); it is now the exact string
+  `"12345678901234567890.123456789"`. Decimals with at most 15 significant digits (and integer-valued ones up to
+  18 digits) stay JSON numbers, so `price DECIMAL(10,2)` columns are unchanged. A typed client reading a wide
+  `DECIMAL` as a number must parse the string.
+- **A cache populate now waits for writes on a serialised source (and vice versa).** A populate that reads a
+  SQLite attachment takes the connection's `serialize-access` lock, so a `POST` during a slow populate queues
+  behind it (it used to run concurrently and fail the populate or the write with `database is locked`).
+  Lock order is fixed: catalog write lock first, source lock second.
+- **Identifiers flAPI builds are quoted.** A DuckLake `alias` or cache `schema` with a hyphen (`my-lake`,
+  `my-schema`) booted into a syntax error or silently skipped the schema; the `ATTACH`, `CREATE SCHEMA`, audit
+  table and `ducklake_*` calls now quote them. Your own templates must still quote
+  (`"{{{cache.catalog}}}"."{{{cache.schema}}}"."{{{cache.table}}}"`).
+- **Debug logging no longer prints connection secrets.** The `Template context:` line (which dumped
+  `conn.*`, passwords included) is gone, and the `Processed query:` line has connection credential values
+  replaced with `<redacted>`.
+
 - **Endpoints whose routes differ only in parameter names are duplicates.** `GET /items/:id` and
   `GET /items/:item_id` match the same requests; both used to load and load order decided which one answered,
   so an endpoint with `auth: {enabled: false}` could shadow an authenticated one. Startup, reload and create now

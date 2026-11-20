@@ -100,7 +100,7 @@ void DatabaseManager::closeDatabaseLocked(bool graceful) {
         // Only what was attached: a one-shot refresh that lost the lock race
         // printed "Failed to detach DuckLake catalog ... database not found".
         if (ducklake_config.enabled && ducklake_attached_) {
-            const std::string detach = "DETACH " + ducklake_config.alias + ";";
+            const std::string detach = "DETACH " + sql::QuoteIdentifier(ducklake_config.alias) + ";";
             if (run(detach.c_str(), error)) {
                 CROW_LOG_INFO << "Detached DuckLake catalog: " << ducklake_config.alias;
             } else {
@@ -270,6 +270,7 @@ void DatabaseManager::initializeDBManagerFromConfig(std::shared_ptr<ConfigManage
         // Extensions first: the version query already needs core_functions, and offline
         // a missing one must fail with loadDefaultExtensions' message, not an autoload error.
         loadDefaultExtensions(config_manager);
+        applyTimeZone();
         logDuckDBVersion();
         initializeConnections(config_manager);
 
@@ -278,7 +279,9 @@ void DatabaseManager::initializeDBManagerFromConfig(std::shared_ptr<ConfigManage
         const auto& ducklake_config = config_manager->getDuckLakeConfig();
         if (ducklake_config.enabled) {
             CROW_LOG_INFO << "Attaching DuckLake catalog at alias '" << ducklake_config.alias << "'";
-            std::string attach_stmt = "ATTACH 'ducklake:" + ducklake_config.metadata_path + "' AS " + ducklake_config.alias + " (DATA_PATH '" + ducklake_config.data_path + "'";
+            std::string attach_stmt = "ATTACH 'ducklake:" + sql::EscapeSqlLiteral(ducklake_config.metadata_path) + "' AS " +
+                                      sql::QuoteIdentifier(ducklake_config.alias) + " (DATA_PATH '" +
+                                      sql::EscapeSqlLiteral(ducklake_config.data_path) + "'";
 
             // Add data inlining configuration if specified
             if (ducklake_config.data_inlining_row_limit) {
@@ -349,7 +352,41 @@ QueryExecutor DatabaseManager::createQueryExecutor()
     // session_default_order_: see createAndInitializeDuckDBConfig. A session
     // setting, so DuckLake's own connection keeps the ascending default it
     // depends on.
-    return QueryExecutor(db, session_default_order_);
+    return QueryExecutor(db, session_default_order_, session_time_zone_fallback_);
+}
+
+void DatabaseManager::applyTimeZone() {
+    // DuckDB takes the host's zone (TZ, /etc/localtime) as the session zone once
+    // ICU loads, which moves every TIMESTAMPTZ -> TIMESTAMP cast and
+    // date_trunc by the host's offset - and ICU loads lazily, on the first
+    // query that needs it, so the shift appears minutes after startup. The
+    // zone is pinned instead: UTC unless the config says otherwise (#212).
+    const std::string statement = "SET GLOBAL TimeZone = '" + sql::EscapeSqlLiteral(effective_time_zone_) + "'";
+    std::string error;
+    duckdb_connection conn;
+    bool ok = duckdb_connect(db, &conn) == DuckDBSuccess;
+    if (!ok) {
+        error = "could not open a connection";
+    } else {
+        duckdb_result result;
+        ok = duckdb_query(conn, statement.c_str(), &result) == DuckDBSuccess;
+        if (!ok) {
+            const char* message = duckdb_result_error(&result);
+            error = message ? message : "unknown error";
+        }
+        duckdb_destroy_result(&result);
+        duckdb_disconnect(&conn);
+    }
+    if (ok) {
+        CROW_LOG_INFO << "DuckDB TimeZone: " << effective_time_zone_;
+        return;
+    }
+    // ICU is not available (offline without it) or the zone name is unknown.
+    // Each connection tries its own SET; if that cannot work either, DuckDB's
+    // own default stays and this warning says so.
+    session_time_zone_fallback_ = effective_time_zone_;
+    CROW_LOG_WARNING << "Could not set the DuckDB TimeZone to '" << effective_time_zone_ << "' globally: " << error
+                     << ". Each connection will try its own SET; the host zone may apply otherwise.";
 }
 
 void DatabaseManager::logDuckDBVersion() {
@@ -437,7 +474,20 @@ void DatabaseManager::createAndInitializeDuckDBConfig(std::shared_ptr<ConfigMana
     // Apply settings from the configuration
     const auto& duckdb_settings = config_manager->getDuckDBConfig().settings;
     session_default_order_.reset();
+    effective_time_zone_ = "UTC";
+    session_time_zone_fallback_.reset();
     for (const auto& [key, value] : duckdb_settings) {
+        // The zone is applied after the engine is open (applyTimeZone): the
+        // setting belongs to the ICU extension, which is not loaded yet, so
+        // duckdb_set_config would refuse it. Matched case-insensitively - DuckDB
+        // itself does - so `timezone:` and `TimeZone:` both count as the user's.
+        std::string lowered_key = key;
+        std::transform(lowered_key.begin(), lowered_key.end(), lowered_key.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (lowered_key == "timezone") {
+            effective_time_zone_ = value;
+            continue;
+        }
         // `default_order` is never set GLOBALLY while DuckLake is attached.
         // DuckLake runs its catalog queries on its own connection, which takes
         // the global default, and several of them rely on a bare ORDER BY
@@ -557,7 +607,7 @@ void DatabaseManager::executeInitStatement(const std::string& init_statement) {
 
 void DatabaseManager::createSchemaIfNecessary(const std::string& schema) {
     auto executor = createQueryExecutor();
-    executor.execute("CREATE SCHEMA IF NOT EXISTS '" + schema + "'");
+    executor.execute("CREATE SCHEMA IF NOT EXISTS " + sql::QuoteIdentifier(schema));
 }
 
 duckdb_connection DatabaseManager::getConnection() {
@@ -653,6 +703,14 @@ DatabaseManager::AccessLocks DatabaseManager::lockSerialisedAccess(const Endpoin
             m = slot.get();
         }
         locks.emplace_back(*m);
+    }
+    return locks;
+}
+
+std::shared_ptr<void> DatabaseManager::holdSerialisedAccess(const EndpointConfig& endpoint) {
+    auto locks = std::make_shared<AccessLocks>(lockSerialisedAccess(endpoint));
+    if (locks->empty()) {
+        return nullptr;
     }
     return locks;
 }

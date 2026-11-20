@@ -37,6 +37,8 @@ public:
                                                  const PopulateTarget& target,
                                                  bool rebuild) override;
 
+    std::shared_ptr<void> lockSourceAccess(const EndpointConfig& endpoint) override;
+
 private:
     std::shared_ptr<DatabaseManager> db_manager_;
 };

@@ -193,4 +193,39 @@ std::size_t countSqlPlaceholders(const std::string& statement) {
     return count;
 }
 
+namespace sql {
+
+std::string EscapeSqlLiteral(const std::string& value) {
+    // Doubling is the whole of SQL string escaping. These literals are built
+    // by us, but the values inside them - a cursor watermark, a table name, a
+    // configured interval - come from upstream data or user config.
+    std::string out;
+    out.reserve(value.size());
+    for (const char c : value) {
+        if (c == '\'') {
+            out += "''";
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+
+std::string QuoteIdentifier(const std::string& name) {
+    std::string out = "\"";
+    for (const char c : name) {
+        // Doubling, not tripling: appending "" and then falling through to
+        // append the character again produced three quotes and invalid SQL
+        // for any legitimately quoted identifier containing one.
+        if (c == '"') {
+            out += "\"\"";
+        } else {
+            out += c;
+        }
+    }
+    out += '"';
+    return out;
+}
+
+} // namespace sql
 } // namespace flapi

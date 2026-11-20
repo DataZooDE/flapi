@@ -43,4 +43,14 @@ std::size_t countSqlPlaceholders(const std::string& statement);
  */
 std::string trimSqlString(const std::string& str);
 
+namespace sql {
+
+/// Double every `'` so a value is safe inside a single-quoted SQL string literal.
+std::string EscapeSqlLiteral(const std::string& value);
+
+/// Quote a name as a SQL identifier: wrapped in double quotes, `"` doubled.
+/// A hyphen, a keyword or a space in the name is then harmless.
+std::string QuoteIdentifier(const std::string& name);
+
+} // namespace sql
 } // namespace flapi

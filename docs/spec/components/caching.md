@@ -299,6 +299,14 @@ check comes first, so a second refresh of the SAME table is still coalesced
 (`refreshCache` returns false, `already_running`) instead of queueing; a refresh of
 another table waits for the lock.
 
+**Lock order.** The populate script reads the source, so it also takes the source connection's
+`serialize-access` lock (`ICacheDatabaseAdapter::lockSourceAccess`) - always AFTER the catalog write lock. A
+write holds its source lock only while it runs and releases it before it triggers a refresh, so no path takes
+the two in the other order (#216).
+
+Identifiers flAPI builds itself (the DuckLake alias in `ATTACH`/`DETACH`, `CREATE SCHEMA`, the audit table and
+every catalog-qualified statement) are double-quoted, so `alias: my-lake` and `schema: my-schema` work.
+
 Attach names are instance-wide in DuckDB. Two populate templates that each run
 `DETACH DATABASE IF EXISTS src; ATTACH ... AS src (READ_ONLY)` used to run in
 parallel and hit `INTERNAL Error: Database name src was already used by a different

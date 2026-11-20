@@ -219,7 +219,7 @@ def _fetch_now(s):
 def test_timezone_defaults_to_utc_regardless_of_host_tz(root, start):
     s = start(TZ_CONFIG.format(duckdb=""), TZ_FILES, env={"TZ": "Asia/Tokyo"})
     row = _fetch_now(s)
-    got = datetime.fromisoformat(row["local_ts"]).replace(tzinfo=timezone.utc)
+    got = datetime.fromisoformat(row["local_ts"].split(".")[0]).replace(tzinfo=timezone.utc)
     drift = abs((datetime.now(timezone.utc) - got).total_seconds())
     assert drift < 120, f"now()::TIMESTAMP drifted {drift / 3600:.1f}h from UTC: {row}"
     assert row["zone"] == "UTC", row
@@ -231,7 +231,7 @@ def test_user_timezone_is_honoured_case_insensitively(root, start, key):
     s = start(TZ_CONFIG.format(duckdb=f"duckdb:\n  {key}: Europe/Berlin\n"), TZ_FILES, env={"TZ": "Asia/Tokyo"})
     row = _fetch_now(s)
     assert row["zone"] == "Europe/Berlin", row
-    got = datetime.fromisoformat(row["local_ts"]).replace(tzinfo=timezone.utc)
+    got = datetime.fromisoformat(row["local_ts"].split(".")[0]).replace(tzinfo=timezone.utc)
     offset_h = (got - datetime.now(timezone.utc)).total_seconds() / 3600
     assert 0.9 < offset_h < 2.1, f"expected Berlin wall clock (+1/+2h), got {offset_h:+.2f}h: {row}"
 
@@ -269,9 +269,9 @@ rate_limit:
     files = {
         "cached.yaml": ("url-path: /cached\nmethod: GET\ntemplate-source: cached.sql\nconnection: [shop]\n"
                         "cache:\n  enabled: true\n  table: products_cache\n  template-file: populate.sql\n"),
-        "cached.sql": "SELECT * FROM lake.main.products_cache ORDER BY id",
+        "cached.sql": "SELECT * FROM {{{cache.catalog}}}.{{{cache.schema}}}.{{{cache.table}}} ORDER BY id",
         # Reads the SQLite table, then burns time in DuckDB while still "populating".
-        "populate.sql": ("CREATE OR REPLACE TABLE lake.main.products_cache AS "
+        "populate.sql": ("CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS "
                          "SELECT p.id, p.name, s.h FROM shop.products p, "
                          "(SELECT sum(hash(range)) AS h FROM range(__N__)) s"),
         "write.yaml": ("url-path: /products\nmethod: POST\n"

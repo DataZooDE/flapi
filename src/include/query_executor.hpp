@@ -132,7 +132,9 @@ class QueryExecutor {
 public:
     QueryExecutor(duckdb_database db);
     // Also applies `SET SESSION default_order` on the new connection.
-    QueryExecutor(duckdb_database db, const std::optional<std::string>& session_default_order);
+    // `session_time_zone` is the per-connection fallback for a TimeZone that could not be set globally.
+    QueryExecutor(duckdb_database db, const std::optional<std::string>& session_default_order,
+                  const std::optional<std::string>& session_time_zone = std::nullopt);
     ~QueryExecutor();
     
     void execute(const std::string& query, const std::string& context = "");

@@ -355,6 +355,11 @@ query, so it keeps the lock. Do not join the source into a cached endpoint's ser
 serialised connection: that read would run unserialised.
 
 An explicit value always wins over the detection.
+
+A **cache populate** that reads the source takes the same lock for the duration of the populate script, so a
+write to a SQLite source issued during a slow populate waits for it (and the populate is never run against a
+concurrent writer). Lock order is always the DuckLake catalog write lock first, the source lock second; a
+write releases its source lock before any `refresh-on-write` / `invalidate-on-write` refresh starts.
 - Use environment variable substitution for sensitive values
 
 > **Implementation:** `src/config_manager.cpp`, `src/database_manager.cpp` | **Tests:** `test/cpp/config_manager_test.cpp`
@@ -371,6 +376,7 @@ Configures the embedded DuckDB database engine.
 | `duckdb.max_memory` | string | auto | Memory limit (e.g., `4GB`, `512MB`) |
 | `duckdb.default_order` | string | - | Default sort order: `ASC` or `DESC`. With `ducklake.enabled` it is set per flAPI connection, not globally, because DuckLake's own catalog queries need the ascending default |
 | `duckdb.default-extensions` | list | `[httpfs, ducklake, fts, json, postgres, sqlite, parquet]` | Extensions installed and loaded at startup. `[]` loads none. A scalar is refused. |
+| `duckdb.TimeZone` | string | `UTC` | The session time zone (IANA name). Defaults to `UTC` whatever the host `TZ` is; the key is matched case-insensitively (`timezone:` works). Applied with `SET GLOBAL` once the engine is open (the setting belongs to ICU, which is not loaded when the config is read) and logged at startup as `DuckDB TimeZone: UTC`. If that fails, each connection retries with its own `SET` and a warning says so |
 | `duckdb.<setting>` | any | - | Any DuckDB configuration setting |
 
 **Example:**
