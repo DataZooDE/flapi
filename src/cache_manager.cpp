@@ -39,7 +39,12 @@ CacheManager::CacheManager(std::shared_ptr<ICacheDatabaseAdapter> db_adapter)
 
 void CacheManager::warmUpCaches(std::shared_ptr<ConfigManager> config_manager) {
     CROW_LOG_INFO << "Warming up endpoint caches, this might take some time...";
-    initializeReadiness(config_manager);
+    // Readiness is initialised ONCE, at DatabaseManager startup, before the HTTP
+    // thread exists. Re-initialising here clear()ed the registry under a live
+    // server (#198). Only a caller that never initialised it (unit tests) does so.
+    if (!readiness_initialised_.load()) {
+        initializeReadiness(config_manager);
+    }
     
     // Initialize audit tables first - not on a read-only catalog, which cannot take the DDL.
     if (!config_manager->getDuckLakeConfig().read_only) {
@@ -135,7 +140,6 @@ std::vector<EndpointConfig> CacheManager::warmupEndpoints(std::shared_ptr<Config
 }
 
 std::thread CacheManager::warmUpCachesAsync(std::shared_ptr<ConfigManager> config_manager) {
-    initializeReadiness(config_manager);
     return std::thread([this, config_manager]() {
         try {
             warmUpCaches(config_manager);
@@ -201,6 +205,23 @@ CacheManager::CacheKey CacheManager::cacheKeyForEndpoint(std::shared_ptr<ConfigM
 }
 
 void CacheManager::initializeReadiness(std::shared_ptr<ConfigManager> config_manager) {
+    // A read-only replica never warms up and never refreshes, so nothing would
+    // ever move a `Starting` entry: it answered 503 cache_warming until the
+    // warm-up thread got round to marking it (~2 s), then cache_not_built (#217).
+    // Settle it here, synchronously, before the HTTP thread exists.
+    const bool replica = config_manager->getDuckLakeConfig().read_only;
+    std::map<CacheKey, bool> replica_exists;
+    if (replica) {
+        for (const auto& endpoint : *config_manager->getEndpoints()) {
+            if (!endpoint.cache.enabled || endpoint.cache.table.empty()) {
+                continue;
+            }
+            const CacheKey key = cacheKeyForEndpoint(config_manager, endpoint);
+            if (replica_exists.count(key) == 0) {
+                replica_exists[key] = cacheTableExists(key.catalog, key.schema, key.table);
+            }
+        }
+    }
     std::lock_guard<std::mutex> lock(readiness_mutex_);
     readiness_.clear();
     for (const auto& endpoint : *config_manager->getEndpoints()) {
@@ -208,8 +229,14 @@ void CacheManager::initializeReadiness(std::shared_ptr<ConfigManager> config_man
             continue;
         }
         const CacheKey key = cacheKeyForEndpoint(config_manager, endpoint);
-        readiness_[key] = CacheReadiness{ReadinessState::Starting, key.catalog, key.schema, key.table, ""};
+        ReadinessState state = ReadinessState::Starting;
+        if (replica) {
+            state = replica_exists[key] ? ReadinessState::Ready : ReadinessState::Unbuilt;
+        }
+        readiness_[key] = CacheReadiness{state, key.catalog, key.schema, key.table, ""};
     }
+    readiness_initialised_.store(true);
+    CROW_LOG_INFO << "Cache readiness initialised for " << readiness_.size() << " cache table(s)";
 }
 
 void CacheManager::syncReadinessWithEndpoints(std::shared_ptr<ConfigManager> config_manager) {

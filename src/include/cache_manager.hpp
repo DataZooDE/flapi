@@ -466,6 +466,7 @@ private:
     std::shared_ptr<DatabaseManager> db_manager;
 
     mutable std::mutex readiness_mutex_;
+    std::atomic<bool> readiness_initialised_{false};
     std::map<CacheKey, CacheReadiness> readiness_;
     // Read-only replicas: when each table was last re-checked (readiness_mutex_).
     std::map<CacheKey, std::chrono::steady_clock::time_point> readonly_rechecked_at_;
