@@ -253,6 +253,43 @@ class TestTimeTravelBeforeSchema:
         assert r.json()["error"] == "snapshot_not_found"
 
 
+TIME_TRAVEL_TS = TIME_TRAVEL.replace(
+    "  - field-name: version\n    field-in: query\n    required: true\n    validators:\n      - type: int\n        min: 0\n",
+    "  - field-name: version\n    field-in: query\n    required: false\n    validators:\n      - type: int\n        min: 0\n"
+    "  - field-name: ts\n    field-in: query\n    required: false\n    validators:\n      - type: string\n"
+    "        pattern: \"^[0-9]{4}-[0-9]{2}-[0-9]{2}( [0-9:]+)?$\"\n"
+    "  - field-name: day\n    field-in: query\n    required: false\n    validators:\n      - type: date\n")
+
+
+class TestTimeTravelParametersStayLiterals:
+    """AT (VERSION|TIMESTAMP => ...) is resolved before parameters are bound (#217), so a
+    validated value there is rendered as a literal, never turned into a `?`."""
+
+    FUTURE = "2100-01-01 00:00:00"
+
+    @pytest.mark.parametrize("clause,params", [
+        ("AT (TIMESTAMP => {{ params.day }})", {"day": "2100-01-01"}),
+        ("AT (TIMESTAMP => CAST('{{{ params.ts }}}' AS TIMESTAMP))", {"ts": FUTURE}),
+        ("AT (TIMESTAMP => '{{{ params.ts }}}')", {"ts": FUTURE}),
+        ("AT (TIMESTAMP => TIMESTAMP '{{{ params.ts }}}')", {"ts": FUTURE}),
+        ("AT (VERSION => {{{ params.version }}})", "snapshot"),
+        ("AT (VERSION => {{ params.version }})", "snapshot"),
+    ], ids=["ts-bare-date", "ts-triple-cast", "ts-triple-quoted", "ts-typed-literal",
+            "version-triple", "version-double"])
+    def test_a_time_travel_value_is_a_validated_literal(self, root, servers, clause, params):
+        write_tree(root, base_config(), {
+            "tt.yaml": TIME_TRAVEL_TS, "full_cache.sql": POPULATE,
+            "tt.sql": "SELECT * FROM {{{cache.catalog}}}.{{{cache.schema}}}.{{{cache.table}}} "
+                      + clause + " ORDER BY id"})
+        write_source(root, [(1, "a", 1)])
+        s = servers(root)
+        answer = s.refresh("tt")
+        query = {"version": answer["snapshot_id"]} if params == "snapshot" else params
+        r = requests.get(f"{s.base}/tt", params=query, timeout=10)
+        assert r.status_code == 200, r.text + s.output()[-1500:]
+        assert len(r.json()["data"]) == 1, r.text
+
+
 ATTACH_CONFIG_EXTRA = """\
 connections:
   src:
