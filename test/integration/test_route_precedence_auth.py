@@ -16,6 +16,8 @@ temporary project; tmpfs lists files in creation order, so the order the files
 are written in is the order the old loader saw them.
 """
 
+import base64
+import hashlib
 import json
 import os
 import subprocess
@@ -42,6 +44,13 @@ def protected(path, method="GET", extra="", user="u", password="p"):
     return (f"url-path: {path}\nmethod: {method}\ntemplate-source: secret.sql\nconnection: [inmem]\n"
             "auth:\n  enabled: true\n  type: basic\n  roles: [admin]\n  users:\n"
             f"    - username: {user}\n      password: {password}\n      roles: [admin]\n" + extra)
+
+
+def pbkdf2_hash(password, salt, iterations=2000):
+    """The `$pbkdf2-sha256$<iter>$<salt>$<hash>` format flapi verifies (base64url, no padding)."""
+    enc = lambda b: base64.urlsafe_b64encode(b).decode().rstrip("=")
+    key = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations, 32)
+    return f"$pbkdf2-sha256${iterations}${enc(salt)}${enc(key)}"
 
 
 def open_endpoint(path, method="GET", extra=""):
@@ -320,6 +329,120 @@ class TestOverlappingRoutes:
             assert _is_error(resp) and "Overlapping routes" in json.dumps(resp), resp
             assert not os.path.exists(os.path.join(s.root, "sqls", "customers_7.yaml"))
             s.assert_protected("/customers/7", "/customers/8")
+        finally:
+            s.stop()
+
+    # --- #221: the comparison is about who gets in, not how it is spelled ---
+
+    def test_a_plaintext_password_and_its_hash_are_the_same_user(self):
+        # A migration: /customers/:id still has `password: p`, /customers/7 was
+        # already moved to a PBKDF2 hash of the same password. Same credentials,
+        # same people - refusing that was a false positive.
+        files = [("sqls/a.yaml", protected("/customers/:id", password="p")),
+                 ("sqls/b.yaml", protected("/customers/7", password=pbkdf2_hash("p", b"salt-salt-salt-1")))]
+        s = _Server(files)
+        try:
+            s.assert_protected("/customers/7", "/customers/8")
+        finally:
+            s.stop()
+
+    def test_a_hash_of_a_different_password_is_still_a_different_user(self):
+        out = _startup_error([("sqls/a.yaml", protected("/customers/:id", password="admin-pw-123")),
+                              ("sqls/b.yaml", protected("/customers/7",
+                                                        password=pbkdf2_hash("guest-pw-456", b"salt-salt-salt-1")))])
+        assert "auth differs in: users" in out, out[-3000:]
+        assert "admin-pw-123" not in out and "guest-pw-456" not in out
+
+    def test_two_hashes_with_different_salts_cannot_be_proven_equal_and_stay_refused(self):
+        # PBKDF2 is one-way: without the plaintext, two salted hashes of one
+        # password are indistinguishable from hashes of two passwords. Fail
+        # closed; the documented fix is to use the same hash string in both.
+        out = _startup_error([("sqls/a.yaml", protected("/customers/:id",
+                                                        password=pbkdf2_hash("p", b"salt-salt-salt-1"))),
+                              ("sqls/b.yaml", protected("/customers/7",
+                                                        password=pbkdf2_hash("p", b"salt-salt-salt-2")))])
+        assert "auth differs in: users" in out, out[-3000:]
+
+    def test_the_same_hash_string_in_both_endpoints_is_the_same_user(self):
+        h = pbkdf2_hash("p", b"salt-salt-salt-1")
+        s = _Server([("sqls/a.yaml", protected("/customers/:id", password=h)),
+                     ("sqls/b.yaml", protected("/customers/7", password=h))])
+        try:
+            s.assert_protected("/customers/7", "/customers/8")
+        finally:
+            s.stop()
+
+    @pytest.mark.parametrize("spelled_out_first", [True, False])
+    def test_an_oidc_preset_and_its_spelled_out_issuer_are_the_same_provider(self, spelled_out_first):
+        def oidc(path, body):
+            return (f"url-path: {path}\nmethod: GET\ntemplate-source: secret.sql\nconnection: [inmem]\n"
+                    "auth:\n  enabled: true\n  type: oidc\n  oidc:\n" + body)
+        preset = ("    provider-type: keycloak\n    domain: kc.example.com\n    realm: acme\n"
+                  "    client-id: flapi\n    allowed-audiences: [flapi]\n")
+        spelled = ("    issuer-url: https://kc.example.com/realms/acme\n    client-id: flapi\n"
+                   "    allowed-audiences: [flapi]\n    username-claim: preferred_username\n"
+                   "    role-claim-path: realm_access.roles\n    roles-claim: roles\n"
+                   "    groups-claim: groups\n    scopes: [openid, profile, email]\n")
+        files = [("sqls/a.yaml", oidc("/customers/:id", preset)), ("sqls/b.yaml", oidc("/customers/7", spelled))]
+        s = _Server(files[::-1] if spelled_out_first else files)
+        try:
+            assert s.get("/customers/7").status_code == 401
+        finally:
+            s.stop()
+
+    def test_oidc_with_a_different_issuer_is_still_different(self):
+        def oidc(path, issuer):
+            return (f"url-path: {path}\nmethod: GET\ntemplate-source: secret.sql\nconnection: [inmem]\n"
+                    f"auth:\n  enabled: true\n  type: oidc\n  oidc:\n    issuer-url: {issuer}\n"
+                    "    client-id: flapi\n")
+        out = _startup_error([("sqls/a.yaml", oidc("/customers/:id", "https://one.example.com/realms/a")),
+                              ("sqls/b.yaml", oidc("/customers/7", "https://two.example.com/realms/a"))])
+        assert "auth differs in: oidc" in out, out[-3000:]
+
+    # --- three levels: judged against the endpoint that actually wins ---
+
+    def test_an_open_literal_under_an_allowed_open_middle_route_starts(self):
+        # /a/b/c would shadow the protected /a/:x/:y, but /a/b/:y (open,
+        # allow-shadowing) already answers /a/b/c over it: no new exposure.
+        # Loaded in path order, so the middle route is in place first.
+        s = _Server([("sqls/a_protected.yaml", protected("/a/:x/:y")),
+                     ("sqls/b_middle.yaml", open_endpoint("/a/b/:y", extra="allow-shadowing: true\n")),
+                     ("sqls/c_literal.yaml", open_endpoint("/a/b/c"))])
+        try:
+            assert "OPEN" in s.get("/a/b/c").text
+            assert "OPEN" in s.get("/a/b/z").text
+            s.assert_protected("/a/q/c", "/a/x/y")
+        finally:
+            s.stop()
+
+    def test_an_open_literal_the_middle_route_does_not_cover_is_still_refused(self):
+        # /a/:x/c is not inside /a/b/:y, so /a/q/c would be answered by it, open,
+        # instead of by the protected /a/:x/:y.
+        out = _startup_error([("sqls/a_protected.yaml", protected("/a/:x/:y")),
+                              ("sqls/b_middle.yaml", open_endpoint("/a/b/:y", extra="allow-shadowing: true\n")),
+                              ("sqls/c_other.yaml", open_endpoint("/a/:x/c"))])
+        assert "Overlapping routes with different auth" in out, out[-3000:]
+
+    def test_a_literal_whose_auth_differs_from_the_middle_route_is_still_refused(self):
+        # The middle route is open; /a/b/c is protected by another user, so it
+        # would not answer what the open middle route answers today.
+        out = _startup_error([("sqls/a_protected.yaml", protected("/a/:x/:y")),
+                              ("sqls/b_middle.yaml", open_endpoint("/a/b/:y", extra="allow-shadowing: true\n")),
+                              ("sqls/c_literal.yaml", protected("/a/b/c", user="g", password="g-pw-9"))])
+        assert "Overlapping routes with different auth" in out, out[-3000:]
+
+    # --- MCP create never opts out of shadowing ---
+
+    @pytest.mark.parametrize("spelling", ["allow-shadowing", "allow_shadowing", "allowShadowing"])
+    def test_mcp_create_cannot_opt_into_shadowing(self, spelling):
+        s = _Server([("sqls/c_protected.yaml", protected("/customers/:id"))])
+        try:
+            resp = s.mcp("flapi_create_endpoint", path="/customers/7", method="GET",
+                         **{"template-source": "open.sql", spelling: True}, connection=["inmem"],
+                         auth={"enabled": False})
+            assert _is_error(resp) and "Overlapping routes with different auth" in json.dumps(resp), resp
+            assert not os.path.exists(os.path.join(s.root, "sqls", "customers_7.yaml"))
+            s.assert_protected("/customers/7")
         finally:
             s.stop()
 
