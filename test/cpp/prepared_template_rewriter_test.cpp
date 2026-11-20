@@ -115,6 +115,8 @@ TEST_CASE("PreparedTemplateRewriter: triple-brace sites that are not plain value
         "SELECT * FROM {{{ params.x }}}",                    // a name
         "SELECT * FROM t ORDER BY {{{ params.k }}}",         // whitelisted identifier
         "SELECT * FROM t_{{{ params.x }}}",                  // part of a name
+        "SELECT * FROM t AT (VERSION => {{{ params.x }}})",  // DuckLake resolves AT before binding
+        "SELECT * FROM t AT (TIMESTAMP => CAST('{{{ params.x }}}' AS TIMESTAMP))",
         "SELECT * FROM t {{#params.x}}WHERE n = '{{{ params.x }}}'{{/params.x}}",   // inside a section
         "SELECT '{{ params.x }} and {{{ params.x }}}'",      // mixed tags: left to the ordinary route
     };

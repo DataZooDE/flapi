@@ -133,8 +133,6 @@ const RequestFieldConfig* findField(const std::string& name,
 // field used unquoted (a whitelisted identifier such as `ORDER BY`).
 // ---------------------------------------------------------------------------
 
-constexpr bool kHonourTimeTravel = false;  // TEMP (item 4)
-
 struct Span {
     std::size_t open = 0;    // index of the first character (the opening quote / paren)
     std::size_t close = 0;   // index of the last character (the closing quote / paren)
@@ -341,7 +339,7 @@ PreparedRewriteResult PreparedTemplateRewriter::rewrite(
     // quoted form always was, and an absent one binds '' as it used to render.
     const auto bindLiteral = [&](const Span& lit, int depth, std::string& replacement,
                                  std::vector<PreparedBindingSpec>& specs) -> bool {
-        if (depth > 0 || (kHonourTimeTravel && within(time_travel, lit.open)) || !literalIsAValue(template_text, lit)) {
+        if (depth > 0 || within(time_travel, lit.open) || !literalIsAValue(template_text, lit)) {
             return false;
         }
         std::vector<std::string> parts;
@@ -449,7 +447,7 @@ PreparedRewriteResult PreparedTemplateRewriter::rewrite(
                 const Bindability bindability = field != nullptr ? classifier.classify(*field) : Bindability{};
                 if (section_depth > 0 || field == nullptr || !bindability.bindable ||
                     hasValidatorType(*field, "enum") || within(literals, tag.start) || within(comments, tag.start) ||
-                    (kHonourTimeTravel && within(time_travel, tag.start)) || !unquotedIsAValue(template_text, tag)) {
+                    within(time_travel, tag.start) || !unquotedIsAValue(template_text, tag)) {
                     appendRange(result.rewritten_template, template_text, tag.start, tag.end);
                     break;
                 }
