@@ -191,7 +191,7 @@ EndpointConfig createWriteEndpoint() {
 
 } // namespace
 
-TEST_CASE("RequestHandler: combineWriteParameters merges sources with precedence", "[request_handler]") {
+TEST_CASE("RequestHandler: combineWriteParameters merges sources with precedence (path > body > query)", "[request_handler]") {
     TempTestConfig temp("request_handler_merge");
     auto config_manager = temp.createConfigManager();
     std::shared_ptr<DatabaseManager> db_manager; // not needed for parameter merging
@@ -208,7 +208,7 @@ TEST_CASE("RequestHandler: combineWriteParameters merges sources with precedence
 
     auto params = handler.combineWriteParameters(req, pathParams, endpoint);
 
-    REQUIRE(params.at("name") == "Body Name"); // body overrides path parameters
+    REQUIRE(params.at("name") == "PathName"); // a path value is not overridable by the body (#192)
     REQUIRE(params.at("email") == "body@example.com"); // body overrides query parameter
     REQUIRE(params.at("offset") == "0"); // default from handler
     REQUIRE(params.at("limit") == "100"); // default preserved (query limit ignored)
