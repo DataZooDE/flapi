@@ -69,7 +69,11 @@ Templates have access to these variables:
 WHERE name = '{{{ params.name }}}'
 -- Input: O'Brien → Output: 'O'Brien'  (a syntax error; a crafted value is injection)
 ```
-Only the validator (and the SQL-injection screen) stands between the value and the SQL here.
+Only the validator (and the SQL-injection screen) stands between the value and the SQL here
+- *where the site stays raw*. For a typed field outside every section, a plain value site
+(`= {{{ params.x }}}`, `= '{{{ params.x }}}'`, `LIKE '%{{{ params.x }}}%'`) is bound like a
+double-brace one (`?`, `?`, `('%' || ? || '%')`); inside sections, SQL comments, enum identifiers, typed
+literals (`DATE '...'`), names after `FROM`/`JOIN`/..., and `AT (VERSION|TIMESTAMP => ...)` it is raw.
 
 **Double Braces (bound or HTML-escaped):**
 ```sql

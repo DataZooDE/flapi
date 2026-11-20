@@ -534,6 +534,26 @@ void APIServer::handleDynamicRequest(const crow::request& req, crow::response& r
         return;
     }
 
+    // The route was matched on the RAW path, so an encoded "%2F" stayed inside
+    // its segment. Decode each captured value once, here, before anything
+    // validates or renders it (#220): `/customers/%37` is id 7, and
+    // `/names/John%20Doe` is "John Doe". A malformed escape is the client's
+    // mistake, not a missing route.
+    for (auto& [name, value] : pathParams) {
+        std::string decoded;
+        if (!RouteTranslator::percentDecodePathValue(value, decoded)) {
+            res.code = 400;
+            res.set_header("Content-Type", "application/json");
+            crow::json::wvalue body;
+            body["error"] = "Invalid percent-encoding in path parameter '" + name + "'";
+            res.write(body.dump());
+            res.end();
+            emit_telemetry(endpoint->urlPath, false);
+            return;
+        }
+        value = std::move(decoded);
+    }
+
     // Build auth params from middleware context for template variable injection.
     //
     // Unguarded: this function is reachable only from the router, so `req`

@@ -707,10 +707,7 @@ TEST_CASE("SQLTemplateProcessor: prepared rendering replaces typed params with ?
         REQUIRE(prepared.sql == "SELECT 1 FROM public.users");
     }
 
-    SECTION("triple-brace stays inline even for typed param (operator must migrate)") {
-        // Triple-brace is intentionally left alone by the rewriter so
-        // operators have time to drop the surrounding quotes when
-        // migrating a string-quoted reference to the prepared path.
+    SECTION("a quoted triple-brace site of a typed param is bound (#192)") {
         std::string template_content = "SELECT '{{{params.name}}}'";
         std::ofstream(temp_dir.getPath() / "triple.sql") << template_content;
 
@@ -725,8 +722,8 @@ TEST_CASE("SQLTemplateProcessor: prepared rendering replaces typed params with ?
 
         std::map<std::string, std::string> params = {{"name", "alice"}};
         auto prepared = processor.loadAndProcessTemplatePrepared(endpoint, params);
-        REQUIRE(prepared.bindings.empty());
-        REQUIRE(prepared.sql == "SELECT 'alice'");
+        REQUIRE(prepared.bindings.size() == 1);
+        REQUIRE(prepared.sql == "SELECT ?");
     }
 
     SECTION("auth.username inside template is rendered, not bound") {

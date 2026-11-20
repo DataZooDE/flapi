@@ -79,10 +79,17 @@ This is the rule people get wrong.
   numbers or known-safe identifiers.
 
 > **Neither form escapes SQL.** Mustache does not know what a SQL string literal
-> is. Your defence against injection is the **validator** on each field — typed,
-> range-checked, pattern-matched — plus quoting string parameters in the
-> template. When in doubt, tighten the validator rather than relying on the
-> braces.
+> is. Where a value stays raw text, your defence against injection is the
+> **validator** on each field — typed, range-checked, pattern-matched — plus
+> quoting string parameters in the template. When in doubt, tighten the
+> validator rather than relying on the braces.
+>
+> **Typed fields are bound where they can be.** For a field with a typed
+> validator, a value site outside a `{{#...}}` section — `= {{{ params.x }}}`,
+> `= '{{{ params.x }}}'`, `LIKE '%{{{ params.x }}}%'` — is sent to DuckDB as a
+> bound parameter, so the value cannot change the statement. Inside sections,
+> for enum-validated identifiers and typed literals (`DATE '{{{ params.d }}}'`)
+> it is still substituted as text.
 
 ### The conditional filter idiom
 

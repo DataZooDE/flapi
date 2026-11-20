@@ -1325,6 +1325,14 @@ The `field-in` property specifies where the parameter is extracted from:
 | `body` | Request body (JSON) | `POST /customers` with JSON body |
 | `header` | HTTP header | `X-Customer-ID: 123` |
 
+Each declared field is read **only** from its `field-in` source, so a query string cannot satisfy a
+`body` field (a required one is `400 Required field is missing`) and a body key cannot replace a `query`
+field. A route parameter (`/customers/:id`) is path-only: `?id=2` or a body `{"id": 99}` never replaces
+it, whether or not the endpoint declares the field. Names no field declares are still accepted from the
+query string or body (validation can reject unknown ones). Path values are percent-decoded once before
+validation (`/customers/%37` is `7`, `/names/John%20Doe` is `John Doe`, `%2F` becomes `/` inside the same
+parameter, `+` stays a plus); a malformed escape, `%00` or invalid UTF-8 is `400`.
+
 A `header` field is read from the request's headers, matched case-insensitively (`field-name: X-Tenant`
 accepts `x-tenant: acme`), on GET and on write methods alike. Only the header counts: a query-string or
 body parameter of the same name does **not** satisfy a `header` field, and a missing required header is a
@@ -1556,8 +1564,19 @@ WHERE name = {{ params.name }}
 {{#params.city}} AND city = '{{{ params.city }}}' {{/params.city}}
 ```
 
-`{{{ params.x }}}` always interpolates the value as text; reserve it for identifiers and fragments you
-validate with an `enum` or a strict `regex`, and for optional filters inside sections. Set
+`{{{ params.x }}}` is bound the same way (#192) when it is a plain value site of a typed field outside
+every section: `n = {{{ params.x }}}` and `n = '{{{ params.x }}}'` both become `n = ?` (a quoted
+site binds the text, and an absent value binds `''` as it used to render), and
+`n LIKE '%{{{ params.x }}}%'` becomes `n LIKE ('%' || ? || '%')`. It stays raw text
+(validated by the field's validator and the screen above) inside a section, inside a SQL comment, inside
+`AT (VERSION|TIMESTAMP => ...)` (DuckLake resolves it before parameters are bound), when the field is an
+`enum` and the tag is unquoted (a whitelisted identifier such as `ORDER BY {{{ params.sort }}}`), when it
+follows a keyword that expects a name or makes a typed literal (`FROM`, `JOIN`, `INTO`, `TABLE`, `BY`,
+`DATE '...'`, `INTERVAL '...'`, `ATTACH '...'`, `E'...'`), when it is glued to an identifier
+(`t_{{{ params.x }}}`), or when a quoted literal mixes it with a non-triple-brace tag. A tag in a
+quoted literal with surrounding text is concatenated, so `'{{{a}}}-{{{b}}}'` becomes `(? || '-' || ?)`.
+Reserve raw `{{{ }}}` text for identifiers and fragments you validate with an `enum` or a strict
+`regex`, and for optional filters inside sections. Set
 `preventSqlInjection: false` on a field only when every reference to it is a bound `{{ }}` and it
 legitimately contains such characters (e.g. a free-text name with an apostrophe and parentheses).
 
@@ -2084,7 +2103,7 @@ literals: inside a section the value is rendered as text, and `'{{ params.x }}'`
 `'?'` (the request then fails with `500`; the server log says `Failed to bind parameter`). See
 [§5.9](#59-the-sql-injection-screen-is-a-safety-net-not-the-defence).
 
-**Triple Braces `{{{ }}}`** - Renders the raw value with no HTML entity escaping; **always** flows through Mustache, never through the prepared path. Use inside single-quoted SQL string literals, inside `LIKE` patterns, or anywhere the value participates in the SQL text itself:
+**Triple Braces `{{{ }}}`** - Renders the raw value with no HTML entity escaping. For a typed field at a plain value site outside every section (`= {{{ params.x }}}`, `= '{{{ params.x }}}'`, `LIKE '%{{{ params.x }}}%'`) the rewriter binds the value just like `{{ }}` does (see [§5.9](#59-the-sql-injection-screen-is-a-safety-net-not-the-defence)); everywhere else (inside sections, identifiers, typed literals such as `DATE '...'`, `AT (VERSION|TIMESTAMP => ...)`) it is raw text:
 
 ```sql
 SELECT * FROM table
@@ -2095,7 +2114,7 @@ WHERE name LIKE '%{{{ params.name }}}%'
 >
 > 1. `RequestValidator` rejects obviously-bad input before SQL is rendered (typed fields, regex/range/enum/format checks). Strict integer/date/time parsing rejects trailing garbage so `1; DROP TABLE` cannot slip through as `1` and `2024-03-15' OR 1=1` cannot slip through as `2024-03-15`.
 > 2. For double-brace references on typed fields, the **DuckDB prepared-statement bind** is the hard boundary — the value travels as a primitive, not as text, and cannot smuggle SQL. This applies uniformly to **GET, POST, PUT, PATCH, and Arrow-streaming endpoints** (multi-statement write templates have their binding plan sliced across statements based on `?` count).
-> 3. For triple-brace references and for non-typed fields, the legacy keyword regex still rejects obvious injection patterns. (It is demoted to a debug-level log only for fields the prepared-statement path already protects — Integer / Double / Boolean / Date / Time — because the regex is a known false-positive source for clean numeric and temporal values.)
+> 3. For triple-brace references that stay raw text (inside sections, identifiers, typed literals) and for non-typed fields, the legacy keyword regex still rejects obvious injection patterns. (It is demoted to a debug-level log only for fields the prepared-statement path already protects — Integer / Double / Boolean / Date / Time — because the regex is a known false-positive source for clean numeric and temporal values.)
 >
 > The end-to-end injection corpus at `test/integration/test_sql_injection_corpus.py` (99 GET-path payloads spanning all 9 validator types + pagination wraps) and `test/integration/test_sql_injection_write_corpus.py` (19 POST-path payloads including multi-statement RETURNING) exercise these layers. Bind-conversion failures on typed params return HTTP 400 (client error) rather than 500.
 
@@ -2153,11 +2172,12 @@ When the field has a typed validator (`int`, `double`, `boolean`, `date`, `time`
 WHERE id = {{ params.id }}              -- field has `validators: [{type: int}]`
 WHERE email = {{ params.email }}        -- field has `validators: [{type: email}]`
 
--- For LIKE patterns or substring matches, triple-brace is required
+-- LIKE patterns and quoted sites are bound too (rewritten to ('%' || ? || '%') / ?)
 WHERE name LIKE '%{{{ params.name }}}%'
+WHERE name = '{{{ params.name }}}'
 ```
 
-Use triple braces (`{{{ params.X }}}`) when the value participates in the SQL text — `LIKE`, identifier substitution, or composite expressions that the prepared-statement rewriter cannot decompose.
+Use triple braces (`{{{ params.X }}}`) inside sections and when the value is part of the SQL text — an identifier (validate it with `enum`), a typed literal (`DATE '{{{ params.d }}}'`), or an `AT (VERSION|TIMESTAMP => ...)` argument; those sites are rendered raw. A bare double-brace `{{ params.x }}` inside `AT (...)` stays bound: that works for `int` and `date` fields, but DuckLake cannot take a bound string there, so write `AT (TIMESTAMP => CAST('{{{ params.ts }}}' AS TIMESTAMP))` with a strict `pattern:` validator on `ts`.
 
 **3. Provide Default Values:**
 

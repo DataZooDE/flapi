@@ -500,3 +500,32 @@ TEST_CASE("OIDC and AWS secret sources are part of the auth comparison", "[routi
     aws.auth.from_aws_secretmanager->region = "eu-central-1";
     CHECK(mgr->DuplicateEndpointProblem(aws).find("from-aws-secretmanager") != std::string::npos);
 }
+
+TEST_CASE("RouteTranslator::percentDecodePathValue decodes once and rejects malformed input (#220)",
+          "[routing][percent-decoding]") {
+    std::string out;
+    CHECK(RouteTranslator::percentDecodePathValue("%37", out));
+    CHECK(out == "7");
+    CHECK(RouteTranslator::percentDecodePathValue("John%20Doe", out));
+    CHECK(out == "John Doe");
+    CHECK(RouteTranslator::percentDecodePathValue("a%2Fb", out));
+    CHECK(out == "a/b");
+    CHECK(RouteTranslator::percentDecodePathValue("a%2fb", out));
+    CHECK(out == "a/b");
+    CHECK(RouteTranslator::percentDecodePathValue("a+b", out));
+    CHECK(out == "a+b");                       // '+' is a plus in a path
+    CHECK(RouteTranslator::percentDecodePathValue("a%252Fb", out));
+    CHECK(out == "a%2Fb");                     // exactly once
+    CHECK(RouteTranslator::percentDecodePathValue("caf%C3%A9", out));
+    CHECK(out == "caf\xC3\xA9");
+    CHECK(RouteTranslator::percentDecodePathValue("", out));
+    CHECK(out.empty());
+
+    CHECK_FALSE(RouteTranslator::percentDecodePathValue("%zz", out));
+    CHECK_FALSE(RouteTranslator::percentDecodePathValue("%4", out));
+    CHECK_FALSE(RouteTranslator::percentDecodePathValue("ab%", out));
+    CHECK_FALSE(RouteTranslator::percentDecodePathValue("a%00b", out));
+    CHECK_FALSE(RouteTranslator::percentDecodePathValue("%C3", out));     // truncated UTF-8
+    CHECK_FALSE(RouteTranslator::percentDecodePathValue("%FF", out));     // not UTF-8
+    CHECK_FALSE(RouteTranslator::percentDecodePathValue("%C0%AF", out));  // overlong '/'
+}

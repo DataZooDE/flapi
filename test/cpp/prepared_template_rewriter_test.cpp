@@ -61,21 +61,92 @@ TEST_CASE("PreparedTemplateRewriter: simple {{ params.X }} with int field is rew
     REQUIRE(r.bindings[0].position == 0);
 }
 
-TEST_CASE("PreparedTemplateRewriter: triple-brace {{{ params.X }}} is never rewritten",
+TEST_CASE("PreparedTemplateRewriter: a quoted triple-brace site binds and drops its quotes (#192)",
           "[security][prepared][rewriter]") {
-    // Triple-brace is the existing convention for raw-substituted string
-    // values inside SQL quotes. Migrating those is a separate step
-    // (operators must drop the surrounding quotes); v1 leaves them
-    // untouched.
     PreparedTemplateRewriter rewriter;
     SqlParameterClassifier classifier;
     auto r = rewriter.rewrite(
-        "SELECT '{{{ params.name }}}'",
+        "SELECT * FROM t WHERE n = '{{{ params.name }}}'",
         {typedField("name", "string")},
         classifier);
 
-    REQUIRE(r.rewritten_template == "SELECT '{{{ params.name }}}'");
+    REQUIRE(r.rewritten_template == "SELECT * FROM t WHERE n = ?");
+    REQUIRE(r.bindings.size() == 1);
+    REQUIRE(r.bindings[0].field_name == "name");
+    REQUIRE(r.bindings[0].type == SqlParameterType::Varchar);
+    REQUIRE(r.bindings[0].absent_as_empty);
+}
+
+TEST_CASE("PreparedTemplateRewriter: an unquoted triple-brace site binds with the field's type (#192)",
+          "[security][prepared][rewriter]") {
+    PreparedTemplateRewriter rewriter;
+    SqlParameterClassifier classifier;
+    auto r = rewriter.rewrite("SELECT * FROM t WHERE id = {{{ params.id }}} LIMIT {{{ params.n }}}",
+                              {typedField("id", "int"), typedField("n", "int")}, classifier);
+    REQUIRE(r.rewritten_template == "SELECT * FROM t WHERE id = ? LIMIT ?");
+    REQUIRE(r.bindings.size() == 2);
+    REQUIRE(r.bindings[0].type == SqlParameterType::Integer);
+    REQUIRE_FALSE(r.bindings[0].absent_as_empty);
+}
+
+TEST_CASE("PreparedTemplateRewriter: a LIKE pattern becomes a concatenation (#192)",
+          "[security][prepared][rewriter]") {
+    PreparedTemplateRewriter rewriter;
+    SqlParameterClassifier classifier;
+    auto r = rewriter.rewrite("WHERE a LIKE '%{{{ params.x }}}%' AND b LIKE '{{{ params.x }}}_' AND c = 1",
+                              {typedField("x", "string")}, classifier);
+    REQUIRE(r.rewritten_template == "WHERE a LIKE ('%' || ? || '%') AND b LIKE (? || '_') AND c = 1");
+    REQUIRE(r.bindings.size() == 2);
+    REQUIRE(r.bindings[0].position == 0);
+    REQUIRE(r.bindings[1].position == 1);
+}
+
+TEST_CASE("PreparedTemplateRewriter: triple-brace sites that are not plain values stay literal (#192)",
+          "[security][prepared][rewriter]") {
+    PreparedTemplateRewriter rewriter;
+    SqlParameterClassifier classifier;
+    const std::vector<RequestFieldConfig> fields = {typedField("x", "string"), typedField("d", "date"),
+                                                    typedField("k", "enum")};
+    const std::vector<std::string> kept = {
+        "SELECT DATE '{{{ params.d }}}'",                    // typed literal
+        "SELECT INTERVAL '{{{ params.x }}}' DAY",            // typed literal
+        "ATTACH '{{{ params.x }}}' AS a",                    // statement argument
+        "SELECT * FROM '{{{ params.x }}}'",                  // replacement scan
+        "SELECT * FROM {{{ params.x }}}",                    // a name
+        "SELECT * FROM t ORDER BY {{{ params.k }}}",         // whitelisted identifier
+        "SELECT * FROM t_{{{ params.x }}}",                  // part of a name
+        "SELECT * FROM t AT (VERSION => {{{ params.x }}})",  // DuckLake resolves AT before binding
+        "SELECT * FROM t AT (TIMESTAMP => CAST('{{{ params.x }}}' AS TIMESTAMP))",
+        "SELECT * FROM t {{#params.x}}WHERE n = '{{{ params.x }}}'{{/params.x}}",   // inside a section
+        "SELECT '{{ params.x }} and {{{ params.x }}}'",      // mixed tags: left to the ordinary route
+    };
+    for (const auto& text : kept) {
+        INFO(text);
+        auto r = rewriter.rewrite(text, fields, classifier);
+        REQUIRE(r.rewritten_template.find("{{{ params.") != std::string::npos);
+    }
+}
+
+TEST_CASE("PreparedTemplateRewriter: a literal with an undeclared or untyped param is left alone (#192)",
+          "[security][prepared][rewriter]") {
+    PreparedTemplateRewriter rewriter;
+    SqlParameterClassifier classifier;
+    auto r = rewriter.rewrite("WHERE n = '{{{ params.free }}}' AND m = '{{{ params.nope }}}'",
+                              {bareField("free")}, classifier);
+    REQUIRE(r.rewritten_template == "WHERE n = '{{{ params.free }}}' AND m = '{{{ params.nope }}}'");
     REQUIRE(r.bindings.empty());
+}
+
+TEST_CASE("PreparedTemplateRewriter: escaped quotes and comments do not confuse the literal scan (#192)",
+          "[security][prepared][rewriter]") {
+    PreparedTemplateRewriter rewriter;
+    SqlParameterClassifier classifier;
+    auto r = rewriter.rewrite("-- it's a comment with '{{{ params.x }}}'\n"
+                              "SELECT 'it''s', n FROM t WHERE n = '{{{ params.x }}}'",
+                              {typedField("x", "string")}, classifier);
+    REQUIRE(r.rewritten_template ==
+            "-- it's a comment with '{{{ params.x }}}'\nSELECT 'it''s', n FROM t WHERE n = ?");
+    REQUIRE(r.bindings.size() == 1);
 }
 
 TEST_CASE("PreparedTemplateRewriter: param with no validator is left on the Mustache path",

@@ -535,8 +535,9 @@ void QueryExecutor::executeWithBindings(const std::string& sql,
         PreparedValueConverter converter;
         for (const auto& spec : bindings) {
             auto it = values.find(spec.field_name);
-            const bool present = it != values.end();
-            const std::string& raw = present ? it->second : std::string();
+            const bool present = it != values.end() || spec.absent_as_empty;
+            const std::string empty;
+            const std::string& raw = it != values.end() ? it->second : empty;
             auto outcome = converter.convert(spec.type, raw, present);
             if (!outcome.ok) {
                 // CLIENT-input failure: the value supplied for a typed
