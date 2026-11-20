@@ -89,6 +89,7 @@ add_executable(flapi_tests
     alloc_counter.cpp
     test_alloc_budget.cpp
     runtime_metrics_test.cpp
+    yaml_text_patch_test.cpp
     route_shape_duplicate_test.cpp
     route_precedence_test.cpp
     test_cluster_c_regressions.cpp
