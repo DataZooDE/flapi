@@ -131,14 +131,16 @@ class TestValidateConfigReportsEverything:
         assert r.returncode == 1, out
         assert "a.sql" in out and "b.sql" in out, out
 
-    def test_undeclared_param_alone_fails_validation(self):
+    def test_undeclared_param_is_reported_as_a_warning(self):
+        # A warning, not an error: shipped examples share one template between
+        # endpoints declaring different subsets of its parameters.
         project = make_project({
             "b.yaml": endpoint_yaml("/b", "b.sql"),
             "b.sql": "SELECT {{ params.nope }} AS n\n",
         })
         r, out = validate(project)
-        assert r.returncode == 1, out
-        assert "params.nope" in out, out
+        assert r.returncode == 0, out
+        assert "WARNING" in out and "params.nope" in out, out
         assert "b.sql" in out or "/b" in out, out
 
     def test_valid_templates_are_not_flagged(self):

@@ -293,6 +293,17 @@ Config service, MCP and CLI:
 - **Metrics latency is measured from the start of the request** and so includes authentication (a Basic-auth
   endpoint's PBKDF2 check), rate limiting and middleware rejections. Latencies are rounded to three decimals.
   Numbers for authenticated endpoints are higher than before because they are now what clients see.
+- **`--validate-config` lists every invalid endpoint or template file** instead of stopping at the first, and
+  warns about an undeclared `{{ params.x }}` in an endpoint template (a name not in its `request:` fields, its
+  `url-path` `:names`, or `limit`/`offset`). The warning does not change the exit code.
+
+### Fixed: observability gaps and two product gaps (#215, #217)
+
+- MCP JSON-RPC responses carry `X-Request-Id`; the access-log `Request:` line carries `request_id`.
+- Async MCP tasks report end-to-end (submit to finish) latency as `protocol: "mcp_task"` series in the metrics.
+- Swagger UI at `/doc` no longer loads from unpkg.com: swagger-ui-dist 5.18.2 is built into the binary and served
+  from `/doc/assets/` (about 1.8 MB larger binary).
+- Config-service `PUT` keeps the comments of an endpoint YAML file.
 
 ### Added: compaction on demand, `--method` for one-shot refreshes
 
