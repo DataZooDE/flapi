@@ -529,3 +529,136 @@ TEST_CASE("RouteTranslator::percentDecodePathValue decodes once and rejects malf
     CHECK_FALSE(RouteTranslator::percentDecodePathValue("%FF", out));     // not UTF-8
     CHECK_FALSE(RouteTranslator::percentDecodePathValue("%C0%AF", out));  // overlong '/'
 }
+
+// --- #221: the comparison is about who gets in, not how it is spelled ---
+
+#include "password_hasher.hpp"
+
+namespace {
+
+EndpointConfig basicUser(const std::string& path, const std::string& password, const std::string& file) {
+    auto ep = rest(path, "GET", true);
+    ep.auth.users = {flapi::AuthUser{"u", password, {"admin"}}};
+    ep.auth.roles = {"admin"};
+    ep.config_file_path = file;
+    return ep;
+}
+
+}  // namespace
+
+TEST_CASE("RouteTranslator::routeCovers: every request the specific route matches", "[routing][precedence]") {
+    CHECK(RouteTranslator::routeCovers("/a/:x/:y", "/a/b/c"));
+    CHECK(RouteTranslator::routeCovers("/a/:x/:y", "/a/b/:y"));
+    CHECK(RouteTranslator::routeCovers("/a/b/:y", "/a/b/c"));
+    CHECK(RouteTranslator::routeCovers("/a/:x/:y", "/a/:p/:q"));
+    CHECK_FALSE(RouteTranslator::routeCovers("/a/b/:y", "/a/:x/c"));   // /a/q/c is not under /a/b
+    CHECK_FALSE(RouteTranslator::routeCovers("/a/b/c", "/a/b/:y"));
+    CHECK_FALSE(RouteTranslator::routeCovers("/a/:x", "/a/:x/c"));
+    CHECK_FALSE(RouteTranslator::routeCovers("/customers/:id", "/customers/"));   // :id needs a character
+}
+
+TEST_CASE("A plaintext password and its hash are one user; salted hashes cannot be proven equal",
+          "[routing][overlap][security]") {
+    flapi::test::TempTestConfig temp(kConfig, "overlap_hash");
+    temp.writeSqlTemplate("a.sql", "SELECT 1 AS n\n");
+    const flapi::PasswordHasher hasher;
+    const auto hash_one = hasher.hashWithDefaults("pw");
+    const auto hash_two = hasher.hashWithDefaults("pw");
+    REQUIRE(hash_one != hash_two);   // fresh salts
+
+    auto mgr = temp.createConfigManager();
+    mgr->addEndpoint(basicUser("/customers/:id", "pw", "/x/general.yaml"));
+    CHECK(mgr->DuplicateEndpointProblem(basicUser("/customers/7", hash_one, "/x/literal.yaml")).empty());
+    CHECK(mgr->DuplicateEndpointProblem(basicUser("/customers/7", "pw", "/x/literal.yaml")).empty());
+    const auto other = mgr->DuplicateEndpointProblem(
+        basicUser("/customers/7", hasher.hashWithDefaults("nope"), "/x/literal.yaml"));
+    CHECK(other.find("auth differs in: users") != std::string::npos);
+
+    auto mgr2 = temp.createConfigManager();
+    mgr2->addEndpoint(basicUser("/customers/:id", hash_one, "/x/general.yaml"));
+    CHECK(mgr2->DuplicateEndpointProblem(basicUser("/customers/7", hash_one, "/x/literal.yaml")).empty());
+    CHECK(mgr2->DuplicateEndpointProblem(basicUser("/customers/7", "pw", "/x/literal.yaml")).empty());
+    // Two salts of one password: one-way, so refused (fail closed).
+    CHECK(mgr2->DuplicateEndpointProblem(basicUser("/customers/7", hash_two, "/x/literal.yaml"))
+              .find("auth differs in: users") != std::string::npos);
+}
+
+TEST_CASE("An OIDC preset equals its spelled-out issuer; non-identity keys do not matter",
+          "[routing][overlap][security]") {
+    flapi::test::TempTestConfig temp(kConfig, "overlap_oidc_preset");
+    temp.writeSqlTemplate("a.sql", "SELECT 1 AS n\n");
+    auto mgr = temp.createConfigManager();
+    const auto oidc = [](const std::string& path, flapi::OIDCConfig o) {
+        auto ep = rest(path);
+        ep.auth.enabled = true;
+        ep.auth.type = "oidc";
+        o.client_id = "flapi";
+        ep.auth.oidc = o;
+        ep.config_file_path = "/x/" + path + ".yaml";
+        return ep;
+    };
+    flapi::OIDCConfig preset;
+    preset.provider_type = "keycloak";
+    preset.domain = "kc.example.com";
+    preset.realm = "acme";
+    mgr->addEndpoint(oidc("/customers/:id", preset));
+
+    flapi::OIDCConfig spelled;
+    spelled.issuer_url = "https://kc.example.com/realms/acme";
+    spelled.username_claim = "preferred_username";
+    spelled.role_claim_path = "realm_access.roles";
+    spelled.scopes = {"openid", "profile", "email"};
+    CHECK(mgr->DuplicateEndpointProblem(oidc("/customers/7", spelled)).empty());
+
+    // email-claim, jwks-cache-hours and the two token-endpoint flows are not identity.
+    auto cosmetic = spelled;
+    cosmetic.email_claim = "mail";
+    cosmetic.jwks_cache_hours = 1;
+    cosmetic.enable_client_credentials = true;
+    cosmetic.enable_refresh_tokens = true;
+    CHECK(mgr->DuplicateEndpointProblem(oidc("/customers/7", cosmetic)).empty());
+
+    auto other_issuer = spelled;
+    other_issuer.issuer_url = "https://kc.example.com/realms/other";
+    CHECK(mgr->DuplicateEndpointProblem(oidc("/customers/7", other_issuer)).find("auth differs in: oidc") !=
+          std::string::npos);
+    auto other_claim = spelled;
+    other_claim.username_claim = "sub";
+    CHECK(mgr->DuplicateEndpointProblem(oidc("/customers/7", other_claim)).find("auth differs in: oidc") !=
+          std::string::npos);
+}
+
+TEST_CASE("An overlap is judged against the endpoint that actually answers", "[routing][overlap][security]") {
+    flapi::test::TempTestConfig temp(kConfig, "overlap_three_level");
+    temp.writeSqlTemplate("a.sql", "SELECT 1 AS n\n");
+    auto mgr = temp.createConfigManager();
+    auto protected_general = rest("/a/:x/:y", "GET", true);
+    protected_general.config_file_path = "/x/general.yaml";
+    mgr->addEndpoint(protected_general);
+    auto middle = rest("/a/b/:y");
+    middle.allow_shadowing = true;
+    middle.config_file_path = "/x/middle.yaml";
+    REQUIRE(mgr->DuplicateEndpointProblem(middle).empty());
+    mgr->addEndpoint(middle);
+
+    auto literal = rest("/a/b/c");
+    literal.config_file_path = "/x/literal.yaml";
+    CHECK(mgr->DuplicateEndpointProblem(literal).empty());          // /a/b/:y already serves it open
+
+    auto uncovered = rest("/a/:x/c");
+    uncovered.config_file_path = "/x/uncovered.yaml";
+    CHECK(mgr->DuplicateEndpointProblem(uncovered).find("Overlapping routes with different auth") !=
+          std::string::npos);
+
+    auto other_auth = rest("/a/b/c", "GET", true);
+    other_auth.auth.users = {flapi::AuthUser{"g", "g-pw", {"admin"}}};
+    other_auth.config_file_path = "/x/literal.yaml";
+    CHECK(mgr->DuplicateEndpointProblem(other_auth).find("Overlapping routes with different auth") !=
+          std::string::npos);
+
+    // Without the middle route the literal is refused, as before.
+    auto mgr2 = temp.createConfigManager();
+    mgr2->addEndpoint(protected_general);
+    CHECK(mgr2->DuplicateEndpointProblem(literal).find("Overlapping routes with different auth") !=
+          std::string::npos);
+}

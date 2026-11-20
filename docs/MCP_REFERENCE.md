@@ -191,6 +191,12 @@ The MCP server exposes two categories of tools:
    - 20 tools in 5 categories: Discovery (5), Template (4), Endpoint (6), Cache (4), Metrics (1: `flapi_get_metrics`)
    - See [MCP Configuration Tools API Reference](./MCP_CONFIG_TOOLS_API.md)
 
+> **Route shadowing:** `flapi_create_endpoint` never opts into `allow-shadowing`. It has no
+> such argument, and one passed under any spelling is ignored, so creating an endpoint whose
+> route overlaps one with different auth is always refused (`Overlapping routes with different
+> auth`). Set `allow-shadowing: true` in the endpoint YAML or through the REST config API when
+> the split is intended. See CONFIG_REFERENCE, *Route precedence*.
+
 **To enable configuration tools:**
 ```bash
 ./flapi --config-service

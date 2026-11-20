@@ -16,6 +16,10 @@ public:
     static std::string urlPathProblem(const std::string& url_path);
     /// Whether some request path matches both routes.
     static bool routesOverlap(const std::string& a, const std::string& b);
+    /// Whether every request path `specific` matches is also matched by
+    /// `general` (`/a/:x/:y` covers `/a/b/c`, `/a/b/:y` and `/a/:x/c`; `/a/b/:y`
+    /// does not cover `/a/:x/c`).
+    static bool routeCovers(const std::string& general, const std::string& specific);
     /// Which route wins a request both match: segment by segment from the
     /// left, the first literal-vs-parameter difference decides and the literal
     /// wins. < 0: `a` is more specific, > 0: `b`, 0: the same shape.

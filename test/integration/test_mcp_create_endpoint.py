@@ -82,6 +82,9 @@ def test_the_schema_declares_what_an_endpoint_needs():
         props = tools["flapi_create_endpoint"]["inputSchema"]["properties"]
         for key in ("path", "method", "template-source", "connection"):
             assert key in props, f"create_endpoint does not declare {key}: {sorted(props)}"
+        # #221: the tool never opts into route shadowing; that stays a file/REST decision.
+        for key in props:
+            assert "shadow" not in key.lower(), f"create_endpoint must not offer shadowing: {key}"
 
 
 def test_the_documented_workflow_creates_serves_and_persists():

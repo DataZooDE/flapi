@@ -1087,9 +1087,7 @@ protected literal over an open one alike. Auth is compared on `enabled`, `type`
 (`jwt` = `bearer`), `roles` **and the identity source**: `users` (username, password,
 per-user roles), `jwt-secret` (compared as a digest), `jwt-issuer`, the `oidc` issuer,
 client, audiences, claims, `scopes`, `verify-expiration` and `clock-skew-seconds`, and
-the `from-aws-secretmanager` secret and region. Any difference counts, including a
-re-hashed password with a new salt or a provider preset against its spelled-out
-`issuer-url` (copy the block byte for byte, or use a YAML include); secret values never
+the `from-aws-secretmanager` secret and region. Secret values never
 appear in the message:
 
 ```
@@ -1117,6 +1115,40 @@ WHERE id = {{{ params.id }}}
 Set `allow-shadowing: true` on the **more specific** endpoint only when the split is
 intended; the overlap is then logged as a WARNING (which the plugin hook passes on to
 Claude). Overlaps with the same auth log an INFO line.
+
+**What counts as "the same auth"** is who gets in, not how the block is spelled:
+
+- `users`: the same username and per-user roles, and a password that admits the same
+  secret. Equal strings do. A **plaintext** password and the MD5 or PBKDF2 hash of it are
+  the same user (the migration case), because flapi can verify the plaintext against the
+  hash. Two PBKDF2 hashes of one password with **different salts cannot be proven equal**
+  (the hash is one-way) and count as different: give both endpoints the same hash string
+  (a YAML include or anchor), or keep one of them in plaintext while migrating. bcrypt
+  hashes are not verifiable by flapi and only match when byte-identical.
+- `oidc`: compared as the provider requests see it, with the `provider-type` preset
+  applied. `provider-type: keycloak` plus `domain`/`realm` is the same provider as the
+  spelled-out `issuer-url` with the claim defaults the preset fills in
+  (`username-claim: preferred_username`, `role-claim-path: realm_access.roles`, ...).
+  Identity keys: the resolved `issuer-url`, `client-id`, `client-secret` (digest),
+  `allowed-audiences`, `username-claim`, `roles-claim`, `groups-claim`, `role-claim-path`,
+  `verify-expiration`, `clock-skew-seconds` and `scopes`. **Not identity:** `email-claim`
+  (a display claim), `jwks-cache-hours` (a key-cache lifetime), `enable-client-credentials`
+  and `enable-refresh-tokens` (token-endpoint flows, not request authentication), and
+  `provider-type`/`tenant-id`/`realm`/`domain` on their own (they only feed the preset).
+- Anything else in the list above (`type`, `roles`, `jwt-secret`, `jwt-issuer`,
+  `from-aws-secretmanager`) must be equal.
+
+**Three levels.** An overlap is judged against the endpoint that actually answers the
+shared URLs. With a protected `/a/:x/:y`, an open `/a/b/:y` (`allow-shadowing: true`) and
+an open `/a/b/c`, the literal `/a/b/c` adds no exposure: `/a/b/:y` already answers it open.
+It loads without its own flag when another endpoint of the same method covers it, beats
+the less specific route, loses to it, and has exactly its auth. The covering route has
+to be loaded before the literal (files load in path order; create it first at runtime).
+
+**`allow-shadowing` over MCP.** The `flapi_create_endpoint` MCP tool never opts into
+shadowing: it has no such argument (`allow-shadowing` in any spelling is ignored), so an
+AI client cannot create an open route over a protected one. Set the flag in the YAML file,
+or `POST /api/v1/_config/endpoints`, if the split is intended.
 
 ### 3.2 MCP Tools
 
