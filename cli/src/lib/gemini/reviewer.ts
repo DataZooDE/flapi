@@ -174,7 +174,7 @@ export class ConfigReviewer {
         name: 'method',
         message: 'New HTTP method',
         choices: ['GET', 'POST', 'PUT', 'DELETE'],
-        initial: config.method,
+        initial: Math.max(0, ['GET', 'POST', 'PUT', 'DELETE'].indexOf(config.method)),
       },
     ]);
 
@@ -305,8 +305,8 @@ export class ConfigReviewer {
         name: 'ttl',
         message: 'Cache TTL in seconds',
         initial: config.cache_ttl || 300,
-        validate: (value: number) => {
-          if (value < 0) {
+        validate: (value: string | number) => {
+          if (Number(value) < 0) {
             return 'TTL must be positive';
           }
           return true;

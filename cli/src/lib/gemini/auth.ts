@@ -1,7 +1,6 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { google } from 'google-auth-library';
 import { Console } from '../console';
 import { GeminiAuthConfig } from '../types';
 
@@ -36,13 +35,13 @@ export class GeminiAuthManager {
 
   async storeApiKey(apiKey: string): Promise<void> {
     const config = await this.loadConfig();
-    if (!config.gemini) {
-      config.gemini = {};
-    }
-    config.gemini.auth_method = 'api_key';
-    config.gemini.api_key = apiKey;
-    config.gemini.model = 'gemini-2.0-flash-exp';
-    config.gemini.max_tokens = 8192;
+    config.gemini = {
+      ...config.gemini,
+      auth_method: 'api_key',
+      api_key: apiKey,
+      model: 'gemini-2.0-flash-exp',
+      max_tokens: 8192,
+    };
     await this.saveConfig(config);
   }
 
@@ -52,17 +51,17 @@ export class GeminiAuthManager {
     expiry?: number
   ): Promise<void> {
     const config = await this.loadConfig();
-    if (!config.gemini) {
-      config.gemini = {};
-    }
-    config.gemini.auth_method = 'oauth';
-    config.gemini.oauth = {
-      access_token: accessToken,
-      refresh_token: refreshToken,
-      expiry,
+    config.gemini = {
+      ...config.gemini,
+      auth_method: 'oauth',
+      oauth: {
+        access_token: accessToken,
+        refresh_token: refreshToken,
+        expiry,
+      },
+      model: 'gemini-2.0-flash-exp',
+      max_tokens: 8192,
     };
-    config.gemini.model = 'gemini-2.0-flash-exp';
-    config.gemini.max_tokens = 8192;
     await this.saveConfig(config);
   }
 

@@ -15,6 +15,7 @@ interface CliYamlConfig {
       'json-style'?: 'camel' | 'hyphen';
     };
     http?: {
+      'base-url'?: string;
       'timeout-seconds'?: number;
       retries?: number;
       'verify-tls'?: boolean;

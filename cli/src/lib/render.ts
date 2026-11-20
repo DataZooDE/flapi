@@ -136,7 +136,7 @@ export function renderEndpointsTable(endpoints: Record<string, unknown>) {
   for (const [path, config] of Object.entries(endpoints)) {
     if (!config || typeof config !== 'object') continue;
     const endpoint = config as Record<string, unknown>;
-    const method = endpoint.method ?? 'GET';
+    const method = String(endpoint.method ?? 'GET');
     const type = determineEndpointType(endpoint);
     const operation = determineOperationType(endpoint, method);
     const connection = Array.isArray(endpoint.connection)

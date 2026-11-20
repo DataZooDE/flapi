@@ -41,6 +41,7 @@
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
+    "@types/lodash.kebabcase": "^4.1.9",
     "@types/node": "^22.5.1",
     "@typescript-eslint/eslint-plugin": "^8.4.1",
     "@typescript-eslint/parser": "^8.4.1",
