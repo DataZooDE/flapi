@@ -306,6 +306,26 @@ jobs:
         retention-days: 90
 
   # -------------------------------------------------------------------------------------------------
+  # flapii CLI type check (fast, no C++ build needed; runs on every PR)
+  # -------------------------------------------------------------------------------------------------
+  cli-typecheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+
+    - name: tsc --noEmit (CLI)
+      run: |
+        (cd cli/shared && npm ci && npm run build)
+        cd cli
+        npm ci
+        npm run typecheck
+
+  # -------------------------------------------------------------------------------------------------
   # flapii CLI Build (Bun standalone binaries)
   # -------------------------------------------------------------------------------------------------
   flapii-build:

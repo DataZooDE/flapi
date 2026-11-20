@@ -15,7 +15,7 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
     .command('list')
     .description('List all templates')
     .action(async () => {
-      let spinner;
+      let spinner: ReturnType<typeof Console.spinner> | undefined;
       if (ctx.config.output !== 'json') {
         spinner = Console.spinner('Fetching templates...');
       }
@@ -39,7 +39,7 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
         }
 
         if (ctx.config.output !== 'json') {
-          spinner.succeed(chalk.green('✓ Templates retrieved'));
+          spinner?.succeed(chalk.green('✓ Templates retrieved'));
         }
 
         if (ctx.config.output === 'json') {
@@ -48,7 +48,7 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
           renderTemplatesTable(templates);
         }
       } catch (error) {
-        spinner.fail(chalk.red('✗ Failed to fetch templates'));
+        spinner?.fail(chalk.red('✗ Failed to fetch templates'));
         handleError(error, ctx.config);
         process.exitCode = 1;
       }
@@ -63,7 +63,7 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
       try {
         const endpointUrl = buildEndpointUrl(path, 'template', options.method);
         const response = await ctx.client.get(endpointUrl);
-        spinner.succeed(chalk.green(`✓ Template ${path} retrieved`));
+        spinner?.succeed(chalk.green(`✓ Template ${path} retrieved`));
         const template = response.data;
 
         if (ctx.config.output === 'json') {
@@ -76,7 +76,7 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
           Console.info(chalk.white(sql));
         }
       } catch (error) {
-        spinner.fail(chalk.red(`✗ Failed to fetch template ${path}`));
+        spinner?.fail(chalk.red(`✗ Failed to fetch template ${path}`));
         handleError(error, ctx.config);
         process.exitCode = 1;
       }
@@ -121,9 +121,9 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
         await ctx.client.put(endpointUrl, {
           template: templateContent
         });
-        spinner.succeed(chalk.green(`✓ Template ${path} updated successfully`));
+        spinner?.succeed(chalk.green(`✓ Template ${path} updated successfully`));
       } catch (error) {
-        spinner.fail(chalk.red(`✗ Failed to update template ${path}`));
+        spinner?.fail(chalk.red(`✗ Failed to update template ${path}`));
         handleError(error, ctx.config);
         process.exitCode = 1;
       }
@@ -167,7 +167,7 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
           { parameters: params },
           options.cache ? { params: { target: 'cache' } } : undefined,
         );
-        spinner.succeed(chalk.green(`✓ Template ${path} expanded successfully`));
+        spinner?.succeed(chalk.green(`✓ Template ${path} expanded successfully`));
         const result = response.data;
 
         if (ctx.config.output === 'json') {
@@ -178,7 +178,7 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
           Console.info(chalk.white(result.expanded || result));
         }
       } catch (error) {
-        spinner.fail(chalk.red(`✗ Failed to expand template ${path}`));
+        spinner?.fail(chalk.red(`✗ Failed to expand template ${path}`));
         handleError(error, ctx.config);
         process.exitCode = 1;
       }
@@ -219,7 +219,7 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
         const response = await ctx.client.post(endpointUrl, {
           parameters: params
         });
-        spinner.succeed(chalk.green(`✓ Template ${path} test completed`));
+        spinner?.succeed(chalk.green(`✓ Template ${path} test completed`));
         const result = response.data;
 
         if (ctx.config.output === 'json') {
@@ -248,7 +248,7 @@ export function registerTemplateCommands(program: Command, ctx: CliContext) {
           }
         }
       } catch (error) {
-        spinner.fail(chalk.red(`✗ Failed to test template ${path}`));
+        spinner?.fail(chalk.red(`✗ Failed to test template ${path}`));
         handleError(error, ctx.config);
         process.exitCode = 1;
       }

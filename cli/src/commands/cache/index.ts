@@ -17,7 +17,7 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
     .command('list')
     .description('List all cache configurations')
     .action(async () => {
-      let spinner;
+      let spinner: ReturnType<typeof Console.spinner> | undefined;
       if (ctx.config.output !== 'json') {
         spinner = Console.spinner('Fetching cache configurations...');
       }
@@ -38,7 +38,7 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
         }
 
         if (ctx.config.output !== 'json') {
-          spinner.succeed(chalk.green('✓ Cache configurations retrieved'));
+          spinner?.succeed(chalk.green('✓ Cache configurations retrieved'));
         }
 
         if (ctx.config.output === 'json') {
@@ -47,7 +47,7 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
           renderCacheTable(caches);
         }
       } catch (error) {
-        spinner.fail(chalk.red('✗ Failed to fetch cache configurations'));
+        spinner?.fail(chalk.red('✗ Failed to fetch cache configurations'));
         handleError(error, ctx.config);
         process.exitCode = 1;
       }
@@ -62,7 +62,7 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
       try {
         const endpointUrl = buildEndpointUrl(path, 'cache', options.method);
         const response = await ctx.client.get(endpointUrl);
-        spinner.succeed(chalk.green(`✓ Cache config for ${path} retrieved`));
+        spinner?.succeed(chalk.green(`✓ Cache config for ${path} retrieved`));
         const cacheConfig = response.data;
 
         if (ctx.config.output === 'json') {
@@ -82,7 +82,7 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
           }
         }
       } catch (error) {
-        spinner.fail(chalk.red(`✗ Failed to fetch cache config for ${path}`));
+        spinner?.fail(chalk.red(`✗ Failed to fetch cache config for ${path}`));
         handleError(error, ctx.config);
         process.exitCode = 1;
       }
@@ -182,9 +182,9 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
       try {
         const endpointUrl = buildEndpointUrl(path, 'cache', options.method);
         await ctx.client.put(endpointUrl, cacheConfig);
-        spinner.succeed(chalk.green(`✓ Cache config for ${path} updated successfully`));
+        spinner?.succeed(chalk.green(`✓ Cache config for ${path} updated successfully`));
       } catch (error) {
-        spinner.fail(chalk.red(`✗ Failed to update cache config for ${path}`));
+        spinner?.fail(chalk.red(`✗ Failed to update cache config for ${path}`));
         handleError(error, ctx.config);
         process.exitCode = 1;
       }
@@ -199,7 +199,7 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
       try {
         const endpointUrl = buildEndpointUrl(path, 'cache/template', options.method);
         const response = await ctx.client.get(endpointUrl);
-        spinner.succeed(chalk.green(`✓ Cache template for ${path} retrieved`));
+        spinner?.succeed(chalk.green(`✓ Cache template for ${path} retrieved`));
         const template = response.data;
 
         if (ctx.config.output === 'json') {
@@ -210,7 +210,7 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
           Console.info(chalk.white(template));
         }
       } catch (error) {
-        spinner.fail(chalk.red(`✗ Failed to fetch cache template for ${path}`));
+        spinner?.fail(chalk.red(`✗ Failed to fetch cache template for ${path}`));
         handleError(error, ctx.config);
         process.exitCode = 1;
       }
@@ -255,9 +255,9 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
         await ctx.client.put(endpointUrl, {
           template: templateContent
         });
-        spinner.succeed(chalk.green(`✓ Cache template for ${path} updated successfully`));
+        spinner?.succeed(chalk.green(`✓ Cache template for ${path} updated successfully`));
       } catch (error) {
-        spinner.fail(chalk.red(`✗ Failed to update cache template for ${path}`));
+        spinner?.fail(chalk.red(`✗ Failed to update cache template for ${path}`));
         handleError(error, ctx.config);
         process.exitCode = 1;
       }
@@ -282,7 +282,7 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
         const query = refreshQuery(options);
         const response = await ctx.client.post(endpointUrl, {}, query ? { params: query } : undefined);
         const result = response.data;
-        spinner.succeed(chalk.green(`✓ Cache for ${path} refreshed successfully`));
+        spinner?.succeed(chalk.green(`✓ Cache for ${path} refreshed successfully`));
         const lines = describeRefreshResult(result);
 
         if (ctx.config.output === 'json') {
@@ -300,14 +300,14 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
         const skipped = skippedRefresh(error);
         if (skipped) {
           const wait = skipped.retryAfter ? `; retry in ${skipped.retryAfter}s` : '';
-          spinner.warn(chalk.yellow(`A refresh of ${path} is already running; not started again${wait}`));
+          spinner?.warn(chalk.yellow(`A refresh of ${path} is already running; not started again${wait}`));
           if (ctx.config.output === 'json') {
             renderJson(skipped.body);
           }
           process.exitCode = 1;
           return;
         }
-        spinner.fail(chalk.red(`✗ Failed to refresh cache for ${path}`));
+        spinner?.fail(chalk.red(`✗ Failed to refresh cache for ${path}`));
         handleError(error, ctx.config);
         process.exitCode = 1;
       }
@@ -322,7 +322,7 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
       try {
         const endpointUrl = buildEndpointUrl(path, 'cache/gc', options.method);
         const response = await ctx.client.post(endpointUrl, {});
-        spinner.succeed(chalk.green(`✓ Cache GC for ${path} completed`));
+        spinner?.succeed(chalk.green(`✓ Cache GC for ${path} completed`));
 
         if (ctx.config.output !== 'json') {
           Console.info(chalk.cyan(`\n🧹 Cache GC: ${path}`));
@@ -330,7 +330,7 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
         }
         renderJson(response.data);
       } catch (error) {
-        spinner.fail(chalk.red(`✗ Failed to run cache GC for ${path}`));
+        spinner?.fail(chalk.red(`✗ Failed to run cache GC for ${path}`));
         handleError(error, ctx.config);
         process.exitCode = 1;
       }
@@ -348,10 +348,10 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
       const spinner = Console.spinner(`Dropping cache table ${table}...`);
       try {
         const response = await ctx.client.post('/api/v1/_config/cache/drop-table', body);
-        spinner.succeed(chalk.green(`✓ Dropped cache table ${table}`));
+        spinner?.succeed(chalk.green(`✓ Dropped cache table ${table}`));
         renderJson(response.data);
       } catch (error) {
-        spinner.fail(chalk.red(`✗ Failed to drop cache table ${table}`));
+        spinner?.fail(chalk.red(`✗ Failed to drop cache table ${table}`));
         handleError(error, ctx.config);
         process.exitCode = 1;
       }
@@ -376,10 +376,10 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
       const spinner = Console.spinner(`Compacting ${target}...`);
       try {
         const response = await ctx.client.post('/api/v1/_config/cache/compact', body);
-        spinner.succeed(chalk.green(`✓ Compacted ${target}`));
+        spinner?.succeed(chalk.green(`✓ Compacted ${target}`));
         renderJson(response.data);
       } catch (error) {
-        spinner.fail(chalk.red(`✗ Failed to compact ${target}`));
+        spinner?.fail(chalk.red(`✗ Failed to compact ${target}`));
         handleError(error, ctx.config);
         process.exitCode = 1;
       }
@@ -401,7 +401,7 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
             ? `/api/v1/_config/cache/audit?table=${encodeURIComponent(options.table)}`
             : '/api/v1/_config/cache/audit';
         const response = await ctx.client.get(url);
-        spinner.succeed(chalk.green(`✓ Cache audit log ${target} retrieved`));
+        spinner?.succeed(chalk.green(`✓ Cache audit log ${target} retrieved`));
 
         const resolved = applyOutputOverride(ctx.config, options.output);
         if (resolved.output === 'json') {
@@ -413,7 +413,7 @@ export function registerCacheCommands(program: Command, ctx: CliContext) {
         Console.info(chalk.gray('═'.repeat(60)));
         renderTable(cacheAuditRows(response.data, !path));
       } catch (error) {
-        spinner.fail(chalk.red(`✗ Failed to fetch cache audit log ${target}`));
+        spinner?.fail(chalk.red(`✗ Failed to fetch cache audit log ${target}`));
         handleError(error, ctx.config);
         process.exitCode = 1;
       }

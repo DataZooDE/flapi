@@ -50,7 +50,7 @@ export function registerLogLevelCommands(configCmd: Command, ctx: CliContext) {
           Console.error('Authentication failed. Config service token required.');
           Console.info('Set token with --config-service-token or FLAPI_CONFIG_SERVICE_TOKEN env var');
         } else {
-          Console.error('Failed to get log level:', error.message);
+          Console.error(`Failed to get log level: ${error.message}`);
         }
         process.exit(1);
       }
@@ -85,9 +85,9 @@ export function registerLogLevelCommands(configCmd: Command, ctx: CliContext) {
           Console.error('Authentication failed. Config service token required.');
           Console.info('Set token with --config-service-token or FLAPI_CONFIG_SERVICE_TOKEN env var');
         } else if (error.response?.status === 400) {
-          Console.error('Invalid log level:', error.response.data);
+          Console.error(`Invalid log level: ${JSON.stringify(error.response.data)}`);
         } else {
-          Console.error('Failed to set log level:', error.message);
+          Console.error(`Failed to set log level: ${error.message}`);
         }
         process.exit(1);
       }

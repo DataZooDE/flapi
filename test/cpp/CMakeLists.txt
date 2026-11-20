@@ -80,6 +80,7 @@ add_executable(flapi_tests
     test_vfs_adapter.cpp
     test_path_validator.cpp
     test_vfs_health.cpp
+    database_manager_ducklake_test.cpp
     test_vfs_cache.cpp
     test_credential_manager.cpp
     test_vfs_s3.cpp
