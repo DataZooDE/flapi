@@ -318,8 +318,33 @@ include_directories(
 # message(STATUS "Web UI subdirectory added")
 
 
+# Swagger UI for /doc: the vendored swagger-ui-dist files are compiled into the
+# binary (about 1.8 MB), so the page works offline and on air-gapped hosts.
+set(FLAPI_SWAGGER_UI_DIR "${CMAKE_SOURCE_DIR}/third_party/swagger-ui-dist")
+set(FLAPI_SWAGGER_UI_FILES
+    "swagger-ui.css:text/css"
+    "swagger-ui-bundle.js:application/javascript"
+    "swagger-ui-standalone-preset.js:application/javascript")
+set(FLAPI_SWAGGER_UI_CPP "${CMAKE_BINARY_DIR}/generated/swagger_ui_assets_data.cpp")
+# `;` would split the argument on the command line; the script turns `,` back.
+string(REPLACE ";" "," FLAPI_SWAGGER_UI_FILES_ARG "${FLAPI_SWAGGER_UI_FILES}")
+add_custom_command(
+    OUTPUT "${FLAPI_SWAGGER_UI_CPP}"
+    COMMAND ${CMAKE_COMMAND}
+            "-DDIR=${FLAPI_SWAGGER_UI_DIR}"
+            "-DOUT=${FLAPI_SWAGGER_UI_CPP}"
+            "-DFILES=${FLAPI_SWAGGER_UI_FILES_ARG}"
+            -P "${CMAKE_SOURCE_DIR}/scripts/embed_swagger_assets.cmake"
+    DEPENDS "${FLAPI_SWAGGER_UI_DIR}/swagger-ui.css"
+            "${FLAPI_SWAGGER_UI_DIR}/swagger-ui-bundle.js"
+            "${FLAPI_SWAGGER_UI_DIR}/swagger-ui-standalone-preset.js"
+            "${CMAKE_SOURCE_DIR}/scripts/embed_swagger_assets.cmake"
+    COMMENT "flapi: embedding Swagger UI assets")
+
 # Create flapi-lib
 add_library(flapi-lib STATIC
+    "${FLAPI_SWAGGER_UI_CPP}"
+    src/yaml_text_patch.cpp
     src/api_server.cpp
     src/archive_io.cpp
     src/audit_logger.cpp

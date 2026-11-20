@@ -20,6 +20,7 @@
 #include "config_tool_adapter.hpp"
 #include "open_api_doc_generator.hpp"
 #include "open_api_page.hpp"
+#include "swagger_ui_assets.hpp"
 #include "rate_limit_middleware.hpp"
 #include "mcp_session_manager.hpp"
 #include "mcp_client_capabilities.hpp"
@@ -195,6 +196,24 @@ void APIServer::setupRoutes() {
         .methods("GET"_method)
         ([this]() {
             return generateOpenAPIPage(configManager);
+        });
+
+    // The Swagger UI's own files (swagger-ui-dist 5.18.2, built into the binary):
+    // /doc must work with no route to unpkg.com. An exact match against a fixed
+    // list - the name never reaches the file system.
+    CROW_ROUTE(app, "/doc/assets/<string>")
+        .methods("GET"_method)
+        ([](const std::string& name) {
+            const auto* asset = FindSwaggerUiAsset(name);
+            if (asset == nullptr) {
+                return crow::response(404);
+            }
+            crow::response res(200);
+            res.set_header("Content-Type", asset->content_type);
+            // Immutable for this binary: the content only changes with a release.
+            res.set_header("Cache-Control", "public, max-age=86400");
+            res.body.assign(reinterpret_cast<const char*>(asset->data), asset->size);
+            return res;
         });
 
     CROW_ROUTE(app, "/doc.yaml")

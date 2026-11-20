@@ -111,7 +111,8 @@ curl 'http://localhost:8080/customers?id=123'
 ```
 
 Open <http://localhost:8080/doc> for a Swagger UI generated from your config, and
-<http://localhost:8080/doc.yaml> for the raw OpenAPI document.
+<http://localhost:8080/doc.yaml> for the raw OpenAPI document. The Swagger UI's assets are
+built into the binary (served from `/doc/assets/`), so `/doc` works offline and on air-gapped hosts.
 
 > **Want to use the `flapii` CLI too?** It talks to the server's configuration
 > service, which is off by default. Start with it enabled:
