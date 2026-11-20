@@ -226,6 +226,9 @@ void RequestContextMiddleware::before_handle(crow::request& req, crow::response&
     ctx.rc.trace_context_source = contextSourceName(resolved.source);
 
     RequestContextScope::activate(&ctx.rc);
+    // Crow's `Request:` line was logged just before this middleware ran, with no
+    // id to carry; write it now that there is one.
+    FlapiLogHandler::releasePendingRequestLine();
 
     // The HTTP SERVER span. Started here - in the FIRST middleware - because Crow
     // runs before_handle in declaration order, so this is the only position that
@@ -291,6 +294,15 @@ void RequestContextMiddleware::finish(crow::response& res, context& ctx) {
     }
     ctx.finished = true;
     ctx.rc.status_code = res.code;
+    // Re-asserted here, not only in before_handle: a handler that RETURNS a
+    // fresh crow::response (every MCP JSON-RPC route does) replaces the one
+    // before_handle stamped, headers included, so an MCP response carried no id.
+    // set_header replaces, so a response that kept the header is unchanged.
+    try {
+        res.set_header("X-Request-Id", std::string(ctx.rc.requestIdView()));
+    } catch (...) {
+        instrumentation_failures_.fetch_add(1, std::memory_order_relaxed);
+    }
     // Crow's own "Response:" line for a request a middleware refused is
     // written AFTER this (the short-circuit unwind runs after_handle first),
     // when the context is no longer ambient; hand it the id.

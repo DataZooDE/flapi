@@ -20,6 +20,20 @@ namespace {
 thread_local const RequestContext* t_response_logged_for = nullptr;
 thread_local std::string t_pending_response_id;
 
+// Crow's own `Request:` line, held between the moment Crow logs it and the
+// moment RequestContextMiddleware::before_handle has given the request an id.
+// See FlapiLogHandler::releasePendingRequestLine().
+struct PendingRequestLine {
+    bool present = false;
+    std::string message;
+    crow::LogLevel level = crow::LogLevel::Info;
+};
+thread_local PendingRequestLine t_pending_request_line;
+
+bool isCrowRequestLine(const std::string& message) {
+    return message.rfind("Request: ", 0) == 0;
+}
+
 bool isCrowResponseLine(const std::string& message) {
     return message.rfind("Response: ", 0) == 0;
 }
@@ -122,6 +136,20 @@ std::string FlapiLogHandler::format(const std::string& message, crow::LogLevel l
     return out;
 }
 
+void FlapiLogHandler::releasePendingRequestLine() {
+    if (!t_pending_request_line.present) {
+        return;
+    }
+    // Taken out BEFORE it is logged again: the log() below must not see it as
+    // still pending.
+    std::string message = std::move(t_pending_request_line.message);
+    const crow::LogLevel level = t_pending_request_line.level;
+    t_pending_request_line = PendingRequestLine{};
+    // Through Crow's own logger so the level filter and the handler apply as
+    // they did the first time; the request is ambient now, so format() stamps it.
+    crow::logger(level) << message;
+}
+
 void FlapiLogHandler::log(std::string message, crow::LogLevel level) {
     if (holding_.load(std::memory_order_acquire)) {
         std::lock_guard<std::mutex> guard(write_mutex_);
@@ -130,6 +158,25 @@ void FlapiLogHandler::log(std::string message, crow::LogLevel level) {
             held_.push_back(HeldLine{std::move(message), level, currentTimestamp()});
             return;
         }
+    }
+    // A Request line still held means before_handle never ran for it (an
+    // invalid or upgraded request): write it as it came rather than attach it
+    // to whichever request this thread serves next.
+    if (t_pending_request_line.present) {
+        PendingRequestLine stale = std::move(t_pending_request_line);
+        t_pending_request_line = PendingRequestLine{};
+        const std::string line = format(stale.message, stale.level, currentTimestamp());
+        std::lock_guard<std::mutex> guard(write_mutex_);
+        std::cerr << line << '\n';
+    }
+    // Crow logs `Request: ...` before any middleware has run, so no request is
+    // ambient yet and the line would carry no id. before_handle releases it, with
+    // the id, a few instructions later on this same thread.
+    if (isCrowRequestLine(message) && RequestContextScope::current() == nullptr) {
+        t_pending_request_line.present = true;
+        t_pending_request_line.message = std::move(message);
+        t_pending_request_line.level = level;
+        return;
     }
     const std::string line = format(message, level, currentTimestamp());
     // Build first, then one write under the lock: partial writes from pooled

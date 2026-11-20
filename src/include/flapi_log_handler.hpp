@@ -68,6 +68,15 @@ public:
     // Before a new request starts on this thread: nothing pending is its.
     static void resetPendingResponse();
 
+    // Crow also logs "Request: <conn> <url> HTTP/1.1 GET /path" before any
+    // middleware runs, so it has no request context to take an id from. log()
+    // holds that one line (per thread) instead of writing it;
+    // RequestContextMiddleware::before_handle calls this once the new request is
+    // ambient, and the line is written then, with its request_id. A held line
+    // that is never released (before_handle did not run) is written unchanged
+    // by the next log call on the thread.
+    static void releasePendingRequestLine();
+
 private:
     static std::string currentTimestamp();
     std::string format(const std::string& message, crow::LogLevel level, const std::string& timestamp) const;
