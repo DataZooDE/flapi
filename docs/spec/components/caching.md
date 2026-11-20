@@ -510,6 +510,16 @@ names any more is dropped with its refresh stats, a newly named table starts `Re
 when it exists in the catalog, else `Unbuilt`. A changed `cache.table` used to have no
 entry (its GET answered 500) and the old one stayed in `/health` until restart.
 
+The registry is initialised **once**: `DatabaseManager::initializeDatabase` calls
+`CacheManager::initializeReadiness` (`src/database_manager.cpp`) before the HTTP
+thread exists, so `/health` and cached endpoints are `Starting` from the very first
+request. `warmUpCaches`/`warmUpCachesAsync` no longer re-run it (that `clear()`ed the
+registry under a live server and let `/health` briefly report `ready`, #198); a reload
+goes through `syncReadinessWithEndpoints`. A read-only replica never warms up, so
+`initializeReadiness` settles it synchronously: `Ready` when the table exists in the
+catalog, else `Unbuilt` - a never-built table answers `cache_not_built` from the first
+request, never `cache_warming` (#217).
+
 On a read-only replica the `cache_not_built` message says the writer has not built
 the cache yet (`CacheReadiness::replica`), not "warm-up skipped".
 

@@ -418,8 +418,9 @@ class TestReplicaNeverBuilt:
                 assert len(answers) >= 60, r.output()[-3000:]
                 assert set(answers) == {(503, "cache_not_built")}, sorted(set(answers))
                 health = session.get(f"{r.base}/health", timeout=5)
-                assert health.status_code == 503
-                assert health.json()["status"] != "starting", health.text
+                # Unbuilt is degraded (200 + `unbuilt` list), never "starting".
+                assert health.status_code == 200 and health.json()["status"] == "degraded", health.text
+                assert health.json()["unbuilt"][0]["table"] == "unbuilt_cache", health.text
             finally:
                 r.stop()
 
