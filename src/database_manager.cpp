@@ -949,6 +949,34 @@ std::optional<AttachDetach> ParseAttachDetach(const std::string& sql) {
     }
 }
 
+// Whether the file a DuckDB database was attached from has since been replaced
+// (an atomic rename over it) or deleted: the process still holds the OLD file
+// open, so the alias reads data the path no longer has. Linux only: the open
+// file's /proc/self/fd link reads "<path> (deleted)" once it is unlinked.
+bool AttachedFileReplaced(const std::string& attached_path) {
+#ifdef __linux__
+    if (attached_path.empty() || attached_path == ":memory:" || attached_path.find("://") != std::string::npos) {
+        return false;
+    }
+    std::error_code ec;
+    const std::string absolute = std::filesystem::absolute(attached_path, ec).lexically_normal().string();
+    if (ec) {
+        return false;
+    }
+    const std::string deleted = absolute + " (deleted)";
+    for (const auto& entry : std::filesystem::directory_iterator("/proc/self/fd", ec)) {
+        std::error_code link_ec;
+        const auto target = std::filesystem::read_symlink(entry.path(), link_ec);
+        if (!link_ec && target.string() == deleted) {
+            return true;
+        }
+    }
+#else
+    (void)attached_path;
+#endif
+    return false;
+}
+
 // Whether a DuckDB error message names `alias` (a catalog/schema qualifier).
 bool NamesAlias(const std::string& message, const std::string& alias) {
     const auto lower = LowerAscii(message);
@@ -1001,14 +1029,27 @@ DatabaseManager::ScriptValidation DatabaseManager::validateScript(const std::str
     // the catalog lock (CacheManager::lockCatalogWrites), so this cannot race a
     // refresh's ATTACH of the same name.
     std::set<std::string> attached_before;
+    // Aliases the server attached before this check whose FILE has been replaced
+    // since (the writer publishes by atomic rename): statements that read them
+    // are checked against the old file.
+    std::set<std::string> stale_aliases;
     if (populate) {
         duckdb_result databases;
-        if (duckdb_query(conn, "SELECT database_name FROM duckdb_databases()", &databases) == DuckDBSuccess) {
+        if (duckdb_query(conn, "SELECT database_name, path FROM duckdb_databases()", &databases) == DuckDBSuccess) {
             for (idx_t row = 0; row < duckdb_row_count(&databases); ++row) {
                 char* name = duckdb_value_varchar(&databases, 0, row);
+                char* path = duckdb_value_varchar(&databases, 1, row);
                 if (name) {
                     attached_before.insert(LowerAscii(name));
+                    if (path && AttachedFileReplaced(path)) {
+                        stale_aliases.insert(LowerAscii(name));
+                    }
+                }
+                if (name) {
                     duckdb_free(name);
+                }
+                if (path) {
+                    duckdb_free(path);
                 }
             }
         }
@@ -1072,6 +1113,16 @@ DatabaseManager::ScriptValidation DatabaseManager::validateScript(const std::str
                     continue;
                 }
                 if (attached_before.count(ad->alias) > 0 && attached_here.count(ad->alias) == 0) {
+                    if (stale_aliases.count(ad->alias) > 0) {
+                        out.warnings.push_back(
+                            {number, "stale",
+                             "statement " + std::to_string(number) + ": " + ad->alias +
+                                 " is attached on the server from a file that has since been replaced (renamed "
+                                 "over or deleted); validation checked against the OLD file. This template "
+                                 "re-attaches on refresh, which reads the new one, so a table or column only "
+                                 "the new file has is reported here, not as an error"});
+                        continue;
+                    }
                     out.warnings.push_back(
                         {number, "not_checked",
                          "statement " + std::to_string(number) + ": " + ad->alias +
@@ -1167,6 +1218,18 @@ DatabaseManager::ScriptValidation DatabaseManager::validateScript(const std::str
             } else if (message.find("Could not determine type of parameters") != std::string::npos) {
                 out.warnings.push_back(
                     {number, "not_checked", "statement " + std::to_string(number) + " was not fully checked: " + message});
+            } else if (const auto stale = std::find_if(stale_aliases.begin(), stale_aliases.end(),
+                                                       [&](const std::string& alias) {
+                                                           return NamesAlias(sql, alias);
+                                                       });
+                       stale != stale_aliases.end()) {
+                // Bound against the file the server attached BEFORE the writer's
+                // rename: not evidence the template is wrong.
+                out.warnings.push_back(
+                    {number, "stale",
+                     "statement " + std::to_string(number) + " does not bind against " + *stale +
+                         ", which the server attached from a file that has since been replaced; the next "
+                         "refresh re-attaches it and may succeed (" + message + ")"});
             } else {
                 out.errors.push_back({number, "bind", message});
             }

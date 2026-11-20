@@ -135,6 +135,10 @@ public:
         // drop-table: the endpoints whose retained snapshots still pin some of
         // the dropped table's files, each with the policy that keeps them.
         std::vector<std::string> pinned_by;
+        // garbage collection: bytes of this table's superseded files (an old
+        // incarnation's, or replaced by a later refresh) that ANOTHER table's
+        // retained snapshots still pin - `pinned_by` names those tables.
+        std::int64_t pinned_bytes = 0;
     };
     /// Drop a cache table no endpoint uses, expire its snapshots and delete its
     /// files. status: dropped | not_found.
@@ -280,6 +284,16 @@ public:
                                      const std::string& cursor_type);
 
 private:
+    /// "<endpoint> (<schema>.<table>: N snapshot(s) kept by <policy>)": one
+    /// `pinned_by` entry, shared by drop-table and garbage collection.
+    std::string describePinHolder(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint,
+                                  const std::string& endpoint_schema, std::int64_t snapshots) const;
+    /// Superseded files of schema.table (every incarnation) that other cached
+    /// tables' retained snapshots still pin: fills `pinned_by` / `pinned_bytes`.
+    /// A file counts only when no snapshot of this table itself still sees it,
+    /// so what this table's own retention keeps is not reported as pinned.
+    void scanPinnedFiles(std::shared_ptr<ConfigManager> config_manager, const std::string& catalog,
+                         const std::string& schema, const std::string& table, GarbageCollectionResult& result);
     /// Delete data files no remaining snapshot references (after an expiry).
     std::size_t cleanupOldFiles(const std::string& catalog);
     /// Total bytes of the data and delete files the catalog still references.
