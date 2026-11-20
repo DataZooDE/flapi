@@ -6,6 +6,22 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ### Upgrade notes
 
+- **Path parameters are percent-decoded** (#220). The route still matches on the raw path, then each captured
+  value is decoded once before validation: `/customers/%37` is id `7`, `/names/John%20Doe` reaches the template
+  as `John Doe`, `%2F` decodes to `/` inside the one parameter, `+` stays a plus. A malformed escape (`%zz`),
+  `%00` or invalid UTF-8 is `400`. A client that sent already-encoded text and relied on the server not
+  decoding it now gets the decoded value.
+- **`field-in` is honoured per declared source** (#192). A declared field is read only from its source: a query
+  parameter no longer satisfies a `body` field (a required one is `400`), a body key no longer replaces a
+  `query` field, and a route parameter (declared or not) cannot be overridden by `?id=` or a body key. Clients
+  that passed a body field in the query string, or the other way round, must move it.
+- **`{{{ params.x }}}` is bound for typed fields** (#192). Outside sections, `= {{{ x }}}`, `= '{{{ x }}}'`
+  and `LIKE '%{{{ x }}}%'` now go to DuckDB as parameters (`?`, `?`, `('%' || ? || '%')`). Inside sections,
+  comments, enum identifiers, typed literals (`DATE '...'`), names after `FROM`/`JOIN`/`BY`, and
+  `AT (VERSION|TIMESTAMP => ...)` they stay raw text. An absent value in a quoted site still behaves as `''`.
+  A template that relied on a typed field's triple-brace value being spliced as SQL (for example
+  `IN ({{{ params.ids }}})` with a string validator) now compares against one text value; use a section or an
+  `enum` instead. See `docs/CONFIG_REFERENCE.md` §5.9.
 - **Endpoints whose routes differ only in parameter names are duplicates.** `GET /items/:id` and
   `GET /items/:item_id` match the same requests; both used to load and load order decided which one answered,
   so an endpoint with `auth: {enabled: false}` could shadow an authenticated one. Startup, reload and create now

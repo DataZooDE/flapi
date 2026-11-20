@@ -365,7 +365,12 @@ When enabled, rejects inputs containing:
 ### Triple Braces for Strings
 
 Triple braces `{{{ }}}` insert the value **unescaped**. They do not double
-quotes, so they are only as safe as the field's validator:
+quotes, so wherever a site stays raw text it is only as safe as the field's
+validator. Plain value sites of a typed field outside a section are **bound**
+(`'{{{ x }}}'`, `{{{ x }}}`, `'%{{{ x }}}%'` become `?`,
+`?` and `('%' || ? || '%')` in `src/prepared_template_rewriter.cpp`); inside
+sections, for enum identifiers, typed literals (`DATE '...'`) and
+`AT (VERSION|TIMESTAMP => ...)` they stay raw:
 
 ```sql
 -- Template
