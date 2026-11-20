@@ -1,10 +1,22 @@
 #include "mcp_task_manager.hpp"
 
+#include "runtime_metrics.hpp"
+
 #include <iomanip>
 #include <random>
 #include <sstream>
 
 namespace flapi {
+
+void MCPTaskManager::markFinishedLocked(Entry& entry) {
+    entry.task.finished_at = std::chrono::steady_clock::now();
+    // The tool series times the execution alone (a worker has no request in
+    // scope). This is the number a caller experienced: submit to terminal,
+    // including the wait behind busy workers.
+    RuntimeMetrics::instance().recordMcpTask(
+        entry.task.tool_name, entry.task.status != Status::Failed,
+        std::chrono::duration_cast<std::chrono::microseconds>(entry.task.finished_at - entry.task.created_at));
+}
 
 MCPTaskManager::MCPTaskManager(size_t workers, size_t queue_depth, SqlExec sql_exec)
     : sql_exec_(std::move(sql_exec)), queue_depth_(queue_depth) {
@@ -221,6 +233,7 @@ void MCPTaskManager::workerLoop() {
                 std::unique_lock<std::mutex> lock(mu_);
                 if (entry->task.status == Status::Working) {
                     entry->task.status = Status::Cancelled;
+                    markFinishedLocked(*entry);
                 }
             }
             persistTask(entry->task);
@@ -256,6 +269,7 @@ void MCPTaskManager::workerLoop() {
                 entry->task.status = Status::Completed;
                 entry->task.result_json = std::move(result);
             }
+            markFinishedLocked(*entry);
         }
         persistTask(entry->task);  // durable terminal state
     }

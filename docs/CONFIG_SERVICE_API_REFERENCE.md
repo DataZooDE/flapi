@@ -343,8 +343,13 @@ Authorization: Bearer <token>
 
 Update an endpoint configuration. The body is deep-merged onto the endpoint's YAML file and the
 result is re-parsed and written back, so you can send only the keys you change - `{"template-source":
-"customers-v2.sql"}` is a complete request; the url-path comes from `{slug}`. Comments in the
-rewritten YAML file are not preserved.
+"customers-v2.sql"}` is a complete request; the url-path comes from `{slug}`. The file is patched
+as text: only the keys the request changes are rewritten, and comments, blank lines, key order and
+flow-style values elsewhere in the file are kept (an inline `# comment` after a changed one-line
+scalar is kept too). Comments *inside* a value that is replaced - a `request:` list whose
+contents change, for example - are lost with it. A file the patcher cannot handle line by line
+(document markers, quoted or complex keys) is re-emitted whole, which drops its comments; the
+result is always re-parsed and verified before it is written.
 
 **Request:**
 ```http
@@ -1384,7 +1389,13 @@ from the start of the request (the first middleware) to the response, for every
 outcome, so authentication (a ~165 ms PBKDF2 check on a Basic-auth endpoint's first
 request with a password), rate limiting and rejections are inside it; it used to
 start in the handler and miss them. MCP tool series include the MCP authentication
-too (a task runs on a worker and is timed from its start). Values are milliseconds
+too (a task runs on a worker and is timed from its start, so its tool series holds the
+execution time only). An async MCP task additionally has its own series with
+`protocol: "mcp_task"` and the same `tool` name: its latency is **end to end**, from the moment
+the task was submitted (including any wait in the queue behind busy workers) to its terminal
+state; `requests` counts finished tasks and `failures` the ones that failed. These series are
+left out of `total` and `server_errors`, because the call is already counted by the tool
+series. Values are milliseconds
 rounded to three decimals. Percentiles are **estimates** from a fixed histogram with ten
 buckets per decade (bounds 1, 1.25, 1.6, 2, 2.5, 3.2, 4, 5, 6.3, 8 x 10^n, from
 0.1 ms to 60 s): the quantile's bucket is found and the value interpolated linearly
