@@ -346,3 +346,86 @@ class TestPackedValidateConfig:
         assert "sqls/sqls/" not in output, output
         assert "Template file does not exist" not in output, output
         shutil.rmtree(s.root, ignore_errors=True)
+
+
+COMMENTED_YAML = """\
+# Items endpoint - owned by the data team.
+# Do not remove without checking the dashboard.
+url-path: /items
+method: GET            # read only
+
+# Which database to hit
+connection: [inmem]
+template-source: items.sql
+
+request:
+  # paging
+  - field-name: limit
+    field-in: query
+    required: false
+    default: '10'
+    validators:
+      - type: int   # whole numbers only
+        min: 1
+        max: 100
+
+mcp-tool:
+  name: list_items
+  # the text agents read
+  description: First description
+"""
+
+
+class TestUpdatePreservesComments:
+    """#217: PUT re-emitted the whole file through YAML::Emitter and dropped every comment."""
+
+    def _server(self):
+        s = Server()
+        with open(os.path.join(s.sqls, "items.yaml"), "w") as f:
+            f.write(COMMENTED_YAML)
+        return s
+
+    def _read(self, s):
+        with open(os.path.join(s.sqls, "items.yaml")) as f:
+            return f.read()
+
+    def test_changing_one_key_keeps_every_comment(self):
+        with self._server() as s:
+            r = requests.put(f"{s.base}/api/v1/_config/endpoints/-items", headers=s.auth, timeout=30,
+                             json={"url-path": "/items", "mcp-tool": {"description": "Second description"}})
+            assert r.status_code == 200, r.text
+            text = self._read(s)
+            for comment in ("# Items endpoint - owned by the data team.",
+                            "# Do not remove without checking the dashboard.",
+                            "# read only", "# Which database to hit", "# paging",
+                            "# whole numbers only", "# the text agents read"):
+                assert comment in text, f"lost {comment!r}:\n{text}"
+            on_disk = yaml.safe_load(text)
+            assert on_disk["mcp-tool"]["description"] == "Second description"
+            assert on_disk["mcp-tool"]["name"] == "list_items"
+            assert on_disk["request"][0]["validators"][0]["max"] == 100
+            assert s.tools()["list_items"]["description"] == "Second description"
+
+    def test_changing_a_scalar_keeps_its_inline_comment(self):
+        with self._server() as s:
+            r = requests.put(f"{s.base}/api/v1/_config/endpoints/-items", headers=s.auth, timeout=30,
+                             json={"url-path": "/items", "template-source": "items.sql",
+                                   "connection": ["inmem"], "method": "GET"})
+            assert r.status_code == 200, r.text
+            assert "# read only" in self._read(s)
+
+    def test_adding_a_new_key_keeps_comments_and_result_is_equivalent(self):
+        with self._server() as s:
+            r = requests.put(f"{s.base}/api/v1/_config/endpoints/-items", headers=s.auth, timeout=30,
+                             json={"url-path": "/items", "rate-limit": {"enabled": True, "max": 5, "interval": 60}})
+            assert r.status_code == 200, r.text
+            text = self._read(s)
+            assert "# Items endpoint - owned by the data team." in text
+            assert "# whole numbers only" in text
+            on_disk = yaml.safe_load(text)
+            assert on_disk["rate-limit"]["max"] == 5
+            assert on_disk["request"][0]["field-name"] == "limit"
+            # and the server restarts cleanly on what was written
+            s.stop()
+            s.start()
+            assert requests.get(f"{s.base}/items", timeout=10).status_code == 200
