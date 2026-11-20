@@ -179,9 +179,10 @@ class TestTripleBraceValuesAreBound:
     @pytest.mark.parametrize("payload", ["0 OR 2>1", "0  OR  2 > 1", "1 or 1<2"])
     def test_an_unquoted_site_cannot_be_widened(self, server, payload):
         r = _get(server, "/tbu", name=payload)
-        # Either the screen rejects it or the value is bound (matching nothing).
-        # What it must never do is return every row.
-        assert r.status_code in (200, 400), f"{payload!r} -> {r.status_code} {r.text[:150]}"
+        # Either the screen rejects it, or the value is bound: it matches nothing, or
+        # fails the cast to the column's type (a 500 - the statement never ran with
+        # the payload as SQL). What it must never do is return every row.
+        assert r.status_code in (200, 400, 500), f"{payload!r} -> {r.status_code} {r.text[:150]}"
         if r.status_code == 200:
             assert len(r.json()["data"]) == 0, f"{payload!r} widened the query: {r.text[:200]}"
 

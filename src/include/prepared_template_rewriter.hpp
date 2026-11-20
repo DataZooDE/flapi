@@ -17,6 +17,10 @@ struct PreparedBindingSpec {
     std::string field_name;
     SqlParameterType type = SqlParameterType::Varchar;
     std::size_t position = 0;
+    // True for a value that replaced a quoted `'{{{ params.x }}}'` site: an
+    // absent parameter used to render as '' there, so it binds '' rather
+    // than NULL.
+    bool absent_as_empty = false;
 };
 
 struct PreparedRewriteResult {

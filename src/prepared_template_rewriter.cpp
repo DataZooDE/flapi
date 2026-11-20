@@ -1,6 +1,9 @@
 #include "prepared_template_rewriter.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <initializer_list>
+#include <regex>
 
 #include "config_manager.hpp"
 
@@ -111,6 +114,213 @@ const RequestFieldConfig* findField(const std::string& name,
     return nullptr;
 }
 
+// ---------------------------------------------------------------------------
+// Triple-brace binding (#192)
+//
+// `{{{ params.x }}}` is raw substitution: whatever the validators let through
+// is spliced into the SQL text. For a typed field outside a Mustache section
+// the rewriter binds it instead, so the value can never change the statement:
+//
+//   n = {{{ params.x }}}          ->  n = ?
+//   n = '{{{ params.x }}}'        ->  n = ?             (quotes dropped)
+//   n LIKE '%{{{ params.x }}}%'   ->  n LIKE ('%' || ? || '%')
+//
+// Sites where a `?` is not a value stay literal: inside a section (the number
+// of `?` would then depend on the data), inside `AT (VERSION|TIMESTAMP => ...)`
+// (DuckLake resolves it before parameters are bound, #217), after a keyword
+// that makes the next token a name or a typed literal (`FROM`, `DATE '...'`,
+// `INTERVAL '...'`, `ATTACH '...'`), glued to an identifier, or for an `enum`
+// field used unquoted (a whitelisted identifier such as `ORDER BY`).
+// ---------------------------------------------------------------------------
+
+constexpr bool kHonourTimeTravel = false;  // TEMP (item 4)
+
+struct Span {
+    std::size_t open = 0;    // index of the first character (the opening quote / paren)
+    std::size_t close = 0;   // index of the last character (the closing quote / paren)
+};
+
+bool isIdentChar(char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_' || c == '$';
+}
+
+// Skips one Mustache tag starting at `i` (which points at "{{"); returns the
+// index one past it, or s.size() when it is unterminated.
+std::size_t skipTag(const std::string& s, std::size_t i) {
+    const bool triple = startsWith(s, i, "{{{");
+    const std::size_t end = triple ? s.find("}}}", i + 3) : s.find("}}", i + 2);
+    if (end == std::string::npos) {
+        return s.size();
+    }
+    return end + (triple ? 3 : 2);
+}
+
+// The single-quoted SQL string literals of the template, tags treated as
+// opaque. Comments and double-quoted identifiers are skipped. An unterminated
+// literal ends the scan (nothing after it can be trusted).
+std::vector<Span> findLiterals(const std::string& s, std::vector<Span>& comments) {
+    std::vector<Span> out;
+    std::size_t i = 0;
+    while (i < s.size()) {
+        const char c = s[i];
+        if (startsWith(s, i, "{{")) {
+            i = skipTag(s, i);
+        } else if (startsWith(s, i, "--")) {
+            const std::size_t nl = s.find('\n', i);
+            comments.push_back({i, nl == std::string::npos ? s.size() - 1 : nl});
+            i = nl == std::string::npos ? s.size() : nl + 1;
+        } else if (startsWith(s, i, "/*")) {
+            const std::size_t end = s.find("*/", i + 2);
+            comments.push_back({i, end == std::string::npos ? s.size() - 1 : end + 1});
+            i = end == std::string::npos ? s.size() : end + 2;
+        } else if (c == '"') {
+            const std::size_t end = s.find('"', i + 1);
+            i = end == std::string::npos ? s.size() : end + 1;
+        } else if (c == '\'') {
+            std::size_t j = i + 1;
+            bool closed = false;
+            while (j < s.size()) {
+                if (startsWith(s, j, "{{")) {
+                    j = skipTag(s, j);
+                } else if (s[j] == '\'') {
+                    if (j + 1 < s.size() && s[j + 1] == '\'') {
+                        j += 2;
+                    } else {
+                        closed = true;
+                        break;
+                    }
+                } else {
+                    ++j;
+                }
+            }
+            if (!closed) {
+                return out;
+            }
+            out.push_back({i, j});
+            i = j + 1;
+        } else {
+            ++i;
+        }
+    }
+    return out;
+}
+
+// `AT (VERSION => ...)` / `AT (TIMESTAMP => ...)` argument lists.
+std::vector<Span> findTimeTravelRegions(const std::string& s, const std::vector<Span>& literals) {
+    std::vector<Span> out;
+    static const std::regex at_clause(R"(\bAT\s*\(\s*(VERSION|TIMESTAMP)\s*=>)", std::regex::icase);
+    for (auto it = std::sregex_iterator(s.begin(), s.end(), at_clause); it != std::sregex_iterator(); ++it) {
+        const std::size_t open = s.find('(', static_cast<std::size_t>(it->position()));
+        int depth = 0;
+        std::size_t j = open;
+        std::size_t close = s.size() - 1;
+        while (j < s.size()) {
+            const auto lit = std::find_if(literals.begin(), literals.end(),
+                                          [j](const Span& l) { return l.open == j; });
+            if (lit != literals.end()) {
+                j = lit->close + 1;
+                continue;
+            }
+            if (startsWith(s, j, "{{")) {
+                j = skipTag(s, j);
+                continue;
+            }
+            if (s[j] == '(') {
+                ++depth;
+            } else if (s[j] == ')') {
+                if (--depth == 0) {
+                    close = j;
+                    break;
+                }
+            }
+            ++j;
+        }
+        out.push_back({open, close});
+    }
+    return out;
+}
+
+bool within(const std::vector<Span>& spans, std::size_t pos) {
+    return std::any_of(spans.begin(), spans.end(),
+                       [pos](const Span& sp) { return pos >= sp.open && pos <= sp.close; });
+}
+
+// The identifier-ish word that ends just before `pos` (whitespace skipped),
+// lower-cased, and the character that ends there ('\0' at the start).
+struct Preceding {
+    std::string word;
+    char last = '\0';
+};
+
+Preceding precedingToken(const std::string& s, std::size_t pos) {
+    Preceding out;
+    std::size_t k = pos;
+    while (k > 0 && std::isspace(static_cast<unsigned char>(s[k - 1])) != 0) {
+        --k;
+    }
+    if (k == 0) {
+        return out;
+    }
+    out.last = s[k - 1];
+    if (isIdentChar(out.last)) {
+        std::size_t start = k;
+        while (start > 0 && isIdentChar(s[start - 1])) {
+            --start;
+        }
+        out.word = s.substr(start, k - start);
+        std::transform(out.word.begin(), out.word.end(), out.word.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    }
+    return out;
+}
+
+bool oneOf(const std::string& word, std::initializer_list<const char*> list) {
+    return std::any_of(list.begin(), list.end(), [&word](const char* w) { return word == w; });
+}
+
+// A quoted literal is a plain string value (so a bound string can replace it)
+// unless a word glued to it makes it something else: DATE '..', INTERVAL '..',
+// E'..', ATTACH '..', FROM '..'. Operators, `(`, `,` and the value-taking
+// keywords below leave it a value.
+bool literalIsAValue(const std::string& s, const Span& lit) {
+    const Preceding before = precedingToken(s, lit.open);
+    if (before.last == '\0') {
+        return true;
+    }
+    if (isIdentChar(before.last)) {
+        return oneOf(before.word, {"like", "ilike", "glob", "and", "or", "not", "then", "else", "when",
+                                   "between", "escape", "select"});
+    }
+    return !(before.last == '\'' || before.last == '"' || before.last == ')' || before.last == ']' ||
+             before.last == '}');
+}
+
+// An unquoted `{{{ params.x }}}` is a value (so a `?` can replace it) unless it
+// is part of a name or follows a keyword that expects one.
+bool unquotedIsAValue(const std::string& s, const TagScan& tag) {
+    const auto glued = [](char c) {
+        return isIdentChar(c) || c == '.' || c == '"' || c == '`' || c == '\'';
+    };
+    if (tag.start > 0 && glued(s[tag.start - 1])) {
+        return false;
+    }
+    if (tag.end < s.size() && glued(s[tag.end])) {
+        return false;
+    }
+    const Preceding before = precedingToken(s, tag.start);
+    if (isIdentChar(before.last)) {
+        return !oneOf(before.word, {"from", "join", "into", "table", "update", "by", "as", "using", "attach",
+                                    "detach", "database", "schema", "view", "index", "set", "pragma", "call",
+                                    "on", "exists", "type", "sequence"});
+    }
+    return true;
+}
+
+bool hasValidatorType(const RequestFieldConfig& field, const char* type) {
+    return std::any_of(field.validators.begin(), field.validators.end(),
+                       [type](const ValidatorConfig& v) { return v.type == type; });
+}
+
 } // namespace
 
 PreparedRewriteResult PreparedTemplateRewriter::rewrite(
@@ -121,11 +331,94 @@ PreparedRewriteResult PreparedTemplateRewriter::rewrite(
     PreparedRewriteResult result;
     result.rewritten_template.reserve(template_text.size());
 
+    std::vector<Span> comments;
+    const std::vector<Span> literals = findLiterals(template_text, comments);
+    const std::vector<Span> time_travel = findTimeTravelRegions(template_text, literals);
+    std::size_t next_literal = 0;
+
+    // The `?` (or `('%' || ? || '%')`) a quoted literal becomes, when every tag
+    // in it is a bindable `{{{ params.x }}}`. Values are bound as text, as the
+    // quoted form always was, and an absent one binds '' as it used to render.
+    const auto bindLiteral = [&](const Span& lit, int depth, std::string& replacement,
+                                 std::vector<PreparedBindingSpec>& specs) -> bool {
+        if (depth > 0 || (kHonourTimeTravel && within(time_travel, lit.open)) || !literalIsAValue(template_text, lit)) {
+            return false;
+        }
+        std::vector<std::string> parts;
+        std::size_t at = lit.open + 1;
+        bool any_tag = false;
+        while (at < lit.close) {
+            const std::size_t brace = template_text.find("{{", at);
+            if (brace == std::string::npos || brace >= lit.close) {
+                parts.push_back("'" + template_text.substr(at, lit.close - at) + "'");
+                break;
+            }
+            const TagScan inner = nextTag(template_text, brace);
+            if (inner.kind != TagKind::TripleBrace || inner.end > lit.close) {
+                return false;
+            }
+            const std::string name = paramName(inner.inner);
+            const RequestFieldConfig* field = name.empty() ? nullptr : findField(name, request_fields);
+            if (field == nullptr || !classifier.classify(*field).bindable) {
+                return false;
+            }
+            if (brace > at) {
+                parts.push_back("'" + template_text.substr(at, brace - at) + "'");
+            }
+            parts.push_back("?");
+            PreparedBindingSpec spec;
+            spec.field_name = name;
+            spec.type = SqlParameterType::Varchar;
+            spec.absent_as_empty = true;
+            specs.push_back(std::move(spec));
+            any_tag = true;
+            at = inner.end;
+        }
+        if (!any_tag) {
+            return false;
+        }
+        if (parts.size() == 1) {
+            replacement = parts.front();
+        } else {
+            replacement = "(";
+            for (std::size_t i = 0; i < parts.size(); ++i) {
+                replacement += (i == 0 ? "" : " || ") + parts[i];
+            }
+            replacement += ")";
+        }
+        return true;
+    };
+
     std::size_t cursor = 0;
     int section_depth = 0;
 
     while (cursor < template_text.size()) {
+        while (next_literal < literals.size() && literals[next_literal].open < cursor) {
+            ++next_literal;
+        }
         const TagScan tag = nextTag(template_text, cursor);
+        if (next_literal < literals.size() &&
+            (tag.kind == TagKind::NoTag || literals[next_literal].open < tag.start)) {
+            const Span lit = literals[next_literal++];
+            appendRange(result.rewritten_template, template_text, cursor, lit.open);
+            cursor = lit.open;
+            std::string replacement;
+            std::vector<PreparedBindingSpec> specs;
+            if (bindLiteral(lit, section_depth, replacement, specs)) {
+                result.rewritten_template += replacement;
+                for (auto& spec : specs) {
+                    spec.position = result.bindings.size();
+                    result.bindings.push_back(std::move(spec));
+                }
+                cursor = lit.close + 1;
+            } else {
+                // Left as written: tags inside it take the ordinary route below.
+                // Step over the opening quote so this literal is not offered again.
+                result.rewritten_template += '\'';
+                cursor = lit.open + 1;
+            }
+            continue;
+        }
         if (tag.kind == TagKind::NoTag) {
             appendRange(result.rewritten_template, template_text, cursor, template_text.size());
             break;
@@ -146,14 +439,30 @@ PreparedRewriteResult PreparedTemplateRewriter::rewrite(
                 }
                 appendRange(result.rewritten_template, template_text, tag.start, tag.end);
                 break;
-            case TagKind::TripleBrace:
-                // Out of scope for PR A — operators migrate triple-brace
-                // sites manually (drop surrounding quotes, switch to
-                // double-brace) before they become bindable.
-                appendRange(result.rewritten_template, template_text, tag.start, tag.end);
+            case TagKind::TripleBrace: {
+                // An unquoted value site binds like a double-brace one. A tag in
+                // a literal that was not bound as a whole stays raw (the literal
+                // may be a typed literal such as DATE '...').
+                const std::string name = paramName(tag.inner);
+                const RequestFieldConfig* field = name.empty() ? nullptr : findField(name, request_fields);
+                // A `?` in a comment is not a placeholder, so it must not enter the plan.
+                const Bindability bindability = field != nullptr ? classifier.classify(*field) : Bindability{};
+                if (section_depth > 0 || field == nullptr || !bindability.bindable ||
+                    hasValidatorType(*field, "enum") || within(literals, tag.start) || within(comments, tag.start) ||
+                    (kHonourTimeTravel && within(time_travel, tag.start)) || !unquotedIsAValue(template_text, tag)) {
+                    appendRange(result.rewritten_template, template_text, tag.start, tag.end);
+                    break;
+                }
+                result.rewritten_template += '?';
+                PreparedBindingSpec spec;
+                spec.field_name = name;
+                spec.type = bindability.type;
+                spec.position = result.bindings.size();
+                result.bindings.push_back(std::move(spec));
                 break;
+            }
             case TagKind::DoubleBrace: {
-                if (section_depth > 0) {
+                if (section_depth > 0 || within(comments, tag.start)) {
                     appendRange(result.rewritten_template, template_text, tag.start, tag.end);
                     break;
                 }
