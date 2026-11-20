@@ -121,8 +121,11 @@ void set_log_level(const std::string& log_level) {
     }
 }
 
-std::shared_ptr<ConfigManager> initializeConfig(const std::string& config_file) {
+// `collect_load_errors`: --validate-config mode - an endpoint file that fails to load is
+// recorded (ConfigManager::getLoadErrors) instead of aborting, so every one is reported.
+std::shared_ptr<ConfigManager> initializeConfig(const std::string& config_file, bool collect_load_errors = false) {
     std::shared_ptr<ConfigManager> config_manager = std::make_shared<ConfigManager>(std::filesystem::path(config_file));
+    config_manager->setCollectLoadErrors(collect_load_errors);
     try {
         config_manager->loadConfig();
     } catch (const std::exception& e) {
@@ -252,11 +255,23 @@ int validateConfiguration(std::shared_ptr<ConfigManager> config_manager, const s
     std::cout << "Validating configuration file: " << config_file << std::endl;
     std::cout << "✓ Configuration file loaded successfully" << std::endl;
     std::cout << "✓ Parsed " << config_manager->getEndpoints()->size() << " endpoint(s)" << std::endl;
-    
+
     bool all_valid = true;
     int warnings_count = 0;
     int errors_count = 0;
-    
+
+    // Endpoint files that did not load at all (a Mustache syntax error, a
+    // malformed endpoint): every one, not just the first.
+    const auto& load_errors = config_manager->getLoadErrors();
+    if (!load_errors.empty()) {
+        all_valid = false;
+        std::cerr << "\n✗ " << load_errors.size() << " endpoint file(s) failed to load" << std::endl;
+        for (const auto& error : load_errors) {
+            std::cerr << "  ERROR: " << error << std::endl;
+            errors_count++;
+        }
+    }
+
     for (const auto& endpoint : *config_manager->getEndpoints()) {
         auto result = config_manager->validateEndpointConfig(endpoint);
         std::string endpoint_name = getEndpointName(endpoint);
@@ -798,7 +813,7 @@ int main(int argc, char* argv[])
                 } else {
                     int rc = 0;
                     try {
-                        auto cm = initializeConfig(main_config.string());
+                        auto cm = initializeConfig(main_config.string(), /*collect_load_errors=*/true);
                         rc = validateConfiguration(cm, main_config.string());
                     } catch (const std::exception& e) {
                         std::cerr << "✗ " << e.what() << "\n";
@@ -1160,7 +1175,7 @@ int main(int argc, char* argv[])
     // it is for. Startup config loading is not one of them (#126).
     std::shared_ptr<ConfigManager> config_manager;
     try {
-        config_manager = initializeConfig(config_file);
+        config_manager = initializeConfig(config_file, /*collect_load_errors=*/validate_config);
     } catch (const std::exception& e) {
         CROW_LOG_ERROR << "Configuration error: " << e.what();
         CROW_LOG_ERROR << "flAPI cannot start until the configuration is valid.";

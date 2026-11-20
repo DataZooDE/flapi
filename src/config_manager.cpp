@@ -2,6 +2,9 @@
 #include "config_manager.hpp"
 #include "route_translator.hpp"
 #include "mustache_syntax_check.hpp"
+
+#include <set>
+#include <string_view>
 #include "extension_installer.hpp"
 #include "redaction.hpp"
 #include "endpoint_config_parser.hpp"
@@ -989,6 +992,21 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
 
     size_t total_yaml_files = 0;
     size_t loaded_endpoints = 0;
+    load_errors_.clear();
+
+    // One file at a time: normally the first failure aborts the load (a server
+    // must not start with a file it could not read), but --validate-config
+    // collects them all.
+    auto loadOne = [this](const std::string& file) {
+        try {
+            loadEndpointConfig(file);
+        } catch (const std::exception& e) {
+            if (!collect_load_errors_) {
+                throw;
+            }
+            load_errors_.emplace_back(e.what());
+        }
+    };
 
     // Bundled mode: enumerate endpoint YAMLs by prefix-matching the
     // in-memory archive. EmbeddedArchiveFileProvider::ListFiles is
@@ -1025,7 +1043,7 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
         for (const auto& name : names) {
             total_yaml_files++;
             size_t endpoints_before = endpointsSnapshot()->size();
-            loadEndpointConfig(name);
+            loadOne(name);
             if (endpointsSnapshot()->size() > endpoints_before) {
                 loaded_endpoints++;
             }
@@ -1048,7 +1066,7 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
         for (const auto& file : files) {
             total_yaml_files++;
             size_t endpoints_before = endpointsSnapshot()->size();
-            loadEndpointConfig(file.string());
+            loadOne(file.string());
             if (endpointsSnapshot()->size() > endpoints_before) {
                 loaded_endpoints++;
             }
@@ -3761,6 +3779,63 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
         return std::nullopt;
     };
 
+    // `{{ params.x }}` names a request parameter; one the endpoint does not declare
+    // is either always empty or an unvalidated raw query parameter - a typo in
+    // practice. Only the first segment after `params.` is judged (`params.items.id`
+    // is `items`), and only names under `params.`: conn.*, env.*, cache.*,
+    // context.*, comments and names scoped by a section are never looked at.
+    // Always set by the request handler besides the declared fields: the paging
+    // defaults, and the `:name`s of the url-path.
+    auto undeclaredParamWarnings = [this, &config](const std::string& source) {
+        std::vector<std::string> problems;
+        const std::filesystem::path as_is(source);
+        std::vector<std::filesystem::path> candidates{as_is};
+        if (!as_is.is_absolute()) {
+            candidates.push_back(std::filesystem::path(template_config.path) / as_is);
+        }
+        std::optional<std::string> text;
+        std::string label = source;
+        for (const auto& candidate : candidates) {
+            if ((text = ReadTemplateText(candidate.string()))) {
+                label = candidate.string();
+                break;
+            }
+        }
+        if (!text || CheckMustacheSyntax(*text)) {
+            return problems;   // missing / malformed: reported by the checks around this one
+        }
+        std::set<std::string> known{"limit", "offset"};
+        for (const auto& field : config.request_fields) {
+            known.insert(field.fieldName);
+        }
+        std::vector<std::string> path_names;
+        RouteTranslator::translateRoutePath(config.urlPath, path_names);
+        known.insert(path_names.begin(), path_names.end());
+
+        std::set<std::string> reported;
+        for (const auto& variable : CollectMustacheVariables(*text)) {
+            constexpr std::string_view kPrefix = "params.";
+            if (variable.name.rfind(kPrefix, 0) != 0) {
+                continue;
+            }
+            const std::string rest = variable.name.substr(kPrefix.size());
+            const std::string first = rest.substr(0, rest.find('.'));
+            if (first.empty() || known.count(first) != 0 || !reported.insert(first).second) {
+                continue;
+            }
+            std::string declared;
+            for (const auto& field : config.request_fields) {
+                declared += (declared.empty() ? "" : ", ") + field.fieldName;
+            }
+            problems.push_back(
+                "Template " + label + ":" + std::to_string(variable.line) + ":" + std::to_string(variable.column) +
+                ": '" + variable.name + "' uses request parameter '" + first + "', which endpoint " +
+                config.getIdentifier() + " does not declare in its request: fields" +
+                (declared.empty() ? " (it declares none)" : " (declared: " + declared + ")"));
+        }
+        return problems;
+    };
+
     // Validate template source. NOT for an MCP prompt: it carries its template
     // inline and touches no database, and the loader already knows that (it skips
     // the template-source parse). This held every prompt to the REST rule, so
@@ -3800,6 +3875,14 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
                 // crow would segfault or hang rendering it; an error, not a warning.
                 result.valid = false;
                 result.errors.push_back(*syntax);
+            } else {
+                // A WARNING, not an error: shipped examples share one template
+                // between endpoints that declare different subsets of its
+                // parameters (and MCP tools that declare none), where the rest
+                // arrive as optional undeclared query parameters.
+                for (auto& problem : undeclaredParamWarnings(config.templateSource)) {
+                    result.warnings.push_back(std::move(problem));
+                }
             }
         }
     }
