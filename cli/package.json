@@ -10,6 +10,7 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
     "lint": "eslint . --ext .ts",
     "format": "prettier --write .",
     "start": "node dist/index.js",
