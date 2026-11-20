@@ -6,6 +6,13 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ### Upgrade notes
 
+- **A refresh skipped because one of the same table is already running answers `409` with `Retry-After: 5`**
+  (`{"status":"already_running"}`), no longer `200`. Nothing was refreshed, which a script could not tell from
+  a refresh that ran. `flapii cache refresh` prints it and exits non-zero. `cache/gc` also reports `pinned_by`
+  and `pinned_bytes` when another cached table's retained snapshot still pins this table's old files (it read
+  `nothing_to_expire` / 0 bytes), and validating a populate template against an alias attached before an
+  atomic rename of its file (`?target=cache&validate_only=1`) answers a `stale` warning instead of a bind
+  error against the old file (Linux).
 - **Endpoints whose routes differ only in parameter names are duplicates.** `GET /items/:id` and
   `GET /items/:item_id` match the same requests; both used to load and load order decided which one answered,
   so an endpoint with `auth: {enabled: false}` could shadow an authenticated one. Startup, reload and create now
