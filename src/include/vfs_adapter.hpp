@@ -21,6 +21,19 @@ using ArchiveEntries = std::map<std::string, std::vector<std::uint8_t>>;
 std::string RedactUrlsInText(const std::string& text);
 
 /**
+ * While one of these is alive, DuckDBVFSProvider remembers what it read (and which files exist), so the several
+ * passes of a configuration load (parse, validate, syntax check) fetch each remote file once instead of 3-5 times.
+ * Scoped: the memo is dropped when the last scope ends, so nothing is ever served stale during normal operation.
+ */
+class VFSReadMemoScope {
+public:
+    VFSReadMemoScope();
+    ~VFSReadMemoScope();
+    VFSReadMemoScope(const VFSReadMemoScope&) = delete;
+    VFSReadMemoScope& operator=(const VFSReadMemoScope&) = delete;
+};
+
+/**
  * Exception thrown when a file operation fails. The message is redacted: it ends up
  * in logs and in config-service responses.
  */

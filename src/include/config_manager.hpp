@@ -704,6 +704,9 @@ public:
     /// symlinks included - to a path strictly inside the templates directory. An absolute
     /// or `../` source let a token holder overwrite any file the server can write (#189).
     std::string TemplatePathProblem(const std::string& source) const;
+    // Non-empty when template.path is remote: the config service cannot create, change, delete or
+    // reload endpoint files there (it would write under a mangled local path and claim success).
+    std::string RemoteTemplateStorageProblem() const;
     std::string getCacheSchema() const;
     const std::unordered_map<std::string, ConnectionConfig>& getConnections() const;
     const RateLimitConfig& getRateLimitConfig() const;

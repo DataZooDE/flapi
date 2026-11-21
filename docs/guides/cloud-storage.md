@@ -24,7 +24,6 @@ connections:
 ```sql
 SELECT * FROM read_parquet('{{{ conn.path }}}')
 WHERE event_date >= '{{{ params.since }}}'
-LIMIT 1000
 ```
 
 S3 and Azure credentials come from the environment (`AWS_ACCESS_KEY_ID`,
@@ -81,6 +80,51 @@ per line) at the root of `template.path`. See
 > binary instead: see [self-packaging](./self-packaging.md). Choose cloud config
 > when you want to change configuration without redeploying, and self-packaging
 > when you want the artifact to be complete and fixed.
+
+## Changing things in a bucket
+
+With config and templates in a bucket, "deploying" is uploading files. What takes effect when:
+
+| You change | Takes effect |
+|---|---|
+| a `.sql` template | within one `storage.cache.ttl` (300 s by default); set `storage.cache.enabled: false` for the next request, at the cost of a round trip to the store per render |
+| an endpoint `.yaml` (validators, cache, auth, ...) | after a **restart** |
+| a new endpoint (`.yaml` + `.sql`) | after a restart; on plain http(s) also add the `.yaml` to `manifest.txt`, which is the only source of endpoints there |
+| `flapi.yaml` itself | after a restart |
+
+A template you upload is live as soon as it is read: check it first with
+`flapi -c <config> --validate-config`, ideally as a CI gate before the upload. The config service and the
+`flapi_*` MCP tools cannot create, edit, delete or reload endpoint files in a bucket (they answer 501 and say
+so); they can read them.
+
+## Running it in production
+
+- **Startup time.** flAPI reads every endpoint file before it listens, one request at a time: about 1 listing
+  request plus 4 per endpoint (`HEAD` + `GET` for the YAML and for the SQL). The HTTP port stays closed until the
+  load finishes, so `/health/live` refuses connections meanwhile. Size a Kubernetes `startupProbe` as roughly
+  `4 x endpoints x store round-trip` (200 endpoints at 50 ms is about 40 s) and remember that N replicas starting
+  together send N times that many requests to the store.
+- **Store outages.** A template read that fails after its cache TTL serves the last good copy for up to 15 s per
+  retry (and logs a warning) instead of failing the request; with no cached copy the request is a 500 whose log
+  line carries the store's status and the redacted URL. `/health` does not probe the store.
+- **Credentials** are read from the environment at startup only: short-lived STS tokens are not refreshed, so
+  restart (or use a role the SDK chain refreshes) before they expire.
+- **Offline hosts.** Set `FLAPI_EXTENSIONS_OFFLINE=1` and pre-populate `FLAPI_EXTENSION_DIRECTORY` with the
+  extensions flAPI loads (httpfs for remote reads, plus the others in `duckdb.default-extensions`; trim that list
+  for offline images). `azure` is loaded only when an `az://` path is read.
+- **CI gate.** `flapi -c <config> --validate-config` exits 0/1 (human text on stdout, details on stderr) and
+  needs the bucket credentials, which makes it a real pre-deploy check of what is in the bucket.
+- **`flapi pack`** does not bundle remote templates: it warns, and the packed binary still reads them from the
+  bucket at runtime.
+
+## Who can write the bucket
+
+Whoever can write the template bucket can run arbitrary SQL as the flAPI process: templates and endpoint YAML are
+code. flAPI does not verify an integrity checksum or signature of remote files. Give the bucket (or the prefix)
+**read-only** credentials to flAPI and **write** access to as few people as the code itself would have, enable
+object versioning, and scope the credentials to the one prefix. S3 credentials from the environment are stored as
+a redacted DuckDB secret, so a template cannot read them back, but SQL can still use them to read whatever they
+allow.
 
 ## Full details
 

@@ -2,6 +2,7 @@
 #include <fstream>
 #include <filesystem>
 #include "config_tool_adapter.hpp"
+#include "vfs_adapter.hpp"
 
 #include <openssl/crypto.h>
 #include "config_service.hpp"
@@ -999,7 +1000,7 @@ ConfigToolResult ConfigToolAdapter::executeGetEndpoint(const crow::json::wvalue&
         result["name"] = ep->getName();
         result["path"] = ep->urlPath;
         result["method"] = ep->method;
-        result["template_source"] = ep->templateSource;
+        result["template_source"] = PathSchemeUtils::RedactUrl(ep->templateSource);
 
         // Build connections list efficiently
         auto conn_list = crow::json::wvalue::list();
@@ -1020,6 +1021,9 @@ ConfigToolResult ConfigToolAdapter::executeGetEndpoint(const crow::json::wvalue&
 }
 
 ConfigToolResult ConfigToolAdapter::executeCreateEndpoint(const crow::json::wvalue& args) {
+    if (const auto remote = config_manager_->RemoteTemplateStorageProblem(); !remote.empty()) {
+        return createErrorResult(501, remote);
+    }
     std::string path;  // Declare outside try block for catch access
     std::string method;  // Declare outside try block for catch access
     try {
@@ -1171,6 +1175,9 @@ ConfigToolResult ConfigToolAdapter::executeCreateEndpoint(const crow::json::wval
 }
 
 ConfigToolResult ConfigToolAdapter::executeUpdateEndpoint(const crow::json::wvalue& args) {
+    if (const auto remote = config_manager_->RemoteTemplateStorageProblem(); !remote.empty()) {
+        return createErrorResult(501, remote);
+    }
     std::string path;  // Declare outside try block for catch access
     try {
         // Defensive check: ensure config manager is available
@@ -1249,7 +1256,7 @@ ConfigToolResult ConfigToolAdapter::executeUpdateEndpoint(const crow::json::wval
         result["file"] = outcome.file;
         result["persisted"] = true;
         result["method"] = outcome.config.method;
-        result["template_source"] = outcome.config.templateSource;
+        result["template_source"] = PathSchemeUtils::RedactUrl(outcome.config.templateSource);
 
         CROW_LOG_INFO << "flapi_update_endpoint: updated endpoint " << path << " in " << outcome.file;
         return createSuccessResult(result.dump());
@@ -1265,6 +1272,9 @@ ConfigToolResult ConfigToolAdapter::executeUpdateEndpoint(const crow::json::wval
 }
 
 ConfigToolResult ConfigToolAdapter::executeDeleteEndpoint(const crow::json::wvalue& args) {
+    if (const auto remote = config_manager_->RemoteTemplateStorageProblem(); !remote.empty()) {
+        return createErrorResult(501, remote);
+    }
     std::string path;  // Declare outside try block for catch access
     try {
         // Defensive check: ensure config manager is available
@@ -1344,6 +1354,9 @@ ConfigToolResult ConfigToolAdapter::executeDeleteEndpoint(const crow::json::wval
 }
 
 ConfigToolResult ConfigToolAdapter::executeReloadEndpoint(const crow::json::wvalue& args) {
+    if (const auto remote = config_manager_->RemoteTemplateStorageProblem(); !remote.empty()) {
+        return createErrorResult(501, remote);
+    }
     std::string path;  // Declare outside try block for catch access
     try {
         // Defensive check: ensure config manager is available

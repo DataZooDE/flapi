@@ -27,7 +27,7 @@ StorageBackendStatus VFSHealthChecker::checkPath(const std::string& name,
                                                    const std::string& path) {
     StorageBackendStatus status;
     status.name = name;
-    status.path = path;
+    status.path = PathSchemeUtils::RedactUrl(path);
     status.scheme = getSchemeType(path);
     status.accessible = false;
     status.latency_ms = 0;

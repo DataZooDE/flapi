@@ -11,6 +11,8 @@
 #include <vector>
 #include <exception>
 #include <mutex>
+#include <set>
+#include <map>
 #include <cstring>
 #include <cctype>
 #include <crow/logging.h>
@@ -76,6 +78,29 @@ std::string PathSchemeUtils::RedactUrl(const std::string& url) {
         out.replace(q, std::string::npos, "?<redacted>");
     }
     return out;
+}
+
+namespace {
+// Memo of remote reads during a configuration load (see VFSReadMemoScope).
+std::mutex g_memo_mutex;
+int g_memo_depth = 0;
+std::map<std::string, std::string> g_memo_content;
+std::set<std::string> g_memo_exists;
+
+}  // namespace
+
+VFSReadMemoScope::VFSReadMemoScope() {
+    std::lock_guard<std::mutex> lock(g_memo_mutex);
+    ++g_memo_depth;
+}
+
+VFSReadMemoScope::~VFSReadMemoScope() {
+    std::lock_guard<std::mutex> lock(g_memo_mutex);
+    if (--g_memo_depth <= 0) {
+        g_memo_depth = 0;
+        g_memo_content.clear();
+        g_memo_exists.clear();
+    }
 }
 
 std::string RedactUrlsInText(const std::string& text) {
@@ -370,8 +395,12 @@ struct BootstrapDb {
 // Every call opens its own connection, which keeps the instance alive for the
 // call - nothing holds a FileSystem pointer across calls (#213).
 std::shared_ptr<BootstrapDb> GetBootstrapDb() {
+    // Deliberately never destroyed: closing a DuckDB instance during static destruction races with
+    // httpfs / the main database shutting down (an intermittent SIGABRT on SIGTERM, "corrupted
+    // double-linked list"). The process exit reclaims it.
     static std::mutex mutex;
-    static std::shared_ptr<BootstrapDb> instance;
+    static std::shared_ptr<BootstrapDb>* const leaked = new std::shared_ptr<BootstrapDb>();
+    auto& instance = *leaked;
     std::lock_guard<std::mutex> lock(mutex);
     if (instance) {
         return instance;
@@ -512,6 +541,15 @@ std::string DuckDBVFSProvider::ReadFile(const std::string& path) {
     // This prevents memory spikes from accidentally loading large files.
     constexpr int64_t MAX_FILE_SIZE = 10LL * 1024LL * 1024LL;  // 10 MB
 
+    {
+        std::lock_guard<std::mutex> lock(g_memo_mutex);
+        if (g_memo_depth > 0) {
+            if (const auto hit = g_memo_content.find(path); hit != g_memo_content.end()) {
+                return hit->second;
+            }
+        }
+    }
+
     std::string content;
     try {
         WithFileSystem(path, [&](::duckdb::FileSystem& fs, ::duckdb::FileOpener* opener) {
@@ -556,6 +594,13 @@ std::string DuckDBVFSProvider::ReadFile(const std::string& path) {
                     std::to_string(file_size) + " bytes)");
             }
         });
+        {
+            std::lock_guard<std::mutex> lock(g_memo_mutex);
+            if (g_memo_depth > 0) {
+                g_memo_content[path] = content;
+                g_memo_exists.insert(path);
+            }
+        }
         return content;
     } catch (const FileOperationError&) {
         throw;
@@ -567,6 +612,24 @@ std::string DuckDBVFSProvider::ReadFile(const std::string& path) {
 }
 
 bool DuckDBVFSProvider::FileExists(const std::string& path) {
+    bool memo_active = false;
+    {
+        std::lock_guard<std::mutex> lock(g_memo_mutex);
+        if (g_memo_depth > 0 && g_memo_exists.count(path) > 0) {
+            return true;
+        }
+        memo_active = g_memo_depth > 0;
+    }
+    if (memo_active) {
+        // During a configuration load the file is about to be read anyway: read it once now (it is
+        // memoised) instead of opening it for an existence probe and again for the read.
+        try {
+            ReadFile(path);
+            return true;
+        } catch (const std::exception& e) {
+            return std::string(e.what()).find("File too large") != std::string::npos;
+        }
+    }
     try {
         bool exists = false;
         WithFileSystem(path, [&](::duckdb::FileSystem& fs, ::duckdb::FileOpener* opener) {
@@ -576,6 +639,12 @@ bool DuckDBVFSProvider::FileExists(const std::string& path) {
             auto handle = fs.OpenFile(path, ::duckdb::FileOpenFlags::FILE_FLAGS_READ, opener);
             exists = handle != nullptr;
         });
+        if (exists) {
+            std::lock_guard<std::mutex> lock(g_memo_mutex);
+            if (g_memo_depth > 0) {
+                g_memo_exists.insert(path);
+            }
+        }
         return exists;
     } catch (const std::exception& e) {
         // DuckDB may throw on network errors - log and treat as "file doesn't exist"

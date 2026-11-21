@@ -177,7 +177,6 @@ public:
 private:
     bool _gcs_referenced = true;
     bool _azure_referenced = false;
-    std::map<std::string, std::string> _applied_settings;  // what this manager SET, to tell it from user values
     std::optional<S3Credentials> _s3_credentials;
     std::optional<GCSCredentials> _gcs_credentials;
     std::optional<AzureCredentials> _azure_credentials;
