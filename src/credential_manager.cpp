@@ -10,6 +10,39 @@ namespace flapi {
 // Environment variable names
 namespace {
 
+// The value DuckDB currently holds for a setting, or "" when it is unset (NULL).
+std::string CurrentSetting(duckdb_connection conn, const std::string& name) {
+    duckdb_result result;
+    const std::string query = "SELECT value FROM duckdb_settings() WHERE name = '" + name + "'";
+    std::string value;
+    if (duckdb_query(conn, query.c_str(), &result) == DuckDBSuccess && duckdb_row_count(&result) > 0 &&
+        !duckdb_value_is_null(&result, 0, 0)) {
+        if (char* text = duckdb_value_varchar(&result, 0, 0)) {
+            value = text;
+            duckdb_free(text);
+        }
+    }
+    duckdb_destroy_result(&result);
+    return value;
+}
+
+// A setting the user chose (`duckdb.settings`, a connection init) wins over the
+// environment: it is applied only when DuckDB still holds the built-in default.
+bool ApplyUnlessUserSet(duckdb_connection conn, const std::string& name, const std::string& sql_value,
+                        const std::string& builtin_default = "") {
+    const std::string current = CurrentSetting(conn, name);
+    if (!current.empty() && current != builtin_default) {
+        CROW_LOG_DEBUG << "Keeping user-configured " << name << "; the environment value is not applied";
+        return false;
+    }
+    const std::string query = "SET GLOBAL " + name + " = " + sql_value + ";";
+    if (duckdb_query(conn, query.c_str(), nullptr) != DuckDBSuccess) {
+        CROW_LOG_WARNING << "Failed to set " << name;
+        return false;
+    }
+    return true;
+}
+
 // Credentials come from the environment; a quote in one must not end the literal.
 std::string SqlLiteral(const std::string& value) {
     std::string out;
@@ -206,30 +239,17 @@ bool CredentialManager::configureConnection(duckdb_connection conn) {
         const auto& creds = _s3_credentials.value();
 
         try {
-            // Set S3 region
             if (!creds.region.empty()) {
-                std::string query = "SET GLOBAL s3_region = '" + SqlLiteral(creds.region) + "';";
-                auto result = duckdb_query(conn, query.c_str(), nullptr);
-                if (result != DuckDBSuccess) {
-                    CROW_LOG_WARNING << "Failed to set s3_region";
-                }
+                ApplyUnlessUserSet(conn, "s3_region", "'" + SqlLiteral(creds.region) + "'");
             }
-
-            // Set S3 credentials if provided (for non-instance-profile auth)
+            // Credentials for non-instance-profile auth
             if (!creds.access_key_id.empty() && !creds.secret_access_key.empty()) {
-                std::string query = "SET GLOBAL s3_access_key_id = '" + SqlLiteral(creds.access_key_id) + "';";
-                duckdb_query(conn, query.c_str(), nullptr);
-
-                query = "SET GLOBAL s3_secret_access_key = '" + SqlLiteral(creds.secret_access_key) + "';";
-                duckdb_query(conn, query.c_str(), nullptr);
-
+                ApplyUnlessUserSet(conn, "s3_access_key_id", "'" + SqlLiteral(creds.access_key_id) + "'");
+                ApplyUnlessUserSet(conn, "s3_secret_access_key", "'" + SqlLiteral(creds.secret_access_key) + "'");
                 if (!creds.session_token.empty()) {
-                    query = "SET GLOBAL s3_session_token = '" + SqlLiteral(creds.session_token) + "';";
-                    duckdb_query(conn, query.c_str(), nullptr);
+                    ApplyUnlessUserSet(conn, "s3_session_token", "'" + SqlLiteral(creds.session_token) + "'");
                 }
             }
-
-            // Set custom endpoint if provided
             if (!creds.endpoint.empty()) {
                 // DuckDB's s3_endpoint is `host[:port]`; the URL scheme decides SSL.
                 std::string host = creds.endpoint;
@@ -244,18 +264,14 @@ bool CredentialManager::configureConnection(duckdb_connection conn) {
                 while (!host.empty() && host.back() == '/') {
                     host.pop_back();
                 }
-                std::string query = "SET GLOBAL s3_endpoint = '" + SqlLiteral(host) + "';";
-                duckdb_query(conn, query.c_str(), nullptr);
-
+                ApplyUnlessUserSet(conn, "s3_endpoint", "'" + SqlLiteral(host) + "'");
                 // A custom endpoint (MinIO, a local fake, an S3-compatible store) is
                 // addressed by path: `<bucket>.<host>` rarely resolves there.
                 const bool real_aws = host.size() >= 13 && host.compare(host.size() - 13, 13, "amazonaws.com") == 0;
                 if (!real_aws) {
-                    query = "SET GLOBAL s3_url_style = 'path';";
-                    duckdb_query(conn, query.c_str(), nullptr);
+                    ApplyUnlessUserSet(conn, "s3_url_style", "'path'", "vhost");
                 }
-                query = std::string("SET GLOBAL s3_use_ssl = ") + (use_ssl ? "true" : "false") + ";";
-                duckdb_query(conn, query.c_str(), nullptr);
+                ApplyUnlessUserSet(conn, "s3_use_ssl", use_ssl ? "true" : "false", "true");
             }
 
             CROW_LOG_INFO << "S3 credentials configured in DuckDB";
