@@ -268,7 +268,7 @@ crow::response FilesystemHandler::getFilesystemStructure(const crow::request& re
         
         // Get the template directory path and add to response
         auto template_path = config_manager_->getFullTemplatePath();
-        response["template_path"] = template_path.string();
+        response["template_path"] = PathSchemeUtils::RedactUrl(template_path.string());
         
         // Build the file tree
         crow::json::wvalue::list tree;
@@ -606,6 +606,10 @@ SlugTarget ResolveSlugTarget(const ConfigManager& cm, const std::string& raw_slu
         target.status = 404;
         target.error = "Endpoint not found: " + (path.empty() ? slug : path) +
                        (method.empty() ? std::string() : " with method " + method);
+        if (slug.find('-') != std::string::npos && slug.find("~1") == std::string::npos) {
+            // The usual slip: a '-' in a slug means '/', a literal '-' is written '~1'.
+            target.error += " (in a slug '-' means '/', so write a literal '-' as '~1': /order-items is -order~1items)";
+        }
         return target;
     }
     if (candidates.size() > 1) {
@@ -2190,6 +2194,9 @@ std::optional<YAML::Node> bodyAsDocument(const std::string& body) {
 }  // namespace
 
 crow::response EndpointConfigHandler::createEndpoint(const crow::request& req) {
+    if (const auto remote = config_manager_->RemoteTemplateStorageProblem(); !remote.empty()) {
+        return jsonError(501, remote);
+    }
     try {
         auto doc = bodyAsDocument(req.body);
         if (!doc) {
@@ -2260,6 +2267,9 @@ crow::response EndpointConfigHandler::getEndpointConfigBySlug(const crow::reques
 }
 
 crow::response EndpointConfigHandler::updateExisting(const crow::request& req, const EndpointConfig& existing) {
+    if (const auto remote = config_manager_->RemoteTemplateStorageProblem(); !remote.empty()) {
+        return jsonError(501, remote);
+    }
     auto json = crow::json::load(req.body);
     auto doc = bodyAsDocument(req.body);
     if (!json || !doc) {
@@ -2353,6 +2363,9 @@ crow::response EndpointConfigHandler::updateEndpointConfigBySlug(const crow::req
 }
 
 crow::response EndpointConfigHandler::removeExisting(const EndpointConfig& existing) {
+    if (const auto remote = config_manager_->RemoteTemplateStorageProblem(); !remote.empty()) {
+        return jsonError(501, remote);
+    }
     const std::string file = existing.config_file_path;
     // Exactly this endpoint: by path it removed GET /orders with POST /orders.
     if (!config_manager_->removeEndpoint(existing)) {
@@ -2518,6 +2531,9 @@ crow::response EndpointConfigHandler::validateEndpointConfig(const crow::request
 }
 
 crow::response EndpointConfigHandler::reloadEndpointConfig(const crow::request& req, const std::string& path) {
+    if (const auto remote = config_manager_->RemoteTemplateStorageProblem(); !remote.empty()) {
+        return jsonError(501, remote);
+    }
     try {
         // Known first, so "no such endpoint" (404) and "it exists but its file
         // is broken" are told apart. Both answered 404 "Failed to reload", so a
@@ -2715,7 +2731,9 @@ crow::response EndpointConfigHandler::findEndpointsByTemplate(const crow::reques
         response["endpoints"] = crow::json::wvalue::list();
         
         // Normalize the template path for comparison
-        auto normalized_template = std::filesystem::path(template_path).lexically_normal();
+        auto normalized_template = PathSchemeUtils::IsRemotePath(template_path)
+                                       ? std::filesystem::path(template_path)
+                                       : std::filesystem::path(template_path).lexically_normal();
         
         // Search through all endpoints
         const auto endpoints = config_manager_->getEndpoints();   // pinned snapshot
@@ -2724,6 +2742,10 @@ crow::response EndpointConfigHandler::findEndpointsByTemplate(const crow::reques
         // An endpoint created through the API keeps its template paths relative
         // to the templates directory; only file-loaded ones are absolute.
         const auto normalize = [this](const std::string& source) {
+            // A URL is compared as text: lexically_normal would turn `s3://` into `s3:/`.
+            if (PathSchemeUtils::IsRemotePath(source)) {
+                return std::filesystem::path(source);
+            }
             std::filesystem::path p(source);
             if (p.is_relative()) {
                 p = std::filesystem::path(config_manager_->getTemplateConfig().path) / p;
@@ -2758,7 +2780,7 @@ crow::response EndpointConfigHandler::findEndpointsByTemplate(const crow::reques
                 ep["url_path"] = endpoint.urlPath;
                 ep["method"] = endpoint.method;
                 ep["config_file_path"] = endpoint.config_file_path;
-                ep["template_source"] = endpoint.templateSource;
+                ep["template_source"] = PathSchemeUtils::RedactUrl(endpoint.templateSource);
                 
                 // Add endpoint type info
                 if (endpoint.isRESTEndpoint()) {
@@ -2791,6 +2813,24 @@ crow::response EndpointConfigHandler::findEndpointsByTemplate(const crow::reques
     }
 }
 
+namespace {
+crow::response readRemoteTemplate(const std::string& source) {
+    try {
+        auto provider = FileProviderFactory::CreateProvider(source);
+        crow::json::wvalue response;
+        response["template"] = provider->ReadFile(source);
+        return crow::response(200, response);
+    } catch (const std::exception& e) {
+        return crow::response(502, std::string("Could not read the remote template: ") + e.what());
+    }
+}
+
+crow::response remoteTemplateIsReadOnly() {
+    return crow::response(501, "This template lives in remote storage and is read-only through the config service; "
+                               "edit the file there and restart flAPI (SQL templates are re-read on each request).");
+}
+}  // namespace
+
 crow::response TemplateHandler::getEndpointTemplate(const crow::request& req, const std::string& path) {
     try {
         // Find the endpoint
@@ -2800,6 +2840,9 @@ crow::response TemplateHandler::getEndpointTemplate(const crow::request& req, co
         }
 
         // Read the template file
+        if (PathSchemeUtils::IsRemotePath(endpoint->templateSource)) {
+            return readRemoteTemplate(endpoint->templateSource);
+        }
         auto template_path = resolveTemplatePath(endpoint->templateSource);
         std::ifstream file(template_path);
         if (!file.is_open()) {
@@ -2839,6 +2882,9 @@ crow::response TemplateHandler::updateEndpointTemplate(const crow::request& req,
         }
 
         // Write the template to file
+        if (PathSchemeUtils::IsRemotePath(endpoint->templateSource)) {
+            return remoteTemplateIsReadOnly();
+        }
         auto template_path = resolveTemplatePath(endpoint->templateSource);
         std::error_code mkdir_ec;
         std::filesystem::create_directories(template_path.parent_path(), mkdir_ec);
@@ -3547,6 +3593,9 @@ crow::response TemplateHandler::getCacheTemplate(const crow::request& req, const
             return crow::response(400, "Cache template not configured for this endpoint");
         }
 
+        if (PathSchemeUtils::IsRemotePath(endpoint->cache.template_file.value())) {
+            return readRemoteTemplate(endpoint->cache.template_file.value());
+        }
         auto cache_path = resolveTemplatePath(endpoint->cache.template_file.value());
         std::ifstream file(cache_path);
         if (!file.is_open()) {
@@ -3591,6 +3640,9 @@ crow::response TemplateHandler::updateCacheTemplate(const crow::request& req, co
                                       FormatMustacheSyntaxError(*syntax, endpoint->cache.template_file.value()));
         }
 
+        if (PathSchemeUtils::IsRemotePath(endpoint->cache.template_file.value())) {
+            return remoteTemplateIsReadOnly();
+        }
         auto cache_path = resolveTemplatePath(endpoint->cache.template_file.value());
         std::ofstream file(cache_path);
         if (!file.is_open()) {

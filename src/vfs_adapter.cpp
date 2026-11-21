@@ -11,6 +11,8 @@
 #include <vector>
 #include <exception>
 #include <mutex>
+#include <set>
+#include <map>
 #include <cstring>
 #include <cctype>
 #include <crow/logging.h>
@@ -58,17 +60,163 @@ std::string PathSchemeUtils::RedactUrl(const std::string& url) {
     if (scheme_end == std::string::npos) {
         return url;
     }
-    std::string out = url;
-    if (const auto q = out.find('?', scheme_end); q != std::string::npos) {
-        out.replace(q, std::string::npos, "?<redacted>");
-    }
     const auto host_start = scheme_end + 3;
-    const auto slash = out.find('/', host_start);
-    const auto at = out.find('@', host_start);
-    if (at != std::string::npos && (slash == std::string::npos || at < slash)) {
-        out.erase(host_start, at - host_start + 1);
+    std::string out = url;
+    const auto cut = out.find_first_of("?#", host_start);
+    // `user:pass@host`: the last '@' before the query, when what precedes it looks like
+    // credentials (a ':' before any '/', or no '/' at all) rather than a path segment.
+    const std::string before_query = out.substr(0, cut == std::string::npos ? out.size() : cut);
+    if (const auto at = before_query.rfind('@'); at != std::string::npos && at > host_start) {
+        const std::string seg = before_query.substr(host_start, at - host_start);
+        const auto slash = seg.find('/');
+        const auto colon = seg.find(':');
+        if (slash == std::string::npos || (colon != std::string::npos && colon < slash)) {
+            out.erase(host_start, at - host_start + 1);
+        }
+    }
+    // A fragment is dropped; in the query, only values whose KEY looks like a credential (signature,
+    // token, key, secret, password, SAS parameters, AWS/GCS/Azure auth) are redacted, so unrelated
+    // parameters (`page=2`, `format=csv`) stay readable in logs.
+    if (const auto hash = out.find('#', host_start); hash != std::string::npos) {
+        out.erase(hash);
+    }
+    if (const auto q = out.find('?', host_start); q != std::string::npos) {
+        const std::string query = out.substr(q + 1);
+        std::string rebuilt;
+        std::size_t pos = 0;
+        while (pos <= query.size()) {
+            auto amp = query.find('&', pos);
+            if (amp == std::string::npos) {
+                amp = query.size();
+            }
+            const std::string pair = query.substr(pos, amp - pos);
+            const auto eq = pair.find('=');
+            std::string key = eq == std::string::npos ? pair : pair.substr(0, eq);
+            std::string lowered = key;
+            std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            static const char* const secret_markers[] = {"sig", "token", "key", "secret", "pass", "pwd", "cred",
+                                                          "auth", "x-amz", "x-goog", "sas", "sv", "se", "sp", "sr"};
+            bool secret = false;
+            for (const char* marker : secret_markers) {
+                const std::string m = marker;
+                // Short markers (sv/se/sp/sr: Azure SAS) only as the whole key; others as a substring.
+                secret = secret || (m.size() <= 2 ? lowered == m : lowered.find(m) != std::string::npos);
+            }
+            if (!rebuilt.empty()) {
+                rebuilt += '&';
+            }
+            rebuilt += (secret && eq != std::string::npos) ? key + "=<redacted>" : pair;
+            pos = amp + 1;
+        }
+        out = out.substr(0, q + 1) + rebuilt;
     }
     return out;
+}
+
+namespace {
+// Memo of remote reads during a configuration load (see VFSReadMemoScope).
+std::mutex g_memo_mutex;
+int g_memo_depth = 0;
+std::map<std::string, std::string> g_memo_content;
+std::set<std::string> g_memo_exists;
+
+}  // namespace
+
+VFSReadMemoScope::VFSReadMemoScope() {
+    std::lock_guard<std::mutex> lock(g_memo_mutex);
+    ++g_memo_depth;
+}
+
+VFSReadMemoScope::~VFSReadMemoScope() {
+    std::lock_guard<std::mutex> lock(g_memo_mutex);
+    if (--g_memo_depth <= 0) {
+        g_memo_depth = 0;
+        g_memo_content.clear();
+        g_memo_exists.clear();
+    }
+}
+
+std::string RedactUrlsInText(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    std::size_t pos = 0;
+    while (true) {
+        const auto marker = text.find("://", pos);
+        if (marker == std::string::npos) {
+            out.append(text, pos, std::string::npos);
+            break;
+        }
+        std::size_t start = marker;
+        while (start > pos && (std::isalnum(static_cast<unsigned char>(text[start - 1])) || text[start - 1] == '+' ||
+                               text[start - 1] == '.' || text[start - 1] == '-')) {
+            --start;
+        }
+        std::size_t end = marker + 3;
+        while (end < text.size() && !std::isspace(static_cast<unsigned char>(text[end])) &&
+               std::string("'\"<>(){},").find(text[end]) == std::string::npos) {
+            ++end;
+        }
+        out.append(text, pos, start - pos);
+        out += PathSchemeUtils::RedactUrl(text.substr(start, end - start));
+        pos = end;
+    }
+    return out;
+}
+
+bool PathSchemeUtils::HasDotDotSegment(const std::string& path) {
+    std::string decoded;
+    decoded.reserve(path.size());
+    for (std::size_t i = 0; i < path.size(); ++i) {
+        if (path[i] == '%' && i + 2 < path.size() && std::isxdigit(static_cast<unsigned char>(path[i + 1])) &&
+            std::isxdigit(static_cast<unsigned char>(path[i + 2]))) {
+            const auto hex = [](char c) { return std::isdigit(static_cast<unsigned char>(c)) ? c - '0' : std::tolower(c) - 'a' + 10; };
+            const int value = hex(path[i + 1]) * 16 + hex(path[i + 2]);
+            if (value == '.' || value == '/' || value == '\\') {
+                decoded += static_cast<char>(value);
+                i += 2;
+                continue;
+            }
+        }
+        decoded += path[i] == '\\' ? '/' : path[i];
+    }
+    std::size_t start = 0;
+    while (start <= decoded.size()) {
+        auto end = decoded.find('/', start);
+        if (end == std::string::npos) {
+            end = decoded.size();
+        }
+        if (decoded.compare(start, end - start, "..") == 0) {
+            return true;
+        }
+        start = end + 1;
+    }
+    return false;
+}
+
+std::string PathSchemeUtils::StripQuery(const std::string& url) {
+    // `?` and `#` only mean query/fragment for http(s); in an s3/gs/az key they are name characters.
+    if (!IsHttpPath(url)) {
+        return url;
+    }
+    const auto cut = url.find_first_of("?#");
+    return cut == std::string::npos ? url : url.substr(0, cut);
+}
+
+std::string PathSchemeUtils::JoinUrl(const std::string& base, const std::string& rel) {
+    std::string path = StripQuery(base);
+    const std::string suffix = base.substr(path.size());
+    while (path.size() > 1 && path.back() == '/') {
+        path.pop_back();
+    }
+    std::string tail = rel;
+    while (tail.rfind("./", 0) == 0) {
+        tail.erase(0, 2);
+    }
+    while (!tail.empty() && tail.front() == '/') {
+        tail.erase(0, 1);
+    }
+    return (tail.empty() ? path : path + "/" + tail) + suffix;
 }
 
 bool PathSchemeUtils::IsS3Path(const std::string& path) {
@@ -267,6 +415,7 @@ std::string CleanDuckError(const std::string& raw) {
 
 struct BootstrapDb {
     duckdb_database db = nullptr;
+    std::once_flag azure_once;
     ~BootstrapDb() {
         if (db) {
             duckdb_close(&db);
@@ -281,8 +430,12 @@ struct BootstrapDb {
 // Every call opens its own connection, which keeps the instance alive for the
 // call - nothing holds a FileSystem pointer across calls (#213).
 std::shared_ptr<BootstrapDb> GetBootstrapDb() {
+    // Deliberately never destroyed: closing a DuckDB instance during static destruction races with
+    // httpfs / the main database shutting down (an intermittent SIGABRT on SIGTERM, "corrupted
+    // double-linked list"). The process exit reclaims it.
     static std::mutex mutex;
-    static std::shared_ptr<BootstrapDb> instance;
+    static std::shared_ptr<BootstrapDb>* const leaked = new std::shared_ptr<BootstrapDb>();
+    auto& instance = *leaked;
     std::lock_guard<std::mutex> lock(mutex);
     if (instance) {
         return instance;
@@ -297,12 +450,7 @@ std::shared_ptr<BootstrapDb> GetBootstrapDb() {
     } else if (const auto bundled = BundledExtensionDirectory()) {
         extension_dir = bundled->string();
     }
-    bool offline = BundledExtensionDirectory().has_value();
-    if (const char* flag = std::getenv("FLAPI_EXTENSIONS_OFFLINE"); flag != nullptr && *flag != '\0') {
-        std::string v = flag;
-        std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return std::tolower(c); });
-        offline = (v == "1" || v == "true" || v == "yes" || v == "on");
-    }
+    const bool offline = ExtensionsOfflineRequested();
     duckdb_config config = nullptr;
     if (duckdb_create_config(&config) == DuckDBSuccess) {
         if (!extension_dir.empty()) {
@@ -363,7 +511,8 @@ DuckDBVFSProvider::DuckDBVFSProvider(::duckdb::FileSystem& fs)
     : _file_system(&fs) {
 }
 
-void DuckDBVFSProvider::WithFileSystem(const std::function<void(::duckdb::FileSystem&, ::duckdb::FileOpener*)>& fn) const {
+void DuckDBVFSProvider::WithFileSystem(const std::string& path,
+                                       const std::function<void(::duckdb::FileSystem&, ::duckdb::FileOpener*)>& fn) const {
     if (_file_system) {
         fn(*_file_system, nullptr);
         return;
@@ -378,6 +527,9 @@ void DuckDBVFSProvider::WithFileSystem(const std::function<void(::duckdb::FileSy
         bootstrap = GetBootstrapDb();
         if (duckdb_connect(bootstrap->db, &conn) != DuckDBSuccess) {
             conn = nullptr;
+        } else if (PathSchemeUtils::IsAzurePath(path)) {
+            // The azure extension (a download) and its secret only when an az:// path is read.
+            std::call_once(bootstrap->azure_once, [&] { getGlobalCredentialManager().configureAzure(conn); });
         }
     }
     if (!conn) {
@@ -419,9 +571,18 @@ std::string DuckDBVFSProvider::ReadFile(const std::string& path) {
     // This prevents memory spikes from accidentally loading large files.
     constexpr int64_t MAX_FILE_SIZE = 10LL * 1024LL * 1024LL;  // 10 MB
 
+    {
+        std::lock_guard<std::mutex> lock(g_memo_mutex);
+        if (g_memo_depth > 0) {
+            if (const auto hit = g_memo_content.find(path); hit != g_memo_content.end()) {
+                return hit->second;
+            }
+        }
+    }
+
     std::string content;
     try {
-        WithFileSystem([&](::duckdb::FileSystem& fs, ::duckdb::FileOpener* opener) {
+        WithFileSystem(path, [&](::duckdb::FileSystem& fs, ::duckdb::FileOpener* opener) {
             auto handle = fs.OpenFile(path, ::duckdb::FileOpenFlags::FILE_FLAGS_READ, opener);
             if (!handle) {
                 throw FileOperationError("Failed to open file: " + path);
@@ -442,14 +603,14 @@ std::string DuckDBVFSProvider::ReadFile(const std::string& path) {
                     }
                     content.append(chunk.data(), static_cast<size_t>(got));
                     if (static_cast<int64_t>(content.size()) > MAX_FILE_SIZE) {
-                        throw FileOperationError("File too large: " + PathSchemeUtils::RedactUrl(path) +
+                        throw FileTooLargeError("File too large: " + PathSchemeUtils::RedactUrl(path) +
                                                  " (exceeds " + std::to_string(MAX_FILE_SIZE) + " byte limit)");
                     }
                 }
                 return;
             }
             if (file_size > MAX_FILE_SIZE) {
-                throw FileOperationError(
+                throw FileTooLargeError(
                     "File too large: " + path + " (" + std::to_string(file_size) +
                     " bytes exceeds " + std::to_string(MAX_FILE_SIZE) + " byte limit)");
             }
@@ -463,6 +624,13 @@ std::string DuckDBVFSProvider::ReadFile(const std::string& path) {
                     std::to_string(file_size) + " bytes)");
             }
         });
+        {
+            std::lock_guard<std::mutex> lock(g_memo_mutex);
+            if (g_memo_depth > 0) {
+                g_memo_content[path] = content;
+                g_memo_exists.insert(path);
+            }
+        }
         return content;
     } catch (const FileOperationError&) {
         throw;
@@ -474,15 +642,41 @@ std::string DuckDBVFSProvider::ReadFile(const std::string& path) {
 }
 
 bool DuckDBVFSProvider::FileExists(const std::string& path) {
+    bool memo_active = false;
+    {
+        std::lock_guard<std::mutex> lock(g_memo_mutex);
+        if (g_memo_depth > 0 && g_memo_exists.count(path) > 0) {
+            return true;
+        }
+        memo_active = g_memo_depth > 0;
+    }
+    if (memo_active) {
+        // During a configuration load the file is about to be read anyway: read it once now (it is
+        // memoised) instead of opening it for an existence probe and again for the read.
+        try {
+            ReadFile(path);
+            return true;
+        } catch (const FileTooLargeError&) {
+            return true;  // it exists; it is just over the read limit
+        } catch (const std::exception&) {
+            return false;
+        }
+    }
     try {
         bool exists = false;
-        WithFileSystem([&](::duckdb::FileSystem& fs, ::duckdb::FileOpener* opener) {
+        WithFileSystem(path, [&](::duckdb::FileSystem& fs, ::duckdb::FileOpener* opener) {
             // httpfs does not implement FileExists (the base class answers false for
             // every URL), so ask the way a read would: open it (a missing file throws, which the
             // caller below turns into "does not exist").
             auto handle = fs.OpenFile(path, ::duckdb::FileOpenFlags::FILE_FLAGS_READ, opener);
             exists = handle != nullptr;
         });
+        if (exists) {
+            std::lock_guard<std::mutex> lock(g_memo_mutex);
+            if (g_memo_depth > 0) {
+                g_memo_exists.insert(path);
+            }
+        }
         return exists;
     } catch (const std::exception& e) {
         // DuckDB may throw on network errors - log and treat as "file doesn't exist"
@@ -504,7 +698,7 @@ std::vector<std::string> DuckDBVFSProvider::ListFiles(const std::string& directo
         }
         glob_path += pattern;
 
-        WithFileSystem([&](::duckdb::FileSystem& fs, ::duckdb::FileOpener* opener) {
+        WithFileSystem(glob_path, [&](::duckdb::FileSystem& fs, ::duckdb::FileOpener* opener) {
             for (const auto& file_info : fs.Glob(glob_path, opener)) {
                 result.push_back(file_info.path);
             }

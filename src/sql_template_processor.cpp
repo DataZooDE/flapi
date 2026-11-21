@@ -133,6 +133,15 @@ crow::mustache::template_t SQLTemplateProcessor::compileTemplate(const std::stri
 
 std::string SQLTemplateProcessor::loadTemplateContent(const std::string& templatePath) {
     auto file_provider = config_manager->getFileProvider();
+    if (PathSchemeUtils::IsRemotePath(templatePath)) {
+        // No separate existence probe: it turned a 403, an expired token or a dead store into
+        // "not found" and cost a round trip. ReadFile says what went wrong (status, redacted URL).
+        try {
+            return file_provider->ReadFile(templatePath);
+        } catch (const FileOperationError& e) {
+            throw std::runtime_error("Could not read template " + PathSchemeUtils::RedactUrl(templatePath) + ": " + e.what());
+        }
+    }
     if (!file_provider->FileExists(templatePath)) {
         throw std::runtime_error("Template file not found: " + templatePath);
     }
@@ -155,10 +164,7 @@ std::string SQLTemplateProcessor::getFullTemplatePath(const std::string& templat
 
     // If base path is remote, concatenate strings (can't use std::filesystem)
     if (PathSchemeUtils::IsRemotePath(basePath)) {
-        if (!basePath.empty() && basePath.back() != '/') {
-            basePath += '/';
-        }
-        return basePath + templateSource;
+        return PathSchemeUtils::JoinUrl(basePath, templateSource);
     }
 
     // In bundled mode the endpoint parser already resolved templateSource

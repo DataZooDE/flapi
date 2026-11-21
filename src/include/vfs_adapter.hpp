@@ -15,12 +15,38 @@ namespace flapi {
 using ArchiveEntries = std::map<std::string, std::vector<std::uint8_t>>;
 
 /**
- * Exception thrown when a file operation fails.
+ * `text` with every URL's `user:pass@` and `?query` / `#fragment` replaced, so an
+ * error or log line cannot carry a presigned signature or a password.
+ */
+std::string RedactUrlsInText(const std::string& text);
+
+/**
+ * While one of these is alive, DuckDBVFSProvider remembers what it read (and which files exist), so the several
+ * passes of a configuration load (parse, validate, syntax check) fetch each remote file once instead of 3-5 times.
+ * Scoped: the memo is dropped when the last scope ends, so nothing is ever served stale during normal operation.
+ */
+class VFSReadMemoScope {
+public:
+    VFSReadMemoScope();
+    ~VFSReadMemoScope();
+    VFSReadMemoScope(const VFSReadMemoScope&) = delete;
+    VFSReadMemoScope& operator=(const VFSReadMemoScope&) = delete;
+};
+
+/**
+ * Exception thrown when a file operation fails. The message is redacted: it ends up
+ * in logs and in config-service responses.
  */
 class FileOperationError : public std::runtime_error {
 public:
     explicit FileOperationError(const std::string& message)
-        : std::runtime_error(message) {}
+        : std::runtime_error(RedactUrlsInText(message)) {}
+};
+
+/** A file that exists but exceeds the read limit (distinct from "does not exist"). */
+class FileTooLargeError : public FileOperationError {
+public:
+    explicit FileTooLargeError(const std::string& message) : FileOperationError(message) {}
 };
 
 /**
@@ -109,6 +135,24 @@ public:
      * signatures, tokens) are replaced. Non-URLs are returned unchanged.
      */
     static std::string RedactUrl(const std::string& url);
+
+    /**
+     * The URL without its `?query` / `#fragment` (the part that names the object).
+     */
+    static std::string StripQuery(const std::string& url);
+
+    /**
+     * True when `path` contains a `..` segment, also spelled with percent escapes
+     * (`%2e%2e`, `.%2e`, `..%2f`) or a backslash separator.
+     */
+    static bool HasDotDotSegment(const std::string& path);
+
+    /**
+     * Join a relative file onto a remote base URL, keeping the base's `?query`
+     * (a SAS token, a signed-URL parameter) at the END: `https://h/d?sig=1` +
+     * `a.yaml` -> `https://h/d/a.yaml?sig=1`.
+     */
+    static std::string JoinUrl(const std::string& base, const std::string& rel);
 
     /**
      * Check if a path uses the S3 scheme.
@@ -215,7 +259,8 @@ public:
 
 private:
     // Runs fn with a FileSystem that is valid for the duration of the call.
-    void WithFileSystem(const std::function<void(duckdb::FileSystem&, duckdb::FileOpener*)>& fn) const;
+    void WithFileSystem(const std::string& path,
+                        const std::function<void(duckdb::FileSystem&, duckdb::FileOpener*)>& fn) const;
 
     duckdb::FileSystem* _file_system;  // only set by the explicit-FileSystem constructor
 };

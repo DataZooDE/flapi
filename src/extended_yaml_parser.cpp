@@ -30,6 +30,11 @@ namespace {
 std::string ReadConfigFile(const std::filesystem::path& file_path) {
     const std::string path_str = file_path.string();
     auto provider = FileProviderFactory::CreateProvider(path_str);
+    if (PathSchemeUtils::IsRemotePath(path_str)) {
+        // No separate existence probe: it turned every failure (403, 404, a reset) into the same
+        // "could not open", and doubled the requests. ReadFile says what actually went wrong.
+        return provider->ReadFile(path_str);
+    }
     if (!provider->FileExists(path_str)) {
         throw std::runtime_error("Could not open file: " + path_str);
     }
@@ -692,6 +697,18 @@ bool ExtendedYamlParser::resolveIncludePath(const std::filesystem::path& include
                                            const std::filesystem::path& base_path,
                                            std::filesystem::path& resolved_path,
                                            const std::vector<std::string>& include_paths) {
+    // A remote config (bucket / http) may include only files below its own directory: an absolute
+    // path would read this machine's disk, and `..` cannot be contained textually.
+    if (PathSchemeUtils::IsRemotePath(base_path.string())) {
+        const std::string wanted = include_path.generic_string();
+        if (wanted.empty() || wanted.front() == '/' || include_path.is_absolute() ||
+            PathSchemeUtils::IsRemotePath(wanted) || PathSchemeUtils::HasDotDotSegment(wanted)) {
+            return false;
+        }
+        resolved_path = PathSchemeUtils::JoinUrl(base_path.string(), wanted);
+        return ConfigFileExists(resolved_path);
+    }
+
     // First try relative to base path
     resolved_path = base_path / include_path;
     if (ConfigFileExists(resolved_path)) {

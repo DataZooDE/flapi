@@ -175,6 +175,13 @@ def validate(flapi: str, cfg: Path) -> tuple[bool, str, list[str]]:
     # Only what explains the failure: INFO lines bury it.
     relevant = [line for line in output.splitlines()
                 if re.search(r"ERROR|WARN|✗|[Ee]rror|Missing|Invalid|\[[A-Z_]+\]", line)]
+    if proc.returncode != 0:
+        # An endpoint YAML written before its SQL file is normal mid-edit: `--validate-config` fails only
+        # on the missing template. Do not block the edit; say what is still missing.
+        errors = [line.strip() for line in output.splitlines() if line.strip().startswith("ERROR:")]
+        if errors and all("Template file does not exist" in line for line in errors) \
+                and "failed to load" not in output:
+            return True, "(pending) " + "; ".join(errors[-3:]) + " - write the SQL file next", security
     return proc.returncode == 0, "\n".join(relevant[-40:]) or output[-2000:], security
 
 

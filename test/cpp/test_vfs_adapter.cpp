@@ -571,3 +571,14 @@ TEST_CASE("VFS edge cases", "[vfs][edge]") {
         REQUIRE(content == unicode_content);
     }
 }
+
+TEST_CASE("PathSchemeUtils::JoinUrl keeps the query at the end", "[vfs][url]") {
+    using flapi::PathSchemeUtils;
+    REQUIRE(PathSchemeUtils::JoinUrl("https://h/d", "a.yaml") == "https://h/d/a.yaml");
+    REQUIRE(PathSchemeUtils::JoinUrl("https://h/d/", "./a.yaml") == "https://h/d/a.yaml");
+    REQUIRE(PathSchemeUtils::JoinUrl("https://h/d?sig=1", "a.yaml") == "https://h/d/a.yaml?sig=1");
+    REQUIRE(PathSchemeUtils::JoinUrl("https://h/d/?sig=1&x=2", "sub/a.yaml") == "https://h/d/sub/a.yaml?sig=1&x=2");
+    REQUIRE(PathSchemeUtils::JoinUrl("s3://b/p", "") == "s3://b/p");
+    REQUIRE(PathSchemeUtils::StripQuery("https://h/d/a.yaml?sig=1") == "https://h/d/a.yaml");
+    REQUIRE(PathSchemeUtils::StripQuery("s3://b/k") == "s3://b/k");
+}

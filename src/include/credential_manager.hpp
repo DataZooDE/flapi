@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <map>
 #include <optional>
 #include <memory>
 
@@ -41,6 +42,11 @@ struct GCSCredentials {
     CredentialType type = CredentialType::ENVIRONMENT;
     std::string project_id;
     std::string key_file;           // Path to service account key file
+    // HMAC key pair for gs:// through Google's S3-interoperability API (what DuckDB's
+    // httpfs can use); a service-account key file cannot be used for gs:// reads.
+    std::string hmac_key_id;
+    std::string hmac_secret;
+    std::string endpoint;           // Optional override (S3-compatible gateway / test double)
 };
 
 /**
@@ -163,9 +169,14 @@ public:
     /// applied" warning is only useful then; it was printed whenever
     /// GOOGLE_CLOUD_PROJECT was set, which on a GCP host is always.
     void setGcsReferenced(bool referenced) { _gcs_referenced = referenced; }
+    // Azure: the secret (and the `azure` extension download) is only set up when something reads az://.
+    void setAzureReferenced(bool referenced) { _azure_referenced = referenced; }
+    // Loads the azure extension and creates the azure secret; false when it could not.
+    bool configureAzure(duckdb_connection conn);
 
 private:
     bool _gcs_referenced = true;
+    bool _azure_referenced = false;
     std::optional<S3Credentials> _s3_credentials;
     std::optional<GCSCredentials> _gcs_credentials;
     std::optional<AzureCredentials> _azure_credentials;

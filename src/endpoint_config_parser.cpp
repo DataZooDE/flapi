@@ -32,6 +32,14 @@ EndpointConfigParser::ParseResult EndpointConfigParser::parseFromFile(
         
         YAML::Node yaml_node = parse_result.node;
         std::filesystem::path endpoint_dir = yaml_file_path.parent_path();
+        if (PathSchemeUtils::IsRemotePath(yaml_file_path.string())) {
+            // Directory of the YAML's URL, carrying its ?query (a SAS token / signature that
+            // every sibling file needs) - parent_path() of the whole URL would drop it.
+            const std::string full = yaml_file_path.string();
+            const std::string no_query = PathSchemeUtils::StripQuery(full);
+            const auto slash = no_query.find_last_of('/');
+            endpoint_dir = no_query.substr(0, slash == std::string::npos ? 0 : slash) + full.substr(no_query.size());
+        }
         
         // Parse the endpoint configuration with path resolution
         parseEndpointFromYaml(yaml_node, endpoint_dir, result);
@@ -413,7 +421,11 @@ void EndpointConfigParser::parseTemplateSource(
     // Resolve relative paths to absolute, relative to the YAML file's directory
     if (!endpoint_dir.empty()) {
         std::filesystem::path template_path(template_source);
-        if (!template_path.is_absolute()) {
+        if (PathSchemeUtils::IsRemotePath(template_source)) {
+            config.templateSource = template_source;
+        } else if (PathSchemeUtils::IsRemotePath(endpoint_dir.string())) {
+            config.templateSource = PathSchemeUtils::JoinUrl(endpoint_dir.string(), template_source);
+        } else if (!template_path.is_absolute()) {
             config.templateSource = (endpoint_dir / template_source).string();
         } else {
             config.templateSource = template_source;

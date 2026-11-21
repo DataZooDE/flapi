@@ -87,6 +87,12 @@ Tips:
 - Prefer section includes (`{{include:...}}`) to avoid unintentionally overwriting unrelated keys.
 - Keep shared blocks in small files (e.g., `connections.yaml`, `auth.yaml`) and include them where needed.
 
+**Remote configuration.** When the config (or `template.path`) lives in a bucket or on http(s), an include may only
+reach files **below its own remote directory**: absolute paths, `..`, and `s3://` URLs are refused ("Could not
+resolve include path"), so `{{include from ../common/auth.yaml}}` works from a local checkout but not from the
+bucket. Copy shared files into each release prefix (`releases/v42/common/`) and include them as `common/auth.yaml`.
+See [cloud-storage.md](./cloud-storage.md#releasing-safely).
+
 ## How it works
 
 Both features run **before** the YAML is parsed — the expanded text is what the

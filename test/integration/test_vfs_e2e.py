@@ -355,7 +355,8 @@ class TestVFSPathSecurity:
             # resolved path happens to exist (sqls/../../../etc/passwd from a
             # temp dir is the real /etc/passwd) there is no "does not exist"
             # warning, but the escape warning is always there - and the file
-            # is never read either way.
+            # is never read either way. (A LOCAL configuration only warns; a remote
+            # origin refuses it, see test_remote_templates.py.)
             out = result.stdout.lower()
             assert "escapes template.path" in out or "does not exist" in out, \
                 "Should warn about a template source outside template.path"

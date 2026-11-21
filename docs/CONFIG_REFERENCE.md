@@ -865,18 +865,31 @@ storage:
   before the main database exists, so `--config s3://...` and a remote `template.path` work at startup.
   `httpfs` must be installable (or already in the extension directory) on the host.
 - `--validate-config` checks that each remote template exists, stays under `template.path`, and parses.
-- **Credentials:** verified for S3 (`AWS_*`; a custom `AWS_ENDPOINT_URL` selects SSL from its `http(s)://` scheme and
-  uses path-style URLs unless it is an `amazonaws.com` host). For `gs://` the HMAC secret lives in a connection's
-  `init`, which the pre-database read cannot see, so only public buckets work for the template listing; `az://`
-  needs the DuckDB `azure` extension, which the bootstrap does not load. Use S3-compatible storage, plain http(s),
-  or `flapi pack` for those.
+- **Credentials** come from the environment and are applied before the first remote read (a value you set
+  yourself in `duckdb:` settings or a connection `init` always wins over the environment for `s3_*`):
+
+  | Scheme | Environment | Notes |
+  |---|---|---|
+  | `s3://` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION` | A custom `AWS_ENDPOINT_URL` selects SSL from its `http(s)://` scheme and uses path-style URLs unless it is an `amazonaws.com` host. |
+  | `gs://` | `GCS_ACCESS_KEY_ID`, `GCS_SECRET_ACCESS_KEY` (or the `GS_*` spelling) | An HMAC key pair for Google's S3-interoperability API; a service-account key file (`GOOGLE_APPLICATION_CREDENTIALS`) cannot be used for `gs://` reads. Optional `GCS_ENDPOINT_URL` for an S3-compatible gateway. |
+  | `az://`, `azure://` | `AZURE_STORAGE_CONNECTION_STRING`, or `AZURE_STORAGE_ACCOUNT` + `AZURE_STORAGE_KEY`, or `AZURE_STORAGE_ACCOUNT` + `AZURE_TENANT_ID`/`AZURE_CLIENT_ID` | Loads DuckDB's `azure` extension (installed on first use, only when Azure credentials are set). |
+
+  Because the credentials are created as DuckDB secrets, give your own values as `duckdb:` settings or as a
+  `CREATE SECRET` in a connection `init` (a secret you create wins over the environment's); a plain
+  `SET s3_access_key_id` in an `init` does not override a secret.
+
+  Offline hosts must have `httpfs` (and `azure`) pre-installed in `FLAPI_EXTENSION_DIRECTORY` (see below).
 - **Limits:** each remote file is read whole, up to 10 MB. A manifest entry must be relative to `template.path`
   (or a full URL under it); `..` segments are refused. A local absolute `template-source` is refused when
   `template.path` is remote.
-- **Changes:** SQL templates are read on every request, so an edited remote `.sql` is picked up immediately and
-  `storage.cache` (TTL, default 50 MB) only bounds repeated reads. Endpoint YAMLs are read at startup: restart to
-  pick up changes (`POST /api/v1/_config/endpoints/reload-file` answers 501 for remote paths).
-- A relative `template.path` inside a remote `--config` resolves against the config's URL.
+- **Changes:** remote files are cached by `storage.cache` (on by default, `ttl` 300 s, `max_size_mb` 50): an
+  edited remote `.sql` shows up within one TTL; set `storage.cache.enabled: false` (or a small `ttl`) to see edits
+  on the next request, at the cost of a round trip to the store per render. Endpoint YAMLs are read at startup:
+  restart to pick up changes (`POST /api/v1/_config/endpoints/reload-file` answers 501 for remote paths). The
+  config service reads a remote template (`GET .../template`) but refuses to write one (501): edit it in storage.
+- A relative `template.path` inside a remote `--config` resolves against the config's URL (keeping its `?query`);
+  relative *local* paths in such a config (`ducklake.metadata-path`, connection paths) resolve against the server's
+  working directory.
 - Offline hosts: set `FLAPI_EXTENSION_DIRECTORY` (httpfs pre-installed) and `FLAPI_EXTENSIONS_OFFLINE=1`; the
   bootstrap then neither installs nor auto-loads anything.
 

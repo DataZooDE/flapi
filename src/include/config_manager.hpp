@@ -704,6 +704,9 @@ public:
     /// symlinks included - to a path strictly inside the templates directory. An absolute
     /// or `../` source let a token holder overwrite any file the server can write (#189).
     std::string TemplatePathProblem(const std::string& source) const;
+    // Non-empty when template.path is remote: the config service cannot create, change, delete or
+    // reload endpoint files there (it would write under a mangled local path and claim success).
+    std::string RemoteTemplateStorageProblem() const;
     std::string getCacheSchema() const;
     const std::unordered_map<std::string, ConnectionConfig>& getConnections() const;
     const RateLimitConfig& getRateLimitConfig() const;
@@ -954,6 +957,8 @@ public:
 protected:
     std::filesystem::path config_file;
     bool collect_load_errors_ = false;
+    // Set while the startup scan of template.path loads endpoint files: a template-source outside it is refused.
+    bool enforce_template_containment_ = false;
     std::vector<std::string> load_errors_;
     YAML::Node config;
     std::string project_name;
@@ -1003,6 +1008,9 @@ protected:
         std::mutex m;
     };
     mutable MovableMutex endpoints_mutex;
+    // The remote-template file cache must outlive one call, or its TTL saves nothing.
+    mutable MovableMutex remote_provider_mutex;
+    mutable std::shared_ptr<IFileProvider> remote_caching_provider_;
 
     // Copy the current table, let `mutate` modify the copy, then publish it.
     // Every writer must go through here; nothing mutates a published vector.

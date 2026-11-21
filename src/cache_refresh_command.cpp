@@ -1,4 +1,5 @@
 #include "cache_refresh_command.hpp"
+#include "vfs_adapter.hpp"
 
 #include <crow.h>
 #include <algorithm>
@@ -153,7 +154,11 @@ int RunCacheRefreshCommand(std::shared_ptr<ConfigManager> config_manager,
     // embed:// for the populate SQL: the bundle's when packed, else the config
     // directory. The one-shot never registered it, so a packed binary's refresh
     // of a read_csv('embed://...') cache failed too.
-    RegisterEmbeddedFileSystem(std::filesystem::absolute(config_manager->getBasePath().empty() ? std::string(".") : config_manager->getBasePath()).string());
+    {
+        const std::string base = config_manager->getBasePath();
+        RegisterEmbeddedFileSystem(
+            std::filesystem::absolute(base.empty() || PathSchemeUtils::IsRemotePath(base) ? std::string(".") : base).string());
+    }
     auto cache_manager = db_manager->getCacheManager();
     cache_manager->initializeAuditTables(config_manager);
 

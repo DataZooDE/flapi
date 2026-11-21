@@ -32,6 +32,7 @@
 #include "database_manager.hpp"
 #include "duckdb_embed_fs.hpp"
 #include "pack.hpp"
+#include <optional>
 #include "flapi_telemetry.hpp"
 #include "rate_limit_middleware.hpp"
 #include "config_token_utils.hpp"
@@ -205,7 +206,7 @@ std::string getEndpointName(const EndpointConfig& endpoint) {
 void printValidationErrors(const std::string& endpoint_name, const std::vector<std::string>& errors, int& errors_count) {
     std::cerr << "\n✗ Endpoint: " << endpoint_name << std::endl;
     for (const auto& error : errors) {
-        std::cerr << "  ERROR: " << error << std::endl;
+        std::cerr << "  ERROR: " << flapi::RedactUrlsInText(error) << std::endl;
         errors_count++;
     }
 }
@@ -213,7 +214,7 @@ void printValidationErrors(const std::string& endpoint_name, const std::vector<s
 void printValidationWarnings(const std::string& endpoint_name, const std::vector<std::string>& warnings, int& warnings_count) {
     std::cout << "\n⚠ Endpoint: " << endpoint_name << std::endl;
     for (const auto& warning : warnings) {
-        std::cout << "  WARNING: " << warning << std::endl;
+        std::cout << "  WARNING: " << flapi::RedactUrlsInText(warning) << std::endl;
         warnings_count++;
     }
 }
@@ -252,7 +253,7 @@ void printValidationSummary(bool all_valid, int errors_count, int warnings_count
 }
 
 int validateConfiguration(std::shared_ptr<ConfigManager> config_manager, const std::string& config_file) {
-    std::cout << "Validating configuration file: " << config_file << std::endl;
+    std::cout << "Validating configuration file: " << flapi::PathSchemeUtils::RedactUrl(config_file) << std::endl;
     std::cout << "✓ Configuration file loaded successfully" << std::endl;
     std::cout << "✓ Parsed " << config_manager->getEndpoints()->size() << " endpoint(s)" << std::endl;
 
@@ -267,11 +268,12 @@ int validateConfiguration(std::shared_ptr<ConfigManager> config_manager, const s
         all_valid = false;
         std::cerr << "\n✗ " << load_errors.size() << " endpoint file(s) failed to load" << std::endl;
         for (const auto& error : load_errors) {
-            std::cerr << "  ERROR: " << error << std::endl;
+            std::cerr << "  ERROR: " << flapi::RedactUrlsInText(error) << std::endl;
             errors_count++;
         }
     }
 
+    flapi::VFSReadMemoScope read_memo;  // validation re-reads every template: fetch each remote file once
     for (const auto& endpoint : *config_manager->getEndpoints()) {
         auto result = config_manager->validateEndpointConfig(endpoint);
         std::string endpoint_name = getEndpointName(endpoint);
@@ -281,8 +283,22 @@ int validateConfiguration(std::shared_ptr<ConfigManager> config_manager, const s
             printValidationErrors(endpoint_name, result.errors, errors_count);
         }
         
-        if (!result.warnings.empty()) {
-            printValidationWarnings(endpoint_name, result.warnings, warnings_count);
+        // A template-source file that is not there answers every request with a 500;
+        // for a configuration check that is a failure, not a hint (#236). Only this
+        // command promotes it: creating an endpoint through the config service may
+        // still precede writing its SQL file.
+        std::vector<std::string> missing_templates;
+        std::vector<std::string> other_warnings;
+        for (const auto& warning : result.warnings) {
+            (warning.rfind("Template file does not exist:", 0) == 0 ? missing_templates : other_warnings)
+                .push_back(warning);
+        }
+        if (!missing_templates.empty()) {
+            all_valid = false;
+            printValidationErrors(endpoint_name, missing_templates, errors_count);
+        }
+        if (!other_warnings.empty()) {
+            printValidationWarnings(endpoint_name, other_warnings, warnings_count);
         }
     }
     
@@ -819,6 +835,12 @@ int main(int argc, char* argv[])
                     int rc = 0;
                     try {
                         auto cm = initializeConfig(main_config.string(), /*collect_load_errors=*/true);
+                        if (flapi::PathSchemeUtils::IsRemotePath(cm->getTemplatePath())) {
+                            std::cerr << "flapi pack: warning: template.path is remote ("
+                                      << flapi::PathSchemeUtils::RedactUrl(cm->getTemplatePath())
+                                      << "): the endpoint YAML and SQL are NOT bundled, and the packed binary "
+                                         "still reads them from that storage at runtime (with its credentials).\n";
+                        }
                         rc = validateConfiguration(cm, main_config.string());
                     } catch (const std::exception& e) {
                         std::cerr << "✗ " << e.what() << "\n";
@@ -1178,6 +1200,10 @@ int main(int argc, char* argv[])
     //
     // terminateHandler stays for genuinely unexpected exceptions; that is what
     // it is for. Startup config loading is not one of them (#126).
+    // One memo for the whole startup (load + validation): each remote file is fetched once, not once per
+    // pass. Released before the server starts answering, so requests never see a memoised copy.
+    std::optional<flapi::VFSReadMemoScope> startup_read_memo;
+    startup_read_memo.emplace();
     std::shared_ptr<ConfigManager> config_manager;
     try {
         config_manager = initializeConfig(config_file, /*collect_load_errors=*/validate_config);
@@ -1307,7 +1333,11 @@ int main(int argc, char* argv[])
     // If a bundle was detected at startup, register the embed:// FS
     // on the DuckDB instance so `read_csv('embed://...')` and similar
     // calls inside SQL templates can resolve to the in-memory archive.
-    if (RegisterEmbeddedFileSystem(std::filesystem::absolute(config_manager->getBasePath().empty() ? std::string(".") : config_manager->getBasePath()).string())) {
+    const std::string embed_base =
+        (config_manager->getBasePath().empty() || flapi::PathSchemeUtils::IsRemotePath(config_manager->getBasePath()))
+            ? std::string(".")
+            : config_manager->getBasePath();
+    if (RegisterEmbeddedFileSystem(std::filesystem::absolute(embed_base).string())) {
         CROW_LOG_INFO << "Registered embed:// DuckDB filesystem";
     }
 
@@ -1329,11 +1359,32 @@ int main(int argc, char* argv[])
             }
         }
         flapi::getGlobalCredentialManager().setGcsReferenced(referenced);
+
+        const auto mentions_azure = [](std::string text) {
+            std::transform(text.begin(), text.end(), text.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            // The URL schemes only: a hostname or a file called `azure_costs` must not trigger a download.
+            return text.find("az://") != std::string::npos || text.find("azure://") != std::string::npos ||
+                   text.find("abfss://") != std::string::npos || text.find("abfs://") != std::string::npos;
+        };
+        bool azure_referenced = mentions_azure(config_manager->getTemplatePath()) ||
+                                mentions_azure(config_manager->getBasePath()) ||
+                                mentions_azure(config_manager->getDuckLakeConfig().metadata_path) ||
+                                mentions_azure(config_manager->getDuckLakeConfig().data_path);
+        for (const auto& [name, connection] : config_manager->getConnections()) {
+            azure_referenced = azure_referenced || mentions_azure(connection.getInit());
+            for (const auto& [key, value] : connection.properties) {
+                azure_referenced = azure_referenced || mentions_azure(value);
+            }
+        }
+        flapi::getGlobalCredentialManager().setAzureReferenced(azure_referenced);
     }
     configureCloudCredentialsInDuckDB();
 
     // Verify storage health at startup
     verifyStorageHealth(config_manager);
+
+    startup_read_memo.reset();
 
     // Create unified API server with MCP support (always enabled in unified configuration)
     setApiServer(std::make_shared<APIServer>(

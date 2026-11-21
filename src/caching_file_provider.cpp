@@ -1,4 +1,7 @@
 #include "caching_file_provider.hpp"
+#include <optional>
+#include <algorithm>
+#include <crow/logging.h>
 #include <algorithm>
 #include <crow/logging.h>
 
@@ -65,72 +68,118 @@ std::string CachingFileProvider::ReadFile(const std::string& path) {
         return _underlying->ReadFile(path);
     }
 
+    using Content = std::shared_ptr<const std::string>;
+    Content served;                                    // answered from the cache (fresh, or stale while refreshing)
+    Content stale;                                     // the expired copy the refreshing reader falls back to
+    bool refresher = false;                            // this reader re-fetches an expired entry
+    std::shared_future<Content> follow;                // a cold miss another reader is already fetching
+    std::shared_ptr<std::promise<Content>> lead;       // this reader fetches a cold miss for everyone
+
     {
         std::lock_guard<std::mutex> lock(_cache_mutex);
-
-        // Check cache
-        auto it = _cache.find(path);
+        const auto it = _cache.find(path);
         if (it != _cache.end()) {
             if (!isExpired(it->second)) {
-                // Cache hit
                 it->second.last_access = std::chrono::steady_clock::now();
                 _stats.hits.fetch_add(1);
-                // CROW_LOG_DEBUG << "Cache hit: " << path;
-                return it->second.content;
+                served = it->second.content;
+            } else if (it->second.refreshing) {
+                // Somebody is already re-fetching it: serve the expired copy instead of piling more
+                // reads onto the store (or blocking for as long as a slow store takes).
+                _stats.hits.fetch_add(1);
+                served = it->second.content;
+            } else {
+                it->second.refreshing = true;
+                stale = it->second.content;
+                refresher = true;
             }
-            // Expired - remove from cache
-            size_t entry_size = it->second.size_bytes;
-            _cache.erase(it);
-            _stats.current_entries.fetch_sub(1);
-            _stats.current_size_bytes.fetch_sub(entry_size);
-            // CROW_LOG_DEBUG << "Cache entry expired: " << path;
+        } else if (const auto flight = _inflight.find(path); flight != _inflight.end()) {
+            _stats.hits.fetch_add(1);  // shares the leader's fetch: no extra store read
+            follow = flight->second;
+        } else {
+            lead = std::make_shared<std::promise<Content>>();
+            _inflight.emplace(path, lead->get_future().share());
         }
     }
 
-    // Cache miss - fetch from underlying
+    if (served) {
+        return *served;  // copied outside the lock
+    }
+    if (follow.valid()) {
+        return *follow.get();  // rethrows the leader's error
+    }
+
     _stats.misses.fetch_add(1);
-    // CROW_LOG_DEBUG << "Cache miss: " << path;
+    std::string content;
+    try {
+        content = _underlying->ReadFile(path);
+    } catch (...) {
+        const auto failure = std::current_exception();
+        if (refresher) {
+            // A transient store error (an expired STS token, a 5xx, a blip) must not turn requests into
+            // 500s the moment the TTL passes: keep serving the last good copy and retry in a few seconds.
+            CROW_LOG_WARNING << "Remote read of " << PathSchemeUtils::RedactUrl(path)
+                             << " failed, serving the cached copy past its TTL";
+            std::lock_guard<std::mutex> lock(_cache_mutex);
+            if (const auto it = _cache.find(path); it != _cache.end()) {
+                it->second.refreshing = false;
+                it->second.expires_at = std::chrono::steady_clock::now() +
+                                        std::min<std::chrono::seconds>(_config.ttl, std::chrono::seconds(15));
+            }
+            return *stale;
+        }
+        {
+            std::lock_guard<std::mutex> lock(_cache_mutex);
+            _inflight.erase(path);
+        }
+        lead->set_exception(failure);
+        std::rethrow_exception(failure);
+    }
 
-    std::string content = _underlying->ReadFile(path);
-
-    // Add to cache if within size limits
+    auto fresh = std::make_shared<const std::string>(std::move(content));
     {
         std::lock_guard<std::mutex> lock(_cache_mutex);
-
-        size_t content_size = content.size();
-
-        // Check if this single entry exceeds max size
-        if (content_size > _config.max_size_bytes) {
-            // File too large to cache
-            return content;
+        // Replace whatever expired entry was there (its bytes leave the accounting first).
+        if (const auto old = _cache.find(path); old != _cache.end()) {
+            _stats.current_size_bytes.fetch_sub(old->second.size_bytes);
+            _stats.current_entries.fetch_sub(1);
+            _cache.erase(old);
         }
-
-        // Evict if necessary
-        size_t current_size = _stats.current_size_bytes.load();
-        if (current_size + content_size > _config.max_size_bytes) {
-            evictLRU(content_size);
-        }
-
-        // Add to cache only if not already inserted by a concurrent thread
-        CacheEntry entry;
-        entry.content = content;
-        entry.expires_at = std::chrono::steady_clock::now() + _config.ttl;
-        entry.last_access = std::chrono::steady_clock::now();
-        entry.size_bytes = content_size;
-
-        auto [it, inserted] = _cache.emplace(path, std::move(entry));
-        if (inserted) {
+        const size_t content_size = fresh->size();
+        if (content_size <= _config.max_size_bytes) {
+            if (_stats.current_size_bytes.load() + content_size > _config.max_size_bytes) {
+                evictLRU(content_size);
+            }
+            CacheEntry entry;
+            entry.content = fresh;
+            entry.size_bytes = content_size;
+            entry.expires_at = std::chrono::steady_clock::now() + _config.ttl;
+            entry.last_access = std::chrono::steady_clock::now();
+            _cache.emplace(path, std::move(entry));
             _stats.current_entries.fetch_add(1);
             _stats.current_size_bytes.fetch_add(content_size);
         }
+        if (lead) {
+            _inflight.erase(path);
+        }
     }
-
-    return content;
+    if (lead) {
+        lead->set_value(fresh);
+    }
+    return *fresh;
 }
 
 bool CachingFileProvider::FileExists(const std::string& path) {
-    // FileExists is typically fast, so we don't cache this
-    // This also ensures we get fresh existence checks
+    // A file whose content is cached and not yet expired exists as far as the TTL is concerned:
+    // without this every render still sent a HEAD to the store, and `storage.cache` saved nothing.
+    // Absence is never cached, so a file that appears later is found at once.
+    if (shouldCache(path)) {
+        std::lock_guard<std::mutex> lock(_cache_mutex);
+        const auto it = _cache.find(path);
+        if (it != _cache.end() && !isExpired(it->second)) {
+            return true;
+        }
+    }
     return _underlying->FileExists(path);
 }
 
