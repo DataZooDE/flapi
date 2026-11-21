@@ -71,6 +71,27 @@ std::string PathSchemeUtils::RedactUrl(const std::string& url) {
     return out;
 }
 
+std::string PathSchemeUtils::StripQuery(const std::string& url) {
+    const auto cut = url.find_first_of("?#");
+    return cut == std::string::npos ? url : url.substr(0, cut);
+}
+
+std::string PathSchemeUtils::JoinUrl(const std::string& base, const std::string& rel) {
+    std::string path = StripQuery(base);
+    const std::string suffix = base.substr(path.size());
+    while (path.size() > 1 && path.back() == '/') {
+        path.pop_back();
+    }
+    std::string tail = rel;
+    while (tail.rfind("./", 0) == 0) {
+        tail.erase(0, 2);
+    }
+    while (!tail.empty() && tail.front() == '/') {
+        tail.erase(0, 1);
+    }
+    return (tail.empty() ? path : path + "/" + tail) + suffix;
+}
+
 bool PathSchemeUtils::IsS3Path(const std::string& path) {
     return StartsWithScheme(path, SCHEME_S3);
 }

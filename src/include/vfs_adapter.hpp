@@ -111,6 +111,18 @@ public:
     static std::string RedactUrl(const std::string& url);
 
     /**
+     * The URL without its `?query` / `#fragment` (the part that names the object).
+     */
+    static std::string StripQuery(const std::string& url);
+
+    /**
+     * Join a relative file onto a remote base URL, keeping the base's `?query`
+     * (a SAS token, a signed-URL parameter) at the END: `https://h/d?sig=1` +
+     * `a.yaml` -> `https://h/d/a.yaml?sig=1`.
+     */
+    static std::string JoinUrl(const std::string& base, const std::string& rel);
+
+    /**
      * Check if a path uses the S3 scheme.
      */
     static bool IsS3Path(const std::string& path);
