@@ -2,7 +2,7 @@
 
 All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (the date the binary set was cut). Earlier history is in the git log.
 
-## Unreleased
+## v26.11.21 — remote templates authenticate on S3, GCS and Azure, and stay safe to operate
 
 ### Remote templates: credentials, hardening and operations (#234, #235, #236, #238)
 
