@@ -240,6 +240,8 @@ def test_user_timezone_is_honoured_case_insensitively(root, start, key):
 
 def test_sqlite_write_waits_for_a_slow_populate_on_the_same_connection(root, start):
     db_path = os.path.join(root, "shop.sqlite")
+    marker = os.path.join(root, "populate_started.csv")
+    marker_end = os.path.join(root, "populate_done.csv")
     con = sqlite3.connect(db_path)
     con.execute("CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT)")
     con.executemany("INSERT INTO products (name) VALUES (?)", [(f"p{i}",) for i in range(20)])
@@ -271,9 +273,13 @@ rate_limit:
                         "cache:\n  enabled: true\n  table: products_cache\n  template-file: populate.sql\n"),
         "cached.sql": "SELECT * FROM {{{cache.catalog}}}.{{{cache.schema}}}.{{{cache.table}}} ORDER BY id",
         # Reads the SQLite table, then burns time in DuckDB while still "populating".
-        "populate.sql": ("CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS "
+        # The first statement drops a marker file, so the test knows the populate
+        # (and the lock it holds) is running instead of guessing with a sleep.
+        "populate.sql": ("COPY (SELECT 1 AS x) TO '" + marker + "' (FORMAT csv); "
+                         "CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS "
                          "SELECT p.id, p.name, s.h FROM shop.products p, "
-                         "(SELECT sum(hash(range)) AS h FROM range(__N__)) s"),
+                         "(SELECT sum(hash(range)) AS h FROM range(__N__)) s; "
+                         "COPY (SELECT 1 AS x) TO '" + marker_end + "' (FORMAT csv);"),
         "write.yaml": ("url-path: /products\nmethod: POST\n"
                        "operation:\n  type: write\n  returns-data: false\n  transaction: true\n"
                        "request:\n  - field-name: name\n    field-in: body\n    required: true\n"
@@ -293,7 +299,10 @@ rate_limit:
 
     t = threading.Thread(target=do_refresh)
     t.start()
-    time.sleep(1.0)  # populate is running now
+    deadline = time.time() + 30
+    while not os.path.exists(marker) and time.time() < deadline:
+        time.sleep(0.02)
+    assert os.path.exists(marker), "the populate never started\n" + s.output()[-2000:]
     w = requests.post(f"{s.base}/products", json={"name": "during-populate"}, timeout=300)
     write_end = time.time()
     t.join(timeout=300)
@@ -302,8 +311,11 @@ rate_limit:
     duration = refresh["end"] - refresh["start"]
     assert duration > 2.5, f"populate too fast ({duration:.1f}s) to prove anything; raise the range"
     assert w.status_code < 500, f"write got {w.status_code}: {w.text}\n{s.output()[-2000:]}"
-    assert write_end >= refresh["end"] - 0.05, (
-        f"the write completed {refresh['end'] - write_end:.1f}s BEFORE the populate it overlapped")
+    # The populate's last statement writes `marker_end` while it still holds the
+    # lock; the HTTP response of the refresh arrives later, so it is the wrong clock.
+    populate_done = os.path.getmtime(marker_end)
+    assert write_end >= populate_done - 0.05, (
+        f"the write completed {populate_done - write_end:.1f}s BEFORE the populate it overlapped")
 
 
 # ------------------------------------------------------------------ #217 DECIMAL

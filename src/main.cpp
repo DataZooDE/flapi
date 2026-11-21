@@ -320,6 +320,11 @@ void configureCloudCredentialsInDuckDB() {
 void verifyStorageHealth(std::shared_ptr<ConfigManager> config_manager) {
     flapi::VFSHealthChecker health_checker;
     std::string config_path = config_manager->getBasePath();
+    // A remote --config was just read successfully; its parent "directory" is not a
+    // listable object, so probing it only produces a false warning.
+    if (flapi::PathSchemeUtils::IsRemotePath(config_path)) {
+        config_path.clear();
+    }
     std::string templates_path = config_manager->getTemplatePath();
     health_checker.verifyStartupHealth(config_path, templates_path);
 }

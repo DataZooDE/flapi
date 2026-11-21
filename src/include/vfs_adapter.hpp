@@ -105,6 +105,12 @@ public:
     static bool IsRemotePath(const std::string& path);
 
     /**
+     * A URL safe to log: `user:pass@` and the query string (presigned-URL
+     * signatures, tokens) are replaced. Non-URLs are returned unchanged.
+     */
+    static std::string RedactUrl(const std::string& url);
+
+    /**
      * Check if a path uses the S3 scheme.
      */
     static bool IsS3Path(const std::string& path);

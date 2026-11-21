@@ -428,3 +428,9 @@ httpfs and the environment credentials, so the configuration can be read before 
 exists. Endpoint YAMLs under a remote `template.path` are found by `ConfigManager::listRemoteEndpointFiles`:
 a recursive glob for s3/gs/az, or `manifest.txt` for plain http(s) and as the fallback. See
 [CONFIG_REFERENCE](../../CONFIG_REFERENCE.md#remote-template-paths).
+
+The bootstrap instance runs before the config is parsed, so it cannot read `duckdb.extension_directory` from the
+file it is fetching. It uses `FLAPI_EXTENSION_DIRECTORY` (or a bundle's embedded extensions) instead, and with
+`FLAPI_EXTENSIONS_OFFLINE=1` (default for a bundle that carries extensions) it skips `INSTALL httpfs` and only
+runs `LOAD httpfs`, logging a warning if it is missing. Air-gapped hosts that boot from a remote `--config`
+must therefore pre-install httpfs into `FLAPI_EXTENSION_DIRECTORY`.
