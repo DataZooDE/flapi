@@ -281,8 +281,22 @@ int validateConfiguration(std::shared_ptr<ConfigManager> config_manager, const s
             printValidationErrors(endpoint_name, result.errors, errors_count);
         }
         
-        if (!result.warnings.empty()) {
-            printValidationWarnings(endpoint_name, result.warnings, warnings_count);
+        // A template-source file that is not there answers every request with a 500;
+        // for a configuration check that is a failure, not a hint (#236). Only this
+        // command promotes it: creating an endpoint through the config service may
+        // still precede writing its SQL file.
+        std::vector<std::string> missing_templates;
+        std::vector<std::string> other_warnings;
+        for (const auto& warning : result.warnings) {
+            (warning.rfind("Template file does not exist:", 0) == 0 ? missing_templates : other_warnings)
+                .push_back(warning);
+        }
+        if (!missing_templates.empty()) {
+            all_valid = false;
+            printValidationErrors(endpoint_name, missing_templates, errors_count);
+        }
+        if (!other_warnings.empty()) {
+            printValidationWarnings(endpoint_name, other_warnings, warnings_count);
         }
     }
     

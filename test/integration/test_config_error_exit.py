@@ -143,6 +143,15 @@ class TestValidateConfigReportsEverything:
         assert "WARNING" in out and "params.nope" in out, out
         assert "b.sql" in out or "/b" in out, out
 
+    def test_a_missing_template_file_fails_validation(self):
+        # #236: the file named by template-source is not there. Every request would
+        # 500, so a configuration check must not say PASSED.
+        project = make_project({"m.yaml": endpoint_yaml("/m", "gone.sql")})
+        r, out = validate(project)
+        assert r.returncode == 1, out
+        assert "Template file does not exist" in out and "gone.sql" in out, out
+        assert "FAILED" in out, out
+
     def test_valid_templates_are_not_flagged(self):
         # Every shape that must NOT be reported: path/header/body fields,
         # section-scoped names, conn/env/cache/context, comments, the always-set
