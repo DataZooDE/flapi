@@ -865,6 +865,20 @@ storage:
   before the main database exists, so `--config s3://...` and a remote `template.path` work at startup.
   `httpfs` must be installable (or already in the extension directory) on the host.
 - `--validate-config` checks that each remote template exists, stays under `template.path`, and parses.
+- **Credentials:** verified for S3 (`AWS_*`; a custom `AWS_ENDPOINT_URL` selects SSL from its `http(s)://` scheme and
+  uses path-style URLs unless it is an `amazonaws.com` host). For `gs://` the HMAC secret lives in a connection's
+  `init`, which the pre-database read cannot see, so only public buckets work for the template listing; `az://`
+  needs the DuckDB `azure` extension, which the bootstrap does not load. Use S3-compatible storage, plain http(s),
+  or `flapi pack` for those.
+- **Limits:** each remote file is read whole, up to 10 MB. A manifest entry must be relative to `template.path`
+  (or a full URL under it); `..` segments are refused. A local absolute `template-source` is refused when
+  `template.path` is remote.
+- **Changes:** SQL templates are read on every request, so an edited remote `.sql` is picked up immediately and
+  `storage.cache` (TTL, default 50 MB) only bounds repeated reads. Endpoint YAMLs are read at startup: restart to
+  pick up changes (`POST /api/v1/_config/endpoints/reload-file` answers 501 for remote paths).
+- A relative `template.path` inside a remote `--config` resolves against the config's URL.
+- Offline hosts: set `FLAPI_EXTENSION_DIRECTORY` (httpfs pre-installed) and `FLAPI_EXTENSIONS_OFFLINE=1`; the
+  bootstrap then neither installs nor auto-loads anything.
 
 #### Supported URI Schemes
 

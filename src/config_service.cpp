@@ -2580,6 +2580,13 @@ crow::response EndpointConfigHandler::reloadEndpointFile(const crow::request& re
         if (FileProviderFactory::GetBundleContents() != nullptr) {
             return fail(409, "This server runs from a packed bundle; its configuration is read-only");
         }
+        if (PathSchemeUtils::IsRemotePath(std::string(json["file"].s())) ||
+            PathSchemeUtils::IsRemotePath(config_manager_->getTemplateConfig().path)) {
+            // A URL is not a filesystem path: it used to be mangled ("http:/host") and
+            // reported as a deleted file, unloading the endpoint.
+            return fail(501, "reload-file does not support a remote template.path; restart flAPI to re-read "
+                             "endpoint YAMLs from remote storage (SQL templates are read on each request)");
+        }
         std::filesystem::path file = std::string(json["file"].s());
         if (file.is_relative()) {
             file = std::filesystem::path(config_manager_->getBasePath()) / file;

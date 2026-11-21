@@ -73,6 +73,10 @@ way; plain `https://` has no directory listing, so add a `manifest.txt` (one end
 per line) at the root of `template.path`. See
 [CONFIG_REFERENCE](../CONFIG_REFERENCE.md#remote-template-paths).
 
+> **Air-gapped hosts:** a remote `--config` is read before the config exists, so `duckdb.extension_directory`
+> in that file does not apply to this first read. Set `FLAPI_EXTENSION_DIRECTORY` (httpfs pre-installed there)
+> and `FLAPI_EXTENSIONS_OFFLINE=1` in the environment instead.
+
 > The alternative for immutable deployments is to bake the config tree into the
 > binary instead: see [self-packaging](./self-packaging.md). Choose cloud config
 > when you want to change configuration without redeploying, and self-packaging

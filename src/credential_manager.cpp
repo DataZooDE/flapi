@@ -9,6 +9,19 @@ namespace flapi {
 
 // Environment variable names
 namespace {
+
+// Credentials come from the environment; a quote in one must not end the literal.
+std::string SqlLiteral(const std::string& value) {
+    std::string out;
+    out.reserve(value.size());
+    for (const char ch : value) {
+        out += ch;
+        if (ch == '\'') {
+            out += '\'';
+        }
+    }
+    return out;
+}
     // S3 / AWS
     constexpr const char* AWS_ACCESS_KEY_ID = "AWS_ACCESS_KEY_ID";
     constexpr const char* AWS_SECRET_ACCESS_KEY = "AWS_SECRET_ACCESS_KEY";
@@ -195,7 +208,7 @@ bool CredentialManager::configureConnection(duckdb_connection conn) {
         try {
             // Set S3 region
             if (!creds.region.empty()) {
-                std::string query = "SET s3_region = '" + creds.region + "';";
+                std::string query = "SET GLOBAL s3_region = '" + SqlLiteral(creds.region) + "';";
                 auto result = duckdb_query(conn, query.c_str(), nullptr);
                 if (result != DuckDBSuccess) {
                     CROW_LOG_WARNING << "Failed to set s3_region";
@@ -204,28 +217,45 @@ bool CredentialManager::configureConnection(duckdb_connection conn) {
 
             // Set S3 credentials if provided (for non-instance-profile auth)
             if (!creds.access_key_id.empty() && !creds.secret_access_key.empty()) {
-                std::string query = "SET s3_access_key_id = '" + creds.access_key_id + "';";
+                std::string query = "SET GLOBAL s3_access_key_id = '" + SqlLiteral(creds.access_key_id) + "';";
                 duckdb_query(conn, query.c_str(), nullptr);
 
-                query = "SET s3_secret_access_key = '" + creds.secret_access_key + "';";
+                query = "SET GLOBAL s3_secret_access_key = '" + SqlLiteral(creds.secret_access_key) + "';";
                 duckdb_query(conn, query.c_str(), nullptr);
 
                 if (!creds.session_token.empty()) {
-                    query = "SET s3_session_token = '" + creds.session_token + "';";
+                    query = "SET GLOBAL s3_session_token = '" + SqlLiteral(creds.session_token) + "';";
                     duckdb_query(conn, query.c_str(), nullptr);
                 }
             }
 
             // Set custom endpoint if provided
             if (!creds.endpoint.empty()) {
-                std::string query = "SET s3_endpoint = '" + creds.endpoint + "';";
+                // DuckDB's s3_endpoint is `host[:port]`; the URL scheme decides SSL.
+                std::string host = creds.endpoint;
+                bool use_ssl = creds.use_ssl;
+                for (const std::string scheme : {"https://", "http://"}) {
+                    if (host.rfind(scheme, 0) == 0) {
+                        use_ssl = (scheme == "https://");
+                        host.erase(0, scheme.size());
+                        break;
+                    }
+                }
+                while (!host.empty() && host.back() == '/') {
+                    host.pop_back();
+                }
+                std::string query = "SET GLOBAL s3_endpoint = '" + SqlLiteral(host) + "';";
                 duckdb_query(conn, query.c_str(), nullptr);
 
-                // If custom endpoint, typically disable SSL verification for local testing
-                if (!creds.use_ssl) {
-                    query = "SET s3_use_ssl = false;";
+                // A custom endpoint (MinIO, a local fake, an S3-compatible store) is
+                // addressed by path: `<bucket>.<host>` rarely resolves there.
+                const bool real_aws = host.size() >= 13 && host.compare(host.size() - 13, 13, "amazonaws.com") == 0;
+                if (!real_aws) {
+                    query = "SET GLOBAL s3_url_style = 'path';";
                     duckdb_query(conn, query.c_str(), nullptr);
                 }
+                query = std::string("SET GLOBAL s3_use_ssl = ") + (use_ssl ? "true" : "false") + ";";
+                duckdb_query(conn, query.c_str(), nullptr);
             }
 
             CROW_LOG_INFO << "S3 credentials configured in DuckDB";
@@ -258,14 +288,14 @@ bool CredentialManager::configureConnection(duckdb_connection conn) {
         try {
             // Azure credentials can be configured via connection string
             if (!creds.connection_string.empty()) {
-                std::string query = "SET azure_storage_connection_string = '" +
-                                    creds.connection_string + "';";
+                std::string query = "SET GLOBAL azure_storage_connection_string = '" +
+                                    SqlLiteral(creds.connection_string) + "';";
                 duckdb_query(conn, query.c_str(), nullptr);
             } else if (!creds.account_name.empty() && !creds.account_key.empty()) {
-                std::string query = "SET azure_account_name = '" + creds.account_name + "';";
+                std::string query = "SET GLOBAL azure_account_name = '" + SqlLiteral(creds.account_name) + "';";
                 duckdb_query(conn, query.c_str(), nullptr);
 
-                query = "SET azure_account_key = '" + creds.account_key + "';";
+                query = "SET GLOBAL azure_account_key = '" + SqlLiteral(creds.account_key) + "';";
                 duckdb_query(conn, query.c_str(), nullptr);
             }
 

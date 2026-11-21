@@ -1024,6 +1024,7 @@ std::vector<std::string> ConfigManager::listRemoteEndpointFiles(const std::strin
     const std::string base = root.back() == '/' ? root : root + "/";
 
     std::vector<std::string> found;
+    std::string listing_error;
     if (!PathSchemeUtils::IsHttpPath(root)) {
         for (const char* pattern : {"**/*.yaml", "**/*.yml"}) {
             try {
@@ -1031,7 +1032,11 @@ std::vector<std::string> ConfigManager::listRemoteEndpointFiles(const std::strin
                     found.push_back(file);
                 }
             } catch (const std::exception& e) {
-                CROW_LOG_DEBUG << "Remote listing of " << root << " (" << pattern << ") failed: " << e.what();
+                if (listing_error.empty()) {
+                    listing_error = e.what();
+                }
+                CROW_LOG_WARNING << "Remote listing of " << PathSchemeUtils::RedactUrl(root) << " (" << pattern
+                                 << ") failed: " << e.what();
             }
         }
     }
@@ -1043,8 +1048,10 @@ std::vector<std::string> ConfigManager::listRemoteEndpointFiles(const std::strin
             text = provider->ReadFile(manifest);
         } catch (const std::exception& e) {
             throw std::runtime_error(
-                "Cannot list endpoint files under " + root + ": no files matched and the manifest " +
-                manifest + " could not be read (" + e.what() + "). A remote template.path needs "
+                "Cannot list endpoint files under " + PathSchemeUtils::RedactUrl(root) + ": " +
+                (listing_error.empty() ? std::string("no files matched")
+                                       : "listing failed (" + listing_error + ")") +
+                " and the manifest " + PathSchemeUtils::RedactUrl(manifest) + " could not be read (" + e.what() + "). A remote template.path needs "
                 "either a store that supports listing (s3://, gs://, az://) or a manifest.txt at "
                 "its root naming each endpoint YAML, one relative path per line.");
         }
@@ -1060,10 +1067,29 @@ std::vector<std::string> ConfigManager::listRemoteEndpointFiles(const std::strin
             }
             const auto last = line.find_last_not_of(" \t\r");
             std::string entry = line.substr(first, last - first + 1);
-            if (entry.find("..") != std::string::npos) {
+            // `..` as a path segment (a name like `a..b.yaml` is fine); an entry that is
+            // a full URL must stay under template.path, or a tampered manifest could
+            // point the server at another bucket or host with this server's credentials.
+            std::string lowered_entry = entry;
+            std::transform(lowered_entry.begin(), lowered_entry.end(), lowered_entry.begin(),
+                           [](unsigned char ch) { return std::tolower(ch); });
+            const bool dotdot = entry == ".." || entry.rfind("../", 0) == 0 || entry.find("/../") != std::string::npos ||
+                                (entry.size() >= 3 && entry.compare(entry.size() - 3, 3, "/..") == 0) ||
+                                lowered_entry.find("%2e%2e") != std::string::npos;
+            if (dotdot) {
                 throw std::runtime_error("Manifest entry escapes template.path: " + entry);
             }
-            found.push_back(PathSchemeUtils::IsRemotePath(entry) ? entry : base + entry);
+            if (PathSchemeUtils::IsRemotePath(entry)) {
+                if (entry.rfind(base, 0) != 0) {
+                    throw std::runtime_error("Manifest entry is outside template.path: " + entry);
+                }
+                found.push_back(entry);
+            } else {
+                if (std::filesystem::path(entry).is_absolute() || entry.front() == '/') {
+                    throw std::runtime_error("Manifest entry must be relative to template.path: " + entry);
+                }
+                found.push_back(base + entry);
+            }
         }
     }
 
@@ -1074,7 +1100,7 @@ std::vector<std::string> ConfigManager::listRemoteEndpointFiles(const std::strin
 
 // Endpoint configuration methods
 void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& template_path) {
-    CROW_LOG_INFO << "Loading endpoint configs recursively from: " << template_path;
+    CROW_LOG_INFO << "Loading endpoint configs recursively from: " << PathSchemeUtils::RedactUrl(template_path.string());
     mutateEndpointsVoid([](std::vector<EndpointConfig>& eps) { eps.clear(); });
 
     size_t total_yaml_files = 0;
@@ -2586,7 +2612,16 @@ std::string ConfigManager::TemplatePathProblem(const std::string& source) const 
     if (PathSchemeUtils::IsRemotePath(getTemplatePath()) || PathSchemeUtils::IsRemotePath(source)) {
         // A URL has no symlinks and no cwd: judged as text. Inside means "starts with
         // template.path and never steps up with `..`".
-        if (source.find("/../") != std::string::npos || source.rfind("../", 0) == 0) {
+        std::string lowered = source;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char ch) { return std::tolower(ch); });
+        if (source.find("/../") != std::string::npos || source.rfind("../", 0) == 0 ||
+            lowered.find("%2e%2e") != std::string::npos || lowered.find("%2f..") != std::string::npos) {
+            return "template path '" + source + "' is outside the templates directory";
+        }
+        // A local absolute path would be read from this machine's disk, not from
+        // the remote template directory: it is never "inside" a remote root.
+        if (!PathSchemeUtils::IsRemotePath(source) &&
+            (std::filesystem::path(source).is_absolute() || source.front() == '/' || source.front() == '\\')) {
             return "template path '" + source + "' is outside the templates directory";
         }
         if (PathSchemeUtils::IsRemotePath(source)) {
