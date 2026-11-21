@@ -1,5 +1,6 @@
 #include "endpoint_config_parser.hpp"
 #include "tracing_config.hpp"
+#include "vfs_adapter.hpp"
 #include <crow/logging.h>
 #include <algorithm>
 #include <cctype>
@@ -37,7 +38,10 @@ EndpointConfigParser::ParseResult EndpointConfigParser::parseFromFile(
         
         // Store the config file path for reloading
         if (result.success) {
-            result.config.config_file_path = std::filesystem::absolute(yaml_file_path).string();
+            // A remote path is not a filesystem path: absolute() would put the cwd in front of it.
+            result.config.config_file_path = PathSchemeUtils::IsRemotePath(yaml_file_path.string())
+                                                 ? yaml_file_path.string()
+                                                 : std::filesystem::absolute(yaml_file_path).string();
         }
         
     } catch (const std::exception& e) {

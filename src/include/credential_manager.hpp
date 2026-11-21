@@ -4,6 +4,8 @@
 #include <optional>
 #include <memory>
 
+#include "duckdb.h"
+
 namespace flapi {
 
 /**
@@ -140,6 +142,12 @@ public:
      * @return true if configuration was successful
      */
     bool configureDuckDB();
+
+    /**
+     * Apply the credentials to an existing connection (used for the bootstrap
+     * instance that reads a remote config before DatabaseManager exists).
+     */
+    bool configureConnection(duckdb_connection conn);
 
     /**
      * Get credential type as string for logging.
