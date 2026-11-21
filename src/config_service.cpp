@@ -606,6 +606,10 @@ SlugTarget ResolveSlugTarget(const ConfigManager& cm, const std::string& raw_slu
         target.status = 404;
         target.error = "Endpoint not found: " + (path.empty() ? slug : path) +
                        (method.empty() ? std::string() : " with method " + method);
+        if (slug.find('-') != std::string::npos && slug.find("~1") == std::string::npos) {
+            // The usual slip: a '-' in a slug means '/', a literal '-' is written '~1'.
+            target.error += " (in a slug '-' means '/', so write a literal '-' as '~1': /order-items is -order~1items)";
+        }
         return target;
     }
     if (candidates.size() > 1) {

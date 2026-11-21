@@ -252,3 +252,42 @@ class TestSmallFixes:
 
     def test_compaction_schedule_without_enabled_warns(self, server):
         assert "ducklake.compaction.schedule has no effect unless compaction.enabled: true" in server.output()
+
+
+def test_a_hyphenated_slug_404_explains_the_escaping(tmp_path):
+    """/remote-hello is -remote~1hello; `-remote-hello` means /remote/hello. The 404 says so (#237)."""
+    import os, shutil, signal, subprocess, time
+    import requests
+    from otel_helpers import flapi_binary, free_port
+
+    (tmp_path / "sqls").mkdir()
+    (tmp_path / "flapi.yaml").write_text(
+        "project-name: slug\ntemplate:\n  path: ./sqls\nconnections:\n  inmem:\n    properties:\n"
+        "      database: ':memory:'\nrate_limit:\n  enabled: false\n")
+    (tmp_path / "sqls" / "h.yaml").write_text(
+        "url-path: /remote-hello\nmethod: GET\ntemplate-source: h.sql\nconnection: [inmem]\n")
+    (tmp_path / "sqls" / "h.sql").write_text("SELECT 1 AS x")
+    port = free_port()
+    log = open(tmp_path / "s.log", "w")
+    proc = subprocess.Popen(
+        [flapi_binary(), "-c", "flapi.yaml", "-p", str(port), "--config-service", "--config-service-token", "tok"],
+        cwd=tmp_path, stdout=log, stderr=subprocess.STDOUT, preexec_fn=os.setsid,
+        env={**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"})
+    try:
+        base = f"http://127.0.0.1:{port}/api/v1/_config/endpoints"
+        auth = {"Authorization": "Bearer tok"}
+        deadline = time.time() + 90
+        while time.time() < deadline:
+            try:
+                if requests.get(f"http://127.0.0.1:{port}/health/live", timeout=1).status_code == 200:
+                    break
+            except requests.RequestException:
+                time.sleep(0.3)
+        wrong = requests.get(f"{base}/-remote-hello", headers=auth, timeout=30)
+        assert wrong.status_code == 404 and "~1" in wrong.text, wrong.text
+        right = requests.post(f"{base}/-remote~1hello/reload", headers=auth, timeout=30)
+        assert right.status_code == 200, right.text
+    finally:
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.wait(timeout=20)
