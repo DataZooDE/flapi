@@ -1798,13 +1798,12 @@ Before completing work that modifies code:
 
 **MANDATORY WORKFLOW:**
 
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
+1. **File issues for remaining work** - Open GitHub issues for anything that needs follow-up
 2. **Run quality gates** (if code changed) - Tests, linters, builds
 3. **Update issue status** - Close finished work, update in-progress items
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
-   bd sync
    git push
    git status  # MUST show "up to date with origin"
    ```
@@ -1832,31 +1831,22 @@ When working on GitHub issues, use feature branches and pull requests to enable 
    # Example: git checkout -b feature/gh-9-arrow-streaming
    ```
 
-2. **Create or link beads epic (optional but recommended):**
-   ```bash
-   bd create --title="<GitHub Issue Title>" --type=epic --priority=1
-   # Add external link to GitHub issue
-   bd update <beads-id> --notes="GitHub: https://github.com/DataZooDE/flapi/issues/<N>"
-   ```
-
-3. **Work and commit on feature branch:**
+2. **Work and commit on feature branch:**
    - Make changes, run tests
    - Commit with descriptive messages
    - Reference GitHub issue: `git commit -m "feat: Add Arrow streaming support (#9)"`
 
-4. **Create pull request:**
+3. **Create pull request:**
    ```bash
    git push -u origin feature/gh-<issue-number>-<short-description>
    gh pr create --title "..." --body "Closes #<issue-number>..."
    ```
 
-5. **After PR merge:**
+4. **After PR merge:**
    ```bash
    git checkout main
    git pull origin main
    git branch -d feature/gh-<issue-number>-<short-description>
-   bd close <beads-epic-id>
-   bd sync
    ```
 
 **Branch Naming Convention:**
@@ -1875,264 +1865,3 @@ When working on GitHub issues, use feature branches and pull requests to enable 
 
 Closes #<issue-number>
 ```
-
-**Integration with Beads:**
-- Beads tracks local work breakdown and dependencies
-- GitHub issues track public feature requests and bugs
-- Link them via notes field: `bd update <id> --notes="GitHub: #N"`
-- Close beads epic after PR merges
-
-## Beads Issue Tracking
-
-Beads (`bd`) is a git-backed issue tracker used in this project. This section documents operational lessons learned, particularly for multi-repo configurations.
-
-### Quick Reference
-
-```bash
-# Common commands
-bd ready                    # Find issues ready to work (no blockers)
-bd list --status=open       # All open issues
-bd show <id>                # View issue details
-bd create --title="..." --type=task --priority=2  # Create issue
-bd update <id> --status=in_progress  # Start work
-bd close <id>               # Complete issue
-bd sync                     # Sync with git remote
-```
-
-### Multi-Repo Routing (Important)
-
-When a user has multiple beads workspaces (e.g., `~/.beads-planning` for personal planning alongside project repos), `bd create` may route issues to the **wrong repository**.
-
-**Symptom:**
-```
-bd create --title="Fix bug" --type=bug
-Error: database not initialized: issue_prefix config is missing
-```
-
-This happens even when the current project has beads properly configured.
-
-**Diagnosis - Use `--verbose`:**
-```bash
-bd --verbose create --title="Fix bug" --type=bug
-# Output shows: DEBUG: Routing to target repo: /Users/jr/.beads-planning
-# ^^^ Wrong repo! Should be current project
-```
-
-**Solution - Use `--repo` flag:**
-```bash
-# Explicitly specify the repository path
-bd create --repo=/Users/jr/Projects/datazoo/flapi --title="Fix bug" --type=bug --priority=1
-```
-
-### Read vs Write Command Behavior
-
-| Command Type | Behavior | Examples |
-|--------------|----------|----------|
-| **Read commands** | Respect current directory | `bd list`, `bd show`, `bd config get` |
-| **Write commands** | May use multi-repo routing | `bd create` - can route to wrong repo |
-
-Read commands work fine from the project directory. Write commands like `bd create` use multi-repo routing logic that may send issues to a different repository.
-
-### Config Precedence
-
-1. `issue-prefix` stored in database takes precedence
-2. Config file setting in `.beads/config.yaml` may not be picked up by daemon
-3. Use `bd config set issue-prefix <value>` to set in database
-
-**Check current prefix:**
-```bash
-bd config get issue-prefix
-```
-
-### Troubleshooting Checklist
-
-When `bd create` fails or routes incorrectly:
-
-1. **Check routing with verbose mode:**
-   ```bash
-   bd --verbose create --title="Test" --type=task
-   ```
-
-2. **Use explicit repo path:**
-   ```bash
-   bd create --repo=$(pwd) --title="Issue title" --type=task --priority=2
-   ```
-
-3. **Verify issue prefix is configured:**
-   ```bash
-   bd config get issue-prefix
-   # If missing, set it:
-   bd config set issue-prefix flapi
-   ```
-
-4. **Restart daemon if needed:**
-   ```bash
-   # Kill any running beads processes
-   pkill -f beads
-   # Retry command
-   bd create --title="..." --type=task
-   ```
-
-5. **Check .beads directory exists:**
-   ```bash
-   ls -la .beads/
-   # Should contain: config.yaml, issues.db, etc.
-   ```
-
-### Best Practices for Issue Creation
-
-1. **Always verify routing first** when working in multi-repo environments
-2. **Use `--repo` flag** if you have multiple beads workspaces
-3. **Check with `bd list`** after creating to confirm issue landed in correct repo
-4. **Run `bd sync`** at session end to push changes to remote
-
-
-<!-- BEGIN BEADS INTEGRATION -->
-## Issue Tracking with bd (beads)
-
-**IMPORTANT**: This project uses **bd (beads)** for ALL issue tracking. Do NOT use markdown TODOs, task lists, or other tracking methods.
-
-### Why bd?
-
-- Dependency-aware: Track blockers and relationships between issues
-- Git-friendly: Auto-syncs to JSONL for version control
-- Agent-optimized: JSON output, ready work detection, discovered-from links
-- Prevents duplicate tracking systems and confusion
-
-### Quick Start
-
-**Check for ready work:**
-
-```bash
-bd ready --json
-```
-
-**Create new issues:**
-
-```bash
-bd create "Issue title" --description="Detailed context" -t bug|feature|task -p 0-4 --json
-bd create "Issue title" --description="What this issue is about" -p 1 --deps discovered-from:bd-123 --json
-```
-
-**Claim and update:**
-
-```bash
-bd update bd-42 --status in_progress --json
-bd update bd-42 --priority 1 --json
-```
-
-**Complete work:**
-
-```bash
-bd close bd-42 --reason "Completed" --json
-```
-
-### Issue Types
-
-- `bug` - Something broken
-- `feature` - New functionality
-- `task` - Work item (tests, docs, refactoring)
-- `epic` - Large feature with subtasks
-- `chore` - Maintenance (dependencies, tooling)
-
-### Priorities
-
-- `0` - Critical (security, data loss, broken builds)
-- `1` - High (major features, important bugs)
-- `2` - Medium (default, nice-to-have)
-- `3` - Low (polish, optimization)
-- `4` - Backlog (future ideas)
-
-### Workflow for AI Agents
-
-1. **Check ready work**: `bd ready` shows unblocked issues
-2. **Claim your task**: `bd update <id> --status in_progress`
-3. **Work on it**: Implement, test, document
-4. **Discover new work?** Create linked issue:
-   - `bd create "Found bug" --description="Details about what was found" -p 1 --deps discovered-from:<parent-id>`
-5. **Complete**: `bd close <id> --reason "Done"`
-
-### Auto-Sync
-
-bd automatically syncs with git:
-
-- Exports to `.beads/issues.jsonl` after changes (5s debounce)
-- Imports from JSONL when newer (e.g., after `git pull`)
-- No manual export/import needed!
-
-### Important Rules
-
-- ✅ Use bd for ALL task tracking
-- ✅ Always use `--json` flag for programmatic use
-- ✅ Link discovered work with `discovered-from` dependencies
-- ✅ Check `bd ready` before asking "what should I work on?"
-- ❌ Do NOT create markdown TODO lists
-- ❌ Do NOT use external issue trackers
-- ❌ Do NOT duplicate tracking systems
-
-For more details, see README.md and docs/QUICKSTART.md.
-
-<!-- END BEADS INTEGRATION -->
-
-<!-- bv-agent-instructions-v1 -->
-
----
-
-## Beads Workflow Integration
-
-This project uses [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) for issue tracking. Issues are stored in `.beads/` and tracked in git.
-
-### Essential Commands
-
-```bash
-# View issues (launches TUI - avoid in automated sessions)
-bv
-
-# CLI commands for agents (use these instead)
-bd ready              # Show issues ready to work (no blockers)
-bd list --status=open # All open issues
-bd show <id>          # Full issue details with dependencies
-bd create --title="..." --type=task --priority=2
-bd update <id> --status=in_progress
-bd close <id> --reason="Completed"
-bd close <id1> <id2>  # Close multiple issues at once
-bd sync               # Commit and push changes
-```
-
-### Workflow Pattern
-
-1. **Start**: Run `bd ready` to find actionable work
-2. **Claim**: Use `bd update <id> --status=in_progress`
-3. **Work**: Implement the task
-4. **Complete**: Use `bd close <id>`
-5. **Sync**: Always run `bd sync` at session end
-
-### Key Concepts
-
-- **Dependencies**: Issues can block other issues. `bd ready` shows only unblocked work.
-- **Priority**: P0=critical, P1=high, P2=medium, P3=low, P4=backlog (use numbers, not words)
-- **Types**: task, bug, feature, epic, question, docs
-- **Blocking**: `bd dep add <issue> <depends-on>` to add dependencies
-
-### Session Protocol
-
-**Before ending any session, run this checklist:**
-
-```bash
-git status              # Check what changed
-git add <files>         # Stage code changes
-bd sync                 # Commit beads changes
-git commit -m "..."     # Commit code
-bd sync                 # Commit any new beads changes
-git push                # Push to remote
-```
-
-### Best Practices
-
-- Check `bd ready` at session start to find available work
-- Update status as you work (in_progress → closed)
-- Create new issues with `bd create` when you discover tasks
-- Use descriptive titles and set appropriate priority/type
-- Always `bd sync` before ending session
-
-<!-- end-bv-agent-instructions -->
