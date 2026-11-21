@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_all.hpp>
 #include "vfs_adapter.hpp"
+#include "database_manager.hpp"
 #include <filesystem>
 #include <fstream>
 
@@ -441,24 +442,42 @@ TEST_CASE("FileProviderFactory::CreateProvider", "[vfs][factory]") {
 // DuckDBVFSProvider Tests
 // ============================================================================
 
-TEST_CASE("DuckDBVFSProvider construction", "[vfs][duckdb]") {
-    SECTION("Requires DatabaseManager (throws or succeeds based on state)") {
-        // If DatabaseManager is initialized (by earlier tests), this succeeds
-        // If not, it throws FileOperationError with a helpful message
-        try {
-            DuckDBVFSProvider provider;
-            // If we get here, DatabaseManager was initialized
-            REQUIRE(provider.GetProviderName() == "duckdb-vfs");
-        } catch (const FileOperationError& e) {
-            std::string msg(e.what());
-            // Should mention what's needed
-            bool helpful = msg.find("DatabaseManager") != std::string::npos ||
-                          msg.find("database") != std::string::npos ||
-                          msg.find("Database") != std::string::npos ||
-                          msg.find("initialized") != std::string::npos;
-            REQUIRE(helpful);
-        }
+// #213: the constructor used to throw while DatabaseManager was uninitialised and
+// otherwise cached a raw FileSystem pointer that dangled when the manager was
+// reset. It now keeps no pointer: every call resolves one.
+TEST_CASE("DuckDBVFSProvider works without a DatabaseManager", "[vfs][duckdb]") {
+    DatabaseManager::getInstance()->reset();  // whatever an earlier test left behind
+
+    const auto dir = std::filesystem::temp_directory_path() / "flapi_vfs_lifetime";
+    std::filesystem::create_directories(dir);
+    const auto file = dir / "note.txt";
+    {
+        std::ofstream out(file);
+        out << "hello vfs";
     }
+
+    SECTION("constructing does not throw") {
+        REQUIRE_NOTHROW(DuckDBVFSProvider{});
+        REQUIRE(FileProviderFactory::CreateDuckDBProvider()->GetProviderName() == "duckdb-vfs");
+    }
+
+    SECTION("reads, checks and lists through the bootstrap instance") {
+        DuckDBVFSProvider provider;
+        REQUIRE(provider.ReadFile(file.string()) == "hello vfs");
+        REQUIRE(provider.FileExists(file.string()));
+        REQUIRE_FALSE(provider.FileExists((dir / "absent.txt").string()));
+        const auto listed = provider.ListFiles(dir.string(), "*.txt");
+        REQUIRE(listed.size() == 1);
+    }
+
+    SECTION("a provider outlives a DatabaseManager reset") {
+        DuckDBVFSProvider provider;
+        REQUIRE(provider.ReadFile(file.string()) == "hello vfs");
+        DatabaseManager::getInstance()->reset();
+        REQUIRE(provider.ReadFile(file.string()) == "hello vfs");
+    }
+
+    std::filesystem::remove_all(dir);
 }
 
 TEST_CASE("FileProviderFactory::CreateDuckDBProvider", "[vfs][factory]") {

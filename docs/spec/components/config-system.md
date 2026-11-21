@@ -417,3 +417,14 @@ template:
 - [../../CONFIG_REFERENCE.md](../../CONFIG_REFERENCE.md) - Configuration options
 - [DESIGN_DECISIONS.md](../DESIGN_DECISIONS.md#10e-copy-on-write-endpoint-table) - Why copy-on-write
 - [observability.md](./observability.md) - What depends on the pinned snapshot
+
+## Remote configuration and templates
+
+`--config` and `template.path` may be `s3://`, `gs://`, `az://` or `http(s)://` URLs. Such paths are kept as
+text (never joined to the config directory or `lexically_normal`ised) and read through
+`DuckDBVFSProvider` (`src/vfs_adapter.cpp`). The provider keeps no DuckDB pointer: each call opens a connection
+to `DatabaseManager`'s database when it is running, otherwise to a private in-memory bootstrap instance with
+httpfs and the environment credentials, so the configuration can be read before the database it configures
+exists. Endpoint YAMLs under a remote `template.path` are found by `ConfigManager::listRemoteEndpointFiles`:
+a recursive glob for s3/gs/az, or `manifest.txt` for plain http(s) and as the fallback. See
+[CONFIG_REFERENCE](../../CONFIG_REFERENCE.md#remote-template-paths).

@@ -68,7 +68,10 @@ flapi --config https://raw.githubusercontent.com/myorg/configs/main/flapi.yaml
 ```
 
 SQL templates are resolved relative to the config, so the whole tree can live in
-the bucket.
+the bucket. A `template.path` of `s3://`, `gs://`, `az://` or `https://` works the same
+way; plain `https://` has no directory listing, so add a `manifest.txt` (one endpoint YAML
+per line) at the root of `template.path`. See
+[CONFIG_REFERENCE](../CONFIG_REFERENCE.md#remote-template-paths).
 
 > The alternative for immutable deployments is to bake the config tree into the
 > binary instead: see [self-packaging](./self-packaging.md). Choose cloud config

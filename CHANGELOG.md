@@ -4,6 +4,18 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Remote configuration and templates (#219, #198, #213)
+
+- **A remote `template.path` loads.** `s3://`, `gs://`, `az://` and `http(s)://` template directories used to be
+  joined onto the config directory and normalised into `<cwd>/s3:/bucket/...`, so startup failed with "Template
+  path does not exist". They are now kept as URLs: endpoint YAMLs are listed with a glob (s3/gs/az) or a
+  `manifest.txt` at the root (plain http(s), and the fallback when a glob finds nothing), and templates are read
+  through DuckDB's httpfs. `--validate-config` checks remote templates too.
+- **`--config http(s)://...` / `s3://...` boots.** Remote files are read through a private in-memory DuckDB (httpfs,
+  credentials from the environment) that exists before `DatabaseManager` does.
+- **`DuckDBVFSProvider` no longer caches a `FileSystem` pointer** (a dangling pointer after a database reset), and
+  `FileExists` works for http(s) (httpfs answered `false` for every URL).
+
 ### Upgrade notes
 
 - **DuckDB's session `TimeZone` is `UTC` unless you set it.** Left alone, DuckDB takes the host zone (`TZ`,

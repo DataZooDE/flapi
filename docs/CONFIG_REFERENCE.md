@@ -843,18 +843,28 @@ connection:
   - local-data
 ```
 
-> **Known limitation:** a remote `template.path` (an `s3://`, `gs://`, `az://` or `https://` directory) does not work
-> yet. flAPI lists the template directory on the local filesystem, so startup fails with
-> `Template path does not exist or is not a directory`. Keep the endpoint YAML and SQL templates on local disk
-> (or bundle them with `flapi pack`). Data files and DuckLake data paths on cloud storage do work.
-
-The intended form, once supported:
+A remote `template.path` (an `s3://`, `gs://`, `az://` or `http(s)://` directory) loads the endpoint YAML and SQL
+files from there:
 
 ```yaml
-# flapi.yaml - templates from HTTPS
+# flapi.yaml
 template:
-  path: https://example.com/templates/
+  path: s3://my-bucket/api-templates/sqls   # or gs://, az://, https://host/dir
+storage:
+  cache:                                      # optional: cache remote template files
+    enabled: true
+    ttl: 300
 ```
+
+- `s3://`, `gs://` and `az://` are listed with a recursive glob (`**/*.yaml`, `**/*.yml`).
+- Plain `http(s)://` has no listing. Put a `manifest.txt` at the root of `template.path`: one endpoint YAML per
+  line, relative to it (`#` starts a comment; `..` is refused). The manifest is also the fallback when a glob
+  finds nothing. If neither works, startup fails and names the manifest it looked for.
+- `template-source:` in each endpoint resolves against the YAML's own location, as it does locally.
+- Remote files are read through DuckDB's `httpfs` with the credentials from the environment (`AWS_*`, ...),
+  before the main database exists, so `--config s3://...` and a remote `template.path` work at startup.
+  `httpfs` must be installable (or already in the extension directory) on the host.
+- `--validate-config` checks that each remote template exists, stays under `template.path`, and parses.
 
 #### Supported URI Schemes
 

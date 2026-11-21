@@ -149,4 +149,4 @@ enforce-https:
 | Key | Notes |
 |---|---|
 | `cache-schema` | fallback schema for cache tables; endpoint `cache.schema` (default `cache`) normally wins |
-| `storage.cache.*` | meant to cache REMOTE template files; a remote `template.path` (s3://, gs://, az://, https://) does not load yet (startup fails: "Template path does not exist"), so keep templates local; with a local `template.path` this block has no effect and a load warning says so |
+| `storage.cache.*` | caches REMOTE template files (`template.path` in s3://, gs://, az://, https://); with a local `template.path` this block has no effect and a load warning says so. Plain https needs a `manifest.txt` listing the endpoint YAMLs at the root of `template.path` |
