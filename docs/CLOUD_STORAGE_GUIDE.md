@@ -11,8 +11,9 @@ authentication, and its failure modes.
 
 > A remote `template.path` (`s3://`, `gs://`, `az://`, `http(s)://`) is supported; see
 > [CONFIG_REFERENCE](CONFIG_REFERENCE.md#remote-template-paths). Plain `http(s)://` has no listing and needs a
-> `manifest.txt` at its root. Credentials for the *remote config and template reads* are verified for S3 only (see
-> the guide's remote-config section).
+> `manifest.txt` at its root. Credentials come from the environment, also for the config and template reads that
+> happen before the database exists: `AWS_*` (S3), `GCS_ACCESS_KEY_ID` / `GCS_SECRET_ACCESS_KEY` (gs://, HMAC key),
+> `AZURE_STORAGE_*` (az://); see CONFIG_REFERENCE.
 
 
 flAPI supports loading configuration and SQL template files from remote storage via DuckDB's Virtual File System (VFS). This enables:

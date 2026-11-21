@@ -41,6 +41,11 @@ struct GCSCredentials {
     CredentialType type = CredentialType::ENVIRONMENT;
     std::string project_id;
     std::string key_file;           // Path to service account key file
+    // HMAC key pair for gs:// through Google's S3-interoperability API (what DuckDB's
+    // httpfs can use); a service-account key file cannot be used for gs:// reads.
+    std::string hmac_key_id;
+    std::string hmac_secret;
+    std::string endpoint;           // Optional override (S3-compatible gateway / test double)
 };
 
 /**

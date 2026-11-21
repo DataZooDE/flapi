@@ -1,4 +1,6 @@
 #include "credential_manager.hpp"
+#include "extension_installer.hpp"
+#include <algorithm>
 #include <crow/logging.h>
 #include <cstdlib>
 
@@ -9,6 +11,43 @@ namespace flapi {
 
 // Environment variable names
 namespace {
+
+bool ExtensionsOffline() {
+    if (const char* flag = std::getenv("FLAPI_EXTENSIONS_OFFLINE"); flag != nullptr && *flag != '\0') {
+        std::string v = flag;
+        std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return std::tolower(c); });
+        return v == "1" || v == "true" || v == "yes" || v == "on";
+    }
+    return BundledExtensionDirectory().has_value();
+}
+
+// INSTALL (unless offline) and LOAD an extension; false with a log line when it is not available.
+bool EnsureExtension(duckdb_connection conn, const std::string& name) {
+    for (const std::string verb : {"INSTALL ", "LOAD "}) {
+        if (verb == "INSTALL " && ExtensionsOffline()) {
+            continue;
+        }
+        duckdb_result result;
+        if (duckdb_query(conn, (verb + name).c_str(), &result) != DuckDBSuccess) {
+            CROW_LOG_WARNING << verb << name << " failed: " << duckdb_result_error(&result)
+                             << (ExtensionsOffline() ? " (offline: pre-install it into FLAPI_EXTENSION_DIRECTORY)" : "");
+            duckdb_destroy_result(&result);
+            return false;
+        }
+        duckdb_destroy_result(&result);
+    }
+    return true;
+}
+
+bool RunStatement(duckdb_connection conn, const std::string& sql, const char* what) {
+    duckdb_result result;
+    const bool ok = duckdb_query(conn, sql.c_str(), &result) == DuckDBSuccess;
+    if (!ok) {
+        CROW_LOG_WARNING << "Failed to create the " << what << " secret: " << duckdb_result_error(&result);
+    }
+    duckdb_destroy_result(&result);
+    return ok;
+}
 
 // The value DuckDB currently holds for a setting, or "" when it is unset (NULL).
 std::string CurrentSetting(duckdb_connection conn, const std::string& name) {
@@ -66,6 +105,11 @@ std::string SqlLiteral(const std::string& value) {
     // GCS / Google Cloud
     constexpr const char* GOOGLE_APPLICATION_CREDENTIALS = "GOOGLE_APPLICATION_CREDENTIALS";
     constexpr const char* GOOGLE_CLOUD_PROJECT = "GOOGLE_CLOUD_PROJECT";
+    constexpr const char* GCS_ACCESS_KEY_ID = "GCS_ACCESS_KEY_ID";
+    constexpr const char* GCS_SECRET_ACCESS_KEY = "GCS_SECRET_ACCESS_KEY";
+    constexpr const char* GS_ACCESS_KEY_ID = "GS_ACCESS_KEY_ID";            // boto / gsutil spelling
+    constexpr const char* GS_SECRET_ACCESS_KEY = "GS_SECRET_ACCESS_KEY";
+    constexpr const char* GCS_ENDPOINT_URL = "GCS_ENDPOINT_URL";
     constexpr const char* GCLOUD_PROJECT = "GCLOUD_PROJECT";
     constexpr const char* GCP_PROJECT = "GCP_PROJECT";
 
@@ -129,10 +173,14 @@ void CredentialManager::loadFromEnvironment() {
     }
 
     // Load GCS credentials
-    if (hasEnv(GOOGLE_APPLICATION_CREDENTIALS) || hasEnv(GOOGLE_CLOUD_PROJECT)) {
+    if (hasEnv(GOOGLE_APPLICATION_CREDENTIALS) || hasEnv(GOOGLE_CLOUD_PROJECT) || hasEnv(GCS_ACCESS_KEY_ID) ||
+        hasEnv(GS_ACCESS_KEY_ID)) {
         GCSCredentials gcs;
         gcs.type = CredentialType::ENVIRONMENT;
         gcs.key_file = getEnv(GOOGLE_APPLICATION_CREDENTIALS);
+        gcs.hmac_key_id = hasEnv(GCS_ACCESS_KEY_ID) ? getEnv(GCS_ACCESS_KEY_ID) : getEnv(GS_ACCESS_KEY_ID);
+        gcs.hmac_secret = hasEnv(GCS_SECRET_ACCESS_KEY) ? getEnv(GCS_SECRET_ACCESS_KEY) : getEnv(GS_SECRET_ACCESS_KEY);
+        gcs.endpoint = getEnv(GCS_ENDPOINT_URL);
 
         // Try multiple project ID environment variables
         gcs.project_id = getEnv(GOOGLE_CLOUD_PROJECT);
@@ -282,19 +330,42 @@ bool CredentialManager::configureConnection(duckdb_connection conn) {
         }
     }
 
-    // GCS: nothing is applied to DuckDB, and the log says so. DuckDB's httpfs
-    // reads gs:// through Google's S3-interoperability API, which takes an
-    // HMAC key pair (a DuckDB secret of TYPE gcs); it does not read a
-    // service-account key file. GOOGLE_APPLICATION_CREDENTIALS therefore has
-    // no effect on gs:// reads - and startup used to log "GCS credentials
-    // configured", which sent operators looking everywhere but here.
-    if (_gcs_credentials.has_value() && _gcs_referenced) {
+    // GCS: DuckDB's httpfs reads gs:// through Google's S3-interoperability API with an
+    // HMAC key pair (a secret of TYPE gcs). A service-account key file is not usable.
+    if (_gcs_credentials.has_value() && !_gcs_credentials->hmac_key_id.empty() &&
+        !_gcs_credentials->hmac_secret.empty()) {
+        const auto& creds = _gcs_credentials.value();
+        std::string sql = "CREATE OR REPLACE SECRET flapi_gcs (TYPE gcs, KEY_ID '" + SqlLiteral(creds.hmac_key_id) +
+                          "', SECRET '" + SqlLiteral(creds.hmac_secret) + "'";
+        if (!creds.endpoint.empty()) {
+            std::string host = creds.endpoint;
+            bool use_ssl = true;
+            for (const std::string scheme : {"https://", "http://"}) {
+                if (host.rfind(scheme, 0) == 0) {
+                    use_ssl = (scheme == "https://");
+                    host.erase(0, scheme.size());
+                    break;
+                }
+            }
+            while (!host.empty() && host.back() == '/') {
+                host.pop_back();
+            }
+            sql += ", ENDPOINT '" + SqlLiteral(host) + "', URL_STYLE 'path', USE_SSL " + (use_ssl ? "true" : "false");
+        }
+        sql += ")";
+        if (RunStatement(conn, sql, "GCS")) {
+            CROW_LOG_INFO << "GCS HMAC credentials configured in DuckDB";
+        } else {
+            success = false;
+            errors += "GCS: secret could not be created; ";
+        }
+    } else if (_gcs_credentials.has_value() && _gcs_referenced) {
         const auto& creds = _gcs_credentials.value();
         CROW_LOG_WARNING << "GCS: " << (creds.key_file.empty() ? "a Google Cloud project" : "GOOGLE_APPLICATION_CREDENTIALS")
                          << " is set, but DuckDB's httpfs does not use service-account credentials, "
-                            "so gs:// access is NOT configured from it. Create an HMAC key and add "
-                            "`CREATE SECRET (TYPE gcs, KEY_ID '...', SECRET '...')` to a connection's "
-                            "`init` (with the values from {{env.NAME}}).";
+                            "so gs:// access is NOT configured from it. Create an HMAC key and set "
+                            "GCS_ACCESS_KEY_ID / GCS_SECRET_ACCESS_KEY (or add "
+                            "`CREATE SECRET (TYPE gcs, KEY_ID '...', SECRET '...')` to a connection's `init`).";
     }
 
     // Configure Azure if credentials are available
@@ -302,17 +373,26 @@ bool CredentialManager::configureConnection(duckdb_connection conn) {
         const auto& creds = _azure_credentials.value();
 
         try {
-            // Azure credentials can be configured via connection string
+            // DuckDB reads az:// / azure:// through the `azure` extension and a secret; the
+            // legacy azure_* settings are not used for that. Only loaded when Azure
+            // credentials exist, so S3-only and local setups never download it.
+            std::string sql;
             if (!creds.connection_string.empty()) {
-                std::string query = "SET GLOBAL azure_storage_connection_string = '" +
-                                    SqlLiteral(creds.connection_string) + "';";
-                duckdb_query(conn, query.c_str(), nullptr);
+                sql = "CREATE OR REPLACE SECRET flapi_azure (TYPE azure, CONNECTION_STRING '" +
+                      SqlLiteral(creds.connection_string) + "')";
             } else if (!creds.account_name.empty() && !creds.account_key.empty()) {
-                std::string query = "SET GLOBAL azure_account_name = '" + SqlLiteral(creds.account_name) + "';";
-                duckdb_query(conn, query.c_str(), nullptr);
-
-                query = "SET GLOBAL azure_account_key = '" + SqlLiteral(creds.account_key) + "';";
-                duckdb_query(conn, query.c_str(), nullptr);
+                sql = "CREATE OR REPLACE SECRET flapi_azure (TYPE azure, CONNECTION_STRING '" +
+                      SqlLiteral("DefaultEndpointsProtocol=https;AccountName=" + creds.account_name +
+                                 ";AccountKey=" + creds.account_key + ";EndpointSuffix=core.windows.net") + "')";
+            } else if (!creds.account_name.empty()) {
+                sql = "CREATE OR REPLACE SECRET flapi_azure (TYPE azure, PROVIDER credential_chain, ACCOUNT_NAME '" +
+                      SqlLiteral(creds.account_name) + "')";
+            }
+            if (!sql.empty()) {
+                if (!EnsureExtension(conn, "azure") || !RunStatement(conn, sql, "Azure")) {
+                    success = false;
+                    errors += "Azure: extension or secret unavailable; ";
+                }
             }
 
             CROW_LOG_INFO << "Azure credentials configured in DuckDB";

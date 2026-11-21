@@ -218,3 +218,107 @@ def test_environment_applies_when_the_user_set_nothing(workdir):
         assert r.json()["data"][0]["value"] == "us-east-1", r.text
     finally:
         stop(proc)
+
+
+def test_gs_template_path_lists_with_hmac_credentials(bucket, workdir):
+    """gs:// goes through the S3-interoperability API with an HMAC key pair (#234)."""
+    root, endpoint = bucket
+    put(root, "gbucket/sqls/hello.yaml", ENDPOINT)
+    put(root, "gbucket/sqls/hello.sql", SQL)
+    put(workdir, "flapi.yaml", main_config("gs://gbucket/sqls"))
+    r = subprocess.run(
+        [flapi_binary(), "-c", os.path.join(workdir, "flapi.yaml"), "--validate-config", "--log-level", "info"],
+        cwd=workdir, capture_output=True, text=True, timeout=120,
+        env={**ENV, "GCS_ACCESS_KEY_ID": "GOOGHMACKEY", "GCS_SECRET_ACCESS_KEY": "hmacsecret",
+             "GCS_ENDPOINT_URL": endpoint})
+    out = r.stdout + r.stderr
+    assert r.returncode == 0 and "Parsed 1 endpoint" in out, out + "\n".join(FakeS3.requests_seen)
+    signed = [a for a in FakeS3.auth_seen if a]
+    assert signed and all("GOOGHMACKEY" in a for a in signed), signed[:2]
+    assert "hmacsecret" not in out, "the HMAC secret must not be logged"
+
+
+class FakeAzure(http.server.BaseHTTPRequestHandler):
+    """Azure Blob (Azurite-style path addressing: /<account>/<container>/<blob>)."""
+    root = None
+    seen = []
+
+    def log_message(self, *args):
+        pass
+
+    def _reply(self, code, body=b"", extra=None):
+        self.send_response(code)
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def _handle(self):
+        FakeAzure.seen.append(f"{self.command} {self.path}")
+        u = urllib.parse.urlparse(self.path)
+        q = urllib.parse.parse_qs(u.query)
+        parts = u.path.lstrip("/").split("/", 2)  # account, container, blob
+        container = parts[1] if len(parts) > 1 else ""
+        blob = parts[2] if len(parts) > 2 else ""
+        base = os.path.join(self.root, container)
+        if q.get("comp") == ["list"]:
+            prefix = q.get("prefix", [""])[0]
+            names = []
+            for dirpath, _, files in os.walk(base):
+                for n in files:
+                    rel = os.path.relpath(os.path.join(dirpath, n), base).replace(os.sep, "/")
+                    if rel.startswith(prefix):
+                        names.append(rel)
+            blobs = "".join(
+                f"<Blob><Name>{escape(n)}</Name><Properties><Content-Length>{os.path.getsize(os.path.join(base, n))}"
+                f"</Content-Length><Last-Modified>Sat, 21 Nov 2026 00:00:00 GMT</Last-Modified>"
+                f"<Etag>0x1</Etag><BlobType>BlockBlob</BlobType></Properties></Blob>" for n in sorted(names))
+            xml = ('<?xml version="1.0" encoding="utf-8"?><EnumerationResults ServiceEndpoint="x" '
+                   f'ContainerName="{container}"><Prefix>{escape(prefix)}</Prefix><Blobs>{blobs}</Blobs>'
+                   "<NextMarker /></EnumerationResults>")
+            return self._reply(200, xml.encode(), {"Content-Type": "application/xml"})
+        path = os.path.join(base, blob)
+        if not os.path.isfile(path):
+            return self._reply(404, b"<Error><Code>BlobNotFound</Code></Error>", {"x-ms-error-code": "BlobNotFound"})
+        data = open(path, "rb").read()
+        meta = {"ETag": '"0x1"', "Last-Modified": "Sat, 21 Nov 2026 00:00:00 GMT", "x-ms-blob-type": "BlockBlob",
+                "Accept-Ranges": "bytes", "Content-Type": "application/octet-stream",
+                "x-ms-creation-time": "Sat, 21 Nov 2026 00:00:00 GMT", "x-ms-lease-status": "unlocked",
+                "x-ms-lease-state": "available", "x-ms-server-encrypted": "true", "x-ms-access-tier": "Hot",
+                "x-ms-request-id": "0", "x-ms-version": "2021-12-02", "x-ms-meta-name": "x"}
+        rng = self.headers.get("Range") or self.headers.get("x-ms-range")
+        if rng and rng.startswith("bytes=") and self.command == "GET":
+            lo, _, hi = rng[6:].partition("-")
+            lo = int(lo)
+            hi = int(hi) if hi else len(data) - 1
+            chunk = data[lo:hi + 1]
+            return self._reply(206, chunk, {**meta, "Content-Range": f"bytes {lo}-{lo + len(chunk) - 1}/{len(data)}"})
+        self._reply(200, data, meta)
+
+    do_GET = do_HEAD = _handle
+
+
+def test_az_template_path_lists_through_the_azure_extension(workdir):
+    d = tempfile.mkdtemp(prefix="flapi_fake_az_")
+    FakeAzure.root = d
+    FakeAzure.seen = []
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeAzure)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        put(d, "cont/sqls/hello.yaml", ENDPOINT)
+        put(d, "cont/sqls/hello.sql", SQL)
+        put(workdir, "flapi.yaml", main_config("az://cont/sqls"))
+        conn = ("DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=c2VjcmV0a2V5;"
+                f"BlobEndpoint=http://127.0.0.1:{httpd.server_address[1]}/devstoreaccount1")
+        r = subprocess.run(
+            [flapi_binary(), "-c", os.path.join(workdir, "flapi.yaml"), "--validate-config", "--log-level", "info"],
+            cwd=workdir, capture_output=True, text=True, timeout=180,
+            env={**ENV, "AZURE_STORAGE_CONNECTION_STRING": conn})
+        out = r.stdout + r.stderr
+        assert r.returncode == 0 and "Parsed 1 endpoint" in out, out + "\n".join(FakeAzure.seen)
+        assert "c2VjcmV0a2V5" not in out, "the account key must not be logged"
+    finally:
+        httpd.shutdown()
+        shutil.rmtree(d, ignore_errors=True)

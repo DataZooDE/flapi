@@ -5,6 +5,10 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 ## Unreleased
 
 ### Remote template follow-ups (#231)
+- **Added:** `gs://` (HMAC key pair via `GCS_ACCESS_KEY_ID` / `GCS_SECRET_ACCESS_KEY`, optional `GCS_ENDPOINT_URL`) and `az://` (`AZURE_STORAGE_*`, through DuckDB's `azure` extension) can authenticate for a remote `--config` / `template.path` (#234). Azure credentials are now a DuckDB secret instead of the legacy `azure_*` settings.
+- **Fixed:** the S3/Azure credential `SET` statements for region, access key, secret and session token were malformed and silently not applied (unreleased regression from the first follow-up commit); a test now checks the requests are signed with the environment's key.
+- **Changed:** `s3_*` settings you configure (`duckdb:` settings, connection `init`) win over the `AWS_*` environment (#235).
+- **Fixed:** `--validate-config` fails (exit 1) when a `template-source` file does not exist (#236); the config-service 404 for a hyphenated slug explains the `~1` escaping (#237); a remote base URL's `?query` (SAS token, signature) is kept on every file instead of being joined mid-URL (#238).
 - **Security:** with a remote `template.path`, a local absolute `template-source` (e.g. `/etc/hostname`) passed the containment check and was read from the server's disk; it is now refused. A manifest entry that is a full URL must stay under `template.path`, and `%2e%2e` is refused.
 - **Fixed:** `POST /api/v1/_config/endpoints/reload-file` with a remote URL mangled it and unloaded the endpoint; it now answers 501 and changes nothing.
 - **Fixed:** `FLAPI_EXTENSIONS_OFFLINE=1` also stops the bootstrap from auto-installing httpfs. A chunked HTTP response (no Content-Length) is no longer read as an empty file. Azure `SET`s are global like S3's; credentials with a `'` no longer break the SET statements.
