@@ -208,7 +208,7 @@ bool CredentialManager::configureConnection(duckdb_connection conn) {
         try {
             // Set S3 region
             if (!creds.region.empty()) {
-                std::string query = "SET GLOBAL s3_region = '\" + SqlLiteral(creds.region) + \"';";
+                std::string query = "SET GLOBAL s3_region = '" + SqlLiteral(creds.region) + "';";
                 auto result = duckdb_query(conn, query.c_str(), nullptr);
                 if (result != DuckDBSuccess) {
                     CROW_LOG_WARNING << "Failed to set s3_region";
@@ -217,14 +217,14 @@ bool CredentialManager::configureConnection(duckdb_connection conn) {
 
             // Set S3 credentials if provided (for non-instance-profile auth)
             if (!creds.access_key_id.empty() && !creds.secret_access_key.empty()) {
-                std::string query = "SET GLOBAL s3_access_key_id = '\" + SqlLiteral(creds.access_key_id) + \"';";
+                std::string query = "SET GLOBAL s3_access_key_id = '" + SqlLiteral(creds.access_key_id) + "';";
                 duckdb_query(conn, query.c_str(), nullptr);
 
-                query = "SET GLOBAL s3_secret_access_key = '\" + SqlLiteral(creds.secret_access_key) + \"';";
+                query = "SET GLOBAL s3_secret_access_key = '" + SqlLiteral(creds.secret_access_key) + "';";
                 duckdb_query(conn, query.c_str(), nullptr);
 
                 if (!creds.session_token.empty()) {
-                    query = "SET GLOBAL s3_session_token = '\" + SqlLiteral(creds.session_token) + \"';";
+                    query = "SET GLOBAL s3_session_token = '" + SqlLiteral(creds.session_token) + "';";
                     duckdb_query(conn, query.c_str(), nullptr);
                 }
             }
@@ -292,10 +292,10 @@ bool CredentialManager::configureConnection(duckdb_connection conn) {
                                     SqlLiteral(creds.connection_string) + "';";
                 duckdb_query(conn, query.c_str(), nullptr);
             } else if (!creds.account_name.empty() && !creds.account_key.empty()) {
-                std::string query = "SET GLOBAL azure_account_name = '\" + SqlLiteral(creds.account_name) + \"';";
+                std::string query = "SET GLOBAL azure_account_name = '" + SqlLiteral(creds.account_name) + "';";
                 duckdb_query(conn, query.c_str(), nullptr);
 
-                query = "SET GLOBAL azure_account_key = '\" + SqlLiteral(creds.account_key) + \"';";
+                query = "SET GLOBAL azure_account_key = '" + SqlLiteral(creds.account_key) + "';";
                 duckdb_query(conn, query.c_str(), nullptr);
             }
 
