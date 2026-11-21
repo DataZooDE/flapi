@@ -195,7 +195,7 @@ bool CredentialManager::configureConnection(duckdb_connection conn) {
         try {
             // Set S3 region
             if (!creds.region.empty()) {
-                std::string query = "SET s3_region = '" + creds.region + "';";
+                std::string query = "SET GLOBAL s3_region = '" + creds.region + "';";
                 auto result = duckdb_query(conn, query.c_str(), nullptr);
                 if (result != DuckDBSuccess) {
                     CROW_LOG_WARNING << "Failed to set s3_region";
@@ -204,26 +204,42 @@ bool CredentialManager::configureConnection(duckdb_connection conn) {
 
             // Set S3 credentials if provided (for non-instance-profile auth)
             if (!creds.access_key_id.empty() && !creds.secret_access_key.empty()) {
-                std::string query = "SET s3_access_key_id = '" + creds.access_key_id + "';";
+                std::string query = "SET GLOBAL s3_access_key_id = '" + creds.access_key_id + "';";
                 duckdb_query(conn, query.c_str(), nullptr);
 
-                query = "SET s3_secret_access_key = '" + creds.secret_access_key + "';";
+                query = "SET GLOBAL s3_secret_access_key = '" + creds.secret_access_key + "';";
                 duckdb_query(conn, query.c_str(), nullptr);
 
                 if (!creds.session_token.empty()) {
-                    query = "SET s3_session_token = '" + creds.session_token + "';";
+                    query = "SET GLOBAL s3_session_token = '" + creds.session_token + "';";
                     duckdb_query(conn, query.c_str(), nullptr);
                 }
             }
 
             // Set custom endpoint if provided
             if (!creds.endpoint.empty()) {
-                std::string query = "SET s3_endpoint = '" + creds.endpoint + "';";
+                // DuckDB's s3_endpoint is `host[:port]`; the URL scheme decides SSL.
+                std::string host = creds.endpoint;
+                bool use_ssl = creds.use_ssl;
+                for (const std::string scheme : {"https://", "http://"}) {
+                    if (host.rfind(scheme, 0) == 0) {
+                        use_ssl = (scheme == "https://");
+                        host.erase(0, scheme.size());
+                        break;
+                    }
+                }
+                while (!host.empty() && host.back() == '/') {
+                    host.pop_back();
+                }
+                std::string query = "SET GLOBAL s3_endpoint = '" + host + "';";
                 duckdb_query(conn, query.c_str(), nullptr);
 
-                // If custom endpoint, typically disable SSL verification for local testing
-                if (!creds.use_ssl) {
-                    query = "SET s3_use_ssl = false;";
+                // A custom endpoint (MinIO, a local fake, an S3-compatible store) is
+                // addressed by path: `<bucket>.<host>` rarely resolves there.
+                query = "SET GLOBAL s3_url_style = 'path';";
+                duckdb_query(conn, query.c_str(), nullptr);
+                if (!use_ssl) {
+                    query = "SET GLOBAL s3_use_ssl = false;";
                     duckdb_query(conn, query.c_str(), nullptr);
                 }
             }

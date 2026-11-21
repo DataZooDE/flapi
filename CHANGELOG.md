@@ -4,6 +4,10 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Remote template follow-ups (#231)
+- **Fixed:** S3 credentials and a custom `AWS_ENDPOINT_URL` are applied with `SET GLOBAL`, so they reach every DuckDB connection (a remote `template.path` listing used a fresh connection and went to AWS). The endpoint's `http://`/`https://` scheme now selects SSL and is stripped for DuckDB; custom endpoints use path-style URLs.
+- **Fixed:** the bootstrap DuckDB for a remote `--config` follows `FLAPI_EXTENSION_DIRECTORY` and `FLAPI_EXTENSIONS_OFFLINE` (no `INSTALL httpfs` when offline).
+
 ### Remote configuration and templates (#219, #198, #213)
 
 - **A remote `template.path` loads.** `s3://`, `gs://`, `az://` and `http(s)://` template directories used to be
