@@ -27,6 +27,7 @@ pytestmark = pytest.mark.standalone_server
 class FakeS3(http.server.BaseHTTPRequestHandler):
     root = None
     requests_seen = []
+    auth_seen = []
 
     def log_message(self, *args):
         pass
@@ -44,6 +45,7 @@ class FakeS3(http.server.BaseHTTPRequestHandler):
 
     def _handle(self):
         FakeS3.requests_seen.append(f"{self.command} {self.path}")
+        FakeS3.auth_seen.append(self.headers.get("Authorization", ""))
         u = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(u.query)
         parts = u.path.lstrip("/").split("/", 1)
@@ -94,6 +96,7 @@ def bucket():
     d = tempfile.mkdtemp(prefix="flapi_fake_s3_")
     FakeS3.root = d
     FakeS3.requests_seen = []
+    FakeS3.auth_seen = []
     httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeS3)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     yield d, f"http://127.0.0.1:{httpd.server_address[1]}"
@@ -102,8 +105,8 @@ def bucket():
 
 
 def s3_env(endpoint):
-    return {"AWS_ENDPOINT_URL": endpoint, "AWS_ACCESS_KEY_ID": "x", "AWS_SECRET_ACCESS_KEY": "y",
-            "AWS_REGION": "us-east-1"}
+    return {"AWS_ENDPOINT_URL": endpoint, "AWS_ACCESS_KEY_ID": "AKIATESTKEY", "AWS_SECRET_ACCESS_KEY": "y",
+            "AWS_REGION": "eu-central-1"}
 
 
 def test_glob_lists_endpoints_without_a_manifest(bucket, workdir):
@@ -119,6 +122,11 @@ def test_glob_lists_endpoints_without_a_manifest(bucket, workdir):
     out = r.stdout + r.stderr
     assert r.returncode == 0, out + "\n".join(FakeS3.requests_seen)
     assert "Parsed 2 endpoint" in out, out
+    # The environment's credentials and region must actually reach DuckDB: the
+    # requests are SigV4-signed with them (the fake does not verify, it records).
+    signed = [a for a in FakeS3.auth_seen if a]
+    assert signed, "no request was signed - the S3 credentials were never applied"
+    assert all("Credential=AKIATESTKEY/" in a and "/eu-central-1/s3/" in a for a in signed), signed[:2]
 
 
 def test_server_serves_an_endpoint_listed_from_a_bucket(bucket, workdir):
