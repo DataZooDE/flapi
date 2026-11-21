@@ -343,3 +343,48 @@ class TestReviewFindings:
             assert requests.get(f"http://127.0.0.1:{port}/leak", timeout=30).status_code == 404
         finally:
             stop(proc)
+
+
+class TestQueryStringBase:
+    def test_a_token_on_template_path_is_sent_with_every_file(self, workdir):
+        # A SAS-style token: every request must carry ?token=abc, so a join that put
+        # the file name after the query ("...?token=abc/hello.yaml") would 403/404.
+        files = {"/sqls/manifest.txt": "hello.yaml\n", "/sqls/hello.yaml": ENDPOINT, "/sqls/hello.sql": SQL}
+        seen = []
+
+        class Guarded(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                path, _, query = self.path.partition("?")
+                seen.append(self.path)
+                if "token=abc" not in query:
+                    self.send_response(403)
+                    self.end_headers()
+                    return
+                body = files.get(path)
+                if body is None:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                data = body.encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            do_HEAD = do_GET
+
+        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Guarded)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        try:
+            put(workdir, "flapi.yaml",
+                main_config(f"http://127.0.0.1:{httpd.server_address[1]}/sqls?token=abc"))
+            r = run(os.path.join(workdir, "flapi.yaml"), workdir, "--validate-config")
+            out = r.stdout + r.stderr
+            assert r.returncode == 0 and "Parsed 1 endpoint" in out, out + "\n".join(seen)
+            assert not any("?token=abc/" in p for p in seen), seen
+            assert "token=abc" not in out, "the token must not be logged:\n" + out
+        finally:
+            httpd.shutdown()

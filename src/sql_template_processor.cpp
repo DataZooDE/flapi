@@ -155,10 +155,7 @@ std::string SQLTemplateProcessor::getFullTemplatePath(const std::string& templat
 
     // If base path is remote, concatenate strings (can't use std::filesystem)
     if (PathSchemeUtils::IsRemotePath(basePath)) {
-        if (!basePath.empty() && basePath.back() != '/') {
-            basePath += '/';
-        }
-        return basePath + templateSource;
+        return PathSchemeUtils::JoinUrl(basePath, templateSource);
     }
 
     // In bundled mode the endpoint parser already resolved templateSource

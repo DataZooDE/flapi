@@ -485,15 +485,7 @@ void ConfigManager::parseTemplateConfig() {
         if (PathSchemeUtils::IsRemotePath(base_path.string())) {
             // A remote config (--config http://host/dir/flapi.yaml): relative
             // template paths resolve against its URL, textually.
-            std::string base = base_path.string();
-            while (!base.empty() && base.back() == '/') {
-                base.pop_back();
-            }
-            std::string rel = template_config.path;
-            while (rel.rfind("./", 0) == 0) {
-                rel.erase(0, 2);
-            }
-            template_config.path = base + "/" + rel;
+            template_config.path = PathSchemeUtils::JoinUrl(base_path.string(), template_config.path);
         } else {
         joined = (base_path / template_path_relative).lexically_normal();
         // In bundled mode the template path is a bundle-relative key
@@ -1021,7 +1013,9 @@ void ConfigManager::parseMCPConfig() {
 // fallback when a glob finds nothing: some stores and proxies do not list.
 std::vector<std::string> ConfigManager::listRemoteEndpointFiles(const std::string& root) const {
     auto provider = FileProviderFactory::CreateDuckDBProvider();
-    const std::string base = root.back() == '/' ? root : root + "/";
+    // Object names live in the path; a `?query` (SAS token, signature) belongs to every
+    // object URL and is re-attached by JoinUrl.
+    const std::string base = PathSchemeUtils::StripQuery(root) + (PathSchemeUtils::StripQuery(root).back() == '/' ? "" : "/");
 
     std::vector<std::string> found;
     std::string listing_error;
@@ -1042,7 +1036,7 @@ std::vector<std::string> ConfigManager::listRemoteEndpointFiles(const std::strin
     }
 
     if (found.empty()) {
-        const std::string manifest = base + "manifest.txt";
+        const std::string manifest = PathSchemeUtils::JoinUrl(root, "manifest.txt");
         std::string text;
         try {
             text = provider->ReadFile(manifest);
@@ -1080,7 +1074,7 @@ std::vector<std::string> ConfigManager::listRemoteEndpointFiles(const std::strin
                 throw std::runtime_error("Manifest entry escapes template.path: " + entry);
             }
             if (PathSchemeUtils::IsRemotePath(entry)) {
-                if (entry.rfind(base, 0) != 0) {
+                if (PathSchemeUtils::StripQuery(entry).rfind(base, 0) != 0) {
                     throw std::runtime_error("Manifest entry is outside template.path: " + entry);
                 }
                 found.push_back(entry);
@@ -1088,7 +1082,7 @@ std::vector<std::string> ConfigManager::listRemoteEndpointFiles(const std::strin
                 if (std::filesystem::path(entry).is_absolute() || entry.front() == '/') {
                     throw std::runtime_error("Manifest entry must be relative to template.path: " + entry);
                 }
-                found.push_back(base + entry);
+                found.push_back(PathSchemeUtils::JoinUrl(root, entry));
             }
         }
     }
@@ -1775,7 +1769,11 @@ void ConfigManager::parseEndpointCache(const YAML::Node& endpoint_config, const 
         std::filesystem::path template_file_path(template_file_value);
         
         // If absolute path, keep as-is; otherwise resolve relative to endpoint_dir
-        if (template_file_path.is_absolute()) {
+        if (PathSchemeUtils::IsRemotePath(template_file_value)) {
+            endpoint.cache.template_file = template_file_value;
+        } else if (PathSchemeUtils::IsRemotePath(endpoint_dir.string())) {
+            endpoint.cache.template_file = PathSchemeUtils::JoinUrl(endpoint_dir.string(), template_file_value);
+        } else if (template_file_path.is_absolute()) {
             endpoint.cache.template_file = template_file_value;
         } else {
             endpoint.cache.template_file = (endpoint_dir / template_file_path).string();
@@ -2625,11 +2623,11 @@ std::string ConfigManager::TemplatePathProblem(const std::string& source) const 
             return "template path '" + source + "' is outside the templates directory";
         }
         if (PathSchemeUtils::IsRemotePath(source)) {
-            std::string root = getTemplatePath();
+            std::string root = PathSchemeUtils::StripQuery(getTemplatePath());
             if (root.empty() || root.back() != '/') {
                 root += '/';
             }
-            if (source.rfind(root, 0) != 0) {
+            if (PathSchemeUtils::StripQuery(source).rfind(root, 0) != 0) {
                 return "template path '" + source + "' is outside the templates directory";
             }
         }
