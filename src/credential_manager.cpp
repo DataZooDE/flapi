@@ -71,24 +71,16 @@ std::string CurrentSetting(duckdb_connection conn, const std::string& name) {
     return value;
 }
 
-// A setting the user chose (`duckdb.settings`, a connection init) wins over the
-// environment: it is applied only when DuckDB still holds the built-in default.
-bool ApplyUnlessUserSet(duckdb_connection conn, std::map<std::string, std::string>& applied, const std::string& name,
-                        const std::string& sql_value, const std::string& builtin_default = "") {
-    const std::string current = CurrentSetting(conn, name);
-    const auto ours = applied.find(name);
-    const bool set_by_us = ours != applied.end() && ours->second == current;
-    if (!current.empty() && current != builtin_default && !set_by_us) {
-        CROW_LOG_DEBUG << "Keeping user-configured " << name << "; the environment value is not applied";
-        return false;
+// What the effective value of an `s3_*` setting is: one the user configured (`duckdb:` settings, a
+// connection init) wins over the environment's value.
+std::string UserOrEnv(duckdb_connection conn, const std::string& setting, const std::string& env_value,
+                      const std::string& builtin_default = "") {
+    const std::string current = CurrentSetting(conn, setting);
+    if (!current.empty() && current != builtin_default) {
+        CROW_LOG_DEBUG << "Keeping user-configured " << setting << "; the environment value is not used";
+        return current;
     }
-    const std::string query = "SET GLOBAL " + name + " = " + sql_value + ";";
-    if (duckdb_query(conn, query.c_str(), nullptr) != DuckDBSuccess) {
-        CROW_LOG_WARNING << "Failed to set " << name;
-        return false;
-    }
-    applied[name] = CurrentSetting(conn, name);
-    return true;
+    return env_value;
 }
 
 // Credentials come from the environment; a quote in one must not end the literal.
@@ -296,39 +288,74 @@ bool CredentialManager::configureConnection(duckdb_connection conn) {
         const auto& creds = _s3_credentials.value();
 
         try {
-            if (!creds.region.empty()) {
-                ApplyUnlessUserSet(conn, _applied_settings, "s3_region", "'" + SqlLiteral(creds.region) + "'");
-            }
-            // Credentials for non-instance-profile auth
-            if (!creds.access_key_id.empty() && !creds.secret_access_key.empty()) {
-                ApplyUnlessUserSet(conn, _applied_settings, "s3_access_key_id", "'" + SqlLiteral(creds.access_key_id) + "'");
-                ApplyUnlessUserSet(conn, _applied_settings, "s3_secret_access_key", "'" + SqlLiteral(creds.secret_access_key) + "'");
-                if (!creds.session_token.empty()) {
-                    ApplyUnlessUserSet(conn, _applied_settings, "s3_session_token", "'" + SqlLiteral(creds.session_token) + "'");
+            // The credentials go into a DuckDB SECRET, not `SET GLOBAL s3_secret_access_key`: a setting
+            // can be read back with `SELECT * FROM duckdb_settings()` by any SQL template, a secret
+            // is redacted. A value the user configured themselves wins over the environment.
+            std::string host = creds.endpoint;
+            bool use_ssl = creds.use_ssl;
+            for (const std::string scheme : {"https://", "http://"}) {
+                if (HasPrefixNoCase(host, scheme)) {
+                    use_ssl = (scheme == "https://");
+                    host.erase(0, scheme.size());
+                    break;
                 }
             }
-            if (!creds.endpoint.empty()) {
-                // DuckDB's s3_endpoint is `host[:port]`; the URL scheme decides SSL.
-                std::string host = creds.endpoint;
-                bool use_ssl = creds.use_ssl;
-                for (const std::string scheme : {"https://", "http://"}) {
-                    if (HasPrefixNoCase(host, scheme)) {
-                        use_ssl = (scheme == "https://");
-                        host.erase(0, scheme.size());
-                        break;
+            while (!host.empty() && host.back() == '/') {
+                host.pop_back();
+            }
+            const std::string region = UserOrEnv(conn, "s3_region", creds.region);
+            const bool have_keys = !creds.access_key_id.empty() && !creds.secret_access_key.empty();
+            if (!have_keys && host.empty()) {
+                // Instance profile / credential chain, or only a region: nothing secret to hide.
+                if (!region.empty() && CurrentSetting(conn, "s3_region").empty()) {
+                    RunStatement(conn, "SET GLOBAL s3_region = '" + SqlLiteral(region) + "';", "S3 region");
+                }
+            } else {
+                std::string sql = "CREATE OR REPLACE SECRET flapi_s3 (TYPE s3";
+                if (have_keys) {
+                    sql += ", KEY_ID '" + SqlLiteral(UserOrEnv(conn, "s3_access_key_id", creds.access_key_id)) +
+                           "', SECRET '" + SqlLiteral(UserOrEnv(conn, "s3_secret_access_key", creds.secret_access_key)) + "'";
+                    if (!creds.session_token.empty()) {
+                        sql += ", SESSION_TOKEN '" + SqlLiteral(UserOrEnv(conn, "s3_session_token", creds.session_token)) + "'";
                     }
                 }
-                while (!host.empty() && host.back() == '/') {
-                    host.pop_back();
+                if (!region.empty()) {
+                    sql += ", REGION '" + SqlLiteral(region) + "'";
                 }
-                ApplyUnlessUserSet(conn, _applied_settings, "s3_endpoint", "'" + SqlLiteral(host) + "'");
-                // A custom endpoint (MinIO, a local fake, an S3-compatible store) is
-                // addressed by path: `<bucket>.<host>` rarely resolves there.
-                const bool real_aws = host.size() >= 13 && host.compare(host.size() - 13, 13, "amazonaws.com") == 0;
-                if (!real_aws) {
-                    ApplyUnlessUserSet(conn, _applied_settings, "s3_url_style", "'path'", "vhost");
+                const std::string endpoint = UserOrEnv(conn, "s3_endpoint", host);
+                if (!endpoint.empty()) {
+                    sql += ", ENDPOINT '" + SqlLiteral(endpoint) + "'";
+                    // A custom endpoint (MinIO, a local fake, an S3-compatible store) is addressed by path:
+                    // `<bucket>.<host>` rarely resolves there.
+                    const bool real_aws =
+                        endpoint.size() >= 13 && endpoint.compare(endpoint.size() - 13, 13, "amazonaws.com") == 0;
+                    const std::string style = UserOrEnv(conn, "s3_url_style", real_aws ? "" : "path", "vhost");
+                    if (!style.empty()) {
+                        sql += ", URL_STYLE '" + SqlLiteral(style) + "'";
+                    }
+                    const std::string ssl = UserOrEnv(conn, "s3_use_ssl", use_ssl ? "true" : "false", "true");
+                    sql += ", USE_SSL " + std::string(ssl == "false" ? "false" : "true");
                 }
-                ApplyUnlessUserSet(conn, _applied_settings, "s3_use_ssl", use_ssl ? "true" : "false", "true");
+                sql += ")";
+                // httpfs copies AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN from the
+                // environment into its legacy s3_* settings when it loads, where any SQL template can
+                // read them back. Load it now (a later LOAD is then a no-op), create the secret, and
+                // blank the settings that only mirror the environment.
+                const bool httpfs_ready = EnsureExtension(conn, "httpfs");
+                if (!RunStatement(conn, sql, "S3")) {
+                    success = false;
+                    errors += "S3: secret could not be created; ";
+                } else if (httpfs_ready) {
+                    const std::pair<const char*, const std::string*> mirrored[] = {
+                        {"s3_access_key_id", &creds.access_key_id},
+                        {"s3_secret_access_key", &creds.secret_access_key},
+                        {"s3_session_token", &creds.session_token}};
+                    for (const auto& [name, env_value] : mirrored) {
+                        if (!env_value->empty() && CurrentSetting(conn, name) == *env_value) {
+                            RunStatement(conn, std::string("SET GLOBAL ") + name + " = '';", "legacy S3 setting");
+                        }
+                    }
+                }
             }
 
             CROW_LOG_INFO << "S3 credentials configured in DuckDB";

@@ -697,6 +697,18 @@ bool ExtendedYamlParser::resolveIncludePath(const std::filesystem::path& include
                                            const std::filesystem::path& base_path,
                                            std::filesystem::path& resolved_path,
                                            const std::vector<std::string>& include_paths) {
+    // A remote config (bucket / http) may include only files below its own directory: an absolute
+    // path would read this machine's disk, and `..` cannot be contained textually.
+    if (PathSchemeUtils::IsRemotePath(base_path.string())) {
+        const std::string wanted = include_path.generic_string();
+        if (wanted.empty() || wanted.front() == '/' || include_path.is_absolute() ||
+            PathSchemeUtils::IsRemotePath(wanted) || PathSchemeUtils::HasDotDotSegment(wanted)) {
+            return false;
+        }
+        resolved_path = PathSchemeUtils::JoinUrl(base_path.string(), wanted);
+        return ConfigFileExists(resolved_path);
+    }
+
     // First try relative to base path
     resolved_path = base_path / include_path;
     if (ConfigFileExists(resolved_path)) {

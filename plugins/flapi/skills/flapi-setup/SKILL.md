@@ -52,6 +52,16 @@ user-invocable: false
 - **GCS: `GOOGLE_*` env vars are not applied to DuckDB** (startup WARNING). Use an HMAC
   `CREATE SECRET (TYPE gcs, KEY_ID ..., SECRET ...)` in a connection `init`.
 
+## Templates in a bucket (remote `template.path`)
+
+`template.path` may be `s3://`, `gs://`, `az://` or `https://`. Credentials come from the environment:
+`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION`, `GCS_ACCESS_KEY_ID` / `GCS_SECRET_ACCESS_KEY`
+(an HMAC key), `AZURE_STORAGE_CONNECTION_STRING`. Plain `https://` has no listing: add a `manifest.txt` at the root
+(one endpoint YAML per line). Do not write local `sqls/` files for such a project and do not expect the config
+service or `flapi_*` tools to write endpoints: upload the `.yaml`/`.sql` files to the bucket, check with
+`flapi -c flapi.yaml --validate-config`, and restart flAPI (YAML is read at boot; SQL within `storage.cache.ttl`).
+Whoever can write the bucket can run SQL as the server: give flAPI read-only, prefix-scoped credentials.
+
 ## Install
 
 ```bash

@@ -1028,18 +1028,19 @@ std::vector<std::string> ConfigManager::listRemoteEndpointFiles(const std::strin
     std::vector<std::string> found;
     std::string listing_error;
     if (!PathSchemeUtils::IsHttpPath(root)) {
-        for (const char* pattern : {"**/*.yaml", "**/*.yml"}) {
-            try {
-                for (const auto& file : provider->ListFiles(root, pattern)) {
+        // One listing request for the whole prefix, filtered here: two globs (`*.yaml`, `*.yml`) cost two
+        // identical round trips to the store.
+        try {
+            for (const auto& file : provider->ListFiles(root, "**/*")) {
+                const auto dot = file.find_last_of('.');
+                const std::string ext = dot == std::string::npos ? "" : file.substr(dot);
+                if (ext == ".yaml" || ext == ".yml") {
                     found.push_back(file);
                 }
-            } catch (const std::exception& e) {
-                if (listing_error.empty()) {
-                    listing_error = e.what();
-                }
-                CROW_LOG_WARNING << "Remote listing of " << PathSchemeUtils::RedactUrl(root) << " (" << pattern
-                                 << ") failed: " << e.what();
             }
+        } catch (const std::exception& e) {
+            listing_error = e.what();
+            CROW_LOG_WARNING << "Remote listing of " << PathSchemeUtils::RedactUrl(root) << " failed: " << e.what();
         }
     }
 
@@ -1053,9 +1054,14 @@ std::vector<std::string> ConfigManager::listRemoteEndpointFiles(const std::strin
                 "Cannot list endpoint files under " + PathSchemeUtils::RedactUrl(root) + ": " +
                 (listing_error.empty() ? std::string("no files matched")
                                        : "listing failed (" + listing_error + ")") +
-                " and the manifest " + PathSchemeUtils::RedactUrl(manifest) + " could not be read (" + e.what() + "). A remote template.path needs "
-                "either a store that supports listing (s3://, gs://, az://) or a manifest.txt at "
-                "its root naming each endpoint YAML, one relative path per line.");
+                " and the manifest " + PathSchemeUtils::RedactUrl(manifest) + " could not be read (" + e.what() + "). " +
+                (PathSchemeUtils::IsHttpPath(root)
+                     ? std::string("A plain http(s) template.path has no listing: put a manifest.txt at its root naming each "
+                                   "endpoint YAML, one relative path per line.")
+                     : std::string("Check the bucket/container name and prefix, the region, and the credentials in the "
+                                   "environment (AWS_* for s3://, GCS_ACCESS_KEY_ID/GCS_SECRET_ACCESS_KEY for gs://, "
+                                   "AZURE_STORAGE_* for az://); a manifest.txt at the root is only the fallback for "
+                                   "stores that cannot be listed.")));
         }
         std::istringstream lines(text);
         std::string line;
@@ -1103,6 +1109,7 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
     size_t total_yaml_files = 0;
     size_t loaded_endpoints = 0;
     load_errors_.clear();
+    VFSReadMemoScope read_memo;  // each remote file is fetched once for the whole load
     struct ContainmentScope {
         bool& flag;
         explicit ContainmentScope(bool& f) : flag(f) { flag = true; }
@@ -2532,7 +2539,7 @@ crow::json::wvalue ConfigManager::getFlapiConfig() const {
     // Manually construct the JSON object from the YAML data
     result["name"] = project_name;
     result["description"] = project_description;
-    result["template-path"] = template_config.path;
+    result["template-path"] = PathSchemeUtils::RedactUrl(template_config.path);
     
     // Add connections
     crow::json::wvalue connectionsJson;
@@ -2633,6 +2640,15 @@ crow::json::wvalue ConfigManager::getFlapiConfig() const {
     return result;
 }
 
+std::string ConfigManager::RemoteTemplateStorageProblem() const {
+    if (!PathSchemeUtils::IsRemotePath(getTemplatePath())) {
+        return "";
+    }
+    return "template.path is remote storage (" + PathSchemeUtils::RedactUrl(getTemplatePath()) +
+           "): endpoint files there are read-only through the config service and MCP tools. Create, edit or delete "
+           "the .yaml and .sql files in the bucket (add the YAML to manifest.txt on plain http(s)), then restart flAPI.";
+}
+
 std::string ConfigManager::TemplatePathProblem(const std::string& source) const {
     if (source.empty()) {
         return "";
@@ -2726,7 +2742,7 @@ crow::json::wvalue ConfigManager::serializeEndpointConfig(const EndpointConfig& 
         if (!config.description.empty()) {
             set("description", "description", config.description);
         }
-        set("template-source", "templateSource", config.templateSource);
+        set("template-source", "templateSource", PathSchemeUtils::RedactUrl(config.templateSource));
 
         if (!config.connection.empty()) {
             auto connection_list = crow::json::wvalue::list();
@@ -2746,7 +2762,7 @@ crow::json::wvalue ConfigManager::serializeEndpointConfig(const EndpointConfig& 
         // were left out, so `flapii endpoints list` showed every resource on
         // connection "N/A".
         if (!config.templateSource.empty()) {
-            set("template-source", "templateSource", config.templateSource);
+            set("template-source", "templateSource", PathSchemeUtils::RedactUrl(config.templateSource));
         }
         if (!config.connection.empty()) {
             auto connection_list = crow::json::wvalue::list();

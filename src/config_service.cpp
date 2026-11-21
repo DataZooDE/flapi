@@ -268,7 +268,7 @@ crow::response FilesystemHandler::getFilesystemStructure(const crow::request& re
         
         // Get the template directory path and add to response
         auto template_path = config_manager_->getFullTemplatePath();
-        response["template_path"] = template_path.string();
+        response["template_path"] = PathSchemeUtils::RedactUrl(template_path.string());
         
         // Build the file tree
         crow::json::wvalue::list tree;
@@ -2194,6 +2194,9 @@ std::optional<YAML::Node> bodyAsDocument(const std::string& body) {
 }  // namespace
 
 crow::response EndpointConfigHandler::createEndpoint(const crow::request& req) {
+    if (const auto remote = config_manager_->RemoteTemplateStorageProblem(); !remote.empty()) {
+        return jsonError(501, remote);
+    }
     try {
         auto doc = bodyAsDocument(req.body);
         if (!doc) {
@@ -2264,6 +2267,9 @@ crow::response EndpointConfigHandler::getEndpointConfigBySlug(const crow::reques
 }
 
 crow::response EndpointConfigHandler::updateExisting(const crow::request& req, const EndpointConfig& existing) {
+    if (const auto remote = config_manager_->RemoteTemplateStorageProblem(); !remote.empty()) {
+        return jsonError(501, remote);
+    }
     auto json = crow::json::load(req.body);
     auto doc = bodyAsDocument(req.body);
     if (!json || !doc) {
@@ -2357,6 +2363,9 @@ crow::response EndpointConfigHandler::updateEndpointConfigBySlug(const crow::req
 }
 
 crow::response EndpointConfigHandler::removeExisting(const EndpointConfig& existing) {
+    if (const auto remote = config_manager_->RemoteTemplateStorageProblem(); !remote.empty()) {
+        return jsonError(501, remote);
+    }
     const std::string file = existing.config_file_path;
     // Exactly this endpoint: by path it removed GET /orders with POST /orders.
     if (!config_manager_->removeEndpoint(existing)) {
@@ -2522,6 +2531,9 @@ crow::response EndpointConfigHandler::validateEndpointConfig(const crow::request
 }
 
 crow::response EndpointConfigHandler::reloadEndpointConfig(const crow::request& req, const std::string& path) {
+    if (const auto remote = config_manager_->RemoteTemplateStorageProblem(); !remote.empty()) {
+        return jsonError(501, remote);
+    }
     try {
         // Known first, so "no such endpoint" (404) and "it exists but its file
         // is broken" are told apart. Both answered 404 "Failed to reload", so a
@@ -2768,7 +2780,7 @@ crow::response EndpointConfigHandler::findEndpointsByTemplate(const crow::reques
                 ep["url_path"] = endpoint.urlPath;
                 ep["method"] = endpoint.method;
                 ep["config_file_path"] = endpoint.config_file_path;
-                ep["template_source"] = endpoint.templateSource;
+                ep["template_source"] = PathSchemeUtils::RedactUrl(endpoint.templateSource);
                 
                 // Add endpoint type info
                 if (endpoint.isRESTEndpoint()) {

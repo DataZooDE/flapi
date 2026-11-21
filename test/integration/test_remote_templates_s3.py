@@ -170,7 +170,7 @@ def test_an_empty_prefix_falls_back_to_the_manifest(bucket, workdir):
     assert "manifest.txt" in out, out
 
 
-SETTINGS_SQL = "SELECT value FROM duckdb_settings() WHERE name = 's3_region'"
+SETTINGS_SQL = "SELECT secret_string AS value FROM duckdb_secrets() WHERE name = 'flapi_s3'"
 
 
 def _settings_server(workdir, extra_duckdb, env):
@@ -204,7 +204,7 @@ def test_user_configured_s3_setting_wins_over_the_environment(workdir):
     try:
         r = requests.get(f"http://127.0.0.1:{port}/region", timeout=30)
         assert r.status_code == 200, r.text
-        assert r.json()["data"][0]["value"] == "eu-west-1", r.text
+        assert "region=eu-west-1" in r.json()["data"][0]["value"], r.text
     finally:
         stop(proc)
 
@@ -215,7 +215,7 @@ def test_environment_applies_when_the_user_set_nothing(workdir):
     try:
         r = requests.get(f"http://127.0.0.1:{port}/region", timeout=30)
         assert r.status_code == 200, r.text
-        assert r.json()["data"][0]["value"] == "us-east-1", r.text
+        assert "region=us-east-1" in r.json()["data"][0]["value"], r.text
     finally:
         stop(proc)
 
@@ -368,3 +368,38 @@ def test_azure_env_without_az_paths_downloads_nothing(bucket, workdir):
     assert r.returncode == 0, out
     files = [f for _, _, names in os.walk(ext) for f in names]
     assert not any("azure" in f for f in files), files
+
+
+def test_a_template_cannot_read_the_s3_secret_key(workdir):
+    """The environment's S3 credentials must not be readable from SQL (duckdb_settings / duckdb_secrets)."""
+    put(workdir, "flapi.yaml",
+        "project-name: s3leak\ntemplate:\n  path: ./sqls\nconnections:\n  inmem:\n    init: |\n"
+        "      INSTALL httpfs;\n      LOAD httpfs;\n    properties:\n      database: ':memory:'\n"
+        "rate_limit:\n  enabled: false\n")
+    put(workdir, "sqls/leak.yaml", "url-path: /leak\nmethod: GET\ntemplate-source: leak.sql\nconnection: [inmem]\n")
+    put(workdir, "sqls/leak.sql",
+        "SELECT name, value FROM duckdb_settings() WHERE name LIKE 's3_%' "
+        "UNION ALL SELECT name, secret_string FROM duckdb_secrets()")
+    port = free_port()
+    log = open(os.path.join(workdir, "leak.log"), "w")
+    proc = subprocess.Popen(
+        [flapi_binary(), "-c", os.path.join(workdir, "flapi.yaml"), "-p", str(port), "--log-level", "info"],
+        cwd=workdir, stdout=log, stderr=subprocess.STDOUT, preexec_fn=os.setsid,
+        env={**ENV, "AWS_ACCESS_KEY_ID": "AKIALEAKCANARY", "AWS_SECRET_ACCESS_KEY": "SECRETLEAKCANARY",
+             "AWS_SESSION_TOKEN": "TOKENLEAKCANARY", "AWS_REGION": "us-east-1"})
+    try:
+        import time
+        deadline = time.time() + 90
+        while time.time() < deadline:
+            assert proc.poll() is None, open(os.path.join(workdir, "leak.log")).read()
+            try:
+                if requests.get(f"http://127.0.0.1:{port}/health/live", timeout=1).status_code == 200:
+                    break
+            except requests.RequestException:
+                time.sleep(0.3)
+        r = requests.get(f"http://127.0.0.1:{port}/leak?limit=200", timeout=30)
+        assert r.status_code == 200, r.text
+        assert "SECRETLEAKCANARY" not in r.text and "TOKENLEAKCANARY" not in r.text, r.text
+        assert "redacted" in r.text, "the secret should be listed, redacted:\n" + r.text
+    finally:
+        stop(proc)

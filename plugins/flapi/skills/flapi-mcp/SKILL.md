@@ -27,6 +27,9 @@ REST endpoint too. One SQL template serves both.
   create/update/delete/reload (config service, `flapii`, the plugin hook or a `flapi_*`
   tool) rebuilds them; no restart. Clients are not notified (`listChanged` stays
   `false`), so re-list after a change; a pagination cursor from before it is rejected.
+  **Exception: a remote `template.path` (bucket or http).** Endpoint files there are read-only through
+  the config service and the `flapi_*` tools (they answer 501); edit the files in the bucket, then
+  restart flAPI. SQL templates are re-read on each request (within `storage.cache.ttl`), YAML only at boot.
 - **An MCP call has no default row limit.** REST pages at 100 rows. A `tools/call` with no
   `limit` argument returns every row the SQL produces (1500 rows in the customers
   fixture). Declare a `limit` request field with an `int` validator and a `default`, and/or

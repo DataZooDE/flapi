@@ -32,6 +32,7 @@
 #include "database_manager.hpp"
 #include "duckdb_embed_fs.hpp"
 #include "pack.hpp"
+#include <optional>
 #include "flapi_telemetry.hpp"
 #include "rate_limit_middleware.hpp"
 #include "config_token_utils.hpp"
@@ -272,6 +273,7 @@ int validateConfiguration(std::shared_ptr<ConfigManager> config_manager, const s
         }
     }
 
+    flapi::VFSReadMemoScope read_memo;  // validation re-reads every template: fetch each remote file once
     for (const auto& endpoint : *config_manager->getEndpoints()) {
         auto result = config_manager->validateEndpointConfig(endpoint);
         std::string endpoint_name = getEndpointName(endpoint);
@@ -833,6 +835,12 @@ int main(int argc, char* argv[])
                     int rc = 0;
                     try {
                         auto cm = initializeConfig(main_config.string(), /*collect_load_errors=*/true);
+                        if (flapi::PathSchemeUtils::IsRemotePath(cm->getTemplatePath())) {
+                            std::cerr << "flapi pack: warning: template.path is remote ("
+                                      << flapi::PathSchemeUtils::RedactUrl(cm->getTemplatePath())
+                                      << "): the endpoint YAML and SQL are NOT bundled, and the packed binary "
+                                         "still reads them from that storage at runtime (with its credentials).\n";
+                        }
                         rc = validateConfiguration(cm, main_config.string());
                     } catch (const std::exception& e) {
                         std::cerr << "✗ " << e.what() << "\n";
@@ -1192,6 +1200,10 @@ int main(int argc, char* argv[])
     //
     // terminateHandler stays for genuinely unexpected exceptions; that is what
     // it is for. Startup config loading is not one of them (#126).
+    // One memo for the whole startup (load + validation): each remote file is fetched once, not once per
+    // pass. Released before the server starts answering, so requests never see a memoised copy.
+    std::optional<flapi::VFSReadMemoScope> startup_read_memo;
+    startup_read_memo.emplace();
     std::shared_ptr<ConfigManager> config_manager;
     try {
         config_manager = initializeConfig(config_file, /*collect_load_errors=*/validate_config);
@@ -1370,6 +1382,8 @@ int main(int argc, char* argv[])
 
     // Verify storage health at startup
     verifyStorageHealth(config_manager);
+
+    startup_read_memo.reset();
 
     // Create unified API server with MCP support (always enabled in unified configuration)
     setApiServer(std::make_shared<APIServer>(

@@ -569,6 +569,19 @@ mcp:
         required: false  # Allow anonymous reads
 ```
 
+## Remote configuration trust model
+
+With `--config` or `template.path` in object storage (s3://, gs://, az://, http(s)://), the files read from there are
+code: endpoint YAML and SQL templates run with the server's privileges and the credentials flAPI holds. There is no
+checksum or signature verification, so **write access to the bucket is equivalent to code execution** on every
+server that reads it. What flAPI does enforce for remote origins: a `template-source` outside `template.path` (an
+absolute local path, `..` in any encoding, another bucket or host) is refused, `{{include}}` in remote YAML is limited
+to files below the same remote directory, `{{env.X}}` stays behind `template.environment-whitelist`, duplicate routes
+abort startup, built-in routes (`/health`, `/mcp`, `/api/v1/_config`) cannot be overridden, and URLs are redacted
+(`user:pass@`, `?query`, `#fragment`) in logs, errors and config-service/MCP answers. Recommended: read-only,
+prefix-scoped credentials for flAPI; write access only through your normal review pipeline; object versioning.
+S3 credentials are kept as a redacted DuckDB secret (`flapi_s3`), not as `s3_*` settings that SQL could read back.
+
 ## Security Best Practices
 
 1. **Always use validators** - Define type and constraints for all inputs

@@ -1,4 +1,7 @@
 #include "caching_file_provider.hpp"
+#include <optional>
+#include <algorithm>
+#include <crow/logging.h>
 #include <algorithm>
 #include <crow/logging.h>
 
@@ -65,6 +68,7 @@ std::string CachingFileProvider::ReadFile(const std::string& path) {
         return _underlying->ReadFile(path);
     }
 
+    std::optional<std::string> stale;  // an expired copy, served if the store fails
     {
         std::lock_guard<std::mutex> lock(_cache_mutex);
 
@@ -78,7 +82,8 @@ std::string CachingFileProvider::ReadFile(const std::string& path) {
                 // CROW_LOG_DEBUG << "Cache hit: " << path;
                 return it->second.content;
             }
-            // Expired - remove from cache
+            // Expired - remove from cache (the content is kept to ride out a store outage)
+            stale = it->second.content;
             size_t entry_size = it->second.size_bytes;
             _cache.erase(it);
             _stats.current_entries.fetch_sub(1);
@@ -91,7 +96,27 @@ std::string CachingFileProvider::ReadFile(const std::string& path) {
     _stats.misses.fetch_add(1);
     // CROW_LOG_DEBUG << "Cache miss: " << path;
 
-    std::string content = _underlying->ReadFile(path);
+    std::string content;
+    try {
+        content = _underlying->ReadFile(path);
+    } catch (const std::exception& e) {
+        if (!stale) {
+            throw;
+        }
+        // A transient store error (an expired STS token, a 5xx, a network blip) must not turn every
+        // request into a 500 the moment the TTL passes: serve the last good copy, retry soon.
+        CROW_LOG_WARNING << "Remote read failed, serving the cached copy past its TTL: " << e.what();
+        std::lock_guard<std::mutex> lock(_cache_mutex);
+        CacheEntry entry;
+        entry.content = *stale;
+        entry.size_bytes = stale->size();
+        entry.expires_at = std::chrono::steady_clock::now() + std::min<std::chrono::seconds>(_config.ttl, std::chrono::seconds(15));
+        entry.last_access = std::chrono::steady_clock::now();
+        _cache[path] = entry;
+        _stats.current_entries.fetch_add(1);
+        _stats.current_size_bytes.fetch_add(entry.size_bytes);
+        return *stale;
+    }
 
     // Add to cache if within size limits
     {
