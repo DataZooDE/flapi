@@ -197,3 +197,22 @@ class TestRemoteConfig:
             assert r.json()["data"][0]["origin"] == "from-remote"
         finally:
             stop(proc)
+
+
+class TestBootstrapExtensions:
+    def test_offline_bootstrap_does_not_download_httpfs(self, store, workdir):
+        # The bootstrap DuckDB reads a remote --config before the config exists, so
+        # it follows FLAPI_EXTENSION_DIRECTORY / FLAPI_EXTENSIONS_OFFLINE from the
+        # environment. Offline with an empty directory it must not INSTALL: it
+        # reports the failed LOAD (naming the directory) instead of downloading.
+        root, base = store
+        put(root, "flapi.yaml", main_config("./sqls"))
+        ext_dir = os.path.join(workdir, "ext")
+        os.makedirs(ext_dir)
+        env = {**ENV, "FLAPI_EXTENSION_DIRECTORY": ext_dir, "FLAPI_EXTENSIONS_OFFLINE": "1"}
+        r = subprocess.run(
+            [flapi_binary(), "-c", f"{base}/flapi.yaml", "--validate-config", "--log-level", "info"],
+            cwd=workdir, capture_output=True, text=True, timeout=120, env=env)
+        out = r.stdout + r.stderr
+        assert "Bootstrap DuckDB: `LOAD httpfs` failed" in out, out
+        assert ext_dir in out, out

@@ -23,6 +23,7 @@
 // Include DatabaseManager for singleton access
 #include "database_manager.hpp"
 #include "credential_manager.hpp"
+#include "extension_installer.hpp"
 
 namespace flapi {
 
@@ -247,14 +248,41 @@ std::shared_ptr<BootstrapDb> GetBootstrapDb() {
         return instance;
     }
     auto created = std::make_shared<BootstrapDb>();
-    if (duckdb_open(nullptr, &created->db) != DuckDBSuccess) {
+    // The config file is not read yet, so only the environment (and a bundle's
+    // embedded extensions) can say where extensions live - the same defaults
+    // ConfigManager applies after `duckdb.extension_directory`.
+    std::string extension_dir;
+    if (const char* dir = std::getenv("FLAPI_EXTENSION_DIRECTORY"); dir != nullptr && *dir != '\0') {
+        extension_dir = dir;
+    } else if (const auto bundled = BundledExtensionDirectory()) {
+        extension_dir = bundled->string();
+    }
+    bool offline = BundledExtensionDirectory().has_value();
+    if (const char* flag = std::getenv("FLAPI_EXTENSIONS_OFFLINE"); flag != nullptr && *flag != '\0') {
+        std::string v = flag;
+        std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return std::tolower(c); });
+        offline = (v == "1" || v == "true" || v == "yes" || v == "on");
+    }
+    duckdb_config config = nullptr;
+    if (duckdb_create_config(&config) == DuckDBSuccess && !extension_dir.empty()) {
+        duckdb_set_config(config, "extension_directory", extension_dir.c_str());
+    }
+    const auto opened = duckdb_open_ext(nullptr, &created->db, config, nullptr);
+    if (config) {
+        duckdb_destroy_config(&config);
+    }
+    if (opened != DuckDBSuccess) {
         throw FileOperationError("Could not start the bootstrap DuckDB used to read remote files.");
     }
     duckdb_connection conn = nullptr;
     if (duckdb_connect(created->db, &conn) != DuckDBSuccess) {
         throw FileOperationError("Could not connect to the bootstrap DuckDB.");
     }
+    // Offline: never download; httpfs must already be in the extension directory.
     for (const char* sql : {"INSTALL httpfs", "LOAD httpfs"}) {
+        if (offline && std::string(sql) == "INSTALL httpfs") {
+            continue;
+        }
         duckdb_result result;
         if (duckdb_query(conn, sql, &result) != DuckDBSuccess) {
             CROW_LOG_WARNING << "Bootstrap DuckDB: `" << sql << "` failed: "
