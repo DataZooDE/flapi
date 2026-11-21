@@ -168,3 +168,53 @@ def test_an_empty_prefix_falls_back_to_the_manifest(bucket, workdir):
     out = r.stdout + r.stderr
     assert r.returncode != 0, out
     assert "manifest.txt" in out, out
+
+
+SETTINGS_SQL = "SELECT value FROM duckdb_settings() WHERE name = 's3_region'"
+
+
+def _settings_server(workdir, extra_duckdb, env):
+    put(workdir, "flapi.yaml",
+        "project-name: s3prec\ntemplate:\n  path: ./sqls\nconnections:\n  inmem:\n    init: |\n"
+        "      INSTALL httpfs;\n      LOAD httpfs;\n    properties:\n      database: ':memory:'\n"
+        "rate_limit:\n  enabled: false\n" + extra_duckdb)
+    put(workdir, "sqls/r.yaml", "url-path: /region\nmethod: GET\ntemplate-source: r.sql\nconnection: [inmem]\n")
+    put(workdir, "sqls/r.sql", SETTINGS_SQL)
+    port = free_port()
+    log = open(os.path.join(workdir, "prec.log"), "w")
+    proc = subprocess.Popen(
+        [flapi_binary(), "-c", os.path.join(workdir, "flapi.yaml"), "-p", str(port), "--log-level", "info"],
+        cwd=workdir, stdout=log, stderr=subprocess.STDOUT, preexec_fn=os.setsid, env={**ENV, **env})
+    import time
+    deadline = time.time() + 90
+    while time.time() < deadline:
+        assert proc.poll() is None, open(os.path.join(workdir, "prec.log")).read()
+        try:
+            if requests.get(f"http://127.0.0.1:{port}/health/live", timeout=1).status_code == 200:
+                break
+        except requests.RequestException:
+            time.sleep(0.3)
+    return proc, port
+
+
+def test_user_configured_s3_setting_wins_over_the_environment(workdir):
+    proc, port = _settings_server(
+        workdir, "duckdb:\n  s3_region: eu-west-1\n",
+        {"AWS_ACCESS_KEY_ID": "AKIATESTKEY", "AWS_SECRET_ACCESS_KEY": "y", "AWS_REGION": "us-east-1"})
+    try:
+        r = requests.get(f"http://127.0.0.1:{port}/region", timeout=30)
+        assert r.status_code == 200, r.text
+        assert r.json()["data"][0]["value"] == "eu-west-1", r.text
+    finally:
+        stop(proc)
+
+
+def test_environment_applies_when_the_user_set_nothing(workdir):
+    proc, port = _settings_server(
+        workdir, "", {"AWS_ACCESS_KEY_ID": "AKIATESTKEY", "AWS_SECRET_ACCESS_KEY": "y", "AWS_REGION": "us-east-1"})
+    try:
+        r = requests.get(f"http://127.0.0.1:{port}/region", timeout=30)
+        assert r.status_code == 200, r.text
+        assert r.json()["data"][0]["value"] == "us-east-1", r.text
+    finally:
+        stop(proc)
