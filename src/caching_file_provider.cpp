@@ -86,6 +86,7 @@ std::string CachingFileProvider::ReadFile(const std::string& path) {
             } else if (it->second.refreshing) {
                 // Somebody is already re-fetching it: serve the expired copy instead of piling more
                 // reads onto the store (or blocking for as long as a slow store takes).
+                _stats.hits.fetch_add(1);
                 served = it->second.content;
             } else {
                 it->second.refreshing = true;
@@ -93,6 +94,7 @@ std::string CachingFileProvider::ReadFile(const std::string& path) {
                 refresher = true;
             }
         } else if (const auto flight = _inflight.find(path); flight != _inflight.end()) {
+            _stats.hits.fetch_add(1);  // shares the leader's fetch: no extra store read
             follow = flight->second;
         } else {
             lead = std::make_shared<std::promise<Content>>();
