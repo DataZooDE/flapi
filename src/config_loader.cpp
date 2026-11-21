@@ -1,4 +1,5 @@
 #include "config_loader.hpp"
+#include "vfs_adapter.hpp"
 #include <crow/logging.h>
 
 namespace flapi {
@@ -44,7 +45,7 @@ ConfigLoader::ConfigLoader(const std::string& config_file_path,
         base_path_ = std::filesystem::path(base_path_string_);
 
         CROW_LOG_DEBUG << "ConfigLoader initialized with remote config: " << config_path_string_;
-        CROW_LOG_DEBUG << "Remote base path: " << base_path_string_;
+        CROW_LOG_DEBUG << "Remote base path: " << PathSchemeUtils::RedactUrl(base_path_string_);
     } else {
         // Local path - normalize using filesystem
         std::string actual_path = PathSchemeUtils::StripFileScheme(config_file_path);
@@ -64,7 +65,7 @@ YAML::Node ConfigLoader::loadYamlFile(const std::filesystem::path& file_path) {
         std::string path_str = full_path.string();
 
         // Use file provider for existence check
-        if (!_file_provider->FileExists(path_str)) {
+        if (!PathSchemeUtils::IsRemotePath(path_str) && !_file_provider->FileExists(path_str)) {
             throw std::runtime_error("Configuration file not found: " + path_str);
         }
 

@@ -129,8 +129,16 @@ std::string CachingFileProvider::ReadFile(const std::string& path) {
 }
 
 bool CachingFileProvider::FileExists(const std::string& path) {
-    // FileExists is typically fast, so we don't cache this
-    // This also ensures we get fresh existence checks
+    // A file whose content is cached and not yet expired exists as far as the TTL is concerned:
+    // without this every render still sent a HEAD to the store, and `storage.cache` saved nothing.
+    // Absence is never cached, so a file that appears later is found at once.
+    if (shouldCache(path)) {
+        std::lock_guard<std::mutex> lock(_cache_mutex);
+        const auto it = _cache.find(path);
+        if (it != _cache.end() && !isExpired(it->second)) {
+            return true;
+        }
+    }
     return _underlying->FileExists(path);
 }
 

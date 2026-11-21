@@ -152,7 +152,7 @@ ConfigManager& ConfigManager::operator=(ConfigManager&&) noexcept = default;
 // Main configuration loading and parsing methods
 void ConfigManager::loadConfig() {
     try {
-        CROW_LOG_INFO << "Loading configuration file: " << config_file;
+        CROW_LOG_INFO << "Loading configuration file: " << PathSchemeUtils::RedactUrl(config_file.string());
 
         // BEFORE the main file is read for real: its `{{env.NAME}}` references
         // are checked against a whitelist that lives in that same file.
@@ -373,6 +373,14 @@ void ConfigManager::parseMainConfig() {
     try {
         CROW_LOG_INFO << "Parsing main configuration";
         base_path = config_file.parent_path();
+        if (PathSchemeUtils::IsRemotePath(config_file.string())) {
+            // The directory of a remote config URL keeps the URL's ?query (a signature that every
+            // sibling file needs); parent_path() of the whole URL would drop it.
+            const std::string full = config_file.string();
+            const std::string no_query = PathSchemeUtils::StripQuery(full);
+            const auto slash = no_query.find_last_of('/');
+            base_path = no_query.substr(0, slash == std::string::npos ? 0 : slash) + full.substr(no_query.size());
+        }
 
         // flAPI has no `server:` block, and refusing one is deliberate (#153).
         // `server: {port, host}` appeared in the config-system spec and in a
@@ -1064,12 +1072,7 @@ std::vector<std::string> ConfigManager::listRemoteEndpointFiles(const std::strin
             // `..` as a path segment (a name like `a..b.yaml` is fine); an entry that is
             // a full URL must stay under template.path, or a tampered manifest could
             // point the server at another bucket or host with this server's credentials.
-            std::string lowered_entry = entry;
-            std::transform(lowered_entry.begin(), lowered_entry.end(), lowered_entry.begin(),
-                           [](unsigned char ch) { return std::tolower(ch); });
-            const bool dotdot = entry == ".." || entry.rfind("../", 0) == 0 || entry.find("/../") != std::string::npos ||
-                                (entry.size() >= 3 && entry.compare(entry.size() - 3, 3, "/..") == 0) ||
-                                lowered_entry.find("%2e%2e") != std::string::npos;
+            const bool dotdot = PathSchemeUtils::HasDotDotSegment(entry);
             if (dotdot) {
                 throw std::runtime_error("Manifest entry escapes template.path: " + entry);
             }
@@ -1100,6 +1103,11 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
     size_t total_yaml_files = 0;
     size_t loaded_endpoints = 0;
     load_errors_.clear();
+    struct ContainmentScope {
+        bool& flag;
+        explicit ContainmentScope(bool& f) : flag(f) { flag = true; }
+        ~ContainmentScope() { flag = false; }
+    } containment_scope(enforce_template_containment_);
 
     // One file at a time: normally the first failure aborts the load (a server
     // must not start with a file it could not read), but --validate-config
@@ -1122,8 +1130,13 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
     if (PathSchemeUtils::IsRemotePath(remote_root)) {
         // Remote templates (#219): no directory to walk.
         std::vector<std::string> names = listRemoteEndpointFiles(remote_root);
+        CROW_LOG_INFO << "Found " << names.size() << " endpoint file(s) under "
+                      << PathSchemeUtils::RedactUrl(remote_root);
         for (const auto& name : names) {
             total_yaml_files++;
+            if (total_yaml_files % 10 == 0) {
+                CROW_LOG_INFO << "Loading remote endpoint files: " << total_yaml_files << "/" << names.size();
+            }
             size_t endpoints_before = endpointsSnapshot()->size();
             loadOne(name);
             if (endpointsSnapshot()->size() > endpoints_before) {
@@ -1204,7 +1217,7 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
 
 void ConfigManager::loadEndpointConfig(const std::string& config_file) {
     try {
-        CROW_LOG_DEBUG << "\tLoading endpoint config from file: " << config_file;
+        CROW_LOG_DEBUG << "\tLoading endpoint config from file: " << PathSchemeUtils::RedactUrl(config_file);
 
         // Use EndpointConfigParser for consistent path resolution
         EndpointConfigParser parser(yaml_parser, this);
@@ -1231,7 +1244,7 @@ void ConfigManager::loadEndpointConfig(const std::string& config_file) {
         if (endpoint.isMCPPrompt()) {
             CROW_LOG_DEBUG << "\t\tTemplate Content: embedded in config";
             } else {
-            CROW_LOG_DEBUG << "\t\tTemplate Source: " << endpoint.templateSource;
+            CROW_LOG_DEBUG << "\t\tTemplate Source: " << PathSchemeUtils::RedactUrl(endpoint.templateSource);
         }
         
         // Two files serving the same url-path and method used to load silently,
@@ -1240,6 +1253,15 @@ void ConfigManager::loadEndpointConfig(const std::string& config_file) {
             throw std::runtime_error(duplicate);
         }
         LogRouteOverlaps(endpoint);
+
+        // A template-source outside template.path (an absolute local path, `../..`, another bucket or
+        // host) would be read and run as SQL; the config-service API already refuses it, and the
+        // startup load must too (a remote config could otherwise point it at local files).
+        if (enforce_template_containment_ && !endpoint.isMCPPrompt() && !endpoint.templateSource.empty()) {
+            if (const auto problem = TemplatePathProblem(endpoint.templateSource); !problem.empty()) {
+                throw std::runtime_error("Template source escapes template.path (" + getTemplatePath() + "): " + problem);
+            }
+        }
 
         // Add to endpoints list
         mutateEndpointsVoid([&](std::vector<EndpointConfig>& eps) { eps.push_back(endpoint); });
@@ -1252,7 +1274,7 @@ void ConfigManager::loadEndpointConfig(const std::string& config_file) {
         if (what_msg.empty()) {
             what_msg = "(empty exception message)";
         }
-        throw std::runtime_error("Error loading endpoint config from file: " + config_file + ", Error: " + what_msg);
+        throw std::runtime_error("Error loading endpoint config from file: " + PathSchemeUtils::RedactUrl(config_file) + ", Error: " + RedactUrlsInText(what_msg));
     }
 }
 
@@ -2193,7 +2215,11 @@ void ConfigManager::parseGlobalHeartbeatConfig() {
 std::string ConfigManager::makePathRelativeToBasePathIfNecessary(const std::string& value) const {
     if (value.find("./") == 0 || value.find("../") == 0) {
         std::filesystem::path relativePath(value);
-        std::filesystem::path absolutePath = std::filesystem::absolute(base_path / relativePath).lexically_normal();
+        // A remote config (--config s3://...) has no directory on disk: `./data/x.ducklake` means
+        // the server's working directory, not `<cwd>/s3:/bucket/data/x.ducklake`.
+        const bool remote_base = PathSchemeUtils::IsRemotePath(base_path.string());
+        std::filesystem::path absolutePath =
+            std::filesystem::absolute(remote_base ? relativePath : base_path / relativePath).lexically_normal();
         return absolutePath.string();
     }
     return value;
@@ -2335,8 +2361,12 @@ std::shared_ptr<IFileProvider> ConfigManager::getFileProvider() const {
         cache_config.ttl = storage_config.cache.ttl;
         cache_config.max_size_bytes = storage_config.cache.max_size_bytes;
 
-        auto base_provider = FileProviderFactory::CreateDuckDBProvider();
-        return std::make_shared<CachingFileProvider>(base_provider, cache_config);
+        std::lock_guard<MovableMutex> guard(remote_provider_mutex);
+        if (!remote_caching_provider_) {
+            remote_caching_provider_ =
+                std::make_shared<CachingFileProvider>(FileProviderFactory::CreateDuckDBProvider(), cache_config);
+        }
+        return remote_caching_provider_;
     }
 
     // Remote template path without a file cache: read straight through the VFS.
@@ -2610,10 +2640,7 @@ std::string ConfigManager::TemplatePathProblem(const std::string& source) const 
     if (PathSchemeUtils::IsRemotePath(getTemplatePath()) || PathSchemeUtils::IsRemotePath(source)) {
         // A URL has no symlinks and no cwd: judged as text. Inside means "starts with
         // template.path and never steps up with `..`".
-        std::string lowered = source;
-        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char ch) { return std::tolower(ch); });
-        if (source.find("/../") != std::string::npos || source.rfind("../", 0) == 0 ||
-            lowered.find("%2e%2e") != std::string::npos || lowered.find("%2f..") != std::string::npos) {
+        if (PathSchemeUtils::HasDotDotSegment(source)) {
             return "template path '" + source + "' is outside the templates directory";
         }
         // A local absolute path would be read from this machine's disk, not from
@@ -4133,12 +4160,12 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
         }
         if (!escape.empty()) {
             result.warnings.emplace_back("Template source escapes template.path (" + getTemplatePath() +
-                                         "): " + escape);
+                                         "): " + RedactUrlsInText(escape));
         }
         {
             std::string reported;
             if (!templateFileExists(config.templateSource, reported)) {
-                result.warnings.emplace_back("Template file does not exist: " + reported);
+                result.warnings.emplace_back("Template file does not exist: " + PathSchemeUtils::RedactUrl(reported));
             } else if (auto syntax = templateSyntaxError(config.templateSource)) {
                 // crow would segfault or hang rendering it; an error, not a warning.
                 result.valid = false;

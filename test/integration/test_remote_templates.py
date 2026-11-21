@@ -388,3 +388,201 @@ class TestQueryStringBase:
             assert "token=abc" not in out, "the token must not be logged:\n" + out
         finally:
             httpd.shutdown()
+
+
+class TestRound1Findings:
+    def test_urls_with_secrets_are_never_logged_or_reported(self, workdir):
+        # userinfo, a presigned query and a fragment: none may appear in logs or errors.
+        put(workdir, "flapi.yaml", main_config("./sqls"))
+        url = "http://USERCANARY:PASSCANARY@127.0.0.1:9/flapi.yaml?X-Amz-Signature=SIGCANARY#FRAGCANARY"
+        r = subprocess.run([flapi_binary(), "-c", url, "--validate-config", "--log-level", "debug"],
+                           cwd=workdir, capture_output=True, text=True, timeout=120, env=ENV)
+        out = r.stdout + r.stderr
+        assert r.returncode != 0, out
+        for canary in ("USERCANARY", "PASSCANARY", "SIGCANARY", "FRAGCANARY"):
+            assert canary not in out, f"{canary} leaked:\n{out}"
+
+    def test_missing_template_error_does_not_leak_the_token(self, workdir):
+        files = {"/sqls/manifest.txt": "hello.yaml\n", "/sqls/hello.yaml": ENDPOINT}
+
+        class Guarded(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                path, _, query = self.path.partition("?")
+                body = files.get(path) if "sig=SIGCANARY" in query else None
+                self.send_response(200 if body else 404)
+                data = (body or "").encode()
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            do_HEAD = do_GET
+
+        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Guarded)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        try:
+            put(workdir, "flapi.yaml", main_config(f"http://127.0.0.1:{httpd.server_address[1]}/sqls?sig=SIGCANARY"))
+            r = run(os.path.join(workdir, "flapi.yaml"), workdir, "--validate-config")
+            out = r.stdout + r.stderr
+            assert r.returncode != 0 and "does not exist" in out, out
+            assert "SIGCANARY" not in out, out
+        finally:
+            httpd.shutdown()
+
+    def test_a_relative_template_path_keeps_the_config_urls_token(self, workdir):
+        files = {"/flapi.yaml": main_config("./sqls"), "/sqls/manifest.txt": "hello.yaml\n",
+                 "/sqls/hello.yaml": ENDPOINT, "/sqls/hello.sql": SQL}
+
+        class Guarded(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                path, _, query = self.path.partition("?")
+                body = files.get(path) if "sig=abc" in query else None
+                self.send_response(200 if body else 403)
+                data = (body or "").encode()
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            do_HEAD = do_GET
+
+        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Guarded)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        try:
+            r = run(f"http://127.0.0.1:{httpd.server_address[1]}/flapi.yaml?sig=abc", workdir, "--validate-config")
+            out = r.stdout + r.stderr
+            assert r.returncode == 0 and "Parsed 1 endpoint" in out, out
+        finally:
+            httpd.shutdown()
+
+    @pytest.mark.parametrize("sneaky", [".%2e/x.yaml", "%2e./x.yaml", "..%2fb", "..\\x.yaml", "a/%2E%2e/b.yaml", "sub/.."])
+    def test_dot_dot_spellings_are_refused_in_a_manifest(self, store, workdir, sneaky):
+        root, base = store
+        put(root, "sqls/manifest.txt", sneaky + "\n")
+        put(workdir, "flapi.yaml", main_config(f"{base}/sqls"))
+        r = run(os.path.join(workdir, "flapi.yaml"), workdir, "--validate-config")
+        out = r.stdout + r.stderr
+        assert r.returncode != 0 and "escapes template.path" in out, out
+
+
+class TestStorageCache:
+    def _serve_counting(self, files):
+        hits = []
+
+        class Counting(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                hits.append((self.command, self.path))
+                body = files.get(self.path.partition("?")[0])
+                self.send_response(200 if body is not None else 404)
+                data = (body or "").encode()
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                if self.command != "HEAD":
+                    self.wfile.write(data)
+
+            do_HEAD = do_GET
+
+        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Counting)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        return httpd, hits
+
+    def _requests_for_template(self, workdir, cache_block):
+        files = {"/sqls/manifest.txt": "hello.yaml\n", "/sqls/hello.yaml": ENDPOINT, "/sqls/hello.sql": SQL}
+        httpd, hits = self._serve_counting(files)
+        try:
+            put(workdir, "flapi.yaml",
+                main_config(f"http://127.0.0.1:{httpd.server_address[1]}/sqls") + cache_block)
+            proc, port, output = serve(os.path.join(workdir, "flapi.yaml"), workdir)
+            try:
+                before = len([h for h in hits if h[1].endswith("hello.sql")])
+                for _ in range(6):
+                    assert requests.get(f"http://127.0.0.1:{port}/remote-hello", timeout=30).status_code == 200
+                self.last_hits = [h for h in hits if h[1].endswith("hello.sql")][before:]
+                return len(self.last_hits)
+            finally:
+                stop(proc)
+        finally:
+            httpd.shutdown()
+
+    def test_storage_cache_saves_round_trips(self, workdir):
+        uncached = self._requests_for_template(workdir, "storage:\n  cache:\n    enabled: false\n")
+        cached = self._requests_for_template(workdir, "storage:\n  cache:\n    enabled: true\n    ttl: 300\n")
+        assert uncached >= 6, uncached
+        assert cached < uncached / 2, f"cached={cached} uncached={uncached}"
+
+
+class TestConfigServiceWithRemoteTemplates:
+    def _boot(self, store, workdir):
+        root, base = store
+        put(root, "sqls/hello.yaml", ENDPOINT)
+        put(root, "sqls/hello.sql", SQL)
+        put(root, "sqls/manifest.txt", "hello.yaml\n")
+        put(workdir, "flapi.yaml", main_config(f"{base}/sqls"))
+        port = free_port()
+        log = open(os.path.join(workdir, "cs.log"), "w")
+        proc = subprocess.Popen(
+            [flapi_binary(), "-c", os.path.join(workdir, "flapi.yaml"), "-p", str(port), "--log-level", "info",
+             "--config-service", "--config-service-token", "tok"],
+            cwd=workdir, stdout=log, stderr=subprocess.STDOUT, preexec_fn=os.setsid, env=ENV)
+        deadline = time.time() + 90
+        while time.time() < deadline:
+            try:
+                if requests.get(f"http://127.0.0.1:{port}/health/live", timeout=1).status_code == 200:
+                    break
+            except requests.RequestException:
+                time.sleep(0.3)
+        return proc, f"http://127.0.0.1:{port}/api/v1/_config/endpoints", {"Authorization": "Bearer tok"}, base
+
+    def test_get_template_reads_it_from_remote_storage(self, store, workdir):
+        proc, api, auth, base = self._boot(store, workdir)
+        try:
+            r = requests.get(f"{api}/-remote~1hello/template", headers=auth, timeout=30)
+            assert r.status_code == 200, r.text
+            assert r.json()["template"] == SQL, r.text
+        finally:
+            stop(proc)
+
+    def test_put_template_is_refused_and_writes_nothing_locally(self, store, workdir):
+        proc, api, auth, base = self._boot(store, workdir)
+        try:
+            r = requests.put(f"{api}/-remote~1hello/template", json={"template": "SELECT 1"}, headers=auth, timeout=30)
+            assert r.status_code == 501, r.text
+            assert "remote" in r.text.lower(), r.text
+            leftovers = [n for n in os.listdir(workdir) if n.startswith("http")]
+            assert leftovers == [], f"a junk local file was written: {leftovers}"
+        finally:
+            stop(proc)
+
+    def test_by_template_finds_a_remote_endpoint(self, store, workdir):
+        proc, api, auth, base = self._boot(store, workdir)
+        try:
+            r = requests.post(f"{api}/by-template", json={"template_path": f"{base}/sqls/hello.sql"},
+                              headers=auth, timeout=30)
+            assert r.status_code == 200, r.text
+            assert r.json().get("count") == 1, r.text
+        finally:
+            stop(proc)
+
+
+def test_relative_ducklake_paths_in_a_remote_config_resolve_against_the_cwd(store, workdir):
+    root, base = store
+    put(root, "flapi.yaml", main_config("./sqls") + (
+        "ducklake:\n  enabled: true\n  alias: lake\n  metadata-path: ./meta.ducklake\n"
+        "  data-path: ./lake_data\n  warmup: never\n"))
+    put(root, "sqls/hello.yaml", ENDPOINT)
+    put(root, "sqls/hello.sql", SQL)
+    put(root, "sqls/manifest.txt", "hello.yaml\n")
+    proc, port, output = serve(f"{base}/flapi.yaml", workdir)
+    try:
+        assert requests.get(f"http://127.0.0.1:{port}/remote-hello", timeout=30).status_code == 200
+    finally:
+        stop(proc)
+    assert os.path.exists(os.path.join(workdir, "meta.ducklake")), os.listdir(workdir)
+    assert not [n for n in os.listdir(workdir) if n.startswith("http")], os.listdir(workdir)

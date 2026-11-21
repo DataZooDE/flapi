@@ -12,6 +12,12 @@ namespace flapi {
 // Environment variable names
 namespace {
 
+bool HasPrefixNoCase(const std::string& text, const std::string& prefix) {
+    return text.size() >= prefix.size() &&
+           std::equal(prefix.begin(), prefix.end(), text.begin(),
+                      [](char a, char b) { return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b)); });
+}
+
 bool ExtensionsOffline() {
     if (const char* flag = std::getenv("FLAPI_EXTENSIONS_OFFLINE"); flag != nullptr && *flag != '\0') {
         std::string v = flag;
@@ -67,10 +73,12 @@ std::string CurrentSetting(duckdb_connection conn, const std::string& name) {
 
 // A setting the user chose (`duckdb.settings`, a connection init) wins over the
 // environment: it is applied only when DuckDB still holds the built-in default.
-bool ApplyUnlessUserSet(duckdb_connection conn, const std::string& name, const std::string& sql_value,
-                        const std::string& builtin_default = "") {
+bool ApplyUnlessUserSet(duckdb_connection conn, std::map<std::string, std::string>& applied, const std::string& name,
+                        const std::string& sql_value, const std::string& builtin_default = "") {
     const std::string current = CurrentSetting(conn, name);
-    if (!current.empty() && current != builtin_default) {
+    const auto ours = applied.find(name);
+    const bool set_by_us = ours != applied.end() && ours->second == current;
+    if (!current.empty() && current != builtin_default && !set_by_us) {
         CROW_LOG_DEBUG << "Keeping user-configured " << name << "; the environment value is not applied";
         return false;
     }
@@ -79,6 +87,7 @@ bool ApplyUnlessUserSet(duckdb_connection conn, const std::string& name, const s
         CROW_LOG_WARNING << "Failed to set " << name;
         return false;
     }
+    applied[name] = CurrentSetting(conn, name);
     return true;
 }
 
@@ -288,14 +297,14 @@ bool CredentialManager::configureConnection(duckdb_connection conn) {
 
         try {
             if (!creds.region.empty()) {
-                ApplyUnlessUserSet(conn, "s3_region", "'" + SqlLiteral(creds.region) + "'");
+                ApplyUnlessUserSet(conn, _applied_settings, "s3_region", "'" + SqlLiteral(creds.region) + "'");
             }
             // Credentials for non-instance-profile auth
             if (!creds.access_key_id.empty() && !creds.secret_access_key.empty()) {
-                ApplyUnlessUserSet(conn, "s3_access_key_id", "'" + SqlLiteral(creds.access_key_id) + "'");
-                ApplyUnlessUserSet(conn, "s3_secret_access_key", "'" + SqlLiteral(creds.secret_access_key) + "'");
+                ApplyUnlessUserSet(conn, _applied_settings, "s3_access_key_id", "'" + SqlLiteral(creds.access_key_id) + "'");
+                ApplyUnlessUserSet(conn, _applied_settings, "s3_secret_access_key", "'" + SqlLiteral(creds.secret_access_key) + "'");
                 if (!creds.session_token.empty()) {
-                    ApplyUnlessUserSet(conn, "s3_session_token", "'" + SqlLiteral(creds.session_token) + "'");
+                    ApplyUnlessUserSet(conn, _applied_settings, "s3_session_token", "'" + SqlLiteral(creds.session_token) + "'");
                 }
             }
             if (!creds.endpoint.empty()) {
@@ -303,7 +312,7 @@ bool CredentialManager::configureConnection(duckdb_connection conn) {
                 std::string host = creds.endpoint;
                 bool use_ssl = creds.use_ssl;
                 for (const std::string scheme : {"https://", "http://"}) {
-                    if (host.rfind(scheme, 0) == 0) {
+                    if (HasPrefixNoCase(host, scheme)) {
                         use_ssl = (scheme == "https://");
                         host.erase(0, scheme.size());
                         break;
@@ -312,14 +321,14 @@ bool CredentialManager::configureConnection(duckdb_connection conn) {
                 while (!host.empty() && host.back() == '/') {
                     host.pop_back();
                 }
-                ApplyUnlessUserSet(conn, "s3_endpoint", "'" + SqlLiteral(host) + "'");
+                ApplyUnlessUserSet(conn, _applied_settings, "s3_endpoint", "'" + SqlLiteral(host) + "'");
                 // A custom endpoint (MinIO, a local fake, an S3-compatible store) is
                 // addressed by path: `<bucket>.<host>` rarely resolves there.
                 const bool real_aws = host.size() >= 13 && host.compare(host.size() - 13, 13, "amazonaws.com") == 0;
                 if (!real_aws) {
-                    ApplyUnlessUserSet(conn, "s3_url_style", "'path'", "vhost");
+                    ApplyUnlessUserSet(conn, _applied_settings, "s3_url_style", "'path'", "vhost");
                 }
-                ApplyUnlessUserSet(conn, "s3_use_ssl", use_ssl ? "true" : "false", "true");
+                ApplyUnlessUserSet(conn, _applied_settings, "s3_use_ssl", use_ssl ? "true" : "false", "true");
             }
 
             CROW_LOG_INFO << "S3 credentials configured in DuckDB";
@@ -341,7 +350,7 @@ bool CredentialManager::configureConnection(duckdb_connection conn) {
             std::string host = creds.endpoint;
             bool use_ssl = true;
             for (const std::string scheme : {"https://", "http://"}) {
-                if (host.rfind(scheme, 0) == 0) {
+                if (HasPrefixNoCase(host, scheme)) {
                     use_ssl = (scheme == "https://");
                     host.erase(0, scheme.size());
                     break;
@@ -368,38 +377,11 @@ bool CredentialManager::configureConnection(duckdb_connection conn) {
                             "`CREATE SECRET (TYPE gcs, KEY_ID '...', SECRET '...')` to a connection's `init`).";
     }
 
-    // Configure Azure if credentials are available
-    if (_azure_credentials.has_value()) {
-        const auto& creds = _azure_credentials.value();
-
-        try {
-            // DuckDB reads az:// / azure:// through the `azure` extension and a secret; the
-            // legacy azure_* settings are not used for that. Only loaded when Azure
-            // credentials exist, so S3-only and local setups never download it.
-            std::string sql;
-            if (!creds.connection_string.empty()) {
-                sql = "CREATE OR REPLACE SECRET flapi_azure (TYPE azure, CONNECTION_STRING '" +
-                      SqlLiteral(creds.connection_string) + "')";
-            } else if (!creds.account_name.empty() && !creds.account_key.empty()) {
-                sql = "CREATE OR REPLACE SECRET flapi_azure (TYPE azure, CONNECTION_STRING '" +
-                      SqlLiteral("DefaultEndpointsProtocol=https;AccountName=" + creds.account_name +
-                                 ";AccountKey=" + creds.account_key + ";EndpointSuffix=core.windows.net") + "')";
-            } else if (!creds.account_name.empty()) {
-                sql = "CREATE OR REPLACE SECRET flapi_azure (TYPE azure, PROVIDER credential_chain, ACCOUNT_NAME '" +
-                      SqlLiteral(creds.account_name) + "')";
-            }
-            if (!sql.empty()) {
-                if (!EnsureExtension(conn, "azure") || !RunStatement(conn, sql, "Azure")) {
-                    success = false;
-                    errors += "Azure: extension or secret unavailable; ";
-                }
-            }
-
-            CROW_LOG_INFO << "Azure credentials configured in DuckDB";
-        } catch (const std::exception& e) {
-            CROW_LOG_ERROR << "Error configuring Azure credentials: " << e.what();
-            errors += "Azure: " + std::string(e.what()) + "; ";
+    // Azure: only when something reads az:// (see setAzureReferenced / the bootstrap).
+    if (_azure_credentials.has_value() && _azure_referenced) {
+        if (!configureAzure(conn)) {
             success = false;
+            errors += "Azure: extension or secret unavailable; ";
         }
     }
 
@@ -446,6 +428,37 @@ void CredentialManager::logCredentialStatus() const {
 
 // Global credential manager instance
 static CredentialManager global_credential_manager;
+
+bool CredentialManager::configureAzure(duckdb_connection conn) {
+    if (!_azure_credentials.has_value()) {
+        return true;
+    }
+    const auto& creds = _azure_credentials.value();
+    // DuckDB reads az:// / azure:// through the `azure` extension and a secret; the legacy
+    // azure_* settings are not used for that.
+    std::string sql;
+    if (!creds.connection_string.empty()) {
+        sql = "CREATE OR REPLACE SECRET flapi_azure (TYPE azure, CONNECTION_STRING '" +
+              SqlLiteral(creds.connection_string) + "')";
+    } else if (!creds.account_name.empty() && !creds.account_key.empty()) {
+        sql = "CREATE OR REPLACE SECRET flapi_azure (TYPE azure, CONNECTION_STRING '" +
+              SqlLiteral("DefaultEndpointsProtocol=https;AccountName=" + creds.account_name +
+                         ";AccountKey=" + creds.account_key + ";EndpointSuffix=core.windows.net") + "')";
+    } else if (!creds.account_name.empty()) {
+        sql = "CREATE OR REPLACE SECRET flapi_azure (TYPE azure, PROVIDER credential_chain, ACCOUNT_NAME '" +
+              SqlLiteral(creds.account_name) + "')";
+    }
+    if (sql.empty()) {
+        CROW_LOG_WARNING << "Azure: AZURE_STORAGE_* is set but holds no usable credentials "
+                            "(connection string, account + key, or account for the credential chain).";
+        return false;
+    }
+    if (!EnsureExtension(conn, "azure") || !RunStatement(conn, sql, "Azure")) {
+        return false;
+    }
+    CROW_LOG_INFO << "Azure credentials configured in DuckDB";
+    return true;
+}
 
 CredentialManager& getGlobalCredentialManager() {
     return global_credential_manager;

@@ -58,20 +58,87 @@ std::string PathSchemeUtils::RedactUrl(const std::string& url) {
     if (scheme_end == std::string::npos) {
         return url;
     }
-    std::string out = url;
-    if (const auto q = out.find('?', scheme_end); q != std::string::npos) {
-        out.replace(q, std::string::npos, "?<redacted>");
-    }
     const auto host_start = scheme_end + 3;
-    const auto slash = out.find('/', host_start);
-    const auto at = out.find('@', host_start);
-    if (at != std::string::npos && (slash == std::string::npos || at < slash)) {
-        out.erase(host_start, at - host_start + 1);
+    std::string out = url;
+    const auto cut = out.find_first_of("?#", host_start);
+    // `user:pass@host`: the last '@' before the query, when what precedes it looks like
+    // credentials (a ':' before any '/', or no '/' at all) rather than a path segment.
+    const std::string before_query = out.substr(0, cut == std::string::npos ? out.size() : cut);
+    if (const auto at = before_query.rfind('@'); at != std::string::npos && at > host_start) {
+        const std::string seg = before_query.substr(host_start, at - host_start);
+        const auto slash = seg.find('/');
+        const auto colon = seg.find(':');
+        if (slash == std::string::npos || (colon != std::string::npos && colon < slash)) {
+            out.erase(host_start, at - host_start + 1);
+        }
+    }
+    if (const auto q = out.find_first_of("?#", host_start); q != std::string::npos) {
+        out.replace(q, std::string::npos, "?<redacted>");
     }
     return out;
 }
 
+std::string RedactUrlsInText(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    std::size_t pos = 0;
+    while (true) {
+        const auto marker = text.find("://", pos);
+        if (marker == std::string::npos) {
+            out.append(text, pos, std::string::npos);
+            break;
+        }
+        std::size_t start = marker;
+        while (start > pos && (std::isalnum(static_cast<unsigned char>(text[start - 1])) || text[start - 1] == '+' ||
+                               text[start - 1] == '.' || text[start - 1] == '-')) {
+            --start;
+        }
+        std::size_t end = marker + 3;
+        while (end < text.size() && !std::isspace(static_cast<unsigned char>(text[end])) &&
+               std::string("'\"<>(){},").find(text[end]) == std::string::npos) {
+            ++end;
+        }
+        out.append(text, pos, start - pos);
+        out += PathSchemeUtils::RedactUrl(text.substr(start, end - start));
+        pos = end;
+    }
+    return out;
+}
+
+bool PathSchemeUtils::HasDotDotSegment(const std::string& path) {
+    std::string decoded;
+    decoded.reserve(path.size());
+    for (std::size_t i = 0; i < path.size(); ++i) {
+        if (path[i] == '%' && i + 2 < path.size() + 0 && std::isxdigit(static_cast<unsigned char>(path[i + 1])) &&
+            std::isxdigit(static_cast<unsigned char>(path[i + 2]))) {
+            const int value = std::stoi(path.substr(i + 1, 2), nullptr, 16);
+            if (value == '.' || value == '/' || value == '\\') {
+                decoded += static_cast<char>(value);
+                i += 2;
+                continue;
+            }
+        }
+        decoded += path[i] == '\\' ? '/' : path[i];
+    }
+    std::size_t start = 0;
+    while (start <= decoded.size()) {
+        auto end = decoded.find('/', start);
+        if (end == std::string::npos) {
+            end = decoded.size();
+        }
+        if (decoded.compare(start, end - start, "..") == 0) {
+            return true;
+        }
+        start = end + 1;
+    }
+    return false;
+}
+
 std::string PathSchemeUtils::StripQuery(const std::string& url) {
+    // `?` and `#` only mean query/fragment for http(s); in an s3/gs/az key they are name characters.
+    if (!IsHttpPath(url)) {
+        return url;
+    }
     const auto cut = url.find_first_of("?#");
     return cut == std::string::npos ? url : url.substr(0, cut);
 }
@@ -288,6 +355,7 @@ std::string CleanDuckError(const std::string& raw) {
 
 struct BootstrapDb {
     duckdb_database db = nullptr;
+    std::once_flag azure_once;
     ~BootstrapDb() {
         if (db) {
             duckdb_close(&db);
@@ -384,7 +452,8 @@ DuckDBVFSProvider::DuckDBVFSProvider(::duckdb::FileSystem& fs)
     : _file_system(&fs) {
 }
 
-void DuckDBVFSProvider::WithFileSystem(const std::function<void(::duckdb::FileSystem&, ::duckdb::FileOpener*)>& fn) const {
+void DuckDBVFSProvider::WithFileSystem(const std::string& path,
+                                       const std::function<void(::duckdb::FileSystem&, ::duckdb::FileOpener*)>& fn) const {
     if (_file_system) {
         fn(*_file_system, nullptr);
         return;
@@ -399,6 +468,9 @@ void DuckDBVFSProvider::WithFileSystem(const std::function<void(::duckdb::FileSy
         bootstrap = GetBootstrapDb();
         if (duckdb_connect(bootstrap->db, &conn) != DuckDBSuccess) {
             conn = nullptr;
+        } else if (PathSchemeUtils::IsAzurePath(path)) {
+            // The azure extension (a download) and its secret only when an az:// path is read.
+            std::call_once(bootstrap->azure_once, [&] { getGlobalCredentialManager().configureAzure(conn); });
         }
     }
     if (!conn) {
@@ -442,7 +514,7 @@ std::string DuckDBVFSProvider::ReadFile(const std::string& path) {
 
     std::string content;
     try {
-        WithFileSystem([&](::duckdb::FileSystem& fs, ::duckdb::FileOpener* opener) {
+        WithFileSystem(path, [&](::duckdb::FileSystem& fs, ::duckdb::FileOpener* opener) {
             auto handle = fs.OpenFile(path, ::duckdb::FileOpenFlags::FILE_FLAGS_READ, opener);
             if (!handle) {
                 throw FileOperationError("Failed to open file: " + path);
@@ -497,7 +569,7 @@ std::string DuckDBVFSProvider::ReadFile(const std::string& path) {
 bool DuckDBVFSProvider::FileExists(const std::string& path) {
     try {
         bool exists = false;
-        WithFileSystem([&](::duckdb::FileSystem& fs, ::duckdb::FileOpener* opener) {
+        WithFileSystem(path, [&](::duckdb::FileSystem& fs, ::duckdb::FileOpener* opener) {
             // httpfs does not implement FileExists (the base class answers false for
             // every URL), so ask the way a read would: open it (a missing file throws, which the
             // caller below turns into "does not exist").
@@ -525,7 +597,7 @@ std::vector<std::string> DuckDBVFSProvider::ListFiles(const std::string& directo
         }
         glob_path += pattern;
 
-        WithFileSystem([&](::duckdb::FileSystem& fs, ::duckdb::FileOpener* opener) {
+        WithFileSystem(glob_path, [&](::duckdb::FileSystem& fs, ::duckdb::FileOpener* opener) {
             for (const auto& file_info : fs.Glob(glob_path, opener)) {
                 result.push_back(file_info.path);
             }

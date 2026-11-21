@@ -5,6 +5,11 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 ## Unreleased
 
 ### Remote template follow-ups (#231)
+- **Security:** every log line, validation message and `FileOperationError` now redacts `user:pass@`, `?query` and `#fragment` of URLs (presigned signatures and tokens no longer reach logs); a `template-source` outside `template.path` is refused when the startup scan loads it (the config-service API already refused it); `..` is detected in its percent-encoded and backslash spellings.
+- **Fixed:** the config service works with remote templates: `GET .../template` and `.../cache/template` read them from storage, `PUT` answers 501 instead of silently writing a junk local file, `by-template` matches URLs.
+- **Fixed:** a remote config's `?query` is kept for its relative `template.path`; relative `ducklake.*` / connection paths in a remote config resolve against the working directory (they were joined onto the bucket URL); `#`/`?` in an `s3://`/`gs://`/`az://` key are no longer treated as a query.
+- **Fixed:** `storage.cache` (on by default, 300 s) now actually caches remote template reads and existence checks - edits to a remote `.sql` appear within one TTL (set `storage.cache.enabled: false` for immediate). Azure credentials/extension are only set up when something reads `az://`; an uppercase `HTTP://` in `AWS_ENDPOINT_URL` is honoured.
+- **Improved:** a failing remote `--config` reports the real cause (403, connection refused...) instead of "Could not open file"; startup logs progress for remote endpoint files.
 - **Added:** `gs://` (HMAC key pair via `GCS_ACCESS_KEY_ID` / `GCS_SECRET_ACCESS_KEY`, optional `GCS_ENDPOINT_URL`) and `az://` (`AZURE_STORAGE_*`, through DuckDB's `azure` extension) can authenticate for a remote `--config` / `template.path` (#234). Azure credentials are now a DuckDB secret instead of the legacy `azure_*` settings.
 - **Fixed:** the S3/Azure credential `SET` statements for region, access key, secret and session token were malformed and silently not applied (unreleased regression from the first follow-up commit); a test now checks the requests are signed with the environment's key.
 - **Changed:** `s3_*` settings you configure (`duckdb:` settings, connection `init`) win over the `AWS_*` environment (#235).
