@@ -215,6 +215,16 @@ std::optional<std::filesystem::path> BundledExtensionDirectory() {
     return bundledDirectory();
 }
 
+bool ExtensionsOfflineRequested() {
+    if (const char* flag = std::getenv("FLAPI_EXTENSIONS_OFFLINE"); flag != nullptr && *flag != '\0') {
+        std::string value = flag;
+        std::transform(value.begin(), value.end(), value.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return value == "1" || value == "true" || value == "yes" || value == "on";
+    }
+    return BundledExtensionDirectory().has_value();
+}
+
 std::optional<std::filesystem::path> MaterializeBundledExtensions(
     const std::map<std::string, std::vector<std::uint8_t>>& entries, const std::filesystem::path& cache_root) {
     namespace fs = std::filesystem;

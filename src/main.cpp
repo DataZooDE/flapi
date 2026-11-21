@@ -1363,8 +1363,9 @@ int main(int argc, char* argv[])
         const auto mentions_azure = [](std::string text) {
             std::transform(text.begin(), text.end(), text.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            // The URL schemes only: a hostname or a file called `azure_costs` must not trigger a download.
             return text.find("az://") != std::string::npos || text.find("azure://") != std::string::npos ||
-                   text.find("azure") != std::string::npos;
+                   text.find("abfss://") != std::string::npos || text.find("abfs://") != std::string::npos;
         };
         bool azure_referenced = mentions_azure(config_manager->getTemplatePath()) ||
                                 mentions_azure(config_manager->getBasePath()) ||

@@ -4,24 +4,30 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
-### Remote template follow-ups (#231)
-- **Security:** S3 credentials from the environment are a redacted DuckDB secret (`flapi_s3`) and httpfs's env-mirrored `s3_*` settings are blanked, so a SQL template can no longer read the key, secret or session token with `duckdb_settings()`. `{{include}}` in a remote YAML only reaches files below its own remote directory. The config service and `flapi_*` MCP tools answer 501 for create/update/delete/reload under a remote `template.path` (they used to report success and write a stray local directory) and no longer return URL tokens. Documented the trust model: write access to the bucket is code execution.
-- **Fixed:** an intermittent SIGABRT on SIGTERM after remote reads (bootstrap DuckDB teardown race); a failing template read shows the store's status instead of "not found"; a template past its cache TTL is served stale (15 s retry) when the store errors; startup fetches each remote file once (4 requests per endpoint instead of about 8; one listing request); `flapi pack` warns when `template.path` is remote; the S3 listing error points at bucket/region/credentials (the manifest hint is for plain http(s)).
-- **Security:** every log line, validation message and `FileOperationError` now redacts `user:pass@`, `?query` and `#fragment` of URLs (presigned signatures and tokens no longer reach logs); a `template-source` outside `template.path` is refused when the startup scan loads it (the config-service API already refused it); `..` is detected in its percent-encoded and backslash spellings.
-- **Fixed:** the config service works with remote templates: `GET .../template` and `.../cache/template` read them from storage, `PUT` answers 501 instead of silently writing a junk local file, `by-template` matches URLs.
-- **Fixed:** a remote config's `?query` is kept for its relative `template.path`; relative `ducklake.*` / connection paths in a remote config resolve against the working directory (they were joined onto the bucket URL); `#`/`?` in an `s3://`/`gs://`/`az://` key are no longer treated as a query.
-- **Fixed:** `storage.cache` (on by default, 300 s) now actually caches remote template reads and existence checks - edits to a remote `.sql` appear within one TTL (set `storage.cache.enabled: false` for immediate). Azure credentials/extension are only set up when something reads `az://`; an uppercase `HTTP://` in `AWS_ENDPOINT_URL` is honoured.
-- **Improved:** a failing remote `--config` reports the real cause (403, connection refused...) instead of "Could not open file"; startup logs progress for remote endpoint files.
-- **Added:** `gs://` (HMAC key pair via `GCS_ACCESS_KEY_ID` / `GCS_SECRET_ACCESS_KEY`, optional `GCS_ENDPOINT_URL`) and `az://` (`AZURE_STORAGE_*`, through DuckDB's `azure` extension) can authenticate for a remote `--config` / `template.path` (#234). Azure credentials are now a DuckDB secret instead of the legacy `azure_*` settings.
-- **Fixed:** the S3/Azure credential `SET` statements for region, access key, secret and session token were malformed and silently not applied (unreleased regression from the first follow-up commit); a test now checks the requests are signed with the environment's key.
-- **Changed:** `s3_*` settings you configure (`duckdb:` settings, connection `init`) win over the `AWS_*` environment (#235).
-- **Fixed:** `--validate-config` fails (exit 1) when a `template-source` file does not exist (#236); the config-service 404 for a hyphenated slug explains the `~1` escaping (#237); a remote base URL's `?query` (SAS token, signature) is kept on every file instead of being joined mid-URL (#238).
-- **Security:** with a remote `template.path`, a local absolute `template-source` (e.g. `/etc/hostname`) passed the containment check and was read from the server's disk; it is now refused. A manifest entry that is a full URL must stay under `template.path`, and `%2e%2e` is refused.
-- **Fixed:** `POST /api/v1/_config/endpoints/reload-file` with a remote URL mangled it and unloaded the endpoint; it now answers 501 and changes nothing.
-- **Fixed:** `FLAPI_EXTENSIONS_OFFLINE=1` also stops the bootstrap from auto-installing httpfs. A chunked HTTP response (no Content-Length) is no longer read as an empty file. Azure `SET`s are global like S3's; credentials with a `'` no longer break the SET statements.
-- **Improved:** listing errors name the real cause (403, ...) instead of only the manifest, DuckDB's raw JSON error is reduced to its message, URLs are logged without query strings or `user:pass@`, and a healthy remote `--config` no longer prints false "storage not accessible" warnings.
-- **Fixed:** S3 credentials and a custom `AWS_ENDPOINT_URL` are applied with `SET GLOBAL`, so they reach every DuckDB connection (a remote `template.path` listing used a fresh connection and went to AWS). The endpoint's `http://`/`https://` scheme now selects SSL and is stripped for DuckDB; custom endpoints use path-style URLs.
-- **Fixed:** the bootstrap DuckDB for a remote `--config` follows `FLAPI_EXTENSION_DIRECTORY` and `FLAPI_EXTENSIONS_OFFLINE` (no `INSTALL httpfs` when offline).
+### Remote templates: credentials, hardening and operations (#234, #235, #236, #238)
+
+- **`gs://` and `az://` authenticate for a remote `--config` / `template.path`** (#234): `GCS_ACCESS_KEY_ID` /
+  `GCS_SECRET_ACCESS_KEY` (HMAC key, optional `GCS_ENDPOINT_URL`) and `AZURE_STORAGE_*` (through DuckDB's `azure`
+  extension, loaded only when something reads `az://`). A custom `AWS_ENDPOINT_URL` works for S3-compatible stores.
+- **Credentials are DuckDB secrets, not readable settings.** S3 (`zz_flapi_s3`), GCS and Azure credentials from the
+  environment are created as secrets; httpfs's env-mirrored `s3_*` settings are blanked, so a SQL template can no
+  longer read the key, secret or session token. A value you set yourself (`duckdb:` settings, a secret in a
+  connection `init`) wins over the environment (#235).
+- **Hardening for remote origins.** A `template-source` outside `template.path` (absolute local path, `..` in any
+  spelling, another bucket or host) is refused when a remote config/template is loaded; `{{include}}` in remote YAML
+  only reaches files below its own remote directory; URLs are redacted in logs, errors and config-service/MCP
+  answers (`user:pass@`, credential-looking query values, fragments). The trust model is documented: write access
+  to the bucket is code execution.
+- **Config service and MCP tools with remote templates.** `GET .../template` reads them from storage;
+  create/update/delete/reload and `reload-file` answer 501 with the next step instead of reporting success and
+  writing a stray local directory.
+- **Operations.** Startup fetches each remote file once (about 4 requests per endpoint, one listing request) and logs
+  progress; a template past its cache TTL is refreshed by one reader while the others are served the old copy, a failed refresh serves it stale (15 s retry), and simultaneous first reads share one fetch; failing reads report
+  the store's status and redacted URL; a failing remote `--config` reports the real cause; an intermittent SIGABRT
+  on SIGTERM after remote reads is fixed; a remote base URL's `?query` (SAS token, signature) is kept on every file;
+  relative `ducklake.*` / connection paths in a remote config resolve against the working directory;
+  `flapi pack` warns that remote templates are not bundled.
+- **`--validate-config` fails (exit 1) when a `template-source` file does not exist** (#236).
 
 ### Remote configuration and templates (#219, #198, #213)
 
@@ -37,6 +43,16 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ### Upgrade notes
 
+- **Remote templates: behaviour changes.** (a) `--validate-config` now exits 1 for a missing `template-source` /
+  `cache.template-file` file (it was a warning): a green CI gate may turn red; an endpoint YAML written before
+  its SQL is the usual cause. (b) With a remote config or `template.path`, a `template-source` outside
+  `template.path` now fails startup (local configurations only warn, as before). (c) `storage.cache` (on by
+  default, `ttl` 300 s) now actually caches remote template reads: an edited remote `.sql` shows up within one TTL;
+  set `storage.cache.enabled: false` for immediate edits. (d) Config-service and `flapi_*` MCP create/update/
+  delete/reload answer 501 under a remote `template.path`. (e) S3/GCS/Azure credentials from the environment are
+  secrets: templates that read `s3_secret_access_key` (or similar) from `duckdb_settings()` get empty values; a custom
+  `AWS_ENDPOINT_URL` selects SSL from its scheme and uses path-style URLs (except `amazonaws.com` hosts).
+  (f) Log and error text now redacts URL credentials/signature values: update log greps that matched them.
 - **DuckDB's session `TimeZone` is `UTC` unless you set it.** Left alone, DuckDB takes the host zone (`TZ`,
   `/etc/localtime`) once its ICU extension loads, which happens lazily on the first query that needs it. A
   server in `Asia/Tokyo` then answered `now()::TIMESTAMP`, `date_trunc` and `TIMESTAMPTZ` -> `TIMESTAMP` casts

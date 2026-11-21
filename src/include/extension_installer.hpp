@@ -48,6 +48,10 @@ int InstallExtensions(const std::vector<ExtensionSpec>& specs, const std::string
 void SetBundledExtensionDirectory(std::optional<std::filesystem::path> dir);
 std::optional<std::filesystem::path> BundledExtensionDirectory();
 
+// True when extensions must not be downloaded: FLAPI_EXTENSIONS_OFFLINE (1/true/yes/on, any case) when set,
+// otherwise whether a bundle carries its extensions. The one spelling every caller shares.
+bool ExtensionsOfflineRequested();
+
 // Writes the bundle's kBundledExtensionsPrefix entries below `cache_root`, in a directory
 // named by a hash of their contents (reused when it already exists). Returns that
 // directory, or nothing when the bundle carries no extensions.
