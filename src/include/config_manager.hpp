@@ -677,6 +677,7 @@ public:
     ConfigManager& operator=(ConfigManager&&) noexcept;
     
     void loadConfig();
+    std::vector<std::string> listRemoteEndpointFiles(const std::string& root) const;
     void loadEndpointConfigsRecursively(const std::filesystem::path& dir);
     void loadEndpointConfig(const std::string& config_file);
 

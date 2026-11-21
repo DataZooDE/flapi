@@ -134,7 +134,10 @@ ConfigManager::ConfigManager(const std::filesystem::path& config_file)
     : config_file(config_file),
       auth_enabled(false),
       yaml_parser(),
-      config_loader(std::make_unique<ConfigLoader>(config_file.string())),
+      config_loader(PathSchemeUtils::IsRemotePath(config_file.string())
+                        ? std::make_unique<ConfigLoader>(config_file.string(),
+                                                         FileProviderFactory::CreateDuckDBProvider())
+                        : std::make_unique<ConfigLoader>(config_file.string())),
       endpoint_repository(std::make_unique<EndpointRepository>())
 {}
 
@@ -469,8 +472,30 @@ void ConfigManager::parseTemplateConfig() {
     auto template_node = config["template"];
     if (template_node) {
         template_config.path = template_node["path"].as<std::string>();
+        if (PathSchemeUtils::IsRemotePath(template_config.path)) {
+            // s3://, gs://, az://, http(s)://: NOT a filesystem path. Joining it onto
+            // the config directory and normalising turned `s3://bucket/x` into
+            // `<cwd>/s3:/bucket/x` (#219). Kept as written, minus a trailing slash.
+            while (template_config.path.size() > 1 && template_config.path.back() == '/') {
+                template_config.path.pop_back();
+            }
+        } else {
         std::filesystem::path template_path_relative(template_config.path);
-        std::filesystem::path joined = (base_path / template_path_relative).lexically_normal();
+        std::filesystem::path joined;
+        if (PathSchemeUtils::IsRemotePath(base_path.string())) {
+            // A remote config (--config http://host/dir/flapi.yaml): relative
+            // template paths resolve against its URL, textually.
+            std::string base = base_path.string();
+            while (!base.empty() && base.back() == '/') {
+                base.pop_back();
+            }
+            std::string rel = template_config.path;
+            while (rel.rfind("./", 0) == 0) {
+                rel.erase(0, 2);
+            }
+            template_config.path = base + "/" + rel;
+        } else {
+        joined = (base_path / template_path_relative).lexically_normal();
         // In bundled mode the template path is a bundle-relative key
         // (e.g. "sqls"), not a filesystem path. Calling absolute() would
         // turn it into "/cwd/sqls" which the EmbeddedArchiveFileProvider
@@ -482,6 +507,8 @@ void ConfigManager::parseTemplateConfig() {
             // stayed `/cwd/../sqls`, and every template under it then "contained
             // path traversal" in --validate-config.
             template_config.path = std::filesystem::absolute(joined).lexically_normal().string();
+        }
+        }
         }
         CROW_LOG_DEBUG << "Template Path: " << template_config.path;
 
@@ -986,6 +1013,65 @@ void ConfigManager::parseMCPConfig() {
     }
 }
 
+// The endpoint YAML files under a REMOTE template.path.
+//
+// s3://, gs:// and az:// are listed with a recursive glob. Plain http(s) has no
+// listing, so a `manifest.txt` at the root of template.path names them, one path
+// per line, relative to it (`#` starts a comment). The manifest is also the
+// fallback when a glob finds nothing: some stores and proxies do not list.
+std::vector<std::string> ConfigManager::listRemoteEndpointFiles(const std::string& root) const {
+    auto provider = FileProviderFactory::CreateDuckDBProvider();
+    const std::string base = root.back() == '/' ? root : root + "/";
+
+    std::vector<std::string> found;
+    if (!PathSchemeUtils::IsHttpPath(root)) {
+        for (const char* pattern : {"**/*.yaml", "**/*.yml"}) {
+            try {
+                for (const auto& file : provider->ListFiles(root, pattern)) {
+                    found.push_back(file);
+                }
+            } catch (const std::exception& e) {
+                CROW_LOG_DEBUG << "Remote listing of " << root << " (" << pattern << ") failed: " << e.what();
+            }
+        }
+    }
+
+    if (found.empty()) {
+        const std::string manifest = base + "manifest.txt";
+        std::string text;
+        try {
+            text = provider->ReadFile(manifest);
+        } catch (const std::exception& e) {
+            throw std::runtime_error(
+                "Cannot list endpoint files under " + root + ": no files matched and the manifest " +
+                manifest + " could not be read (" + e.what() + "). A remote template.path needs "
+                "either a store that supports listing (s3://, gs://, az://) or a manifest.txt at "
+                "its root naming each endpoint YAML, one relative path per line.");
+        }
+        std::istringstream lines(text);
+        std::string line;
+        while (std::getline(lines, line)) {
+            if (const auto hash = line.find('#'); hash != std::string::npos) {
+                line.erase(hash);
+            }
+            const auto first = line.find_first_not_of(" \t\r");
+            if (first == std::string::npos) {
+                continue;
+            }
+            const auto last = line.find_last_not_of(" \t\r");
+            std::string entry = line.substr(first, last - first + 1);
+            if (entry.find("..") != std::string::npos) {
+                throw std::runtime_error("Manifest entry escapes template.path: " + entry);
+            }
+            found.push_back(PathSchemeUtils::IsRemotePath(entry) ? entry : base + entry);
+        }
+    }
+
+    std::sort(found.begin(), found.end());
+    found.erase(std::unique(found.begin(), found.end()), found.end());
+    return found;
+}
+
 // Endpoint configuration methods
 void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& template_path) {
     CROW_LOG_INFO << "Loading endpoint configs recursively from: " << template_path;
@@ -1012,7 +1098,19 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
     // Bundled mode: enumerate endpoint YAMLs by prefix-matching the
     // in-memory archive. EmbeddedArchiveFileProvider::ListFiles is
     // non-recursive on purpose, so we walk the bundle directly here.
-    if (auto bundle = FileProviderFactory::GetBundleContents();
+    const std::string remote_root = template_path.string();
+    if (PathSchemeUtils::IsRemotePath(remote_root)) {
+        // Remote templates (#219): no directory to walk.
+        std::vector<std::string> names = listRemoteEndpointFiles(remote_root);
+        for (const auto& name : names) {
+            total_yaml_files++;
+            size_t endpoints_before = endpointsSnapshot()->size();
+            loadOne(name);
+            if (endpointsSnapshot()->size() > endpoints_before) {
+                loaded_endpoints++;
+            }
+        }
+    } else if (auto bundle = FileProviderFactory::GetBundleContents();
         bundle != nullptr) {
         std::string prefix = template_path.string();
         // Normalise to a key shape that matches archive entries (no
@@ -2217,6 +2315,13 @@ std::shared_ptr<IFileProvider> ConfigManager::getFileProvider() const {
         return std::make_shared<CachingFileProvider>(base_provider, cache_config);
     }
 
+    // Remote template path without a file cache: read straight through the VFS.
+    // (It fell through to the local provider, so every render of a remote
+    // template failed with "file not found".)
+    if (PathSchemeUtils::IsRemotePath(template_config.path)) {
+        return FileProviderFactory::CreateDuckDBProvider();
+    }
+
     // Bundled mode (#62): templates live in the in-memory archive, not on
     // disk. Route through the factory so SQLTemplateProcessor gets an
     // EmbeddedArchiveFileProvider when SetBundleContents has been called.
@@ -2476,6 +2581,23 @@ crow::json::wvalue ConfigManager::getFlapiConfig() const {
 
 std::string ConfigManager::TemplatePathProblem(const std::string& source) const {
     if (source.empty()) {
+        return "";
+    }
+    if (PathSchemeUtils::IsRemotePath(getTemplatePath()) || PathSchemeUtils::IsRemotePath(source)) {
+        // A URL has no symlinks and no cwd: judged as text. Inside means "starts with
+        // template.path and never steps up with `..`".
+        if (source.find("/../") != std::string::npos || source.rfind("../", 0) == 0) {
+            return "template path '" + source + "' is outside the templates directory";
+        }
+        if (PathSchemeUtils::IsRemotePath(source)) {
+            std::string root = getTemplatePath();
+            if (root.empty() || root.back() != '/') {
+                root += '/';
+            }
+            if (source.rfind(root, 0) != 0) {
+                return "template path '" + source + "' is outside the templates directory";
+            }
+        }
         return "";
     }
     namespace fs = std::filesystem;
@@ -3833,9 +3955,17 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
     // first; template.path/<source> only for a source parsed without a
     // directory (validateEndpointConfigFromYaml).
     auto templateFileExists = [this](const std::string& source, std::string& reported) {
+        if (PathSchemeUtils::IsRemotePath(source)) {
+            reported = source;
+            try {
+                return FileProviderFactory::CreateDuckDBProvider()->FileExists(source);
+            } catch (const std::exception&) {
+                return false;
+            }
+        }
         const std::filesystem::path as_is(source);
         std::vector<std::filesystem::path> candidates{as_is};
-        if (!as_is.is_absolute()) {
+        if (!as_is.is_absolute() && !PathSchemeUtils::IsRemotePath(source)) {
             candidates.push_back(std::filesystem::path(template_config.path) / as_is);
         }
         const bool bundled = FileProviderFactory::GetBundleContents() != nullptr;
@@ -3868,7 +3998,7 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
     auto templateSyntaxError = [this](const std::string& source) -> std::optional<std::string> {
         const std::filesystem::path as_is(source);
         std::vector<std::filesystem::path> candidates{as_is};
-        if (!as_is.is_absolute()) {
+        if (!as_is.is_absolute() && !PathSchemeUtils::IsRemotePath(source)) {
             candidates.push_back(std::filesystem::path(template_config.path) / as_is);
         }
         for (const auto& candidate : candidates) {
@@ -3890,7 +4020,7 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
         std::vector<std::string> problems;
         const std::filesystem::path as_is(source);
         std::vector<std::filesystem::path> candidates{as_is};
-        if (!as_is.is_absolute()) {
+        if (!as_is.is_absolute() && !PathSchemeUtils::IsRemotePath(source)) {
             candidates.push_back(std::filesystem::path(template_config.path) / as_is);
         }
         std::optional<std::string> text;
@@ -3954,9 +4084,14 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
         // Traversal means ESCAPING template.path, not a `..` somewhere in the
         // configured path: `template.path: ../sqls` flagged every template it
         // held - and then claimed the existing files did not exist.
-        const std::string normalised = std::filesystem::path(config.templateSource).lexically_normal().string();
+        const bool remote_source = PathSchemeUtils::IsRemotePath(config.templateSource);
+        const std::string normalised = remote_source
+                                           ? config.templateSource
+                                           : std::filesystem::path(config.templateSource).lexically_normal().string();
         std::string escape;
-        if (FileProviderFactory::GetBundleContents() != nullptr) {
+        if (remote_source) {
+            escape = TemplatePathProblem(normalised);
+        } else if (FileProviderFactory::GetBundleContents() != nullptr) {
             if (PathValidator::ContainsTraversal(normalised)) {
                 escape = "template path '" + config.templateSource + "' is outside the templates directory";
             }

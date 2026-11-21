@@ -198,7 +198,10 @@ def _json_request_lines(path: str):
     for ln in _log_lines(path):
         if not ln.startswith("{"):
             continue
-        rec = json.loads(ln)
+        try:
+            rec = json.loads(ln)
+        except json.JSONDecodeError:
+            continue  # the server is still writing this line; the next read has it
         msg = rec.get("message", "")
         if msg.startswith("Request:") and "/open" in msg:
             out.append(rec)
@@ -230,5 +233,10 @@ class TestRequestLineCarriesRequestId:
 
     def test_exactly_one_request_line_per_request(self, json_log_server):
         _fetch_with_id(json_log_server["base_url"])
+        # The access log is written after the response; give it a moment.
+        deadline = time.time() + 5
         lines = _json_request_lines(json_log_server["log_path"])
+        while not lines and time.time() < deadline:
+            time.sleep(0.1)
+            lines = _json_request_lines(json_log_server["log_path"])
         assert len(lines) == 1, f"expected one Request: line, saw {len(lines)}: {lines}"

@@ -202,7 +202,7 @@ std::vector<MustacheVariable> CollectMustacheVariables(const std::string& body) 
 }
 
 std::optional<std::string> ReadTemplateText(const std::string& path) {
-    if (path.empty() || PathValidator::IsRemotePath(path)) {
+    if (path.empty()) {
         return std::nullopt;
     }
     try {

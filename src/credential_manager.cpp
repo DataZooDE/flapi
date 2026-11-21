@@ -179,6 +179,12 @@ bool CredentialManager::configureDuckDB() {
         return false;
     }
 
+    const bool ok = configureConnection(conn);
+    duckdb_disconnect(&conn);
+    return ok;
+}
+
+bool CredentialManager::configureConnection(duckdb_connection conn) {
     bool success = true;
     std::string errors;
 
@@ -270,8 +276,6 @@ bool CredentialManager::configureDuckDB() {
             success = false;
         }
     }
-
-    duckdb_disconnect(&conn);
 
     if (!success) {
         CROW_LOG_WARNING << "Some credentials failed to configure: " << errors;

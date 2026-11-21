@@ -7,6 +7,9 @@
 #include <sstream>
 #include <algorithm>
 #include <regex>
+#include <functional>
+#include <exception>
+#include <mutex>
 #include <cstring>
 #include <cctype>
 #include <crow/logging.h>
@@ -19,6 +22,7 @@
 
 // Include DatabaseManager for singleton access
 #include "database_manager.hpp"
+#include "credential_manager.hpp"
 
 namespace flapi {
 
@@ -218,119 +222,158 @@ bool LocalFileProvider::IsRemotePath(const std::string& path) const {
 // DuckDBVFSProvider Implementation
 // ============================================================================
 
+namespace {
+
+struct BootstrapDb {
+    duckdb_database db = nullptr;
+    ~BootstrapDb() {
+        if (db) {
+            duckdb_close(&db);
+        }
+    }
+};
+
+// A DuckDB instance of its own, for reading a REMOTE configuration (a --config
+// URL, a template.path in s3://) before DatabaseManager exists: the config
+// decides what the database is, so it cannot be read through it. In-memory, with
+// httpfs and the credentials found in the environment; created on first use.
+// Every call opens its own connection, which keeps the instance alive for the
+// call - nothing holds a FileSystem pointer across calls (#213).
+std::shared_ptr<BootstrapDb> GetBootstrapDb() {
+    static std::mutex mutex;
+    static std::shared_ptr<BootstrapDb> instance;
+    std::lock_guard<std::mutex> lock(mutex);
+    if (instance) {
+        return instance;
+    }
+    auto created = std::make_shared<BootstrapDb>();
+    if (duckdb_open(nullptr, &created->db) != DuckDBSuccess) {
+        throw FileOperationError("Could not start the bootstrap DuckDB used to read remote files.");
+    }
+    duckdb_connection conn = nullptr;
+    if (duckdb_connect(created->db, &conn) != DuckDBSuccess) {
+        throw FileOperationError("Could not connect to the bootstrap DuckDB.");
+    }
+    for (const char* sql : {"INSTALL httpfs", "LOAD httpfs"}) {
+        duckdb_result result;
+        if (duckdb_query(conn, sql, &result) != DuckDBSuccess) {
+            CROW_LOG_WARNING << "Bootstrap DuckDB: `" << sql << "` failed: "
+                             << duckdb_result_error(&result)
+                             << " (remote files cannot be read without httpfs)";
+        }
+        duckdb_destroy_result(&result);
+    }
+    auto& credentials = getGlobalCredentialManager();
+    credentials.loadFromEnvironment();
+    credentials.configureConnection(conn);
+    duckdb_disconnect(&conn);
+    instance = created;
+    return instance;
+}
+
+}  // namespace
+
 DuckDBVFSProvider::DuckDBVFSProvider()
     : _file_system(nullptr) {
-    // TODO(flapi-b33): This implementation uses DuckDB internal APIs (capi_internal.hpp)
-    // which are ABI-unstable and may break on DuckDB upgrades. Future refactoring should:
-    // 1. Expose FileSystem access through DatabaseManager via a stable public API, OR
-    // 2. Use stable DuckDB C API if/when it provides FileSystem access
-    //
-    // TODO(flapi-p9h): The _file_system pointer is obtained once and cached. If the
-    // DatabaseManager is reset or the underlying DB instance changes, this pointer
-    // can become dangling. For now, we assume DatabaseManager has stable lifetime.
-    // Future improvement: re-fetch FileSystem per operation or tie to DatabaseManager lifetime.
-
-    try {
-        // Get DatabaseManager singleton
-        auto db_manager = DatabaseManager::getInstance();
-        if (!db_manager) {
-            throw FileOperationError(
-                "DuckDBVFSProvider requires DatabaseManager to be initialized. "
-                "Call DatabaseManager::initializeDBManagerFromConfig() first.");
-        }
-
-        // Check if DatabaseManager has been initialized with a database
-        // This prevents crashes when trying to get a connection from an uninitialized manager
-        if (!db_manager->isInitialized()) {
-            throw FileOperationError(
-                "DatabaseManager is not initialized. DuckDBVFSProvider requires "
-                "a running database. Call DatabaseManager::initializeDBManagerFromConfig() first.");
-        }
-
-        // Get the DuckDB database handle from DatabaseManager
-        // We need to get a connection to access the database instance
-        auto conn = db_manager->getConnection();
-        if (!conn) {
-            throw FileOperationError(
-                "Failed to get DuckDB connection from DatabaseManager.");
-        }
-
-        // Get the database wrapper from the connection
-        // The connection's internal structure gives us access to the database
-        // WARNING: This uses internal DuckDB APIs that are not ABI-stable
-        auto* conn_wrapper = reinterpret_cast<::duckdb::Connection*>(conn);
-        if (conn_wrapper && conn_wrapper->context) {
-            _file_system = &::duckdb::FileSystem::GetFileSystem(*conn_wrapper->context);
-        } else {
-            duckdb_disconnect(&conn);
-            throw FileOperationError(
-                "Failed to get FileSystem from DuckDB connection.");
-        }
-
-        // Release the connection since we only needed it to get the FileSystem
-        duckdb_disconnect(&conn);
-    } catch (const FileOperationError&) {
-        // Re-throw our own exceptions
-        throw;
-    } catch (const std::exception& e) {
-        // Wrap other exceptions (like from DatabaseManager) in FileOperationError
-        throw FileOperationError(
-            std::string("DuckDBVFSProvider initialization failed: ") + e.what());
-    }
+    // No FileSystem pointer is kept (#213). Each operation resolves one through
+    // WithFileSystem: DatabaseManager's database when it is running, otherwise
+    // the bootstrap instance, so a provider can be created - and used - before
+    // the database is initialised.
 }
 
 DuckDBVFSProvider::DuckDBVFSProvider(::duckdb::FileSystem& fs)
     : _file_system(&fs) {
 }
 
-std::string DuckDBVFSProvider::ReadFile(const std::string& path) {
-    if (!_file_system) {
-        throw FileOperationError("DuckDBVFSProvider not properly initialized.");
+void DuckDBVFSProvider::WithFileSystem(const std::function<void(::duckdb::FileSystem&, ::duckdb::FileOpener*)>& fn) const {
+    if (_file_system) {
+        fn(*_file_system, nullptr);
+        return;
     }
 
+    duckdb_connection conn = nullptr;
+    std::shared_ptr<BootstrapDb> bootstrap;  // keeps the instance alive for the call
+    auto db_manager = DatabaseManager::getInstance();
+    if (db_manager && db_manager->isInitialized()) {
+        conn = db_manager->getConnection();
+    } else {
+        bootstrap = GetBootstrapDb();
+        if (duckdb_connect(bootstrap->db, &conn) != DuckDBSuccess) {
+            conn = nullptr;
+        }
+    }
+    if (!conn) {
+        throw FileOperationError("DuckDBVFSProvider could not get a DuckDB connection.");
+    }
+
+    auto* wrapper = reinterpret_cast<::duckdb::Connection*>(conn);
+    if (!wrapper || !wrapper->context) {
+        duckdb_disconnect(&conn);
+        throw FileOperationError("Failed to get FileSystem from DuckDB connection.");
+    }
+    try {
+        // GetFileSystem(context) already pushes the context's opener (httpfs
+        // settings, secrets); passing one again is an INTERNAL error.
+        // Remote file systems read settings and secrets through the context, which
+        // needs an open transaction ("ActiveTransaction called without active
+        // transaction" otherwise). A failure inside is rethrown after the
+        // transaction has been rolled back by RunFunctionInTransaction.
+        std::exception_ptr failure;
+        wrapper->context->RunFunctionInTransaction([&]() {
+            try {
+                fn(::duckdb::FileSystem::GetFileSystem(*wrapper->context), nullptr);
+            } catch (...) {
+                failure = std::current_exception();
+            }
+        });
+        if (failure) {
+            std::rethrow_exception(failure);
+        }
+    } catch (...) {
+        duckdb_disconnect(&conn);
+        throw;
+    }
+    duckdb_disconnect(&conn);
+}
+
+std::string DuckDBVFSProvider::ReadFile(const std::string& path) {
     // Maximum file size to read (10 MB). Config/SQL files should be small.
     // This prevents memory spikes from accidentally loading large files.
     constexpr int64_t MAX_FILE_SIZE = 10LL * 1024LL * 1024LL;  // 10 MB
 
+    std::string content;
     try {
-        // Open the file for reading
-        auto flags = ::duckdb::FileOpenFlags::FILE_FLAGS_READ;
-        auto handle = _file_system->OpenFile(path, flags);
+        WithFileSystem([&](::duckdb::FileSystem& fs, ::duckdb::FileOpener* opener) {
+            auto handle = fs.OpenFile(path, ::duckdb::FileOpenFlags::FILE_FLAGS_READ, opener);
+            if (!handle) {
+                throw FileOperationError("Failed to open file: " + path);
+            }
 
-        if (!handle) {
-            throw FileOperationError("Failed to open file: " + path);
-        }
+            auto file_size = fs.GetFileSize(*handle);
+            if (file_size < 0) {
+                throw FileOperationError("Failed to get file size: " + path);
+            }
+            if (file_size == 0) {
+                return;
+            }
+            if (file_size > MAX_FILE_SIZE) {
+                throw FileOperationError(
+                    "File too large: " + path + " (" + std::to_string(file_size) +
+                    " bytes exceeds " + std::to_string(MAX_FILE_SIZE) + " byte limit)");
+            }
 
-        // Get file size
-        auto file_size = _file_system->GetFileSize(*handle);
-        if (file_size < 0) {
-            throw FileOperationError("Failed to get file size: " + path);
-        }
-
-        if (file_size == 0) {
-            return "";
-        }
-
-        // Check file size limit
-        if (file_size > MAX_FILE_SIZE) {
-            throw FileOperationError(
-                "File too large: " + path + " (" + std::to_string(file_size) +
-                " bytes exceeds " + std::to_string(MAX_FILE_SIZE) + " byte limit)");
-        }
-
-        // Read entire file content
-        std::string content;
-        content.resize(static_cast<size_t>(file_size));
-
-        auto bytes_read = handle->Read(content.data(), static_cast<::duckdb::idx_t>(file_size));
-        if (bytes_read != file_size) {
-            throw FileOperationError(
-                "Failed to read complete file: " + path +
-                " (read " + std::to_string(bytes_read) + " of " +
-                std::to_string(file_size) + " bytes)");
-        }
-
+            content.resize(static_cast<size_t>(file_size));
+            auto bytes_read = handle->Read(content.data(), static_cast<::duckdb::idx_t>(file_size));
+            if (bytes_read != file_size) {
+                throw FileOperationError(
+                    "Failed to read complete file: " + path +
+                    " (read " + std::to_string(bytes_read) + " of " +
+                    std::to_string(file_size) + " bytes)");
+            }
+        });
         return content;
+    } catch (const FileOperationError&) {
+        throw;
     } catch (const ::duckdb::Exception& e) {
         throw FileOperationError("DuckDB error reading file '" + path + "': " + e.what());
     } catch (const std::exception& e) {
@@ -339,20 +382,19 @@ std::string DuckDBVFSProvider::ReadFile(const std::string& path) {
 }
 
 bool DuckDBVFSProvider::FileExists(const std::string& path) {
-    if (!_file_system) {
-        CROW_LOG_WARNING << "DuckDBVFSProvider::FileExists called without initialized file system";
-        return false;
-    }
-
     try {
-        return _file_system->FileExists(path);
-    } catch (const ::duckdb::Exception& e) {
+        bool exists = false;
+        WithFileSystem([&](::duckdb::FileSystem& fs, ::duckdb::FileOpener* opener) {
+            // httpfs does not implement FileExists (the base class answers false for
+            // every URL), so ask the way a read would: open it (a missing file throws, which the
+            // caller below turns into "does not exist").
+            auto handle = fs.OpenFile(path, ::duckdb::FileOpenFlags::FILE_FLAGS_READ, opener);
+            exists = handle != nullptr;
+        });
+        return exists;
+    } catch (const std::exception& e) {
         // DuckDB may throw on network errors - log and treat as "file doesn't exist"
         // This could indicate credential issues or network problems
-        CROW_LOG_WARNING << "DuckDBVFSProvider::FileExists failed for '" << path
-                         << "': " << e.what();
-        return false;
-    } catch (const std::exception& e) {
         CROW_LOG_WARNING << "DuckDBVFSProvider::FileExists failed for '" << path
                          << "': " << e.what();
         return false;
@@ -361,12 +403,7 @@ bool DuckDBVFSProvider::FileExists(const std::string& path) {
 
 std::vector<std::string> DuckDBVFSProvider::ListFiles(const std::string& directory,
                                                        const std::string& pattern) {
-    if (!_file_system) {
-        throw FileOperationError("DuckDBVFSProvider not properly initialized.");
-    }
-
     std::vector<std::string> result;
-
     try {
         // Build glob pattern
         std::string glob_path = directory;
@@ -375,17 +412,15 @@ std::vector<std::string> DuckDBVFSProvider::ListFiles(const std::string& directo
         }
         glob_path += pattern;
 
-        // Use DuckDB's Glob function
-        auto files = _file_system->Glob(glob_path);
-
-        for (const auto& file_info : files) {
-            result.push_back(file_info.path);
-        }
-
-        // Sort for consistent ordering
+        WithFileSystem([&](::duckdb::FileSystem& fs, ::duckdb::FileOpener* opener) {
+            for (const auto& file_info : fs.Glob(glob_path, opener)) {
+                result.push_back(file_info.path);
+            }
+        });
         std::sort(result.begin(), result.end());
-
         return result;
+    } catch (const FileOperationError&) {
+        throw;
     } catch (const ::duckdb::Exception& e) {
         throw FileOperationError(
             "DuckDB error listing files in '" + directory + "': " + e.what());

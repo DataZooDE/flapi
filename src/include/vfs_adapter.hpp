@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -167,6 +168,7 @@ public:
 // Forward declarations for DuckDB types (in global duckdb namespace)
 namespace duckdb {
 class FileSystem;
+class FileOpener;
 class DatabaseInstance;
 }
 
@@ -177,15 +179,16 @@ namespace flapi {
  * Supports remote storage via httpfs extension (S3, GCS, Azure, HTTP/HTTPS).
  *
  * This provider requires that:
- * 1. DatabaseManager is initialized
- * 2. httpfs extension is loaded (for HTTP/HTTPS support)
- * 3. Appropriate credentials are configured for cloud storage (S3, GCS, Azure)
+ * 1. the httpfs extension is available (INSTALLed or in the extension directory)
+ * 2. Appropriate credentials are configured for cloud storage (S3, GCS, Azure)
  */
 class DuckDBVFSProvider : public IFileProvider {
 public:
     /**
-     * Construct a DuckDBVFSProvider using the global DatabaseManager instance.
-     * Throws FileOperationError if DatabaseManager is not initialized.
+     * Construct a DuckDBVFSProvider. It keeps no pointer into DuckDB: every
+     * operation uses DatabaseManager's database when that is running and a
+     * private bootstrap instance (in-memory, httpfs) before that, so it works
+     * while the configuration itself is still being read.
      */
     DuckDBVFSProvider();
 
@@ -205,7 +208,10 @@ public:
     std::string GetProviderName() const override { return "duckdb-vfs"; }
 
 private:
-    duckdb::FileSystem* _file_system;
+    // Runs fn with a FileSystem that is valid for the duration of the call.
+    void WithFileSystem(const std::function<void(duckdb::FileSystem&, duckdb::FileOpener*)>& fn) const;
+
+    duckdb::FileSystem* _file_system;  // only set by the explicit-FileSystem constructor
 };
 
 /**
@@ -232,9 +238,7 @@ public:
 
     /**
      * Create a DuckDB VFS provider for remote file access.
-     * Requires DatabaseManager to be initialized.
-     *
-     * @throws FileOperationError if DatabaseManager is not initialized
+     * Works before DatabaseManager exists (bootstrap instance) and after it.
      */
     static std::shared_ptr<IFileProvider> CreateDuckDBProvider();
 
