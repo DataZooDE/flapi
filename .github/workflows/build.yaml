@@ -437,7 +437,9 @@ jobs:
 
     - name: Run integration tests
       working-directory: test/integration
-      timeout-minutes: 20
+      # The suite runs serially and takes ~20 minutes on a runner (1400+ tests, many start a server);
+      # 20 left no headroom, so a handful of added tests turned into a timeout, not a failure.
+      timeout-minutes: 35
       env:
         # Be explicit: several tests prefer build/debug/flapi when it exists, and
         # a stale debug binary would silently test the wrong build.
