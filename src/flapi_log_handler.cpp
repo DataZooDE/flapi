@@ -1,4 +1,5 @@
 #include "flapi_log_handler.hpp"
+#include "vfs_adapter.hpp"
 
 #include <chrono>
 #include <ctime>
@@ -151,6 +152,10 @@ void FlapiLogHandler::releasePendingRequestLine() {
 }
 
 void FlapiLogHandler::log(std::string message, crow::LogLevel level) {
+    // Every log line: a URL must not carry user:pass@, a presigned signature or a token.
+    if (message.find("://") != std::string::npos) {
+        message = RedactUrlsInText(message);
+    }
     if (holding_.load(std::memory_order_acquire)) {
         std::lock_guard<std::mutex> guard(write_mutex_);
         // Re-checked under the lock: setFormat() may have flushed meanwhile.

@@ -18,7 +18,7 @@ ducklake:
   enabled: true
   alias: cache
   metadata-path: ./data/cache.ducklake
-  data-path: ./data/cache.ducklake
+  data-path: ./data/cache_files   # a directory, not the metadata file
   retention:                 # default for every cache without its own retention
     max-snapshot-age: 14d
 ```

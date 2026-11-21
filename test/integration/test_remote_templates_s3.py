@@ -322,3 +322,49 @@ def test_az_template_path_lists_through_the_azure_extension(workdir):
     finally:
         httpd.shutdown()
         shutil.rmtree(d, ignore_errors=True)
+
+
+def test_an_uppercase_endpoint_scheme_still_selects_ssl(bucket, workdir):
+    root, endpoint = bucket
+    put(root, "mybucket/sqls/hello.yaml", ENDPOINT)
+    put(root, "mybucket/sqls/hello.sql", SQL)
+    put(workdir, "flapi.yaml", main_config("s3://mybucket/sqls"))
+    r = subprocess.run(
+        [flapi_binary(), "-c", os.path.join(workdir, "flapi.yaml"), "--validate-config", "--log-level", "info"],
+        cwd=workdir, capture_output=True, text=True, timeout=120,
+        env={**ENV, **s3_env(endpoint.replace("http://", "HTTP://"))})
+    out = r.stdout + r.stderr
+    assert r.returncode == 0 and "Parsed 1 endpoint" in out, out
+
+
+def test_a_key_with_a_hash_or_question_mark_is_not_mangled(bucket, workdir):
+    root, endpoint = bucket
+    put(root, "mybucket/a#1/hello.yaml", ENDPOINT)
+    put(root, "mybucket/a#1/hello.sql", SQL)
+    put(root, "mybucket/a#1/manifest.txt", "hello.yaml\n")
+    put(workdir, "flapi.yaml", main_config("s3://mybucket/a#1"))
+    r = subprocess.run(
+        [flapi_binary(), "-c", os.path.join(workdir, "flapi.yaml"), "--validate-config", "--log-level", "info"],
+        cwd=workdir, capture_output=True, text=True, timeout=120, env={**ENV, **s3_env(endpoint)})
+    out = r.stdout + r.stderr
+    assert r.returncode == 0 and "Parsed 1 endpoint" in out, out
+
+
+def test_azure_env_without_az_paths_downloads_nothing(bucket, workdir):
+    # AZURE_STORAGE_* in the environment must not trigger an extension download when
+    # nothing reads az://: an offline, empty extension dir stays empty.
+    root, endpoint = bucket
+    put(root, "mybucket/sqls/hello.yaml", ENDPOINT)
+    put(root, "mybucket/sqls/hello.sql", SQL)
+    put(workdir, "flapi.yaml", main_config("s3://mybucket/sqls"))
+    ext = os.path.join(workdir, "ext")
+    os.makedirs(ext)
+    r = subprocess.run(
+        [flapi_binary(), "-c", os.path.join(workdir, "flapi.yaml"), "--validate-config", "--log-level", "info"],
+        cwd=workdir, capture_output=True, text=True, timeout=120,
+        env={**ENV, **s3_env(endpoint), "AZURE_STORAGE_CONNECTION_STRING": "AccountName=a;AccountKey=Yg==",
+             "FLAPI_EXTENSION_DIRECTORY": ext})
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out
+    files = [f for _, _, names in os.walk(ext) for f in names]
+    assert not any("azure" in f for f in files), files

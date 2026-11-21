@@ -954,6 +954,8 @@ public:
 protected:
     std::filesystem::path config_file;
     bool collect_load_errors_ = false;
+    // Set while the startup scan of template.path loads endpoint files: a template-source outside it is refused.
+    bool enforce_template_containment_ = false;
     std::vector<std::string> load_errors_;
     YAML::Node config;
     std::string project_name;
@@ -1003,6 +1005,9 @@ protected:
         std::mutex m;
     };
     mutable MovableMutex endpoints_mutex;
+    // The remote-template file cache must outlive one call, or its TTL saves nothing.
+    mutable MovableMutex remote_provider_mutex;
+    mutable std::shared_ptr<IFileProvider> remote_caching_provider_;
 
     // Copy the current table, let `mutate` modify the copy, then publish it.
     // Every writer must go through here; nothing mutates a published vector.

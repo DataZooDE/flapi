@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <map>
 #include <optional>
 #include <memory>
 
@@ -168,9 +169,15 @@ public:
     /// applied" warning is only useful then; it was printed whenever
     /// GOOGLE_CLOUD_PROJECT was set, which on a GCP host is always.
     void setGcsReferenced(bool referenced) { _gcs_referenced = referenced; }
+    // Azure: the secret (and the `azure` extension download) is only set up when something reads az://.
+    void setAzureReferenced(bool referenced) { _azure_referenced = referenced; }
+    // Loads the azure extension and creates the azure secret; false when it could not.
+    bool configureAzure(duckdb_connection conn);
 
 private:
     bool _gcs_referenced = true;
+    bool _azure_referenced = false;
+    std::map<std::string, std::string> _applied_settings;  // what this manager SET, to tell it from user values
     std::optional<S3Credentials> _s3_credentials;
     std::optional<GCSCredentials> _gcs_credentials;
     std::optional<AzureCredentials> _azure_credentials;

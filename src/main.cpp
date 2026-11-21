@@ -205,7 +205,7 @@ std::string getEndpointName(const EndpointConfig& endpoint) {
 void printValidationErrors(const std::string& endpoint_name, const std::vector<std::string>& errors, int& errors_count) {
     std::cerr << "\n✗ Endpoint: " << endpoint_name << std::endl;
     for (const auto& error : errors) {
-        std::cerr << "  ERROR: " << error << std::endl;
+        std::cerr << "  ERROR: " << flapi::RedactUrlsInText(error) << std::endl;
         errors_count++;
     }
 }
@@ -213,7 +213,7 @@ void printValidationErrors(const std::string& endpoint_name, const std::vector<s
 void printValidationWarnings(const std::string& endpoint_name, const std::vector<std::string>& warnings, int& warnings_count) {
     std::cout << "\n⚠ Endpoint: " << endpoint_name << std::endl;
     for (const auto& warning : warnings) {
-        std::cout << "  WARNING: " << warning << std::endl;
+        std::cout << "  WARNING: " << flapi::RedactUrlsInText(warning) << std::endl;
         warnings_count++;
     }
 }
@@ -252,7 +252,7 @@ void printValidationSummary(bool all_valid, int errors_count, int warnings_count
 }
 
 int validateConfiguration(std::shared_ptr<ConfigManager> config_manager, const std::string& config_file) {
-    std::cout << "Validating configuration file: " << config_file << std::endl;
+    std::cout << "Validating configuration file: " << flapi::PathSchemeUtils::RedactUrl(config_file) << std::endl;
     std::cout << "✓ Configuration file loaded successfully" << std::endl;
     std::cout << "✓ Parsed " << config_manager->getEndpoints()->size() << " endpoint(s)" << std::endl;
 
@@ -267,7 +267,7 @@ int validateConfiguration(std::shared_ptr<ConfigManager> config_manager, const s
         all_valid = false;
         std::cerr << "\n✗ " << load_errors.size() << " endpoint file(s) failed to load" << std::endl;
         for (const auto& error : load_errors) {
-            std::cerr << "  ERROR: " << error << std::endl;
+            std::cerr << "  ERROR: " << flapi::RedactUrlsInText(error) << std::endl;
             errors_count++;
         }
     }
@@ -1321,7 +1321,11 @@ int main(int argc, char* argv[])
     // If a bundle was detected at startup, register the embed:// FS
     // on the DuckDB instance so `read_csv('embed://...')` and similar
     // calls inside SQL templates can resolve to the in-memory archive.
-    if (RegisterEmbeddedFileSystem(std::filesystem::absolute(config_manager->getBasePath().empty() ? std::string(".") : config_manager->getBasePath()).string())) {
+    const std::string embed_base =
+        (config_manager->getBasePath().empty() || flapi::PathSchemeUtils::IsRemotePath(config_manager->getBasePath()))
+            ? std::string(".")
+            : config_manager->getBasePath();
+    if (RegisterEmbeddedFileSystem(std::filesystem::absolute(embed_base).string())) {
         CROW_LOG_INFO << "Registered embed:// DuckDB filesystem";
     }
 
@@ -1343,6 +1347,24 @@ int main(int argc, char* argv[])
             }
         }
         flapi::getGlobalCredentialManager().setGcsReferenced(referenced);
+
+        const auto mentions_azure = [](std::string text) {
+            std::transform(text.begin(), text.end(), text.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return text.find("az://") != std::string::npos || text.find("azure://") != std::string::npos ||
+                   text.find("azure") != std::string::npos;
+        };
+        bool azure_referenced = mentions_azure(config_manager->getTemplatePath()) ||
+                                mentions_azure(config_manager->getBasePath()) ||
+                                mentions_azure(config_manager->getDuckLakeConfig().metadata_path) ||
+                                mentions_azure(config_manager->getDuckLakeConfig().data_path);
+        for (const auto& [name, connection] : config_manager->getConnections()) {
+            azure_referenced = azure_referenced || mentions_azure(connection.getInit());
+            for (const auto& [key, value] : connection.properties) {
+                azure_referenced = azure_referenced || mentions_azure(value);
+            }
+        }
+        flapi::getGlobalCredentialManager().setAzureReferenced(azure_referenced);
     }
     configureCloudCredentialsInDuckDB();
 
