@@ -13,7 +13,9 @@
 #include <openssl/crypto.h>
 
 #include "config_service.hpp"
+#include "sql_utils.hpp"
 #include "mustache_syntax_check.hpp"
+#include "yaml_text_patch.hpp"
 
 #ifdef _WIN32
 #define ENV_BLOCK _environ
@@ -1456,7 +1458,7 @@ std::string AuditLogHandler::buildAuditQuery(const std::string& catalog,
         SELECT event_id, endpoint_path, cache_table, cache_schema, sync_type, status, message,
                snapshot_id, rows_affected, sync_started_at, sync_completed_at, duration_ms,
                coalesce("full", false) AS "full"
-        FROM )" << catalog << R"(.audit.sync_events)";
+        FROM )" << sql::QuoteIdentifier(catalog) << R"(.audit.sync_events)";
     
     if (!endpoint_filter.empty()) {
         // Quote-doubled. The caller's endpoint path reaches here, and a
@@ -2044,7 +2046,18 @@ Outcome UpdateFromPatch(ConfigManager& cm, const EndpointConfig& existing, const
             std::filesystem::remove(file, ec);
         }
     };
-    if (!writeFile(file, emit(merged), outcome.error)) {
+    // Patched into the existing text where possible, so the file keeps its
+    // comments; a plain re-emit (which drops them) only when it cannot be.
+    std::string new_text;
+    if (had_file) {
+        if (auto patched = PatchYamlPreservingComments(previous, base, merged)) {
+            new_text = std::move(*patched);
+        }
+    }
+    if (new_text.empty()) {
+        new_text = emit(merged);
+    }
+    if (!writeFile(file, new_text, outcome.error)) {
         outcome.status = 500;
         restore();
         return outcome;
@@ -3650,8 +3663,14 @@ crow::response CacheConfigHandler::refreshCache(const crow::request& req, const 
         body["full"] = options.full;
         if (!ran) {
             // Another refresh of the same table (warm-up, the scheduler) is in
-            // flight; it was not run twice.
+            // flight; it was not run twice. 409, not 200: nothing was refreshed,
+            // which a script cannot tell from a refresh that ran. Retry-After is
+            // how long to wait before asking again (as for cache_warming).
             body["status"] = "already_running";
+            crow::response skipped(409, body);
+            skipped.set_header("Content-Type", "application/json");
+            skipped.set_header("Retry-After", "5");
+            return skipped;
         } else {
             body["status"] = "refreshed";
             // The stats this refresh just recorded (CacheManager::recordSyncEvent).
@@ -3875,6 +3894,16 @@ crow::response CacheConfigHandler::performGarbageCollection(const crow::request&
             body["message"] = result.message;
             if (!result.warning.empty()) {
                 body["warning"] = result.warning;
+            }
+            if (!result.pinned_by.empty()) {
+                // Files this table no longer needs that ANOTHER table's retained
+                // snapshots still pin, and who holds them.
+                body["pinned_bytes"] = result.pinned_bytes;
+                crow::json::wvalue pinned = crow::json::wvalue::list();
+                for (std::size_t i = 0; i < result.pinned_by.size(); ++i) {
+                    pinned[i] = result.pinned_by[i];
+                }
+                body["pinned_by"] = std::move(pinned);
             }
             crow::response res(result.status == "error" ? 500 : 200, body);
             res.set_header("Content-Type", "application/json");

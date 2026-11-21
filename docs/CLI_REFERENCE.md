@@ -296,6 +296,14 @@ Loads and validates the configuration file, checking for:
   `{{`, empty tags, partials (`{{> x}}`) and set-delimiter tags (`{{= =}}`). The error names the file,
   line and column, e.g. `Invalid template sqls/orders.sql:12:3: '{{/region}}' closes a section that was
   never opened`. The same check runs at startup (exit 1) and on reload. The SQL itself is not run.
+- Template variable names: every `{{ params.x }}` / `{{#params.x}}` in an endpoint's template must name a
+  request field declared in its `request:` list (or a `:name` of its `url-path`; `limit` and `offset`
+  are always set). It is a **warning**, not an error (templates are often shared by endpoints that declare different
+  subsets of their parameters) - such a variable is either empty or an unvalidated raw query parameter. `conn.*`, `env.*`, `cache.*`, `context.*`, comments and names inside a section
+  (`{{#params.items}}{{name}}{{/params.items}}`) are not checked.
+- **Every** invalid endpoint or template file is reported in one run, not just the first: with
+  `--validate-config` a file that fails to load (a Mustache syntax error, a malformed endpoint) is listed
+  and the remaining files are still checked. A normal start still stops at the first.
 - Connection configuration validity
 - URL path format compliance
 

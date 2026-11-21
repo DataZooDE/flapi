@@ -679,7 +679,15 @@ public:
     void loadConfig();
     void loadEndpointConfigsRecursively(const std::filesystem::path& dir);
     void loadEndpointConfig(const std::string& config_file);
-    
+
+    // `--validate-config` wants every invalid endpoint file, not the first: with
+    // collection on, a file that fails to load is recorded (message includes the
+    // file name) and loading carries on with the next one, instead of the first
+    // failure aborting loadConfig(). Off by default - a server must not start with
+    // a file it could not load. Set before loadConfig().
+    void setCollectLoadErrors(bool collect) { collect_load_errors_ = collect; }
+    const std::vector<std::string>& getLoadErrors() const { return load_errors_; }
+
     // Getters for configuration values
     std::string getProjectName() const;
     std::string getProjectDescription() const;
@@ -944,6 +952,8 @@ public:
 
 protected:
     std::filesystem::path config_file;
+    bool collect_load_errors_ = false;
+    std::vector<std::string> load_errors_;
     YAML::Node config;
     std::string project_name;
     TracingConfig tracing_config;

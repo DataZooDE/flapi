@@ -319,8 +319,8 @@ export async function promptCacheOptions(): Promise<{
         name: 'ttl',
         message: 'Cache TTL in seconds',
         initial: 300,
-        validate: (value: number) => {
-          if (value < 0) {
+        validate: (value: string | number) => {
+          if (Number(value) < 0) {
             return 'TTL must be positive';
           }
           return true;

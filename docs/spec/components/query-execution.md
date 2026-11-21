@@ -69,7 +69,11 @@ Templates have access to these variables:
 WHERE name = '{{{ params.name }}}'
 -- Input: O'Brien → Output: 'O'Brien'  (a syntax error; a crafted value is injection)
 ```
-Only the validator (and the SQL-injection screen) stands between the value and the SQL here.
+Only the validator (and the SQL-injection screen) stands between the value and the SQL here
+- *where the site stays raw*. For a typed field outside every section, a plain value site
+(`= {{{ params.x }}}`, `= '{{{ params.x }}}'`, `LIKE '%{{{ params.x }}}%'`) is bound like a
+double-brace one (`?`, `?`, `('%' || ? || '%')`); inside sections, SQL comments, enum identifiers, typed
+literals (`DATE '...'`), names after `FROM`/`JOIN`/..., and `AT (VERSION|TIMESTAMP => ...)` it is raw.
 
 **Double Braces (bound or HTML-escaped):**
 ```sql
@@ -161,8 +165,14 @@ disk per request). Rejected: unbalanced or crossed sections, `{{{` not closed by
 **JSON values** (`QueryResult::decimalToJson`, `convertVectorTimestampToJson`):
 
 - `DECIMAL` is rendered from DuckDB's exact text, not through `double`: scale 0 with at most 18 digits
-  becomes a JSON integer; scale up to 6 with at most 9 integer digits becomes the exact JSON number
-  (`7790.62`, not `7790.61999999999989086`). Wider decimals fall back to the nearest double.
+  becomes a JSON integer; a value with at most 15 significant digits becomes the exact JSON number
+  (`7790.62`, not `7790.61999999999989086`). A wider value (`DECIMAL(38,9)`, more than 15 digits in all) is
+  emitted as the exact **string** (`"12345678901234567890.123456789"`): crow's `wvalue` cannot carry a raw
+  number token, and a double would change digits. Only those values change JSON type.
+- The session `TimeZone` is pinned to `UTC` (or `duckdb.TimeZone`) at startup (`DatabaseManager::applyTimeZone`),
+  so `now()::TIMESTAMP`, `date_trunc` and `TIMESTAMPTZ` -> `TIMESTAMP` do not follow the host `TZ`.
+- Debug logs never contain connection credentials: the template context is not dumped and the rendered SQL is
+  scrubbed of every connection's credential-valued properties (`SQLTemplateProcessor::processTemplate`).
 - `TIMESTAMP` / `TIMESTAMPTZ` keep microseconds; `TIMESTAMP_S` and `TIMESTAMP_MS` are decoded in their
   own unit, `TIMESTAMP_NS` keeps 9 fractional digits; DuckDB's infinities become the strings
   `"infinity"` / `"-infinity"`. Only `TIMESTAMPTZ` (an instant, stored as UTC) carries the `Z`

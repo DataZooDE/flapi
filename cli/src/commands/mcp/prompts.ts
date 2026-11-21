@@ -18,7 +18,7 @@ export function registerMcpPromptsCommand(parent: Command, ctx: CliContext) {
         spinner.succeed(chalk.green('✓ MCP prompts retrieved'));
         const payload = response.data;
         const prompts = Object.entries(payload)
-          .map(([path, config]) => ({ path, config }))
+          .map(([path, config]) => ({ path, config: config as Record<string, unknown> }))
           .filter((entry) => entry.config?.['mcp-prompt'] ?? entry.config?.mcpPrompt);
 
         if (ctx.config.output === 'json') {

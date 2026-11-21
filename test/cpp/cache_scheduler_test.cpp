@@ -500,7 +500,7 @@ TEST_CASE("A cache without template-file materialises its serving SELECT", "[cac
         std::map<std::string, std::string> params;
         REQUIRE(cache_manager.refreshCache(cm, endpoint, params));
         REQUIRE(adapter->count("CREATE OR REPLACE TABLE \"cache\".\"main\".\"orders\" AS\nSELECT id, name FROM src") == 1);
-        REQUIRE(adapter->count("INSERT INTO cache.audit.sync_events") == 1);
+        REQUIRE(adapter->count("INSERT INTO \"cache\".audit.sync_events") == 1);
         REQUIRE(adapter->count("'full', 'success'") == 1);
     }
     SECTION("an explicit template-file is passed through, so a bare SELECT is still refused") {

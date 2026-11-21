@@ -80,6 +80,7 @@ The JSON must have exactly this structure:
           const response = await model.generateContent({
             contents: [
               {
+                role: 'user',
                 parts: [
                   { text: systemPrompt },
                   { text: userPrompt },

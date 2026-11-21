@@ -493,3 +493,37 @@ def test_hook_passes_on_overlapping_route_warnings(tmp_path):
     assert "still serves every other URL its pattern matches" in context, context
     assert context.count("Overlapping routes with different auth") == 1, context
     assert "hook-pw-789" not in context
+
+
+def test_hook_warns_when_an_uncached_template_reads_an_alias_only_a_populate_attaches(tmp_path):
+    """#218: the populate template's ATTACH runs on refresh only; an uncached endpoint reading that alias
+    does not see it (or a rename-published update of it) until something attached it."""
+    hook = _load_hook_module()
+    populate = ("DETACH DATABASE IF EXISTS stats;\n"
+                "ATTACH '{{{conn.path}}}' AS stats (READ_ONLY);\n"
+                "CREATE OR REPLACE TABLE cache.main.t AS SELECT * FROM stats.orders;\n")
+    assert hook.attached_aliases(populate) == {"stats"}
+    assert hook.attached_aliases("ATTACH IF NOT EXISTS 'a.db' AS \"Mixed\"; attach 'b.db' as other") == {"mixed", "other"}
+    assert hook.attached_aliases("SELECT 1") == set()
+
+    # `stats.orders` is a read; the literal 'stats.orders' and a column called stats are not.
+    assert hook.reads_alias("SELECT * FROM stats.orders", "stats")
+    assert hook.reads_alias("SELECT count(*) FROM \"stats\".main.orders", "stats")
+    assert not hook.reads_alias("SELECT 'stats.orders' AS s, stats FROM t", "stats")
+    assert not hook.reads_alias("SELECT * FROM mystats.orders", "stats")
+
+    note = hook.populate_only_alias_note("SELECT * FROM stats.orders WHERE id = 1", {"stats_cache.sql": populate})
+    assert note and "`stats.`" in note and "stats_cache.sql" in note and "never sees a rename-published" in note, note
+    # Not about this alias: no note.
+    assert hook.populate_only_alias_note("SELECT * FROM other.orders", {"stats_cache.sql": populate}) is None
+    # The connection's init attaches it as well: fine.
+    config = "connections:\n  c:\n    init: |\n      ATTACH './s.duckdb' AS stats (READ_ONLY);\n"
+    assert hook.populate_only_alias_note("SELECT * FROM stats.orders", {"stats_cache.sql": populate}, config) is None
+
+    # The populate templates are found through the endpoint YAMLs' template-file.
+    (tmp_path / "stats.yaml").write_text("url-path: /stats\ntemplate-source: stats.sql\n"
+                                         "cache:\n  enabled: true\n  table: t\n  template-file: stats_cache.sql\n")
+    (tmp_path / "stats_cache.sql").write_text(populate)
+    (tmp_path / "plain.yaml").write_text("url-path: /plain\ntemplate-source: plain.sql\n")
+    (tmp_path / "plain.sql").write_text("SELECT * FROM stats.orders")
+    assert hook.populate_templates(tmp_path) == {"stats_cache.sql": populate}

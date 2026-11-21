@@ -39,7 +39,8 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def _write_config(dirpath: str, port: int, scheduler_enabled: bool = False, invalid_cache: bool = False) -> str:
+def _write_config(dirpath: str, port: int, scheduler_enabled: bool = False, invalid_cache: bool = False,
+                  populate_rows: int = 120000000) -> str:
     sqls = os.path.join(dirpath, "sqls")
     os.makedirs(sqls)
 
@@ -99,8 +100,8 @@ CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS
 SELECT
   1 AS id,
   SUM(i % 13) AS checksum
-FROM range(120000000) t(i);
-"""
+FROM range({populate_rows}) t(i);
+""".replace("{populate_rows}", str(populate_rows))
             )
 
     with open(os.path.join(sqls, "uncached.yaml"), "w") as f:
@@ -312,3 +313,82 @@ class TestWarmupReadiness:
         first_scheduled = log_text.find("Running scheduled cache refresh")
         assert finished >= 0, log_text[-3000:]
         assert first_scheduled > finished, log_text[-3000:]
+
+
+def _poll_from_bind(base_url: str, proc: subprocess.Popen, seconds: float):
+    """Tight-poll /health and /cached from the first moment the port answers.
+
+    Returns the ordered list of (health_status, cached_status, cached_error)
+    triples, one per iteration that reached the server.
+    """
+    samples = []
+    deadline = time.time() + seconds
+    session = requests.Session()
+    while time.time() < deadline and proc.poll() is None:
+        try:
+            health = session.get(f"{base_url}/health", timeout=2)
+            cached = session.get(f"{base_url}/cached", timeout=2)
+        except requests.exceptions.RequestException:
+            continue
+        try:
+            error = cached.json().get("error")
+        except ValueError:
+            error = None
+        samples.append((health.status_code, cached.status_code, error))
+        if health.status_code == 200 and cached.status_code == 200:
+            break
+    return samples
+
+
+@pytest.mark.standalone_server
+class TestStartupRaceIssue198:
+    """/health must never be ready while a cache is still being built, and the
+    registry must never be re-initialised under a running server (#198)."""
+
+    @pytest.mark.parametrize("attempt", range(6))
+    def test_readiness_is_monotonic_from_first_bind(self, attempt):
+        port = _free_port()
+        with tempfile.TemporaryDirectory(prefix="flapi_race_") as tmpdir:
+            config_path = _write_config(tmpdir, port, scheduler_enabled=True, populate_rows=20000000)
+            log_path = os.path.join(tmpdir, "server.log")
+            proc = _spawn_server(config_path, log_path)
+            try:
+                samples = _poll_from_bind(f"http://127.0.0.1:{port}", proc, 60)
+                assert samples, _read_log(log_path)
+                assert samples[-1][:2] == (200, 200), (samples[-5:], _read_log(log_path)[-3000:])
+                seen_ready = False
+                for health, cached, error in samples:
+                    # Ready may only be reported together with a serving cache.
+                    if health == 200:
+                        assert cached == 200, (health, cached, error)
+                    # No flicker back to warming once the cache serves.
+                    if cached == 200:
+                        seen_ready = True
+                    elif seen_ready:
+                        raise AssertionError(f"cache went back to {cached}/{error}: {samples}")
+                    # The cache is only ever warming (or served): never 500, never
+                    # an empty/unknown registry answer.
+                    if cached != 200:
+                        assert (cached, error) == (503, "cache_warming"), (cached, error)
+                    if health != 200:
+                        assert health == 503, health
+            finally:
+                _stop_server(proc)
+
+    def test_warmup_initialises_readiness_exactly_once(self):
+        port = _free_port()
+        with tempfile.TemporaryDirectory(prefix="flapi_race_once_") as tmpdir:
+            config_path = _write_config(tmpdir, port, populate_rows=1000000)
+            log_path = os.path.join(tmpdir, "server.log")
+            proc = _spawn_server(config_path, log_path)
+            try:
+                _wait_for_live(f"http://127.0.0.1:{port}", proc, log_path)
+                deadline = time.time() + 30
+                while time.time() < deadline:
+                    if requests.get(f"http://127.0.0.1:{port}/health", timeout=2).status_code == 200:
+                        break
+                    time.sleep(0.1)
+                log_text = _read_log(log_path)
+                assert log_text.count("Cache readiness initialised") == 1, log_text[-3000:]
+            finally:
+                _stop_server(proc)

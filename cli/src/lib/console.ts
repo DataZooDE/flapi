@@ -21,8 +21,8 @@ export const Console = {
   },
 
   color(color: keyof typeof colorette, text: string) {
-    const fn = colorette[color];
-    return typeof fn === 'function' ? fn(text) : text;
+    const fn: unknown = colorette[color];
+    return typeof fn === 'function' ? (fn as (value: string) => string)(text) : text;
   },
 
   success(message: string) {

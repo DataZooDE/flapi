@@ -4,6 +4,7 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 #include <vector>
 
@@ -13,6 +14,11 @@ namespace flapi {
  * Responsible for storing and retrieving endpoint configurations.
  * Provides efficient lookup by REST path/method and MCP name.
  * Does NOT interpret or validate configurations - that's handled elsewhere.
+ *
+ * Thread-safe: every method takes `_mutex` (shared for reads, exclusive for
+ * writes), and the getters return copies. ConfigManager updates it from REST,
+ * MCP and reload threads. `findEndpoints` runs its predicate on a snapshot,
+ * outside the lock.
  */
 class EndpointRepository {
 public:
@@ -138,6 +144,8 @@ public:
     size_t countMCPEndpoints() const;
 
 private:
+    mutable std::shared_mutex _mutex;
+
     // REST endpoints: key format "METHOD:URL_PATH" (e.g., "GET:/customers")
     std::map<std::string, EndpointConfig> rest_endpoints_;
 

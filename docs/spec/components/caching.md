@@ -296,8 +296,16 @@ DuckLake catalog on its own: a populate script with its retention and audit row
 (`refreshCache`), compaction, garbage collection, `drop-table`, and the cache-target
 `validate_only` check that executes a template's READ_ONLY `ATTACH`. The duplicate
 check comes first, so a second refresh of the SAME table is still coalesced
-(`refreshCache` returns false, `already_running`) instead of queueing; a refresh of
+(`refreshCache` returns false; the route answers `409 already_running` with `Retry-After`) instead of queueing; a refresh of
 another table waits for the lock.
+
+**Lock order.** The populate script reads the source, so it also takes the source connection's
+`serialize-access` lock (`ICacheDatabaseAdapter::lockSourceAccess`) - always AFTER the catalog write lock. A
+write holds its source lock only while it runs and releases it before it triggers a refresh, so no path takes
+the two in the other order (#216).
+
+Identifiers flAPI builds itself (the DuckLake alias in `ATTACH`/`DETACH`, `CREATE SCHEMA`, the audit table and
+every catalog-qualified statement) are double-quoted, so `alias: my-lake` and `schema: my-schema` work.
 
 Attach names are instance-wide in DuckDB. Two populate templates that each run
 `DETACH DATABASE IF EXISTS src; ATTACH ... AS src (READ_ONLY)` used to run in
@@ -509,6 +517,16 @@ delete, reload, reload-file, the MCP config tools): an entry for a table no endp
 names any more is dropped with its refresh stats, a newly named table starts `Ready`
 when it exists in the catalog, else `Unbuilt`. A changed `cache.table` used to have no
 entry (its GET answered 500) and the old one stayed in `/health` until restart.
+
+The registry is initialised **once**: `DatabaseManager::initializeDatabase` calls
+`CacheManager::initializeReadiness` (`src/database_manager.cpp`) before the HTTP
+thread exists, so `/health` and cached endpoints are `Starting` from the very first
+request. `warmUpCaches`/`warmUpCachesAsync` no longer re-run it (that `clear()`ed the
+registry under a live server and let `/health` briefly report `ready`, #198); a reload
+goes through `syncReadinessWithEndpoints`. A read-only replica never warms up, so
+`initializeReadiness` settles it synchronously: `Ready` when the table exists in the
+catalog, else `Unbuilt` - a never-built table answers `cache_not_built` from the first
+request, never `cache_warming` (#217).
 
 On a read-only replica the `cache_not_built` message says the writer has not built
 the cache yet (`CacheReadiness::replica`), not "warm-up skipped".

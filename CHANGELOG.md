@@ -6,6 +6,56 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ### Upgrade notes
 
+- **DuckDB's session `TimeZone` is `UTC` unless you set it.** Left alone, DuckDB takes the host zone (`TZ`,
+  `/etc/localtime`) once its ICU extension loads, which happens lazily on the first query that needs it. A
+  server in `Asia/Tokyo` then answered `now()::TIMESTAMP`, `date_trunc` and `TIMESTAMPTZ` -> `TIMESTAMP` casts
+  nine hours off, from some minutes after startup. flAPI now applies `SET GLOBAL TimeZone` right after the
+  engine opens and logs `DuckDB TimeZone: UTC`. Set `duckdb: {TimeZone: Europe/Berlin}` (key case does not
+  matter) to choose another zone; if the host zone is what you relied on, set it explicitly there. If ICU
+  cannot be loaded at that point (offline image without it) a warning says so and each connection tries its
+  own `SET`.
+- **`DECIMAL` values with more than 15 significant digits are JSON strings.** `DECIMAL(38,9)` `12345678901234567890.123456789`
+  used to be rounded to the nearest double (`12345678901234567168`); it is now the exact string
+  `"12345678901234567890.123456789"`. Decimals with at most 15 significant digits (and integer-valued ones up to
+  18 digits) stay JSON numbers, so `price DECIMAL(10,2)` columns are unchanged. A typed client reading a wide
+  `DECIMAL` as a number must parse the string.
+- **A cache populate now waits for writes on a serialised source (and vice versa).** A populate that reads a
+  SQLite attachment takes the connection's `serialize-access` lock, so a `POST` during a slow populate queues
+  behind it (it used to run concurrently and fail the populate or the write with `database is locked`).
+  Lock order is fixed: catalog write lock first, source lock second.
+- **Identifiers flAPI builds are quoted.** A DuckLake `alias` or cache `schema` with a hyphen (`my-lake`,
+  `my-schema`) booted into a syntax error or silently skipped the schema; the `ATTACH`, `CREATE SCHEMA`, audit
+  table and `ducklake_*` calls now quote them. Your own templates must still quote
+  (`"{{{cache.catalog}}}"."{{{cache.schema}}}"."{{{cache.table}}}"`).
+- **Debug logging no longer prints connection secrets.** The `Template context:` line (which dumped
+  `conn.*`, passwords included) is gone, and the `Processed query:` line has connection credential values
+  replaced with `<redacted>`.
+
+
+- **A refresh skipped because one of the same table is already running answers `409` with `Retry-After: 5`**
+  (`{"status":"already_running"}`), no longer `200`. Nothing was refreshed, which a script could not tell from
+  a refresh that ran. `flapii cache refresh` prints it and exits non-zero. `cache/gc` also reports `pinned_by`
+  and `pinned_bytes` when another cached table's retained snapshot still pins this table's old files (it read
+  `nothing_to_expire` / 0 bytes), and validating a populate template against an alias attached before an
+  atomic rename of its file (`?target=cache&validate_only=1`) answers a `stale` warning instead of a bind
+  error against the old file (Linux).
+
+- **Path parameters are percent-decoded** (#220). The route still matches on the raw path, then each captured
+  value is decoded once before validation: `/customers/%37` is id `7`, `/names/John%20Doe` reaches the template
+  as `John Doe`, `%2F` decodes to `/` inside the one parameter, `+` stays a plus. A malformed escape (`%zz`),
+  `%00` or invalid UTF-8 is `400`. A client that sent already-encoded text and relied on the server not
+  decoding it now gets the decoded value.
+- **`field-in` is honoured per declared source** (#192). A declared field is read only from its source: a query
+  parameter no longer satisfies a `body` field (a required one is `400`), a body key no longer replaces a
+  `query` field, and a route parameter (declared or not) cannot be overridden by `?id=` or a body key. Clients
+  that passed a body field in the query string, or the other way round, must move it.
+- **`{{{ params.x }}}` is bound for typed fields** (#192). Outside sections, `= {{{ x }}}`, `= '{{{ x }}}'`
+  and `LIKE '%{{{ x }}}%'` now go to DuckDB as parameters (`?`, `?`, `('%' || ? || '%')`). Inside sections,
+  comments, enum identifiers, typed literals (`DATE '...'`), names after `FROM`/`JOIN`/`BY`, and
+  `AT (VERSION|TIMESTAMP => ...)` they stay raw text. An absent value in a quoted site still behaves as `''`.
+  A template that relied on a typed field's triple-brace value being spliced as SQL (for example
+  `IN ({{{ params.ids }}})` with a string validator) now compares against one text value; use a section or an
+  `enum` instead. See `docs/CONFIG_REFERENCE.md` §5.9.
 - **Endpoints whose routes differ only in parameter names are duplicates.** `GET /items/:id` and
   `GET /items/:item_id` match the same requests; both used to load and load order decided which one answered,
   so an endpoint with `auth: {enabled: false}` could shadow an authenticated one. Startup, reload and create now
@@ -293,6 +343,17 @@ Config service, MCP and CLI:
 - **Metrics latency is measured from the start of the request** and so includes authentication (a Basic-auth
   endpoint's PBKDF2 check), rate limiting and middleware rejections. Latencies are rounded to three decimals.
   Numbers for authenticated endpoints are higher than before because they are now what clients see.
+- **`--validate-config` lists every invalid endpoint or template file** instead of stopping at the first, and
+  warns about an undeclared `{{ params.x }}` in an endpoint template (a name not in its `request:` fields, its
+  `url-path` `:names`, or `limit`/`offset`). The warning does not change the exit code.
+
+### Fixed: observability gaps and two product gaps (#215, #217)
+
+- MCP JSON-RPC responses carry `X-Request-Id`; the access-log `Request:` line carries `request_id`.
+- Async MCP tasks report end-to-end (submit to finish) latency as `protocol: "mcp_task"` series in the metrics.
+- Swagger UI at `/doc` no longer loads from unpkg.com: swagger-ui-dist 5.18.2 is built into the binary and served
+  from `/doc/assets/` (about 1.8 MB larger binary).
+- Config-service `PUT` keeps the comments of an endpoint YAML file.
 
 ### Added: compaction on demand, `--method` for one-shot refreshes
 

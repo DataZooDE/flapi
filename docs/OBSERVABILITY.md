@@ -16,7 +16,7 @@ into payload capture.
 
 ## 1. What you get without configuring anything
 
-Even with tracing disabled, every response carries `X-Request-Id`, and that id
+Even with tracing disabled, every response - REST and MCP JSON-RPC alike - carries `X-Request-Id`, and that id
 appears in the audit log and in every application log line emitted while serving
 that request. A support report quoting the header is enough to find the request.
 
@@ -409,7 +409,22 @@ first startup line on: lines logged while the configuration is read are held
 and written once it has said which format it wants. Crow's own access line
 (`Response: <conn> <url> <status> ...`) carries the `request_id` too, for
 every outcome: a 200 from an offloaded handler, and a 401/403/429 a middleware
-answered before any handler ran.
+answered before any handler ran. So does the `Request: <conn> <url> HTTP/1.1 GET /path`
+line: Crow writes it before any middleware has run, so the handler holds it for the
+few instructions until the request has an id and then writes it - once - with the id
+attached.
+
+### Async MCP tasks: end-to-end latency
+
+A task worker has no HTTP request in scope, so the tool's own series
+(`protocol: "mcp"`) times the execution alone. The task manager therefore stamps
+each task when it is submitted and when it reaches a terminal state, and records
+the difference - queue wait included - in a separate metrics series,
+`protocol: "mcp_task"`, one per tool, in `GET /api/v1/_config/metrics`
+(`requests.series`). A task that sat behind busy workers shows a short tool latency
+and a long `mcp_task` latency; the gap is the queue wait. `mcp.tasks.workers` and
+`mcp.tasks.queue-depth` size the pool. These series are not part of `total` or
+`server_errors`.
 
 ```yaml
 log-level: info

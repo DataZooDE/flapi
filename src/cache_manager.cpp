@@ -15,6 +15,7 @@
 #include <tuple>
 
 #include "cache_manager.hpp"
+#include "sql_utils.hpp"
 #include "template_secrets.hpp"
 
 #include "database_manager.hpp"
@@ -39,7 +40,12 @@ CacheManager::CacheManager(std::shared_ptr<ICacheDatabaseAdapter> db_adapter)
 
 void CacheManager::warmUpCaches(std::shared_ptr<ConfigManager> config_manager) {
     CROW_LOG_INFO << "Warming up endpoint caches, this might take some time...";
-    initializeReadiness(config_manager);
+    // Readiness is initialised ONCE, at DatabaseManager startup, before the HTTP
+    // thread exists. Re-initialising here clear()ed the registry under a live
+    // server (#198). Only a caller that never initialised it (unit tests) does so.
+    if (!readiness_initialised_.load()) {
+        initializeReadiness(config_manager);
+    }
     
     // Initialize audit tables first - not on a read-only catalog, which cannot take the DDL.
     if (!config_manager->getDuckLakeConfig().read_only) {
@@ -135,7 +141,6 @@ std::vector<EndpointConfig> CacheManager::warmupEndpoints(std::shared_ptr<Config
 }
 
 std::thread CacheManager::warmUpCachesAsync(std::shared_ptr<ConfigManager> config_manager) {
-    initializeReadiness(config_manager);
     return std::thread([this, config_manager]() {
         try {
             warmUpCaches(config_manager);
@@ -201,6 +206,23 @@ CacheManager::CacheKey CacheManager::cacheKeyForEndpoint(std::shared_ptr<ConfigM
 }
 
 void CacheManager::initializeReadiness(std::shared_ptr<ConfigManager> config_manager) {
+    // A read-only replica never warms up and never refreshes, so nothing would
+    // ever move a `Starting` entry: it answered 503 cache_warming until the
+    // warm-up thread got round to marking it (~2 s), then cache_not_built (#217).
+    // Settle it here, synchronously, before the HTTP thread exists.
+    const bool replica = config_manager->getDuckLakeConfig().read_only;
+    std::map<CacheKey, bool> replica_exists;
+    if (replica) {
+        for (const auto& endpoint : *config_manager->getEndpoints()) {
+            if (!endpoint.cache.enabled || endpoint.cache.table.empty()) {
+                continue;
+            }
+            const CacheKey key = cacheKeyForEndpoint(config_manager, endpoint);
+            if (replica_exists.count(key) == 0) {
+                replica_exists[key] = cacheTableExists(key.catalog, key.schema, key.table);
+            }
+        }
+    }
     std::lock_guard<std::mutex> lock(readiness_mutex_);
     readiness_.clear();
     for (const auto& endpoint : *config_manager->getEndpoints()) {
@@ -208,8 +230,14 @@ void CacheManager::initializeReadiness(std::shared_ptr<ConfigManager> config_man
             continue;
         }
         const CacheKey key = cacheKeyForEndpoint(config_manager, endpoint);
-        readiness_[key] = CacheReadiness{ReadinessState::Starting, key.catalog, key.schema, key.table, ""};
+        ReadinessState state = ReadinessState::Starting;
+        if (replica) {
+            state = replica_exists[key] ? ReadinessState::Ready : ReadinessState::Unbuilt;
+        }
+        readiness_[key] = CacheReadiness{state, key.catalog, key.schema, key.table, ""};
     }
+    readiness_initialised_.store(true);
+    CROW_LOG_INFO << "Cache readiness initialised for " << readiness_.size() << " cache table(s)";
 }
 
 void CacheManager::syncReadinessWithEndpoints(std::shared_ptr<ConfigManager> config_manager) {
@@ -682,6 +710,13 @@ void CacheManager::refreshDuckLakeCache(std::shared_ptr<ConfigManager> config_ma
             throw std::runtime_error("server is shutting down; refresh not started");
         }
         {
+            // The populate READS the source: on a SQLite attachment a concurrent
+            // write (a POST whose refresh-on-write is what usually starts this)
+            // wedges it or fails the populate with "database is locked" (#216).
+            // Taken after the catalog write lock refreshCache() already holds,
+            // always in that order, so a write - which releases its source
+            // lock before it triggers a refresh - cannot deadlock against us.
+            const auto source_access = db_adapter_->lockSourceAccess(endpoint);
             // Published for the duration of the populate script, so a shutdown can
             // interrupt it instead of waiting minutes for a warm-up query to end.
             ActiveRefreshGuard active(*this);
@@ -943,35 +978,11 @@ std::string CacheManager::fetchCursorWatermark(const std::string& catalog,
 }
 
 std::string CacheManager::escapeSqlLiteral(const std::string& value) {
-    // Doubling is the whole of SQL string escaping. These literals are built
-    // by us, but the values inside them - a cursor watermark, a table name, a
-    // configured interval - come from upstream data or user config.
-    std::string out;
-    out.reserve(value.size());
-    for (const char c : value) {
-        if (c == '\'') {
-            out += "''";
-        } else {
-            out += c;
-        }
-    }
-    return out;
+    return sql::EscapeSqlLiteral(value);
 }
 
 std::string CacheManager::quoteIdentifier(const std::string& name) {
-    std::string out = "\"";
-    for (const char c : name) {
-        // Doubling, not tripling: appending "" and then falling through to
-        // append the character again produced three quotes and invalid SQL
-        // for any legitimately quoted identifier containing one.
-        if (c == '"') {
-            out += "\"\"";
-        } else {
-            out += c;
-        }
-    }
-    out += '"';
-    return out;
+    return sql::QuoteIdentifier(name);
 }
 
 std::optional<std::vector<std::string>> CacheManager::liveTableChangeKeys(
@@ -1528,6 +1539,10 @@ CacheManager::GarbageCollectionResult CacheManager::performGarbageCollection(std
         return result;
     }
     result.status = outcome.expired_snapshots > 0 ? "expired" : "nothing_to_expire";
+    // What the expiry could not free: old files another table's retained
+    // snapshots still pin. Without this the answer read "nothing to expire" / 0
+    // bytes while the disk still held them.
+    scanPinnedFiles(config_manager, catalog, schema, table, result);
     std::ostringstream message;
     if (outcome.expired_snapshots > 0) {
         message << "Expired " << outcome.expired_snapshots << " snapshot(s), deleted "
@@ -1538,9 +1553,150 @@ CacheManager::GarbageCollectionResult CacheManager::performGarbageCollection(std
     if (!outcome.warning.empty()) {
         message << "; warning: " << outcome.warning;
     }
+    if (!result.pinned_by.empty()) {
+        message << "; " << result.pinned_bytes << " bytes of old files stay on disk, pinned by snapshots retained by ";
+        for (std::size_t i = 0; i < result.pinned_by.size(); ++i) {
+            message << (i > 0 ? ", " : "") << result.pinned_by[i];
+        }
+        message << "; they are deleted when that retention expires those snapshots";
+    }
     result.message = message.str();
     recordSyncEvent(config_manager, endpoint, "garbage_collection", "success", result.message, details);
     return result;
+}
+
+std::string CacheManager::describePinHolder(std::shared_ptr<ConfigManager> config_manager,
+                                            const EndpointConfig& endpoint, const std::string& endpoint_schema,
+                                            std::int64_t snapshots) const {
+    const auto retention = effectiveRetention(config_manager, endpoint.cache);
+    std::ostringstream holder;
+    holder << (endpoint.urlPath.empty() ? endpoint.getName() : endpoint.urlPath) << " (" << endpoint_schema << "."
+           << endpoint.cache.table << ": " << snapshots << " snapshot(s) kept by ";
+    if (retention.keep_last_snapshots) {
+        holder << "retention keep-last-snapshots " << *retention.keep_last_snapshots;
+    } else if (retention.max_snapshot_age) {
+        holder << "retention max-snapshot-age " << *retention.max_snapshot_age;
+    } else {
+        holder << "no retention policy; set cache.retention or ducklake.retention";
+    }
+    holder << ")";
+    return holder.str();
+}
+
+void CacheManager::scanPinnedFiles(std::shared_ptr<ConfigManager> config_manager, const std::string& catalog,
+                                   const std::string& schema, const std::string& table,
+                                   GarbageCollectionResult& result) {
+    // The same question drop-table answers for a dropped table, asked of a live
+    // one: which retained snapshots of OTHER cached tables can still see files
+    // this table no longer needs. A superseded data/delete file (end_snapshot
+    // set) stays in the metadata, and on disk, while ANY snapshot in
+    // [begin_snapshot, end_snapshot) survives.
+    struct Pinned {
+        std::int64_t begin;
+        std::int64_t end;
+        std::int64_t bytes;
+    };
+    const auto read_ids = [&](const std::string& predicate) {
+        std::vector<std::int64_t> ids;
+        auto answer = db_adapter_->executeDuckLakeQueryWithResult(
+            "SELECT snapshot_id FROM ducklake_snapshots('" + escapeSqlLiteral(catalog) + "') WHERE " + predicate);
+        auto rows = crow::json::load(answer.data.dump());
+        if (rows && rows.t() == crow::json::type::List) {
+            for (std::size_t i = 0; i < rows.size(); ++i) {
+                if (rows[i].has("snapshot_id") && rows[i]["snapshot_id"].t() == crow::json::type::Number) {
+                    ids.push_back(static_cast<std::int64_t>(rows[i]["snapshot_id"].d()));
+                }
+            }
+        }
+        return ids;
+    };
+    const auto any_in = [](const std::vector<std::int64_t>& ids, const Pinned& file) {
+        return std::any_of(ids.begin(), ids.end(),
+                           [&](std::int64_t id) { return id >= file.begin && id < file.end; });
+    };
+    try {
+        const auto own_keys = tableChangeKeys(catalog, schema, table, /*strict=*/true);
+        if (own_keys.empty()) {
+            return;   // not identifiable: report nothing rather than guess
+        }
+        const std::string meta = metadataCatalog(catalog);
+        const std::string incarnations =
+            "SELECT t.table_id FROM " + meta + ".ducklake_table t JOIN " + meta +
+            ".ducklake_schema s ON s.schema_id = t.schema_id WHERE t.table_name = '" + escapeSqlLiteral(table) +
+            "' AND s.schema_name = '" + escapeSqlLiteral(schema) + "'";
+        auto answer = db_adapter_->executeDuckLakeQueryWithResult(
+            "SELECT CAST(begin_snapshot AS BIGINT) AS b, CAST(end_snapshot AS BIGINT) AS e, "
+            "CAST(file_size_bytes AS BIGINT) AS bytes FROM " + meta + ".ducklake_data_file "
+            "WHERE end_snapshot IS NOT NULL AND table_id IN (" + incarnations + ") "
+            "UNION ALL SELECT CAST(begin_snapshot AS BIGINT), CAST(end_snapshot AS BIGINT), "
+            "CAST(file_size_bytes AS BIGINT) FROM " + meta + ".ducklake_delete_file "
+            "WHERE end_snapshot IS NOT NULL AND table_id IN (" + incarnations + ")");
+        auto files = crow::json::load(answer.data.dump());
+        std::vector<Pinned> superseded;
+        if (files && files.t() == crow::json::type::List) {
+            for (std::size_t i = 0; i < files.size(); ++i) {
+                if (files[i].has("b") && files[i].has("e") && files[i].has("bytes") &&
+                    files[i]["b"].t() == crow::json::type::Number && files[i]["e"].t() == crow::json::type::Number &&
+                    files[i]["bytes"].t() == crow::json::type::Number) {
+                    superseded.push_back({static_cast<std::int64_t>(files[i]["b"].d()),
+                                          static_cast<std::int64_t>(files[i]["e"].d()),
+                                          static_cast<std::int64_t>(files[i]["bytes"].d())});
+                }
+            }
+        }
+        if (superseded.empty()) {
+            return;
+        }
+        // Files this table's own retained snapshots still see are its retention's
+        // doing, not another table's.
+        const auto own_ids = read_ids(tableSnapshotPredicate(own_keys));
+        std::vector<Pinned> candidates;
+        for (const auto& file : superseded) {
+            if (!any_in(own_ids, file)) {
+                candidates.push_back(file);
+            }
+        }
+        if (candidates.empty()) {
+            return;
+        }
+        std::set<std::pair<std::string, std::string>> seen{{schema, table}};
+        std::set<std::size_t> pinned_files;
+        for (const auto& endpoint : *config_manager->getEndpoints()) {
+            if (!endpoint.cache.enabled || endpoint.cache.table.empty()) {
+                continue;
+            }
+            const std::string ep_schema = endpoint.cache.schema.empty() ? "main" : endpoint.cache.schema;
+            if (!seen.insert({ep_schema, endpoint.cache.table}).second) {
+                continue;
+            }
+            const auto keys = tableChangeKeys(catalog, ep_schema, endpoint.cache.table, /*strict=*/true);
+            if (keys.empty()) {
+                continue;
+            }
+            std::int64_t pinning_snapshots = 0;
+            for (const auto id : read_ids(tableSnapshotPredicate(keys))) {
+                bool pins = false;
+                for (std::size_t f = 0; f < candidates.size(); ++f) {
+                    if (id >= candidates[f].begin && id < candidates[f].end) {
+                        pinned_files.insert(f);
+                        pins = true;
+                    }
+                }
+                pinning_snapshots += pins ? 1 : 0;
+            }
+            if (pinning_snapshots > 0) {
+                result.pinned_by.push_back(describePinHolder(config_manager, endpoint, ep_schema, pinning_snapshots));
+            }
+        }
+        for (const auto index : pinned_files) {
+            result.pinned_bytes += candidates[index].bytes;
+        }
+    } catch (const std::exception& ex) {
+        CROW_LOG_DEBUG << "Could not scan the files of " << schema << "." << table
+                       << " that other tables' snapshots pin: " << ex.what();
+        result.pinned_by.clear();
+        result.pinned_bytes = 0;
+    }
 }
 
 CacheManager::GarbageCollectionResult CacheManager::dropObsoleteCacheTable(
@@ -1672,18 +1828,7 @@ CacheManager::GarbageCollectionResult CacheManager::dropObsoleteCacheTable(
                 if (still == 0) {
                     continue;
                 }
-                std::ostringstream holder;
-                holder << (endpoint.urlPath.empty() ? endpoint.getName() : endpoint.urlPath) << " (" << ep_schema
-                       << "." << endpoint.cache.table << ": " << still << " snapshot(s) kept by ";
-                if (retention.keep_last_snapshots) {
-                    holder << "retention keep-last-snapshots " << *retention.keep_last_snapshots;
-                } else if (retention.max_snapshot_age) {
-                    holder << "retention max-snapshot-age " << *retention.max_snapshot_age;
-                } else {
-                    holder << "no retention policy; set cache.retention or ducklake.retention";
-                }
-                holder << ")";
-                result.pinned_by.push_back(holder.str());
+                result.pinned_by.push_back(describePinHolder(config_manager, endpoint, ep_schema, still));
             }
             const auto bytes_after = referencedFileBytes(catalog);
             if (bytes_before && bytes_after && *bytes_before >= *bytes_after) {
@@ -1724,11 +1869,11 @@ void CacheManager::initializeAuditTables(std::shared_ptr<ConfigManager> config_m
     const std::string auditSchema = "audit";
     
     // Create audit schema if it doesn't exist
-    std::string createSchemaSQL = "CREATE SCHEMA IF NOT EXISTS " + catalog + "." + auditSchema;
+    std::string createSchemaSQL = "CREATE SCHEMA IF NOT EXISTS " + quoteIdentifier(catalog) + "." + quoteIdentifier(auditSchema);
     
     // Create sync_events audit table (DuckLake doesn't support PRIMARY KEY constraints)
     std::string createAuditTableSQL = R"(
-        CREATE TABLE IF NOT EXISTS )" + catalog + "." + auditSchema + R"(.sync_events (
+        CREATE TABLE IF NOT EXISTS )" + quoteIdentifier(catalog) + "." + quoteIdentifier(auditSchema) + R"(.sync_events (
             event_id VARCHAR,
             endpoint_path VARCHAR NOT NULL,
             cache_table VARCHAR NOT NULL,
@@ -1745,7 +1890,7 @@ void CacheManager::initializeAuditTables(std::shared_ptr<ConfigManager> config_m
         )
     )";
     // Catalogs created before the column existed.
-    const std::string addFullColumnSQL = "ALTER TABLE " + catalog + "." + auditSchema +
+    const std::string addFullColumnSQL = "ALTER TABLE " + quoteIdentifier(catalog) + "." + quoteIdentifier(auditSchema) +
                                          ".sync_events ADD COLUMN IF NOT EXISTS \"full\" BOOLEAN";
 
     try {
@@ -1772,7 +1917,7 @@ void CacheManager::ensureCacheSchemaExists(const std::string& catalog, const std
         return;
     }
     
-    std::string createSchemaSQL = "CREATE SCHEMA IF NOT EXISTS " + catalog + "." + schema;
+    std::string createSchemaSQL = "CREATE SCHEMA IF NOT EXISTS " + quoteIdentifier(catalog) + "." + quoteIdentifier(schema);
     
     try {
         std::map<std::string, std::string> params;
@@ -1826,7 +1971,7 @@ std::string CacheManager::buildSyncEventInsert(const std::string& catalog, const
     const std::string schema = cacheConfig.table.empty() ? cacheConfig.schema
                              : cacheConfig.schema.empty() ? std::string("main")
                                                           : cacheConfig.schema;
-    return "INSERT INTO " + catalog + ".audit.sync_events "
+    return "INSERT INTO " + quoteIdentifier(catalog) + ".audit.sync_events "
            "(event_id, endpoint_path, cache_table, cache_schema, sync_type, status, message, "
            "snapshot_id, rows_affected, sync_started_at, sync_completed_at, duration_ms, \"full\") VALUES (" +
            quote(event_id) + ", " +

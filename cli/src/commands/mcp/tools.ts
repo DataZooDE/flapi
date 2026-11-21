@@ -18,7 +18,7 @@ export function registerMcpToolsCommand(parent: Command, ctx: CliContext) {
         spinner.succeed(chalk.green('✓ MCP tools retrieved'));
         const payload = response.data;
         const tools = Object.entries(payload)
-          .map(([path, config]) => ({ path, config }))
+          .map(([path, config]) => ({ path, config: config as Record<string, unknown> }))
           .filter((entry) => entry.config?.['mcp-tool'] ?? entry.config?.mcpTool);
 
         if (ctx.config.output === 'json') {

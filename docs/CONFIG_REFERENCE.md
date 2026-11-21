@@ -355,6 +355,11 @@ query, so it keeps the lock. Do not join the source into a cached endpoint's ser
 serialised connection: that read would run unserialised.
 
 An explicit value always wins over the detection.
+
+A **cache populate** that reads the source takes the same lock for the duration of the populate script, so a
+write to a SQLite source issued during a slow populate waits for it (and the populate is never run against a
+concurrent writer). Lock order is always the DuckLake catalog write lock first, the source lock second; a
+write releases its source lock before any `refresh-on-write` / `invalidate-on-write` refresh starts.
 - Use environment variable substitution for sensitive values
 
 > **Implementation:** `src/config_manager.cpp`, `src/database_manager.cpp` | **Tests:** `test/cpp/config_manager_test.cpp`
@@ -371,6 +376,7 @@ Configures the embedded DuckDB database engine.
 | `duckdb.max_memory` | string | auto | Memory limit (e.g., `4GB`, `512MB`) |
 | `duckdb.default_order` | string | - | Default sort order: `ASC` or `DESC`. With `ducklake.enabled` it is set per flAPI connection, not globally, because DuckLake's own catalog queries need the ascending default |
 | `duckdb.default-extensions` | list | `[httpfs, ducklake, fts, json, postgres, sqlite, parquet]` | Extensions installed and loaded at startup. `[]` loads none. A scalar is refused. |
+| `duckdb.TimeZone` | string | `UTC` | The session time zone (IANA name). Defaults to `UTC` whatever the host `TZ` is; the key is matched case-insensitively (`timezone:` works). Applied with `SET GLOBAL` once the engine is open (the setting belongs to ICU, which is not loaded when the config is read) and logged at startup as `DuckDB TimeZone: UTC`. If that fails, each connection retries with its own `SET` and a warning says so |
 | `duckdb.<setting>` | any | - | Any DuckDB configuration setting |
 
 **Example:**
@@ -1081,9 +1087,7 @@ protected literal over an open one alike. Auth is compared on `enabled`, `type`
 (`jwt` = `bearer`), `roles` **and the identity source**: `users` (username, password,
 per-user roles), `jwt-secret` (compared as a digest), `jwt-issuer`, the `oidc` issuer,
 client, audiences, claims, `scopes`, `verify-expiration` and `clock-skew-seconds`, and
-the `from-aws-secretmanager` secret and region. Any difference counts, including a
-re-hashed password with a new salt or a provider preset against its spelled-out
-`issuer-url` (copy the block byte for byte, or use a YAML include); secret values never
+the `from-aws-secretmanager` secret and region. Secret values never
 appear in the message:
 
 ```
@@ -1111,6 +1115,40 @@ WHERE id = {{{ params.id }}}
 Set `allow-shadowing: true` on the **more specific** endpoint only when the split is
 intended; the overlap is then logged as a WARNING (which the plugin hook passes on to
 Claude). Overlaps with the same auth log an INFO line.
+
+**What counts as "the same auth"** is who gets in, not how the block is spelled:
+
+- `users`: the same username and per-user roles, and a password that admits the same
+  secret. Equal strings do. A **plaintext** password and the MD5 or PBKDF2 hash of it are
+  the same user (the migration case), because flapi can verify the plaintext against the
+  hash. Two PBKDF2 hashes of one password with **different salts cannot be proven equal**
+  (the hash is one-way) and count as different: give both endpoints the same hash string
+  (a YAML include or anchor), or keep one of them in plaintext while migrating. bcrypt
+  hashes are not verifiable by flapi and only match when byte-identical.
+- `oidc`: compared as the provider requests see it, with the `provider-type` preset
+  applied. `provider-type: keycloak` plus `domain`/`realm` is the same provider as the
+  spelled-out `issuer-url` with the claim defaults the preset fills in
+  (`username-claim: preferred_username`, `role-claim-path: realm_access.roles`, ...).
+  Identity keys: the resolved `issuer-url`, `client-id`, `client-secret` (digest),
+  `allowed-audiences`, `username-claim`, `roles-claim`, `groups-claim`, `role-claim-path`,
+  `verify-expiration`, `clock-skew-seconds` and `scopes`. **Not identity:** `email-claim`
+  (a display claim), `jwks-cache-hours` (a key-cache lifetime), `enable-client-credentials`
+  and `enable-refresh-tokens` (token-endpoint flows, not request authentication), and
+  `provider-type`/`tenant-id`/`realm`/`domain` on their own (they only feed the preset).
+- Anything else in the list above (`type`, `roles`, `jwt-secret`, `jwt-issuer`,
+  `from-aws-secretmanager`) must be equal.
+
+**Three levels.** An overlap is judged against the endpoint that actually answers the
+shared URLs. With a protected `/a/:x/:y`, an open `/a/b/:y` (`allow-shadowing: true`) and
+an open `/a/b/c`, the literal `/a/b/c` adds no exposure: `/a/b/:y` already answers it open.
+It loads without its own flag when another endpoint of the same method covers it, beats
+the less specific route, loses to it, and has exactly its auth. The covering route has
+to be loaded before the literal (files load in path order; create it first at runtime).
+
+**`allow-shadowing` over MCP.** The `flapi_create_endpoint` MCP tool never opts into
+shadowing: it has no such argument (`allow-shadowing` in any spelling is ignored), so an
+AI client cannot create an open route over a protected one. Set the flag in the YAML file,
+or `POST /api/v1/_config/endpoints`, if the split is intended.
 
 ### 3.2 MCP Tools
 
@@ -1318,6 +1356,14 @@ The `field-in` property specifies where the parameter is extracted from:
 | `path` | URL path parameter | `GET /customers/:id` → `GET /customers/123` |
 | `body` | Request body (JSON) | `POST /customers` with JSON body |
 | `header` | HTTP header | `X-Customer-ID: 123` |
+
+Each declared field is read **only** from its `field-in` source, so a query string cannot satisfy a
+`body` field (a required one is `400 Required field is missing`) and a body key cannot replace a `query`
+field. A route parameter (`/customers/:id`) is path-only: `?id=2` or a body `{"id": 99}` never replaces
+it, whether or not the endpoint declares the field. Names no field declares are still accepted from the
+query string or body (validation can reject unknown ones). Path values are percent-decoded once before
+validation (`/customers/%37` is `7`, `/names/John%20Doe` is `John Doe`, `%2F` becomes `/` inside the same
+parameter, `+` stays a plus); a malformed escape, `%00` or invalid UTF-8 is `400`.
 
 A `header` field is read from the request's headers, matched case-insensitively (`field-name: X-Tenant`
 accepts `x-tenant: acme`), on GET and on write methods alike. Only the header counts: a query-string or
@@ -1550,8 +1596,19 @@ WHERE name = {{ params.name }}
 {{#params.city}} AND city = '{{{ params.city }}}' {{/params.city}}
 ```
 
-`{{{ params.x }}}` always interpolates the value as text; reserve it for identifiers and fragments you
-validate with an `enum` or a strict `regex`, and for optional filters inside sections. Set
+`{{{ params.x }}}` is bound the same way (#192) when it is a plain value site of a typed field outside
+every section: `n = {{{ params.x }}}` and `n = '{{{ params.x }}}'` both become `n = ?` (a quoted
+site binds the text, and an absent value binds `''` as it used to render), and
+`n LIKE '%{{{ params.x }}}%'` becomes `n LIKE ('%' || ? || '%')`. It stays raw text
+(validated by the field's validator and the screen above) inside a section, inside a SQL comment, inside
+`AT (VERSION|TIMESTAMP => ...)` (DuckLake resolves it before parameters are bound), when the field is an
+`enum` and the tag is unquoted (a whitelisted identifier such as `ORDER BY {{{ params.sort }}}`), when it
+follows a keyword that expects a name or makes a typed literal (`FROM`, `JOIN`, `INTO`, `TABLE`, `BY`,
+`DATE '...'`, `INTERVAL '...'`, `ATTACH '...'`, `E'...'`), when it is glued to an identifier
+(`t_{{{ params.x }}}`), or when a quoted literal mixes it with a non-triple-brace tag. A tag in a
+quoted literal with surrounding text is concatenated, so `'{{{a}}}-{{{b}}}'` becomes `(? || '-' || ?)`.
+Reserve raw `{{{ }}}` text for identifiers and fragments you validate with an `enum` or a strict
+`regex`, and for optional filters inside sections. Set
 `preventSqlInjection: false` on a field only when every reference to it is a bound `{{ }}` and it
 legitimately contains such characters (e.g. a free-text name with an apostrophe and parentheses).
 
@@ -2078,7 +2135,7 @@ literals: inside a section the value is rendered as text, and `'{{ params.x }}'`
 `'?'` (the request then fails with `500`; the server log says `Failed to bind parameter`). See
 [§5.9](#59-the-sql-injection-screen-is-a-safety-net-not-the-defence).
 
-**Triple Braces `{{{ }}}`** - Renders the raw value with no HTML entity escaping; **always** flows through Mustache, never through the prepared path. Use inside single-quoted SQL string literals, inside `LIKE` patterns, or anywhere the value participates in the SQL text itself:
+**Triple Braces `{{{ }}}`** - Renders the raw value with no HTML entity escaping. For a typed field at a plain value site outside every section (`= {{{ params.x }}}`, `= '{{{ params.x }}}'`, `LIKE '%{{{ params.x }}}%'`) the rewriter binds the value just like `{{ }}` does (see [§5.9](#59-the-sql-injection-screen-is-a-safety-net-not-the-defence)); everywhere else (inside sections, identifiers, typed literals such as `DATE '...'`, `AT (VERSION|TIMESTAMP => ...)`) it is raw text:
 
 ```sql
 SELECT * FROM table
@@ -2089,7 +2146,7 @@ WHERE name LIKE '%{{{ params.name }}}%'
 >
 > 1. `RequestValidator` rejects obviously-bad input before SQL is rendered (typed fields, regex/range/enum/format checks). Strict integer/date/time parsing rejects trailing garbage so `1; DROP TABLE` cannot slip through as `1` and `2024-03-15' OR 1=1` cannot slip through as `2024-03-15`.
 > 2. For double-brace references on typed fields, the **DuckDB prepared-statement bind** is the hard boundary — the value travels as a primitive, not as text, and cannot smuggle SQL. This applies uniformly to **GET, POST, PUT, PATCH, and Arrow-streaming endpoints** (multi-statement write templates have their binding plan sliced across statements based on `?` count).
-> 3. For triple-brace references and for non-typed fields, the legacy keyword regex still rejects obvious injection patterns. (It is demoted to a debug-level log only for fields the prepared-statement path already protects — Integer / Double / Boolean / Date / Time — because the regex is a known false-positive source for clean numeric and temporal values.)
+> 3. For triple-brace references that stay raw text (inside sections, identifiers, typed literals) and for non-typed fields, the legacy keyword regex still rejects obvious injection patterns. (It is demoted to a debug-level log only for fields the prepared-statement path already protects — Integer / Double / Boolean / Date / Time — because the regex is a known false-positive source for clean numeric and temporal values.)
 >
 > The end-to-end injection corpus at `test/integration/test_sql_injection_corpus.py` (99 GET-path payloads spanning all 9 validator types + pagination wraps) and `test/integration/test_sql_injection_write_corpus.py` (19 POST-path payloads including multi-statement RETURNING) exercise these layers. Bind-conversion failures on typed params return HTTP 400 (client error) rather than 500.
 
@@ -2147,11 +2204,12 @@ When the field has a typed validator (`int`, `double`, `boolean`, `date`, `time`
 WHERE id = {{ params.id }}              -- field has `validators: [{type: int}]`
 WHERE email = {{ params.email }}        -- field has `validators: [{type: email}]`
 
--- For LIKE patterns or substring matches, triple-brace is required
+-- LIKE patterns and quoted sites are bound too (rewritten to ('%' || ? || '%') / ?)
 WHERE name LIKE '%{{{ params.name }}}%'
+WHERE name = '{{{ params.name }}}'
 ```
 
-Use triple braces (`{{{ params.X }}}`) when the value participates in the SQL text — `LIKE`, identifier substitution, or composite expressions that the prepared-statement rewriter cannot decompose.
+Use triple braces (`{{{ params.X }}}`) inside sections and when the value is part of the SQL text — an identifier (validate it with `enum`), a typed literal (`DATE '{{{ params.d }}}'`), or an `AT (VERSION|TIMESTAMP => ...)` argument; those sites are rendered raw. A bare double-brace `{{ params.x }}` inside `AT (...)` stays bound: that works for `int` and `date` fields, but DuckLake cannot take a bound string there, so write `AT (TIMESTAMP => CAST('{{{ params.ts }}}' AS TIMESTAMP))` with a strict `pattern:` validator on `ts`.
 
 **3. Provide Default Values:**
 

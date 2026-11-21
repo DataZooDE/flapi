@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { AxiosResponseError } from '@flapi/shared';
 import { applyConfigJsonStyle, renderJson } from '../../src/lib/render';
-import { cacheAuditRows, describeRefreshResult, refreshQuery } from '../../src/lib/cacheRender';
+import { cacheAuditRows, describeRefreshResult, refreshQuery, skippedRefresh } from '../../src/lib/cacheRender';
 import { handleError, messageFromBody } from '../../src/lib/errors';
 import { loadConfig } from '../../src/lib/config';
 import { PROJECT_TEMPLATES } from '../../src/commands/project/templates';
@@ -110,6 +110,17 @@ describe('cache refresh and audit', () => {
     expect(describeRefreshResult({
       status: 'refreshed', endpoint: '/a', mode: 'full', full: true, duration_ms: 3, rows_affected: 10, snapshot_id: '2',
     })).toEqual(['Mode: full', 'Status: refreshed', 'Rows: 10', 'Duration: 3 ms', 'Snapshot: 2', 'Full rebuild: yes']);
+  });
+
+  it('recognises a refresh the server skipped (409 already_running + Retry-After)', () => {
+    const skipped = skippedRefresh({
+      response: { status: 409, data: { status: 'already_running', endpoint: '/a' }, headers: { 'retry-after': '3' } },
+    });
+    expect(skipped?.retryAfter).toBe(3);
+    expect(skipped?.body.endpoint).toBe('/a');
+    expect(skippedRefresh({ response: { status: 409, data: { error: 'read_only_cache' } } })).toBeUndefined();
+    expect(skippedRefresh({ response: { status: 400, data: { status: 'already_running' } } })).toBeUndefined();
+    expect(skippedRefresh(new Error('boom'))).toBeUndefined();
   });
 
   it('accepts warn as an alias of warning for the runtime log level', () => {

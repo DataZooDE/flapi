@@ -386,6 +386,45 @@ class TestReadOnlyReplica:
         assert requests.get(f"{r.base}/full", timeout=10).status_code == 200
 
 
+class TestReplicaNeverBuilt:
+    UNBUILT_ENDPOINT = FULL_ENDPOINT.replace("/full", "/unbuilt").replace("full_cache", "unbuilt_cache")
+
+    def test_never_built_table_is_cache_not_built_from_the_first_request(self, root, servers):
+        # #217: a replica answered 503 cache_warming for ~2 s after the port
+        # opened, THEN cache_not_built. It must say cache_not_built at once.
+        write_tree(root, base_config(), {"full.yaml": FULL_ENDPOINT, "full_cache.sql": FULL_POPULATE,
+                                         "unbuilt.yaml": self.UNBUILT_ENDPOINT, "serve.sql": SERVE})
+        write_source(root, [(1, "a", 1)])
+        w = servers(root)
+        w.refresh("full")
+        w.stop()
+
+        with open(os.path.join(root, "flapi.yaml"), "w") as f:
+            f.write(base_config("  read-only: true"))
+        for _ in range(3):
+            r = Server(root)
+            try:
+                answers = []
+                deadline = time.time() + 20
+                session = requests.Session()
+                while time.time() < deadline and r.proc.poll() is None:
+                    try:
+                        resp = session.get(f"{r.base}/unbuilt", timeout=2)
+                    except requests.RequestException:
+                        continue
+                    answers.append((resp.status_code, resp.json().get("error")))
+                    if len(answers) >= 60:
+                        break
+                assert len(answers) >= 60, r.output()[-3000:]
+                assert set(answers) == {(503, "cache_not_built")}, sorted(set(answers))
+                health = session.get(f"{r.base}/health", timeout=5)
+                # Unbuilt is degraded (200 + `unbuilt` list), never "starting".
+                assert health.status_code == 200 and health.json()["status"] == "degraded", health.text
+                assert health.json()["unbuilt"][0]["table"] == "unbuilt_cache", health.text
+            finally:
+                r.stop()
+
+
 class TestCatalogSafety:
     def test_missing_catalog_directories_are_created(self, root, servers):
         write_tree(root, base_config(metadata="./state/deep/cache.ducklake"),

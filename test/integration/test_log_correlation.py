@@ -184,3 +184,51 @@ class TestLogCorrelation:
             )
         finally:
             _stop(quiet)
+
+
+def _fetch_with_id(base_url: str) -> str:
+    r = requests.get(f"{base_url}/open", timeout=10)
+    assert r.status_code == 200
+    time.sleep(0.4)
+    return r.headers["X-Request-Id"]
+
+
+def _json_request_lines(path: str):
+    out = []
+    for ln in _log_lines(path):
+        if not ln.startswith("{"):
+            continue
+        rec = json.loads(ln)
+        msg = rec.get("message", "")
+        if msg.startswith("Request:") and "/open" in msg:
+            out.append(rec)
+    return out
+
+
+@pytest.mark.standalone_server
+class TestRequestLineCarriesRequestId:
+    """#215: Crow logs `Request:` before any middleware runs, so the line had no
+    request_id although the `Response:` line did."""
+
+    def test_json_request_line_has_request_id(self, json_log_server):
+        request_id = _fetch_with_id(json_log_server["base_url"])
+        lines = _json_request_lines(json_log_server["log_path"])
+        assert lines, "no Request: line logged for /open"
+        assert [r for r in lines if r.get("request_id") == request_id], (
+            f"no Request: line carried request_id={request_id}: {lines}")
+
+    def test_text_request_line_has_request_id(self):
+        server = _start(log_format="text", log_level="debug")
+        try:
+            request_id = _fetch_with_id(server["base_url"])
+            lines = [ln for ln in _log_lines(server["log_path"])
+                     if "Request:" in ln and "/open" in ln and "Response:" not in ln]
+            assert lines, "no Request: line logged for /open"
+            assert any(f"request_id={request_id}" in ln for ln in lines), lines
+        finally:
+            _stop(server)
+
+    def test_exactly_one_request_line_per_request(self, json_log_server):
+        _fetch_with_id(json_log_server["base_url"])
+        lines = _json_request_lines(json_log_server["log_path"])
+        assert len(lines) == 1, f"expected one Request: line, saw {len(lines)}: {lines}"

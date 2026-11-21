@@ -254,6 +254,13 @@ admission:
   and the identity source - users (name, password digest, per-user roles), a SHA-256
   digest of `jwt-secret`, `jwt-issuer`, OIDC issuer/client/audiences/claims, and the
   `from-aws-secretmanager` source; messages name the differing field, never a value.
+  Identity, not spelling: a plaintext password equals its hash (verified), two salted
+  PBKDF2 hashes of one password cannot be proven equal and are refused; OIDC is compared
+  with the provider preset applied (`email-claim`, `jwks-cache-hours`,
+  `enable-client-credentials`, `enable-refresh-tokens` are not identity). A literal is also
+  accepted without its own `allow-shadowing` when a covering route of the same method,
+  already present, beats the less specific route and has the literal's auth
+  (`answeredByEquivalentRoute`); `flapi_create_endpoint` never sets the flag.
   A stricter literal is refused too: it protects one path string, while other spellings
   of the same value (`/customers/07`, `/customers/+7`) still reach the general route;
 - `url-path` segments outside `[A-Za-z0-9._~-]+` / `:name`, `.` / `..` segments, a
@@ -365,7 +372,12 @@ When enabled, rejects inputs containing:
 ### Triple Braces for Strings
 
 Triple braces `{{{ }}}` insert the value **unescaped**. They do not double
-quotes, so they are only as safe as the field's validator:
+quotes, so wherever a site stays raw text it is only as safe as the field's
+validator. Plain value sites of a typed field outside a section are **bound**
+(`'{{{ x }}}'`, `{{{ x }}}`, `'%{{{ x }}}%'` become `?`,
+`?` and `('%' || ? || '%')` in `src/prepared_template_rewriter.cpp`); inside
+sections, for enum identifiers, typed literals (`DATE '...'`) and
+`AT (VERSION|TIMESTAMP => ...)` they stay raw:
 
 ```sql
 -- Template

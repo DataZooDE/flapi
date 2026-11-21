@@ -161,8 +161,23 @@ Parameters are extracted based on `field-in` configuration:
 | `body` | Request body (JSON) | `{"id": 123}` |
 | `header` | HTTP headers (case-insensitive name match; GET and writes) | `X-Custom-Id: 123` |
 
-A `header` field is satisfied **only** by a request header; a query or body
-parameter of the same name is not used for it.
+Every declared field is read **only** from its declared source
+(`mayComeFrom` in `src/request_handler.cpp`): a `header` field only from a
+header, a `body` field only from the JSON body (a query parameter of the same
+name does not satisfy it, so a required one is `400`), a `query` field only from
+the query string, a `path` field only from the route. A route parameter is
+path-only even when no field declares it: `?id=2` or a body `{"id": 99}` cannot
+replace the `id` in `/byid/1`. Names that no field declares keep the old
+any-source behaviour so validation can report them as unknown parameters.
+
+Path values are percent-decoded **after** the route matched and before
+validation (`RouteTranslator::percentDecodePathValue`, called from
+`APIServer::handleDynamicRequest`): `/customers/%37` is id `7`,
+`/names/John%20Doe` is `John Doe`, and `%2F` decodes to `/` *inside* the one
+parameter (the route matches on the raw path, so it never adds a segment).
+`+` stays a plus. Decoding happens once (`%252F` is the text `%2F`). A malformed
+escape (`%zz`, a truncated `%4`), an encoded NUL (`%00`) or a result that is not
+valid UTF-8 is `400`.
 
 ```cpp
 std::map<std::string, std::string> params;
@@ -259,7 +274,9 @@ Results are serialized to JSON and returned:
 }
 ```
 
-Every response also carries `X-Request-Id`, and `X-Trace-Id` when a span was
+Every response also carries `X-Request-Id` (set in `before_handle` and re-asserted in
+`after_handle`, because the MCP handlers return a fresh `crow::response` that replaces the one
+`before_handle` stamped), and `X-Trace-Id` when a span was
 produced. `X-Trace-Id` is the **caller's** trace id when they supplied a valid
 `traceparent`, so both sides join on one value.
 

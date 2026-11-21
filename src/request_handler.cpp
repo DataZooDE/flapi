@@ -506,21 +506,32 @@ std::string RequestHandler::createNextUrl(const crow::request& req, const QueryR
 // The `__auth_*` rule lives in auth_params.hpp - see the comment there for
 // what a caller could do before it existed.
 
-std::map<std::string, std::string> RequestHandler::combineParameters(const crow::request& req, const std::map<std::string, std::string>& defaultParams, const std::map<std::string, std::string>& pathParams, const EndpointConfig& endpoint) {
-    std::map<std::string, std::string> params = defaultParams;
+namespace {
 
-    for (const auto& key : pathParams) {
-        if (isReservedAuthKey(key.first)) {
+// `field-in` says where a value may come from. A declared field is read ONLY
+// from that source (#192): a query parameter must not be able to replace a
+// path value, nor satisfy a body field, nor the body a query field. Names that
+// no field declares keep the old any-source behaviour - validation is what
+// reports an unknown parameter. A field whose `field-in` is none of the four
+// known sources (empty, `cookie`) is not restricted either.
+bool mayComeFrom(const EndpointConfig& endpoint, const std::string& name, const char* source) {
+    for (const auto& field : endpoint.request_fields) {
+        if (field.fieldName != name) {
             continue;
         }
-        params[key.first] = key.second;
-    }
-
-    for (const auto& field : endpoint.request_fields) {
-        if (!field.defaultValue.empty() && params.find(field.fieldName) == params.end()) {
-            params[field.fieldName] = field.defaultValue;
+        const std::string& declared = field.fieldIn;
+        if (declared == "path" || declared == "query" || declared == "body" || declared == "header") {
+            return declared == source;
         }
+        return true;
     }
+    return true;
+}
+
+} // namespace
+
+std::map<std::string, std::string> RequestHandler::combineParameters(const crow::request& req, const std::map<std::string, std::string>& defaultParams, const std::map<std::string, std::string>& pathParams, const EndpointConfig& endpoint) {
+    std::map<std::string, std::string> params = defaultParams;
 
     // A repeated query parameter (?x=1&x=2) used to take the first value
     // silently - a client sending two filters got one. Ambiguous input is a 400.
@@ -534,7 +545,24 @@ std::map<std::string, std::string> RequestHandler::combineParameters(const crow:
         if (isReservedAuthKey(key)) {
             continue;   // server-injected identity is not client input
         }
+        if (pathParams.find(key) != pathParams.end() || !mayComeFrom(endpoint, key, "query")) {
+            continue;   // a route parameter is path-only; a body/header/path field is not a query value
+        }
         params[key] = req.url_params.get(key);
+    }
+
+    // Path values go in after the query string and win over it.
+    for (const auto& key : pathParams) {
+        if (isReservedAuthKey(key.first)) {
+            continue;
+        }
+        params[key.first] = key.second;
+    }
+
+    for (const auto& field : endpoint.request_fields) {
+        if (!field.defaultValue.empty() && params.find(field.fieldName) == params.end()) {
+            params[field.fieldName] = field.defaultValue;
+        }
     }
     applyHeaderFields(req, endpoint, params);
     return params;
@@ -682,6 +710,9 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
                         if (isReservedAuthKey(fieldName)) {
                             continue;   // identity comes from the middleware, not the body
                         }
+                        if (pathParams.find(fieldName) != pathParams.end() || !mayComeFrom(endpoint, fieldName, "body")) {
+                            continue;   // a path value is not overridable; a query/header field is not a body value
+                        }
                         std::string value = jsonValueToString(fieldName);
                         params[fieldName] = value;
                     }
@@ -705,6 +736,9 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
     // Only adds parameters not already set by body or endpoint defaults
     for (const auto& key : req.url_params.keys()) {
         if (isReservedAuthKey(key)) {
+            continue;
+        }
+        if (pathParams.find(key) != pathParams.end() || !mayComeFrom(endpoint, key, "query")) {
             continue;
         }
         if (params.find(key) == params.end()) {

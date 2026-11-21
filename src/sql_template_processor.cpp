@@ -2,6 +2,7 @@
 #include "flapi_tracing.hpp"
 #include "trace_semconv.hpp"
 #include "vfs_adapter.hpp"
+#include "template_secrets.hpp"
 #include "mustache_syntax_check.hpp"
 #include <stdexcept>
 #include <filesystem>
@@ -106,7 +107,18 @@ std::string SQLTemplateProcessor::loadAndProcessTemplate(const EndpointConfig& e
 std::string SQLTemplateProcessor::processTemplate(const std::string& templateContent, const crow::mustache::context& ctx) {
     auto compiledTemplate = compileTemplate(templateContent);
     auto renderedTemplate = compiledTemplate.render(ctx).dump();
-    CROW_LOG_DEBUG << "Processed query: \n" << renderedTemplate;
+    if (crow::logger::get_current_log_level() <= crow::LogLevel::Debug) {
+        // The rendered SQL carries whatever the template interpolated, a
+        // connection password included. Every connection's credential-valued
+        // properties are scrubbed, whichever endpoint this renders for.
+        TemplateSecrets secrets;
+        if (config_manager) {
+            for (const auto& [name, connection] : config_manager->getConnections()) {
+                secrets.addAll(connection.properties, TemplateSecrets::Source::Connection);
+            }
+        }
+        CROW_LOG_DEBUG << "Processed query: \n" << secrets.scrub(renderedTemplate);
+    }
     return renderedTemplate;
 }
 
@@ -266,7 +278,10 @@ crow::mustache::context SQLTemplateProcessor::createTemplateContext(const Endpoi
         ctx["params"][key] = value;
     }
 
-    CROW_LOG_DEBUG << "Template context: " << ctx.dump();
+    // Deliberately NOT dumped: the context carries `conn.*`, i.e. connection
+    // passwords, tokens and DSNs, and a debug-level log is routinely shipped to
+    // a log aggregator. Only the shape is logged.
+    CROW_LOG_DEBUG << "Template context built: " << params.size() << " request parameter(s)";
 
     return ctx;
 }

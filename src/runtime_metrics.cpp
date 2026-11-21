@@ -12,6 +12,8 @@ namespace {
 // The series kind for MCP tool calls. REST series use the HTTP method, which
 // is never this literal, so the two protocols cannot collide on one key.
 constexpr std::string_view kMcpToolKind = "TOOL";
+// Async MCP tasks, end to end (submit to terminal state, queue wait included).
+constexpr std::string_view kMcpTaskKind = "TASK";
 
 int64_t nowUnixMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -108,6 +110,14 @@ void RuntimeMetrics::recordMcpTool(std::string_view tool_name, bool success, std
     }
 }
 
+void RuntimeMetrics::recordMcpTask(std::string_view tool_name, bool success, std::chrono::microseconds duration) {
+    Series& s = seriesFor(kMcpTaskKind, tool_name);
+    observe(s, duration);
+    if (!success) {
+        s.failures.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
 void RuntimeMetrics::recordRejection(int status_code) {
     if (status_code == 429) {
         _rate_limited.fetch_add(1, std::memory_order_relaxed);
@@ -155,9 +165,10 @@ std::vector<RuntimeMetrics::SeriesSnapshot> RuntimeMetrics::snapshot() const {
     out.reserve(_series.size());
     for (const auto& [key, series] : _series) {
         SeriesSnapshot snap;
+        const bool is_task = key.first == kMcpTaskKind;
         const bool is_tool = key.first == kMcpToolKind;
-        snap.protocol = is_tool ? "mcp" : "rest";
-        snap.method = is_tool ? "" : key.first;
+        snap.protocol = is_task ? "mcp_task" : (is_tool ? "mcp" : "rest");
+        snap.method = (is_tool || is_task) ? "" : key.first;
         snap.route = key.second;
         snap.requests = series->requests.load(std::memory_order_relaxed);
         snap.status_2xx = series->status_2xx.load(std::memory_order_relaxed);
@@ -203,10 +214,12 @@ crow::json::wvalue RuntimeMetrics::toJson(const std::string& route_filter) const
         if (!s.method.empty()) {
             row["method"] = s.method;
         }
-        row[s.protocol == "mcp" ? "tool" : "route"] = s.route;
+        const bool mcp_task = s.protocol == "mcp_task";
+        const bool mcp_series = s.protocol == "mcp" || mcp_task;
+        row[mcp_series ? "tool" : "route"] = s.route;
         row["requests"] = s.requests;
         row["rejected"] = s.rejected;
-        if (s.protocol == "mcp") {
+        if (mcp_series) {
             row["failures"] = s.failures;
         } else {
             row["status"]["2xx"] = s.status_2xx;
@@ -224,10 +237,14 @@ crow::json::wvalue RuntimeMetrics::toJson(const std::string& route_filter) const
         row["latency_ms"]["p99"] = ms3(s.p99_ms);
         row["latency_ms"]["max"] = ms3(s.max_ms);
         row["last_request_unix_ms"] = s.last_request_unix_ms;
-        total += s.requests;
-        // server_errors excludes cache-not-ready 503s; they are cache_unavailable.
-        errors += s.protocol == "mcp" ? s.failures : s.status_5xx;
-        cache_unavailable += s.cache_unavailable;
+        // A task's call is already counted by its tool series; the end-to-end
+        // series is a second view of the same work, not more of it.
+        if (!mcp_task) {
+            total += s.requests;
+            // server_errors excludes cache-not-ready 503s; they are cache_unavailable.
+            errors += s.protocol == "mcp" ? s.failures : s.status_5xx;
+            cache_unavailable += s.cache_unavailable;
+        }
         rows.push_back(std::move(row));
     }
     out["total"] = total;

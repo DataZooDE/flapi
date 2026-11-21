@@ -144,6 +144,93 @@ bool RouteTranslator::matchAndExtractParams(const std::string& routePattern, con
 
 namespace {
 
+int hexDigitValue(char c) {
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return -1;
+}
+
+bool isValidUtf8(const std::string& s) {
+    std::size_t i = 0;
+    while (i < s.size()) {
+        const auto c = static_cast<unsigned char>(s[i]);
+        std::size_t extra = 0;
+        std::uint32_t code_point = 0;
+        std::uint32_t minimum = 0;
+        if (c < 0x80) {
+            ++i;
+            continue;
+        }
+        if ((c & 0xE0) == 0xC0) {
+            extra = 1;
+            code_point = c & 0x1F;
+            minimum = 0x80;
+        } else if ((c & 0xF0) == 0xE0) {
+            extra = 2;
+            code_point = c & 0x0F;
+            minimum = 0x800;
+        } else if ((c & 0xF8) == 0xF0) {
+            extra = 3;
+            code_point = c & 0x07;
+            minimum = 0x10000;
+        } else {
+            return false;
+        }
+        if (s.size() - i <= extra) {
+            return false;   // truncated sequence
+        }
+        for (std::size_t k = 1; k <= extra; ++k) {
+            const auto cc = static_cast<unsigned char>(s[i + k]);
+            if ((cc & 0xC0) != 0x80) {
+                return false;
+            }
+            code_point = (code_point << 6) | (cc & 0x3F);
+        }
+        if (code_point < minimum || code_point > 0x10FFFF || (code_point >= 0xD800 && code_point <= 0xDFFF)) {
+            return false;
+        }
+        i += extra + 1;
+    }
+    return true;
+}
+
+} // namespace
+
+bool RouteTranslator::percentDecodePathValue(const std::string& raw, std::string& out) {
+    out.clear();
+    out.reserve(raw.size());
+    for (std::size_t i = 0; i < raw.size(); ++i) {
+        if (raw[i] != '%') {
+            out += raw[i];
+            continue;
+        }
+        if (raw.size() - i < 3) {
+            return false;   // truncated escape
+        }
+        const int hi = hexDigitValue(raw[i + 1]);
+        const int lo = hexDigitValue(raw[i + 2]);
+        if (hi < 0 || lo < 0) {
+            return false;
+        }
+        const char decoded = static_cast<char>((hi << 4) | lo);
+        if (decoded == '\0') {
+            return false;   // an encoded NUL ends C strings and file paths early
+        }
+        out += decoded;
+        i += 2;
+    }
+    return isValidUtf8(out);
+}
+
+namespace {
+
 struct RouteSegment {
     bool param;
     std::string text;
@@ -285,6 +372,26 @@ bool RouteTranslator::routesOverlap(const std::string& a, const std::string& b) 
             if ((sa[i].param ? sb[i] : sa[i]).text.empty()) {
                 return false;
             }
+        }
+    }
+    return true;
+}
+
+bool RouteTranslator::routeCovers(const std::string& general, const std::string& specific) {
+    const auto sg = routeSegments(general);
+    const auto ss = routeSegments(specific);
+    if (sg.size() != ss.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < sg.size(); ++i) {
+        if (sg[i].param) {
+            // A parameter matches one or more characters, never the empty
+            // segment after a trailing slash.
+            if (!ss[i].param && ss[i].text.empty()) {
+                return false;
+            }
+        } else if (ss[i].param || sg[i].text != ss[i].text) {
+            return false;
         }
     }
     return true;

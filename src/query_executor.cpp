@@ -1,4 +1,5 @@
 #include "query_executor.hpp"
+#include "sql_utils.hpp"
 #include "database_health.hpp"
 #include "flapi_tracing.hpp"
 #include "trace_semconv.hpp"
@@ -99,8 +100,18 @@ QueryExecutor::QueryExecutor(duckdb_database db) : has_result(false) {
     }
 }
 
-QueryExecutor::QueryExecutor(duckdb_database db, const std::optional<std::string>& session_default_order)
+QueryExecutor::QueryExecutor(duckdb_database db, const std::optional<std::string>& session_default_order,
+                             const std::optional<std::string>& session_time_zone)
     : QueryExecutor(db) {
+    if (session_time_zone) {
+        // Best effort: only set when the global SET could not be applied at
+        // startup (ICU not loadable then). A failure here leaves the
+        // process zone in force, which was already logged as a warning.
+        duckdb_result tz_result;
+        duckdb_query(conn, ("SET SESSION TimeZone = '" + sql::EscapeSqlLiteral(*session_time_zone) + "'").c_str(),
+                     &tz_result);
+        duckdb_destroy_result(&tz_result);
+    }
     if (!session_default_order) {
         return;
     }
@@ -524,8 +535,9 @@ void QueryExecutor::executeWithBindings(const std::string& sql,
         PreparedValueConverter converter;
         for (const auto& spec : bindings) {
             auto it = values.find(spec.field_name);
-            const bool present = it != values.end();
-            const std::string& raw = present ? it->second : std::string();
+            const bool present = it != values.end() || spec.absent_as_empty;
+            const std::string empty;
+            const std::string& raw = it != values.end() ? it->second : empty;
             auto outcome = converter.convert(spec.type, raw, present);
             if (!outcome.ok) {
                 // CLIENT-input failure: the value supplied for a typed
@@ -914,11 +926,21 @@ crow::json::wvalue QueryResult::decimalToJson(const duckdb_decimal& decimal) {
             return crow::json::wvalue(parsed);
         }
     }
-    // Beyond what a double holds exactly: the closest double, as before. A
-    // string would be exact but would change the column's JSON type for its
-    // largest values only, which breaks typed clients in production and not
-    // in tests.
-    return crow::json::wvalue(duckdb_decimal_to_double(decimal));
+    // A double reproduces the decimal text exactly while the value has at most
+    // 15 significant digits, and the response writer (normaliseNumberText)
+    // then prints the shortest round-trip form, which is that text without
+    // trailing zeros.
+    if (integer_digits + static_cast<std::size_t>(decimal.scale) <= 15) {
+        return crow::json::wvalue(duckdb_decimal_to_double(decimal));
+    }
+    // Wider than a double holds (more than 15 significant digits - e.g.
+    // DECIMAL(38,9), or any scale beyond what remains of the 15): crow's
+    // wvalue has no raw number token, and a double would print the NEAREST
+    // double (12345678901234567890.123456789 became 12345678901234567168). The
+    // exact text goes out as a JSON STRING instead: the column's JSON type
+    // changes, for these values only, in exchange for never altering a digit.
+    // Documented in docs/spec/components/query-execution.md.
+    return crow::json::wvalue(text);
 }
 
 crow::json::wvalue QueryResult::convertVectorTimestampToJson(const duckdb_vector &vector, const idx_t row_idx) {

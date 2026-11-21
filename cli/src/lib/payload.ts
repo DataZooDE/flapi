@@ -61,7 +61,7 @@ async function readFromStdin(): Promise<string> {
 
   return await new Promise<string>((resolve, reject) => {
     process.stdin.setEncoding('utf-8');
-    process.stdin.on('data', (chunk) => chunks.push(chunk));
+    process.stdin.on('data', (chunk) => chunks.push(String(chunk)));
     process.stdin.once('end', () => resolve(chunks.join('')));
     process.stdin.once('error', reject);
   });

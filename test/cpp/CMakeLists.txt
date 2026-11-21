@@ -80,6 +80,7 @@ add_executable(flapi_tests
     test_vfs_adapter.cpp
     test_path_validator.cpp
     test_vfs_health.cpp
+    database_manager_ducklake_test.cpp
     test_vfs_cache.cpp
     test_credential_manager.cpp
     test_vfs_s3.cpp
@@ -89,6 +90,7 @@ add_executable(flapi_tests
     alloc_counter.cpp
     test_alloc_budget.cpp
     runtime_metrics_test.cpp
+    yaml_text_patch_test.cpp
     route_shape_duplicate_test.cpp
     route_precedence_test.cpp
     test_cluster_c_regressions.cpp

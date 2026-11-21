@@ -21,6 +21,8 @@ import requests
 
 from otel_helpers import flapi_binary, free_port
 
+pytestmark = pytest.mark.standalone_server
+
 
 def _w(base, rel, text):
     path = os.path.join(base, rel)
@@ -53,7 +55,17 @@ def server():
         "bool": _endpoint("bool", "flag", "boolean", f"SELECT * FROM {rows} WHERE b = {{{{{{params.flag}}}}}}\n"),
         "bl2": _endpoint("bl2", "flag", "bool", f"SELECT * FROM {rows} WHERE b = {{{{{{params.flag}}}}}}\n"),
         "integer": _endpoint("integer", "amount", "integer", f"SELECT * FROM {rows} WHERE a > {{{{{{params.amount}}}}}}\n"),
+        # Triple-brace sites the prepared rewriter binds (#192).
+        "tbu": _endpoint("tbu", "name", "string", f"SELECT * FROM {rows} WHERE a = {{{{{{params.name}}}}}}\n"),
+        "tbq": _endpoint("tbq", "name", "string", f"SELECT * FROM {rows} WHERE n = '{{{{{{params.name}}}}}}'\n"),
+        "tbl": _endpoint("tbl", "name", "string",
+                         f"SELECT * FROM {rows} WHERE n LIKE '%{{{{{{params.name}}}}}}%' ORDER BY a\n"),
+        "tbn": _endpoint("tbn", "amount", "int", f"SELECT * FROM {rows} WHERE a > {{{{{{params.amount}}}}}}\n"),
+        "tbd": _endpoint("tbd", "day", "date", "SELECT DATE '{{{params.day}}}' AS d\n"),
+        "tbe": _endpoint("tbe", "sort", "enum", f"SELECT * FROM {rows} ORDER BY {{{{{{params.sort}}}}}}\n"),
     }
+    specs["tbe"] = (specs["tbe"][0].replace("      - type: enum\n", "      - type: enum\n        allowedValues: [n, a]\n"),
+                    specs["tbe"][1])
     for name, (yaml_text, sql) in specs.items():
         _w(tmp, f"sqls/{name}.yaml", yaml_text)
         _w(tmp, f"sqls/{name}.sql", sql)
@@ -159,3 +171,51 @@ class TestCacheMetadataIsServerOwned:
             body = r.json() if r.status_code == 200 else {}
             assert r.status_code == 200 and body["data"][0]["which"] == "one", (
                 f"{key}={value} changed what /one reads: {r.status_code} {r.text[:150]}")
+
+
+class TestTripleBraceValuesAreBound:
+    """`{{{ params.x }}}` for a typed field is a bound value, not spliced text (#192)."""
+
+    @pytest.mark.parametrize("payload", ["0 OR 2>1", "0  OR  2 > 1", "1 or 1<2"])
+    def test_an_unquoted_site_cannot_be_widened(self, server, payload):
+        r = _get(server, "/tbu", name=payload)
+        # Either the screen rejects it, or the value is bound: it matches nothing, or
+        # fails the cast to the column's type (a 500 - the statement never ran with
+        # the payload as SQL). What it must never do is return every row.
+        assert r.status_code in (200, 400, 500), f"{payload!r} -> {r.status_code} {r.text[:150]}"
+        if r.status_code == 200:
+            assert len(r.json()["data"]) == 0, f"{payload!r} widened the query: {r.text[:200]}"
+
+    def test_an_apostrophe_in_a_quoted_site_is_just_a_character(self, server):
+        r = _get(server, "/tbq", name="O'Brien")
+        assert r.status_code == 200, f"{r.status_code} {r.text[:200]}"
+        assert [row["n"] for row in r.json()["data"]] == ["O'Brien"]
+
+    def test_a_quoted_site_still_matches_ordinary_values(self, server):
+        r = _get(server, "/tbq", name="alice")
+        assert r.status_code == 200 and [row["a"] for row in r.json()["data"]] == [1], r.text[:200]
+
+    @pytest.mark.parametrize("name,expected", [("li", ["alice"]), ("b", ["bob"]),
+                                               ("Brien", ["O'Brien"]), ("O'B", ["O'Brien"]), ("zzz", [])])
+    def test_a_like_pattern_keeps_working(self, server, name, expected):
+        r = _get(server, "/tbl", name=name)
+        assert r.status_code == 200, f"{name!r} -> {r.status_code} {r.text[:200]}"
+        assert [row["n"] for row in r.json()["data"]] == expected
+
+    def test_a_numeric_site_still_works(self, server):
+        r = _get(server, "/tbn", amount="1")
+        assert r.status_code == 200 and [row["a"] for row in r.json()["data"]] == [2, 3], r.text[:200]
+
+    def test_a_typed_literal_keeps_its_keyword(self, server):
+        r = _get(server, "/tbd", day="2024-02-29")
+        assert r.status_code == 200, r.text[:200]
+        assert r.json()["data"][0]["d"].startswith("2024-02-29")
+        assert _get(server, "/tbd", day="2024-13-45").status_code == 400
+
+    def test_an_enum_checked_identifier_keeps_working(self, server):
+        # ORDER BY ? would sort by a constant, so a whitelisted identifier stays literal.
+        r = _get(server, "/tbe", sort="a")
+        assert r.status_code == 200 and [row["a"] for row in r.json()["data"]] == [1, 2, 3], r.text[:200]
+        r = _get(server, "/tbe", sort="n")
+        assert r.status_code == 200 and [row["n"] for row in r.json()["data"]] == ["O'Brien", "alice", "bob"]
+        assert _get(server, "/tbe", sort="a; DROP TABLE x").status_code == 400

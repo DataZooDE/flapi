@@ -100,7 +100,7 @@ void DatabaseManager::closeDatabaseLocked(bool graceful) {
         // Only what was attached: a one-shot refresh that lost the lock race
         // printed "Failed to detach DuckLake catalog ... database not found".
         if (ducklake_config.enabled && ducklake_attached_) {
-            const std::string detach = "DETACH " + ducklake_config.alias + ";";
+            const std::string detach = "DETACH " + sql::QuoteIdentifier(ducklake_config.alias) + ";";
             if (run(detach.c_str(), error)) {
                 CROW_LOG_INFO << "Detached DuckLake catalog: " << ducklake_config.alias;
             } else {
@@ -270,6 +270,7 @@ void DatabaseManager::initializeDBManagerFromConfig(std::shared_ptr<ConfigManage
         // Extensions first: the version query already needs core_functions, and offline
         // a missing one must fail with loadDefaultExtensions' message, not an autoload error.
         loadDefaultExtensions(config_manager);
+        applyTimeZone();
         logDuckDBVersion();
         initializeConnections(config_manager);
 
@@ -278,7 +279,9 @@ void DatabaseManager::initializeDBManagerFromConfig(std::shared_ptr<ConfigManage
         const auto& ducklake_config = config_manager->getDuckLakeConfig();
         if (ducklake_config.enabled) {
             CROW_LOG_INFO << "Attaching DuckLake catalog at alias '" << ducklake_config.alias << "'";
-            std::string attach_stmt = "ATTACH 'ducklake:" + ducklake_config.metadata_path + "' AS " + ducklake_config.alias + " (DATA_PATH '" + ducklake_config.data_path + "'";
+            std::string attach_stmt = "ATTACH 'ducklake:" + sql::EscapeSqlLiteral(ducklake_config.metadata_path) + "' AS " +
+                                      sql::QuoteIdentifier(ducklake_config.alias) + " (DATA_PATH '" +
+                                      sql::EscapeSqlLiteral(ducklake_config.data_path) + "'";
 
             // Add data inlining configuration if specified
             if (ducklake_config.data_inlining_row_limit) {
@@ -349,7 +352,41 @@ QueryExecutor DatabaseManager::createQueryExecutor()
     // session_default_order_: see createAndInitializeDuckDBConfig. A session
     // setting, so DuckLake's own connection keeps the ascending default it
     // depends on.
-    return QueryExecutor(db, session_default_order_);
+    return QueryExecutor(db, session_default_order_, session_time_zone_fallback_);
+}
+
+void DatabaseManager::applyTimeZone() {
+    // DuckDB takes the host's zone (TZ, /etc/localtime) as the session zone once
+    // ICU loads, which moves every TIMESTAMPTZ -> TIMESTAMP cast and
+    // date_trunc by the host's offset - and ICU loads lazily, on the first
+    // query that needs it, so the shift appears minutes after startup. The
+    // zone is pinned instead: UTC unless the config says otherwise (#212).
+    const std::string statement = "SET GLOBAL TimeZone = '" + sql::EscapeSqlLiteral(effective_time_zone_) + "'";
+    std::string error;
+    duckdb_connection conn;
+    bool ok = duckdb_connect(db, &conn) == DuckDBSuccess;
+    if (!ok) {
+        error = "could not open a connection";
+    } else {
+        duckdb_result result;
+        ok = duckdb_query(conn, statement.c_str(), &result) == DuckDBSuccess;
+        if (!ok) {
+            const char* message = duckdb_result_error(&result);
+            error = message ? message : "unknown error";
+        }
+        duckdb_destroy_result(&result);
+        duckdb_disconnect(&conn);
+    }
+    if (ok) {
+        CROW_LOG_INFO << "DuckDB TimeZone: " << effective_time_zone_;
+        return;
+    }
+    // ICU is not available (offline without it) or the zone name is unknown.
+    // Each connection tries its own SET; if that cannot work either, DuckDB's
+    // own default stays and this warning says so.
+    session_time_zone_fallback_ = effective_time_zone_;
+    CROW_LOG_WARNING << "Could not set the DuckDB TimeZone to '" << effective_time_zone_ << "' globally: " << error
+                     << ". Each connection will try its own SET; the host zone may apply otherwise.";
 }
 
 void DatabaseManager::logDuckDBVersion() {
@@ -437,7 +474,20 @@ void DatabaseManager::createAndInitializeDuckDBConfig(std::shared_ptr<ConfigMana
     // Apply settings from the configuration
     const auto& duckdb_settings = config_manager->getDuckDBConfig().settings;
     session_default_order_.reset();
+    effective_time_zone_ = "UTC";
+    session_time_zone_fallback_.reset();
     for (const auto& [key, value] : duckdb_settings) {
+        // The zone is applied after the engine is open (applyTimeZone): the
+        // setting belongs to the ICU extension, which is not loaded yet, so
+        // duckdb_set_config would refuse it. Matched case-insensitively - DuckDB
+        // itself does - so `timezone:` and `TimeZone:` both count as the user's.
+        std::string lowered_key = key;
+        std::transform(lowered_key.begin(), lowered_key.end(), lowered_key.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (lowered_key == "timezone") {
+            effective_time_zone_ = value;
+            continue;
+        }
         // `default_order` is never set GLOBALLY while DuckLake is attached.
         // DuckLake runs its catalog queries on its own connection, which takes
         // the global default, and several of them rely on a bare ORDER BY
@@ -557,7 +607,7 @@ void DatabaseManager::executeInitStatement(const std::string& init_statement) {
 
 void DatabaseManager::createSchemaIfNecessary(const std::string& schema) {
     auto executor = createQueryExecutor();
-    executor.execute("CREATE SCHEMA IF NOT EXISTS '" + schema + "'");
+    executor.execute("CREATE SCHEMA IF NOT EXISTS " + sql::QuoteIdentifier(schema));
 }
 
 duckdb_connection DatabaseManager::getConnection() {
@@ -653,6 +703,14 @@ DatabaseManager::AccessLocks DatabaseManager::lockSerialisedAccess(const Endpoin
             m = slot.get();
         }
         locks.emplace_back(*m);
+    }
+    return locks;
+}
+
+std::shared_ptr<void> DatabaseManager::holdSerialisedAccess(const EndpointConfig& endpoint) {
+    auto locks = std::make_shared<AccessLocks>(lockSerialisedAccess(endpoint));
+    if (locks->empty()) {
+        return nullptr;
     }
     return locks;
 }
@@ -949,6 +1007,34 @@ std::optional<AttachDetach> ParseAttachDetach(const std::string& sql) {
     }
 }
 
+// Whether the file a DuckDB database was attached from has since been replaced
+// (an atomic rename over it) or deleted: the process still holds the OLD file
+// open, so the alias reads data the path no longer has. Linux only: the open
+// file's /proc/self/fd link reads "<path> (deleted)" once it is unlinked.
+bool AttachedFileReplaced(const std::string& attached_path) {
+#ifdef __linux__
+    if (attached_path.empty() || attached_path == ":memory:" || attached_path.find("://") != std::string::npos) {
+        return false;
+    }
+    std::error_code ec;
+    const std::string absolute = std::filesystem::absolute(attached_path, ec).lexically_normal().string();
+    if (ec) {
+        return false;
+    }
+    const std::string deleted = absolute + " (deleted)";
+    for (const auto& entry : std::filesystem::directory_iterator("/proc/self/fd", ec)) {
+        std::error_code link_ec;
+        const auto target = std::filesystem::read_symlink(entry.path(), link_ec);
+        if (!link_ec && target.string() == deleted) {
+            return true;
+        }
+    }
+#else
+    (void)attached_path;
+#endif
+    return false;
+}
+
 // Whether a DuckDB error message names `alias` (a catalog/schema qualifier).
 bool NamesAlias(const std::string& message, const std::string& alias) {
     const auto lower = LowerAscii(message);
@@ -1001,14 +1087,27 @@ DatabaseManager::ScriptValidation DatabaseManager::validateScript(const std::str
     // the catalog lock (CacheManager::lockCatalogWrites), so this cannot race a
     // refresh's ATTACH of the same name.
     std::set<std::string> attached_before;
+    // Aliases the server attached before this check whose FILE has been replaced
+    // since (the writer publishes by atomic rename): statements that read them
+    // are checked against the old file.
+    std::set<std::string> stale_aliases;
     if (populate) {
         duckdb_result databases;
-        if (duckdb_query(conn, "SELECT database_name FROM duckdb_databases()", &databases) == DuckDBSuccess) {
+        if (duckdb_query(conn, "SELECT database_name, path FROM duckdb_databases()", &databases) == DuckDBSuccess) {
             for (idx_t row = 0; row < duckdb_row_count(&databases); ++row) {
                 char* name = duckdb_value_varchar(&databases, 0, row);
+                char* path = duckdb_value_varchar(&databases, 1, row);
                 if (name) {
                     attached_before.insert(LowerAscii(name));
+                    if (path && AttachedFileReplaced(path)) {
+                        stale_aliases.insert(LowerAscii(name));
+                    }
+                }
+                if (name) {
                     duckdb_free(name);
+                }
+                if (path) {
+                    duckdb_free(path);
                 }
             }
         }
@@ -1072,6 +1171,16 @@ DatabaseManager::ScriptValidation DatabaseManager::validateScript(const std::str
                     continue;
                 }
                 if (attached_before.count(ad->alias) > 0 && attached_here.count(ad->alias) == 0) {
+                    if (stale_aliases.count(ad->alias) > 0) {
+                        out.warnings.push_back(
+                            {number, "stale",
+                             "statement " + std::to_string(number) + ": " + ad->alias +
+                                 " is attached on the server from a file that has since been replaced (renamed "
+                                 "over or deleted); validation checked against the OLD file. This template "
+                                 "re-attaches on refresh, which reads the new one, so a table or column only "
+                                 "the new file has is reported here, not as an error"});
+                        continue;
+                    }
                     out.warnings.push_back(
                         {number, "not_checked",
                          "statement " + std::to_string(number) + ": " + ad->alias +
@@ -1167,6 +1276,18 @@ DatabaseManager::ScriptValidation DatabaseManager::validateScript(const std::str
             } else if (message.find("Could not determine type of parameters") != std::string::npos) {
                 out.warnings.push_back(
                     {number, "not_checked", "statement " + std::to_string(number) + " was not fully checked: " + message});
+            } else if (const auto stale = std::find_if(stale_aliases.begin(), stale_aliases.end(),
+                                                       [&](const std::string& alias) {
+                                                           return NamesAlias(sql, alias);
+                                                       });
+                       stale != stale_aliases.end()) {
+                // Bound against the file the server attached BEFORE the writer's
+                // rename: not evidence the template is wrong.
+                out.warnings.push_back(
+                    {number, "stale",
+                     "statement " + std::to_string(number) + " does not bind against " + *stale +
+                         ", which the server attached from a file that has since been replaced; the next "
+                         "refresh re-attaches it and may succeed (" + message + ")"});
             } else {
                 out.errors.push_back({number, "bind", message});
             }
