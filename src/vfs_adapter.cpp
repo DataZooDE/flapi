@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <regex>
 #include <functional>
+#include <vector>
 #include <exception>
 #include <mutex>
 #include <cstring>
@@ -50,6 +51,24 @@ namespace {
 
 bool PathSchemeUtils::IsRemotePath(const std::string& path) {
     return IsS3Path(path) || IsGCSPath(path) || IsAzurePath(path) || IsHttpPath(path);
+}
+
+std::string PathSchemeUtils::RedactUrl(const std::string& url) {
+    const auto scheme_end = url.find("://");
+    if (scheme_end == std::string::npos) {
+        return url;
+    }
+    std::string out = url;
+    if (const auto q = out.find('?', scheme_end); q != std::string::npos) {
+        out.replace(q, std::string::npos, "?<redacted>");
+    }
+    const auto host_start = scheme_end + 3;
+    const auto slash = out.find('/', host_start);
+    const auto at = out.find('@', host_start);
+    if (at != std::string::npos && (slash == std::string::npos || at < slash)) {
+        out.erase(host_start, at - host_start + 1);
+    }
+    return out;
 }
 
 bool PathSchemeUtils::IsS3Path(const std::string& path) {
@@ -225,6 +244,27 @@ bool LocalFileProvider::IsRemotePath(const std::string& path) const {
 
 namespace {
 
+// DuckDB's httpfs reports HTTP failures as a JSON blob (headers, response body,
+// request ids). Users need the message: keep `exception_message` when present.
+std::string CleanDuckError(const std::string& raw) {
+    if (!raw.empty() && raw.front() == '{') {
+        auto parsed = crow::json::load(raw);
+        if (parsed && parsed.t() == crow::json::type::Object && parsed.has("exception_message") &&
+            parsed["exception_message"].t() == crow::json::type::String) {
+            std::string msg = parsed["exception_message"].s();
+            const auto blank = msg.find("\n\n");
+            if (blank != std::string::npos) {
+                // First line is the HTTP status, next paragraph the store's own error code/message.
+                const auto second = msg.find("\n\n", blank + 2);
+                msg = msg.substr(0, second == std::string::npos ? msg.size() : second);
+                std::replace(msg.begin(), msg.end(), '\n', ' ');
+            }
+            return msg;
+        }
+    }
+    return raw;
+}
+
 struct BootstrapDb {
     duckdb_database db = nullptr;
     ~BootstrapDb() {
@@ -264,8 +304,15 @@ std::shared_ptr<BootstrapDb> GetBootstrapDb() {
         offline = (v == "1" || v == "true" || v == "yes" || v == "on");
     }
     duckdb_config config = nullptr;
-    if (duckdb_create_config(&config) == DuckDBSuccess && !extension_dir.empty()) {
-        duckdb_set_config(config, "extension_directory", extension_dir.c_str());
+    if (duckdb_create_config(&config) == DuckDBSuccess) {
+        if (!extension_dir.empty()) {
+            duckdb_set_config(config, "extension_directory", extension_dir.c_str());
+        }
+        if (offline) {
+            // LOAD of a known extension would otherwise auto-install (download) it.
+            duckdb_set_config(config, "autoinstall_known_extensions", "false");
+            duckdb_set_config(config, "autoload_known_extensions", "false");
+        }
     }
     const auto opened = duckdb_open_ext(nullptr, &created->db, config, nullptr);
     if (config) {
@@ -287,7 +334,10 @@ std::shared_ptr<BootstrapDb> GetBootstrapDb() {
         if (duckdb_query(conn, sql, &result) != DuckDBSuccess) {
             CROW_LOG_WARNING << "Bootstrap DuckDB: `" << sql << "` failed: "
                              << duckdb_result_error(&result)
-                             << " (remote files cannot be read without httpfs)";
+                             << " (remote files cannot be read without httpfs"
+                             << (offline ? "; offline mode: pre-install httpfs into FLAPI_EXTENSION_DIRECTORY"
+                                         : "")
+                             << ")";
         }
         duckdb_destroy_result(&result);
     }
@@ -382,6 +432,20 @@ std::string DuckDBVFSProvider::ReadFile(const std::string& path) {
                 throw FileOperationError("Failed to get file size: " + path);
             }
             if (file_size == 0) {
+                // A server that sends no Content-Length (chunked http) reports 0 for a
+                // file that has content: read until EOF instead of returning "".
+                std::vector<char> chunk(64 * 1024);
+                while (true) {
+                    const auto got = handle->Read(chunk.data(), static_cast<::duckdb::idx_t>(chunk.size()));
+                    if (got <= 0) {
+                        break;
+                    }
+                    content.append(chunk.data(), static_cast<size_t>(got));
+                    if (static_cast<int64_t>(content.size()) > MAX_FILE_SIZE) {
+                        throw FileOperationError("File too large: " + PathSchemeUtils::RedactUrl(path) +
+                                                 " (exceeds " + std::to_string(MAX_FILE_SIZE) + " byte limit)");
+                    }
+                }
                 return;
             }
             if (file_size > MAX_FILE_SIZE) {
@@ -403,7 +467,7 @@ std::string DuckDBVFSProvider::ReadFile(const std::string& path) {
     } catch (const FileOperationError&) {
         throw;
     } catch (const ::duckdb::Exception& e) {
-        throw FileOperationError("DuckDB error reading file '" + path + "': " + e.what());
+        throw FileOperationError("DuckDB error reading file '" + PathSchemeUtils::RedactUrl(path) + "': " + CleanDuckError(e.what()));
     } catch (const std::exception& e) {
         throw FileOperationError("Error reading file '" + path + "': " + e.what());
     }
@@ -423,7 +487,7 @@ bool DuckDBVFSProvider::FileExists(const std::string& path) {
     } catch (const std::exception& e) {
         // DuckDB may throw on network errors - log and treat as "file doesn't exist"
         // This could indicate credential issues or network problems
-        CROW_LOG_WARNING << "DuckDBVFSProvider::FileExists failed for '" << path
+        CROW_LOG_DEBUG << "DuckDBVFSProvider::FileExists failed for '" << PathSchemeUtils::RedactUrl(path)
                          << "': " << e.what();
         return false;
     }
@@ -451,7 +515,7 @@ std::vector<std::string> DuckDBVFSProvider::ListFiles(const std::string& directo
         throw;
     } catch (const ::duckdb::Exception& e) {
         throw FileOperationError(
-            "DuckDB error listing files in '" + directory + "': " + e.what());
+            "DuckDB error listing files in '" + PathSchemeUtils::RedactUrl(directory) + "': " + CleanDuckError(e.what()));
     } catch (const std::exception& e) {
         throw FileOperationError(
             "Error listing files in '" + directory + "': " + e.what());

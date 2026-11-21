@@ -187,6 +187,8 @@ Run it in the foreground and read the last `[ERROR]` lines. `flapi -c flapi.yaml
 | `IO Error: Extension ".../nosuchext.duckdb_extension" not found` | `LOAD` of an extension that is not installed / offline | `INSTALL` it in `init`, or `flapi extensions install -c flapi.yaml` at build time |
 | `Failed to attach DuckLake catalog: another process holds the lock on the DuckDB-file catalog ...` (raw: `Conflicting lock is held in .../flapi (PID n)`) | Another flAPI process (a writer, a replica, or `flapi cache refresh`) holds the DuckDB-file catalog | Stop it (`ps -p n`), or give each process its own `metadata-path`; a writer with replicas needs a Postgres/SQLite/MySQL catalog |
 | `Failed to attach DuckLake catalog: directory ... does not exist (ducklake.read-only: ...)` | Replica started before the catalog exists | Start the writer first, or fix `metadata-path` / `data-path` (a writer creates them) |
+| `Cannot list endpoint files under s3://... : listing failed (...) and the manifest ... could not be read` | A remote `template.path` (bucket or http dir): empty/missing prefix, bad credentials, or an http dir with no `manifest.txt` | Check the quoted listing error (403 = credentials); for plain http(s) add `manifest.txt` (one endpoint YAML per line) |
+| `Bootstrap DuckDB: \`LOAD httpfs\` failed` | Remote `--config`/`template.path` on a host without httpfs (offline) | Pre-install httpfs into `FLAPI_EXTENSION_DIRECTORY` and set `FLAPI_EXTENSIONS_OFFLINE=1` |
 | `the server could not start: bind: Address already in use` | Port taken | `-p <port>` / `FLAPI_PORT`, or stop the other process |
 | `invalid log level 'verbose'; must be one of: debug, info, warning (or warn), error` | Unknown `log-level` | One of those |
 

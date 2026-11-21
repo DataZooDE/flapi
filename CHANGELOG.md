@@ -5,6 +5,10 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 ## Unreleased
 
 ### Remote template follow-ups (#231)
+- **Security:** with a remote `template.path`, a local absolute `template-source` (e.g. `/etc/hostname`) passed the containment check and was read from the server's disk; it is now refused. A manifest entry that is a full URL must stay under `template.path`, and `%2e%2e` is refused.
+- **Fixed:** `POST /api/v1/_config/endpoints/reload-file` with a remote URL mangled it and unloaded the endpoint; it now answers 501 and changes nothing.
+- **Fixed:** `FLAPI_EXTENSIONS_OFFLINE=1` also stops the bootstrap from auto-installing httpfs. A chunked HTTP response (no Content-Length) is no longer read as an empty file. Azure `SET`s are global like S3's; credentials with a `'` no longer break the SET statements.
+- **Improved:** listing errors name the real cause (403, ...) instead of only the manifest, DuckDB's raw JSON error is reduced to its message, URLs are logged without query strings or `user:pass@`, and a healthy remote `--config` no longer prints false "storage not accessible" warnings.
 - **Fixed:** S3 credentials and a custom `AWS_ENDPOINT_URL` are applied with `SET GLOBAL`, so they reach every DuckDB connection (a remote `template.path` listing used a fresh connection and went to AWS). The endpoint's `http://`/`https://` scheme now selects SSL and is stripped for DuckDB; custom endpoints use path-style URLs.
 - **Fixed:** the bootstrap DuckDB for a remote `--config` follows `FLAPI_EXTENSION_DIRECTORY` and `FLAPI_EXTENSIONS_OFFLINE` (no `INSTALL httpfs` when offline).
 

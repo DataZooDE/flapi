@@ -9,10 +9,10 @@ authentication, and its failure modes.
 
 ## Overview
 
-> **Known limitation:** a remote `template.path` (an `s3://`, `gs://`, `az://` or `https://` directory) does not work
-> yet. flAPI lists the template directory on the local filesystem, so startup fails with
-> `Template path does not exist or is not a directory`. Keep the endpoint YAML and SQL templates on local disk
-> (or bundle them with `flapi pack`). Data files and DuckLake data paths on cloud storage do work.
+> A remote `template.path` (`s3://`, `gs://`, `az://`, `http(s)://`) is supported; see
+> [CONFIG_REFERENCE](CONFIG_REFERENCE.md#remote-template-paths). Plain `http(s)://` has no listing and needs a
+> `manifest.txt` at its root. Credentials for the *remote config and template reads* are verified for S3 only (see
+> the guide's remote-config section).
 
 
 flAPI supports loading configuration and SQL template files from remote storage via DuckDB's Virtual File System (VFS). This enables:
@@ -128,7 +128,7 @@ project-name: Mixed Storage API
 project-description: Local config, remote templates
 
 template:
-  path: https://templates.example.com/sqls/
+  path: https://templates.example.com/sqls/   # needs https://templates.example.com/sqls/manifest.txt
 
 connections:
   local-parquet:

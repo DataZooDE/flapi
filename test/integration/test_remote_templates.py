@@ -216,3 +216,130 @@ class TestBootstrapExtensions:
         out = r.stdout + r.stderr
         assert "Bootstrap DuckDB: `LOAD httpfs` failed" in out, out
         assert ext_dir in out, out
+        assert "FLAPI_EXTENSION_DIRECTORY" in out, out
+        files = [f for _, _, names in os.walk(ext_dir) for f in names]
+        assert files == [], f"offline mode must not download anything: {files}"
+
+
+class TestReviewFindings:
+    def test_manifest_cannot_point_outside_template_path(self, store, workdir):
+        root, base = store
+        put(root, "sqls/hello.sql", SQL)
+        put(root, "sqls/manifest.txt", f"{base}/other/evil.yaml\n")
+        put(workdir, "flapi.yaml", main_config(f"{base}/sqls"))
+        r = run(os.path.join(workdir, "flapi.yaml"), workdir, "--validate-config")
+        out = r.stdout + r.stderr
+        assert r.returncode != 0, out
+        assert "outside template.path" in out, out
+
+    def test_manifest_name_containing_two_dots_is_allowed(self, store, workdir):
+        root, base = store
+        put(root, "sqls/a..b.yaml", ENDPOINT)
+        put(root, "sqls/hello.sql", SQL)
+        put(root, "sqls/manifest.txt", "a..b.yaml\n")
+        put(workdir, "flapi.yaml", main_config(f"{base}/sqls"))
+        r = run(os.path.join(workdir, "flapi.yaml"), workdir, "--validate-config")
+        assert r.returncode == 0, r.stdout + r.stderr
+
+    def test_a_chunked_response_is_not_read_as_empty(self, workdir):
+        # No Content-Length: the size reads as 0, the content must still arrive.
+        class Chunked(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                body = {"/flapi.yaml": main_config("./sqls"), "/sqls/manifest.txt": "hello.yaml\n",
+                        "/sqls/hello.yaml": ENDPOINT, "/sqls/hello.sql": SQL}.get(self.path)
+                if body is None:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                data = body.encode()
+                self.wfile.write(f"{len(data):x}\r\n".encode() + data + b"\r\n0\r\n\r\n")
+
+            do_HEAD = do_GET
+
+        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Chunked)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        try:
+            r = run(f"http://127.0.0.1:{httpd.server_address[1]}/flapi.yaml", workdir, "--validate-config")
+            out = r.stdout + r.stderr
+            assert r.returncode == 0 and "Parsed 1 endpoint" in out, out
+        finally:
+            httpd.shutdown()
+
+    def test_listing_error_is_readable_and_secret_free(self, workdir):
+        put(workdir, "flapi.yaml", main_config("s3://my-bucket/sqls"))
+        r = subprocess.run(
+            [flapi_binary(), "-c", os.path.join(workdir, "flapi.yaml"), "--validate-config", "--log-level", "info"],
+            cwd=workdir, capture_output=True, text=True, timeout=120,
+            env={**ENV, "AWS_ENDPOINT_URL": "http://127.0.0.1:9", "AWS_ACCESS_KEY_ID": "AKIATOPSECRET",
+                 "AWS_SECRET_ACCESS_KEY": "supersecretvalue", "AWS_REGION": "us-east-1"})
+        out = r.stdout + r.stderr
+        assert "AKIATOPSECRET" not in out and "supersecretvalue" not in out, out
+        assert '"exception_type"' not in out, "raw DuckDB JSON should be reduced to its message:\n" + out
+
+    def test_reload_file_with_a_remote_url_is_refused_not_unloaded(self, store, workdir):
+        root, base = store
+        put(root, "sqls/hello.yaml", ENDPOINT)
+        put(root, "sqls/hello.sql", SQL)
+        put(root, "sqls/manifest.txt", "hello.yaml\n")
+        put(workdir, "flapi.yaml", main_config(f"{base}/sqls"))
+        port = free_port()
+        log = open(os.path.join(workdir, "s.log"), "w")
+        proc = subprocess.Popen(
+            [flapi_binary(), "-c", os.path.join(workdir, "flapi.yaml"), "-p", str(port), "--log-level", "info",
+             "--config-service", "--config-service-token", "tok"],
+            cwd=workdir, stdout=log, stderr=subprocess.STDOUT, preexec_fn=os.setsid, env=ENV)
+        try:
+            deadline = time.time() + 90
+            while time.time() < deadline:
+                try:
+                    if requests.get(f"http://127.0.0.1:{port}/health/live", timeout=1).status_code == 200:
+                        break
+                except requests.RequestException:
+                    time.sleep(0.3)
+            r = requests.post(f"http://127.0.0.1:{port}/api/v1/_config/endpoints/reload-file",
+                              json={"file": f"{base}/sqls/hello.yaml"},
+                              headers={"Authorization": "Bearer tok"}, timeout=30)
+            assert r.status_code == 501, r.text
+            assert "remote" in r.text, r.text
+            # and the endpoint is still served
+            assert requests.get(f"http://127.0.0.1:{port}/remote-hello", timeout=30).status_code == 200
+        finally:
+            stop(proc)
+
+    def test_a_local_absolute_template_source_is_refused_under_a_remote_template_path(self, store, workdir):
+        # With template.path remote, `/etc/hostname` used to pass the containment check and
+        # was then read from the LOCAL disk by anyone allowed to create endpoints.
+        root, base = store
+        put(root, "sqls/hello.yaml", ENDPOINT)
+        put(root, "sqls/hello.sql", SQL)
+        put(root, "sqls/manifest.txt", "hello.yaml\n")
+        put(workdir, "flapi.yaml", main_config(f"{base}/sqls"))
+        port = free_port()
+        log = open(os.path.join(workdir, "s2.log"), "w")
+        proc = subprocess.Popen(
+            [flapi_binary(), "-c", os.path.join(workdir, "flapi.yaml"), "-p", str(port), "--log-level", "info",
+             "--config-service", "--config-service-token", "tok"],
+            cwd=workdir, stdout=log, stderr=subprocess.STDOUT, preexec_fn=os.setsid, env=ENV)
+        try:
+            deadline = time.time() + 90
+            while time.time() < deadline:
+                try:
+                    if requests.get(f"http://127.0.0.1:{port}/health/live", timeout=1).status_code == 200:
+                        break
+                except requests.RequestException:
+                    time.sleep(0.3)
+            r = requests.post(f"http://127.0.0.1:{port}/api/v1/_config/endpoints",
+                              json={"url-path": "/leak", "method": "GET", "template-source": "/etc/hostname",
+                                    "connection": ["inmem"]},
+                              headers={"Authorization": "Bearer tok"}, timeout=30)
+            assert r.status_code >= 400, r.text
+            assert "outside the templates directory" in r.text, r.text
+            assert requests.get(f"http://127.0.0.1:{port}/leak", timeout=30).status_code == 404
+        finally:
+            stop(proc)

@@ -27,6 +27,7 @@ New to flAPI? Start with [Getting started](./guides/getting-started.md).
 | Validate incoming parameters | [CONFIG_REFERENCE.md § 5](./CONFIG_REFERENCE.md) |
 | Reuse config across endpoints, or read secrets from the environment | [guides/yaml-includes.md](./guides/yaml-includes.md) |
 | Read from S3, GCS or Azure | [guides/cloud-storage.md](./guides/cloud-storage.md) |
+| Serve config and templates from a bucket | [guides/cloud-storage.md](./guides/cloud-storage.md) · [CONFIG_REFERENCE.md#remote-template-paths](./CONFIG_REFERENCE.md#remote-template-paths) |
 
 ### Expose it to an AI agent
 
