@@ -9,6 +9,7 @@ import http.server
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import urllib.parse
@@ -21,7 +22,8 @@ import requests
 from otel_helpers import flapi_binary, free_port
 from test_remote_templates import ENDPOINT, ENV, SQL, main_config, put, stop, workdir  # noqa: F401
 
-pytestmark = pytest.mark.standalone_server
+pytestmark = [pytest.mark.standalone_server,
+              pytest.mark.skipif(sys.platform == "win32", reason="spawns POSIX process groups (os.setsid / killpg)")]
 
 
 class FakeS3(http.server.BaseHTTPRequestHandler):
@@ -170,7 +172,7 @@ def test_an_empty_prefix_falls_back_to_the_manifest(bucket, workdir):
     assert "manifest.txt" in out, out
 
 
-SETTINGS_SQL = "SELECT secret_string AS value FROM duckdb_secrets() WHERE name = 'flapi_s3'"
+SETTINGS_SQL = "SELECT secret_string AS value FROM duckdb_secrets() WHERE name = 'zz_flapi_s3'"
 
 
 def _settings_server(workdir, extra_duckdb, env):
@@ -317,6 +319,8 @@ def test_az_template_path_lists_through_the_azure_extension(workdir):
             cwd=workdir, capture_output=True, text=True, timeout=180,
             env={**ENV, "AZURE_STORAGE_CONNECTION_STRING": conn})
         out = r.stdout + r.stderr
+        if "INSTALL azure failed" in out:
+            pytest.skip("the azure extension could not be downloaded (no network in this environment)")
         assert r.returncode == 0 and "Parsed 1 endpoint" in out, out + "\n".join(FakeAzure.seen)
         assert "c2VjcmV0a2V5" not in out, "the account key must not be logged"
     finally:
@@ -401,5 +405,43 @@ def test_a_template_cannot_read_the_s3_secret_key(workdir):
         assert r.status_code == 200, r.text
         assert "SECRETLEAKCANARY" not in r.text and "TOKENLEAKCANARY" not in r.text, r.text
         assert "redacted" in r.text, "the secret should be listed, redacted:\n" + r.text
+    finally:
+        stop(proc)
+
+
+def test_a_secret_the_user_creates_beats_the_environment(bucket, workdir):
+    """An unscoped S3 secret created in a connection init must win over the AWS_* environment's secret."""
+    root, endpoint = bucket
+    put(root, "mybucket/data.csv", "a\n1\n")
+    host = endpoint.replace("http://", "")
+    put(workdir, "flapi.yaml",
+        "project-name: usersecret\ntemplate:\n  path: ./sqls\nconnections:\n  inmem:\n    init: |\n"
+        "      INSTALL httpfs;\n      LOAD httpfs;\n"
+        f"      CREATE SECRET mine (TYPE s3, KEY_ID 'AKIAMINE', SECRET 'x', REGION 'eu-west-3', ENDPOINT '{host}', "
+        "URL_STYLE 'path', USE_SSL false);\n"
+        "    properties:\n      database: ':memory:'\nrate_limit:\n  enabled: false\n")
+    put(workdir, "sqls/d.yaml", "url-path: /d\nmethod: GET\ntemplate-source: d.sql\nconnection: [inmem]\n")
+    put(workdir, "sqls/d.sql", "SELECT * FROM read_csv('s3://mybucket/data.csv')")
+    port = free_port()
+    log = open(os.path.join(workdir, "us.log"), "w")
+    proc = subprocess.Popen(
+        [flapi_binary(), "-c", os.path.join(workdir, "flapi.yaml"), "-p", str(port), "--log-level", "info"],
+        cwd=workdir, stdout=log, stderr=subprocess.STDOUT, preexec_fn=os.setsid,
+        env={**ENV, **s3_env(endpoint)})
+    try:
+        import time
+        deadline = time.time() + 90
+        while time.time() < deadline:
+            assert proc.poll() is None, open(os.path.join(workdir, "us.log")).read()
+            try:
+                if requests.get(f"http://127.0.0.1:{port}/health/live", timeout=1).status_code == 200:
+                    break
+            except requests.RequestException:
+                time.sleep(0.3)
+        FakeS3.auth_seen.clear()
+        r = requests.get(f"http://127.0.0.1:{port}/d", timeout=30)
+        assert r.status_code == 200, r.text
+        signed = [a for a in FakeS3.auth_seen if a]
+        assert signed and all("AKIAMINE" in a for a in signed), signed[:3]
     finally:
         stop(proc)

@@ -19,12 +19,7 @@ bool HasPrefixNoCase(const std::string& text, const std::string& prefix) {
 }
 
 bool ExtensionsOffline() {
-    if (const char* flag = std::getenv("FLAPI_EXTENSIONS_OFFLINE"); flag != nullptr && *flag != '\0') {
-        std::string v = flag;
-        std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return std::tolower(c); });
-        return v == "1" || v == "true" || v == "yes" || v == "on";
-    }
-    return BundledExtensionDirectory().has_value();
+    return ExtensionsOfflineRequested();
 }
 
 // INSTALL (unless offline) and LOAD an extension; false with a log line when it is not available.
@@ -311,7 +306,7 @@ bool CredentialManager::configureConnection(duckdb_connection conn) {
                     RunStatement(conn, "SET GLOBAL s3_region = '" + SqlLiteral(region) + "';", "S3 region");
                 }
             } else {
-                std::string sql = "CREATE OR REPLACE SECRET flapi_s3 (TYPE s3";
+                std::string sql = "CREATE OR REPLACE SECRET zz_flapi_s3 (TYPE s3";
                 if (have_keys) {
                     sql += ", KEY_ID '" + SqlLiteral(UserOrEnv(conn, "s3_access_key_id", creds.access_key_id)) +
                            "', SECRET '" + SqlLiteral(UserOrEnv(conn, "s3_secret_access_key", creds.secret_access_key)) + "'";
@@ -327,8 +322,7 @@ bool CredentialManager::configureConnection(duckdb_connection conn) {
                     sql += ", ENDPOINT '" + SqlLiteral(endpoint) + "'";
                     // A custom endpoint (MinIO, a local fake, an S3-compatible store) is addressed by path:
                     // `<bucket>.<host>` rarely resolves there.
-                    const bool real_aws =
-                        endpoint.size() >= 13 && endpoint.compare(endpoint.size() - 13, 13, "amazonaws.com") == 0;
+                    const bool real_aws = endpoint.find("amazonaws.com") != std::string::npos;  // incl. .com.cn
                     const std::string style = UserOrEnv(conn, "s3_url_style", real_aws ? "" : "path", "vhost");
                     if (!style.empty()) {
                         sql += ", URL_STYLE '" + SqlLiteral(style) + "'";
@@ -371,7 +365,7 @@ bool CredentialManager::configureConnection(duckdb_connection conn) {
     if (_gcs_credentials.has_value() && !_gcs_credentials->hmac_key_id.empty() &&
         !_gcs_credentials->hmac_secret.empty()) {
         const auto& creds = _gcs_credentials.value();
-        std::string sql = "CREATE OR REPLACE SECRET flapi_gcs (TYPE gcs, KEY_ID '" + SqlLiteral(creds.hmac_key_id) +
+        std::string sql = "CREATE OR REPLACE SECRET zz_flapi_gcs (TYPE gcs, KEY_ID '" + SqlLiteral(creds.hmac_key_id) +
                           "', SECRET '" + SqlLiteral(creds.hmac_secret) + "'";
         if (!creds.endpoint.empty()) {
             std::string host = creds.endpoint;
@@ -465,14 +459,14 @@ bool CredentialManager::configureAzure(duckdb_connection conn) {
     // azure_* settings are not used for that.
     std::string sql;
     if (!creds.connection_string.empty()) {
-        sql = "CREATE OR REPLACE SECRET flapi_azure (TYPE azure, CONNECTION_STRING '" +
+        sql = "CREATE OR REPLACE SECRET zz_flapi_azure (TYPE azure, CONNECTION_STRING '" +
               SqlLiteral(creds.connection_string) + "')";
     } else if (!creds.account_name.empty() && !creds.account_key.empty()) {
-        sql = "CREATE OR REPLACE SECRET flapi_azure (TYPE azure, CONNECTION_STRING '" +
+        sql = "CREATE OR REPLACE SECRET zz_flapi_azure (TYPE azure, CONNECTION_STRING '" +
               SqlLiteral("DefaultEndpointsProtocol=https;AccountName=" + creds.account_name +
                          ";AccountKey=" + creds.account_key + ";EndpointSuffix=core.windows.net") + "')";
     } else if (!creds.account_name.empty()) {
-        sql = "CREATE OR REPLACE SECRET flapi_azure (TYPE azure, PROVIDER credential_chain, ACCOUNT_NAME '" +
+        sql = "CREATE OR REPLACE SECRET zz_flapi_azure (TYPE azure, PROVIDER credential_chain, ACCOUNT_NAME '" +
               SqlLiteral(creds.account_name) + "')";
     }
     if (sql.empty()) {

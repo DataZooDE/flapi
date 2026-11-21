@@ -43,6 +43,12 @@ public:
         : std::runtime_error(RedactUrlsInText(message)) {}
 };
 
+/** A file that exists but exceeds the read limit (distinct from "does not exist"). */
+class FileTooLargeError : public FileOperationError {
+public:
+    explicit FileTooLargeError(const std::string& message) : FileOperationError(message) {}
+};
+
 /**
  * Abstract interface for file operations.
  * Provides a unified API for reading files from local filesystem or remote storage.

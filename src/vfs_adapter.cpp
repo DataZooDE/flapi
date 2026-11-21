@@ -74,8 +74,42 @@ std::string PathSchemeUtils::RedactUrl(const std::string& url) {
             out.erase(host_start, at - host_start + 1);
         }
     }
-    if (const auto q = out.find_first_of("?#", host_start); q != std::string::npos) {
-        out.replace(q, std::string::npos, "?<redacted>");
+    // A fragment is dropped; in the query, only values whose KEY looks like a credential (signature,
+    // token, key, secret, password, SAS parameters, AWS/GCS/Azure auth) are redacted, so unrelated
+    // parameters (`page=2`, `format=csv`) stay readable in logs.
+    if (const auto hash = out.find('#', host_start); hash != std::string::npos) {
+        out.erase(hash);
+    }
+    if (const auto q = out.find('?', host_start); q != std::string::npos) {
+        const std::string query = out.substr(q + 1);
+        std::string rebuilt;
+        std::size_t pos = 0;
+        while (pos <= query.size()) {
+            auto amp = query.find('&', pos);
+            if (amp == std::string::npos) {
+                amp = query.size();
+            }
+            const std::string pair = query.substr(pos, amp - pos);
+            const auto eq = pair.find('=');
+            std::string key = eq == std::string::npos ? pair : pair.substr(0, eq);
+            std::string lowered = key;
+            std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            static const char* const secret_markers[] = {"sig", "token", "key", "secret", "pass", "pwd", "cred",
+                                                          "auth", "x-amz", "x-goog", "sas", "sv", "se", "sp", "sr"};
+            bool secret = false;
+            for (const char* marker : secret_markers) {
+                const std::string m = marker;
+                // Short markers (sv/se/sp/sr: Azure SAS) only as the whole key; others as a substring.
+                secret = secret || (m.size() <= 2 ? lowered == m : lowered.find(m) != std::string::npos);
+            }
+            if (!rebuilt.empty()) {
+                rebuilt += '&';
+            }
+            rebuilt += (secret && eq != std::string::npos) ? key + "=<redacted>" : pair;
+            pos = amp + 1;
+        }
+        out = out.substr(0, q + 1) + rebuilt;
     }
     return out;
 }
@@ -134,9 +168,10 @@ bool PathSchemeUtils::HasDotDotSegment(const std::string& path) {
     std::string decoded;
     decoded.reserve(path.size());
     for (std::size_t i = 0; i < path.size(); ++i) {
-        if (path[i] == '%' && i + 2 < path.size() + 0 && std::isxdigit(static_cast<unsigned char>(path[i + 1])) &&
+        if (path[i] == '%' && i + 2 < path.size() && std::isxdigit(static_cast<unsigned char>(path[i + 1])) &&
             std::isxdigit(static_cast<unsigned char>(path[i + 2]))) {
-            const int value = std::stoi(path.substr(i + 1, 2), nullptr, 16);
+            const auto hex = [](char c) { return std::isdigit(static_cast<unsigned char>(c)) ? c - '0' : std::tolower(c) - 'a' + 10; };
+            const int value = hex(path[i + 1]) * 16 + hex(path[i + 2]);
             if (value == '.' || value == '/' || value == '\\') {
                 decoded += static_cast<char>(value);
                 i += 2;
@@ -415,12 +450,7 @@ std::shared_ptr<BootstrapDb> GetBootstrapDb() {
     } else if (const auto bundled = BundledExtensionDirectory()) {
         extension_dir = bundled->string();
     }
-    bool offline = BundledExtensionDirectory().has_value();
-    if (const char* flag = std::getenv("FLAPI_EXTENSIONS_OFFLINE"); flag != nullptr && *flag != '\0') {
-        std::string v = flag;
-        std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return std::tolower(c); });
-        offline = (v == "1" || v == "true" || v == "yes" || v == "on");
-    }
+    const bool offline = ExtensionsOfflineRequested();
     duckdb_config config = nullptr;
     if (duckdb_create_config(&config) == DuckDBSuccess) {
         if (!extension_dir.empty()) {
@@ -573,14 +603,14 @@ std::string DuckDBVFSProvider::ReadFile(const std::string& path) {
                     }
                     content.append(chunk.data(), static_cast<size_t>(got));
                     if (static_cast<int64_t>(content.size()) > MAX_FILE_SIZE) {
-                        throw FileOperationError("File too large: " + PathSchemeUtils::RedactUrl(path) +
+                        throw FileTooLargeError("File too large: " + PathSchemeUtils::RedactUrl(path) +
                                                  " (exceeds " + std::to_string(MAX_FILE_SIZE) + " byte limit)");
                     }
                 }
                 return;
             }
             if (file_size > MAX_FILE_SIZE) {
-                throw FileOperationError(
+                throw FileTooLargeError(
                     "File too large: " + path + " (" + std::to_string(file_size) +
                     " bytes exceeds " + std::to_string(MAX_FILE_SIZE) + " byte limit)");
             }
@@ -626,8 +656,10 @@ bool DuckDBVFSProvider::FileExists(const std::string& path) {
         try {
             ReadFile(path);
             return true;
-        } catch (const std::exception& e) {
-            return std::string(e.what()).find("File too large") != std::string::npos;
+        } catch (const FileTooLargeError&) {
+            return true;  // it exists; it is just over the read limit
+        } catch (const std::exception&) {
+            return false;
         }
     }
     try {

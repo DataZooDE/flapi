@@ -16,6 +16,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -25,7 +26,8 @@ import requests
 
 from otel_helpers import flapi_binary, free_port
 
-pytestmark = pytest.mark.standalone_server
+pytestmark = [pytest.mark.standalone_server,
+              pytest.mark.skipif(sys.platform == "win32", reason="spawns POSIX process groups (os.setsid / killpg)")]
 
 ENV = {**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"}
 
@@ -790,6 +792,120 @@ class TestOperations:
                 log = output()
                 assert "Could not read template" in log and "HTTP GET error" in log, log[-1500:]
                 assert "Template file not found" not in log, log[-1500:]
+            finally:
+                stop(proc)
+        finally:
+            httpd.shutdown()
+
+
+class TestLocalConfigUnchanged:
+    def test_a_local_template_source_outside_template_path_still_serves(self, workdir):
+        # A local configuration is the operator's own: `../shared/x.sql` must keep working (it is only
+        # a --validate-config warning); only a REMOTE origin refuses it.
+        put(workdir, "flapi.yaml", main_config("./sqls"))
+        put(workdir, "sqls/e.yaml", ENDPOINT.replace("hello.sql", "../shared/x.sql"))
+        put(workdir, "shared/x.sql", SQL)
+        proc, port, output = serve(os.path.join(workdir, "flapi.yaml"), workdir)
+        try:
+            r = requests.get(f"http://127.0.0.1:{port}/remote-hello", timeout=30)
+            assert r.status_code == 200, r.text + output()[-1500:]
+        finally:
+            stop(proc)
+
+    def test_redaction_keeps_unrelated_query_parameters(self, workdir):
+        put(workdir, "flapi.yaml", main_config("./sqls"))
+        url = "http://127.0.0.1:9/flapi.yaml?page=2&format=yaml&X-Amz-Signature=SIGCANARY&sig=SIGCANARY2"
+        r = subprocess.run([flapi_binary(), "-c", url, "--validate-config", "--log-level", "info"],
+                           cwd=workdir, capture_output=True, text=True, timeout=120, env=ENV)
+        out = r.stdout + r.stderr
+        assert "SIGCANARY" not in out, out
+        assert "page=2" in out and "format=yaml" in out, "unrelated parameters should stay readable:\n" + out
+
+
+class TestCacheUnderConcurrency:
+    def _store(self, state, files):
+        hits = []
+
+        class Store(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                hits.append((self.command, self.path))
+                body = files.get(self.path.partition("?")[0])
+                if state.get("down") and self.path.endswith("hello.sql"):
+                    self.send_response(500)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                if state.get("delay") and self.path.endswith("hello.sql"):
+                    time.sleep(state["delay"])
+                self.send_response(200 if body is not None else 404)
+                data = (body or "").encode()
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                if self.command != "HEAD":
+                    self.wfile.write(data)
+
+            do_HEAD = do_GET
+
+        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Store)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        return httpd, hits
+
+    def test_no_request_fails_while_the_store_is_down_after_the_ttl(self, workdir):
+        # Regression: only the first reader of an expired file got the stale copy; its concurrent
+        # siblings found no entry and failed (about 12% 500s in a load test).
+        state = {}
+        files = {"/sqls/manifest.txt": "hello.yaml\n", "/sqls/hello.yaml": ENDPOINT, "/sqls/hello.sql": SQL}
+        httpd, hits = self._store(state, files)
+        try:
+            put(workdir, "flapi.yaml", main_config(f"http://127.0.0.1:{httpd.server_address[1]}/sqls") +
+                "storage:\n  cache:\n    enabled: true\n    ttl: 1\n")
+            proc, port, output = serve(os.path.join(workdir, "flapi.yaml"), workdir)
+            try:
+                url = f"http://127.0.0.1:{port}/remote-hello"
+                assert requests.get(url, timeout=30).status_code == 200
+                state["down"] = True
+                statuses = []
+                stop_at = time.time() + 5
+
+                def hammer():
+                    session = requests.Session()
+                    while time.time() < stop_at:
+                        statuses.append(session.get(url, timeout=30).status_code)
+
+                threads = [threading.Thread(target=hammer) for _ in range(40)]
+                [t.start() for t in threads]
+                [t.join() for t in threads]
+                assert len(statuses) > 200, len(statuses)
+                assert set(statuses) == {200}, {s: statuses.count(s) for s in set(statuses)}
+            finally:
+                stop(proc)
+        finally:
+            httpd.shutdown()
+
+    def test_a_cold_herd_shares_one_store_read(self, workdir):
+        state = {"delay": 0.5}
+        files = {"/sqls/manifest.txt": "hello.yaml\n", "/sqls/hello.yaml": ENDPOINT, "/sqls/hello.sql": SQL}
+        httpd, hits = self._store(state, files)
+        try:
+            put(workdir, "flapi.yaml", main_config(f"http://127.0.0.1:{httpd.server_address[1]}/sqls"))
+            proc, port, output = serve(os.path.join(workdir, "flapi.yaml"), workdir)
+            try:
+                # Startup read the template; make the first request cold by waiting out nothing:
+                # clear the count and use a fresh cache key by restarting is overkill - instead count
+                # how many store GETs 30 simultaneous first-time renders cause after the TTL window.
+                url = f"http://127.0.0.1:{port}/remote-hello"
+                before = len([h for h in hits if h[1].endswith("hello.sql") and h[0] == "GET"])
+                results = []
+                threads = [threading.Thread(target=lambda: results.append(requests.get(url, timeout=60).status_code))
+                           for _ in range(30)]
+                [t.start() for t in threads]
+                [t.join() for t in threads]
+                gets = len([h for h in hits if h[1].endswith("hello.sql") and h[0] == "GET"]) - before
+                assert results == [200] * 30, results
+                assert gets <= 2, f"{gets} store GETs for 30 simultaneous renders"
             finally:
                 stop(proc)
         finally:

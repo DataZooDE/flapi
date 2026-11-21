@@ -4,6 +4,8 @@
 #include <unordered_map>
 #include <chrono>
 #include <mutex>
+#include <future>
+#include <memory>
 #include <atomic>
 #include "vfs_adapter.hpp"
 
@@ -104,16 +106,19 @@ public:
 
 private:
     struct CacheEntry {
-        std::string content;
+        std::shared_ptr<const std::string> content;  // shared: a hit copies outside the lock, not under it
         std::chrono::steady_clock::time_point expires_at;
         std::chrono::steady_clock::time_point last_access;
-        size_t size_bytes;
+        size_t size_bytes = 0;
+        bool refreshing = false;  // one reader is re-fetching this expired entry; the others serve it stale
     };
 
     std::shared_ptr<IFileProvider> _underlying;
     FileCacheConfig _config;
     mutable std::mutex _cache_mutex;
     std::unordered_map<std::string, CacheEntry> _cache;
+    // Cold misses in flight, so a herd of readers of an uncached file shares one store read.
+    std::unordered_map<std::string, std::shared_future<std::shared_ptr<const std::string>>> _inflight;
     CacheStats _stats;
 
     /**

@@ -97,15 +97,39 @@ A template you upload is live as soon as it is read: check it first with
 `flapi_*` MCP tools cannot create, edit, delete or reload endpoint files in a bucket (they answer 501 and say
 so); they can read them.
 
+## Releasing safely
+
+Treat the bucket like a deployment target, not a shared folder:
+
+1. **Upload to an immutable prefix per release** (`s3://b/releases/v42/`): `flapi.yaml` with a relative
+   `template.path: ./sqls`, `sqls/`, and a copy of anything shared (`common/`). Never overwrite objects in
+   place: flAPI reads a file with a size probe followed by a ranged read, so a file replaced in between is read
+   torn (and cached for the TTL).
+2. **Gate on what is in the bucket**: `flapi -c s3://b/releases/v42/flapi.yaml --validate-config` (needs the bucket
+   credentials). A run on your checkout is not equivalent: `template-source: ../shared/x.sql` and
+   `{{include from ../common/x.yaml}}` pass locally but are refused for a remote origin (an include may only reach
+   files below its own remote directory, so copy `common/` into the release prefix). `--validate-config` also
+   fails an endpoint whose SQL file is missing; a replica started without that gate boots and answers 500 for it.
+3. **Switch with `-c` or `FLAPI_CONFIG`** (`-c` wins) to the new prefix and restart replicas one at a time. Drain
+   each from the load balancer before SIGTERM: in-flight requests are cut when the process stops. Roll back by
+   pointing at the previous prefix. `{{env.RELEASE}}` works inside `template.path` (whitelist it under `template:`).
+4. **Expect replicas to differ for up to one TTL**: each replica caches each SQL file for `storage.cache.ttl`
+   independently. YAML and `flapi.yaml` changes need the restart.
+5. Keep sync tools from uploading `.git/` or editor directories: YAML files in hidden directories under
+   `template.path` are loaded as endpoints, as they are locally.
+
 ## Running it in production
 
 - **Startup time.** flAPI reads every endpoint file before it listens, one request at a time: about 1 listing
   request plus 4 per endpoint (`HEAD` + `GET` for the YAML and for the SQL). The HTTP port stays closed until the
   load finishes, so `/health/live` refuses connections meanwhile. Size a Kubernetes `startupProbe` as roughly
-  `4 x endpoints x store round-trip` (200 endpoints at 50 ms is about 40 s) and remember that N replicas starting
+  `4 x endpoints x (store round-trip + ~25 ms of flAPI overhead)` (1000 endpoints against an instant store took
+  about 90 s; 200 endpoints at 50 ms about 60 s) and remember that N replicas starting
   together send N times that many requests to the store.
-- **Store outages.** A template read that fails after its cache TTL serves the last good copy for up to 15 s per
-  retry (and logs a warning) instead of failing the request; with no cached copy the request is a 500 whose log
+- **Store outages and refreshes.** When a cached template expires, one reader re-fetches it while the others keep
+  getting the old copy (no stampede on the store, no waiting on a slow store); simultaneous first reads share one
+  fetch. A refresh that fails serves the last good copy for up to 15 s per retry (and logs a warning) instead of
+  failing the request; with no cached copy the request is a 500 whose log
   line carries the store's status and the redacted URL. `/health` does not probe the store.
 - **Credentials** are read from the environment at startup only: short-lived STS tokens are not refreshed, so
   restart (or use a role the SDK chain refreshes) before they expire.

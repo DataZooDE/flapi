@@ -95,15 +95,6 @@ CacheWarmupMode parseWarmupNode(const YAML::Node& node, const std::string& yaml_
     return *mode;
 }
 
-bool isTruthyEnv(const char* name) {
-    const char* value = std::getenv(name);
-    if (value == nullptr) {
-        return false;
-    }
-    const std::string s(value);
-    return s == "1" || s == "true" || s == "yes";
-}
-
 } // namespace
 
 std::chrono::seconds CacheConfig::getRefreshTimeInSeconds() const {
@@ -580,11 +571,7 @@ void ConfigManager::parseDuckDBConfig() {
         }
     }
     // A bundle that carries its extensions starts offline unless told otherwise.
-    if (const char* offline = std::getenv("FLAPI_EXTENSIONS_OFFLINE"); offline != nullptr && *offline != '\0') {
-        duckdb_config.offline_extensions = isTruthyEnv("FLAPI_EXTENSIONS_OFFLINE");
-    } else {
-        duckdb_config.offline_extensions = bundled.has_value();
-    }
+    duckdb_config.offline_extensions = ExtensionsOfflineRequested();
 }
 
 const DuckDBConfig& ConfigManager::getDuckDBConfig() const {
@@ -1110,11 +1097,15 @@ void ConfigManager::loadEndpointConfigsRecursively(const std::filesystem::path& 
     size_t loaded_endpoints = 0;
     load_errors_.clear();
     VFSReadMemoScope read_memo;  // each remote file is fetched once for the whole load
+    // Refusing a template-source outside template.path protects a REMOTE origin (a bucket or URL that
+    // someone else can write). A local configuration is the operator's own: `../shared/x.sql` there is
+    // legitimate, so it stays a --validate-config warning.
     struct ContainmentScope {
         bool& flag;
-        explicit ContainmentScope(bool& f) : flag(f) { flag = true; }
+        ContainmentScope(bool& f, bool enforce) : flag(f) { flag = enforce; }
         ~ContainmentScope() { flag = false; }
-    } containment_scope(enforce_template_containment_);
+    } containment_scope(enforce_template_containment_,
+                        PathSchemeUtils::IsRemotePath(getTemplatePath()) || PathSchemeUtils::IsRemotePath(base_path.string()));
 
     // One file at a time: normally the first failure aborts the load (a server
     // must not start with a file it could not read), but --validate-config
@@ -2359,7 +2350,14 @@ void ConfigManager::setHttpPort(int port) { http_port = port; }
 std::string ConfigManager::getHttpHost() const { return http_host; }
 void ConfigManager::setHttpHost(const std::string& host) { http_host = host; }
 std::string ConfigManager::getTemplatePath() const { return template_config.path; }
-std::filesystem::path ConfigManager::getFullTemplatePath() const { return std::filesystem::path(base_path) / template_config.path; }
+std::filesystem::path ConfigManager::getFullTemplatePath() const {
+    // Never join a URL as a filesystem path (on Windows `path("s3://b") / x` becomes `s3:\\b`): a remote
+    // template.path is returned as written.
+    if (PathSchemeUtils::IsRemotePath(template_config.path)) {
+        return std::filesystem::path(template_config.path);
+    }
+    return std::filesystem::path(base_path) / template_config.path;
+}
 std::shared_ptr<IFileProvider> ConfigManager::getFileProvider() const {
     // For remote template paths with caching enabled, wrap with CachingFileProvider
     if (storage_config.cache.enabled && PathSchemeUtils::IsRemotePath(template_config.path)) {

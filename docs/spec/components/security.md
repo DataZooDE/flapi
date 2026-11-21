@@ -580,7 +580,7 @@ to files below the same remote directory, `{{env.X}}` stays behind `template.env
 abort startup, built-in routes (`/health`, `/mcp`, `/api/v1/_config`) cannot be overridden, and URLs are redacted
 (`user:pass@`, `?query`, `#fragment`) in logs, errors and config-service/MCP answers. Recommended: read-only,
 prefix-scoped credentials for flAPI; write access only through your normal review pipeline; object versioning.
-S3 credentials are kept as a redacted DuckDB secret (`flapi_s3`), not as `s3_*` settings that SQL could read back.
+S3 credentials are kept as a redacted DuckDB secret (`zz_flapi_s3`), not as `s3_*` settings that SQL could read back.
 
 ## Security Best Practices
 
