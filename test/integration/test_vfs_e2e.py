@@ -351,15 +351,14 @@ class TestVFSPathSecurity:
                 timeout=30
             )
 
-            # A source that leaves template.path is named as such. When the
-            # resolved path happens to exist (sqls/../../../etc/passwd from a
-            # temp dir is the real /etc/passwd) there is no "does not exist"
-            # warning, but the escape warning is always there - and the file
-            # is never read either way.
-            out = result.stdout.lower()
-            assert "escapes template.path" in out or "does not exist" in out, \
-                "Should warn about a template source outside template.path"
-            assert "root:" not in result.stdout, "Should not read /etc/passwd content"
+            # A source that leaves template.path is refused when the endpoint loads (it used
+            # to be a warning, and the file was then run as SQL): validation fails and names
+            # the escape. The file is never read either way.
+            out = (result.stdout + result.stderr).lower()
+            assert result.returncode != 0, "an escaping template-source must fail validation"
+            assert "escapes template.path" in out, \
+                "Should name a template source outside template.path"
+            assert "root:" not in result.stdout + result.stderr, "Should not read /etc/passwd content"
 
 
 class TestVFSMixedPaths:
