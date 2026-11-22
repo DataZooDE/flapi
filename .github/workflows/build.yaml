@@ -389,7 +389,8 @@ jobs:
   integration-tests:
     needs: [linux-build]
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # The job limit must cover the 35-minute test step plus setup.
+    timeout-minutes: 45
     steps:
     - uses: actions/checkout@v4
       with:
@@ -403,6 +404,18 @@ jobs:
 
     - name: Make binary executable
       run: chmod +x build/release/flapi
+
+    # The previous release, for the upgrade test (state it wrote must keep working) and the
+    # byte-for-byte differential. Without it both skip, and the CHANGELOG's "tested" claim is not.
+    - name: Download the previous flapi release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        mkdir -p build/previous
+        gh release download v26.11.21 --repo "${{ github.repository }}" -p flapi-linux-amd64.tar.gz -O - \
+          | tar xz -C build/previous
+        chmod +x build/previous/flapi
+        build/previous/flapi --version
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -444,6 +457,8 @@ jobs:
         # Be explicit: several tests prefer build/debug/flapi when it exists, and
         # a stale debug binary would silently test the wrong build.
         FLAPI_BUILD_TYPE: release
+        FLAPI_OLD_BINARY: ${{ github.workspace }}/build/previous/flapi
+        FLAPI_REFERENCE_BINARY: ${{ github.workspace }}/build/previous/flapi
       run: |
         # pipefail matters: without it the step's exit code is tee's, so a failing
         # pytest run reports success. Combined with the continue-on-error that used

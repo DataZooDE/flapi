@@ -134,7 +134,7 @@ FLAPI_EXTENSION_DIRECTORY=/opt/flapi/extensions FLAPI_EXTENSIONS_OFFLINE=1 flapi
 |---|---|
 | `ghcr.io/datazoode/flapi:latest` | newest release, slim (binary only) |
 | `:v26.10.31` | that release, slim |
-| `:v26.10.31-runtime` | same binary with `core_functions httpfs ducklake fts json postgres sqlite parquet bigquery` pre-installed and `FLAPI_EXTENSION_DIRECTORY=/opt/flapi/extensions` set |
+| `:v26.10.31-runtime` | same binary with `httpfs ducklake fts postgres sqlite` (and `bigquery` once published for its DuckDB version) pre-installed; core_functions/parquet/json/icu are built in and `FLAPI_EXTENSION_DIRECTORY=/opt/flapi/extensions` set |
 | `:main`, `:main-runtime`, `:sha-<commit>` | builds of `main` (not releases) |
 
 There is no `:latest-runtime`. Pin a version.

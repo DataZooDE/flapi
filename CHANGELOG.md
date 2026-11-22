@@ -43,6 +43,8 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   a new DuckLake catalog) use DuckDB 2.0's storage version and DuckLake spec 1.1, which DuckDB 1.x cannot read. To
   roll back to a 1.5-based flAPI keep a copy of the state directory, or rebuild the caches. Existing files are not
   converted.
+- **`-runtime` Docker image:** `bigquery@community` is installed only when the community extension exists for
+  DuckDB 2.0.1 (not yet at the time of writing); `INSTALL bigquery FROM community` at runtime works once it does.
 - **Extension directory is per DuckDB version.** Offline images (`FLAPI_EXTENSIONS_OFFLINE`) must re-populate
   `FLAPI_EXTENSION_DIRECTORY` for v2.0.1 (`flapi extensions install`); core_functions, parquet, json and icu are no
   longer needed there.

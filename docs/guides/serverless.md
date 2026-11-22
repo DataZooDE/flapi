@@ -132,10 +132,10 @@ flapi cache refresh -c flapi.yaml --all     # writes ./state/cache.ducklake + ./
 
 ## 4. Fast, offline startup
 
-Use the `-runtime` image. It carries `core_functions`, every default
-extension (`httpfs`, `ducklake`, `fts`, `json`, `postgres`, `sqlite`,
-`parquet`) and `bigquery`,
-and sets `FLAPI_EXTENSION_DIRECTORY`:
+Use the `-runtime` image. It carries every default extension that is not built
+into flapi (`httpfs`, `ducklake`, `fts`, `postgres`, `sqlite`; `core_functions`,
+`parquet`, `json` and `icu` are built in) and `bigquery` when the community
+extension is published for its DuckDB version, and sets `FLAPI_EXTENSION_DIRECTORY`:
 
 ```dockerfile
 FROM ghcr.io/datazoode/flapi:<version>-runtime
