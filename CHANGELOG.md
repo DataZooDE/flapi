@@ -2,6 +2,61 @@
 
 All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (the date the binary set was cut). Earlier history is in the git log.
 
+## Unreleased
+
+### DuckDB 2.0.1, and a faster, leaner server (#241)
+
+- **DuckDB 1.5.5 → 2.0.1.** core_functions, parquet, json and icu are built into the binary (no download, never
+  installed or packed); a state directory written by 1.5.5 (`duckdb.db_path`, DuckLake catalogs) keeps working
+  unchanged (tested); files 2.0.1 *creates* use its newest formats (see Upgrade notes).
+- **Throughput, latency and memory** (same 50-endpoint benchmark, 24 cores, against v26.11.21): a simple endpoint
+  went from ~1,500 to ~7,600 req/s at 64 clients and from 22 to ~5,500 req/s on a single keep-alive client; point
+  lookups 1.6-15x, parquet scans 2.4x at 8 clients and equal at 64; peak memory is 10-50% lower in every scenario,
+  idle memory 214 -> 175 MB. Row-heavy pages at 64 clients are ~20% slower (DuckDB 2.0's prepared-statement
+  execution) and startup takes ~0.1 s instead of ~0.05 s (DuckDB 2.0's database open). Causes, each measured on
+  its own:
+  - `TCP_NODELAY` on every connection: every keep-alive response after the first waited ~40 ms before.
+  - The `COUNT(*)` for `total_count` runs only when the page cannot tell the total (a full page, or an empty page
+    past the end); MCP tool calls never count; new endpoint option `total-count: false` drops `total_count` and
+    `X-Total-Count` and never counts (`next` still works).
+  - Per-thread connection reuse with cached prepared statements (`FLAPI_NO_CONNECTION_REUSE=1` opts out).
+  - Rows are written straight into the response text (REST JSON, CSV, MCP); a 200k-row response peaked at
+    ~640 MB before, ~260 MB now, and is ~3x faster.
+- **Memory and threads.** DuckDB's async I/O pool is off when no remote storage is configured, and 2x the worker
+  threads when it is; DuckDB `threads`, the HTTP handler pool and the allocator arenas follow the CPUs the process
+  may use (affinity mask, container CPU quota) instead of every host CPU. Configured values (`duckdb: threads`,
+  `duckdb: async_threads`, `DUCKDB_JE_MALLOC_CONF`) win.
+- **Startup.** First start on an empty host 1.8 s → 0.1 s; caches whose table exists are ready at once after a
+  restart (no burst of `503 cache_warming`).
+- **Fixed:** an ENUM column could crash the server; NULL DATE/TIME/INTERVAL/ENUM values printed leftover memory;
+  INTERVAL prints as DuckDB's text (`3 days 04:00:00`) and works in Arrow (was a 500); doubles in exponent form
+  (`1e300` printed as `1000.0`); Arrow responses over ~2.7M rows failed; a response body over 1 MiB reset the next
+  request on the same keep-alive connection; time travel to a future timestamp answers `400 snapshot_in_future`
+  (was 500); populate-template validation missed errors under DuckDB 2.0 (`ATTACH ... (READ_ONLY)`, CTAS).
+- **Telemetry** sends one aggregated event per route/status per minute (count, mean and max duration) instead of
+  one per request.
+- Crow 1.2.0 → 1.3.4.
+
+### Upgrade notes
+
+- **New database files and DuckLake catalogs are 2.0-only.** Files created by this version (a new `duckdb.db_path`,
+  a new DuckLake catalog) use DuckDB 2.0's storage version and DuckLake spec 1.1, which DuckDB 1.x cannot read. To
+  roll back to a 1.5-based flAPI keep a copy of the state directory, or rebuild the caches. Existing files are not
+  converted.
+- **Extension directory is per DuckDB version.** Offline images (`FLAPI_EXTENSIONS_OFFLINE`) must re-populate
+  `FLAPI_EXTENSION_DIRECTORY` for v2.0.1 (`flapi extensions install`); core_functions, parquet, json and icu are no
+  longer needed there.
+- **SQL behaviour changes in DuckDB 2.0** that can affect templates: the single-arrow lambda `x -> ...` is an error
+  (write `lambda x : ...`); `//` and `%` by zero raise an error; any error inside an explicit transaction aborts it;
+  `MERGE`/`UPDATE ... FROM` with several matching source rows give a nondeterministic value (keep cache merge keys
+  unique). See DuckDB's migration guide.
+- **Arrow** honours an explicit `?limit=` / `?offset=` (it ignored them); without them it still streams the full
+  result.
+- **INTERVAL** values render as DuckDB's text (`1 day 00:01:00`), not `months:days.millis`.
+- **`flapi.db.result_set_bytes`** (`tracing.db_profiling: summary`) is gone: DuckDB 2.0 has no result-size metric;
+  the response size is on the request span as `flapi.result.bytes`.
+- Nested STRUCT/MAP key order inside a row is not specified and can differ from earlier versions.
+
 ## v26.11.21 — remote templates authenticate on S3, GCS and Azure, and stay safe to operate
 
 ### Remote templates: credentials, hardening and operations (#234, #235, #236, #238)
