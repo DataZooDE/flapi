@@ -1,8 +1,8 @@
 """Keep-alive responses are not delayed by Nagle's algorithm (#241).
 
 Crow never set TCP_NODELAY, so on a keep-alive connection every response after the first
-waited ~40 ms for the client's delayed ACK. flAPI now sets it on the listening socket, which
-accepted sockets inherit.
+waited ~40 ms for the client's delayed ACK. flAPI now has Crow (1.3+) set it on every accepted
+socket.
 """
 import shutil
 import statistics
@@ -17,8 +17,7 @@ from test_duckdb_defaults import project
 from test_duckdb_upgrade import Run
 from otel_helpers import flapi_binary
 
-pytestmark = [pytest.mark.standalone_server,
-              pytest.mark.skipif(sys.platform == "win32", reason="Windows sockets do not inherit TCP_NODELAY")]
+pytestmark = pytest.mark.standalone_server
 
 
 @pytest.fixture

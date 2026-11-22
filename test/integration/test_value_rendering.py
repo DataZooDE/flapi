@@ -55,3 +55,13 @@ def test_arrow_pages_only_when_the_client_asks(tmp_path):
     assert full.num_rows == 1000                       # no silent 100-row default for Arrow
     assert page.column("id").to_pylist() == list(range(20, 30))
     assert len(json_page["data"]) == 100              # JSON keeps its default page
+
+
+def test_doubles_in_exponent_form_keep_their_exponent(tmp_path):
+    # crow 1.2's trailing-zero trimmer cut the exponent: 1e300 came out as 1000.0 (crow 1.3.4 fixed it).
+    run = mini_server(tmp_path, "SELECT 1e300::DOUBLE AS big, 1.5e-7::DOUBLE AS small, [2e21::DOUBLE] AS l\n")
+    try:
+        row = requests.get(f"{run.base}/q", timeout=30).json()[0]
+    finally:
+        run.stop()
+    assert row == {"big": 1e300, "small": 1.5e-7, "l": [2e21]}, row

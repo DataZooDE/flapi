@@ -41,7 +41,7 @@ public:
         crow::logger::setHandler(&restore);
         crow::logger::setLogLevel(_previous_level);
     }
-    void log(std::string message, crow::LogLevel level) override {
+    void log(const std::string& message, crow::LogLevel level) override {
         if (level >= crow::LogLevel::Warning) {
             std::lock_guard<std::mutex> lock(_mutex);
             _lines.push_back(std::move(message));

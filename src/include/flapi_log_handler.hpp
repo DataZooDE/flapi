@@ -47,7 +47,7 @@ public:
     // only change the format.
     void setFormat(Format format);
 
-    void log(std::string message, crow::LogLevel level) override;
+    void log(const std::string& message, crow::LogLevel level) override;
 
     // Exposed for tests: asserting on the exact rendered line is the only way to
     // prove a key is absent rather than merely empty.

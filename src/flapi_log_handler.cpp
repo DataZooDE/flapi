@@ -151,7 +151,8 @@ void FlapiLogHandler::releasePendingRequestLine() {
     crow::logger(level) << message;
 }
 
-void FlapiLogHandler::log(std::string message, crow::LogLevel level) {
+void FlapiLogHandler::log(const std::string& raw_message, crow::LogLevel level) {
+    std::string message = raw_message;   // redacted / moved below (Crow 1.3 passes a const reference)
     // Every log line: a URL must not carry user:pass@, a presigned signature or a token.
     if (message.find("://") != std::string::npos) {
         message = RedactUrlsInText(message);

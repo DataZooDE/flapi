@@ -29,88 +29,6 @@
 #include "mcp_session_manager.hpp"
 #include "mcp_client_capabilities.hpp"
 
-#ifndef _WIN32
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <sys/resource.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
-#endif
-
-namespace {
-// Crow never sets TCP_NODELAY on accepted sockets, so every keep-alive response after the first
-// one waited ~40 ms for Nagle + delayed ACK: the largest per-request cost flAPI had. Crow does
-// not expose its acceptor, so find the listening socket by port; accepted sockets inherit the
-// option from it (Linux, BSD/macOS). Windows does not inherit it and keeps the old behaviour.
-//
-// Sockets ACCEPTED before the listener had the option inherit nothing, and keep Nagle for the
-// life of the connection: a client (a load balancer's pooled connection, a health checker)
-// that connected in the first ~50 ms after the bind paid 40 ms on every response after its
-// first, for good. Connected sockets on the port are therefore set too. Returns whether the
-// listener was found.
-bool EnableNoDelayOnListener(uint16_t port) {
-    bool found_listener = false;
-#ifndef _WIN32
-    std::vector<int> fds;
-    std::error_code ec;
-    for (const auto& entry : std::filesystem::directory_iterator("/proc/self/fd", ec)) {
-        try {
-            fds.push_back(std::stoi(entry.path().filename().string()));
-        } catch (const std::exception&) {
-        }
-    }
-    if (ec || fds.empty()) {
-        // No /proc (macOS, BSD): probe the descriptor range.
-        struct rlimit limit {};
-        int max_fd = 1024;
-        if (getrlimit(RLIMIT_NOFILE, &limit) == 0 && limit.rlim_cur != RLIM_INFINITY) {
-            max_fd = static_cast<int>(std::min<rlim_t>(limit.rlim_cur, 65536));
-        }
-        fds.clear();
-        for (int fd = 0; fd < max_fd; ++fd) {
-            fds.push_back(fd);
-        }
-    }
-    for (const int fd : fds) {
-        struct stat st {};
-        if (fstat(fd, &st) != 0 || !S_ISSOCK(st.st_mode)) {
-            continue;
-        }
-        struct sockaddr_storage addr {};
-        socklen_t addr_len = sizeof(addr);
-        if (getsockname(fd, reinterpret_cast<struct sockaddr*>(&addr), &addr_len) != 0) {
-            continue;
-        }
-        uint16_t bound = 0;
-        if (addr.ss_family == AF_INET) {
-            bound = ntohs(reinterpret_cast<struct sockaddr_in*>(&addr)->sin_port);
-        } else if (addr.ss_family == AF_INET6) {
-            bound = ntohs(reinterpret_cast<struct sockaddr_in6*>(&addr)->sin6_port);
-        }
-        if (bound != port) {
-            continue;
-        }
-        int listening = 0;
-        socklen_t len = sizeof(listening);
-        if (getsockopt(fd, SOL_SOCKET, SO_ACCEPTCONN, &listening, &len) != 0) {
-            continue;
-        }
-        const int one = 1;
-        if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)) != 0) {
-            if (listening) {
-                CROW_LOG_WARNING << "could not set TCP_NODELAY on the listening socket";
-            }
-            continue;
-        }
-        found_listener = found_listener || listening != 0;
-    }
-#else
-    (void)port;
-#endif
-    return found_listener;
-}
-}  // namespace
-
 namespace flapi {
 
 APIServer::APIServer(std::shared_ptr<ConfigManager> cm, 
@@ -419,7 +337,7 @@ void APIServer::setupRoutes() {
                     if (!armed) {
                         return;
                     }
-                    asio::post(*req->io_service,
+                    asio::post(*req->io_context,
                                [res = res, keepalive = keepalive, rc = rc, code = code,
                                 body = std::move(body),
                                 headers = std::move(headers),
@@ -943,14 +861,13 @@ void APIServer::run(int port) {
     // so an EADDRINUSE printed "started" followed by the error, and the MCP
     // "ready at" line was printed from a constructor with a hard-coded
     // localhost:8080 whatever -p said.
+    auto announced = std::make_shared<std::atomic<bool>>(false);
     {
-        auto announced = std::make_shared<std::atomic<bool>>(false);
         const std::string scheme = https.enabled ? "https" : "http";
         app.tick(std::chrono::milliseconds(50), [this, announced, scheme, bind_host]() {
             if (announced->exchange(true)) {
                 return;
             }
-            EnableNoDelayOnListener(app.port());
             const std::string base = scheme + "://" + bind_host + ":" + std::to_string(app.port());
             CROW_LOG_INFO << "flAPI server listening on " << base
                           << " (REST API; MCP at " << base << "/mcp/jsonrpc)";
@@ -1017,6 +934,9 @@ void APIServer::run(int port) {
            .server_name("flAPI")
            .concurrency(serverThreadCount(UsableCpus()))
            .use_compression(crow::compression::GZIP)
+           // Crow 1.3 sets TCP_NODELAY on every accepted socket (all platforms). Without it every
+           // keep-alive response after the first waited ~40 ms for Nagle + delayed ACK.
+           .tcp_nodelay(true)
            // Crow writes a body above stream_threshold (default 1 MiB) synchronously on the io
            // thread in 16 KiB pieces and then never reads the connection again: the next
            // keep-alive request on it is reset. Every body takes the async write instead.
@@ -1030,6 +950,9 @@ void APIServer::run(int port) {
            .server_name("flAPI")
            .concurrency(serverThreadCount(UsableCpus()))
            .use_compression(crow::compression::GZIP)
+           // Crow 1.3 sets TCP_NODELAY on every accepted socket (all platforms). Without it every
+           // keep-alive response after the first waited ~40 ms for Nagle + delayed ACK.
+           .tcp_nodelay(true)
            // Crow writes a body above stream_threshold (default 1 MiB) synchronously on the io
            // thread in 16 KiB pieces and then never reads the connection again: the next
            // keep-alive request on it is reset. Every body takes the async write instead.
@@ -1062,19 +985,9 @@ void APIServer::run(int port) {
     // effective from the moment it does, so a stop requested at any point
     // during startup takes effect without anyone having to detect WHEN crow
     // became stoppable.
-    // TCP_NODELAY as soon as the acceptor exists, not on the first tick 50 ms later (see
-    // EnableNoDelayOnListener). Polled at 1 ms until the listener is found or the server ends;
-    // a configured port 0 is only known on the tick, which still covers it.
-    const uint16_t configured_port = configManager->getHttpPort();
-    bool nodelay_set = configured_port == 0;
-    const auto nodelay_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (serving.wait_for(std::chrono::milliseconds(nodelay_set ? 20 : 1)) != std::future_status::ready) {
+    while (serving.wait_for(std::chrono::milliseconds(20)) != std::future_status::ready) {
         if (stop_requested_.load(std::memory_order_acquire)) {
             app.stop();
-        }
-        if (!nodelay_set) {
-            nodelay_set = EnableNoDelayOnListener(configured_port) ||
-                          std::chrono::steady_clock::now() > nodelay_deadline;
         }
     }
 
@@ -1083,6 +996,13 @@ void APIServer::run(int port) {
     // that answers nothing and cannot be stopped. main catches it, logs, and
     // shuts down cleanly.
     serving.get();
+
+    // Crow 1.3 no longer throws when the bind fails: it logs "Failed to bind" and returns from
+    // run() normally. A server that never got to serve and was not asked to stop did not start,
+    // and main must exit non-zero (a supervisor cannot tell an exit 0 from a clean shutdown).
+    if (!announced->load() && !stop_requested_.load(std::memory_order_acquire)) {
+        throw std::runtime_error("the HTTP listener did not start (see the error above, e.g. the port is in use)");
+    }
 }
 
 void APIServer::warmEndpoint(const EndpointConfig& endpoint)
