@@ -7,6 +7,7 @@
 #include "duckdb.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
+#include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/subquery_expression.hpp"
 #include "duckdb/parser/expression/window_expression.hpp"
@@ -36,8 +37,8 @@ std::string Lower(std::string value) {
 // Walks one parsed SELECT and answers whether it reads DuckLake tables only.
 class CountableWalker {
 public:
-    CountableWalker(std::string alias, std::vector<std::string>& functions)
-        : alias_(Lower(std::move(alias))), functions_(functions) {}
+    CountableWalker(std::string alias, std::vector<std::string>& functions, std::vector<TableName>& tables)
+        : alias_(Lower(std::move(alias))), functions_(functions), tables_(tables) {}
 
     bool ok() const { return ok_; }
 
@@ -103,6 +104,11 @@ private:
         if (!ok_) {
             return;
         }
+        if (r.sample) {
+            // TABLESAMPLE on a table reference: as random as USING SAMPLE.
+            ok_ = false;
+            return;
+        }
         switch (r.type) {
             case duckdb::TableReferenceType::BASE_TABLE: {
                 auto& base = r.Cast<duckdb::BaseTableRef>();
@@ -117,6 +123,9 @@ private:
                     ok_ = false;
                     return;
                 }
+                tables_.push_back(TableName{Lower(name.Catalog().GetIdentifierName()),
+                                            Lower(name.Schema().GetIdentifierName()),
+                                            Lower(name.Name().GetIdentifierName())});
                 if (base.at_clause) {
                     expr(base.at_clause->Expression().get(), ctes);
                 }
@@ -170,6 +179,17 @@ private:
                 return;
             }
             node(*sq.Subquery()->node, ctes);
+        } else if (e->GetExpressionClass() == duckdb::ExpressionClass::COLUMN_REF) {
+            // `current_date`, `current_timestamp`, `user`, ... without parentheses
+            // parse as a column and bind as the function when no column has the
+            // name: judged by name too (a real column so named just never caches).
+            const auto& c = e->Cast<duckdb::ColumnRefExpression>();
+            if (!c.IsQualified()) {
+                const auto name = Lower(c.GetColumnName().GetIdentifierName());
+                if (UnstableFunctionName(name)) {
+                    functions_.push_back(name);
+                }
+            }
         } else if (e->GetExpressionClass() == duckdb::ExpressionClass::WINDOW) {
             // Window functions are judged by name like any other.
             functions_.push_back(Lower(e->Cast<duckdb::WindowExpression>().FunctionName().GetIdentifierName()));
@@ -180,10 +200,62 @@ private:
 
     std::string alias_;
     std::vector<std::string>& functions_;
+    std::vector<TableName>& tables_;
     bool ok_ = true;
 };
 
 }  // namespace
+
+// Audited in the vendored DuckDB (2.0.1) for functions that read the clock,
+// the transaction, the session or a random source while duckdb_functions()
+// lets them through (no VOLATILE overload, not every overload
+// CONSISTENT_WITHIN_QUERY):
+//   * age(TIMESTAMP) - core_functions/scalar/date/age.cpp reads
+//     MetaTransaction::start_timestamp yet is CONSISTENT; the ICU TIMESTAMPTZ
+//     overload (CurrentMidnight) is CONSISTENT_WITHIN_QUERY, so the name is mixed;
+//   * json_serialize_plan - binds its argument against the live catalogs of
+//     every attached database, not only DuckLake.
+// Every other mixed name is a TIMESTAMPTZ overload that reads the TimeZone /
+// Calendar setting (fixed for the server). The rest of the list is already
+// refused by its stability and is named here so that a future DuckDB that
+// relabels one cannot slip it through.
+bool UnstableFunctionName(const std::string& lower_name) {
+    static const std::set<std::string> kNames = {
+        "age", "json_serialize_plan",
+        // clock and transaction
+        "now", "today", "current_date", "current_time", "current_timestamp", "get_current_time",
+        "get_current_timestamp", "transaction_timestamp", "localtime", "localtimestamp", "txid_current",
+        // session
+        "current_setting", "getvariable", "current_query", "current_schema", "current_schemas",
+        "current_database", "current_catalog", "current_user", "current_role", "session_user", "user",
+        "in_search_path",
+        // random and sequences
+        "random", "setseed", "uuid", "gen_random_uuid", "uuidv4", "uuidv7", "nextval", "currval",
+    };
+    return kNames.count(lower_name) > 0;
+}
+
+void AppendKeyPart(std::string& key, std::string_view part) {
+    key += std::to_string(part.size());
+    key += ':';
+    key.append(part.data(), part.size());
+}
+
+bool CountCacheSwitch::usable(std::int64_t now_ms) const {
+    return !off_.load(std::memory_order_relaxed) || now_ms >= retry_at_ms_.load(std::memory_order_relaxed);
+}
+
+bool CountCacheSwitch::failed(std::int64_t now_ms) {
+    retry_at_ms_.store(now_ms + kRetryAfterMs, std::memory_order_relaxed);
+    return !off_.exchange(true);
+}
+
+bool CountCacheSwitch::succeeded() {
+    if (!off_.load(std::memory_order_relaxed)) {
+        return false;
+    }
+    return off_.exchange(false);
+}
 
 CountCache::CountCache(std::size_t capacity) : capacity_(capacity == 0 ? 1 : capacity) {}
 
@@ -228,21 +300,40 @@ std::optional<CountCache::Verdict> CountCache::verdict(const std::string& sql) {
     if (it == verdicts_.end()) {
         return std::nullopt;
     }
-    return it->second;
+    return it->second.verdict;
+}
+
+std::optional<bool> CountCache::tablesVerdict(const std::string& sql, std::int64_t generation) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = verdicts_.find(sql);
+    if (it == verdicts_.end() || it->second.tables_generation != generation) {
+        return std::nullopt;
+    }
+    return it->second.tables_ok;
+}
+
+void CountCache::storeTablesVerdict(const std::string& sql, std::int64_t generation, bool tables_ok) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = verdicts_.find(sql);
+    if (it == verdicts_.end() || generation < it->second.tables_generation) {
+        return;
+    }
+    it->second.tables_generation = generation;
+    it->second.tables_ok = tables_ok;
 }
 
 CountCache::Verdict CountCache::storeVerdict(const std::string& sql, bool eligible) {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto it = verdicts_.find(sql);
     if (it != verdicts_.end()) {
-        return it->second;   // judged concurrently: keep the first id
+        return it->second.verdict;   // judged concurrently: keep the first id
     }
     if (verdicts_.size() >= kMaxVerdicts) {
         // Counts keyed by a forgotten id are never looked up again and age out.
         verdicts_.clear();
     }
     const Verdict v{eligible, next_verdict_id_++};
-    verdicts_.emplace(sql, v);
+    verdicts_.emplace(sql, StoredVerdict{v});
     return v;
 }
 
@@ -260,6 +351,12 @@ void CountCache::clear() {
 
 bool CountableQuery(const std::string& sql, const std::string& ducklake_alias,
                     std::vector<std::string>& functions) {
+    std::vector<TableName> tables;
+    return CountableQuery(sql, ducklake_alias, functions, tables);
+}
+
+bool CountableQuery(const std::string& sql, const std::string& ducklake_alias,
+                    std::vector<std::string>& functions, std::vector<TableName>& tables) {
     if (ducklake_alias.empty()) {
         return false;
     }
@@ -274,9 +371,12 @@ bool CountableQuery(const std::string& sql, const std::string& ducklake_alias,
         if (!select.node) {
             return false;
         }
-        CountableWalker walker(ducklake_alias, functions);
+        CountableWalker walker(ducklake_alias, functions, tables);
         walker.node(*select.node, {});
-        return walker.ok();
+        if (!walker.ok()) {
+            return false;
+        }
+        return std::none_of(functions.begin(), functions.end(), UnstableFunctionName);
     } catch (const std::exception&) {
         return false;
     }

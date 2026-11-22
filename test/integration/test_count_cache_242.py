@@ -58,6 +58,29 @@ FILES = {
     "joined.yaml": cached("/joined", "joined.sql"),
     "joined.sql": (f"SELECT c.* FROM {TABLE} c JOIN read_csv('{{{{{{conn.path}}}}}}') s USING (id) "
                    "ORDER BY c.id\n"),
+    # age(ts) reads the transaction start although DuckDB reports its TIMESTAMP overload CONSISTENT.
+    "aged.yaml": cached("/aged", "aged.sql"),
+    "aged.sql": (f"SELECT * FROM {TABLE} WHERE age(TIMESTAMP '2000-01-01') > INTERVAL '1 day' "
+                 "ORDER BY id\n"),
+    # Bare current_timestamp parses as a column reference and binds as the function.
+    "today.yaml": cached("/today", "today.sql"),
+    "today.sql": f"SELECT * FROM {TABLE} WHERE current_timestamp > TIMESTAMP '2000-01-01' ORDER BY id\n",
+    # TABLESAMPLE on a table reference is random like USING SAMPLE.
+    "sampled.yaml": cached("/sampled", "sampled.sql"),
+    "sampled.sql": f"SELECT * FROM {TABLE} TABLESAMPLE 90% (bernoulli) ORDER BY id\n",
+    # A DuckLake VIEW is <alias>.<schema>.<name> too, but its body reads whatever it likes.
+    "viewed.yaml": cached("/viewed", "viewed.sql"),
+    "viewed.sql": "SELECT * FROM cache.main.over_csv ORDER BY id\n",
+    "mkview.yaml": ("url-path: /mkview\nmethod: POST\ntemplate-source: mkview.sql\nconnection: [src]\n"
+                    "operation:\n  type: write\n  returns-data: false\n  transaction: false\n"),
+    "mkview.sql": "CREATE OR REPLACE VIEW cache.main.over_csv AS SELECT * FROM read_csv('{{{conn.path}}}')\n",
+    # Two bound strings whose values could be spliced into each other's.
+    "pair.yaml": cached("/pair", "pair.sql",
+                        "request:\n" + "".join(
+                            f"  - field-name: {n}\n    field-in: query\n    required: true\n"
+                            "    validators:\n      - type: string\n        max-length: 50\n" for n in "ab")),
+    "pair.sql": (f"SELECT * FROM {TABLE} WHERE id >= 10 * length({{{{ params.a }}}}) "
+                 "AND id < 1000 - length({{ params.b }}) ORDER BY id\n"),
     # A write endpoint that changes the cached table outside any refresh.
     "add.yaml": ("url-path: /add\nmethod: POST\ntemplate-source: add.sql\nconnection: [src]\n"
                  "operation:\n  type: write\n  returns-data: false\n  transaction: false\n"),
@@ -137,7 +160,7 @@ def get(root, s, route, query=""):
 def counted(names):
     """How many COUNT queries ran. Builds before #242 name no query on the plain path
     ("duckdb.query" for the page and the count alike), hence the page is discounted."""
-    queries = [n for n in names if n not in ("count cache generation", "count cache check")]
+    queries = [n for n in names if n not in ("count cache generation", "count cache check", "count cache tables")]
     return len(queries) - 1
 
 
@@ -267,3 +290,44 @@ def test_a_refresh_by_another_process_is_seen(root, servers):
     for server, where in ((writer, root), (replica, replica_root)):
         body, _ = get(where, server, "/all")
         assert_total(body, 275)
+
+
+def test_time_dependent_functions_and_samples_always_count(root, servers):
+    write_project(root)
+    write_source(root, rows(250))
+    s = servers(root)
+    s.refresh("all")
+    for route in ("/aged", "/today", "/sampled"):
+        for _ in range(3):
+            body, names = get(root, s, route)
+            assert counted(names) == 1, (route, names)
+    body, _ = get(root, s, "/aged")
+    assert_total(body, 250)
+
+
+def test_a_ducklake_view_is_not_a_ducklake_table(root, servers):
+    write_project(root)
+    write_source(root, rows(250))
+    s = servers(root)
+    s.refresh("all")
+    r = requests.post(f"{s.base}/mkview", timeout=30)
+    assert r.status_code in (200, 201), r.text
+    for _ in range(2):
+        body, names = get(root, s, "/viewed")
+        assert_total(body, 250)
+        assert counted(names) == 1, names
+    write_source(root, rows(180))                    # the view reads it; no snapshot changes
+    body, _ = get(root, s, "/viewed")
+    assert_total(body, 180)
+
+
+def test_bound_values_cannot_collide_in_the_key(root, servers):
+    write_project(root)
+    write_source(root, rows(250))
+    s = servers(root)
+    s.refresh("all")
+    # Joined as name=value\x1f these two produced the same key: a=p\x1fb=q\x1fb=r\x1f.
+    body, _ = get(root, s, "/pair", "?a=p%1Fb%3Dq&b=r")
+    assert_total(body, 200)                           # 50 <= id < 999
+    body, _ = get(root, s, "/pair", "?a=p&b=q%1Fb%3Dr")
+    assert_total(body, 240)                           # 10 <= id < 995

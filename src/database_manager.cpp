@@ -876,6 +876,17 @@ QueryResult DatabaseManager::executeQuery(const EndpointConfig& endpoint, std::m
     }, "query");
 }
 
+
+namespace {
+// Steady-clock milliseconds, for the count cache's retry backoff (#242).
+std::int64_t SteadyNowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+}  // namespace
+
 QueryResult DatabaseManager::executeQueryOnce(const EndpointConfig& endpoint, std::map<std::string, std::string>& params,
                                               bool with_pagination, TotalCount total, const ResultSink* sink)
 {
@@ -897,20 +908,26 @@ QueryResult DatabaseManager::executeQueryOnce(const EndpointConfig& endpoint, st
     CountCacheUse count_use;
     const CountCacheUse* count_cache = nullptr;
     if (count_cache_ && with_pagination && total == TotalCount::Exact && endpoint.cache.enabled &&
-        !endpoint.cache.table.empty() && count_cache_->usable.load(std::memory_order_relaxed)) {
+        !endpoint.cache.table.empty() && count_cache_->power.usable(SteadyNowMs())) {
         count_use.state = count_cache_.get();
+        // Length-prefixed parts: no value can be read as part of another.
         for (const auto& spec : prepared.bindings) {
             const auto it = bind_values.find(spec.field_name);
-            count_use.bound += spec.field_name;
+            AppendKeyPart(count_use.bound, spec.field_name);
             if (it == bind_values.end()) {
-                count_use.bound += '\x02';   // absent: binds NULL or ''
+                count_use.bound += '-';   // absent: binds NULL or ''
             } else {
                 count_use.bound += '=';
-                count_use.bound += it->second;
+                AppendKeyPart(count_use.bound, it->second);
             }
-            count_use.bound += '\x1f';
+            if (count_use.bound.size() > kMaxCountKeyBytes) {
+                count_use.too_long = true;
+                break;
+            }
         }
-        count_cache = &count_use;
+        if (!count_use.too_long) {
+            count_cache = &count_use;
+        }
     }
 
     // Endpoint reads reuse this thread's connection and its prepared statements.
@@ -1755,7 +1772,9 @@ namespace {
 // within a query - now(), current_date, getvariable, current_setting and the
 // like, whose answer changes between requests. Mixed names (`+`, date_part:
 // their TIMESTAMPTZ overloads read the TimeZone setting, which is fixed for the
-// server) pass. A macro or an unknown name fails.
+// server) pass - except those CountableQuery already refused by name
+// (UnstableFunctionName: age reads the transaction start in a CONSISTENT
+// overload). A macro or an unknown name fails.
 bool FunctionsAreStable(QueryExecutor& executor, const std::vector<std::string>& functions) {
     std::set<std::string> names(functions.begin(), functions.end());
     if (names.empty()) {
@@ -1786,6 +1805,49 @@ bool FunctionsAreStable(QueryExecutor& executor, const std::vector<std::string>&
     return stable.size() == names.size();
 }
 
+// Whether every three-part name is a base TABLE of its catalog (#242). The
+// caller memoises the answer per rendered SQL and generation, so this runs
+// (and the SQL is re-parsed for its names) only when the catalog changed.
+bool TablesAreDuckLakeTables(QueryExecutor& executor, const std::vector<TableName>& tables) {
+    if (tables.empty()) {
+        return true;
+    }
+    std::string where;
+    std::set<std::string> distinct;
+    for (const auto& t : tables) {
+        distinct.insert(t.catalog + '\x1f' + t.schema + '\x1f' + t.name);
+        where += (where.empty() ? "" : " OR ") + std::string("(lower(database_name) = '") +
+                 sql::EscapeSqlLiteral(t.catalog) + "' AND lower(schema_name) = '" + sql::EscapeSqlLiteral(t.schema) +
+                 "' AND lower(table_name) = '" + sql::EscapeSqlLiteral(t.name) + "')";
+    }
+    // duckdb_tables() lists base tables only: a VIEW (whose body may read
+    // anything) or a name that does not resolve is not counted.
+    executor.execute("SELECT count(DISTINCT (lower(database_name), lower(schema_name), lower(table_name))) "
+                     "FROM duckdb_tables() WHERE " + where,
+                     "count cache tables");
+    return executor.rowCount() > 0 &&
+           duckdb_value_int64(&executor.result, 0, 0) == static_cast<std::int64_t>(distinct.size());
+}
+
+// Whether `sql`'s count may be cached at `generation`: the parse and function
+// rule once per rendered SQL, the catalog check once per generation.
+bool CountCacheTablesOk(QueryExecutor& executor, const std::string& sql, CountCacheState& state,
+                        std::int64_t generation) {
+    if (const auto known = state.cache.tablesVerdict(sql, generation)) {
+        return *known;
+    }
+    std::vector<std::string> functions;
+    std::vector<TableName> tables;
+    bool ok = CountableQuery(sql, state.alias, functions, tables);
+    try {
+        ok = ok && TablesAreDuckLakeTables(executor, tables);
+    } catch (const std::exception&) {
+        return false;   // not stored: judged again next time
+    }
+    state.cache.storeTablesVerdict(sql, generation, ok);
+    return ok;
+}
+
 // Whether `sql`'s count may be cached, judged once per rendered SQL.
 CountCache::Verdict CountCacheEligible(QueryExecutor& executor, const std::string& sql, CountCacheState& state) {
     if (const auto known = state.cache.verdict(sql)) {
@@ -1809,13 +1871,18 @@ CountCache::Verdict CountCacheEligible(QueryExecutor& executor, const std::strin
 std::optional<std::int64_t> CountGeneration(QueryExecutor& executor, CountCacheState& state) {
     try {
         executor.execute(state.generation_sql, "count cache generation");
+        if (state.power.succeeded()) {
+            CROW_LOG_INFO << "total_count caching is back on: the DuckLake snapshot id can be read again";
+        }
         if (executor.rowCount() > 0 && !duckdb_value_is_null(&executor.result, 0, 0)) {
             return duckdb_value_int64(&executor.result, 0, 0);
         }
     } catch (const std::exception& e) {
-        if (state.usable.exchange(false)) {
-            CROW_LOG_WARNING << "total_count caching is off: the DuckLake snapshot id cannot be read ("
-                             << e.what() << ")";
+        // Off for a while, then tried again: a metadata database that was
+        // briefly unreachable must not disable the cache for the process.
+        if (state.power.failed(SteadyNowMs())) {
+            CROW_LOG_WARNING << "total_count caching is off for " << CountCacheSwitch::kRetryAfterMs / 1000
+                             << " s: the DuckLake snapshot id cannot be read (" << e.what() << ")";
         }
     }
     return std::nullopt;
@@ -1891,14 +1958,17 @@ static QueryResult RunPaginated(QueryExecutor& executor, const std::string& sql,
         std::optional<std::int64_t> generation;
         std::string key;
         std::optional<std::int64_t> known;
-        if (count_cache != nullptr && count_cache->state->usable.load(std::memory_order_relaxed)) {
+        if (count_cache != nullptr && count_cache->state->power.usable(SteadyNowMs())) {
             const auto verdict = CountCacheEligible(executor, sql, *count_cache->state);
             if (verdict.eligible) {
                 generation = CountGeneration(executor, *count_cache->state);
             }
+            if (generation && !CountCacheTablesOk(executor, sql, *count_cache->state, *generation)) {
+                generation.reset();
+            }
             if (generation) {
-                key = std::to_string(verdict.id);
-                key.append(1, '\x1e').append(count_cache->bound);
+                AppendKeyPart(key, std::to_string(verdict.id));
+                key.append(count_cache->bound);
                 known = count_cache->state->cache.find(key, *generation);
             }
         }

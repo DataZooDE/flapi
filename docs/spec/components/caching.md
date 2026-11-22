@@ -496,7 +496,8 @@ A full page of a paginated GET needs `SELECT COUNT(*) FROM (<page query>)` for
 `total_count` (see `RunPaginated`, `src/database_manager.cpp`); on a DuckLake
 table that costs about as much as the page. The count of a cached endpoint is
 kept in a process-wide LRU (`CountCache`, `src/count_cache.cpp`, 10,000 entries)
-keyed by the rendered SQL plus the bound values, and tagged with the catalog's
+keyed by the rendered SQL plus the bound values (length-prefixed, so no value can
+be spliced into another's; a key over 4 KB is not cached), and tagged with the catalog's
 **generation**: `SELECT max(snapshot_id) FROM "__ducklake_metadata_<alias>".ducklake_snapshot`,
 read on the metadata database just before the count would run (a fraction of a
 millisecond). Every committed DuckLake change makes a new snapshot - a refresh, a
@@ -514,17 +515,27 @@ A query is eligible only when all of this holds (judged once per rendered SQL):
   reference is fully qualified into the DuckLake catalog,
   `<alias>.<schema>.<table>`, or names a CTE of the query - no table function
   (`read_parquet`, `ducklake_snapshots`, ...), no two-part or bare table name, no
-  `USING SAMPLE`; subqueries, joins, set operations and `AT (VERSION|TIMESTAMP => ...)`
-  are walked;
+  `USING SAMPLE` or `TABLESAMPLE`; subqueries, joins, set operations and
+  `AT (VERSION|TIMESTAMP => ...)` are walked;
+- every three-part name is a TABLE of the catalog per `duckdb_tables()`, not a
+  VIEW (whose body may read `read_parquet`, the main database, ...); checked
+  again whenever the generation changes;
 - every function it calls is, per `duckdb_functions()`, a scalar, aggregate or
-  window function with no VOLATILE overload (`random`, `uuid`, `nextval`) and is
-  not one of those that are only consistent within a query (`now`, `current_date`,
+  window function with no VOLATILE overload (`random`, `uuid`, `nextval`) and
+  not only consistent within a query in every overload (`now`, `current_date`,
   `today`, `getvariable`, `current_setting`, ...); a macro or an unknown name is
-  not eligible.
+  not eligible. A name with both kinds of overload passes (`date_part`,
+  `date_trunc`, `+`: their TIMESTAMPTZ overloads read the server's fixed TimeZone),
+  except the names that read the clock, session or a random source in an overload
+  DuckDB reports CONSISTENT, refused by name (`UnstableFunctionName`): `age`
+  (`age(ts)` is measured from the transaction start) and `json_serialize_plan`
+  (binds against every attached catalog), plus the clock/session/random names
+  above as a guard, also when written without parentheses (`current_date`,
+  `current_timestamp`, `user` parse as column references).
 
 Time travel is keyed by its rendered text and bound values like everything else.
-If the snapshot id cannot be read, counting falls back to running every time for
-the rest of the process (one warning). Responses are byte-identical either way.
+If the snapshot id cannot be read, the cache is off for 30 s (every count runs)
+and then tried again; turning off and back on is logged once each. Responses are byte-identical either way.
 
 ## Readiness during warmup
 
