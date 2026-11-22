@@ -5,7 +5,7 @@ can read an older one with `AT (VERSION => n)` or `AT (TIMESTAMP => ...)`. Reten
 (`cache.retention`, `ducklake.retention`) expires old snapshots, after which they
 can no longer be read.
 
-Verified on flAPI v26.10.31 (DuckDB 1.5.5): a full-refresh cache refreshed five times
+Verified on flAPI with DuckDB 2.0.1 (DuckLake 1.1): a full-refresh cache refreshed five times
 under `keep-last-snapshots: 2`.
 
 ## Endpoint with a version and a timestamp parameter
@@ -61,7 +61,7 @@ cache:
 # flapi: check GET /items -> 200
 # flapi: check GET /items?version=999999 -> 404
 # flapi: check GET /items?at=2000-01-01%2000:00:00 -> 404
-# flapi: check GET /items?at=2999-01-01%2000:00:00 -> 200
+# flapi: check GET /items?at=2999-01-01%2000:00:00 -> 400
 # flapi: check GET /items?at=yesterday -> 400
 ```
 
@@ -100,7 +100,10 @@ DuckDB message, one of:
 | `AT (TIMESTAMP => t)`, t before the oldest kept snapshot | `Invalid Input Error: No snapshot found at timestamp t` |
 | `AT (TIMESTAMP => t)`, t inside an expired incarnation of a CTAS table | `Catalog Error: Table with name items_cache does not exist at timestamp t!` |
 
-A timestamp after the newest snapshot reads the newest one (200).
+A timestamp in the future answers `400 {"error":"snapshot_in_future"}`
+(DuckLake 1.1 refuses it with `Cannot time travel to a future timestamp`; under
+DuckDB 1.5 it read the newest snapshot). A timestamp between the newest snapshot
+and now reads the newest one (200).
 
 ## Listing the snapshots that still exist
 
