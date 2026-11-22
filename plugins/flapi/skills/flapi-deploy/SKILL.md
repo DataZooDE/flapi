@@ -179,8 +179,8 @@ HEALTHCHECK CMD ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /
 ```
 
 Need an extension that is not in the image (mysql, azure, snowflake)? Add
-`RUN /app/flapi extensions install --dir /app/extensions mysql`: flapi searches
-`/app/extensions` unless `FLAPI_EXTENSION_DIRECTORY` points elsewhere.
+`RUN /app/flapi extensions install --dir /app/extensions mysql`: the server
+searches `/app/extensions` unless `FLAPI_EXTENSION_DIRECTORY` points elsewhere.
 
 ## Kubernetes probes
 
