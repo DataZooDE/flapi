@@ -93,7 +93,11 @@ public:
 
     // Execute query and return raw QueryExecutor for Arrow serialization
     // The executor owns the duckdb_result and must remain alive while accessing it
-    std::unique_ptr<QueryExecutor> executeQueryRaw(const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
+    // `explicit_limit` / `explicit_offset`: the client's own ?limit= / ?offset=, applied as a
+    // LIMIT/OFFSET around the query. Without them the full result is streamed, as before.
+    std::unique_ptr<QueryExecutor> executeQueryRaw(const EndpointConfig& endpoint, std::map<std::string, std::string>& params,
+                                                   std::optional<int64_t> explicit_limit = std::nullopt,
+                                                   std::optional<int64_t> explicit_offset = std::nullopt);
     QueryResult executeDuckLakeQuery(const std::string& query, const std::map<std::string, std::string>& params = {});
     /// Run a (possibly multi-statement) DuckLake script - a rendered cache
     /// populate template - in ONE transaction, statement by statement, and

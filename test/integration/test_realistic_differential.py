@@ -55,6 +55,15 @@ EXPECTED = [
     ("total-count: false is new (8c06da4); the reference ignores the key",
      lambda req: req.path == "/documents" and req.kind in ("csv", "arrow"),
      lambda d: d["kind"] == "header:x-total-count"),
+    # Arrow honours an explicit ?limit= / ?offset= now (the reference streamed the full result and
+    # ignored them); without them it still streams everything.
+    ("Arrow pages on an explicit ?limit= / ?offset= (#241); the reference ignored them",
+     lambda req: req.kind == "arrow" and ("limit=" in req.name or "offset=" in req.name),
+     lambda d: d["kind"] in ("arrow_data", "header:x-arrow-rows", "header:x-arrow-bytes", "header:x-arrow-batches")),
+    # INTERVAL renders as DuckDB's text ("1 day 00:01:00"), not the old "months:days.millis".
+    ("INTERVAL as DuckDB text (#241); the reference printed months:days.millis",
+     lambda req: req.path == "/types" or "type_showcase" in req.name,
+     lambda d: d["kind"] == "value" and ("day" in d["detail"] or "mon" in d["detail"] or "year" in d["detail"])),
 ]
 
 
@@ -312,21 +321,18 @@ def test_nested_keys_keep_their_declared_order(current):
     assert list(row["attrs"]) == ["k0", "k1"], row["attrs"]
 
 
-def mini_server(tmp_path, sql):
+def mini_server(tmp_path, sql, paginated=False):
     """A one-endpoint project on the current binary, for cases that would take the shared server down."""
     (tmp_path / "sqls").mkdir()
     (tmp_path / "flapi.yaml").write_text("project-name: mini\ntemplate:\n  path: ./sqls\nconnections:\n"
                                          "  c:\n    properties: {}\nrate_limit:\n  enabled: false\n")
     (tmp_path / "sqls" / "q.yaml").write_text("url-path: /q\nmethod: GET\ntemplate-source: q.sql\n"
-                                              "connection: [c]\nwith-pagination: false\n")
+                                              "connection: [c]\n" + ("" if paginated else "with-pagination: false\n"))
     (tmp_path / "sqls" / "q.sql").write_text(sql)
     from test_duckdb_upgrade import Run
     return Run(rp.current_binary(), str(tmp_path))
 
 
-@pytest.mark.xfail(strict=True, reason="pre-existing in both builds: convertVectorDateToJson / TimeToJson / "
-                                       "IntervalToJson ignore the validity mask, so NULL renders as the zero value "
-                                       "(and, under DuckDB 2.0, as whatever bytes the NULL slot holds)")
 def test_null_dates_times_and_intervals_are_null(tmp_path):
     run = mini_server(tmp_path, "SELECT NULL::DATE AS d, NULL::TIME AS t, NULL::INTERVAL AS i, "
                                 "NULL::TIMESTAMP AS ts\n")
@@ -337,8 +343,6 @@ def test_null_dates_times_and_intervals_are_null(tmp_path):
     assert row == {"d": None, "t": None, "i": None, "ts": None}, row
 
 
-@pytest.mark.xfail(strict=True, reason="pre-existing in both builds (seen on the 1.5.5 reference too, far more "
-                                       "often under DuckDB 2.0): a NULL DATE renders as the bytes in its slot")
 def test_null_dates_render_deterministically(current):
     """Every 11th customer has a NULL birth_date in the parquet file. Whatever a NULL renders as, it
     must render the same way every time. convertVectorDateToJson ignores the validity mask and
@@ -351,8 +355,6 @@ def test_null_dates_render_deterministically(current):
     assert seen == {None}, f"NULL birth_date rendered as {sorted(map(str, seen))[:8]}"
 
 
-@pytest.mark.xfail(strict=True, reason="pre-existing in both builds: the Arrow serializer has no INTERVAL "
-                                       "mapping ('Arrow array view set failed', 500)")
 def test_arrow_interval(tmp_path):
     run = mini_server(tmp_path, "SELECT INTERVAL 3 DAY AS i\n")
     try:
@@ -362,8 +364,6 @@ def test_arrow_interval(tmp_path):
     assert r.status_code == 200, r.text
 
 
-@pytest.mark.xfail(strict=True, reason="pre-existing in both builds: convertVectorEnumToJson reads the ENUM "
-                                       "index as idx_t (8 bytes) whatever the physical width; the server segfaults")
 def test_an_enum_column_does_not_crash_the_server(tmp_path):
     run = mini_server(tmp_path, "SELECT range AS id, CAST((['new', 'paid', 'shipped'])[range % 3 + 1] "
                                 "AS ENUM('new', 'paid', 'shipped')) AS e FROM range(8)\n")

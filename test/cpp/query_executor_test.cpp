@@ -195,7 +195,7 @@ TEST_CASE("QueryExecutor type coverage", "[query_executor]") {
     REQUIRE(doc["struct"]["key"].s() == "value");
     REQUIRE(doc["list"].size() == 3);
     REQUIRE(doc["boolean"].b() == true);
-    REQUIRE(doc["interval"].s() == "01:00.000");
+    REQUIRE(doc["interval"].s() == "1 month");   // DuckDB's interval text (was "01:00.000")
     REQUIRE(doc["varchar"].s() == "hello");
     REQUIRE(doc["decimal"].d() == Catch::Approx(123.456));
 

@@ -334,7 +334,17 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
                 return;
             }
 
-            auto executor = db_manager->executeQueryRaw(endpoint, params);
+            // Only the client's own ?limit= / ?offset= page an Arrow stream (already validated by
+            // parsePaginationParams); the JSON default page of 100 never truncates it.
+            std::optional<int64_t> arrow_limit;
+            std::optional<int64_t> arrow_offset;
+            if (req.url_params.get("limit") != nullptr) {
+                arrow_limit = std::stoll(params["limit"]);
+            }
+            if (req.url_params.get("offset") != nullptr) {
+                arrow_offset = std::stoll(params["offset"]);
+            }
+            auto executor = db_manager->executeQueryRaw(endpoint, params, arrow_limit, arrow_offset);
 
             ArrowSerializerConfig arrowConfig;
             arrowConfig.codec = negotiation.codec;  // Use negotiated codec (lz4, zstd, or empty)

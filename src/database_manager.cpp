@@ -1628,7 +1628,9 @@ std::string DatabaseManager::renderCacheTemplate(const EndpointConfig& endpoint,
     return processCacheTemplate(endpoint, cacheConfig, params);
 }
 
-std::unique_ptr<QueryExecutor> DatabaseManager::executeQueryRaw(const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
+std::unique_ptr<QueryExecutor> DatabaseManager::executeQueryRaw(const EndpointConfig& endpoint, std::map<std::string, std::string>& params,
+                                                                std::optional<int64_t> explicit_limit,
+                                                                std::optional<int64_t> explicit_offset) {
     const auto access = lockSerialisedReadAccess(endpoint);
     cache_manager->addQueryCacheParamsIfNecessary(config_manager, endpoint, params);
 
@@ -1637,6 +1639,16 @@ std::unique_ptr<QueryExecutor> DatabaseManager::executeQueryRaw(const EndpointCo
     // execute when the binding plan is empty (no behaviour change).
     std::map<std::string, std::string> bind_values = params;
     auto prepared = sql_processor->loadAndProcessTemplatePrepared(endpoint, params);
+    if (endpoint.with_pagination && (explicit_limit || explicit_offset)) {
+        std::string paged = "SELECT * FROM (" + prepared.sql + ") AS subquery";
+        if (explicit_limit) {
+            paged += " LIMIT " + std::to_string(*explicit_limit);
+        }
+        if (explicit_offset) {
+            paged += " OFFSET " + std::to_string(*explicit_offset);
+        }
+        prepared.sql = paged;
+    }
 
     auto executor = std::make_unique<QueryExecutor>(db, session_default_order_);
     if (prepared.bindings.empty()) {

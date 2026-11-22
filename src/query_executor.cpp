@@ -981,8 +981,7 @@ idx_t QueryResult::streamResultAsJsonText(const duckdb_result& const_result, con
             for (idx_t c = 0; c < cols; ++c) {
                 out += prefixes[c];
                 const CellKind kind = kinds[c];
-                if (kind == CellKind::FALLBACK ||
-                    (kind == CellKind::DATE && !duckdb_validity_row_is_valid(validity[c], row))) {
+                if (kind == CellKind::FALLBACK) {
                     appendJson(convertVectorEntryToJson(vectors[c], row), out, nullptr, false);
                     continue;
                 }
@@ -1479,6 +1478,9 @@ crow::json::wvalue QueryResult::convertVectorTimestampToJson(const duckdb_vector
 }
 
 crow::json::wvalue QueryResult::convertVectorDateToJson(const duckdb_vector &vector, const idx_t row_idx) {
+    if (!duckdb_validity_row_is_valid(duckdb_vector_get_validity(vector), row_idx)) {
+        return crow::json::wvalue(nullptr);   // the slot holds whatever was there: never read it
+    }
     auto data = (duckdb_date *)duckdb_vector_get_data(vector);
     auto date = duckdb_from_date(data[row_idx]);
 
@@ -1487,6 +1489,9 @@ crow::json::wvalue QueryResult::convertVectorDateToJson(const duckdb_vector &vec
 }
 
 crow::json::wvalue QueryResult::convertVectorTimeToJson(const duckdb_vector &vector, const idx_t row_idx) {
+    if (!duckdb_validity_row_is_valid(duckdb_vector_get_validity(vector), row_idx)) {
+        return crow::json::wvalue(nullptr);
+    }
     auto data = (duckdb_time *)duckdb_vector_get_data(vector);
     auto time = duckdb_from_time(data[row_idx]);
 
@@ -1495,18 +1500,39 @@ crow::json::wvalue QueryResult::convertVectorTimeToJson(const duckdb_vector &vec
 }
 
 crow::json::wvalue QueryResult::convertVectorIntervalToJson(const duckdb_vector &vector, const idx_t row_idx) {
+    if (!duckdb_validity_row_is_valid(duckdb_vector_get_validity(vector), row_idx)) {
+        return crow::json::wvalue(nullptr);
+    }
     auto data = (duckdb_interval *)duckdb_vector_get_data(vector);
-    auto interval = data[row_idx];
-
-    std::string str = fmt::format("{:02d}:{:02d}.{:03d}", interval.months, interval.days, interval.micros / 1000);
+    // DuckDB's own text ("1 year 2 months 3 days 04:00:00"), as CAST(... AS VARCHAR) gives it.
+    // It printed "months:days.millis" ("00:03.144" for 3 days 04:00:00) before.
+    auto value = duckdb_create_interval(data[row_idx]);
+    char* text = duckdb_get_varchar(value);
+    std::string str = text ? text : "";
+    duckdb_free(text);
+    duckdb_destroy_value(&value);
     return crow::json::wvalue(str);
 }
 
 crow::json::wvalue QueryResult::convertVectorEnumToJson(const duckdb_vector &vector, const idx_t row_idx) {
+    if (!duckdb_validity_row_is_valid(duckdb_vector_get_validity(vector), row_idx)) {
+        return crow::json::wvalue(nullptr);
+    }
     auto type = duckdb_vector_get_column_type(vector);
 
-    auto data = (idx_t *)duckdb_vector_get_data(vector);
-    DuckDBString value_wrapper(duckdb_enum_dictionary_value(type, data[row_idx]));
+    // The index is stored as UTINYINT, USMALLINT or UINTEGER depending on the dictionary size.
+    // Reading it as idx_t (8 bytes) read past the vector and crashed the server.
+    const void* raw = duckdb_vector_get_data(vector);
+    idx_t index = 0;
+    switch (duckdb_enum_internal_type(type)) {
+        case DUCKDB_TYPE_UTINYINT: index = static_cast<const uint8_t*>(raw)[row_idx]; break;
+        case DUCKDB_TYPE_USMALLINT: index = static_cast<const uint16_t*>(raw)[row_idx]; break;
+        case DUCKDB_TYPE_UINTEGER: index = static_cast<const uint32_t*>(raw)[row_idx]; break;
+        default:
+            duckdb_destroy_logical_type(&type);
+            return crow::json::wvalue(nullptr);
+    }
+    DuckDBString value_wrapper(duckdb_enum_dictionary_value(type, index));
     std::string str_val = value_wrapper.to_string();
 
     duckdb_destroy_logical_type(&type);
