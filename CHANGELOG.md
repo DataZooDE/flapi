@@ -39,10 +39,10 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ### Releases carry their DuckDB extensions; stripped binaries (#244, #245)
 
-- **Extensions ship with the release.** The release archives, the `flapi-io` wheels and the Docker images carry
+- **Extensions ship with the release.** The release archives and the Docker images carry
   the signed default extensions (`httpfs`, `ducklake`, `fts`, `postgres`, `sqlite`) for their DuckDB version and
   platform in `extensions/<duckdb version>/<platform>/` next to the binary (`/app/extensions` in the images). flapi
-  finds the directory by its real executable path (symlinks and the wheel's `flapi_io/bin/` included), so a fresh
+  finds the directory by its real executable path (symlinks resolved), so a fresh
   host starts with no download and no network; `FLAPI_EXTENSIONS_OFFLINE=1` works with that directory alone. CI
   installs the files with each platform's own binary on a native runner and checks that every one loads from
   there with an empty HOME, offline.
@@ -72,9 +72,8 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   `FLAPI_EXTENSION_DIRECTORY` is no longer set. A derived image that installs into `/opt/flapi/extensions` must
   set `FLAPI_EXTENSION_DIRECTORY=/opt/flapi/extensions` itself (then it holds the only directory) or install into
   `/app/extensions`.
-- **PyPI upload limit:** a wheel that would exceed `PYPI_WHEEL_LIMIT_MB` (repository variable, default 100, PyPI's
-  default limit) with the extensions is published without them, with a warning in the release log; that wheel's
-  flapi downloads them on first start. The linux wheels are ~155 MB with them.
+- **The `flapi-io` wheels carry no extensions:** with them a wheel would be ~155 MB, above PyPI's 100 MB file
+  limit. A pip-installed flapi downloads them on first start, as before (or set `FLAPI_EXTENSION_DIRECTORY`).
 - **New database files and DuckLake catalogs are 2.0-only.** Files created by this version (a new `duckdb.db_path`,
   a new DuckLake catalog) use DuckDB 2.0's storage version and DuckLake spec 1.1, which DuckDB 1.x cannot read. To
   roll back to a 1.5-based flAPI keep a copy of the state directory, or rebuild the caches. Existing files are not

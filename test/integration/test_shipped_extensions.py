@@ -6,7 +6,7 @@ layout around a copy of the real binary and check that:
 
 - with an empty HOME and no network, every default extension loads from it, and
   nothing is downloaded into the user directory (online and FLAPI_EXTENSIONS_OFFLINE);
-- it is found through a symlink to the binary, and with the wheel's flapi_io/bin layout;
+- it is found through a symlink to the binary, and in a nested install directory;
 - FLAPI_EXTENSION_DIRECTORY and duckdb.extension_directory still win over it;
 - a shipped directory for another DuckDB version is ignored with one log line;
 - an extension that is not shipped still installs, into the user directory, never into
@@ -280,8 +280,7 @@ class TestPrecedence:
 
 class TestWheelLayout:
     def test_flapi_io_bin_layout(self, shipped_extensions):
-        # bin-to-wheel installs site-packages/flapi_io/bin/flapi and execs it; the extensions
-        # are added beside it at flapi_io/bin/extensions.
+        # Any install prefix: the lookup is relative to the executable, wherever it lives.
         r = Release(shipped_extensions, bin_subdir=os.path.join("site-packages", "flapi_io", "bin"))
         try:
             r.start(env=r.env(FLAPI_EXTENSIONS_OFFLINE="1", **NO_NETWORK)).wait_http()

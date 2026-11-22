@@ -33,9 +33,10 @@ user-invocable: false
   platform, fill a directory there (`flapi extensions install --dir`) and pass
   `--extensions-dir`.
 - **Releases ship the default extensions next to the binary** (`extensions/<duckdb
-  version>/<platform>/`: archives, wheels, Docker `/app/extensions`), so a fresh host starts
+  version>/<platform>/`: archives, Docker `/app/extensions`), so a fresh host starts
   without downloading. Keep binary and `extensions/` together. Releases before DuckDB 2.0.1
-  and wheels above PyPI's upload limit do not carry them and download on first start.
+  and the `flapi-io` wheels (PyPI's 100 MB file limit; ~155 MB with them) do not carry them
+  and download on first start.
 - **`/health` is readiness, not liveness.** It answers 503 while caches warm (`starting`),
   when a cache failed to build (`degraded` + `failed`), and when a request is stuck longer
   than `stall-timeout-s` (`stalled`). Liveness is `/health/live`, which is 200 once the

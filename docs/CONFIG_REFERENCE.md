@@ -409,13 +409,14 @@ duckdb:
 | 1 | `duckdb.extension_directory` (or `extension_directories`) in `flapi.yaml` | the only directory |
 | 2 | `FLAPI_EXTENSION_DIRECTORY` | the only directory |
 | 3 | extensions embedded by `flapi pack --with-extensions` (extracted to `$TMPDIR/flapi-extensions/ext-<hash>/`) | the only directory; offline on |
-| 4 | `extensions/` **next to the flapi executable** (release archives, `flapi-io` wheels, Docker `/app/extensions`) | searched **after** the user directory below |
+| 4 | `extensions/` **next to the flapi executable** (release archives, Docker `/app/extensions`) | searched **after** the user directory below |
 | 5 | DuckDB's default, `~/.duckdb/extensions` | install target, searched first |
 
 - Releases ship the signed default extensions (`httpfs`, `ducklake`, `fts`, `postgres_scanner`,
   `sqlite_scanner`; `core_functions`, `parquet`, `json` and `icu` are built in) in DuckDB's own layout,
   `extensions/<duckdb version>/<platform>/`. The executable's real path is used: a symlink to the binary
-  (`/usr/local/bin/flapi`) and the wheel's `site-packages/flapi_io/bin/flapi` both work.
+  (`/usr/local/bin/flapi`) works. The `flapi-io` wheels carry no `extensions/`: with it a wheel would be
+  ~155 MB, above PyPI's 100 MB file limit, so a pip-installed flapi downloads on first start.
 - With 4 present, DuckDB gets `extension_directories = ['~/.duckdb/extensions', '<bin>/extensions']`. DuckDB
   installs into the first directory and loads from the first that has the file, so the shipped directory is
   **only ever read** (it may be read-only), an extension outside the default set still installs into the user

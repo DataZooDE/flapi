@@ -135,7 +135,7 @@ flapi cache refresh -c flapi.yaml --all     # writes ./state/cache.ducklake + ./
 Every release carries the default extensions that are not built into flapi
 (`httpfs`, `ducklake`, `fts`, `postgres`, `sqlite`; `core_functions`, `parquet`,
 `json` and `icu` are built in) in `extensions/` next to the binary: the release
-archives, the `flapi-io` wheels and the Docker images (`/app/extensions`). flapi
+archives and the Docker images (`/app/extensions`). flapi
 finds that directory on its own, so a fresh container starts without downloading
 anything and with no network at all. The `-runtime` image adds `bigquery` when the
 community extension is published for its DuckDB version.
@@ -158,8 +158,8 @@ ENV FLAPI_CONFIG=/app/config/flapi.yaml FLAPI_EXTENSIONS_OFFLINE=1
   shipped directory; anything you install yourself goes to `~/.duckdb/extensions`,
   which is searched first. See
   [CONFIG_REFERENCE: where DuckDB extensions come from](../CONFIG_REFERENCE.md#24-duckdb-configuration).
-- A wheel above PyPI's upload limit is published without the extensions (the
-  release log warns); `pip install flapi-io` then downloads them on first start.
+- The `flapi-io` wheels do not carry them (a wheel would be ~155 MB, above
+  PyPI's 100 MB file limit): `pip install flapi-io` downloads on first start.
 
 Not using containers? `flapi pack --in . --out api --with-extensions` produces
 one binary that carries its config **and** its extensions and starts offline

@@ -1045,8 +1045,8 @@ jobs:
   # Each platform's binary installs its own default extensions (the signed files from
   # extensions.duckdb.org, for exactly its DuckDB version and platform) into extensions/
   # beside itself, then proves it loads every one of them from there with an empty HOME,
-  # offline and through a dead proxy. That directory is the artifact the release archives,
-  # the flapi-io wheels and the Docker images carry. Native runners only: the arm64 Linux
+  # offline and through a dead proxy. That directory is the artifact the release archives
+  # and the Docker images carry (not the wheels: PyPI's 100 MB file limit). Native runners only: the arm64 Linux
   # binary is cross-built, so its extensions are fetched on an arm64 runner.
   shipped-extensions-linux:
     needs: [linux-build]
@@ -1190,12 +1190,9 @@ jobs:
     - name: Install bin-to-wheel
       run: pip install "bin-to-wheel @ git+https://github.com/DataZooDE/bin-to-wheel.git@main"
 
-    # PYPI_WHEEL_LIMIT_MB: PyPI refuses files above the project's upload limit (100 MB unless
-    # PyPI raised it on request). A wheel that would exceed it with the extensions is published
-    # without them (a ::warning::, not a failure); that flapi downloads them on first start.
+    # The wheels carry no extensions (#245): with them a wheel would be ~155 MB, above PyPI's
+    # 100 MB file limit. A pip-installed flapi downloads them on first start.
     - name: Build flapi-io wheels (flapi + flapii)
-      env:
-        PYPI_WHEEL_LIMIT_MB: ${{ vars.PYPI_WHEEL_LIMIT_MB || '100' }}
       run: |
         WHEEL_VERSION="${{ steps.get_version.outputs.VERSION }}"
         WHEEL_VERSION="${WHEEL_VERSION#v}"
@@ -1236,18 +1233,6 @@ jobs:
           --description "SQL-to-API server" --author "DataZoo GmbH" \
           --license BUSL-1.1 --url https://github.com/DataZooDE/flapi \
           --readme ./Readme.md
-
-        # The shipped extensions beside the binary: site-packages/flapi_io/bin/extensions/ (#245).
-        add_extensions() {
-          python3 scripts/wheel_add_tree.py dist/flapi-io/flapi_io-*-"$1".whl \
-            --src "artifacts/shipped-extensions-$2" --dest flapi_io/bin/extensions \
-            --max-mb "${PYPI_WHEEL_LIMIT_MB}"
-        }
-        add_extensions manylinux_2_17_x86_64 linux-amd64
-        add_extensions manylinux_2_17_aarch64 linux-arm64
-        add_extensions macosx_11_0_arm64 macos-arm64
-        add_extensions win_amd64 windows-amd64
-        ls -l dist/flapi-io
 
     # Derived from the wheel FILENAMES just built - the exact artefacts being
     # uploaded, already in PyPI's normalised form (26.9.23, never 26.09.23).
