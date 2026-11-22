@@ -53,7 +53,7 @@ The easiest way to get started with flAPI is to use the pre-built docker image.
 ```
 
 
-The image is pretty small and mainly contains the flAPI binary which is statically linked against [DuckDB v1.5.5](https://github.com/duckdb/duckdb/releases/tag/v1.5.5). Details about the docker image can be found in the [Dockerfile](https://github.com/DataZooDE/flapi/blob/main/Dockerfile).
+The image is pretty small and mainly contains the flAPI binary which is statically linked against [DuckDB v2.0.1](https://github.com/duckdb/duckdb/releases/tag/v2.0.1). Details about the docker image can be found in the [Dockerfile](https://github.com/DataZooDE/flapi/blob/main/Dockerfile).
 
 #### 2. Run flAPI:
 Once you have downloaded the binary, you can run flAPI by executing the following command:
@@ -280,7 +280,7 @@ In essecence a few prerequisites need to be met:
 - Checkout the repository and submodules: `git clone --recurse-submodules https://github.com/datazoode/flapi.git`
 - Build the project: `make release`
 
-The build process will download and build DuckDB v1.5.5 and install the vcpkg package manager. We depend on the following vcpkg ports:
+The build process will download and build DuckDB v2.0.1 and install the vcpkg package manager. We depend on the following vcpkg ports:
 
 - [`argparse`](https://github.com/p-ranav/argparse) - Command line argument parser
 - [`crow`](https://github.com/CrowCpp/Crow) - Our REST-Web framework and JSON handling

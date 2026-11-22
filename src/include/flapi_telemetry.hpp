@@ -109,6 +109,7 @@ public:
     void setAggregationInterval(std::chrono::milliseconds interval);
     // Emit the pending aggregates now (also done by flush()).
     void emitAggregates();
+    bool hasPendingAggregates();
 
     // Map an HTTP status code to a bounded status class ("2xx".."5xx").
     static std::string statusClass(int code);

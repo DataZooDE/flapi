@@ -180,7 +180,7 @@ def test_a_cache_that_never_warms_up_is_unbuilt_from_the_start(root):
         server.stop()
 
 
-@pytest.mark.skipif(not os.path.exists("/proc/self/fd"), reason="Linux: accepted sockets inherit TCP_NODELAY")
+@pytest.mark.skipif(not os.path.exists("/proc/self/fd"), reason="Linux: Crow sets TCP_NODELAY on every accepted socket")
 def test_a_connection_opened_at_bind_time_has_no_nagle_delay(root):
     write_project(root)
     port = free_port()

@@ -5,7 +5,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Windows-specific settings
 if(WIN32)
-    # Use static runtime libraries for Windows builds (/MT, matching DuckDB 1.5.5)
+    # Use static runtime libraries for Windows builds (/MT, matching DuckDB)
     add_definitions(-D_WIN32_WINNT=0x0601)  # Target Windows 7 or later
 
     # Set vcpkg triplet for Windows
@@ -17,7 +17,7 @@ if(WIN32)
         endif()
     endif()
 
-    # Force static CRT (/MT) to match DuckDB 1.5.5's unconditional
+    # Force static CRT (/MT) to match DuckDB's unconditional
     # set(CMAKE_MSVC_RUNTIME_LIBRARY ...) in duckdb/CMakeLists.txt:62.
     # vcpkg's toolchain only sets /MT for packages; flapi's own targets need
     # this explicit setting or MSVC defaults to /MD → LNK2038 at link time.
@@ -293,6 +293,12 @@ set(CMAKE_CXX_STANDARD ${FLAPI_CXX_STANDARD})
 set(DUCKDB_SRC_INCLUDE "${CMAKE_SOURCE_DIR}/duckdb/src/include")
 set(DUCKDB_THIRD_PARTY "${CMAKE_SOURCE_DIR}/duckdb/third_party")
 add_subdirectory(third_party/posthog-telemetry)
+if(APPLE)
+    # DuckDB 2.0's httplib (0.53) reads root certificates from the macOS keychain by default, which
+    # needs -framework Security; posthog-telemetry links only IOKit/CoreFoundation. Keep the
+    # previous behaviour (OpenSSL's own store) instead of relying on Security being pulled in.
+    target_compile_definitions(posthog_telemetry PRIVATE CPPHTTPLIB_DISABLE_MACOSX_AUTOMATIC_ROOT_CERTIFICATES)
+endif()
 
 # Feedback banner (header-only). Telemetry ON so a printed banner counts as a
 # banner_shown event through the instance configured above; the include dir is

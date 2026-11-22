@@ -1,4 +1,5 @@
 #include "query_executor.hpp"
+#include <set>
 #include "sql_utils.hpp"
 #include "database_health.hpp"
 #include "flapi_tracing.hpp"
@@ -141,8 +142,17 @@ void applySessionSettings(duckdb_connection conn, const std::optional<std::strin
 // it dirty, and a dirty connection is closed when its executor ends (no session state leaks).
 std::atomic<std::uint64_t> g_pool_generation{1};
 
+struct PooledConnection;
+
+// Every thread's pooled connection, so closing the database can disconnect the idle ones: a pooled
+// connection keeps the DuckDB instance alive, so duckdb_close alone would leave the database (and
+// its db_path file) open until each thread ran its next query - or until exit() (#147).
+std::mutex g_pool_registry_mutex;
+std::set<PooledConnection*> g_pool_registry;
+
 struct PooledConnection {
     static constexpr std::size_t kMaxStatements = 64;
+    std::mutex mutex;   // the owning thread vs. InvalidatePooledConnections
     duckdb_database db = nullptr;
     std::uint64_t generation = 0;
     duckdb_connection conn = nullptr;
@@ -151,7 +161,18 @@ struct PooledConnection {
     std::list<std::pair<std::string, duckdb_prepared_statement>> lru;
     std::unordered_map<std::string_view, decltype(lru)::iterator> index;
 
-    ~PooledConnection() { reset(); }
+    PooledConnection() {
+        std::lock_guard<std::mutex> lock(g_pool_registry_mutex);
+        g_pool_registry.insert(this);
+    }
+    ~PooledConnection() {
+        {
+            std::lock_guard<std::mutex> lock(g_pool_registry_mutex);
+            g_pool_registry.erase(this);
+        }
+        std::lock_guard<std::mutex> lock(mutex);
+        reset();
+    }
     void reset() {
         index.clear();
         for (auto& entry : lru) {
@@ -182,6 +203,15 @@ QueryExecutor::ReuseConnectionScope::~ReuseConnectionScope() { --t_reuse_depth; 
 
 void QueryExecutor::InvalidatePooledConnections() {
     g_pool_generation.fetch_add(1, std::memory_order_acq_rel);
+    // Disconnect every idle pooled connection now; one in use is dropped by its executor when it
+    // ends (it sees the new generation).
+    std::lock_guard<std::mutex> lock(g_pool_registry_mutex);
+    for (PooledConnection* pooled : g_pool_registry) {
+        std::lock_guard<std::mutex> conn_lock(pooled->mutex);
+        if (!pooled->in_use) {
+            pooled->reset();
+        }
+    }
 }
 
 QueryExecutor::QueryExecutor(duckdb_database db) : has_result(false) {
@@ -194,6 +224,7 @@ QueryExecutor::QueryExecutor(duckdb_database db, const std::optional<std::string
                              const std::optional<std::string>& session_time_zone)
     : conn(nullptr), has_result(false) {
     if (t_reuse_depth > 0 && !t_pooled.in_use && !connectionReuseDisabled()) {
+        std::lock_guard<std::mutex> lock(t_pooled.mutex);
         const auto generation = g_pool_generation.load(std::memory_order_acquire);
         if (t_pooled.conn == nullptr || t_pooled.db != db || t_pooled.generation != generation) {
             t_pooled.reset();
@@ -232,9 +263,11 @@ QueryExecutor::~QueryExecutor() {
         has_result = false;
     }
     if (borrowed_) {
+        std::lock_guard<std::mutex> lock(t_pooled.mutex);
         t_pooled.in_use = false;
-        if (t_pooled.dirty || profiling_enabled_) {
-            t_pooled.reset();   // session state changed: never hand it to the next request
+        if (t_pooled.dirty || profiling_enabled_ ||
+            t_pooled.generation != g_pool_generation.load(std::memory_order_acquire)) {
+            t_pooled.reset();   // session state changed, or the database was closed: drop it
         }
         return;
     }

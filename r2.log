@@ -1,3 +1,0 @@
-(2026-11-22T15:19:12.420166Z) [info] Loading configuration file: flapi.yaml
-(2026-11-22T15:19:12.420275Z) [error] Configuration error: Error while loading configuration, Details: Failed to parse config file: Could not open file: flapi.yaml
-(2026-11-22T15:19:12.420277Z) [error] flAPI cannot start until the configuration is valid.

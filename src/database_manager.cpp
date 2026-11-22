@@ -1725,6 +1725,9 @@ static QueryResult RunPaginated(QueryExecutor& executor, const std::string& sql,
     QueryResult result;
     result.columns = executor.columnNames();
     const auto take = [&](idx_t max_rows) {
+        if (sink && sink->reset) {
+            sink->reset();
+        }
         if (sink) {
             result.streamed = true;
             result.streamed_rows = QueryResult::streamResult(executor.result, max_rows, *sink);

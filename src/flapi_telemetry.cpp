@@ -253,6 +253,11 @@ void FlapiTelemetry::aggregate(const std::string& key, const std::string& event,
     }
 }
 
+bool FlapiTelemetry::hasPendingAggregates() {
+    std::lock_guard<std::mutex> lock(aggregate_mutex_);
+    return !aggregates_.empty();
+}
+
 void FlapiTelemetry::emitAggregates() {
     std::unordered_map<std::string, Aggregate> pending;
     {

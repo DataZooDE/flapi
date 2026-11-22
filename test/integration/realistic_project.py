@@ -552,7 +552,7 @@ def current_binary():
     env = os.environ.get("FLAPI_BINARY")
     if env:
         return pathlib.Path(env)
-    for c in ("release-2", os.getenv("FLAPI_BUILD_TYPE", "release"), "release", "debug"):
+    for c in (os.getenv("FLAPI_BUILD_TYPE", "release"), "release", "debug"):
         p = REPO / "build" / c / "flapi"
         if p.exists():
             return p

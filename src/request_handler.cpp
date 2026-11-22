@@ -396,6 +396,11 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
         std::vector<std::string> row_columns;
         bool first_row = true;
         ResultSink sink;
+        sink.reset = [&]() {
+            rows_text = csv ? std::string() : std::string("[");
+            row_columns.clear();
+            first_row = true;
+        };
         sink.begin = [&](const std::vector<std::string>& columns) { row_columns = columns; };
         if (!csv) {
             sink.json_rows = &rows_text;   // rows go from the vectors straight into the text

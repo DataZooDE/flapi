@@ -603,6 +603,11 @@ QueryResult MCPToolHandler::executeQueryWithEndpoint(const EndpointConfig& endpo
     std::vector<std::string> columns;
     bool first = true;
     ResultSink sink;
+    sink.reset = [&]() {
+        text = "[";
+        columns.clear();
+        first = true;
+    };
     sink.begin = [&](const std::vector<std::string>& names) { columns = names; };
     sink.json_rows = &text;
     sink.row = [&](const crow::json::wvalue& row) {

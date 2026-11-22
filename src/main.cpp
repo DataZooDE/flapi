@@ -1532,8 +1532,9 @@ int main(int argc, char* argv[])
     // join on purpose: warmup writes to the catalog being detached.
     DatabaseManager::getInstance()->shutdown();
 
-    // Drain buffered telemetry on clean exit; the signal path already flushed.
-    if (!should_exit) {
+    // Drain buffered telemetry on clean exit; the signal path already flushed, but requests that
+    // finished while draining were aggregated after it.
+    if (!should_exit || flapi::GlobalTelemetry().hasPendingAggregates()) {
         flapi::GlobalTelemetry().flush();
     }
 

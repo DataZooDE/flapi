@@ -72,6 +72,7 @@ def test_threads_follow_the_cpus_the_process_may_use(root):
                             env={**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"},
                             preexec_fn=lambda: os.sched_setaffinity(0, {0, 1}))
     try:
+        r = None
         deadline = time.time() + 60
         while time.time() < deadline:
             try:
@@ -79,6 +80,7 @@ def test_threads_follow_the_cpus_the_process_may_use(root):
                 break
             except requests.RequestException:
                 time.sleep(0.2)
+        assert r is not None, "server never answered"
         assert r.json()["data"][0]["threads"] == 2, r.text
         assert len(os.listdir(f"/proc/{proc.pid}/task")) < 40, "thread pools sized for the host, not 2 CPUs"
     finally:

@@ -51,6 +51,9 @@ namespace flapi {
 // writers (REST JSON/CSV, MCP) append each row to their output and drop it, so a large
 // result is never held as a JSON tree plus copies of it.
 struct ResultSink {
+    // Called before rows are delivered for an attempt: a lock-contention retry re-runs the
+    // query, so whatever an earlier attempt appended must be discarded first.
+    std::function<void()> reset;
     std::function<void(const std::vector<std::string>& columns)> begin;
     std::function<void(const crow::json::wvalue& row)> row;
     // When set, rows are written as JSON objects (comma-separated, no brackets) straight from
