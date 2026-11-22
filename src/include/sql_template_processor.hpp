@@ -76,8 +76,9 @@ public:
         const TemplateConfig& whitelist,
         const std::function<void(const std::string& name, std::string_view value)>& visit);
 
-    /// Drop the cached text of every template (tests; a reload does not need
-    /// it, the cache revalidates against the file on every read).
+    /// Drop the cached text of every template. Called whenever flAPI writes a
+    /// template or reloads endpoints itself: the per-read stat cannot tell two
+    /// same-size writes within one filesystem timestamp tick apart.
     static void clearTemplateCache();
     
     // Public method to load template content for validation

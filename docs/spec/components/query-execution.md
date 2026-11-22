@@ -123,7 +123,13 @@ A local template file is read once and cached by path (`loadTemplateShared`); ev
 render revalidates the entry with one `stat` (device, inode, size, mtime, ctime) and
 re-reads on any difference, so an edited file is served by the next request. That
 stat costs ~0.2 us, the read it replaces (four existence stats, open, read, copies)
-~2.5 us. Templates in a bundle are already in memory; remote templates are fetched
+~2.5 us. Two same-size writes within one filesystem timestamp tick leave the same
+stamp, so every write flAPI makes itself (config service template PUT, endpoint
+create/update, any reload) drops the whole cache (`clearTemplateCache`); only an
+external editor writing twice within one tick can be missed, until the next change
+or reload. On Windows the stamp is size, last-write time (100 ns) and creation time
+(`GetFileAttributesEx`; there is no inode); the filesystem's own timestamp
+resolution still applies (FAT: 2 s). Templates in a bundle are already in memory; remote templates are fetched
 per render as before.
 
 ## QueryExecutor

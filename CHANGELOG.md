@@ -78,7 +78,8 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   page, +50% / +30% for a filtered one.
 - **Less CPU per request:** the endpoint is resolved once per request instead of three times (rate limit, auth,
   handler); a local SQL template is cached and revalidated with one `stat` instead of re-read (an edit is still
-  served by the next request); the secret scrubber no longer copies the environment. Measured with 200 endpoints and a
+  served by the next request; a template written through the config service or a reload drops the cache, since
+  two same-size writes within one filesystem timestamp tick look alike); the secret scrubber no longer copies the environment. Measured with 200 endpoints and a
   trivial query: +21% req/s on one client, +30% on four.
 
 ### Upgrade notes

@@ -86,3 +86,18 @@ def test_rate_limit_auth_and_handler_judge_the_same_route(server):
     statuses = [requests.get(f"{server.base}/items/9", headers=basic, timeout=30) for _ in range(3)]
     assert [r.status_code for r in statuses] == [200, 429, 429], [r.text for r in statuses]
     assert statuses[0].json() == [{"route": "param"}]
+
+
+def test_a_template_written_through_the_config_service_is_served_at_once(server):
+    # Two same-size writes in quick succession may land in one filesystem timestamp tick (and on
+    # Windows mtime has whole seconds): the stamp alone cannot tell them apart. A write flAPI
+    # makes itself drops the cached text, so the next request reads the file.
+    from test_duckdb_upgrade import TOKEN
+    h = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
+    s = requests.Session()
+    for i in range(40):
+        for value in (f"a{i:03d}", f"b{i:03d}"):
+            r = s.put(f"{server.base}/api/v1/_config/endpoints/-edit/template", headers=h,
+                      json={"template": f"SELECT '{value}' AS v\n"}, timeout=30)
+            assert r.status_code == 200, r.text
+            assert s.get(f"{server.base}/edit", timeout=30).json() == [{"v": value}], (i, value)

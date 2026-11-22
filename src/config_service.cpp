@@ -1681,6 +1681,9 @@ bool writeFile(const std::filesystem::path& file, const std::string& content, st
     }
     out << content;
     out.close();
+    // Endpoint YAML and template files alike: the template text cache cannot
+    // tell two same-size writes within one timestamp tick apart (#243).
+    SQLTemplateProcessor::clearTemplateCache();
     if (!out) {
         error = "cannot write " + file.string();
         return false;
@@ -2894,6 +2897,9 @@ crow::response TemplateHandler::updateEndpointTemplate(const crow::request& req,
         }
 
         file << json["template"].s();
+        file.close();
+        // Served by the very next request, even within one timestamp tick (#243).
+        SQLTemplateProcessor::clearTemplateCache();
         if (!file.good()) {
             return crow::response(500, "Error writing template to file");
         }
@@ -3650,6 +3656,9 @@ crow::response TemplateHandler::updateCacheTemplate(const crow::request& req, co
         }
 
         file << json["template"].s();
+        file.close();
+        // Served by the very next request, even within one timestamp tick (#243).
+        SQLTemplateProcessor::clearTemplateCache();
         if (!file.good()) {
             return crow::response(500, "Error writing template to file");
         }

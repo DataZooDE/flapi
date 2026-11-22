@@ -10,6 +10,12 @@
 #include <mutex>
 #include <unordered_map>
 #include <sys/stat.h>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace flapi {
 
@@ -21,6 +27,10 @@ namespace {
 // picked up by the next request. It still is: an entry is used only while the
 // file's identity, size, mtime and ctime are what they were when it was read,
 // and a rewrite changes ctime even when it restores the old mtime and size.
+// Two writes within one timestamp tick of the filesystem can still look alike;
+// every write flAPI makes itself (config service template PUT, endpoint
+// create/update, reload) therefore drops the cache (clearTemplateCache). An
+// external editor writing twice within one tick is the remaining gap.
 struct FileStamp {
     std::uint64_t device = 0;
     std::uint64_t inode = 0;
@@ -35,16 +45,23 @@ struct FileStamp {
 
 std::optional<FileStamp> StampOf(const std::string& path) {
 #ifdef _WIN32
-    struct _stat64 st;
-    if (::_stat64(path.c_str(), &st) != 0 || (st.st_mode & _S_IFREG) == 0) {
+    // Not _stat64: its times have whole seconds, its st_ctime is the CREATION
+    // time and st_ino is 0, so two same-size edits within one second looked
+    // alike. GetFileAttributesEx is still one call and reports the last write
+    // in 100 ns units. There is no inode: delete-and-recreate is caught by the
+    // creation time instead.
+    WIN32_FILE_ATTRIBUTE_DATA data;
+    if (!::GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &data) ||
+        (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
         return std::nullopt;
     }
+    const auto ticks = [](const FILETIME& t) {
+        return static_cast<std::int64_t>((static_cast<std::uint64_t>(t.dwHighDateTime) << 32) | t.dwLowDateTime);
+    };
     FileStamp stamp;
-    stamp.device = static_cast<std::uint64_t>(st.st_dev);
-    stamp.inode = static_cast<std::uint64_t>(st.st_ino);
-    stamp.size = static_cast<std::int64_t>(st.st_size);
-    stamp.mtime_ns = static_cast<std::int64_t>(st.st_mtime) * 1000000000LL;
-    stamp.ctime_ns = static_cast<std::int64_t>(st.st_ctime) * 1000000000LL;
+    stamp.size = static_cast<std::int64_t>((static_cast<std::uint64_t>(data.nFileSizeHigh) << 32) | data.nFileSizeLow);
+    stamp.mtime_ns = ticks(data.ftLastWriteTime) * 100;
+    stamp.ctime_ns = ticks(data.ftCreationTime) * 100;
     return stamp;
 #else
     struct stat st;

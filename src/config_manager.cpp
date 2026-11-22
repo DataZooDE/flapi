@@ -1,4 +1,5 @@
 #include <regex>
+#include "sql_template_processor.hpp"
 #include "config_manager.hpp"
 #include "route_translator.hpp"
 #include "request_context.hpp"
@@ -4400,6 +4401,9 @@ std::string canonicalOrSelf(const std::filesystem::path& p) {
 }  // namespace
 
 ConfigManager::FileReloadResult ConfigManager::reloadEndpointFile(const std::filesystem::path& file) {
+    // A reload re-reads templates too: drop the cached text rather than trust
+    // a stat that cannot tell two writes within one timestamp tick apart (#243).
+    SQLTemplateProcessor::clearTemplateCache();
     FileReloadResult result;
     const std::string wanted = canonicalOrSelf(file);
     if (!std::filesystem::exists(file)) {
