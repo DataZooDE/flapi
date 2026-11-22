@@ -79,8 +79,10 @@ def main() -> int:
             loaded = {r["extension_name"]: r["install_path"] for r in rows}
             print(json.dumps(loaded, indent=2))
             missing = [e for e in EXPECTED if e not in loaded]
+            # With the separator: /x/extensions must not accept /x/extensions-old/...
+            inside = os.path.join(os.path.normcase(os.path.abspath(shipped)), "")
             elsewhere = [e for e in EXPECTED if e in loaded and not
-                         os.path.normcase(os.path.abspath(loaded[e])).startswith(os.path.normcase(shipped))]
+                         os.path.normcase(os.path.abspath(loaded[e])).startswith(inside)]
             downloaded = [os.path.join(r, n) for r, _, fs in os.walk(home) for n in fs
                           if n.endswith(".duckdb_extension")]
             for label, items in (("not loaded", missing), ("not loaded from " + shipped, elsewhere),

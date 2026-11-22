@@ -428,6 +428,10 @@ duckdb:
 - 1-3 replace the shipped directory instead of adding to it: an operator who points flAPI at a directory gets
   exactly that directory, and a packed binary never loads a second copy of an extension.
 - Offline (`FLAPI_EXTENSIONS_OFFLINE=1`) works with the shipped directory alone.
+- **macOS:** an archive downloaded with a browser gets the `com.apple.quarantine` attribute, and its unpacked
+  files keep it; Gatekeeper then refuses the binary and the extensions it loads. Clear it once for the whole
+  unpacked directory, binary and `extensions/` together: `xattr -dr com.apple.quarantine <unpacked dir>`
+  (`curl` / `gh release download` set no quarantine).
 - `core_functions`, `parquet`, `json` and `icu` are built into flAPI (DuckDB 2.0): they are never installed,
   loaded from the extension directory or packed, and need no network.
 - Defaults flAPI sets unless the key is given here: `threads` = the CPUs the process may use (affinity mask and

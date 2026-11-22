@@ -154,6 +154,9 @@ ENV FLAPI_CONFIG=/app/config/flapi.yaml FLAPI_EXTENSIONS_OFFLINE=1
 - Keep the binary and its `extensions/` together when you copy a release
   around; a symlink to the binary is fine. An `extensions/` for another DuckDB
   version is ignored with one warning.
+- On macOS, a release archive downloaded with a browser is quarantined, and so
+  is everything unpacked from it (binary and extensions): run
+  `xattr -dr com.apple.quarantine <unpacked dir>` once before starting it.
 - `FLAPI_EXTENSION_DIRECTORY` (or `duckdb.extension_directory`) replaces the
   shipped directory; anything you install yourself goes to `~/.duckdb/extensions`,
   which is searched first. See

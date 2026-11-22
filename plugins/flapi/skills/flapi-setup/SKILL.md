@@ -73,7 +73,7 @@ flapii --help
 | Channel | What you get |
 |---|---|
 | PyPI `flapi-io` | wheels for linux x86_64/aarch64, macOS arm64 and Windows x64. Each wheel holds both binaries. There is no separate `flapii` package. |
-| GitHub release | `flapi-linux-amd64.tar.gz`, `flapi-linux-arm64.tar.gz`, `flapi-macos-arm64.tar.gz`, `flapi-windows-amd64.zip` (server only). |
+| GitHub release | `flapi-linux-amd64.tar.gz`, `flapi-linux-arm64.tar.gz`, `flapi-macos-arm64.tar.gz`, `flapi-windows-amd64.zip` (server only, with `extensions/`). macOS, after a browser download: `xattr -dr com.apple.quarantine <unpacked dir>`. |
 | Docker | `ghcr.io/datazoode/flapi:latest` (the latest release), `:v<version>`, `:v<version>-runtime` (extensions pre-installed). See `flapi-deploy`. |
 
 ```bash
