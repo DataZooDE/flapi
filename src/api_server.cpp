@@ -1,8 +1,10 @@
 #include <algorithm>
 #include <cstdlib>
+#include <filesystem>
 #include <future>
 #include <string>
 #include <thread>
+#include <vector>
 #include <yaml-cpp/yaml.h>
 
 #include "api_server.hpp"
@@ -39,21 +41,38 @@ namespace {
 // one waited ~40 ms for Nagle + delayed ACK: the largest per-request cost flAPI had. Crow does
 // not expose its acceptor, so find the listening socket by port; accepted sockets inherit the
 // option from it (Linux, BSD/macOS). Windows does not inherit it and keeps the old behaviour.
-void EnableNoDelayOnListener(uint16_t port) {
+//
+// Sockets ACCEPTED before the listener had the option inherit nothing, and keep Nagle for the
+// life of the connection: a client (a load balancer's pooled connection, a health checker)
+// that connected in the first ~50 ms after the bind paid 40 ms on every response after its
+// first, for good. Connected sockets on the port are therefore set too. Returns whether the
+// listener was found.
+bool EnableNoDelayOnListener(uint16_t port) {
+    bool found_listener = false;
 #ifndef _WIN32
-    struct rlimit limit {};
-    int max_fd = 1024;
-    if (getrlimit(RLIMIT_NOFILE, &limit) == 0 && limit.rlim_cur != RLIM_INFINITY) {
-        max_fd = static_cast<int>(std::min<rlim_t>(limit.rlim_cur, 65536));
+    std::vector<int> fds;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator("/proc/self/fd", ec)) {
+        try {
+            fds.push_back(std::stoi(entry.path().filename().string()));
+        } catch (const std::exception&) {
+        }
     }
-    for (int fd = 0; fd < max_fd; ++fd) {
+    if (ec || fds.empty()) {
+        // No /proc (macOS, BSD): probe the descriptor range.
+        struct rlimit limit {};
+        int max_fd = 1024;
+        if (getrlimit(RLIMIT_NOFILE, &limit) == 0 && limit.rlim_cur != RLIM_INFINITY) {
+            max_fd = static_cast<int>(std::min<rlim_t>(limit.rlim_cur, 65536));
+        }
+        fds.clear();
+        for (int fd = 0; fd < max_fd; ++fd) {
+            fds.push_back(fd);
+        }
+    }
+    for (const int fd : fds) {
         struct stat st {};
         if (fstat(fd, &st) != 0 || !S_ISSOCK(st.st_mode)) {
-            continue;
-        }
-        int listening = 0;
-        socklen_t len = sizeof(listening);
-        if (getsockopt(fd, SOL_SOCKET, SO_ACCEPTCONN, &listening, &len) != 0 || !listening) {
             continue;
         }
         struct sockaddr_storage addr {};
@@ -70,14 +89,24 @@ void EnableNoDelayOnListener(uint16_t port) {
         if (bound != port) {
             continue;
         }
+        int listening = 0;
+        socklen_t len = sizeof(listening);
+        if (getsockopt(fd, SOL_SOCKET, SO_ACCEPTCONN, &listening, &len) != 0) {
+            continue;
+        }
         const int one = 1;
         if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)) != 0) {
-            CROW_LOG_WARNING << "could not set TCP_NODELAY on the listening socket";
+            if (listening) {
+                CROW_LOG_WARNING << "could not set TCP_NODELAY on the listening socket";
+            }
+            continue;
         }
+        found_listener = found_listener || listening != 0;
     }
 #else
     (void)port;
 #endif
+    return found_listener;
 }
 }  // namespace
 
@@ -1024,9 +1053,19 @@ void APIServer::run(int port) {
     // effective from the moment it does, so a stop requested at any point
     // during startup takes effect without anyone having to detect WHEN crow
     // became stoppable.
-    while (serving.wait_for(std::chrono::milliseconds(20)) != std::future_status::ready) {
+    // TCP_NODELAY as soon as the acceptor exists, not on the first tick 50 ms later (see
+    // EnableNoDelayOnListener). Polled at 1 ms until the listener is found or the server ends;
+    // a configured port 0 is only known on the tick, which still covers it.
+    const uint16_t configured_port = configManager->getHttpPort();
+    bool nodelay_set = configured_port == 0;
+    const auto nodelay_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (serving.wait_for(std::chrono::milliseconds(nodelay_set ? 20 : 1)) != std::future_status::ready) {
         if (stop_requested_.load(std::memory_order_acquire)) {
             app.stop();
+        }
+        if (!nodelay_set) {
+            nodelay_set = EnableNoDelayOnListener(configured_port) ||
+                          std::chrono::steady_clock::now() > nodelay_deadline;
         }
     }
 

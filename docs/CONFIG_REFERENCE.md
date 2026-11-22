@@ -375,7 +375,7 @@ Configures the embedded DuckDB database engine.
 | `duckdb.threads` | integer | auto | Number of threads for query parallelism |
 | `duckdb.max_memory` | string | auto | Memory limit (e.g., `4GB`, `512MB`) |
 | `duckdb.default_order` | string | - | Default sort order: `ASC` or `DESC`. With `ducklake.enabled` it is set per flAPI connection, not globally, because DuckLake's own catalog queries need the ascending default |
-| `duckdb.default-extensions` | list | `[httpfs, ducklake, fts, json, postgres, sqlite, parquet]` | Extensions installed and loaded at startup. `[]` loads none. A scalar is refused. |
+| `duckdb.default-extensions` | list | `[httpfs, ducklake, fts, json, postgres, sqlite, parquet]` | Extensions installed and loaded at startup. Extensions built into the binary (`core_functions`, `parquet`, `json`, `icu`) are skipped: nothing is downloaded for them. `[]` loads none. A scalar is refused. |
 | `duckdb.TimeZone` | string | `UTC` | The session time zone (IANA name). Defaults to `UTC` whatever the host `TZ` is; the key is matched case-insensitively (`timezone:` works). Applied with `SET GLOBAL` once the engine is open (the setting belongs to ICU, which is not loaded when the config is read) and logged at startup as `DuckDB TimeZone: UTC`. If that fails, each connection retries with its own `SET` and a warning says so |
 | `duckdb.<setting>` | any | - | Any DuckDB configuration setting |
 

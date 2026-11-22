@@ -603,6 +603,28 @@ void DatabaseManager::loadDefaultExtensions(std::shared_ptr<ConfigManager> confi
         }
     }
 
+    // Linked into the binary (core_functions, parquet, json, icu): already loaded when the
+    // database opened, so LOAD is a no-op - but INSTALL still downloaded the loadable copy
+    // (84 MB for json and parquet, ~1.6 s on a first start) that nothing ever opens.
+    {
+        std::set<std::string> built_in;
+        duckdb_connection conn = nullptr;
+        if (duckdb_connect(db, &conn) == DuckDBSuccess) {
+            built_in = StaticallyLinkedExtensions(conn);
+            duckdb_disconnect(&conn);
+        }
+        extensions.erase(std::remove_if(extensions.begin(), extensions.end(),
+                                        [&](const std::string& extension) {
+                                            if (built_in.count(extension) == 0) {
+                                                return false;
+                                            }
+                                            CROW_LOG_DEBUG << "Extension '" << extension
+                                                           << "' is built into flapi; not installing or loading it";
+                                            return true;
+                                        }),
+                         extensions.end());
+    }
+
     // Install the extensions (try individually to handle failures gracefully).
     // Offline skips this: INSTALL is a download, and the point is that none happens.
     CROW_LOG_INFO << (offline ? "Offline extensions: skipping install of " : "Installing default ")

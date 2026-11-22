@@ -190,6 +190,8 @@ public:
     void markCacheUnbuilt(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint);
     // Whether the cache table exists in the DuckLake catalog. A failed lookup reads as "no".
     bool cacheTableExists(const std::string& catalog, const std::string& schema, const std::string& table);
+    // (schema, table) of every table in `catalog`; empty when the listing fails.
+    std::set<std::pair<std::string, std::string>> listCatalogTables(const std::string& catalog);
     CacheReadiness getEndpointReadiness(std::shared_ptr<ConfigManager> config_manager, const EndpointConfig& endpoint) const;
     /// Non-const: on a read-only replica an unbuilt cache is re-checked here
     /// (throttled) - the writer may have built it since.

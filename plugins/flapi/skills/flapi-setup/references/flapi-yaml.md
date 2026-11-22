@@ -45,7 +45,7 @@ A map of `name -> {init, properties, serialize-access}`. Recipes are in
 | Key | Default | Notes |
 |---|---|---|
 | `duckdb.db_path` | in-memory | a file makes the DuckDB database (and a DuckLake cache inside it, if any) persistent |
-| `duckdb.default-extensions` | `[httpfs, ducklake, fts, json, postgres, sqlite, parquet]` | installed and loaded at startup; `[]` = none; must be a list |
+| `duckdb.default-extensions` | `[httpfs, ducklake, fts, json, postgres, sqlite, parquet]` | installed and loaded at startup; built-in `json`/`parquet` are skipped; `[]` = none; must be a list |
 | `duckdb.<any DuckDB setting>` | – | passed through, e.g. `threads`, `max_memory`, `access_mode`, `extension_directory`, `default_order` |
 
 ```text

@@ -120,7 +120,8 @@ flapi extensions install --dir /opt/flapi/extensions httpfs parquet bigquery@com
 FLAPI_EXTENSION_DIRECTORY=/opt/flapi/extensions FLAPI_EXTENSIONS_OFFLINE=1 flapi -c flapi.yaml
 ```
 
-- `--config` installs `duckdb.default-extensions` + every `INSTALL` in `connections.*.init`.
+- `--config` installs `duckdb.default-extensions` + every `INSTALL` in `connections.*.init`,
+  except the extensions built into flapi (`core_functions`, `parquet`, `json`, `icu`).
   The default directory is `FLAPI_EXTENSION_DIRECTORY`, then DuckDB's own default.
 - `FLAPI_EXTENSIONS_OFFLINE=1|true|yes` skips `INSTALL`, disables autoinstall, and turns a
   missing default extension into a startup error that names it.

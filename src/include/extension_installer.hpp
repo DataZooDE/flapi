@@ -5,8 +5,11 @@
 #include <map>
 #include <optional>
 #include <ostream>
+#include <set>
 #include <string>
 #include <vector>
+
+#include <duckdb.h>
 
 namespace flapi {
 
@@ -22,10 +25,16 @@ struct ExtensionSpec {
 // directories so concurrent processes never share one.
 long CurrentProcessId();
 
-// Extensions flAPI needs whatever the config says. Its DuckDB loads no extension
-// statically, and every query needs core_functions: without it pre-installed, an
-// offline start fails and an online one downloads it on the first query.
+// Extensions flAPI needs whatever the config says: every query needs core_functions.
+// Builds that link it statically (DuckDB 2.0) skip it - see StaticallyLinkedExtensions.
 const std::vector<std::string>& ImplicitExtensions();
+
+// The extensions linked into this binary (duckdb_extensions() install_mode STATICALLY_LINKED:
+// core_functions, parquet, json and icu in the DuckDB 2.0 build). They are loaded when the
+// database opens, so INSTALL/LOAD of one is a no-op - except that INSTALL still downloads
+// the loadable copy (json 51 MB, core_functions 40 MB, parquet 32 MB) that nothing ever
+// opens. Empty when the query fails: then nothing is skipped.
+std::set<std::string> StaticallyLinkedExtensions(duckdb_connection connection);
 
 // Parses `name` or `name@repository`. Both parts must be identifiers: they end up in SQL.
 std::optional<ExtensionSpec> ParseExtensionSpec(const std::string& arg);
