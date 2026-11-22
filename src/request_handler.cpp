@@ -380,7 +380,9 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
         }
 
         // Execute query for JSON/CSV (existing path)
-        QueryResult queryResult = db_manager->executeQuery(endpoint, params, endpoint.with_pagination);
+        QueryResult queryResult = db_manager->executeQuery(
+            endpoint, params, endpoint.with_pagination,
+            endpoint.total_count ? DatabaseManager::TotalCount::Exact : DatabaseManager::TotalCount::Skip);
         // limit=0 asks for the count alone. Its "next page" starts at the same
         // offset, so `next` pointed at the request itself and a client
         // following it looped forever.
@@ -400,7 +402,11 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
             // Assembled by hand around dumpData(): rows keep their SELECT
             // column order and doubles their shortest form, which a
             // crow::json::wvalue (an unordered map, 21-digit doubles) loses.
-            if (endpoint.with_pagination) {
+            if (endpoint.with_pagination && !endpoint.total_count) {
+                // `total-count: false`: no COUNT ran, so there is no total to report.
+                res.write("{\"data\":" + queryResult.dumpData() +
+                          ",\"next\":" + crow::json::wvalue(createNextUrl(req, queryResult)).dump() + "}");
+            } else if (endpoint.with_pagination) {
                 res.write("{\"data\":" + queryResult.dumpData() +
                           ",\"next\":" + crow::json::wvalue(createNextUrl(req, queryResult)).dump() +
                           ",\"total_count\":" + std::to_string(queryResult.total_count) + "}");
@@ -409,7 +415,9 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
             }
         }
 
-        res.add_header("X-Total-Count", std::to_string(queryResult.total_count));
+        if (endpoint.total_count) {
+            res.add_header("X-Total-Count", std::to_string(queryResult.total_count));
+        }
         res.add_header("X-Offset", std::to_string(offset));
         res.add_header("X-Limit", std::to_string(limit));
         res.add_header("X-Next", createNextUrl(req, queryResult));

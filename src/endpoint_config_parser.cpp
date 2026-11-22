@@ -194,6 +194,7 @@ void EndpointConfigParser::parseRestEndpointFields(
     config.allow_shadowing = config_manager_->safeGet<bool>(yaml_node, "allow-shadowing", "allow-shadowing", false);
     config.description = config_manager_->safeGet<std::string>(yaml_node, "description", "description", "");
     config.with_pagination = config_manager_->safeGet<bool>(yaml_node, "with-pagination", "with-pagination", true);
+    config.total_count = config_manager_->safeGet<bool>(yaml_node, "total-count", "total-count", true);
     config.request_fields_validation = config_manager_->safeGet<bool>(yaml_node, "request-fields-validation", "request-fields-validation", false);
     
     // Auto-detect write operation based on HTTP method (for backward compatibility)

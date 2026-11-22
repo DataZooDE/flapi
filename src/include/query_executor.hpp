@@ -55,7 +55,9 @@ public:
     // unordered map, so `data` alone cannot say which column came first.
     std::vector<std::string> columns;
 
-    static crow::json::wvalue convertResultToJson(const duckdb_result& result);
+    // `max_rows`: rows past it are read but not converted (the pagination probe row).
+    static crow::json::wvalue convertResultToJson(const duckdb_result& result,
+                                                  idx_t max_rows = static_cast<idx_t>(-1));
 
     // `data` as JSON text: row keys in `columns` order and every double in
     // its shortest round-trip form (crow prints 21 significant digits, so
@@ -164,7 +166,7 @@ public:
         return names;
     }
     
-    crow::json::wvalue toJson() const;
+    crow::json::wvalue toJson(idx_t max_rows = static_cast<idx_t>(-1)) const;
 
     // Interrupt an in-flight query on this executor's connection from another
     // thread. Used by the MCP Tasks extension (issue #111) to make tasks/cancel

@@ -586,12 +586,12 @@ void QueryExecutor::executeWithBindings(const std::string& sql,
     duckdb_destroy_prepare(&stmt);
 }
 
-crow::json::wvalue QueryExecutor::toJson() const {
+crow::json::wvalue QueryExecutor::toJson(idx_t max_rows) const {
     if (!has_result) {
         throw std::runtime_error("No result available - execute query first");
     }
-    
-    return QueryResult::convertResultToJson(result);
+
+    return QueryResult::convertResultToJson(result, max_rows);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -688,7 +688,7 @@ std::string QueryResult::dumpData() const {
     return dumpJson(data, columns.empty() ? nullptr : &columns);
 }
 
-crow::json::wvalue QueryResult::convertResultToJson(const duckdb_result& result) {
+crow::json::wvalue QueryResult::convertResultToJson(const duckdb_result& result, idx_t max_rows) {
     auto [names, types] = extractNamesAndTypes(const_cast<duckdb_result&>(result));
 
     std::vector<crow::json::wvalue> rows;
@@ -699,7 +699,9 @@ crow::json::wvalue QueryResult::convertResultToJson(const duckdb_result& result)
         }
         duckdb_destroy_data_chunk(&chunk);
     }
-    
+    if (rows.size() > max_rows) {
+        rows.resize(max_rows);
+    }
     return crow::json::wvalue(rows);
 }
 

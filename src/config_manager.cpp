@@ -2751,6 +2751,7 @@ crow::json::wvalue ConfigManager::serializeEndpointConfig(const EndpointConfig& 
         }
 
         set("with-pagination", "withPagination", config.with_pagination);
+        set("total-count", "totalCount", config.total_count);
         if (config.allow_shadowing) {
             set("allow-shadowing", "allowShadowing", true);
         }
@@ -3064,6 +3065,7 @@ EndpointConfig ConfigManager::deserializeEndpointConfig(const crow::json::rvalue
         config.connection = getList({"connection", "connections"});
     }
     config.with_pagination = getBool({"with-pagination", "withPagination", "with_pagination"}, base ? base->with_pagination : true);
+    config.total_count = getBool({"total-count", "totalCount", "total_count"}, base ? base->total_count : true);
     config.allow_shadowing = getBool({"allow-shadowing", "allowShadowing", "allow_shadowing"},
                                      base ? base->allow_shadowing : false);
     config.request_fields_validation = getBool({"request-fields-validation", "requestFieldsValidation"},
@@ -3815,6 +3817,9 @@ std::string ConfigManager::serializeEndpointConfigToYaml(const EndpointConfig& c
         if (config.allow_shadowing) {
             out << YAML::Key << "allow-shadowing" << YAML::Value << true;
         }
+        if (!config.total_count) {
+            out << YAML::Key << "total-count" << YAML::Value << false;
+        }
     }
     
     // MCP Tool fields
@@ -3947,6 +3952,7 @@ EndpointConfig ConfigManager::deserializeEndpointConfigFromYaml(const std::strin
             throw std::runtime_error(problem);
         }
         config.allow_shadowing = node["allow-shadowing"] && node["allow-shadowing"].as<bool>();
+        config.total_count = !node["total-count"] || node["total-count"].as<bool>();
     }
     
     // Parse MCP Tool

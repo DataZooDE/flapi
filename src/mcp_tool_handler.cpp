@@ -596,7 +596,9 @@ std::map<std::string, std::string> MCPToolHandler::prepareParameters(
 QueryResult MCPToolHandler::executeQueryWithEndpoint(const EndpointConfig& endpoint_config,
                                                    std::map<std::string, std::string>& params) const {
     // Use the database manager to execute the query
-    return db_manager->executeQuery(endpoint_config, params, true);
+    // The tool result carries only the rows (formatResult), so the COUNT a REST page runs for
+    // total_count would be thrown away: skip it.
+    return db_manager->executeQuery(endpoint_config, params, true, DatabaseManager::TotalCount::Skip);
 }
 
 std::string MCPToolHandler::formatResult(const QueryResult& query_result,

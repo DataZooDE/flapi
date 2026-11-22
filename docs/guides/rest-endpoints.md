@@ -50,6 +50,12 @@ template `LIMIT {{ params.limit }}` applies the limit *before* flAPI's offset, s
 `?limit=2&offset=2` returns `"data": []`. Set `with-pagination: false` if you
 want to return a bare array and control `LIMIT` yourself.
 
+`total_count` costs a second query (`SELECT COUNT(*)` over your SQL) on a full
+page; a shorter page tells the total by itself, so the last page and small
+results run one query. For endpoints whose clients only page forward, set
+`total-count: false`: the response then has `data` and `next` only (no
+`total_count`, no `X-Total-Count`) and no count query ever runs.
+
 The full key list is in [CONFIG_REFERENCE § 3](../CONFIG_REFERENCE.md).
 
 ## Writing the SQL template

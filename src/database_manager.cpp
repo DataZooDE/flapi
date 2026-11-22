@@ -800,7 +800,8 @@ DatabaseManager::AccessLocks DatabaseManager::lockSerialisedReadAccess(const End
     return lockSerialisedAccess(endpoint);
 }
 
-QueryResult DatabaseManager::executeQuery(const EndpointConfig& endpoint, std::map<std::string, std::string>& params, bool with_pagination)
+QueryResult DatabaseManager::executeQuery(const EndpointConfig& endpoint, std::map<std::string, std::string>& params,
+                                          bool with_pagination, TotalCount total)
 {
     // #116: a read concurrent with a write wedges a SQLite attachment for good,
     // so on those connections a read waits its turn like a write does.
@@ -810,11 +811,12 @@ QueryResult DatabaseManager::executeQuery(const EndpointConfig& endpoint, std::m
     // blocks them, and failing a GET because some unrelated POST held a lock is
     // the least defensible outcome of the lot.
     return retryOnLockContention([&]() -> QueryResult {
-        return executeQueryOnce(endpoint, params, with_pagination);
+        return executeQueryOnce(endpoint, params, with_pagination, total);
     }, "query");
 }
 
-QueryResult DatabaseManager::executeQueryOnce(const EndpointConfig& endpoint, std::map<std::string, std::string>& params, bool with_pagination)
+QueryResult DatabaseManager::executeQueryOnce(const EndpointConfig& endpoint, std::map<std::string, std::string>& params,
+                                              bool with_pagination, TotalCount total)
 {
     cache_manager->addQueryCacheParamsIfNecessary(config_manager, endpoint, params);
 
@@ -831,9 +833,9 @@ QueryResult DatabaseManager::executeQueryOnce(const EndpointConfig& endpoint, st
     auto prepared = sql_processor->loadAndProcessTemplatePrepared(endpoint, params);
 
     if (prepared.bindings.empty()) {
-        return executeQuery(prepared.sql, params, with_pagination);
+        return executeQuery(prepared.sql, params, with_pagination, total);
     }
-    return executeQueryWithBindings(prepared.sql, prepared.bindings, bind_values, params, with_pagination);
+    return executeQueryWithBindings(prepared.sql, prepared.bindings, bind_values, params, with_pagination, total);
 }
 
 QueryResult DatabaseManager::executeCacheQuery(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params) 
@@ -1609,121 +1611,127 @@ std::unique_ptr<QueryExecutor> DatabaseManager::executeQueryRaw(const EndpointCo
     return executor;
 }
 
+namespace {
+// Pagination parameters as the request handler set them (limit/offset are reserved for it).
+struct PageWindow {
+    bool paged = false;
+    int64_t limit = 0;
+    int64_t offset = 0;
+};
+
+PageWindow ReadPageWindow(bool with_pagination, const std::map<std::string, std::string>& params) {
+    PageWindow window;
+    if (!with_pagination) {
+        return window;
+    }
+    const auto limit = params.find("limit");
+    const auto offset = params.find("offset");
+    if (limit == params.end() && offset == params.end()) {
+        return window;
+    }
+    window.paged = true;
+    if (limit != params.end()) {
+        window.limit = std::stoll(limit->second);
+    }
+    if (offset != params.end()) {
+        window.offset = std::stoll(offset->second);
+    }
+    return window;
+}
+
+std::string NextLink(const PageWindow& window, const std::map<std::string, std::string>& params) {
+    std::stringstream next_ss;
+    next_ss << "?offset=" << (window.offset + window.limit);
+    for (const auto& [key, value] : params) {
+        if (key != "offset") {
+            next_ss << "&" << key << "=" << value;
+        }
+    }
+    return next_ss.str();
+}
+}  // namespace
+
+// Runs one paginated (or plain) read and fills data, total_count and next.
+//
+// The COUNT(*) query costs a second full execution, and on DuckDB 2.0 a second parse and
+// plan; it is only run when the page cannot tell the total itself:
+//   * no limit/offset applied: the result IS everything, total = rows;
+//   * a short page (fewer rows than the limit) that is not empty past the end: total = offset + rows;
+//   * TotalCount::Skip (MCP, `total-count: false`): never; one row past the page tells `next`.
+template <class Run>
+static QueryResult RunPaginated(QueryExecutor& executor, const std::string& sql,
+                                const std::map<std::string, std::string>& params, bool with_pagination,
+                                DatabaseManager::TotalCount total, Run&& run) {
+    const PageWindow window = ReadPageWindow(with_pagination, params);
+    const bool skip = total == DatabaseManager::TotalCount::Skip;
+    std::string page_sql = sql;
+    if (window.paged) {
+        const int64_t fetch = skip ? window.limit + 1 : window.limit;
+        page_sql = "SELECT * FROM (" + sql + ") AS subquery LIMIT " + std::to_string(fetch) +
+                   " OFFSET " + std::to_string(window.offset);
+    }
+
+    run(page_sql, "main query");
+    const auto rows = static_cast<int64_t>(executor.rowCount());
+
+    QueryResult result;
+    result.columns = executor.columnNames();
+    if (!with_pagination) {
+        result.data = executor.toJson();
+        return result;
+    }
+    if (!window.paged) {
+        result.data = executor.toJson();
+        result.total_count = rows;
+        return result;
+    }
+
+    const int64_t shown = std::min(rows, window.limit);
+    result.data = executor.toJson(static_cast<idx_t>(std::max<int64_t>(shown, 0)));
+    const bool short_page = rows < window.limit && (rows > 0 || window.offset == 0);
+    if (skip) {
+        if (rows > window.limit) {
+            result.next = NextLink(window, params);
+        } else if (short_page) {
+            result.total_count = window.offset + rows;
+        }
+        return result;
+    }
+    if (short_page) {
+        result.total_count = window.offset + rows;
+    } else {
+        // Same connection: the page result is already converted.
+        run("SELECT COUNT(*) FROM (" + sql + ") AS subquery", "count query");
+        if (executor.rowCount() > 0) {
+            result.total_count = duckdb_value_int64(&executor.result, 0, 0);
+        }
+    }
+    if (window.offset + window.limit < result.total_count) {
+        result.next = NextLink(window, params);
+    }
+    return result;
+}
+
 QueryResult DatabaseManager::executeQueryWithBindings(
     const std::string& sql,
     const std::vector<PreparedBindingSpec>& bindings,
     const std::map<std::string, std::string>& bind_values,
     const std::map<std::string, std::string>& for_template_params,
-    bool with_pagination)
+    bool with_pagination, TotalCount total)
 {
     auto executor = createQueryExecutor();
-    std::string paginatedQuery = sql;
-    std::string countQuery = "SELECT COUNT(*) FROM (" + sql + ") AS subquery";
-
-    int64_t limit = 0;
-    int64_t offset = 0;
-    bool hasPagination = false;
-
-    if (with_pagination &&
-        (for_template_params.find("limit") != for_template_params.end() ||
-         for_template_params.find("offset") != for_template_params.end())) {
-        hasPagination = true;
-        if (for_template_params.find("limit") != for_template_params.end()) {
-            limit = std::stoll(for_template_params.find("limit")->second);
-        }
-        if (for_template_params.find("offset") != for_template_params.end()) {
-            offset = std::stoll(for_template_params.find("offset")->second);
-        }
-        paginatedQuery = "SELECT * FROM (" + paginatedQuery + ") AS subquery "
-                         "LIMIT " + std::to_string(limit) +
-                         " OFFSET " + std::to_string(offset);
-    }
-
-    // Run the main (possibly wrapped) query against the prepared path.
-    executor.executeWithBindings(paginatedQuery, bindings, bind_values, "main query");
-
-    QueryResult result;
-    result.data = executor.toJson();
-    result.columns = executor.columnNames();
-
-    if (with_pagination) {
-        auto countExecutor = createQueryExecutor();
-        countExecutor.executeWithBindings(countQuery, bindings, bind_values, "count query");
-        if (countExecutor.rowCount() > 0) {
-            result.total_count = duckdb_value_int64(&countExecutor.result, 0, 0);
-        }
-
-        if (hasPagination && offset + limit < result.total_count) {
-            std::stringstream next_ss;
-            next_ss << "?offset=" << (offset + limit);
-            for (const auto& [key, value] : for_template_params) {
-                if (key != "offset") {
-                    next_ss << "&" << key << "=" << value;
-                }
-            }
-            result.next = next_ss.str();
-        }
-    }
-
-    return result;
+    return RunPaginated(executor, sql, for_template_params, with_pagination, total,
+                        [&](const std::string& query, const char* what) {
+                            executor.executeWithBindings(query, bindings, bind_values, what);
+                        });
 }
 
 QueryResult DatabaseManager::executeQuery(const std::string& query,
                                           const std::map<std::string, std::string>& params,
-                                          bool with_pagination) {
+                                          bool with_pagination, TotalCount total) {
     auto executor = createQueryExecutor();
-    std::string paginatedQuery = query;
-    std::string countQuery = "SELECT COUNT(*) FROM (" + query + ") AS subquery";
-    
-    auto limit = 0;
-    auto offset = 0;
-    auto hasPagination = false;
-    
-    // Handle pagination parameters
-    if (with_pagination && (params.find("limit") != params.end() || params.find("offset") != params.end())) {
-        hasPagination = true;
-        if (params.find("limit") != params.end()) {
-            limit = std::stoll(params.find("limit")->second);
-        }
-        if (params.find("offset") != params.end()) {
-            offset = std::stoll(params.find("offset")->second);
-        }
-        paginatedQuery = "SELECT * FROM (" + paginatedQuery + ") AS subquery " 
-                        "LIMIT " + std::to_string(limit) + 
-                        " OFFSET " + std::to_string(offset);
-    }
-    
-    // Execute main query
-    executor.execute(paginatedQuery);
-    
-    // Convert result to JSON using QueryResult
-    QueryResult result;
-    result.data = executor.toJson();
-    result.columns = executor.columnNames();
-    
-    // Handle pagination metadata
-    if (with_pagination) {
-        // Get total count
-        auto countExecutor = createQueryExecutor();
-        countExecutor.execute(countQuery);
-        if (countExecutor.rowCount() > 0) {
-            result.total_count = duckdb_value_int64(&countExecutor.result, 0, 0);
-        }
-        
-        // Generate next link if needed
-        if (hasPagination && offset + limit < result.total_count) {
-            std::stringstream next_ss;
-            next_ss << "?offset=" << (offset + limit);
-            for (const auto& [key, value] : params) {
-                if (key != "offset") {
-                    next_ss << "&" << key << "=" << value;
-                }
-            }
-            result.next = next_ss.str();
-        }
-    }
-    
-    return result;
+    return RunPaginated(executor, query, params, with_pagination, total,
+                        [&](const std::string& sql, const char*) { executor.execute(sql); });
 }
 
 WriteResult DatabaseManager::executeWrite(const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {

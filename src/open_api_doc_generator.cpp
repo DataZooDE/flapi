@@ -312,7 +312,9 @@ YAML::Node OpenAPIDocGenerator::generateResponseSchema(const EndpointConfig& end
         schema["properties"]["data"]["items"] = items;
 
         schema["properties"]["next"]["type"] = "string";
-        schema["properties"]["total_count"]["type"] = "integer";
+        if (endpoint.total_count) {
+            schema["properties"]["total_count"]["type"] = "integer";
+        }
     } else {
         schema["type"] = "array";
         schema["items"] = items;
