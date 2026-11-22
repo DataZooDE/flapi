@@ -464,6 +464,48 @@ bool duckdb_settings_has(const Map& settings, const std::string& name) {
 }
 }  // namespace
 
+namespace {
+bool NamesRemoteStorage(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    for (const char* scheme : {"s3://", "s3a://", "s3n://", "gs://", "gcs://", "az://", "azure://", "abfs://",
+                               "abfss://", "http://", "https://", "r2://", "hf://"}) {
+        if (text.find(scheme) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+int64_t DefaultAsyncThreads(const ConfigManager& config) {
+    bool remote = NamesRemoteStorage(config.getTemplatePath()) || NamesRemoteStorage(config.getBasePath()) ||
+                  NamesRemoteStorage(config.getDuckLakeConfig().metadata_path) ||
+                  NamesRemoteStorage(config.getDuckLakeConfig().data_path);
+    for (const auto& [name, connection] : config.getConnections()) {
+        remote = remote || NamesRemoteStorage(connection.getInit());
+        for (const auto& [key, value] : connection.properties) {
+            remote = remote || NamesRemoteStorage(value);
+        }
+    }
+    if (!remote) {
+        return 0;
+    }
+    int64_t threads = static_cast<int64_t>(std::thread::hardware_concurrency());
+    for (const auto& [key, value] : config.getDuckDBConfig().settings) {
+        std::string lowered = key;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (lowered == "threads" || lowered == "worker_threads") {
+            try {
+                threads = std::stoll(value);
+            } catch (const std::exception&) {
+            }
+        }
+    }
+    return std::max<int64_t>(2, 2 * threads);
+}
+}  // namespace
+
 void DatabaseManager::createAndInitializeDuckDBConfig(std::shared_ptr<ConfigManager> config_manager, duckdb_config& config) {
     duckdb_create_config(&config);
 
@@ -486,13 +528,19 @@ void DatabaseManager::createAndInitializeDuckDBConfig(std::shared_ptr<ConfigMana
         throw std::runtime_error("Failed to set DuckDB configuration: autoload_known_extensions");
     }
 
-    // DuckDB 2.0 starts 4 async I/O threads per core (96 on 24 cores). flAPI runs many short
-    // concurrent queries, where that pool cost ~27% throughput and ~3x peak memory on local
-    // parquet scans (#241 benchmark). One async thread recovers about half of it; remote-heavy
-    // workloads can raise it with `duckdb: async_threads: N`, which the loop below applies.
-    if (duckdb_settings_has(config_manager->getDuckDBConfig().settings, "async_threads") == false &&
-        duckdb_set_config(config, "async_threads", "1") == DuckDBError) {
-        CROW_LOG_WARNING << "Could not set the DuckDB default async_threads=1; DuckDB's default applies";
+    // DuckDB 2.0's async I/O pool (4 threads per core, independent of `threads`) is the main cost
+    // of 2.0 under flAPI's many short concurrent queries on LOCAL data (-25% throughput, ~3x
+    // memory) but makes uncached remote reads 2-3x faster than 1.5. So: no pool when nothing is
+    // remote, 2x the worker threads when a connection, template.path, the config or the DuckLake
+    // paths name object storage or http(s). `duckdb: async_threads: N` always wins.
+    if (!duckdb_settings_has(config_manager->getDuckDBConfig().settings, "async_threads")) {
+        const std::string async = std::to_string(DefaultAsyncThreads(*config_manager));
+        if (duckdb_set_config(config, "async_threads", async.c_str()) == DuckDBError) {
+            CROW_LOG_WARNING << "Could not set DuckDB async_threads=" << async << "; DuckDB's default applies";
+        } else {
+            CROW_LOG_INFO << "DuckDB async_threads=" << async
+                          << (async == "0" ? " (no remote storage configured)" : " (remote storage configured)");
+        }
     }
 
     // Apply settings from the configuration
