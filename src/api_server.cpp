@@ -25,6 +25,61 @@
 #include "mcp_session_manager.hpp"
 #include "mcp_client_capabilities.hpp"
 
+#ifndef _WIN32
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/resource.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#endif
+
+namespace {
+// Crow never sets TCP_NODELAY on accepted sockets, so every keep-alive response after the first
+// one waited ~40 ms for Nagle + delayed ACK: the largest per-request cost flAPI had. Crow does
+// not expose its acceptor, so find the listening socket by port; accepted sockets inherit the
+// option from it (Linux, BSD/macOS). Windows does not inherit it and keeps the old behaviour.
+void EnableNoDelayOnListener(uint16_t port) {
+#ifndef _WIN32
+    struct rlimit limit {};
+    int max_fd = 1024;
+    if (getrlimit(RLIMIT_NOFILE, &limit) == 0 && limit.rlim_cur != RLIM_INFINITY) {
+        max_fd = static_cast<int>(std::min<rlim_t>(limit.rlim_cur, 65536));
+    }
+    for (int fd = 0; fd < max_fd; ++fd) {
+        struct stat st {};
+        if (fstat(fd, &st) != 0 || !S_ISSOCK(st.st_mode)) {
+            continue;
+        }
+        int listening = 0;
+        socklen_t len = sizeof(listening);
+        if (getsockopt(fd, SOL_SOCKET, SO_ACCEPTCONN, &listening, &len) != 0 || !listening) {
+            continue;
+        }
+        struct sockaddr_storage addr {};
+        socklen_t addr_len = sizeof(addr);
+        if (getsockname(fd, reinterpret_cast<struct sockaddr*>(&addr), &addr_len) != 0) {
+            continue;
+        }
+        uint16_t bound = 0;
+        if (addr.ss_family == AF_INET) {
+            bound = ntohs(reinterpret_cast<struct sockaddr_in*>(&addr)->sin_port);
+        } else if (addr.ss_family == AF_INET6) {
+            bound = ntohs(reinterpret_cast<struct sockaddr_in6*>(&addr)->sin6_port);
+        }
+        if (bound != port) {
+            continue;
+        }
+        const int one = 1;
+        if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)) != 0) {
+            CROW_LOG_WARNING << "could not set TCP_NODELAY on the listening socket";
+        }
+    }
+#else
+    (void)port;
+#endif
+}
+}  // namespace
+
 namespace flapi {
 
 APIServer::APIServer(std::shared_ptr<ConfigManager> cm, 
@@ -864,6 +919,7 @@ void APIServer::run(int port) {
             if (announced->exchange(true)) {
                 return;
             }
+            EnableNoDelayOnListener(app.port());
             const std::string base = scheme + "://" + bind_host + ":" + std::to_string(app.port());
             CROW_LOG_INFO << "flAPI server listening on " << base
                           << " (REST API; MCP at " << base << "/mcp/jsonrpc)";
