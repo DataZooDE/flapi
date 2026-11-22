@@ -801,7 +801,7 @@ DatabaseManager::AccessLocks DatabaseManager::lockSerialisedReadAccess(const End
 }
 
 QueryResult DatabaseManager::executeQuery(const EndpointConfig& endpoint, std::map<std::string, std::string>& params,
-                                          bool with_pagination, TotalCount total)
+                                          bool with_pagination, TotalCount total, const ResultSink* sink)
 {
     // #116: a read concurrent with a write wedges a SQLite attachment for good,
     // so on those connections a read waits its turn like a write does.
@@ -811,12 +811,12 @@ QueryResult DatabaseManager::executeQuery(const EndpointConfig& endpoint, std::m
     // blocks them, and failing a GET because some unrelated POST held a lock is
     // the least defensible outcome of the lot.
     return retryOnLockContention([&]() -> QueryResult {
-        return executeQueryOnce(endpoint, params, with_pagination, total);
+        return executeQueryOnce(endpoint, params, with_pagination, total, sink);
     }, "query");
 }
 
 QueryResult DatabaseManager::executeQueryOnce(const EndpointConfig& endpoint, std::map<std::string, std::string>& params,
-                                              bool with_pagination, TotalCount total)
+                                              bool with_pagination, TotalCount total, const ResultSink* sink)
 {
     cache_manager->addQueryCacheParamsIfNecessary(config_manager, endpoint, params);
 
@@ -833,9 +833,9 @@ QueryResult DatabaseManager::executeQueryOnce(const EndpointConfig& endpoint, st
     auto prepared = sql_processor->loadAndProcessTemplatePrepared(endpoint, params);
 
     if (prepared.bindings.empty()) {
-        return executeQuery(prepared.sql, params, with_pagination, total);
+        return executeQuery(prepared.sql, params, with_pagination, total, sink);
     }
-    return executeQueryWithBindings(prepared.sql, prepared.bindings, bind_values, params, with_pagination, total);
+    return executeQueryWithBindings(prepared.sql, prepared.bindings, bind_values, params, with_pagination, total, sink);
 }
 
 QueryResult DatabaseManager::executeCacheQuery(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params) 
@@ -1661,7 +1661,7 @@ std::string NextLink(const PageWindow& window, const std::map<std::string, std::
 template <class Run>
 static QueryResult RunPaginated(QueryExecutor& executor, const std::string& sql,
                                 const std::map<std::string, std::string>& params, bool with_pagination,
-                                DatabaseManager::TotalCount total, Run&& run) {
+                                DatabaseManager::TotalCount total, const ResultSink* sink, Run&& run) {
     const PageWindow window = ReadPageWindow(with_pagination, params);
     const bool skip = total == DatabaseManager::TotalCount::Skip;
     std::string page_sql = sql;
@@ -1676,18 +1676,26 @@ static QueryResult RunPaginated(QueryExecutor& executor, const std::string& sql,
 
     QueryResult result;
     result.columns = executor.columnNames();
+    const auto take = [&](idx_t max_rows) {
+        if (sink) {
+            result.streamed = true;
+            result.streamed_rows = QueryResult::streamResult(executor.result, max_rows, *sink);
+        } else {
+            result.data = executor.toJson(max_rows);
+        }
+    };
     if (!with_pagination) {
-        result.data = executor.toJson();
+        take(static_cast<idx_t>(-1));
         return result;
     }
     if (!window.paged) {
-        result.data = executor.toJson();
+        take(static_cast<idx_t>(-1));
         result.total_count = rows;
         return result;
     }
 
     const int64_t shown = std::min(rows, window.limit);
-    result.data = executor.toJson(static_cast<idx_t>(std::max<int64_t>(shown, 0)));
+    take(static_cast<idx_t>(std::max<int64_t>(shown, 0)));
     const bool short_page = rows < window.limit && (rows > 0 || window.offset == 0);
     if (skip) {
         if (rows > window.limit) {
@@ -1717,10 +1725,10 @@ QueryResult DatabaseManager::executeQueryWithBindings(
     const std::vector<PreparedBindingSpec>& bindings,
     const std::map<std::string, std::string>& bind_values,
     const std::map<std::string, std::string>& for_template_params,
-    bool with_pagination, TotalCount total)
+    bool with_pagination, TotalCount total, const ResultSink* sink)
 {
     auto executor = createQueryExecutor();
-    return RunPaginated(executor, sql, for_template_params, with_pagination, total,
+    return RunPaginated(executor, sql, for_template_params, with_pagination, total, sink,
                         [&](const std::string& query, const char* what) {
                             executor.executeWithBindings(query, bindings, bind_values, what);
                         });
@@ -1728,9 +1736,9 @@ QueryResult DatabaseManager::executeQueryWithBindings(
 
 QueryResult DatabaseManager::executeQuery(const std::string& query,
                                           const std::map<std::string, std::string>& params,
-                                          bool with_pagination, TotalCount total) {
+                                          bool with_pagination, TotalCount total, const ResultSink* sink) {
     auto executor = createQueryExecutor();
-    return RunPaginated(executor, query, params, with_pagination, total,
+    return RunPaginated(executor, query, params, with_pagination, total, sink,
                         [&](const std::string& sql, const char*) { executor.execute(sql); });
 }
 

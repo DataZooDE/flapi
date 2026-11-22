@@ -394,13 +394,13 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
         // Create metadata
         std::unordered_map<std::string, std::string> metadata;
         metadata["tool_name"] = request.tool_name;
-        metadata["query_rows"] = std::to_string(query_result.data.size());
+        metadata["query_rows"] = std::to_string(query_result.rowCount());
         metadata["execution_time_ms"] = "0"; // Simplified
         if (shaped) {
             metadata["response_shaped"] = "true";
         }
 
-        emit_audit("success", static_cast<std::int64_t>(query_result.data.size()));
+        emit_audit("success", static_cast<std::int64_t>(query_result.rowCount()));
         return createSuccessResult(formatted_result, metadata);
         }
     } catch (const std::exception& e) {
@@ -598,7 +598,23 @@ QueryResult MCPToolHandler::executeQueryWithEndpoint(const EndpointConfig& endpo
     // Use the database manager to execute the query
     // The tool result carries only the rows (formatResult), so the COUNT a REST page runs for
     // total_count would be thrown away: skip it.
-    return db_manager->executeQuery(endpoint_config, params, true, DatabaseManager::TotalCount::Skip);
+    // Rows go straight into JSON text (no JSON tree of the whole result).
+    std::string text = "[";
+    std::vector<std::string> columns;
+    bool first = true;
+    ResultSink sink;
+    sink.begin = [&](const std::vector<std::string>& names) { columns = names; };
+    sink.row = [&](const crow::json::wvalue& row) {
+        if (!first) {
+            text += ',';
+        }
+        QueryResult::appendRow(row, columns, text);
+        first = false;
+    };
+    auto result = db_manager->executeQuery(endpoint_config, params, true, DatabaseManager::TotalCount::Skip, &sink);
+    text += ']';
+    result.streamed_json = std::move(text);
+    return result;
 }
 
 std::string MCPToolHandler::formatResult(const QueryResult& query_result,

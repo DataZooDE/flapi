@@ -4,6 +4,7 @@
 #include <crow.h>
 #include <stdexcept>
 #include <optional>
+#include <functional>
 #include <string>
 #include <map>
 #include <thread>
@@ -46,9 +47,24 @@ void interruptActiveExecutor(std::thread::id tid);
 
 namespace flapi {
 
+// Receives result rows one at a time instead of a materialised `data` tree: the response
+// writers (REST JSON/CSV, MCP) append each row to their output and drop it, so a large
+// result is never held as a JSON tree plus copies of it.
+struct ResultSink {
+    std::function<void(const std::vector<std::string>& columns)> begin;
+    std::function<void(const crow::json::wvalue& row)> row;
+};
+
 class QueryResult {
 public:
     crow::json::wvalue data;
+    // Rows delivered to a ResultSink instead of `data` (then `data` stays empty).
+    idx_t streamed_rows = 0;
+    bool streamed = false;
+    idx_t rowCount() const { return streamed ? streamed_rows : data.size(); }
+    // When a caller streamed the rows into JSON text itself, it may keep it here;
+    // dumpData() then returns it.
+    std::string streamed_json;
     std::string next = "";
     int64_t total_count = -1;
     // The result's column names in SELECT order. crow's object is an
@@ -58,6 +74,10 @@ public:
     // `max_rows`: rows past it are read but not converted (the pagination probe row).
     static crow::json::wvalue convertResultToJson(const duckdb_result& result,
                                                   idx_t max_rows = static_cast<idx_t>(-1));
+    // Converts row by row into `sink`; returns the number of rows delivered.
+    static idx_t streamResult(const duckdb_result& result, idx_t max_rows, const ResultSink& sink);
+    // One row as dumpData() prints it inside the list (columns in SELECT order).
+    static void appendRow(const crow::json::wvalue& row, const std::vector<std::string>& columns, std::string& out);
 
     // `data` as JSON text: row keys in `columns` order and every double in
     // its shortest round-trip form (crow prints 21 significant digits, so

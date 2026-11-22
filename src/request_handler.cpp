@@ -379,10 +379,32 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
             return;
         }
 
-        // Execute query for JSON/CSV (existing path)
+        // Rows are written straight into the response text as they are converted: a result is
+        // never held as a JSON tree and copies of it (a 9 MB response peaked at 721 MB that way).
+        const bool csv = negotiation.format == ResponseFormat::CSV;
+        std::string rows_text = csv ? std::string() : std::string("[");
+        std::vector<std::string> row_columns;
+        bool first_row = true;
+        ResultSink sink;
+        sink.begin = [&](const std::vector<std::string>& columns) { row_columns = columns; };
+        sink.row = [&](const crow::json::wvalue& row) {
+            if (csv) {
+                appendCSVRow(row, row_columns, first_row, rows_text);
+            } else {
+                if (!first_row) {
+                    rows_text += ',';
+                }
+                QueryResult::appendRow(row, row_columns, rows_text);
+            }
+            first_row = false;
+        };
         QueryResult queryResult = db_manager->executeQuery(
             endpoint, params, endpoint.with_pagination,
-            endpoint.total_count ? DatabaseManager::TotalCount::Exact : DatabaseManager::TotalCount::Skip);
+            endpoint.total_count ? DatabaseManager::TotalCount::Exact : DatabaseManager::TotalCount::Skip,
+            &sink);
+        if (!csv) {
+            rows_text += ']';
+        }
         // limit=0 asks for the count alone. Its "next page" starts at the same
         // offset, so `next` pointed at the request itself and a client
         // following it looped forever.
@@ -391,10 +413,9 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
         }
 
         // Handle CSV format
-        if (negotiation.format == ResponseFormat::CSV) {
-            std::string csvData = convertToCSV(queryResult);
+        if (csv) {
             res.set_header("Content-Type", "text/csv");
-            res.write(csvData);
+            res.body = std::move(rows_text);
         } else {
             // JSON format (default)
             res.set_header("Content-Type", "application/json");
@@ -404,14 +425,22 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
             // crow::json::wvalue (an unordered map, 21-digit doubles) loses.
             if (endpoint.with_pagination && !endpoint.total_count) {
                 // `total-count: false`: no COUNT ran, so there is no total to report.
-                res.write("{\"data\":" + queryResult.dumpData() +
-                          ",\"next\":" + crow::json::wvalue(createNextUrl(req, queryResult)).dump() + "}");
+                res.body = "{\"data\":" + rows_text +
+                           ",\"next\":" + crow::json::wvalue(createNextUrl(req, queryResult)).dump() + "}";
             } else if (endpoint.with_pagination) {
-                res.write("{\"data\":" + queryResult.dumpData() +
-                          ",\"next\":" + crow::json::wvalue(createNextUrl(req, queryResult)).dump() +
-                          ",\"total_count\":" + std::to_string(queryResult.total_count) + "}");
+                std::string body;
+                const std::string next = crow::json::wvalue(createNextUrl(req, queryResult)).dump();
+                body.reserve(rows_text.size() + next.size() + 48);
+                body += "{\"data\":";
+                body += rows_text;
+                body += ",\"next\":";
+                body += next;
+                body += ",\"total_count\":";
+                body += std::to_string(queryResult.total_count);
+                body += '}';
+                res.body = std::move(body);
             } else {
-                res.write(queryResult.dumpData());
+                res.body = std::move(rows_text);
             }
         }
 
@@ -938,6 +967,28 @@ std::string RequestHandler::convertToCSV(const QueryResult& queryResult)
     }
 
     return csv.str();
+}
+
+void RequestHandler::appendCSVRow(const crow::json::wvalue& row, const std::vector<std::string>& columns,
+                                  bool first_row, std::string& out) {
+    // The same text convertToCSV writes: a header before the first row, then one line per row.
+    std::vector<std::string> keys = columns.empty() ? row.keys() : columns;
+    if (first_row) {
+        bool first = true;
+        for (const auto& column : keys) {
+            if (!first) out += ',';
+            out += escapeCSV(column);
+            first = false;
+        }
+        out += '\n';
+    }
+    bool first = true;
+    for (const auto& column : keys) {
+        if (!first) out += ',';
+        out += QueryResult::dumpJson(row[column]);
+        first = false;
+    }
+    out += '\n';
 }
 
 std::string RequestHandler::escapeCSV(const std::string& str) {

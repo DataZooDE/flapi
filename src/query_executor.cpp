@@ -685,7 +685,36 @@ std::string QueryResult::dumpJson(const crow::json::wvalue& value, const std::ve
 }
 
 std::string QueryResult::dumpData() const {
+    if (streamed) {
+        return streamed_json.empty() ? std::string("[]") : streamed_json;
+    }
     return dumpJson(data, columns.empty() ? nullptr : &columns);
+}
+
+idx_t QueryResult::streamResult(const duckdb_result& result, idx_t max_rows, const ResultSink& sink) {
+    auto [names, types] = extractNamesAndTypes(const_cast<duckdb_result&>(result));
+    if (sink.begin) {
+        sink.begin(names);
+    }
+    idx_t delivered = 0;
+    duckdb_data_chunk chunk;
+    while ((chunk = duckdb_fetch_chunk(const_cast<duckdb_result&>(result))) != NULL) {
+        const idx_t row_count = duckdb_data_chunk_get_size(chunk);
+        for (idx_t row_idx = 0; row_idx < row_count && delivered < max_rows; row_idx++, delivered++) {
+            crow::json::wvalue row;
+            for (idx_t col_idx = 0; col_idx < names.size(); col_idx++) {
+                auto vector = duckdb_data_chunk_get_vector(chunk, col_idx);
+                row[names[col_idx]] = convertVectorEntryToJson(vector, row_idx);
+            }
+            sink.row(row);
+        }
+        duckdb_destroy_data_chunk(&chunk);
+    }
+    return delivered;
+}
+
+void QueryResult::appendRow(const crow::json::wvalue& row, const std::vector<std::string>& columns, std::string& out) {
+    appendJson(row, out, columns.empty() ? nullptr : &columns, true);
 }
 
 crow::json::wvalue QueryResult::convertResultToJson(const duckdb_result& result, idx_t max_rows) {
@@ -695,14 +724,16 @@ crow::json::wvalue QueryResult::convertResultToJson(const duckdb_result& result,
     duckdb_data_chunk chunk;
     while ((chunk = duckdb_fetch_chunk(const_cast<duckdb_result&>(result))) != NULL) {
         for (auto &row : QueryResult::convertChunkToJson(names, chunk)) {
-            rows.push_back(row);
+            rows.push_back(std::move(row));
         }
         duckdb_destroy_data_chunk(&chunk);
     }
     if (rows.size() > max_rows) {
         rows.resize(max_rows);
     }
-    return crow::json::wvalue(rows);
+    crow::json::wvalue out;
+    out = std::move(rows);   // crow has no list&& constructor; the copying one deep-copied every row
+    return out;
 }
 
 std::tuple<std::vector<std::string>, std::vector<duckdb_type>> QueryResult::extractNamesAndTypes(duckdb_result& result) {
@@ -725,7 +756,7 @@ std::vector<crow::json::wvalue> QueryResult::convertChunkToJson(const std::vecto
             auto vector = duckdb_data_chunk_get_vector(chunk, col_idx);
             row[names[col_idx]] = convertVectorEntryToJson(vector, row_idx);
         }
-        result.push_back(row);
+        result.push_back(std::move(row));
     }
 
     return result;

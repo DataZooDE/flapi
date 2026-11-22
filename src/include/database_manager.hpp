@@ -82,11 +82,14 @@ public:
     // total_count stays -1 unless the page itself shows the end.
     enum class TotalCount { Exact, Skip };
 
+    // `sink`: rows are handed to it one by one instead of being materialised in QueryResult::data.
     QueryResult executeQuery(const EndpointConfig& endpoint, std::map<std::string, std::string>& params,
-                             bool with_pagination = true, TotalCount total = TotalCount::Exact);
+                             bool with_pagination = true, TotalCount total = TotalCount::Exact,
+                             const ResultSink* sink = nullptr);
     QueryResult executeCacheQuery(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params);
     QueryResult executeQuery(const std::string& query, const std::map<std::string, std::string>& params = {},
-                             bool with_pagination = true, TotalCount total = TotalCount::Exact);
+                             bool with_pagination = true, TotalCount total = TotalCount::Exact,
+                             const ResultSink* sink = nullptr);
 
     // Execute query and return raw QueryExecutor for Arrow serialization
     // The executor owns the duckdb_result and must remain alive while accessing it
@@ -168,7 +171,7 @@ public:
 private:
     // The single-attempt body; executeQuery wraps it in lock-contention retry.
     QueryResult executeQueryOnce(const EndpointConfig& endpoint, std::map<std::string, std::string>& params,
-                                 bool with_pagination, TotalCount total);
+                                 bool with_pagination, TotalCount total, const ResultSink* sink);
 public:
     
     YAML::Node describeSelectQuery(const EndpointConfig& endpoint);
@@ -196,7 +199,8 @@ private:
                                          const std::vector<PreparedBindingSpec>& bindings,
                                          const std::map<std::string, std::string>& bind_values,
                                          const std::map<std::string, std::string>& for_template_params,
-                                         bool with_pagination, TotalCount total = TotalCount::Exact);
+                                         bool with_pagination, TotalCount total = TotalCount::Exact,
+                                         const ResultSink* sink = nullptr);
 
     void logDuckDBVersion();
     
