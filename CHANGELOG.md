@@ -37,6 +37,21 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   one per request.
 - Crow 1.2.0 → 1.3.4.
 
+### Cached total_count and less work per request (#242, #243)
+
+- **total_count of a DuckLake-cached endpoint is reused** until the catalog changes: the `COUNT(*)` behind a full
+  page cost about as much as the page. The count is keyed by the rendered SQL and bound values (time travel
+  included) and tagged with the catalog's newest snapshot id, read with one small metadata query per request, so
+  any committed change - a refresh, a full rebuild, a write, a refresh by another process or the writer of a
+  read-only replica - is seen by the next request and the total stays exact. Only queries that read nothing but
+  `<alias>.<schema>.<table>` DuckLake tables and call no time-, session- or random-dependent function qualify
+  (rule in docs/spec/components/caching.md). Measured on a 2M-row cached table (8 server CPUs): +15% req/s on one client and +20% on 16 for an unfiltered
+  page, +50% / +30% for a filtered one.
+- **Less CPU per request:** the endpoint is resolved once per request instead of three times (rate limit, auth,
+  handler); a local SQL template is cached and revalidated with one `stat` instead of re-read (an edit is still
+  served by the next request); the secret scrubber no longer copies the environment. Measured with 200 endpoints and a
+  trivial query: +21% req/s on one client, +30% on four.
+
 ### Upgrade notes
 
 - **New database files and DuckLake catalogs are 2.0-only.** Files created by this version (a new `duckdb.db_path`,

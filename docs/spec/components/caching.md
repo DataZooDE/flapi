@@ -490,6 +490,42 @@ watermark. A writer adds the column to an older audit table at start
 (`ADD COLUMN IF NOT EXISTS "full"`); the audit routes read `false` for a table that
 has none yet (a replica on a catalog its writer has not migrated).
 
+### total_count of a cached endpoint (#242)
+
+A full page of a paginated GET needs `SELECT COUNT(*) FROM (<page query>)` for
+`total_count` (see `RunPaginated`, `src/database_manager.cpp`); on a DuckLake
+table that costs about as much as the page. The count of a cached endpoint is
+kept in a process-wide LRU (`CountCache`, `src/count_cache.cpp`, 10,000 entries)
+keyed by the rendered SQL plus the bound values, and tagged with the catalog's
+**generation**: `SELECT max(snapshot_id) FROM "__ducklake_metadata_<alias>".ducklake_snapshot`,
+read on the metadata database just before the count would run (a fraction of a
+millisecond). Every committed DuckLake change makes a new snapshot - a refresh, a
+`--full` rebuild, a MERGE, retention, a write endpoint or a template that writes
+the table, a writer or one-shot `flapi cache refresh` in another process on a
+shared (Postgres/SQLite/MySQL) catalog - so an entry is used only while the catalog
+is exactly as it was counted, and the count is exact. Read-only replicas use it
+too: they read the same metadata.
+
+A query is eligible only when all of this holds (judged once per rendered SQL):
+
+- the endpoint has `cache.enabled` and a `cache.table`, is paginated, and keeps
+  `total-count` (MCP calls and `total-count: false` never count anyway);
+- the rendered SQL parses (DuckDB's parser) as one SELECT whose every table
+  reference is fully qualified into the DuckLake catalog,
+  `<alias>.<schema>.<table>`, or names a CTE of the query - no table function
+  (`read_parquet`, `ducklake_snapshots`, ...), no two-part or bare table name, no
+  `USING SAMPLE`; subqueries, joins, set operations and `AT (VERSION|TIMESTAMP => ...)`
+  are walked;
+- every function it calls is, per `duckdb_functions()`, a scalar, aggregate or
+  window function with no VOLATILE overload (`random`, `uuid`, `nextval`) and is
+  not one of those that are only consistent within a query (`now`, `current_date`,
+  `today`, `getvariable`, `current_setting`, ...); a macro or an unknown name is
+  not eligible.
+
+Time travel is keyed by its rendered text and bound values like everything else.
+If the snapshot id cannot be read, counting falls back to running every time for
+the rest of the process (one warning). Responses are byte-identical either way.
+
 ## Readiness during warmup
 
 There is **no per-request cache hit/miss check**. The cache is a materialised
@@ -571,6 +607,7 @@ Postgres/SQLite/MySQL, because a DuckDB-file catalog serves one process.
 |------|---------|
 | `src/cache_manager.cpp` | Cache operations |
 | `src/heartbeat_worker.cpp` | Background refresh scheduler |
+| `src/count_cache.cpp` | total_count reuse for cached endpoints, eligibility rule |
 | `src/include/config_manager.hpp` | CacheConfig, DuckLakeConfig structs |
 
 ## Related Documentation
