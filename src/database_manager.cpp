@@ -991,15 +991,27 @@ std::optional<AttachDetach> ParseAttachDetach(const std::string& sql) {
             const auto text = LowerAscii(expr->ToString());
             return text != "false" && text != "0" && text != "'false'";
         };
-        for (const auto& [key, expr] : info->parsed_options) {
+        const auto apply = [&](const std::string& key, bool value, const std::string& text) {
             const auto name = LowerAscii(key);
             if (name == "read_only" || name == "readonly") {
-                out.read_only = flag(expr);
+                out.read_only = value;
             } else if (name == "read_write" || name == "readwrite") {
-                out.read_only = !flag(expr);
-            } else if (name == "access_mode" && expr) {
-                out.read_only = LowerAscii(expr->ToString()).find("read_only") != std::string::npos;
+                out.read_only = !value;
+            } else if (name == "access_mode") {
+                out.read_only = LowerAscii(text).find("read_only") != std::string::npos;
             }
+        };
+        for (const auto& [key, expr] : info->parsed_options) {
+            apply(key, flag(expr), expr ? expr->ToString() : "");
+        }
+        // DuckDB 2.0's parser puts constant options - a bare `(READ_ONLY)` among them - into the
+        // bound `options` map instead of parsed_options.
+        const auto value_flag = [](const duckdb::Value& v) {
+            const auto text = LowerAscii(v.ToString());
+            return text != "false" && text != "0";
+        };
+        for (const auto& [key, value] : info->options) {
+            apply(key, value_flag(value), value.ToString());
         }
         return out;
     } catch (const std::exception&) {
@@ -1244,13 +1256,24 @@ DatabaseManager::ScriptValidation DatabaseManager::validateScript(const std::str
             // Not every CTAS form accepts the suffix; one that does not just
             // leaves its table unchecked.
             const std::string no_data = sql + "\nWITH NO DATA";
-            if (duckdb_query(conn, no_data.c_str(), nullptr) != DuckDBError) {
+            duckdb_result no_data_result;
+            if (duckdb_query(conn, no_data.c_str(), &no_data_result) != DuckDBError) {
                 replay.push_back(no_data);
                 created = true;
             } else {
+                // DuckDB 2.0 prepares a CTAS without binding its query, so this is where a
+                // missing column or table shows up: report it. A parser error only means
+                // this CTAS form does not take the suffix.
+                const char* raw = duckdb_result_error(&no_data_result);
+                const std::string message = raw ? raw : "";
+                if (message.find("Binder Error") != std::string::npos ||
+                    message.find("Catalog Error") != std::string::npos) {
+                    failure = message;
+                }
                 rollback();
                 in_transaction = begin();
             }
+            duckdb_destroy_result(&no_data_result);
         }
 
         if (failure) {
