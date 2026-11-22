@@ -1172,9 +1172,13 @@ crow::json::wvalue QueryResult::convertVectorBitToJson(const duckdb_vector &vect
 
     duckdb_bit bit { const_cast<uint8_t *>(bytes), length };
     auto value = duckdb_create_bit(bit);
-    DuckDBString str(duckdb_value_to_string(value));
+    // duckdb_value_to_string renders a SQL literal for BIT since DuckDB 2.0 ('101010'::BIT);
+    // duckdb_get_varchar is the plain bit string ('101010') both versions agree on.
+    char* rendered = duckdb_get_varchar(value);
+    std::string out = rendered ? rendered : "";
+    duckdb_free(rendered);
     duckdb_destroy_value(&value);
-    return crow::json::wvalue(str.to_string());
+    return crow::json::wvalue(out);
 }
 
 crow::json::wvalue QueryResult::convertVectorListToJson(const duckdb_vector &vector, const idx_t row_idx) {

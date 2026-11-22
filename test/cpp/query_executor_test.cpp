@@ -168,7 +168,7 @@ TEST_CASE("QueryExecutor type coverage", "[query_executor]") {
             '2023-01-01'::DATE as date,
             '12:34:56'::TIME as time,
             '2023-01-01 12:34:56'::TIMESTAMP as timestamp,
-            '2023-01-01 12:34:56'::TIMESTAMPTZ as timestamp_tz,
+            '2023-01-01 12:34:56+00'::TIMESTAMPTZ as timestamp_tz,
             {'key': 'value'} as struct,
             [1,2,3] as list,
             TRUE as boolean,

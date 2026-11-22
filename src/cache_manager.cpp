@@ -1267,7 +1267,7 @@ CacheManager::ExpiryCandidates CacheManager::expirableSnapshotIds(
         if (foreign_keys.empty()) {
             others << "true";   // no other live table exists to share with
         } else {
-            others << "len(list_filter(flatten(map_values(changes)), x -> ";
+            others << "len(list_filter(flatten(map_values(changes)), lambda x : ";
             for (std::size_t i = 0; i < foreign_keys.size(); ++i) {
                 if (i > 0) {
                     others << " OR ";
@@ -1751,7 +1751,7 @@ CacheManager::GarbageCollectionResult CacheManager::dropObsoleteCacheTable(
         if (live->empty()) {
             touches_live << "false";
         } else {
-            touches_live << "len(list_filter(flatten(map_values(changes)), x -> ";
+            touches_live << "len(list_filter(flatten(map_values(changes)), lambda x : ";
             for (std::size_t i = 0; i < live->size(); ++i) {
                 touches_live << (i > 0 ? " OR " : "") << "x = '" << escapeSqlLiteral((*live)[i]) << "'";
             }

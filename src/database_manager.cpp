@@ -813,7 +813,7 @@ std::optional<std::size_t> DatabaseManager::FindSelectStatement(const std::strin
     // correctly. A script the standalone parser cannot read (an extension's
     // syntax) is not judged here; executing it reports whatever is wrong.
     try {
-        duckdb::Parser parser;
+        auto parser = duckdb::Parser::GetBuiltinParser();
         parser.ParseQuery(script);
         if (statement_count) {
             *statement_count = parser.statements.size();
@@ -912,7 +912,7 @@ enum class StatementKind { Unknown, Select, Transaction, PlainCreate, CreateAs, 
 // read it (an extension's syntax): then only the connection judges it.
 StatementKind ClassifyStatement(const std::string& sql) {
     try {
-        duckdb::Parser parser;
+        auto parser = duckdb::Parser::GetBuiltinParser();
         parser.ParseQuery(sql);
         if (parser.statements.size() != 1 || !parser.statements[0]) {
             return StatementKind::Unknown;
@@ -956,7 +956,7 @@ std::string LowerAscii(std::string value) {
 
 std::optional<AttachDetach> ParseAttachDetach(const std::string& sql) {
     try {
-        duckdb::Parser parser;
+        auto parser = duckdb::Parser::GetBuiltinParser();
         parser.ParseQuery(sql);
         if (parser.statements.size() != 1 || !parser.statements[0]) {
             return std::nullopt;
@@ -967,7 +967,7 @@ std::optional<AttachDetach> ParseAttachDetach(const std::string& sql) {
             if (!info) {
                 return std::nullopt;
             }
-            return AttachDetach{false, LowerAscii(info->name), false};
+            return AttachDetach{false, LowerAscii(info->name.GetIdentifierName()), false};
         }
         if (statement.type != duckdb::StatementType::ATTACH_STATEMENT) {
             return std::nullopt;
@@ -978,7 +978,7 @@ std::optional<AttachDetach> ParseAttachDetach(const std::string& sql) {
         }
         AttachDetach out;
         out.attach = true;
-        out.alias = info->name;
+        out.alias = info->name.GetIdentifierName();
         if (out.alias.empty()) {
             // ATTACH 'dir/file.duckdb' with no AS: DuckDB names it after the file.
             out.alias = std::filesystem::path(info->path).stem().string();
@@ -1317,7 +1317,7 @@ DatabaseManager::ScriptValidation DatabaseManager::validateScript(const std::str
 
 std::optional<std::string> DatabaseManager::MaterialiseSelect(const std::string& script, const PopulateTarget& target) {
     try {
-        duckdb::Parser parser;
+        auto parser = duckdb::Parser::GetBuiltinParser();
         parser.ParseQuery(script);
         if (parser.statements.size() != 1 || !parser.statements[0] ||
             parser.statements[0]->type != duckdb::StatementType::SELECT_STATEMENT) {

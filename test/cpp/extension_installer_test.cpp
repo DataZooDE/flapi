@@ -169,8 +169,8 @@ TEST_CASE("CollectExtensionSpecs merges defaults and connection inits without du
     for (const auto& spec : specs) {
         names.push_back(spec.repository.empty() ? spec.name : spec.name + "@" + spec.repository);
     }
-    // core_functions first: flAPI's DuckDB loads no extension statically, and every query
-    // needs it, so a pre-installed set without it still downloads on the first query.
+    // core_functions stays first: every query needs it. DuckDB 2.0 builds it (with parquet, json
+    // and icu) into flAPI, so this is a no-op load on a host without an extension directory.
     REQUIRE(names == std::vector<std::string>{"core_functions", "json", "postgres", "bigquery@community"});
 }
 
@@ -199,7 +199,8 @@ TEST_CASE("Offline mode fails fast on a missing extension and names the fix", "[
         const std::string what = ex.what();
         INFO(what);
         REQUIRE(what.find("flapi_test_missing_ext") != std::string::npos);
-        REQUIRE(what.find("core_functions") != std::string::npos);
+        // core_functions is linked in (DuckDB 2.0): only the genuinely missing extension is listed.
+        REQUIRE(what.find("core_functions") == std::string::npos);
         REQUIRE(what.find("flapi extensions install") != std::string::npos);
     }
     db->reset();
