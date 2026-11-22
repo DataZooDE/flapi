@@ -760,6 +760,11 @@ public:
 
     EndpointRef getEndpointForPath(const std::string& path) const;
     EndpointRef getEndpointForPathAndMethod(const std::string& path, const std::string& httpMethod) const;
+    /// getEndpointForPathAndMethod for the request in flight on this thread:
+    /// the first call resolves and records the answer in its RequestContext,
+    /// later calls for the same path and method reuse it (#243). Outside a
+    /// request, or for another path, it is a plain lookup.
+    EndpointRef getEndpointForRequest(const std::string& path, const std::string& httpMethod) const;
     // Returns a PINNED snapshot, not a reference.
     //
     // This used to return `const std::vector<EndpointConfig>&` into the live

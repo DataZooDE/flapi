@@ -1,6 +1,7 @@
 #include <regex>
 #include "config_manager.hpp"
 #include "route_translator.hpp"
+#include "request_context.hpp"
 #include "mustache_syntax_check.hpp"
 
 #include <set>
@@ -3803,6 +3804,26 @@ ConfigManager::EndpointRef ConfigManager::getEndpointForPath(const std::string& 
 ConfigManager::EndpointRef ConfigManager::getEndpointForPathAndMethod(const std::string& path, const std::string& httpMethod) const {
     auto snapshot = endpointsSnapshot();
     return EndpointRef(snapshot, findEndpoint(*snapshot, path, httpMethod));
+}
+
+ConfigManager::EndpointRef ConfigManager::getEndpointForRequest(const std::string& path,
+                                                               const std::string& httpMethod) const {
+    RequestContext* rc = RequestContextScope::current();
+    // Only for the request's own path and method: a caller asking about some
+    // other route gets a plain lookup and leaves the recorded answer alone.
+    const bool this_request = rc != nullptr && rc->raw_path == path && httpMethod == rc->http_method;
+    if (this_request && rc->endpoint_resolved && rc->resolved_by == this) {
+        return EndpointRef(rc->resolved_snapshot, rc->resolved_endpoint);
+    }
+    auto snapshot = endpointsSnapshot();
+    const EndpointConfig* endpoint = findEndpoint(*snapshot, path, httpMethod);
+    if (this_request) {
+        rc->endpoint_resolved = true;
+        rc->resolved_by = this;
+        rc->resolved_snapshot = snapshot;
+        rc->resolved_endpoint = endpoint;
+    }
+    return EndpointRef(std::move(snapshot), endpoint);
 }
 
 // YAML Serialization

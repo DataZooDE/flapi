@@ -7,8 +7,110 @@
 #include <stdexcept>
 #include <filesystem>
 #include <cstring>
+#include <mutex>
+#include <unordered_map>
+#include <sys/stat.h>
 
 namespace flapi {
+
+namespace {
+
+// Local template files, cached by path and revalidated with ONE stat per read
+// (#243). Every render used to re-read the file - two existence probes (four
+// stats), an open, a read and two string copies - so an edited template was
+// picked up by the next request. It still is: an entry is used only while the
+// file's identity, size, mtime and ctime are what they were when it was read,
+// and a rewrite changes ctime even when it restores the old mtime and size.
+struct FileStamp {
+    std::uint64_t device = 0;
+    std::uint64_t inode = 0;
+    std::int64_t size = -1;
+    std::int64_t mtime_ns = 0;
+    std::int64_t ctime_ns = 0;
+    bool operator==(const FileStamp& o) const {
+        return device == o.device && inode == o.inode && size == o.size && mtime_ns == o.mtime_ns &&
+               ctime_ns == o.ctime_ns;
+    }
+};
+
+std::optional<FileStamp> StampOf(const std::string& path) {
+#ifdef _WIN32
+    struct _stat64 st;
+    if (::_stat64(path.c_str(), &st) != 0 || (st.st_mode & _S_IFREG) == 0) {
+        return std::nullopt;
+    }
+    FileStamp stamp;
+    stamp.device = static_cast<std::uint64_t>(st.st_dev);
+    stamp.inode = static_cast<std::uint64_t>(st.st_ino);
+    stamp.size = static_cast<std::int64_t>(st.st_size);
+    stamp.mtime_ns = static_cast<std::int64_t>(st.st_mtime) * 1000000000LL;
+    stamp.ctime_ns = static_cast<std::int64_t>(st.st_ctime) * 1000000000LL;
+    return stamp;
+#else
+    struct stat st;
+    if (::stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
+        return std::nullopt;
+    }
+    FileStamp stamp;
+    stamp.device = static_cast<std::uint64_t>(st.st_dev);
+    stamp.inode = static_cast<std::uint64_t>(st.st_ino);
+    stamp.size = static_cast<std::int64_t>(st.st_size);
+#if defined(__APPLE__)
+    stamp.mtime_ns = static_cast<std::int64_t>(st.st_mtimespec.tv_sec) * 1000000000LL + st.st_mtimespec.tv_nsec;
+    stamp.ctime_ns = static_cast<std::int64_t>(st.st_ctimespec.tv_sec) * 1000000000LL + st.st_ctimespec.tv_nsec;
+#else
+    stamp.mtime_ns = static_cast<std::int64_t>(st.st_mtim.tv_sec) * 1000000000LL + st.st_mtim.tv_nsec;
+    stamp.ctime_ns = static_cast<std::int64_t>(st.st_ctim.tv_sec) * 1000000000LL + st.st_ctim.tv_nsec;
+#endif
+    return stamp;
+#endif
+}
+
+struct CachedTemplate {
+    FileStamp stamp;
+    std::shared_ptr<const std::string> text;
+};
+
+// Keyed by the resolved path: the key space is the configured templates.
+constexpr std::size_t kMaxCachedTemplates = 4096;
+
+std::mutex& TemplateCacheMutex() {
+    static std::mutex m;
+    return m;
+}
+
+std::unordered_map<std::string, CachedTemplate>& TemplateCache() {
+    static std::unordered_map<std::string, CachedTemplate> cache;
+    return cache;
+}
+
+}  // namespace
+
+void SQLTemplateProcessor::clearTemplateCache() {
+    std::lock_guard<std::mutex> lock(TemplateCacheMutex());
+    TemplateCache().clear();
+}
+
+void SQLTemplateProcessor::forEachAllowedEnvironmentVariable(
+    const TemplateConfig& whitelist,
+    const std::function<void(const std::string& name, std::string_view value)>& visit) {
+    // An empty whitelist allows none: nothing to walk.
+    if (whitelist.environment_whitelist.empty()) {
+        return;
+    }
+    std::string key;
+    for (char** env = environ; *env != nullptr; ++env) {
+        const char* entry = *env;
+        const char* eq = std::strchr(entry, '=');
+        if (eq == nullptr) {
+            continue;
+        }
+        key.assign(entry, eq - entry);
+        if (whitelist.isEnvironmentVariableAllowed(key)) {
+            visit(key, std::string_view(eq + 1));
+        }
+    }
+}
 
 SQLTemplateProcessor::SQLTemplateProcessor(std::shared_ptr<ConfigManager> config_manager)
     : config_manager(config_manager) {}
@@ -36,7 +138,8 @@ PreparedQueryRender SQLTemplateProcessor::loadAndProcessTemplatePrepared(
 
     const std::string templatePath = getFullTemplatePath(endpoint.templateSource);
     CROW_LOG_DEBUG << "Prepared template path: " << templatePath;
-    const std::string templateContent = loadTemplateContent(templatePath);
+    const auto templateText = loadTemplateShared(templatePath);
+    const std::string& templateContent = *templateText;
     // Checked on the SOURCE, so an error names the file and a line the
     // operator can find; the rewritten text is checked again at compile.
     RequireValidMustacheSyntax(templateContent, templatePath);
@@ -124,16 +227,55 @@ std::string SQLTemplateProcessor::processTemplate(const std::string& templateCon
 }
 
 crow::mustache::template_t SQLTemplateProcessor::compileTemplate(const std::string& templateSource) {
-    // The one road into crow::mustache::compile. Templates are re-read from
-    // disk on every render, so a file edited after load (without a reload)
-    // reaches this point unchecked; crow itself would segfault or hang on an
+    // The one road into crow::mustache::compile. Templates are revalidated
+    // against the file on every render, so a file edited after load (without
+    // a reload) reaches this point unchecked; crow itself would segfault or hang on an
     // unbalanced section (see mustache_syntax_check.hpp).
     RequireValidMustacheSyntax(templateSource, "");
     return crow::mustache::compile(templateSource);
 }
 
 std::string SQLTemplateProcessor::loadTemplateContent(const std::string& templatePath) {
+    return *loadTemplateShared(templatePath);
+}
+
+std::shared_ptr<const std::string> SQLTemplateProcessor::loadTemplateShared(const std::string& templatePath) {
     auto file_provider = config_manager->getFileProvider();
+    // Only plain local files are cached: a bundle is served from memory
+    // already, and a remote template is re-fetched per read, as before.
+    if (!PathSchemeUtils::IsRemotePath(templatePath) && file_provider->GetProviderName() == "local") {
+        const std::string local = PathSchemeUtils::StripFileScheme(templatePath);
+        const auto stamp = StampOf(local);
+        if (!stamp) {
+            {
+                std::lock_guard<std::mutex> lock(TemplateCacheMutex());
+                TemplateCache().erase(local);
+            }
+            throw std::runtime_error("Template file not found: " + templatePath);
+        }
+        {
+            std::lock_guard<std::mutex> lock(TemplateCacheMutex());
+            const auto it = TemplateCache().find(local);
+            if (it != TemplateCache().end() && it->second.stamp == *stamp) {
+                return it->second.text;
+            }
+        }
+        // Read AFTER the stamp: a write racing this read leaves a newer stamp
+        // on disk than the one stored, so the next read re-reads.
+        auto text = std::make_shared<const std::string>(file_provider->ReadFile(templatePath));
+        std::lock_guard<std::mutex> lock(TemplateCacheMutex());
+        auto& cache = TemplateCache();
+        if (cache.size() >= kMaxCachedTemplates && cache.find(local) == cache.end()) {
+            cache.clear();
+        }
+        cache[local] = CachedTemplate{*stamp, text};
+        return text;
+    }
+    return std::make_shared<const std::string>(readTemplateUncached(*file_provider, templatePath));
+}
+
+std::string SQLTemplateProcessor::readTemplateUncached(IFileProvider& provider, const std::string& templatePath) {
+    auto* file_provider = &provider;
     if (PathSchemeUtils::IsRemotePath(templatePath)) {
         // No separate existence probe: it turned a 403, an expired token or a dead store into
         // "not found" and cost a round trip. ReadFile says what went wrong (status, redacted URL).
@@ -203,21 +345,10 @@ crow::mustache::context SQLTemplateProcessor::createTemplateContext(const Endpoi
     // Add filtered environment variables
     // Straight from `environ`, only the whitelisted names: copying the whole environment into a
     // map on every request was ~11% of a small query's CPU. An empty whitelist allows none.
-    const auto& templateConfig = config_manager->getTemplateConfig();
-    if (!templateConfig.environment_whitelist.empty()) {
-        std::string key;
-        for (char** env = environ; *env != nullptr; ++env) {
-            const char* entry = *env;
-            const char* eq = std::strchr(entry, '=');
-            if (eq == nullptr) {
-                continue;
-            }
-            key.assign(entry, eq - entry);
-            if (templateConfig.isEnvironmentVariableAllowed(key)) {
-                ctx["env"][key] = std::string(eq + 1);
-            }
-        }
-    }
+    forEachAllowedEnvironmentVariable(config_manager->getTemplateConfig(),
+                                      [&](const std::string& name, std::string_view value) {
+                                          ctx["env"][name] = std::string(value);
+                                      });
 
     // Add cache-related parameters
     if (params.find("cacheCatalog") != params.end()) {
@@ -302,20 +433,6 @@ crow::mustache::context SQLTemplateProcessor::createTemplateContext(const Endpoi
     CROW_LOG_DEBUG << "Template context built: " << params.size() << " request parameter(s)";
 
     return ctx;
-}
-
-std::map<std::string, std::string> SQLTemplateProcessor::getEnvironmentVariables() {
-    std::map<std::string, std::string> envMap;
-    for (char** env = environ; *env != nullptr; ++env) {
-        std::string envStr(*env);
-        size_t pos = envStr.find('=');
-        if (pos != std::string::npos) {
-            std::string key = envStr.substr(0, pos);
-            std::string value = envStr.substr(pos + 1);
-            envMap[key] = value;
-        }
-    }
-    return envMap;
 }
 
 std::string SQLTemplateProcessor::loadTemplate(const EndpointConfig& endpoint) {
