@@ -160,7 +160,7 @@ jobs:
   # PR had last run CI - unmerged, unreviewed code. Publishing also waits for
   # the integration and Linux smoke tests, like the GitHub release and PyPI.
   docker-build:
-    needs: [linux-build, integration-tests, smoke-test-linux-amd64, smoke-test-linux-arm64, pack-smoke-linux-amd64, pack-smoke-linux-arm64]
+    needs: [linux-build, shipped-extensions-linux, integration-tests, smoke-test-linux-amd64, smoke-test-linux-arm64, pack-smoke-linux-amd64, pack-smoke-linux-arm64]
     runs-on: ubuntu-24.04
     # The digest THIS run pushed. docker-promote tags it, not :sha-<commit>:
     # a main run and a tag run for the same commit both write that tag, and
@@ -209,6 +209,9 @@ jobs:
         cp artifacts/flapi-linux-amd64/flapi binaries/amd64/
         cp artifacts/flapi-linux-arm64/flapi binaries/arm64/
         chmod +x binaries/amd64/flapi binaries/arm64/flapi
+        # Copied into the image beside the binary (/app/extensions), not installed under QEMU.
+        cp -r artifacts/shipped-extensions-linux-amd64 binaries/amd64/extensions
+        cp -r artifacts/shipped-extensions-linux-arm64 binaries/arm64/extensions
 
     - name: Build and push multi-arch image
       id: build
@@ -250,22 +253,33 @@ jobs:
         build-contexts: |
           build=binaries
 
-    # The point of the runtime image: it must start with no network at all.
-    - name: Runtime image starts offline
+    # Both images must start with no network at all and load every default extension from
+    # /app/extensions: the default one online-mode (nothing to download, so nothing tried),
+    # the runtime one offline.
+    - name: Images start offline
       run: |
         set -euo pipefail
-        docker buildx build --load --target runtime --platform linux/amd64 \
-          --build-context build=binaries -t flapi-runtime-test -f Dockerfile .
-        docker run -d --name rt --network none -e FLAPI_EXTENSIONS_OFFLINE=1 -w /config \
-          -v "$PWD/test/integration/fixtures/offline:/config:ro" flapi-runtime-test --config /config/flapi.yaml
-        # bash, not sh: /dev/tcp is a bash feature and the image's /bin/sh is dash.
-        for i in $(seq 1 30); do
-          if docker exec rt bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf "GET /health/live HTTP/1.0\r\n\r\n" >&3 && cat <&3' 2>/dev/null | grep -q '"live"'; then
-            docker logs rt; docker rm -f rt; exit 0
-          fi
-          sleep 1
-        done
-        docker logs rt; docker rm -f rt; exit 1
+        check() {
+          local target=$1; shift
+          docker buildx build --load --target "$target" --platform linux/amd64 \
+            --build-context build=binaries -t "flapi-$target-test" -f Dockerfile .
+          docker run -d --name rt --network none "$@" -w /config \
+            -v "$PWD/test/integration/fixtures/offline:/config:ro" "flapi-$target-test" --config /config/flapi.yaml
+          # bash, not sh: /dev/tcp is a bash feature and the image's /bin/sh is dash.
+          for i in $(seq 1 30); do
+            if docker exec rt bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf "GET /health/live HTTP/1.0\r\n\r\n" >&3 && cat <&3' 2>/dev/null | grep -q '"live"'; then
+              docker logs rt > rt.log 2>&1; docker rm -f rt
+              cat rt.log
+              grep -Eq 'Successfully loaded ([0-9]+) out of \1 extensions' rt.log
+              grep -q 'shipped with flapi' rt.log
+              return 0
+            fi
+            sleep 1
+          done
+          docker logs rt; docker rm -f rt; return 1
+        }
+        check slim
+        check runtime -e FLAPI_EXTENSIONS_OFFLINE=1
 
   # -------------------------------------------------------------------------------------------------
   # macOS Universal
@@ -1026,6 +1040,89 @@ jobs:
         if ($h1 -ne $h2) { throw "reproducibility check failed: $h1 != $h2" }
 
   # -------------------------------------------------------------------------------------------------
+  # DuckDB extensions shipped with the release (#245)
+  # -------------------------------------------------------------------------------------------------
+  # Each platform's binary installs its own default extensions (the signed files from
+  # extensions.duckdb.org, for exactly its DuckDB version and platform) into extensions/
+  # beside itself, then proves it loads every one of them from there with an empty HOME,
+  # offline and through a dead proxy. That directory is the artifact the release archives,
+  # the flapi-io wheels and the Docker images carry. Native runners only: the arm64 Linux
+  # binary is cross-built, so its extensions are fetched on an arm64 runner.
+  shipped-extensions-linux:
+    needs: [linux-build]
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download flapi binary
+      uses: actions/download-artifact@v4
+      with:
+        name: flapi-linux-${{ matrix.arch }}
+        path: bin
+
+    - name: Install and verify the shipped extensions
+      shell: bash
+      run: |
+        set -euo pipefail
+        chmod +x bin/flapi
+        bin/flapi extensions install --defaults --dir bin/extensions
+        python3 scripts/check_shipped_extensions.py bin/flapi
+        du -sh bin/extensions
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: shipped-extensions-linux-${{ matrix.arch }}
+        path: bin/extensions
+        if-no-files-found: error
+
+  shipped-extensions-desktop:
+    needs: [osx-universal-build, windows-build]
+    strategy:
+      matrix:
+        include:
+          - platform: macos-arm64
+            runner: macos-latest
+            exe: flapi
+            python: python3
+          - platform: windows-amd64
+            runner: windows-latest
+            exe: flapi.exe
+            python: python
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download flapi binary
+      uses: actions/download-artifact@v4
+      with:
+        name: flapi-${{ matrix.platform }}
+        path: bin
+
+    - name: Install and verify the shipped extensions
+      shell: bash
+      run: |
+        set -euo pipefail
+        chmod +x bin/${{ matrix.exe }}
+        bin/${{ matrix.exe }} extensions install --defaults --dir bin/extensions
+        ${{ matrix.python }} scripts/check_shipped_extensions.py bin/${{ matrix.exe }}
+        du -sh bin/extensions
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: shipped-extensions-${{ matrix.platform }}
+        path: bin/extensions
+        if-no-files-found: error
+
+  # -------------------------------------------------------------------------------------------------
   # Create GitHub Release + PyPI Wheels (tag pushes only)
   # -------------------------------------------------------------------------------------------------
   create-release:
@@ -1037,7 +1134,7 @@ jobs:
     # slowest job, and normally finishes first.
     # docker-build too: otherwise a failed image push still lets the GitHub
     # release and PyPI go out, leaving a release with no :latest/:<tag> image.
-    needs: [windows-build, linux-build, osx-universal-build, flapii-build, integration-tests, cli-integration, docker-build, smoke-test-windows, smoke-test-linux-amd64, smoke-test-linux-arm64, smoke-test-macos, pack-smoke-linux-amd64, pack-smoke-linux-arm64, pack-smoke-macos, pack-smoke-windows]
+    needs: [windows-build, linux-build, osx-universal-build, flapii-build, shipped-extensions-linux, shipped-extensions-desktop, integration-tests, cli-integration, docker-build, smoke-test-windows, smoke-test-linux-amd64, smoke-test-linux-arm64, smoke-test-macos, pack-smoke-linux-amd64, pack-smoke-linux-arm64, pack-smoke-macos, pack-smoke-windows]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -1065,21 +1162,40 @@ jobs:
         pattern: flapii-*
         merge-multiple: false
 
+    - name: Download the shipped extensions
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+        pattern: shipped-extensions-*
+        merge-multiple: false
+
+    # The binaries were stripped at link time (FLAPI_STRIP_BINARY, #244). Each archive carries
+    # extensions/<duckdb version>/<platform>/ next to the binary (#245); flapi finds it there.
     - name: Prepare release assets
       run: |
+        set -euo pipefail
         chmod +x ./artifacts/flapi-linux-amd64/flapi
         chmod +x ./artifacts/flapi-linux-arm64/flapi
         chmod +x ./artifacts/flapi-macos-arm64/flapi
+        for p in linux-amd64 linux-arm64 macos-arm64 windows-amd64; do
+          cp -r "artifacts/shipped-extensions-$p" "artifacts/flapi-$p/extensions"
+        done
 
-        cd artifacts/flapi-windows-amd64 && zip ../flapi-windows-amd64.zip flapi.exe && cd ../..
-        cd artifacts/flapi-linux-amd64 && tar czf ../flapi-linux-amd64.tar.gz flapi && cd ../..
-        cd artifacts/flapi-linux-arm64 && tar czf ../flapi-linux-arm64.tar.gz flapi && cd ../..
-        cd artifacts/flapi-macos-arm64 && tar czf ../flapi-macos-arm64.tar.gz flapi && cd ../..
+        cd artifacts/flapi-windows-amd64 && zip -r ../flapi-windows-amd64.zip flapi.exe extensions && cd ../..
+        cd artifacts/flapi-linux-amd64 && tar czf ../flapi-linux-amd64.tar.gz flapi extensions && cd ../..
+        cd artifacts/flapi-linux-arm64 && tar czf ../flapi-linux-arm64.tar.gz flapi extensions && cd ../..
+        cd artifacts/flapi-macos-arm64 && tar czf ../flapi-macos-arm64.tar.gz flapi extensions && cd ../..
+        ls -l artifacts/*.tar.gz artifacts/*.zip
 
     - name: Install bin-to-wheel
       run: pip install "bin-to-wheel @ git+https://github.com/DataZooDE/bin-to-wheel.git@main"
 
+    # PYPI_WHEEL_LIMIT_MB: PyPI refuses files above the project's upload limit (100 MB unless
+    # PyPI raised it on request). A wheel that would exceed it with the extensions is published
+    # without them (a ::warning::, not a failure); that flapi downloads them on first start.
     - name: Build flapi-io wheels (flapi + flapii)
+      env:
+        PYPI_WHEEL_LIMIT_MB: ${{ vars.PYPI_WHEEL_LIMIT_MB || '100' }}
       run: |
         WHEEL_VERSION="${{ steps.get_version.outputs.VERSION }}"
         WHEEL_VERSION="${WHEEL_VERSION#v}"
@@ -1120,6 +1236,18 @@ jobs:
           --description "SQL-to-API server" --author "DataZoo GmbH" \
           --license BUSL-1.1 --url https://github.com/DataZooDE/flapi \
           --readme ./Readme.md
+
+        # The shipped extensions beside the binary: site-packages/flapi_io/bin/extensions/ (#245).
+        add_extensions() {
+          python3 scripts/wheel_add_tree.py dist/flapi-io/flapi_io-*-"$1".whl \
+            --src "artifacts/shipped-extensions-$2" --dest flapi_io/bin/extensions \
+            --max-mb "${PYPI_WHEEL_LIMIT_MB}"
+        }
+        add_extensions manylinux_2_17_x86_64 linux-amd64
+        add_extensions manylinux_2_17_aarch64 linux-arm64
+        add_extensions macosx_11_0_arm64 macos-arm64
+        add_extensions win_amd64 windows-amd64
+        ls -l dist/flapi-io
 
     # Derived from the wheel FILENAMES just built - the exact artefacts being
     # uploaded, already in PyPI's normalised form (26.9.23, never 26.09.23).

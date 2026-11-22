@@ -335,6 +335,12 @@ docker: release
 		echo "Error: Could not find flapi binary"; \
 		exit 1; \
 	fi
+	@# The default extensions beside the binary, like the released image (#245).
+	@for arch in amd64 arm64; do \
+		if [ -f binaries/$$arch/flapi ]; then \
+			binaries/$$arch/flapi extensions install --defaults --dir binaries/$$arch/extensions || exit 1; \
+		fi; \
+	done
 	@ARCH=$$(if [ "$$(uname -m)" = "x86_64" ]; then echo "amd64"; elif [ "$$(uname -m)" = "aarch64" ]; then echo "arm64"; else echo "unknown"; fi); \
 	if [ "$$ARCH" = "unknown" ]; then \
 		echo "Unsupported architecture: $$(uname -m)"; \
