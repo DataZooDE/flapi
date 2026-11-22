@@ -8,6 +8,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "api_server.hpp"
+#include <limits>
 #include "usable_cpus.hpp"
 #include "database_health.hpp"
 #include "runtime_metrics.hpp"
@@ -1016,6 +1017,10 @@ void APIServer::run(int port) {
            .server_name("flAPI")
            .concurrency(serverThreadCount(UsableCpus()))
            .use_compression(crow::compression::GZIP)
+           // Crow writes a body above stream_threshold (default 1 MiB) synchronously on the io
+           // thread in 16 KiB pieces and then never reads the connection again: the next
+           // keep-alive request on it is reset. Every body takes the async write instead.
+           .stream_threshold(std::numeric_limits<std::size_t>::max())
            .ssl_file(https.ssl_cert_file, https.ssl_key_file)
            .run_async();
     } else {
@@ -1025,6 +1030,10 @@ void APIServer::run(int port) {
            .server_name("flAPI")
            .concurrency(serverThreadCount(UsableCpus()))
            .use_compression(crow::compression::GZIP)
+           // Crow writes a body above stream_threshold (default 1 MiB) synchronously on the io
+           // thread in 16 KiB pieces and then never reads the connection again: the next
+           // keep-alive request on it is reset. Every body takes the async write instead.
+           .stream_threshold(std::numeric_limits<std::size_t>::max())
            .run_async();
     }
 

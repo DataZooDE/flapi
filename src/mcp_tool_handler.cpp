@@ -604,6 +604,7 @@ QueryResult MCPToolHandler::executeQueryWithEndpoint(const EndpointConfig& endpo
     bool first = true;
     ResultSink sink;
     sink.begin = [&](const std::vector<std::string>& names) { columns = names; };
+    sink.json_rows = &text;
     sink.row = [&](const crow::json::wvalue& row) {
         if (!first) {
             text += ',';

@@ -53,6 +53,10 @@ namespace flapi {
 struct ResultSink {
     std::function<void(const std::vector<std::string>& columns)> begin;
     std::function<void(const crow::json::wvalue& row)> row;
+    // When set, rows are written as JSON objects (comma-separated, no brackets) straight from
+    // the DuckDB vectors into this text - no crow::json::wvalue per row; `row` is then unused.
+    // The text is byte-for-byte what appendRow() writes for the same row.
+    std::string* json_rows = nullptr;
 };
 
 class QueryResult {
@@ -76,6 +80,9 @@ public:
                                                   idx_t max_rows = static_cast<idx_t>(-1));
     // Converts row by row into `sink`; returns the number of rows delivered.
     static idx_t streamResult(const duckdb_result& result, idx_t max_rows, const ResultSink& sink);
+    // ResultSink::json_rows: rows written from the vectors into `out`, no wvalue per row.
+    static idx_t streamResultAsJsonText(const duckdb_result& result, const std::vector<std::string>& names,
+                                        idx_t max_rows, std::string& out);
     // One row as dumpData() prints it inside the list (columns in SELECT order).
     static void appendRow(const crow::json::wvalue& row, const std::vector<std::string>& columns, std::string& out);
 
@@ -152,6 +159,16 @@ private:
 
 class QueryExecutor {
 public:
+    // While one is alive on a thread, executors created there for the default session settings
+    // borrow that thread's pooled connection (and its prepared-statement cache) instead of
+    // opening and closing a connection per query. Endpoint reads open one.
+    struct ReuseConnectionScope {
+        ReuseConnectionScope();
+        ~ReuseConnectionScope();
+    };
+    // Drops every thread's pooled connection at its next use (a database was closed/reopened).
+    static void InvalidatePooledConnections();
+
     QueryExecutor(duckdb_database db);
     // Also applies `SET SESSION default_order` on the new connection.
     // `session_time_zone` is the per-connection fallback for a TimeZone that could not be set globally.
@@ -207,6 +224,10 @@ public:
     void attachProfilingMetrics(SpanScope& span) const;
     mutable duckdb_result result;
     bool has_result;
+
+private:
+    bool borrowed_ = false;
+    duckdb_prepared_statement cachedPrepare(const std::string& sql);
 };
 
 } // namespace flapi

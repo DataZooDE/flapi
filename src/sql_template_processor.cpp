@@ -6,6 +6,7 @@
 #include "mustache_syntax_check.hpp"
 #include <stdexcept>
 #include <filesystem>
+#include <cstring>
 
 namespace flapi {
 
@@ -200,10 +201,21 @@ crow::mustache::context SQLTemplateProcessor::createTemplateContext(const Endpoi
     }
 
     // Add filtered environment variables
+    // Straight from `environ`, only the whitelisted names: copying the whole environment into a
+    // map on every request was ~11% of a small query's CPU. An empty whitelist allows none.
     const auto& templateConfig = config_manager->getTemplateConfig();
-    for (const auto& [key, value] : getEnvironmentVariables()) {
-        if (templateConfig.isEnvironmentVariableAllowed(key)) {
-            ctx["env"][key] = value;
+    if (!templateConfig.environment_whitelist.empty()) {
+        std::string key;
+        for (char** env = environ; *env != nullptr; ++env) {
+            const char* entry = *env;
+            const char* eq = std::strchr(entry, '=');
+            if (eq == nullptr) {
+                continue;
+            }
+            key.assign(entry, eq - entry);
+            if (templateConfig.isEnvironmentVariableAllowed(key)) {
+                ctx["env"][key] = std::string(eq + 1);
+            }
         }
     }
 

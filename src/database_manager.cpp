@@ -116,6 +116,7 @@ void DatabaseManager::closeDatabaseLocked(bool graceful) {
         }
     }
 
+    QueryExecutor::InvalidatePooledConnections();
     duckdb_close(&db);
     db = nullptr;
     initialized = false;
@@ -865,6 +866,8 @@ QueryResult DatabaseManager::executeQueryOnce(const EndpointConfig& endpoint, st
     std::map<std::string, std::string> bind_values = params;
     auto prepared = sql_processor->loadAndProcessTemplatePrepared(endpoint, params);
 
+    // Endpoint reads reuse this thread's connection and its prepared statements.
+    QueryExecutor::ReuseConnectionScope reuse;
     if (prepared.bindings.empty()) {
         return executeQuery(prepared.sql, params, with_pagination, total, sink);
     }

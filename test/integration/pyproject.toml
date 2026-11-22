@@ -48,6 +48,7 @@ markers = [
     "mcp: MCP protocol tests",
     "manual: tests requiring manual intervention or setup",
     "concurrency: concurrency-correctness tests (not the performance gate; see test/load/)",
+    "soak: long mixed-load soak tests; skipped unless FLAPI_SOAK=1",
 ]
 filterwarnings = [
     "ignore::pytest.PytestDeprecationWarning:attr.*:",
