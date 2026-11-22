@@ -47,8 +47,8 @@ sequenceDiagram
     end
     Auth->>Crow: handleDynamicRequest()
 
-    Crow->>CM: getEndpointForPathAndMethod("/customers", "GET")
-    CM-->>Crow: EndpointRef (pinned COW snapshot)
+    Crow->>CM: getEndpointForRequest("/customers", "GET")
+    CM-->>Crow: EndpointRef (pinned COW snapshot; the one the rate limiter resolved first)
     Crow-->>RCM: route_template, capture tier, declared params
     Crow->>RH: handleRequest()
 
@@ -535,7 +535,7 @@ same rules.
 |------|------|-----|
 | Entry point | `src/api_server.cpp` | `src/mcp_route_handlers.cpp` |
 | Auth | `src/auth_middleware.cpp` | `src/mcp_auth_handler.cpp` |
-| Config lookup | `ConfigManager::getEndpointForPathAndMethod` | `ConfigManager::getEndpointForPath` |
+| Config lookup | `ConfigManager::getEndpointForRequest` (one scan per request, kept in the `RequestContext` for rate limit, auth and handler) | `ConfigManager::getEndpointForPath` |
 | Validation | `src/request_validator.cpp` | `src/mcp_tool_handler.cpp` |
 | Template | `src/sql_template_processor.cpp` | `src/sql_template_processor.cpp` |
 | Execution | `src/query_executor.cpp` | `src/query_executor.cpp` |

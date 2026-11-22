@@ -337,6 +337,13 @@ void DatabaseManager::initializeDBManagerFromConfig(std::shared_ptr<ConfigManage
             try {
                 executeInitStatement(attach_stmt);
                 ducklake_attached_ = true;
+                count_cache_ = std::make_unique<CountCacheState>();
+                count_cache_->alias = ducklake_config.alias;
+                // DuckLake keeps its metadata under this fixed catalog name,
+                // whatever the backend; every committed change adds a snapshot.
+                count_cache_->generation_sql =
+                    "SELECT max(snapshot_id) FROM " + sql::QuoteIdentifier("__ducklake_metadata_" + ducklake_config.alias) +
+                    ".ducklake_snapshot";
                 // Only once it worked: this used to be logged before the ATTACH,
                 // so a replica that could not attach said "attached" first.
                 if (ducklake_config.read_only) {
@@ -886,12 +893,33 @@ QueryResult DatabaseManager::executeQueryOnce(const EndpointConfig& endpoint, st
     std::map<std::string, std::string> bind_values = params;
     auto prepared = sql_processor->loadAndProcessTemplatePrepared(endpoint, params);
 
+    // #242: a DuckLake-cached endpoint may reuse its total_count (see RunPaginated).
+    CountCacheUse count_use;
+    const CountCacheUse* count_cache = nullptr;
+    if (count_cache_ && with_pagination && total == TotalCount::Exact && endpoint.cache.enabled &&
+        !endpoint.cache.table.empty() && count_cache_->usable.load(std::memory_order_relaxed)) {
+        count_use.state = count_cache_.get();
+        for (const auto& spec : prepared.bindings) {
+            const auto it = bind_values.find(spec.field_name);
+            count_use.bound += spec.field_name;
+            if (it == bind_values.end()) {
+                count_use.bound += '\x02';   // absent: binds NULL or ''
+            } else {
+                count_use.bound += '=';
+                count_use.bound += it->second;
+            }
+            count_use.bound += '\x1f';
+        }
+        count_cache = &count_use;
+    }
+
     // Endpoint reads reuse this thread's connection and its prepared statements.
     QueryExecutor::ReuseConnectionScope reuse;
     if (prepared.bindings.empty()) {
-        return executeQuery(prepared.sql, params, with_pagination, total, sink);
+        return executeQueryText(prepared.sql, params, with_pagination, total, sink, count_cache);
     }
-    return executeQueryWithBindings(prepared.sql, prepared.bindings, bind_values, params, with_pagination, total, sink);
+    return executeQueryWithBindings(prepared.sql, prepared.bindings, bind_values, params, with_pagination, total,
+                                    sink, count_cache);
 }
 
 QueryResult DatabaseManager::executeCacheQuery(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params) 
@@ -1719,17 +1747,96 @@ std::string NextLink(const PageWindow& window, const std::map<std::string, std::
 }
 }  // namespace
 
+namespace {
+
+// The functions a count-cached query may call (#242), as DuckDB itself reports
+// them: every overload a scalar, aggregate or window function, none VOLATILE
+// (random, uuid, nextval, ...), and not one of those that are ONLY consistent
+// within a query - now(), current_date, getvariable, current_setting and the
+// like, whose answer changes between requests. Mixed names (`+`, date_part:
+// their TIMESTAMPTZ overloads read the TimeZone setting, which is fixed for the
+// server) pass. A macro or an unknown name fails.
+bool FunctionsAreStable(QueryExecutor& executor, const std::vector<std::string>& functions) {
+    std::set<std::string> names(functions.begin(), functions.end());
+    if (names.empty()) {
+        return true;
+    }
+    std::string in;
+    for (const auto& name : names) {
+        in += (in.empty() ? "" : ", ") + std::string("'") + sql::EscapeSqlLiteral(name) + "'";
+    }
+    executor.execute(
+        "SELECT lower(function_name) AS name, bool_and(function_type IN ('scalar', 'aggregate', 'window') "
+        "AND stability IS NOT NULL AND stability <> 'VOLATILE') AND NOT bool_and(stability = "
+        "'CONSISTENT_WITHIN_QUERY') AS ok FROM duckdb_functions() WHERE lower(function_name) IN (" + in +
+            ") GROUP BY 1",
+        "count cache check");
+    const idx_t rows = executor.rowCount();
+    std::set<std::string> stable;
+    for (idx_t row = 0; row < rows; ++row) {
+        if (!duckdb_value_boolean(&executor.result, 1, row)) {
+            return false;
+        }
+        char* name = duckdb_value_varchar(&executor.result, 0, row);
+        if (name != nullptr) {
+            stable.insert(name);
+            duckdb_free(name);
+        }
+    }
+    return stable.size() == names.size();
+}
+
+// Whether `sql`'s count may be cached, judged once per rendered SQL.
+CountCache::Verdict CountCacheEligible(QueryExecutor& executor, const std::string& sql, CountCacheState& state) {
+    if (const auto known = state.cache.verdict(sql)) {
+        return *known;
+    }
+    std::vector<std::string> functions;
+    bool eligible = CountableQuery(sql, state.alias, functions);
+    if (eligible) {
+        try {
+            eligible = FunctionsAreStable(executor, functions);
+        } catch (const std::exception&) {
+            eligible = false;
+        }
+    }
+    return state.cache.storeVerdict(sql, eligible);
+}
+
+// The DuckLake catalog's newest snapshot id, read BEFORE the count runs: a
+// change committed after this read can only make a stored count look older
+// than it is, never newer.
+std::optional<std::int64_t> CountGeneration(QueryExecutor& executor, CountCacheState& state) {
+    try {
+        executor.execute(state.generation_sql, "count cache generation");
+        if (executor.rowCount() > 0 && !duckdb_value_is_null(&executor.result, 0, 0)) {
+            return duckdb_value_int64(&executor.result, 0, 0);
+        }
+    } catch (const std::exception& e) {
+        if (state.usable.exchange(false)) {
+            CROW_LOG_WARNING << "total_count caching is off: the DuckLake snapshot id cannot be read ("
+                             << e.what() << ")";
+        }
+    }
+    return std::nullopt;
+}
+
+}  // namespace
+
 // Runs one paginated (or plain) read and fills data, total_count and next.
 //
 // The COUNT(*) query costs a second full execution, and on DuckDB 2.0 a second parse and
 // plan; it is only run when the page cannot tell the total itself:
 //   * no limit/offset applied: the result IS everything, total = rows;
 //   * a short page (fewer rows than the limit) that is not empty past the end: total = offset + rows;
-//   * TotalCount::Skip (MCP, `total-count: false`): never; one row past the page tells `next`.
+//   * TotalCount::Skip (MCP, `total-count: false`): never; one row past the page tells `next`;
+//   * a DuckLake-cached endpoint (`count_cache`): reused while the catalog's snapshot id is
+//     unchanged (#242, CountCache).
 template <class Run>
 static QueryResult RunPaginated(QueryExecutor& executor, const std::string& sql,
                                 const std::map<std::string, std::string>& params, bool with_pagination,
-                                DatabaseManager::TotalCount total, const ResultSink* sink, Run&& run) {
+                                DatabaseManager::TotalCount total, const ResultSink* sink,
+                                const CountCacheUse* count_cache, Run&& run) {
     const PageWindow window = ReadPageWindow(with_pagination, params);
     const bool skip = total == DatabaseManager::TotalCount::Skip;
     std::string page_sql = sql;
@@ -1779,10 +1886,33 @@ static QueryResult RunPaginated(QueryExecutor& executor, const std::string& sql,
     if (short_page) {
         result.total_count = window.offset + rows;
     } else {
-        // Same connection: the page result is already converted.
-        run("SELECT COUNT(*) FROM (" + sql + ") AS subquery", "count query");
-        if (executor.rowCount() > 0) {
-            result.total_count = duckdb_value_int64(&executor.result, 0, 0);
+        // #242: on a DuckLake-cached endpoint the count cannot change until the
+        // catalog does; reuse it while the catalog's snapshot id is unchanged.
+        std::optional<std::int64_t> generation;
+        std::string key;
+        std::optional<std::int64_t> known;
+        if (count_cache != nullptr && count_cache->state->usable.load(std::memory_order_relaxed)) {
+            const auto verdict = CountCacheEligible(executor, sql, *count_cache->state);
+            if (verdict.eligible) {
+                generation = CountGeneration(executor, *count_cache->state);
+            }
+            if (generation) {
+                key = std::to_string(verdict.id);
+                key.append(1, '\x1e').append(count_cache->bound);
+                known = count_cache->state->cache.find(key, *generation);
+            }
+        }
+        if (known) {
+            result.total_count = *known;
+        } else {
+            // Same connection: the page result is already converted.
+            run("SELECT COUNT(*) FROM (" + sql + ") AS subquery", "count query");
+            if (executor.rowCount() > 0) {
+                result.total_count = duckdb_value_int64(&executor.result, 0, 0);
+                if (generation) {
+                    count_cache->state->cache.store(key, *generation, result.total_count);
+                }
+            }
         }
     }
     if (window.offset + window.limit < result.total_count) {
@@ -1796,10 +1926,10 @@ QueryResult DatabaseManager::executeQueryWithBindings(
     const std::vector<PreparedBindingSpec>& bindings,
     const std::map<std::string, std::string>& bind_values,
     const std::map<std::string, std::string>& for_template_params,
-    bool with_pagination, TotalCount total, const ResultSink* sink)
+    bool with_pagination, TotalCount total, const ResultSink* sink, const CountCacheUse* count_cache)
 {
     auto executor = createQueryExecutor();
-    return RunPaginated(executor, sql, for_template_params, with_pagination, total, sink,
+    return RunPaginated(executor, sql, for_template_params, with_pagination, total, sink, count_cache,
                         [&](const std::string& query, const char* what) {
                             executor.executeWithBindings(query, bindings, bind_values, what);
                         });
@@ -1808,9 +1938,16 @@ QueryResult DatabaseManager::executeQueryWithBindings(
 QueryResult DatabaseManager::executeQuery(const std::string& query,
                                           const std::map<std::string, std::string>& params,
                                           bool with_pagination, TotalCount total, const ResultSink* sink) {
+    return executeQueryText(query, params, with_pagination, total, sink, nullptr);
+}
+
+QueryResult DatabaseManager::executeQueryText(const std::string& query,
+                                              const std::map<std::string, std::string>& params,
+                                              bool with_pagination, TotalCount total, const ResultSink* sink,
+                                              const CountCacheUse* count_cache) {
     auto executor = createQueryExecutor();
-    return RunPaginated(executor, query, params, with_pagination, total, sink,
-                        [&](const std::string& sql, const char*) { executor.execute(sql); });
+    return RunPaginated(executor, query, params, with_pagination, total, sink, count_cache,
+                        [&](const std::string& sql, const char* what) { executor.execute(sql, what); });
 }
 
 WriteResult DatabaseManager::executeWrite(const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {

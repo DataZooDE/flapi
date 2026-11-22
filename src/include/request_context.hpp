@@ -3,6 +3,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <optional>
 #include <string_view>
@@ -12,6 +13,8 @@
 #include <vector>
 
 namespace flapi {
+
+struct EndpointConfig;
 
 // One object per in-flight request: the identity and the single clock that the
 // audit log, the application log and the trace all share.
@@ -85,6 +88,18 @@ struct RequestContext {
     // resolved. Optional so "unset" stays distinguishable from "set to the
     // global default"; a global `off` wins over it regardless.
     std::optional<CaptureTier> endpoint_capture;
+
+    // The endpoint this request resolved to, kept by the FIRST lookup
+    // (ConfigManager::getEndpointForRequest) so the rate limiter, the auth
+    // middleware and the handler share one route scan instead of three (#243),
+    // and all three judge the same endpoint even if a reload lands mid-request.
+    // Valid only for (raw_path, http_method) and the ConfigManager that filled
+    // it; the snapshot pins `resolved_endpoint` until the next request on the
+    // connection resets the context.
+    bool endpoint_resolved = false;
+    const void* resolved_by = nullptr;
+    std::shared_ptr<const std::vector<EndpointConfig>> resolved_snapshot;
+    const EndpointConfig* resolved_endpoint = nullptr;
 
     // ---- accessors --------------------------------------------------------
     std::string_view requestIdView() const { return viewOf(request_id); }

@@ -210,11 +210,10 @@ TemplateSecrets collectTemplateSecrets(ConfigManager* config_manager,
         // SQLTemplateProcessor, so every caller can use this: RequestHandler
         // holds no template processor of its own.
         const auto& template_config = config_manager->getTemplateConfig();
-        for (const auto& [key, value] : SQLTemplateProcessor::getEnvironmentVariables()) {
-            if (template_config.isEnvironmentVariableAllowed(key)) {
-                secrets.add(key, value, TemplateSecrets::Source::Environment);
-            }
-        }
+        SQLTemplateProcessor::forEachAllowedEnvironmentVariable(
+            template_config, [&](const std::string& key, std::string_view value) {
+                secrets.add(key, std::string(value), TemplateSecrets::Source::Environment);
+            });
     }
     // The DuckLake catalog's own paths. A metadata-path is frequently a DSN
     // with inline credentials (`postgres://user:pw@host/db`) or an object
