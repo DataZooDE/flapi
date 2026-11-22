@@ -269,6 +269,32 @@ void DatabaseManager::initializeDBManagerFromConfig(std::shared_ptr<ConfigManage
         // Cleanup the configuration object
         duckdb_destroy_config(&config);
 
+        // No extension directory configured (duckdb.extension_directory, FLAPI_EXTENSION_DIRECTORY
+        // or a bundle's): search the user directory, then the one shipped next to the binary.
+        bool directory_configured = false;
+        for (const auto& [key, value] : config_manager->getDuckDBConfig().settings) {
+            std::string lowered = key;
+            std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            directory_configured = directory_configured || lowered == "extension_directory" ||
+                                   lowered == "extension_directories";
+        }
+        if (!directory_configured) {
+            if (const auto statement = ShippedExtensionSearchStatement()) {
+                duckdb_connection conn = nullptr;
+                duckdb_result result;
+                if (duckdb_connect(db, &conn) != DuckDBSuccess ||
+                    duckdb_query(conn, statement->c_str(), &result) != DuckDBSuccess) {
+                    CROW_LOG_WARNING << "Could not add the shipped extension directory: "
+                                     << (conn ? duckdb_result_error(&result) : "no connection");
+                }
+                if (conn) {
+                    duckdb_destroy_result(&result);
+                    duckdb_disconnect(&conn);
+                }
+            }
+        }
+
         // Extensions first: the version query already needs core_functions, and offline
         // a missing one must fail with loadDefaultExtensions' message, not an autoload error.
         loadDefaultExtensions(config_manager);
@@ -626,36 +652,29 @@ void DatabaseManager::loadDefaultExtensions(std::shared_ptr<ConfigManager> confi
                          extensions.end());
     }
 
-    // Install the extensions (try individually to handle failures gracefully).
-    // Offline skips this: INSTALL is a download, and the point is that none happens.
-    CROW_LOG_INFO << (offline ? "Offline extensions: skipping install of " : "Installing default ")
-                  << extensions.size() << " extensions";
-    for (const auto& extension : offline ? std::vector<std::string>{} : extensions) {
-        std::string install_stmt = "INSTALL " + extension + ";";
-        try {
-            executeInitStatement(install_stmt);
-            CROW_LOG_DEBUG << "Successfully installed extension: " << extension;
-        } catch (const std::exception& e) {
-            CROW_LOG_WARNING << "Failed to install extension '" << extension << "': " << e.what() << ". Skipping.";
-        }
-    }
-    CROW_LOG_INFO << "Finished installing default extensions";
-
-    // Load the extensions (try individually to handle failures gracefully)
-    CROW_LOG_INFO << "Loading default " << extensions.size() << " extensions";
+    // Load each extension, installing (downloading) only the ones no search directory has:
+    // INSTALL looks at the first directory alone, so INSTALL-then-LOAD fetched an extension
+    // the shipped directory already carries. Offline never installs. One at a time, so one
+    // failure does not stop the others.
+    CROW_LOG_INFO << (offline ? "Offline extensions: loading " : "Loading ") << extensions.size()
+                  << " default extensions" << (offline ? ", downloading none" : "");
     int loaded_count = 0;
     std::vector<std::string> missing;
+    duckdb_connection conn = nullptr;
+    if (duckdb_connect(db, &conn) != DuckDBSuccess) {
+        throw std::runtime_error("Failed to connect to DuckDB to load extensions");
+    }
     for (const auto& extension : extensions) {
-        std::string load_stmt = "LOAD " + extension + ";";
-        try {
-            executeInitStatement(load_stmt);
+        const std::string error = LoadOrInstallExtension(conn, extension, offline);
+        if (error.empty()) {
             CROW_LOG_DEBUG << "Successfully loaded extension: " << extension;
             loaded_count++;
-        } catch (const std::exception& e) {
-            CROW_LOG_WARNING << "Failed to load extension '" << extension << "': " << e.what() << ". Skipping.";
+        } else {
+            CROW_LOG_WARNING << "Failed to load extension '" << extension << "': " << error << ". Skipping.";
             missing.push_back(extension);
         }
     }
+    duckdb_disconnect(&conn);
     if (offline && !missing.empty()) {
         std::string names;
         for (const auto& name : missing) {
@@ -663,7 +682,8 @@ void DatabaseManager::loadDefaultExtensions(std::shared_ptr<ConfigManager> confi
         }
         throw std::runtime_error("Extension(s) not installed and FLAPI_EXTENSIONS_OFFLINE forbids downloading: " +
                                  names + ". Pre-install them with `flapi extensions install --config <flapi.yaml> "
-                                 "--dir <dir>` and set FLAPI_EXTENSION_DIRECTORY=<dir>, or trim "
+                                 "--dir <dir>` and set FLAPI_EXTENSION_DIRECTORY=<dir>, use a release that "
+                                 "ships them in extensions/ next to the binary, or trim "
                                  "duckdb.default-extensions.");
     }
     CROW_LOG_INFO << "Successfully loaded " << loaded_count << " out of " << extensions.size() << " extensions";

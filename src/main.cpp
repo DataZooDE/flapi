@@ -794,6 +794,10 @@ int main(int argc, char* argv[])
     extensions_install_cmd.add_argument("--dir")
         .help("Extension directory (default: FLAPI_EXTENSION_DIRECTORY, then DuckDB's default)")
         .default_value(std::string(""));
+    extensions_install_cmd.add_argument("--defaults")
+        .help("Install flapi's default extension set (what releases ship in extensions/ next to the binary)")
+        .default_value(false)
+        .implicit_value(true);
     extensions_install_cmd.add_argument("extensions")
         .help("Extensions to install, name or name@repository")
         .remaining();
@@ -1055,6 +1059,11 @@ int main(int argc, char* argv[])
                 return 2;
             }
             specs.push_back(*spec);
+        }
+        if (extensions_install_cmd.get<bool>("--defaults")) {
+            for (const auto& name : DefaultExtensions()) {
+                specs.push_back({name, ""});
+            }
         }
         // As for `cache refresh`: a packed binary reads its own bundled config,
         // and with no names and no --config installs what the bundled flapi.yaml needs.

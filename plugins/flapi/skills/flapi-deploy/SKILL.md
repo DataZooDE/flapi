@@ -32,9 +32,11 @@ user-invocable: false
 - **`--with-extensions` embeds extensions for the host platform only.** For another
   platform, fill a directory there (`flapi extensions install --dir`) and pass
   `--extensions-dir`.
-- **The slim image downloads extensions at startup.** Without network access it fails or
-  warns. Use the `:v<version>-runtime` image, or set `FLAPI_EXTENSIONS_OFFLINE=1` with
-  pre-installed extensions.
+- **Releases ship the default extensions next to the binary** (`extensions/<duckdb
+  version>/<platform>/`: archives, Docker `/app/extensions`), so a fresh host starts
+  without downloading. Keep binary and `extensions/` together. Releases before DuckDB 2.0.1
+  and the `flapi-io` wheels (PyPI's 100 MB file limit; ~155 MB with them) do not carry them
+  and download on first start.
 - **`/health` is readiness, not liveness.** It answers 503 while caches warm (`starting`),
   when a cache failed to build (`degraded` + `failed`), and when a request is stuck longer
   than `stall-timeout-s` (`stalled`). Liveness is `/health/live`, which is 200 once the
@@ -124,7 +126,17 @@ FLAPI_EXTENSION_DIRECTORY=/opt/flapi/extensions FLAPI_EXTENSIONS_OFFLINE=1 flapi
   except the extensions built into flapi (`core_functions`, `parquet`, `json`, `icu`).
   The default directory is `FLAPI_EXTENSION_DIRECTORY`, then DuckDB's own default.
 - `FLAPI_EXTENSIONS_OFFLINE=1|true|yes` skips `INSTALL`, disables autoinstall, and turns a
-  missing default extension into a startup error that names it.
+  missing default extension into a startup error that names it. It works with only the
+  shipped `extensions/` directory.
+- Where extensions come from, first match wins: `duckdb.extension_directory` >
+  `FLAPI_EXTENSION_DIRECTORY` > a packed bundle's (each used **alone**) > `extensions/` next
+  to the real executable (symlinks resolved), searched **after** `~/.duckdb/extensions`.
+  Installs always go to `~/.duckdb/extensions`, never the shipped directory; a copy installed
+  there (`FORCE INSTALL`) wins. An `extensions/` for another DuckDB version is ignored with
+  one warning.
+- `flapi extensions install --defaults --dir DIR` installs the default set; a release binary
+  copies shipped extensions instead of downloading them (so `pack --with-extensions` works
+  offline).
 - Trim `duckdb.default-extensions` to what the endpoints use (default: `httpfs, ducklake,
   fts, json, postgres, sqlite, parquet`).
 
@@ -132,9 +144,9 @@ FLAPI_EXTENSION_DIRECTORY=/opt/flapi/extensions FLAPI_EXTENSIONS_OFFLINE=1 flapi
 
 | Tag | Contents |
 |---|---|
-| `ghcr.io/datazoode/flapi:latest` | newest release, slim (binary only) |
-| `:v26.10.31` | that release, slim |
-| `:v26.10.31-runtime` | same binary with `httpfs ducklake fts postgres sqlite` (and `bigquery` once published for its DuckDB version) pre-installed; core_functions/parquet/json/icu are built in and `FLAPI_EXTENSION_DIRECTORY=/opt/flapi/extensions` set |
+| `ghcr.io/datazoode/flapi:latest` | newest release: binary + `httpfs ducklake fts postgres sqlite` in `/app/extensions` (core_functions/parquet/json/icu are built in) |
+| `:v<version>` | that release, same contents (from the DuckDB 2.0.1 release on; older tags are binary only) |
+| `:v<version>-runtime` | the same plus `bigquery` (once published for its DuckDB version) in `/app/extensions`. Before DuckDB 2.0.1 releases: the only image with extensions, via `FLAPI_EXTENSION_DIRECTORY=/opt/flapi/extensions` |
 | `:main`, `:main-runtime`, `:sha-<commit>` | builds of `main` (not releases) |
 
 There is no `:latest-runtime`. Pin a version.
@@ -166,8 +178,9 @@ ENV FLAPI_CONFIG=/app/config/flapi.yaml FLAPI_EXTENSIONS_OFFLINE=1
 HEALTHCHECK CMD ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /health/live HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q live <&3"]
 ```
 
-Need an extension that is not in the runtime image (mysql, azure, snowflake)? Add
-`RUN /app/flapi extensions install --dir /opt/flapi/extensions mysql`.
+Need an extension that is not in the image (mysql, azure, snowflake)? Add
+`RUN /app/flapi extensions install --dir /app/extensions mysql`: flapi searches
+`/app/extensions` unless `FLAPI_EXTENSION_DIRECTORY` points elsewhere.
 
 ## Kubernetes probes
 
@@ -251,8 +264,8 @@ properties are fine) and the same endpoint YAMLs.
   `PGPASSWORD`. A `password=` in the DSN is shown as `<redacted>` in logs and config API
   answers, but keep it out of YAML.
 
-Fast startup: use the `-runtime` image with `FLAPI_EXTENSIONS_OFFLINE=1`, or
-`flapi pack --with-extensions`. CI smoke test without touching data: `flapi --validate-config`
+Fast startup: any release image (extensions in `/app/extensions`) with
+`FLAPI_EXTENSIONS_OFFLINE=1`, or `flapi pack --with-extensions`. CI smoke test without touching data: `flapi --validate-config`
 never opens the database. `flapi -c flapi.yaml --no-cache-warmup` starts with every cache
 unbuilt: `/health` answers 200 `degraded`, and cached endpoints answer 503
 `cache_not_built`.

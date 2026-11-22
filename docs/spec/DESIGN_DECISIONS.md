@@ -716,6 +716,36 @@ A config that *reads* as protected and scheduled must *be* protected and schedul
 
 ---
 
+## 13. Default Extensions Ship Next to the Binary (#245)
+
+**Decision:** release archives and Docker images carry the signed default DuckDB extensions in
+`extensions/<version>/<platform>/` beside the executable; flapi adds that directory to DuckDB's `extension_directories` **after** the user
+directory (`['~/.duckdb/extensions', '<bin>/extensions']`) when nothing else is configured.
+
+**Alternatives considered** (issue #245): linking the extensions into the binary (out-of-tree builds of
+httpfs/postgres/... on four platforms, ABI-coupled, every fix needs a flapi release), and packing them by
+default (only helps packed binaries). Shipping files keeps the official signatures and costs CI one
+`flapi extensions install` per platform.
+
+**Why that order:** DuckDB installs into the first directory and loads from the first that has the file.
+With the user directory first, the shipped directory is never written (it may be read-only, e.g. inside a
+system package or an image), extensions outside the default set install as before, and a deliberately installed
+copy (`FORCE INSTALL`) overrides a shipped one without a flapi release. Seeding a writable cache from the
+shipped files was rejected: it duplicates ~200 MB per host for no gain. An explicit directory
+(`duckdb.extension_directory`, `FLAPI_EXTENSION_DIRECTORY`) or a bundle's replaces the shipped one rather
+than adding to it, so what an operator configured is exactly what is used and nothing loads twice.
+
+**Not in the wheels:** the `flapi-io` wheels (flapi + flapii) would be ~155 MB with the extensions,
+above PyPI's 100 MB per-file limit; they stay without them and download on first start.
+
+**Consequence:** startup must `LOAD` before it `INSTALL`s (an `INSTALL` only checks the first directory
+and would download a shipped extension again). The shipped directory is tied to one DuckDB version; one
+for another version is ignored with a warning, and CI regenerates it from the binary being released.
+
+**Code:** `src/extension_installer.cpp` (`FindShippedExtensions`, `ShippedExtensionSearchStatement`,
+`LoadOrInstallExtension`), `src/database_manager.cpp` (`initializeDBManagerFromConfig`,
+`loadDefaultExtensions`); tests `test/integration/test_shipped_extensions.py`.
+
 ## Summary
 
 These design decisions prioritize:

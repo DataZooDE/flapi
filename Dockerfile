@@ -11,7 +11,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 ARG TARGETARCH
-COPY --from=build ${TARGETARCH}/flapi /app/flapi
+# The binary and, when the build context has it, extensions/<duckdb version>/<platform>/
+# beside it (#245): flapi loads its default DuckDB extensions from /app/extensions, so the
+# image starts without downloading anything. CI copies the directory its platform job
+# verified; `make docker` fills it with `flapi extensions install --defaults`.
+COPY --from=build ${TARGETARCH}/ /app/
 
 # Ensure executable permissions
 RUN chmod +x /app/flapi
@@ -28,23 +32,19 @@ LABEL org.opencontainers.image.licenses="BUSL-1.1"
 ENTRYPOINT ["/app/flapi"]
 
 # ---------------------------------------------------------------------------
-# runtime: the same image with every default DuckDB extension (plus bigquery)
-# pre-installed, so a
-# container never downloads one at startup (scale-to-zero platforms, egress-less
-# networks). Built with `--target runtime`; published as :<tag>-runtime.
-# Installed by the binary that ships, so the directory matches its DuckDB
-# version and platform (under QEMU the arm64 stage fetches arm64 builds).
+# runtime: the same image plus the bigquery community extension (best effort),
+# added to /app/extensions. Built with `--target runtime`; published as
+# :<tag>-runtime. The default extensions are in the default image already (#245),
+# so this target no longer sets FLAPI_EXTENSION_DIRECTORY. Installed by the binary
+# that ships, so it matches its DuckDB version and platform (under QEMU the arm64
+# stage fetches the arm64 build).
 # ---------------------------------------------------------------------------
 FROM slim AS runtime
-ENV FLAPI_EXTENSION_DIRECTORY=/opt/flapi/extensions
 # bigquery is a community extension, published per DuckDB version some time after a DuckDB
 # release: best effort, so the image still builds before it exists for this DuckDB version.
-# core_functions, parquet, json and icu are built into flapi and need no install.
-RUN /app/flapi extensions install --dir /opt/flapi/extensions \
-        httpfs ducklake fts postgres sqlite \
-    && (/app/flapi extensions install --dir /opt/flapi/extensions bigquery@community \
-        || echo "bigquery@community is not available for this DuckDB version; image built without it")
-LABEL org.opencontainers.image.description="flAPI with every default DuckDB extension (plus bigquery when published for its DuckDB version) pre-installed."
+RUN /app/flapi extensions install --dir /app/extensions bigquery@community \
+        || echo "bigquery@community is not available for this DuckDB version; image built without it"
+LABEL org.opencontainers.image.description="flAPI with its default DuckDB extensions plus bigquery (when published for its DuckDB version)."
 
-# The default target stays the slim image.
+# The default target is the image with the default extensions.
 FROM slim

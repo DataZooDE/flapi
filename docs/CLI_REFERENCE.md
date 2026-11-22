@@ -704,6 +704,9 @@ flapi extensions install --config flapi.yaml --dir /opt/flapi/extensions
 
 # Or name them; @repo for non-core repositories
 flapi extensions install --dir /opt/flapi/extensions httpfs parquet ducklake bigquery@community
+
+# flAPI's default set (httpfs ducklake fts postgres sqlite): what a release ships in extensions/
+flapi extensions install --defaults --dir ./extensions
 ```
 
 Installs into `--dir` (default: `FLAPI_EXTENSION_DIRECTORY`, then DuckDB's own default) and exits `1` if
@@ -712,6 +715,15 @@ any extension failed, after reporting every failure. Run it at image build time;
 rather than a download, `FLAPI_EXTENSIONS_OFFLINE=1`. The extension directory is keyed by DuckDB version and
 platform, so install with the same `flapi` binary you ship. In a packed binary, `flapi extensions install` with
 no names and no `--config` installs what the bundled `flapi.yaml` needs.
+
+A release binary finds the `extensions/` directory shipped next to it (see
+[CONFIG_REFERENCE: where DuckDB extensions come from](CONFIG_REFERENCE.md)). An extension it carries is
+**copied** from there into `--dir` (no download, so `flapi pack --with-extensions` works offline too); with no
+`--dir` and no `FLAPI_EXTENSION_DIRECTORY` it is reported as shipped and not installed at all.
+
+Release binaries (archives, wheels, Docker) are linked with `-DFLAPI_STRIP_BINARY=ON`: no static symbol table
+(Linux 122 -> 102 MB; macOS keeps global symbols), the dynamic symbols loadable extensions need are kept. Local
+builds keep their symbols unless you pass the option.
 
 ---
 
@@ -726,7 +738,7 @@ no names and no `--config` installs what the bundled `flapi.yaml` needs.
 | `FLAPI_CONFIG_SERVICE_TOKEN` | Authentication token for configuration service API | `--config-service-token` fallback |
 | `FLAPI_NO_TELEMETRY` | Disable telemetry when set to `1`, `true`, or `yes` | `--no-telemetry` fallback |
 | `FLAPI_CACHE_WARMUP` | `always`, `if-empty` or `never`; invalid values exit 1 | `--cache-warmup` fallback |
-| `FLAPI_EXTENSION_DIRECTORY` | Default `extension_directory` when the config sets none | DuckDB startup, `flapi extensions install` |
+| `FLAPI_EXTENSION_DIRECTORY` | Default `extension_directory` when the config sets none; replaces the bundled and shipped directories | DuckDB startup, `flapi extensions install` |
 | `FLAPI_EXTENSIONS_OFFLINE` | `1`/`true`/`yes`: never download extensions; a missing one stops startup | DuckDB startup |
 | `SOURCE_DATE_EPOCH` | Mtime stamped on every entry by `flapi pack` (reproducible builds) | `flapi pack` |
 | `CODESIGN_IDENTITY` | macOS only: identity passed to `codesign --sign` after `flapi pack`. Defaults to `-` (ad-hoc). | `flapi pack` |

@@ -531,7 +531,7 @@ const TemplateConfig& ConfigManager::getTemplateConfig() const {
 void ConfigManager::parseDuckDBConfig() {
     CROW_LOG_INFO << "Parsing DuckDB configuration";
 
-    duckdb_config.default_extensions = { "httpfs", "ducklake", "fts", "json", "postgres", "sqlite", "parquet" };
+    duckdb_config.default_extensions = DefaultExtensions();
     
     if (config["duckdb"]) {
         auto duckdb_node = config["duckdb"];

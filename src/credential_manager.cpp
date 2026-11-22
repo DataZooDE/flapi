@@ -22,20 +22,14 @@ bool ExtensionsOffline() {
     return ExtensionsOfflineRequested();
 }
 
-// INSTALL (unless offline) and LOAD an extension; false with a log line when it is not available.
+// LOAD an extension, installing it first only when no search directory has it (never offline);
+// false with a log line when it is not available.
 bool EnsureExtension(duckdb_connection conn, const std::string& name) {
-    for (const std::string verb : {"INSTALL ", "LOAD "}) {
-        if (verb == "INSTALL " && ExtensionsOffline()) {
-            continue;
-        }
-        duckdb_result result;
-        if (duckdb_query(conn, (verb + name).c_str(), &result) != DuckDBSuccess) {
-            CROW_LOG_WARNING << verb << name << " failed: " << duckdb_result_error(&result)
-                             << (ExtensionsOffline() ? " (offline: pre-install it into FLAPI_EXTENSION_DIRECTORY)" : "");
-            duckdb_destroy_result(&result);
-            return false;
-        }
-        duckdb_destroy_result(&result);
+    const std::string error = LoadOrInstallExtension(conn, name, ExtensionsOffline());
+    if (!error.empty()) {
+        CROW_LOG_WARNING << "LOAD " << name << " failed: " << error
+                         << (ExtensionsOffline() ? " (offline: pre-install it into FLAPI_EXTENSION_DIRECTORY)" : "");
+        return false;
     }
     return true;
 }
