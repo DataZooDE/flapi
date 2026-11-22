@@ -27,6 +27,7 @@
 #include <chrono>
 #include <thread>
 #include "duckdb_raii.hpp"
+#include "usable_cpus.hpp"
 
 namespace flapi {
 
@@ -490,7 +491,7 @@ int64_t DefaultAsyncThreads(const ConfigManager& config) {
     if (!remote) {
         return 0;
     }
-    int64_t threads = static_cast<int64_t>(std::thread::hardware_concurrency());
+    int64_t threads = static_cast<int64_t>(UsableCpus());
     for (const auto& [key, value] : config.getDuckDBConfig().settings) {
         std::string lowered = key;
         std::transform(lowered.begin(), lowered.end(), lowered.begin(),
@@ -540,6 +541,16 @@ void DatabaseManager::createAndInitializeDuckDBConfig(std::shared_ptr<ConfigMana
         } else {
             CROW_LOG_INFO << "DuckDB async_threads=" << async
                           << (async == "0" ? " (no remote storage configured)" : " (remote storage configured)");
+        }
+    }
+
+    // DuckDB sizes its worker pool from every host CPU; in a container with a CPU limit, or
+    // pinned by taskset/cpusets, that is threads waking for CPUs it cannot get.
+    if (!duckdb_settings_has(config_manager->getDuckDBConfig().settings, "threads") &&
+        !duckdb_settings_has(config_manager->getDuckDBConfig().settings, "worker_threads")) {
+        const unsigned usable = UsableCpus();
+        if (usable < std::thread::hardware_concurrency()) {
+            duckdb_set_config(config, "threads", std::to_string(usable).c_str());
         }
     }
 

@@ -6,6 +6,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "api_server.hpp"
+#include "usable_cpus.hpp"
 #include "database_health.hpp"
 #include "runtime_metrics.hpp"
 #include "handler_pool.hpp"
@@ -105,7 +106,7 @@ APIServer::APIServer(std::shared_ptr<ConfigManager> cm,
             CROW_LOG_WARNING << "handler offload disabled; a slow query will block "
                                 "other connections on its io thread (#120)";
         } else {
-            const unsigned hw = std::thread::hardware_concurrency();
+            const unsigned hw = UsableCpus();
             const std::size_t pool_threads = hw > 4 ? hw : 4;
             handlerPool = std::make_unique<HandlerPool>(pool_threads, pool_threads * 32);
             CROW_LOG_INFO << "handler offload enabled with " << pool_threads
@@ -984,7 +985,7 @@ void APIServer::run(int port) {
         serving = app.bindaddr(bind_host)
            .port(configManager->getHttpPort())
            .server_name("flAPI")
-           .concurrency(serverThreadCount(std::thread::hardware_concurrency()))
+           .concurrency(serverThreadCount(UsableCpus()))
            .use_compression(crow::compression::GZIP)
            .ssl_file(https.ssl_cert_file, https.ssl_key_file)
            .run_async();
@@ -993,7 +994,7 @@ void APIServer::run(int port) {
         serving = app.bindaddr(bind_host)
            .port(configManager->getHttpPort())
            .server_name("flAPI")
-           .concurrency(serverThreadCount(std::thread::hardware_concurrency()))
+           .concurrency(serverThreadCount(UsableCpus()))
            .use_compression(crow::compression::GZIP)
            .run_async();
     }

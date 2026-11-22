@@ -1,6 +1,10 @@
 #pragma once
 
 #include <memory>
+#include <chrono>
+#include <mutex>
+#include <optional>
+#include <unordered_map>
 #include <string>
 
 #include "telemetry.hpp"   // duckdb::PostHogTelemetry, PropertyMap, PropertyValue
@@ -93,8 +97,18 @@ public:
                const std::string& route_template);
 
     // Synchronously drain buffered events (call on clean shutdown / SIGTERM —
-    // the library's at-exit handler *discards* by design).
+    // the library's at-exit handler *discards* by design). Emits the pending
+    // aggregates first.
     void flush();
+
+    // Per-request events are aggregated in memory (count, mean and max duration per
+    // route/status/cache-hit, tool/status, auth kind/outcome) and emitted as one event
+    // per key every `interval` (default 60 s) instead of one event per request: one
+    // event per request buffered ~10k events and opened an HTTP client per batch,
+    // ~40-60 MB at ~1700 req/s (#241).
+    void setAggregationInterval(std::chrono::milliseconds interval);
+    // Emit the pending aggregates now (also done by flush()).
+    void emitAggregates();
 
     // Map an HTTP status code to a bounded status class ("2xx".."5xx").
     static std::string statusClass(int code);
@@ -107,8 +121,24 @@ private:
     // Stamp install_kind (and, when sampling, sample_rate) onto a prop map.
     void stampCommon(duckdb::PropertyMap& props, bool hot) const;
 
+    struct Aggregate {
+        std::string event;
+        duckdb::PropertyMap props;   // the key's bounded props (route, status, ...)
+        uint64_t count = 0;
+        double duration_sum = 0.0;
+        double duration_max = 0.0;
+        bool has_duration = false;
+    };
+    void aggregate(const std::string& key, const std::string& event, duckdb::PropertyMap props,
+                   std::optional<double> duration_ms);
+
     std::unique_ptr<ITelemetryBackend> backend_;
     bool enabled_ = true;
+
+    std::mutex aggregate_mutex_;
+    std::unordered_map<std::string, Aggregate> aggregates_;
+    std::chrono::milliseconds aggregation_interval_{60000};
+    std::chrono::steady_clock::time_point last_emit_ = std::chrono::steady_clock::now();
 
     // Deterministic 1-of-N decimation for the hot paths (counter, not RNG, so
     // it is testable and needs no global random state).

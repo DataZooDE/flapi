@@ -52,3 +52,35 @@ def test_async_threads(root, block, properties, expected):
         assert run.get("/s")[0]["async_threads"] == expected
     finally:
         run.stop()
+
+
+@pytest.mark.skipif(not hasattr(os, "sched_setaffinity") or (os.cpu_count() or 1) < 4,
+                    reason="needs Linux CPU affinity and at least 4 CPUs")
+def test_threads_follow_the_cpus_the_process_may_use(root):
+    """DuckDB's pool counted every host CPU, even when taskset / a cpuset / a container
+    limit allows two. flAPI now sizes it (and its HTTP handler pool) to the usable CPUs."""
+    import subprocess
+    import time
+    import requests
+    from otel_helpers import free_port
+    project(root)
+    with open(os.path.join(root, "sqls", "s.sql"), "w") as f:
+        f.write("SELECT current_setting('threads')::INT AS threads")
+    port = free_port()
+    proc = subprocess.Popen([flapi_binary(), "-c", "flapi.yaml", "-p", str(port)], cwd=root,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            env={**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"},
+                            preexec_fn=lambda: os.sched_setaffinity(0, {0, 1}))
+    try:
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            try:
+                r = requests.get(f"http://127.0.0.1:{port}/s", timeout=2)
+                break
+            except requests.RequestException:
+                time.sleep(0.2)
+        assert r.json()["data"][0]["threads"] == 2, r.text
+        assert len(os.listdir(f"/proc/{proc.pid}/task")) < 40, "thread pools sized for the host, not 2 CPUs"
+    finally:
+        proc.terminate()
+        proc.wait(timeout=20)
