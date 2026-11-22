@@ -449,6 +449,21 @@ bool DatabaseManager::invalidateCache(const EndpointConfig& endpoint) {
     return true;
 }
 
+namespace {
+template <class Map>
+bool duckdb_settings_has(const Map& settings, const std::string& name) {
+    for (const auto& [key, value] : settings) {
+        std::string lowered = key;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (lowered == name) {
+            return true;
+        }
+    }
+    return false;
+}
+}  // namespace
+
 void DatabaseManager::createAndInitializeDuckDBConfig(std::shared_ptr<ConfigManager> config_manager, duckdb_config& config) {
     duckdb_create_config(&config);
 
@@ -469,6 +484,15 @@ void DatabaseManager::createAndInitializeDuckDBConfig(std::shared_ptr<ConfigMana
     if (duckdb_set_config(config, "autoload_known_extensions", "1") == DuckDBError) {
         duckdb_destroy_config(&config);
         throw std::runtime_error("Failed to set DuckDB configuration: autoload_known_extensions");
+    }
+
+    // DuckDB 2.0 starts 4 async I/O threads per core (96 on 24 cores). flAPI runs many short
+    // concurrent queries, where that pool cost ~27% throughput and ~3x peak memory on local
+    // parquet scans (#241 benchmark). One async thread recovers about half of it; remote-heavy
+    // workloads can raise it with `duckdb: async_threads: N`, which the loop below applies.
+    if (duckdb_settings_has(config_manager->getDuckDBConfig().settings, "async_threads") == false &&
+        duckdb_set_config(config, "async_threads", "1") == DuckDBError) {
+        CROW_LOG_WARNING << "Could not set the DuckDB default async_threads=1; DuckDB's default applies";
     }
 
     // Apply settings from the configuration
