@@ -216,7 +216,7 @@ class TestBootstrapExtensions:
             [flapi_binary(), "-c", f"{base}/flapi.yaml", "--validate-config", "--log-level", "info"],
             cwd=workdir, capture_output=True, text=True, timeout=120, env=env)
         out = r.stdout + r.stderr
-        assert "Bootstrap DuckDB: `LOAD httpfs` failed" in out, out
+        assert "Bootstrap DuckDB: loading httpfs failed" in out, out
         assert ext_dir in out, out
         assert "FLAPI_EXTENSION_DIRECTORY" in out, out
         files = [f for _, _, names in os.walk(ext_dir) for f in names]
