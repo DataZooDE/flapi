@@ -10,6 +10,7 @@ fell back to whatever flapi.yaml sat next to it.
 
 import io
 import os
+import sys
 import resource
 import shutil
 import subprocess
@@ -158,14 +159,23 @@ class TestBundleReadingIsBounded:
         tmp = _mk(prefix="flapi_bomb_")
         binary = _hostile_bundle(tmp, [("flapi.yaml", MIN_CONFIG), ("data/bomb.bin", 300 * 1024 * 1024)])
         start = time.time()
-        proc = subprocess.Popen([binary, "info"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                                env={**os.environ, "FLAPI_BUNDLE_MAX_MIB": "64", "DATAZOO_DISABLE_TELEMETRY": "1"})
-        out = proc.stdout.read()
-        _, status, usage = os.wait4(proc.pid, 0)  # THIS child's peak RSS, not every child so far
-        proc.returncode = os.waitstatus_to_exitcode(status)
+        # Measured through a small helper process: Linux carries a process's peak RSS across exec,
+        # so a child forked straight from this (by now large) pytest process reported pytest's
+        # own peak - 645 MiB late in a full run - whatever flapi used. The helper's fresh, small
+        # address space is what flapi's peak starts from.
+        helper = ("import os, subprocess, sys\n"
+                  "p = subprocess.Popen(sys.argv[1:])\n"
+                  "_, status, usage = os.wait4(p.pid, 0)\n"
+                  "print('MAXRSS', usage.ru_maxrss, flush=True)\n"
+                  "sys.exit(os.waitstatus_to_exitcode(status))\n")
+        proc = subprocess.run([sys.executable, "-c", helper, binary, "info"], stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True, timeout=120,
+                              env={**os.environ, "FLAPI_BUNDLE_MAX_MIB": "64", "DATAZOO_DISABLE_TELEMETRY": "1"})
+        out = proc.stdout
+        maxrss = int(out.rsplit("MAXRSS", 1)[1].split()[0])
         assert proc.returncode != 0, out
         assert "limit" in out.lower() or "exceed" in out.lower(), out
-        assert usage.ru_maxrss < 280 * 1024, f"peak RSS {usage.ru_maxrss // 1024} MiB: the bomb was expanded"
+        assert maxrss < 280 * 1024, f"peak RSS {maxrss // 1024} MiB: the bomb was expanded"
         assert time.time() - start < 60
 
     def test_too_many_entries_are_refused(self):
