@@ -107,12 +107,15 @@ jobs:
           -t ${BUILD_IMAGE} \
           -f .github/docker/linux_${BUILD_ARCH}/Dockerfile .
 
+    # FLAPI_STRIP_BINARY (#244): linked without the static symbol table (122 -> 102 MB on
+    # amd64), so every job downstream tests the binary that ships. The arm64 binary was never
+    # stripped before: the release job's x86 `strip` could not read it and skipped silently.
     - name: Run build in docker
       shell: bash
       run: |
         docker run \
           ${{ matrix.arch == 'arm64' && format('-e FLAPI_CROSS_COMPILE="{0}"', matrix.arch) || '' }} \
-          ${{ startsWith(github.ref, 'refs/tags/v') && format('-e CMAKE_EXTRA_FLAGS="-DFLAPI_VERSION_OVERRIDE={0}"', github.ref_name) || '' }} \
+          -e CMAKE_EXTRA_FLAGS="-DFLAPI_STRIP_BINARY=ON ${{ startsWith(github.ref, 'refs/tags/v') && format('-DFLAPI_VERSION_OVERRIDE={0}', github.ref_name) || '' }}" \
           -v `pwd`:/build_dir \
           -v ~/.ccache:/ccache_dir \
           ${BUILD_IMAGE} \
@@ -292,9 +295,12 @@ jobs:
         cd vcpkg
         ./bootstrap-vcpkg.sh -disableMetrics
 
+    # FLAPI_STRIP_BINARY (#244): the artifact every later job tests is the one that ships, so
+    # it is stripped at link time here (ld64 -x keeps the linker's ad-hoc signature valid),
+    # not by a `strip` in the release job.
     - name: Build
       env:
-        CMAKE_EXTRA_FLAGS: ${{ startsWith(github.ref, 'refs/tags/v') && format('-DFLAPI_VERSION_OVERRIDE={0}', github.ref_name) || '' }}
+        CMAKE_EXTRA_FLAGS: -DFLAPI_STRIP_BINARY=ON ${{ startsWith(github.ref, 'refs/tags/v') && format('-DFLAPI_VERSION_OVERRIDE={0}', github.ref_name) || '' }}
       run: make release-arm64 && make test
 
     - name: Upload artifact
@@ -1058,20 +1064,6 @@ jobs:
         path: artifacts
         pattern: flapii-*
         merge-multiple: false
-
-    - name: Strip binaries
-      run: |
-        # Only strip flapi (C++ binary). Do NOT strip flapii — Bun standalone
-        # binaries embed JavaScript at the end of the ELF, and strip corrupts it.
-        # Skip Windows (MSVC Release is already stripped).
-        for bin in \
-          ./artifacts/flapi-linux-amd64/flapi \
-          ./artifacts/flapi-linux-arm64/flapi \
-          ./artifacts/flapi-macos-arm64/flapi; do
-          echo "Stripping $bin ($(du -h "$bin" | cut -f1) before)"
-          llvm-strip "$bin" 2>/dev/null || strip "$bin" 2>/dev/null || echo "  skipped (unsupported format)"
-          echo "  -> $(du -h "$bin" | cut -f1) after"
-        done
 
     - name: Prepare release assets
       run: |
