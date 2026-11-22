@@ -99,8 +99,8 @@ class TestDbProfiling:
         # which OTLP guarantees anyway - it could never fail. The tier table in
         # the docs is only true if this holds.
         detailed_only = {"flapi.db.cpu_time_ms", "flapi.db.rows_scanned"}
-        summary_keys = {"flapi.db.latency_ms", "flapi.db.blocked_thread_time_ms",
-                        "flapi.db.result_set_bytes", "flapi.db.bytes_read"}
+        # flapi.db.result_set_bytes is gone with DuckDB 2.0 (no RESULT_SET_SIZE metric any more).
+        summary_keys = {"flapi.db.latency_ms", "flapi.db.blocked_thread_time_ms", "flapi.db.bytes_read"}
 
         for server in _server("summary"):
             requests.get(f"{server.base_url}/typed?id=1", timeout=10)

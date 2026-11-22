@@ -272,17 +272,17 @@ struct ProfMetric {
     bool detailed_only;
 };
 
-constexpr std::array<ProfMetric, 6> kProfMetrics{{
-    // Summary: query-level only. None of these trigger ProfilingInfo::Expand,
-    // so DuckDB does not switch on per-operator collection for them.
-    {"LATENCY",                   flapi::semconv::dbprof::kLatencyMs,       true,  false},
-    {"BLOCKED_THREAD_TIME",       flapi::semconv::dbprof::kBlockedMs,       true,  false},
-    {"RESULT_SET_SIZE",           flapi::semconv::dbprof::kResultBytes,     false, false},
-    {"TOTAL_BYTES_READ",          flapi::semconv::dbprof::kBytesRead,       false, false},
-    // Detailed: CPU_TIME expands to OPERATOR_TIMING and CUMULATIVE_ROWS_SCANNED
-    // to OPERATOR_ROWS_SCANNED inside DuckDB, so these cost real work per query.
-    {"CPU_TIME",                  flapi::semconv::dbprof::kCpuTimeMs,       true,  true},
-    {"CUMULATIVE_ROWS_SCANNED",   flapi::semconv::dbprof::kRowsScanned,     false, true},
+constexpr std::array<ProfMetric, 5> kProfMetrics{{
+    // DuckDB 2.0 names metrics `<group>.<metric>` and enables them with the tracked_metrics
+    // glob list (custom_profiling_settings and the UPPERCASE names are gone). 1.x's
+    // RESULT_SET_SIZE has no 2.0 counterpart; flapi.result.bytes carries the response size.
+    // Summary: query-level only.
+    {"query.total_time",          flapi::semconv::dbprof::kLatencyMs,       true,  false},
+    {"system.blocked_thread_time", flapi::semconv::dbprof::kBlockedMs,      true,  false},
+    {"io.total_bytes_read",       flapi::semconv::dbprof::kBytesRead,       false, false},
+    // Detailed: these make DuckDB collect per-operator timings and row counts.
+    {"query.cpu_time",            flapi::semconv::dbprof::kCpuTimeMs,       true,  true},
+    {"query.total_rows_scanned",  flapi::semconv::dbprof::kRowsScanned,     false, true},
 }};
 
 }  // namespace
@@ -308,21 +308,21 @@ void QueryExecutor::enableProfilingIfRequested(const SpanScope& span) {
     }
 
     const bool detailed = level == flapi::DbProfiling::Detailed;
-    std::string json = "{";
+    std::string metrics = "[";
     for (const auto& m : kProfMetrics) {
         if (m.detailed_only && !detailed) {
             continue;
         }
-        if (json.size() > 1) { json += ","; }
-        json += "\"";
-        json += m.duckdb_key;
-        json += "\":\"true\"";
+        if (metrics.size() > 1) { metrics += ","; }
+        metrics += "'";
+        metrics += m.duckdb_key;
+        metrics += "'";
     }
-    json += "}";
+    metrics += "]";
 
     // `no_output` FIRST, then the metric set.
     //
-    // custom_profiling_settings turns the profiler on but leaves
+    // tracked_metrics turns the metrics on but leaves
     // emit_profiler_output at its default of true (client_config.hpp), so
     // DuckDB renders and prints a ~1 KB query tree to stderr for EVERY profiled
     // query: a synchronous write on the request thread, log volume proportional
@@ -333,7 +333,7 @@ void QueryExecutor::enableProfilingIfRequested(const SpanScope& span) {
     // Both go in one duckdb_query call, so this is still one round trip.
     const std::string stmt =
         "SET enable_profiling='no_output'; "
-        "SET custom_profiling_settings='" + json + "'";
+        "SET tracked_metrics=" + metrics;
     duckdb_result r;
     if (duckdb_query(conn, stmt.c_str(), &r) == DuckDBSuccess) {
         profiling_enabled_ = true;
@@ -349,6 +349,35 @@ void QueryExecutor::enableProfilingIfRequested(const SpanScope& span) {
     duckdb_destroy_result(&r);
 }
 
+namespace {
+// DuckDB 2.0 nests the query-level metrics in group objects ("query", "system", "io") below the
+// root, after the operator nodes, and the C API cannot name a child. A group is recognised by a
+// metric only it carries; operator nodes have their own `cpu_time`, so `query.cpu_time` must be
+// read from the node that also has `total_time`.
+duckdb_value ProfilingMetric(duckdb_profiling_info root, const std::string& dotted) {
+    const auto dot = dotted.find('.');
+    if (dot == std::string::npos) {
+        return duckdb_profiling_info_get_value(root, dotted.c_str());
+    }
+    const std::string group = dotted.substr(0, dot);
+    const std::string leaf = dotted.substr(dot + 1);
+    const char* marker = group == "query" ? "total_time"
+                       : group == "system" ? "blocked_thread_time"
+                       : group == "io" ? "total_bytes_read" : leaf.c_str();
+    const idx_t children = duckdb_profiling_info_get_child_count(root);
+    for (idx_t i = 0; i < children; ++i) {
+        duckdb_profiling_info child = duckdb_profiling_info_get_child(root, i);
+        duckdb_value probe = duckdb_profiling_info_get_value(child, marker);
+        if (probe == nullptr) {
+            continue;
+        }
+        duckdb_destroy_value(&probe);
+        return duckdb_profiling_info_get_value(child, leaf.c_str());
+    }
+    return nullptr;
+}
+}  // namespace
+
 void QueryExecutor::attachProfilingMetrics(SpanScope& span) const {
     if (!profiling_enabled_ || !span) {
         return;
@@ -363,7 +392,7 @@ void QueryExecutor::attachProfilingMetrics(SpanScope& span) const {
         if (m.detailed_only && !detailed) {
             continue;
         }
-        DuckDBValue value(duckdb_profiling_info_get_value(info, m.duckdb_key));
+        DuckDBValue value(ProfilingMetric(info, m.duckdb_key));
         if (!value) {
             // Absent, not zero. A fabricated measurement is worse than a missing
             // one: zero latency reads as "instant" on every dashboard.

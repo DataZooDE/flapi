@@ -439,6 +439,21 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
             res.end();
             return;
         }
+        // DuckLake 1.1 (DuckDB 2.0) refuses `AT (TIMESTAMP => t)` with t in the future, where the
+        // 1.0 extension answered the latest snapshot. The caller's value is the problem: a 400.
+        if (endpoint.cache.enabled &&
+            std::string(e.what()).find("Cannot time travel to a future timestamp") != std::string::npos) {
+            CROW_LOG_INFO << "time travel to a future timestamp: " << e.what();
+            res.code = 400;
+            res.set_header("Content-Type", "application/json");
+            crow::json::wvalue body;
+            body["error"] = "snapshot_in_future";
+            body["message"] = "The requested time-travel timestamp is in the future; ask for the current data "
+                              "without a timestamp, or for a time at or before now";
+            res.write(body.dump());
+            res.end();
+            return;
+        }
         // Time travel on a cached endpoint to a snapshot that does not exist (or
         // that retention expired) is the caller asking for something absent, not
         // a server fault: it was a 500.
