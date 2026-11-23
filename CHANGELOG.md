@@ -84,6 +84,13 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   two same-size writes within one filesystem timestamp tick look alike); the secret scrubber no longer copies the environment. Measured with 200 endpoints and a
   trivial query: +21% req/s on one client, +30% on four.
 
+### Fixed
+
+- **A rare SIGSEGV on SIGTERM** (#249): the server thread's stop poll called Crow's `Server::stop()` without
+  the lock `APIServer::stop()` holds, so two threads could run it at once (Crow's stop is not thread-safe:
+  both closed the same acceptor). Seen once in CI with an MCP task in flight; the shutdown tests now assert the
+  acceptor is closed exactly once.
+
 ### Upgrade notes
 
 - **`-runtime` image:** extensions moved from `/opt/flapi/extensions` to `/app/extensions` and

@@ -81,6 +81,15 @@ def _terminate(proc):
     return proc.returncode
 
 
+def _assert_crow_stopped_once(log):
+    """Crow's Server::stop() is not thread-safe, and two threads used to run it at once on a
+    SIGTERM (#249): both saw the acceptor open, both closed it, and one SIGTERM with an MCP task
+    in flight died with SIGSEGV. Serialised, only the first stop finds the acceptor open, so it is
+    logged exactly once; twice means two stops overlapped."""
+    n = log.count("Closing acceptor")
+    assert n == 1, f"the acceptor was closed {n} times: two Server::stop() calls overlapped\n" + log[-3000:]
+
+
 class TestGracefulShutdown:
 
     def test_sigterm_detaches_and_checkpoints_while_logging_is_alive(self):
@@ -95,6 +104,7 @@ class TestGracefulShutdown:
             log = open(log_path).read()
 
             assert code == 0, f"SIGTERM exited {code}\n" + log[-3000:]
+            _assert_crow_stopped_once(log)
             # The whole point of #147: these used to run in a destructor
             # during exit(), and never once appeared in a real shutdown log.
             assert "Detached DuckLake catalog: cache" in log, (
@@ -208,5 +218,6 @@ class TestShutdownWithAnAsyncTaskInFlight:
                 "killed by a signal, e.g. a crash in teardown)\n" + log[-3000:])
             assert elapsed < 30, f"shutdown took {elapsed:.1f}s\n" + log[-3000:]
             assert "Detached DuckLake catalog: cache" in log, log[-3000:]
+            _assert_crow_stopped_once(log)
         finally:
             _terminate(proc)
