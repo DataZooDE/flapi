@@ -1,11 +1,15 @@
 #include <algorithm>
 #include <cstdlib>
+#include <filesystem>
 #include <future>
 #include <string>
 #include <thread>
+#include <vector>
 #include <yaml-cpp/yaml.h>
 
 #include "api_server.hpp"
+#include <limits>
+#include "usable_cpus.hpp"
 #include "database_health.hpp"
 #include "runtime_metrics.hpp"
 #include "handler_pool.hpp"
@@ -50,7 +54,7 @@ APIServer::APIServer(std::shared_ptr<ConfigManager> cm,
             CROW_LOG_WARNING << "handler offload disabled; a slow query will block "
                                 "other connections on its io thread (#120)";
         } else {
-            const unsigned hw = std::thread::hardware_concurrency();
+            const unsigned hw = UsableCpus();
             const std::size_t pool_threads = hw > 4 ? hw : 4;
             handlerPool = std::make_unique<HandlerPool>(pool_threads, pool_threads * 32);
             CROW_LOG_INFO << "handler offload enabled with " << pool_threads
@@ -333,7 +337,7 @@ void APIServer::setupRoutes() {
                     if (!armed) {
                         return;
                     }
-                    asio::post(*req->io_service,
+                    asio::post(*req->io_context,
                                [res = res, keepalive = keepalive, rc = rc, code = code,
                                 body = std::move(body),
                                 headers = std::move(headers),
@@ -857,8 +861,8 @@ void APIServer::run(int port) {
     // so an EADDRINUSE printed "started" followed by the error, and the MCP
     // "ready at" line was printed from a constructor with a hard-coded
     // localhost:8080 whatever -p said.
+    auto announced = std::make_shared<std::atomic<bool>>(false);
     {
-        auto announced = std::make_shared<std::atomic<bool>>(false);
         const std::string scheme = https.enabled ? "https" : "http";
         app.tick(std::chrono::milliseconds(50), [this, announced, scheme, bind_host]() {
             if (announced->exchange(true)) {
@@ -928,8 +932,15 @@ void APIServer::run(int port) {
         serving = app.bindaddr(bind_host)
            .port(configManager->getHttpPort())
            .server_name("flAPI")
-           .concurrency(serverThreadCount(std::thread::hardware_concurrency()))
+           .concurrency(serverThreadCount(UsableCpus()))
            .use_compression(crow::compression::GZIP)
+           // Crow 1.3 sets TCP_NODELAY on every accepted socket (all platforms). Without it every
+           // keep-alive response after the first waited ~40 ms for Nagle + delayed ACK.
+           .tcp_nodelay(true)
+           // Crow writes a body above stream_threshold (default 1 MiB) synchronously on the io
+           // thread in 16 KiB pieces and then never reads the connection again: the next
+           // keep-alive request on it is reset. Every body takes the async write instead.
+           .stream_threshold(std::numeric_limits<std::size_t>::max())
            .ssl_file(https.ssl_cert_file, https.ssl_key_file)
            .run_async();
     } else {
@@ -937,8 +948,15 @@ void APIServer::run(int port) {
         serving = app.bindaddr(bind_host)
            .port(configManager->getHttpPort())
            .server_name("flAPI")
-           .concurrency(serverThreadCount(std::thread::hardware_concurrency()))
+           .concurrency(serverThreadCount(UsableCpus()))
            .use_compression(crow::compression::GZIP)
+           // Crow 1.3 sets TCP_NODELAY on every accepted socket (all platforms). Without it every
+           // keep-alive response after the first waited ~40 ms for Nagle + delayed ACK.
+           .tcp_nodelay(true)
+           // Crow writes a body above stream_threshold (default 1 MiB) synchronously on the io
+           // thread in 16 KiB pieces and then never reads the connection again: the next
+           // keep-alive request on it is reset. Every body takes the async write instead.
+           .stream_threshold(std::numeric_limits<std::size_t>::max())
            .run_async();
     }
 
@@ -978,6 +996,13 @@ void APIServer::run(int port) {
     // that answers nothing and cannot be stopped. main catches it, logs, and
     // shuts down cleanly.
     serving.get();
+
+    // Crow 1.3 no longer throws when the bind fails: it logs "Failed to bind" and returns from
+    // run() normally. A server that never got to serve and was not asked to stop did not start,
+    // and main must exit non-zero (a supervisor cannot tell an exit 0 from a clean shutdown).
+    if (!announced->load() && !stop_requested_.load(std::memory_order_acquire)) {
+        throw std::runtime_error("the HTTP listener did not start (see the error above, e.g. the port is in use)");
+    }
 }
 
 void APIServer::warmEndpoint(const EndpointConfig& endpoint)

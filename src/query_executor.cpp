@@ -1,4 +1,5 @@
 #include "query_executor.hpp"
+#include <set>
 #include "sql_utils.hpp"
 #include "database_health.hpp"
 #include "flapi_tracing.hpp"
@@ -9,6 +10,9 @@
 #include "prepared_value_converter.hpp"
 #include <crow.h>
 #include <fmt/core.h>
+#include <fmt/format.h>
+#include <charconv>
+#include <iterator>
 #include <cmath>
 #include <cstdlib>
 #include <sstream>
@@ -26,6 +30,8 @@
 
 #include <mutex>
 #include <unordered_map>
+#include <list>
+#include <string_view>
 
 namespace flapi {
 
@@ -94,15 +100,10 @@ struct ActiveExecGuard {
 };
 } // namespace
 
-QueryExecutor::QueryExecutor(duckdb_database db) : has_result(false) {
-    if (duckdb_connect(db, &conn) == DuckDBError) {
-        throw std::runtime_error("Failed to create database connection");
-    }
-}
+namespace {
 
-QueryExecutor::QueryExecutor(duckdb_database db, const std::optional<std::string>& session_default_order,
-                             const std::optional<std::string>& session_time_zone)
-    : QueryExecutor(db) {
+void applySessionSettings(duckdb_connection conn, const std::optional<std::string>& session_default_order,
+                          const std::optional<std::string>& session_time_zone) {
     if (session_time_zone) {
         // Best effort: only set when the global SET could not be applied at
         // startup (ICU not loadable then). A failure here leaves the
@@ -132,9 +133,102 @@ QueryExecutor::QueryExecutor(duckdb_database db, const std::optional<std::string
     }
     duckdb_destroy_result(&set_result);
     if (!ok) {
-        // The delegating constructor has completed, so the destructor runs and
-        // disconnects.
         throw std::runtime_error("Failed to set default_order: " + error);
+    }
+}
+
+// One connection per thread for endpoint reads, with an LRU of prepared statements keyed by
+// the exact SQL text. Only SELECTs are cached; anything else that runs on the connection makes
+// it dirty, and a dirty connection is closed when its executor ends (no session state leaks).
+std::atomic<std::uint64_t> g_pool_generation{1};
+
+struct PooledConnection {
+    static constexpr std::size_t kMaxStatements = 64;
+    duckdb_database db = nullptr;
+    std::uint64_t generation = 0;
+    duckdb_connection conn = nullptr;
+    bool in_use = false;
+    bool dirty = false;
+    std::list<std::pair<std::string, duckdb_prepared_statement>> lru;
+    std::unordered_map<std::string_view, decltype(lru)::iterator> index;
+
+    ~PooledConnection() { reset(); }
+    void reset() {
+        index.clear();
+        for (auto& entry : lru) {
+            duckdb_destroy_prepare(&entry.second);
+        }
+        lru.clear();
+        if (conn != nullptr) {
+            duckdb_disconnect(&conn);
+        }
+        conn = nullptr;
+        db = nullptr;
+        dirty = false;
+    }
+};
+
+thread_local PooledConnection t_pooled;
+thread_local int t_reuse_depth = 0;
+
+bool connectionReuseDisabled() {
+    static const bool disabled = std::getenv("FLAPI_NO_CONNECTION_REUSE") != nullptr;
+    return disabled;
+}
+
+}  // namespace
+
+QueryExecutor::ReuseConnectionScope::ReuseConnectionScope() { ++t_reuse_depth; }
+QueryExecutor::ReuseConnectionScope::~ReuseConnectionScope() { --t_reuse_depth; }
+
+void QueryExecutor::InvalidatePooledConnections() {
+    // Each thread drops its pooled connection the next time it builds or ends an executor.
+    // (Disconnecting other threads' idle connections from here, through a registry, corrupted
+    // the heap when a task thread exited after the database was closed: thread-local teardown
+    // and the cross-thread reset raced. The handler pool and the task manager are joined before
+    // the database closes, so the server path needs no more than this.)
+    g_pool_generation.fetch_add(1, std::memory_order_acq_rel);
+}
+
+QueryExecutor::QueryExecutor(duckdb_database db) : has_result(false) {
+    if (duckdb_connect(db, &conn) == DuckDBError) {
+        throw std::runtime_error("Failed to create database connection");
+    }
+}
+
+QueryExecutor::QueryExecutor(duckdb_database db, const std::optional<std::string>& session_default_order,
+                             const std::optional<std::string>& session_time_zone)
+    : conn(nullptr), has_result(false) {
+    if (t_reuse_depth > 0 && !t_pooled.in_use && !connectionReuseDisabled()) {
+        const auto generation = g_pool_generation.load(std::memory_order_acquire);
+        if (t_pooled.conn == nullptr || t_pooled.db != db || t_pooled.generation != generation) {
+            t_pooled.reset();
+            if (duckdb_connect(db, &t_pooled.conn) == DuckDBError) {
+                t_pooled.conn = nullptr;
+                throw std::runtime_error("Failed to create database connection");
+            }
+            try {
+                applySessionSettings(t_pooled.conn, session_default_order, session_time_zone);
+            } catch (...) {
+                t_pooled.reset();
+                throw;
+            }
+            t_pooled.db = db;
+            t_pooled.generation = generation;
+        }
+        conn = t_pooled.conn;
+        t_pooled.in_use = true;
+        borrowed_ = true;
+        return;
+    }
+    if (duckdb_connect(db, &conn) == DuckDBError) {
+        throw std::runtime_error("Failed to create database connection");
+    }
+    try {
+        applySessionSettings(conn, session_default_order, session_time_zone);
+    } catch (...) {
+        duckdb_disconnect(&conn);
+        throw;
     }
 }
 
@@ -143,9 +237,42 @@ QueryExecutor::~QueryExecutor() {
         duckdb_destroy_result(&result);
         has_result = false;
     }
+    if (borrowed_) {
+        t_pooled.in_use = false;
+        if (t_pooled.dirty || profiling_enabled_ ||
+            t_pooled.generation != g_pool_generation.load(std::memory_order_acquire)) {
+            t_pooled.reset();   // session state changed, or the database was closed: drop it
+        }
+        return;
+    }
     duckdb_disconnect(&conn);
 }
 
+duckdb_prepared_statement QueryExecutor::cachedPrepare(const std::string& sql) {
+    const auto found = t_pooled.index.find(std::string_view(sql));
+    if (found != t_pooled.index.end()) {
+        t_pooled.lru.splice(t_pooled.lru.begin(), t_pooled.lru, found->second);
+        return found->second->second;
+    }
+    duckdb_prepared_statement stmt = nullptr;
+    if (duckdb_prepare(conn, sql.c_str(), &stmt) == DuckDBError) {
+        duckdb_destroy_prepare(&stmt);
+        return nullptr;   // e.g. several statements: the caller runs it the unprepared way
+    }
+    if (duckdb_prepared_statement_type(stmt) != DUCKDB_STATEMENT_TYPE_SELECT) {
+        duckdb_destroy_prepare(&stmt);
+        return nullptr;
+    }
+    t_pooled.lru.emplace_front(sql, stmt);
+    t_pooled.index.emplace(std::string_view(t_pooled.lru.front().first), t_pooled.lru.begin());
+    if (t_pooled.lru.size() > PooledConnection::kMaxStatements) {
+        auto& last = t_pooled.lru.back();
+        t_pooled.index.erase(std::string_view(last.first));
+        duckdb_destroy_prepare(&last.second);
+        t_pooled.lru.pop_back();
+    }
+    return stmt;
+}
 
 namespace {
 
@@ -272,17 +399,17 @@ struct ProfMetric {
     bool detailed_only;
 };
 
-constexpr std::array<ProfMetric, 6> kProfMetrics{{
-    // Summary: query-level only. None of these trigger ProfilingInfo::Expand,
-    // so DuckDB does not switch on per-operator collection for them.
-    {"LATENCY",                   flapi::semconv::dbprof::kLatencyMs,       true,  false},
-    {"BLOCKED_THREAD_TIME",       flapi::semconv::dbprof::kBlockedMs,       true,  false},
-    {"RESULT_SET_SIZE",           flapi::semconv::dbprof::kResultBytes,     false, false},
-    {"TOTAL_BYTES_READ",          flapi::semconv::dbprof::kBytesRead,       false, false},
-    // Detailed: CPU_TIME expands to OPERATOR_TIMING and CUMULATIVE_ROWS_SCANNED
-    // to OPERATOR_ROWS_SCANNED inside DuckDB, so these cost real work per query.
-    {"CPU_TIME",                  flapi::semconv::dbprof::kCpuTimeMs,       true,  true},
-    {"CUMULATIVE_ROWS_SCANNED",   flapi::semconv::dbprof::kRowsScanned,     false, true},
+constexpr std::array<ProfMetric, 5> kProfMetrics{{
+    // DuckDB 2.0 names metrics `<group>.<metric>` and enables them with the tracked_metrics
+    // glob list (custom_profiling_settings and the UPPERCASE names are gone). 1.x's
+    // RESULT_SET_SIZE has no 2.0 counterpart; flapi.result.bytes carries the response size.
+    // Summary: query-level only.
+    {"query.total_time",          flapi::semconv::dbprof::kLatencyMs,       true,  false},
+    {"system.blocked_thread_time", flapi::semconv::dbprof::kBlockedMs,      true,  false},
+    {"io.total_bytes_read",       flapi::semconv::dbprof::kBytesRead,       false, false},
+    // Detailed: these make DuckDB collect per-operator timings and row counts.
+    {"query.cpu_time",            flapi::semconv::dbprof::kCpuTimeMs,       true,  true},
+    {"query.total_rows_scanned",  flapi::semconv::dbprof::kRowsScanned,     false, true},
 }};
 
 }  // namespace
@@ -308,21 +435,21 @@ void QueryExecutor::enableProfilingIfRequested(const SpanScope& span) {
     }
 
     const bool detailed = level == flapi::DbProfiling::Detailed;
-    std::string json = "{";
+    std::string metrics = "[";
     for (const auto& m : kProfMetrics) {
         if (m.detailed_only && !detailed) {
             continue;
         }
-        if (json.size() > 1) { json += ","; }
-        json += "\"";
-        json += m.duckdb_key;
-        json += "\":\"true\"";
+        if (metrics.size() > 1) { metrics += ","; }
+        metrics += "'";
+        metrics += m.duckdb_key;
+        metrics += "'";
     }
-    json += "}";
+    metrics += "]";
 
     // `no_output` FIRST, then the metric set.
     //
-    // custom_profiling_settings turns the profiler on but leaves
+    // tracked_metrics turns the metrics on but leaves
     // emit_profiler_output at its default of true (client_config.hpp), so
     // DuckDB renders and prints a ~1 KB query tree to stderr for EVERY profiled
     // query: a synchronous write on the request thread, log volume proportional
@@ -333,7 +460,7 @@ void QueryExecutor::enableProfilingIfRequested(const SpanScope& span) {
     // Both go in one duckdb_query call, so this is still one round trip.
     const std::string stmt =
         "SET enable_profiling='no_output'; "
-        "SET custom_profiling_settings='" + json + "'";
+        "SET tracked_metrics=" + metrics;
     duckdb_result r;
     if (duckdb_query(conn, stmt.c_str(), &r) == DuckDBSuccess) {
         profiling_enabled_ = true;
@@ -349,6 +476,35 @@ void QueryExecutor::enableProfilingIfRequested(const SpanScope& span) {
     duckdb_destroy_result(&r);
 }
 
+namespace {
+// DuckDB 2.0 nests the query-level metrics in group objects ("query", "system", "io") below the
+// root, after the operator nodes, and the C API cannot name a child. A group is recognised by a
+// metric only it carries; operator nodes have their own `cpu_time`, so `query.cpu_time` must be
+// read from the node that also has `total_time`.
+duckdb_value ProfilingMetric(duckdb_profiling_info root, const std::string& dotted) {
+    const auto dot = dotted.find('.');
+    if (dot == std::string::npos) {
+        return duckdb_profiling_info_get_value(root, dotted.c_str());
+    }
+    const std::string group = dotted.substr(0, dot);
+    const std::string leaf = dotted.substr(dot + 1);
+    const char* marker = group == "query" ? "total_time"
+                       : group == "system" ? "blocked_thread_time"
+                       : group == "io" ? "total_bytes_read" : leaf.c_str();
+    const idx_t children = duckdb_profiling_info_get_child_count(root);
+    for (idx_t i = 0; i < children; ++i) {
+        duckdb_profiling_info child = duckdb_profiling_info_get_child(root, i);
+        duckdb_value probe = duckdb_profiling_info_get_value(child, marker);
+        if (probe == nullptr) {
+            continue;
+        }
+        duckdb_destroy_value(&probe);
+        return duckdb_profiling_info_get_value(child, leaf.c_str());
+    }
+    return nullptr;
+}
+}  // namespace
+
 void QueryExecutor::attachProfilingMetrics(SpanScope& span) const {
     if (!profiling_enabled_ || !span) {
         return;
@@ -363,7 +519,7 @@ void QueryExecutor::attachProfilingMetrics(SpanScope& span) const {
         if (m.detailed_only && !detailed) {
             continue;
         }
-        DuckDBValue value(duckdb_profiling_info_get_value(info, m.duckdb_key));
+        DuckDBValue value(ProfilingMetric(info, m.duckdb_key));
         if (!value) {
             // Absent, not zero. A fabricated measurement is worse than a missing
             // one: zero latency reads as "instant" on every dashboard.
@@ -390,6 +546,13 @@ void QueryExecutor::execute(const std::string& query, const std::string& context
     if (has_result) {
         duckdb_destroy_result(&result);
         has_result = false;
+    }
+    if (borrowed_) {
+        if (duckdb_prepared_statement stmt = cachedPrepare(query)) {
+            executePrepared(stmt, context);
+            return;
+        }
+        t_pooled.dirty = true;   // not a cacheable SELECT: it may change the session
     }
     
     SpanScope span = startDbSpan(context, query);
@@ -521,6 +684,27 @@ void QueryExecutor::executeWithBindings(const std::string& sql,
                                         const std::vector<PreparedBindingSpec>& bindings,
                                         const std::map<std::string, std::string>& values,
                                         const std::string& context) {
+    if (borrowed_) {
+        if (duckdb_prepared_statement cached = cachedPrepare(sql)) {
+            duckdb_clear_bindings(cached);
+            PreparedValueConverter converter;
+            for (const auto& spec : bindings) {
+                auto it = values.find(spec.field_name);
+                const bool present = it != values.end() || spec.absent_as_empty;
+                const std::string empty;
+                const std::string& raw = it != values.end() ? it->second : empty;
+                auto outcome = converter.convert(spec.type, raw, present);
+                if (!outcome.ok) {
+                    throw BadRequestError(
+                        "Invalid value for parameter '" + spec.field_name + "': " + outcome.error);
+                }
+                bindOne(cached, spec.position + 1, outcome.value, spec);
+            }
+            executePrepared(cached, context);
+            return;
+        }
+        t_pooled.dirty = true;
+    }
     duckdb_prepared_statement stmt = nullptr;
     if (duckdb_prepare(conn, sql.c_str(), &stmt) == DuckDBError) {
         const char* err = duckdb_prepare_error(stmt);
@@ -557,12 +741,12 @@ void QueryExecutor::executeWithBindings(const std::string& sql,
     duckdb_destroy_prepare(&stmt);
 }
 
-crow::json::wvalue QueryExecutor::toJson() const {
+crow::json::wvalue QueryExecutor::toJson(idx_t max_rows) const {
     if (!has_result) {
         throw std::runtime_error("No result available - execute query first");
     }
-    
-    return QueryResult::convertResultToJson(result);
+
+    return QueryResult::convertResultToJson(result, max_rows);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -656,22 +840,317 @@ std::string QueryResult::dumpJson(const crow::json::wvalue& value, const std::ve
 }
 
 std::string QueryResult::dumpData() const {
+    if (streamed) {
+        return streamed_json.empty() ? std::string("[]") : streamed_json;
+    }
     return dumpJson(data, columns.empty() ? nullptr : &columns);
 }
 
-crow::json::wvalue QueryResult::convertResultToJson(const duckdb_result& result) {
+namespace {
+
+// How a column is written by the direct JSON row writer. Decided once per result from the
+// column's logical type, not per cell. FALLBACK cells go through convertVectorEntryToJson and
+// appendJson, so every type keeps exactly the text it had.
+enum class CellKind { BOOL, I8, I16, I32, I64, U8, U16, U32, U64, DOUBLE, VARCHAR, DATE, TS, FALLBACK };
+
+CellKind cellKindOf(duckdb_result& result, idx_t col) {
+    duckdb_logical_type type = duckdb_column_logical_type(&result, col);
+    const duckdb_type id = duckdb_get_type_id(type);
+    bool json_alias = false;
+    if (id == DUCKDB_TYPE_VARCHAR) {
+        DuckDBString alias(duckdb_logical_type_get_alias(type));
+        json_alias = !alias.is_null() && std::string(alias.get()) == "JSON";
+    }
+    duckdb_destroy_logical_type(&type);
+    switch (id) {
+        case DUCKDB_TYPE_BOOLEAN:   return CellKind::BOOL;
+        case DUCKDB_TYPE_TINYINT:   return CellKind::I8;
+        case DUCKDB_TYPE_SMALLINT:  return CellKind::I16;
+        case DUCKDB_TYPE_INTEGER:   return CellKind::I32;
+        case DUCKDB_TYPE_BIGINT:    return CellKind::I64;
+        case DUCKDB_TYPE_UTINYINT:  return CellKind::U8;
+        case DUCKDB_TYPE_USMALLINT: return CellKind::U16;
+        case DUCKDB_TYPE_UINTEGER:  return CellKind::U32;
+        case DUCKDB_TYPE_UBIGINT:   return CellKind::U64;
+        case DUCKDB_TYPE_DOUBLE:    return CellKind::DOUBLE;
+        case DUCKDB_TYPE_VARCHAR:   return json_alias ? CellKind::FALLBACK : CellKind::VARCHAR;
+        case DUCKDB_TYPE_DATE:      return CellKind::DATE;
+        case DUCKDB_TYPE_TIMESTAMP:
+        case DUCKDB_TYPE_TIMESTAMP_TZ:
+        case DUCKDB_TYPE_TIMESTAMP_S:
+        case DUCKDB_TYPE_TIMESTAMP_MS:
+        case DUCKDB_TYPE_TIMESTAMP_NS:
+            return CellKind::TS;
+        default:
+            return CellKind::FALLBACK;
+    }
+}
+
+template <class T>
+void appendInt(T value, std::string& out) {
+    char buf[24];
+    const auto res = std::to_chars(buf, buf + sizeof(buf), value);
+    out.append(buf, res.ptr);
+}
+
+// A DOUBLE as the wvalue path prints it: crow's "%.21g" (trailing zeros trimmed), then
+// normaliseNumberText. That is formatDouble() for a value with a fraction, the integer digits
+// for an integral one; the exponent forms crow can mangle are left to the wvalue path.
+bool appendDoubleFast(double value, std::string& out) {
+    if (!std::isfinite(value)) {
+        return false;
+    }
+    const double magnitude = std::fabs(value);
+    if (magnitude >= 1e21 || (magnitude != 0.0 && magnitude < 1e-4)) {
+        return false;
+    }
+    if (value == std::trunc(value)) {
+        if (magnitude < 9.0e18) {
+            if (value == 0.0 && std::signbit(value)) {
+                out += "-0";
+                return true;
+            }
+            appendInt(static_cast<std::int64_t>(value), out);
+            return true;
+        }
+        fmt::format_to(std::back_inserter(out), "{:.0f}", value);
+        return true;
+    }
+    out += QueryResult::formatDouble(value);
+    return true;
+}
+
+// crow::json::escape for a (pointer, length) string, appending unescaped runs in one go.
+void appendEscaped(const char* s, idx_t n, std::string& out) {
+    idx_t run = 0;
+    for (idx_t i = 0; i < n; ++i) {
+        const char c = s[i];
+        const char* rep = nullptr;
+        switch (c) {
+            case '"': rep = "\\\""; break;
+            case '\\': rep = "\\\\"; break;
+            case '\n': rep = "\\n"; break;
+            case '\b': rep = "\\b"; break;
+            case '\f': rep = "\\f"; break;
+            case '\r': rep = "\\r"; break;
+            case '\t': rep = "\\t"; break;
+            default:
+                if (c >= 0 && c < 0x20) {
+                    out.append(s + run, i - run);
+                    static const char* hex = "0123456789abcdef";
+                    out += "\\u00";
+                    out += hex[(c / 16) & 0xf];
+                    out += hex[(c % 16) & 0xf];
+                    run = i + 1;
+                }
+                continue;
+        }
+        out.append(s + run, i - run);
+        out += rep;
+        run = i + 1;
+    }
+    out.append(s + run, n - run);
+}
+
+}  // namespace
+
+idx_t QueryResult::streamResultAsJsonText(const duckdb_result& const_result, const std::vector<std::string>& names,
+                                          idx_t max_rows, std::string& out) {
+    auto& result = const_cast<duckdb_result&>(const_result);
+    const idx_t cols = names.size();
+    std::vector<CellKind> kinds(cols);
+    std::vector<duckdb_type> ts_types(cols, DUCKDB_TYPE_INVALID);
+    std::vector<std::string> prefixes(cols);
+    for (idx_t c = 0; c < cols; ++c) {
+        kinds[c] = cellKindOf(result, c);
+        ts_types[c] = duckdb_column_type(&result, c);
+        prefixes[c] = c == 0 ? "{\"" : ",\"";
+        crow::json::escape(names[c], prefixes[c]);
+        prefixes[c] += "\":";
+    }
+    std::vector<duckdb_vector> vectors(cols);
+    std::vector<const void*> data(cols);
+    std::vector<uint64_t*> validity(cols);
+
+    idx_t delivered = 0;
+    duckdb_data_chunk chunk;
+    while ((chunk = duckdb_fetch_chunk(result)) != NULL) {
+        const idx_t row_count = duckdb_data_chunk_get_size(chunk);
+        for (idx_t c = 0; c < cols; ++c) {
+            vectors[c] = duckdb_data_chunk_get_vector(chunk, c);
+            data[c] = duckdb_vector_get_data(vectors[c]);
+            validity[c] = duckdb_vector_get_validity(vectors[c]);
+        }
+        for (idx_t row = 0; row < row_count && delivered < max_rows; row++, delivered++) {
+            if (delivered > 0) {
+                out += ',';
+            }
+            for (idx_t c = 0; c < cols; ++c) {
+                out += prefixes[c];
+                const CellKind kind = kinds[c];
+                if (kind == CellKind::FALLBACK) {
+                    appendJson(convertVectorEntryToJson(vectors[c], row), out, nullptr, false);
+                    continue;
+                }
+                if (!duckdb_validity_row_is_valid(validity[c], row)) {
+                    out += "null";
+                    continue;
+                }
+                switch (kind) {
+                    case CellKind::BOOL:
+                        out += static_cast<const bool*>(data[c])[row] ? "true" : "false";
+                        break;
+                    case CellKind::I8:  appendInt<std::int64_t>(static_cast<const std::int8_t*>(data[c])[row], out); break;
+                    case CellKind::I16: appendInt<std::int64_t>(static_cast<const std::int16_t*>(data[c])[row], out); break;
+                    case CellKind::I32: appendInt<std::int64_t>(static_cast<const std::int32_t*>(data[c])[row], out); break;
+                    case CellKind::I64: appendInt<std::int64_t>(static_cast<const std::int64_t*>(data[c])[row], out); break;
+                    case CellKind::U8:  appendInt<std::uint64_t>(static_cast<const std::uint8_t*>(data[c])[row], out); break;
+                    case CellKind::U16: appendInt<std::uint64_t>(static_cast<const std::uint16_t*>(data[c])[row], out); break;
+                    case CellKind::U32: appendInt<std::uint64_t>(static_cast<const std::uint32_t*>(data[c])[row], out); break;
+                    case CellKind::U64: appendInt<std::uint64_t>(static_cast<const std::uint64_t*>(data[c])[row], out); break;
+                    case CellKind::DOUBLE:
+                        if (!appendDoubleFast(static_cast<const double*>(data[c])[row], out)) {
+                            appendJson(convertVectorEntryToJson(vectors[c], row), out, nullptr, false);
+                        }
+                        break;
+                    case CellKind::VARCHAR: {
+                        const auto& s = static_cast<const duckdb_string_t*>(data[c])[row];
+                        const bool inl = duckdb_string_is_inlined(s);
+                        out += '"';
+                        appendEscaped(inl ? s.value.inlined.inlined : s.value.pointer.ptr,
+                                      inl ? s.value.inlined.length : s.value.pointer.length, out);
+                        out += '"';
+                        break;
+                    }
+                    case CellKind::DATE: {
+                        const auto date = duckdb_from_date(static_cast<const duckdb_date*>(data[c])[row]);
+                        fmt::format_to(std::back_inserter(out), "\"{:04d}-{:02d}-{:02d}\"", date.year, date.month,
+                                       date.day);
+                        break;
+                    }
+                    case CellKind::TS: {
+                        const std::int64_t raw = static_cast<const std::int64_t*>(data[c])[row];
+                        if (raw == std::numeric_limits<std::int64_t>::max() ||
+                            raw == -std::numeric_limits<std::int64_t>::max()) {
+                            out += raw > 0 ? "\"infinity\"" : "\"-infinity\"";
+                            break;
+                        }
+                        const duckdb_type tid = ts_types[c];
+                        std::int64_t micros = raw;
+                        std::int64_t nanos = -1;
+                        if (tid == DUCKDB_TYPE_TIMESTAMP_S) {
+                            micros = raw * 1000000;
+                        } else if (tid == DUCKDB_TYPE_TIMESTAMP_MS) {
+                            micros = raw * 1000;
+                        } else if (tid == DUCKDB_TYPE_TIMESTAMP_NS) {
+                            micros = raw / 1000;
+                            nanos = raw % 1000;
+                            if (nanos < 0) {
+                                nanos += 1000;
+                                micros -= 1;
+                            }
+                        }
+                        duckdb_timestamp tsv;
+                        tsv.micros = micros;
+                        const auto ts = duckdb_from_timestamp(tsv);
+                        const char* zone = tid == DUCKDB_TYPE_TIMESTAMP_TZ ? "Z" : "";
+                        if (nanos >= 0) {
+                            fmt::format_to(std::back_inserter(out),
+                                           "\"{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}.{:06d}{:03d}{}\"",
+                                           ts.date.year, ts.date.month, ts.date.day, ts.time.hour, ts.time.min,
+                                           ts.time.sec, ts.time.micros, nanos, zone);
+                        } else {
+                            fmt::format_to(std::back_inserter(out),
+                                           "\"{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}.{:06d}{}\"",
+                                           ts.date.year, ts.date.month, ts.date.day, ts.time.hour, ts.time.min,
+                                           ts.time.sec, ts.time.micros, zone);
+                        }
+                        break;
+                    }
+                    default:
+                        break;
+                }
+            }
+            if (cols == 0) {
+                out += '{';
+            }
+            out += '}';
+        }
+        duckdb_destroy_data_chunk(&chunk);
+    }
+    return delivered;
+}
+
+idx_t QueryResult::streamResult(const duckdb_result& result, idx_t max_rows, const ResultSink& sink) {
+    auto [names, types] = extractNamesAndTypes(const_cast<duckdb_result&>(result));
+    if (sink.begin) {
+        sink.begin(names);
+    }
+    if (sink.json_rows != nullptr) {
+        // Duplicate column names collapse in a wvalue object (its key order then differs too);
+        // such a result keeps the wvalue path below.
+        std::vector<std::string> sorted = names;
+        std::sort(sorted.begin(), sorted.end());
+        if (std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end()) {
+            return streamResultAsJsonText(result, names, max_rows, *sink.json_rows);
+        }
+        idx_t delivered = 0;
+        duckdb_data_chunk chunk;
+        while ((chunk = duckdb_fetch_chunk(const_cast<duckdb_result&>(result))) != NULL) {
+            const idx_t row_count = duckdb_data_chunk_get_size(chunk);
+            for (idx_t row_idx = 0; row_idx < row_count && delivered < max_rows; row_idx++, delivered++) {
+                crow::json::wvalue row;
+                for (idx_t col_idx = 0; col_idx < names.size(); col_idx++) {
+                    auto vector = duckdb_data_chunk_get_vector(chunk, col_idx);
+                    row[names[col_idx]] = convertVectorEntryToJson(vector, row_idx);
+                }
+                if (delivered > 0) {
+                    *sink.json_rows += ',';
+                }
+                appendRow(row, names, *sink.json_rows);
+            }
+            duckdb_destroy_data_chunk(&chunk);
+        }
+        return delivered;
+    }
+    idx_t delivered = 0;
+    duckdb_data_chunk chunk;
+    while ((chunk = duckdb_fetch_chunk(const_cast<duckdb_result&>(result))) != NULL) {
+        const idx_t row_count = duckdb_data_chunk_get_size(chunk);
+        for (idx_t row_idx = 0; row_idx < row_count && delivered < max_rows; row_idx++, delivered++) {
+            crow::json::wvalue row;
+            for (idx_t col_idx = 0; col_idx < names.size(); col_idx++) {
+                auto vector = duckdb_data_chunk_get_vector(chunk, col_idx);
+                row[names[col_idx]] = convertVectorEntryToJson(vector, row_idx);
+            }
+            sink.row(row);
+        }
+        duckdb_destroy_data_chunk(&chunk);
+    }
+    return delivered;
+}
+
+void QueryResult::appendRow(const crow::json::wvalue& row, const std::vector<std::string>& columns, std::string& out) {
+    appendJson(row, out, columns.empty() ? nullptr : &columns, true);
+}
+
+crow::json::wvalue QueryResult::convertResultToJson(const duckdb_result& result, idx_t max_rows) {
     auto [names, types] = extractNamesAndTypes(const_cast<duckdb_result&>(result));
 
     std::vector<crow::json::wvalue> rows;
     duckdb_data_chunk chunk;
     while ((chunk = duckdb_fetch_chunk(const_cast<duckdb_result&>(result))) != NULL) {
         for (auto &row : QueryResult::convertChunkToJson(names, chunk)) {
-            rows.push_back(row);
+            rows.push_back(std::move(row));
         }
         duckdb_destroy_data_chunk(&chunk);
     }
-    
-    return crow::json::wvalue(rows);
+    if (rows.size() > max_rows) {
+        rows.resize(max_rows);
+    }
+    crow::json::wvalue out;
+    out = std::move(rows);   // crow has no list&& constructor; the copying one deep-copied every row
+    return out;
 }
 
 std::tuple<std::vector<std::string>, std::vector<duckdb_type>> QueryResult::extractNamesAndTypes(duckdb_result& result) {
@@ -694,7 +1173,7 @@ std::vector<crow::json::wvalue> QueryResult::convertChunkToJson(const std::vecto
             auto vector = duckdb_data_chunk_get_vector(chunk, col_idx);
             row[names[col_idx]] = convertVectorEntryToJson(vector, row_idx);
         }
-        result.push_back(row);
+        result.push_back(std::move(row));
     }
 
     return result;
@@ -1006,6 +1485,9 @@ crow::json::wvalue QueryResult::convertVectorTimestampToJson(const duckdb_vector
 }
 
 crow::json::wvalue QueryResult::convertVectorDateToJson(const duckdb_vector &vector, const idx_t row_idx) {
+    if (!duckdb_validity_row_is_valid(duckdb_vector_get_validity(vector), row_idx)) {
+        return crow::json::wvalue(nullptr);   // the slot holds whatever was there: never read it
+    }
     auto data = (duckdb_date *)duckdb_vector_get_data(vector);
     auto date = duckdb_from_date(data[row_idx]);
 
@@ -1014,6 +1496,9 @@ crow::json::wvalue QueryResult::convertVectorDateToJson(const duckdb_vector &vec
 }
 
 crow::json::wvalue QueryResult::convertVectorTimeToJson(const duckdb_vector &vector, const idx_t row_idx) {
+    if (!duckdb_validity_row_is_valid(duckdb_vector_get_validity(vector), row_idx)) {
+        return crow::json::wvalue(nullptr);
+    }
     auto data = (duckdb_time *)duckdb_vector_get_data(vector);
     auto time = duckdb_from_time(data[row_idx]);
 
@@ -1022,18 +1507,39 @@ crow::json::wvalue QueryResult::convertVectorTimeToJson(const duckdb_vector &vec
 }
 
 crow::json::wvalue QueryResult::convertVectorIntervalToJson(const duckdb_vector &vector, const idx_t row_idx) {
+    if (!duckdb_validity_row_is_valid(duckdb_vector_get_validity(vector), row_idx)) {
+        return crow::json::wvalue(nullptr);
+    }
     auto data = (duckdb_interval *)duckdb_vector_get_data(vector);
-    auto interval = data[row_idx];
-
-    std::string str = fmt::format("{:02d}:{:02d}.{:03d}", interval.months, interval.days, interval.micros / 1000);
+    // DuckDB's own text ("1 year 2 months 3 days 04:00:00"), as CAST(... AS VARCHAR) gives it.
+    // It printed "months:days.millis" ("00:03.144" for 3 days 04:00:00) before.
+    auto value = duckdb_create_interval(data[row_idx]);
+    char* text = duckdb_get_varchar(value);
+    std::string str = text ? text : "";
+    duckdb_free(text);
+    duckdb_destroy_value(&value);
     return crow::json::wvalue(str);
 }
 
 crow::json::wvalue QueryResult::convertVectorEnumToJson(const duckdb_vector &vector, const idx_t row_idx) {
+    if (!duckdb_validity_row_is_valid(duckdb_vector_get_validity(vector), row_idx)) {
+        return crow::json::wvalue(nullptr);
+    }
     auto type = duckdb_vector_get_column_type(vector);
 
-    auto data = (idx_t *)duckdb_vector_get_data(vector);
-    DuckDBString value_wrapper(duckdb_enum_dictionary_value(type, data[row_idx]));
+    // The index is stored as UTINYINT, USMALLINT or UINTEGER depending on the dictionary size.
+    // Reading it as idx_t (8 bytes) read past the vector and crashed the server.
+    const void* raw = duckdb_vector_get_data(vector);
+    idx_t index = 0;
+    switch (duckdb_enum_internal_type(type)) {
+        case DUCKDB_TYPE_UTINYINT: index = static_cast<const uint8_t*>(raw)[row_idx]; break;
+        case DUCKDB_TYPE_USMALLINT: index = static_cast<const uint16_t*>(raw)[row_idx]; break;
+        case DUCKDB_TYPE_UINTEGER: index = static_cast<const uint32_t*>(raw)[row_idx]; break;
+        default:
+            duckdb_destroy_logical_type(&type);
+            return crow::json::wvalue(nullptr);
+    }
+    DuckDBString value_wrapper(duckdb_enum_dictionary_value(type, index));
     std::string str_val = value_wrapper.to_string();
 
     duckdb_destroy_logical_type(&type);
@@ -1172,9 +1678,13 @@ crow::json::wvalue QueryResult::convertVectorBitToJson(const duckdb_vector &vect
 
     duckdb_bit bit { const_cast<uint8_t *>(bytes), length };
     auto value = duckdb_create_bit(bit);
-    DuckDBString str(duckdb_value_to_string(value));
+    // duckdb_value_to_string renders a SQL literal for BIT since DuckDB 2.0 ('101010'::BIT);
+    // duckdb_get_varchar is the plain bit string ('101010') both versions agree on.
+    char* rendered = duckdb_get_varchar(value);
+    std::string out = rendered ? rendered : "";
+    duckdb_free(rendered);
     duckdb_destroy_value(&value);
-    return crow::json::wvalue(str.to_string());
+    return crow::json::wvalue(out);
 }
 
 crow::json::wvalue QueryResult::convertVectorListToJson(const duckdb_vector &vector, const idx_t row_idx) {

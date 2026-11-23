@@ -525,7 +525,7 @@ flapi pack --in <config-dir> --out <new-binary> [--with-extensions | --extension
 | `--exclude` | no | Do not bundle files matching this glob, relative to `--in`; repeatable. `*` stays within a path segment, `**` crosses segments, `?` matches one character. A pattern without `/` matches a file or directory name at any depth, and a matching directory excludes everything below it (`--exclude scratch --exclude 'data/raw/**'`). |
 | `--skip-validation` | no | Skip the config validation `pack` otherwise runs first (the same checks as `--validate-config`). Without it, an invalid `<in>/flapi.yaml` is refused and no output file is written. |
 | `--macos-append` | no | macOS only: append the archive after `__LINKEDIT` instead of overwriting the reserved `__FLAPI/__bundle` segment. **Not notarisable.** |
-| `--with-extensions` | no | Install the DuckDB extensions the config needs (`core_functions`, `duckdb.default-extensions`, every `INSTALL` in `connections.*.init`) **for the platform `pack` runs on**, and embed them. Fails without writing output if any cannot be installed. |
+| `--with-extensions` | no | Install the DuckDB extensions the config needs (`duckdb.default-extensions`, every `INSTALL` in `connections.*.init`) **for the platform `pack` runs on**, and embed them. Fails without writing output if any cannot be installed. |
 | `--extensions-dir` | no | Embed an already filled extension directory instead, e.g. one built by `flapi extensions install` for another platform. Exclusive with `--with-extensions`. |
 
 **Embedded extensions.** They are stored under the reserved `.flapi/extensions/` prefix (an input tree
@@ -698,7 +698,7 @@ column) drops the watermark and loads the full source; the audit row's `message`
 ### `flapi extensions install` -- pre-install DuckDB extensions
 
 ```bash
-# Everything a config needs: core_functions (always needed by flAPI), duckdb.default-extensions,
+# Everything a config needs (core_functions, parquet, json and icu are built in): duckdb.default-extensions,
 # and every INSTALL in connections.*.init
 flapi extensions install --config flapi.yaml --dir /opt/flapi/extensions
 

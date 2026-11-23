@@ -4,6 +4,7 @@
 #include <crow.h>
 #include <stdexcept>
 #include <optional>
+#include <functional>
 #include <string>
 #include <map>
 #include <thread>
@@ -46,16 +47,47 @@ void interruptActiveExecutor(std::thread::id tid);
 
 namespace flapi {
 
+// Receives result rows one at a time instead of a materialised `data` tree: the response
+// writers (REST JSON/CSV, MCP) append each row to their output and drop it, so a large
+// result is never held as a JSON tree plus copies of it.
+struct ResultSink {
+    // Called before rows are delivered for an attempt: a lock-contention retry re-runs the
+    // query, so whatever an earlier attempt appended must be discarded first.
+    std::function<void()> reset;
+    std::function<void(const std::vector<std::string>& columns)> begin;
+    std::function<void(const crow::json::wvalue& row)> row;
+    // When set, rows are written as JSON objects (comma-separated, no brackets) straight from
+    // the DuckDB vectors into this text - no crow::json::wvalue per row; `row` is then unused.
+    // The text is byte-for-byte what appendRow() writes for the same row.
+    std::string* json_rows = nullptr;
+};
+
 class QueryResult {
 public:
     crow::json::wvalue data;
+    // Rows delivered to a ResultSink instead of `data` (then `data` stays empty).
+    idx_t streamed_rows = 0;
+    bool streamed = false;
+    idx_t rowCount() const { return streamed ? streamed_rows : data.size(); }
+    // When a caller streamed the rows into JSON text itself, it may keep it here;
+    // dumpData() then returns it.
+    std::string streamed_json;
     std::string next = "";
     int64_t total_count = -1;
     // The result's column names in SELECT order. crow's object is an
     // unordered map, so `data` alone cannot say which column came first.
     std::vector<std::string> columns;
 
-    static crow::json::wvalue convertResultToJson(const duckdb_result& result);
+    // `max_rows`: rows past it are read but not converted (the pagination probe row).
+    static crow::json::wvalue convertResultToJson(const duckdb_result& result,
+                                                  idx_t max_rows = static_cast<idx_t>(-1));
+    // Converts row by row into `sink`; returns the number of rows delivered.
+    static idx_t streamResult(const duckdb_result& result, idx_t max_rows, const ResultSink& sink);
+    // ResultSink::json_rows: rows written from the vectors into `out`, no wvalue per row.
+    static idx_t streamResultAsJsonText(const duckdb_result& result, const std::vector<std::string>& names,
+                                        idx_t max_rows, std::string& out);
+    // One row as dumpData() prints it inside the list (columns in SELECT order).
+    static void appendRow(const crow::json::wvalue& row, const std::vector<std::string>& columns, std::string& out);
 
     // `data` as JSON text: row keys in `columns` order and every double in
     // its shortest round-trip form (crow prints 21 significant digits, so
@@ -130,6 +162,16 @@ private:
 
 class QueryExecutor {
 public:
+    // While one is alive on a thread, executors created there for the default session settings
+    // borrow that thread's pooled connection (and its prepared-statement cache) instead of
+    // opening and closing a connection per query. Endpoint reads open one.
+    struct ReuseConnectionScope {
+        ReuseConnectionScope();
+        ~ReuseConnectionScope();
+    };
+    // Drops every thread's pooled connection at its next use (a database was closed/reopened).
+    static void InvalidatePooledConnections();
+
     QueryExecutor(duckdb_database db);
     // Also applies `SET SESSION default_order` on the new connection.
     // `session_time_zone` is the per-connection fallback for a TimeZone that could not be set globally.
@@ -164,7 +206,7 @@ public:
         return names;
     }
     
-    crow::json::wvalue toJson() const;
+    crow::json::wvalue toJson(idx_t max_rows = static_cast<idx_t>(-1)) const;
 
     // Interrupt an in-flight query on this executor's connection from another
     // thread. Used by the MCP Tasks extension (issue #111) to make tasks/cancel
@@ -185,6 +227,10 @@ public:
     void attachProfilingMetrics(SpanScope& span) const;
     mutable duckdb_result result;
     bool has_result;
+
+private:
+    bool borrowed_ = false;
+    duckdb_prepared_statement cachedPrepare(const std::string& sql);
 };
 
 } // namespace flapi

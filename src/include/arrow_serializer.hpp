@@ -190,7 +190,9 @@ inline const char* duckdbTypeToArrowFormat(duckdb_type type) {
         case DUCKDB_TYPE_TIMESTAMP_S:  return "tss:"; // timestamp[seconds]
         case DUCKDB_TYPE_TIMESTAMP_MS: return "tsm:"; // timestamp[milliseconds]
         case DUCKDB_TYPE_TIMESTAMP_NS: return "tsn:"; // timestamp[nanoseconds]
-        case DUCKDB_TYPE_INTERVAL:   return "tiM";    // interval[months]
+        // An interval has months, days AND microseconds; "tiM" (months only) had no matching
+        // array and every INTERVAL column failed the request. DuckDB's text, as JSON gives it.
+        case DUCKDB_TYPE_INTERVAL:   return "u";
         case DUCKDB_TYPE_HUGEINT:    return "u";      // Convert to string (128-bit)
         case DUCKDB_TYPE_UUID:       return "u";      // Convert to string (UUID)
         default:                     return "u";      // Fallback to string
@@ -532,6 +534,27 @@ inline ArrowErrorCode convertChunkToArrow(
                 break;
             }
 
+            case DUCKDB_TYPE_INTERVAL: {
+                NANOARROW_RETURN_NOT_OK(ArrowArrayInitFromType(child, NANOARROW_TYPE_STRING));
+                NANOARROW_RETURN_NOT_OK(ArrowArrayStartAppending(child));
+                auto* data = static_cast<duckdb_interval*>(duckdb_vector_get_data(vec));
+                for (idx_t i = 0; i < row_count; i++) {
+                    if (validity && !duckdb_validity_row_is_valid(validity, i)) {
+                        NANOARROW_RETURN_NOT_OK(ArrowArrayAppendNull(child, 1));
+                        continue;
+                    }
+                    auto value = duckdb_create_interval(data[i]);
+                    char* text = duckdb_get_varchar(value);
+                    ArrowStringView view = {text ? text : "", text ? static_cast<int64_t>(std::strlen(text)) : 0};
+                    const auto rc = ArrowArrayAppendString(child, view);
+                    duckdb_free(text);
+                    duckdb_destroy_value(&value);
+                    NANOARROW_RETURN_NOT_OK(rc);
+                }
+                NANOARROW_RETURN_NOT_OK(ArrowArrayFinishBuildingDefault(child, error));
+                break;
+            }
+
             default: {
                 // Unsupported type - add empty string column as placeholder
                 // This is safer than trying to interpret unknown binary data
@@ -633,8 +656,9 @@ inline ArrowSerializationResult serializeToArrowIPC(
             break;
         }
 
-        // Check memory limit
-        memoryUsed += chunk_size * 100;  // Rough estimate
+        // Check memory limit against what the stream actually holds. A fixed 100 bytes per row
+        // failed every result over ~2.7M rows (256 MB cap) however narrow the rows were.
+        memoryUsed = static_cast<size_t>(outputBuffer.size_bytes);
         if (config.maxMemoryBytes > 0 && memoryUsed > config.maxMemoryBytes) {
             duckdb_destroy_data_chunk(&chunk);
             ArrowIpcWriterReset(&writer);

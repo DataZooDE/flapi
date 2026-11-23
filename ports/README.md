@@ -34,3 +34,15 @@ surface flAPI depends on: TracerProvider, BatchSpanProcessor, the OTLP HTTP and
 file exporters, the W3C propagator, and samplers. Delete this overlay entirely
 once the pinned baseline carries a version that satisfies both requirements
 above.
+
+## `crow` (1.3.4)
+
+**Why this exists.** flAPI completes responses from its handler pool (#120), which needs a strong
+reference to the connection across the offload: `async-completion-keepalive.patch` adds
+`crow::response::connection_keepalive` (not upstream). The pinned baseline would also resolve an
+older crow (1.2.0 had a JSON writer that cut exponents, `1e300` -> `1000.0`, and no TCP_NODELAY option).
+
+**Upgrading.** Bump `version` and `SHA512` in `portfile.cmake`, re-apply the patch (two lines in
+`http_connection.h`, one member in `http_response.h`), and run the full integration suite: the
+startup-failure tests (Crow 1.3 logs a bind failure instead of throwing), the keep-alive tests and
+test_handler_offload exercise exactly the Crow behaviour flAPI depends on.

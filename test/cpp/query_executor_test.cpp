@@ -168,7 +168,7 @@ TEST_CASE("QueryExecutor type coverage", "[query_executor]") {
             '2023-01-01'::DATE as date,
             '12:34:56'::TIME as time,
             '2023-01-01 12:34:56'::TIMESTAMP as timestamp,
-            '2023-01-01 12:34:56'::TIMESTAMPTZ as timestamp_tz,
+            '2023-01-01 12:34:56+00'::TIMESTAMPTZ as timestamp_tz,
             {'key': 'value'} as struct,
             [1,2,3] as list,
             TRUE as boolean,
@@ -195,7 +195,7 @@ TEST_CASE("QueryExecutor type coverage", "[query_executor]") {
     REQUIRE(doc["struct"]["key"].s() == "value");
     REQUIRE(doc["list"].size() == 3);
     REQUIRE(doc["boolean"].b() == true);
-    REQUIRE(doc["interval"].s() == "01:00.000");
+    REQUIRE(doc["interval"].s() == "1 month");   // DuckDB's interval text (was "01:00.000")
     REQUIRE(doc["varchar"].s() == "hello");
     REQUIRE(doc["decimal"].d() == Catch::Approx(123.456));
 

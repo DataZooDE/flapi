@@ -175,13 +175,14 @@ void FlapiTelemetry::restEndpointServed(const std::string& method,
         return;
     }
     duckdb::PropertyMap props;
+    const std::string status = statusClass(status_code);
     props["method"] = method;                       // enum: GET|POST|...
     props["route_template"] = route_template;       // TEMPLATE, never filled path
-    props["status_class"] = statusClass(status_code);
-    props["duration_ms"] = duration_ms;             // JSON number
+    props["status_class"] = status;
     props["cache_hit"] = cache_hit;                 // JSON bool
     stampCommon(props, /*hot=*/true);
-    backend_->captureFeature("rest_endpoint_served", std::move(props));
+    aggregate("rest|" + method + "|" + route_template + "|" + status + "|" + (cache_hit ? "1" : "0"),
+              "rest_endpoint_served", std::move(props), duration_ms);
 }
 
 void FlapiTelemetry::mcpToolCalled(const std::string& tool, bool success,
@@ -192,9 +193,9 @@ void FlapiTelemetry::mcpToolCalled(const std::string& tool, bool success,
     duckdb::PropertyMap props;
     props["tool"] = tool;                           // registered, bounded tool name
     props["status_class"] = success ? "2xx" : "5xx";
-    props["duration_ms"] = duration_ms;             // JSON number
     stampCommon(props, /*hot=*/true);
-    backend_->captureFeature("mcp_tool_called", std::move(props));
+    aggregate(std::string("mcp|") + tool + "|" + (success ? "1" : "0"), "mcp_tool_called", std::move(props),
+              duration_ms);
 }
 
 void FlapiTelemetry::authEnforced(const std::string& auth_kind, bool allow) {
@@ -205,7 +206,9 @@ void FlapiTelemetry::authEnforced(const std::string& auth_kind, bool allow) {
     props["auth_kind"] = auth_kind;                 // enum: basic|bearer|oidc
     props["outcome"] = allow ? "allow" : "deny";
     stampCommon(props, /*hot=*/false);
-    backend_->captureFeature("auth_enforced", std::move(props));
+    // Runs once per authenticated request: aggregated like the request events.
+    aggregate(std::string("auth|") + auth_kind + "|" + (allow ? "1" : "0"), "auth_enforced", std::move(props),
+              std::nullopt);
 }
 
 void FlapiTelemetry::error(const std::string& error_class, const std::string& feature,
@@ -221,10 +224,63 @@ void FlapiTelemetry::error(const std::string& error_class, const std::string& fe
     backend_->captureError(error_class, std::move(props));
 }
 
+void FlapiTelemetry::setAggregationInterval(std::chrono::milliseconds interval) {
+    std::lock_guard<std::mutex> lock(aggregate_mutex_);
+    aggregation_interval_ = interval;
+}
+
+void FlapiTelemetry::aggregate(const std::string& key, const std::string& event, duckdb::PropertyMap props,
+                               std::optional<double> duration_ms) {
+    bool due = false;
+    {
+        std::lock_guard<std::mutex> lock(aggregate_mutex_);
+        auto [it, inserted] = aggregates_.try_emplace(key);
+        Aggregate& agg = it->second;
+        if (inserted) {
+            agg.event = event;
+            agg.props = std::move(props);
+        }
+        ++agg.count;
+        if (duration_ms) {
+            agg.has_duration = true;
+            agg.duration_sum += *duration_ms;
+            agg.duration_max = std::max(agg.duration_max, *duration_ms);
+        }
+        due = std::chrono::steady_clock::now() - last_emit_ >= aggregation_interval_;
+    }
+    if (due) {
+        emitAggregates();
+    }
+}
+
+bool FlapiTelemetry::hasPendingAggregates() {
+    std::lock_guard<std::mutex> lock(aggregate_mutex_);
+    return !aggregates_.empty();
+}
+
+void FlapiTelemetry::emitAggregates() {
+    std::unordered_map<std::string, Aggregate> pending;
+    {
+        std::lock_guard<std::mutex> lock(aggregate_mutex_);
+        pending.swap(aggregates_);
+        last_emit_ = std::chrono::steady_clock::now();
+    }
+    for (auto& [key, agg] : pending) {
+        duckdb::PropertyMap props = std::move(agg.props);
+        props["count"] = static_cast<int64_t>(agg.count);              // requests this event stands for
+        if (agg.has_duration) {
+            props["duration_ms"] = agg.duration_sum / static_cast<double>(agg.count);   // mean
+            props["duration_ms_max"] = agg.duration_max;
+        }
+        backend_->captureFeature(agg.event, std::move(props));
+    }
+}
+
 void FlapiTelemetry::flush() {
     if (!active()) {
         return;
     }
+    emitAggregates();
     backend_->flush();
 }
 

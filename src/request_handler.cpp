@@ -334,7 +334,17 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
                 return;
             }
 
-            auto executor = db_manager->executeQueryRaw(endpoint, params);
+            // Only the client's own ?limit= / ?offset= page an Arrow stream (already validated by
+            // parsePaginationParams); the JSON default page of 100 never truncates it.
+            std::optional<int64_t> arrow_limit;
+            std::optional<int64_t> arrow_offset;
+            if (req.url_params.get("limit") != nullptr) {
+                arrow_limit = std::stoll(params["limit"]);
+            }
+            if (req.url_params.get("offset") != nullptr) {
+                arrow_offset = std::stoll(params["offset"]);
+            }
+            auto executor = db_manager->executeQueryRaw(endpoint, params, arrow_limit, arrow_offset);
 
             ArrowSerializerConfig arrowConfig;
             arrowConfig.codec = negotiation.codec;  // Use negotiated codec (lz4, zstd, or empty)
@@ -379,8 +389,40 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
             return;
         }
 
-        // Execute query for JSON/CSV (existing path)
-        QueryResult queryResult = db_manager->executeQuery(endpoint, params, endpoint.with_pagination);
+        // Rows are written straight into the response text as they are converted: a result is
+        // never held as a JSON tree and copies of it (a 9 MB response peaked at 721 MB that way).
+        const bool csv = negotiation.format == ResponseFormat::CSV;
+        std::string rows_text = csv ? std::string() : std::string("[");
+        std::vector<std::string> row_columns;
+        bool first_row = true;
+        ResultSink sink;
+        sink.reset = [&]() {
+            rows_text = csv ? std::string() : std::string("[");
+            row_columns.clear();
+            first_row = true;
+        };
+        sink.begin = [&](const std::vector<std::string>& columns) { row_columns = columns; };
+        if (!csv) {
+            sink.json_rows = &rows_text;   // rows go from the vectors straight into the text
+        }
+        sink.row = [&](const crow::json::wvalue& row) {
+            if (csv) {
+                appendCSVRow(row, row_columns, first_row, rows_text);
+            } else {
+                if (!first_row) {
+                    rows_text += ',';
+                }
+                QueryResult::appendRow(row, row_columns, rows_text);
+            }
+            first_row = false;
+        };
+        QueryResult queryResult = db_manager->executeQuery(
+            endpoint, params, endpoint.with_pagination,
+            endpoint.total_count ? DatabaseManager::TotalCount::Exact : DatabaseManager::TotalCount::Skip,
+            &sink);
+        if (!csv) {
+            rows_text += ']';
+        }
         // limit=0 asks for the count alone. Its "next page" starts at the same
         // offset, so `next` pointed at the request itself and a client
         // following it looped forever.
@@ -389,10 +431,9 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
         }
 
         // Handle CSV format
-        if (negotiation.format == ResponseFormat::CSV) {
-            std::string csvData = convertToCSV(queryResult);
+        if (csv) {
             res.set_header("Content-Type", "text/csv");
-            res.write(csvData);
+            res.body = std::move(rows_text);
         } else {
             // JSON format (default)
             res.set_header("Content-Type", "application/json");
@@ -400,16 +441,30 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
             // Assembled by hand around dumpData(): rows keep their SELECT
             // column order and doubles their shortest form, which a
             // crow::json::wvalue (an unordered map, 21-digit doubles) loses.
-            if (endpoint.with_pagination) {
-                res.write("{\"data\":" + queryResult.dumpData() +
-                          ",\"next\":" + crow::json::wvalue(createNextUrl(req, queryResult)).dump() +
-                          ",\"total_count\":" + std::to_string(queryResult.total_count) + "}");
+            if (endpoint.with_pagination && !endpoint.total_count) {
+                // `total-count: false`: no COUNT ran, so there is no total to report.
+                res.body = "{\"data\":" + rows_text +
+                           ",\"next\":" + crow::json::wvalue(createNextUrl(req, queryResult)).dump() + "}";
+            } else if (endpoint.with_pagination) {
+                std::string body;
+                const std::string next = crow::json::wvalue(createNextUrl(req, queryResult)).dump();
+                body.reserve(rows_text.size() + next.size() + 48);
+                body += "{\"data\":";
+                body += rows_text;
+                body += ",\"next\":";
+                body += next;
+                body += ",\"total_count\":";
+                body += std::to_string(queryResult.total_count);
+                body += '}';
+                res.body = std::move(body);
             } else {
-                res.write(queryResult.dumpData());
+                res.body = std::move(rows_text);
             }
         }
 
-        res.add_header("X-Total-Count", std::to_string(queryResult.total_count));
+        if (endpoint.total_count) {
+            res.add_header("X-Total-Count", std::to_string(queryResult.total_count));
+        }
         res.add_header("X-Offset", std::to_string(offset));
         res.add_header("X-Limit", std::to_string(limit));
         res.add_header("X-Next", createNextUrl(req, queryResult));
@@ -435,6 +490,21 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
             res.set_header("Content-Type", "application/json");
             crow::json::wvalue body;
             body["error"] = "The database is busy; retry shortly.";
+            res.write(body.dump());
+            res.end();
+            return;
+        }
+        // DuckLake 1.1 (DuckDB 2.0) refuses `AT (TIMESTAMP => t)` with t in the future, where the
+        // 1.0 extension answered the latest snapshot. The caller's value is the problem: a 400.
+        if (endpoint.cache.enabled &&
+            std::string(e.what()).find("Cannot time travel to a future timestamp") != std::string::npos) {
+            CROW_LOG_INFO << "time travel to a future timestamp: " << e.what();
+            res.code = 400;
+            res.set_header("Content-Type", "application/json");
+            crow::json::wvalue body;
+            body["error"] = "snapshot_in_future";
+            body["message"] = "The requested time-travel timestamp is in the future; ask for the current data "
+                              "without a timestamp, or for a time at or before now";
             res.write(body.dump());
             res.end();
             return;
@@ -915,6 +985,28 @@ std::string RequestHandler::convertToCSV(const QueryResult& queryResult)
     }
 
     return csv.str();
+}
+
+void RequestHandler::appendCSVRow(const crow::json::wvalue& row, const std::vector<std::string>& columns,
+                                  bool first_row, std::string& out) {
+    // The same text convertToCSV writes: a header before the first row, then one line per row.
+    std::vector<std::string> keys = columns.empty() ? row.keys() : columns;
+    if (first_row) {
+        bool first = true;
+        for (const auto& column : keys) {
+            if (!first) out += ',';
+            out += escapeCSV(column);
+            first = false;
+        }
+        out += '\n';
+    }
+    bool first = true;
+    for (const auto& column : keys) {
+        if (!first) out += ',';
+        out += QueryResult::dumpJson(row[column]);
+        first = false;
+    }
+    out += '\n';
 }
 
 std::string RequestHandler::escapeCSV(const std::string& str) {

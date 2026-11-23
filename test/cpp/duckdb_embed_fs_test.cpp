@@ -152,9 +152,11 @@ TEST_CASE("EmbeddedFileSystem proof-of-life: read_csv('embed://...') returns row
     }
 
     REQUIRE(result->RowCount() == 3);
-    REQUIRE(result->GetValue(0, 0).ToString() == "Alice");
-    REQUIRE(result->GetValue(0, 1).ToString() == "Bob");
-    REQUIRE(result->GetValue(0, 2).ToString() == "Carol");
+    auto chunk = result->Fetch();
+    REQUIRE(chunk);
+    REQUIRE(chunk->GetValue(0, 0).ToString() == "Alice");
+    REQUIRE(chunk->GetValue(0, 1).ToString() == "Bob");
+    REQUIRE(chunk->GetValue(0, 2).ToString() == "Carol");
 }
 
 TEST_CASE("EmbeddedFileSystem proof-of-life: read_csv with embed:// glob",
@@ -173,6 +175,8 @@ TEST_CASE("EmbeddedFileSystem proof-of-life: read_csv with embed:// glob",
         FAIL("read_csv glob failed: " << result->GetError());
     }
     REQUIRE(result->RowCount() == 1);
+    auto chunk = result->Fetch();
+    REQUIRE(chunk);
     // 3 rows in people.csv + 3 rows in cities.csv = 6.
-    REQUIRE(result->GetValue(0, 0).GetValue<int64_t>() == 6);
+    REQUIRE(chunk->GetValue(0, 0).GetValue<int64_t>() == 6);
 }

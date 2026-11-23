@@ -92,7 +92,7 @@ void FlapiCorsMiddleware::after_handle(crow::request& req, crow::response& res, 
 // request, and handle() then produces Crow's own answer (204 + Allow, or 404).
 // Every other method goes to Crow's router unchanged.
 namespace {
-constexpr uint16_t kDeferredOptionsRule = 0xFFFF;
+constexpr std::size_t kDeferredOptionsRule = static_cast<std::size_t>(-1);
 }  // namespace
 
 template<>
@@ -102,7 +102,7 @@ std::unique_ptr<crow::routing_handle_result> flapi::FlapiApp::handle_initial(cro
         return router_.handle_initial(req, res);
     }
     return std::make_unique<crow::routing_handle_result>(
-        kDeferredOptionsRule, std::vector<uint16_t>(), crow::routing_params(), crow::HTTPMethod::Options);
+        kDeferredOptionsRule, std::vector<std::size_t>(), crow::routing_params(), crow::HTTPMethod::Options);
 }
 
 template<>

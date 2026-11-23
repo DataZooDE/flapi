@@ -50,7 +50,10 @@ private:
     bool validateRequestParameters(const std::vector<RequestFieldConfig>& requestFields, const std::map<std::string, std::string>& params);
     void parsePaginationParams(std::map<std::string, std::string>& params);
     std::string convertToCSV(const QueryResult& queryResult);
-    std::string escapeCSV(const std::string& str);
+    static std::string escapeCSV(const std::string& str);
+    // One row (plus the header before the first) as convertToCSV writes it.
+    static void appendCSVRow(const crow::json::wvalue& row, const std::vector<std::string>& columns,
+                             bool first_row, std::string& out);
     std::string createNextUrl(const crow::request& req, const QueryResult& queryResult);
 
     

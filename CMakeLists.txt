@@ -5,7 +5,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Windows-specific settings
 if(WIN32)
-    # Use static runtime libraries for Windows builds (/MT, matching DuckDB 1.5.5)
+    # Use static runtime libraries for Windows builds (/MT, matching DuckDB)
     add_definitions(-D_WIN32_WINNT=0x0601)  # Target Windows 7 or later
 
     # Set vcpkg triplet for Windows
@@ -17,7 +17,7 @@ if(WIN32)
         endif()
     endif()
 
-    # Force static CRT (/MT) to match DuckDB 1.5.5's unconditional
+    # Force static CRT (/MT) to match DuckDB's unconditional
     # set(CMAKE_MSVC_RUNTIME_LIBRARY ...) in duckdb/CMakeLists.txt:62.
     # vcpkg's toolchain only sets /MT for packages; flapi's own targets need
     # this explicit setting or MSVC defaults to /MD → LNK2038 at link time.
@@ -261,9 +261,7 @@ find_package(zstd CONFIG REQUIRED)
 find_package(lz4 CONFIG REQUIRED)
 
 # Add DuckDB
-set(DUCKDB_EXPLICIT_VERSION 1.5.5)
-set(ENABLE_EXTENSION_AUTOLOADING true)
-set(ENABLE_EXTENSION_AUTOINSTALL true)
+set(DUCKDB_EXPLICIT_VERSION 2.0.1)
 if (WIN32)
     set(DUCKDB_EXPLICIT_PLATFORM "windows_amd64")
 endif()
@@ -284,6 +282,10 @@ endif()
 # so restoring the value afterwards keeps flAPI's own targets at C++20.
 set(FLAPI_CXX_STANDARD ${CMAKE_CXX_STANDARD})
 set(CMAKE_CXX_STANDARD 17)
+# flAPI never builds DuckDB's own test runner. Since DuckDB 2.0 its test/api/cpp/CMakeLists.txt
+# resolves sources against the TOP-LEVEL source dir (tools/cpp/tests/...), so configuring it
+# from a parent project fails; turning it off is correct and faster.
+set(BUILD_UNITTESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory(duckdb EXCLUDE_FROM_ALL)
 set(CMAKE_CXX_STANDARD ${FLAPI_CXX_STANDARD})
 
@@ -291,6 +293,12 @@ set(CMAKE_CXX_STANDARD ${FLAPI_CXX_STANDARD})
 set(DUCKDB_SRC_INCLUDE "${CMAKE_SOURCE_DIR}/duckdb/src/include")
 set(DUCKDB_THIRD_PARTY "${CMAKE_SOURCE_DIR}/duckdb/third_party")
 add_subdirectory(third_party/posthog-telemetry)
+if(APPLE)
+    # DuckDB 2.0's httplib (0.53) reads root certificates from the macOS keychain by default, which
+    # needs -framework Security; posthog-telemetry links only IOKit/CoreFoundation. Keep the
+    # previous behaviour (OpenSSL's own store) instead of relying on Security being pulled in.
+    target_compile_definitions(posthog_telemetry PRIVATE CPPHTTPLIB_DISABLE_MACOSX_AUTOMATIC_ROOT_CERTIFICATES)
+endif()
 
 # Feedback banner (header-only). Telemetry ON so a printed banner counts as a
 # banner_shown event through the instance configured above; the include dir is
@@ -436,10 +444,44 @@ add_library(flapi-lib STATIC
 #target_link_libraries(flapi-lib PUBLIC web_ui_lib)
 #message(STATUS "Web UI dependencies configured")
 
+# DuckDB 2.0 links its static extensions and capabilities into the SHARED `duckdb` target only;
+# duckdb_static is a bare archive. Link them into flapi-lib ourselves, BEFORE duckdb_static
+# (the archives must precede libduckdb_static.a), and register them from the executables via
+# DUCKDB_STATIC_EXTENSION_AUTOREGISTER (an object compiled into the program, not an archive,
+# or the linker drops it). flapi-lib's own generated loader defines the register function.
+enable_language(C)  # the generated static extension loader is a C source
+set(DUCKDB_MODULE_BASE_DIR ${CMAKE_SOURCE_DIR}/duckdb)  # used by duckdb_write_static_extension_loader
+# Link the extension ARCHIVES by file, not by target: the targets export their include
+# directories (parquet re-exports DuckDB's namespaced zstd headers, which shadow the real
+# <zstd.h> flAPI's Arrow code needs), and neither $<LINK_ONLY:> nor BEFORE keeps those out.
+# DuckDB 2.0 links core_functions, parquet, json and icu statically by default, but into the shared
+# libduckdb only, not into duckdb_static, which is what flAPI links. 1.5.5 had ICU built into the core
+# and flAPI fetched core_functions/parquet/json at runtime; linking the set DuckDB itself treats as
+# essential makes a fresh host and the unit tests hermetic (no download for the basics) and keeps
+# timezone handling working without an extension directory.
+set(FLAPI_STATIC_EXTENSIONS core_functions parquet json icu)
+set(FLAPI_STATIC_CAPABILITIES httplib loadable_extensions local_extension_repository)
+set(FLAPI_STATIC_EXT_FILES "")
+set(FLAPI_STATIC_EXT_DEPS "")
+foreach(EXT IN LISTS FLAPI_STATIC_EXTENSIONS)
+    list(APPEND FLAPI_STATIC_EXT_FILES $<TARGET_FILE:${EXT}_extension>)
+    list(APPEND FLAPI_STATIC_EXT_DEPS ${EXT}_extension)
+endforeach()
+foreach(CAP IN LISTS FLAPI_STATIC_CAPABILITIES)
+    list(APPEND FLAPI_STATIC_EXT_FILES $<TARGET_FILE:duckdb_${CAP}>)
+    list(APPEND FLAPI_STATIC_EXT_DEPS duckdb_${CAP})
+endforeach()
+add_dependencies(flapi-lib ${FLAPI_STATIC_EXT_DEPS})
+target_link_libraries(flapi-lib PUBLIC ${FLAPI_STATIC_EXT_FILES})
+set(FLAPI_EXT_LOADER "${CMAKE_CURRENT_BINARY_DIR}/flapi_static_extension_loader.c")
+duckdb_write_static_extension_loader(${FLAPI_EXT_LOADER} ${FLAPI_STATIC_CAPABILITIES} ${FLAPI_STATIC_EXTENSIONS})
+target_sources(flapi-lib PRIVATE ${FLAPI_EXT_LOADER})
+set(DUCKDB_STATIC_EXTENSION_AUTOREGISTER
+    ${CMAKE_SOURCE_DIR}/duckdb/extension/loader/static_extension_autoregister.cpp)
+
 # Link libraries to flapi-lib
 target_link_libraries(flapi-lib PUBLIC
     duckdb_static
-    dummy_static_extension_loader
     Crow::Crow
     yaml-cpp::yaml-cpp
     jwt-cpp::jwt-cpp
@@ -490,7 +532,7 @@ if(APPLE)
 endif()
 
 # Create main executable
-add_executable(flapi src/main.cpp)
+add_executable(flapi src/main.cpp ${DUCKDB_STATIC_EXTENSION_AUTOREGISTER})
 target_link_libraries(flapi PRIVATE flapi-lib)
 target_compile_definitions(flapi PRIVATE FLAPI_VERSION="${FLAPI_VERSION_STR}")
 set_target_properties(flapi PROPERTIES ENABLE_EXPORTS TRUE)

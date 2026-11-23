@@ -50,6 +50,25 @@ const std::vector<std::string>& ImplicitExtensions() {
     return extensions;
 }
 
+std::set<std::string> StaticallyLinkedExtensions(duckdb_connection connection) {
+    std::set<std::string> names;
+    duckdb_result result;
+    if (duckdb_query(connection,
+                     "SELECT extension_name FROM duckdb_extensions() WHERE install_mode = 'STATICALLY_LINKED'",
+                     &result) == DuckDBSuccess) {
+        const idx_t rows = duckdb_row_count(&result);
+        for (idx_t row = 0; row < rows; ++row) {
+            char* name = duckdb_value_varchar(&result, 0, row);
+            if (name != nullptr) {
+                names.insert(name);
+                duckdb_free(name);
+            }
+        }
+    }
+    duckdb_destroy_result(&result);
+    return names;
+}
+
 std::optional<ExtensionSpec> ParseExtensionSpec(const std::string& arg) {
     const auto at = arg.find('@');
     ExtensionSpec spec;
@@ -148,8 +167,14 @@ int InstallExtensions(const std::vector<ExtensionSpec>& specs, const std::string
     duckdb_connect(db, &con);
 
     int failures = 0;
+    const auto built_in = StaticallyLinkedExtensions(con);
     for (const auto& spec : specs) {
         const std::string label = spec.repository.empty() ? spec.name : spec.name + "@" + spec.repository;
+        // A repository-qualified spec is someone asking for that build on purpose: installed.
+        if (spec.repository.empty() && built_in.count(spec.name) != 0) {
+            log << "✓ " << label << " (built into flapi, nothing to install)\n";
+            continue;
+        }
         duckdb_result result;
         if (duckdb_query(con, BuildInstallStatement(spec).c_str(), &result) == DuckDBError) {
             const char* error = duckdb_result_error(&result);

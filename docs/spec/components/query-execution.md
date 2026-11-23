@@ -397,13 +397,14 @@ With `tracing.db_profiling` set, DuckDB's own execution metrics are attached to
 the database span (`flapi.db.*`). Three things shape the implementation:
 
 - **The settings are connection-scoped.** `enable_profiling` and
-  `custom_profiling_settings` are `SetLocal` only — there is no global setter, so
-  they cannot be applied at `duckdb_open`. Since `QueryExecutor` opens a
-  connection per query, each query pays a `SET`. Measured at ~106 µs, which is
-  nearly all of the feature's cost. Pooling connections would make it close to
-  free.
+  `tracked_metrics` (DuckDB 2.0; it replaced `custom_profiling_settings` and takes metric names
+  such as `query.total_time`) are `SetLocal` only — there is no global setter, so
+  they cannot be applied at `duckdb_open`, so each profiled query pays a `SET`.
+  Measured at ~106 µs, which is nearly all of the feature's cost. Request threads
+  otherwise reuse their connection (and its prepared SELECTs); a profiled
+  connection is retired after the query instead, so profiling never leaks.
 - **Two statements in one round trip, and the order matters.**
-  `custom_profiling_settings` turns the profiler on but leaves
+  `tracked_metrics` turns the metrics on but leaves
   `emit_profiler_output` at its default of **true**, so DuckDB renders and prints
   a ~1 KB query tree to stderr for every profiled query — a synchronous write on
   the request thread, and operator detail landing in a log that never passes

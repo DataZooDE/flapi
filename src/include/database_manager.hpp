@@ -77,13 +77,27 @@ public:
     std::shared_ptr<void> holdSerialisedAccess(const EndpointConfig& endpoint);
     bool invalidateCache(const EndpointConfig& endpoint);
     
-    QueryResult executeQuery(const EndpointConfig& endpoint, std::map<std::string, std::string>& params, bool with_pagination = true);
+    // How a paginated result learns total_count. Exact: from the page when it is short, else a
+    // COUNT query. Skip: never a COUNT query; one row past the page is read to know `next`, and
+    // total_count stays -1 unless the page itself shows the end.
+    enum class TotalCount { Exact, Skip };
+
+    // `sink`: rows are handed to it one by one instead of being materialised in QueryResult::data.
+    QueryResult executeQuery(const EndpointConfig& endpoint, std::map<std::string, std::string>& params,
+                             bool with_pagination = true, TotalCount total = TotalCount::Exact,
+                             const ResultSink* sink = nullptr);
     QueryResult executeCacheQuery(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params);
-    QueryResult executeQuery(const std::string& query, const std::map<std::string, std::string>& params = {}, bool with_pagination = true);
+    QueryResult executeQuery(const std::string& query, const std::map<std::string, std::string>& params = {},
+                             bool with_pagination = true, TotalCount total = TotalCount::Exact,
+                             const ResultSink* sink = nullptr);
 
     // Execute query and return raw QueryExecutor for Arrow serialization
     // The executor owns the duckdb_result and must remain alive while accessing it
-    std::unique_ptr<QueryExecutor> executeQueryRaw(const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
+    // `explicit_limit` / `explicit_offset`: the client's own ?limit= / ?offset=, applied as a
+    // LIMIT/OFFSET around the query. Without them the full result is streamed, as before.
+    std::unique_ptr<QueryExecutor> executeQueryRaw(const EndpointConfig& endpoint, std::map<std::string, std::string>& params,
+                                                   std::optional<int64_t> explicit_limit = std::nullopt,
+                                                   std::optional<int64_t> explicit_offset = std::nullopt);
     QueryResult executeDuckLakeQuery(const std::string& query, const std::map<std::string, std::string>& params = {});
     /// Run a (possibly multi-statement) DuckLake script - a rendered cache
     /// populate template - in ONE transaction, statement by statement, and
@@ -160,7 +174,8 @@ public:
 
 private:
     // The single-attempt body; executeQuery wraps it in lock-contention retry.
-    QueryResult executeQueryOnce(const EndpointConfig& endpoint, std::map<std::string, std::string>& params, bool with_pagination);
+    QueryResult executeQueryOnce(const EndpointConfig& endpoint, std::map<std::string, std::string>& params,
+                                 bool with_pagination, TotalCount total, const ResultSink* sink);
 public:
     
     YAML::Node describeSelectQuery(const EndpointConfig& endpoint);
@@ -188,7 +203,8 @@ private:
                                          const std::vector<PreparedBindingSpec>& bindings,
                                          const std::map<std::string, std::string>& bind_values,
                                          const std::map<std::string, std::string>& for_template_params,
-                                         bool with_pagination);
+                                         bool with_pagination, TotalCount total = TotalCount::Exact,
+                                         const ResultSink* sink = nullptr);
 
     void logDuckDBVersion();
     

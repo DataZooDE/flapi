@@ -210,16 +210,40 @@ void CacheManager::initializeReadiness(std::shared_ptr<ConfigManager> config_man
     // ever move a `Starting` entry: it answered 503 cache_warming until the
     // warm-up thread got round to marking it (~2 s), then cache_not_built (#217).
     // Settle it here, synchronously, before the HTTP thread exists.
+    //
+    // The same holds for a writer whose warm-up does not rebuild an existing table
+    // (`warmup: if-empty` / `never`): the warm-up thread only checks that the table
+    // exists and marks it ready, but it first creates the audit tables and walks the
+    // caches one by one, so after a restart every cached endpoint answered 503
+    // cache_warming for ~150 ms (3 caches) past /health/live - longer with more caches -
+    // while the data it would serve was already there. One catalog listing settles them
+    // here; `always` still rebuilds, and an if-empty table that does not exist yet is
+    // still `starting` until the warm-up builds it.
     const bool replica = config_manager->getDuckLakeConfig().read_only;
-    std::map<CacheKey, bool> replica_exists;
-    if (replica) {
-        for (const auto& endpoint : *config_manager->getEndpoints()) {
-            if (!endpoint.cache.enabled || endpoint.cache.table.empty()) {
-                continue;
-            }
-            const CacheKey key = cacheKeyForEndpoint(config_manager, endpoint);
-            if (replica_exists.count(key) == 0) {
-                replica_exists[key] = cacheTableExists(key.catalog, key.schema, key.table);
+    std::map<std::string, std::set<std::pair<std::string, std::string>>> tables_by_catalog;
+    const auto exists = [&](const CacheKey& key) {
+        auto it = tables_by_catalog.find(key.catalog);
+        if (it == tables_by_catalog.end()) {
+            it = tables_by_catalog.emplace(key.catalog, listCatalogTables(key.catalog)).first;
+        }
+        return it->second.count({key.schema, key.table}) != 0;
+    };
+    std::map<CacheKey, ReadinessState> settled;
+    for (const auto& endpoint : *config_manager->getEndpoints()) {
+        if (!endpoint.cache.enabled || endpoint.cache.table.empty()) {
+            continue;
+        }
+        const CacheKey key = cacheKeyForEndpoint(config_manager, endpoint);
+        if (settled.count(key) != 0) {
+            continue;
+        }
+        if (replica) {
+            settled[key] = exists(key) ? ReadinessState::Ready : ReadinessState::Unbuilt;
+        } else if (config_manager->getEffectiveCacheWarmupMode(endpoint) != CacheWarmupMode::Always) {
+            if (exists(key)) {
+                settled[key] = ReadinessState::Ready;
+            } else if (config_manager->getEffectiveCacheWarmupMode(endpoint) == CacheWarmupMode::Never) {
+                settled[key] = ReadinessState::Unbuilt;
             }
         }
     }
@@ -230,10 +254,8 @@ void CacheManager::initializeReadiness(std::shared_ptr<ConfigManager> config_man
             continue;
         }
         const CacheKey key = cacheKeyForEndpoint(config_manager, endpoint);
-        ReadinessState state = ReadinessState::Starting;
-        if (replica) {
-            state = replica_exists[key] ? ReadinessState::Ready : ReadinessState::Unbuilt;
-        }
+        const auto it = settled.find(key);
+        const ReadinessState state = it == settled.end() ? ReadinessState::Starting : it->second;
         readiness_[key] = CacheReadiness{state, key.catalog, key.schema, key.table, ""};
     }
     readiness_initialised_.store(true);
@@ -329,6 +351,26 @@ void CacheManager::markCacheUnbuilt(std::shared_ptr<ConfigManager> config_manage
     const CacheKey key = cacheKeyForEndpoint(config_manager, endpoint);
     std::lock_guard<std::mutex> lock(readiness_mutex_);
     readiness_[key] = CacheReadiness{ReadinessState::Unbuilt, key.catalog, key.schema, key.table, ""};
+}
+
+std::set<std::pair<std::string, std::string>> CacheManager::listCatalogTables(const std::string& catalog) {
+    std::set<std::pair<std::string, std::string>> tables;
+    try {
+        auto result = db_adapter_->executeDuckLakeQueryWithResult(
+            "SELECT schema_name, table_name FROM duckdb_tables() WHERE database_name = '" +
+            escapeSqlLiteral(catalog) + "'");
+        auto rows = crow::json::load(result.data.dump());
+        if (rows && rows.t() == crow::json::type::List) {
+            for (const auto& row : rows) {
+                if (row.has("schema_name") && row.has("table_name")) {
+                    tables.emplace(std::string(row["schema_name"].s()), std::string(row["table_name"].s()));
+                }
+            }
+        }
+    } catch (const std::exception& ex) {
+        CROW_LOG_WARNING << "Could not list tables in catalog '" << catalog << "': " << ex.what();
+    }
+    return tables;
 }
 
 bool CacheManager::cacheTableExists(const std::string& catalog, const std::string& schema, const std::string& table) {
@@ -1267,7 +1309,7 @@ CacheManager::ExpiryCandidates CacheManager::expirableSnapshotIds(
         if (foreign_keys.empty()) {
             others << "true";   // no other live table exists to share with
         } else {
-            others << "len(list_filter(flatten(map_values(changes)), x -> ";
+            others << "len(list_filter(flatten(map_values(changes)), lambda x : ";
             for (std::size_t i = 0; i < foreign_keys.size(); ++i) {
                 if (i > 0) {
                     others << " OR ";
@@ -1751,7 +1793,7 @@ CacheManager::GarbageCollectionResult CacheManager::dropObsoleteCacheTable(
         if (live->empty()) {
             touches_live << "false";
         } else {
-            touches_live << "len(list_filter(flatten(map_values(changes)), x -> ";
+            touches_live << "len(list_filter(flatten(map_values(changes)), lambda x : ";
             for (std::size_t i = 0; i < live->size(); ++i) {
                 touches_live << (i > 0 ? " OR " : "") << "x = '" << escapeSqlLiteral((*live)[i]) << "'";
             }

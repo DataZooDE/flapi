@@ -1,6 +1,7 @@
 find_package(Catch2 3 REQUIRED)
 
 add_executable(flapi_tests
+    ${DUCKDB_STATIC_EXTENSION_AUTOREGISTER}
     main.cpp
     api_server_threads_test.cpp
     handler_pool_test.cpp

@@ -259,6 +259,9 @@ struct EndpointConfig {
     std::string templateSource;
     std::vector<std::string> connection;
     bool with_pagination = true;
+    // `total-count: false`: paginated responses carry no total_count (and no X-Total-Count), and
+    // flAPI runs no COUNT query for them; `next` is found by reading one row past the page.
+    bool total_count = true;
     // `allow-shadowing: true`: this endpoint may take precedence over a less
     // specific, overlapping route of the same method whose effective auth
     // differs in any way (scheme, roles, users, secrets, issuers), in either

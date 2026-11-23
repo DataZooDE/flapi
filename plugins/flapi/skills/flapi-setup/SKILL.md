@@ -314,7 +314,7 @@ flapii endpoints list
 3. Add one connection per source. Put `INSTALL`/`LOAD`/`CREATE SECRET`/`ATTACH` in `init`.
    Read credentials as `{{env.X}}` and add each `X` to `template.environment-whitelist`.
 4. Trim `duckdb.default-extensions` to what you use. Each default is installed (downloaded)
-   at startup when it is missing.
+   at startup when it is missing; `json` and `parquet` are built in.
 5. Write one endpoint YAML + SQL over the real data, with a validator on every parameter
    (`flapi-rest`).
 6. Run `flapi -c flapi.yaml --validate-config` until it reports no errors, and read every

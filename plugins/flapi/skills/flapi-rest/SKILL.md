@@ -168,6 +168,10 @@ curl 'http://localhost:8080/customers?format=csv'   # or Accept: text/csv; Arrow
 `limit`/`offset` must be plain non-negative integers (else 400). `next` is
 empty on the last page and for `limit=0` (count only). With
 `with-pagination: false` the body is a bare JSON array and no count query runs.
+The count query runs only when the page cannot tell the total (a full page, or an
+empty page past the end). `total-count: false` on an endpoint drops `total_count`
+and `X-Total-Count` and never counts; `next` still works (one row past the page
+is read).
 A query parameter given twice (`?x=1&x=2`) is a 400. Row keys (JSON and CSV)
 follow the `SELECT` column order; doubles print in shortest form; a naive
 `TIMESTAMP` has no `Z` (only `TIMESTAMPTZ` does).

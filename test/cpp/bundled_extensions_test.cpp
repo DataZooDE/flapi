@@ -35,8 +35,8 @@ std::string readFile(const fs::path& p) {
 ArchiveEntries sampleBundle() {
     ArchiveEntries entries;
     entries["flapi.yaml"] = bytesOf("project-name: x\n");
-    entries[std::string(kBundledExtensionsPrefix) + "v1.5.5/linux_amd64/httpfs.duckdb_extension"] = bytesOf("ELF-httpfs");
-    entries[std::string(kBundledExtensionsPrefix) + "v1.5.5/linux_amd64/core_functions.duckdb_extension"] = bytesOf("ELF-core");
+    entries[std::string(kBundledExtensionsPrefix) + "v0.0.0-test/linux_amd64/httpfs.duckdb_extension"] = bytesOf("ELF-httpfs");
+    entries[std::string(kBundledExtensionsPrefix) + "v0.0.0-test/linux_amd64/core_functions.duckdb_extension"] = bytesOf("ELF-core");
     return entries;
 }
 
@@ -92,21 +92,21 @@ TEST_CASE("MaterializeBundledExtensions writes only extension entries, once", "[
 
     auto dir = MaterializeBundledExtensions(entries, cache.path());
     REQUIRE(dir.has_value());
-    REQUIRE(readFile(*dir / "v1.5.5/linux_amd64/httpfs.duckdb_extension") == "ELF-httpfs");
-    REQUIRE(readFile(*dir / "v1.5.5/linux_amd64/core_functions.duckdb_extension") == "ELF-core");
+    REQUIRE(readFile(*dir / "v0.0.0-test/linux_amd64/httpfs.duckdb_extension") == "ELF-httpfs");
+    REQUIRE(readFile(*dir / "v0.0.0-test/linux_amd64/core_functions.duckdb_extension") == "ELF-core");
     REQUIRE_FALSE(fs::exists(*dir / "flapi.yaml"));
 
     // Same contents, same directory: a restart reuses it rather than rewriting.
-    const auto mtime = fs::last_write_time(*dir / "v1.5.5/linux_amd64/httpfs.duckdb_extension");
+    const auto mtime = fs::last_write_time(*dir / "v0.0.0-test/linux_amd64/httpfs.duckdb_extension");
     auto again = MaterializeBundledExtensions(entries, cache.path());
     REQUIRE(again == dir);
     // Compared outside REQUIRE: on libc++ file_time_type has an __int128 duration, which
     // Catch2 cannot stringify when it decomposes the expression (macOS build error).
-    const bool untouched = fs::last_write_time(*again / "v1.5.5/linux_amd64/httpfs.duckdb_extension") == mtime;
+    const bool untouched = fs::last_write_time(*again / "v0.0.0-test/linux_amd64/httpfs.duckdb_extension") == mtime;
     REQUIRE(untouched);
 
     // Different contents, different directory: a re-packed binary never sees stale files.
-    entries[std::string(kBundledExtensionsPrefix) + "v1.5.5/linux_amd64/httpfs.duckdb_extension"] = bytesOf("ELF-httpfs-v2");
+    entries[std::string(kBundledExtensionsPrefix) + "v0.0.0-test/linux_amd64/httpfs.duckdb_extension"] = bytesOf("ELF-httpfs-v2");
     auto changed = MaterializeBundledExtensions(entries, cache.path());
     REQUIRE(changed.has_value());
     REQUIRE(*changed != *dir);

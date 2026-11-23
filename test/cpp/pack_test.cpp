@@ -327,8 +327,8 @@ TEST_CASE("Pack embeds an extension directory under the reserved prefix", "[pack
     TempDir input;
     PopulateSampleTree(input);
     TempDir extensions;
-    extensions.WriteFile("v1.5.5/linux_amd64/httpfs.duckdb_extension", "ELF-httpfs");
-    extensions.WriteFile("v1.5.5/linux_amd64/core_functions.duckdb_extension", "ELF-core");
+    extensions.WriteFile("v0.0.0-test/linux_amd64/httpfs.duckdb_extension", "ELF-httpfs");
+    extensions.WriteFile("v0.0.0-test/linux_amd64/core_functions.duckdb_extension", "ELF-core");
 
     PackOptions opts;
     opts.host_binary_override = WriteFakeHost(host_dir);
@@ -348,7 +348,7 @@ TEST_CASE("Pack embeds an extension directory under the reserved prefix", "[pack
     auto entries = ReadArchive(zip);
 
     REQUIRE(entries.count("flapi.yaml") == 1);
-    const auto key = std::string(kBundledExtensionsPrefix) + "v1.5.5/linux_amd64/httpfs.duckdb_extension";
+    const auto key = std::string(kBundledExtensionsPrefix) + "v0.0.0-test/linux_amd64/httpfs.duckdb_extension";
     REQUIRE(entries.count(key) == 1);
     REQUIRE(std::string(entries[key].begin(), entries[key].end()) == "ELF-httpfs");
 }

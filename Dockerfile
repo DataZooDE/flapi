@@ -37,9 +37,14 @@ ENTRYPOINT ["/app/flapi"]
 # ---------------------------------------------------------------------------
 FROM slim AS runtime
 ENV FLAPI_EXTENSION_DIRECTORY=/opt/flapi/extensions
+# bigquery is a community extension, published per DuckDB version some time after a DuckDB
+# release: best effort, so the image still builds before it exists for this DuckDB version.
+# core_functions, parquet, json and icu are built into flapi and need no install.
 RUN /app/flapi extensions install --dir /opt/flapi/extensions \
-        core_functions httpfs ducklake fts json postgres sqlite parquet bigquery@community
-LABEL org.opencontainers.image.description="flAPI with every default DuckDB extension plus bigquery pre-installed."
+        httpfs ducklake fts postgres sqlite \
+    && (/app/flapi extensions install --dir /opt/flapi/extensions bigquery@community \
+        || echo "bigquery@community is not available for this DuckDB version; image built without it")
+LABEL org.opencontainers.image.description="flAPI with every default DuckDB extension (plus bigquery when published for its DuckDB version) pre-installed."
 
 # The default target stays the slim image.
 FROM slim

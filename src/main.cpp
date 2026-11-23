@@ -23,6 +23,7 @@
 #endif
 
 #include "api_server.hpp"
+#include "usable_cpus.hpp"
 #include "archive_io.hpp"
 #include "auth_middleware.hpp"
 #include "bundle_locator.hpp"
@@ -525,6 +526,22 @@ void signal_handler(int signal) {
 // Identity for the feedback banner and the issue link on error payloads.
 static constexpr datazoo::BannerInfo kBanner {"flapi", FLAPI_VERSION,
                                               "https://github.com/DataZooDE/flapi"};
+
+#if defined(__linux__)
+// DuckDB's jemalloc keeps one arena per host CPU, each holding freed pages for its decay time.
+// Under flAPI's many short concurrent queries memory freed by one thread is rarely reused by
+// another, so the retained pool grew with the request rate. Measured (#241): one arena on 8-11
+// CPUs, four on 24 CPUs - i.e. one per 6 usable CPUs - used 30-45% less memory than DuckDB's
+// default with equal or better throughput (fewer arenas starved 24 CPUs). jemalloc reads its
+// options when DuckDB's allocator initialises, before main, so this runs as an early static
+// constructor. An operator's own DUCKDB_JE_MALLOC_CONF wins (setenv does not overwrite).
+__attribute__((constructor(101))) static void FlapiJemallocDefaults() {
+    const unsigned arenas = flapi::UsableCpus() / 6 > 1 ? flapi::UsableCpus() / 6 : 1;
+    char conf[32];
+    std::snprintf(conf, sizeof(conf), "narenas:%u", arenas);
+    setenv("DUCKDB_JE_MALLOC_CONF", conf, /*overwrite=*/0);
+}
+#endif
 
 int main(int argc, char* argv[]) 
 {
@@ -1515,8 +1532,9 @@ int main(int argc, char* argv[])
     // join on purpose: warmup writes to the catalog being detached.
     DatabaseManager::getInstance()->shutdown();
 
-    // Drain buffered telemetry on clean exit; the signal path already flushed.
-    if (!should_exit) {
+    // Drain buffered telemetry on clean exit; the signal path already flushed, but requests that
+    // finished while draining were aggregated after it.
+    if (!should_exit || flapi::GlobalTelemetry().hasPendingAggregates()) {
         flapi::GlobalTelemetry().flush();
     }
 

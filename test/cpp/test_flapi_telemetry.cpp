@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 
 #include "flapi_telemetry.hpp"
 #include "telemetry.hpp"
@@ -150,6 +151,8 @@ TEST_CASE("rest_endpoint_served emits template/enum/number props only", "[flapi_
     auto tel = makeTelemetry(raw);
 
     tel.restEndpointServed("GET", "/customers/:id", 200, 12.5, true);
+    REQUIRE(raw->find("rest_endpoint_served") == nullptr);   // aggregated, not one event per request
+    tel.emitAggregates();
 
     const auto* ev = raw->find("rest_endpoint_served");
     REQUIRE(ev != nullptr);
@@ -167,7 +170,8 @@ TEST_CASE("rest_endpoint_served emits template/enum/number props only", "[flapi_
     for (const auto& kv : ev->props) {
         const std::string& k = kv.first;
         REQUIRE((k == "method" || k == "route_template" || k == "status_class" ||
-                 k == "duration_ms" || k == "cache_hit" || k == "install_kind"));
+                 k == "duration_ms" || k == "duration_ms_max" || k == "count" || k == "cache_hit" ||
+                 k == "install_kind"));
     }
 }
 
@@ -177,6 +181,7 @@ TEST_CASE("mcp_tool_called emits bounded tool name + status/duration", "[flapi_t
     auto tel = makeTelemetry(raw);
 
     tel.mcpToolCalled("get_customer", false, 3.0);
+    tel.emitAggregates();
     const auto* ev = raw->find("mcp_tool_called");
     REQUIRE(ev != nullptr);
     REQUIRE(hasStringProp(ev->props, "tool", "get_customer"));
@@ -190,6 +195,7 @@ TEST_CASE("auth_enforced emits kind + outcome only", "[flapi_telemetry]") {
     auto tel = makeTelemetry(raw);
 
     tel.authEnforced("oidc", false);
+    tel.emitAggregates();
     const auto* ev = raw->find("auth_enforced");
     REQUIRE(ev != nullptr);
     REQUIRE(hasStringProp(ev->props, "auth_kind", "oidc"));
@@ -250,13 +256,47 @@ TEST_CASE("sampling decimates the hot path and stamps sample_rate", "[flapi_tele
     for (int i = 0; i < 10; ++i) {
         tel.restEndpointServed("GET", "/x", 200, 1.0, false);
     }
-    REQUIRE(raw->calls.size() == 5);
+    tel.emitAggregates();
+    // 5 sampled requests, aggregated into one event that says how many it stands for.
+    REQUIRE(raw->calls.size() == 1);
+    REQUIRE(raw->calls.front().props.at("count").i == 5);
     // Surviving events are stamped with sample_rate so counts scale back up.
     REQUIRE(raw->calls.front().props.at("sample_rate").kind == duckdb::PropertyValue::Kind::Double);
 
     // Low-volume events are never sampled out.
     tel.authEnforced("basic", true);
+    tel.emitAggregates();
     REQUIRE(raw->find("auth_enforced") != nullptr);
+}
+
+TEST_CASE("per-request events aggregate per key with count, mean and max duration", "[flapi_telemetry]") {
+    EnvGuard guard("DATAZOO_DISABLE_TELEMETRY", "0");
+    FakeBackend* raw = nullptr;
+    auto tel = makeTelemetry(raw);
+    for (int i = 0; i < 1000; ++i) {
+        tel.restEndpointServed("GET", "/a", 200, i % 2 ? 1.0 : 3.0, false);
+    }
+    tel.restEndpointServed("GET", "/a", 500, 9.0, false);
+    tel.restEndpointServed("GET", "/b", 200, 2.0, true);
+    REQUIRE(raw->calls.empty());
+    tel.emitAggregates();
+    REQUIRE(raw->calls.size() == 3);   // (/a, 2xx), (/a, 5xx), (/b, 2xx, cache hit)
+    for (const auto& call : raw->calls) {
+        if (hasStringProp(call.props, "route_template", "/a") && hasStringProp(call.props, "status_class", "2xx")) {
+            REQUIRE(call.props.at("count").i == 1000);
+            REQUIRE(call.props.at("duration_ms").d == Catch::Approx(2.0));
+            REQUIRE(call.props.at("duration_ms_max").d == Catch::Approx(3.0));
+        }
+    }
+    // Emitted once: a second emit has nothing left.
+    tel.emitAggregates();
+    REQUIRE(raw->calls.size() == 3);
+
+    // The interval triggers an emit on the next event without an explicit call.
+    tel.setAggregationInterval(std::chrono::milliseconds(0));
+    tel.restEndpointServed("GET", "/c", 200, 1.0, false);
+    REQUIRE(raw->find("rest_endpoint_served") != nullptr);
+    REQUIRE(raw->calls.size() == 4);
 }
 
 // End-to-end no-leak check against the REAL library transport: drive the

@@ -74,7 +74,7 @@ SOURCE_DATE_EPOCH=1700000000 flapi pack --in ./my-api --out api   # bit-identica
 | Option | Meaning |
 |---|---|
 | `--in DIR` / `--out FILE` | required: the tree with `flapi.yaml` + `sqls/` (+ `data/`) and the output binary |
-| `--with-extensions` | install the config's extensions (`core_functions`, `duckdb.default-extensions`, `INSTALL`s in `connections.*.init`) for this platform and embed them under `.flapi/extensions/` |
+| `--with-extensions` | install the config's extensions (`duckdb.default-extensions`, `INSTALL`s in `connections.*.init`) for this platform and embed them under `.flapi/extensions/` |
 | `--extensions-dir DIR` | embed an already filled extension directory instead (another platform) |
 | `--allow-secrets` | bundle secret-looking files anyway (testing only) |
 | `--exclude GLOB` | repeatable: leave matching files out (`*` within a segment, `**` across; a name without `/` matches at any depth). The configured DuckLake `metadata-path` (+ `.wal`), its `data-path`, and any `*.ducklake` / `*.ducklake.wal` are always left out (`Excluded N file(s) (DuckLake catalog / --exclude)`) |
@@ -120,7 +120,8 @@ flapi extensions install --dir /opt/flapi/extensions httpfs parquet bigquery@com
 FLAPI_EXTENSION_DIRECTORY=/opt/flapi/extensions FLAPI_EXTENSIONS_OFFLINE=1 flapi -c flapi.yaml
 ```
 
-- `--config` installs `duckdb.default-extensions` + every `INSTALL` in `connections.*.init`.
+- `--config` installs `duckdb.default-extensions` + every `INSTALL` in `connections.*.init`,
+  except the extensions built into flapi (`core_functions`, `parquet`, `json`, `icu`).
   The default directory is `FLAPI_EXTENSION_DIRECTORY`, then DuckDB's own default.
 - `FLAPI_EXTENSIONS_OFFLINE=1|true|yes` skips `INSTALL`, disables autoinstall, and turns a
   missing default extension into a startup error that names it.
@@ -133,7 +134,7 @@ FLAPI_EXTENSION_DIRECTORY=/opt/flapi/extensions FLAPI_EXTENSIONS_OFFLINE=1 flapi
 |---|---|
 | `ghcr.io/datazoode/flapi:latest` | newest release, slim (binary only) |
 | `:v26.10.31` | that release, slim |
-| `:v26.10.31-runtime` | same binary with `core_functions httpfs ducklake fts json postgres sqlite parquet bigquery` pre-installed and `FLAPI_EXTENSION_DIRECTORY=/opt/flapi/extensions` set |
+| `:v26.10.31-runtime` | same binary with `httpfs ducklake fts postgres sqlite` (and `bigquery` once published for its DuckDB version) pre-installed; core_functions/parquet/json/icu are built in and `FLAPI_EXTENSION_DIRECTORY=/opt/flapi/extensions` set |
 | `:main`, `:main-runtime`, `:sha-<commit>` | builds of `main` (not releases) |
 
 There is no `:latest-runtime`. Pin a version.

@@ -53,7 +53,9 @@ bool RunStatement(duckdb_connection conn, const std::string& sql, const char* wh
 // The value DuckDB currently holds for a setting, or "" when it is unset (NULL).
 std::string CurrentSetting(duckdb_connection conn, const std::string& name) {
     duckdb_result result;
-    const std::string query = "SELECT value FROM duckdb_settings() WHERE name = '" + name + "'";
+    // current_setting(), not duckdb_settings(): DuckDB 2.0 no longer lists extension settings such as
+    // httpfs's s3_* there. An unknown setting is an error, which reads as "not set".
+    const std::string query = "SELECT current_setting('" + name + "')::VARCHAR";
     std::string value;
     if (duckdb_query(conn, query.c_str(), &result) == DuckDBSuccess && duckdb_row_count(&result) > 0 &&
         !duckdb_value_is_null(&result, 0, 0)) {

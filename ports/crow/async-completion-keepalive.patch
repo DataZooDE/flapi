@@ -24,9 +24,27 @@ as the references it sits with, so it introduces no cycle of its own.
 
 Not yet submitted upstream (https://github.com/CrowCpp/crow).
 
---- a/include/crow/http_response.h	2026-09-22 13:10:03.946998309 +0200
-+++ b/include/crow/http_response.h	2026-09-22 13:10:03.961646627 +0200
-@@ -261,6 +261,21 @@
+--- a/include/crow/http_connection.h	2026-11-22 19:31:15.176590607 +0100
++++ b/include/crow/http_connection.h	2026-11-22 19:31:15.191336999 +0100
+@@ -213,6 +213,7 @@
+ 
+                 if (!res.completed_)
+                 {
++                    res.connection_keepalive = self;
+                     res.complete_request_handler_ = [self] {
+                         self->complete_request();
+                     };
+@@ -295,6 +296,7 @@
+         {
+             res.complete_request_handler_ = nullptr;
+             res.is_alive_helper_ = nullptr;
++            res.connection_keepalive.reset();
+ 
+             if (!adaptor_.is_open())
+             {
+--- a/include/crow/http_response.h	2026-11-22 19:31:15.176635752 +0100
++++ b/include/crow/http_response.h	2026-11-22 19:31:15.191402883 +0100
+@@ -274,6 +274,21 @@
              end();
          }
  
@@ -48,22 +66,3 @@ Not yet submitted upstream (https://github.com/CrowCpp/crow).
          /// Check if the connection is still alive (usually by checking the socket status).
          bool is_alive()
          {
-
---- a/include/crow/http_connection.h	2026-09-22 13:10:03.948143308 +0200
-+++ b/include/crow/http_connection.h	2026-09-22 13:10:03.961773046 +0200
-@@ -195,6 +195,7 @@
-                 if (!res.completed_)
-                 {
-                     auto self = this->shared_from_this();
-+                    res.connection_keepalive = self;
-                     res.complete_request_handler_ = [self] {
-                         self->complete_request();
-                     };
-@@ -289,6 +290,7 @@
-         {
-             res.complete_request_handler_ = nullptr;
-             res.is_alive_helper_ = nullptr;
-+            res.connection_keepalive.reset();
- 
-             if (!adaptor_.is_open())
-             {

@@ -17,6 +17,7 @@ Each test starts its own server on a throwaway DuckLake catalog:
 * a read-only replica says the WRITER has not built a cache, not "warm-up
   skipped".
 """
+import datetime
 import os
 import subprocess
 import time
@@ -265,16 +266,17 @@ class TestTimeTravelParametersStayLiterals:
     """AT (VERSION|TIMESTAMP => ...) is resolved before parameters are bound (#217), so a
     validated value there is rendered as a literal, never turned into a `?`."""
 
-    FUTURE = "2100-01-01 00:00:00"
+    # A time just after the refresh: DuckLake 1.1 (DuckDB 2.0) refuses a future timestamp, which
+    # the 1.0 extension answered with the latest snapshot. "NOW" is filled in after the refresh.
+    NOW = "now"
 
     @pytest.mark.parametrize("clause,params", [
-        ("AT (TIMESTAMP => {{ params.day }})", {"day": "2100-01-01"}),
-        ("AT (TIMESTAMP => CAST('{{{ params.ts }}}' AS TIMESTAMP))", {"ts": FUTURE}),
-        ("AT (TIMESTAMP => '{{{ params.ts }}}')", {"ts": FUTURE}),
-        ("AT (TIMESTAMP => TIMESTAMP '{{{ params.ts }}}')", {"ts": FUTURE}),
+        ("AT (TIMESTAMP => CAST('{{{ params.ts }}}' AS TIMESTAMP))", {"ts": NOW}),
+        ("AT (TIMESTAMP => '{{{ params.ts }}}')", {"ts": NOW}),
+        ("AT (TIMESTAMP => TIMESTAMP '{{{ params.ts }}}')", {"ts": NOW}),
         ("AT (VERSION => {{{ params.version }}})", "snapshot"),
         ("AT (VERSION => {{ params.version }})", "snapshot"),
-    ], ids=["ts-bare-date", "ts-triple-cast", "ts-triple-quoted", "ts-typed-literal",
+    ], ids=["ts-triple-cast", "ts-triple-quoted", "ts-typed-literal",
             "version-triple", "version-double"])
     def test_a_time_travel_value_is_a_validated_literal(self, root, servers, clause, params):
         write_tree(root, base_config(), {
@@ -284,10 +286,29 @@ class TestTimeTravelParametersStayLiterals:
         write_source(root, [(1, "a", 1)])
         s = servers(root)
         answer = s.refresh("tt")
-        query = {"version": answer["snapshot_id"]} if params == "snapshot" else params
+        if params == "snapshot":
+            query = {"version": answer["snapshot_id"]}
+        else:
+            time.sleep(1.1)
+            now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            query = {k: (now if v == self.NOW else v) for k, v in params.items()}
         r = requests.get(f"{s.base}/tt", params=query, timeout=10)
         assert r.status_code == 200, r.text + s.output()[-1500:]
         assert len(r.json()["data"]) == 1, r.text
+
+    def test_a_bare_date_literal_in_the_future_is_a_400_not_a_500(self, root, servers):
+        # The bare `{{ params.day }}` form must still render as a literal; a future day is
+        # the caller's mistake (DuckLake 1.1 refuses it), not a server fault.
+        write_tree(root, base_config(), {
+            "tt.yaml": TIME_TRAVEL_TS, "full_cache.sql": POPULATE,
+            "tt.sql": "SELECT * FROM {{{cache.catalog}}}.{{{cache.schema}}}.{{{cache.table}}} "
+                      "AT (TIMESTAMP => {{ params.day }}) ORDER BY id"})
+        write_source(root, [(1, "a", 1)])
+        s = servers(root)
+        s.refresh("tt")
+        r = requests.get(f"{s.base}/tt", params={"day": "2100-01-01"}, timeout=10)
+        assert r.status_code == 400, r.text + s.output()[-1500:]
+        assert r.json()["error"] == "snapshot_in_future", r.text
 
 
 ATTACH_CONFIG_EXTRA = """\

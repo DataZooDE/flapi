@@ -2,7 +2,7 @@
 
 **Version:** 1.0.0
 **flAPI Version:** >= 1.0.0
-**DuckDB Version:** >= 1.5.5
+**DuckDB Version:** 2.0.1
 
 This document provides a complete reference for all configuration options in flAPI, the SQL-to-API framework that generates REST APIs and MCP tools from SQL templates.
 
@@ -156,6 +156,8 @@ should not bake in.
 | `FLAPI_LOG_LEVEL` | startup | Log verbosity (fallback for `--log-level`) | CLI > env > `log-level` config > `info` default; invalid values exit non-zero |
 | `FLAPI_CONFIG_SERVICE_TOKEN` | startup | Bearer token for the management API (fallback for `--config-service-token`) | CLI > env > auto-generate |
 | `FLAPI_NO_TELEMETRY` | startup | Disable PostHog telemetry (fallback for `--no-telemetry`) | CLI > env > config-file > enabled |
+| `FLAPI_NO_CONNECTION_REUSE` | startup | `1`: a fresh DuckDB connection per query instead of per-thread reuse with cached prepared statements | env > reuse on |
+| `DUCKDB_JE_MALLOC_CONF` | startup | DuckDB allocator options (Linux); flAPI sets `narenas:<usable CPUs / 6>` only when this is unset | env > flAPI default |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` | startup, query time | S3 credentials (DuckDB `httpfs`) | env only |
 | `GOOGLE_APPLICATION_CREDENTIALS` / `GOOGLE_CLOUD_PROJECT` | startup | Detected and logged only. flAPI does **not** configure GCS for DuckDB from them, and DuckDB `httpfs` does not read a service-account file: GCS access needs an HMAC key in a DuckDB secret (`CREATE SECRET (TYPE gcs, KEY_ID '…', SECRET '…')`, e.g. in a connection's `init`) | — |
 | `AZURE_STORAGE_CONNECTION_STRING` / `AZURE_STORAGE_ACCOUNT` / `AZURE_STORAGE_KEY` | startup, query time | Azure Blob credentials | env only |
@@ -375,7 +377,7 @@ Configures the embedded DuckDB database engine.
 | `duckdb.threads` | integer | auto | Number of threads for query parallelism |
 | `duckdb.max_memory` | string | auto | Memory limit (e.g., `4GB`, `512MB`) |
 | `duckdb.default_order` | string | - | Default sort order: `ASC` or `DESC`. With `ducklake.enabled` it is set per flAPI connection, not globally, because DuckLake's own catalog queries need the ascending default |
-| `duckdb.default-extensions` | list | `[httpfs, ducklake, fts, json, postgres, sqlite, parquet]` | Extensions installed and loaded at startup. `[]` loads none. A scalar is refused. |
+| `duckdb.default-extensions` | list | `[httpfs, ducklake, fts, json, postgres, sqlite, parquet]` | Extensions installed and loaded at startup. Extensions built into the binary (`core_functions`, `parquet`, `json`, `icu`) are skipped: nothing is downloaded for them. `[]` loads none. A scalar is refused. |
 | `duckdb.TimeZone` | string | `UTC` | The session time zone (IANA name). Defaults to `UTC` whatever the host `TZ` is; the key is matched case-insensitively (`timezone:` works). Applied with `SET GLOBAL` once the engine is open (the setting belongs to ICU, which is not loaded when the config is read) and logged at startup as `DuckDB TimeZone: UTC`. If that fails, each connection retries with its own `SET` and a warning says so |
 | `duckdb.<setting>` | any | - | Any DuckDB configuration setting |
 
@@ -398,8 +400,16 @@ duckdb:
 - `FLAPI_EXTENSIONS_OFFLINE=1` (also `true`/`yes`) never downloads: startup skips `INSTALL`, sets
   `autoinstall_known_extensions=false`, and **fails** if a default extension cannot be loaded, naming it and
   `flapi extensions install`. Without it a missing extension is only a warning.
-- flAPI's DuckDB loads no extension statically. `core_functions` is needed by every query, so online it is
-  autoinstalled on first use, and offline it must be pre-installed (`flapi extensions install` always includes it).
+- `core_functions`, `parquet`, `json` and `icu` are built into flAPI (DuckDB 2.0): they are never installed,
+  loaded from the extension directory or packed, and need no network.
+- Defaults flAPI sets unless the key is given here: `threads` = the CPUs the process may use (affinity mask and
+  container CPU quota, not every host CPU); `async_threads` = 0 when no connection, `template.path`, config or
+  DuckLake path names remote storage (`s3://`, `gs://`, `az://`, `http(s)://`, ...), else 2x `threads`. A template
+  that reads `s3://` only inside its SQL should set `async_threads` itself.
+- DuckDB's allocator (Linux) gets one arena per 6 usable CPUs (`DUCKDB_JE_MALLOC_CONF=narenas:N`); an
+  operator's own `DUCKDB_JE_MALLOC_CONF` wins.
+- Each request thread keeps its DuckDB connection and up to 64 prepared SELECTs between requests (a non-SELECT
+  statement retires the connection). `FLAPI_NO_CONNECTION_REUSE=1` opens a fresh connection per query instead.
 - Pre-install everything a config needs with `flapi extensions install --config flapi.yaml --dir <path>`
   ([CLI_REFERENCE § 3](./CLI_REFERENCE.md)).
 
@@ -1060,6 +1070,7 @@ REST endpoints expose SQL queries as HTTP APIs.
 | `template-source` | string | **required** | Path to SQL template file |
 | `connection` | array[string] | **required** | Connection name(s) from flapi.yaml |
 | `with-pagination` | boolean | `true` | Wrap the query in `?limit=` (default `100`) / `?offset=` paging; the body is `{"next", "total_count", "data"}` plus `X-Total-Count`/`X-Limit`/`X-Offset`/`X-Next` headers. `limit`/`offset` are reserved; do not use them in the template. `limit=0` returns no rows and an empty `next` (the count only). `false` returns a bare JSON array |
+| `total-count` | boolean | `true` | `false`: paginated responses carry no `total_count` and no `X-Total-Count`, and flAPI never runs the `COUNT` query for them; `next` is found by reading one row past the page. For endpoints whose clients only page forward. With `true`, the `COUNT` runs only for a full page or an empty page past the end: a shorter page gives the total itself |
 | `request-fields-validation` | boolean | `false` | Reject (400) a query parameter that is not a declared `field-name`. `limit`, `offset` and `format` are always allowed |
 
 A query parameter given more than once (`?x=1&x=2`) is rejected with 400

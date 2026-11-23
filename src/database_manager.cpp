@@ -27,6 +27,7 @@
 #include <chrono>
 #include <thread>
 #include "duckdb_raii.hpp"
+#include "usable_cpus.hpp"
 
 namespace flapi {
 
@@ -115,6 +116,7 @@ void DatabaseManager::closeDatabaseLocked(bool graceful) {
         }
     }
 
+    QueryExecutor::InvalidatePooledConnections();
     duckdb_close(&db);
     db = nullptr;
     initialized = false;
@@ -449,6 +451,63 @@ bool DatabaseManager::invalidateCache(const EndpointConfig& endpoint) {
     return true;
 }
 
+namespace {
+template <class Map>
+bool duckdb_settings_has(const Map& settings, const std::string& name) {
+    for (const auto& [key, value] : settings) {
+        std::string lowered = key;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (lowered == name) {
+            return true;
+        }
+    }
+    return false;
+}
+}  // namespace
+
+namespace {
+bool NamesRemoteStorage(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    for (const char* scheme : {"s3://", "s3a://", "s3n://", "gs://", "gcs://", "az://", "azure://", "abfs://",
+                               "abfss://", "http://", "https://", "r2://", "hf://"}) {
+        if (text.find(scheme) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+int64_t DefaultAsyncThreads(const ConfigManager& config) {
+    bool remote = NamesRemoteStorage(config.getTemplatePath()) || NamesRemoteStorage(config.getBasePath()) ||
+                  NamesRemoteStorage(config.getDuckLakeConfig().metadata_path) ||
+                  NamesRemoteStorage(config.getDuckLakeConfig().data_path);
+    for (const auto& [name, connection] : config.getConnections()) {
+        remote = remote || NamesRemoteStorage(connection.getInit());
+        for (const auto& [key, value] : connection.properties) {
+            remote = remote || NamesRemoteStorage(value);
+        }
+    }
+    if (!remote) {
+        return 0;
+    }
+    int64_t threads = static_cast<int64_t>(UsableCpus());
+    for (const auto& [key, value] : config.getDuckDBConfig().settings) {
+        std::string lowered = key;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (lowered == "threads" || lowered == "worker_threads") {
+            try {
+                threads = std::stoll(value);
+            } catch (const std::exception&) {
+            }
+        }
+    }
+    return std::max<int64_t>(2, 2 * threads);
+}
+}  // namespace
+
 void DatabaseManager::createAndInitializeDuckDBConfig(std::shared_ptr<ConfigManager> config_manager, duckdb_config& config) {
     duckdb_create_config(&config);
 
@@ -469,6 +528,31 @@ void DatabaseManager::createAndInitializeDuckDBConfig(std::shared_ptr<ConfigMana
     if (duckdb_set_config(config, "autoload_known_extensions", "1") == DuckDBError) {
         duckdb_destroy_config(&config);
         throw std::runtime_error("Failed to set DuckDB configuration: autoload_known_extensions");
+    }
+
+    // DuckDB 2.0's async I/O pool (4 threads per core, independent of `threads`) is the main cost
+    // of 2.0 under flAPI's many short concurrent queries on LOCAL data (-25% throughput, ~3x
+    // memory) but makes uncached remote reads 2-3x faster than 1.5. So: no pool when nothing is
+    // remote, 2x the worker threads when a connection, template.path, the config or the DuckLake
+    // paths name object storage or http(s). `duckdb: async_threads: N` always wins.
+    if (!duckdb_settings_has(config_manager->getDuckDBConfig().settings, "async_threads")) {
+        const std::string async = std::to_string(DefaultAsyncThreads(*config_manager));
+        if (duckdb_set_config(config, "async_threads", async.c_str()) == DuckDBError) {
+            CROW_LOG_WARNING << "Could not set DuckDB async_threads=" << async << "; DuckDB's default applies";
+        } else {
+            CROW_LOG_INFO << "DuckDB async_threads=" << async
+                          << (async == "0" ? " (no remote storage configured)" : " (remote storage configured)");
+        }
+    }
+
+    // DuckDB sizes its worker pool from every host CPU; in a container with a CPU limit, or
+    // pinned by taskset/cpusets, that is threads waking for CPUs it cannot get.
+    if (!duckdb_settings_has(config_manager->getDuckDBConfig().settings, "threads") &&
+        !duckdb_settings_has(config_manager->getDuckDBConfig().settings, "worker_threads")) {
+        const unsigned usable = UsableCpus();
+        if (usable < std::thread::hardware_concurrency()) {
+            duckdb_set_config(config, "threads", std::to_string(usable).c_str());
+        }
     }
 
     // Apply settings from the configuration
@@ -518,6 +602,28 @@ void DatabaseManager::loadDefaultExtensions(std::shared_ptr<ConfigManager> confi
                 extensions.insert(extensions.begin(), implicit);
             }
         }
+    }
+
+    // Linked into the binary (core_functions, parquet, json, icu): already loaded when the
+    // database opened, so LOAD is a no-op - but INSTALL still downloaded the loadable copy
+    // (84 MB for json and parquet, ~1.6 s on a first start) that nothing ever opens.
+    {
+        std::set<std::string> built_in;
+        duckdb_connection conn = nullptr;
+        if (duckdb_connect(db, &conn) == DuckDBSuccess) {
+            built_in = StaticallyLinkedExtensions(conn);
+            duckdb_disconnect(&conn);
+        }
+        extensions.erase(std::remove_if(extensions.begin(), extensions.end(),
+                                        [&](const std::string& extension) {
+                                            if (built_in.count(extension) == 0) {
+                                                return false;
+                                            }
+                                            CROW_LOG_DEBUG << "Extension '" << extension
+                                                           << "' is built into flapi; not installing or loading it";
+                                            return true;
+                                        }),
+                         extensions.end());
     }
 
     // Install the extensions (try individually to handle failures gracefully).
@@ -728,7 +834,8 @@ DatabaseManager::AccessLocks DatabaseManager::lockSerialisedReadAccess(const End
     return lockSerialisedAccess(endpoint);
 }
 
-QueryResult DatabaseManager::executeQuery(const EndpointConfig& endpoint, std::map<std::string, std::string>& params, bool with_pagination)
+QueryResult DatabaseManager::executeQuery(const EndpointConfig& endpoint, std::map<std::string, std::string>& params,
+                                          bool with_pagination, TotalCount total, const ResultSink* sink)
 {
     // #116: a read concurrent with a write wedges a SQLite attachment for good,
     // so on those connections a read waits its turn like a write does.
@@ -738,11 +845,12 @@ QueryResult DatabaseManager::executeQuery(const EndpointConfig& endpoint, std::m
     // blocks them, and failing a GET because some unrelated POST held a lock is
     // the least defensible outcome of the lot.
     return retryOnLockContention([&]() -> QueryResult {
-        return executeQueryOnce(endpoint, params, with_pagination);
+        return executeQueryOnce(endpoint, params, with_pagination, total, sink);
     }, "query");
 }
 
-QueryResult DatabaseManager::executeQueryOnce(const EndpointConfig& endpoint, std::map<std::string, std::string>& params, bool with_pagination)
+QueryResult DatabaseManager::executeQueryOnce(const EndpointConfig& endpoint, std::map<std::string, std::string>& params,
+                                              bool with_pagination, TotalCount total, const ResultSink* sink)
 {
     cache_manager->addQueryCacheParamsIfNecessary(config_manager, endpoint, params);
 
@@ -758,10 +866,12 @@ QueryResult DatabaseManager::executeQueryOnce(const EndpointConfig& endpoint, st
     std::map<std::string, std::string> bind_values = params;
     auto prepared = sql_processor->loadAndProcessTemplatePrepared(endpoint, params);
 
+    // Endpoint reads reuse this thread's connection and its prepared statements.
+    QueryExecutor::ReuseConnectionScope reuse;
     if (prepared.bindings.empty()) {
-        return executeQuery(prepared.sql, params, with_pagination);
+        return executeQuery(prepared.sql, params, with_pagination, total, sink);
     }
-    return executeQueryWithBindings(prepared.sql, prepared.bindings, bind_values, params, with_pagination);
+    return executeQueryWithBindings(prepared.sql, prepared.bindings, bind_values, params, with_pagination, total, sink);
 }
 
 QueryResult DatabaseManager::executeCacheQuery(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params) 
@@ -813,7 +923,7 @@ std::optional<std::size_t> DatabaseManager::FindSelectStatement(const std::strin
     // correctly. A script the standalone parser cannot read (an extension's
     // syntax) is not judged here; executing it reports whatever is wrong.
     try {
-        duckdb::Parser parser;
+        auto parser = duckdb::Parser::GetBuiltinParser();
         parser.ParseQuery(script);
         if (statement_count) {
             *statement_count = parser.statements.size();
@@ -912,7 +1022,7 @@ enum class StatementKind { Unknown, Select, Transaction, PlainCreate, CreateAs, 
 // read it (an extension's syntax): then only the connection judges it.
 StatementKind ClassifyStatement(const std::string& sql) {
     try {
-        duckdb::Parser parser;
+        auto parser = duckdb::Parser::GetBuiltinParser();
         parser.ParseQuery(sql);
         if (parser.statements.size() != 1 || !parser.statements[0]) {
             return StatementKind::Unknown;
@@ -956,7 +1066,7 @@ std::string LowerAscii(std::string value) {
 
 std::optional<AttachDetach> ParseAttachDetach(const std::string& sql) {
     try {
-        duckdb::Parser parser;
+        auto parser = duckdb::Parser::GetBuiltinParser();
         parser.ParseQuery(sql);
         if (parser.statements.size() != 1 || !parser.statements[0]) {
             return std::nullopt;
@@ -967,7 +1077,7 @@ std::optional<AttachDetach> ParseAttachDetach(const std::string& sql) {
             if (!info) {
                 return std::nullopt;
             }
-            return AttachDetach{false, LowerAscii(info->name), false};
+            return AttachDetach{false, LowerAscii(info->name.GetIdentifierName()), false};
         }
         if (statement.type != duckdb::StatementType::ATTACH_STATEMENT) {
             return std::nullopt;
@@ -978,7 +1088,7 @@ std::optional<AttachDetach> ParseAttachDetach(const std::string& sql) {
         }
         AttachDetach out;
         out.attach = true;
-        out.alias = info->name;
+        out.alias = info->name.GetIdentifierName();
         if (out.alias.empty()) {
             // ATTACH 'dir/file.duckdb' with no AS: DuckDB names it after the file.
             out.alias = std::filesystem::path(info->path).stem().string();
@@ -991,15 +1101,27 @@ std::optional<AttachDetach> ParseAttachDetach(const std::string& sql) {
             const auto text = LowerAscii(expr->ToString());
             return text != "false" && text != "0" && text != "'false'";
         };
-        for (const auto& [key, expr] : info->parsed_options) {
+        const auto apply = [&](const std::string& key, bool value, const std::string& text) {
             const auto name = LowerAscii(key);
             if (name == "read_only" || name == "readonly") {
-                out.read_only = flag(expr);
+                out.read_only = value;
             } else if (name == "read_write" || name == "readwrite") {
-                out.read_only = !flag(expr);
-            } else if (name == "access_mode" && expr) {
-                out.read_only = LowerAscii(expr->ToString()).find("read_only") != std::string::npos;
+                out.read_only = !value;
+            } else if (name == "access_mode") {
+                out.read_only = LowerAscii(text).find("read_only") != std::string::npos;
             }
+        };
+        for (const auto& [key, expr] : info->parsed_options) {
+            apply(key, flag(expr), expr ? expr->ToString() : "");
+        }
+        // DuckDB 2.0's parser puts constant options - a bare `(READ_ONLY)` among them - into the
+        // bound `options` map instead of parsed_options.
+        const auto value_flag = [](const duckdb::Value& v) {
+            const auto text = LowerAscii(v.ToString());
+            return text != "false" && text != "0";
+        };
+        for (const auto& [key, value] : info->options) {
+            apply(key, value_flag(value), value.ToString());
         }
         return out;
     } catch (const std::exception&) {
@@ -1244,13 +1366,24 @@ DatabaseManager::ScriptValidation DatabaseManager::validateScript(const std::str
             // Not every CTAS form accepts the suffix; one that does not just
             // leaves its table unchecked.
             const std::string no_data = sql + "\nWITH NO DATA";
-            if (duckdb_query(conn, no_data.c_str(), nullptr) != DuckDBError) {
+            duckdb_result no_data_result;
+            if (duckdb_query(conn, no_data.c_str(), &no_data_result) != DuckDBError) {
                 replay.push_back(no_data);
                 created = true;
             } else {
+                // DuckDB 2.0 prepares a CTAS without binding its query, so this is where a
+                // missing column or table shows up: report it. A parser error only means
+                // this CTAS form does not take the suffix.
+                const char* raw = duckdb_result_error(&no_data_result);
+                const std::string message = raw ? raw : "";
+                if (message.find("Binder Error") != std::string::npos ||
+                    message.find("Catalog Error") != std::string::npos) {
+                    failure = message;
+                }
                 rollback();
                 in_transaction = begin();
             }
+            duckdb_destroy_result(&no_data_result);
         }
 
         if (failure) {
@@ -1317,7 +1450,7 @@ DatabaseManager::ScriptValidation DatabaseManager::validateScript(const std::str
 
 std::optional<std::string> DatabaseManager::MaterialiseSelect(const std::string& script, const PopulateTarget& target) {
     try {
-        duckdb::Parser parser;
+        auto parser = duckdb::Parser::GetBuiltinParser();
         parser.ParseQuery(script);
         if (parser.statements.size() != 1 || !parser.statements[0] ||
             parser.statements[0]->type != duckdb::StatementType::SELECT_STATEMENT) {
@@ -1495,7 +1628,9 @@ std::string DatabaseManager::renderCacheTemplate(const EndpointConfig& endpoint,
     return processCacheTemplate(endpoint, cacheConfig, params);
 }
 
-std::unique_ptr<QueryExecutor> DatabaseManager::executeQueryRaw(const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
+std::unique_ptr<QueryExecutor> DatabaseManager::executeQueryRaw(const EndpointConfig& endpoint, std::map<std::string, std::string>& params,
+                                                                std::optional<int64_t> explicit_limit,
+                                                                std::optional<int64_t> explicit_offset) {
     const auto access = lockSerialisedReadAccess(endpoint);
     cache_manager->addQueryCacheParamsIfNecessary(config_manager, endpoint, params);
 
@@ -1504,6 +1639,16 @@ std::unique_ptr<QueryExecutor> DatabaseManager::executeQueryRaw(const EndpointCo
     // execute when the binding plan is empty (no behaviour change).
     std::map<std::string, std::string> bind_values = params;
     auto prepared = sql_processor->loadAndProcessTemplatePrepared(endpoint, params);
+    if (endpoint.with_pagination && (explicit_limit || explicit_offset)) {
+        std::string paged = "SELECT * FROM (" + prepared.sql + ") AS subquery";
+        if (explicit_limit) {
+            paged += " LIMIT " + std::to_string(*explicit_limit);
+        }
+        if (explicit_offset) {
+            paged += " OFFSET " + std::to_string(*explicit_offset);
+        }
+        prepared.sql = paged;
+    }
 
     auto executor = std::make_unique<QueryExecutor>(db, session_default_order_);
     if (prepared.bindings.empty()) {
@@ -1514,121 +1659,138 @@ std::unique_ptr<QueryExecutor> DatabaseManager::executeQueryRaw(const EndpointCo
     return executor;
 }
 
+namespace {
+// Pagination parameters as the request handler set them (limit/offset are reserved for it).
+struct PageWindow {
+    bool paged = false;
+    int64_t limit = 0;
+    int64_t offset = 0;
+};
+
+PageWindow ReadPageWindow(bool with_pagination, const std::map<std::string, std::string>& params) {
+    PageWindow window;
+    if (!with_pagination) {
+        return window;
+    }
+    const auto limit = params.find("limit");
+    const auto offset = params.find("offset");
+    if (limit == params.end() && offset == params.end()) {
+        return window;
+    }
+    window.paged = true;
+    if (limit != params.end()) {
+        window.limit = std::stoll(limit->second);
+    }
+    if (offset != params.end()) {
+        window.offset = std::stoll(offset->second);
+    }
+    return window;
+}
+
+std::string NextLink(const PageWindow& window, const std::map<std::string, std::string>& params) {
+    std::stringstream next_ss;
+    next_ss << "?offset=" << (window.offset + window.limit);
+    for (const auto& [key, value] : params) {
+        if (key != "offset") {
+            next_ss << "&" << key << "=" << value;
+        }
+    }
+    return next_ss.str();
+}
+}  // namespace
+
+// Runs one paginated (or plain) read and fills data, total_count and next.
+//
+// The COUNT(*) query costs a second full execution, and on DuckDB 2.0 a second parse and
+// plan; it is only run when the page cannot tell the total itself:
+//   * no limit/offset applied: the result IS everything, total = rows;
+//   * a short page (fewer rows than the limit) that is not empty past the end: total = offset + rows;
+//   * TotalCount::Skip (MCP, `total-count: false`): never; one row past the page tells `next`.
+template <class Run>
+static QueryResult RunPaginated(QueryExecutor& executor, const std::string& sql,
+                                const std::map<std::string, std::string>& params, bool with_pagination,
+                                DatabaseManager::TotalCount total, const ResultSink* sink, Run&& run) {
+    const PageWindow window = ReadPageWindow(with_pagination, params);
+    const bool skip = total == DatabaseManager::TotalCount::Skip;
+    std::string page_sql = sql;
+    if (window.paged) {
+        const int64_t fetch = skip ? window.limit + 1 : window.limit;
+        page_sql = "SELECT * FROM (" + sql + ") AS subquery LIMIT " + std::to_string(fetch) +
+                   " OFFSET " + std::to_string(window.offset);
+    }
+
+    run(page_sql, "main query");
+    const auto rows = static_cast<int64_t>(executor.rowCount());
+
+    QueryResult result;
+    result.columns = executor.columnNames();
+    const auto take = [&](idx_t max_rows) {
+        if (sink && sink->reset) {
+            sink->reset();
+        }
+        if (sink) {
+            result.streamed = true;
+            result.streamed_rows = QueryResult::streamResult(executor.result, max_rows, *sink);
+        } else {
+            result.data = executor.toJson(max_rows);
+        }
+    };
+    if (!with_pagination) {
+        take(static_cast<idx_t>(-1));
+        return result;
+    }
+    if (!window.paged) {
+        take(static_cast<idx_t>(-1));
+        result.total_count = rows;
+        return result;
+    }
+
+    const int64_t shown = std::min(rows, window.limit);
+    take(static_cast<idx_t>(std::max<int64_t>(shown, 0)));
+    const bool short_page = rows < window.limit && (rows > 0 || window.offset == 0);
+    if (skip) {
+        if (rows > window.limit) {
+            result.next = NextLink(window, params);
+        } else if (short_page) {
+            result.total_count = window.offset + rows;
+        }
+        return result;
+    }
+    if (short_page) {
+        result.total_count = window.offset + rows;
+    } else {
+        // Same connection: the page result is already converted.
+        run("SELECT COUNT(*) FROM (" + sql + ") AS subquery", "count query");
+        if (executor.rowCount() > 0) {
+            result.total_count = duckdb_value_int64(&executor.result, 0, 0);
+        }
+    }
+    if (window.offset + window.limit < result.total_count) {
+        result.next = NextLink(window, params);
+    }
+    return result;
+}
+
 QueryResult DatabaseManager::executeQueryWithBindings(
     const std::string& sql,
     const std::vector<PreparedBindingSpec>& bindings,
     const std::map<std::string, std::string>& bind_values,
     const std::map<std::string, std::string>& for_template_params,
-    bool with_pagination)
+    bool with_pagination, TotalCount total, const ResultSink* sink)
 {
     auto executor = createQueryExecutor();
-    std::string paginatedQuery = sql;
-    std::string countQuery = "SELECT COUNT(*) FROM (" + sql + ") AS subquery";
-
-    int64_t limit = 0;
-    int64_t offset = 0;
-    bool hasPagination = false;
-
-    if (with_pagination &&
-        (for_template_params.find("limit") != for_template_params.end() ||
-         for_template_params.find("offset") != for_template_params.end())) {
-        hasPagination = true;
-        if (for_template_params.find("limit") != for_template_params.end()) {
-            limit = std::stoll(for_template_params.find("limit")->second);
-        }
-        if (for_template_params.find("offset") != for_template_params.end()) {
-            offset = std::stoll(for_template_params.find("offset")->second);
-        }
-        paginatedQuery = "SELECT * FROM (" + paginatedQuery + ") AS subquery "
-                         "LIMIT " + std::to_string(limit) +
-                         " OFFSET " + std::to_string(offset);
-    }
-
-    // Run the main (possibly wrapped) query against the prepared path.
-    executor.executeWithBindings(paginatedQuery, bindings, bind_values, "main query");
-
-    QueryResult result;
-    result.data = executor.toJson();
-    result.columns = executor.columnNames();
-
-    if (with_pagination) {
-        auto countExecutor = createQueryExecutor();
-        countExecutor.executeWithBindings(countQuery, bindings, bind_values, "count query");
-        if (countExecutor.rowCount() > 0) {
-            result.total_count = duckdb_value_int64(&countExecutor.result, 0, 0);
-        }
-
-        if (hasPagination && offset + limit < result.total_count) {
-            std::stringstream next_ss;
-            next_ss << "?offset=" << (offset + limit);
-            for (const auto& [key, value] : for_template_params) {
-                if (key != "offset") {
-                    next_ss << "&" << key << "=" << value;
-                }
-            }
-            result.next = next_ss.str();
-        }
-    }
-
-    return result;
+    return RunPaginated(executor, sql, for_template_params, with_pagination, total, sink,
+                        [&](const std::string& query, const char* what) {
+                            executor.executeWithBindings(query, bindings, bind_values, what);
+                        });
 }
 
 QueryResult DatabaseManager::executeQuery(const std::string& query,
                                           const std::map<std::string, std::string>& params,
-                                          bool with_pagination) {
+                                          bool with_pagination, TotalCount total, const ResultSink* sink) {
     auto executor = createQueryExecutor();
-    std::string paginatedQuery = query;
-    std::string countQuery = "SELECT COUNT(*) FROM (" + query + ") AS subquery";
-    
-    auto limit = 0;
-    auto offset = 0;
-    auto hasPagination = false;
-    
-    // Handle pagination parameters
-    if (with_pagination && (params.find("limit") != params.end() || params.find("offset") != params.end())) {
-        hasPagination = true;
-        if (params.find("limit") != params.end()) {
-            limit = std::stoll(params.find("limit")->second);
-        }
-        if (params.find("offset") != params.end()) {
-            offset = std::stoll(params.find("offset")->second);
-        }
-        paginatedQuery = "SELECT * FROM (" + paginatedQuery + ") AS subquery " 
-                        "LIMIT " + std::to_string(limit) + 
-                        " OFFSET " + std::to_string(offset);
-    }
-    
-    // Execute main query
-    executor.execute(paginatedQuery);
-    
-    // Convert result to JSON using QueryResult
-    QueryResult result;
-    result.data = executor.toJson();
-    result.columns = executor.columnNames();
-    
-    // Handle pagination metadata
-    if (with_pagination) {
-        // Get total count
-        auto countExecutor = createQueryExecutor();
-        countExecutor.execute(countQuery);
-        if (countExecutor.rowCount() > 0) {
-            result.total_count = duckdb_value_int64(&countExecutor.result, 0, 0);
-        }
-        
-        // Generate next link if needed
-        if (hasPagination && offset + limit < result.total_count) {
-            std::stringstream next_ss;
-            next_ss << "?offset=" << (offset + limit);
-            for (const auto& [key, value] : params) {
-                if (key != "offset") {
-                    next_ss << "&" << key << "=" << value;
-                }
-            }
-            result.next = next_ss.str();
-        }
-    }
-    
-    return result;
+    return RunPaginated(executor, query, params, with_pagination, total, sink,
+                        [&](const std::string& sql, const char*) { executor.execute(sql); });
 }
 
 WriteResult DatabaseManager::executeWrite(const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {

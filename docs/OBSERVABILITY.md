@@ -157,7 +157,6 @@ tracing:
 |---|---|---|
 | `flapi.db.latency_ms` | summary | Query execution time as DuckDB measures it |
 | `flapi.db.blocked_thread_time_ms` | summary | Time blocked rather than working — contention |
-| `flapi.db.result_set_bytes` | summary | Materialised result size |
 | `flapi.db.bytes_read` | summary | Bytes read from storage |
 | `flapi.db.cpu_time_ms` | detailed | CPU across all threads |
 | `flapi.db.rows_scanned` | detailed | Rows scanned, cumulative |
@@ -165,6 +164,9 @@ tracing:
 DuckDB's `SYSTEM_PEAK_BUFFER_MEMORY` is deliberately **not** exported: it is a
 database-wide figure, not this query's, and on a concurrent workload it would
 read as if one query had used all of it.
+
+`flapi.db.result_set_bytes` existed up to DuckDB 1.5: DuckDB 2.0 has no result-size metric. The
+response size is on the request span as `flapi.result.bytes`.
 
 A metric DuckDB does not report is **omitted**, never exported as `0` — a
 fabricated zero reads as "instant" on every dashboard.
@@ -186,9 +188,9 @@ not a real saving — it is the measurement telling you the difference is below 
 own noise. Choose a tier by what you want to see, never to save time.
 
 Nearly all of the ~100 µs is switching profiling on, not measuring: DuckDB's
-profiling settings are connection-scoped (`SetLocal`, no global setter) and flAPI
-opens a connection per query, so every query pays a `SET`. If connections were
-pooled this would be close to free — they are not, today.
+profiling settings are connection-scoped (`SetLocal`, no global setter), so every
+profiled query pays a `SET`, and a profiled connection is not reused (flAPI otherwise
+keeps one connection per request thread).
 
 Note the overhead is per *query*, and fixed. On a request doing real work it does
 not show; on a trivial one it is a third of the database time. A paginated
