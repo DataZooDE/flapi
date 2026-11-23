@@ -2,7 +2,7 @@
 
 All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (the date the binary set was cut). Earlier history is in the git log.
 
-## Unreleased
+## v26.11.23 — DuckDB 2.0.1, a faster and leaner server, and releases that ship their extensions
 
 ### DuckDB 2.0.1, and a faster, leaner server (#241)
 
