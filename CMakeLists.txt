@@ -397,6 +397,7 @@ add_library(flapi-lib STATIC
     src/selfpath.cpp
     src/sql_parameter_classifier.cpp
     src/sql_template_processor.cpp
+    src/count_cache.cpp
     src/mustache_syntax_check.cpp
     src/template_secrets.cpp
     src/sql_utils.cpp
@@ -536,6 +537,23 @@ add_executable(flapi src/main.cpp ${DUCKDB_STATIC_EXTENSION_AUTOREGISTER})
 target_link_libraries(flapi PRIVATE flapi-lib)
 target_compile_definitions(flapi PRIVATE FLAPI_VERSION="${FLAPI_VERSION_STR}")
 set_target_properties(flapi PROPERTIES ENABLE_EXPORTS TRUE)
+
+# Release artifacts (#244): leave the static symbol table out of the flapi executable
+# (~20 MB on Linux). OFF by default so local builds keep their symbols for gdb/perf; CI turns
+# it on for the binaries it tests and ships. Done by the linker, not a later `strip`: on macOS
+# a post-link strip invalidates the linker's ad-hoc signature (arm64 refuses to run it), and
+# `flapi pack` re-signs only after writing its segment. What loadable C++ extensions resolve
+# against stays: ENABLE_EXPORTS' dynamic symbols (.dynsym on Linux, the export trie on macOS)
+# are not part of the static table. MSVC executables carry no symbol table (it is in the PDB).
+option(FLAPI_STRIP_BINARY "Strip the static symbol table from the flapi executable (release artifacts)" OFF)
+if(FLAPI_STRIP_BINARY)
+    if(APPLE)
+        # -x: drop local symbols; ld64 has no switch to drop globals, which stay.
+        target_link_options(flapi PRIVATE "LINKER:-x")
+    elseif(NOT MSVC)
+        target_link_options(flapi PRIVATE "LINKER:--strip-all")
+    endif()
+endif()
 
 # macOS reserved-segment for self-packaging (#48). Allocates a
 # placeholder __FLAPI/__bundle section at link time that `flapi pack`

@@ -335,6 +335,17 @@ docker: release
 		echo "Error: Could not find flapi binary"; \
 		exit 1; \
 	fi
+	@# The default extensions beside the binary, like the released image (#245).
+	@# Only the host-arch Linux binary can run here and install its platform's
+	@# extensions; a binaries/<other arch>/flapi (a cross build) is never executed.
+	@HOST_ARCH=$$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/'); \
+	if [ "$$(uname)" != "Linux" ]; then \
+		echo "Skipping extensions: the image needs Linux ones, installed by a Linux flapi (run make docker on Linux)"; \
+	elif [ -x binaries/$$HOST_ARCH/flapi ]; then \
+		binaries/$$HOST_ARCH/flapi extensions install --defaults --dir binaries/$$HOST_ARCH/extensions || exit 1; \
+	else \
+		echo "Skipping extensions: no binaries/$$HOST_ARCH/flapi for this host"; \
+	fi
 	@ARCH=$$(if [ "$$(uname -m)" = "x86_64" ]; then echo "amd64"; elif [ "$$(uname -m)" = "aarch64" ]; then echo "arm64"; else echo "unknown"; fi); \
 	if [ "$$ARCH" = "unknown" ]; then \
 		echo "Unsupported architecture: $$(uname -m)"; \

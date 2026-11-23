@@ -1,8 +1,10 @@
 #pragma once
 
+#include <functional>
 #include <string>
 #include <map>
 #include <memory>
+#include <string_view>
 #include <vector>
 #include <crow.h>
 #include "config_manager.hpp"
@@ -56,6 +58,10 @@ private:
     std::shared_ptr<ConfigManager> config_manager;
 
     std::string loadTemplateContent(const std::string& templatePath);
+    // The template text, from the in-process cache when the file on disk is
+    // unchanged (#243). Never null; throws as loadTemplateContent does.
+    std::shared_ptr<const std::string> loadTemplateShared(const std::string& templatePath);
+    static std::string readTemplateUncached(IFileProvider& provider, const std::string& templatePath);
     std::string getFullTemplatePath(const std::string& templateSource) const;
 public:
     crow::mustache::context createTemplateContext(const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
@@ -63,9 +69,17 @@ public:
     
     // Add these two declarations
     crow::mustache::template_t compileTemplate(const std::string& templateSource);
-    /// Static: it only walks `environ`, and the secret collector needs it
-    /// from call sites that hold no template processor.
-    static std::map<std::string, std::string> getEnvironmentVariables();
+    /// The environment variables `whitelist` exposes to templates, straight
+    /// from `environ` (no copy of the environment). Static: the secret
+    /// collector needs it from call sites that hold no template processor.
+    static void forEachAllowedEnvironmentVariable(
+        const TemplateConfig& whitelist,
+        const std::function<void(const std::string& name, std::string_view value)>& visit);
+
+    /// Drop the cached text of every template. Called whenever flAPI writes a
+    /// template or reloads endpoints itself: the per-read stat cannot tell two
+    /// same-size writes within one filesystem timestamp tick apart.
+    static void clearTemplateCache();
     
     // Public method to load template content for validation
     std::string loadTemplate(const EndpointConfig& endpoint);

@@ -20,7 +20,7 @@ void RateLimitMiddleware::before_handle(crow::request& req, crow::response& res,
 
     // By path AND method, as auth and request handling do: looking up by path alone made
     // `GET /items` (no limit) decide for `POST /items` (limited) - a bypass (#198).
-    const auto endpoint = config_manager->getEndpointForPathAndMethod(
+    const auto endpoint = config_manager->getEndpointForRequest(
         req.url, crow::method_name(req.method));
     if (!endpoint) {
         return;

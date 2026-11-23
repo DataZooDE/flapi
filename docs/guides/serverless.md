@@ -132,13 +132,16 @@ flapi cache refresh -c flapi.yaml --all     # writes ./state/cache.ducklake + ./
 
 ## 4. Fast, offline startup
 
-Use the `-runtime` image. It carries every default extension that is not built
-into flapi (`httpfs`, `ducklake`, `fts`, `postgres`, `sqlite`; `core_functions`,
-`parquet`, `json` and `icu` are built in) and `bigquery` when the community
-extension is published for its DuckDB version, and sets `FLAPI_EXTENSION_DIRECTORY`:
+Every release carries the default extensions that are not built into flapi
+(`httpfs`, `ducklake`, `fts`, `postgres`, `sqlite`; `core_functions`, `parquet`,
+`json` and `icu` are built in) in `extensions/` next to the binary: the release
+archives and the Docker images (`/app/extensions`). flapi
+finds that directory on its own, so a fresh container starts without downloading
+anything and with no network at all. The `-runtime` image adds `bigquery` when the
+community extension is published for its DuckDB version.
 
 ```dockerfile
-FROM ghcr.io/datazoode/flapi:<version>-runtime
+FROM ghcr.io/datazoode/flapi:<version>
 COPY flapi.yaml /app/config/flapi.yaml
 COPY sqls/ /app/config/sqls/
 COPY data/ /app/config/data/
@@ -147,6 +150,19 @@ COPY data/ /app/config/data/
 COPY state/ /app/config/state/
 ENV FLAPI_CONFIG=/app/config/flapi.yaml FLAPI_EXTENSIONS_OFFLINE=1
 ```
+
+- Keep the binary and its `extensions/` together when you copy a release
+  around; a symlink to the binary is fine. An `extensions/` for another DuckDB
+  version is ignored with one warning.
+- On macOS, a release archive downloaded with a browser is quarantined, and so
+  is everything unpacked from it (binary and extensions): run
+  `xattr -dr com.apple.quarantine <unpacked dir>` once before starting it.
+- `FLAPI_EXTENSION_DIRECTORY` (or `duckdb.extension_directory`) replaces the
+  shipped directory; anything you install yourself goes to `~/.duckdb/extensions`,
+  which is searched first. See
+  [CONFIG_REFERENCE: where DuckDB extensions come from](../CONFIG_REFERENCE.md#24-duckdb-configuration).
+- The `flapi-io` wheels do not carry them (a wheel would be ~155 MB, above
+  PyPI's 100 MB file limit): `pip install flapi-io` downloads on first start.
 
 Not using containers? `flapi pack --in . --out api --with-extensions` produces
 one binary that carries its config **and** its extensions and starts offline

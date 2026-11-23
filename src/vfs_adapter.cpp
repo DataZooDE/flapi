@@ -473,21 +473,23 @@ std::shared_ptr<BootstrapDb> GetBootstrapDb() {
     if (duckdb_connect(created->db, &conn) != DuckDBSuccess) {
         throw FileOperationError("Could not connect to the bootstrap DuckDB.");
     }
-    // Offline: never download; httpfs must already be in the extension directory.
-    for (const char* sql : {"INSTALL httpfs", "LOAD httpfs"}) {
-        if (offline && std::string(sql) == "INSTALL httpfs") {
-            continue;
+    // Nothing configured: the user directory, then the extensions shipped next to the binary.
+    if (extension_dir.empty()) {
+        if (const auto statement = ShippedExtensionSearchStatement()) {
+            duckdb_result result;
+            if (duckdb_query(conn, statement->c_str(), &result) != DuckDBSuccess) {
+                CROW_LOG_WARNING << "Bootstrap DuckDB: could not add the shipped extension directory: "
+                                 << duckdb_result_error(&result);
+            }
+            duckdb_destroy_result(&result);
         }
-        duckdb_result result;
-        if (duckdb_query(conn, sql, &result) != DuckDBSuccess) {
-            CROW_LOG_WARNING << "Bootstrap DuckDB: `" << sql << "` failed: "
-                             << duckdb_result_error(&result)
-                             << " (remote files cannot be read without httpfs"
-                             << (offline ? "; offline mode: pre-install httpfs into FLAPI_EXTENSION_DIRECTORY"
-                                         : "")
-                             << ")";
-        }
-        duckdb_destroy_result(&result);
+    }
+    // Offline: never download; httpfs must already be in an extension directory.
+    if (const auto error = LoadOrInstallExtension(conn, "httpfs", offline); !error.empty()) {
+        CROW_LOG_WARNING << "Bootstrap DuckDB: loading httpfs failed: " << error
+                         << " (remote files cannot be read without httpfs"
+                         << (offline ? "; offline mode: pre-install httpfs into FLAPI_EXTENSION_DIRECTORY" : "")
+                         << ")";
     }
     auto& credentials = getGlobalCredentialManager();
     credentials.loadFromEnvironment();

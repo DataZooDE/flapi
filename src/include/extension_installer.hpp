@@ -29,6 +29,11 @@ long CurrentProcessId();
 // Builds that link it statically (DuckDB 2.0) skip it - see StaticallyLinkedExtensions.
 const std::vector<std::string>& ImplicitExtensions();
 
+// duckdb.default-extensions when the config does not set it. The loadable ones among them
+// (httpfs, ducklake, fts, postgres, sqlite - json and parquet are built in) are what
+// releases ship in extensions/ next to the binary; `flapi extensions install --defaults`.
+const std::vector<std::string>& DefaultExtensions();
+
 // The extensions linked into this binary (duckdb_extensions() install_mode STATICALLY_LINKED:
 // core_functions, parquet, json and icu in the DuckDB 2.0 build). They are loaded when the
 // database opens, so INSTALL/LOAD of one is a no-op - except that INSTALL still downloads
@@ -49,6 +54,8 @@ std::vector<ExtensionSpec> CollectExtensionSpecs(const ConfigManager& config_man
 
 // Installs into `extension_directory` (empty = DuckDB's default). Returns the number of
 // extensions that failed; every failure is written to `log`, so a build step reports all at once.
+// An extension the shipped directory carries is copied from there (no download); with no
+// target directory it is not installed at all - the server finds it there anyway.
 int InstallExtensions(const std::vector<ExtensionSpec>& specs, const std::string& extension_directory,
                       std::ostream& log);
 
@@ -56,6 +63,41 @@ int InstallExtensions(const std::vector<ExtensionSpec>& specs, const std::string
 // When set, it is the default extension_directory and implies offline extensions.
 void SetBundledExtensionDirectory(std::optional<std::filesystem::path> dir);
 std::optional<std::filesystem::path> BundledExtensionDirectory();
+
+// ---- Extensions shipped with a release (#245) ----------------------------------------------
+// Release archives, wheels and the Docker image carry the signed default extensions in an
+// `extensions/` directory beside the executable, in DuckDB's own layout
+// (extensions/<duckdb version>/<platform>/<name>.duckdb_extension).
+
+// The outcome of looking for that directory: `root` (the `extensions/` directory, which is
+// what DuckDB is given - it appends <version>/<platform> itself) when it carries extensions
+// for `version`/`platform`; otherwise `ignored` says why an existing directory was not used
+// (empty when there is none at all, which is not worth a log line).
+struct ShippedExtensions {
+    std::optional<std::filesystem::path> root;
+    std::string ignored;
+};
+ShippedExtensions FindShippedExtensions(const std::filesystem::path& executable, const std::string& version,
+                                        const std::string& platform);
+
+// FindShippedExtensions for the running binary (symlinks resolved), computed and logged once.
+std::optional<std::filesystem::path> ShippedExtensionDirectory();
+
+// `SET GLOBAL extension_directories = [<user dir>, <shipped dir>]`, or nothing when there is
+// no shipped directory. DuckDB installs into the FIRST directory and loads from the first
+// that has the file, so the user directory stays the (writable) install target, the shipped
+// one is only ever read, and a copy the user installed on purpose (FORCE INSTALL) wins.
+// Callers run it only when no extension directory is configured: an explicit
+// FLAPI_EXTENSION_DIRECTORY / duckdb.extension_directory, or a bundle's, is used alone.
+std::optional<std::string> ShippedExtensionSearchStatement();
+
+// The statement for an arbitrary list (exposed for tests): SQL string literals, so any path works.
+std::string ExtensionDirectoriesStatement(const std::vector<std::string>& directories);
+
+// LOAD `name`; when that fails and downloads are allowed, INSTALL then LOAD again. Loading first
+// means an extension found in ANY search directory (the shipped one included) never causes a
+// download: INSTALL only looks at the first directory. Returns the last error, empty on success.
+std::string LoadOrInstallExtension(duckdb_connection connection, const std::string& name, bool offline);
 
 // True when extensions must not be downloaded: FLAPI_EXTENSIONS_OFFLINE (1/true/yes/on, any case) when set,
 // otherwise whether a bundle carries its extensions. The one spelling every caller shares.

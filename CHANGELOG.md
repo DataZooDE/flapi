@@ -37,8 +37,61 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   one per request.
 - Crow 1.2.0 → 1.3.4.
 
+### Releases carry their DuckDB extensions; stripped binaries (#244, #245)
+
+- **Extensions ship with the release.** The release archives and the Docker images carry
+  the signed default extensions (`httpfs`, `ducklake`, `fts`, `postgres`, `sqlite`) for their DuckDB version and
+  platform in `extensions/<duckdb version>/<platform>/` next to the binary (`/app/extensions` in the images). flapi
+  finds the directory by its real executable path (symlinks resolved), so a fresh
+  host starts with no download and no network; `FLAPI_EXTENSIONS_OFFLINE=1` works with that directory alone. CI
+  installs the files with each platform's own binary on a native runner and checks that every one loads from
+  there with an empty HOME, offline.
+- **Lookup order** (CONFIG_REFERENCE § 2.4): `duckdb.extension_directory` > `FLAPI_EXTENSION_DIRECTORY` > a packed
+  bundle's extensions (each replaces the rest, so a packed binary never loads a second copy) > the shipped
+  directory, searched after `~/.duckdb/extensions`. The shipped directory is only read: anything else installs
+  into `~/.duckdb/extensions`, and a copy installed there on purpose (`FORCE INSTALL`) wins over the shipped one.
+  A shipped directory for another DuckDB version is ignored with one warning.
+- **Startup loads first and downloads only what is missing** from every search directory (it ran `INSTALL` for
+  each default extension, which looks at the first directory only); the same for httpfs/azure on the remote-config
+  and credential paths.
+- **`flapi extensions install --defaults`** installs the default set; a release binary copies the shipped files
+  into `--dir` instead of downloading them, so `flapi pack --with-extensions` works offline. `pack` still embeds
+  extensions only when asked.
+- **The default Docker image now has the extensions**; `-runtime` adds `bigquery` (best effort) to
+  `/app/extensions` and no longer sets `FLAPI_EXTENSION_DIRECTORY`.
+- **Stripped release binaries.** New CMake option `FLAPI_STRIP_BINARY` (off for local builds, on in CI) links
+  `flapi` without its static symbol table: Linux amd64 122 MB → 102 MB. The dynamic symbols that loadable
+  extensions resolve against are kept (verified: ducklake, postgres, sqlite, fts and httpfs load from a stripped
+  binary). It replaces the release job's post-build `strip`, which skipped the arm64 and macOS binaries silently
+  and stripped a different binary than the one the tests ran; macOS drops local symbols at link time (`ld -x`),
+  so the linker's signature stays valid for `flapi pack`.
+
+### Cached total_count and less work per request (#242, #243)
+
+- **total_count of a DuckLake-cached endpoint is reused** until the catalog changes: the `COUNT(*)` behind a full
+  page cost about as much as the page. The count is keyed by the rendered SQL and bound values (time travel
+  included) and tagged with the catalog's newest snapshot id, read with one small metadata query per request, so
+  any committed change - a refresh, a full rebuild, a write, a refresh by another process or the writer of a
+  read-only replica - is seen by the next request and the total stays exact. Only queries that read nothing but
+  `<alias>.<schema>.<table>` DuckLake tables (not views), do not sample and call no time-, session- or
+  random-dependent function qualify - `age(ts)` included, which DuckDB reports as stable although it reads the
+  transaction start (rule in docs/spec/components/caching.md). If the snapshot id cannot be read the cache is
+  off for 30 s, then tried again. Measured on a 2M-row cached table (8 server CPUs): +15% req/s on one client and +20% on 16 for an unfiltered
+  page, +50% / +30% for a filtered one.
+- **Less CPU per request:** the endpoint is resolved once per request instead of three times (rate limit, auth,
+  handler); a local SQL template is cached and revalidated with one `stat` instead of re-read (an edit is still
+  served by the next request; a template written through the config service or a reload drops the cache, since
+  two same-size writes within one filesystem timestamp tick look alike); the secret scrubber no longer copies the environment. Measured with 200 endpoints and a
+  trivial query: +21% req/s on one client, +30% on four.
+
 ### Upgrade notes
 
+- **`-runtime` image:** extensions moved from `/opt/flapi/extensions` to `/app/extensions` and
+  `FLAPI_EXTENSION_DIRECTORY` is no longer set. A derived image that installs into `/opt/flapi/extensions` must
+  set `FLAPI_EXTENSION_DIRECTORY=/opt/flapi/extensions` itself (then it holds the only directory) or install into
+  `/app/extensions`.
+- **The `flapi-io` wheels carry no extensions:** with them a wheel would be ~155 MB, above PyPI's 100 MB file
+  limit. A pip-installed flapi downloads them on first start, as before (or set `FLAPI_EXTENSION_DIRECTORY`).
 - **New database files and DuckLake catalogs are 2.0-only.** Files created by this version (a new `duckdb.db_path`,
   a new DuckLake catalog) use DuckDB 2.0's storage version and DuckLake spec 1.1, which DuckDB 1.x cannot read. To
   roll back to a 1.5-based flAPI keep a copy of the state directory, or rebuild the caches. Existing files are not

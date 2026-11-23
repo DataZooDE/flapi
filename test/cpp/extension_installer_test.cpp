@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -224,4 +225,76 @@ TEST_CASE("InstallExtensions reports an extension it cannot install", "[extensio
     const int failures = InstallExtensions({{"flapi_test_missing_ext", ""}}, dir.path(), log);
     REQUIRE(failures == 1);
     REQUIRE(log.str().find("flapi_test_missing_ext") != std::string::npos);
+}
+
+namespace {
+void touch(const fs::path& file) {
+    fs::create_directories(file.parent_path());
+    std::ofstream(file) << "x";
+}
+}  // namespace
+
+TEST_CASE("FindShippedExtensions: the extensions/ directory next to the executable", "[extensions][shipped]") {
+    TempDirectory dir("ext_shipped_find");
+    const fs::path exe = fs::path(dir.path()) / "flapi";
+    touch(exe);
+
+    SECTION("no directory: nothing, and nothing worth logging") {
+        const auto found = FindShippedExtensions(exe, "v2.0.1", "linux_amd64");
+        REQUIRE_FALSE(found.root);
+        REQUIRE(found.ignored.empty());
+    }
+    SECTION("this version and platform: used") {
+        touch(fs::path(dir.path()) / "extensions" / "v2.0.1" / "linux_amd64" / "httpfs.duckdb_extension");
+        const auto found = FindShippedExtensions(exe, "v2.0.1", "linux_amd64");
+        REQUIRE(found.root);
+        REQUIRE(*found.root == fs::path(dir.path()) / "extensions");
+    }
+    SECTION("another version or platform: ignored, and the reason names what is there") {
+        touch(fs::path(dir.path()) / "extensions" / "v1.5.5" / "linux_amd64" / "httpfs.duckdb_extension");
+        touch(fs::path(dir.path()) / "extensions" / "v2.0.1" / "osx_arm64" / "httpfs.duckdb_extension");
+        const auto found = FindShippedExtensions(exe, "v2.0.1", "linux_amd64");
+        REQUIRE_FALSE(found.root);
+        REQUIRE(found.ignored.find("v1.5.5/linux_amd64") != std::string::npos);
+        REQUIRE(found.ignored.find("v2.0.1/osx_arm64") != std::string::npos);
+        REQUIRE(found.ignored.find("needs v2.0.1/linux_amd64") != std::string::npos);
+    }
+    SECTION("an empty platform directory does not count") {
+        fs::create_directories(fs::path(dir.path()) / "extensions" / "v2.0.1" / "linux_amd64");
+        const auto found = FindShippedExtensions(exe, "v2.0.1", "linux_amd64");
+        REQUIRE_FALSE(found.root);
+        REQUIRE(found.ignored.find("holds none") != std::string::npos);
+    }
+}
+
+TEST_CASE("ExtensionDirectoriesStatement quotes every path as a SQL literal", "[extensions][shipped]") {
+    REQUIRE(ExtensionDirectoriesStatement({"~/.duckdb/extensions", "/opt/it's here", "C:\\flapi\\extensions"}) ==
+            "SET GLOBAL extension_directories = ['~/.duckdb/extensions', '/opt/it''s here', "
+            "'C:\\flapi\\extensions']");
+    // ... and DuckDB accepts it, backslashes and quotes intact.
+    duckdb_database db = nullptr;
+    REQUIRE(duckdb_open(nullptr, &db) == DuckDBSuccess);
+    duckdb_connection con = nullptr;
+    REQUIRE(duckdb_connect(db, &con) == DuckDBSuccess);
+    duckdb_result result;
+    REQUIRE(duckdb_query(con, ExtensionDirectoriesStatement({"/a/it's", "C:\\b"}).c_str(), &result) == DuckDBSuccess);
+    duckdb_destroy_result(&result);
+    REQUIRE(duckdb_query(con, "SELECT unnest(current_setting('extension_directories'))", &result) ==
+            DuckDBSuccess);
+    std::vector<std::string> values;
+    for (idx_t row = 0; row < duckdb_row_count(&result); ++row) {
+        char* value = duckdb_value_varchar(&result, 0, row);
+        values.emplace_back(value);
+        duckdb_free(value);
+    }
+    duckdb_destroy_result(&result);
+    REQUIRE(values == std::vector<std::string>{"/a/it's", "C:\\b"});
+    duckdb_disconnect(&con);
+    duckdb_close(&db);
+}
+
+TEST_CASE("DefaultExtensions is what duckdb.default-extensions defaults to", "[extensions][shipped]") {
+    TempTestConfig temp(baseConfig(""), "ext_defaults");
+    auto cm = temp.createConfigManager();
+    REQUIRE(cm->getDuckDBConfig().default_extensions == DefaultExtensions());
 }

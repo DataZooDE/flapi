@@ -119,6 +119,19 @@ std::string processTemplate(const EndpointConfig& endpoint,
 }
 ```
 
+A local template file is read once and cached by path (`loadTemplateShared`); every
+render revalidates the entry with one `stat` (device, inode, size, mtime, ctime) and
+re-reads on any difference, so an edited file is served by the next request. That
+stat costs ~0.2 us, the read it replaces (four existence stats, open, read, copies)
+~2.5 us. Two same-size writes within one filesystem timestamp tick leave the same
+stamp, so every write flAPI makes itself (config service template PUT, endpoint
+create/update, any reload) drops the whole cache (`clearTemplateCache`); only an
+external editor writing twice within one tick can be missed, until the next change
+or reload. On Windows the stamp is size, last-write time (100 ns) and creation time
+(`GetFileAttributesEx`; there is no inode); the filesystem's own timestamp
+resolution still applies (FAT: 2 s). Templates in a bundle are already in memory; remote templates are fetched
+per render as before.
+
 ## QueryExecutor
 
 `QueryExecutor` (src/query_executor.cpp) executes SQL against DuckDB.
@@ -328,6 +341,11 @@ QueryResult executeQuery(const std::string& query,
 Pagination params:
 - `_limit` - Maximum rows to return
 - `_offset` - Rows to skip
+
+`total_count` comes from the page when it can (no window, or a short page); otherwise a
+`COUNT(*)` over the query runs - except on a DuckLake-cached endpoint whose query reads
+only DuckLake tables, where the count is reused until the catalog's next snapshot
+(`CountCache`, see [caching.md](./caching.md#total_count-of-a-cached-endpoint-242)).
 
 ## Write Operations
 

@@ -480,7 +480,7 @@ void APIServer::handleDynamicRequest(const crow::request& req, crow::response& r
     std::string path = req.url;
     // Match endpoint by both path and HTTP method
     std::string method = crow::method_name(req.method);
-    const auto endpoint = configManager->getEndpointForPathAndMethod(path, method);
+    const auto endpoint = configManager->getEndpointForRequest(path, method);
 
     // The middleware deliberately does not resolve routes (that would be a third
     // O(N) scan per request, and would tax /health, which resolves nothing

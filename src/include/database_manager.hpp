@@ -14,6 +14,8 @@
 #include "cache_manager.hpp"
 #include "sql_template_processor.hpp"
 #include "query_executor.hpp"
+#include "count_cache.hpp"
+#include <atomic>
 #include <optional>
 
 namespace flapi {
@@ -204,7 +206,11 @@ private:
                                          const std::map<std::string, std::string>& bind_values,
                                          const std::map<std::string, std::string>& for_template_params,
                                          bool with_pagination, TotalCount total = TotalCount::Exact,
-                                         const ResultSink* sink = nullptr);
+                                         const ResultSink* sink = nullptr,
+                                         const CountCacheUse* count_cache = nullptr);
+    QueryResult executeQueryText(const std::string& query, const std::map<std::string, std::string>& params,
+                                 bool with_pagination, TotalCount total, const ResultSink* sink,
+                                 const CountCacheUse* count_cache);
 
     void logDuckDBVersion();
     
@@ -257,6 +263,8 @@ private:
     bool initialized = false;
     // The DuckLake catalog was attached (so shutdown detaches it).
     bool ducklake_attached_ = false;
+    // total_count of DuckLake-cached reads (#242); null without DuckLake.
+    std::unique_ptr<CountCacheState> count_cache_;
     std::mutex db_mutex; // Mutex for thread safety
     std::shared_ptr<CacheManager> cache_manager;
     std::shared_ptr<SQLTemplateProcessor> sql_processor;

@@ -395,11 +395,43 @@ duckdb:
 **Notes:**
 - Omit `db_path` or set to `:memory:` for an in-memory database
 - Any other key-value pairs are passed directly as DuckDB settings
-- `FLAPI_EXTENSION_DIRECTORY` sets `extension_directory` when the config does not. The `-runtime` image sets it to
-  its baked directory, so extensions are never downloaded at startup.
+- `FLAPI_EXTENSION_DIRECTORY` sets `extension_directory` when the config does not (see the precedence below).
 - `FLAPI_EXTENSIONS_OFFLINE=1` (also `true`/`yes`) never downloads: startup skips `INSTALL`, sets
   `autoinstall_known_extensions=false`, and **fails** if a default extension cannot be loaded, naming it and
   `flapi extensions install`. Without it a missing extension is only a warning.
+- Startup `LOAD`s each default extension and `INSTALL`s (downloads) only one that no search directory has.
+
+**Where DuckDB extensions come from** (first match wins; `src/config_manager.cpp` `parseDuckDBConfig`,
+`src/extension_installer.cpp` `ShippedExtensionDirectory`):
+
+| # | Source | Used as |
+|---|--------|---------|
+| 1 | `duckdb.extension_directory` (or `extension_directories`) in `flapi.yaml` | the only directory |
+| 2 | `FLAPI_EXTENSION_DIRECTORY` | the only directory |
+| 3 | extensions embedded by `flapi pack --with-extensions` (extracted to `$TMPDIR/flapi-extensions/ext-<hash>/`) | the only directory; offline on |
+| 4 | `extensions/` **next to the flapi executable** (release archives, Docker `/app/extensions`) | searched **after** the user directory below |
+| 5 | DuckDB's default, `~/.duckdb/extensions` | install target, searched first |
+
+- Releases ship the signed default extensions (`httpfs`, `ducklake`, `fts`, `postgres_scanner`,
+  `sqlite_scanner`; `core_functions`, `parquet`, `json` and `icu` are built in) in DuckDB's own layout,
+  `extensions/<duckdb version>/<platform>/`. The executable's real path is used: a symlink to the binary
+  (`/usr/local/bin/flapi`) works. The `flapi-io` wheels carry no `extensions/`: with it a wheel would be
+  ~155 MB, above PyPI's 100 MB file limit, so a pip-installed flapi downloads on first start.
+- With 4 present, DuckDB gets `extension_directories = ['~/.duckdb/extensions', '<bin>/extensions']`. DuckDB
+  installs into the first directory and loads from the first that has the file, so the shipped directory is
+  **only ever read** (it may be read-only), an extension outside the default set still installs into the user
+  directory, and a copy you install there yourself (`FORCE INSTALL httpfs`, e.g. a fix before the next flAPI
+  release) **wins** over the shipped one. A user directory copy for the same DuckDB version is the same build
+  unless you installed another on purpose.
+- An `extensions/` holding no files for this binary's DuckDB version and platform (left over from an older
+  release) is ignored with one warning naming what it holds; startup goes on with 5.
+- 1-3 replace the shipped directory instead of adding to it: an operator who points flAPI at a directory gets
+  exactly that directory, and a packed binary never loads a second copy of an extension.
+- Offline (`FLAPI_EXTENSIONS_OFFLINE=1`) works with the shipped directory alone.
+- **macOS:** an archive downloaded with a browser gets the `com.apple.quarantine` attribute, and its unpacked
+  files keep it; Gatekeeper then refuses the binary and the extensions it loads. Clear it once for the whole
+  unpacked directory, binary and `extensions/` together: `xattr -dr com.apple.quarantine <unpacked dir>`
+  (`curl` / `gh release download` set no quarantine).
 - `core_functions`, `parquet`, `json` and `icu` are built into flAPI (DuckDB 2.0): they are never installed,
   loaded from the extension directory or packed, and need no network.
 - Defaults flAPI sets unless the key is given here: `threads` = the CPUs the process may use (affinity mask and
@@ -1070,7 +1102,7 @@ REST endpoints expose SQL queries as HTTP APIs.
 | `template-source` | string | **required** | Path to SQL template file |
 | `connection` | array[string] | **required** | Connection name(s) from flapi.yaml |
 | `with-pagination` | boolean | `true` | Wrap the query in `?limit=` (default `100`) / `?offset=` paging; the body is `{"next", "total_count", "data"}` plus `X-Total-Count`/`X-Limit`/`X-Offset`/`X-Next` headers. `limit`/`offset` are reserved; do not use them in the template. `limit=0` returns no rows and an empty `next` (the count only). `false` returns a bare JSON array |
-| `total-count` | boolean | `true` | `false`: paginated responses carry no `total_count` and no `X-Total-Count`, and flAPI never runs the `COUNT` query for them; `next` is found by reading one row past the page. For endpoints whose clients only page forward. With `true`, the `COUNT` runs only for a full page or an empty page past the end: a shorter page gives the total itself |
+| `total-count` | boolean | `true` | `false`: paginated responses carry no `total_count` and no `X-Total-Count`, and flAPI never runs the `COUNT` query for them; `next` is found by reading one row past the page. For endpoints whose clients only page forward. With `true`, the `COUNT` runs only for a full page or an empty page past the end: a shorter page gives the total itself. On a DuckLake-cached endpoint whose query reads only DuckLake tables, the count is reused until the catalog's next snapshot (exact; see [caching.md](spec/components/caching.md#total_count-of-a-cached-endpoint-242)) |
 | `request-fields-validation` | boolean | `false` | Reject (400) a query parameter that is not a declared `field-name`. `limit`, `offset` and `format` are always allowed |
 
 A query parameter given more than once (`?x=1&x=2`) is rejected with 400

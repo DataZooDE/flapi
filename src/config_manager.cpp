@@ -1,6 +1,8 @@
 #include <regex>
+#include "sql_template_processor.hpp"
 #include "config_manager.hpp"
 #include "route_translator.hpp"
+#include "request_context.hpp"
 #include "mustache_syntax_check.hpp"
 
 #include <set>
@@ -531,7 +533,7 @@ const TemplateConfig& ConfigManager::getTemplateConfig() const {
 void ConfigManager::parseDuckDBConfig() {
     CROW_LOG_INFO << "Parsing DuckDB configuration";
 
-    duckdb_config.default_extensions = { "httpfs", "ducklake", "fts", "json", "postgres", "sqlite", "parquet" };
+    duckdb_config.default_extensions = DefaultExtensions();
     
     if (config["duckdb"]) {
         auto duckdb_node = config["duckdb"];
@@ -3805,6 +3807,26 @@ ConfigManager::EndpointRef ConfigManager::getEndpointForPathAndMethod(const std:
     return EndpointRef(snapshot, findEndpoint(*snapshot, path, httpMethod));
 }
 
+ConfigManager::EndpointRef ConfigManager::getEndpointForRequest(const std::string& path,
+                                                               const std::string& httpMethod) const {
+    RequestContext* rc = RequestContextScope::current();
+    // Only for the request's own path and method: a caller asking about some
+    // other route gets a plain lookup and leaves the recorded answer alone.
+    const bool this_request = rc != nullptr && rc->raw_path == path && httpMethod == rc->http_method;
+    if (this_request && rc->endpoint_resolved && rc->resolved_by == this) {
+        return EndpointRef(rc->resolved_snapshot, rc->resolved_endpoint);
+    }
+    auto snapshot = endpointsSnapshot();
+    const EndpointConfig* endpoint = findEndpoint(*snapshot, path, httpMethod);
+    if (this_request) {
+        rc->endpoint_resolved = true;
+        rc->resolved_by = this;
+        rc->resolved_snapshot = snapshot;
+        rc->resolved_endpoint = endpoint;
+    }
+    return EndpointRef(std::move(snapshot), endpoint);
+}
+
 // YAML Serialization
 std::string ConfigManager::serializeEndpointConfigToYaml(const EndpointConfig& config) const {
     YAML::Emitter out;
@@ -4379,6 +4401,9 @@ std::string canonicalOrSelf(const std::filesystem::path& p) {
 }  // namespace
 
 ConfigManager::FileReloadResult ConfigManager::reloadEndpointFile(const std::filesystem::path& file) {
+    // A reload re-reads templates too: drop the cached text rather than trust
+    // a stat that cannot tell two writes within one timestamp tick apart (#243).
+    SQLTemplateProcessor::clearTemplateCache();
     FileReloadResult result;
     const std::string wanted = canonicalOrSelf(file);
     if (!std::filesystem::exists(file)) {
