@@ -8,13 +8,13 @@ description: >
   wheel, environment variables and a production checklist (config service, auth, JSON
   logs, telemetry opt-out). Use when someone packages, containerises, deploys or
   hardens a flAPI server.
-version: 26.11.21
+version: 26.11.23
 user-invocable: false
 ---
 
 # flAPI Deploy Cheat Sheet
 
-**flAPI:** v26.11.21 | **Skill:** Deploy | **See also:** `flapi-setup`, `flapi-auth`, `flapi-cache-design`, `flapi-cache-tuning`, `flapi-operate`
+**flAPI:** v26.11.23 | **Skill:** Deploy | **See also:** `flapi-setup`, `flapi-auth`, `flapi-cache-design`, `flapi-cache-tuning`, `flapi-operate`
 
 ## Critical gotchas
 

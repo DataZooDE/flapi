@@ -8,13 +8,13 @@ description: >
   transactions), YAML includes, env vars, per-endpoint rate limits and OpenAPI.
   Use when a user wants to expose SQL as an HTTP endpoint, add a filter or
   validator, paginate, write rows from an API, or debug a 400/404/500.
-version: 26.11.21
+version: 26.11.23
 user-invocable: false
 ---
 
 # flAPI REST Endpoints Cheat Sheet
 
-**flAPI:** v26.11.21 | **Skill:** Develop | **See also:** `flapi-setup`, `flapi-auth`, `flapi-mcp`, `flapi-testing`, `flapi-cache-design`
+**flAPI:** v26.11.23 | **Skill:** Develop | **See also:** `flapi-setup`, `flapi-auth`, `flapi-mcp`, `flapi-testing`, `flapi-cache-design`
 
 An endpoint is a YAML file plus a SQL (Mustache) template, both under
 `template.path` (usually `./sqls`). Every `.yaml` there that has `url-path`

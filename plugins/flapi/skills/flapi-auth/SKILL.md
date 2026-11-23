@@ -9,13 +9,13 @@ description: >
   auth inherited by every endpoint, opt-out, and REST roles (403). Use when a user
   asks to require a login or token, restrict who may call an endpoint or tool,
   debug a 401/403, or harden a deployment.
-version: 26.11.21
+version: 26.11.23
 user-invocable: false
 ---
 
 # flAPI Authentication & Authorization Cheat Sheet
 
-**flAPI:** v26.11.21 | **Skill:** Develop | **See also:** `flapi-rest`, `flapi-mcp`, `flapi-live-config`, `flapi-deploy`
+**flAPI:** v26.11.23 | **Skill:** Develop | **See also:** `flapi-rest`, `flapi-mcp`, `flapi-live-config`, `flapi-deploy`
 
 Three independent gates: the endpoint's own `auth:` block (REST), `mcp.auth`
 (everything on `/mcp/jsonrpc`), and the config-service token (`/api/v1/_config/*`,
