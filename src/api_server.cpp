@@ -985,9 +985,18 @@ void APIServer::run(int port) {
     // effective from the moment it does, so a stop requested at any point
     // during startup takes effect without anyone having to detect WHEN crow
     // became stoppable.
+    //
+    // Under stop_mutex_, never bare (#249). stop() sets stop_requested_ BEFORE it drains and
+    // calls app.stop() itself, so a bare call here ran Crow's Server::stop() on two threads at
+    // once - it is not thread-safe: both saw the acceptor open and closed the same socket, and a
+    // SIGTERM with an MCP task in flight died with SIGSEGV. try_lock: while stop() holds the
+    // mutex it will issue app.stop() itself, and the next tick retries.
     while (serving.wait_for(std::chrono::milliseconds(20)) != std::future_status::ready) {
         if (stop_requested_.load(std::memory_order_acquire)) {
-            app.stop();
+            std::unique_lock<std::mutex> lock(stop_mutex_, std::try_to_lock);
+            if (lock.owns_lock()) {
+                app.stop();
+            }
         }
     }
 
