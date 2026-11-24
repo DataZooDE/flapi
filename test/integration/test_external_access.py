@@ -686,3 +686,21 @@ class TestPackedBundle:
             assert_refused(s, "/passwd", "read_csv('/etc/passwd') in a restricted bundle")
         finally:
             stop(s.proc)
+
+
+# --------------------------------------------------------------------------- the block itself
+
+class TestHardeningBlock:
+    @pytest.mark.parametrize("block,key", [
+        ("duckdb-hardening:\n  external-access: lockdown\n", "duckdb-hardening.external-access"),
+        ("duckdb-hardening:\n  allowed-directory: ['/tmp']\n", "duckdb-hardening.allowed-directory"),
+        ("duckdb-hardening:\n  allowed-directories: /tmp\n", "duckdb-hardening.allowed-directories"),
+    ])
+    def test_a_wrong_block_is_a_startup_error_naming_the_key(self, workdir, block, key):
+        put(workdir, "flapi.yaml", local_config(block))
+        write_own(workdir)
+        r = subprocess.run([flapi_binary(), "-c", "flapi.yaml", "--validate-config"], cwd=workdir,
+                           capture_output=True, text=True, timeout=120, env=ENV)
+        out = r.stdout + r.stderr
+        assert r.returncode != 0, f"a wrong duckdb-hardening block was accepted:\n{out[-2000:]}"
+        assert key in out, f"the error does not name `{key}`:\n{out[-2000:]}"
