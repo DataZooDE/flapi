@@ -622,6 +622,42 @@ abort startup, built-in routes (`/health`, `/mcp`, `/api/v1/_config`) cannot be 
 prefix-scoped credentials for flAPI; write access only through your normal review pipeline; object versioning.
 S3 credentials are kept as a redacted DuckDB secret (`zz_flapi_s3`), not as `s3_*` settings that SQL could read back.
 
+### External access for templates (`duckdb-hardening`, #253)
+
+A remote config's templates run with **external access off** by default (`duckdb-hardening.external-access: auto`
+= `restricted` when `--config` is remote; [CONFIG_REFERENCE § 2.4.1](../../CONFIG_REFERENCE.md#241-duckdb-hardening-duckdb-hardening)).
+`DatabaseManager::applyExternalAccessPolicy` (`src/database_manager.cpp`) runs last in startup, from `main()` before
+the APIServer is built:
+
+```mermaid
+flowchart LR
+    A[ATTACH DuckLake, connection inits, credentials, embed://] --> B[preload httpfs/ducklake/azure + init LOADs]
+    B --> C[SET allowed_directories / allowed_paths]
+    C --> D[SET enable_external_access=false]
+    D --> E[SET allowed_configs, lock_configuration=true]
+    E --> F[log policy once; APIServer, heartbeat, requests]
+```
+
+- **Allowed:** the config's directory or remote URL prefix (query string stripped), `template.path`, the DuckLake
+  `data-path`, `embed://` in a bundle, the operator's `allowed-directories`/`allowed-paths`; DuckDB adds attached
+  database files and its temp directory. Everything else - local files, URLs, other buckets, `..`/`%2e%2e`
+  traversal, `s3://bucket-evil/` past `s3://bucket/`, `glob()`, `COPY TO`, ATTACH (also `TYPE sqlite`/`postgres`,
+  whose scanners check the setting) - is refused by DuckDB with a `Permission Error`.
+- **Locked configuration:** `allowed_configs` is exactly what flAPI SETs per connection after startup
+  (`TimeZone` fallback and `default_order` in `QueryExecutor`, `enable_profiling`/`tracked_metrics` for tracing).
+  `SET` and `SET SESSION` both go through DuckDB's lock check.
+- **Refused by flAPI** (`src/external_access_policy.cpp`, called from `SQLTemplateProcessor::processTemplate`):
+  `INSTALL`/`LOAD`/`UPDATE EXTENSIONS`/repository DDL and `CREATE`/`DROP SECRET` in any rendered template. DuckDB
+  still downloads from its official repositories with external access off, and a temporary secret is shared by the
+  whole instance: measured before the fix, a template's `CREATE SECRET (TYPE s3, ENDPOINT '<host>', SCOPE
+  's3://<config bucket>/')` sent the next endpoint's data reads **and flAPI's own template reads** to that host.
+- After the policy, `LoadOrInstallExtension` cannot load anything new and says so naming the extension and
+  `duckdb-hardening`; an autoload refusal in a query error gets the same hint.
+
+Known limits: allowed directories are writable (a template can `COPY` into the config directory, `template.path` or
+the DuckLake `data-path`, and with a remote config into its own bucket prefix with flAPI's credentials); the mode is
+chosen by whoever writes `flapi.yaml`; connection `init` SQL and the `duckdb:` settings run before the policy.
+
 ## Security Best Practices
 
 1. **Always use validators** - Define type and constraints for all inputs

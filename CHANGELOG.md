@@ -49,6 +49,27 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 - **Basic auth does not reveal which usernames exist.** An unknown username is checked against a dummy hash of the
   same kind and cost as the stored ones (inline `users:` and Secrets Manager alike), and plaintext and MD5 passwords
   are compared in constant time.
+- **Templates of a remote config run with DuckDB's external access off (#253).** New top-level block
+  `duckdb-hardening` (`external-access: auto|full|restricted`, `allowed-directories`, `allowed-paths`). `auto`, the
+  default, is `restricted` when `--config` is remote (`s3://`, `gs://`, `az://`, `http(s)://`) and `full` otherwise,
+  so local configs and packed bundles see no change. `restricted` preloads the extensions flAPI needs, allows the
+  config's directory or URL prefix, `template.path`, the DuckLake `data-path`, `embed://` in a bundle and the listed
+  extras, switches `enable_external_access` off and locks the DuckDB configuration. Before, a template could read
+  any local file (`read_csv('/etc/passwd')`), any URL or bucket, ATTACH or COPY anywhere and LOAD any extension.
+- While restricted, `INSTALL`/`LOAD` and `CREATE`/`DROP SECRET` in a template are refused by flAPI: a template's
+  temporary S3 secret with its own `ENDPOINT` redirected every endpoint's reads of the config bucket - and flAPI's
+  own template reads - to another host.
+- The policy is logged once at startup: `external access: restricted (...; allowed: ...)` or
+  `external access: full (...)`.
+
+### Upgrade notes
+
+- **Remote-config deployments that read other buckets or local paths** must list them in
+  `duckdb-hardening.allowed-directories` (or `allowed-paths`), or set `duckdb-hardening.external-access: full`.
+  Without that, those reads now fail with `Permission Error: ... disabled by configuration`.
+- Under `restricted`, an extension a template needs must be loaded at startup (`duckdb.default-extensions` or a
+  connection `init`), and secrets created in a connection `init`; a template's `SET` of any DuckDB setting other
+  than `TimeZone`, `default_order`, `enable_profiling`, `tracked_metrics` (and `schema`/`search_path`) fails.
 
 ### Fixed
 
