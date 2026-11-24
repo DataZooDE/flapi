@@ -137,8 +137,7 @@ Every release carries the default extensions that are not built into flapi
 `json` and `icu` are built in) in `extensions/` next to the binary: the release
 archives and the Docker images (`/app/extensions`). flapi
 finds that directory on its own, so a fresh container starts without downloading
-anything and with no network at all. The `-runtime` image adds `bigquery` when the
-community extension is published for its DuckDB version.
+anything and with no network at all. The `-runtime` image adds `bigquery`.
 
 ```dockerfile
 FROM ghcr.io/datazoode/flapi:<version>
