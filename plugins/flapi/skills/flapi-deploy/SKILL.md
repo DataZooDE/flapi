@@ -45,6 +45,11 @@ user-invocable: false
 - **The images have no `curl`, no `wget` and no `HEALTHCHECK`.** They run as root with
   `WORKDIR /app` and `ENTRYPOINT ["/app/flapi"]`. Pass `-c /config/flapi.yaml` or set
   `FLAPI_CONFIG`. For an in-container probe, use `bash` + `/dev/tcp` (`/bin/sh` is dash).
+- **A remote `--config` (`s3://...`, `https://...`) starts with DuckDB external access off.**
+  Templates reach only the config's prefix, `template.path`, the DuckLake `data-path` and
+  `duckdb-hardening.allowed-directories`; other buckets and local paths fail with `Permission Error`
+  until listed there (or `duckdb-hardening.external-access: full`). A packed bundle is local (`full`
+  under `auto`); with `restricted` it still reads `embed://`. See `flapi-setup`.
 - **`--config-service` without a token generates one** and prints it in the log. In
   production, leave the config service off, or set `FLAPI_CONFIG_SERVICE_TOKEN` from a
   secret store.

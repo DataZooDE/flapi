@@ -4,6 +4,7 @@
 #include "vfs_adapter.hpp"
 #include "template_secrets.hpp"
 #include "mustache_syntax_check.hpp"
+#include "external_access_policy.hpp"
 #include <stdexcept>
 #include <filesystem>
 #include <cstring>
@@ -240,6 +241,10 @@ std::string SQLTemplateProcessor::processTemplate(const std::string& templateCon
         }
         CROW_LOG_DEBUG << "Processed query: \n" << secrets.scrub(renderedTemplate);
     }
+    // duckdb-hardening (#253): every template - endpoint, cache populate, MCP tool,
+    // config-service expand - is rendered here, so this is the one place INSTALL/LOAD
+    // and secret DDL are refused before DuckDB sees them.
+    RefuseRestrictedTemplateStatements(renderedTemplate);
     return renderedTemplate;
 }
 

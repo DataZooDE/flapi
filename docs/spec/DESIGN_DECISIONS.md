@@ -746,6 +746,65 @@ for another version is ignored with a warning, and CI regenerates it from the bi
 `LoadOrInstallExtension`), `src/database_manager.cpp` (`initializeDBManagerFromConfig`,
 `loadDefaultExtensions`); tests `test/integration/test_shipped_extensions.py`.
 
+## 14. Remote Templates Run With External Access Off (#253)
+
+**Decision:** a top-level `duckdb-hardening` block; `external-access: auto` (the default) is `restricted` for a
+remote `--config` and `full` for a local one. `restricted` turns DuckDB's `enable_external_access` off after
+setting `allowed_directories` to what the deployment itself uses, then locks the configuration.
+
+**Why top level:** every scalar under `duckdb:` is passed to DuckDB verbatim as a setting; a policy flAPI
+computes and applies in steps does not belong there.
+
+**Why it runs after startup, not as a config option at open:** DuckDB with external access off cannot load an
+extension, attach the DuckLake catalog's backend, or read the remote config it is serving. So startup does all
+of that first (DuckLake ATTACH, connection inits, credentials, `embed://`), and the policy is the last thing
+before the APIServer exists. Everything that can run SQL later - requests, MCP, the heartbeat, warm-up, the
+config service - runs under it.
+
+**Why preload extensions:** after the switch nothing new can load, and an autoload fails late, inside a request.
+httpfs (every `s3://`/`http(s)://` read and the remote config itself), ducklake, azure when referenced, and
+whatever connection inits load (and `aws` for their `CREDENTIAL_CHAIN`) are loaded before. AWS Secrets
+Manager auth needs none of them: its `init` runs in a private DuckDB (#254). Autoinstall is switched off: DuckDB
+would still download from its official repositories.
+
+**Why lock the configuration:** with the settings open, a template could undo the policy or route around it
+(`SET http_proxy`, `SET secret_directory` to write a persistent secret anywhere, `SET temp_directory`).
+`allowed_configs` lists exactly the four settings flAPI SETs per connection after startup, so nothing of flAPI's
+own breaks.
+
+**Why flAPI checks templates against an allowlist itself:** DuckDB allows `INSTALL x FROM core` with external
+access off, and a loaded extension is native code outside any file policy. A temporary secret is instance-wide: one
+template's `CREATE SECRET (TYPE s3, ENDPOINT ..., SCOPE 's3://<allowed bucket>/')` redirected every endpoint's
+reads of the allowed bucket, and flAPI's own template reads, to another host (measured on v26.11.23). `IMPORT
+DATABASE` runs a `schema.sql` that a template can `COPY` into an allowed directory first. The first version refused
+named statements behind a keyword pre-filter; review found `EXPLAIN ANALYZE CREATE SECRET` and `EXPLAIN ANALYZE DROP
+SECRET zz_flapi_s3` walking past it. So every rendered template is parsed and each statement must be of an allowed
+type, recursing into `EXPLAIN` and `PREPARE`; `SET`/`RESET` must stay in the session (the configuration lock checks
+a setting's name, not its scope). Unparsable SQL is refused. Extensions belong in a connection `init` or
+`duckdb.default-extensions`, secrets in a connection `init`.
+
+**Why the extension directory is not allowed:** allowed directories are writable. A template that could write
+`<extension_directory>/httpfs.duckdb_extension` would run its code at the next start. Nothing needs the directory
+after the preload.
+
+**Known limit - allowed directories are writable:** DuckDB has one list for reads and writes. A template can
+`COPY ... TO` a file under the config directory - `flapi.yaml` included, which a local deployment would then start
+with `external-access: full` - `template.path` or the DuckLake `data-path`; with a remote config, into its own bucket
+prefix with flAPI's credentials. Keep those credentials and files read-only where possible.
+
+**Known limit - redirects:** DuckDB checks the URL of an HTTP request, then follows redirects without checking
+again, so an allowed http(s) origin that redirects reaches anywhere. Allow only origins that do not redirect.
+
+**Not covered:** whoever writes `flapi.yaml` chooses the mode (`full` is one line away for a bucket writer);
+connection `init` SQL and `duckdb:` settings run before the policy (an endpoint's
+`auth.from-aws-secretmanager.init` does not: its private DuckDB is switched off and locked the same way before it
+runs); a local `flapi.yaml` with a remote
+`template.path` is `full` under `auto`.
+
+**Code:** `src/database_manager.cpp` (`applyExternalAccessPolicy`, `ComputeExternalAccessAllowList`),
+`src/external_access_policy.cpp`, `src/config_manager.cpp` (`parseDuckDBHardeningConfig`), `src/main.cpp`;
+tests `test/integration/test_external_access.py`.
+
 ## Summary
 
 These design decisions prioritize:
@@ -758,5 +817,6 @@ These design decisions prioritize:
 7. **Observability** - One request identity across traces, audit and logs (#10)
 8. **Elasticity** - Nothing heavy on the boot path; batch data is produced once and read in place (#11)
 9. **Honesty** - A key that is configured is enforced, or warns that it is not (#12)
+10. **Least privilege** - Templates from a remote origin reach only what the deployment uses (#14)
 
 For implementation details, see the [component documentation](./components/).

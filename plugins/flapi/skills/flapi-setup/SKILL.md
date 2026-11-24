@@ -62,6 +62,25 @@ service or `flapi_*` tools to write endpoints: upload the `.yaml`/`.sql` files t
 `flapi -c flapi.yaml --validate-config`, and restart flAPI (YAML is read at boot; SQL within `storage.cache.ttl`).
 Whoever can write the bucket can run SQL as the server: give flAPI read-only, prefix-scoped credentials.
 
+**A remote `flapi.yaml` (`-c s3://bucket/flapi.yaml`) runs its templates with external access off**
+(`duckdb-hardening.external-access: auto`). They can read the config's own prefix, `template.path` and the DuckLake
+`data-path`; `/etc/passwd`, other buckets and URLs fail (`Permission Error: ... disabled by configuration`), and
+flAPI refuses `PRAGMA`, `IMPORT`/`EXPORT DATABASE`, `ATTACH`/`DETACH`, `INSTALL`/`LOAD`, `CREATE`/`DROP SECRET` and
+`SET GLOBAL` in a template, also inside `EXPLAIN`/`PREPARE` (write `SET SESSION`). Startup logs
+`external access: restricted (...; allowed: ...)`. Another bucket the templates read goes in the list; `full` turns
+it off. A local `flapi.yaml` with a remote `template.path` stays `full` under `auto`: set `restricted` yourself.
+
+```yaml
+duckdb-hardening:
+  external-access: restricted          # auto (default) | full | restricted
+  allowed-directories: [s3://shared-reference-data/]
+```
+
+Under `restricted`, load extensions in a connection `init` (or `duckdb.default-extensions`, which REPLACES the
+defaults httpfs, ducklake, fts, json, postgres, sqlite, parquet: list them too) and create secrets in a connection
+`init`; both run before the lock. Extensions only templates use (excel, spatial, iceberg, delta) must be loaded there.
+An allowed http(s) origin must not redirect: redirects are not re-checked.
+
 ## Install
 
 ```bash

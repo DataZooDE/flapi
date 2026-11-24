@@ -121,6 +121,8 @@ Cache design is covered in `flapi-cache-design` and refresh tuning in `flapi-cac
 | `cors.allow-origins` | none: `Access-Control-Allow-Origin: *` | a list; once set, only listed origins get CORS headers; `"*"` allows all (`CORS_WILDCARD_WITH_AUTH` warning when any auth is on) |
 | `cors.allow-headers`, `cors.allow-methods` | – | lists |
 | `enforce-https.enabled` | `false` | serve TLS directly; needs `ssl-cert-file` and `ssl-key-file`; must be a map |
+| `duckdb-hardening.external-access` | `auto` | `auto` / `full` / `restricted`; `auto` = `restricted` when `--config` is remote. Restricted: templates reach only the config dir or URL prefix, `template.path`, the DuckLake `data-path`, `embed://` in a bundle and the lists below; DuckDB settings are locked; templates may not use `PRAGMA`, `ATTACH`, `INSTALL`/`LOAD`, `CREATE SECRET` or `SET GLOBAL`. **Top level**, not under `duckdb:` |
+| `duckdb-hardening.allowed-directories`, `.allowed-paths` | `[]` | extra prefixes / files under `restricted` (relative = working directory); they are writable too |
 
 ```yaml
 rate_limit:

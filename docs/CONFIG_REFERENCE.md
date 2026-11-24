@@ -19,6 +19,7 @@ This document provides a complete reference for all configuration options in flA
    - [2.2 Template Configuration](#22-template-configuration)
    - [2.3 Connections](#23-connections)
    - [2.4 DuckDB Configuration](#24-duckdb-configuration)
+   - [2.4.1 DuckDB Hardening (`duckdb-hardening`)](#241-duckdb-hardening-duckdb-hardening)
    - [2.5 DuckLake Configuration](#25-ducklake-configuration)
    - [2.6 MCP Configuration](#26-mcp-configuration)
    - [2.7 Authentication (Global)](#27-authentication-global)
@@ -454,6 +455,93 @@ duckdb:
   ([CLI_REFERENCE § 3](./CLI_REFERENCE.md)).
 
 > **Implementation:** `src/database_manager.cpp` | **Tests:** `test/cpp/database_manager_test.cpp`
+
+### 2.4.1 DuckDB Hardening (`duckdb-hardening`)
+
+What SQL templates may reach outside the database (#253). A **top-level** block, not under `duckdb:` (every
+scalar there is handed to DuckDB as a setting).
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `duckdb-hardening.external-access` | string | `auto` | `auto`, `full` or `restricted`. `auto` is `restricted` when the main config file (`--config`) is remote (`s3://`, `gs://`, `az://`, `http(s)://`, ...) and `full` otherwise; a packed bundle counts as local. Anything else stops startup naming the key |
+| `duckdb-hardening.allowed-directories` | list | `[]` | Extra prefixes templates may read and write under `restricted`. Relative entries resolve against the working directory; each gets a trailing `/`; URLs (`s3://other-bucket/data/`) are kept as written |
+| `duckdb-hardening.allowed-paths` | list | `[]` | Extra single files, same rules without the trailing `/` |
+
+An unknown key inside the block, a scalar where a list belongs, or an empty entry stops startup.
+
+```yaml
+duckdb-hardening:
+  external-access: restricted
+  allowed-directories:
+    - s3://shared-reference-data/          # another bucket the templates read
+    - /srv/flapi/data
+```
+
+**What `restricted` does**, once, at the very end of startup (after the DuckLake ATTACH, connection inits and
+the cloud credentials), in this order:
+
+1. Loads the extensions flAPI needs: `httpfs`, `ducklake` (cache on), `azure` (when something names `az://`),
+   every extension a connection `init` LOADs/INSTALLs, and `aws` for its `CREDENTIAL_CHAIN` (an AWS Secrets
+   Manager `init` runs in a private DuckDB and is not affected). Turns
+   `autoinstall_known_extensions` off.
+2. `SET allowed_directories` to: the config's directory (for a remote config its URL prefix, query string
+   stripped), `template.path`, the DuckLake `data-path`, `embed://` in a packed bundle, and the lists above.
+   `allowed_paths` to `allowed-paths`. DuckDB adds every attached database file (main database, DuckLake
+   catalog, their WALs) and its temp directory by itself.
+3. `SET enable_external_access = false`: any other file, URL, bucket, ATTACH target or extension load is refused
+   (`Permission Error: ... disabled by configuration`).
+4. `SET lock_configuration = true` with `allowed_configs` = `TimeZone`, `default_order`, `enable_profiling`,
+   `tracked_metrics` (what flAPI itself sets per connection). A template can change no other setting
+   (`secret_directory`, `http_proxy`, `allowed_directories`, ...).
+
+While restricted, every rendered template (endpoint, cache populate, write, MCP tool, config-service expand) is
+parsed and checked against an **allowlist of statement types** before DuckDB sees it
+(`src/external_access_policy.cpp`). Allowed: `SELECT`/`WITH`, `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `CREATE`/`DROP`/
+`ALTER` of tables, views, macros, schemas, sequences, indexes and types (`OR REPLACE`, `AS SELECT`), `COPY` (within the
+allowed directories), transactions, `CALL` of table functions (`CHECKPOINT` is one), `VACUUM`/`ANALYZE`,
+`PREPARE`/`EXECUTE` and `EXPLAIN` of an allowed statement, `SET SESSION`/`RESET SESSION`, `SET VARIABLE`, and a bare
+`SET` of a setting that defaults to the session (`USE`, `schema`, `search_path`). Everything else is refused with
+`... is not allowed in a template: external access is restricted (duckdb-hardening.external-access)`:
+`PRAGMA` (including `IMPORT DATABASE`, which runs `<dir>/schema.sql` verbatim), `EXPORT DATABASE`, `ATTACH`/`DETACH`,
+`COPY FROM DATABASE`, `INSTALL`/`LOAD`/`UPDATE EXTENSIONS`, `CREATE`/`DROP SECRET`, `SET GLOBAL`/`RESET GLOBAL`, and a
+bare `SET` of a global-default setting (`SET default_order`, `SET TimeZone`: write `SET SESSION`). Wrapping does not
+help: `EXPLAIN ANALYZE` and `PREPARE` are checked by their inner statement. SQL flAPI cannot parse is refused.
+Why: DuckDB still lets `INSTALL ... FROM core` reach the official repository with external access off, and a
+temporary secret is instance-wide (a template's `CREATE SECRET (TYPE s3, ENDPOINT ..., SCOPE 's3://your-bucket/')`
+redirects every endpoint's reads of that bucket). Load extensions and create secrets at startup instead: `LOAD` in a
+connection `init`, or `duckdb.default-extensions` - which **replaces** the defaults (`httpfs, ducklake, fts, json,
+postgres, sqlite, parquet`), so list those too. Extensions only templates use (`excel`, `spatial`, `iceberg`,
+`delta`, `aws`, ...) must be listed: nothing can load after startup. `aws` is preloaded for you when a connection
+`init` uses `credential_chain`; `azure` when anything names `az://`. An endpoint's `auth.from-aws-secretmanager.init`
+runs in a private DuckDB with external access off and its configuration locked: it can create its secret (and
+`LOAD` httpfs/aws, loaded for it beforehand), but cannot read or write files, reach the network or `INSTALL`.
+
+Startup also loads the persistent secrets (`secret_directory` is never allowed) and allows the CA bundle httpfs needs
+for https: whichever of `/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem`,
+`/etc/pki/tls/certs/ca-bundle.crt`, `/etc/ssl/ca-bundle.pem`, `/etc/ssl/cert.pem` exist, plus `SSL_CERT_FILE` and
+`ca_cert_file` when set (`SSL_CERT_DIR` is not allowed: use a bundle file). The DuckLake data path stored in the
+catalog is allowed as well as the configured one. `flapi cache refresh` (the one-shot) applies the same policy.
+
+The policy is logged once at startup:
+`external access: restricted (auto: the configuration is remote; allowed: s3://bucket/, ...)` or
+`external access: full (auto: the configuration is local)`.
+
+**Limits:**
+- Allowed directories and paths are **writable** too: a template can `COPY ... TO` a file under the config
+  directory, `template.path` or the DuckLake `data-path` (with a remote config, into the config's own bucket prefix
+  with flAPI's credentials). That includes **`flapi.yaml` itself** when the config directory is local: a template can
+  overwrite it with `external-access: full` for the next start. With a process running as root, the allowed CA
+  bundle is writable as well. Keep flAPI's credentials and files read-only where the deployment allows it.
+- **HTTP redirects are followed without re-checking the allow list** (DuckDB checks the first URL only). Do not
+  allow an http(s) origin that redirects, or one whose redirects you do not control.
+- An endpoint YAML `{{include}}` outside the config/template prefix fails on a hot reload under `restricted` (the
+  reload reads through the restricted database).
+- With a **local** `flapi.yaml` and a remote `template.path`, `auto` is `full`; set `restricted` yourself.
+- Whoever writes `flapi.yaml` chooses the mode: with the config in a bucket, the bucket writer can set `full`.
+- Connection `init` SQL and the `duckdb:` settings run at startup, before the policy, with full access.
+
+> **Implementation:** `src/database_manager.cpp` (`applyExternalAccessPolicy`), `src/external_access_policy.cpp` |
+> **Tests:** `test/integration/test_external_access.py`
 
 ### 2.5 DuckLake Configuration
 

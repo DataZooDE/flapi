@@ -25,6 +25,9 @@
 #include "database_health.hpp"
 #include "cache_refresh_command.hpp"
 #include "extension_installer.hpp"
+#include "external_access_policy.hpp"
+#include "vfs_adapter.hpp"
+#include <regex>
 #include <chrono>
 #include <thread>
 #include "duckdb_raii.hpp"
@@ -453,6 +456,320 @@ void DatabaseManager::logDuckDBVersion() {
 
     DuckDBString version_wrapper(duckdb_value_varchar(&executor.result, 0, 0));
     CROW_LOG_DEBUG << "DuckDB DB Version: " << version_wrapper.to_string();
+}
+
+namespace {
+
+// A local path as DuckDB will compare it: absolute and normalised. URLs as written
+// minus their query string - a signed URL's signature is not a prefix of anything,
+// and must not reach the log either.
+std::string AllowListEntry(const std::string& path, bool directory) {
+    std::string entry;
+    if (path.rfind("file://", 0) == 0) {
+        return AllowListEntry(path.substr(7), directory);
+    }
+    if (PathSchemeUtils::IsRemotePath(path) || path.find("://") != std::string::npos) {
+        entry = PathSchemeUtils::StripQuery(path);
+    } else {
+        entry = std::filesystem::absolute(std::filesystem::path(path)).lexically_normal().string();
+    }
+    if (directory && (entry.empty() || entry.back() != '/')) {
+        entry += '/';
+    }
+    return entry;
+}
+
+// A DuckLake data path is a directory; a metadata path that names a backend
+// (`postgres:...`, `sqlite:...`) is not a file of ours.
+bool IsPlainPath(const std::string& path) {
+    if (path.empty()) {
+        return false;
+    }
+    if (path.find("://") != std::string::npos) {
+        return true;
+    }
+    const auto colon = path.find(':');
+    // `C:\...` is a drive letter, not a scheme.
+    return colon == std::string::npos || colon == 1;
+}
+
+bool NamesAzure(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return text.find("az://") != std::string::npos || text.find("azure://") != std::string::npos ||
+           text.find("abfss://") != std::string::npos || text.find("abfs://") != std::string::npos;
+}
+
+// The extensions an init statement LOADs or INSTALLs.
+void CollectLoadedExtensions(const std::string& sql, std::vector<std::string>& out) {
+    static const std::regex kLoad(R"((?:^|[;\s(])(?:force\s+)?(?:install|load)\s+['"]?([A-Za-z0-9_]+))",
+                                  std::regex::icase);
+    for (std::sregex_iterator it(sql.begin(), sql.end(), kLoad), end; it != end; ++it) {
+        std::string name = (*it)[1].str();
+        std::transform(name.begin(), name.end(), name.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (std::find(out.begin(), out.end(), name) == out.end()) {
+            out.push_back(name);
+        }
+    }
+}
+
+std::string SqlStringList(const std::vector<std::string>& items) {
+    std::string list = "[";
+    for (const auto& item : items) {
+        list += (list.size() > 1 ? ", " : "") + std::string("'") + sql::EscapeSqlLiteral(item) + "'";
+    }
+    return list + "]";
+}
+
+}  // namespace
+
+DatabaseManager::ExternalAccessAllowList DatabaseManager::ComputeExternalAccessAllowList(const ConfigManager& config,
+                                                                                         bool bundle_present) {
+    ExternalAccessAllowList allow;
+    const auto add_directory = [&](const std::string& path) {
+        if (path.empty()) {
+            return;
+        }
+        const auto entry = AllowListEntry(path, true);
+        if (std::find(allow.directories.begin(), allow.directories.end(), entry) == allow.directories.end()) {
+            allow.directories.push_back(entry);
+        }
+    };
+
+    if (bundle_present) {
+        // Config and templates are served from the archive by flAPI itself, never
+        // through DuckDB; data files the bundle carries are read as embed://.
+        allow.directories.push_back("embed://");
+    } else {
+        // The config's own directory - for a remote config, its URL prefix: data next
+        // to flapi.yaml in the bucket is what such a deployment reads.
+        add_directory(config.getBasePath().empty() ? std::string(".") : config.getBasePath());
+        add_directory(config.getTemplatePath());
+    }
+
+    const auto& ducklake = config.getDuckLakeConfig();
+    if (ducklake.enabled && IsPlainPath(ducklake.data_path)) {
+        add_directory(ducklake.data_path);
+    }
+    // The DuckLake metadata file and the main database are added by DuckDB itself
+    // when external access goes off (every attached database path, with its WAL).
+
+    const auto add_path = [&](const std::string& path) {
+        if (path.empty()) {
+            return;
+        }
+        const auto entry = AllowListEntry(path, false);
+        if (std::find(allow.paths.begin(), allow.paths.end(), entry) == allow.paths.end()) {
+            allow.paths.push_back(entry);
+        }
+    };
+
+    const auto& hardening = config.getDuckDBHardeningConfig();
+    for (const auto& directory : hardening.allowed_directories) {
+        add_directory(directory);
+    }
+    for (const auto& path : hardening.allowed_paths) {
+        add_path(path);
+    }
+
+    // The CA bundle httpfs verifies https with: without it every https read (and an
+    // https config) fails with "Cannot read a CA certificate bundle". The candidates
+    // are httpfs's own list (its binary, DuckDB 2.0.1), then SSL_CERT_FILE and
+    // `ca_cert_file`. Single files only: SSL_CERT_DIR is not allowed, since an allowed
+    // directory is writable and a template could plant a CA there.
+    for (const char* bundle : {"/etc/ssl/certs/ca-certificates.crt", "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+                               "/etc/pki/tls/certs/ca-bundle.crt", "/etc/ssl/ca-bundle.pem", "/etc/ssl/cert.pem"}) {
+        std::error_code ec;
+        if (std::filesystem::exists(bundle, ec)) {
+            add_path(bundle);
+        }
+    }
+    if (const char* env = std::getenv("SSL_CERT_FILE"); env != nullptr && *env != '\0') {
+        add_path(env);
+    }
+    for (const auto& [key, value] : config.getDuckDBConfig().settings) {
+        std::string lowered = key;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (lowered == "ca_cert_file") {
+            add_path(value);
+        }
+    }
+    return allow;
+}
+
+std::vector<std::string> DatabaseManager::ComputeExternalAccessPreload(const ConfigManager& config) {
+    std::vector<std::string> preload = {"httpfs"};
+    if (config.getDuckLakeConfig().enabled) {
+        preload.push_back("ducklake");
+    }
+    // The same places main() looks for az:// when it decides to set up Azure.
+    const auto& ducklake = config.getDuckLakeConfig();
+    bool azure = NamesAzure(config.getTemplatePath()) || NamesAzure(config.getBasePath()) ||
+                 NamesAzure(ducklake.metadata_path) || NamesAzure(ducklake.data_path);
+    // AWS Secrets Manager auth needs nothing here: its users are fetched by the AWS
+    // SDK and its `init` runs in a private DuckDB of its own (#254).
+    bool aws = false;
+    const auto credential_chain = [](const std::string& sql) {
+        std::string lowered = sql;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return lowered.find("credential_chain") != std::string::npos;
+    };
+    for (const auto& [name, connection] : config.getConnections()) {
+        azure = azure || NamesAzure(connection.getInit());
+        for (const auto& [key, value] : connection.properties) {
+            azure = azure || NamesAzure(value);
+        }
+        aws = aws || credential_chain(connection.getInit());
+        CollectLoadedExtensions(connection.getInit(), preload);
+    }
+    for (const auto& [enabled, name] : {std::pair<bool, const char*>{azure, "azure"}, {aws, "aws"}}) {
+        if (enabled && std::find(preload.begin(), preload.end(), name) == preload.end()) {
+            preload.push_back(name);
+        }
+    }
+    return preload;
+}
+
+void DatabaseManager::applyExternalAccessPolicy() {
+    if (!config_manager || db == nullptr) {
+        throw std::runtime_error("external access policy: the database is not initialised");
+    }
+    const auto& hardening = config_manager->getDuckDBHardeningConfig();
+    const bool remote = config_manager->isRemoteConfig();
+    bool restricted = false;
+    std::string reason;
+    switch (hardening.external_access) {
+        case ExternalAccessMode::Full:
+            reason = "duckdb-hardening.external-access: full";
+            break;
+        case ExternalAccessMode::Restricted:
+            restricted = true;
+            reason = "duckdb-hardening.external-access: restricted";
+            break;
+        case ExternalAccessMode::Auto:
+            restricted = remote;
+            reason = remote ? "auto: the configuration is remote" : "auto: the configuration is local";
+            break;
+    }
+    if (!restricted) {
+        SetExternalAccessRestricted(false);
+        CROW_LOG_INFO << "external access: full (" << reason << ")";
+        return;
+    }
+
+    duckdb_connection conn = nullptr;
+    if (duckdb_connect(db, &conn) != DuckDBSuccess) {
+        throw std::runtime_error("external access policy: could not open a DuckDB connection");
+    }
+    const auto run = [&](const std::string& statement) {
+        duckdb_result result;
+        const bool ok = duckdb_query(conn, statement.c_str(), &result) == DuckDBSuccess;
+        std::string error;
+        if (!ok) {
+            const char* message = duckdb_result_error(&result);
+            error = message ? message : "unknown error";
+        }
+        duckdb_destroy_result(&result);
+        if (!ok) {
+            throw std::runtime_error("external access policy: `" + statement + "` failed: " + error);
+        }
+    };
+
+    try {
+        // 1. Everything flAPI will need, loaded while loading is still possible:
+        // httpfs reads every s3/gcs/http(s) path and the remote config itself; azure
+        // when something names az://; ducklake when the cache is on (its ATTACH loaded
+        // it already); whatever connection inits load, and aws for their CREDENTIAL_CHAIN.
+        const auto preload = ComputeExternalAccessPreload(*config_manager);
+        const bool offline = config_manager->getDuckDBConfig().offline_extensions;
+        for (const auto& extension : preload) {
+            const std::string error = LoadOrInstallExtension(conn, extension, offline);
+            if (!error.empty()) {
+                CROW_LOG_WARNING << "external access policy: could not preload extension '" << extension
+                                 << "': " << error << ". It cannot be loaded later either.";
+            }
+        }
+        // DuckDB still INSTALLs from the official repositories with external access off;
+        // an autoload would download an extension it then may not load.
+        run("SET GLOBAL autoinstall_known_extensions = false");
+
+        // Persistent secrets load lazily, by listing secret_directory on the first
+        // lookup - which, after the switch, is refused, and every read needing a secret
+        // fails. Load them now; the directory itself is never allowed (a template could
+        // plant a secret there).
+        run("SELECT count(*) FROM duckdb_secrets()");
+
+        // 2. Where templates may read and write.
+        auto allow = ComputeExternalAccessAllowList(*config_manager, FileProviderFactory::GetBundleContents() != nullptr);
+        const auto query_one = [&](const std::string& sql) -> std::optional<std::string> {
+            duckdb_result result;
+            std::optional<std::string> value;
+            if (duckdb_query(conn, sql.c_str(), &result) == DuckDBSuccess && duckdb_row_count(&result) > 0 &&
+                !duckdb_value_is_null(&result, 0, 0)) {
+                if (char* text = duckdb_value_varchar(&result, 0, 0)) {
+                    value = text;
+                    duckdb_free(text);
+                }
+            }
+            duckdb_destroy_result(&result);
+            return value;
+        };
+        // ca_cert_file as httpfs holds it (also when a connection init SET it).
+        if (const auto ca = query_one("SELECT current_setting('ca_cert_file')::VARCHAR"); ca && !ca->empty()) {
+            const auto entry = AllowListEntry(*ca, false);
+            if (std::find(allow.paths.begin(), allow.paths.end(), entry) == allow.paths.end()) {
+                allow.paths.push_back(entry);
+            }
+        }
+        // The data path the DuckLake catalog actually writes to: the one stored in the
+        // catalog, which wins over a differing configured one unless override-data-path.
+        const auto& ducklake = config_manager->getDuckLakeConfig();
+        if (ducklake_attached_) {
+            const auto stored = query_one("SELECT value FROM " +
+                                          sql::QuoteIdentifier("__ducklake_metadata_" + ducklake.alias) +
+                                          ".ducklake_metadata WHERE key = 'data_path'");
+            if (stored && IsPlainPath(*stored)) {
+                const auto entry = AllowListEntry(*stored, true);
+                if (std::find(allow.directories.begin(), allow.directories.end(), entry) == allow.directories.end()) {
+                    allow.directories.push_back(entry);
+                }
+            }
+        }
+        run("SET GLOBAL allowed_directories = " + SqlStringList(allow.directories));
+        run("SET GLOBAL allowed_paths = " + SqlStringList(allow.paths));
+
+        // 3. Off. DuckDB adds every attached database (the main one, the DuckLake
+        // catalog) and the temp directory to the allowed paths as it does.
+        run("SET GLOBAL enable_external_access = false");
+
+        // 4. Locked: a template cannot undo any of the above, nor point secret_directory,
+        // http_proxy or temp_directory somewhere else. allowed_configs is exactly what
+        // flAPI itself SETs per connection after startup: the session TimeZone fallback
+        // and default_order (QueryExecutor), and the profiling pair (tracing).
+        run("SET GLOBAL allowed_configs = ['TimeZone', 'default_order', 'enable_profiling', 'tracked_metrics']");
+        run("SET GLOBAL lock_configuration = true");
+
+        duckdb_disconnect(&conn);
+        SetExternalAccessRestricted(true);
+
+        std::string allowed;
+        for (const auto& entry : allow.directories) {
+            allowed += (allowed.empty() ? "" : ", ") + entry;
+        }
+        for (const auto& entry : allow.paths) {
+            allowed += (allowed.empty() ? "" : ", ") + entry;
+        }
+        CROW_LOG_INFO << RedactUrlsInText("external access: restricted (" + reason + "; allowed: " +
+                                          (allowed.empty() ? std::string("nothing") : allowed) + ")");
+    } catch (...) {
+        if (conn != nullptr) {
+            duckdb_disconnect(&conn);
+        }
+        throw;
+    }
 }
 
 std::vector<std::string> DatabaseManager::getTableNames(const std::string& schema) {

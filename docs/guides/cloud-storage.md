@@ -72,6 +72,13 @@ way; plain `https://` has no directory listing, so add a `manifest.txt` (one end
 per line) at the root of `template.path`. See
 [CONFIG_REFERENCE](../CONFIG_REFERENCE.md#remote-template-paths).
 
+> **Templates of a remote config run with external access off** (#253). They read the config's own prefix
+> (`s3://my-bucket/configs/`), `template.path` and the DuckLake `data-path`; a local file, another bucket or a URL
+> fails with `Permission Error: ... disabled by configuration`, and so do `SET`, `INSTALL`/`LOAD` and
+> `CREATE SECRET` in a template. List what else they read under `duckdb-hardening.allowed-directories`, or set
+> `duckdb-hardening.external-access: full`. Startup logs the policy: `external access: restricted (...)`. See
+> [CONFIG_REFERENCE § 2.4.1](../CONFIG_REFERENCE.md#241-duckdb-hardening-duckdb-hardening).
+
 > **Air-gapped hosts:** a remote `--config` is read before the config exists, so `duckdb.extension_directory`
 > in that file does not apply to this first read. Set `FLAPI_EXTENSION_DIRECTORY` (httpfs pre-installed there)
 > and `FLAPI_EXTENSIONS_OFFLINE=1` in the environment instead.

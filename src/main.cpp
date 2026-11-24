@@ -1031,7 +1031,8 @@ int main(int argc, char* argv[])
             options.method = cache_refresh_cmd.get<std::string>("--method");
             rc = RunCacheRefreshCommand(cm, options, std::cout);
         } catch (const std::exception& e) {
-            std::cerr << "flapi cache refresh: " << e.what() << "\n";
+            // A failed external access policy quotes its SET statement, which may carry a signed URL.
+            std::cerr << "flapi cache refresh: " << flapi::RedactUrlsInText(e.what()) << "\n";
             rc = 1;
         }
         // Release the catalog cleanly (DuckLake detach) before the process exits.
@@ -1409,6 +1410,21 @@ int main(int argc, char* argv[])
 
     // Verify storage health at startup
     verifyStorageHealth(config_manager);
+
+    // duckdb-hardening (#253), LAST in the database's startup: after the DuckLake
+    // ATTACH, the connection inits, the cloud credentials and embed://. Everything
+    // after it - the APIServer and its AWS Secrets Manager init statements, the
+    // heartbeat, warm-up, every request - runs under the policy. A policy that could
+    // not be applied in full stops the server rather than serve without it.
+    try {
+        DatabaseManager::getInstance()->applyExternalAccessPolicy();
+    } catch (const std::exception& e) {
+        // e.what() already starts with "external access policy:"; a statement in it may
+        // carry a signed URL.
+        CROW_LOG_ERROR << "duckdb-hardening: " << flapi::RedactUrlsInText(e.what());
+        DatabaseManager::getInstance()->shutdown();
+        return 1;
+    }
 
     startup_read_memo.reset();
 

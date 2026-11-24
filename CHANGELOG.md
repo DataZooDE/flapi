@@ -49,6 +49,35 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 - **Basic auth does not reveal which usernames exist.** An unknown username is checked against a dummy hash of the
   same kind and cost as the stored ones (inline `users:` and Secrets Manager alike), and plaintext and MD5 passwords
   are compared in constant time.
+- **Templates of a remote config run with DuckDB's external access off (#253).** New top-level block
+  `duckdb-hardening` (`external-access: auto|full|restricted`, `allowed-directories`, `allowed-paths`). `auto`, the
+  default, is `restricted` when `--config` is remote (`s3://`, `gs://`, `az://`, `http(s)://`) and `full` otherwise,
+  so local configs and packed bundles see no change. `restricted` preloads the extensions flAPI needs, allows the
+  config's directory or URL prefix, `template.path`, the DuckLake `data-path`, `embed://` in a bundle and the listed
+  extras, switches `enable_external_access` off and locks the DuckDB configuration. Before, a template could read
+  any local file (`read_csv('/etc/passwd')`), any URL or bucket, ATTACH or COPY anywhere and LOAD any extension.
+- While restricted, each template statement must be of an allowed type (queries, DML, MERGE, CREATE/DROP/ALTER of
+  tables, views, macros, schemas, COPY, transactions, CALL, session-scoped SET; EXPLAIN and PREPARE judged by what
+  they wrap). Refused: PRAGMA and IMPORT/EXPORT DATABASE, ATTACH/DETACH, INSTALL/LOAD, CREATE/DROP SECRET, SET GLOBAL.
+  A template's temporary S3 secret with its own `ENDPOINT` redirected every endpoint's reads of the config bucket -
+  and flAPI's own template reads - to another host.
+- Restricted startup loads persistent secrets and allows the system CA bundle (plus `SSL_CERT_FILE`/`ca_cert_file`),
+  so https and stored secrets keep working; `flapi cache refresh` applies the same policy.
+- The policy is logged once at startup: `external access: restricted (...; allowed: ...)` or
+  `external access: full (...)`.
+
+### Upgrade notes
+
+- **Remote-config deployments that read other buckets or local paths** must list them in
+  `duckdb-hardening.allowed-directories` (or `allowed-paths`), or set `duckdb-hardening.external-access: full`.
+  Without that, those reads now fail with `Permission Error: ... disabled by configuration`.
+- Under `restricted`, an extension a template needs must be loaded at startup: `LOAD` it in a connection `init`, or
+  list it in `duckdb.default-extensions`, which replaces the defaults (`httpfs, ducklake, fts, json, postgres,
+  sqlite, parquet`). Secrets go in a connection `init`. A template may only `SET SESSION` (or `SET` a session-default
+  setting) of `TimeZone`, `default_order`, `enable_profiling`, `tracked_metrics`, `schema`/`search_path`; `ATTACH`,
+  `PRAGMA` and `SET GLOBAL` in templates fail.
+- Under `restricted`, an endpoint's `auth.from-aws-secretmanager.init` runs with external access off and a locked
+  configuration in its private DuckDB: creating its secret works; `INSTALL`, file and network access in it fail.
 
 ### Fixed
 

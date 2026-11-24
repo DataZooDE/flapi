@@ -46,8 +46,9 @@ class FakeS3(http.server.BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def _handle(self):
-        FakeS3.requests_seen.append(f"{self.command} {self.path}")
-        FakeS3.auth_seen.append(self.headers.get("Authorization", ""))
+        # type(self): a subclass keeps its own record (test_external_access's module fixture).
+        type(self).requests_seen.append(f"{self.command} {self.path}")
+        type(self).auth_seen.append(self.headers.get("Authorization", ""))
         u = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(u.query)
         parts = u.path.lstrip("/").split("/", 1)

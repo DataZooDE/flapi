@@ -293,7 +293,7 @@ const std::vector<std::string>& ConfigManager::KnownTopLevelKeys() {
         "log-level", "stall-timeout-s", "log-format", "log-http-requests", "cache-schema", "telemetry",
         "template", "duckdb", "ducklake", "audit", "tracing", "storage", "mcp",
         "heartbeat", "connections", "rate_limit", "cors", "enforce-https", "auth",
-        "version", "environment-whitelist", "server"};
+        "version", "environment-whitelist", "server", "duckdb-hardening"};
     return keys;
 }
 
@@ -452,6 +452,7 @@ void ConfigManager::parseMainConfig() {
         parseRateLimitConfig();
         parseAuthConfig();
         parseDuckDBConfig();
+        parseDuckDBHardeningConfig();
         parseDuckLakeConfig();
         parseMCPConfig();
         parseAuditConfig();
@@ -593,6 +594,82 @@ const DuckDBConfig& ConfigManager::getDuckDBConfig() const {
 
 std::string ConfigManager::getDuckDBPath() const {
     return duckdb_config.db_path.empty() ? ":memory:" : duckdb_config.db_path;
+}
+
+bool ConfigManager::isRemoteConfig() const {
+    return PathSchemeUtils::IsRemotePath(config_file.string());
+}
+
+// duckdb-hardening (#253). Read here, applied by DatabaseManager::applyExternalAccessPolicy
+// once startup is done. A security block, so a typo fails instead of silently meaning auto.
+void ConfigManager::parseDuckDBHardeningConfig() {
+    duckdb_hardening_config = DuckDBHardeningConfig{};
+    const auto node = config["duckdb-hardening"];
+    if (!node) {
+        return;
+    }
+    if (!node.IsMap()) {
+        throw ConfigurationError("`duckdb-hardening` must be a mapping with external-access, "
+                                 "allowed-directories and allowed-paths",
+                                 "duckdb-hardening");
+    }
+    for (const auto& entry : node) {
+        const auto key = entry.first.as<std::string>();
+        if (key != "external-access" && key != "allowed-directories" && key != "allowed-paths") {
+            throw ConfigurationError("unknown key `duckdb-hardening." + key +
+                                         "`; the keys are external-access, allowed-directories and allowed-paths",
+                                     "duckdb-hardening." + key);
+        }
+    }
+
+    if (node["external-access"]) {
+        const auto mode = safeGet<std::string>(node, "external-access", "duckdb-hardening.external-access");
+        if (mode == "auto") {
+            duckdb_hardening_config.external_access = ExternalAccessMode::Auto;
+        } else if (mode == "full") {
+            duckdb_hardening_config.external_access = ExternalAccessMode::Full;
+        } else if (mode == "restricted") {
+            duckdb_hardening_config.external_access = ExternalAccessMode::Restricted;
+        } else {
+            throw ConfigurationError("invalid duckdb-hardening.external-access '" + mode +
+                                         "'; must be one of: auto, full, restricted",
+                                     "duckdb-hardening.external-access");
+        }
+    }
+
+    // Made absolute HERE, against the working directory, so the startup log line and
+    // the allow list show exactly what is allowed (DuckDB 2.0.1 would canonicalise a
+    // relative entry the same way). `file://` is stripped: DuckDB compares plain paths.
+    const auto read_list = [&](const YAML::Node& list, const char* key, bool directories) {
+        std::vector<std::string> out;
+        if (!list) {
+            return out;
+        }
+        const std::string yaml_path = std::string("duckdb-hardening.") + key;
+        if (!list.IsSequence()) {
+            throw ConfigurationError("`" + yaml_path + "` must be a list of paths", yaml_path);
+        }
+        for (const auto& item : list) {
+            if (!item.IsScalar() || item.Scalar().empty()) {
+                throw ConfigurationError("every entry of `" + yaml_path + "` must be a non-empty path", yaml_path);
+            }
+            std::string value = item.Scalar();
+            if (value.rfind("file://", 0) == 0) {
+                value = value.substr(7);
+            }
+            if (value.find("://") == std::string::npos) {
+                value = std::filesystem::absolute(std::filesystem::path(value)).lexically_normal().string();
+            }
+            if (directories && value.back() != '/') {
+                value += '/';
+            }
+            out.push_back(value);
+        }
+        return out;
+    };
+    duckdb_hardening_config.allowed_directories =
+        read_list(node["allowed-directories"], "allowed-directories", true);
+    duckdb_hardening_config.allowed_paths = read_list(node["allowed-paths"], "allowed-paths", false);
 }
 
 // DuckLake configuration methods

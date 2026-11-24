@@ -26,8 +26,10 @@ import http.server
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
+import tempfile
 import sys
 import threading
 import time
@@ -757,3 +759,60 @@ def test_remote_config_credentials_are_not_handed_to_templates(bucket, workdir):
         assert SECRET_KEY not in r.text, "the secret value is readable through duckdb_settings()"
     finally:
         stop(proc)
+
+
+@pytest.mark.parametrize("variant", ["keys", "legacy-init"])
+def test_secrets_manager_auth_works_under_restricted_external_access(secretsmanager, workdir, variant):
+    # #253 x #254: the policy hardens the main DuckDB only. The user fetch goes
+    # through the AWS SDK and a legacy init runs in a private DuckDB, so neither
+    # may need an extension or a setting the locked main database refuses.
+    write_project(workdir, extra="duckdb-hardening:\n  external-access: restricted\n")
+    if variant == "legacy-init":
+        init = (f"CREATE OR REPLACE SECRET {SECRET_ID} (TYPE S3, KEY_ID '{ACCESS_KEY_ID}', "
+                f"SECRET '{SECRET_KEY}', REGION '{REGION}');")
+        protected(workdir, "protected", with_keys=False, init=init)
+    proc, port, output = start(workdir, sm_env(secretsmanager))
+    try:
+        assert "external access: restricted" in output(), output()[-2000:]
+        assert_signed_by(ACCESS_KEY_ID)
+        ok = get(port, "/protected", ("alice", PASSWORD))
+        assert ok.status_code == 200, ok.text + output()[-2000:]
+        assert get(port, "/protected", ("alice", "wrong")).status_code == 401
+        # Nothing auth-related was loaded into, or left in, the main database.
+        assert "could not preload extension 'aws'" not in output()
+        r = get(port, "/peek-secrets")
+        assert r.status_code == 200, r.text
+        assert SECRET_ID not in [row["name"] for row in r.json()["data"]]
+    finally:
+        stop(proc)
+
+
+@pytest.mark.parametrize("mode", ["full", "restricted"])
+def test_an_endpoint_auth_init_is_hardened_under_restricted(secretsmanager, workdir, mode):
+    # An endpoint YAML's auth init runs in a private DuckDB (#254). Under restricted
+    # (#253) whoever writes sqls/*.yaml - the remote bucket, for a remote config -
+    # must not get file or network access through it. `full` is the control.
+    outside = tempfile.mkdtemp(prefix="flapi_sm_exfil_")
+    target = os.path.join(outside, "exfil.csv")
+    try:
+        init = (f"CREATE OR REPLACE SECRET {SECRET_ID} (TYPE S3, KEY_ID '{ACCESS_KEY_ID}', "
+                f"SECRET '{SECRET_KEY}', REGION '{REGION}'); "
+                f"COPY (SELECT 'leaked' AS v) TO '{target}';")
+        write_project(workdir, extra=f"duckdb-hardening:\n  external-access: {mode}\n")
+        protected(workdir, "protected", with_keys=False, init=init)
+        if mode == "full":
+            proc, port, output = start(workdir, sm_env(secretsmanager))
+            stop(proc)
+            assert os.path.exists(target), "control: the init's COPY should run under full"
+        else:
+            proc, port, output = launch(workdir, sm_env(secretsmanager))
+            try:
+                wait_live_or_exit(proc, port, seconds=30)
+            finally:
+                if proc.poll() is None:
+                    stop(proc)
+            assert not os.path.exists(target), (
+                "an endpoint's auth init wrote outside every allowed directory under restricted\n"
+                + output()[-2000:])
+    finally:
+        shutil.rmtree(outside, ignore_errors=True)

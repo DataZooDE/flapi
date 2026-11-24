@@ -362,6 +362,7 @@ add_library(flapi-lib STATIC
     src/cache_refresh_command.cpp
     src/database_health.cpp
     src/extension_installer.cpp
+    src/external_access_policy.cpp
     src/database_manager_cache_adapter.cpp
     src/duckdb_embed_fs.cpp
     src/config_loader.cpp

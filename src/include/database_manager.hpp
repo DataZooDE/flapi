@@ -64,6 +64,24 @@ public:
     void shutdown();
 
     void initializeDBManagerFromConfig(std::shared_ptr<ConfigManager> config_manager);
+
+    /// duckdb-hardening (#253). Called once, at the very end of startup - after the
+    /// DuckLake ATTACH, credential setup and the APIServer's own init statements are
+    /// prepared for - because everything after it runs with external access off and
+    /// the configuration locked. In `restricted` mode: preloads the extensions flAPI
+    /// needs, sets allowed_directories/allowed_paths, turns enable_external_access off
+    /// and locks the configuration. Logs the policy either way. Throws when a step of
+    /// the restricted policy fails: a half-applied policy must not serve.
+    void applyExternalAccessPolicy();
+
+    /// The prefixes `restricted` allows, as they will be handed to DuckDB.
+    struct ExternalAccessAllowList {
+        std::vector<std::string> directories;
+        std::vector<std::string> paths;
+    };
+    static ExternalAccessAllowList ComputeExternalAccessAllowList(const ConfigManager& config, bool bundle_present);
+    /// The extensions `restricted` loads before switching external access off.
+    static std::vector<std::string> ComputeExternalAccessPreload(const ConfigManager& config);
     void loadDefaultExtensions(std::shared_ptr<ConfigManager> config_manager);
     void initializeConnections(std::shared_ptr<ConfigManager> config_manager);
     void executeInitStatement(const std::string& init_statement);
