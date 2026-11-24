@@ -39,6 +39,7 @@ add_executable(flapi_tests
     cache_warmup_mode_test.cpp
     cache_scheduler_test.cpp
     extension_installer_test.cpp
+    external_access_policy_test.cpp
     ducklake_reader_test.cpp
     bundled_extensions_test.cpp
     mcp_authorization_policy_test.cpp
