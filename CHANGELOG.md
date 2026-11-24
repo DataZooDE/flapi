@@ -4,6 +4,18 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Added
+
+- **A log of every HTTP request DuckDB makes (#252).** `log-http-requests: true`
+  (or `FLAPI_LOG_HTTP_REQUESTS=1`, which wins when set) writes one `info` line per
+  S3/GCS/Azure/HTTP request into the flAPI log:
+  `duckdb http GET <url> -> 206 4ms request_id=req-...`. The id is the request
+  whose query caused it, also on DuckDB's worker threads, or `-` for startup reads
+  and the fetch of a remote `--config`. `ERR` marks a request that got no
+  response. Headers are never printed and URL credentials are redacted, even if a
+  template turns DuckDB's own redaction off. Off by default, and off it costs
+  nothing: DuckDB logging is not enabled.
+
 ### Security
 
 - **Secrets-Manager users are no longer readable by SQL templates (#254).** `auth.from-aws-secretmanager` stored

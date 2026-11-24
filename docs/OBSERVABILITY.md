@@ -416,6 +416,43 @@ line: Crow writes it before any middleware has run, so the handler holds it for 
 few instructions until the request has an id and then writes it - once - with the id
 attached.
 
+### Which object store requests did a request cause?
+
+When a template or a remote configuration reads from S3, GCS, Azure or HTTP,
+DuckDB makes the requests, and by default nothing in the flAPI log shows them.
+`log-http-requests: true` at the top level of `flapi.yaml`, or the environment
+variable `FLAPI_LOG_HTTP_REQUESTS=1`, writes one `info` line per DuckDB HTTP
+request into the normal flAPI log:
+
+```
+(2026-11-24T12:02:20.53Z) [info] duckdb http GET http://minio:9000/mybucket/data/obj3.csv -> 206 4ms request_id=req-1a846510d386e8d8
+(2026-11-24T12:02:22.65Z) [info] duckdb http HEAD http://10.0.0.9:9000/x.csv -> ERR 0ms request_id=req-93e2e434a1a7d067
+(2026-11-24T12:01:58.10Z) [info] duckdb http GET https://bucket.s3.amazonaws.com/sqls/obj.yaml -> 200 31ms request_id=-
+```
+
+- `<status>` is the HTTP status, or `ERR` when no response came back (refused,
+  timed out). DuckDB's retries are separate lines.
+- `request_id` is the request whose query made the HTTP request, also when a
+  parallel scan made it on a DuckDB worker thread, so `grep req-...` lists a
+  request's object store traffic. `-` marks requests no flAPI request caused:
+  startup, the fetch of a remote `--config`, the endpoint files under a remote
+  `template.path`, a cache refresh. With `log-format: json` the id is the
+  record's `request_id` field.
+- Headers are never printed. Credentials in the URL are redacted twice: DuckDB is
+  told `redact_http_logs = true` (again after the connection `init` statements),
+  and flAPI redacts the URL itself as well, so a template that sets
+  `redact_http_logs = false` still cannot put a signature or a password in the log.
+- The lines are `info`: `log-level: warning` hides them.
+
+`FLAPI_LOG_HTTP_REQUESTS` (`1`/`true`/`yes`/`on` or `0`/`false`/`no`/`off`)
+wins over the key in both directions. Only the variable covers the fetch of a
+remote main configuration (`flapi -c s3://...`), which happens before the
+configuration exists. Both are read once at startup.
+
+It is a debugging switch, not a metric: every request is one synchronous line.
+With it off (the default) flAPI never enables DuckDB logging, so it costs
+nothing.
+
 ### Async MCP tasks: end-to-end latency
 
 A task worker has no HTTP request in scope, so the tool's own series
@@ -523,6 +560,7 @@ overrides only what your YAML sets.
 | `OTEL_EXPORTER_OTLP_HEADERS`, `..._TRACES_HEADERS` | Merged in. A header you also set in YAML is **replaced** by the YAML value, not sent twice. |
 | `OTEL_EXPORTER_OTLP_PROTOCOL`, `..._TRACES_PROTOCOL` | Read by the SDK. flAPI overrides it only when YAML sets `protocol: http/json` — so an env protocol otherwise wins. |
 | `OTEL_EXPORTER_OTLP_CERTIFICATE`, `..._CLIENT_KEY`, `..._CLIENT_CERTIFICATE`, `..._COMPRESSION`, and the SDK's retry knobs | Honoured by the SDK; flAPI does not touch them. |
+| `FLAPI_LOG_HTTP_REQUESTS` | Not OpenTelemetry: `1`/`0` turns the DuckDB HTTP request log ([§8](#which-object-store-requests-did-a-request-cause)) on or off, over `log-http-requests`. |
 
 **These have no effect:** `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`,
 `OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG`, `OTEL_TRACES_EXPORTER`, the

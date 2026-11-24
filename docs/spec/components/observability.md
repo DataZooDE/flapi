@@ -294,6 +294,51 @@ changed.
 Lines are emitted whole, not field by field, so concurrent pooled workers cannot
 interleave a partial line.
 
+`FlapiLogHandler::RequestIdOverride` attributes the lines logged on a thread to an
+explicit request id (or `-`) instead of the ambient request. The id is still
+stamped by the handler, so it appears once: `request_id=` in text, the
+`request_id` field in JSON. A line held during startup keeps the override it was
+logged under. The ambient request's trace ids are kept only when the override is
+that request's own id.
+
+## DuckDB HTTP request log
+
+Opt-in (`log-http-requests`, or `FLAPI_LOG_HTTP_REQUESTS`, which wins). The switch
+is resolved in `ConfigManager` before the endpoint files load, because a remote
+`template.path` is fetched while they do.
+
+```mermaid
+flowchart LR
+    Q[QueryExecutor::execute*] -- "HttpRequestAttributionGuard<br/>(db, connection_id) -> request_id" --> M[(attribution map)]
+    D[DuckDB HTTPUtil::LogRequest<br/>any thread] --> L[LogManager] --> S[DuckDBHttpLogSink]
+    S -- "1. connection_id of the log context" --> M
+    S -- "2. ambient RequestContext" --> R[RequestContextScope]
+    S -- "RequestIdOverride + CROW_LOG_INFO" --> H[FlapiLogHandler]
+```
+
+- **Enabling.** `EnableDuckDBHttpRequestLog` registers a `duckdb::LogSink` named
+  `flapi_http`, makes it the log storage, enables only the `HTTP` log type and sets
+  `redact_http_logs = true`. It runs on the main database right after it opens
+  (before any connection, since a connection's logger is fixed when it is
+  created) and again after the connection `init` statements; and on the bootstrap
+  instance that reads a remote configuration (`GetBootstrapDb`,
+  `src/vfs_adapter.cpp`) once the switch is on. Off, none of this runs.
+- **Format.** DuckDB 2.0.1 logs the `HTTP` entry as the string form of a STRUCT
+  (`HTTPLogType::GetLogType()`). The sink casts it back to that type with DuckDB's
+  own cast, as `duckdb_logs_parsed()` does, rather than parsing the text. The
+  status is the number in DuckDB's enum name (`OK_200`); `INVALID` or a missing
+  response is `ERR`. The URL goes through `PathSchemeUtils::RedactUrl` as well,
+  because a template can turn DuckDB's redaction off. Unit tests build their input
+  with DuckDB's own `HTTPLogType::ConstructLogMessage`.
+- **Attribution.** DuckDB calls the sink synchronously on the thread that made the
+  request; for a parallel scan that is a DuckDB worker, where no request is
+  ambient. Every log context carries the DuckDB connection id, so
+  `QueryExecutor::execute`, `executePrepared` and `executeWithBindings` register
+  `(database instance, connection id) -> request_id` for their duration (RAII; a
+  nested call on the same connection is a no-op). The sink looks the id up there,
+  then falls back to the ambient request (flAPI's own VFS reads open a fresh
+  connection on the request thread), then to `-`.
+
 ## Source Files
 
 | File | Purpose |
@@ -309,6 +354,7 @@ interleave a partial line.
 | `src/include/trace_semconv.hpp` | Attribute keys, one pinned semconv revision |
 | `src/tracing_config.cpp` | The `tracing:` block |
 | `src/flapi_log_handler.cpp` | Log/trace correlation |
+| `src/duckdb_http_log_sink.cpp` | The opt-in DuckDB HTTP request log: sink, switch, request attribution |
 | `src/audit_logger.cpp` | Audit records |
 
 ## Related Documentation

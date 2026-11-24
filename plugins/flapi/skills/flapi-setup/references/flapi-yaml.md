@@ -16,6 +16,7 @@ under `template:`).
 | `http-host` | `0.0.0.0` | overridden by `--host`, then `FLAPI_HOST`; `127.0.0.1` = loopback only |
 | `log-level` | `info` | `debug`, `info`, `warning` (alias `warn`), `error`. `--log-level` / `FLAPI_LOG_LEVEL` win. An unknown value is a startup error. |
 | `log-format` | `text` | `json` = one JSON object per line, carrying `request_id` (and `trace_id` with tracing) |
+| `log-http-requests` | `false` | `true`: one `info` line per HTTP request DuckDB makes (S3/GCS/Azure/HTTP), with the causing `request_id` or `-`. `FLAPI_LOG_HTTP_REQUESTS` wins |
 | `stall-timeout-s` | `60` | `GET /health` answers 503 `stalled` when a request is older than this; `0` disables |
 | `server-name` | `localhost` | has **no effect**; a load warning says so |
 | `version` | – | accepted as metadata, not read |
