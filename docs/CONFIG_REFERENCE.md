@@ -481,7 +481,8 @@ duckdb-hardening:
 the cloud credentials), in this order:
 
 1. Loads the extensions flAPI needs: `httpfs`, `ducklake` (cache on), `azure` (when something names `az://`),
-   and every extension a connection `init` or an AWS Secrets Manager `init` LOADs/INSTALLs. Turns
+   every extension a connection `init` LOADs/INSTALLs, and `aws` for its `CREDENTIAL_CHAIN` (an AWS Secrets
+   Manager `init` runs in a private DuckDB and is not affected). Turns
    `autoinstall_known_extensions` off.
 2. `SET allowed_directories` to: the config's directory (for a remote config its URL prefix, query string
    stripped), `template.path`, the DuckLake `data-path`, `embed://` in a packed bundle, and the lists above.

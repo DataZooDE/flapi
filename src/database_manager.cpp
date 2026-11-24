@@ -608,7 +608,9 @@ std::vector<std::string> DatabaseManager::ComputeExternalAccessPreload(const Con
     const auto& ducklake = config.getDuckLakeConfig();
     bool azure = NamesAzure(config.getTemplatePath()) || NamesAzure(config.getBasePath()) ||
                  NamesAzure(ducklake.metadata_path) || NamesAzure(ducklake.data_path);
-    bool aws = config.getGlobalAuthConfig().from_aws_secretmanager.has_value();
+    // AWS Secrets Manager auth needs nothing here: its users are fetched by the AWS
+    // SDK and its `init` runs in a private DuckDB of its own (#254).
+    bool aws = false;
     const auto credential_chain = [](const std::string& sql) {
         std::string lowered = sql;
         std::transform(lowered.begin(), lowered.end(), lowered.begin(),
@@ -622,14 +624,6 @@ std::vector<std::string> DatabaseManager::ComputeExternalAccessPreload(const Con
         }
         aws = aws || credential_chain(connection.getInit());
         CollectLoadedExtensions(connection.getInit(), preload);
-    }
-    if (const auto endpoints = config.getEndpoints()) {
-        for (const auto& endpoint : *endpoints) {
-            if (endpoint.auth.from_aws_secretmanager) {
-                aws = true;
-                CollectLoadedExtensions(endpoint.auth.from_aws_secretmanager->init, preload);
-            }
-        }
     }
     for (const auto& [enabled, name] : {std::pair<bool, const char*>{azure, "azure"}, {aws, "aws"}}) {
         if (enabled && std::find(preload.begin(), preload.end(), name) == preload.end()) {
@@ -688,8 +682,7 @@ void DatabaseManager::applyExternalAccessPolicy() {
         // 1. Everything flAPI will need, loaded while loading is still possible:
         // httpfs reads every s3/gcs/http(s) path and the remote config itself; azure
         // when something names az://; ducklake when the cache is on (its ATTACH loaded
-        // it already); whatever connection inits and the AWS Secrets Manager inits load
-        // (the latter run when the APIServer starts, after this).
+        // it already); whatever connection inits load, and aws for their CREDENTIAL_CHAIN.
         const auto preload = ComputeExternalAccessPreload(*config_manager);
         const bool offline = config_manager->getDuckDBConfig().offline_extensions;
         for (const auto& extension : preload) {

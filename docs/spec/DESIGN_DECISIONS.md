@@ -763,7 +763,8 @@ config service - runs under it.
 
 **Why preload extensions:** after the switch nothing new can load, and an autoload fails late, inside a request.
 httpfs (every `s3://`/`http(s)://` read and the remote config itself), ducklake, azure when referenced, and
-whatever connection and AWS Secrets Manager inits load are loaded before. Autoinstall is switched off: DuckDB
+whatever connection inits load (and `aws` for their `CREDENTIAL_CHAIN`) are loaded before. AWS Secrets
+Manager auth needs none of them: its `init` runs in a private DuckDB (#254). Autoinstall is switched off: DuckDB
 would still download from its official repositories.
 
 **Why lock the configuration:** with the settings open, a template could undo the policy or route around it
