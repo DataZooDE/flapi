@@ -2,6 +2,7 @@
 
 #include "duckdb_http_log_sink.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <string>
 #include <thread>
@@ -159,4 +160,53 @@ TEST_CASE("attribution guards: nested, scoped and concurrent", "[duckdb_http_log
             CHECK_FALSE(LookupHttpRequestAttribution(&db_a, static_cast<std::uint64_t>(t)).has_value());
         }
     }
+}
+
+// Review S1/S2: what DuckDB logs with `redact_http_logs = false` (a template can
+// set it at any time). The line must hold no credential from the authority or
+// the query, and no byte that could end the line or start a field.
+TEST_CASE("the URL in the line keeps scheme, host and path only, whatever DuckDB passed",
+          "[duckdb_http_log][security]") {
+    struct Case {
+        const char* url;
+        const char* expected;
+    };
+    const Case cases[] = {
+        // colon-less userinfo, and an '@' in the path
+        {"https://ghp_SECRET@raw.githubusercontent.com/o/r/main/@latest.csv",
+         "https://raw.githubusercontent.com/o/r/main/@latest.csv"},
+        // user:pw, and an '@' in the path must not swallow the host
+        {"http://user:SECRETPW@host:9000/a@b", "http://host:9000/a@b"},
+        {"https://h/x?jwt=SECRET1&hmac=SECRET2&session=SECRET3&sid=SECRET4&code=SECRET5&ticket=SECRET6"
+         "&bearer=SECRET7&client_assertion=SECRET8&pw=SECRET9",
+         "https://h/x?redacted"},
+        {"https://h/x?u=x&p=SECRETP", "https://h/x?redacted"},
+        {"https://h/x?SECRETVALUE", "https://h/x?redacted"},
+        {"https://h/x?%73ig=SECRETS1&%74oken=SECRETS2", "https://h/x?redacted"},
+        {"https://h/x?a=1;X-Amz-Signature=SECRETSIG", "https://h/x?redacted"},
+        {"https://h/x#SECRETFRAG", "https://h/x"},
+        {"https://a:b@h/x?q=1#f", "https://h/x?redacted"},
+    };
+    for (const auto& c : cases) {
+        INFO(c.url);
+        DuckDBHttpLogEntry entry{"GET", c.url, "200", 3};
+        CHECK(FormatDuckDBHttpLogLine(entry) == std::string("duckdb http GET ") + c.expected + " -> 200 3ms");
+    }
+}
+
+TEST_CASE("URL bytes that could forge a line or a field are percent-encoded", "[duckdb_http_log][security]") {
+    DuckDBHttpLogEntry entry{"GET",
+                             "http://h/obj0.csv\r\nFORGED [info] duckdb http GET http://x -> 200 1ms request_id=FAKE "
+                             "\"q\" \xff\x7f\t",
+                             "200", 1};
+    const auto line = FormatDuckDBHttpLogLine(entry);
+    INFO(line);
+    for (const unsigned char c : line) {
+        CHECK((c == ' ' || (c > 0x20 && c < 0x7f && c != '"')));
+    }
+    // duckdb http GET <url> -> 200 1ms: the URL is one token.
+    CHECK(std::count(line.begin(), line.end(), ' ') == 5);
+    CHECK(line.find("%0D%0AFORGED%20") != std::string::npos);
+    CHECK(line.find("%FF%7F%09") != std::string::npos);
+    CHECK(line.find("%22q%22") != std::string::npos);
 }

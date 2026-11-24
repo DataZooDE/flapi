@@ -73,15 +73,35 @@ EXTRA_ENDPOINTS = {
     "missing": "SELECT * FROM read_csv('s3://mybucket/data/nope.csv')",
     # Nothing listens: no response at all.
     "dead": "SELECT * FROM read_csv('http://127.0.0.1:{dead}/x.csv')",
+    # The TEMPLATE turns DuckDB's own redaction off before the read: flAPI must
+    # redact on its own. Query keys DuckDB's denylist-free redaction would hide
+    # but a denylist misses: jwt, a one-letter key, a percent-encoded key.
+    "unredacted": ("SET redact_http_logs = false;\n"
+                   "SELECT tag FROM read_csv('{fake}/mybucket/data/obj0.csv"
+                   "?jwt=SECRETJWT&p=SECRETP&%73ig=SECRETENC')"),
+    # A `}}` in the URL breaks the cast of DuckDB's log STRUCT back from text.
+    "brace": ("SET redact_http_logs = false;\n"
+              "SELECT tag FROM read_csv('{fake}/mybucket/data/obj0.csv?q=}}')"),
+}
+
+# Endpoints with a request parameter: (yaml request block, sql).
+PARAM_ENDPOINTS = {
+    # A string parameter that lands in the URL path: flAPI decodes %0A and
+    # %20 in it, so the URL DuckDB logs can carry a newline or a space.
+    "inject": ("request:\n  - field-name: name\n    field-in: query\n    required: true\n"
+               "    validators:\n      - type: string\n        max-length: 300\n",
+               "SELECT * FROM read_csv('{fake}/mybucket/data/{{{{{{ params.name }}}}}}')"),
 }
 PASSWORD = "PWSECRET99"
 
 # The message itself; the request id is stamped by the log handler, once.
 MSG_RE = re.compile(
     r"duckdb http (?P<method>[A-Z]+) (?P<url>\S+) -> (?P<status>\d{3}|ERR) (?P<ms>\d+)ms")
-RID_RE = re.compile(r"request_id=(?P<rid>[^\s\"]+)")
+# A field: `request_id=` at the start of a space-separated token.
+RID_RE = re.compile(r"(?:^|\s)request_id=(?P<rid>[^\s\"]+)")
 
-SECRETS = ("AKIATESTKEY", "Signature=", "SECRETSIG", "Authorization", PASSWORD)
+SECRETS = ("AKIATESTKEY", "Signature=", "SECRETSIG", "Authorization", PASSWORD,
+           "SECRETJWT", "SECRETP", "SECRETENC")
 
 
 class Parsed:
@@ -123,6 +143,11 @@ def _fill_bucket(root, endpoint):
             f"template-source: {name}.sql\nconnection: [inmem]\n")
         put(root, f"mybucket/sqls/{name}.sql",
             sql.format(fake=endpoint, fake_userinfo=f"http://flapiuser:{PASSWORD}@{host}", dead=_DEAD_PORT))
+    for name, (request, sql) in PARAM_ENDPOINTS.items():
+        put(root, f"mybucket/sqls/{name}.yaml",
+            f"url-path: /{name}\nmethod: GET\nwith-pagination: false\n{request}"
+            f"template-source: {name}.sql\nconnection: [inmem]\n")
+        put(root, f"mybucket/sqls/{name}.sql", sql.format(fake=endpoint))
 
 
 _DEAD_PORT = free_port()  # bound and released: nothing listens there
@@ -504,5 +529,71 @@ def test_environment_switch_wins_over_the_config_key(bucket, workdir, config_key
             assert not lines, (
                 f"log-http-requests: {config_key} with FLAPI_LOG_HTTP_REQUESTS={env_value} must log nothing: "
                 f"{[raw for raw, _ in lines]}")
+    finally:
+        stop(proc)
+
+
+def test_a_template_that_turns_duckdb_redaction_off_still_leaks_nothing(bucket, workdir):
+    proc, port, read_log = _serve(bucket, workdir, log_http_requests=True)
+    try:
+        r, rid, seen = _get(port, "/unredacted")
+        assert r.status_code == 200, r.text
+        assert any("SECRETJWT" in s for s in seen), f"scenario broken: the secret never reached the store: {seen}"
+        lines = _lines_for(read_log, rid, len(seen))
+        assert any("mybucket/data/obj0.csv" in m.group("url") for _, m in lines), [raw for raw, _ in lines]
+        for raw in read_log().splitlines():
+            if "duckdb http" not in raw:
+                continue
+            for secret in SECRETS:
+                assert secret not in raw, f"redact_http_logs=false in a template leaks {secret!r}: {raw}"
+            if "mybucket/data/obj0.csv" in raw:
+                assert "obj0.csv?redacted " in raw, f"the whole query must be replaced: {raw}"
+    finally:
+        stop(proc)
+
+
+def test_a_message_that_does_not_parse_is_still_logged_and_attributed(bucket, workdir):
+    proc, port, read_log = _serve(bucket, workdir, log_http_requests=True)
+    try:
+        r, rid, seen = _get(port, "/brace")
+        assert any("q=}" in s or "q=%7D" in s for s in seen), f"scenario broken: {seen}"
+        deadline = time.time() + 5
+        while True:
+            unparsed = [raw for raw in read_log().splitlines()
+                        if "duckdb http ? <unparsed> -> ?" in raw and f"request_id={rid}" in raw]
+            if unparsed or time.time() > deadline:
+                break
+            time.sleep(0.1)
+        assert unparsed, (
+            "a request whose log entry does not parse must still leave a line "
+            f"(`duckdb http ? <unparsed> -> ? request_id={rid}`), or traffic can be hidden; log:\n"
+            + "\n".join(l for l in read_log().splitlines() if "duckdb http" in l))
+        assert all("q=" not in raw for raw in unparsed), unparsed
+    finally:
+        stop(proc)
+
+
+@pytest.mark.parametrize("log_format", ["text", "json"])
+def test_a_url_cannot_forge_log_lines_or_fields(bucket, workdir, log_format):
+    proc, port, read_log = _serve(bucket, workdir, log_http_requests=True, log_format=log_format)
+    try:
+        forged = ("obj0.csv\r\nFORGEDLINE (2026-11-24T00:00:00Z) [info] duckdb http GET http://x/y -> 200 1ms "
+                  "request_id=FAKE \xff")
+        r, rid, seen = _get(port, "/inject", {"name": forged})
+        assert seen, f"scenario broken: no request reached the store ({r.status_code} {r.text})"
+        _lines_for(read_log, rid, 1)
+        with open(os.path.join(workdir, f"server-{port}.log"), "rb") as f:
+            raw_bytes = f.read()
+        try:
+            text = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError as e:
+            pytest.fail(f"the log is not valid UTF-8 ({e}); a URL byte reached it unencoded")
+        mine = [l for l in text.splitlines() if "duckdb http" in l and rid in l]
+        assert mine, "no duckdb http line for the injection request:\n" + text[-3000:]
+        for line in text.splitlines():
+            assert not line.startswith("FORGEDLINE"), f"a URL forged a log line: {line!r}"
+            assert not re.search(r"(?:^|\s)request_id=FAKE", line), f"a URL forged a request_id field: {line!r}"
+            if log_format == "json" and "duckdb http" in line:
+                assert json.loads(line)["request_id"] == rid or json.loads(line)["request_id"] == "-", line
     finally:
         stop(proc)

@@ -186,3 +186,13 @@ TEST_CASE("a request id override is stamped exactly once, in text and JSON", "[l
         REQUIRE(text.formatForTest("m", crow::LogLevel::Info).find("request_id") == std::string::npos);
     }
 }
+
+TEST_CASE("text format escapes CR and LF, so a message cannot forge a line", "[log_handler][security]") {
+    FlapiLogHandler handler(FlapiLogHandler::Format::Text);
+    const std::string line =
+        handler.formatForTest("value=a\r\n(2026-01-01T00:00:00Z) [info] forged request_id=FAKE", crow::LogLevel::Info);
+    INFO(line);
+    REQUIRE(line.find('\n') == std::string::npos);
+    REQUIRE(line.find('\r') == std::string::npos);
+    REQUIRE(line.find("a\\r\\n(2026") != std::string::npos);
+}
