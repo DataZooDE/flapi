@@ -8,13 +8,19 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 - **A log of every HTTP request DuckDB makes (#252).** `log-http-requests: true`
   (or `FLAPI_LOG_HTTP_REQUESTS=1`, which wins when set) writes one `info` line per
-  S3/GCS/Azure/HTTP request into the flAPI log:
+  S3/GCS/HTTP(S) request into the flAPI log (Azure unverified):
   `duckdb http GET <url> -> 206 4ms request_id=req-...`. The id is the request
   whose query caused it, also on DuckDB's worker threads, or `-` for startup reads
   and the fetch of a remote `--config`. `ERR` marks a request that got no
-  response. Headers are never printed and URL credentials are redacted, even if a
-  template turns DuckDB's own redaction off. Off by default, and off it costs
-  nothing: DuckDB logging is not enabled.
+  response. Headers are never printed; the URL keeps scheme, host and path, with
+  userinfo dropped and the whole query `?redacted`, even if a template turns
+  DuckDB's own redaction off. Secrets in URL paths are not redacted: a debugging
+  switch, not for production. Off by default, and off it costs nothing: DuckDB
+  logging is not enabled.
+- The text log format escapes CR and LF in every message, so no logged value
+  can forge a line; `PathSchemeUtils::RedactUrl` (used on every log line) now
+  takes userinfo up to the last `@` of the authority, matches percent-decoded
+  query keys, splits on `;` too, and knows more credential keys.
 
 ### Security
 

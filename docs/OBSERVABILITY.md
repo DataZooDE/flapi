@@ -418,8 +418,8 @@ attached.
 
 ### Which object store requests did a request cause?
 
-When a template or a remote configuration reads from S3, GCS, Azure or HTTP,
-DuckDB makes the requests, and by default nothing in the flAPI log shows them.
+When a template or a remote configuration reads from S3, GCS or HTTP(S), DuckDB
+makes the requests, and by default nothing in the flAPI log shows them.
 `log-http-requests: true` at the top level of `flapi.yaml`, or the environment
 variable `FLAPI_LOG_HTTP_REQUESTS=1`, writes one `info` line per DuckDB HTTP
 request into the normal flAPI log:
@@ -427,31 +427,58 @@ request into the normal flAPI log:
 ```
 (2026-11-24T12:02:20.53Z) [info] duckdb http GET http://minio:9000/mybucket/data/obj3.csv -> 206 4ms request_id=req-1a846510d386e8d8
 (2026-11-24T12:02:22.65Z) [info] duckdb http HEAD http://10.0.0.9:9000/x.csv -> ERR 0ms request_id=req-93e2e434a1a7d067
-(2026-11-24T12:01:58.10Z) [info] duckdb http GET https://bucket.s3.amazonaws.com/sqls/obj.yaml -> 200 31ms request_id=-
+(2026-11-24T12:01:58.10Z) [info] duckdb http GET https://bucket.s3.amazonaws.com/?redacted -> 200 31ms request_id=-
 ```
 
+> **A debugging switch, not for production.** Turn it on to answer a question,
+> then off again. Request URLs - and so request parameters a template puts into
+> a path - reach your log store. Every DuckDB HTTP request is one synchronous log
+> write, serialised under DuckDB's logging lock, and the volume grows with the
+> width of a glob: a `read_parquet('s3://b/**/*.parquet')` over 10 000 objects is
+> tens of thousands of lines per call. Startup logs a warning while it is on.
+
 - `<status>` is the HTTP status, or `ERR` when no response came back (refused,
-  timed out). DuckDB's retries are separate lines.
+  timed out). DuckDB's retries are separate lines. A log entry that does not
+  parse still leaves `duckdb http ? <unparsed> -> ?` with its `request_id`.
 - `request_id` is the request whose query made the HTTP request, also when a
   parallel scan made it on a DuckDB worker thread, so `grep req-...` lists a
-  request's object store traffic. `-` marks requests no flAPI request caused:
-  startup, the fetch of a remote `--config`, the endpoint files under a remote
-  `template.path`, a cache refresh. With `log-format: json` the id is the
+  request's object store traffic. Lines from worker threads carry the
+  `request_id` but not the request's `trace_id`/`span_id`. `-` marks requests no
+  flAPI request caused: startup, the fetch of a remote `--config`, the endpoint
+  files under a remote `template.path`, a **scheduled** cache refresh. An
+  on-demand refresh through the management API (`flapii cache refresh`) carries
+  the id of that management request. With `log-format: json` the id is the
   record's `request_id` field.
-- Headers are never printed. Credentials in the URL are redacted twice: DuckDB is
-  told `redact_http_logs = true` (again after the connection `init` statements),
-  and flAPI redacts the URL itself as well, so a template that sets
-  `redact_http_logs = false` still cannot put a signature or a password in the log.
-- The lines are `info`: `log-level: warning` hides them.
+- What the URL shows: scheme, host and path. Userinfo (`user:pw@`, a bare
+  `token@`) and the fragment are dropped, and the **whole** query string becomes
+  `?redacted` - the same cut DuckDB's own redaction makes, applied by flAPI itself,
+  so a template that runs `SET redact_http_logs = false` changes nothing. Bytes
+  that could end the line or start a field (control characters, space, `"`,
+  non-ASCII) are percent-encoded. Headers are never printed.
+- **Secrets in a URL path are not redacted.** A Slack incoming-webhook URL
+  (`hooks.slack.com/services/T../B../<secret>`), a Telegram bot token
+  (`api.telegram.org/bot<token>/...`) or any token-in-path API appears as is. Do
+  not turn this on where templates read such URLs.
+- The lines are `info`: `log-level: warning` hides them (and skips the work).
+- Turning it on takes over DuckDB's logging configuration: an `enable_logging(...)`
+  or `logging_storage` of your own in a connection `init` is replaced, `HTTP` is
+  the only log type, `redact_http_logs` is set to `true`, and `duckdb_logs` /
+  `duckdb_logs_parsed` return nothing (the flAPI sink cannot be scanned). A
+  template that runs `CALL disable_logging()` turns the log off until restart.
 
 `FLAPI_LOG_HTTP_REQUESTS` (`1`/`true`/`yes`/`on` or `0`/`false`/`no`/`off`)
-wins over the key in both directions. Only the variable covers the fetch of a
-remote main configuration (`flapi -c s3://...`), which happens before the
-configuration exists. Both are read once at startup.
+wins over the key in both directions. Both are read once at startup. Only the
+variable covers what is fetched before the key has been read: a remote main
+configuration (`flapi -c s3://...`), and the YAML includes of a local main
+configuration.
 
-It is a debugging switch, not a metric: every request is one synchronous line.
-With it off (the default) flAPI never enables DuckDB logging, so it costs
-nothing.
+Azure (`az://`, `abfss://`) is not verified: the azure extension sends its
+requests through the Azure SDK's own transport and logging policy, not through
+DuckDB's HTTP client, so its requests may not appear, or may appear as
+`? <unparsed>` lines.
+
+With the switch off (the default) flAPI never enables DuckDB logging, so it
+costs nothing.
 
 ### Async MCP tasks: end-to-end latency
 

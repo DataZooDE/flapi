@@ -181,7 +181,7 @@ ducklake:
   data-path: ./cache_data
 log-level: info            # debug | info | warning (or warn) | error
 log-format: json           # one JSON object per line, with request_id
-log-http-requests: false   # true: one line per DuckDB S3/GCS/Azure/HTTP request
+log-http-requests: false   # true (debugging only): one line per DuckDB S3/GCS/HTTP request
 stall-timeout-s: 60        # /health -> 503 "stalled" past this; 0 disables
 audit:
   enabled: true
@@ -232,9 +232,14 @@ SELECT * FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
   `FLAPI_LOG_HTTP_REQUESTS=1`, which wins over the key both ways) logs one `info` line per
   HTTP request DuckDB makes: `duckdb http GET <url> -> 206 4ms request_id=req-...`. The id
   is the request whose query made it (DuckDB worker threads included), `-` for startup
-  reads; `ERR` = no response (refused, timeout), retries are separate lines. Headers are
-  never printed, URL credentials are redacted. Only the env var covers the fetch of a
-  remote `-c s3://.../flapi.yaml`. Read at startup; off by default and free when off.
+  reads and scheduled cache refreshes; `ERR` = no response (refused, timeout), retries are
+  separate lines. The URL is scheme, host and path: userinfo dropped, the whole query
+  `?redacted`, whatever `redact_http_logs` says. **Secrets in URL paths (Slack webhooks, bot
+  tokens) are not redacted**, request parameters in paths land in the log, and every request
+  is a synchronous write - a debugging switch, not for production; volume grows with glob
+  width. It takes over DuckDB's logging config (`duckdb_logs` stays empty). Only the env var
+  covers a remote `-c s3://.../flapi.yaml` and the includes of a local config. Read at
+  startup; off by default and free when off. Azure: unverified.
 
 Tracing (OpenTelemetry, off by default):
 

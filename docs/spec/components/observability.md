@@ -311,33 +311,48 @@ is resolved in `ConfigManager` before the endpoint files load, because a remote
 flowchart LR
     Q[QueryExecutor::execute*] -- "HttpRequestAttributionGuard<br/>(db, connection_id) -> request_id" --> M[(attribution map)]
     D[DuckDB HTTPUtil::LogRequest<br/>any thread] --> L[LogManager] --> S[DuckDBHttpLogSink]
-    S -- "1. connection_id of the log context" --> M
-    S -- "2. ambient RequestContext" --> R[RequestContextScope]
+    S -- "1. ambient RequestContext" --> R[RequestContextScope]
+    S -- "2. connection_id of the log context" --> M
     S -- "RequestIdOverride + CROW_LOG_INFO" --> H[FlapiLogHandler]
 ```
 
 - **Enabling.** `EnableDuckDBHttpRequestLog` registers a `duckdb::LogSink` named
   `flapi_http`, makes it the log storage, enables only the `HTTP` log type and sets
-  `redact_http_logs = true`. It runs on the main database right after it opens
-  (before any connection, since a connection's logger is fixed when it is
-  created) and again after the connection `init` statements; and on the bootstrap
-  instance that reads a remote configuration (`GetBootstrapDb`,
-  `src/vfs_adapter.cpp`) once the switch is on. Off, none of this runs.
+  `redact_http_logs = true`. It runs on the main database right after it opens,
+  before extensions load and the connection `init` statements run, and again after
+  them; and on the bootstrap instance that reads a remote configuration
+  (`GetBootstrapDb`, `src/vfs_adapter.cpp`) once the switch is on. Existing
+  connections follow: DuckDB 2.0.1 recreates a connection's logger at every query
+  start and end (`ClientContext::RefreshLoggerInternal`). This replaces any logging
+  configuration of the user's own, and `duckdb_logs` stays empty (the sink cannot
+  be scanned). A template running `CALL disable_logging()` turns it off for the
+  process; it is not re-asserted. Off, none of this runs.
 - **Format.** DuckDB 2.0.1 logs the `HTTP` entry as the string form of a STRUCT
   (`HTTPLogType::GetLogType()`). The sink casts it back to that type with DuckDB's
-  own cast, as `duckdb_logs_parsed()` does, rather than parsing the text. The
-  status is the number in DuckDB's enum name (`OK_200`); `INVALID` or a missing
-  response is `ERR`. The URL goes through `PathSchemeUtils::RedactUrl` as well,
-  because a template can turn DuckDB's redaction off. Unit tests build their input
-  with DuckDB's own `HTTPLogType::ConstructLogMessage`.
+  own cast, as `duckdb_logs_parsed()` does, rather than parsing the text; quotes,
+  braces and commas in a URL survive the round trip (pinned in unit tests built on
+  DuckDB's own `HTTPLogType::ConstructLogMessage`). An entry that does not cast
+  still yields `duckdb http ? <unparsed> -> ?`. The status is the number in
+  DuckDB's enum name (`OK_200`); `INVALID` or a missing response is `ERR`.
+- **URL.** `SanitizeLoggedHttpUrl` applies DuckDB's own redaction cut whatever
+  `redact_http_logs` says (a template can turn it off at any time): userinfo up to
+  the last `@` of the authority and the fragment are dropped, the whole query
+  becomes `?redacted`; then bytes `< 0x21`, `>= 0x7f` and `"` are percent-encoded
+  so the URL is one ASCII token. The text log format additionally escapes CR/LF in
+  every message. Path secrets are not redacted.
 - **Attribution.** DuckDB calls the sink synchronously on the thread that made the
-  request; for a parallel scan that is a DuckDB worker, where no request is
-  ambient. Every log context carries the DuckDB connection id, so
-  `QueryExecutor::execute`, `executePrepared` and `executeWithBindings` register
+  request. `ResolveHttpRequestId` takes the request ambient on that thread first:
+  a file handle opened by another connection logs through that connection's
+  context, so the connection map could name the wrong request. On a thread with no
+  request - a DuckDB worker of a parallel scan - it uses the map that
+  `QueryExecutor::execute`, `executePrepared` and `executeWithBindings` fill with
   `(database instance, connection id) -> request_id` for their duration (RAII; a
-  nested call on the same connection is a no-op). The sink looks the id up there,
-  then falls back to the ambient request (flAPI's own VFS reads open a fresh
-  connection on the request thread), then to `-`.
+  nested call on the same connection is a no-op); then `-`. The map holds only the
+  id, so worker-thread lines carry no `trace_id`/`span_id`.
+- **Safety.** Nothing escapes the sink into DuckDB's HTTP path (which has no
+  handler and may already be unwinding): every entry point catches all and warns at
+  most once a minute. With the Crow level above `info` the sink returns before any
+  parsing, since it runs under the LogManager's lock.
 
 ## Source Files
 
