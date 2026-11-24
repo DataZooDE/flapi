@@ -128,3 +128,71 @@ TEST_CASE("concurrent emission does not interleave partial lines", "[log_handler
     for (auto& th : threads) { th.join(); }
     REQUIRE(bad.load() == 0);
 }
+
+// #252: the DuckDB HTTP request log attributes a line to a request that is not
+// ambient on the logging thread (a DuckDB worker), or to none ("-").
+namespace {
+std::size_t countOf(const std::string& haystack, const std::string& needle) {
+    std::size_t n = 0;
+    for (auto pos = haystack.find(needle); pos != std::string::npos; pos = haystack.find(needle, pos + 1)) {
+        ++n;
+    }
+    return n;
+}
+}  // namespace
+
+TEST_CASE("a request id override is stamped exactly once, in text and JSON", "[log_handler]") {
+    FlapiLogHandler text(FlapiLogHandler::Format::Text);
+    FlapiLogHandler json(FlapiLogHandler::Format::Json);
+
+    SECTION("no request ambient: the override alone") {
+        FlapiLogHandler::RequestIdOverride attribute("-");
+        const auto line = text.formatForTest("duckdb http GET http://x/a -> 200 1ms", crow::LogLevel::Info);
+        REQUIRE(countOf(line, "request_id=") == 1);
+        REQUIRE(line.find("request_id=-") != std::string::npos);
+        const auto rec = crow::json::load(json.formatForTest("duckdb http GET http://x/a -> 200 1ms",
+                                                             crow::LogLevel::Info));
+        REQUIRE(rec);
+        REQUIRE(std::string(rec["request_id"].s()) == "-");
+    }
+    SECTION("another request ambient: the override wins, without that request's trace") {
+        RequestContext rc;
+        RequestContext::mintRequestId(rc.request_id);
+        rc.setTraceId("4bf92f3577b34da6a3ce929d0e0e4736");
+        rc.setSpanId("00f067aa0ba902b7");
+        RequestContextScope scope(&rc);
+        FlapiLogHandler::RequestIdOverride attribute("req-0123456789abcdef");
+        const auto line = text.formatForTest("m", crow::LogLevel::Info);
+        REQUIRE(countOf(line, "request_id=") == 1);
+        REQUIRE(line.find("request_id=req-0123456789abcdef") != std::string::npos);
+        REQUIRE(line.find("trace_id") == std::string::npos);
+    }
+    SECTION("the ambient request's own id: its trace ids stay") {
+        RequestContext rc;
+        RequestContext::mintRequestId(rc.request_id);
+        rc.setTraceId("4bf92f3577b34da6a3ce929d0e0e4736");
+        rc.setSpanId("00f067aa0ba902b7");
+        RequestContextScope scope(&rc);
+        const std::string id(rc.requestIdView());
+        FlapiLogHandler::RequestIdOverride attribute(id);
+        const auto line = text.formatForTest("m", crow::LogLevel::Info);
+        REQUIRE(countOf(line, "request_id=") == 1);
+        REQUIRE(line.find("trace_id=4bf92f3577b34da6a3ce929d0e0e4736") != std::string::npos);
+    }
+    SECTION("the override ends with its scope") {
+        {
+            FlapiLogHandler::RequestIdOverride attribute("-");
+        }
+        REQUIRE(text.formatForTest("m", crow::LogLevel::Info).find("request_id") == std::string::npos);
+    }
+}
+
+TEST_CASE("text format escapes CR and LF, so a message cannot forge a line", "[log_handler][security]") {
+    FlapiLogHandler handler(FlapiLogHandler::Format::Text);
+    const std::string line =
+        handler.formatForTest("value=a\r\n(2026-01-01T00:00:00Z) [info] forged request_id=FAKE", crow::LogLevel::Info);
+    INFO(line);
+    REQUIRE(line.find('\n') == std::string::npos);
+    REQUIRE(line.find('\r') == std::string::npos);
+    REQUIRE(line.find("a\\r\\n(2026") != std::string::npos);
+}

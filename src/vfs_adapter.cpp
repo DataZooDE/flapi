@@ -27,6 +27,7 @@
 #include "database_manager.hpp"
 #include "credential_manager.hpp"
 #include "extension_installer.hpp"
+#include "duckdb_http_log_sink.hpp"
 
 namespace flapi {
 
@@ -55,6 +56,40 @@ bool PathSchemeUtils::IsRemotePath(const std::string& path) {
     return IsS3Path(path) || IsGCSPath(path) || IsAzurePath(path) || IsHttpPath(path);
 }
 
+namespace {
+
+int hexValue(char c) {
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return -1;
+}
+
+// `%73ig` is `sig`: a key is matched as the server will read it.
+std::string percentDecoded(const std::string& in) {
+    std::string out;
+    out.reserve(in.size());
+    for (std::size_t i = 0; i < in.size(); ++i) {
+        if (in[i] == '%' && i + 2 < in.size() && hexValue(in[i + 1]) >= 0 && hexValue(in[i + 2]) >= 0) {
+            out.push_back(static_cast<char>(hexValue(in[i + 1]) * 16 + hexValue(in[i + 2])));
+            i += 2;
+        } else if (in[i] == '+') {
+            out.push_back(' ');
+        } else {
+            out.push_back(in[i]);
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
 std::string PathSchemeUtils::RedactUrl(const std::string& url) {
     const auto scheme_end = url.find("://");
     if (scheme_end == std::string::npos) {
@@ -62,21 +97,21 @@ std::string PathSchemeUtils::RedactUrl(const std::string& url) {
     }
     const auto host_start = scheme_end + 3;
     std::string out = url;
-    const auto cut = out.find_first_of("?#", host_start);
-    // `user:pass@host`: the last '@' before the query, when what precedes it looks like
-    // credentials (a ':' before any '/', or no '/' at all) rather than a path segment.
-    const std::string before_query = out.substr(0, cut == std::string::npos ? out.size() : cut);
-    if (const auto at = before_query.rfind('@'); at != std::string::npos && at > host_start) {
-        const std::string seg = before_query.substr(host_start, at - host_start);
-        const auto slash = seg.find('/');
-        const auto colon = seg.find(':');
-        if (slash == std::string::npos || (colon != std::string::npos && colon < slash)) {
-            out.erase(host_start, at - host_start + 1);
-        }
+    // The authority runs to the first '/', '?' or '#'; userinfo is everything
+    // before its LAST '@' (RFC 3986). An '@' in the path is data, and userinfo
+    // without a ':' (a bare token) is a credential all the same.
+    auto authority_end = out.find_first_of("/?#", host_start);
+    if (authority_end == std::string::npos) {
+        authority_end = out.size();
     }
-    // A fragment is dropped; in the query, only values whose KEY looks like a credential (signature,
-    // token, key, secret, password, SAS parameters, AWS/GCS/Azure auth) are redacted, so unrelated
-    // parameters (`page=2`, `format=csv`) stay readable in logs.
+    const auto at = out.rfind('@', authority_end == host_start ? host_start : authority_end - 1);
+    if (at != std::string::npos && at >= host_start && at < authority_end) {
+        out.erase(host_start, at - host_start + 1);
+    }
+    // A fragment is dropped; in the query, only values whose KEY (percent-decoded) looks like a
+    // credential (signature, token, key, secret, password, SAS parameters, AWS/GCS/Azure auth) are
+    // redacted, so unrelated parameters (`page=2`, `format=csv`) stay readable in logs. Both '&'
+    // and ';' separate parameters.
     if (const auto hash = out.find('#', host_start); hash != std::string::npos) {
         out.erase(hash);
     }
@@ -85,29 +120,34 @@ std::string PathSchemeUtils::RedactUrl(const std::string& url) {
         std::string rebuilt;
         std::size_t pos = 0;
         while (pos <= query.size()) {
-            auto amp = query.find('&', pos);
-            if (amp == std::string::npos) {
-                amp = query.size();
+            auto sep = query.find_first_of("&;", pos);
+            if (sep == std::string::npos) {
+                sep = query.size();
             }
-            const std::string pair = query.substr(pos, amp - pos);
+            const std::string pair = query.substr(pos, sep - pos);
             const auto eq = pair.find('=');
             std::string key = eq == std::string::npos ? pair : pair.substr(0, eq);
-            std::string lowered = key;
+            std::string lowered = percentDecoded(key);
             std::transform(lowered.begin(), lowered.end(), lowered.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
             static const char* const secret_markers[] = {"sig", "token", "key", "secret", "pass", "pwd", "cred",
-                                                          "auth", "x-amz", "x-goog", "sas", "sv", "se", "sp", "sr"};
+                                                          "auth", "x-amz", "x-goog", "sas", "jwt", "hmac",
+                                                          "session", "ticket", "bearer", "assertion"};
+            // Too short or too common to match inside other keys: the whole key only
+            // (sv/se/sp/sr: Azure SAS; `code`: OAuth; `sid`, `pw`).
+            static const char* const whole_key_markers[] = {"sv", "se", "sp", "sr", "sid", "code", "pw"};
             bool secret = false;
             for (const char* marker : secret_markers) {
-                const std::string m = marker;
-                // Short markers (sv/se/sp/sr: Azure SAS) only as the whole key; others as a substring.
-                secret = secret || (m.size() <= 2 ? lowered == m : lowered.find(m) != std::string::npos);
+                secret = secret || lowered.find(marker) != std::string::npos;
             }
-            if (!rebuilt.empty()) {
-                rebuilt += '&';
+            for (const char* marker : whole_key_markers) {
+                secret = secret || lowered == marker;
             }
             rebuilt += (secret && eq != std::string::npos) ? key + "=<redacted>" : pair;
-            pos = amp + 1;
+            if (sep < query.size()) {
+                rebuilt += query[sep];
+            }
+            pos = sep + 1;
         }
         out = out.substr(0, q + 1) + rebuilt;
     }
@@ -472,6 +512,9 @@ namespace {
 struct BootstrapDb {
     duckdb_database db = nullptr;
     std::once_flag azure_once;
+    // The DuckDB HTTP request log (#252), enabled once the switch is on: at
+    // creation from FLAPI_LOG_HTTP_REQUESTS, or later from `log-http-requests`.
+    std::once_flag http_log_once;
     ~BootstrapDb() {
         if (db) {
             duckdb_close(&db);
@@ -498,6 +541,10 @@ std::shared_ptr<BootstrapDb> GetBootstrapDb() {
     }
     auto created = std::make_shared<BootstrapDb>();
     created->db = OpenPrivateDuckDb(/*allow_persistent_secrets=*/true, "bootstrap DuckDB used to read remote files");
+    // Before the setup connection below, so the httpfs install it may trigger is logged too.
+    if (HttpRequestLogEnabled()) {
+        std::call_once(created->http_log_once, [&] { EnableDuckDBHttpRequestLog(created->db); });
+    }
     duckdb_connection conn = nullptr;
     if (duckdb_connect(created->db, &conn) != DuckDBSuccess) {
         throw FileOperationError("Could not connect to the bootstrap DuckDB.");
@@ -546,6 +593,9 @@ void DuckDBVFSProvider::WithFileSystem(const std::string& path,
         conn = db_manager->getConnection();
     } else {
         bootstrap = GetBootstrapDb();
+        if (HttpRequestLogEnabled()) {
+            std::call_once(bootstrap->http_log_once, [&] { EnableDuckDBHttpRequestLog(bootstrap->db); });
+        }
         if (duckdb_connect(bootstrap->db, &conn) != DuckDBSuccess) {
             conn = nullptr;
         } else if (PathSchemeUtils::IsAzurePath(path)) {

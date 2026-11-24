@@ -28,6 +28,7 @@
 #include <chrono>
 #include <thread>
 #include "duckdb_raii.hpp"
+#include "duckdb_http_log_sink.hpp"
 #include "usable_cpus.hpp"
 
 namespace flapi {
@@ -270,6 +271,17 @@ void DatabaseManager::initializeDBManagerFromConfig(std::shared_ptr<ConfigManage
         // Cleanup the configuration object
         duckdb_destroy_config(&config);
 
+        // Opt-in DuckDB HTTP request log (#252), before the extension loads and
+        // init statements below so their downloads and reads are logged too. (A
+        // connection's logger follows the global setting: DuckDB 2.0.1 recreates
+        // it at every query start and end, RefreshLoggerInternal.) A template that
+        // runs `CALL disable_logging()` turns it off until restart. Off, DuckDB
+        // logging is never touched.
+        const bool http_request_log = config_manager->getLogHttpRequests();
+        if (http_request_log) {
+            EnableDuckDBHttpRequestLog(db);
+        }
+
         // No extension directory configured (duckdb.extension_directory, FLAPI_EXTENSION_DIRECTORY
         // or a bundle's): search the user directory, then the one shipped next to the binary.
         bool directory_configured = false;
@@ -302,6 +314,10 @@ void DatabaseManager::initializeDBManagerFromConfig(std::shared_ptr<ConfigManage
         applyTimeZone();
         logDuckDBVersion();
         initializeConnections(config_manager);
+        if (http_request_log) {
+            // An init statement may have turned DuckDB's own redaction off.
+            EnableDuckDBHttpRequestLog(db);
+        }
 
         this->config_manager = config_manager;
 

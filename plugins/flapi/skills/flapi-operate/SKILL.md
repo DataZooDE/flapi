@@ -4,7 +4,8 @@ description: >
   Running flAPI in production and diagnosing it: /health readiness states (ready,
   starting, degraded, stalled) and /health/live, 503 cache_warming / cache_not_built /
   cache_build_failed with Retry-After, 500 bodies with request_id, runtime metrics (`flapii metrics`, GET /api/v1/_config/metrics,
-  flapi_get_metrics), logs (log-level, log-format json, X-Request-Id), tracing, audit
+  flapi_get_metrics), logs (log-level, log-format json, X-Request-Id, log-http-requests
+  for DuckDB's S3/HTTP requests), tracing, audit
   and log correlation, cache operations (refresh, gc, audit) and troubleshooting
   playbooks for 404, 400, 401/403, 429, 500, 503, startup failures, DuckLake locks,
   slow requests and memory. Use when a server misbehaves, a probe fails, an endpoint
@@ -180,6 +181,7 @@ ducklake:
   data-path: ./cache_data
 log-level: info            # debug | info | warning (or warn) | error
 log-format: json           # one JSON object per line, with request_id
+log-http-requests: false   # true (debugging only): one line per DuckDB S3/GCS/HTTP request
 stall-timeout-s: 60        # /health -> 503 "stalled" past this; 0 disables
 audit:
   enabled: true
@@ -226,6 +228,18 @@ SELECT * FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
 - Change the level at runtime: `flapii config log-level set debug` (until restart). `debug`
   logs the template context and the rendered SQL of each request.
 - Precedence: `--log-level`, then `FLAPI_LOG_LEVEL`, then `log-level:` in the config.
+- Which object store requests did a call cause? `log-http-requests: true` (or
+  `FLAPI_LOG_HTTP_REQUESTS=1`, which wins over the key both ways) logs one `info` line per
+  HTTP request DuckDB makes: `duckdb http GET <url> -> 206 4ms request_id=req-...`. The id
+  is the request whose query made it (DuckDB worker threads included), `-` for startup
+  reads and scheduled cache refreshes; `ERR` = no response (refused, timeout), retries are
+  separate lines. The URL is scheme, host and path: userinfo dropped, the whole query
+  `?redacted`, whatever `redact_http_logs` says. **Secrets in URL paths (Slack webhooks, bot
+  tokens) are not redacted**, request parameters in paths land in the log, and every request
+  is a synchronous write - a debugging switch, not for production; volume grows with glob
+  width. It takes over DuckDB's logging config (`duckdb_logs` stays empty). Only the env var
+  covers a remote `-c s3://.../flapi.yaml` and the includes of a local config. Read at
+  startup; off by default and free when off. Azure: unverified.
 
 Tracing (OpenTelemetry, off by default):
 

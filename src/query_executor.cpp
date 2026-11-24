@@ -8,6 +8,7 @@
 #include "tracing_config.hpp"
 #include <atomic>
 #include "prepared_value_converter.hpp"
+#include "duckdb_http_log_sink.hpp"
 #include <crow.h>
 #include <fmt/core.h>
 #include <fmt/format.h>
@@ -543,6 +544,9 @@ void QueryExecutor::attachProfilingMetrics(SpanScope& span) const {
 }
 
 void QueryExecutor::execute(const std::string& query, const std::string& context) {
+    // HTTP requests this query makes - on any DuckDB thread - belong to the
+    // ambient flAPI request (#252). A no-op unless the HTTP request log is on.
+    HttpRequestAttributionGuard attribute_http(conn);
     if (has_result) {
         duckdb_destroy_result(&result);
         has_result = false;
@@ -585,6 +589,7 @@ void QueryExecutor::execute(const std::string& query, const std::string& context
 
 void QueryExecutor::executePrepared(duckdb_prepared_statement stmt,
                                     const std::string& context) {
+    HttpRequestAttributionGuard attribute_http(conn);   // see execute()
     if (has_result) {
         duckdb_destroy_result(&result);
         has_result = false;
@@ -684,6 +689,7 @@ void QueryExecutor::executeWithBindings(const std::string& sql,
                                         const std::vector<PreparedBindingSpec>& bindings,
                                         const std::map<std::string, std::string>& values,
                                         const std::string& context) {
+    HttpRequestAttributionGuard attribute_http(conn);   // see execute(); covers the prepare too
     if (borrowed_) {
         if (duckdb_prepared_statement cached = cachedPrepare(sql)) {
             duckdb_clear_bindings(cached);
