@@ -566,6 +566,19 @@ struct DuckDBConfig {
     bool offline_extensions = false;  // FLAPI_EXTENSIONS_OFFLINE: never download, fail fast on a missing extension
 };
 
+// duckdb-hardening (#253): what SQL templates may reach. A top-level block, not under
+// `duckdb:`, because every scalar there is handed to DuckDB as a setting.
+enum class ExternalAccessMode { Auto, Full, Restricted };
+
+struct DuckDBHardeningConfig {
+    // auto = restricted when the main config file is remote, full otherwise.
+    ExternalAccessMode external_access = ExternalAccessMode::Auto;
+    // Absolute (relative entries resolve against the working directory, like every
+    // relative path a template reads) and each ending in '/'; URLs kept as written.
+    std::vector<std::string> allowed_directories;
+    std::vector<std::string> allowed_paths;
+};
+
 struct TemplateConfig {
     std::string path;
     std::vector<std::string> environment_whitelist;
@@ -827,6 +840,9 @@ public:
 
     const GlobalHeartbeatConfig& getGlobalHeartbeatConfig() const { return global_heartbeat_config; }
     const DuckLakeConfig& getDuckLakeConfig() const { return ducklake_config; }
+    const DuckDBHardeningConfig& getDuckDBHardeningConfig() const { return duckdb_hardening_config; }
+    // Whether the main configuration file was loaded from s3://, gs://, az://, http(s)://...
+    bool isRemoteConfig() const;
     // Set from --cache-warmup / FLAPI_CACHE_WARMUP; wins over the config files.
     void setCacheWarmupOverride(std::optional<CacheWarmupMode> mode) { cache_warmup_override = mode; }
     // read-only > override > endpoint cache.warmup > ducklake.warmup
@@ -1070,6 +1086,7 @@ protected:
     CorsConfig cors_config;
     GlobalHeartbeatConfig global_heartbeat_config;
     DuckLakeConfig ducklake_config;
+    DuckDBHardeningConfig duckdb_hardening_config;
     std::optional<CacheWarmupMode> cache_warmup_override;
     MCPConfig mcp_config;
     StorageConfig storage_config;
@@ -1097,6 +1114,7 @@ protected:
     void parseCorsConfig();
     void parseTemplateConfig();
     void parseDuckLakeConfig();
+    void parseDuckDBHardeningConfig();
     void parseMCPConfig();
     void parseAuditConfig();
     void parseTracingConfig();

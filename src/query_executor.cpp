@@ -1,4 +1,5 @@
 #include "query_executor.hpp"
+#include "external_access_policy.hpp"
 #include <set>
 #include "sql_utils.hpp"
 #include "database_health.hpp"
@@ -570,7 +571,7 @@ void QueryExecutor::execute(const std::string& query, const std::string& context
         qstate = duckdb_query(conn, query.c_str(), &result);
     }
     if (qstate == DuckDBError) {
-        std::string error_message = duckdb_result_error(&result);
+        std::string error_message = ExplainExternalAccessError(duckdb_result_error(&result));
         std::string context_msg = context.empty() ? "" : " during " + context;
         duckdb_destroy_result(&result);
         // Enumerated, never the DuckDB message: that string routinely contains
@@ -608,7 +609,7 @@ void QueryExecutor::executePrepared(duckdb_prepared_statement stmt,
         pstate = duckdb_execute_prepared(stmt, &result);
     }
     if (pstate == DuckDBError) {
-        std::string error_message = duckdb_result_error(&result);
+        std::string error_message = ExplainExternalAccessError(duckdb_result_error(&result));
         std::string context_msg = context.empty() ? "" : " during " + context;
         duckdb_destroy_result(&result);
         // Enumerated, never the DuckDB message: it routinely contains fragments

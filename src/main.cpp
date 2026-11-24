@@ -1410,6 +1410,18 @@ int main(int argc, char* argv[])
     // Verify storage health at startup
     verifyStorageHealth(config_manager);
 
+    // duckdb-hardening (#253), LAST in the database's startup: after the DuckLake
+    // ATTACH, the connection inits, the cloud credentials and embed://. Everything
+    // after it - the APIServer and its AWS Secrets Manager init statements, the
+    // heartbeat, warm-up, every request - runs under the policy. A policy that could
+    // not be applied in full stops the server rather than serve without it.
+    try {
+        DatabaseManager::getInstance()->applyExternalAccessPolicy();
+    } catch (const std::exception& e) {
+        CROW_LOG_ERROR << "Could not apply the external access policy (duckdb-hardening): " << e.what();
+        return 1;
+    }
+
     startup_read_memo.reset();
 
     // Create unified API server with MCP support (always enabled in unified configuration)

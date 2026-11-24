@@ -1,4 +1,5 @@
 #include "extension_installer.hpp"
+#include "external_access_policy.hpp"
 
 #include <duckdb.h>
 #include <algorithm>
@@ -318,6 +319,11 @@ std::string LoadOrInstallExtension(duckdb_connection connection, const std::stri
     };
     if (run("LOAD " + name)) {
         return "";
+    }
+    // After duckdb-hardening switched external access off, only an extension that is
+    // already loaded can be "loaded"; say so instead of DuckDB's bare permission error.
+    if (ExternalAccessRestricted()) {
+        return ExtensionUnavailableUnderHardening(name);
     }
     if (offline) {
         return error;
