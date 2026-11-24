@@ -1585,45 +1585,8 @@ void ConfigManager::parseEndpointAuth(const YAML::Node& endpoint_config, Endpoin
             endpoint.auth.jwt_issuer = safeGet<std::string>(auth_node, "jwt-issuer", "auth.jwt-issuer");
         }
         
-        // Parse AWS Secrets Manager configuration if present
         if (auth_node["from-aws-secretmanager"]) {
-            CROW_LOG_DEBUG << "\t\tParsing AWS Secrets Manager configuration";
-            auto aws_node = auth_node["from-aws-secretmanager"];
-            
-            AuthFromSecretManagerConfig aws_config;
-            aws_config.secret_name = safeGet<std::string>(aws_node, "secret-name", "auth.from-aws-secretmanager.secret-name");
-            if (aws_node["region"]) {
-                aws_config.region = safeGet<std::string>(aws_node, "region", "auth.from-aws-secretmanager.region");
-            }
-
-            if (aws_node["secret-id"]) {
-                aws_config.secret_id = safeGet<std::string>(aws_node, "secret-id", "auth.from-aws-secretmanager.secret-id");
-            }
-
-            if (aws_node["secret-key"]) {
-                aws_config.secret_key = safeGet<std::string>(aws_node, "secret-key", "auth.from-aws-secretmanager.secret-key");
-            }
-
-            aws_config.secret_table = safeGet<std::string>(aws_node, "secret-table", 
-                                                           "auth.from-aws-secretmanager.secret-table", 
-                                                           secretNameToTableName(aws_config.secret_name));
-            
-            aws_config.init = safeGet<std::string>(aws_node, "init", 
-                                                  "auth.from-aws-secretmanager.init", 
-                                                  createDefaultAuthInit(aws_config.secret_name, 
-                                                                        aws_config.region, 
-                                                                        aws_config.secret_id, 
-                                                                        aws_config.secret_key));
-
-            endpoint.auth.from_aws_secretmanager = aws_config;
-            
-            CROW_LOG_DEBUG << "\t\tAWS Secrets Manager configuration:";
-            CROW_LOG_DEBUG << "\t\t\tSecret Name: " << aws_config.secret_name;
-            CROW_LOG_DEBUG << "\t\t\tRegion: " << aws_config.region;
-            CROW_LOG_DEBUG << "\t\t\tSecret Table: " << aws_config.secret_table;
-            CROW_LOG_DEBUG << "\t\t\tInit: " << aws_config.init;
-            CROW_LOG_DEBUG << "\t\t\tSecret ID: *****[" << aws_config.secret_id.length() << "]";
-            CROW_LOG_DEBUG << "\t\t\tSecret Key: *****[" << aws_config.secret_key.length() << "]";
+            endpoint.auth.from_aws_secretmanager = parseAwsSecretManagerNode(auth_node["from-aws-secretmanager"]);
         }
 
         // Parse OIDC configuration if present
@@ -1665,15 +1628,6 @@ void ConfigManager::parseEndpointAuth(const YAML::Node& endpoint_config, Endpoin
     }
 }
 
-std::string ConfigManager::secretNameToTableName(const std::string& secret_name) 
-{   
-    // Sanitize the secret name, such that it can be a SQL table
-    std::string sanitized_name = secret_name;
-     std::replace_if(sanitized_name.begin(), sanitized_name.end(), 
-                    [](char c) { return !std::isalnum(c); }, '_');
-    return "auth_" + sanitized_name;
-}
-
 std::string ConfigManager::secretNameToSecretId(const std::string& secret_name) 
 {
     // Sanitize the secret name, such that it can be duckdb secret identifier
@@ -1683,28 +1637,51 @@ std::string ConfigManager::secretNameToSecretId(const std::string& secret_name)
     return sanitized_name;
 }
 
-std::string ConfigManager::createDefaultAuthInit(const std::string& secret_name, 
-                                                 const std::string& region, 
-                                                 const std::string& secret_id, 
-                                                 const std::string& secret_key) 
-{
-    std::stringstream init;
-    init << "CREATE OR REPLACE SECRET " << secretNameToSecretId(secret_name) << " ";
-    init << "(TYPE S3";
-
-    if (!secret_id.empty() && !secret_key.empty()) {
-        init << ", KEY_ID '" << secret_id << "', SECRET '" << secret_key << "'";
-    } else {
-        init << ", PROVIDER CREDENTIAL_CHAIN";
+AuthFromSecretManagerConfig ConfigManager::parseAwsSecretManagerNode(const YAML::Node& aws_node) const {
+    CROW_LOG_DEBUG << "\t\tParsing AWS Secrets Manager configuration";
+    AuthFromSecretManagerConfig aws_config;
+    aws_config.secret_name = safeGet<std::string>(aws_node, "secret-name", "auth.from-aws-secretmanager.secret-name");
+    if (aws_config.secret_name.empty()) {
+        throw ConfigurationError("auth.from-aws-secretmanager.secret-name is not set", "auth.from-aws-secretmanager");
     }
-
-    if (!region.empty()) {
-        init << ", REGION '" << region << "'";
+    if (aws_node["region"]) {
+        aws_config.region = safeGet<std::string>(aws_node, "region", "auth.from-aws-secretmanager.region");
     }
-
-    init << ");";
-
-    return init.str();
+    if (aws_node["secret-id"]) {
+        aws_config.secret_id = safeGet<std::string>(aws_node, "secret-id", "auth.from-aws-secretmanager.secret-id");
+    }
+    if (aws_node["secret-key"]) {
+        aws_config.secret_key = safeGet<std::string>(aws_node, "secret-key", "auth.from-aws-secretmanager.secret-key");
+    }
+    if (aws_config.secret_id.empty() != aws_config.secret_key.empty()) {
+        // One without the other used to fall back to the ambient credential
+        // chain silently - a different identity than the one configured.
+        throw ConfigurationError(
+            "auth.from-aws-secretmanager: secret-id and secret-key go together; set both, or neither to use the "
+            "AWS SDK's default credential chain. If one comes from {{env.NAME}}, that variable is unset or empty.",
+            "auth.from-aws-secretmanager");
+    }
+    if (aws_node["secret-table"]) {
+        // The user list is no longer a table in the main database, where every
+        // SQL template could read it (#254).
+        aws_config.secret_table = safeGet<std::string>(aws_node, "secret-table", "auth.from-aws-secretmanager.secret-table");
+        CROW_LOG_WARNING << "auth.from-aws-secretmanager.secret-table is ignored: the fetched user list is kept "
+                            "in flAPI's memory, not in a table. Remove the key.";
+    }
+    if (aws_node["init"]) {
+        // Legacy: SQL that creates a DuckDB secret named after secret-name. It
+        // runs in a private DuckDB instance, never in the main database.
+        aws_config.init = safeGet<std::string>(aws_node, "init", "auth.from-aws-secretmanager.init");
+        aws_config.init_declared = true;
+    }
+    // Never the init SQL or a credential itself: both are secrets.
+    CROW_LOG_DEBUG << "\t\tAWS Secrets Manager configuration: secret " << aws_config.secret_name
+                   << ", region " << (aws_config.region.empty() ? std::string("(from the environment)") : aws_config.region)
+                   << ", credentials "
+                   << (aws_config.init_declared ? "from the legacy init"
+                                                : (aws_config.secret_id.empty() ? "from the AWS SDK default chain"
+                                                                                : "configured (secret-id/secret-key)"));
+    return aws_config;
 }
 
 void ConfigManager::parseEndpointCache(const YAML::Node& endpoint_config, const std::filesystem::path& endpoint_dir, EndpointConfig& endpoint) {
@@ -2014,6 +1991,10 @@ void ConfigManager::parseAuthConfig() {
                 global_auth_config.users.push_back(auth_user);
                 CROW_LOG_DEBUG << "Added user: " << auth_user.username << " with " << auth_user.roles.size() << " roles";
             }
+        }
+
+        if (auth_node["from-aws-secretmanager"]) {
+            global_auth_config.from_aws_secretmanager = parseAwsSecretManagerNode(auth_node["from-aws-secretmanager"]);
         }
 
         // Parse OIDC configuration if present — store in global_auth_config

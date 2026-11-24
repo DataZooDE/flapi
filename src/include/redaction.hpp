@@ -30,4 +30,11 @@ std::string normaliseKey(std::string_view key);
 // `signature` rather than `sig`, so `design` survives.
 bool isCredentialKey(std::string_view key);
 
+// A DuckDB error message about a statement that may carry credentials (a
+// connection or auth `init:`), safe to log: the `LINE n: ...` excerpt of the
+// statement is dropped, and every single-quoted literal and the token a syntax
+// error quotes become `<redacted>`. What is left names the kind of failure and
+// any identifier it quotes.
+std::string redactSqlErrorMessage(std::string_view message);
+
 }  // namespace flapi

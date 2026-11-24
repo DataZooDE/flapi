@@ -86,3 +86,24 @@ TEST_CASE("key normalisation strips separators and case", "[redaction]") {
     REQUIRE(normaliseKey("client_secret") == "clientsecret");
     REQUIRE(normaliseKey("") == "");
 }
+
+// An init script carries credentials, and DuckDB's error about it quotes the
+// statement: `LINE 1: ...SECRET 'abc'def'...` and `at or near "def"` (#254).
+TEST_CASE("SQL error messages lose the statement text", "[redaction][security]") {
+    const std::string parse_error =
+        "Parser Error: syntax error at or near \"defKEY\"\n\n"
+        "LINE 1: ...KEY_ID 'AKID', SECRET 'abc'defKEY', REGION 'eu'...\n"
+        "                                       ^";
+    const auto redacted = redactSqlErrorMessage(parse_error);
+    REQUIRE(redacted == "Parser Error: syntax error at or near \"<redacted>\"");
+
+    const auto literal = redactSqlErrorMessage("Invalid Input Error: bad value 'hunter2' for SECRET");
+    REQUIRE(literal == "Invalid Input Error: bad value '<redacted>' for SECRET");
+
+    // Identifiers are kept: they name what went wrong.
+    const std::string missing = "IO Error: Extension \"/x/postgres.duckdb_extension\" not found";
+    REQUIRE(redactSqlErrorMessage(missing) == missing);
+
+    // An unterminated literal is masked to the end.
+    REQUIRE(redactSqlErrorMessage("oops 'abc") == "oops '<redacted>");
+}

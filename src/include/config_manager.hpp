@@ -96,8 +96,14 @@ struct AuthFromSecretManagerConfig {
     std::string region;
     std::string secret_id;
     std::string secret_key;
+    // Accepted for old configs and ignored (a warning says so): the fetched user
+    // list lives in AuthMiddleware's memory, not in a table templates can read.
     std::string secret_table;
+    // Legacy: SQL creating a DuckDB S3 secret named secretNameToSecretId(secret_name).
+    // Run in a private DuckDB instance, never the main one. Set only when the
+    // config has an `init:` key (init_declared), even an empty one.
     std::string init;
+    bool init_declared = false;
 
     const std::string& getInit() const { return init; }
     void setInit(const std::string& initSql) { init = initSql; }
@@ -1123,12 +1129,9 @@ protected:
     T safeGet(const YAML::Node& node, const std::string& key, const std::string& path) const;
 
 public:
-    static std::string secretNameToTableName(const std::string& secret_name);
     static std::string secretNameToSecretId(const std::string& secret_name);
-    static std::string createDefaultAuthInit(const std::string& secret_name,
-                                             const std::string& region,
-                                             const std::string& secret_id,
-                                             const std::string& secret_key);
+    // `auth.from-aws-secretmanager`, of an endpoint or of the top-level `auth:`.
+    AuthFromSecretManagerConfig parseAwsSecretManagerNode(const YAML::Node& aws_node) const;
 
 };
 

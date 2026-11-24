@@ -4,9 +4,11 @@
 #include <crow/http_response.h>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "config_manager.hpp"
 #include "database_manager.hpp"
@@ -22,12 +24,37 @@ struct AwsAuthParams {
     std::string region;
 };
 
+// One entry of a Secrets-Manager user list: {"auth":[{"username","password","roles"}]}.
+struct SecretUser {
+    std::string username;
+    std::string password;   // as stored: plaintext, MD5 or $pbkdf2-sha256$...
+    std::vector<std::string> roles;
+};
+
+// Basic-auth users fetched from AWS Secrets Manager (`auth.from-aws-secretmanager`).
+//
+// The list is kept here, in memory, keyed by secret-name - never in the main
+// DuckDB, where every SQL template could read it (#254). Each secret is fetched
+// once, however many endpoints (or the top-level `auth:`) name it. The AWS
+// credentials go straight to the SDK: configured secret-id/secret-key, else the
+// SDK's default credential chain; only a legacy `init:` involves DuckDB, and
+// then a private instance of its own.
 class AwsHelper {
 public:
-    AwsHelper(std::shared_ptr<DatabaseManager> db_manager);
-    
-    void refreshSecretJson(const std::string& secret_name, const std::string& secret_table);
-    std::string getSecretJson(const std::string& secret_name);
+    explicit AwsHelper(std::shared_ptr<DatabaseManager> db_manager);
+
+    // Fetch the secret's user list unless it is already loaded. Throws on failure.
+    void loadUsers(const AuthFromSecretManagerConfig& config);
+    bool hasUsers(const std::string& secret_name) const;
+    // The first user of that name in the secret's list.
+    std::optional<SecretUser> findUser(const std::string& secret_name, const std::string& username) const;
+
+    // The secret's SecretString, fetched from Secrets Manager.
+    std::string getSecretJson(const AuthFromSecretManagerConfig& config);
+
+    // Parse {"auth":[{"username":..,"password":..,"roles":[..]}]}. Throws, without
+    // quoting the document, when it is not that shape.
+    static std::vector<SecretUser> parseUserList(const std::string& secret_json);
 
     using EnvLookup = std::function<std::optional<std::string>(const std::string&)>;
     // The Secrets Manager endpoint to use instead of AWS's: AWS_ENDPOINT_URL_SECRETS_MANAGER,
@@ -35,13 +62,16 @@ public:
     static std::string resolveEndpointOverride(const EnvLookup& env);
     // `configured`, else AWS_REGION, else AWS_DEFAULT_REGION; throws when none is set.
     static std::string resolveRegion(const std::string& configured, const EnvLookup& env);
-    void persistSecretJson(const std::string& secret_table, const std::string& secret_json);
 
 private:
+    // Legacy `init:`: run it in a private DuckDB and read the S3 secret it
+    // creates; else the main database's secret of that name (deprecated).
+    std::optional<AwsAuthParams> credentialsFromLegacyInit(const AuthFromSecretManagerConfig& config);
 
-    std::optional<AwsAuthParams> tryGetS3AuthParams(const std::string& secret_name);
-
-    std::shared_ptr<DatabaseManager> db_manager;
+private:
+    std::shared_ptr<DatabaseManager> _db_manager;
+    mutable std::mutex _mutex;
+    std::unordered_map<std::string, std::vector<SecretUser>> _users;
 };
 
 

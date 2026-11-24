@@ -413,6 +413,62 @@ std::string CleanDuckError(const std::string& raw) {
     return raw;
 }
 
+}  // namespace
+
+duckdb_database OpenPrivateDuckDb(bool allow_persistent_secrets, const std::string& purpose) {
+    // The config file may not be read yet, so only the environment (and a
+    // bundle's embedded extensions) can say where extensions live - the same
+    // defaults ConfigManager applies after `duckdb.extension_directory`.
+    std::string extension_dir;
+    if (const char* dir = std::getenv("FLAPI_EXTENSION_DIRECTORY"); dir != nullptr && *dir != '\0') {
+        extension_dir = dir;
+    } else if (const auto bundled = BundledExtensionDirectory()) {
+        extension_dir = bundled->string();
+    }
+    const bool offline = ExtensionsOfflineRequested();
+    duckdb_config config = nullptr;
+    if (duckdb_create_config(&config) == DuckDBSuccess) {
+        if (!extension_dir.empty()) {
+            duckdb_set_config(config, "extension_directory", extension_dir.c_str());
+        }
+        if (offline) {
+            // LOAD of a known extension would otherwise auto-install (download) it.
+            duckdb_set_config(config, "autoinstall_known_extensions", "false");
+            duckdb_set_config(config, "autoload_known_extensions", "false");
+        }
+        if (!allow_persistent_secrets) {
+            // ~/.duckdb/stored_secrets belongs to whoever runs DuckDB, not to this instance.
+            duckdb_set_config(config, "allow_persistent_secrets", "false");
+        }
+    }
+    duckdb_database db = nullptr;
+    const auto opened = duckdb_open_ext(nullptr, &db, config, nullptr);
+    if (config) {
+        duckdb_destroy_config(&config);
+    }
+    if (opened != DuckDBSuccess) {
+        throw FileOperationError("Could not start the " + purpose + ".");
+    }
+    // Nothing configured: the user directory, then the extensions shipped next to the binary.
+    if (extension_dir.empty()) {
+        if (const auto statement = ShippedExtensionSearchStatement()) {
+            duckdb_connection conn = nullptr;
+            if (duckdb_connect(db, &conn) == DuckDBSuccess) {
+                duckdb_result result;
+                if (duckdb_query(conn, statement->c_str(), &result) != DuckDBSuccess) {
+                    CROW_LOG_WARNING << "The " << purpose << ": could not add the shipped extension directory: "
+                                     << duckdb_result_error(&result);
+                }
+                duckdb_destroy_result(&result);
+                duckdb_disconnect(&conn);
+            }
+        }
+    }
+    return db;
+}
+
+namespace {
+
 struct BootstrapDb {
     duckdb_database db = nullptr;
     std::once_flag azure_once;
@@ -441,49 +497,12 @@ std::shared_ptr<BootstrapDb> GetBootstrapDb() {
         return instance;
     }
     auto created = std::make_shared<BootstrapDb>();
-    // The config file is not read yet, so only the environment (and a bundle's
-    // embedded extensions) can say where extensions live - the same defaults
-    // ConfigManager applies after `duckdb.extension_directory`.
-    std::string extension_dir;
-    if (const char* dir = std::getenv("FLAPI_EXTENSION_DIRECTORY"); dir != nullptr && *dir != '\0') {
-        extension_dir = dir;
-    } else if (const auto bundled = BundledExtensionDirectory()) {
-        extension_dir = bundled->string();
-    }
-    const bool offline = ExtensionsOfflineRequested();
-    duckdb_config config = nullptr;
-    if (duckdb_create_config(&config) == DuckDBSuccess) {
-        if (!extension_dir.empty()) {
-            duckdb_set_config(config, "extension_directory", extension_dir.c_str());
-        }
-        if (offline) {
-            // LOAD of a known extension would otherwise auto-install (download) it.
-            duckdb_set_config(config, "autoinstall_known_extensions", "false");
-            duckdb_set_config(config, "autoload_known_extensions", "false");
-        }
-    }
-    const auto opened = duckdb_open_ext(nullptr, &created->db, config, nullptr);
-    if (config) {
-        duckdb_destroy_config(&config);
-    }
-    if (opened != DuckDBSuccess) {
-        throw FileOperationError("Could not start the bootstrap DuckDB used to read remote files.");
-    }
+    created->db = OpenPrivateDuckDb(/*allow_persistent_secrets=*/true, "bootstrap DuckDB used to read remote files");
     duckdb_connection conn = nullptr;
     if (duckdb_connect(created->db, &conn) != DuckDBSuccess) {
         throw FileOperationError("Could not connect to the bootstrap DuckDB.");
     }
-    // Nothing configured: the user directory, then the extensions shipped next to the binary.
-    if (extension_dir.empty()) {
-        if (const auto statement = ShippedExtensionSearchStatement()) {
-            duckdb_result result;
-            if (duckdb_query(conn, statement->c_str(), &result) != DuckDBSuccess) {
-                CROW_LOG_WARNING << "Bootstrap DuckDB: could not add the shipped extension directory: "
-                                 << duckdb_result_error(&result);
-            }
-            duckdb_destroy_result(&result);
-        }
-    }
+    const bool offline = ExtensionsOfflineRequested();
     // Offline: never download; httpfs must already be in an extension directory.
     if (const auto error = LoadOrInstallExtension(conn, "httpfs", offline); !error.empty()) {
         CROW_LOG_WARNING << "Bootstrap DuckDB: loading httpfs failed: " << error

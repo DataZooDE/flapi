@@ -90,4 +90,47 @@ bool isCredentialKey(std::string_view key) {
                        });
 }
 
+std::string redactSqlErrorMessage(std::string_view message) {
+    std::string out(message);
+    // DuckDB's parser appends the statement around the failure position:
+    // "\n\nLINE 1: ...SECRET 'abc'def'...\n        ^". Everything from there on
+    // is statement text.
+    if (const auto at = out.find("\nLINE "); at != std::string::npos) {
+        out.erase(at);
+    }
+    while (!out.empty() && (out.back() == '\n' || out.back() == ' ')) {
+        out.pop_back();
+    }
+    // Then the fragments that are statement text, not names: every single-
+    // quoted string literal, and the token a syntax error quotes
+    // (`at or near "def"`) - with an unescaped secret, a piece of the secret.
+    // Double-quoted identifiers elsewhere (an extension, a table) stay.
+    std::string redacted;
+    redacted.reserve(out.size());
+    static constexpr std::string_view kNear = "at or near \"";
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        char quote = 0;
+        if (out[i] == '\'') {
+            quote = '\'';
+        } else if (out.compare(i, kNear.size(), kNear) == 0) {
+            redacted.append(kNear.substr(0, kNear.size() - 1));
+            i += kNear.size() - 1;
+            quote = '"';
+        }
+        if (quote == 0) {
+            redacted.push_back(out[i]);
+            continue;
+        }
+        const auto close = out.find(quote, i + 1);
+        redacted.push_back(quote);
+        redacted += "<redacted>";
+        if (close == std::string::npos) {
+            break;
+        }
+        redacted.push_back(quote);
+        i = close;
+    }
+    return redacted;
+}
+
 }  // namespace flapi
