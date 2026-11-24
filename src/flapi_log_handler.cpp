@@ -31,6 +31,9 @@ struct PendingRequestLine {
 };
 thread_local PendingRequestLine t_pending_request_line;
 
+// See FlapiLogHandler::RequestIdOverride.
+thread_local std::string_view t_request_id_override;
+
 bool isCrowRequestLine(const std::string& message) {
     return message.rfind("Request: ", 0) == 0;
 }
@@ -78,15 +81,34 @@ void FlapiLogHandler::resetPendingResponse() {
     t_response_logged_for = nullptr;
 }
 
+FlapiLogHandler::RequestIdOverride::RequestIdOverride(std::string_view request_id) noexcept
+    : previous_(t_request_id_override) {
+    t_request_id_override = request_id;
+}
+
+FlapiLogHandler::RequestIdOverride::~RequestIdOverride() noexcept {
+    t_request_id_override = previous_;
+}
+
+std::string_view FlapiLogHandler::currentRequestIdOverride() noexcept {
+    return t_request_id_override;
+}
+
 std::string FlapiLogHandler::format(const std::string& message, crow::LogLevel level,
-                                    const std::string& timestamp) const {
+                                    const std::string& timestamp,
+                                    std::string_view request_id_override) const {
     const RequestContext* rc = RequestContextScope::current();
 
-    // The request id this line belongs to, if any: the ambient request's, or -
-    // for Crow's own Response line of a request whose context has already been
-    // released - the one finish() left for it.
+    // The request id this line belongs to, if any: an explicit override, the
+    // ambient request's, or - for Crow's own Response line of a request whose
+    // context has already been released - the one finish() left for it.
     std::string_view request_id;
-    if (rc != nullptr) {
+    if (!request_id_override.empty()) {
+        request_id = request_id_override;
+        if (rc != nullptr && rc->requestIdView() != request_id_override) {
+            rc = nullptr;   // another request's trace ids do not belong on this line
+        }
+    } else if (rc != nullptr) {
         request_id = rc->requestIdView();
         if (isCrowResponseLine(message)) {
             t_response_logged_for = rc;
@@ -130,7 +152,7 @@ std::string FlapiLogHandler::format(const std::string& message, crow::LogLevel l
             out.append(rc->spanIdView());
         }
     }
-    if (rc == nullptr && isCrowResponseLine(message)) {
+    if (request_id_override.empty() && rc == nullptr && isCrowResponseLine(message)) {
         // Used once: the next Response line on this thread is another request's.
         t_pending_response_id.clear();
     }
@@ -161,7 +183,8 @@ void FlapiLogHandler::log(const std::string& raw_message, crow::LogLevel level) 
         std::lock_guard<std::mutex> guard(write_mutex_);
         // Re-checked under the lock: setFormat() may have flushed meanwhile.
         if (holding_.load(std::memory_order_relaxed)) {
-            held_.push_back(HeldLine{std::move(message), level, currentTimestamp()});
+            held_.push_back(HeldLine{std::move(message), level, currentTimestamp(),
+                                     std::string(t_request_id_override)});
             return;
         }
     }
@@ -171,7 +194,7 @@ void FlapiLogHandler::log(const std::string& raw_message, crow::LogLevel level) 
     if (t_pending_request_line.present) {
         PendingRequestLine stale = std::move(t_pending_request_line);
         t_pending_request_line = PendingRequestLine{};
-        const std::string line = format(stale.message, stale.level, currentTimestamp());
+        const std::string line = format(stale.message, stale.level, currentTimestamp(), {});
         std::lock_guard<std::mutex> guard(write_mutex_);
         std::cerr << line << '\n';
     }
@@ -184,7 +207,7 @@ void FlapiLogHandler::log(const std::string& raw_message, crow::LogLevel level) 
         t_pending_request_line.level = level;
         return;
     }
-    const std::string line = format(message, level, currentTimestamp());
+    const std::string line = format(message, level, currentTimestamp(), t_request_id_override);
     // Build first, then one write under the lock: partial writes from pooled
     // workers would interleave into unparseable output.
     std::lock_guard<std::mutex> guard(write_mutex_);
@@ -195,7 +218,7 @@ void FlapiLogHandler::setFormat(Format format) {
     std::lock_guard<std::mutex> guard(write_mutex_);
     format_.store(format, std::memory_order_relaxed);
     for (const auto& held : held_) {
-        std::cerr << this->format(held.message, held.level, held.timestamp) << '\n';
+        std::cerr << this->format(held.message, held.level, held.timestamp, held.request_id_override) << '\n';
     }
     held_.clear();
     held_.shrink_to_fit();

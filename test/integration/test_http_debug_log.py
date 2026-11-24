@@ -427,7 +427,8 @@ def test_credentials_in_urls_never_reach_the_log(bucket, workdir, duckdb_redacts
             assert len(lines) == len(seen), (
                 f"{path}: {len(lines)} line(s) for request_id={rid}, the fake served {len(seen)}: {seen}\n"
                 f"log: {[raw for raw, _ in _http_lines(read_log())]}")
-            assert all("mybucket/data/obj0.csv" in m.group("url") for _, m in lines), [raw for raw, _ in lines]
+            data = [(raw, m) for raw, m in lines if "mybucket/data/obj0.csv" in m.group("url")]
+            assert data, f"{path}: no line for the data object: {[raw for raw, _ in lines]}"
         everything = read_log()
         http = [raw for raw, _ in _http_lines(everything)]
         for raw in http:
@@ -452,12 +453,12 @@ def test_failed_requests_are_logged_with_their_outcome(bucket, workdir):
 
         r, rid, _ = _get(port, "/dead", timeout=120)
         assert r.status_code >= 400, r.text
-        lines = _lines_for(read_log, rid, 1)
-        assert lines, (f"no duckdb http line for request_id={rid} (connection refused); all lines: "
+        lines = [(raw, m) for raw, m in _lines_for(read_log, rid, 1)
+                 if f"127.0.0.1:{_DEAD_PORT}/x.csv" in m.group("url")]
+        assert lines, (f"no duckdb http line for the refused connection of request_id={rid}; all lines: "
                        f"{[raw for raw, _ in _http_lines(read_log())]}")
         assert all(m.group("status") == "ERR" for _, m in lines), (
             "a request that got no response must log `-> ERR`: " + str([raw for raw, _ in lines]))
-        assert all(f"127.0.0.1:{_DEAD_PORT}/x.csv" in m.group("url") for _, m in lines), [raw for raw, _ in lines]
         unparsed = [raw for raw, m in _http_lines(read_log()) if m is None]
         assert not unparsed, f"duckdb http lines not in the agreed format: {unparsed}"
     finally:

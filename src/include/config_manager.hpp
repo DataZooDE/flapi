@@ -815,6 +815,8 @@ public:
     const std::string& getLogLevel() const { return log_level; }
     int getStallTimeoutSeconds() const { return stall_timeout_s; }
     const std::string& getLogFormat() const { return log_format; }
+    // `log-http-requests`, after FLAPI_LOG_HTTP_REQUESTS (which wins when set).
+    bool getLogHttpRequests() const { return log_http_requests; }
     std::string getBasePath() const;
     std::string getDuckDBPath() const;
     ExtendedYamlParser& getYamlParser() { return yaml_parser; }
@@ -990,6 +992,7 @@ protected:
     // still running after this long is pathological rather than merely slow.
     int stall_timeout_s = 60;
     std::string log_format = "text";
+    bool log_http_requests = false;
     std::string project_description;
     std::string cache_schema = "flapi";
     std::string server_name;

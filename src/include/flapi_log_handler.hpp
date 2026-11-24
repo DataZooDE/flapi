@@ -52,8 +52,11 @@ public:
     // Exposed for tests: asserting on the exact rendered line is the only way to
     // prove a key is absent rather than merely empty.
     std::string formatForTest(const std::string& message, crow::LogLevel level) const {
-        return format(message, level, currentTimestamp());
+        return format(message, level, currentTimestamp(), currentRequestIdOverride());
     }
+
+    // The override in force on this thread; empty when none.
+    static std::string_view currentRequestIdOverride() noexcept;
 
     static const char* levelName(crow::LogLevel level);
 
@@ -77,14 +80,35 @@ public:
     // by the next log call on the thread.
     static void releasePendingRequestLine();
 
+    // Attributes the lines logged on this thread, while it lives, to `request_id`
+    // instead of the ambient request (or to none). For a writer that knows which
+    // request a line belongs to although that request is not ambient on its
+    // thread: the DuckDB HTTP request log runs on DuckDB's worker threads, and
+    // marks the lines no request caused with "-". The id is stamped by the
+    // handler like any other, so it appears once, as `request_id=` in text and
+    // as the `request_id` field in JSON. When it is the ambient request's own
+    // id, that request's trace ids are kept.
+    class RequestIdOverride {
+    public:
+        explicit RequestIdOverride(std::string_view request_id) noexcept;
+        ~RequestIdOverride() noexcept;
+        RequestIdOverride(const RequestIdOverride&) = delete;
+        RequestIdOverride& operator=(const RequestIdOverride&) = delete;
+
+    private:
+        std::string_view previous_;
+    };
+
 private:
     static std::string currentTimestamp();
-    std::string format(const std::string& message, crow::LogLevel level, const std::string& timestamp) const;
+    std::string format(const std::string& message, crow::LogLevel level, const std::string& timestamp,
+                       std::string_view request_id_override) const;
 
     struct HeldLine {
         std::string message;
         crow::LogLevel level;
         std::string timestamp;
+        std::string request_id_override;   // a held line keeps the override it was logged under
     };
 
     std::atomic<Format> format_;

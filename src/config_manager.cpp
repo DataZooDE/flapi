@@ -9,6 +9,7 @@
 #include <string_view>
 #include "extension_installer.hpp"
 #include "redaction.hpp"
+#include "duckdb_http_log_sink.hpp"
 #include "endpoint_config_parser.hpp"
 #include "config_loader.hpp"
 #include "endpoint_repository.hpp"
@@ -289,7 +290,7 @@ const std::vector<std::string>& ConfigManager::KnownTopLevelKeys() {
     // when a reader is added to this file without its key being listed here.
     static const std::vector<std::string> keys = {
         "project-name", "project-description", "server-name", "http-port", "http-host",
-        "log-level", "stall-timeout-s", "log-format", "cache-schema", "telemetry",
+        "log-level", "stall-timeout-s", "log-format", "log-http-requests", "cache-schema", "telemetry",
         "template", "duckdb", "ducklake", "audit", "tracing", "storage", "mcp",
         "heartbeat", "connections", "rate_limit", "cors", "enforce-https", "auth",
         "version", "environment-whitelist", "server"};
@@ -429,6 +430,14 @@ void ConfigManager::parseMainConfig() {
                                      + std::to_string(stall_timeout_s));
         }
         log_format = safeGet<std::string>(config, "log-format", "log-format", "text");
+        // Read before the endpoint files: a remote template.path is fetched
+        // while they load, and those fetches are logged too. The environment
+        // variable FLAPI_LOG_HTTP_REQUESTS wins when set.
+        log_http_requests = ResolveHttpRequestLog(
+            safeGet<bool>(config, "log-http-requests", "log-http-requests", false));
+        if (log_http_requests) {
+            CROW_LOG_INFO << "Logging every DuckDB HTTP request (log-http-requests / FLAPI_LOG_HTTP_REQUESTS)";
+        }
 
         CROW_LOG_DEBUG << "Project Name: " << project_name;
         CROW_LOG_DEBUG << "Server Name: " << server_name;

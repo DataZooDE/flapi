@@ -27,6 +27,7 @@
 #include "database_manager.hpp"
 #include "credential_manager.hpp"
 #include "extension_installer.hpp"
+#include "duckdb_http_log_sink.hpp"
 
 namespace flapi {
 
@@ -472,6 +473,9 @@ namespace {
 struct BootstrapDb {
     duckdb_database db = nullptr;
     std::once_flag azure_once;
+    // The DuckDB HTTP request log (#252), enabled once the switch is on: at
+    // creation from FLAPI_LOG_HTTP_REQUESTS, or later from `log-http-requests`.
+    std::once_flag http_log_once;
     ~BootstrapDb() {
         if (db) {
             duckdb_close(&db);
@@ -498,6 +502,10 @@ std::shared_ptr<BootstrapDb> GetBootstrapDb() {
     }
     auto created = std::make_shared<BootstrapDb>();
     created->db = OpenPrivateDuckDb(/*allow_persistent_secrets=*/true, "bootstrap DuckDB used to read remote files");
+    // Before any connection: a connection's logger is fixed when it is created.
+    if (HttpRequestLogEnabled()) {
+        std::call_once(created->http_log_once, [&] { EnableDuckDBHttpRequestLog(created->db); });
+    }
     duckdb_connection conn = nullptr;
     if (duckdb_connect(created->db, &conn) != DuckDBSuccess) {
         throw FileOperationError("Could not connect to the bootstrap DuckDB.");
@@ -546,6 +554,9 @@ void DuckDBVFSProvider::WithFileSystem(const std::string& path,
         conn = db_manager->getConnection();
     } else {
         bootstrap = GetBootstrapDb();
+        if (HttpRequestLogEnabled()) {
+            std::call_once(bootstrap->http_log_once, [&] { EnableDuckDBHttpRequestLog(bootstrap->db); });
+        }
         if (duckdb_connect(bootstrap->db, &conn) != DuckDBSuccess) {
             conn = nullptr;
         } else if (PathSchemeUtils::IsAzurePath(path)) {

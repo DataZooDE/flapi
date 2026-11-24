@@ -105,6 +105,7 @@ add_executable(flapi_tests
     test_trace_scope.cpp
     test_trace_capture_policy.cpp
     test_redaction.cpp
+    test_duckdb_http_log_sink.cpp
     test_in_flight_registry.cpp
     test_http_client_tracing.cpp
     test_flapi_log_handler.cpp
