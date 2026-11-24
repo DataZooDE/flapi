@@ -146,7 +146,7 @@ FLAPI_EXTENSION_DIRECTORY=/opt/flapi/extensions FLAPI_EXTENSIONS_OFFLINE=1 flapi
 |---|---|
 | `ghcr.io/datazoode/flapi:latest` | newest release: binary + `httpfs ducklake fts postgres sqlite` in `/app/extensions` (core_functions/parquet/json/icu are built in) |
 | `:v<version>` | that release, same contents (from the DuckDB 2.0.1 release on; older tags are binary only) |
-| `:v<version>-runtime` | the same plus `bigquery` (once published for its DuckDB version) in `/app/extensions`. Before DuckDB 2.0.1 releases: the only image with extensions, via `FLAPI_EXTENSION_DIRECTORY=/opt/flapi/extensions` |
+| `:v<version>-runtime` | the same plus `bigquery` in `/app/extensions` (v26.11.23-runtime lacks it: it was not yet published for DuckDB 2.0.1). Before DuckDB 2.0.1 releases: the only image with extensions, via `FLAPI_EXTENSION_DIRECTORY=/opt/flapi/extensions` |
 | `:main`, `:main-runtime`, `:sha-<commit>` | builds of `main` (not releases) |
 
 There is no `:latest-runtime`. Pin a version.

@@ -2,6 +2,14 @@
 
 All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (the date the binary set was cut). Earlier history is in the git log.
 
+## Unreleased
+
+### Fixed
+
+- **The `-runtime` Docker image has `bigquery` again** (#251). `bigquery@community` is now published for DuckDB
+  2.0.1; v26.11.23-runtime was built without it. The image build now fails instead of silently leaving it out,
+  and CI starts the image with no network and `bigquery` in `duckdb.default-extensions`.
+
 ## v26.11.23 — DuckDB 2.0.1, a faster and leaner server, and releases that ship their extensions
 
 ### DuckDB 2.0.1, and a faster, leaner server (#241)

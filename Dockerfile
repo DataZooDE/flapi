@@ -32,8 +32,8 @@ LABEL org.opencontainers.image.licenses="BUSL-1.1"
 ENTRYPOINT ["/app/flapi"]
 
 # ---------------------------------------------------------------------------
-# runtime: the same image plus the bigquery community extension (best effort),
-# added to /app/extensions. Built with `--target runtime`; published as
+# runtime: the same image plus the bigquery community extension, added to
+# /app/extensions. Built with `--target runtime`; published as
 # :<tag>-runtime. The default extensions are in the default image already (#245),
 # so this target no longer sets FLAPI_EXTENSION_DIRECTORY. Installed by the binary
 # that ships, so it matches its DuckDB version and platform (under QEMU the arm64
@@ -41,10 +41,10 @@ ENTRYPOINT ["/app/flapi"]
 # ---------------------------------------------------------------------------
 FROM slim AS runtime
 # bigquery is a community extension, published per DuckDB version some time after a DuckDB
-# release: best effort, so the image still builds before it exists for this DuckDB version.
-RUN /app/flapi extensions install --dir /app/extensions bigquery@community \
-        || echo "bigquery@community is not available for this DuckDB version; image built without it"
-LABEL org.opencontainers.image.description="flAPI with its default DuckDB extensions plus bigquery (when published for its DuckDB version)."
+# release. The build fails without it (#251): a -runtime image without bigquery is not one.
+# On a DuckDB bump that it does not support yet, hold the bump or the runtime target back.
+RUN /app/flapi extensions install --dir /app/extensions bigquery@community
+LABEL org.opencontainers.image.description="flAPI with its default DuckDB extensions plus bigquery."
 
 # The default target is the image with the default extensions.
 FROM slim
