@@ -29,6 +29,7 @@ ran, the read went through).
 A refusal is matched on the log lines of THAT request only: the 500 body carries a
 `request_id`, and every log line written while the request ran carries it too.
 """
+import functools
 import http.server
 import json
 import os
@@ -915,3 +916,48 @@ class TestHardeningBlock:
         out = r.stdout + r.stderr
         assert r.returncode != 0, f"a wrong duckdb-hardening block was accepted:\n{out[-2000:]}"
         assert key in out, f"the error does not name `{key}`:\n{out[-2000:]}"
+
+
+class TestHttpRequestLogUnderRestricted:
+    """#252 x #253: the HTTP request log is switched on before the lock, so it keeps
+    working under restricted - and a template cannot switch it off or unredact it."""
+
+    def test_the_log_survives_a_template_that_tries_to_turn_it_off(self, workdir):
+        data_dir = tempfile.mkdtemp(prefix="flapi_extacc_http_")
+        with open(os.path.join(data_dir, "x.csv"), "w") as f:
+            f.write("v\nover-http\n")
+        handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=data_dir)
+        handler.log_message = lambda *a, **k: None
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        origin = f"http://127.0.0.1:{server.server_address[1]}/"
+        try:
+            put(workdir, "flapi.yaml", local_config("log-http-requests: true\n" + hardening("restricted", [origin])))
+            put(workdir, "sqls/read.yaml", endpoint("/read", "read.sql"))
+            put(workdir, "sqls/read.sql", f"SELECT * FROM read_csv('{origin}x.csv')")
+            put(workdir, "sqls/off.yaml", endpoint("/off", "off.sql", paginated=False))
+            put(workdir, "sqls/off.sql", "CALL disable_logging()")
+            put(workdir, "sqls/unredact.yaml", endpoint("/unredact", "unredact.sql", paginated=False))
+            put(workdir, "sqls/unredact.sql", "SET redact_http_logs = false")
+            s = start_server("flapi.yaml", workdir)
+            try:
+                assert_policy_line_once(s.output(), "restricted")
+                r, log = get(s, "/read")
+                assert r.status_code == 200, r.text
+                assert "duckdb http GET " + origin + "x.csv" in log, log[-2000:]
+
+                off = requests.get(f"{s.base}/off", timeout=30)
+                assert off.status_code != 200, "CALL disable_logging() ran from a template under restricted"
+                off_lines = "\n".join(request_lines(s, off.json()["request_id"]))
+                assert "configuration has been locked" in off_lines, off_lines[-2000:]
+                assert_refused(s, "/unredact", "SET redact_http_logs from a template")
+
+                r, log = get(s, "/read")
+                assert r.status_code == 200, r.text
+                assert "duckdb http GET " + origin + "x.csv" in log, (
+                    "a template switched the DuckDB HTTP request log off under restricted:\n" + log[-2000:])
+            finally:
+                stop(s.proc)
+        finally:
+            server.shutdown()
+            shutil.rmtree(data_dir, ignore_errors=True)

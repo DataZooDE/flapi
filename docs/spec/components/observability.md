@@ -326,7 +326,8 @@ flowchart LR
   start and end (`ClientContext::RefreshLoggerInternal`). This replaces any logging
   configuration of the user's own, and `duckdb_logs` stays empty (the sink cannot
   be scanned). A template running `CALL disable_logging()` turns it off for the
-  process; it is not re-asserted. Off, none of this runs.
+  process; it is not re-asserted. Under `duckdb-hardening: restricted` the configuration
+  is locked after the sink is enabled, so that call is refused. Off, none of this runs.
 - **Format.** DuckDB 2.0.1 logs the `HTTP` entry as the string form of a STRUCT
   (`HTTPLogType::GetLogType()`). The sink casts it back to that type with DuckDB's
   own cast, as `duckdb_logs_parsed()` does, rather than parsing the text; quotes,

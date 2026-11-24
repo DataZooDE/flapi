@@ -464,7 +464,10 @@ request into the normal flAPI log:
   or `logging_storage` of your own in a connection `init` is replaced, `HTTP` is
   the only log type, `redact_http_logs` is set to `true`, and `duckdb_logs` /
   `duckdb_logs_parsed` return nothing (the flAPI sink cannot be scanned). A
-  template that runs `CALL disable_logging()` turns the log off until restart.
+  template that runs `CALL disable_logging()` turns the log off until restart -
+  unless the DuckDB configuration is locked: under `duckdb-hardening` `restricted`
+  (the default for a remote config) that call, and `SET redact_http_logs`, fail
+  with "the configuration has been locked" and the log stays on.
 
 `FLAPI_LOG_HTTP_REQUESTS` (`1`/`true`/`yes`/`on` or `0`/`false`/`no`/`off`)
 wins over the key in both directions. Both are read once at startup. Only the
