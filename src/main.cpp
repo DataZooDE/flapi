@@ -1031,7 +1031,8 @@ int main(int argc, char* argv[])
             options.method = cache_refresh_cmd.get<std::string>("--method");
             rc = RunCacheRefreshCommand(cm, options, std::cout);
         } catch (const std::exception& e) {
-            std::cerr << "flapi cache refresh: " << e.what() << "\n";
+            // A failed external access policy quotes its SET statement, which may carry a signed URL.
+            std::cerr << "flapi cache refresh: " << flapi::RedactUrlsInText(e.what()) << "\n";
             rc = 1;
         }
         // Release the catalog cleanly (DuckLake detach) before the process exits.

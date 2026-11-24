@@ -76,6 +76,8 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   sqlite, parquet`). Secrets go in a connection `init`. A template may only `SET SESSION` (or `SET` a session-default
   setting) of `TimeZone`, `default_order`, `enable_profiling`, `tracked_metrics`, `schema`/`search_path`; `ATTACH`,
   `PRAGMA` and `SET GLOBAL` in templates fail.
+- Under `restricted`, an endpoint's `auth.from-aws-secretmanager.init` runs with external access off and a locked
+  configuration in its private DuckDB: creating its secret works; `INSTALL`, file and network access in it fail.
 
 ### Fixed
 

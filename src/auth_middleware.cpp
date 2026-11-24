@@ -45,6 +45,7 @@ const char* staticAuthKind(const std::string& configured) {
 #include "duckdb/common/types/blob.hpp"
 #include "oidc_provider_presets.hpp"
 #include "extension_installer.hpp"
+#include "external_access_policy.hpp"
 #include "redaction.hpp"
 #include "vfs_adapter.hpp"
 
@@ -275,6 +276,15 @@ std::optional<AwsAuthParams> AwsHelper::credentialsFromLegacyInit(const AuthFrom
                 CROW_LOG_WARNING << "auth.from-aws-secretmanager.init: loading aws (for CREDENTIAL_CHAIN) failed: "
                                  << error;
             }
+        }
+        // duckdb-hardening (#253): an endpoint YAML carries this SQL, and for a remote
+        // config that YAML is in the very bucket `restricted` does not trust. The
+        // init only has to create a secret, so it gets no file or network access and
+        // cannot change that; extensions it needs were loaded just above.
+        if (ExternalAccessRestricted()) {
+            RunStatements(private_db.conn,
+                          "SET enable_external_access = false; SET lock_configuration = true;",
+                          "hardening the private DuckDB for auth.from-aws-secretmanager.init");
         }
         RunStatements(private_db.conn, config.init,
                       "auth.from-aws-secretmanager.init for secret '" + config.secret_name + "'");

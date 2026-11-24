@@ -511,8 +511,10 @@ temporary secret is instance-wide (a template's `CREATE SECRET (TYPE s3, ENDPOIN
 redirects every endpoint's reads of that bucket). Load extensions and create secrets at startup instead: `LOAD` in a
 connection `init`, or `duckdb.default-extensions` - which **replaces** the defaults (`httpfs, ducklake, fts, json,
 postgres, sqlite, parquet`), so list those too. Extensions only templates use (`excel`, `spatial`, `iceberg`,
-`delta`, `aws`, ...) must be listed: nothing can load after startup. `aws` is preloaded for you when an auth block
-uses `from-aws-secretmanager` or an `init` uses `credential_chain`; `azure` when anything names `az://`.
+`delta`, `aws`, ...) must be listed: nothing can load after startup. `aws` is preloaded for you when a connection
+`init` uses `credential_chain`; `azure` when anything names `az://`. An endpoint's `auth.from-aws-secretmanager.init`
+runs in a private DuckDB with external access off and its configuration locked: it can create its secret (and
+`LOAD` httpfs/aws, loaded for it beforehand), but cannot read or write files, reach the network or `INSTALL`.
 
 Startup also loads the persistent secrets (`secret_directory` is never allowed) and allows the CA bundle httpfs needs
 for https: whichever of `/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem`,

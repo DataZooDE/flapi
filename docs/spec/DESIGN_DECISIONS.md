@@ -796,7 +796,9 @@ prefix with flAPI's credentials. Keep those credentials and files read-only wher
 again, so an allowed http(s) origin that redirects reaches anywhere. Allow only origins that do not redirect.
 
 **Not covered:** whoever writes `flapi.yaml` chooses the mode (`full` is one line away for a bucket writer);
-connection `init` SQL and `duckdb:` settings run before the policy; a local `flapi.yaml` with a remote
+connection `init` SQL and `duckdb:` settings run before the policy (an endpoint's
+`auth.from-aws-secretmanager.init` does not: its private DuckDB is switched off and locked the same way before it
+runs); a local `flapi.yaml` with a remote
 `template.path` is `full` under `auto`.
 
 **Code:** `src/database_manager.cpp` (`applyExternalAccessPolicy`, `ComputeExternalAccessAllowList`),
