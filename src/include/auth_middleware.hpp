@@ -2,7 +2,9 @@
 
 #include <crow/http_request.h>
 #include <crow/http_response.h>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 
@@ -26,6 +28,13 @@ public:
     
     void refreshSecretJson(const std::string& secret_name, const std::string& secret_table);
     std::string getSecretJson(const std::string& secret_name);
+
+    using EnvLookup = std::function<std::optional<std::string>(const std::string&)>;
+    // The Secrets Manager endpoint to use instead of AWS's: AWS_ENDPOINT_URL_SECRETS_MANAGER,
+    // else AWS_ENDPOINT_URL, unless AWS_IGNORE_CONFIGURED_ENDPOINT_URLS is true. Empty: AWS's.
+    static std::string resolveEndpointOverride(const EnvLookup& env);
+    // `configured`, else AWS_REGION, else AWS_DEFAULT_REGION; throws when none is set.
+    static std::string resolveRegion(const std::string& configured, const EnvLookup& env);
     void persistSecretJson(const std::string& secret_table, const std::string& secret_json);
 
 private:

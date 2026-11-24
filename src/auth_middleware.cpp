@@ -8,6 +8,8 @@
 #include <crow/utility.h>
 #include <crow/json.h>
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <jwt-cpp/jwt.h>
 #include <openssl/evp.h>
@@ -42,6 +44,64 @@ const char* staticAuthKind(const std::string& configured) {
 namespace flapi 
 {
 
+namespace {
+
+std::optional<std::string> ProcessEnv(const std::string& name) {
+    const char* value = std::getenv(name.c_str());
+    if (value == nullptr) {
+        return std::nullopt;
+    }
+    return std::string(value);
+}
+
+// A key the secret does not carry is a NULL Value, and NULL.ToString() is the
+// four characters "NULL": every secret without a session token sent
+// `X-Amz-Security-Token: NULL`, which AWS rejects, and one without a region
+// asked for the region "NULL".
+std::string SecretString(const duckdb::KeyValueSecret& secret, const char* key) {
+    const auto value = secret.TryGetValue(key, false);
+    if (value.IsNull()) {
+        return "";
+    }
+    return value.ToString();
+}
+
+bool IsTruthy(const std::string& value) {
+    std::string lower = value;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return std::tolower(c); });
+    return lower == "true" || lower == "1" || lower == "yes";
+}
+
+}  // namespace
+
+std::string AwsHelper::resolveEndpointOverride(const EnvLookup& env) {
+    // The AWS SDKs' service-specific endpoint convention; SDK for C++ 1.11
+    // does not apply it by itself.
+    if (const auto ignore = env("AWS_IGNORE_CONFIGURED_ENDPOINT_URLS"); ignore && IsTruthy(*ignore)) {
+        return "";
+    }
+    for (const char* name : {"AWS_ENDPOINT_URL_SECRETS_MANAGER", "AWS_ENDPOINT_URL"}) {
+        if (const auto value = env(name); value && !value->empty()) {
+            return *value;
+        }
+    }
+    return "";
+}
+
+std::string AwsHelper::resolveRegion(const std::string& configured, const EnvLookup& env) {
+    if (!configured.empty()) {
+        return configured;
+    }
+    for (const char* name : {"AWS_REGION", "AWS_DEFAULT_REGION"}) {
+        if (const auto value = env(name); value && !value->empty()) {
+            return *value;
+        }
+    }
+    throw std::runtime_error(
+        "auth.from-aws-secretmanager.region is not set, and neither is AWS_REGION nor AWS_DEFAULT_REGION: "
+        "set the region of the Secrets Manager secret");
+}
+
 AwsHelper::AwsHelper(std::shared_ptr<DatabaseManager> db_manager) 
     : db_manager(db_manager)
 { }
@@ -69,8 +129,14 @@ std::string AwsHelper::getSecretJson(const std::string& secret_name)
                                           aws_auth_params->secret_key, 
                                           aws_auth_params->session_token);
     
-    Aws::Client::ClientConfiguration clientConfig;
-    clientConfig.region = aws_auth_params->region;
+    Aws::Client::ClientConfigurationInitValues init_values;
+    init_values.shouldDisableIMDS = true;
+    Aws::Client::ClientConfiguration clientConfig(init_values);
+    clientConfig.region = resolveRegion(aws_auth_params->region, ProcessEnv);
+    const auto endpoint_override = resolveEndpointOverride(ProcessEnv);
+    if (!endpoint_override.empty()) {
+        clientConfig.endpointOverride = endpoint_override;
+    }
     
     Aws::SecretsManager::SecretsManagerClient secretsClient(credentials, nullptr, clientConfig);
     Aws::SecretsManager::Model::GetSecretValueRequest request;
@@ -107,10 +173,10 @@ std::optional<AwsAuthParams> AwsHelper::tryGetS3AuthParams(const std::string& se
     }
 
     AwsAuthParams auth_params;
-    auth_params.access_key = kv_secret->TryGetValue("key_id", false).ToString();
-    auth_params.secret_key = kv_secret->TryGetValue("secret", false).ToString();
-    auth_params.session_token = kv_secret->TryGetValue("session_token", false).ToString();
-    auth_params.region = kv_secret->TryGetValue("region", false).ToString();
+    auth_params.access_key = SecretString(*kv_secret, "key_id");
+    auth_params.secret_key = SecretString(*kv_secret, "secret");
+    auth_params.session_token = SecretString(*kv_secret, "session_token");
+    auth_params.region = SecretString(*kv_secret, "region");
 
     return auth_params;
 }
