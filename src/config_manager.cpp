@@ -640,9 +640,8 @@ void ConfigManager::parseDuckDBHardeningConfig() {
     // DuckDB matches allowed_directories as plain string prefixes and does not make a
     // relative entry absolute, while the paths it checks are absolute: `./data` would
     // never match anything.
-    const auto read_list = [&](const char* key, bool directories) {
+    const auto read_list = [&](const YAML::Node& list, const char* key, bool directories) {
         std::vector<std::string> out;
-        const auto list = node[key];
         if (!list) {
             return out;
         }
@@ -665,8 +664,9 @@ void ConfigManager::parseDuckDBHardeningConfig() {
         }
         return out;
     };
-    duckdb_hardening_config.allowed_directories = read_list("allowed-directories", true);
-    duckdb_hardening_config.allowed_paths = read_list("allowed-paths", false);
+    duckdb_hardening_config.allowed_directories =
+        read_list(node["allowed-directories"], "allowed-directories", true);
+    duckdb_hardening_config.allowed_paths = read_list(node["allowed-paths"], "allowed-paths", false);
 }
 
 // DuckLake configuration methods
