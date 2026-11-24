@@ -107,3 +107,27 @@ TEST_CASE("SQL error messages lose the statement text", "[redaction][security]")
     // An unterminated literal is masked to the end.
     REQUIRE(redactSqlErrorMessage("oops 'abc") == "oops '<redacted>");
 }
+
+// Review of #254: four ways the message-only redaction leaked or mangled.
+TEST_CASE("SQL error redaction: what the message alone gives away", "[redaction][security]") {
+    SECTION("a PEG syntax error double-quotes the token") {
+        const auto out = redactSqlErrorMessage(
+            "Parser Error: syntax error at or near \"\"wJalrXUtnFEMIK7MDENG\"\"");
+        REQUIRE(out.find("wJal") == std::string::npos);
+    }
+    SECTION("an apostrophe in prose is not a literal") {
+        const std::string prose = "Catalog Error: Table with name foo doesn't exist! Did you mean \"bar\"?";
+        REQUIRE(redactSqlErrorMessage(prose) == prose);
+    }
+    SECTION("a DSN echoed unquoted by an extension") {
+        const auto out = redactSqlErrorMessage(
+            "IO Error: Unable to connect to Postgres at host=db user=app password=s3cr3t dbname=x");
+        REQUIRE(out.find("s3cr3t") == std::string::npos);
+        REQUIRE(out.find("host=db") != std::string::npos);
+    }
+    SECTION("a URL with credentials") {
+        const auto out = redactSqlErrorMessage("HTTP Error: GET https://user:pa55word@example.com/x?sig=abc failed");
+        REQUIRE(out.find("pa55word") == std::string::npos);
+        REQUIRE(out.find("sig=abc") == std::string::npos);
+    }
+}

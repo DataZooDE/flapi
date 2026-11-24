@@ -106,6 +106,7 @@ class FakeSecretsManager(http.server.BaseHTTPRequestHandler):
     secrets = {}
     keys = {}       # access key id -> secret access key
     calls = []
+    error = None    # (status, __type, message): answer every GetSecretValue with it
 
     def log_message(self, *args):
         pass
@@ -132,6 +133,9 @@ class FakeSecretsManager(http.server.BaseHTTPRequestHandler):
             "sig_problem": sigv4_problem("POST", self.path, headers, raw, FakeSecretsManager.keys)})
         if target != "secretsmanager.GetSecretValue":
             return self._send(400, {"__type": "UnknownOperationException", "message": target})
+        if FakeSecretsManager.error:
+            status, kind, message = FakeSecretsManager.error
+            return self._send(status, {"__type": kind, "message": message})
         secret_id = body.get("SecretId")
         if secret_id not in FakeSecretsManager.secrets:
             return self._send(400, {"__type": "ResourceNotFoundException",
@@ -152,6 +156,7 @@ def secretsmanager():
     FakeSecretsManager.secrets = {SECRET_NAME: json.dumps(USERS)}
     FakeSecretsManager.keys = {ACCESS_KEY_ID: SECRET_KEY, ENV_ACCESS_KEY_ID: ENV_SECRET_KEY}
     FakeSecretsManager.calls = []
+    FakeSecretsManager.error = None
     httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeSecretsManager)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{httpd.server_address[1]}"
@@ -169,8 +174,12 @@ def sm_env(endpoint, var="AWS_ENDPOINT_URL_SECRETS_MANAGER", **extra):
     return env
 
 
-def sm_block(secret_key=SECRET_KEY, indent="  ", with_keys=True, init=None):
-    lines = ["from-aws-secretmanager:", f"  secret-name: {SECRET_NAME}", f"  region: {REGION}"]
+def sm_block(secret_key=SECRET_KEY, indent="  ", with_keys=True, init=None, region=REGION, secret_table=None):
+    lines = ["from-aws-secretmanager:", f"  secret-name: {SECRET_NAME}"]
+    if region is not None:
+        lines += [f"  region: {region}"]
+    if secret_table is not None:
+        lines += [f"  secret-table: {secret_table}"]
     if with_keys:
         lines += [f"  secret-id: {ACCESS_KEY_ID}",
                   f"  secret-key: {json.dumps(secret_key)}"]   # a JSON string is a valid YAML scalar
@@ -188,12 +197,16 @@ def protected(workdir, name, roles=None, **sm):
         + auth + sm_block(indent="  ", **sm))
 
 
-def write_project(workdir, secret_key=SECRET_KEY, top_level_auth="", extra=""):
+def write_project(workdir, secret_key=SECRET_KEY, top_level_auth="", extra="", with_protected=True, conn_init=None):
+    conn = "  inmem:\n    properties:\n      database: ':memory:'\n"
+    if conn_init is not None:
+        conn += f"    init: {json.dumps(conn_init)}\n"
     put(workdir, "flapi.yaml",
-        "project-name: sm-auth\ntemplate:\n  path: ./sqls\nconnections:\n  inmem:\n    properties:\n"
-        "      database: ':memory:'\nrate_limit:\n  enabled: false\n" + top_level_auth + extra)
+        "project-name: sm-auth\ntemplate:\n  path: ./sqls\nconnections:\n" + conn +
+        "rate_limit:\n  enabled: false\n" + top_level_auth + extra)
     put(workdir, "sqls/ok.sql", "SELECT 1 AS ok")
-    protected(workdir, "protected", secret_key=secret_key)
+    if with_protected:
+        protected(workdir, "protected", secret_key=secret_key)
     # Two unauthenticated endpoints an author could write - or an attacker who can
     # create one through the config service.
     put(workdir, "sqls/users.yaml",
@@ -206,12 +219,12 @@ def write_project(workdir, secret_key=SECRET_KEY, top_level_auth="", extra=""):
     put(workdir, "sqls/secrets.sql", "SELECT name FROM duckdb_secrets()")
 
 
-def launch(workdir, env, log_level="info", extra_args=()):
+def launch(workdir, env, log_level="info", extra_args=(), binary=None):
     port = free_port()
     log_path = os.path.join(workdir, f"server-{port}.log")
     log = open(log_path, "w")
     proc = subprocess.Popen(
-        [flapi_binary(), "-c", os.path.join(workdir, "flapi.yaml"), "-p", str(port), "--log-level", log_level,
+        [binary or flapi_binary(), "-c", os.path.join(workdir, "flapi.yaml"), "-p", str(port), "--log-level", log_level,
          *extra_args],
         cwd=workdir, stdout=log, stderr=subprocess.STDOUT, preexec_fn=os.setsid, env=env)
 
@@ -222,9 +235,9 @@ def launch(workdir, env, log_level="info", extra_args=()):
     return proc, port, output
 
 
-def start(workdir, env, log_level="info", extra_args=()):
+def start(workdir, env, log_level="info", extra_args=(), binary=None):
     """Start flapi; fail clearly (not hang) when it does not come up."""
-    proc, port, output = launch(workdir, env, log_level, extra_args)
+    proc, port, output = launch(workdir, env, log_level, extra_args, binary)
 
     def why():
         return (f"\nfake Secrets Manager saw {len(FakeSecretsManager.calls)} call(s): "
@@ -265,28 +278,56 @@ def get(port, path, auth=None):
     return requests.get(f"http://127.0.0.1:{port}{path}", auth=auth, timeout=30)
 
 
-@pytest.mark.parametrize("endpoint_var", ["AWS_ENDPOINT_URL_SECRETS_MANAGER", "AWS_ENDPOINT_URL"])
-def test_basic_auth_against_a_secrets_manager_user(secretsmanager, workdir, endpoint_var):
+def wait_live_or_exit(proc, port, seconds=60):
+    """True once live, False when the process exited (or never came up)."""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            return False
+        try:
+            if requests.get(f"http://127.0.0.1:{port}/health/live", timeout=1).status_code == 200:
+                return True
+        except requests.RequestException:
+            time.sleep(0.3)
+    return False
+
+
+def test_basic_auth_against_a_secrets_manager_user(secretsmanager, workdir):
     write_project(workdir)
-    proc, port, output = start(workdir, sm_env(secretsmanager, endpoint_var))
+    proc, port, output = start(workdir, sm_env(secretsmanager))
     try:
-        assert fetched_from_fake(), "the user list was not fetched from the endpoint in " + endpoint_var
+        assert fetched_from_fake(), "the user list was not fetched from AWS_ENDPOINT_URL_SECRETS_MANAGER"
         assert_signed_by(ACCESS_KEY_ID)
         ok = get(port, "/protected", ("alice", PASSWORD))
         assert ok.status_code == 200, ok.text + output()[-2000:]
         bad = get(port, "/protected", ("alice", "wrong"))
         assert bad.status_code == 401, bad.text
+        # Whoever answers there decides who can log in: say so, loudly.
+        assert "decides who can log in" in output(), output()[-2000:]
     finally:
         stop(proc)
 
 
-def test_the_service_specific_endpoint_wins_over_the_global_one(secretsmanager, workdir):
+def test_the_generic_endpoint_url_is_ignored(secretsmanager, workdir):
+    # AWS_ENDPOINT_URL is usually set for S3 (MinIO). It must not choose the
+    # service that decides who may log in.
     write_project(workdir)
-    env = sm_env(secretsmanager, AWS_ENDPOINT_URL="http://127.0.0.1:9")
-    proc, port, output = start(workdir, env)
+    proc, port, output = launch(workdir, sm_env(secretsmanager, "AWS_ENDPOINT_URL"))
     try:
-        assert fetched_from_fake(), "AWS_ENDPOINT_URL_SECRETS_MANAGER did not take precedence"
-        assert get(port, "/protected", ("alice", PASSWORD)).status_code == 200
+        wait_live_or_exit(proc, port)
+        assert not fetched_from_fake(), "AWS_ENDPOINT_URL redirected Secrets Manager to the fake"
+    finally:
+        stop(proc)
+
+
+def test_a_plain_http_endpoint_off_loopback_is_refused(workdir):
+    write_project(workdir)
+    proc, port, output = launch(workdir, sm_env("http://sm.example.invalid:9"))
+    try:
+        assert not wait_live_or_exit(proc, port), "started with a plain-http, non-loopback Secrets Manager endpoint"
+        proc.wait(timeout=30)
+        assert proc.returncode != 0
+        assert "FLAPI_ALLOW_INSECURE_SECRETS_ENDPOINT" in output(), output()[-2000:]
     finally:
         stop(proc)
 
@@ -476,6 +517,185 @@ def test_a_running_server_does_not_log_the_credentials(secretsmanager, workdir, 
     leaked = [line for line in out.splitlines()
               if "CANARY456" in line or ACCESS_KEY_ID in line or PASSWORD in line]
     assert not leaked, "credentials written to the log:\n" + "\n".join(leaked)
+
+
+def expect_startup_failure(workdir, env, seconds=60):
+    """Launch flapi, require that it exits non-zero without ever serving; return its log."""
+    proc, port, output = launch(workdir, env)
+    try:
+        assert not wait_live_or_exit(proc, port, seconds), "flapi started; expected a startup failure\n" + output()[-2000:]
+        proc.wait(timeout=30)
+        assert proc.returncode != 0, output()[-2000:]
+        return output()
+    finally:
+        stop(proc)
+
+
+def test_tables_left_by_an_older_version_are_dropped(secretsmanager, workdir):
+    """An upgrade on a file db_path must not leave the old user table readable."""
+    users_json = json.dumps(USERS).replace("'", "''")
+    old_state = (f"CREATE TABLE IF NOT EXISTS {SECRET_TABLE} AS SELECT '{users_json}'::JSON AS j; "
+                 f"CREATE TABLE IF NOT EXISTS my_users AS SELECT '{users_json}'::JSON AS j;")
+    db = "duckdb:\n  db_path: ./state.db\n"
+    # What an older flapi left behind: the tables it created on the file database.
+    write_project(workdir, extra=db, with_protected=False, conn_init=old_state)
+    old = os.path.join(os.path.dirname(flapi_binary()), "..", "main-bin", "flapi")
+    proc, port, output = start(workdir, sm_env(secretsmanager), binary=old if os.path.exists(old) else None)
+    stop(proc)
+    # Now this version, with one block on the default name and one naming `secret-table`.
+    write_project(workdir, extra=db)
+    protected(workdir, "custom-table", secret_table="my_users")
+    put(workdir, "sqls/peek2.yaml",
+        "url-path: /peek-custom\nmethod: GET\ntemplate-source: peek2.sql\nconnection: [inmem]\nauth:\n  enabled: false\n")
+    put(workdir, "sqls/peek2.sql", "SELECT * FROM my_users")
+    proc, port, output = start(workdir, sm_env(secretsmanager))
+    try:
+        for path in ("/peek-users", "/peek-custom"):
+            r = get(port, path)
+            assert PASSWORD not in r.text, f"{path} still reads the old user table: {r.text[:300]}"
+        assert "dropped" in output().lower(), output()[-2000:]
+    finally:
+        stop(proc)
+
+
+def test_an_unknown_user_costs_as_much_as_a_wrong_password(secretsmanager, workdir):
+    """No username enumeration by timing: an unknown name must not answer much faster."""
+    FakeSecretsManager.secrets[SECRET_NAME] = json.dumps(
+        {"auth": [{"username": "carol", "password": pbkdf2_hash("CAROLPW", iterations=600000), "roles": []}]})
+    write_project(workdir)
+    proc, port, output = start(workdir, sm_env(secretsmanager))
+    try:
+        def median(user):
+            times = []
+            for _ in range(3):
+                t0 = time.perf_counter()
+                assert get(port, "/protected", (user, "wrong")).status_code == 401
+                times.append(time.perf_counter() - t0)
+            return sorted(times)[1]
+        known, unknown = median("carol"), median("nobody-by-that-name")
+        assert unknown >= 0.5 * known, f"unknown user {unknown * 1000:.1f} ms vs known user {known * 1000:.1f} ms"
+    finally:
+        stop(proc)
+
+
+def test_two_blocks_sharing_a_secret_name_must_agree(secretsmanager, workdir):
+    write_project(workdir)
+    protected(workdir, "elsewhere", region="us-west-2")
+    out = expect_startup_failure(workdir, sm_env(secretsmanager))
+    assert "/protected" in out and "/elsewhere" in out, out[-2000:]
+
+
+def test_an_aws_error_is_logged_short_and_masked(secretsmanager, workdir):
+    blob = "Zm9vYmFyYmF6cXV4" * 4
+    FakeSecretsManager.error = (400, "AccessDeniedException",
+                                f"User AKIAABCDEFGHIJKLMNOP is not authorized {blob}\nSECONDLINECANARY " + "x" * 600)
+    write_project(workdir)
+    out = expect_startup_failure(workdir, sm_env(secretsmanager))
+    assert "AccessDeniedException" in out, out[-2000:]
+    for leaked in ("AKIAABCDEFGHIJKLMNOP", blob, "SECONDLINECANARY", "x" * 400):
+        assert leaked not in out, f"{leaked[:40]!r} in the log"
+
+
+def test_a_non_basic_block_does_not_fetch(secretsmanager, workdir):
+    top = ("auth:\n  enabled: true\n  type: bearer\n  jwt-secret: 'abcdefghijklmnopqrstuvwxyz0123456789'\n"
+           "  jwt-issuer: test\n" + sm_block(indent="  "))
+    write_project(workdir, top_level_auth=top, with_protected=False)
+    put(workdir, "sqls/inherits.yaml",
+        "url-path: /inherits\nmethod: GET\ntemplate-source: ok.sql\nconnection: [inmem]\n")
+    proc, port, output = start(workdir, sm_env(secretsmanager))
+    try:
+        assert not FakeSecretsManager.calls, "a bearer block fetched a Secrets-Manager user list"
+        assert get(port, "/inherits").status_code == 401
+    finally:
+        stop(proc)
+
+
+def test_the_region_can_come_from_the_aws_profile(secretsmanager, workdir):
+    put(workdir, "aws-config", f"[default]\nregion = {REGION}\n")
+    write_project(workdir)
+    protected(workdir, "protected", region=None)
+    env = sm_env(secretsmanager, AWS_CONFIG_FILE=os.path.join(workdir, "aws-config"))
+    proc, port, output = start(workdir, env)
+    try:
+        assert_signed_by(ACCESS_KEY_ID)
+        assert get(port, "/protected", ("alice", PASSWORD)).status_code == 200
+    finally:
+        stop(proc)
+
+
+def _aws_extension_installed():
+    for root in filter(None, [os.environ.get("FLAPI_EXTENSION_DIRECTORY"), os.path.expanduser("~/.duckdb/extensions")]):
+        for dirpath, _, files in os.walk(root):
+            if "aws.duckdb_extension" in files and "v2.0.1" in dirpath:
+                return True
+    return False
+
+
+@pytest.mark.skipif(not _aws_extension_installed(), reason="the DuckDB aws extension is not installed (no download in tests)")
+def test_a_legacy_credential_chain_init_works(secretsmanager, workdir):
+    init = f"CREATE OR REPLACE SECRET {SECRET_ID} (TYPE S3, PROVIDER CREDENTIAL_CHAIN, REGION '{REGION}');"
+    write_project(workdir)
+    protected(workdir, "protected", with_keys=False, init=init)
+    env = sm_env(secretsmanager, AWS_ACCESS_KEY_ID=ENV_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY=ENV_SECRET_KEY)
+    proc, port, output = start(workdir, env)
+    try:
+        assert_signed_by(ENV_ACCESS_KEY_ID)
+    finally:
+        stop(proc)
+
+
+def test_the_top_level_block_alone_protects_endpoints(secretsmanager, workdir):
+    top = "auth:\n  enabled: true\n  type: basic\n" + sm_block(indent="  ")
+    write_project(workdir, top_level_auth=top, with_protected=False)
+    put(workdir, "sqls/inherits.yaml",
+        "url-path: /inherits\nmethod: GET\ntemplate-source: ok.sql\nconnection: [inmem]\n")
+    proc, port, output = start(workdir, sm_env(secretsmanager))
+    try:
+        assert get(port, "/inherits").status_code == 401
+        assert get(port, "/inherits", ("alice", PASSWORD)).status_code == 200
+        assert len(fetched_from_fake()) == 1
+    finally:
+        stop(proc)
+
+
+def test_a_malformed_secret_stops_startup_without_quoting_it(secretsmanager, workdir):
+    FakeSecretsManager.secrets[SECRET_NAME] = json.dumps({"users": [{"name": "x", "pw": "MALFORMEDCANARY"}]})
+    write_project(workdir)
+    out = expect_startup_failure(workdir, sm_env(secretsmanager))
+    assert "MALFORMEDCANARY" not in out
+    assert "user list" in out, out[-2000:]
+
+
+def test_an_init_that_creates_no_secret_stops_startup(secretsmanager, workdir):
+    write_project(workdir)
+    protected(workdir, "protected", with_keys=False, init="SELECT 42;")
+    out = expect_startup_failure(workdir, sm_env(secretsmanager))
+    assert "created no DuckDB S3 secret" in out, out[-2000:]
+    assert not fetched_from_fake()
+
+
+def test_sigterm_after_a_fetch_exits_cleanly(secretsmanager, workdir):
+    write_project(workdir)
+    proc, port, output = start(workdir, sm_env(secretsmanager))
+    assert get(port, "/protected", ("alice", PASSWORD)).status_code == 200
+    os.killpg(proc.pid, signal.SIGTERM)
+    proc.wait(timeout=30)
+    assert proc.returncode == 0, f"exit code {proc.returncode}\n" + output()[-2000:]
+
+
+def test_project_config_does_not_return_init_literals(workdir):
+    write_project(workdir, with_protected=False, conn_init="SET VARIABLE flapi_canary = 'INITCANARY999';")
+    proc, port, output = start(workdir, {k: v for k, v in ENV.items() if not k.startswith("AWS_")},
+                               extra_args=("--config-service", "--config-service-token", TOKEN))
+    try:
+        for path in ("/api/v1/_config/project", "/config"):
+            r = requests.get(f"http://127.0.0.1:{port}{path}", headers={"Authorization": f"Bearer {TOKEN}"},
+                             timeout=30)
+            assert r.status_code == 200, f"{path}: {r.status_code} {r.text[:300]}"
+            assert "SET VARIABLE" in r.text, f"{path}: the init is no longer shown at all: {r.text[:300]}"
+            assert "INITCANARY999" not in r.text, f"{path} returns the init's literal: {r.text[:500]}"
+    finally:
+        stop(proc)
 
 
 SECRETS_SQL = "SELECT name, persistent, secret_string FROM duckdb_secrets() ORDER BY name"

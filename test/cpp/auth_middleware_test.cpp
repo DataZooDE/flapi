@@ -188,13 +188,14 @@ AwsHelper::EnvLookup FakeEnv(std::map<std::string, std::string> vars) {
 
 TEST_CASE("AwsHelper resolves the Secrets-Manager endpoint override", "[auth][aws]") {
     REQUIRE(AwsHelper::resolveEndpointOverride(FakeEnv({})).empty());
-    REQUIRE(AwsHelper::resolveEndpointOverride(FakeEnv({{"AWS_ENDPOINT_URL", "http://global"}})) == "http://global");
+    // AWS_ENDPOINT_URL is usually MinIO for S3: it must not decide who logs in.
+    REQUIRE(AwsHelper::resolveEndpointOverride(FakeEnv({{"AWS_ENDPOINT_URL", "http://global"}})).empty());
     REQUIRE(AwsHelper::resolveEndpointOverride(FakeEnv({{"AWS_ENDPOINT_URL", "http://global"},
                                                         {"AWS_ENDPOINT_URL_SECRETS_MANAGER", "http://sm"}})) ==
             "http://sm");
     REQUIRE(AwsHelper::resolveEndpointOverride(FakeEnv({{"AWS_ENDPOINT_URL", "http://global"},
-                                                        {"AWS_ENDPOINT_URL_SECRETS_MANAGER", ""}})) ==
-            "http://global");
+                                                        {"AWS_ENDPOINT_URL_SECRETS_MANAGER", ""}}))
+                .empty());
     for (const char* yes : {"true", "TRUE", "1"}) {
         REQUIRE(AwsHelper::resolveEndpointOverride(FakeEnv({{"AWS_ENDPOINT_URL_SECRETS_MANAGER", "http://sm"},
                                                             {"AWS_IGNORE_CONFIGURED_ENDPOINT_URLS", yes}}))
