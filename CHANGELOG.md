@@ -34,6 +34,9 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ### Fixed
 
+- **The `-runtime` Docker image has `bigquery` again** (#251). `bigquery@community` is now published for DuckDB
+  2.0.1; v26.11.23-runtime was built without it. The image build now fails instead of silently leaving it out,
+  and CI starts the image with no network and `bigquery` in `duckdb.default-extensions`.
 - **Secrets-Manager auth works without a session token (#254).** A DuckDB secret without `session_token` read
   back as the string `NULL`, so every request carried `X-Amz-Security-Token: NULL` and AWS refused it ("The
   security token included in the request is invalid"); an omitted `region` became the region `NULL`. The region
