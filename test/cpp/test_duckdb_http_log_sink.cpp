@@ -1,6 +1,7 @@
 #include <catch2/catch_all.hpp>
 
 #include "duckdb_http_log_sink.hpp"
+#include "request_context.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -205,8 +206,54 @@ TEST_CASE("URL bytes that could forge a line or a field are percent-encoded", "[
         CHECK((c == ' ' || (c > 0x20 && c < 0x7f && c != '"')));
     }
     // duckdb http GET <url> -> 200 1ms: the URL is one token.
-    CHECK(std::count(line.begin(), line.end(), ' ') == 5);
+    CHECK(std::count(line.begin(), line.end(), ' ') == 6);
     CHECK(line.find("%0D%0AFORGED%20") != std::string::npos);
     CHECK(line.find("%FF%7F%09") != std::string::npos);
     CHECK(line.find("%22q%22") != std::string::npos);
+}
+
+TEST_CASE("the thread's own request wins over the connection map", "[duckdb_http_log]") {
+    int db = 0;
+    HttpRequestAttributionGuard mapped(&db, 3, "req-mmmmmmmmmmmmmmmm");
+    SECTION("a worker thread (no request) takes the map") {
+        CHECK(ResolveHttpRequestId(&db, 3) == "req-mmmmmmmmmmmmmmmm");
+        CHECK(ResolveHttpRequestId(&db, 4) == "-");
+        CHECK(ResolveHttpRequestId(&db, std::nullopt) == "-");
+    }
+    SECTION("a request thread keeps its own id, even for a connection mapped to another") {
+        flapi::RequestContext rc;
+        flapi::RequestContext::mintRequestId(rc.request_id);
+        flapi::RequestContextScope scope(&rc);
+        CHECK(ResolveHttpRequestId(&db, 3) == std::string(rc.requestIdView()));
+    }
+}
+
+TEST_CASE("the switch can be reset between tests", "[duckdb_http_log]") {
+    ResolveHttpRequestLog(true);
+    if (!HttpRequestLogEnvSwitch().has_value()) {
+        CHECK(HttpRequestLogEnabled());
+    }
+    ResetHttpRequestLogForTest();
+    CHECK(HttpRequestLogEnabled() == HttpRequestLogEnvSwitch().value_or(false));
+}
+
+TEST_CASE("quotes, braces and commas in a URL survive DuckDB's STRUCT round trip", "[duckdb_http_log]") {
+    // Review S3 expected a `}` to break the cast. In DuckDB 2.0.1 it does not:
+    // ToString quotes the VARCHAR children. Pinned, with redaction off.
+    auto r = response(duckdb::HTTPStatusCode::OK_200);
+    for (const char* url : {"http://h/a?q=}", "http://h/a}", "http://h/a?q='", "http://h/a?q={", "http://h/a?q=\\",
+                            "http://h/a?q=a, b", "http://h/a?q='}", "http://h/a?q=\"", "http://h/a?q=a': 'b"}) {
+        INFO(url);
+        const auto entry = ParseDuckDBHttpLogMessage(realMessage(duckdb::RequestType::GET_REQUEST, url, &r, false));
+        REQUIRE(entry.has_value());
+        CHECK(entry->url == url);
+    }
+}
+
+TEST_CASE("a message that does not parse still yields a line, with nothing from the message",
+          "[duckdb_http_log][security]") {
+    CHECK(DuckDBHttpLogLineFor("{'request': garbage SECRET}") == "duckdb http ? <unparsed> -> ?");
+    auto r = response(duckdb::HTTPStatusCode::OK_200);
+    CHECK(DuckDBHttpLogLineFor(realMessage(duckdb::RequestType::GET_REQUEST, "http://h/a?k=SECRET", &r, false)) ==
+          "duckdb http GET http://h/a?redacted -> 200 0ms");
 }

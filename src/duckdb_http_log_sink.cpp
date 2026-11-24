@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cctype>
 #include <cstdlib>
 #include <map>
@@ -26,6 +27,7 @@ namespace flapi {
 namespace {
 
 constexpr const char* kSinkName = "flapi_http";
+constexpr const char* kUnparsedLine = "duckdb http ? <unparsed> -> ?";
 
 // ---- the switch -----------------------------------------------------------
 
@@ -87,6 +89,30 @@ const duckdb::Value* childNamed(const duckdb::Value& parent, std::string_view na
     return nullptr;
 }
 
+// Never more than one warning a minute from the sink: it runs on DuckDB's HTTP
+// path, possibly for every request.
+void warnRateLimited(const char* what) noexcept {
+    static std::atomic<std::int64_t> last_ms{0};
+    try {
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now().time_since_epoch())
+                             .count();
+        auto previous = last_ms.load(std::memory_order_relaxed);
+        if (now - previous < 60'000 && previous != 0) {
+            return;
+        }
+        if (!last_ms.compare_exchange_strong(previous, now)) {
+            return;
+        }
+        CROW_LOG_WARNING << "duckdb http: " << what;
+    } catch (...) {
+    }
+}
+
+bool infoLogged() {
+    return crow::logger::get_current_log_level() <= crow::LogLevel::Info;
+}
+
 class DuckDBHttpLogSink : public duckdb::LogSink {
 public:
     explicit DuckDBHttpLogSink(const void* database) : database_(database) {}
@@ -96,23 +122,39 @@ public:
     // Called by the LogManager under its own lock, synchronously, on the thread
     // that made the request. Nothing is buffered: the line is in the flAPI log
     // when DuckDB returns from the request.
+    //
+    // Nothing may escape into DuckDB: HTTPUtil::LogRequest has no handler, and it
+    // also runs while an exception is already unwinding.
     void WriteLogEntry(duckdb::timestamp_t, duckdb::LogLevel, const std::string& log_type,
                        const std::string& log_message, const duckdb::RegisteredLoggingContext& context) override {
-        if (log_type != duckdb::HTTPLogType::NAME) {
-            return;
+        try {
+            // All of this runs under the LogManager's lock: skip the work when the
+            // line would be filtered anyway.
+            if (!infoLogged() || log_type != duckdb::HTTPLogType::NAME) {
+                return;
+            }
+            write(log_message, context.context.connection_id);
+        } catch (...) {
+            warnRateLimited("a log entry could not be written");
         }
-        write(log_message, context.context.connection_id);
     }
 
     void WriteLogEntries(duckdb::DataChunk& chunk, const duckdb::RegisteredLoggingContext& context) override {
-        // LOG_ENTRIES layout: context_id, timestamp, type, log_level, message.
-        for (duckdb::idx_t row = 0; row < chunk.size(); ++row) {
-            const auto type = chunk.GetValue(2, row);
-            const auto message = chunk.GetValue(4, row);
-            if (type.IsNull() || message.IsNull() || type.ToString() != duckdb::HTTPLogType::NAME) {
-                continue;
+        try {
+            if (!infoLogged()) {
+                return;
             }
-            write(message.ToString(), context.context.connection_id);
+            // LOG_ENTRIES layout: context_id, timestamp, type, log_level, message.
+            for (duckdb::idx_t row = 0; row < chunk.size(); ++row) {
+                const auto type = chunk.GetValue(2, row);
+                const auto message = chunk.GetValue(4, row);
+                if (type.IsNull() || message.IsNull() || type.ToString() != duckdb::HTTPLogType::NAME) {
+                    continue;
+                }
+                write(message.ToString(), context.context.connection_id);
+            }
+        } catch (...) {
+            warnRateLimited("log entries could not be written");
         }
     }
 
@@ -121,28 +163,16 @@ public:
     bool IsEnabled(duckdb::LoggingTargetTable) override { return true; }
 
 private:
-    void write(const std::string& message, duckdb::optional_idx connection_id) const {
-        const auto entry = ParseDuckDBHttpLogMessage(message);
-        if (!entry) {
-            // Never the raw message: with redaction off it carries the URL's credentials.
-            CROW_LOG_WARNING << "duckdb http: a log entry did not parse as DuckDB's HTTP log type";
-            return;
+    void write(const std::string& message, duckdb::optional_idx connection_id) const noexcept {
+        try {
+            const std::string id = ResolveHttpRequestId(
+                database_, connection_id.IsValid() ? std::optional<std::uint64_t>(connection_id.GetIndex())
+                                                   : std::nullopt);
+            FlapiLogHandler::RequestIdOverride attribute(id);
+            CROW_LOG_INFO << DuckDBHttpLogLineFor(message);
+        } catch (...) {
+            warnRateLimited("a log entry could not be written");
         }
-        // Whose request is this: the flAPI request running a query on this
-        // connection (any thread), else the one ambient on this thread (flAPI's
-        // own file reads), else none.
-        std::optional<std::string> request_id;
-        if (connection_id.IsValid()) {
-            request_id = LookupHttpRequestAttribution(database_, connection_id.GetIndex());
-        }
-        if (!request_id) {
-            if (const RequestContext* rc = RequestContextScope::current()) {
-                request_id = std::string(rc->requestIdView());
-            }
-        }
-        const std::string id = request_id.value_or("-");
-        FlapiLogHandler::RequestIdOverride attribute(id);
-        CROW_LOG_INFO << FormatDuckDBHttpLogLine(*entry);
     }
 
     const void* database_;
@@ -183,6 +213,25 @@ bool ResolveHttpRequestLog(bool config_value) {
     const bool enabled = HttpRequestLogEnvSwitch().value_or(config_value);
     g_resolved.store(enabled ? 1 : 0, std::memory_order_release);
     return enabled;
+}
+
+void ResetHttpRequestLogForTest() {
+    g_resolved.store(-1, std::memory_order_release);
+}
+
+std::string ResolveHttpRequestId(const void* database, std::optional<std::uint64_t> connection_id) {
+    // The thread's own request first: a file handle opened by another connection
+    // logs through THAT connection's context, so the map could name the wrong
+    // request. The map is for threads with no request: DuckDB's workers.
+    if (const RequestContext* rc = RequestContextScope::current()) {
+        return std::string(rc->requestIdView());
+    }
+    if (connection_id) {
+        if (auto id = LookupHttpRequestAttribution(database, *connection_id)) {
+            return std::move(*id);
+        }
+    }
+    return "-";
 }
 
 bool HttpRequestLogEnabled() {
@@ -302,11 +351,60 @@ std::optional<DuckDBHttpLogEntry> ParseDuckDBHttpLogMessage(const std::string& m
     return entry;
 }
 
+std::string SanitizeLoggedHttpUrl(const std::string& url) {
+    // What DuckDB's own BuildLogURL does when it redacts, applied whatever DuckDB
+    // was told: a template can `SET redact_http_logs = false` at any time.
+    std::string kept;
+    std::size_t rest_start = 0;
+    if (const auto scheme_end = url.find("://"); scheme_end != std::string::npos) {
+        const auto authority_start = scheme_end + 3;
+        auto authority_end = url.find_first_of("/?#", authority_start);
+        if (authority_end == std::string::npos) {
+            authority_end = url.size();
+        }
+        const std::string authority = url.substr(authority_start, authority_end - authority_start);
+        const auto at = authority.rfind('@');   // userinfo: everything before the last '@'
+        kept = url.substr(0, authority_start) + (at == std::string::npos ? authority : authority.substr(at + 1));
+        rest_start = authority_end;
+    }
+    std::string rest = url.substr(rest_start);
+    rest = rest.substr(0, rest.find('#'));
+    if (const auto q = rest.find('?'); q != std::string::npos) {
+        rest = rest.substr(0, q) + "?redacted";   // the WHOLE query: no denylist to miss a key
+    }
+    kept += rest;
+    // One token on one line: nothing that ends the line, separates a field or
+    // quotes; and only ASCII, so the JSON format stays valid UTF-8.
+    static const char* const hex = "0123456789ABCDEF";
+    std::string out;
+    out.reserve(kept.size());
+    for (const char ch : kept) {
+        const auto c = static_cast<unsigned char>(ch);
+        if (c < 0x21 || c >= 0x7f || c == '"') {
+            out += '%';
+            out += hex[c >> 4];
+            out += hex[c & 0x0f];
+        } else {
+            out += ch;
+        }
+    }
+    return out;
+}
+
+std::string DuckDBHttpLogLineFor(const std::string& message) {
+    if (const auto entry = ParseDuckDBHttpLogMessage(message)) {
+        return FormatDuckDBHttpLogLine(*entry);
+    }
+    // Still a line, or a message that does not cast would hide the request.
+    // Nothing from the message: it may carry credentials.
+    return kUnparsedLine;
+}
+
 std::string FormatDuckDBHttpLogLine(const DuckDBHttpLogEntry& entry) {
     std::string line = "duckdb http ";
     line += entry.method;
     line += ' ';
-    line += entry.url.empty() ? "-" : PathSchemeUtils::RedactUrl(entry.url);
+    line += entry.url.empty() ? "-" : SanitizeLoggedHttpUrl(entry.url);
     line += " -> ";
     line += entry.status;
     line += ' ';

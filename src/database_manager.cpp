@@ -271,9 +271,13 @@ void DatabaseManager::initializeDBManagerFromConfig(std::shared_ptr<ConfigManage
         // Cleanup the configuration object
         duckdb_destroy_config(&config);
 
-        // Opt-in DuckDB HTTP request log (#252): before any connection exists,
-        // so every one of them logs. Off, DuckDB logging is never touched.
-        const bool http_request_log = HttpRequestLogEnabled();
+        // Opt-in DuckDB HTTP request log (#252), before the extension loads and
+        // init statements below so their downloads and reads are logged too. (A
+        // connection's logger follows the global setting: DuckDB 2.0.1 recreates
+        // it at every query start and end, RefreshLoggerInternal.) A template that
+        // runs `CALL disable_logging()` turns it off until restart. Off, DuckDB
+        // logging is never touched.
+        const bool http_request_log = config_manager->getLogHttpRequests();
         if (http_request_log) {
             EnableDuckDBHttpRequestLog(db);
         }

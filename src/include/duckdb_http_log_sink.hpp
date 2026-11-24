@@ -19,9 +19,10 @@ namespace flapi {
 //     duckdb http <METHOD> <url> -> <status|ERR> <N>ms request_id=<id>
 //
 // <id> is the flAPI request whose query made the request, or "-". Headers are
-// never printed; the URL goes through PathSchemeUtils::RedactUrl even though
-// DuckDB is told to redact as well, because a template can `SET
-// redact_http_logs = false`. When off, DuckDB logging is never touched.
+// never printed. The URL is cut to scheme, host and path with `?redacted` for
+// any query (SanitizeLoggedHttpUrl) whatever DuckDB passed, because a template
+// can `SET redact_http_logs = false` at any time. When off, DuckDB logging is
+// never touched.
 
 // ---- the switch -----------------------------------------------------------
 
@@ -37,6 +38,10 @@ bool ResolveHttpRequestLog(bool config_value);
 // environment variable alone.
 bool HttpRequestLogEnabled();
 
+// Forget the resolved value (the environment alone decides again). For tests:
+// the switch is process-global.
+void ResetHttpRequestLogForTest();
+
 // Register the sink on `db` and enable DuckDB's HTTP log type with it, with
 // `redact_http_logs = true`. Idempotent per database; call it again to put
 // back redaction an init statement turned off. Failures are logged, not thrown:
@@ -45,9 +50,9 @@ void EnableDuckDBHttpRequestLog(duckdb_database db);
 
 // ---- request attribution --------------------------------------------------
 
-// While it lives, HTTP requests DuckDB makes on `conn` - on any thread, the
-// worker threads of a parallel scan included - are attributed to the flAPI
-// request ambient on the constructing thread. A no-op when the switch is off,
+// While it lives, HTTP requests DuckDB makes on `conn` from a thread with no
+// request of its own - the worker threads of a parallel scan - are attributed to
+// the flAPI request ambient on the constructing thread. A no-op when the switch is off,
 // when no request is ambient, or when the connection is already attributed
 // (nested execution on the same connection).
 class HttpRequestAttributionGuard {
@@ -70,6 +75,12 @@ private:
 // The request id attributed to (database, connection_id), if any.
 std::optional<std::string> LookupHttpRequestAttribution(const void* database, std::uint64_t connection_id);
 
+// Whose HTTP request is this: the request ambient on the calling thread first
+// (a file handle opened by another connection logs through that connection's
+// context, so the map could name the wrong request); then, on a thread with no
+// request (a DuckDB worker), the map; then "-".
+std::string ResolveHttpRequestId(const void* database, std::optional<std::uint64_t> connection_id);
+
 // ---- formatting (exposed for tests) ---------------------------------------
 
 struct DuckDBHttpLogEntry {
@@ -85,8 +96,19 @@ struct DuckDBHttpLogEntry {
 // the message does not cast.
 std::optional<DuckDBHttpLogEntry> ParseDuckDBHttpLogMessage(const std::string& message);
 
-// "duckdb http GET <redacted url> -> 200 12ms" - no request id, the log
-// handler stamps that.
+// The line for one `HTTP` log message: FormatDuckDBHttpLogLine of the parsed
+// entry, or "duckdb http ? <unparsed> -> ?" when it does not parse.
+std::string DuckDBHttpLogLineFor(const std::string& message);
+
+// "duckdb http GET <url> -> 200 12ms" - no request id, the log handler stamps
+// that. The URL goes through SanitizeLoggedHttpUrl.
 std::string FormatDuckDBHttpLogLine(const DuckDBHttpLogEntry& entry);
+
+// What DuckDB's BuildLogURL does when it redacts: userinfo (everything before
+// the last '@' of the authority) and the fragment dropped, the whole query
+// replaced by `?redacted`. Then bytes < 0x21, >= 0x7f and '"' are
+// percent-encoded, so the URL is one ASCII token that cannot end the line or
+// forge a field. Secrets in the PATH are not touched.
+std::string SanitizeLoggedHttpUrl(const std::string& url);
 
 }  // namespace flapi

@@ -436,7 +436,9 @@ void ConfigManager::parseMainConfig() {
         log_http_requests = ResolveHttpRequestLog(
             safeGet<bool>(config, "log-http-requests", "log-http-requests", false));
         if (log_http_requests) {
-            CROW_LOG_INFO << "Logging every DuckDB HTTP request (log-http-requests / FLAPI_LOG_HTTP_REQUESTS)";
+            CROW_LOG_WARNING << "Logging every DuckDB HTTP request (log-http-requests / FLAPI_LOG_HTTP_REQUESTS): "
+                                "a debugging switch, not for production - request URLs, and so request "
+                                "parameters, reach the log";
         }
 
         CROW_LOG_DEBUG << "Project Name: " << project_name;

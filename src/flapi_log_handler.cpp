@@ -140,7 +140,18 @@ std::string FlapiLogHandler::format(const std::string& message, crow::LogLevel l
         out += ") [";
         out += levelName(level);
         out += "] ";
-        out += message;
+        // One record per line: a CR or LF from anywhere (a URL, a parameter, a
+        // DuckDB error) must not end the line and let what follows pose as a
+        // record of its own.
+        for (const char c : message) {
+            if (c == '\n') {
+                out += "\\n";
+            } else if (c == '\r') {
+                out += "\\r";
+            } else {
+                out += c;
+            }
+        }
         if (!request_id.empty()) {
             out += " request_id=";
             out.append(request_id);
