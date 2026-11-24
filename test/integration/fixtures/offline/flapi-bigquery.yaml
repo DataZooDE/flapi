@@ -1,0 +1,22 @@
+# The runtime image's offline check (#251): the same project as flapi.yaml, plus
+# bigquery in the startup extension list. Under --network none and
+# FLAPI_EXTENSIONS_OFFLINE=1 it can only load from /app/extensions, so
+# "Successfully loaded N out of N" proves the image ships bigquery.
+project-name: offline-startup-bigquery
+project-description: Starts with no network and loads bigquery from the image
+http-port: 8080
+http-host: 0.0.0.0
+template:
+  path: ./sqls
+duckdb:
+  db_path: ":memory:"
+  default-extensions: [httpfs, ducklake, fts, json, postgres, sqlite, parquet, bigquery]
+ducklake:
+  enabled: true
+  alias: cache
+  metadata-path: /tmp/flapi-offline-cache.ducklake
+  data-path: /tmp/flapi-offline-cache-data/
+connections:
+  local:
+    properties:
+      path: ./data/cities.csv
