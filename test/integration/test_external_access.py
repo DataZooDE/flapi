@@ -265,6 +265,30 @@ LOCKED_SETTINGS = {
     "lock_proxy": "SET http_proxy='http://127.0.0.1:1'",
 }
 
+# Statements outside the template allowlist (#253 review): each must be refused BY FLAPI
+# (its log record names duckdb-hardening), whatever DuckDB would have said.
+NOT_ALLOWED = {
+    "explain_install": "EXPLAIN ANALYZE INSTALL fts FROM core",
+    "explain_load": "EXPLAIN ANALYZE LOAD fts",
+    "set_global_tz": "SET GLOBAL TimeZone='America/New_York'",
+    "reset_global_tz": "RESET GLOBAL TimeZone",
+    # default_order is a GLOBAL_DEFAULT setting: a bare SET changes it for every endpoint.
+    "set_default_order": "SET default_order='desc'",
+    "pragma_import": "PRAGMA import_database('{root}/exp')",
+    "export_db": "EXPORT DATABASE '{root}/exp'",
+    "detach": "DETACH DATABASE IF EXISTS nothing_attached",
+    "prepare_secret": "PREPARE p AS CREATE SECRET s (TYPE s3, KEY_ID 'a', SECRET 'b')",
+}
+
+# Statements templates use that the allowlist must keep working.
+STILL_ALLOWED = {
+    "set_session_tz": "SET SESSION TimeZone='UTC'",
+    "explain_select": "EXPLAIN SELECT 1",
+    "checkpoint": "CHECKPOINT",
+    "create_view": "CREATE OR REPLACE VIEW v_ok AS SELECT 1 AS x",
+    "txn": "BEGIN TRANSACTION; CREATE OR REPLACE TABLE t_ok AS SELECT 1 AS x; COMMIT",
+}
+
 
 @pytest.fixture(scope="module")
 def restricted():
@@ -306,9 +330,9 @@ def restricted():
     put(root, "sqls/secretdir.yaml", endpoint("/secretdir", "secretdir.sql", paginated=False))
     put(root, "sqls/secretdir.sql",
         f"SET secret_directory='{secret_dir}'; CREATE PERSISTENT SECRET s (TYPE s3, KEY_ID 'a', SECRET 'b')")
-    for name, sql in LOCKED_SETTINGS.items():
+    for name, sql in {**LOCKED_SETTINGS, **NOT_ALLOWED, **STILL_ALLOWED}.items():
         put(root, f"sqls/{name}.yaml", endpoint(f"/{name}", f"{name}.sql", paginated=False))
-        put(root, f"sqls/{name}.sql", sql)
+        put(root, f"sqls/{name}.sql", sql.replace("{root}", root))
     # Writes outside the allowed directories.
     copy_target = os.path.join(outside, "x.csv")
     put(root, "sqls/copyout.yaml", endpoint("/copyout", "copyout.sql", paginated=False))
@@ -420,6 +444,16 @@ class TestRestrictedLocal:
     @pytest.mark.parametrize("name", sorted(LOCKED_SETTINGS))
     def test_global_settings_are_locked(self, restricted, name):
         assert_refused(restricted, f"/{name}", LOCKED_SETTINGS[name])
+
+    @pytest.mark.parametrize("name", sorted(NOT_ALLOWED))
+    def test_statements_outside_the_allowlist_are_refused_by_flapi(self, restricted, name):
+        lines = "\n".join(assert_refused(restricted, f"/{name}", NOT_ALLOWED[name]))
+        assert "duckdb-hardening" in lines, (
+            f"NOT REFUSED BY FLAPI: {NOT_ALLOWED[name]} reached DuckDB\n" + lines[-2000:])
+
+    @pytest.mark.parametrize("name", sorted(STILL_ALLOWED))
+    def test_statements_templates_use_still_run(self, restricted, name):
+        assert_allowed(restricted, f"/{name}", STILL_ALLOWED[name])
 
     def test_cache_refresh_still_works_and_the_cache_answers(self, restricted):
         r = requests.post(f"{restricted.base}/api/v1/_config/endpoints/-cached/cache/refresh",
@@ -604,6 +638,77 @@ class TestRemoteConfig:
             stop(s.proc)
             hp.server.shutdown()
 
+    def test_explain_analyze_cannot_smuggle_secret_ddl(self, bucket, workdir):
+        root, s3_endpoint = bucket
+        remote_bucket(root, "")
+        hp = make_honeypot()
+        put(root, "mybucket/sqls/xredirect.yaml", endpoint("/xredirect", "xredirect.sql", paginated=False))
+        put(root, "mybucket/sqls/xredirect.sql",
+            "EXPLAIN ANALYZE CREATE SECRET redirect (TYPE s3, KEY_ID 'k', SECRET 's', REGION 'eu-central-1', "
+            f"ENDPOINT '127.0.0.1:{hp.port}', URL_STYLE path, USE_SSL false, SCOPE 's3://mybucket/')")
+        put(root, "mybucket/sqls/xdrop.yaml", endpoint("/xdrop", "xdrop.sql", paginated=False))
+        put(root, "mybucket/sqls/xdrop.sql", "EXPLAIN ANALYZE DROP SECRET zz_flapi_s3")
+        s = start_server("s3://mybucket/flapi.yaml", workdir, env=s3_env(s3_endpoint))
+        try:
+            failures = []
+            for path in ("/xredirect", "/xdrop"):
+                try:
+                    lines = "\n".join(assert_refused(s, path, f"EXPLAIN ANALYZE <secret DDL> at {path}"))
+                    if "duckdb-hardening" not in lines:
+                        failures.append(f"NOT REFUSED BY FLAPI: {path}\n{lines[-1000:]}")
+                except AssertionError as e:
+                    failures.append(str(e)[:1500])
+            r = requests.get(f"{s.base}/data", timeout=60)
+            if r.status_code != 200 or r.json()["data"] != [{"id": 1, "origin": "mybucket"}]:
+                failures.append(f"flAPI's own bucket read broke after the attempts: {r.status_code} {r.text[:300]}")
+            if hp.hits:
+                failures.append(f"NOT REFUSED: reads were redirected to the honeypot: {hp.hits}")
+            assert not failures, "\n\n".join(failures)
+        finally:
+            stop(s.proc)
+            hp.server.shutdown()
+
+    def test_import_database_cannot_run_a_planted_schema(self, bucket, workdir):
+        """IMPORT DATABASE runs <dir>/schema.sql verbatim: a template COPYs one into an
+        allowed directory, a second imports it, and the secret it creates redirects reads."""
+        root, s3_endpoint = bucket
+        plant = tempfile.mkdtemp(prefix="flapi_extacc_plant_")
+        hp = make_honeypot()
+        try:
+            remote_bucket(root, hardening(allowed_dirs=[plant]))
+            secret = ("CREATE SECRET planted (TYPE s3, KEY_ID ''k'', SECRET ''s'', REGION ''eu-central-1'', "
+                      f"ENDPOINT ''127.0.0.1:{hp.port}'', URL_STYLE path, USE_SSL false, SCOPE ''s3://mybucket/'');")
+            put(root, "mybucket/sqls/plant.yaml", endpoint("/plant", "plant.sql", paginated=False))
+            put(root, "mybucket/sqls/plant.sql",
+                f"COPY (SELECT '{secret}' AS s) TO '{plant}/schema.sql' (HEADER false, DELIMITER '|'); "
+                f"COPY (SELECT '-- nothing' AS s) TO '{plant}/load.sql' (HEADER false, DELIMITER '|')")
+            forms = {"import": f"IMPORT DATABASE '{plant}'",
+                     "pragmaimport": f"PRAGMA import_database('{plant}')",
+                     "explainimport": f"EXPLAIN ANALYZE PRAGMA import_database('{plant}')"}
+            for name, sql in forms.items():
+                put(root, f"mybucket/sqls/{name}.yaml", endpoint(f"/{name}", f"{name}.sql", paginated=False))
+                put(root, f"mybucket/sqls/{name}.sql", sql)
+            s = start_server("s3://mybucket/flapi.yaml", workdir, env=s3_env(s3_endpoint))
+            try:
+                # Writing into an allowed directory is a documented limit; the import is not.
+                assert_allowed(s, "/plant", "COPY into an allowed directory")
+                assert os.path.exists(os.path.join(plant, "schema.sql"))
+                failures = []
+                for name, sql in forms.items():
+                    try:
+                        assert_refused(s, f"/{name}", sql)
+                    except AssertionError as e:
+                        failures.append(str(e)[:1500])
+                requests.get(f"{s.base}/data", timeout=60)
+                if hp.hits:
+                    failures.append(f"NOT REFUSED: the planted secret redirected reads: {hp.hits}")
+                assert not failures, "\n\n".join(failures)
+            finally:
+                stop(s.proc)
+        finally:
+            hp.server.shutdown()
+            shutil.rmtree(plant, ignore_errors=True)
+
     def test_reload_of_a_remote_endpoint_stays_restricted(self, bucket, workdir):
         """A remote template.path is read-only through the config service: reload answers 501
         and the endpoint keeps its template. Whichever it does, a template edited in the
@@ -656,6 +761,112 @@ class TestRemoteConfig:
             assert_policy_line_once(s.output(), "full")
         finally:
             stop(s.proc)
+
+
+# --------------------------------------------------------------------------- HTTPS, stored secrets, one-shot
+
+def make_tls_server(directory):
+    """A local HTTPS server over `directory` with a fresh self-signed cert for 127.0.0.1.
+    Returns (server, port, cert_path); the cert doubles as the CA bundle."""
+    import ssl
+    import functools
+    cert, key = os.path.join(directory, "cert.pem"), os.path.join(directory, "key.pem")
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert,
+                    "-days", "1", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"],
+                   check=True, capture_output=True)
+    web = os.path.join(directory, "www")
+    os.makedirs(web, exist_ok=True)
+    put(web, "x.csv", "v\nover-tls\n")
+
+    class Quiet(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Quiet, directory=web))
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert, key)
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, server.server_address[1], cert
+
+
+class TestHttps:
+    @pytest.mark.parametrize("mode", ["full", "restricted"])
+    def test_an_allowed_https_origin_is_readable(self, workdir, mode):
+        """A CA bundle outside every allowed directory (`ca_cert_file`, as SSL_CERT_FILE would be)
+        must still be readable by httpfs under restricted; `full` is the control."""
+        tls_dir = tempfile.mkdtemp(prefix="flapi_extacc_tls_")
+        server = None
+        try:
+            server, port, cert = make_tls_server(tls_dir)
+            origin = f"https://127.0.0.1:{port}/"
+            put(workdir, "flapi.yaml", local_config(f"duckdb:\n  ca_cert_file: '{cert}'\n" +
+                                                    hardening(mode, [origin] if mode == "restricted" else [])))
+            put(workdir, "sqls/tls.yaml", endpoint("/tls", "tls.sql"))
+            put(workdir, "sqls/tls.sql", f"SELECT * FROM read_csv('{origin}x.csv')")
+            s = start_server("flapi.yaml", workdir, env={"SSL_CERT_FILE": cert})
+            try:
+                r = assert_allowed(s, "/tls", f"read_csv over https with external-access: {mode}")
+                assert r.json()["data"] == [{"v": "over-tls"}], r.text
+            finally:
+                stop(s.proc)
+        finally:
+            if server is not None:
+                server.shutdown()
+            shutil.rmtree(tls_dir, ignore_errors=True)
+
+
+class TestStoredSecrets:
+    def test_a_persistent_secret_still_serves_reads_under_restricted(self, bucket, workdir):
+        """Persistent secrets load lazily from secret_directory on the first lookup - after
+        external access is off, that load was refused and every s3 read failed."""
+        root, s3_endpoint = bucket
+        put(root, "mybucket/data.csv", "id,origin\n1,mybucket\n")
+        secret_dir = os.path.join(workdir, "stored_secrets")
+        os.makedirs(secret_dir)
+        host = s3_endpoint.replace("http://", "")
+        base = ("project-name: stored\ntemplate:\n  path: ./sqls\nrate_limit:\n  enabled: false\n"
+                f"duckdb:\n  secret_directory: '{secret_dir}'\n")
+        put(workdir, "sqls/data.yaml", endpoint("/data", "data.sql"))
+        put(workdir, "sqls/data.sql", "SELECT * FROM read_csv('s3://mybucket/data.csv')")
+        # 1. A full-access start stores the secret.
+        put(workdir, "flapi.yaml", base +
+            "connections:\n  inmem:\n    init: |\n      CREATE OR REPLACE PERSISTENT SECRET stored (TYPE s3, "
+            f"KEY_ID 'AKIATESTKEY', SECRET 'y', REGION 'eu-central-1', ENDPOINT '{host}', URL_STYLE path, "
+            "USE_SSL false, SCOPE 's3://mybucket/');\n    properties:\n      database: ':memory:'\n"
+            + hardening("full"))
+        s = start_server("flapi.yaml", workdir)
+        stop(s.proc)
+        assert os.listdir(secret_dir), "setup: the persistent secret was not stored"
+        # 2. A restricted start with no init and no credentials in the environment.
+        put(workdir, "flapi.yaml", base + "connections:\n  inmem:\n    properties:\n      database: ':memory:'\n"
+            + hardening("restricted", ["s3://mybucket/"]))
+        s = start_server("flapi.yaml", workdir)
+        try:
+            r = assert_allowed(s, "/data", "an s3 read served by a persistent secret under restricted")
+            assert r.json()["data"] == [{"id": 1, "origin": "mybucket"}], r.text
+        finally:
+            stop(s.proc)
+
+
+class TestOneShotCacheRefresh:
+    def test_flapi_cache_refresh_applies_the_policy(self, bucket, workdir):
+        root, s3_endpoint = bucket
+        remote_bucket(root, "ducklake:\n  enabled: true\n  alias: cache\n  metadata-path: ./cache.ducklake\n"
+                            "  data-path: ./cache_data\n")
+        put(root, "mybucket/sqls/pw.yaml", endpoint("/pw", "pw.sql") +
+            "cache:\n  enabled: true\n  table: pw_cache\n  schema: main\n  template-file: pw_populate.sql\n")
+        put(root, "mybucket/sqls/pw.sql", "SELECT * FROM {{{cache.catalog}}}.{{{cache.schema}}}.{{{cache.table}}}")
+        put(root, "mybucket/sqls/pw_populate.sql",
+            "CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS "
+            "SELECT * FROM read_csv('/etc/passwd', header=false, sep=':');\n")
+        r = subprocess.run([flapi_binary(), "cache", "refresh", "-c", "s3://mybucket/flapi.yaml", "--endpoint", "/pw",
+                            "--log-level", "info"],
+                           cwd=workdir, capture_output=True, text=True, timeout=180, env={**ENV, **s3_env(s3_endpoint)})
+        out = r.stdout + r.stderr
+        assert r.returncode != 0, f"NOT REFUSED: the one-shot refresh read /etc/passwd (exit 0):\n{out[-3000:]}"
+        assert REFUSAL.search(out), f"NOT REFUSED BY THE POLICY: the refresh failed otherwise:\n{out[-3000:]}"
+        assert_policy_line_once(out, "restricted")
 
 
 # --------------------------------------------------------------------------- packed bundle

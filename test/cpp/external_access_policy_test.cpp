@@ -8,6 +8,7 @@
 #include "config_manager.hpp"
 #include "database_manager.hpp"
 #include "external_access_policy.hpp"
+#include "extension_installer.hpp"
 #include "test_utils.hpp"
 
 using namespace flapi;
@@ -152,4 +153,116 @@ TEST_CASE("The allow list covers the config dir, templates and the DuckLake data
 
     const auto bundled = DatabaseManager::ComputeExternalAccessAllowList(*manager, true);
     CHECK(Contains(bundled.directories, "embed://"));
+}
+
+// --------------------------------------------------------------------------- #253 review
+
+TEST_CASE("The template allowlist refuses wrapped and out-of-list statements", "[external_access]") {
+    for (const char* sql : {
+             "EXPLAIN ANALYZE CREATE SECRET s (TYPE s3, KEY_ID 'a', SECRET 'b')",
+             "EXPLAIN ANALYZE DROP SECRET zz_flapi_s3",
+             "EXPLAIN ANALYZE INSTALL fts FROM core",
+             "EXPLAIN LOAD fts",
+             "PREPARE p AS CREATE SECRET s (TYPE s3, KEY_ID 'a', SECRET 'b')",
+             "PRAGMA import_database('/tmp/x')",
+             "IMPORT DATABASE '/tmp/x'",
+             "EXPLAIN ANALYZE PRAGMA import_database('/tmp/x')",
+             "EXPORT DATABASE '/tmp/x'",
+             "ATTACH '/tmp/x.duckdb' AS x",
+             "DETACH x",
+             "COPY FROM DATABASE a TO b",
+             "PRAGMA enable_profiling",
+             "SET GLOBAL TimeZone = 'UTC'",
+             "RESET GLOBAL TimeZone",
+             "SET default_order = 'desc'",
+             "SELECT 1; SET GLOBAL threads = 1",
+         }) {
+        INFO(sql);
+        CHECK(RefusedTemplateStatement(sql).has_value());
+    }
+}
+
+TEST_CASE("The template allowlist keeps what templates use", "[external_access]") {
+    for (const char* sql : {
+             "SELECT * FROM t WHERE id = $1",
+             "WITH a AS (SELECT 1) SELECT * FROM a",
+             "INSERT INTO t VALUES (1)",
+             "UPDATE t SET x = 1 WHERE id = 2",
+             "DELETE FROM t WHERE id = 2",
+             "MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE SET x = s.x",
+             "CREATE OR REPLACE TABLE cache.main.t AS SELECT 1",
+             "CREATE TABLE IF NOT EXISTS t (x INTEGER)",
+             "CREATE OR REPLACE VIEW v AS SELECT 1",
+             "CREATE MACRO m(a) AS a + 1",
+             "CREATE SCHEMA IF NOT EXISTS s",
+             "DROP TABLE IF EXISTS t",
+             "DROP VIEW IF EXISTS v",
+             "ALTER TABLE t ADD COLUMN y INTEGER",
+             "COPY (SELECT 1) TO '/tmp/x.csv'",
+             "COPY t FROM '/tmp/x.csv'",
+             "BEGIN TRANSACTION; SELECT 1; COMMIT",
+             "ROLLBACK",
+             "SET SESSION TimeZone = 'UTC'",
+             "SET schema = 'main'",
+             "USE main",
+             "SET VARIABLE x = 1",
+             "CHECKPOINT",
+             "CALL ducklake_expire_snapshots('cache', dry_run => true)",
+             "VACUUM",
+             "EXPLAIN SELECT 1",
+             "EXPLAIN ANALYZE SELECT 1",
+             "PREPARE q AS SELECT 1",
+             "EXECUTE q",
+             "DESCRIBE t",
+             "SHOW TABLES",
+         }) {
+        INFO(sql);
+        CHECK_FALSE(RefusedTemplateStatement(sql).has_value());
+    }
+}
+
+TEST_CASE("LoadOrInstallExtension decides on the connection, not the process flag", "[external_access]") {
+    RestrictedScope scope(true);   // as if the server's own DuckDB were locked down
+    duckdb_database db = nullptr;
+    duckdb_connection conn = nullptr;
+    REQUIRE(duckdb_open(nullptr, &db) == DuckDBSuccess);
+    REQUIRE(duckdb_connect(db, &conn) == DuckDBSuccess);
+    // An unrestricted instance (the bootstrap DB, a private one) must get DuckDB's own answer.
+    const auto error = LoadOrInstallExtension(conn, "no_such_extension_253", /*offline=*/true);
+    CHECK_FALSE(error.empty());
+    CHECK(error.find("duckdb-hardening") == std::string::npos);
+
+    duckdb_result result;
+    REQUIRE(duckdb_query(conn, "SET enable_external_access = false", &result) == DuckDBSuccess);
+    duckdb_destroy_result(&result);
+    const auto restricted_error = LoadOrInstallExtension(conn, "no_such_extension_253", /*offline=*/true);
+    CHECK(restricted_error.find("duckdb-hardening") != std::string::npos);
+    duckdb_disconnect(&conn);
+    duckdb_close(&db);
+}
+
+TEST_CASE("The preload covers aws for credential_chain and azure wherever it is named", "[external_access]") {
+    TempTestConfig config(
+        "project-name: preload\ntemplate:\n  path: ./sqls\nconnections:\n"
+        "  s3conn:\n    init: \"CREATE SECRET s (TYPE s3, PROVIDER credential_chain)\"\n"
+        "    properties:\n      database: ':memory:'\n"
+        "  azconn:\n    properties:\n      path: 'az://container/data.parquet'\n",
+        "flapi_hardening_preload");
+    auto manager = config.createConfigManager();
+    const auto preload = DatabaseManager::ComputeExternalAccessPreload(*manager);
+    CHECK(Contains(preload, "httpfs"));
+    CHECK(Contains(preload, "aws"));
+    CHECK(Contains(preload, "azure"));
+}
+
+TEST_CASE("The allow list carries the CA bundle and strips file://", "[external_access]") {
+    const std::string bundle = "/etc/ssl/certs/ca-certificates.crt";
+    TempTestConfig config(ConfigWith("duckdb-hardening:\n  allowed-directories: ['file:///srv/data']\n"),
+                          "flapi_hardening_ca");
+    auto manager = config.createConfigManager();
+    const auto allow = DatabaseManager::ComputeExternalAccessAllowList(*manager, false);
+    CHECK(Contains(allow.directories, "/srv/data/"));
+    if (fs::exists(bundle)) {
+        CHECK(Contains(allow.paths, bundle));
+    }
 }
