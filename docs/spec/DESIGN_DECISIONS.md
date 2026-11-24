@@ -771,20 +771,28 @@ would still download from its official repositories.
 `allowed_configs` lists exactly the four settings flAPI SETs per connection after startup, so nothing of flAPI's
 own breaks.
 
-**Why flAPI refuses INSTALL/LOAD and secret DDL itself:** DuckDB allows `INSTALL x FROM core` with external access
-off, and a loaded extension is native code outside any file policy. A temporary secret is instance-wide: one
+**Why flAPI checks templates against an allowlist itself:** DuckDB allows `INSTALL x FROM core` with external
+access off, and a loaded extension is native code outside any file policy. A temporary secret is instance-wide: one
 template's `CREATE SECRET (TYPE s3, ENDPOINT ..., SCOPE 's3://<allowed bucket>/')` redirected every endpoint's
-reads of the allowed bucket, and flAPI's own template reads, to another host (measured on v26.11.23). These are
-refused when the template is rendered, before DuckDB sees them; extensions belong in `duckdb.default-extensions`
-and secrets in a connection `init`.
+reads of the allowed bucket, and flAPI's own template reads, to another host (measured on v26.11.23). `IMPORT
+DATABASE` runs a `schema.sql` that a template can `COPY` into an allowed directory first. The first version refused
+named statements behind a keyword pre-filter; review found `EXPLAIN ANALYZE CREATE SECRET` and `EXPLAIN ANALYZE DROP
+SECRET zz_flapi_s3` walking past it. So every rendered template is parsed and each statement must be of an allowed
+type, recursing into `EXPLAIN` and `PREPARE`; `SET`/`RESET` must stay in the session (the configuration lock checks
+a setting's name, not its scope). Unparsable SQL is refused. Extensions belong in a connection `init` or
+`duckdb.default-extensions`, secrets in a connection `init`.
 
 **Why the extension directory is not allowed:** allowed directories are writable. A template that could write
 `<extension_directory>/httpfs.duckdb_extension` would run its code at the next start. Nothing needs the directory
 after the preload.
 
 **Known limit - allowed directories are writable:** DuckDB has one list for reads and writes. A template can
-`COPY ... TO` a file under the config directory, `template.path` or the DuckLake `data-path` - with a remote config,
-into its own bucket prefix with flAPI's credentials. Keep those credentials read-only where possible.
+`COPY ... TO` a file under the config directory - `flapi.yaml` included, which a local deployment would then start
+with `external-access: full` - `template.path` or the DuckLake `data-path`; with a remote config, into its own bucket
+prefix with flAPI's credentials. Keep those credentials and files read-only where possible.
+
+**Known limit - redirects:** DuckDB checks the URL of an HTTP request, then follows redirects without checking
+again, so an allowed http(s) origin that redirects reaches anywhere. Allow only origins that do not redirect.
 
 **Not covered:** whoever writes `flapi.yaml` chooses the mode (`full` is one line away for a bucket writer);
 connection `init` SQL and `duckdb:` settings run before the policy; a local `flapi.yaml` with a remote
