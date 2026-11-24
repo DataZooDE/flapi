@@ -30,11 +30,19 @@ std::string normaliseKey(std::string_view key);
 // `signature` rather than `sig`, so `design` survives.
 bool isCredentialKey(std::string_view key);
 
-// A DuckDB error message about a statement that may carry credentials (a
-// connection or auth `init:`), safe to log: the `LINE n: ...` excerpt of the
-// statement is dropped, and every single-quoted literal and the token a syntax
-// error quotes become `<redacted>`. What is left names the kind of failure and
-// any identifier it quotes.
-std::string redactSqlErrorMessage(std::string_view message);
+// A DuckDB error message about `statement`, a statement that may carry
+// credentials (a connection or auth `init:`), safe to log:
+//  - DuckDB's `LINE n: ...` excerpt of the statement is dropped;
+//  - every string literal, quoted identifier and dollar-quoted body of the
+//    statement (4+ bytes) is replaced wherever the message repeats it;
+//  - the token after "at or near" (rest of the line) is replaced;
+//  - connection-string secrets and URL credentials/queries are masked.
+// An apostrophe in the message itself is never taken for a literal.
+std::string redactSqlErrorMessage(std::string_view message, std::string_view statement = {});
+
+// `statement` with the body of every string literal and dollar-quoted string
+// replaced by `<redacted>`; identifiers and keywords stay. For showing a
+// connection `init:` through the config APIs.
+std::string redactSqlLiterals(std::string_view statement);
 
 }  // namespace flapi

@@ -552,7 +552,7 @@ def test_tables_left_by_an_older_version_are_dropped(secretsmanager, workdir):
     try:
         for path in ("/peek-users", "/peek-custom"):
             r = get(port, path)
-            assert PASSWORD not in r.text, f"{path} still reads the old user table: {r.text[:300]}"
+            assert PASSWORD not in r.text, f"{path} still reads the old user table: {r.text[:300]}\n" + output()[-3000:]
         assert "dropped" in output().lower(), output()[-2000:]
     finally:
         stop(proc)

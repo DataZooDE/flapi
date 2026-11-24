@@ -1,6 +1,8 @@
 #include "password_hasher.hpp"
 
 #include <algorithm>
+#include <map>
+#include <mutex>
 #include <cctype>
 #include <cstring>
 #include <random>
@@ -15,6 +17,7 @@
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/rand.h>
+#include <openssl/sha.h>
 
 namespace flapi {
 
@@ -151,6 +154,16 @@ bool constantTimeEqual(const std::vector<unsigned char>& a,
     return CRYPTO_memcmp(a.data(), b.data(), a.size()) == 0;
 }
 
+// Equal-length digests of both sides, compared in constant time: neither the
+// position of the first differing byte nor the stored length shows in timing.
+bool constantTimeStringEqual(const std::string& a, const std::string& b) {
+    unsigned char da[SHA256_DIGEST_LENGTH];
+    unsigned char db[SHA256_DIGEST_LENGTH];
+    ::SHA256(reinterpret_cast<const unsigned char*>(a.data()), a.size(), da);
+    ::SHA256(reinterpret_cast<const unsigned char*>(b.data()), b.size(), db);
+    return CRYPTO_memcmp(da, db, SHA256_DIGEST_LENGTH) == 0;
+}
+
 bool verifyPbkdf2(const std::string& provided, const std::string& stored) {
     // stored: $pbkdf2-sha256$<iter>$<b64-salt>$<b64-hash>
     auto rest = stored.substr(std::strlen(kPbkdf2Prefix));
@@ -238,7 +251,7 @@ bool PasswordHasher::verify(const std::string& provided, const std::string& stor
             return verifyPbkdf2(provided, stored);
         case PasswordFormat::Md5Deprecated: {
             try {
-                return md5Hex(provided) == stored;
+                return constantTimeStringEqual(md5Hex(provided), stored);
             } catch (...) {
                 return false;
             }
@@ -249,9 +262,53 @@ bool PasswordHasher::verify(const std::string& provided, const std::string& stor
             // Wave 0 auditor warning).
             return false;
         case PasswordFormat::PlaintextDeprecated:
-            return provided == stored;
+            return constantTimeStringEqual(provided, stored);
     }
     return false;
+}
+
+std::string PasswordHasher::dummyHashLike(const std::string& stored) {
+    // Never matches anything a caller sends: its password is random and
+    // never leaves this function.
+    static std::mutex mutex;
+    static std::map<std::uint32_t, std::string> pbkdf2_by_iterations;
+    static const std::string secret = [] {
+        auto bytes = randomSalt(24);
+        return base64UrlEncode(bytes);
+    }();
+    std::uint32_t iterations = kDefaultIterations;
+    switch (stored.empty() ? PasswordFormat::Pbkdf2Sha256 : classifyFormat(stored)) {
+        case PasswordFormat::Md5Deprecated:
+            return md5Hex(secret);
+        case PasswordFormat::PlaintextDeprecated:
+            return secret;
+        case PasswordFormat::BcryptUnsupported:
+            return stored;   // refused without any work, as for a real bcrypt user
+        case PasswordFormat::Pbkdf2Sha256: {
+            if (stored.empty()) {
+                break;
+            }
+            const auto rest = stored.substr(std::strlen(kPbkdf2Prefix));
+            try {
+                const auto parsed = std::stoul(rest.substr(0, rest.find('$')));
+                if (parsed > 0 && parsed <= 10'000'000) {
+                    iterations = static_cast<std::uint32_t>(parsed);
+                }
+            } catch (...) {
+            }
+            break;
+        }
+    }
+    std::lock_guard<std::mutex> lock(mutex);
+    auto it = pbkdf2_by_iterations.find(iterations);
+    if (it == pbkdf2_by_iterations.end()) {
+        auto salt = randomSalt(kSaltBytes);
+        auto derived = pbkdf2(secret, salt, iterations, kKeyBytes);
+        std::ostringstream oss;
+        oss << kPbkdf2Prefix << iterations << '$' << base64UrlEncode(salt) << '$' << base64UrlEncode(derived);
+        it = pbkdf2_by_iterations.emplace(iterations, oss.str()).first;
+    }
+    return it->second;
 }
 
 // ---------------------------------------------------------------------------

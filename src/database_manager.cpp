@@ -726,7 +726,7 @@ void DatabaseManager::executeInitStatement(const std::string& init_statement) {
     idx_t n_statements = duckdb_extract_statements(executor.conn, init_statement.c_str(), &stmts);
     if (n_statements == 0) {
         const char* error_message = duckdb_extract_statements_error(stmts);
-        const std::string detail = redactSqlErrorMessage(error_message ? error_message : "(no detail)");
+        const std::string detail = redactSqlErrorMessage(error_message ? error_message : "(no detail)", init_statement);
         duckdb_destroy_extracted(&stmts);
         throw std::runtime_error("Failed to parse init statements: " + detail);
     }
@@ -736,7 +736,7 @@ void DatabaseManager::executeInitStatement(const std::string& init_statement) {
         duckdb_prepared_statement prepared_stmt = nullptr;
         if (duckdb_prepare_extracted_statement(executor.conn, stmts, i, &prepared_stmt) == DuckDBError) {
             const char* error_message = duckdb_prepare_error(prepared_stmt);
-            const std::string detail = redactSqlErrorMessage(error_message ? error_message : "(no detail)");
+            const std::string detail = redactSqlErrorMessage(error_message ? error_message : "(no detail)", init_statement);
             duckdb_destroy_prepare(&prepared_stmt);
             duckdb_destroy_extracted(&stmts);
             throw std::runtime_error("Failed to prepare " + position + ": " + detail);
@@ -746,7 +746,7 @@ void DatabaseManager::executeInitStatement(const std::string& init_statement) {
         } catch (const std::exception& e) {
             duckdb_destroy_prepare(&prepared_stmt);
             duckdb_destroy_extracted(&stmts);
-            throw std::runtime_error("Failed to execute " + position + ": " + redactSqlErrorMessage(e.what()));
+            throw std::runtime_error("Failed to execute " + position + ": " + redactSqlErrorMessage(e.what(), init_statement));
         }
         duckdb_destroy_prepare(&prepared_stmt);
     }
@@ -2250,6 +2250,26 @@ YAML::Node DatabaseManager::describeSelectQuery(const EndpointConfig& endpoint) 
     }
     
     return properties;
+}
+
+bool DatabaseManager::dropTableIfExists(const std::string& name) {
+    // `name` is `table` or `schema.table` (the main schema by default), as an
+    // older flAPI interpolated it.
+    std::string schema = "main";
+    std::string table = name;
+    if (const auto dot = name.rfind('.'); dot != std::string::npos) {
+        schema = name.substr(0, dot);
+        table = name.substr(dot + 1);
+    }
+    const auto found = executeQuery(
+        "SELECT table_name FROM information_schema.tables WHERE table_schema = '" + sql::EscapeSqlLiteral(schema) +
+            "' AND table_name = '" + sql::EscapeSqlLiteral(table) + "'",
+        {}, false);
+    if (found.data.t() == crow::json::type::Null || found.data.size() == 0) {
+        return false;
+    }
+    executeQuery("DROP TABLE IF EXISTS " + sql::QuoteIdentifier(schema) + "." + sql::QuoteIdentifier(table), {}, false);
+    return true;
 }
 
 std::tuple<duckdb::SecretManager&, duckdb::CatalogTransaction> DatabaseManager::getSecretManagerAndTransaction() 

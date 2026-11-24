@@ -188,6 +188,8 @@ public:
     std::vector<ColumnInfo> getTableColumns(const std::string& schema, const std::string& table);
 
     std::tuple<duckdb::SecretManager&, duckdb::CatalogTransaction> getSecretManagerAndTransaction();
+    // Drop `table` or `schema.table` when it exists; true when it did.
+    bool dropTableIfExists(const std::string& name);
     
     std::shared_ptr<CacheManager> getCacheManager() const { return cache_manager; }
 

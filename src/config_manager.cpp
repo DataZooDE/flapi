@@ -2526,7 +2526,9 @@ crow::json::wvalue ConfigManager::getFlapiConfig() const {
     crow::json::wvalue connectionsJson;
     for (const auto& [name, conn] : connections) {
         crow::json::wvalue connJson;
-        connJson["init"] = conn.init;
+        // An init script can carry credentials as literals (the shipped SAP
+        // example puts a PASSWD there); no key-name predicate finds them.
+        connJson["init"] = redactSqlLiterals(conn.init);
         connJson["log-queries"] = conn.log_queries;
         connJson["log-parameters"] = conn.log_parameters;
         connJson["allow"] = conn.allow;
@@ -3407,7 +3409,8 @@ AuthSignature authSignature(const EndpointConfig& ep) {
     }
     if (auth.from_aws_secretmanager) {
         const auto& s = *auth.from_aws_secretmanager;
-        sig.aws_secret = joined({s.secret_name, s.region, s.secret_id, s.secret_key, s.secret_table});
+        sig.aws_secret = joined({s.secret_name, s.region, s.secret_id, digestOf(s.secret_key), digestOf(s.init),
+                                  s.init_declared ? "init" : ""});
     }
     return sig;
 }
