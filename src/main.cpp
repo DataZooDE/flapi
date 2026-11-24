@@ -1418,7 +1418,10 @@ int main(int argc, char* argv[])
     try {
         DatabaseManager::getInstance()->applyExternalAccessPolicy();
     } catch (const std::exception& e) {
-        CROW_LOG_ERROR << "Could not apply the external access policy (duckdb-hardening): " << e.what();
+        // e.what() already starts with "external access policy:"; a statement in it may
+        // carry a signed URL.
+        CROW_LOG_ERROR << "duckdb-hardening: " << flapi::RedactUrlsInText(e.what());
+        DatabaseManager::getInstance()->shutdown();
         return 1;
     }
 

@@ -637,9 +637,9 @@ void ConfigManager::parseDuckDBHardeningConfig() {
         }
     }
 
-    // DuckDB matches allowed_directories as plain string prefixes and does not make a
-    // relative entry absolute, while the paths it checks are absolute: `./data` would
-    // never match anything.
+    // Made absolute HERE, against the working directory, so the startup log line and
+    // the allow list show exactly what is allowed (DuckDB 2.0.1 would canonicalise a
+    // relative entry the same way). `file://` is stripped: DuckDB compares plain paths.
     const auto read_list = [&](const YAML::Node& list, const char* key, bool directories) {
         std::vector<std::string> out;
         if (!list) {
@@ -654,6 +654,9 @@ void ConfigManager::parseDuckDBHardeningConfig() {
                 throw ConfigurationError("every entry of `" + yaml_path + "` must be a non-empty path", yaml_path);
             }
             std::string value = item.Scalar();
+            if (value.rfind("file://", 0) == 0) {
+                value = value.substr(7);
+            }
             if (value.find("://") == std::string::npos) {
                 value = std::filesystem::absolute(std::filesystem::path(value)).lexically_normal().string();
             }

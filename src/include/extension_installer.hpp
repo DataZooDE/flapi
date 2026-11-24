@@ -99,6 +99,9 @@ std::string ExtensionDirectoriesStatement(const std::vector<std::string>& direct
 // download: INSTALL only looks at the first directory. Returns the last error, empty on success.
 std::string LoadOrInstallExtension(duckdb_connection connection, const std::string& name, bool offline);
 
+// Whether `connection`'s database still has external access (duckdb-hardening, #253).
+bool ExternalAccessEnabled(duckdb_connection connection);
+
 // True when extensions must not be downloaded: FLAPI_EXTENSIONS_OFFLINE (1/true/yes/on, any case) when set,
 // otherwise whether a bundle carries its extensions. The one spelling every caller shares.
 bool ExtensionsOfflineRequested();

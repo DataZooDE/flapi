@@ -305,6 +305,18 @@ std::optional<std::string> ShippedExtensionSearchStatement() {
     return ExtensionDirectoriesStatement({"~/.duckdb/extensions", shipped->string()});
 }
 
+bool ExternalAccessEnabled(duckdb_connection connection) {
+    duckdb_result result;
+    bool enabled = true;
+    if (duckdb_query(connection, "SELECT current_setting('enable_external_access')::BOOLEAN", &result) ==
+            DuckDBSuccess &&
+        duckdb_row_count(&result) > 0 && !duckdb_value_is_null(&result, 0, 0)) {
+        enabled = duckdb_value_boolean(&result, 0, 0);
+    }
+    duckdb_destroy_result(&result);
+    return enabled;
+}
+
 std::string LoadOrInstallExtension(duckdb_connection connection, const std::string& name, bool offline) {
     std::string error;
     auto run = [&](const std::string& sql) {
@@ -320,9 +332,11 @@ std::string LoadOrInstallExtension(duckdb_connection connection, const std::stri
     if (run("LOAD " + name)) {
         return "";
     }
-    // After duckdb-hardening switched external access off, only an extension that is
-    // already loaded can be "loaded"; say so instead of DuckDB's bare permission error.
-    if (ExternalAccessRestricted()) {
+    // After duckdb-hardening switched external access off on THIS database, only an
+    // extension that is already loaded can be "loaded"; say so instead of DuckDB's bare
+    // permission error. Asked of the connection, not a process flag: the bootstrap
+    // DuckDB that reads a remote config is never restricted.
+    if (!ExternalAccessEnabled(connection)) {
         return ExtensionUnavailableUnderHardening(name);
     }
     if (offline) {

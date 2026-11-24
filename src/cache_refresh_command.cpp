@@ -1,4 +1,5 @@
 #include "cache_refresh_command.hpp"
+#include "credential_manager.hpp"
 #include "vfs_adapter.hpp"
 
 #include <crow.h>
@@ -161,6 +162,16 @@ int RunCacheRefreshCommand(std::shared_ptr<ConfigManager> config_manager,
     }
     auto cache_manager = db_manager->getCacheManager();
     cache_manager->initializeAuditTables(config_manager);
+
+    // The one-shot runs the same populate templates as the server, so it gets the same
+    // cloud credentials (a remote config's own bucket, AWS_ENDPOINT_URL) and the same
+    // duckdb-hardening policy (#253), last, as the server does.
+    {
+        auto& credentials = getGlobalCredentialManager();
+        credentials.loadFromEnvironment();
+        credentials.configureDuckDB();
+    }
+    db_manager->applyExternalAccessPolicy();
 
     CacheManager::RefreshOptions refresh_options;
     refresh_options.full = options.full;

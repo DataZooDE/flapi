@@ -465,6 +465,9 @@ namespace {
 // and must not reach the log either.
 std::string AllowListEntry(const std::string& path, bool directory) {
     std::string entry;
+    if (path.rfind("file://", 0) == 0) {
+        return AllowListEntry(path.substr(7), directory);
+    }
     if (PathSchemeUtils::IsRemotePath(path) || path.find("://") != std::string::npos) {
         entry = PathSchemeUtils::StripQuery(path);
     } else {
@@ -552,14 +555,45 @@ DatabaseManager::ExternalAccessAllowList DatabaseManager::ComputeExternalAccessA
     // The DuckLake metadata file and the main database are added by DuckDB itself
     // when external access goes off (every attached database path, with its WAL).
 
+    const auto add_path = [&](const std::string& path) {
+        if (path.empty()) {
+            return;
+        }
+        const auto entry = AllowListEntry(path, false);
+        if (std::find(allow.paths.begin(), allow.paths.end(), entry) == allow.paths.end()) {
+            allow.paths.push_back(entry);
+        }
+    };
+
     const auto& hardening = config.getDuckDBHardeningConfig();
     for (const auto& directory : hardening.allowed_directories) {
         add_directory(directory);
     }
     for (const auto& path : hardening.allowed_paths) {
-        const auto entry = AllowListEntry(path, false);
-        if (std::find(allow.paths.begin(), allow.paths.end(), entry) == allow.paths.end()) {
-            allow.paths.push_back(entry);
+        add_path(path);
+    }
+
+    // The CA bundle httpfs verifies https with: without it every https read (and an
+    // https config) fails with "Cannot read a CA certificate bundle". The candidates
+    // are httpfs's own list (its binary, DuckDB 2.0.1), then SSL_CERT_FILE and
+    // `ca_cert_file`. Single files only: SSL_CERT_DIR is not allowed, since an allowed
+    // directory is writable and a template could plant a CA there.
+    for (const char* bundle : {"/etc/ssl/certs/ca-certificates.crt", "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+                               "/etc/pki/tls/certs/ca-bundle.crt", "/etc/ssl/ca-bundle.pem", "/etc/ssl/cert.pem"}) {
+        std::error_code ec;
+        if (std::filesystem::exists(bundle, ec)) {
+            add_path(bundle);
+        }
+    }
+    if (const char* env = std::getenv("SSL_CERT_FILE"); env != nullptr && *env != '\0') {
+        add_path(env);
+    }
+    for (const auto& [key, value] : config.getDuckDBConfig().settings) {
+        std::string lowered = key;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (lowered == "ca_cert_file") {
+            add_path(value);
         }
     }
     return allow;
@@ -570,20 +604,36 @@ std::vector<std::string> DatabaseManager::ComputeExternalAccessPreload(const Con
     if (config.getDuckLakeConfig().enabled) {
         preload.push_back("ducklake");
     }
+    // The same places main() looks for az:// when it decides to set up Azure.
+    const auto& ducklake = config.getDuckLakeConfig();
     bool azure = NamesAzure(config.getTemplatePath()) || NamesAzure(config.getBasePath()) ||
-                 NamesAzure(config.getDuckLakeConfig().data_path);
+                 NamesAzure(ducklake.metadata_path) || NamesAzure(ducklake.data_path);
+    bool aws = config.getGlobalAuthConfig().from_aws_secretmanager.has_value();
+    const auto credential_chain = [](const std::string& sql) {
+        std::string lowered = sql;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return lowered.find("credential_chain") != std::string::npos;
+    };
     for (const auto& [name, connection] : config.getConnections()) {
         azure = azure || NamesAzure(connection.getInit());
+        for (const auto& [key, value] : connection.properties) {
+            azure = azure || NamesAzure(value);
+        }
+        aws = aws || credential_chain(connection.getInit());
         CollectLoadedExtensions(connection.getInit(), preload);
-    }
-    if (azure && std::find(preload.begin(), preload.end(), "azure") == preload.end()) {
-        preload.push_back("azure");
     }
     if (const auto endpoints = config.getEndpoints()) {
         for (const auto& endpoint : *endpoints) {
             if (endpoint.auth.from_aws_secretmanager) {
+                aws = true;
                 CollectLoadedExtensions(endpoint.auth.from_aws_secretmanager->init, preload);
             }
+        }
+    }
+    for (const auto& [enabled, name] : {std::pair<bool, const char*>{azure, "azure"}, {aws, "aws"}}) {
+        if (enabled && std::find(preload.begin(), preload.end(), name) == preload.end()) {
+            preload.push_back(name);
         }
     }
     return preload;
@@ -653,8 +703,48 @@ void DatabaseManager::applyExternalAccessPolicy() {
         // an autoload would download an extension it then may not load.
         run("SET GLOBAL autoinstall_known_extensions = false");
 
+        // Persistent secrets load lazily, by listing secret_directory on the first
+        // lookup - which, after the switch, is refused, and every read needing a secret
+        // fails. Load them now; the directory itself is never allowed (a template could
+        // plant a secret there).
+        run("SELECT count(*) FROM duckdb_secrets()");
+
         // 2. Where templates may read and write.
-        const auto allow = ComputeExternalAccessAllowList(*config_manager, FileProviderFactory::GetBundleContents() != nullptr);
+        auto allow = ComputeExternalAccessAllowList(*config_manager, FileProviderFactory::GetBundleContents() != nullptr);
+        const auto query_one = [&](const std::string& sql) -> std::optional<std::string> {
+            duckdb_result result;
+            std::optional<std::string> value;
+            if (duckdb_query(conn, sql.c_str(), &result) == DuckDBSuccess && duckdb_row_count(&result) > 0 &&
+                !duckdb_value_is_null(&result, 0, 0)) {
+                if (char* text = duckdb_value_varchar(&result, 0, 0)) {
+                    value = text;
+                    duckdb_free(text);
+                }
+            }
+            duckdb_destroy_result(&result);
+            return value;
+        };
+        // ca_cert_file as httpfs holds it (also when a connection init SET it).
+        if (const auto ca = query_one("SELECT current_setting('ca_cert_file')::VARCHAR"); ca && !ca->empty()) {
+            const auto entry = AllowListEntry(*ca, false);
+            if (std::find(allow.paths.begin(), allow.paths.end(), entry) == allow.paths.end()) {
+                allow.paths.push_back(entry);
+            }
+        }
+        // The data path the DuckLake catalog actually writes to: the one stored in the
+        // catalog, which wins over a differing configured one unless override-data-path.
+        const auto& ducklake = config_manager->getDuckLakeConfig();
+        if (ducklake_attached_) {
+            const auto stored = query_one("SELECT value FROM " +
+                                          sql::QuoteIdentifier("__ducklake_metadata_" + ducklake.alias) +
+                                          ".ducklake_metadata WHERE key = 'data_path'");
+            if (stored && IsPlainPath(*stored)) {
+                const auto entry = AllowListEntry(*stored, true);
+                if (std::find(allow.directories.begin(), allow.directories.end(), entry) == allow.directories.end()) {
+                    allow.directories.push_back(entry);
+                }
+            }
+        }
         run("SET GLOBAL allowed_directories = " + SqlStringList(allow.directories));
         run("SET GLOBAL allowed_paths = " + SqlStringList(allow.paths));
 
