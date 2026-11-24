@@ -157,6 +157,8 @@ should not bake in.
 | `FLAPI_CONFIG_SERVICE_TOKEN` | startup | Bearer token for the management API (fallback for `--config-service-token`) | CLI > env > auto-generate |
 | `FLAPI_NO_TELEMETRY` | startup | Disable PostHog telemetry (fallback for `--no-telemetry`) | CLI > env > config-file > enabled |
 | `FLAPI_NO_CONNECTION_REUSE` | startup | `1`: a fresh DuckDB connection per query instead of per-thread reuse with cached prepared statements | env > reuse on |
+| `AWS_ENDPOINT_URL_SECRETS_MANAGER` | startup | Secrets Manager endpoint for `auth.from-aws-secretmanager` (warned about; `AWS_ENDPOINT_URL` is not used for it) | env > AWS; `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=true` ignores it |
+| `FLAPI_ALLOW_INSECURE_SECRETS_ENDPOINT` | startup | `1`/`true`/`yes`: accept a plain-`http://` Secrets Manager endpoint that is not loopback | refused without it |
 | `DUCKDB_JE_MALLOC_CONF` | startup | DuckDB allocator options (Linux); flAPI sets `narenas:<usable CPUs / 6>` only when this is unset | env > flAPI default |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` | startup, query time | S3 credentials (DuckDB `httpfs`) | env only |
 | `GOOGLE_APPLICATION_CREDENTIALS` / `GOOGLE_CLOUD_PROJECT` | startup | Detected and logged only. flAPI does **not** configure GCS for DuckDB from them, and DuckDB `httpfs` does not read a service-account file: GCS access needs an HMAC key in a DuckDB secret (`CREATE SECRET (TYPE gcs, KEY_ID '…', SECRET '…')`, e.g. in a connection's `init`) | — |
@@ -2122,16 +2124,19 @@ The secret's `SecretString` is `{"auth": [{"username": "...", "password": "...",
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `auth.from-aws-secretmanager.secret-name` | string | AWS secret name or ARN (required) |
-| `auth.from-aws-secretmanager.region` | string | AWS region; else `AWS_REGION`, else `AWS_DEFAULT_REGION`, else a startup error |
+| `auth.from-aws-secretmanager.region` | string | AWS region; else `AWS_REGION`, else `AWS_DEFAULT_REGION`, else the active AWS profile's region, else a startup error |
 | `auth.from-aws-secretmanager.secret-id` | string | AWS access key ID. Set together with `secret-key`, or neither (the AWS SDK's default credential chain) |
 | `auth.from-aws-secretmanager.secret-key` | string | AWS secret access key |
 | `auth.from-aws-secretmanager.secret-table` | string | **Ignored** (a startup warning says so). The user list is held in flAPI's memory, not in a table |
-| `auth.from-aws-secretmanager.init` | string | Legacy: SQL creating a DuckDB S3 secret named after `secret-name` (non-alphanumerics → `_`). Runs in a private DuckDB, never the one templates use |
+| `auth.from-aws-secretmanager.init` | string | Deprecated: SQL creating a DuckDB S3 secret named after `secret-name` (non-alphanumerics → `_`). Runs in a private DuckDB, never the one templates use, so it has no side effects there |
 
-- The secret is fetched **once, at startup**, per `secret-name`, however many endpoints share it. To rotate
-  users, update the secret and restart flAPI.
-- `AWS_ENDPOINT_URL_SECRETS_MANAGER`, else `AWS_ENDPOINT_URL`, replaces AWS's endpoint (`http://` works),
-  unless `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=true`.
+- Read by `type: basic` blocks only. The secret is fetched **once, at startup**, per `secret-name`, however many
+  endpoints share it; blocks sharing a name must agree on region, credentials and `init`. To rotate users, update
+  the secret and restart flAPI.
+- `AWS_ENDPOINT_URL_SECRETS_MANAGER` replaces AWS's endpoint unless `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=true`
+  (startup warns while it is active). `AWS_ENDPOINT_URL` is not used for it. Plain `http://` only to a loopback
+  host, or with `FLAPI_ALLOW_INSECURE_SECRETS_ENDPOINT=1`.
+- Tables `auth_<name>` / `secret-table` an older version left in the main database are dropped at startup.
 - Neither the credentials nor the user list reach the DuckDB database SQL templates run on, and neither is logged.
 
 **Example:**

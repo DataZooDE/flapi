@@ -740,6 +740,8 @@ builds keep their symbols unless you pass the option.
 | `FLAPI_CACHE_WARMUP` | `always`, `if-empty` or `never`; invalid values exit 1 | `--cache-warmup` fallback |
 | `FLAPI_EXTENSION_DIRECTORY` | Default `extension_directory` when the config sets none; replaces the bundled and shipped directories | DuckDB startup, `flapi extensions install` |
 | `FLAPI_EXTENSIONS_OFFLINE` | `1`/`true`/`yes`: never download extensions; a missing one stops startup | DuckDB startup |
+| `AWS_ENDPOINT_URL_SECRETS_MANAGER` | Secrets Manager endpoint for `auth.from-aws-secretmanager` (startup warns; `AWS_ENDPOINT_URL` is not used for it) | startup |
+| `FLAPI_ALLOW_INSECURE_SECRETS_ENDPOINT` | `1`/`true`/`yes`: accept a plain-`http://`, non-loopback Secrets Manager endpoint | startup |
 | `SOURCE_DATE_EPOCH` | Mtime stamped on every entry by `flapi pack` (reproducible builds) | `flapi pack` |
 | `CODESIGN_IDENTITY` | macOS only: identity passed to `codesign --sign` after `flapi pack`. Defaults to `-` (ad-hoc). | `flapi pack` |
 

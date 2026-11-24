@@ -150,16 +150,26 @@ of another shape stops startup with an error that never quotes it.
    `AWS_SECRET_ACCESS_KEY` (+ `AWS_SESSION_TOKEN`), the shared config and
    credentials files (`AWS_PROFILE`), web identity, SSO, the container and the
    instance role.
-3. Legacy `init:` - SQL creating a DuckDB S3 secret named after `secret-name`
+3. Deprecated `init:` - SQL creating a DuckDB S3 secret named after `secret-name`
    (`prod/flapi/users` -> `prod_flapi_users`). It runs in a private DuckDB, not
-   the one templates use. If it creates no such secret, a secret of that name in
-   the main database is used, with a deprecation warning.
+   the one templates use, so nothing else it does reaches them. If it creates no
+   such secret, a secret of that name in the main database is used, with a
+   deprecation warning; with none there either, startup stops.
 
-**Endpoint.** `AWS_ENDPOINT_URL_SECRETS_MANAGER`, else `AWS_ENDPOINT_URL`,
-replaces AWS's endpoint - LocalStack, a VPC endpoint, a test double; plain
-`http://` works. `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=true` ignores both. Note
-that `AWS_ENDPOINT_URL` also redirects flAPI's S3 access (MinIO): set the
-service-specific variable when only one should move.
+The region: `region:`, else `AWS_REGION`, else `AWS_DEFAULT_REGION`, else the
+active profile's `region` in `~/.aws/config` (`AWS_PROFILE`, `AWS_CONFIG_FILE`).
+
+Only a `type: basic` block reads `from-aws-secretmanager`. Blocks naming the same
+`secret-name` must agree on region, credentials and `init` (startup names both
+endpoints when they do not).
+
+**Endpoint.** `AWS_ENDPOINT_URL_SECRETS_MANAGER` replaces AWS's endpoint -
+LocalStack, a VPC endpoint, a test double - and startup warns while it is set,
+because whatever answers there decides who can log in. The generic
+`AWS_ENDPOINT_URL` (which moves flAPI's S3 access, e.g. to MinIO) is not used for
+it. Plain `http://` is accepted only to a loopback host (`localhost`,
+`127.x.x.x`, `::1`), or with `FLAPI_ALLOW_INSECURE_SECRETS_ENDPOINT=1`.
+`AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=true` ignores the override.
 
 **When it is read.** Once, at startup, per `secret-name` - two endpoints and the
 top-level block naming the same secret cause one `GetSecretValue`. A failure
@@ -170,7 +180,10 @@ does not trigger a fetch (its logins are refused).
 The user list is held in flAPI's memory. Neither it nor the AWS credentials are
 in the DuckDB database SQL templates run on, and neither is logged.
 `secret-table` from older configs is ignored with a warning: the list is no
-longer a table, so a template that read it now fails.
+longer a table, so a template that read it now fails. Tables an older version
+left in a file `duckdb.db_path` (`auth_<name>`, or the `secret-table`) are dropped
+at startup with a warning; if that file was in use, rotate those passwords.
+An unknown username takes as long to refuse as a wrong password.
 
 ## CORS with authentication
 

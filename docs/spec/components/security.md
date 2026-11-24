@@ -191,13 +191,30 @@ Loads Basic-auth users (`{"auth":[{username, password, roles}]}`) from AWS Secre
   `allow_persistent_secrets=false`, same extension directory and offline rules as the main one), which is
   closed once the secret is read; only if it creates no matching S3 secret is the main database's secret of
   that name used, with a deprecation warning.
-- **Endpoint and region.** `AwsHelper::resolveEndpointOverride` (`AWS_ENDPOINT_URL_SECRETS_MANAGER`, then
-  `AWS_ENDPOINT_URL`, unless `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS`) and `AwsHelper::resolveRegion` (config,
-  `AWS_REGION`, `AWS_DEFAULT_REGION`). The client does not probe instance metadata for a region.
+- **Default credential chain.** It reads `~/.aws/config` and `~/.aws/credentials` (`AWS_CONFIG_FILE`,
+  `AWS_SHARED_CREDENTIALS_FILE`, `AWS_PROFILE`) at startup, and a profile's `credential_process` runs that
+  command as the flAPI user. Whoever can write those files chooses the identity that fetches the user list.
+- **Endpoint and region.** `AwsHelper::resolveEndpointOverride` (`AWS_ENDPOINT_URL_SECRETS_MANAGER` only - not the
+  generic `AWS_ENDPOINT_URL`, often MinIO - unless `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS`);
+  `AwsHelper::checkEndpointOverride` refuses plain http to a non-loopback host unless
+  `FLAPI_ALLOW_INSECURE_SECRETS_ENDPOINT` is set, and an active override is a startup warning: that endpoint
+  decides who can log in. `AwsHelper::resolveRegion`: config, `AWS_REGION`, `AWS_DEFAULT_REGION`, the profile's
+  region. The client does not probe instance metadata for a region.
+- **Only basic, and consistent.** Only enabled `type: basic` blocks fetch. Blocks sharing a `secret-name` must
+  agree on region, credential source and `init`, or startup stops naming both endpoints.
+- **Upgrade.** `AuthMiddleware::dropLegacyUserTables` drops `auth_<name>` and a configured `secret-table` from the
+  main database at startup (a file `db_path` kept them), with a warning.
+- **Timing.** An unknown username is verified against `PasswordHasher::dummyHashLike` of the stored passwords
+  (same format, same PBKDF2 iterations), inline users included; plaintext and MD5 compare SHA-256 digests with
+  `CRYPTO_memcmp`.
 - **Logging.** Neither the credentials, the init SQL nor the secret document is logged; the parser logs the
   credential *source* only. `DatabaseManager::executeInitStatement` (connection `init:`, DuckLake `ATTACH`) and
-  the private-instance runner report the failing statement's position and `redactSqlErrorMessage`
-  (`src/redaction.cpp`): DuckDB's `LINE n:` excerpt dropped, string literals masked.
+  the private-instance runner report the failing statement's position and `redactSqlErrorMessage(message,
+  statement)` (`src/redaction.cpp`): DuckDB's `LINE n:` excerpt dropped; every literal, quoted identifier and
+  dollar-quoted body of the statement replaced wherever the message repeats it; the token after "at or near"
+  masked; then connection-string secrets and URL credentials. AWS error messages: first line, 300 characters,
+  key ids masked (`AwsHelper::sanitiseAwsErrorMessage`). The config APIs show a connection `init` through
+  `redactSqlLiterals`.
 - `Aws::InitAPI` runs once per process and is never shut down.
 
 **Persistent secrets.** The main DuckDB loads `~/.duckdb/stored_secrets` of the user flAPI runs as, and
