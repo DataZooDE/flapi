@@ -80,6 +80,8 @@ public:
         std::vector<std::string> paths;
     };
     static ExternalAccessAllowList ComputeExternalAccessAllowList(const ConfigManager& config, bool bundle_present);
+    /// The extensions `restricted` loads before switching external access off.
+    static std::vector<std::string> ComputeExternalAccessPreload(const ConfigManager& config);
     void loadDefaultExtensions(std::shared_ptr<ConfigManager> config_manager);
     void initializeConnections(std::shared_ptr<ConfigManager> config_manager);
     void executeInitStatement(const std::string& init_statement);

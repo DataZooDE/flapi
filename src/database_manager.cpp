@@ -565,6 +565,30 @@ DatabaseManager::ExternalAccessAllowList DatabaseManager::ComputeExternalAccessA
     return allow;
 }
 
+std::vector<std::string> DatabaseManager::ComputeExternalAccessPreload(const ConfigManager& config) {
+    std::vector<std::string> preload = {"httpfs"};
+    if (config.getDuckLakeConfig().enabled) {
+        preload.push_back("ducklake");
+    }
+    bool azure = NamesAzure(config.getTemplatePath()) || NamesAzure(config.getBasePath()) ||
+                 NamesAzure(config.getDuckLakeConfig().data_path);
+    for (const auto& [name, connection] : config.getConnections()) {
+        azure = azure || NamesAzure(connection.getInit());
+        CollectLoadedExtensions(connection.getInit(), preload);
+    }
+    if (azure && std::find(preload.begin(), preload.end(), "azure") == preload.end()) {
+        preload.push_back("azure");
+    }
+    if (const auto endpoints = config.getEndpoints()) {
+        for (const auto& endpoint : *endpoints) {
+            if (endpoint.auth.from_aws_secretmanager) {
+                CollectLoadedExtensions(endpoint.auth.from_aws_secretmanager->init, preload);
+            }
+        }
+    }
+    return preload;
+}
+
 void DatabaseManager::applyExternalAccessPolicy() {
     if (!config_manager || db == nullptr) {
         throw std::runtime_error("external access policy: the database is not initialised");
@@ -616,26 +640,7 @@ void DatabaseManager::applyExternalAccessPolicy() {
         // when something names az://; ducklake when the cache is on (its ATTACH loaded
         // it already); whatever connection inits and the AWS Secrets Manager inits load
         // (the latter run when the APIServer starts, after this).
-        std::vector<std::string> preload = {"httpfs"};
-        if (config_manager->getDuckLakeConfig().enabled) {
-            preload.push_back("ducklake");
-        }
-        bool azure = NamesAzure(config_manager->getTemplatePath()) || NamesAzure(config_manager->getBasePath()) ||
-                     NamesAzure(config_manager->getDuckLakeConfig().data_path);
-        for (const auto& [name, connection] : config_manager->getConnections()) {
-            azure = azure || NamesAzure(connection.getInit());
-            CollectLoadedExtensions(connection.getInit(), preload);
-        }
-        if (azure && std::find(preload.begin(), preload.end(), "azure") == preload.end()) {
-            preload.push_back("azure");
-        }
-        if (const auto endpoints = config_manager->getEndpoints()) {
-            for (const auto& endpoint : *endpoints) {
-                if (endpoint.auth.from_aws_secretmanager) {
-                    CollectLoadedExtensions(endpoint.auth.from_aws_secretmanager->init, preload);
-                }
-            }
-        }
+        const auto preload = ComputeExternalAccessPreload(*config_manager);
         const bool offline = config_manager->getDuckDBConfig().offline_extensions;
         for (const auto& extension : preload) {
             const std::string error = LoadOrInstallExtension(conn, extension, offline);
