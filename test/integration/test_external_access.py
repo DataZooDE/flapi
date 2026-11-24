@@ -152,11 +152,21 @@ def get(s, path):
     return r, s.output()[before:]
 
 
+RECORD_START = re.compile(r"^\(\d{4}-\d{2}-\d{2}T", re.MULTILINE)
+
+
+def log_records(text):
+    """The log as records: a DuckDB error spans lines (`LINE 1: ...` and a caret line),
+    and the request_id is appended to the record's LAST line only."""
+    starts = [m.start() for m in RECORD_START.finditer(text)] or [0]
+    return [text[a:b] for a, b in zip(starts, starts[1:] + [len(text)])]
+
+
 def request_lines(s, request_id, timeout=5.0):
-    """The log lines carrying `request_id`, polled until one is a refusal or `timeout` passes."""
+    """The log records carrying `request_id`, polled until one is a refusal or `timeout` passes."""
     deadline = time.time() + timeout
     while True:
-        lines = [line for line in s.output().splitlines() if request_id in line]
+        lines = [record for record in log_records(s.output()) if request_id in record]
         if any(REFUSAL.search(line) for line in lines) or time.time() >= deadline:
             return lines
         time.sleep(0.1)
@@ -303,6 +313,14 @@ def restricted():
     copy_target = os.path.join(outside, "x.csv")
     put(root, "sqls/copyout.yaml", endpoint("/copyout", "copyout.sql", paginated=False))
     put(root, "sqls/copyout.sql", f"COPY (SELECT 1 AS x) TO '{copy_target}'")
+    # Scanner extensions loaded by default (sqlite, postgres) open files and sockets
+    # themselves, past DuckDB's file system.
+    sqlite_target = os.path.join(outside, "evil.sqlite")
+    put(root, "sqls/sqliteattach.yaml", endpoint("/sqliteattach", "sqliteattach.sql", paginated=False))
+    put(root, "sqls/sqliteattach.sql", f"ATTACH '{sqlite_target}' AS evil_sqlite (TYPE sqlite)")
+    put(root, "sqls/pgattach.yaml", endpoint("/pgattach", "pgattach.sql", paginated=False))
+    put(root, "sqls/pgattach.sql",
+        f"ATTACH 'host=127.0.0.1 port={hp.port} dbname=x user=x connect_timeout=2' AS evil_pg (TYPE postgres)")
     put(root, "sqls/glob.yaml", endpoint("/glob", "glob.sql"))
     put(root, "sqls/glob.sql", "SELECT * FROM glob('/etc/*')")
     # A DuckLake cache populated from the project's own CSV.
@@ -319,7 +337,7 @@ def restricted():
         s = start_server("flapi.yaml", root, env=s3_env(s3_endpoint),
                          extra=("--config-service", "--config-service-token", TOKEN))
         s.root, s.hp, s.attach_target = root, hp, attach_target
-        s.secret_dir, s.copy_target = secret_dir, copy_target
+        s.secret_dir, s.copy_target, s.sqlite_target = secret_dir, copy_target, sqlite_target
         yield s
     finally:
         if s is not None:
@@ -363,6 +381,16 @@ class TestRestrictedLocal:
     def test_copy_to_a_file_outside_the_allowed_directories_is_refused(self, restricted):
         assert_refused(restricted, "/copyout", "COPY ... TO a file outside the allowed directories")
         assert not os.path.exists(restricted.copy_target), f"NOT REFUSED: COPY wrote {restricted.copy_target}"
+
+    def test_attaching_a_sqlite_file_outside_is_refused(self, restricted):
+        assert_refused(restricted, "/sqliteattach", "ATTACH '<outside>/evil.sqlite' (TYPE sqlite)")
+        assert not os.path.exists(restricted.sqlite_target), f"NOT REFUSED: created {restricted.sqlite_target}"
+
+    def test_attaching_a_postgres_server_is_refused_and_nothing_connects(self, restricted):
+        before = len(restricted.hp.hits)
+        assert_refused(restricted, "/pgattach", "ATTACH 'host=127.0.0.1 ...' (TYPE postgres)")
+        assert restricted.hp.hits[before:] == [], (
+            f"NOT REFUSED: the postgres scanner connected out: {restricted.hp.hits[before:]}")
 
     def test_loading_an_extension_flapi_did_not_preload_is_refused(self, restricted):
         assert_refused(restricted, "/load", "LOAD fts")
