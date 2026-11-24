@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "duckdb.h"
+
 namespace flapi {
 
 // Forward-declared so the factory can refer to bundle contents without
@@ -19,6 +21,17 @@ using ArchiveEntries = std::map<std::string, std::vector<std::uint8_t>>;
  * error or log line cannot carry a presigned signature or a password.
  */
 std::string RedactUrlsInText(const std::string& text);
+
+/**
+ * An in-memory DuckDB instance of its own, never the main database that SQL
+ * templates run on: what is created in it (secrets, tables) is invisible to them.
+ * It honours FLAPI_EXTENSION_DIRECTORY (else a bundle's extensions, else the
+ * extensions shipped next to the binary) and offline mode, like the main one.
+ * With `allow_persistent_secrets` false it does not load ~/.duckdb/stored_secrets.
+ * The caller owns the handle and closes it with duckdb_close. `purpose` names it
+ * in errors. Throws FileOperationError when DuckDB cannot start.
+ */
+duckdb_database OpenPrivateDuckDb(bool allow_persistent_secrets, const std::string& purpose);
 
 /**
  * While one of these is alive, DuckDBVFSProvider remembers what it read (and which files exist), so the several

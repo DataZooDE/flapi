@@ -187,9 +187,9 @@ public:
     std::vector<std::string> getTableNames(const std::string& schema);
     std::vector<ColumnInfo> getTableColumns(const std::string& schema, const std::string& table);
 
-    void refreshSecretsTable(const std::string& secret_table, const std::string& secret_json);
-    std::optional<std::tuple<std::string, std::vector<std::string>>> findUserInSecretsTable(const std::string& secret_table, const std::string& username);
     std::tuple<duckdb::SecretManager&, duckdb::CatalogTransaction> getSecretManagerAndTransaction();
+    // Drop `table` or `schema.table` when it exists; true when it did.
+    bool dropTableIfExists(const std::string& name);
     
     std::shared_ptr<CacheManager> getCacheManager() const { return cache_manager; }
 

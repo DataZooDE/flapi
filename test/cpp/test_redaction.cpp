@@ -86,3 +86,88 @@ TEST_CASE("key normalisation strips separators and case", "[redaction]") {
     REQUIRE(normaliseKey("client_secret") == "clientsecret");
     REQUIRE(normaliseKey("") == "");
 }
+
+// An init script carries credentials, and DuckDB's error about it quotes the
+// statement: `LINE 1: ...SECRET 'abc'def'...` and `at or near "def"` (#254).
+TEST_CASE("SQL error messages lose the statement text", "[redaction][security]") {
+    const std::string statement = "CREATE SECRET s (TYPE S3, KEY_ID 'AKID', SECRET 'abc'defKEY', REGION 'eu')";
+    const std::string parse_error =
+        "Parser Error: syntax error at or near \"defKEY\"\n\n"
+        "LINE 1: ...KEY_ID 'AKID', SECRET 'abc'defKEY', REGION 'eu'...\n"
+        "                                       ^";
+    REQUIRE(redactSqlErrorMessage(parse_error, statement) == "Parser Error: syntax error at or near <redacted>");
+
+    const auto literal = redactSqlErrorMessage("Invalid Input Error: bad value 'hunter2' for SECRET",
+                                               "CREATE SECRET x (TYPE S3, SECRET 'hunter2')");
+    REQUIRE(literal == "Invalid Input Error: bad value '<redacted>' for SECRET");
+
+    // Identifiers the statement does not contain are kept: they name what went wrong.
+    const std::string missing = "IO Error: Extension \"/x/postgres.duckdb_extension\" not found";
+    REQUIRE(redactSqlErrorMessage(missing, "LOAD postgres") == missing);
+}
+
+TEST_CASE("SQL error redaction with the statement", "[redaction][security]") {
+    SECTION("a PEG error double-quoting a literal's value") {
+        const auto out = redactSqlErrorMessage(
+            "Parser Error: syntax error at or near \"\"wJalrXUtnFEMIK7MDENG\"\"",
+            "CREATE SECRET s (TYPE S3, SECRET 'wJalrXUtnFEMIK7MDENG')");
+        REQUIRE(out.find("wJal") == std::string::npos);
+    }
+    SECTION("a double quote inside a literal") {
+        const std::string statement = "CREATE SECRET s (TYPE S3, SECRET 'ab\"cdSECRET99')";
+        const auto out = redactSqlErrorMessage(
+            "Invalid Input Error: could not use \"ab\"cdSECRET99\" as a key", statement);
+        REQUIRE(out.find("SECRET99") == std::string::npos);
+    }
+    SECTION("nested and odd apostrophes") {
+        const std::string statement = "CREATE SECRET s (TYPE S3, SECRET 'it''s S3CRETVALUE')";
+        const auto out = redactSqlErrorMessage(
+            "Invalid Input Error: Failed to cast option 'secret' to VARCHAR: can't use 'it's S3CRETVALUE' here",
+            statement);
+        REQUIRE(out.find("S3CRETVALUE") == std::string::npos);
+        REQUIRE(out.find("can't use") != std::string::npos);
+    }
+    SECTION("an extension echoing a DSN unquoted") {
+        const std::string statement = "ATTACH 'host=db user=app password=s3cr3t dbname=x' AS pg (TYPE postgres)";
+        const auto out = redactSqlErrorMessage(
+            "IO Error: Unable to connect to Postgres at host=db user=app password=s3cr3t dbname=x", statement);
+        REQUIRE(out.find("s3cr3t") == std::string::npos);
+    }
+    SECTION("a dollar-quoted body") {
+        const auto out = redactSqlErrorMessage("Binder Error: bad DOLLARBODY1",
+                                               "SELECT $tag$DOLLARBODY1$tag$");
+        REQUIRE(out.find("DOLLARBODY1") == std::string::npos);
+    }
+}
+
+TEST_CASE("an init statement is shown with its literals redacted", "[redaction][security]") {
+    REQUIRE(redactSqlLiterals("SET VARIABLE x = 'INITCANARY'; ATTACH 'it''s' AS \"db\"") ==
+            "SET VARIABLE x = '<redacted>'; ATTACH '<redacted>' AS \"db\"");
+    REQUIRE(redactSqlLiterals("SELECT $$body$$ -- 'c'") == "SELECT $$<redacted>$$ -- 'c'");
+    REQUIRE(redactSqlLiterals("") == "");
+}
+
+// Review of #254: four ways the message-only redaction leaked or mangled.
+TEST_CASE("SQL error redaction: what the message alone gives away", "[redaction][security]") {
+    SECTION("a PEG syntax error double-quotes the token") {
+        const auto out = redactSqlErrorMessage(
+            "Parser Error: syntax error at or near \"\"wJalrXUtnFEMIK7MDENG\"\"");
+        REQUIRE(out.find("wJal") == std::string::npos);
+    }
+    SECTION("an apostrophe in prose is not a literal") {
+        const std::string prose = "Catalog Error: Table with name foo doesn't exist! Did you mean \"bar\"?";
+        REQUIRE(redactSqlErrorMessage(prose) == prose);
+    }
+    SECTION("a DSN echoed unquoted by an extension") {
+        const auto out = redactSqlErrorMessage(
+            "IO Error: Unable to connect to Postgres at host=db user=app password=s3cr3t dbname=x");
+        REQUIRE(out.find("s3cr3t") == std::string::npos);
+        REQUIRE(out.find("host=db") != std::string::npos);
+    }
+    SECTION("a URL with credentials") {
+        const auto out = redactSqlErrorMessage(
+            "HTTP Error: GET https://user:pa55word@example.com/x?X-Amz-Signature=abc123def failed");
+        REQUIRE(out.find("pa55word") == std::string::npos);
+        REQUIRE(out.find("abc123def") == std::string::npos);
+    }
+}

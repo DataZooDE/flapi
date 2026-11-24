@@ -21,6 +21,7 @@
 #include "sql_template_processor.hpp"
 #include "sql_utils.hpp"
 #include "database_manager.hpp"
+#include "redaction.hpp"
 #include "database_health.hpp"
 #include "cache_refresh_command.hpp"
 #include "extension_installer.hpp"
@@ -714,27 +715,43 @@ void DatabaseManager::initializeConnections(std::shared_ptr<ConfigManager> confi
 }
 
 void DatabaseManager::executeInitStatement(const std::string& init_statement) {
+    // An init script routinely carries credentials: a connection's
+    // `CREATE SECRET (... SECRET '...')`, an ATTACH with a password in its
+    // connection string. Neither the script nor DuckDB's error about it (which
+    // quotes the statement) is logged or put into an exception as it is: only
+    // the statement's position and the redacted error.
     auto executor = createQueryExecutor();
-    
+
     duckdb_extracted_statements stmts = nullptr;
     idx_t n_statements = duckdb_extract_statements(executor.conn, init_statement.c_str(), &stmts);
     if (n_statements == 0) {
-        auto error_message = duckdb_extract_statements_error(stmts);
-        throw std::runtime_error("Failed to extract statements from init statement: " + init_statement + "\n Error: " + error_message);
+        const char* error_message = duckdb_extract_statements_error(stmts);
+        const std::string detail = redactSqlErrorMessage(error_message ? error_message : "(no detail)", init_statement);
+        duckdb_destroy_extracted(&stmts);
+        throw std::runtime_error("Failed to parse init statements: " + detail);
     }
 
-    duckdb_prepared_statement prepared_stmt = nullptr;
     for (idx_t i = 0; i < n_statements; i++) {
+        const std::string position = "init statement " + std::to_string(i + 1) + " of " + std::to_string(n_statements);
+        duckdb_prepared_statement prepared_stmt = nullptr;
         if (duckdb_prepare_extracted_statement(executor.conn, stmts, i, &prepared_stmt) == DuckDBError) {
+            const char* error_message = duckdb_prepare_error(prepared_stmt);
+            const std::string detail = redactSqlErrorMessage(error_message ? error_message : "(no detail)", init_statement);
+            duckdb_destroy_prepare(&prepared_stmt);
             duckdb_destroy_extracted(&stmts);
-            throw std::runtime_error("Failed to prepare statement: " + init_statement);
+            throw std::runtime_error("Failed to prepare " + position + ": " + detail);
         }
-
-        executor.executePrepared(prepared_stmt);
+        try {
+            executor.executePrepared(prepared_stmt);
+        } catch (const std::exception& e) {
+            duckdb_destroy_prepare(&prepared_stmt);
+            duckdb_destroy_extracted(&stmts);
+            throw std::runtime_error("Failed to execute " + position + ": " + redactSqlErrorMessage(e.what(), init_statement));
+        }
         duckdb_destroy_prepare(&prepared_stmt);
     }
 
-    CROW_LOG_DEBUG << n_statements << " init statements executed successfully: \n" << init_statement;
+    CROW_LOG_DEBUG << n_statements << " init statement(s) executed successfully";
     duckdb_destroy_extracted(&stmts);
 }
 
@@ -2235,143 +2252,24 @@ YAML::Node DatabaseManager::describeSelectQuery(const EndpointConfig& endpoint) 
     return properties;
 }
 
-void DatabaseManager::refreshSecretsTable(const std::string& secret_table, const std::string& secret_json) {
-    auto executor = createQueryExecutor();
-
-    auto create_table_stmt = "CREATE OR REPLACE TABLE " + secret_table + "(j JSON)";
-    // The secret document is bound, not interpolated. It comes from the secrets
-    // manager rather than from a request, but it is still data: a single
-    // apostrophe in any username or password terminated the literal and the
-    // INSERT failed to parse, and a secret crafted by whoever can write to the
-    // store executed SQL here - inside a DuckDB that reaches the filesystem and
-    // every configured cloud backend.
-    auto insert_stmt = "INSERT INTO " + secret_table + " VALUES (?)";
-
-    try {
-        executor.execute(create_table_stmt, "create table");
-
-        duckdb_prepared_statement stmt = nullptr;
-        if (duckdb_prepare(executor.conn, insert_stmt.c_str(), &stmt) == DuckDBError) {
-            const char* err = duckdb_prepare_error(stmt);
-            std::string detail = err ? err : "(no detail)";
-            duckdb_destroy_prepare(&stmt);
-            throw std::runtime_error("prepare failed: " + detail);
-        }
-        if (duckdb_bind_varchar_length(stmt, 1, secret_json.data(), secret_json.size()) == DuckDBError) {
-            duckdb_destroy_prepare(&stmt);
-            throw std::runtime_error("bind failed");
-        }
-        try {
-            executor.executePrepared(stmt, "insert data");
-        } catch (...) {
-            duckdb_destroy_prepare(&stmt);
-            throw;
-        }
-        duckdb_destroy_prepare(&stmt);
-    } catch (const std::exception& e) {
-        throw std::runtime_error("Failed to refresh JSON table '" + secret_table + "': " + e.what());
+bool DatabaseManager::dropTableIfExists(const std::string& name) {
+    // `name` is `table` or `schema.table` (the main schema by default), as an
+    // older flAPI interpolated it.
+    std::string schema = "main";
+    std::string table = name;
+    if (const auto dot = name.rfind('.'); dot != std::string::npos) {
+        schema = name.substr(0, dot);
+        table = name.substr(dot + 1);
     }
-}
-
-std::optional<std::tuple<std::string, std::vector<std::string>>> DatabaseManager::findUserInSecretsTable(const std::string& secret_table, 
-                                                                                                         const std::string& username) 
-{
-    // The username arrives base64-decoded from an `Authorization: Basic`
-    // header and is therefore fully attacker-controlled on an UNauthenticated
-    // request. It used to be concatenated into this query, which made the
-    // header an injection point into the query that decides authentication -
-    // and the query returns the stored password AND the role list, both of
-    // which the caller then trusts. Controlling the result set therefore meant
-    // choosing your own password hash and your own roles: auth bypass plus
-    // privilege escalation, not just data disclosure.
-    //
-    // Bound as a parameter. `secret_table` stays interpolated because it is a
-    // table identifier - it cannot be bound - but it comes from the config
-    // file, not from the request.
-    std::stringstream query;
-
-    query << "SELECT y->>'username' AS username, y->>'password' AS password, CAST(json_extract_string(y, '$.roles[*]') AS varchar[]) AS roles "
-          << "FROM (SELECT unnest(cast(j.auth as JSON[])) AS y FROM " << secret_table << ") AS x "
-          << "WHERE y->>'username' = ? "
-          << "LIMIT 1";
-
-    auto executor = createQueryExecutor();
-
-    duckdb_prepared_statement stmt = nullptr;
-    if (duckdb_prepare(executor.conn, query.str().c_str(), &stmt) == DuckDBError) {
-        const char* err = duckdb_prepare_error(stmt);
-        std::string detail = err ? err : "(no detail)";
-        duckdb_destroy_prepare(&stmt);
-        throw std::runtime_error("Failed to prepare secrets lookup: " + detail);
+    const auto found = executeQuery(
+        "SELECT table_name FROM information_schema.tables WHERE table_schema = '" + sql::EscapeSqlLiteral(schema) +
+            "' AND table_name = '" + sql::EscapeSqlLiteral(table) + "'",
+        {}, false);
+    if (found.data.t() == crow::json::type::Null || found.data.size() == 0) {
+        return false;
     }
-    if (duckdb_bind_varchar_length(stmt, 1, username.data(), username.size()) == DuckDBError) {
-        duckdb_destroy_prepare(&stmt);
-        throw std::runtime_error("Failed to bind username for secrets lookup");
-    }
-    try {
-        executor.executePrepared(stmt, "secrets lookup");
-    } catch (...) {
-        duckdb_destroy_prepare(&stmt);
-        throw;
-    }
-    duckdb_destroy_prepare(&stmt);
-
-    while(true) 
-    {
-        auto chunk = duckdb_fetch_chunk(executor.result);
-        if (chunk == nullptr) {
-            break;
-        }
-
-        idx_t row_count = duckdb_data_chunk_get_size(chunk);
-        if (row_count != 1) {
-            duckdb_destroy_data_chunk(&chunk);
-            return std::nullopt;
-        }
-
-        // get the username column
-        auto username_col = duckdb_data_chunk_get_vector(chunk, 0);
-        auto password_col = duckdb_data_chunk_get_vector(chunk, 1);
-        auto roles_col = duckdb_data_chunk_get_vector(chunk, 2);
-
-        duckdb_string_t *username_data = (duckdb_string_t *) duckdb_vector_get_data(username_col);
-        std::string username;
-        if (duckdb_string_is_inlined(username_data[0])) {
-            username = std::string(username_data[0].value.inlined.inlined, username_data[0].value.inlined.length);
-		} else {
-            username = std::string(username_data[0].value.pointer.ptr, username_data[0].value.pointer.length);
-        }
-
-        duckdb_string_t *password_data = (duckdb_string_t *) duckdb_vector_get_data(password_col);
-        std::string password;
-        if (duckdb_string_is_inlined(password_data[0])) {
-            password = std::string(password_data[0].value.inlined.inlined, password_data[0].value.inlined.length);
-		} else {
-            password = std::string(password_data[0].value.pointer.ptr, password_data[0].value.pointer.length);
-        }
-
-        duckdb_list_entry *list_data = (duckdb_list_entry *) duckdb_vector_get_data(roles_col);
-        duckdb_vector list_child = duckdb_list_vector_get_child(roles_col);
-        duckdb_string_t *child_data = (duckdb_string_t *) duckdb_vector_get_data(list_child);
-        duckdb_list_entry roles_list = list_data[0];
-
-        std::vector<std::string> roles;
-        for (idx_t child_idx = roles_list.offset; child_idx < roles_list.offset + roles_list.length; child_idx++) 
-        {
-            std::string role;
-            if (duckdb_string_is_inlined(child_data[child_idx])) {
-                role = std::string(child_data[child_idx].value.inlined.inlined, child_data[child_idx].value.inlined.length);
-            } else {
-                role = std::string(child_data[child_idx].value.pointer.ptr, child_data[child_idx].value.pointer.length);
-            }
-            roles.push_back(role);
-        }
-        
-        duckdb_destroy_data_chunk(&chunk);
-        return std::make_tuple(password, roles);
-    }
-
-    return std::nullopt;
+    executeQuery("DROP TABLE IF EXISTS " + sql::QuoteIdentifier(schema) + "." + sql::QuoteIdentifier(table), {}, false);
+    return true;
 }
 
 std::tuple<duckdb::SecretManager&, duckdb::CatalogTransaction> DatabaseManager::getSecretManagerAndTransaction() 

@@ -49,6 +49,13 @@ public:
     // Inspect what shape `stored` is. Pure function, exported for tests
     // and for the startup auditor's deprecation warnings.
     static PasswordFormat classifyFormat(const std::string& stored);
+
+    // A stored hash no password matches, costing what checking `stored` costs:
+    // PBKDF2 with the same iteration count (the default when `stored` is empty
+    // or unparsable), MD5 for MD5, a random plaintext for plaintext. Checked
+    // when a username is unknown, so the response time does not tell whether
+    // the user exists.
+    static std::string dummyHashLike(const std::string& stored);
 };
 
 // Basic auth sends the password on EVERY request, and a PBKDF2 hash at the

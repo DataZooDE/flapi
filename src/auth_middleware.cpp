@@ -1,5 +1,7 @@
 #include <aws/core/Aws.h>
 #include <aws/core/auth/AWSCredentialsProvider.h>
+#include <aws/core/auth/AWSCredentialsProviderChain.h>
+#include <aws/core/config/ConfigAndCredentialsCacheManager.h>
 #include <aws/secretsmanager/SecretsManagerClient.h>
 #include <aws/secretsmanager/model/GetSecretValueRequest.h>
 #include <aws/secretsmanager/model/GetSecretValueResult.h>
@@ -8,12 +10,16 @@
 #include <crow/utility.h>
 #include <crow/json.h>
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <jwt-cpp/jwt.h>
 #include <openssl/evp.h>
 #include <sstream>
 #include <iomanip>
+#include <regex>
 
+#include "duckdb/main/capi/capi_internal.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
 
 #include "auth_middleware.hpp"
@@ -38,81 +44,417 @@ const char* staticAuthKind(const std::string& configured) {
 #include "duckdb.hpp"
 #include "duckdb/common/types/blob.hpp"
 #include "oidc_provider_presets.hpp"
+#include "extension_installer.hpp"
+#include "redaction.hpp"
+#include "vfs_adapter.hpp"
 
 namespace flapi 
 {
 
-AwsHelper::AwsHelper(std::shared_ptr<DatabaseManager> db_manager) 
-    : db_manager(db_manager)
+namespace {
+
+std::optional<std::string> ProcessEnv(const std::string& name) {
+    const char* value = std::getenv(name.c_str());
+    if (value == nullptr) {
+        return std::nullopt;
+    }
+    return std::string(value);
+}
+
+// A key the secret does not carry is a NULL Value, and NULL.ToString() is the
+// four characters "NULL": every secret without a session token sent
+// `X-Amz-Security-Token: NULL`, which AWS rejects, and one without a region
+// asked for the region "NULL".
+std::string SecretString(const duckdb::KeyValueSecret& secret, const char* key) {
+    const auto value = secret.TryGetValue(key, false);
+    if (value.IsNull()) {
+        return "";
+    }
+    return value.ToString();
+}
+
+bool IsTruthy(const std::string& value) {
+    std::string lower = value;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return std::tolower(c); });
+    return lower == "true" || lower == "1" || lower == "yes";
+}
+
+}  // namespace
+
+std::string AwsHelper::resolveEndpointOverride(const EnvLookup& env) {
+    // Only the service-specific variable. AWS_ENDPOINT_URL is commonly set for
+    // S3 (MinIO): it must not also pick the service that decides who logs in.
+    if (const auto ignore = env("AWS_IGNORE_CONFIGURED_ENDPOINT_URLS"); ignore && IsTruthy(*ignore)) {
+        return "";
+    }
+    if (const auto value = env("AWS_ENDPOINT_URL_SECRETS_MANAGER"); value && !value->empty()) {
+        return *value;
+    }
+    return "";
+}
+
+bool AwsHelper::isLoopbackHost(const std::string& url) {
+    auto rest = url;
+    if (const auto scheme = rest.find("://"); scheme != std::string::npos) {
+        rest = rest.substr(scheme + 3);
+    }
+    if (const auto at = rest.find('@'); at != std::string::npos && at < rest.find('/')) {
+        rest = rest.substr(at + 1);
+    }
+    std::string host;
+    if (!rest.empty() && rest.front() == '[') {
+        host = rest.substr(1, rest.find(']') == std::string::npos ? std::string::npos : rest.find(']') - 1);
+    } else {
+        host = rest.substr(0, rest.find_first_of(":/?#"));
+    }
+    std::transform(host.begin(), host.end(), host.begin(), [](unsigned char c) { return std::tolower(c); });
+    if (host == "localhost" || host == "::1") {
+        return true;
+    }
+    // 127.0.0.0/8 as an IPv4 literal - not a name that merely starts with "127.".
+    static const std::regex loopback_v4(R"(127\.\d{1,3}\.\d{1,3}\.\d{1,3})");
+    return std::regex_match(host, loopback_v4);
+}
+
+void AwsHelper::checkEndpointOverride(const std::string& url, const EnvLookup& env) {
+    std::string scheme = url.substr(0, url.find("://"));
+    std::transform(scheme.begin(), scheme.end(), scheme.begin(), [](unsigned char c) { return std::tolower(c); });
+    if (scheme != "http" || isLoopbackHost(url)) {
+        return;
+    }
+    if (const auto allow = env("FLAPI_ALLOW_INSECURE_SECRETS_ENDPOINT"); allow && IsTruthy(*allow)) {
+        return;
+    }
+    throw std::runtime_error(
+        "AWS_ENDPOINT_URL_SECRETS_MANAGER is plain http to a host that is not loopback (" +
+        RedactUrlsInText(url) + "): the answer decides who can log in, and anyone on the path could change it. "
+        "Use https, or set FLAPI_ALLOW_INSECURE_SECRETS_ENDPOINT=1 to accept that.");
+}
+
+std::string AwsHelper::resolveRegion(const std::string& configured, const EnvLookup& env,
+                                     const std::string& profile_region) {
+    if (!configured.empty()) {
+        return configured;
+    }
+    for (const char* name : {"AWS_REGION", "AWS_DEFAULT_REGION"}) {
+        if (const auto value = env(name); value && !value->empty()) {
+            return *value;
+        }
+    }
+    if (!profile_region.empty()) {
+        return profile_region;
+    }
+    throw std::runtime_error(
+        "auth.from-aws-secretmanager.region is not set, nor AWS_REGION, AWS_DEFAULT_REGION or the AWS profile's "
+        "region: set the region of the Secrets Manager secret");
+}
+
+std::string AwsHelper::sanitiseAwsErrorMessage(const std::string& message) {
+    // AWS messages can quote an access key id or an encoded authorization
+    // message; only the first line is wanted in a log anyway.
+    std::string out = message.substr(0, message.find_first_of("\r\n"));
+    static const std::regex access_key_id("A[SK]IA[0-9A-Z]{16}");
+    static const std::regex long_base64("[A-Za-z0-9+/=_-]{32,}");
+    out = std::regex_replace(out, access_key_id, "<key-id>");
+    out = std::regex_replace(out, long_base64, "<redacted>");
+    if (out.size() > 300) {
+        out = out.substr(0, 300) + "...";
+    }
+    return out;
+}
+
+AwsHelper::AwsHelper(std::shared_ptr<DatabaseManager> db_manager)
+    : _db_manager(std::move(db_manager))
 { }
 
-void AwsHelper::refreshSecretJson(const std::string& secret_name, const std::string& secret_table) {
-    auto secret_json = getSecretJson(secret_name);
-    persistSecretJson(secret_table, secret_json);
+namespace {
+
+// Aws::InitAPI once per process, and no ShutdownAPI: the SDK's global state
+// (HTTP client factory, curl) would otherwise be torn down and rebuilt around
+// every fetch, and shutting it down during static destruction races other
+// threads the way closing the bootstrap DuckDB did. The process exit reclaims it.
+void EnsureAwsSdkInitialised() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        static Aws::SDKOptions* const options = new Aws::SDKOptions();
+        Aws::InitAPI(*options);
+    });
 }
 
-std::string AwsHelper::getSecretJson(const std::string& secret_name) 
-{
-    std::string duck_secret_id = ConfigManager::secretNameToSecretId(secret_name);
-    CROW_LOG_DEBUG << "Retrieving secret '" + secret_name + "' -> '" + duck_secret_id + "' from AWS Secrets Manager";
-
-    auto aws_auth_params = tryGetS3AuthParams(duck_secret_id);
-    if (!aws_auth_params) {
-        throw std::runtime_error("No AWS auth params found for secret '" + secret_name + "', " +
-                                 "please use create a duckdb secret with the same name '" + duck_secret_id + "' and type 'S3'");
-    }
-
-    Aws::SDKOptions options;
-    Aws::InitAPI(options);
-    
-    Aws::Auth::AWSCredentials credentials(aws_auth_params->access_key, 
-                                          aws_auth_params->secret_key, 
-                                          aws_auth_params->session_token);
-    
-    Aws::Client::ClientConfiguration clientConfig;
-    clientConfig.region = aws_auth_params->region;
-    
-    Aws::SecretsManager::SecretsManagerClient secretsClient(credentials, nullptr, clientConfig);
-    Aws::SecretsManager::Model::GetSecretValueRequest request;
-    request.SetSecretId(secret_name);
-
-    auto response = secretsClient.GetSecretValue(request);
-    if (!response.IsSuccess()) {
-        Aws::ShutdownAPI(options);
-        throw std::runtime_error("Error retrieving secret '" + secret_name + "': " + response.GetError().GetMessage());
-    }
-
-    auto secret_json = response.GetResult().GetSecretString();
-    CROW_LOG_DEBUG << "Successfully retrieved secret '" + secret_name + "': *****[" + std::to_string(secret_json.size()) + "]";
-
-    Aws::ShutdownAPI(options);
-    return secret_json;
-}
-
-void AwsHelper::persistSecretJson(const std::string& secret_table, const std::string& secret_json) {
-    db_manager->refreshSecretsTable(secret_table, secret_json);
-}
-
-std::optional<AwsAuthParams> AwsHelper::tryGetS3AuthParams(const std::string& secret_name) 
-{
-    auto [secret_manager, transaction] = db_manager->getSecretManagerAndTransaction();
-    auto secret_entry = secret_manager.GetSecretByName(transaction, secret_name);
+std::optional<AwsAuthParams> ReadS3Secret(duckdb::SecretManager& secret_manager,
+                                          duckdb::CatalogTransaction transaction, const std::string& name) {
+    auto secret_entry = secret_manager.GetSecretByName(transaction, name);
     if (!secret_entry) {
         return std::nullopt;
     }
-
-    auto kv_secret = dynamic_cast<const duckdb::KeyValueSecret *>(secret_entry->secret.get());
+    auto kv_secret = dynamic_cast<const duckdb::KeyValueSecret*>(secret_entry->secret.get());
     if (!kv_secret) {
         return std::nullopt;
     }
-
     AwsAuthParams auth_params;
-    auth_params.access_key = kv_secret->TryGetValue("key_id", false).ToString();
-    auth_params.secret_key = kv_secret->TryGetValue("secret", false).ToString();
-    auth_params.session_token = kv_secret->TryGetValue("session_token", false).ToString();
-    auth_params.region = kv_secret->TryGetValue("region", false).ToString();
-
+    auth_params.access_key = SecretString(*kv_secret, "key_id");
+    auth_params.secret_key = SecretString(*kv_secret, "secret");
+    auth_params.session_token = SecretString(*kv_secret, "session_token");
+    auth_params.region = SecretString(*kv_secret, "region");
     return auth_params;
+}
+
+// Every statement of `sql` on `conn`. Errors say which statement failed and
+// what kind of error it was, never the statement: this is credential SQL.
+void RunStatements(duckdb_connection conn, const std::string& sql, const std::string& what) {
+    duckdb_extracted_statements stmts = nullptr;
+    const idx_t n = duckdb_extract_statements(conn, sql.c_str(), &stmts);
+    if (n == 0) {
+        const char* error = duckdb_extract_statements_error(stmts);
+        const std::string detail = redactSqlErrorMessage(error ? error : "(no detail)", sql);
+        duckdb_destroy_extracted(&stmts);
+        throw std::runtime_error(what + ": could not parse it: " + detail);
+    }
+    for (idx_t i = 0; i < n; i++) {
+        const std::string position = "statement " + std::to_string(i + 1) + " of " + std::to_string(n);
+        duckdb_prepared_statement stmt = nullptr;
+        if (duckdb_prepare_extracted_statement(conn, stmts, i, &stmt) == DuckDBError) {
+            const char* error = duckdb_prepare_error(stmt);
+            const std::string detail = redactSqlErrorMessage(error ? error : "(no detail)", sql);
+            duckdb_destroy_prepare(&stmt);
+            duckdb_destroy_extracted(&stmts);
+            throw std::runtime_error(what + ": " + position + " failed: " + detail);
+        }
+        duckdb_result result;
+        const bool failed = duckdb_execute_prepared(stmt, &result) == DuckDBError;
+        const std::string detail = failed ? redactSqlErrorMessage(duckdb_result_error(&result), sql) : "";
+        duckdb_destroy_result(&result);
+        duckdb_destroy_prepare(&stmt);
+        if (failed) {
+            duckdb_destroy_extracted(&stmts);
+            throw std::runtime_error(what + ": " + position + " failed: " + detail);
+        }
+    }
+    duckdb_destroy_extracted(&stmts);
+}
+
+// Owns a private DuckDB instance for the length of a scope.
+struct PrivateDuckDb {
+    duckdb_database db = nullptr;
+    duckdb_connection conn = nullptr;
+    ~PrivateDuckDb() {
+        if (conn) {
+            duckdb_disconnect(&conn);
+        }
+        if (db) {
+            duckdb_close(&db);
+        }
+    }
+};
+
+}  // namespace
+
+std::optional<AwsAuthParams> AwsHelper::credentialsFromLegacyInit(const AuthFromSecretManagerConfig& config) {
+    const std::string duck_secret_id = ConfigManager::secretNameToSecretId(config.secret_name);
+    if (!config.init.empty()) {
+        // A DuckDB of its own: a secret created in the main database is listed by
+        // duckdb_secrets() to every SQL template (#254).
+        PrivateDuckDb private_db;
+        private_db.db = OpenPrivateDuckDb(/*allow_persistent_secrets=*/false,
+                                          "private DuckDB for auth.from-aws-secretmanager.init");
+        if (duckdb_connect(private_db.db, &private_db.conn) != DuckDBSuccess) {
+            throw std::runtime_error("Could not connect to the private DuckDB for auth.from-aws-secretmanager.init");
+        }
+        // httpfs registers the S3 secret type; offline, nothing autoloads it.
+        const bool offline = ExtensionsOfflineRequested();
+        if (const auto error = LoadOrInstallExtension(private_db.conn, "httpfs", offline); !error.empty()) {
+            CROW_LOG_WARNING << "auth.from-aws-secretmanager.init: loading httpfs failed: " << error;
+        }
+        // PROVIDER CREDENTIAL_CHAIN lives in the aws extension. Loaded only when
+        // the init asks for it, so no other init downloads anything.
+        std::string lower_init = config.init;
+        std::transform(lower_init.begin(), lower_init.end(), lower_init.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        if (lower_init.find("credential_chain") != std::string::npos) {
+            if (const auto error = LoadOrInstallExtension(private_db.conn, "aws", offline); !error.empty()) {
+                CROW_LOG_WARNING << "auth.from-aws-secretmanager.init: loading aws (for CREDENTIAL_CHAIN) failed: "
+                                 << error;
+            }
+        }
+        RunStatements(private_db.conn, config.init,
+                      "auth.from-aws-secretmanager.init for secret '" + config.secret_name + "'");
+        auto& instance = *reinterpret_cast<duckdb::DatabaseWrapper*>(private_db.db)->database->instance;
+        if (auto params = ReadS3Secret(duckdb::SecretManager::Get(instance),
+                                       duckdb::CatalogTransaction::GetSystemTransaction(instance), duck_secret_id)) {
+            return params;
+        }
+    }
+    // Created by a connection `init:` or persisted in ~/.duckdb/stored_secrets:
+    // the main database's secret of that name. It keeps working, but such a
+    // secret is listed (redacted) to every template, so it is deprecated.
+    if (_db_manager && _db_manager->isInitialized()) {
+        auto [secret_manager, transaction] = _db_manager->getSecretManagerAndTransaction();
+        if (auto params = ReadS3Secret(secret_manager, transaction, duck_secret_id)) {
+            CROW_LOG_WARNING << "auth.from-aws-secretmanager for secret '" << config.secret_name
+                             << "': using the DuckDB secret '" << duck_secret_id
+                             << "' of the main database, which SQL templates can list. This is deprecated: set "
+                                "secret-id/secret-key, or neither to use the AWS SDK's default credential chain, "
+                                "or create the secret in auth.from-aws-secretmanager.init.";
+            return params;
+        }
+    }
+    return std::nullopt;
+}
+
+std::string AwsHelper::getSecretJson(const AuthFromSecretManagerConfig& config)
+{
+    const auto& secret_name = config.secret_name;
+    CROW_LOG_DEBUG << "Retrieving secret '" << secret_name << "' from AWS Secrets Manager";
+    EnsureAwsSdkInitialised();
+
+    const auto endpoint_override = resolveEndpointOverride(ProcessEnv);
+    if (!endpoint_override.empty()) {
+        checkEndpointOverride(endpoint_override, ProcessEnv);
+        CROW_LOG_WARNING << "AWS Secrets Manager endpoint overridden by AWS_ENDPOINT_URL_SECRETS_MANAGER: "
+                         << RedactUrlsInText(endpoint_override)
+                         << ". This endpoint decides who can log in (secret '" << secret_name << "').";
+    }
+
+    std::shared_ptr<Aws::Auth::AWSCredentialsProvider> credentials;
+    std::string region = config.region;
+    if (config.init_declared) {
+        const auto params = credentialsFromLegacyInit(config);
+        if (!params) {
+            throw std::runtime_error(
+                "auth.from-aws-secretmanager for secret '" + secret_name + "': `init` created no DuckDB S3 secret "
+                "named '" + ConfigManager::secretNameToSecretId(secret_name) + "'. Set secret-id/secret-key "
+                "instead, or neither to use the AWS SDK's default credential chain.");
+        }
+        credentials = std::make_shared<Aws::Auth::SimpleAWSCredentialsProvider>(
+            params->access_key, params->secret_key, params->session_token);
+        if (region.empty()) {
+            region = params->region;
+        }
+    } else if (!config.secret_id.empty()) {
+        // Straight to the SDK: no DuckDB secret, no SQL, nothing to quote.
+        credentials = std::make_shared<Aws::Auth::SimpleAWSCredentialsProvider>(config.secret_id, config.secret_key);
+    } else {
+        // Environment, shared config/credentials files, SSO, web identity,
+        // container and instance roles - the standard AWS precedence.
+        credentials = std::make_shared<Aws::Auth::DefaultAWSCredentialsProviderChain>();
+    }
+
+    Aws::Client::ClientConfigurationInitValues init_values;
+    init_values.shouldDisableIMDS = true;   // the region is resolved below, not probed
+    Aws::Client::ClientConfiguration client_config(init_values);
+    // The active profile (AWS_PROFILE, else default) of AWS_CONFIG_FILE / ~/.aws/config.
+    client_config.region = resolveRegion(region, ProcessEnv, Aws::Config::GetCachedConfigValue("region"));
+    if (!endpoint_override.empty()) {
+        client_config.endpointOverride = endpoint_override;
+    }
+
+    Aws::SecretsManager::SecretsManagerClient client(credentials, client_config);
+    Aws::SecretsManager::Model::GetSecretValueRequest request;
+    request.SetSecretId(secret_name);
+
+    auto response = client.GetSecretValue(request);
+    if (!response.IsSuccess()) {
+        const auto& error = response.GetError();
+        throw std::runtime_error("Error retrieving secret '" + secret_name + "' from AWS Secrets Manager (" +
+                                 client_config.region + "): " + error.GetExceptionName() + ": " +
+                                 sanitiseAwsErrorMessage(error.GetMessage()));
+    }
+
+    auto secret_json = response.GetResult().GetSecretString();
+    CROW_LOG_DEBUG << "Retrieved secret '" << secret_name << "': *****[" << secret_json.size() << "]";
+    return secret_json;
+}
+
+std::vector<SecretUser> AwsHelper::parseUserList(const std::string& secret_json) {
+    // The document is never quoted in an error: it holds the passwords.
+    static const std::string kShape =
+        "expected a JSON object {\"auth\": [{\"username\": ..., \"password\": ..., \"roles\": [...]}]}";
+    auto doc = crow::json::load(secret_json);
+    if (!doc || doc.t() != crow::json::type::Object || !doc.has("auth") ||
+        doc["auth"].t() != crow::json::type::List) {
+        throw std::runtime_error("The secret is not a flAPI user list: " + kShape);
+    }
+    std::vector<SecretUser> users;
+    idx_t index = 0;
+    for (const auto& entry : doc["auth"]) {
+        const std::string where = "entry " + std::to_string(index++) + " of \"auth\"";
+        if (entry.t() != crow::json::type::Object) {
+            throw std::runtime_error("The secret's " + where + " is not an object: " + kShape);
+        }
+        SecretUser user;
+        for (const auto& [key, target] : {std::pair<const char*, std::string*>{"username", &user.username},
+                                          std::pair<const char*, std::string*>{"password", &user.password}}) {
+            if (!entry.has(key) || entry[key].t() != crow::json::type::String) {
+                throw std::runtime_error("The secret's " + where + " has no string \"" + key + "\"");
+            }
+            *target = std::string(entry[key].s());
+            if (target->empty()) {
+                throw std::runtime_error("The secret's " + where + " has an empty \"" + key + "\"");
+            }
+        }
+        if (entry.has("roles")) {
+            if (entry["roles"].t() != crow::json::type::List) {
+                throw std::runtime_error("The secret's " + where + ": \"roles\" is not a list of strings");
+            }
+            for (const auto& role : entry["roles"]) {
+                if (role.t() != crow::json::type::String) {
+                    throw std::runtime_error("The secret's " + where + ": \"roles\" is not a list of strings");
+                }
+                user.roles.emplace_back(role.s());
+            }
+        }
+        users.push_back(std::move(user));
+    }
+    return users;
+}
+
+void AwsHelper::loadUsers(const AuthFromSecretManagerConfig& config) {
+    if (hasUsers(config.secret_name)) {
+        return;
+    }
+    std::vector<SecretUser> users;
+    try {
+        users = parseUserList(getSecretJson(config));
+    } catch (const std::exception& e) {
+        throw std::runtime_error("auth.from-aws-secretmanager, secret '" + config.secret_name + "': " + e.what());
+    }
+    CROW_LOG_INFO << "Loaded " << users.size() << " user(s) from AWS Secrets Manager secret '"
+                  << config.secret_name << "'";
+    // Built now, not on the first unknown login: a PBKDF2 hash takes as long
+    // to make as to check.
+    auto dummy = PasswordHasher::dummyHashLike(users.empty() ? std::string() : users.front().password);
+    std::lock_guard<std::mutex> lock(_mutex);
+    _users.emplace(config.secret_name, std::move(users));
+    _dummy_hashes.emplace(config.secret_name, std::move(dummy));
+}
+
+std::string AwsHelper::dummyHashFor(const std::string& secret_name) const {
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (const auto it = _dummy_hashes.find(secret_name); it != _dummy_hashes.end()) {
+            return it->second;
+        }
+    }
+    return PasswordHasher::dummyHashLike("");
+}
+
+bool AwsHelper::hasUsers(const std::string& secret_name) const {
+    std::lock_guard<std::mutex> lock(_mutex);
+    return _users.count(secret_name) > 0;
+}
+
+std::optional<SecretUser> AwsHelper::findUser(const std::string& secret_name, const std::string& username) const {
+    std::lock_guard<std::mutex> lock(_mutex);
+    const auto it = _users.find(secret_name);
+    if (it == _users.end()) {
+        return std::nullopt;
+    }
+    for (const auto& user : it->second) {
+        if (user.username == username) {
+            return user;
+        }
+    }
+    return std::nullopt;
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -124,33 +466,101 @@ void AuthMiddleware::initialize(std::shared_ptr<ConfigManager> config_manager) {
     initializeAwsSecretsManager();
 }
 
+namespace {
+
+// What decides which users a block gets, for the secret-name it shares.
+struct SecretSource {
+    std::string region;
+    std::string credentials;   // compared only, never logged
+    std::string init;
+    std::string endpoint;
+};
+
+std::string LegacyDefaultTableName(const std::string& secret_name) {
+    std::string sanitized = secret_name;
+    std::replace_if(sanitized.begin(), sanitized.end(), [](char c) { return !std::isalnum(static_cast<unsigned char>(c)); }, '_');
+    return "auth_" + sanitized;
+}
+
+}  // namespace
+
+void AuthMiddleware::dropLegacyUserTables(const AuthFromSecretManagerConfig& config) {
+    // Older versions kept the fetched user list in a table of the main
+    // database. On a file db_path it outlives the upgrade, readable by every
+    // template and listed by the schema API, so it goes.
+    if (!db_manager || !db_manager->isInitialized()) {
+        return;
+    }
+    std::vector<std::string> names{LegacyDefaultTableName(config.secret_name)};
+    if (!config.secret_table.empty() && config.secret_table != names.front()) {
+        names.push_back(config.secret_table);
+    }
+    for (const auto& name : names) {
+        try {
+            if (db_manager->dropTableIfExists(name)) {
+                CROW_LOG_WARNING << "Dropped table '" << name << "' left by an older flAPI: it held the user list "
+                                 << "of AWS Secrets Manager secret '" << config.secret_name
+                                 << "', readable by SQL templates. If this database file was in use, rotate "
+                                    "those passwords.";
+            }
+        } catch (const std::exception& e) {
+            CROW_LOG_ERROR << "Could not drop table '" << name << "' left by an older flAPI (it holds the user list "
+                           << "of secret '" << config.secret_name << "' and SQL templates can read it): "
+                           << e.what();
+        }
+    }
+}
+
 void AuthMiddleware::initializeAwsSecretsManager() {
-    for (const auto& endpoint : *config_manager->getEndpoints()) {
-        if (!endpoint.auth.from_aws_secretmanager || !endpoint.auth.enabled) {
+    // Once per secret-name: endpoints sharing one (or inheriting the top-level
+    // `auth:`) share its user list - so they must agree on where it comes from.
+    std::unordered_map<std::string, SecretSource> sources;
+    std::vector<const EndpointConfig*> to_load;
+    const auto endpoints = config_manager->getEndpoints();
+    for (const auto& endpoint : *endpoints) {
+        if (!endpoint.auth.from_aws_secretmanager) {
             continue;
         }
-
-        CROW_LOG_DEBUG << "Initializing AWS Secrets Manager for endpoint: " << endpoint.urlPath;
-
-        auto aws_secretmanager_config = *endpoint.auth.from_aws_secretmanager;
-
-        auto secret_name = aws_secretmanager_config.secret_name;
-        if (secret_name.empty()) {
+        const auto& aws_config = *endpoint.auth.from_aws_secretmanager;
+        dropLegacyUserTables(aws_config);
+        // Only Basic reads it; a bearer or OIDC block with a leftover
+        // from-aws-secretmanager (a load warning names it) fetches nothing.
+        if (!endpoint.auth.enabled || endpoint.auth.type != "basic") {
+            continue;
+        }
+        if (aws_config.secret_name.empty()) {
             throw std::runtime_error("AWS Secrets Manager secret name in endpoint " + endpoint.urlPath + " is not set");
         }
-
-        auto secret_table = aws_secretmanager_config.secret_table;
-        if (secret_table.empty()) {
-            throw std::runtime_error("AWS Secrets Manager table in endpoint " + endpoint.urlPath + " is not set");
+        SecretSource source;
+        source.region = aws_config.region;
+        source.credentials = aws_config.init_declared ? "init"
+                             : aws_config.secret_id.empty() ? "chain"
+                                                            : "keys:" + aws_config.secret_id + ":" + aws_config.secret_key;
+        source.init = aws_config.init;
+        source.endpoint = endpoint.getIdentifier();
+        const auto [it, inserted] = sources.emplace(aws_config.secret_name, source);
+        if (!inserted) {
+            std::string differs;
+            if (it->second.region != source.region) {
+                differs += "region";
+            }
+            if (it->second.credentials != source.credentials) {
+                differs += std::string(differs.empty() ? "" : ", ") + "credentials";
+            }
+            if (it->second.init != source.init) {
+                differs += std::string(differs.empty() ? "" : ", ") + "init";
+            }
+            if (!differs.empty()) {
+                throw std::runtime_error(
+                    "auth.from-aws-secretmanager: " + it->second.endpoint + " and " + source.endpoint +
+                    " both name secret '" + aws_config.secret_name + "' but differ in " + differs +
+                    ". The secret is fetched once and shared, so the blocks must agree.");
+            }
         }
-
-        auto init_sql = aws_secretmanager_config.init;
-        if (!init_sql.empty()) {
-            CROW_LOG_DEBUG << "Executing init statement for AWS Secrets Manager for endpoint: " << endpoint.urlPath;
-            db_manager->executeInitStatement(init_sql);
-        }
-
-        aws_helper->refreshSecretJson(secret_name, secret_table);
+        to_load.push_back(&endpoint);
+    }
+    for (const auto* endpoint : to_load) {
+        aws_helper->loadUsers(*endpoint->auth.from_aws_secretmanager);
     }
 }
 
@@ -343,44 +753,51 @@ bool AuthMiddleware::authenticateBasic(const std::string& auth_header, const End
 
 bool AuthMiddleware::authenticateInlineUsers(const std::string& username, const std::string& password,
                                           const EndpointConfig& endpoint, context& ctx) {
+    bool known = false;
     for (const auto& user : endpoint.auth.users) {
-        if (user.username == username && verifyCredentials(username, password, user.password)) {
-            ctx.username = username;
-            ctx.roles = user.roles;
-            return true;
+        if (user.username == username) {
+            known = true;
+            if (verifyCredentials(username, password, user.password)) {
+                ctx.username = username;
+                ctx.roles = user.roles;
+                return true;
+            }
         }
     }
+    if (known) {
+        return false;
+    }
+    // Unknown user: the same work as a wrong password, so timing does not tell
+    // which usernames exist.
+    verifyCredentials(username, password,
+                      PasswordHasher::dummyHashLike(endpoint.auth.users.empty() ? std::string()
+                                                                                : endpoint.auth.users.front().password));
     return false;
 }
 
 bool AuthMiddleware::authenticateAwsSecrets(const std::string& username, const std::string& password,
                                          const EndpointConfig& endpoint, context& ctx) {
-    if (!endpoint.auth.from_aws_secretmanager || !db_manager) {
+    if (!endpoint.auth.from_aws_secretmanager || !aws_helper) {
         return false;
     }
-
     try {
-        const auto& aws_config = *endpoint.auth.from_aws_secretmanager;
-        auto result = db_manager->findUserInSecretsTable(aws_config.secret_table, username);
-        if (!result) {
+        const auto& secret_name = endpoint.auth.from_aws_secretmanager->secret_name;
+        const auto user = aws_helper->findUser(secret_name, username);
+        if (!user) {
+            // As for inline users: an unknown name costs a wrong password.
+            verifyCredentials(username, password, aws_helper->dummyHashFor(secret_name));
             return false;
         }
-
-        auto [stored_password, roles] = result.value();
-        if (verifyCredentials(username, password, stored_password))
-        {
-            ctx.username = username;
-            for (const auto& role : roles) {
-                ctx.roles.push_back(role);
-            }
-            
-            return true;
+        if (!verifyCredentials(username, password, user->password)) {
+            return false;
         }
+        ctx.username = username;
+        ctx.roles.insert(ctx.roles.end(), user->roles.begin(), user->roles.end());
+        return true;
     } catch (const std::exception& e) {
-        CROW_LOG_ERROR << "Error authenticating against AWS Secrets: " << e.what();
+        CROW_LOG_ERROR << "Error authenticating against AWS Secrets Manager users: " << e.what();
+        return false;
     }
-
-    return false;
 }
 
 std::string AuthMiddleware::md5Hash(const std::string& input) {

@@ -180,8 +180,27 @@ auth:
       roles: [admin]
 ```
 
-Users can also come from AWS Secrets Manager:
-`auth.from-aws-secretmanager: {secret-name, region, secret-id, secret-key, secret-table, init}`.
+Users can also come from AWS Secrets Manager (endpoint or top-level `auth:`, `type: basic`):
+
+```yaml
+auth:
+  enabled: true
+  type: basic
+  from-aws-secretmanager:
+    secret-name: prod/flapi/users      # SecretString: {"auth":[{"username","password","roles":[...]}]}
+    region: eu-central-1               # else AWS_REGION, else AWS_DEFAULT_REGION
+    # secret-id / secret-key: both or neither; neither = the AWS SDK default credential chain
+```
+
+- Passwords in the secret take the `users:` formats (PBKDF2 preferred); `roles` gives 403s as usual.
+- Fetched **once at startup** per `secret-name` (shared by every endpoint naming it). Rotate = update the
+  secret and restart. Blocks sharing a `secret-name` must agree (region, credentials, init). Region falls back to
+  `AWS_REGION`, `AWS_DEFAULT_REGION`, then the AWS profile.
+- Endpoint override: only `AWS_ENDPOINT_URL_SECRETS_MANAGER` (not `AWS_ENDPOINT_URL`); plain `http://` only to
+  loopback unless `FLAPI_ALLOW_INSECURE_SECRETS_ENDPOINT=1`; startup warns while it is set.
+- The users and the AWS credentials never reach the DuckDB templates run on: a template cannot read them.
+- `secret-table` has no effect (startup warns); `init:` is deprecated (legacy SQL creating a DuckDB S3 secret,
+  run in a private DuckDB).
 
 ## Bearer (HS256 JWT)
 
