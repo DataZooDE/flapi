@@ -395,6 +395,10 @@ duckdb:
 **Notes:**
 - Omit `db_path` or set to `:memory:` for an in-memory database
 - Any other key-value pairs are passed directly as DuckDB settings
+- **Persistent DuckDB secrets are visible to templates.** DuckDB loads the secrets in
+  `~/.duckdb/stored_secrets` of the user flAPI runs as, and any template can list them (values redacted) with
+  `duckdb_secrets()` and use them. `duckdb: {allow_persistent_secrets: false}` stops that; secrets flAPI or a
+  connection `init:` creates are unaffected.
 - `FLAPI_EXTENSION_DIRECTORY` sets `extension_directory` when the config does not (see the precedence below).
 - `FLAPI_EXTENSIONS_OFFLINE=1` (also `true`/`yes`) never downloads: startup skips `INSTALL`, sets
   `autoinstall_known_extensions=false`, and **fails** if a default extension cannot be loaded, naming it and
@@ -2110,16 +2114,25 @@ e.g. `'issuer-url' (https://login.microsoftonline.com/{tenant}/v2.0) still conta
 
 ### 7.5 AWS Secrets Manager
 
-Load credentials from AWS Secrets Manager.
+Basic-auth users from an AWS Secrets Manager secret, in an endpoint's `auth:` block or the top-level one.
+The secret's `SecretString` is `{"auth": [{"username": "...", "password": "...", "roles": ["..."]}]}`
+(passwords plaintext, MD5 or `$pbkdf2-sha256$...`, as for `users:`); the
+[authentication guide](guides/authentication.md#users-from-aws-secrets-manager) has the details.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `auth.from-aws-secretmanager.secret-name` | string | AWS secret name |
-| `auth.from-aws-secretmanager.region` | string | AWS region |
-| `auth.from-aws-secretmanager.secret-id` | string | AWS access key ID |
+| `auth.from-aws-secretmanager.secret-name` | string | AWS secret name or ARN (required) |
+| `auth.from-aws-secretmanager.region` | string | AWS region; else `AWS_REGION`, else `AWS_DEFAULT_REGION`, else a startup error |
+| `auth.from-aws-secretmanager.secret-id` | string | AWS access key ID. Set together with `secret-key`, or neither (the AWS SDK's default credential chain) |
 | `auth.from-aws-secretmanager.secret-key` | string | AWS secret access key |
-| `auth.from-aws-secretmanager.secret-table` | string | Table name for cached credentials |
-| `auth.from-aws-secretmanager.init` | string | Custom initialization SQL |
+| `auth.from-aws-secretmanager.secret-table` | string | **Ignored** (a startup warning says so). The user list is held in flAPI's memory, not in a table |
+| `auth.from-aws-secretmanager.init` | string | Legacy: SQL creating a DuckDB S3 secret named after `secret-name` (non-alphanumerics → `_`). Runs in a private DuckDB, never the one templates use |
+
+- The secret is fetched **once, at startup**, per `secret-name`, however many endpoints share it. To rotate
+  users, update the secret and restart flAPI.
+- `AWS_ENDPOINT_URL_SECRETS_MANAGER`, else `AWS_ENDPOINT_URL`, replaces AWS's endpoint (`http://` works),
+  unless `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=true`.
+- Neither the credentials nor the user list reach the DuckDB database SQL templates run on, and neither is logged.
 
 **Example:**
 

@@ -115,6 +115,63 @@ Startup tells you what happened:
 The global block covers REST only. MCP tools are protected by `mcp.auth` and
 per-tool `allowed-roles`; see [MCP tools](./mcp-tools.md).
 
+## Users from AWS Secrets Manager
+
+Basic-auth users can live in an AWS Secrets Manager secret instead of in YAML:
+
+```yaml
+auth:                          # flapi.yaml (every endpoint) or an endpoint's own block
+  enabled: true
+  type: basic
+  from-aws-secretmanager:
+    secret-name: prod/flapi/users
+    region: eu-central-1       # else AWS_REGION, else AWS_DEFAULT_REGION
+```
+
+The secret's value (its `SecretString`) is a JSON object with an `auth` array:
+
+```json
+{"auth": [
+  {"username": "alice", "password": "$pbkdf2-sha256$600000$...", "roles": ["reader"]},
+  {"username": "ops",   "password": "a plaintext password", "roles": ["admin", "reader"]}
+]}
+```
+
+`username` and `password` are required and non-empty; `roles` is optional. The
+password takes the same formats as `users:` (PBKDF2; MD5 and plaintext are
+deprecated). A document
+of another shape stops startup with an error that never quotes it.
+
+**AWS credentials**, first match wins:
+
+1. `secret-id` + `secret-key` in the block (set both, or neither), e.g. from
+   `{{env.NAME}}`. They go straight to the AWS SDK.
+2. Neither: the AWS SDK's default credential chain - `AWS_ACCESS_KEY_ID` /
+   `AWS_SECRET_ACCESS_KEY` (+ `AWS_SESSION_TOKEN`), the shared config and
+   credentials files (`AWS_PROFILE`), web identity, SSO, the container and the
+   instance role.
+3. Legacy `init:` - SQL creating a DuckDB S3 secret named after `secret-name`
+   (`prod/flapi/users` -> `prod_flapi_users`). It runs in a private DuckDB, not
+   the one templates use. If it creates no such secret, a secret of that name in
+   the main database is used, with a deprecation warning.
+
+**Endpoint.** `AWS_ENDPOINT_URL_SECRETS_MANAGER`, else `AWS_ENDPOINT_URL`,
+replaces AWS's endpoint - LocalStack, a VPC endpoint, a test double; plain
+`http://` works. `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=true` ignores both. Note
+that `AWS_ENDPOINT_URL` also redirects flAPI's S3 access (MinIO): set the
+service-specific variable when only one should move.
+
+**When it is read.** Once, at startup, per `secret-name` - two endpoints and the
+top-level block naming the same secret cause one `GetSecretValue`. A failure
+stops startup. **To rotate users, update the secret and restart flAPI**; there is
+no periodic refresh, and an endpoint created later through the config service
+does not trigger a fetch (its logins are refused).
+
+The user list is held in flAPI's memory. Neither it nor the AWS credentials are
+in the DuckDB database SQL templates run on, and neither is logged.
+`secret-table` from older configs is ignored with a warning: the list is no
+longer a table, so a template that read it now fails.
+
 ## CORS with authentication
 
 With no `cors:` block, or `allow-origins` empty or containing `"*"`, any web

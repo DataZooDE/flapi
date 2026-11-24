@@ -4,8 +4,40 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Security
+
+- **Secrets-Manager users are no longer readable by SQL templates (#254).** `auth.from-aws-secretmanager` stored
+  the fetched user list (usernames, passwords, roles) in a table `auth_<name>` of the main DuckDB, so any
+  template - including one created through the config service - could `SELECT` it, and the config service's
+  schema API listed it. The list is now parsed once into flAPI's memory. **Behaviour change:** a template that
+  read that table gets an error; `secret-table` is accepted and ignored with a warning.
+- **The Secrets-Manager bootstrap credentials are no longer a DuckDB secret of the main database (#254).**
+  `secret-id`/`secret-key` became `CREATE SECRET ... (TYPE S3, KEY_ID '..', SECRET '..')` in the database
+  templates run on, where `duckdb_secrets()` listed it. They now go straight to the AWS SDK; with neither set,
+  the SDK's default credential chain is used. A custom `init:` runs in a private DuckDB instance; a DuckDB secret
+  of that name in the main database (a connection `init:`, `~/.duckdb/stored_secrets`) is still used as a
+  fallback, with a deprecation warning.
+- **Credentials are not logged (#254).** The parser logged the generated init SQL - `KEY_ID` and `SECRET` in
+  clear - at debug level, and a failing init statement (any connection `init:` as well) put the statement into
+  the startup error. Init errors now name the statement position and DuckDB's error with string literals and
+  the statement excerpt redacted.
+
 ### Fixed
 
+- **Secrets-Manager auth works without a session token (#254).** A DuckDB secret without `session_token` read
+  back as the string `NULL`, so every request carried `X-Amz-Security-Token: NULL` and AWS refused it ("The
+  security token included in the request is invalid"); an omitted `region` became the region `NULL`. The region
+  is now the configured one, else `AWS_REGION`, else `AWS_DEFAULT_REGION`, else a startup error naming the key.
+- **A `secret-key` containing `'` works (#254)**: it broke the generated SQL and stopped startup.
+- **Secrets-Manager endpoint override (#254).** `AWS_ENDPOINT_URL_SECRETS_MANAGER`, else `AWS_ENDPOINT_URL`, is
+  used as the Secrets Manager endpoint (plain `http://` works), unless `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS` is
+  true. **Behaviour change:** `AWS_ENDPOINT_URL` already pointed flAPI's S3 access at another endpoint (MinIO);
+  set for that, it now also redirects Secrets Manager - set `AWS_ENDPOINT_URL_SECRETS_MANAGER` to keep AWS's.
+- **Each secret is fetched once (#254)**, however many endpoints name it; endpoints inheriting the top-level
+  `auth:` share its fetch. The top-level `auth:` now reads `from-aws-secretmanager` at all - it was ignored, so
+  its endpoints refused every login.
+- `secret-id` without `secret-key` (or the reverse) is a startup error; it used to fall back to the ambient
+  credentials silently.
 - **The `-runtime` Docker image has `bigquery` again** (#251). `bigquery@community` is now published for DuckDB
   2.0.1; v26.11.23-runtime was built without it. The image build now fails instead of silently leaving it out,
   and CI starts the image with no network and `bigquery` in `duckdb.default-extensions`.
