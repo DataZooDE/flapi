@@ -8,13 +8,13 @@ description: >
   and a GitHub Actions CI job that installs flapi-io, starts the server and runs
   the suite. Use when a user wants to check an endpoint before deploying, write
   API or MCP tests, or set up CI for a flAPI repository.
-version: 26.11.25
+version: 26.11.26
 user-invocable: false
 ---
 
 # flAPI Testing Cheat Sheet
 
-**flAPI:** v26.11.25 | **Skill:** Develop | **See also:** `flapi-rest`, `flapi-mcp`, `flapi-auth`, `flapi-live-config`, `flapi-deploy`
+**flAPI:** v26.11.26 | **Skill:** Develop | **See also:** `flapi-rest`, `flapi-mcp`, `flapi-auth`, `flapi-live-config`, `flapi-deploy`
 
 Three layers, cheapest first: static validation (no database), template checks
 against a running server, then HTTP/MCP tests against a running server.

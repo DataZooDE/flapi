@@ -8,13 +8,13 @@ description: >
   MySQL, BigQuery, Snowflake and S3/GCS/Azure, server flags, --validate-config and
   the first run. Use when someone starts a new flAPI project, wires up a data source,
   or cannot get the server to start.
-version: 26.11.25
+version: 26.11.26
 user-invocable: false
 ---
 
 # flAPI Setup Cheat Sheet
 
-**flAPI:** v26.11.25 | **Skill:** Setup | **See also:** `flapi-rest`, `flapi-mcp`, `flapi-auth`, `flapi-cache-design`, `flapi-deploy`
+**flAPI:** v26.11.26 | **Skill:** Setup | **See also:** `flapi-rest`, `flapi-mcp`, `flapi-auth`, `flapi-cache-design`, `flapi-deploy`
 
 ## Critical gotchas
 

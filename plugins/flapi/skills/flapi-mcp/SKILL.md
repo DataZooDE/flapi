@@ -9,13 +9,13 @@ description: >
   instructions. Covers connecting Claude Code, Claude Desktop and other clients and
   calling tools/list and tools/call with curl. Use when a user wants an MCP tool,
   resource or prompt, needs an agent to call their SQL, or an MCP call misbehaves.
-version: 26.11.25
+version: 26.11.26
 user-invocable: false
 ---
 
 # flAPI MCP Cheat Sheet
 
-**flAPI:** v26.11.25 | **Skill:** Develop | **See also:** `flapi-rest`, `flapi-auth`, `flapi-live-config`, `flapi-testing`, `flapi-operate`
+**flAPI:** v26.11.26 | **Skill:** Develop | **See also:** `flapi-rest`, `flapi-auth`, `flapi-live-config`, `flapi-testing`, `flapi-operate`
 
 MCP is served on the **same port as REST**, at `POST /mcp/jsonrpc` (JSON-RPC 2.0).
 An endpoint YAML with an `mcp-tool:` block is a tool. If it also has `url-path:`, it is a
