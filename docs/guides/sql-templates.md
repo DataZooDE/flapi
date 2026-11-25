@@ -156,6 +156,7 @@ The rule of thumb:
 - **Names and keywords** (`ORDER BY`, a table, `DATE '...'`): write
   `{{{ params.x }}}` and restrict it with an `enum` or a strict `regex` validator.
 - **`conn.*`, `env.*`, `auth.*`**: write `'{{{ ... }}}'`. These are never bound.
+  `auth.*` must be in a plain `'...'` literal of the outer query (step 6).
 
 Two terms used below. A **section** is a block between `{{#name}}` (or
 `{{^name}}`) and `{{/name}}` that Mustache renders or skips (step 4). A
@@ -482,7 +483,12 @@ curl -s -u alice:reader-pass http://localhost:8080/me
 With `auth.*`, one endpoint can return each caller only their own rows. Three
 rules:
 
-- **`auth.*` is text, never bound.** Quote it: `'{{{ auth.username }}}'`.
+- **`auth.*` is text, never bound.** Quote it: `'{{{ auth.username }}}'`. Its
+  single quotes are doubled, which is safe only in a plain `'...'` literal of
+  the outer query; a comment, an `E'...'` string, an identifier, a dollar-quoted
+  string or SQL text run by `query()`/`*_query` is refused at startup and by
+  `--validate-config`. An identity with a control character, or a role with a
+  comma, gets `401`.
 - **Test roles as a list.** `auth.roles` is one string, so split it:
   `list_contains(string_split('{{{ auth.roles }}}', ','), 'admin')`. Do not write
   `'{{{ auth.roles }}}' LIKE '%admin%'`: it also matches a role named `notadmin`.

@@ -4,6 +4,35 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ## Unreleased
 
+### Security
+
+- **`auth.*` template values are SQL-quoted (GHSA-r36p-v9m5-4f8q).** `auth.username`,
+  `auth.email`, `auth.roles` and `auth.type` are rendered with every single quote doubled
+  on REST and MCP (the config service has no caller identity, so `auth.*` renders empty
+  there), so they are safe inside the documented `'{{{ auth.username }}}'` literal and a
+  name such as `O'Brien` still matches its rows.
+- **`auth.*` outside a plain top-level `'...'` literal of the outer query is an error.**
+  Unquoted, in a comment, an `E'...'` string, a `"..."` identifier, a `$$` string, or in SQL
+  text that another function executes (`query()`, `bigquery_query()`, `postgres_query()`,
+  any `*_query`/`*_execute` call, a literal holding `''`, `$$` or `"`, or a call whose other
+  arguments do, such as a macro that runs its argument): such a template stops startup,
+  reload and `--validate-config`, is refused by the config service, and the rendered SQL of
+  every request is checked before the values are substituted. Filter in the outer query
+  instead. `{{ auth.x }}` now renders the same quote-doubled value as `{{{ auth.x }}}`.
+- **An identity containing a control character, or a role containing a comma, is refused**
+  with 401 on REST and MCP. `auth.roles` joins roles with commas and MCP `allowed-roles`
+  splits on them, so a role `reader,admin` would read as two roles.
+
+### Upgrade notes
+
+- **Run `flapi --validate-config` before upgrading.** A template that places `auth.*`
+  anywhere but a plain top-level `'...'` literal of the outer query now stops startup,
+  reload and validation; move the filter into such a literal of the outer query.
+- **`{{ auth.x }}` output changes** from HTML-escaped to quote-doubled, the same as
+  `{{{ auth.x }}}`: a template that compared against `&#39;` or `&amp;` forms now matches
+  the real value.
+- Identity providers issuing a role name with a comma in it must rename that role.
+
 ### Documentation
 
 - **A task guide for every feature area (#272), each run in CI.** New: Writing SQL

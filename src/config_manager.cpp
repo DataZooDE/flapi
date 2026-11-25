@@ -4182,6 +4182,19 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
         }
         return std::nullopt;
     };
+    auto templateAuthPlacementError = [this](const std::string& source) -> std::optional<std::string> {
+        const std::filesystem::path as_is(source);
+        std::vector<std::filesystem::path> candidates{as_is};
+        if (!as_is.is_absolute() && !PathSchemeUtils::IsRemotePath(source)) {
+            candidates.push_back(std::filesystem::path(template_config.path) / as_is);
+        }
+        for (const auto& candidate : candidates) {
+            if (auto error = CheckAuthPlacementInTemplateFile(candidate.string())) {
+                return error;
+            }
+        }
+        return std::nullopt;
+    };
 
     // `{{ params.x }}` names a request parameter; one the endpoint does not declare
     // is either always empty or an unvalidated raw query parameter - a typo in
@@ -4284,6 +4297,11 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
                 // crow would segfault or hang rendering it; an error, not a warning.
                 result.valid = false;
                 result.errors.push_back(*syntax);
+            } else if (auto unsafe = templateAuthPlacementError(config.templateSource)) {
+                // auth.* outside a plain '...' literal is never safe (see
+                // SQLTemplateProcessor::createTemplateContext): an error.
+                result.valid = false;
+                result.errors.push_back(*unsafe);
             } else {
                 // A WARNING, not an error: shipped examples share one template
                 // between endpoints that declare different subsets of its

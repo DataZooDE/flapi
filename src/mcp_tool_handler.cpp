@@ -65,7 +65,7 @@ void applyMcpAuthContext(std::map<std::string, std::string>& params,
     // an authenticated caller, because nothing put the real principal back.
     // Only the REST path injected. The documented multi-tenant template
     //
-    //   {{#auth.username}}WHERE tenant = '{{ auth.username }}'{{/auth.username}}
+    //   {{#auth.username}}WHERE tenant = '{{{ auth.username }}}'{{/auth.username}}
     //
     // therefore rendered NO filter over MCP and returned every tenant's rows
     // to any authenticated caller; the unconditional form rendered

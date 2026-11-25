@@ -148,9 +148,17 @@ void EndpointConfigParser::parseEndpointFromYaml(
                 if (auto error = CheckMustacheTemplateFile(config.templateSource)) {
                     throw std::runtime_error(*error);
                 }
+                // auth.* outside a plain '...' literal is never safe: a load
+                // error, so startup, reload and --validate-config refuse it.
+                if (auto error = CheckAuthPlacementInTemplateFile(config.templateSource)) {
+                    throw std::runtime_error(*error);
+                }
             }
             if (config.cache.template_file) {
                 if (auto error = CheckMustacheTemplateFile(*config.cache.template_file)) {
+                    throw std::runtime_error(*error);
+                }
+                if (auto error = CheckAuthPlacementInTemplateFile(*config.cache.template_file)) {
                     throw std::runtime_error(*error);
                 }
             }

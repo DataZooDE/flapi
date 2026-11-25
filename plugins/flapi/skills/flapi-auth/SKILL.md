@@ -52,7 +52,19 @@ Three independent gates: the endpoint's own `auth:` block (REST), `mcp.auth`
   and `/customers/+7` still reach `/customers/:id` and select row 7. To protect a
   record, give both routes the same auth, or protect the general endpoint and filter
   by the caller in its SQL:
-  `AND (id <> 7 OR list_contains(string_split('{{ auth.roles }}', ','), 'admin'))`.
+  `AND (id <> 7 OR list_contains(string_split('{{{ auth.roles }}}', ','), 'admin'))`.
+- **`auth.*` goes inside a plain top-level `'...'` literal of the outer query.**
+  `auth.username`, `auth.email`, `auth.roles` and `auth.type` have every `'` doubled
+  (`O'Brien` -> `O''Brien`), so write `WHERE owner = '{{{ auth.username }}}'`. Refused
+  (startup, reload, `--validate-config`, the config service, and on the rendered SQL of every
+  request): unquoted, `E'...'`, a `--` or `/* */` comment, a `"..."` identifier, a `$$`
+  string, and SQL text another function runs - a literal inside `query()`,
+  `bigquery_query()`, `postgres_query()` or any `*_query`/`*_execute` call, a literal holding
+  `''`, `$$` or `"`, or one beside such a literal in a call (a macro handed SQL). Push down
+  without `auth.*` and filter in the outer query. A quoted value still means something to
+  `LIKE` (`%`, `_`), regexes, `GLOB` and file paths (`*`, `?`, `[`): compare with `=`. An
+  identity holding a control character (newline, NUL, ...) or a role containing a comma is
+  refused with 401.
 - **A 401 names the endpoint's scheme**: `WWW-Authenticate: Basic realm="flAPI"`
   or `Bearer realm="flAPI"` (`, error="invalid_token"` for a refused token), body
   `{"error":"Unauthorized","message":...}`.
@@ -138,9 +150,9 @@ connection: [customers]
 
 ```sql
 -- flapi: template group=basic file=me.sql
-SELECT '{{ auth.username }}' AS username,
-       '{{ auth.roles }}'    AS roles,
-       '{{ auth.type }}'     AS auth_type
+SELECT '{{{ auth.username }}}' AS username,
+       '{{{ auth.roles }}}'    AS roles,
+       '{{{ auth.type }}}'     AS auth_type
 ```
 
 ```yaml
@@ -300,13 +312,14 @@ the block came from `flapi.yaml`).
 
 After authentication the template sees `auth.username`, `auth.roles`
 (comma-joined), `auth.email`, `auth.type`, `auth.authenticated` (`"true"`).
-Clients cannot spoof them: `__auth_*` query/body keys are dropped. Quote them
-with double braces (HTML-escaped, so a `'` cannot end the literal):
+Clients cannot spoof them: `__auth_*` query/body keys are dropped. Each `'` in a
+value is doubled, so put them inside a plain `'...'` literal of the outer query
+(`{{ }}` and `{{{ }}}` render the same value); any other place is refused:
 
 ```sql
 SELECT * FROM orders
-WHERE owner = '{{ auth.username }}'
-   OR list_contains(string_split('{{ auth.roles }}', ','), 'admin')
+WHERE owner = '{{{ auth.username }}}'
+   OR list_contains(string_split('{{{ auth.roles }}}', ','), 'admin')
 ```
 
 That is row filtering (empty result); use `auth.roles` for a 403. For MCP the same variables are

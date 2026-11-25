@@ -7,6 +7,7 @@
 #include <string_view>
 #include <vector>
 #include <crow.h>
+#include "mustache_syntax_check.hpp"
 #include "config_manager.hpp"
 #include "prepared_template_rewriter.hpp"
 
@@ -63,7 +64,19 @@ private:
     std::shared_ptr<const std::string> loadTemplateShared(const std::string& templatePath);
     static std::string readTemplateUncached(IFileProvider& provider, const std::string& templatePath);
     std::string getFullTemplatePath(const std::string& templateSource) const;
+    // The auth.* markers of one render and the values that replace them.
+    struct AuthRender {
+        std::string prefix;
+        std::vector<AuthMarker> markers;
+    };
+    crow::mustache::context createTemplateContext(const EndpointConfig& endpoint,
+                                                  std::map<std::string, std::string>& params,
+                                                  AuthRender* auth);
+    std::string processTemplate(const std::string& templateContent, const crow::mustache::context& ctx,
+                                const AuthRender& auth, const std::string& label);
 public:
+    // auth.* renders EMPTY in this context: an identity reaches SQL only through
+    // the render paths above, which check where it lands (variable listings use this).
     crow::mustache::context createTemplateContext(const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
     std::string processTemplate(const std::string& templateContent, const crow::mustache::context& ctx);
     

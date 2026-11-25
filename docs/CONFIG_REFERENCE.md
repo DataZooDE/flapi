@@ -1294,7 +1294,7 @@ template:
 -- /customers/:id, auth: basic with users admin (roles [admin]) and guest (roles [guest])
 SELECT * FROM customers
 WHERE id = {{{ params.id }}}
-  AND (id <> 7 OR list_contains(string_split('{{ auth.roles }}', ','), 'admin'))
+  AND (id <> 7 OR list_contains(string_split('{{{ auth.roles }}}', ','), 'admin'))
 ```
 
 Set `allow-shadowing: true` on the **more specific** endpoint only when the split is
@@ -2360,7 +2360,47 @@ WHERE name LIKE '%{{{ params.name }}}%'
 | `conn.*` | Connection properties | `{{{ conn.path }}}` |
 | `cache.*` | Cache metadata | `{{ cache.table }}` |
 | `env.*` | Whitelisted environment variables | `{{{ env.API_KEY }}}` |
-| `auth.*` | Authentication context | `{{{ auth.username }}}`, `{{{ auth.roles }}}`, `{{{ auth.email }}}`, `{{{ auth.type }}}` |
+| `auth.*` | Authentication context | `'{{{ auth.username }}}'`, `'{{{ auth.roles }}}'`, `'{{{ auth.email }}}'`, `'{{{ auth.type }}}'` |
+
+**`auth.*` values are SQL-quoted for a plain top-level `'...'` literal of the outer query
+only.** `auth.username`, `auth.email`, `auth.roles` and `auth.type` come from the identity
+provider (Basic username, JWT `sub` and `roles`, OIDC claims) and are rendered, never bound as
+prepared parameters, so every single quote in them is doubled (`O'Brien` renders `O''Brien`).
+Write them inside a plain single-quoted literal, e.g. `WHERE owner = '{{{ auth.username }}}'`;
+that matches the stored `O'Brien`. `{{ }}` and `{{{ }}}` render the same value here.
+
+Plain top-level `'...'` of the outer query only. Refused:
+
+- unquoted, `E'...'` (a backslash escapes the quote there), a `--` or `/* */` comment, a
+  `"..."` identifier or a `$$` string;
+- **SQL text that another function executes.** A literal passed, at any depth, to
+  `query()`, `query_table()`, `bigquery_query()`, `postgres_query()`, `mysql_query()`,
+  `snowflake_query()`, `odbc_query()`, `sqlite_query()` or any other `*_query` / `*_execute`
+  function, any literal that itself holds a doubled quote `''`, a `$$`/`$tag$` or a `"`,
+  and any literal in a call whose other arguments hold one (a macro handed SQL text), is SQL
+  that is parsed again, where the doubling no longer protects. The function name is found
+  across comments and in its `"quoted"` form. Push the query down without `auth.*` and filter
+  in the outer query: `SELECT * FROM bigquery_query('proj', 'SELECT ...') WHERE owner =
+  '{{{ auth.username }}}'`.
+
+The check runs on the **rendered** SQL of every request (with a random placeholder for each
+value, before the real values are substituted), so no Mustache comment or section can hide
+where a value lands. The template source is also checked at startup, reload,
+`--validate-config` and by the config service, which refuse such a template:
+
+```
+Unsafe use of auth.* in sqls/docs.sql:1:52: 'auth.username' is inside a -- comment. ...
+```
+
+A quoted value still carries meaning inside some functions: `%` and `_` in `LIKE`, regular
+expression metacharacters in `regexp_matches`, glob characters (`*`, `?`, `[`) in `GLOB` and
+in file paths such as `read_csv('data/{{{ auth.username }}}.csv')`, and path segments in a
+file URL. Compare with `=`, and do not build file paths from `auth.*`.
+
+An identity containing a control character (newline, carriage return, NUL, ...), or a role
+containing a comma (roles are comma-joined in `auth.roles`), is refused with 401 on REST and
+MCP, never cleaned up. `auth.authenticated` is `true` or empty and may be
+used anywhere.
 
 ### 9.3 Conditional Sections
 

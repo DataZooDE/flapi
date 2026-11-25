@@ -2,6 +2,8 @@
 
 #include <map>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace flapi {
 
@@ -10,7 +12,7 @@ namespace flapi {
 /// `auth.roles`, `auth.email`, `auth.type` and `auth.authenticated`.
 ///
 /// It is SERVER data. A caller must never be able to supply it - a template
-/// filtering rows on `{{ auth.username }}`, the documented multi-tenant
+/// filtering rows on `'{{{ auth.username }}}'`, the documented multi-tenant
 /// pattern, would otherwise let the caller choose who they are.
 ///
 /// This rule had FIVE copies: REST read, REST write, the MCP tool path, and
@@ -22,6 +24,42 @@ inline constexpr const char* kReservedAuthPrefix = "__auth_";
 
 inline bool isReservedAuthKey(const std::string& key) {
     return key.rfind(kReservedAuthPrefix, 0) == 0;
+}
+
+/// True when `value` holds a C0 control character (0x00-0x1F) or DEL.
+///
+/// An identity carrying one is refused, never cleaned up: a newline ends a
+/// SQL `--` comment and a NUL truncates C strings, and stripping them would
+/// map one principal ("bob\n") onto another ("bob").
+inline bool ContainsControlCharacter(std::string_view value) {
+    for (const char c : value) {
+        const auto u = static_cast<unsigned char>(c);
+        if (u < 0x20 || u == 0x7F) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Why an authenticated identity is refused, or nullptr when it is fine: a
+/// control character in any value, or a comma in a role. Roles are joined
+/// with commas for `auth.roles` and split on them again (MCP allowed-roles,
+/// `string_split('{{{ auth.roles }}}', ',')`), so a role "reader,admin" would
+/// read as two roles.
+inline const char* IdentityRefusal(std::string_view username, std::string_view email,
+                                   const std::vector<std::string>& roles) {
+    if (ContainsControlCharacter(username) || ContainsControlCharacter(email)) {
+        return "the identity contains a control character";
+    }
+    for (const auto& role : roles) {
+        if (ContainsControlCharacter(role)) {
+            return "the identity contains a control character";
+        }
+        if (role.find(',') != std::string::npos) {
+            return "a role contains a comma";
+        }
+    }
+    return nullptr;
 }
 
 /// Remove every caller-supplied `__auth_*` entry from `params`.

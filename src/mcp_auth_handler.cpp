@@ -1,5 +1,6 @@
 #include "include/mcp_auth_handler.hpp"
 #include "auth_middleware.hpp"
+#include "auth_params.hpp"
 #include "oidc_provider_presets.hpp"
 #include <crow/logging.h>
 #include <crow/utility.h>
@@ -23,16 +24,28 @@ std::optional<MCPSession::AuthContext> MCPAuthHandler::authenticate(const crow::
         return std::nullopt;
     }
 
+    std::optional<MCPSession::AuthContext> authenticated;
     if (mcp_auth.type == "basic") {
-        return authenticateBasic(auth_header);
+        authenticated = authenticateBasic(auth_header);
     } else if (mcp_auth.type == "bearer") {
-        return authenticateBearer(auth_header);
+        authenticated = authenticateBearer(auth_header);
     } else if (mcp_auth.type == "oidc") {
-        return authenticateOIDC(auth_header);
+        authenticated = authenticateOIDC(auth_header);
+    } else {
+        CROW_LOG_WARNING << "Unknown MCP auth type: " << mcp_auth.type;
+        return std::nullopt;
     }
 
-    CROW_LOG_WARNING << "Unknown MCP auth type: " << mcp_auth.type;
-    return std::nullopt;
+    // An identity with a control character, or a role containing a comma, is
+    // refused, as on REST (AuthMiddleware). See auth_params.hpp.
+    if (authenticated) {
+        if (const char* refusal =
+                IdentityRefusal(authenticated->username, authenticated->email, authenticated->roles)) {
+            CROW_LOG_WARNING << "MCP " << mcp_auth.type << " authentication refused: " << refusal;
+            return std::nullopt;
+        }
+    }
+    return authenticated;
 }
 
 bool MCPAuthHandler::methodRequiresAuth(const std::string& method) const {

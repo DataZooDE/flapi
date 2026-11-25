@@ -5,7 +5,9 @@
 #include "template_secrets.hpp"
 #include "mustache_syntax_check.hpp"
 #include "external_access_policy.hpp"
+#include "auth_params.hpp"
 #include <stdexcept>
+#include <tuple>
 #include <filesystem>
 #include <cstring>
 #include <mutex>
@@ -138,8 +140,9 @@ std::string SQLTemplateProcessor::loadAndProcessTemplate(const EndpointConfig& e
     CROW_LOG_DEBUG << "Template path: " << templatePath;
     std::string templateContent = loadTemplateContent(templatePath);
     RequireValidMustacheSyntax(templateContent, templatePath);
-    crow::mustache::context ctx = createTemplateContext(endpoint, params);
-    return processTemplate(templateContent, ctx);
+    AuthRender auth;
+    crow::mustache::context ctx = createTemplateContext(endpoint, params, &auth);
+    return processTemplate(templateContent, ctx, auth, templatePath);
 }
 
 PreparedQueryRender SQLTemplateProcessor::loadAndProcessTemplatePrepared(
@@ -171,9 +174,10 @@ PreparedQueryRender SQLTemplateProcessor::loadAndProcessTemplatePrepared(
     // so the rewriter still sees the auth-prefixed keys it ignores by
     // design (they are not declared as request_fields, so the rewriter's
     // findField() path returns nullptr and they pass through untouched).
-    crow::mustache::context ctx = createTemplateContext(endpoint, params);
+    AuthRender auth;
+    crow::mustache::context ctx = createTemplateContext(endpoint, params, &auth);
 
-    out.sql = processTemplate(rewrite.rewritten_template, ctx);
+    out.sql = processTemplate(rewrite.rewritten_template, ctx, auth, templatePath);
     out.bindings = std::move(rewrite.bindings);
 
     if (span) {
@@ -204,9 +208,10 @@ PreparedQueryRender SQLTemplateProcessor::processTemplatePrepared(const std::str
     PreparedTemplateRewriter rewriter;
     SqlParameterClassifier classifier;
     auto rewrite = rewriter.rewrite(templateContent, endpoint.request_fields, classifier);
-    crow::mustache::context ctx = createTemplateContext(endpoint, params);
+    AuthRender auth;
+    crow::mustache::context ctx = createTemplateContext(endpoint, params, &auth);
     PreparedQueryRender out;
-    out.sql = processTemplate(rewrite.rewritten_template, ctx);
+    out.sql = processTemplate(rewrite.rewritten_template, ctx, auth, endpoint.templateSource);
     out.bindings = std::move(rewrite.bindings);
     return out;
 }
@@ -222,13 +227,31 @@ std::string SQLTemplateProcessor::loadAndProcessTemplate(const EndpointConfig& e
     }
     std::string templateContent = loadTemplateContent(templatePath);
     RequireValidMustacheSyntax(templateContent, templatePath);
-    crow::mustache::context ctx = createTemplateContext(endpoint, params);
-    return processTemplate(templateContent, ctx);
+    AuthRender auth;
+    crow::mustache::context ctx = createTemplateContext(endpoint, params, &auth);
+    return processTemplate(templateContent, ctx, auth, templatePath);
 }
 
 std::string SQLTemplateProcessor::processTemplate(const std::string& templateContent, const crow::mustache::context& ctx) {
+    return processTemplate(templateContent, ctx, AuthRender{}, "");
+}
+
+std::string SQLTemplateProcessor::processTemplate(const std::string& templateContent,
+                                                  const crow::mustache::context& ctx,
+                                                  const AuthRender& auth,
+                                                  const std::string& label) {
     auto compiledTemplate = compileTemplate(templateContent);
     auto renderedTemplate = compiledTemplate.render(ctx).dump();
+    if (!auth.markers.empty()) {
+        // Every auth.* value must land in a plain top-level '...' literal of the
+        // RENDERED SQL (see createTemplateContext); only then is it substituted.
+        const auto problems = FindUnsafeAuthMarkers(renderedTemplate, auth.prefix, auth.markers);
+        if (!problems.empty()) {
+            const std::string where = "the rendered SQL of " + (label.empty() ? std::string("the template") : label);
+            throw std::invalid_argument(FormatAuthPlacementProblem(problems.front(), where));
+        }
+        renderedTemplate = SubstituteAuthMarkers(renderedTemplate, auth.prefix, auth.markers);
+    }
     if (crow::logger::get_current_log_level() <= crow::LogLevel::Debug) {
         // The rendered SQL carries whatever the template interpolated, a
         // connection password included. Every connection's credential-valued
@@ -355,6 +378,12 @@ std::string SQLTemplateProcessor::getFullTemplatePath(const std::string& templat
 }
 
 crow::mustache::context SQLTemplateProcessor::createTemplateContext(const EndpointConfig& endpoint, std::map<std::string, std::string>& params) {
+    return createTemplateContext(endpoint, params, nullptr);
+}
+
+crow::mustache::context SQLTemplateProcessor::createTemplateContext(const EndpointConfig& endpoint,
+                                                                    std::map<std::string, std::string>& params,
+                                                                    AuthRender* auth) {
     crow::mustache::context ctx;
 
     // Add connection properties
@@ -428,20 +457,65 @@ crow::mustache::context SQLTemplateProcessor::createTemplateContext(const Endpoi
         params.erase("primaryKeys");
     }
 
-    // Extract auth params (reserved __auth_ prefix) and inject into ctx["auth"]
-    static const std::vector<std::pair<std::string, std::string>> auth_keys = {
-        {"__auth_username",      "username"},
-        {"__auth_roles",         "roles"},
-        {"__auth_email",         "email"},
-        {"__auth_type",          "type"},
-        {"__auth_authenticated", "authenticated"},
+    // Extract auth params (reserved __auth_ prefix) and inject into ctx["auth"].
+    //
+    // These values come from the identity provider (a Basic username, JWT
+    // `sub`/`roles`, OIDC claims, some of which end users can edit), and they
+    // are never bound as prepared parameters: the rewriter only binds params.*.
+    // They are made safe for exactly one place, a plain top-level '...'
+    // literal of the outer query, by doubling every single quote (DuckDB gives
+    // backslash no meaning there, and O'Brien still matches 'O''Brien').
+    //
+    // So the template is rendered with a random MARKER in place of each
+    // non-empty value (an empty one renders empty, so sections behave alike),
+    // the rendered SQL is lexed, every marker must sit in such a literal, and
+    // only then are the quote-doubled values substituted (processTemplate).
+    // Checking the rendered SQL rather than the source means no Mustache
+    // comment or section between two SQL characters can hide where a value
+    // lands. Without `auth` (the public overload) the values render empty.
+    static const std::vector<std::tuple<std::string, std::string, char>> auth_keys = {
+        {"__auth_username",      "username", 'a'},
+        {"__auth_roles",         "roles",    'b'},
+        {"__auth_email",         "email",    'c'},
+        {"__auth_type",          "type",     'd'},
+        {"__auth_authenticated", "authenticated", '\0'},
     };
-    for (const auto& [param_key, ctx_key] : auth_keys) {
+    if (auth != nullptr) {
+        auth->prefix = NewAuthMarkerPrefix();
+        auth->markers.clear();
+    }
+    for (const auto& [param_key, ctx_key, letter] : auth_keys) {
         auto it = params.find(param_key);
-        if (it != params.end()) {
-            ctx["auth"][ctx_key] = it->second;
-            params.erase(it);
+        if (it == params.end()) {
+            continue;
         }
+        // A control character (newline, carriage return, NUL, ...) is
+        // refused, not stripped. Stripping would turn "bob\n" into "bob", a
+        // different principal's identity, and a newline or NUL is no part of
+        // a real name. The authentication layers (AuthMiddleware,
+        // MCPAuthHandler) already answer 401 for such an identity; this is the
+        // backstop for any path that reaches a render without them.
+        if (ContainsControlCharacter(it->second)) {
+            throw std::invalid_argument("auth." + ctx_key + " contains a control character; refusing to render it");
+        }
+        if (letter == '\0') {
+            ctx["auth"][ctx_key] = it->second;   // "true", set by the server
+        } else if (auth == nullptr || it->second.empty()) {
+            ctx["auth"][ctx_key] = std::string();
+        } else {
+            std::string quoted;
+            quoted.reserve(it->second.size());
+            for (const char c : it->second) {
+                quoted += c;
+                if (c == '\'') {
+                    quoted += '\'';
+                }
+            }
+            std::string marker = auth->prefix + letter + 'z';
+            ctx["auth"][ctx_key] = marker;
+            auth->markers.push_back(AuthMarker{std::move(marker), "auth." + ctx_key, std::move(quoted)});
+        }
+        params.erase(it);
     }
 
     // Add request parameters

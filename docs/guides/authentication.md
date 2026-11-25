@@ -394,15 +394,21 @@ Five rules make such a filter safe:
 - **Split the roles, never `LIKE`.** `'{{{ auth.roles }}}' LIKE '%admin%'` is
   true for carol, whose only role is `sysadmin`, and for any role that merely
   contains the word (`admin-readonly`). `list_contains(string_split(...), 'admin')`
-  matches whole role names only. Role names must not contain commas.
+  matches whole role names only. Role names must not contain commas (an
+  identity with such a role gets `401`).
 - **Fail closed.** Write the condition so that empty values match nothing, as
   above: an empty `auth.roles` splits into `['']`, which contains no role. A
   filter that is only applied *when* a value is present
   (`{{#auth.username}}WHERE owner = ...{{/auth.username}}`) shows every row to
   an anonymous caller.
 - **`auth.*` is text, not a bound parameter.** Unlike `{{ params.x }}` it is
-  never a prepared-statement parameter. Put it inside single quotes with triple
-  braces, `'{{{ auth.username }}}'`, and use only values the caller cannot edit: your own `users:`, a token you signed, or an identity
+  never a prepared-statement parameter. flAPI doubles every single quote in it,
+  which is safe in exactly one place: a plain `'...'` literal of the outer
+  query, `'{{{ auth.username }}}'`. Any other place (unquoted, a comment, an
+  `E'...'` string, a `"..."` identifier, a dollar-quoted string, or SQL text that
+  `query()` or a `*_query` function runs) stops startup and `--validate-config`,
+  and is refused at request time. An identity holding a control character, or a
+  role containing a comma, gets `401`. Use only values the caller cannot edit: your own `users:`, a token you signed, or an identity
   provider's immutable subject (`sub` or an object id). Do not filter on
   `preferred_username` or `email` from an identity provider where users can
   change their own profile.

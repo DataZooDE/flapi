@@ -2883,6 +2883,11 @@ crow::response TemplateHandler::updateEndpointTemplate(const crow::request& req,
         if (const auto syntax = CheckMustacheSyntax(json["template"].s())) {
             return jsonError(400, "Invalid template " + FormatMustacheSyntaxError(*syntax, endpoint->templateSource));
         }
+        // auth.* outside a plain '...' literal is never safe; refuse it before
+        // it replaces a working file, as the loader would at startup.
+        if (const auto unsafe = CheckAuthPlacement(json["template"].s(), endpoint->templateSource)) {
+            return jsonError(400, *unsafe);
+        }
 
         // Write the template to file
         if (PathSchemeUtils::IsRemotePath(endpoint->templateSource)) {

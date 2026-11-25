@@ -23,6 +23,7 @@
 #include "duckdb/main/secret/secret_manager.hpp"
 
 #include "auth_middleware.hpp"
+#include "auth_params.hpp"
 #include "request_context_middleware.hpp"
 
 namespace {
@@ -676,6 +677,20 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
     } else if (endpoint->auth.type == "oidc") {
         ctx.auth_type = "oidc";
         ctx.authenticated = authenticateOIDC(auth_header, *endpoint, ctx);
+    }
+
+    // An identity with a control character (newline, NUL, ...) or a role
+    // containing a comma is refused, not cleaned up: it reaches SQL templates
+    // as auth.*, stripping would turn "bob\n" into another principal's name,
+    // and a comma would split one role into two. See auth_params.hpp.
+    const char* refusal = ctx.authenticated ? IdentityRefusal(ctx.username, ctx.email, ctx.roles) : nullptr;
+    if (refusal != nullptr) {
+        CROW_LOG_WARNING << "Authentication refused on " << endpoint->getIdentifier()
+                         << " (" << ctx.auth_type << "): " << refusal;
+        ctx.authenticated = false;
+        ctx.username.clear();
+        ctx.email.clear();
+        ctx.roles.clear();
     }
 
     if (!ctx.authenticated) {
