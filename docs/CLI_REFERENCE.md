@@ -471,7 +471,7 @@ Disables all telemetry events.
 
 **Description:**
 
-When set, flapi sends no telemetry at all (no `server_started`, no per-route counts; see [TELEMETRY.md](../TELEMETRY.md)). Telemetry can also be disabled via the `FLAPI_NO_TELEMETRY` environment variable or via `telemetry.enabled: false` in `flapi.yaml`.
+When set, flapi sends no telemetry at all (no `server_started`, no per-route `feature_used` counts; see [TELEMETRY.md](../TELEMETRY.md)). Telemetry can also be disabled via the `FLAPI_NO_TELEMETRY` environment variable or via `telemetry.enabled: false` in `flapi.yaml`.
 
 **Precedence (highest wins):**
 1. `--no-telemetry` CLI flag

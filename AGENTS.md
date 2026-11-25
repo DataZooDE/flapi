@@ -61,8 +61,9 @@ flAPI ships a Claude Code plugin from this repo (`.claude-plugin/marketplace.jso
   commit.
 - Deprecated or wrong facts the skills must not teach are listed in
   `scripts/skill_snippets/forbidden.txt`.
-- The same checks cover `Readme.md`, `TELEMETRY.md` and `docs/` (not `archive/`, `blog/`,
-  `promotion/`), plus relative links and `#anchors`, and the Readme Quick Start
+- The forbidden facts, `{{cache.*}}` variable and `flapi`/`flapii` command checks also cover
+  `Readme.md`, `TELEMETRY.md` and `docs/` (not `archive/`, `blog/`, `promotion/`; no YAML-key
+  check there), plus relative links and `#anchors` everywhere, and the Readme Quick Start
   (`<!-- flapi: quickstart run|serve|try -->` blocks) runs against the built binaries.
   A fact that changes in code changes in the Readme and docs in the same PR.
 

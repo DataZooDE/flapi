@@ -23,7 +23,7 @@ RUN chmod +x /app/flapi
 # Add labels
 LABEL org.opencontainers.image.title="flAPI"
 LABEL org.opencontainers.image.description="flAPI serves SQL templates as REST endpoints and MCP tools, from one YAML config. One binary with DuckDB inside."
-# The version label is set by docker/metadata-action in CI (build.yaml), from the tag or commit.
+# The version label is set by docker/metadata-action in CI (build.yaml), from the commit.
 LABEL org.opencontainers.image.authors="DataZoo GmbH <contact@data-zoo.de>"
 LABEL org.opencontainers.image.url="https://github.com/DataZooDE/flapi"
 LABEL org.opencontainers.image.source="https://github.com/DataZooDE/flapi"

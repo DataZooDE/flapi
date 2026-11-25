@@ -36,8 +36,8 @@ Write a SQL template and a few lines of YAML. flAPI serves the result as a REST 
 
 ### 🧩 SQL templates and validation
 - **Mustache templates** with `params.*`, `conn.*`, `auth.*` and whitelisted `env.*`
-- **Typed parameters are bound as prepared statements**: a bare `{{ params.x }}` on an `int`, `date`, `uuid`, `enum`, `string` (…) field is a bound value, so it cannot inject SQL
-- **Validators** for int, string (length, regex), email, uuid, enum, date and time. A bad request gets a 400 before any SQL runs
+- **Typed parameters are bound as prepared statements**: a `{{ params.x }}` (or `{{{ }}}` at a value site) on a typed field, outside a `{{#…}}` section, becomes a bound `?`, so it cannot inject SQL. Inside a section, the validator is the defence
+- **Validators** for int, number, boolean, string (length, regex), email, uuid, enum, date and time. A bad request gets a 400 before any SQL runs
 - **Writes** (POST/PUT/PATCH/DELETE) with `RETURNING` rows and cache invalidation
 
 ### ⚡ Caching (DuckLake)
@@ -52,11 +52,11 @@ Write a SQL template and a few lines of YAML. flAPI serves the result as a REST 
 ### 🔭 Observability
 - **OpenTelemetry tracing**: one span per request with the query inside, joined to the calling agent's trace
 - **`request_id`** on every response and log line, runtime metrics, `/health` and `/health/live`
-- **`log-http-requests`** logs every HTTP request DuckDB makes (S3, GCS, HTTP), with credentials redacted
+- **`log-http-requests`** logs every HTTP request DuckDB makes (S3, GCS, HTTP), with userinfo and query strings redacted (a debugging switch)
 
 ### 📦 Deployment
 - **One binary**, with the DuckDB extensions it needs shipped next to it in `extensions/`
-- **[Self-packaging](docs/guides/self-packaging.md)**: `flapi pack` folds the config, templates and small data files, and optionally the extensions (`--with-extensions`), into the binary itself. Then `scp` is the whole deploy. Builds are reproducible (`SOURCE_DATE_EPOCH`), and macOS builds can be notarised
+- **[Self-packaging](docs/guides/self-packaging.md)**: `flapi pack` folds the config, templates and small data files, and optionally the extensions (`--with-extensions`), into the binary itself. Then `scp` is the whole deploy. Secrets stay out: `pack` refuses `*.env`, `.env.*`, `secrets/*`, `*.pem` and `*.key`. Builds are reproducible (`SOURCE_DATE_EPOCH`), and macOS builds can be notarised
 - **Docker** (`ghcr.io/datazoode/flapi`), **[scale-to-zero platforms](docs/guides/serverless.md)** (Cloud Run, App Runner, Container Apps, Knative) and **PyPI** (`flapi-io`)
 
 ## 📋 Table of Contents
@@ -118,11 +118,11 @@ docker run --rm -p 8080:8080 -v "$PWD/demo:/config" ghcr.io/datazoode/flapi -c /
 
 This serves the `demo/` project from the [Quick Start](#-quick-start) below. Mount any directory that holds a `flapi.yaml`.
 
-`:latest` and `:v<version>` come from releases; `:main` and `:sha-<commit>` come from main. The image carries the default extensions. The `-runtime` variant (for example `:latest-runtime`) also carries `bigquery`. One port (8080) serves both REST and MCP (`/mcp/jsonrpc`).
+`:latest` and `:v<version>` come from releases; `:main` and `:sha-<commit>` come from main. The image carries the default extensions. The `-runtime` variant (for example `:v26.11.25-runtime` or `:main-runtime`) also carries `bigquery`. One port (8080) serves both REST and MCP (`/mcp/jsonrpc`).
 
 ## 🚀 Quick Start
 
-This takes about a minute and needs only [uv](https://docs.astral.sh/uv/). CI runs these exact blocks against every build.
+You need [uv](https://docs.astral.sh/uv/) and network access: the PyPI package downloads its DuckDB extensions on first start. CI runs these blocks against every build (with the freshly built binaries in place of `uvx`).
 
 **1. Create a project.** This scaffolds `demo/`: a config, a sample CSV, and a `/sample` endpoint with an `id` filter.
 
@@ -196,7 +196,8 @@ auth:                              # REST only
   type: basic
   users:
     - username: reader
-      password: '{{env.READER_PASSWORD}}'   # never a literal; or a $pbkdf2-sha256$ hash
+      password: '{{env.READER_PASSWORD}}'   # never a literal (or a $pbkdf2-sha256$ hash);
+                                            # READER_PASSWORD must match template.environment-whitelist
       roles: [reader]
 ```
 
@@ -209,7 +210,7 @@ WHERE 1=1
 {{/params.id}}
 ```
 
-GET endpoints are paginated by default (`?limit=` / `?offset=`, 100 rows per page), so the template has no `LIMIT`. For the `mcp.auth` block, see [Exposing an endpoint as an MCP tool](docs/guides/mcp-tools.md#limiting-who-can-call-it).
+GET endpoints are paginated by default (`?limit=` / `?offset=`, 100 rows per page), so the template has no `LIMIT`. MCP is on by default on the same port (`mcp: {enabled: false}` turns it off; `GET /mcp/health` reports its state). Files can also define an `mcp-resource` or `mcp-prompt` alone. For the `mcp.auth` block, see [Exposing an endpoint as an MCP tool](docs/guides/mcp-tools.md#limiting-who-can-call-it).
 
 ## 📚 Documentation
 
@@ -265,7 +266,7 @@ DuckDB v2.0.1 is a git submodule. vcpkg provides `crow`, `argparse`, `jwt-cpp`, 
 
 ## 📊 Telemetry
 
-flAPI sends anonymous, aggregate usage events: `server_started`, and once a minute per route and status, `rest_endpoint_served` and `mcp_tool_called` counts with their durations. It never sends query data, SQL, paths, credentials or personal information. [TELEMETRY.md](TELEMETRY.md) lists every property.
+flAPI sends anonymous, aggregate usage events: `server_started` at boot, `$exception` on a failed request, and at most once a minute per route and status a count with durations (REST, MCP tool and auth outcomes). It sends route templates, never filled request paths, query data, SQL, credentials or personal information. [TELEMETRY.md](TELEMETRY.md) lists every property.
 
 **Opt out** (any one is enough):
 
@@ -287,9 +288,10 @@ telemetry:          # flapi.yaml
 ✅ **Free to copy, modify and build on**
 ✅ **Free for development and research**
 
-❌ **No hosted service for third parties** and **no embedding in a product you distribute** without a commercial license
+❌ **Not offered to third parties on a hosted or embedded basis** without a commercial license
+❌ **No rights to the flAPI or DataZoo trademarks**
 
-🔄 **Converts to MPL 2.0** five years after each version's first publication
+🔄 **Converts to MPL 2.0** on each version's Change Date (see [LICENSE](LICENSE))
 
 For a commercial license (embedding flAPI in a product, or offering it as a hosted service), contact [contact@data-zoo.de](mailto:contact@data-zoo.de). The [LICENSE](LICENSE) file has the full terms. Licensor: DataZoo GmbH.
 

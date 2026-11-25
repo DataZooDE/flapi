@@ -1042,19 +1042,23 @@ storage:
 | `https://` | HTTPS URLs | None required |
 | `http://` | HTTP URLs (not recommended) | None required |
 | `s3://` | Amazon S3 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` |
-| `s3a://`, `s3n://` | S3-compatible storage | Same as S3 |
+| `s3a://`, `s3n://` | S3-compatible storage (data only) | Same as S3 |
 | `gs://` | Google Cloud Storage | HMAC key in a DuckDB secret (`TYPE gcs`); `GOOGLE_*` variables are not used |
-| `az://`, `abfs://` | Azure Blob Storage | `AZURE_STORAGE_ACCOUNT`, `AZURE_STORAGE_KEY` |
+| `az://`, `azure://` | Azure Blob Storage | `AZURE_STORAGE_ACCOUNT`, `AZURE_STORAGE_KEY` |
+| `abfs://` | Azure Data Lake (data only) | as Azure |
 | `file://` | Local filesystem | None required |
 
 #### Path Security
 
-- **Template sources stay inside `template.path`.** An endpoint whose
-  `template-source` escapes the templates directory (by `..`, also URL-encoded as
-  `%2e%2e`) gets a validation warning (`--validate-config`) and is reported at
-  startup. In a packed binary the check is against the bundle.
-- **Every scheme in the table above is supported**, for the config, the templates
-  and the data. There is no scheme allowlist; what a *template* may read is
+- **Template sources stay inside `template.path`.** A `template-source` that
+  escapes the templates directory (`..`, an absolute path, a symlink out, another
+  bucket or host) is a `--validate-config` warning for a local config, and stops
+  startup for a remote config or `template.path`. Remote paths are checked after
+  percent-decoding (`%2e%2e`); in a packed binary the check is against the bundle.
+- **Schemes:** the config and templates can be read from `s3://`, `gs://`, `az://`,
+  `azure://` and `http(s)://` (and local paths). Schemes marked *data only* are
+  passed to DuckDB in SQL but are not recognised as a config or template location.
+  There is no scheme allowlist; what a *template* may read is
   governed by DuckDB external access instead: see
   [§2.4.1 DuckDB Hardening](#241-duckdb-hardening-duckdb-hardening). Under
   `auto` (the default), the templates of a remote config (`s3://`, `gs://`,
@@ -1150,21 +1154,22 @@ connection:
 ### 2.12 Telemetry Configuration
 
 Controls the anonymous, aggregate usage telemetry flAPI sends to PostHog (EU):
-`server_started` at boot, and per route and status once a minute
-`rest_endpoint_served` / `mcp_tool_called` with a `count` and the mean and max
-duration, plus `auth_enforced` and `$exception`. [TELEMETRY.md](../TELEMETRY.md)
+`server_started` at boot, `$exception` on a failed request, and at most once a
+minute per route and status a `feature_used` event (`feature` =
+`rest_endpoint_served`, `mcp_tool_called` or `auth_enforced`) with a `count` and
+the mean and max duration. [TELEMETRY.md](../TELEMETRY.md)
 lists every property and what is never sent.
 
 ```yaml
 telemetry:
   enabled: true      # false opts out
-  sample_rate: 1.0   # 0..1: share of rest_endpoint_served / mcp_tool_called sent
+  sample_rate: 1.0   # values in (0,1) down-sample the per-request events
 ```
 
 | Field | Default | Description |
 |-------|---------|-------------|
 | `telemetry.enabled` | `true` | Enable/disable telemetry events |
-| `telemetry.sample_rate` | `1.0` | Down-sample the per-request and per-tool events; lifecycle events are always sent. Sampled events carry `sample_rate` |
+| `telemetry.sample_rate` | `1.0` | A value in (0,1) keeps about one in `round(1/rate)` per-request and per-tool events; anything else (including `0`) sends all, so use `enabled: false` to stop. Lifecycle events are always sent; sampled events carry `sample_rate` |
 
 **Opt-out precedence (highest wins):**
 
