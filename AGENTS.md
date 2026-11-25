@@ -1625,7 +1625,7 @@ flapii cache list
 cat sqls/cache-populate.sql
 
 # Enable debug logging to see refresh attempts
-flapii config log-level debug
+flapii config log-level set debug
 
 # Check if cache table exists
 # SELECT * FROM cache_table_name;
@@ -1663,7 +1663,7 @@ flapii cache gc /endpoint
 flapii cache get /endpoint | jq '.cache.retention'
 
 # Monitor memory in debug logs
-flapii config log-level debug
+flapii config log-level set debug
 ```
 
 #### Connection Fails
@@ -1694,7 +1694,7 @@ cat flapi.yaml | grep -A 10 "connections:"
 cat flapi.yaml | grep -A 5 "environment-whitelist:"
 
 # Enable debug logging
-flapii config log-level debug
+flapii config log-level set debug
 ./build/debug/flapi --config flapi.yaml
 ```
 

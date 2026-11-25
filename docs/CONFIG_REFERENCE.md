@@ -873,8 +873,11 @@ audit:
 
 Each event is a single JSON line of the shape:
 ```json
-{"ts":"2026-05-17T05:32:11Z","request_id":"…","principal":"alice","method":"tools/call","target":"customer_lookup","params":{"id":"42"},"status":"ok","row_count":1,"latency_ms":12}
+{"timestamp":"2026-05-17T05:32:11Z","request_id":"…","trace_id":"…","span_id":"…","principal":"alice","method":"tools/call","target":"customer_lookup","status":"success","row_count":1,"latency_ms":12,"params":{"id":"42"}}
 ```
+
+`status` is `success` or `error:<code>`. `trace_id` / `span_id` appear when the request has a
+trace. `row_count` is `-1` when the row count is not known (REST requests today).
 
 > **Implementation:** `src/audit_logger.cpp` | **Tests:** `test/cpp/audit_logger_test.cpp`, `test/integration/test_audit_log.py`
 
@@ -2263,7 +2266,8 @@ Read operations (queries) are the default for `GET`, `HEAD`, and `OPTIONS` metho
 
 Write operations are auto-detected for `POST`, `PUT`, `PATCH`, and `DELETE` methods. All four run the
 write path: parameters are extracted and validated, the template is rendered and executed, and the
-response is `200 {"rows_affected": n}` (or the `RETURNING` rows with `returns-data: true`). `n` is the number
+response is `{"rows_affected": n}` with status `201` for `POST` and `200` for `PUT`/`PATCH`/`DELETE`; rows a
+`RETURNING` sends back come under `data` (`returns-data: true` makes `data` present, `[]`, even when there are none). `n` is the number
 of rows changed - DuckDB's count, summed over the template's statements; for a `RETURNING` statement, the rows
 it returned - so an `UPDATE` of five rows answers 5 and a `DELETE` that matched nothing answers 0. A `DELETE`
 endpoint is no different — its template is the `DELETE FROM …` statement, and as an MCP tool it is a write
