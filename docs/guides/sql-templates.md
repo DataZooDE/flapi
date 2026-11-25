@@ -341,6 +341,12 @@ ORDER BY c_custkey
 
 Without `?name=`, both placeholders bind `NULL` and every row comes back.
 
+```bash
+curl -s 'http://localhost:8080/customers-exact?name=Customer%23000000007'   # one row
+curl -s "http://localhost:8080/customers-exact?name=O%27Brien"              # no row, no error
+curl -s 'http://localhost:8080/customers-exact?limit=1'                     # no name: every row, first page
+```
+
 A list in one parameter works the same way: bind it as one string and split it
 in SQL. The `regex` validator makes sure it is a list of numbers.
 
@@ -370,6 +376,12 @@ SELECT c_custkey, c_name
 FROM read_parquet('{{{ conn.path }}}')
 WHERE list_contains(string_split({{ params.ids }}, ','), CAST(c_custkey AS VARCHAR))
 ORDER BY c_custkey
+```
+
+```bash
+curl -s 'http://localhost:8080/customers-by-ids?ids=3,7'
+# {"data":[{"c_custkey":3,...},{"c_custkey":7,"c_name":"Customer#000000007"}],...}
+curl -s 'http://localhost:8080/customers-by-ids?ids=3;7'    # fails the regex: 400
 ```
 
 ## 5. Use the caller and the environment
@@ -674,6 +686,13 @@ connection: [notes]
 DELETE FROM notesdb.notes WHERE id = {{ params.id }}
 ```
 
+```bash
+curl -s -X DELETE http://localhost:8080/notes/2
+# {"rows_affected":1}
+curl -s -X DELETE http://localhost:8080/notes/99
+# {"rows_affected":0}
+```
+
 A write template may hold several `;`-separated statements. They run in one
 transaction (`operation.transaction`, on by default), each as its own prepared
 statement.
@@ -711,6 +730,11 @@ connection: [notes]
 SET VARIABLE q = {{ params.q }};
 SELECT id, title FROM notesdb.notes
 WHERE title ILIKE '%' || getvariable('q') || '%'
+```
+
+```bash
+curl -s -X POST http://localhost:8080/notes/search -H 'Content-Type: application/json' -d '{"q":"Brien"}'
+# {"rows_affected":0,"data":[{"id":1,"title":"O'Brien's list"}]}
 ```
 
 ## Common mistakes
