@@ -326,8 +326,11 @@ connections:
 ```
 
 **Notes:**
-- Connection properties are accessible in templates as `{{ conn.property_name }}`
-- The `init` SQL runs once when the connection is first used
+- Connection properties are accessible in templates as `{{{ conn.property_name }}}` (triple braces: `{{ }}`
+  HTML-escapes `/` and `'`), for the endpoint's first listed connection only
+- The `init` SQL runs once at startup, in the shared DuckDB, before the external-access policy applies; it is
+  not a template (`{{ conn.x }}` inside it stays literal text). Relative paths in `init` resolve against the
+  server's working directory, while `./` paths in `properties` resolve against the config file's directory
 
 **Serialised access (`serialize-access`)**
 
