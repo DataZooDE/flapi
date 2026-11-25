@@ -27,9 +27,10 @@ includes.
   the key to add it to. It is never left in the file as literal text, because a
   literal `{{env.DB_PASSWORD}}` would silently become the password.
 - The rule applies to the root config and to every endpoint file, and to `env.NAME`
-  include conditions (below). **A `{{env.NAME}}` inside a file pulled in with
-  `{{include}}` is not scanned** — it is left as literal text and is not checked
-  (#165) — so keep references in the including file.
+  include conditions (below), and to every file pulled in with `{{include}}`: an
+  included file gets the same substitution and the same whitelist check as the
+  file that includes it (#165), so a shared `auth.yaml` can hold
+  `password: '{{env.API_PASSWORD}}'`.
 - `environment-whitelist` belongs under `template:`. A top-level
   `environment-whitelist:` is never read, so flAPI rejects it at startup.
 - The whitelist must be in the root config file itself, not in a file it includes.

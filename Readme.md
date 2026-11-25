@@ -1,255 +1,80 @@
-# flAPI: SQL → REST APIs and MCP tools, from one config
+<p align="center">
+  <img src="docs/assets/logo.svg" alt="flAPI logo" width="80" height="80">
+</p>
 
-Write a SQL template and a few lines of YAML; flAPI serves it as a REST endpoint *and* an MCP tool for AI agents — with the same parameter validators and the same cache behind both, and role-based access control on each. One static binary with [DuckDB](https://duckdb.org/) inside: Parquet, Postgres, BigQuery, S3 and 50+ more sources.
+<h1 align="center">flAPI</h1>
+<p align="center"><strong>SQL → REST APIs and MCP tools, from one config</strong></p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-BSL%201.1-blue.svg" alt="License: BSL 1.1"></a>
+  <a href="https://duckdb.org"><img src="https://img.shields.io/badge/DuckDB-2.0.1-green.svg" alt="DuckDB 2.0.1"></a>
+  <a href="https://github.com/DataZooDE/flapi/actions/workflows/build.yaml"><img src="https://github.com/DataZooDE/flapi/actions/workflows/build.yaml/badge.svg?branch=main" alt="Build"></a>
+  <a href="https://pypi.org/project/flapi-io/"><img src="https://img.shields.io/pypi/v/flapi-io.svg?label=PyPI%20flapi-io" alt="PyPI flapi-io"></a>
+  <a href="docs/MCP_REFERENCE.md"><img src="https://img.shields.io/badge/MCP-2026--07--28-orange.svg" alt="MCP 2026-07-28"></a>
+  <a href="#-claude-code-plugin"><img src="https://img.shields.io/badge/Claude_Code-plugin-8A2BE2.svg" alt="Claude Code plugin"></a>
+</p>
+
+Write a SQL template and a few lines of YAML. flAPI serves the result as a REST endpoint **and** as an MCP tool for AI agents. Both use the same parameter validators and the same cache, and each has its own access control. It ships as one binary with [DuckDB](https://duckdb.org/) inside, so it reads Parquet, CSV, Postgres, BigQuery, S3 and 50+ more sources.
+
+> **🤖 Using Claude Code?** flAPI ships a [Claude Code plugin](#-claude-code-plugin) with skills for scaffolding projects, writing endpoints and MCP tools, designing caches, and deploying and debugging flAPI. CI checks every example in the skills against the real binary.
+>
+> Install with `/plugin marketplace add DataZooDE/flapi`, then `/plugin install flapi@flapi`.
 
 ![flAPI demo: one SQL template served as a REST endpoint and an MCP tool](docs/promotion/assets/flapi-demo.gif)
 
-![overview of flAPI](https://i.imgur.com/m7UVZlR.png)
+## ✨ Key Features
 
-> **Using Claude Code?** Install the flAPI plugin, and Claude can scaffold projects, write endpoints and MCP
-> tools, design and tune caches, and deploy and debug flAPI for you:
-> `/plugin marketplace add DataZooDE/flapi` then `/plugin install flapi@flapi`. See
-> [Claude Code plugin](#-claude-code-plugin).
+### 🔌 REST and MCP from one config
+- **One file, two protocols**: `url-path` makes a REST endpoint, and `mcp-tool` makes the same SQL an MCP tool. `mcp-resource` and `mcp-prompt` complete the set
+- **Current MCP (`2026-07-28`) and older clients on the same endpoint**, with long-running tools (Tasks), typed results and OAuth discovery
+- **Agent safety**: roles per tool, dry runs, per-tool rate limits, and a scanner that flags prompt injection in tool descriptions
+- **OpenAPI 3.0** document at `/doc.yaml` and a Swagger UI at `/doc`
 
-## ⚡ Features
+### 🗄️ Data sources
+- **Everything DuckDB reads**: Parquet, CSV, JSON, [Iceberg](https://github.com/duckdb/duckdb-iceberg), Delta, [Postgres](https://github.com/duckdb/duckdb-postgres), [MySQL](https://github.com/duckdb/duckdb-mysql), SQLite, [BigQuery](https://github.com/hafenkran/duckdb-bigquery), SAP ERP and BW (via [ERPL](https://github.com/datazoode/erpl)), and S3 / GCS / Azure / HTTP
+- **Configs and templates can live in object storage**: `flapi -c s3://bucket/flapi.yaml` (also `gs://`, `az://`, `https://`)
 
-- **Automatic API Generation**: Create APIs for your datasets without coding
-- **MCP (Model Context Protocol) Support**: Declarative AI tools alongside REST endpoints, speaking the latest **MCP `2026-07-28`** revision (dual-era: modern *and* legacy clients) — with the **Tasks extension** for long-running queries, **typed schemas + structured results**, **OAuth discovery**, **per-tool RBAC**, **shadow/dry-run**, **response shaping**, **rate limiting**, and a **prompt-injection hygiene scanner**
-- **Multiple Data Sources**: Connect to [BigQuery](https://github.com/hafenkran/duckdb-bigquery), SAP ERP & BW (via [ERPL](https://github.com/datazoode/erpl)), Parquet, [Iceberg](https://github.com/duckdb/duckdb_iceberg), [Postgres](https://github.com/duckdb/postgres_scanner), [MySQL](https://github.com/duckdb/duckdb_mysql), and more
-- **SQL Templates**: Mustache-like syntax. Typed `{{ params.X }}` references on `int`/`double`/`boolean`/`date`/`time`/`uuid`/`enum`/`email`/`string` fields are bound as **DuckDB prepared statements** — SQL injection is structurally impossible for those sites
-- **Caching**: DuckLake-backed cache with full refresh and incremental sync
-- **Production security**: PBKDF2-SHA256 password hashing, config-driven CORS allowlist, per-user rate limiting, JSONL request audit log, TLS termination, startup config auditor — all opt-in via single-line YAML so `flapii project init` demos stay simple
-- **Easy deployment**: Deploy flAPI with a single binary file
-- **[Self-packaging](docs/guides/self-packaging.md)**: Fold an entire flapi config tree (YAMLs + SQL templates + small data files) into the binary itself via `flapi pack`. `scp flapi-prod user@host` becomes the whole deploy. Reproducible (`SOURCE_DATE_EPOCH`), notarisable on macOS via a reserved Mach-O segment, with a secret deny list (`*.env`, `secrets/*`, `*.pem`, `*.key`) enforced at pack time.
-- **Privacy-respecting telemetry**: Anonymous startup/shutdown analytics with easy opt-out via `--no-telemetry` flag, `FLAPI_NO_TELEMETRY` env var, or `flapi.yaml`
+### 🧩 SQL templates and validation
+- **Mustache templates** with `params.*`, `conn.*`, `auth.*` and whitelisted `env.*`
+- **Typed parameters are bound as prepared statements**: a `{{ params.x }}` (or `{{{ }}}` at a value site) on a typed field, outside a `{{#…}}` section, becomes a bound `?`, so it cannot inject SQL. Inside a section, the validator is the defence
+- **Validators** for int, number, boolean, string (length, regex), email, uuid, enum, date and time. A bad request gets a 400 before any SQL runs
+- **Writes** (POST/PUT/PATCH/DELETE) with `RETURNING` rows and cache invalidation
 
-## 📦 Install
+### ⚡ Caching (DuckLake)
+- **Full refresh, append or merge**, inferred from `cursor` / `primary-key`, on a schedule
+- **Snapshots and time travel**, retention and garbage collection, refresh on demand (`flapii cache refresh`), and prebuilt caches for serverless
 
-The fastest way to try flAPI — no download, no Docker:
+### 🔐 Security
+- **Auth**: Basic, Bearer/JWT and OIDC, with roles per endpoint, PBKDF2 password hashes, users from AWS Secrets Manager, and `{{env.X}}` for every secret
+- **Hardened by default where it matters**: SQL templates of a remote config run with DuckDB external access restricted (`duckdb-hardening`), so they can't read other files, buckets or hosts
+- CORS allowlist, per-user rate limits, a JSONL audit log, direct TLS, and a config auditor that runs at startup
 
-```bash
-# Run the flapi server (note: "flapi" is taken on PyPI, so the package is "flapi-io")
-uvx --from flapi-io flapi -c flapi.yaml
+### 🔭 Observability
+- **OpenTelemetry tracing**: one span per request with the query inside, joined to the calling agent's trace
+- **`request_id`** on every response and log line, runtime metrics, `/health` and `/health/live`
+- **`log-http-requests`** logs every HTTP request DuckDB makes (S3, GCS, HTTP), with userinfo and query strings redacted (a debugging switch)
 
-# Run the flapii CLI client (also bundled in flapi-io)
-uvx --from flapi-io flapii
-```
+### 📦 Deployment
+- **One binary**, with the DuckDB extensions it needs shipped next to it in `extensions/`
+- **[Self-packaging](docs/guides/self-packaging.md)**: `flapi pack` folds the config, templates and small data files, and optionally the extensions (`--with-extensions`), into the binary itself. Then `scp` is the whole deploy. Secrets stay out: `pack` refuses `*.env`, `.env.*`, `secrets/*`, `*.pem` and `*.key`. Builds are reproducible (`SOURCE_DATE_EPOCH`), and macOS builds can be notarised
+- **Docker** (`ghcr.io/datazoode/flapi`), **[scale-to-zero platforms](docs/guides/serverless.md)** (Cloud Run, App Runner, Container Apps, Knative) and **PyPI** (`flapi-io`)
 
-Or install permanently — one package gives you both commands:
+## 📋 Table of Contents
 
-```bash
-pip install flapi-io   # installs both "flapi" and "flapii" commands
-```
-
-Pre-built binaries and Docker images are also available — see below.
-
-## 🛠 Quick Start
-The easiest way to get started with flAPI is to use the pre-built docker image.
-
-#### 1. Pull the docker image from the Github Container Registry:
-
-```bash
-> docker pull ghcr.io/datazoode/flapi:latest
-```
-
-
-The image is pretty small and mainly contains the flAPI binary which is statically linked against [DuckDB v2.0.1](https://github.com/duckdb/duckdb/releases/tag/v2.0.1). Details about the docker image can be found in the [Dockerfile](https://github.com/DataZooDE/flapi/blob/main/Dockerfile).
-
-#### 2. Run flAPI:
-Once you have downloaded the binary, you can run flAPI by executing the following command:
-
-```
-> docker run -it --rm -p 8080:8080 -v $(pwd)/examples/:/config ghcr.io/datazoode/flapi -c /config/flapi.yaml
-```
-
-The different arguments in this docker command are:
-- `-it --rm`: Run the container in interactive mode and remove it after the process has finished
-- `-p 8080:8080`: Exposes port 8080 of the container to the host. This one port serves both the REST API (`http://localhost:8080`) and MCP (`http://localhost:8080/mcp/jsonrpc`)
-- `-v $(pwd)/examples/:/config`: This mounts the local `examples` directory to the `/config` directory in the container, this is where the flAPI configuration file
-is expected to be found.
-- `ghcr.io/datazoode/flapi`: The docker image to use
-- `-c /config/flapi.yaml`: This is an argument to the flAPI application which tells it to use the `flapi.yaml` file in the `/config` directory as the configuration file.
-
-#### 2.1 MCP Support:
-MCP is enabled by default and served by the same server as the REST API, on the same port, at
-`/mcp/jsonrpc` — there is no separate MCP port. To switch it off, set it in `flapi.yaml`:
-
-```yaml
-mcp:
-  enabled: false
-```
-
-#### 3.1 Test the API server:
-If everything is set up correctly, you should be able to access the API at the URL specified in the configuration file.
-
-```bash
-> curl 'http://localhost:8080/'
-
-
-         ___
-     ___( o)>   Welcome to
-     \ <_. )    flAPI
-      `---'    
-
-    Fast and Flexible API Framework
-    powered by DuckDB
-```
-
-#### 3.2 Get an overview of the available endpoints:
-The flAPI server creates embedded Swagger UI at which provides an overview of the available endpoints and allows you to test them. It can be found at
-
-[`> http://localhost:8080/doc`](http://localhost:8080/doc)
-
-You should see the familiar Swagger UI page:
-
-![flAPI Swagger UI](https://i.imgur.com/HqjHMlA.png)
-
-The raw yaml [Swagger 2.0](https://swagger.io/specification/) is also available at [`http://localhost:8080/doc.yaml`](http://localhost:8080/doc.yaml)
-
-#### 3.3 Test the MCP server:
-If MCP is enabled, you can test the MCP server as well:
-
-```bash
-# Check MCP server health
-> curl 'http://localhost:8080/mcp/health'
-
-{"status":"healthy","server":"flapi-mcp-server","version":"0.3.0","protocol_version":"2024-11-05","tools_count":0}
-
-# Initialize MCP connection
-> curl -X POST http://localhost:8080/mcp/jsonrpc \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc": "2.0", "id": 1, "method": "initialize"}'
-
-# List available tools
-> curl -X POST http://localhost:8080/mcp/jsonrpc \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc": "2.0", "id": 2, "method": "tools/list"}'
-```
-
-## 🤖 MCP (Model Context Protocol) Support
-
-flAPI now supports the **Model Context Protocol (MCP)** in a **unified configuration approach**. Every flAPI instance automatically runs both a REST API server and an MCP server concurrently, allowing you to create AI tools alongside your REST endpoints using the same configuration files and SQL templates.
-
-### Key Features
-
-- **MCP `2026-07-28` (dual-era)**: serves the latest stateless MCP revision (`server/discover`, per-request metadata, cacheable results, OAuth discovery via RFC 9728) **alongside** the legacy `initialize`/session protocol — existing clients keep working unchanged
-- **Long-running tools (Tasks extension)**: mark a tool `async` and slow queries return a task handle immediately instead of blocking the connection; the durable task store survives a restart, with `tasks/get` / `tasks/cancel` and per-caller isolation
-- **Typed, structured tool contracts**: tool parameters advertise real types and constraints (int ranges, dates, uuid, enum, …), results carry machine-readable `structuredContent`, an `outputSchema` is learned after first use, and failures return actionable `isError` results the model can self-correct from
-- **Unified Configuration**: Single YAML files can define REST endpoints, MCP tools, and MCP resources
-- **Automatic Detection**: Configuration type is determined by presence of `url-path` (REST), `mcp-tool` (MCP tool), or `mcp-resource` (MCP resource)
-- **Shared Components**: MCP tools and resources use the same SQL templates, parameter validation and caching as REST endpoints; MCP authentication is configured separately in the top-level `mcp.auth` block with per-tool `allowed-roles`
-- **Security Integration**: method authorization enforced on every request, per-tool/resource/prompt RBAC (`allowed-roles`), shadow/dry-run (`_dryRun`), response shaping, per-tool rate limiting, and a tool-description hygiene scanner
-- **Tool Discovery**: automatic tool discovery, pagination, resource templates (`flapi://customers/{id}`), and `x-mcp-header` for per-tenant edge routing
-
-See [docs/MCP_REFERENCE.md](docs/MCP_REFERENCE.md) — the dual-era model and all new capabilities are documented in §11.
-
-### MCP Endpoints
-
-- `POST /mcp/jsonrpc` - Main JSON-RPC endpoint for tool calls
-- `GET /mcp/health` - Health check endpoint
-
-### Unified Configuration
-
-**MCP is now automatically enabled** - no separate configuration needed! Every flAPI instance runs both REST API and MCP servers concurrently.
-
-Configuration files can define multiple entity types:
-
-#### REST Endpoint + MCP Tool (Unified)
-
-```yaml
-# Single configuration file serves as BOTH REST endpoint AND MCP tool
-url-path: /customers/                    # Makes this a REST endpoint
-mcp-tool:                                # Also makes this an MCP tool
-  name: get_customers
-  description: Retrieve customer information by ID
-  result-mime-type: application/json
-
-request:
-  - field-name: id
-    field-in: query
-    description: Customer ID
-    required: false
-    validators:
-      - type: int
-        min: 1
-        max: 1000000
-        preventSqlInjection: true
-
-template-source: customers.sql
-connection: [customers-parquet]
-
-rate-limit:
-  enabled: true
-  max: 100
-  interval: 60
-
-auth:
-  enabled: true
-  type: basic
-  users:
-    - username: admin
-      password: secret
-      roles: [admin]
-```
-
-#### MCP Resource Only
-
-```yaml
-# MCP Resource example
-mcp-resource:
-  name: customer_schema
-  description: Customer database schema definition
-  mime-type: application/json
-
-template-source: customer-schema.sql
-connection: [customers-parquet]
-```
-
-### Using MCP Tools
-
-Once MCP is enabled, you can interact with tools using JSON-RPC 2.0:
-
-```bash
-# Check MCP server health
-curl 'http://localhost:8080/mcp/health'
-
-# Initialize MCP connection
-curl -X POST http://localhost:8080/mcp/jsonrpc \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc": "2.0", "id": 1, "method": "initialize"}'
-
-# List available tools (discovered from unified configuration)
-curl -X POST http://localhost:8080/mcp/jsonrpc \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc": "2.0", "id": 2, "method": "tools/list"}'
-
-# Call a tool (same SQL template used for both REST and MCP)
-curl -X POST http://localhost:8080/mcp/jsonrpc \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "get_customers", "arguments": {"id": "123"}}}'
-```
-
-## 🎓 Learn by doing
-
-The guides below are task-shaped — each one gets you to a working result, then
-links to the reference and to the implementation notes.
-
-| I want to… | Guide |
-|---|---|
-| Serve my first endpoint | [Getting started](docs/guides/getting-started.md) |
-| Add validation, filters, pagination | [Building a REST endpoint](docs/guides/rest-endpoints.md) |
-| Let an AI agent call it | [Exposing an endpoint as an MCP tool](docs/guides/mcp-tools.md) |
-| Make a slow query fast | [Caching an expensive query](docs/guides/caching.md) |
-| Require a token, restrict by role | [Requiring authentication](docs/guides/authentication.md) |
-| Read from S3, GCS or Azure | [Reading from cloud storage](docs/guides/cloud-storage.md) |
-| Stop copy-pasting config blocks | [Reusing config and reading the environment](docs/guides/yaml-includes.md) |
-| Deploy one self-contained binary | [Shipping one self-contained binary](docs/guides/self-packaging.md) |
-| Trace requests and keep an audit trail | [Observability](docs/OBSERVABILITY.md) |
-| Let Claude Code build and run it with me | [Using flAPI with Claude Code](docs/guides/claude-code.md) |
+- [Key Features](#-key-features)
+- [Claude Code plugin](#-claude-code-plugin)
+- [Installation](#-installation)
+- [Quick Start](#-quick-start)
+- [One config, two protocols](#-one-config-two-protocols)
+- [Documentation](#-documentation)
+- [Building from source](#-building-from-source)
+- [Telemetry](#-telemetry)
+- [License](#-license)
+- [Contributing](#-contributing) · [Support](#-support) · [Citation](#-citation) · [Feedback](#feedback)
 
 ## 🤖 Claude Code plugin
 
-The repository is also a Claude Code plugin marketplace:
+The repository is also a [Claude Code](https://claude.com/claude-code) plugin marketplace:
 
 ```
 /plugin marketplace add DataZooDE/flapi
@@ -267,42 +92,152 @@ The repository is also a Claude Code plugin marketplace:
 Slash commands: `/flapi:init`, `/flapi:new-endpoint`, `/flapi:add-cache`, `/flapi:auth-setup`,
 `/flapi:deploy-check`, `/flapi:diagnose`, `/flapi:metrics`.
 
-The plugin also registers your running flAPI as an MCP server, and adds a hook that validates and
-hot-reloads config after each edit. Every example in the skills is checked against the real binary in CI.
-See [docs/guides/claude-code.md](docs/guides/claude-code.md). To try local changes:
-`claude --plugin-dir ./plugins/flapi`.
+The plugin also registers your running flAPI as an MCP server. It adds a hook that validates and hot-reloads the config after each edit. See [Using flAPI with Claude Code](docs/guides/claude-code.md). To try local changes, run `claude --plugin-dir ./plugins/flapi`.
 
-## 🏭 Building from source
-The source code of flAPI is written in C++ and closely resembles the [DuckDB build process](https://duckdb.org/docs/dev/building/overview). A good documentation of the build process is the GitHub action in [`build.yaml`](.github/workflows/build.yaml). In essecence a few prerequisites need to be met:
-In essecence a few prerequisites need to be met:
+## 📥 Installation
 
-- Install the dependencies: `sudo apt-get install -y build-essential cmake ninja-build`
-- Checkout the repository and submodules: `git clone --recurse-submodules https://github.com/datazoode/flapi.git`
-- Build the project: `make release`
+### PyPI (both commands, no Docker)
 
-The build process will download and build DuckDB v2.0.1 and install the vcpkg package manager. We depend on the following vcpkg ports:
+```bash
+uvx --from flapi-io flapi --version     # run without installing
+pip install flapi-io                     # or install: provides `flapi` (server) and `flapii` (CLI)
+```
 
-- [`argparse`](https://github.com/p-ranav/argparse) - Command line argument parser
-- [`crow`](https://github.com/CrowCpp/Crow) - Our REST-Web framework and JSON handling
-- [`yaml-cpp`](https://github.com/jbeder/yaml-cpp) - YAML parser
-- [`jwt-cpp`](https://github.com/Thalhammer/jwt-cpp) - JSON Web Token library
-- [`openssl`](https://github.com/openssl/openssl) - Crypto library
-- [`catch2`](https://github.com/catchorg/Catch2) - Testing framework
+The package is `flapi-io` because "flapi" was taken on PyPI. It carries both the `flapi` server and the `flapii` CLI.
 
-**Note**: MCP support is built-in and doesn't require additional dependencies beyond what's already included.
+### Release binaries
+
+[GitHub Releases](https://github.com/DataZooDE/flapi/releases) has archives for Linux (amd64, arm64), macOS (arm64) and Windows (amd64). Each archive holds the `flapi` binary and an `extensions/` directory with the DuckDB extensions it loads by default. Keep the two together.
+
+### Docker
+
+```bash
+docker pull ghcr.io/datazoode/flapi:latest
+docker run --rm -p 8080:8080 -v "$PWD/demo:/config" ghcr.io/datazoode/flapi -c /config/flapi.yaml
+```
+
+This serves the `demo/` project from the [Quick Start](#-quick-start) below. Mount any directory that holds a `flapi.yaml`.
+
+`:latest` and `:v<version>` come from releases; `:main` and `:sha-<commit>` come from main. The image carries the default extensions. The `-runtime` variant (for example `:v26.11.25-runtime` or `:main-runtime`) also carries `bigquery`. One port (8080) serves both REST and MCP (`/mcp/jsonrpc`).
+
+## 🚀 Quick Start
+
+You need [uv](https://docs.astral.sh/uv/) and network access: the PyPI package downloads its DuckDB extensions on first start. CI runs these blocks against every build (with the freshly built binaries in place of `uvx`).
+
+**1. Create a project.** This scaffolds `demo/`: a config, a sample CSV, and a `/sample` endpoint with an `id` filter.
+
+<!-- flapi: quickstart run -->
+```bash
+uvx --from flapi-io flapii project init demo
+```
+
+**2. Make the endpoint an MCP tool too.** It's the same file and the same SQL; add three lines:
+
+<!-- flapi: quickstart run -->
+```bash
+cat >> demo/sqls/sample.yaml <<'EOF'
+mcp-tool:
+  name: get_sample
+  description: Look up sample products, optionally by id
+EOF
+```
+
+**3. Start the server.** It runs in the foreground on port 8080; stop it with Ctrl+C. It prints a security warning that MCP has no auth yet, which is expected for a local demo; see [Authentication](docs/guides/authentication.md).
+
+<!-- flapi: quickstart serve -->
+```bash
+uvx --from flapi-io flapi -c demo/flapi.yaml
+```
+
+**4. Call it, in a second terminal: once over REST, once as an agent would over MCP.**
+
+<!-- flapi: quickstart try expect="Gadget" -->
+```bash
+curl -s 'http://localhost:8080/sample?id=2'
+# {"data":[{"id":2,"name":"Gadget","category":"tools","price":19.5}],"next":"","total_count":1}
+```
+
+<!-- flapi: quickstart try expect="structuredContent" -->
+```bash
+curl -s http://localhost:8080/mcp/jsonrpc -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_sample","arguments":{"id":"2"}}}'
+# {"jsonrpc":"2.0","id":1,"result":{"content":[...],"structuredContent":{"rows":[{"id":2,"name":"Gadget",...}],"row_count":1}}}
+```
+
+The Swagger UI is at [http://localhost:8080/doc](http://localhost:8080/doc). To connect Claude Code to the tool, run `claude mcp add --transport http flapi http://localhost:8080/mcp/jsonrpc`.
+
+**Next:** [Getting started](docs/guides/getting-started.md) walks through your own data, parameters and validation.
+
+## 🧭 One config, two protocols
+
+One endpoint file serves `GET /customers` and the MCP tool `get_customers`. REST and MCP are protected separately: the endpoint's `auth:` guards REST, and the top-level `mcp.auth` with the tool's `allowed-roles` guards `tools/call`.
+
+```yaml
+# sqls/customers.yaml
+url-path: /customers
+mcp-tool:
+  name: get_customers
+  description: Retrieve customers, optionally by id
+  allowed-roles: [reader]          # who may call the tool (with mcp.auth enabled)
+
+request:
+  - field-name: id
+    field-in: query
+    required: false
+    validators:
+      - type: int
+        min: 1
+
+template-source: customers.sql
+connection: [customers-parquet]
+
+auth:                              # REST only
+  enabled: true
+  type: basic
+  users:
+    - username: reader
+      password: '{{env.READER_PASSWORD}}'   # never a literal password; the variable may hold a
+                                            # $pbkdf2-sha256$ hash, and must match template.environment-whitelist
+      roles: [reader]
+```
+
+```sql
+-- sqls/customers.sql
+SELECT * FROM read_parquet('{{{ conn.path }}}')
+WHERE 1=1
+{{#params.id}}
+  AND customer_id = {{ params.id }}
+{{/params.id}}
+```
+
+GET endpoints are paginated by default (`?limit=` / `?offset=`, 100 rows per page), so the template has no `LIMIT`. MCP is on by default on the same port (`mcp: {enabled: false}` turns it off; `GET /mcp/health` reports its state). Files can also define an `mcp-resource` or `mcp-prompt` alone. For the `mcp.auth` block, see [Exposing an endpoint as an MCP tool](docs/guides/mcp-tools.md#limiting-who-can-call-it).
 
 ## 📚 Documentation
 
-**Start at the [documentation index](docs/README.md)** — it routes you from what
-you are trying to do to the right page.
+**Start at the [documentation index](docs/README.md).** It routes you from what you're trying to do to the right page.
 
-- **[Guides](docs/guides/)** — task-first walkthroughs
-- **[Configuration Reference](docs/CONFIG_REFERENCE.md)** — every `flapi.yaml` and endpoint key
-- **[CLI Reference](docs/CLI_REFERENCE.md)** — server flags and subcommands
-- **[MCP Reference](docs/MCP_REFERENCE.md)** — the MCP protocol as flAPI implements it
-- **[Config Service API](docs/CONFIG_SERVICE_API_REFERENCE.md)** — runtime configuration over REST
-- **[Observability](docs/OBSERVABILITY.md)** — tracing, audit and log correlation
-- **[Architecture & design](docs/spec/)** — how it works inside, and why
+| I want to… | Guide |
+|---|---|
+| Serve my first endpoint | [Getting started](docs/guides/getting-started.md) |
+| Add validation, filters, pagination | [Building a REST endpoint](docs/guides/rest-endpoints.md) |
+| Let an AI agent call it | [Exposing an endpoint as an MCP tool](docs/guides/mcp-tools.md) |
+| Make a slow query fast | [Caching an expensive query](docs/guides/caching.md) |
+| Require a token, restrict by role | [Requiring authentication](docs/guides/authentication.md) |
+| Read from S3, GCS or Azure | [Reading from cloud storage](docs/guides/cloud-storage.md) |
+| Stop copy-pasting config blocks | [Reusing config and reading the environment](docs/guides/yaml-includes.md) |
+| Deploy one self-contained binary | [Shipping one self-contained binary](docs/guides/self-packaging.md) |
+| Run on Cloud Run and other scale-to-zero platforms | [Serverless](docs/guides/serverless.md) |
+| Trace requests and keep an audit trail | [Observability](docs/OBSERVABILITY.md) |
+| Let Claude Code build and run it with me | [Using flAPI with Claude Code](docs/guides/claude-code.md) |
+
+| Reference | Covers |
+|---|---|
+| [Configuration](docs/CONFIG_REFERENCE.md) | every `flapi.yaml` and endpoint key |
+| [CLI](docs/CLI_REFERENCE.md) | server flags and subcommands (`pack`, `cache`, `extensions`, …) |
+| [MCP](docs/MCP_REFERENCE.md) | the MCP protocol as flAPI implements it |
+| [Config Service API](docs/CONFIG_SERVICE_API_REFERENCE.md) | runtime configuration over REST, used by `flapii` |
+| [Architecture & design](docs/spec/ARCHITECTURE.md) | how it works inside, and why |
+| [Changelog](CHANGELOG.md) | what changed in each release, with upgrade notes |
 
 ### MCP Registry
 
@@ -310,74 +245,93 @@ flAPI is listed in the official [MCP Registry](https://registry.modelcontextprot
 
 mcp-name: io.github.datazoode/flapi
 
-## 📊 Telemetry
+## 🏭 Building from source
 
-flAPI sends anonymous `application_start` and `application_stop` events to help the team understand adoption. No query data, credentials, or personal information is ever sent.
+flAPI is C++20 and builds much like [DuckDB](https://duckdb.org/docs/stable/dev/building/overview). The CI workflow [`build.yaml`](.github/workflows/build.yaml) and its build images (`.github/docker/`) are the reference for every platform.
 
-**Opt out** (any one of these is sufficient):
+On Linux, you need:
+
+- A C++20 compiler, CMake, Ninja, `git`, `curl`, `zip`/`unzip`, `pkg-config`, `autoconf` and the OpenSSL headers. On Ubuntu:
+  `sudo apt-get install -y build-essential cmake ninja-build git curl zip unzip pkg-config autoconf libssl-dev`
+- [vcpkg](https://vcpkg.io), bootstrapped, with `VCPKG_ROOT` pointing at it. The build does not install vcpkg for you.
 
 ```bash
-# One-off via CLI flag
-./flapi --no-telemetry
+git clone --recurse-submodules https://github.com/DataZooDE/flapi.git
+cd flapi
+make release            # build/release/flapi
+make test               # C++ unit tests
+```
 
-# Per-session via environment variable
-export FLAPI_NO_TELEMETRY=1
-./flapi
+DuckDB v2.0.1 is a git submodule. vcpkg provides `crow`, `argparse`, `jwt-cpp`, `fmt`, `libarchive`, `curl`, `zstd`, `lz4`, `catch2`, `aws-sdk-cpp` and `opentelemetry-cpp`; `crow` and `opentelemetry-cpp` use the overlay ports in [`ports/`](ports/). `yaml-cpp` comes in through CMake. The [`Makefile`](Makefile) lists the integration-test targets.
 
-# Permanently via config file (flapi.yaml)
-telemetry:
+## 📊 Telemetry
+
+flAPI sends anonymous, aggregate usage events: `server_started` at boot, `$exception` on a failed request, and at most once a minute per route and status a count with durations (REST, MCP tool and auth outcomes). It sends route templates, never filled request paths, query data, SQL, credentials or personal information. [TELEMETRY.md](TELEMETRY.md) lists every property.
+
+**Opt out** (any one is enough):
+
+```bash
+flapi --no-telemetry -c flapi.yaml   # CLI flag
+export DATAZOO_DISABLE_TELEMETRY=1   # or FLAPI_NO_TELEMETRY=1
+```
+
+```yaml
+telemetry:          # flapi.yaml
   enabled: false
 ```
 
-See [CLI Reference](docs/CLI_REFERENCE.md#disable-telemetry---no-telemetry) and [Configuration Reference](docs/CONFIG_REFERENCE.md) for full details.
+## 📄 License
+
+**Business Source License 1.1 (BSL 1.1)**
+
+✅ **Free for production use**: use it inside your business
+✅ **Free to copy, modify and build on**
+✅ **Free for development and research**
+
+❌ **Not offered to third parties on a hosted or embedded basis** without a commercial license
+❌ **No rights to the flAPI or DataZoo trademarks**
+
+🔄 **Converts to MPL 2.0** on each version's Change Date (see [LICENSE](LICENSE))
+
+For a commercial license (embedding flAPI in a product, or offering it as a hosted service), contact [contact@data-zoo.de](mailto:contact@data-zoo.de). The [LICENSE](LICENSE) file has the full terms. Licensor: DataZoo GmbH.
 
 ## 🤝 Contributing
 
-We welcome contributions. [Open an issue](https://github.com/DataZooDE/flapi/issues) to discuss a change, or send a pull request.
+We welcome contributions. [Open an issue](https://github.com/DataZooDE/flapi/issues) to discuss a change, or send a pull request. [CLAUDE.md](CLAUDE.md) describes the code layout, conventions and test targets.
 
-## 📄 License
+## 📞 Support
 
-flAPI is licensed under the [Business Source License (BSL) Version 1.1](./LICENSE). The BSL is a source-available license that gives you the following permissions:
+- **Documentation**: [docs/](docs/README.md) and [flapi.io](https://flapi.io)
+- **Issues**: [GitHub Issues](https://github.com/DataZooDE/flapi/issues)
+- **Commercial support and licensing**: [contact@data-zoo.de](mailto:contact@data-zoo.de)
 
-### Allowed
-1. **Copy, modify, and create derivative works**: You can copy the software, modify it, and create derivative works.
-2. **Redistribute and non-production use**: Redistribution and non-production use of the software is permitted.
-3. **Limited production use**: You can use flAPI in production, but with one restriction (see below).
-4. **Change License rights**: After the Change Date (five years from first publication of the Licensed Work), the software automatically becomes available under the Change License (MPL 2.0).
+## 🎓 Citation
 
-### Not allowed
-1. **Offering to third parties on a hosted or embedded basis**: The Additional Use Grant explicitly restricts using the software in a way that offers it to third parties as a hosted service or embedded component. If you want to do that, you need a commercial license.
-2. **Violation of current license requirements**: If your use does not comply with the BSL, you must either purchase a commercial license or stop using flAPI.
-3. **Trademark usage**: You do not have rights to the flAPI or DataZoo trademarks or logos, except as expressly required by the License.
+```bibtex
+@software{flapi,
+  title  = {flAPI: SQL to REST APIs and MCP tools},
+  author = {Joachim Rosskopf and DataZoo GmbH},
+  year   = {2026},
+  url    = {https://github.com/DataZooDE/flapi}
+}
+```
 
-For commercial licensing — embedding flAPI in a product, offering it as a hosted service, or any redistribution that the Additional Use Grant restricts — contact [contact@data-zoo.de](mailto:contact@data-zoo.de).
+## 🏆 Acknowledgments
 
-### Licensing parameters
-- **Licensor**: DataZoo GmbH
-- **Licensed Work**: flAPI — SQL-to-API framework
-- **Change Date**: five years from the first publication of each version
-- **Change License**: MPL 2.0
-
-See the [LICENSE](./LICENSE) file for the full text.
-
-## 🙋‍♀️ Support
-
-If you have any questions or need help, please [open an issue](https://github.com/DataZooDE/flapi/issues).
+Built on [DuckDB](https://duckdb.org), [DuckLake](https://ducklake.select), [Crow](https://github.com/CrowCpp/Crow), [yaml-cpp](https://github.com/jbeder/yaml-cpp), [jwt-cpp](https://github.com/Thalhammer/jwt-cpp), [OpenTelemetry C++](https://github.com/open-telemetry/opentelemetry-cpp) and the [Model Context Protocol](https://modelcontextprotocol.io).
 
 ---
 
 ## Feedback
 
-If flAPI misbehaves — an endpoint that will not serve, a cache that will not invalidate,
-an auth flow that will not complete — please
+If flAPI misbehaves (an endpoint that won't serve, a cache that won't invalidate, an auth flow that won't complete), please
 [open an issue](https://github.com/DataZooDE/flapi/issues). Deployments differ in ways we
-cannot reproduce here, so a report with your config is the fastest path to a fix. A failed
-request answers `500` with a `request_id`; the details are in the server log under that id,
+can't reproduce here, so a report with your config is the fastest way to a fix. A failed
+request answers `500` with a `request_id`. The details are in the server log under that id,
 so quote the matching log lines in the report.
 
 If it saved you time, a star on the repo helps other people find it.
 
 On an interactive start, a small banner says the same thing once a day. Under a container
-or systemd there is no terminal, so it never prints — the startup log line carries the
+or systemd there is no terminal, so it never prints; the startup log line carries the
 pointer instead. Silence both with `DATAZOO_NO_BANNER=1`.
-

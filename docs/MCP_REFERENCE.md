@@ -1,8 +1,7 @@
 # flAPI - MCP Protocol Reference
 
-**Version:** 1.0.0
 **Protocol Versions:** 2026-07-28 (modern, stateless) and 2024-11-05 … 2025-11-25 (legacy) — flAPI is a **dual-era** server
-**flAPI Version:** >= 1.0.0
+**flAPI Version:** v26.11.25 (releases are numbered `vYY.MM.DD`)
 
 This document provides a comprehensive reference for flAPI's MCP (Model Context Protocol) implementation, covering protocol details, configuration, and usage.
 
@@ -131,12 +130,14 @@ flAPI supports multiple MCP protocol versions for backward compatibility:
 
 | Version | Release | Status | Notes |
 |---------|---------|--------|-------|
-| `2025-11-25` | Latest | **Default** | Full feature support |
+| `2026-07-28` | Latest | Supported (modern era) | Stateless: `server/discover`, per-request metadata, no sessions; see [§ 11](#11-mcp-2026-07-28-dual-era) |
+| `2025-11-25` | Q4 2025 | **Default for `initialize`** | Full feature support |
 | `2025-06-18` | Q2 2025 | Supported | - |
 | `2025-03-26` | Q1 2025 | Supported | - |
 | `2024-11-05` | Q4 2024 | Supported | Initial MCP specification |
 
-The server negotiates the highest mutually supported version during `initialize`.
+A legacy client negotiates the highest mutually supported version during `initialize`; a modern
+client names `2026-07-28` per request and never calls `initialize`.
 
 > **Implementation:** `src/mcp_server.cpp`, `src/mcp_route_handlers.cpp` | **Tests:** `test/cpp/mcp_server_test.cpp`, `test/integration/test_mcp_methods.py`
 
@@ -255,7 +256,10 @@ curl -X POST http://localhost:8080/mcp/jsonrpc \
 `serverInfo.version` is the flAPI build version (what `flapi --version` prints); it used to be a fixed
 `"0.3.0"`.
 
-The response includes an `Mcp-Session-Id` header that must be included in subsequent requests.
+A legacy `initialize` response carries an `Mcp-Session-Id` header that a client may echo on later
+requests. The session only keeps the legacy shim's bookkeeping: authentication and method authorization
+are checked on every request whether the header is present or not, and the modern (2026-07-28) path is
+stateless, never mints a session and ignores the header.
 
 ### Health Check
 
@@ -271,13 +275,16 @@ curl http://localhost:8080/mcp/health
 {
   "status": "healthy",
   "server": "flapi-mcp-server",
-  "version": "26.10.31",
+  "version": "26.11.25",
   "protocol_version": "2025-11-25",
   "mcp_available": true,
   "tools_available": true,
   "resources_available": true,
   "tools_count": 5,
-  "resources_count": 2
+  "resources_count": 2,
+  "arrow_available": true,
+  "arrow_active_streams": 0,
+  "arrow_total_requests": 0
 }
 ```
 

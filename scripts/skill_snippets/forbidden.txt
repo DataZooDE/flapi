@@ -1,4 +1,8 @@
-# term<TAB>why. A term may appear only on a line that also says "deprecated" or "no effect".
+# term<TAB>why. `re:<regex>` makes the term a regular expression. A term may appear only where
+# its sentence says it is gone (see says_gone in check_skills.py): "deprecated", "no effect",
+# "does not exist" or "earlier version" anywhere in the sentence, or "ignored", "removed",
+# "dropped", "drops", "existed" within a few words of the term. A sentence continues onto the
+# next line when that line starts lowercase; a table row is one statement.
 rollback-window	parsed but never read; deprecated
 delete-handling	parsed but never read; deprecated; handle deletes in the MERGE template
 rollbackWindow	parsed but never read; deprecated
@@ -8,3 +12,13 @@ refresh: incremental	there is no refresh: key; the mode is inferred from cursor 
 refresh: full	there is no refresh: key; the mode is inferred from cursor / primary-key
 flapii cache refresh --endpoint	flapii takes the path as an argument: flapii cache refresh <path> (the server one-shot is flapi cache refresh --endpoint)
 secret-table	ignored since #254: the Secrets-Manager user list is held in memory, not a table; say it has no effect
+application_start	not a telemetry event; flAPI sends server_started, rest_endpoint_served, mcp_tool_called, auth_enforced
+application_stop	not a telemetry event; flAPI sends server_started, rest_endpoint_served, mcp_tool_called, auth_enforced
+Swagger 2.0	/doc.yaml is an OpenAPI 3.0 document
+"protocol_version":"2024-11-05"	/mcp/health reports the current default protocol version, not 2024-11-05
+"version":"0.3.0"	the MCP server reports the build version (FLAPI_VERSION)
+re:(?<![\w-])port: 8081	MCP has no port of its own; it is served on the HTTP port at /mcp/jsonrpc
+pip install flapii	there is no flapii PyPI package; pip install flapi-io installs both commands
+result_set_bytes	removed; the result size is flapi.result.bytes on the request span
+"returned_data"	the write response carries RETURNING rows under data (returns-data: true)
+docs.datazoo.dev	that host does not exist; link the docs on GitHub

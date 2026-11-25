@@ -151,12 +151,12 @@ Next steps:
   2. Create endpoint YAML files in sqls/
   3. Write SQL templates in sqls/
   4. Run: flapii config validate --config ${path.join(displayDir === 'current directory' ? '.' : projectDir, 'flapi.yaml')}
-  5. Start server: ./flapi -c ${path.join(displayDir === 'current directory' ? '.' : projectDir, 'flapi.yaml')}
+  5. Start server: flapi -c ${path.join(displayDir === 'current directory' ? '.' : projectDir, 'flapi.yaml')}
 
 Documentation:
-  • Project guide: https://docs.datazoo.dev/flapi/project-init
-  • SQL templates: https://docs.datazoo.dev/flapi/mustache-templates
-  • Configuration: https://docs.datazoo.dev/flapi/configuration`;
+  • Getting started: https://github.com/DataZooDE/flapi/blob/main/docs/guides/getting-started.md
+  • REST endpoints:  https://github.com/DataZooDE/flapi/blob/main/docs/guides/rest-endpoints.md
+  • Configuration:   https://github.com/DataZooDE/flapi/blob/main/docs/CONFIG_REFERENCE.md`;
 
     console.log(Console.box(summary, '✨ Project Setup Complete!'));
   }

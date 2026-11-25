@@ -1,7 +1,6 @@
 # flAPI Config Service API Reference
 
-**Version:** 1.0.0
-**flAPI Version:** >= 1.0.0
+**flAPI Version:** v26.11.25 (releases are numbered `vYY.MM.DD`)
 
 This document provides a complete reference for the flAPI Config Service REST API and the `flapii` CLI client for runtime configuration management.
 

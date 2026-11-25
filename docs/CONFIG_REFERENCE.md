@@ -1,7 +1,6 @@
 # flAPI Configuration Reference
 
-**Version:** 1.0.0
-**flAPI Version:** >= 1.0.0
+**flAPI Version:** v26.11.25 (releases are numbered `vYY.MM.DD`)
 **DuckDB Version:** 2.0.1
 
 This document provides a complete reference for all configuration options in flAPI, the SQL-to-API framework that generates REST APIs and MCP tools from SQL templates.
@@ -25,8 +24,11 @@ This document provides a complete reference for all configuration options in flA
    - [2.7 Authentication (Global)](#27-authentication-global)
    - [2.8 Rate Limiting (Global)](#28-rate-limiting-global)
    - [2.9 HTTPS Configuration](#29-https-configuration)
+   - [2.9.1 CORS](#291-cors)
+   - [2.9.2 Audit Log](#292-audit-log)
    - [2.10 Heartbeat Configuration](#210-heartbeat-configuration)
    - [2.11 Storage Configuration (VFS)](#211-storage-configuration-vfs)
+   - [2.12 Telemetry Configuration](#212-telemetry-configuration)
 3. [Endpoint Configuration](#3-endpoint-configuration)
    - [3.1 REST Endpoints](#31-rest-endpoints)
    - [3.2 MCP Tools](#32-mcp-tools)
@@ -47,9 +49,10 @@ This document provides a complete reference for all configuration options in flA
    - [5.7 Time Validator](#57-time-validator)
 6. [Cache Configuration](#6-cache-configuration)
    - [6.1 Basic Cache Settings](#61-basic-cache-settings)
-   - [6.2 Refresh Modes](#62-refresh-modes)
-   - [6.3 Retention Policies](#63-retention-policies)
-   - [6.4 Cache Template Variables](#64-cache-template-variables)
+   - [6.2 Cache Readiness During Warmup](#62-cache-readiness-during-warmup)
+   - [6.3 Refresh Modes](#63-refresh-modes)
+   - [6.4 Retention Policies](#64-retention-policies)
+   - [6.5 Cache Template Variables](#65-cache-template-variables)
 7. [Authentication](#7-authentication)
    - [7.1 Basic Authentication](#71-basic-authentication)
    - [7.2 JWT Authentication](#72-jwt-authentication)
@@ -1039,40 +1042,30 @@ storage:
 | `https://` | HTTPS URLs | None required |
 | `http://` | HTTP URLs (not recommended) | None required |
 | `s3://` | Amazon S3 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` |
-| `s3a://`, `s3n://` | S3-compatible storage | Same as S3 |
+| `s3a://`, `s3n://` | S3-compatible storage (data only) | Same as S3 |
 | `gs://` | Google Cloud Storage | HMAC key in a DuckDB secret (`TYPE gcs`); `GOOGLE_*` variables are not used |
-| `az://`, `abfs://` | Azure Blob Storage | `AZURE_STORAGE_ACCOUNT`, `AZURE_STORAGE_KEY` |
+| `az://`, `azure://` | Azure Blob Storage | `AZURE_STORAGE_ACCOUNT`, `AZURE_STORAGE_KEY` |
+| `abfs://` | Azure Data Lake (data only) | as Azure |
 | `file://` | Local filesystem | None required |
 
 #### Path Security
 
-flAPI includes security features to prevent path traversal attacks:
-
-- **Path traversal detection**: Blocks `..` sequences in paths
-- **URL-encoded traversal detection**: Detects `%2e%2e` and other encoded traversal attempts
-- **Scheme whitelisting**: Only configured schemes are allowed (default: `file`, `https`)
-
-**Default Allowed Schemes:**
-
-```yaml
-# Built-in defaults (no configuration needed)
-# Allowed: file://, https://
-# Blocked by default: http://, s3://, gs://, az://
-```
-
-To enable additional schemes, configure them in the connection's `init` block:
-
-```yaml
-connections:
-  s3-data:
-    init: |
-      INSTALL httpfs;
-      LOAD httpfs;
-      SET s3_region='us-east-1';
-    properties:
-      bucket: my-bucket
-      prefix: data/
-```
+- **Template sources stay inside `template.path`.** A `template-source` that
+  escapes the templates directory (`..`, an absolute path, a symlink out, another
+  bucket or host) is a `--validate-config` warning for a local config, and stops
+  startup for a remote config or `template.path`. Remote paths are checked after
+  percent-decoding (`%2e%2e`); in a packed binary the check is against the bundle.
+- **Schemes:** the config and templates can be read from `s3://`, `gs://`, `az://`,
+  `azure://` and `http(s)://` (and local paths). Schemes marked *data only* are
+  passed to DuckDB in SQL but are not recognised as a config or template location.
+  There is no scheme allowlist; what a *template* may read is
+  governed by DuckDB external access instead: see
+  [§2.4.1 DuckDB Hardening](#241-duckdb-hardening-duckdb-hardening). Under
+  `auto` (the default), the templates of a remote config (`s3://`, `gs://`,
+  `az://`, `https://`) run with external access restricted to the directories
+  flAPI needs.
+- Credentials: the environment variables below, or a DuckDB secret in a
+  connection's `init`; see [Reading from cloud storage](guides/cloud-storage.md).
 
 #### Environment Variables for Cloud Storage
 
@@ -1160,16 +1153,23 @@ connection:
 
 ### 2.12 Telemetry Configuration
 
-Controls whether flapi sends anonymous startup/shutdown analytics to PostHog.
+Controls the anonymous, aggregate usage telemetry flAPI sends to PostHog (EU):
+`server_started` at boot, `$exception` on a failed request, and at most once a
+minute per route and status a `feature_used` event (`feature` =
+`rest_endpoint_served`, `mcp_tool_called` or `auth_enforced`) with a `count` and
+the mean and max duration. [TELEMETRY.md](../TELEMETRY.md)
+lists every property and what is never sent.
 
 ```yaml
 telemetry:
-  enabled: true   # Set to false to opt out of startup/shutdown analytics
+  enabled: true      # false opts out
+  sample_rate: 1.0   # values in (0,1) down-sample the per-request events
 ```
 
 | Field | Default | Description |
 |-------|---------|-------------|
 | `telemetry.enabled` | `true` | Enable/disable telemetry events |
+| `telemetry.sample_rate` | `1.0` | A value in (0,1) keeps about one in `round(1/rate)` per-request and per-tool events; anything else (including `0`) sends all, so use `enabled: false` to stop. Lifecycle events are always sent; sampled events carry `sample_rate` |
 
 **Opt-out precedence (highest wins):**
 
