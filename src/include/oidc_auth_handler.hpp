@@ -35,6 +35,42 @@ struct OIDCTokenClaims {
 };
 
 /**
+ * A JWT's header and payload, parsed but NOT verified.
+ *
+ * Why this is a move-only type and not a pair of crow rvalues (#273):
+ * crow::json::load() returns a root rvalue that owns its text buffer, but a
+ * COPY of an rvalue does not own anything - it points into the original's
+ * buffer. decodeJWT used to `return std::make_pair(header, payload)`, i.e.
+ * copies; the originals freed the buffer on return, and every later
+ * `header.has("alg")` read freed memory. Every valid token got 401.
+ *
+ * Here the roots live in the object, copying is deleted and a move hands the
+ * buffer over, so the parsed values cannot outlive their text. Values read
+ * through header()/payload() are valid while this object is.
+ */
+class DecodedJWT {
+public:
+    /// nullopt unless the token has three dot-separated parts whose first two
+    /// are base64url-encoded JSON objects.
+    static std::optional<DecodedJWT> Decode(const std::string& token);
+
+    DecodedJWT(DecodedJWT&&) noexcept = default;
+    DecodedJWT& operator=(DecodedJWT&&) = delete;
+    DecodedJWT(const DecodedJWT&) = delete;
+    DecodedJWT& operator=(const DecodedJWT&) = delete;
+
+    const crow::json::rvalue& header() const { return header_; }
+    const crow::json::rvalue& payload() const { return payload_; }
+
+private:
+    DecodedJWT(crow::json::rvalue&& header, crow::json::rvalue&& payload)
+        : header_(std::move(header)), payload_(std::move(payload)) {}
+
+    crow::json::rvalue header_;
+    crow::json::rvalue payload_;
+};
+
+/**
  * OIDCAuthHandler validates OIDC/OAuth 2.0 tokens
  * Supports RSA signature verification and claims validation
  */
@@ -146,8 +182,7 @@ private:
     /**
      * Decode JWT without verification (to extract kid and claims)
      */
-    std::optional<std::pair<crow::json::rvalue, crow::json::rvalue>>
-    decodeJWT(const std::string& token);
+    std::optional<DecodedJWT> decodeJWT(const std::string& token);
 
     /**
      * Extract claim value from token payload (supports nested paths)
