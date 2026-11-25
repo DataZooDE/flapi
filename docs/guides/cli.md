@@ -52,7 +52,7 @@ You get `flapi.yaml`, an endpoint `GET /sample` (`sqls/sample.yaml` +
 | `--advanced` | Extra template files |
 | `--skip-validation` | Skip the check at the end |
 | `-f`, `--force` | Overwrite existing files. Without it, files that already exist are skipped (`⚠ ⏭️ flapi.yaml already exists, skipping`), so rerunning it is safe. |
-| `--ai` | Fill the config with Gemini's help (needs a key, see step 11) |
+| `--ai` | Fill the config with Gemini's help (needs a Gemini key, see [the wizard](#the-wizard)) |
 
 `project init` runs locally; it needs no server. Exit code `0` on success, `2`
 for a permission error, `3` for an invalid argument, `1` otherwise.
@@ -116,6 +116,7 @@ SELECT * FROM read_csv_auto('{{{ conn.path }}}')
 
 <!-- flapi: check group=demo GET /api/v1/_config/endpoints -> 401 -->
 <!-- flapi: check group=demo GET /api/v1/_config/health -> 200 -->
+<!-- flapi: check group=demo GET /api/v1/_config/endpoints header=X-Config-Token:skill-check-token -> 200 contains "/sample-cached" -->
 
 How the cache works is explained in [Caching](./caching.md).
 
@@ -201,7 +202,7 @@ flapii only reaches that file when no `flapi.yaml` is in the current
 directory or its parents.
 
 `~/.flapi/config.json` is not where flapii looks for the URL or the token. It
-holds only the Gemini API key of the AI wizard (step 11).
+holds only the Gemini API key of the AI wizard ([below](#the-wizard)).
 
 Other global options: `--timeout <seconds>` (default 10, env `FLAPI_TIMEOUT`),
 `--retries <count>` (default 2, only for reads, env `FLAPI_RETRIES`),

@@ -46,7 +46,7 @@ Snippet tags (first line of a fenced block)
     ```sql
     -- flapi: template group=orders file=orders.sql
 
-Check lines (anywhere inside a tagged endpoint/config block):
+Check lines (skills: inside any tagged block; guides: as HTML comments after the block):
     # flapi: check GET /orders?id=1 [body={...}] [user=name:pw] -> 200 [contains "text"]
     # flapi: check-mcp get_orders [{"id": 1}] [user=name:pw] -> ok|error|401 [contains "text"]
 Group attributes on any tag: `env="NAME=value ..."` (exported for the group, as the
@@ -834,6 +834,10 @@ def run_group(rep: Report, name: str, members: list[Snippet], flapi: Path):
         for s in members:
             body = strip_tag(s.body)
             checks.extend(s.checks)
+            for line in body.splitlines():   # inline check lines (skills), in any block kind
+                t = TAG.match(line)
+                if t and t.group(1) in ("check", "check-mcp"):
+                    checks.append(("mcp " if t.group(1) == "check-mcp" else "") + t.group(2).strip())
             if s.tag == "config":
                 (root / "flapi.yaml").write_text(body)
                 continue
@@ -845,10 +849,6 @@ def run_group(rep: Report, name: str, members: list[Snippet], flapi: Path):
             dest = base / target
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(body)
-            for line in body.splitlines():
-                t = TAG.match(line)
-                if t and t.group(1) in ("check", "check-mcp"):
-                    checks.append(("mcp " if t.group(1) == "check-mcp" else "") + t.group(2).strip())
         # `env="NAME=value OTHER=value"` on any tag of the group: what a guide tells the reader to export.
         group_env = dict(kv.split("=", 1) for m in members for kv in shlex.split(m.attrs.get("env", "")) if "=" in kv)
         env = {**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1", "FLAPI_NO_TELEMETRY": "1", **group_env}
