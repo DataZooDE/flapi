@@ -437,7 +437,7 @@ auth:
 <!-- flapi: check GET /me user=alice:reader-pass -> 200 contains "sales,eu" -->
 <!-- flapi: check GET /me user=alice:reader-pass -> 200 contains "eu-west" -->
 
-The password is stored as a PBKDF2 hash; [Authentication](./authentication.md#the-quickest-thing-that-works)
+The password is stored as a PBKDF2 hash; [Authentication](./authentication.md#2-store-password-hashes-not-passwords)
 shows the command that makes one.
 
 `sqls/me.sql`:
