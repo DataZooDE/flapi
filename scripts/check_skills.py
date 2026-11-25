@@ -108,7 +108,8 @@ USER_NAMED_CHILDREN = {
 # `duckdb:` passes any other key straight to DuckDB as a setting (threads,
 # max_memory, ...), so its children are DuckDB's namespace, not flAPI's.
 OPAQUE_SUBTREES = {"duckdb", "input_schema", "inputSchema", "input-schema", "output_schema",
-                   "outputSchema", "output-schema", "schema-properties", "items", "annotations"}
+                   "outputSchema", "output-schema", "schema-properties", "items", "annotations",
+                   "resource_attributes"}   # tracing.resource_attributes: OTel attribute names
 
 
 @dataclass
