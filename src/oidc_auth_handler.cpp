@@ -1,7 +1,6 @@
 #include "include/oidc_auth_handler.hpp"
 #include "include/http_client.hpp"
 #include <crow/logging.h>
-#include <jwt-cpp/jwt.h>
 #include <openssl/evp.h>
 #include <sstream>
 #include <ctime>
@@ -38,11 +37,14 @@ std::optional<OIDCTokenClaims> OIDCAuthHandler::validateToken(const std::string&
         return std::nullopt;
     }
 
-    auto [header, payload] = *decoded;
+    // References into `decoded`, which outlives every use below. Do not copy
+    // these into a value that outlives it (see DecodedJWT).
+    const crow::json::rvalue& header = decoded->header();
+    const crow::json::rvalue& payload = decoded->payload();
 
     // Extract kid (key ID) from header
     std::string kid;
-    if (header.has("kid")) {
+    if (header.has("kid") && header["kid"].t() == crow::json::type::String) {
         kid = header["kid"].s();
     } else {
         logError("JWT header missing 'kid' field");
@@ -75,7 +77,7 @@ std::optional<OIDCTokenClaims> OIDCAuthHandler::validateToken(const std::string&
 
     // Get algorithm from header
     std::string alg;
-    if (header.has("alg")) {
+    if (header.has("alg") && header["alg"].t() == crow::json::type::String) {
         alg = header["alg"].s();
     } else {
         logError("JWT header missing 'alg' field");
@@ -131,7 +133,12 @@ std::optional<OIDCTokenClaims> OIDCAuthHandler::validateToken(const std::string&
         return std::nullopt;
     }
 
-    // Expiration
+    // Expiration. A token without one never expires; refuse it rather than
+    // lean on the zero time_point that an absent `exp` leaves behind.
+    if (config_.verify_expiration && !payload.has("exp")) {
+        logError("Token missing 'exp' claim");
+        return std::nullopt;
+    }
     if (payload.has("exp")) {
         try {
             uint64_t exp_seconds = (uint64_t)payload["exp"].i();
@@ -175,7 +182,9 @@ std::optional<OIDCTokenClaims> OIDCAuthHandler::validateToken(const std::string&
     }
 
     // Email verified
-    if (payload.has("email_verified")) {
+    if (payload.has("email_verified") &&
+        (payload["email_verified"].t() == crow::json::type::True ||
+         payload["email_verified"].t() == crow::json::type::False)) {
         claims.email_verified = payload["email_verified"].b();
     }
 
@@ -251,35 +260,41 @@ std::string OIDCAuthHandler::extractTokenFromHeader(const std::string& auth_head
     return auth_header;
 }
 
-std::optional<std::pair<crow::json::rvalue, crow::json::rvalue>>
-OIDCAuthHandler::decodeJWT(const std::string& token) {
+std::optional<DecodedJWT> DecodedJWT::Decode(const std::string& token) {
+    const size_t first_dot = token.find('.');
+    if (first_dot == std::string::npos || first_dot == 0) {
+        return std::nullopt;
+    }
+    const size_t second_dot = token.find('.', first_dot + 1);
+    if (second_dot == std::string::npos || second_dot == first_dot + 1 ||
+        token.find('.', second_dot + 1) != std::string::npos) {
+        return std::nullopt;
+    }
+
+    // base64decode accepts the URL alphabet and missing padding.
+    const std::string header_json =
+        crow::utility::base64decode(token.substr(0, first_dot));
+    const std::string payload_json =
+        crow::utility::base64decode(token.substr(first_dot + 1, second_dot - first_dot - 1));
+
+    // load() copies the text into a buffer the returned root owns. The roots
+    // are MOVED into the result; a copy would not own that buffer.
+    crow::json::rvalue header = crow::json::load(header_json);
+    crow::json::rvalue payload = crow::json::load(payload_json);
+    if (!header || header.t() != crow::json::type::Object ||
+        !payload || payload.t() != crow::json::type::Object) {
+        return std::nullopt;
+    }
+    return DecodedJWT(std::move(header), std::move(payload));
+}
+
+std::optional<DecodedJWT> OIDCAuthHandler::decodeJWT(const std::string& token) {
     try {
-        // Use jwt-cpp to decode without verification
-        auto decoded = jwt::decode(token);
-
-        // Get header and payload as JSON
-        // Extract the JSON parts from the token manually
-        size_t first_dot = token.find('.');
-        size_t second_dot = token.find('.', first_dot + 1);
-
-        if (first_dot == std::string::npos || second_dot == std::string::npos) {
+        auto decoded = DecodedJWT::Decode(token);
+        if (!decoded) {
             logError("Invalid JWT format");
-            return std::nullopt;
         }
-
-        std::string header_b64 = token.substr(0, first_dot);
-        std::string payload_b64 = token.substr(first_dot + 1, second_dot - first_dot - 1);
-
-        // Decode base64
-        std::string header_json = crow::utility::base64decode(header_b64);
-        std::string payload_json = crow::utility::base64decode(payload_b64);
-
-        // Parse JSON
-        auto header = crow::json::load(header_json);
-        auto payload = crow::json::load(payload_json);
-
-        return std::make_pair(header, payload);
-
+        return decoded;
     } catch (const std::exception& e) {
         logError("JWT decode error: " + std::string(e.what()));
         return std::nullopt;

@@ -47,6 +47,15 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 - The `posthog-telemetry` submodule is cloned over HTTPS, so
   `git clone --recurse-submodules` works without a GitHub SSH key.
 
+### Fixed
+
+- OIDC: valid tokens were rejected (#273). Every token got 401 and the log said
+  `JWT header missing 'alg' field`: the decoded JWT header and payload pointed into
+  memory that was freed before they were read. REST (`auth.type: oidc`) and MCP
+  (`mcp.auth.type: oidc`) were both affected. A token without `exp` is now refused
+  by name (`Token missing 'exp' claim`) instead of as expired. A new end-to-end test
+  runs the binary against a mock issuer.
+
 ## v26.11.25 — templates of remote configs are sandboxed, a DuckDB HTTP request log, and Secrets-Manager users out of SQL reach
 
 ### Added

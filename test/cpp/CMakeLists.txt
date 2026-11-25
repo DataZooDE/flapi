@@ -9,6 +9,7 @@ add_executable(flapi_tests
     cache_snapshot_watermark_test.cpp
     security_auditor_jwt_test.cpp
     oidc_token_expiry_test.cpp
+    oidc_decode_jwt_test.cpp
     archive_io_test.cpp
     audit_logger_test.cpp
     bundle_locator_test.cpp

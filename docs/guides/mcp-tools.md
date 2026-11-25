@@ -650,9 +650,9 @@ curl -s $URL -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":3,"me
   variables hold the MCP principal, so one tool can filter rows per caller. A caller
   cannot set `__auth_*` arguments, because flAPI strips them.
 - **Bearer tokens.** For agents that hold a token, use `type: bearer`: HS256 JWTs with a
-  `roles` claim, signed with `jwt-secret`. `type: oidc` exists, but in v26.11.25 it
-  rejects every token (see the known issue in
-  [Authentication § OIDC](./authentication.md#oidc)).
+  `roles` claim, signed with `jwt-secret`, or `type: oidc` for tokens from your
+  identity provider ([Authentication § OIDC](./authentication.md#oidc); it needs a
+  release after v26.11.25).
 
   ```yaml
   mcp:
