@@ -26,8 +26,8 @@ Write a SQL template and a few lines of YAML. flAPI serves the result as a REST 
 
 ### 🔌 REST and MCP from one config
 - **One file, two protocols**: `url-path` makes a REST endpoint, and `mcp-tool` makes the same SQL an MCP tool. `mcp-resource` and `mcp-prompt` complete the set
-- **MCP `2026-07-28` and the legacy `initialize` protocol on the same endpoint**, so modern and older clients both work. Supports the Tasks extension for long-running queries, typed schemas with `structuredContent` results, and OAuth discovery (RFC 9728)
-- **Agent safety**: per-tool RBAC (`allowed-roles`), dry runs (`_dryRun`), response shaping, per-tool rate limits, and a prompt-injection scanner for tool descriptions
+- **Current MCP (`2026-07-28`) and older clients on the same endpoint**, with long-running tools (Tasks), typed results and OAuth discovery
+- **Agent safety**: roles per tool, dry runs, per-tool rate limits, and a scanner that flags prompt injection in tool descriptions
 - **OpenAPI 3.0** document at `/doc.yaml` and a Swagger UI at `/doc`
 
 ### 🗄️ Data sources
@@ -50,7 +50,7 @@ Write a SQL template and a few lines of YAML. flAPI serves the result as a REST 
 - CORS allowlist, per-user rate limits, a JSONL audit log, direct TLS, and a config auditor that runs at startup
 
 ### 🔭 Observability
-- **OpenTelemetry tracing**: one span per request with the query inside, joined to the agent's trace via SEP-414 `traceparent`
+- **OpenTelemetry tracing**: one span per request with the query inside, joined to the calling agent's trace
 - **`request_id`** on every response and log line, runtime metrics, `/health` and `/health/live`
 - **`log-http-requests`** logs every HTTP request DuckDB makes (S3, GCS, HTTP), with credentials redacted
 
@@ -70,6 +70,7 @@ Write a SQL template and a few lines of YAML. flAPI serves the result as a REST 
 - [Building from source](#-building-from-source)
 - [Telemetry](#-telemetry)
 - [License](#-license)
+- [Contributing](#-contributing) · [Support](#-support) · [Citation](#-citation) · [Feedback](#feedback)
 
 ## 🤖 Claude Code plugin
 
@@ -115,6 +116,8 @@ docker pull ghcr.io/datazoode/flapi:latest
 docker run --rm -p 8080:8080 -v "$PWD/demo:/config" ghcr.io/datazoode/flapi -c /config/flapi.yaml
 ```
 
+This serves the `demo/` project from the [Quick Start](#-quick-start) below. Mount any directory that holds a `flapi.yaml`.
+
 `:latest` and `:v<version>` come from releases; `:main` and `:sha-<commit>` come from main. The image carries the default extensions. The `-runtime` variant (for example `:latest-runtime`) also carries `bigquery`. One port (8080) serves both REST and MCP (`/mcp/jsonrpc`).
 
 ## 🚀 Quick Start
@@ -139,7 +142,7 @@ mcp-tool:
 EOF
 ```
 
-**3. Start the server.** It prints a security warning that MCP has no auth yet. That is expected for a local demo; see [Authentication](docs/guides/authentication.md).
+**3. Start the server.** It runs in the foreground on port 8080; stop it with Ctrl+C. It prints a security warning that MCP has no auth yet, which is expected for a local demo; see [Authentication](docs/guides/authentication.md).
 
 <!-- flapi: quickstart serve -->
 ```bash

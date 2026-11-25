@@ -66,7 +66,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -315,10 +317,24 @@ def check_yaml_keys(rep: Report, snippets: list[Snippet], known: set[str]):
             rep.ok(where, "yaml keys")
 
 
-# A forbidden term may be named where the text says it is gone (sentences wrap,
-# so the next line counts too).
-GONE = ("deprecated", "no effect", "ignored", "removed", "dropped", "existed",
-        "earlier version", "does not exist", "drops")
+# A forbidden term may be named where its sentence says it is gone. Sentences wrap,
+# so the sentence may continue on the next line, but it ends at the first period.
+GONE = re.compile(r"\b(deprecated|no effect|ignored|removed|dropped|drops|existed|earlier version|"
+                  r"does not exist)\b", re.I)
+
+
+def says_gone(lines: list[str], n: int, term: str) -> bool:
+    """Whether the sentence holding `term` (on 1-based line n) says the term is gone."""
+    if lines[n - 1].lstrip().startswith("|"):          # a table row is one statement
+        return bool(GONE.search(lines[n - 1]))
+    nxt = lines[n] if n < len(lines) else ""
+    # The sentence goes on to the next line unless that line starts a new one (or a block).
+    continues = bool(re.match(r"^\s*[a-z`(]", nxt))
+    text = lines[n - 1] + (" " + nxt if continues else "")
+    i = text.find(term)
+    start = text.rfind(". ", 0, i) + 1
+    end = text.find(". ", i)
+    return bool(GONE.search(text[start:end if end >= 0 else len(text)]))
 
 
 def check_forbidden(rep: Report, files: list[Path]):
@@ -326,9 +342,8 @@ def check_forbidden(rep: Report, files: list[Path]):
     for f in files:
         lines = f.read_text(encoding="utf-8").splitlines()
         for n, line in enumerate(lines, 1):
-            context = (line + " " + (lines[n] if n < len(lines) else "")).lower()
             for term, why in terms:
-                if term in line and not any(w in context for w in GONE):
+                if term in line and not says_gone(lines, n, term):
                     rep.fail(f"{rel(f)}:{n}", f"'{term}' ({why})")
 
 
@@ -337,24 +352,31 @@ def check_template_vars(rep: Report, files: list[Path], allowed: set[str]):
     for f in files:
         lines = f.read_text(encoding="utf-8").splitlines()
         for n, line in enumerate(lines, 1):
-            context = (line + " " + (lines[n] if n < len(lines) else "")).lower()
             for var in pat.findall(line):
-                if var not in allowed and not any(w in context for w in GONE):
+                if var not in allowed and not says_gone(lines, n, f"cache.{var}"):
                     rep.fail(f"{rel(f)}:{n}", f"{{{{cache.{var}}}}} is not set by the template processor "
                                               f"(known: {', '.join(sorted(allowed))})")
 
 
 def github_slug(heading: str, seen: dict[str, int]) -> str:
-    """The anchor GitHub generates for a Markdown heading."""
+    """The anchor GitHub generates for a Markdown heading (github-slugger rules)."""
     # Inline HTML goes, except inside code spans (`--to <dir>` keeps "dir").
     parts = heading.split("`")
     text = "".join(p if i % 2 else re.sub(r"<[^>]+>", "", p) for i, p in enumerate(parts))
     text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", text)   # links and images keep their text
+    text = re.sub(r"(\*\*|__|\*|\b_)(.+?)\1", r"\2", text)    # emphasis markers go, the words stay
     text = text.strip().lower()
-    slug = re.sub(r"[^\w\- ]", "", text, flags=re.UNICODE).replace(" ", "-")
-    n = seen.get(slug, 0)
-    seen[slug] = n + 1
-    return slug if n == 0 else f"{slug}-{n}"
+    # Letters, digits, `_`, `-`, spaces and combining marks (the U+FE0F of an emoji) stay.
+    slug = "".join(ch for ch in text if ch.isalnum() or ch in "_- " or unicodedata.category(ch).startswith("M"))
+    slug = slug.replace(" ", "-")
+    if slug in seen:
+        n = seen[slug]
+        while f"{slug}-{n}" in seen:
+            n += 1
+        seen[slug] = n + 1
+        slug = f"{slug}-{n}"
+    seen[slug] = seen.get(slug, 1)
+    return slug
 
 
 def anchors_of(path: Path, cache: dict[Path, set[str]]) -> set[str]:
@@ -362,30 +384,51 @@ def anchors_of(path: Path, cache: dict[Path, set[str]]) -> set[str]:
         text = path.read_text(encoding="utf-8")
         text = FENCE.sub("", text)  # a `# comment` in a code block is not a heading
         seen: dict[str, int] = {}
-        found = {github_slug(m.group(1), seen) for m in re.finditer(r"^#{1,6}\s+(.*?)\s*#*\s*$", text, re.M)}
-        found |= set(re.findall(r"""<a\s+(?:name|id)=["']([^"']+)["']""", text))
+        headings = re.findall(r"^#{1,6}\s+(.*?)\s*#*\s*$", text, re.M)
+        headings += re.findall(r"^(\S.*?)\s*\n(?:=+|-+)\s*$", text, re.M)   # setext
+        found = {github_slug(h, seen) for h in headings}
+        found |= {a.lower() for a in re.findall(r"""<a\s+(?:name|id)=["']([^"']+)["']""", text)}
         cache[path] = found
     return cache[path]
 
 
-LINK = re.compile(r"(?<!!)\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)|<img[^>]+src=\"([^\"]+)\"|<a[^>]+href=\"([^\"]+)\"")
+LINK = re.compile(r"\[[^\]]*\]\(<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\)|<img[^>]+src=[\"']([^\"']+)[\"']"
+                  r"|<a[^>]+href=[\"']([^\"']+)[\"']")
+
+
+def tracked_files() -> set[Path] | None:
+    try:
+        out = subprocess.run(["git", "-C", str(REPO), "ls-files", "-co", "--exclude-standard"],
+                             capture_output=True, text=True, timeout=60, check=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    files = {(REPO / p).resolve() for p in out.splitlines()}
+    return files | {d for f in files for d in f.parents}
 
 
 def check_links(rep: Report, files: list[Path]):
-    """Every relative link resolves to a file, and every #anchor to a heading in it."""
+    """Every relative link resolves to a file in the repo, and every #anchor to a heading in it."""
     cache: dict[Path, set[str]] = {}
+    tracked = tracked_files()   # an ignored file exists here but not on GitHub
     for f in files:
         text = FENCE.sub(lambda m: "\n" * m.group(0).count("\n"), f.read_text(encoding="utf-8"))
         for n, line in enumerate(text.splitlines(), 1):
+            line = re.sub(r"`[^`]*`", "", line)   # `[x](y)` in inline code is not a link
             for m in LINK.finditer(line):
                 target = next(g for g in m.groups() if g)
                 if re.match(r"^[a-z][a-z0-9+.-]*:", target, re.I):   # http:, mailto:, ...
                     continue
                 path_part, _, anchor = target.partition("#")
-                dest = f if not path_part else (f.parent / path_part).resolve()
+                path_part = urllib.parse.unquote(path_part.split("?", 1)[0])
+                if not path_part:
+                    dest = f
+                elif path_part.startswith("/"):              # repo-absolute, as GitHub resolves it
+                    dest = (REPO / path_part.lstrip("/")).resolve()
+                else:
+                    dest = (f.parent / path_part).resolve()
                 where = f"{rel(f)}:{n}"
-                if not dest.exists():
-                    rep.fail(where, f"link target {target} does not exist")
+                if not dest.exists() or (tracked is not None and dest not in tracked):
+                    rep.fail(where, f"link target {target} does not exist in the repository")
                     continue
                 if anchor and dest.suffix == ".md" and anchor.lower() not in anchors_of(dest, cache):
                     rep.fail(where, f"anchor #{anchor} is not a heading in {rel(dest)}")
@@ -395,7 +438,23 @@ def check_links(rep: Report, files: list[Path]):
 
 # ------------------------------------------------------------------ Readme Quick Start
 
-QUICKSTART = re.compile(r"^<!--\s*flapi:\s*quickstart\s+(\w+)([^>]*)-->\s*\n```\w*\n(.*?)^```", re.S | re.M)
+QUICKSTART_MARK = re.compile(r"^<!--\s*flapi:\s*quickstart\b", re.M)
+QUICKSTART = re.compile(r"^<!--\s*flapi:\s*quickstart\s+(\w+)([^>]*)-->\s*\n```[^\n]*\n(.*?)^```", re.S | re.M)
+QUICKSTART_KINDS = {"run", "serve", "try"}
+
+
+def stop_group(proc: subprocess.Popen):
+    """Stop a process started with start_new_session=True, and everything it started."""
+    for sig, wait in ((signal.SIGTERM, 15), (signal.SIGKILL, 5)):
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            return
+        try:
+            proc.wait(timeout=wait)
+            return
+        except subprocess.TimeoutExpired:
+            continue
 
 
 def run_quickstart(rep: Report, flapi: Path, flapii: list[str]):
@@ -405,13 +464,26 @@ def run_quickstart(rep: Report, flapi: Path, flapii: list[str]):
       <!-- flapi: quickstart run -->              run with bash, must exit 0
       <!-- flapi: quickstart serve -->            started in the background; the server must come up
       <!-- flapi: quickstart try expect="x" -->   run once the server is up; must exit 0 and print x
-    `uvx --from flapi-io <cmd>` resolves to the binaries under test, and port 8080 to a free port
-    (FLAPI_PORT for the server, a text substitution in the blocks).
+    `uvx --from flapi-io <cmd>` resolves to the binaries under test, and localhost:8080 to a free
+    port (FLAPI_PORT for the server, a substitution in the blocks).
     """
     readme = REPO / "Readme.md"
+    text = readme.read_text(encoding="utf-8")
     blocks = [(m.group(1), dict(re.findall(r'(\w+)="([^"]*)"', m.group(2))), m.group(3),
-               readme.read_text(encoding="utf-8").count("\n", 0, m.start()) + 1)
-              for m in QUICKSTART.finditer(readme.read_text(encoding="utf-8"))]
+               text.count("\n", 0, m.start()) + 1)
+              for m in QUICKSTART.finditer(text)]
+    marks = len(QUICKSTART_MARK.findall(text))
+    if marks != len(blocks):
+        rep.fail("Readme.md", f"{marks} quickstart markers but {len(blocks)} parse: each needs a kind and a "
+                              "fenced block on the very next line")
+        return
+    for kind, attrs, _, line in blocks:
+        if kind not in QUICKSTART_KINDS:
+            rep.fail(f"Readme.md:{line}", f"unknown quickstart kind {kind!r} (known: {', '.join(sorted(QUICKSTART_KINDS))})")
+            return
+        if kind == "try" and "expect" not in attrs:
+            rep.fail(f"Readme.md:{line}", 'a quickstart try block needs expect="..." (curl -s exits 0 on a 500)')
+            return
     if not any(k == "serve" for k, *_ in blocks) or not any(k == "try" for k, *_ in blocks):
         rep.fail("Readme.md", "no runnable Quick Start (<!-- flapi: quickstart serve/try --> blocks)")
         return
@@ -433,7 +505,7 @@ def run_quickstart(rep: Report, flapi: Path, flapii: list[str]):
         try:
             for kind, attrs, body, line in blocks:
                 where = f"Readme.md:{line} (quickstart {kind})"
-                script = shim + body.replace("8080", str(port))
+                script = shim + re.sub(r"\b(localhost|127\.0\.0\.1):8080\b", rf"\1:{port}", body)
                 if kind == "serve":
                     server = subprocess.Popen(["bash", "-c", script], cwd=tmp, env=env,
                                               stdout=log.open("w"), stderr=subprocess.STDOUT,
@@ -452,11 +524,16 @@ def run_quickstart(rep: Report, flapi: Path, flapii: list[str]):
                         return
                     rep.ok(where, "server up")
                     continue
-                proc = subprocess.run(["bash", "-c", script], cwd=tmp, env=env, capture_output=True,
-                                      text=True, timeout=300)
-                out = proc.stdout + proc.stderr
-                if proc.returncode != 0:
-                    rep.fail(where, f"exit {proc.returncode}:\n{out[-1500:]}")
+                step = subprocess.Popen(["bash", "-c", script], cwd=tmp, env=env, stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, text=True, start_new_session=True)
+                try:
+                    out, _ = step.communicate(timeout=300)
+                except subprocess.TimeoutExpired:
+                    stop_group(step)
+                    rep.fail(where, "timed out after 300 s")
+                    return
+                if step.returncode != 0:
+                    rep.fail(where, f"exit {step.returncode}:\n{out[-1500:]}")
                     return
                 if "expect" in attrs and attrs["expect"] not in out:
                     rep.fail(where, f"output lacks {attrs['expect']!r}:\n{out[-1500:]}")
@@ -464,11 +541,7 @@ def run_quickstart(rep: Report, flapi: Path, flapii: list[str]):
                 rep.ok(where)
         finally:
             if server is not None:
-                try:
-                    os.killpg(server.pid, signal.SIGTERM)
-                    server.wait(timeout=15)
-                except (ProcessLookupError, subprocess.TimeoutExpired):
-                    os.killpg(server.pid, signal.SIGKILL)
+                stop_group(server)
 
 
 # ------------------------------------------------------------------ CLI help model
@@ -571,7 +644,8 @@ def cli_invocations(files: list[Path], binary: str, prose_ok: bool = True) -> li
     if not prose_ok:
         # In docs a command starts a line or a code span (after an optional prompt or
         # `&&`); "a running flapi holds the lock" inside a quoted message is no call.
-        pat = re.compile(rf"(?:^\s*(?:[$>]\s+)?|`|&&\s*|\|\s*|\$\()(?:\./)?{re.escape(binary)}\s+([^`\n]*)")
+        pat = re.compile(rf"(?:^\s*(?:[$>]\s+)?|`|&&\s*|\|\s*|\$\()(?:sudo\s+)?(?:[A-Z_][A-Z0-9_]*=\S*\s+)*"
+                         rf"(?:uvx\s+--from\s+flapi-io(?:==\S+)?\s+|\S*/)?{re.escape(binary)}\s+([^`\n]*)")
     for f in files:
         text = f.read_text(encoding="utf-8")
         if not prose_ok:
@@ -742,11 +816,7 @@ def run_checks(rep: Report, where: str, root: Path, flapi: Path, checks: list[st
             else:
                 rep.ok(where, f"{method} {url} -> {code}")
     finally:
-        try:
-            os.killpg(server.pid, signal.SIGTERM)
-            server.wait(timeout=15)
-        except (ProcessLookupError, subprocess.TimeoutExpired):
-            os.killpg(server.pid, signal.SIGKILL)
+        stop_group(server)
         log.close()
 
 
