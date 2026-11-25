@@ -12,16 +12,40 @@ flAPI checks a caller in three places, and each has its own configuration:
 | Which rows may they see? | the SQL template, using `auth.username` and `auth.roles` |
 
 MCP tools are a separate door with a separate lock: `mcp.auth` and per-tool
-`allowed-roles` (step 6). The REST `auth:` block does not protect them.
+`allowed-roles` (step 5). The REST `auth:` block does not protect them.
 
-**Before you start:** you have a project with a working endpoint
-([Getting started](./getting-started.md)). The examples use the sample
-customer table:
+**Words used below**
+
+| Term | Meaning |
+|---|---|
+| principal | the authenticated caller: a user name or a token's subject |
+| challenge | the `WWW-Authenticate` header of a `401`, naming the scheme to use |
+| realm | the name in a challenge; flAPI always sends `realm="flAPI"` |
+| preflight | the `OPTIONS` request a browser sends before a cross-origin call |
+| `sub`, `iss`, `aud`, `exp`, `nbf` | token claims: subject, issuer, audience, expiry, not-before |
+| JWKS, `kid` | the identity provider's published public keys, and the id in a token naming the key that signed it |
+| startup auditor | the check that prints `SECURITY WARNINGS` at startup and in `--validate-config`; it never stops startup |
+| config service | flAPI's admin API (`--config-service`), used by `flapii` |
+| MCP tool | an endpoint exposed to AI agents over `POST /mcp/jsonrpc` |
+
+**Before you start:** you have flAPI installed ([Getting started](./getting-started.md)).
+The guide builds three small projects, each in its own directory:
+
+| Project | Steps |
+|---|---|
+| `shop` | 1-4 and 6: users, roles, row filters, CORS, rate limits |
+| `shop-agents` | 5: MCP tools |
+| `reports-jwt` | 7: Bearer tokens |
+
+Start the first one with the sample customer table:
 
 ```bash
-mkdir -p data
+mkdir -p shop/data shop/sqls && cd shop
 curl -L -o data/customers.parquet https://github.com/DataZooDE/flapi/raw/main/examples/data/customers.parquet
 ```
+
+flAPI does not watch its files: after every change to a config or endpoint
+file, **restart it** (Ctrl-C, then the same `flapi` command).
 
 ---
 
@@ -75,14 +99,16 @@ ORDER BY c_custkey
 <!-- flapi: check group=quick GET /customers?limit=2 user=reader:s3cret-reader -> 200 contains "Customer#000000002" -->
 <!-- flapi: check group=quick GET /customers user=reader:wrong -> 401 contains "not accepted" -->
 
-Start it with the password exported:
+Start it with the password exported. `--host 127.0.0.1` keeps a password demo
+off the network:
 
 ```bash
 export READER_PASSWORD='s3cret-reader'
-flapi -c flapi.yaml
+flapi -c flapi.yaml --host 127.0.0.1
 ```
 
-Without credentials the answer is `401`, with a challenge naming the scheme:
+In a second terminal, call it without credentials. The answer is `401`, with a
+challenge naming the scheme:
 
 ```bash
 curl -i http://localhost:8080/customers
@@ -97,7 +123,7 @@ X-Request-Id: req-6088c2b6fe989082
 {"message":"This endpoint requires authentication; no Authorization header was sent.","error":"Unauthorized"}
 ```
 
-With them, the rows:
+With credentials, the rows:
 
 ```bash
 curl -u reader:s3cret-reader 'http://localhost:8080/customers?limit=2'
@@ -114,7 +140,7 @@ A wrong password gets `401` with `"The credentials sent were not accepted."`.
 one that is unset or empty stops it too (`auth.users: a user has an empty
 username or password`). See [reusing config and reading the environment](./yaml-includes.md).
 
-Startup also prints two security warnings. Steps 2 and 7 remove them:
+Startup also prints two security warnings. Step 2 removes both:
 
 ```text
 [AUTH_PLAINTEXT_PASSWORD] User 'reader' has a plaintext password. Store a PBKDF2-SHA256 hash instead, ... (at: endpoint GET /customers)
@@ -138,12 +164,11 @@ digest is cracked in seconds. Both still log in, so an upgrade does not lock
 anyone out, but both are deprecated. bcrypt is recognised and refused rather
 than accepted unchecked.
 
-flAPI has no hashing command. Use passlib, which writes the format flAPI
-reads (the auditor's warning prints the same command):
+flAPI has no hashing command. passlib writes the format flAPI reads; `uvx`
+runs it without installing anything:
 
 ```bash
-pip install passlib
-python3 -c "from passlib.hash import pbkdf2_sha256; import getpass; print(pbkdf2_sha256.using(rounds=600000).hash(getpass.getpass()))"
+uvx --with passlib python -c "from passlib.hash import pbkdf2_sha256; import getpass; print(pbkdf2_sha256.using(rounds=600000).hash(getpass.getpass()))"
 ```
 
 ```text
@@ -152,8 +177,8 @@ $pbkdf2-sha256$600000$ozRmzJmTci5lTIkxptQ6Zw$MLAFJ2P.1Tf285q/gCCNFLbb/giQPB71ksN
 ```
 
 Paste that string as the password. Here three users, defined once in the
-top-level `auth:` block of `flapi.yaml` so every endpoint shares them (step 4).
-The `cors:` block is explained in step 7.
+top-level `auth:` block so every endpoint shares them (step 3). Replace
+`flapi.yaml`:
 
 <!-- flapi: config group=shop -->
 ```yaml
@@ -167,7 +192,7 @@ connections:
     properties:
       path: ./data/customers.parquet
 cors:
-  allow-origins: ['https://app.example.com']
+  allow-origins: ['https://app.example.com']   # step 6
 auth:
   enabled: true
   type: basic
@@ -183,179 +208,9 @@ auth:
       roles: [sysadmin]
 ```
 
-This config starts without a security warning. A hash is not the password,
-but it can be attacked offline, so keep it out of public repositories; it can
-come from `{{env.NAME}}` like a password.
-
-A 600,000-round hash takes a noticeable fraction of a second to check. flAPI
-remembers a successful check for the same user and password, so only the first
-request pays it, and it caps how many checks run at once.
-
-## 3. Choose a method
-
-| Method | `type:` | Use it when | The caller sends |
-|---|---|---|---|
-| Basic | `basic` | a handful of known callers; users in YAML or in AWS Secrets Manager | `Authorization: Basic <base64 user:password>` |
-| Bearer | `bearer` (alias `jwt`) | you mint HS256 tokens yourself with a shared secret | `Authorization: Bearer <jwt>` |
-| OIDC | `oidc` | an identity provider (Entra ID, Keycloak, Auth0, Okta, Google) signs the tokens | `Authorization: Bearer <jwt>` |
-
-One scheme applies per block. Keys the chosen type never reads (`users:` under
-`bearer`, `jwt-secret:` under `basic`) are named in a startup warning. A
-`type:` flAPI does not know (`basci`) stops startup with `AUTH_UNKNOWN_TYPE`.
-
-There is no API-key header and no opaque shared-secret token: a bearer token
-must be a JWT that verifies.
-
-### Bearer (HS256 JWT)
-
-```yaml
-# sqls/reports.yaml (the auth: block)
-auth:
-  enabled: true
-  type: bearer
-  jwt-secret: '{{env.JWT_SECRET}}'           # whitelist JWT_SECRET
-  jwt-issuer: https://auth.example.com
-  roles: [analyst]
-```
-
-A token is accepted when all of this holds:
-
-| Check | Fails with |
-|---|---|
-| signed with HS256 and `jwt-secret` | `401` |
-| `iss` equals `jwt-issuer` exactly | `401` |
-| `sub` is a string: it becomes `auth.username` | `401` |
-| `roles` is an array of strings, possibly empty: it becomes `auth.roles` | `401` (a missing claim, or a single string) |
-| `exp`, when the token has one, is in the future | `401` |
-| one of the endpoint's `roles` is in the token | `403` |
-
-`aud` is not checked, and a token without `exp` never expires, so mint tokens
-with one. An empty `jwt-secret` (an unset variable) refuses every token and
-the auditor reports `AUTH_EMPTY_JWT_SECRET`.
-
-To try it, mint a token with PyJWT:
-
-```bash
-pip install pyjwt
-export JWT_SECRET=$(openssl rand -hex 32)      # the same value the server reads
-TOKEN=$(python3 -c "import jwt, os, time; print(jwt.encode({'sub': 'dana', 'iss': 'https://auth.example.com', 'roles': ['analyst'], 'exp': int(time.time()) + 3600}, os.environ['JWT_SECRET'], algorithm='HS256'))")
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/reports
-```
-
-A refused token gets `WWW-Authenticate: Bearer realm="flAPI", error="invalid_token"`;
-no token at all gets the bare `Bearer realm="flAPI"`.
-
-### OIDC
-
-> **Known issue in v26.11.25: OIDC rejects every token, valid ones included**
-> ([#273](https://github.com/DataZooDE/flapi/issues/273)). The server logs `JWT header missing 'alg' field`.
-> Until a release fixes it, use Bearer (`jwt-secret`) or Basic. The configuration below is what a fixed
-> release will accept.
-
-flAPI validates tokens your identity provider issues. It fetches
-`<issuer-url>/.well-known/openid-configuration` on the first request, then the
-JWKS it names, and checks each token against them.
-
-```yaml
-# flapi.yaml (the top-level auth: block)
-auth:
-  enabled: true
-  type: oidc
-  oidc:
-    provider-type: keycloak          # fills issuer-url, username and roles claims
-    domain: kc.example.com
-    realm: acme                      # issuer: https://kc.example.com/realms/acme
-    client-id: flapi-api
-    allowed-audiences: [flapi-api]
-    email-claim: email
-```
-
-A token is accepted when:
-
-- its header has a `kid` found in the JWKS and an `alg` of RS256, RS384 or
-  RS512 (an unknown `kid` refetches the JWKS once; otherwise it is kept for
-  `jwks-cache-hours`, default 24);
-- `iss` equals `issuer-url` exactly, trailing slash included (Auth0 issuers end
-  in `/`);
-- `aud` holds one of `allowed-audiences`. **Without `allowed-audiences`, any
-  token from that issuer is accepted**, including ones minted for other
-  applications;
-- `exp` is not older than `clock-skew-seconds` (default 300), unless
-  `verify-expiration: false`;
-- it has a `sub`.
-
-Claims become template variables like this:
-
-| Variable | Claim | Default |
-|---|---|---|
-| `auth.username` | `username-claim`, else `sub` | `sub`; the presets use `preferred_username` (Microsoft, Keycloak, Okta) or `email` (Google, Auth0) |
-| `auth.email` | `email-claim` | `email` |
-| `auth.roles` | `role-claim-path` if set, else `roles-claim` | `roles`; Keycloak's preset reads `realm_access.roles` |
-
-A dot in `role-claim-path` or `roles-claim` means nesting (`realm_access.roles`).
-`groups-claim` is read but does not grant roles: only the roles claim counts
-for `roles:` and `allowed-roles`.
-
-`provider-type` (`google`, `microsoft` with aliases `azure`, `azure-ad`,
-`entra`, `keycloak`, `auth0`, `okta`, `github`, `generic`) fills in
-`issuer-url` with placeholders: `{tenant}` from `tenant-id` (Microsoft),
-`{domain}` and `{realm}` (Keycloak, Auth0, Okta). A placeholder left unfilled
-stops startup with an error naming the key. flAPI only validates tokens:
-`client-secret`, `scopes`, `enable-client-credentials` and
-`enable-refresh-tokens` do not take part in it.
-
-The full key list is in [CONFIG_REFERENCE § 7.4](../CONFIG_REFERENCE.md#74-oidc-authentication).
-
-### Users from AWS Secrets Manager
-
-The user list can live in a Secrets Manager secret instead of YAML. Only a
-`type: basic` block reads it:
-
-```yaml
-# flapi.yaml (the top-level auth: block), or an endpoint's own block
-auth:
-  enabled: true
-  type: basic
-  from-aws-secretmanager:
-    secret-name: prod/flapi/users
-    region: eu-central-1               # else AWS_REGION, AWS_DEFAULT_REGION, the profile's region
-```
-
-The secret's value is a JSON object with an `auth` array. `username` and
-`password` are required strings; `password` takes the formats of step 2:
-
-```json
-{"auth": [
-  {"username": "alice", "password": "$pbkdf2-sha256$600000$...", "roles": ["admin"]},
-  {"username": "bob",   "password": "$pbkdf2-sha256$600000$...", "roles": ["sales"]}
-]}
-```
-
-- **AWS credentials:** `secret-id` and `secret-key` in the block (both or
-  neither, e.g. from `{{env.NAME}}`), else the AWS SDK's default chain
-  (environment, `AWS_PROFILE`, SSO, web identity, container or instance role).
-  The deprecated `init:` creates a DuckDB S3 secret named after `secret-name`
-  (`prod/flapi/users` becomes `prod_flapi_users`) in a private DuckDB.
-- **When it is read:** once at startup per `secret-name`, however many
-  endpoints share it. A failure stops startup. To rotate users, update the
-  secret and restart flAPI.
-- **Where it is kept:** in flAPI's memory. Neither the users nor the AWS
-  credentials are in the DuckDB database templates run on, and neither is
-  logged. `secret-table` from older configs is ignored with a warning (it
-  has no effect), and tables an older version left in a file `db_path` are
-  dropped at startup; if that file was in use, rotate those passwords.
-- **Inline users win:** a block with `users:` never consults the secret.
-- **Endpoint override:** `AWS_ENDPOINT_URL_SECRETS_MANAGER` (LocalStack, a VPC
-  endpoint) is honoured with a startup warning; plain `http://` only to a
-  loopback host or with `FLAPI_ALLOW_INSECURE_SECRETS_ENDPOINT=1`.
-  `AWS_ENDPOINT_URL` is not used for it.
-
-The rest is in [CONFIG_REFERENCE § 7.5](../CONFIG_REFERENCE.md#75-aws-secrets-manager).
-
-## 4. Decide who may call what
-
-With the top-level block of step 2, every endpoint **without an `auth:` block
-of its own** requires one of those users. This endpoint has none:
+Replace `sqls/customers.yaml` too. An endpoint's own `auth:` block would
+replace the top-level one, and the old one still reads `READER_PASSWORD`,
+which this config no longer whitelists:
 
 <!-- flapi: endpoint group=shop file=customers.yaml -->
 ```yaml
@@ -367,13 +222,29 @@ connection: [customers]
 
 <!-- flapi: template group=shop file=customers.sql -->
 ```sql
--- sqls/customers.sql
+-- sqls/customers.sql (unchanged)
 SELECT c_custkey, c_name, c_mktsegment
 FROM read_parquet('{{{ conn.path }}}')
 ORDER BY c_custkey
 ```
 <!-- flapi: check group=shop GET /customers -> 401 -->
 <!-- flapi: check group=shop GET /customers?limit=1 user=bob:builder -> 200 contains "Customer#000000001" -->
+
+Restart flAPI. It starts without a security warning, and `/customers` now
+takes any of the three users:
+
+```bash
+curl -s -u bob:builder 'http://localhost:8080/customers?limit=1'
+```
+
+A hash is not the password, but it can be attacked offline, so keep it out of
+public repositories; it can come from `{{env.NAME}}` like a password.
+
+A 600,000-round hash takes a noticeable fraction of a second to check. flAPI
+remembers a successful check for the same user and password, so only the first
+request pays it, and it caps how many checks run at once.
+
+## 3. Decide who may call what
 
 <a id="roles"></a>
 
@@ -400,11 +271,15 @@ FROM read_parquet('{{{ conn.path }}}')
 <!-- flapi: check group=shop GET /admin/balances user=bob:builder -> 403 contains "does not hold any role" -->
 <!-- flapi: check group=shop GET /admin/balances -> 401 -->
 
+Restart flAPI, then:
+
 ```bash
+curl -s -u alice:wonderland http://localhost:8080/admin/balances
 curl -s -u bob:builder http://localhost:8080/admin/balances
 ```
 
 ```json
+{"data":[{"total_balance":6681865.59}],"next":"","total_count":1}
 {"message":"The authenticated principal does not hold any role this endpoint requires.","error":"Forbidden"}
 ```
 
@@ -435,28 +310,34 @@ ORDER BY segment
 ```
 <!-- flapi: check group=shop GET /segments -> 200 contains "MACHINERY" -->
 
+Restart flAPI; no credentials needed:
+
+```bash
+curl -s http://localhost:8080/segments
+```
+
 The rules for an endpoint's `auth:` block:
 
 | The endpoint has | Result |
 |---|---|
 | no `auth:` block | the top-level block applies, roles included (`inherited: true` in the config API) |
 | `auth: {roles: [...]}` (no `type`, no credentials) | the top-level type and users, with these roles. Without an enabled top-level block: startup error `AUTH_NO_TYPE` |
-| a `type:` or credentials (`users`, `jwt-secret`, `oidc`, `from-aws-secretmanager`) | **replaces** the top-level block; nothing is merged, so give it everything it needs. Credentials without `type:` are `AUTH_NO_TYPE` |
+| a `type:` or credentials (`users`, `jwt-secret`, `jwt-issuer`, `oidc`, `from-aws-secretmanager`) | **replaces** the top-level block; nothing is merged, so give it everything it needs. Credentials without `type:` are `AUTH_NO_TYPE` |
 | `auth: {enabled: false}` | public, whatever the top level says |
 
 A block without an `enabled:` key that sets `type`, `roles`, `users`,
 `jwt-secret`, `jwt-issuer`, `oidc` or `from-aws-secretmanager` is **on**; only
-`enabled: false` turns it off. Startup reports the outcome:
+`enabled: false` turns it off. At this point startup reports:
 
 ```text
 Endpoint GET /admin/balances: `auth:` names no type or credentials, so it uses the top-level `auth:` block (type 'basic') with its own roles
-Global auth (type 'basic') applies to 3 endpoint(s) without their own `auth:` block; 1 endpoint(s) opt out with `auth: {enabled: false}`
+Global auth (type 'basic') applies to 1 endpoint(s) without their own `auth:` block; 1 endpoint(s) opt out with `auth: {enabled: false}`
 ```
 
 The top-level block covers endpoints created later through the config service
-too. It covers REST only; MCP tools are step 6.
+too. It covers REST only; MCP tools are step 5.
 
-## 5. Filter rows by caller
+## 4. Filter rows by caller
 
 After authentication the template sees who is calling:
 
@@ -468,9 +349,10 @@ After authentication the template sees who is calling:
 | `auth.type` | `basic`, `bearer` or `oidc` | every authenticated request |
 | `auth.authenticated` | `true` | every authenticated request |
 
-On an anonymous request (an endpoint with `enabled: false`, or an MCP call with
-`mcp.auth` off) every one of them is **empty**. A caller cannot set them: a
-`__auth_roles=admin` query or tool argument is dropped.
+No other claim reaches the template. On an anonymous request (an endpoint with
+`enabled: false`, or an MCP call with `mcp.auth` off) every one of them is
+**empty**. A caller cannot set them: a `__auth_roles=admin` query or tool
+argument is dropped.
 
 Here admins see every customer and everyone else the segments named in their
 roles:
@@ -496,6 +378,8 @@ ORDER BY c_custkey
 <!-- flapi: check group=shop GET /my-customers?limit=1 user=bob:builder -> 200 contains ""total_count":616" -->
 <!-- flapi: check group=shop GET /my-customers user=carol:sunshine -> 200 contains ""total_count":0" -->
 
+Restart flAPI, then:
+
 ```bash
 curl -s -u bob:builder 'http://localhost:8080/my-customers?limit=2'
 ```
@@ -505,42 +389,109 @@ curl -s -u bob:builder 'http://localhost:8080/my-customers?limit=2'
 ```
 
 alice gets all 1500, bob the 616 BUILDING and FURNITURE customers, carol none.
-Four rules make such a filter safe:
+Five rules make such a filter safe:
 
 - **Split the roles, never `LIKE`.** `'{{{ auth.roles }}}' LIKE '%admin%'` is
   true for carol, whose only role is `sysadmin`, and for any role that merely
   contains the word (`admin-readonly`). `list_contains(string_split(...), 'admin')`
-  matches whole role names only.
+  matches whole role names only. Role names must not contain commas.
 - **Fail closed.** Write the condition so that empty values match nothing, as
   above: an empty `auth.roles` splits into `['']`, which contains no role. A
   filter that is only applied *when* a value is present
   (`{{#auth.username}}WHERE owner = ...{{/auth.username}}`) shows every row to
   an anonymous caller.
-- **`auth.*` is text in the SQL.** Unlike `{{ params.x }}` it is never bound
-  as a prepared-statement parameter; the value is pasted into the query. Put
-  it inside single quotes with triple braces, `'{{{ auth.username }}}'`, and
-  trust it as far as you trust its source: your own `users:`, the holder of
-  `jwt-secret`, or your identity provider.
+- **`auth.*` is text, not a bound parameter.** Unlike `{{ params.x }}` it is
+  never a prepared-statement parameter. Put it inside single quotes with triple
+  braces, `'{{{ auth.username }}}'`, and use only values the caller cannot edit: your own `users:`, a token you signed, or an identity
+  provider's immutable subject (`sub` or an object id). Do not filter on
+  `preferred_username` or `email` from an identity provider where users can
+  change their own profile.
+- **Scope by user** with a column compare:
+  `WHERE account_owner = '{{{ auth.username }}}'`.
 - **The endpoint's `roles:` decides whether the query runs; the template
   decides which rows it returns.** Use both: a `roles:` list keeps strangers
   out with a `403` before any SQL runs.
 
-To scope by user instead of role, compare a column with the user name:
-
-```sql
-WHERE account_owner = '{{{ auth.username }}}'
-```
-
-## 6. Protect MCP tools
+## 5. Protect MCP tools
 
 MCP requests (`POST /mcp/jsonrpc`) never pass the REST `auth:` check, whether
-it is the endpoint's own block or the top-level one. A tool is protected only by
-`mcp.auth` and its own `allowed-roles`. If `mcp.auth` is off, every tool runs
-for anyone who reaches the server, with empty `auth.*` (the startup auditor
-says so: `MCP_UNAUTHENTICATED_TOOLS`).
+it is the endpoint's own block or the top-level one. A tool is protected only
+by `mcp.auth` and its own `allowed-roles`.
 
-`mcp.auth` has its own users (or `jwt-secret`, or `oidc` block), separate from
-the REST ones:
+### The leak
+
+Make a new project next to `shop`:
+
+```bash
+cd .. && mkdir -p shop-agents/sqls && cp -r shop/data shop-agents/ && cd shop-agents
+```
+
+Start it with REST authentication only. alice is the one user:
+
+<!-- flapi: config group=leak allow=MCP_UNAUTHENTICATED_TOOLS -->
+```yaml
+# flapi.yaml (first version)
+project-name: shop-agents
+project-description: Customer tools for agents
+template:
+  path: ./sqls
+connections:
+  customers:
+    properties:
+      path: ./data/customers.parquet
+cors:
+  allow-origins: ['https://app.example.com']
+auth:
+  enabled: true
+  type: basic
+  users:
+    - username: alice                # password: wonderland
+      password: '$pbkdf2-sha256$600000$ozRmzJmTci5lTIkxptQ6Zw$MLAFJ2P.1Tf285q/gCCNFLbb/giQPB71ksNz79pRVVc'
+      roles: [admin]
+```
+
+and one endpoint that is also a tool:
+
+<!-- flapi: endpoint group=leak file=customer-count.yaml -->
+```yaml
+# sqls/customer-count.yaml (first version)
+url-path: /customer-count
+template-source: customer-count.sql
+connection: [customers]
+mcp-tool:
+  name: customer_count
+  description: Number of customers
+```
+
+<!-- flapi: template group=leak file=customer-count.sql -->
+```sql
+-- sqls/customer-count.sql
+SELECT count(*) AS customers
+FROM read_parquet('{{{ conn.path }}}')
+```
+<!-- flapi: check group=leak GET /customer-count -> 401 -->
+<!-- flapi: check group=leak GET /customer-count user=alice:wonderland -> 200 contains ""customers":1500" -->
+<!-- flapi: check-mcp group=leak customer_count -> ok contains ""customers":1500" -->
+
+Startup warns `MCP_UNAUTHENTICATED_TOOLS`, and it means it. REST refuses an
+anonymous caller, the tool does not:
+
+```bash
+curl -s http://localhost:8080/customer-count
+curl -s http://localhost:8080/mcp/jsonrpc -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"customer_count","arguments":{}}}'
+```
+
+```text
+{"message":"This endpoint requires authentication; no Authorization header was sent.","error":"Unauthorized"}
+{"jsonrpc":"2.0","id":1,"result":{"content":[{"text":"[{\"customers\":1500}]","type":"text"}],"structuredContent":{"rows":[{"customers":1500}],"row_count":1}}}
+```
+
+### The fix: `mcp.auth` and `allowed-roles`
+
+Add an `mcp:` block. `mcp.auth` has its own user list (or `jwt-secret`, or
+`oidc` block); a YAML anchor (`&users`, `*users`) reuses the REST one. Replace
+`flapi.yaml`:
 
 <!-- flapi: config group=agents -->
 ```yaml
@@ -555,24 +506,50 @@ connections:
       path: ./data/customers.parquet
 cors:
   allow-origins: ['https://app.example.com']
+auth:
+  enabled: true
+  type: basic
+  users: &users
+    - username: alice                # password: wonderland
+      password: '$pbkdf2-sha256$600000$ozRmzJmTci5lTIkxptQ6Zw$MLAFJ2P.1Tf285q/gCCNFLbb/giQPB71ksNz79pRVVc'
+      roles: [admin]
+    - username: bob                  # password: builder
+      password: '$pbkdf2-sha256$600000$oxSC0LrXOocQotTamxOC8A$P1Vx2VzRfDfyN0vMeYUQDJMGY9UkAXekveTOV9rmjKY'
+      roles: [sales, building, furniture]
+    - username: carol                # password: sunshine
+      password: '$pbkdf2-sha256$600000$KSVEaA2h9N5ba60V4jxnzA$KFV4K50ijplOcayCt7xitjyTNAEWAdZaxu6wtQoVb7U'
+      roles: [sysadmin]
 mcp:
   auth:
     enabled: true
     type: basic                      # default: bearer
-    users:
-      - username: alice
-        password: '$pbkdf2-sha256$600000$ozRmzJmTci5lTIkxptQ6Zw$MLAFJ2P.1Tf285q/gCCNFLbb/giQPB71ksNz79pRVVc'
-        roles: [admin]
-      - username: bob
-        password: '$pbkdf2-sha256$600000$oxSC0LrXOocQotTamxOC8A$P1Vx2VzRfDfyN0vMeYUQDJMGY9UkAXekveTOV9rmjKY'
-        roles: [sales, building, furniture]
-      - username: carol
-        password: '$pbkdf2-sha256$600000$KSVEaA2h9N5ba60V4jxnzA$KFV4K50ijplOcayCt7xitjyTNAEWAdZaxu6wtQoVb7U'
-        roles: [sysadmin]
+    users: *users
 ```
 
 With `mcp.auth` enabled, **a tool without `allowed-roles` is refused to
-everyone**. List the roles that may call it:
+everyone** (`403`, "has no allowed-roles configured"). Give the tool its roles:
+
+<!-- flapi: endpoint group=agents file=customer-count.yaml -->
+```yaml
+# sqls/customer-count.yaml
+url-path: /customer-count
+template-source: customer-count.sql
+connection: [customers]
+mcp-tool:
+  name: customer_count
+  description: Number of customers
+  allowed-roles: [admin]
+```
+
+<!-- flapi: template group=agents file=customer-count.sql -->
+```sql
+-- sqls/customer-count.sql (unchanged)
+SELECT count(*) AS customers
+FROM read_parquet('{{{ conn.path }}}')
+```
+
+and add a second tool whose template filters exactly like step 4; `auth.*`
+holds the MCP caller:
 
 <!-- flapi: endpoint group=agents file=segment-balances.yaml -->
 ```yaml
@@ -586,8 +563,6 @@ mcp-tool:
   allowed-roles: [admin, sales]
 ```
 
-The template filters exactly like step 5; `auth.*` holds the MCP caller:
-
 <!-- flapi: template group=agents file=segment-balances.sql -->
 ```sql
 -- sqls/segment-balances.sql
@@ -600,11 +575,22 @@ WHERE list_contains(string_split('{{{ auth.roles }}}', ','), 'admin')
 GROUP BY c_mktsegment
 ORDER BY segment
 ```
+<!-- flapi: check-mcp group=agents customer_count -> 401 -->
+<!-- flapi: check-mcp group=agents customer_count user=alice:wonderland -> ok contains ""customers":1500" -->
 <!-- flapi: check-mcp group=agents segment_balances -> 401 -->
 <!-- flapi: check-mcp group=agents segment_balances user=alice:wonderland -> ok contains ""row_count":5" -->
 <!-- flapi: check-mcp group=agents segment_balances user=bob:builder -> ok contains ""row_count":2" -->
 <!-- flapi: check-mcp group=agents segment_balances user=carol:sunshine -> 403 contains "requires one of [admin, sales]" -->
-<!-- flapi: check group=agents GET /segment-balances -> 200 contains ""total_count":0" -->
+<!-- flapi: check group=agents GET /segment-balances user=bob:builder -> 200 contains "FURNITURE" -->
+
+Restart flAPI and call the tool as each user (drop `-u` for the anonymous
+call):
+
+```bash
+curl -s -u bob:builder http://localhost:8080/mcp/jsonrpc -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"segment_balances","arguments":{}}}'
+curl -s -u bob:builder http://localhost:8080/segment-balances
+```
 
 | Caller | `tools/call segment_balances` |
 |---|---|
@@ -613,17 +599,18 @@ ORDER BY segment
 | bob (`sales`) | BUILDING and FURNITURE only |
 | carol (`sysadmin`) | HTTP `403`, `"Permission denied: Tool 'segment_balances' requires one of [admin, sales]; caller has [sysadmin]."` |
 
-The same file is also a REST endpoint, and this config has no REST `auth:`:
-`GET /segment-balances` is public and returns `"total_count":0`, because its
-anonymous caller has no roles and the template fails closed. Add a top-level
-`auth:` block (step 4) or remove `url-path` if the tool should be the only way
-in.
+The same endpoint answers REST too, through the top-level `auth:`: bob gets the
+same two segments from `GET /segment-balances`. Remove `url-path` if the tool
+should be the only way in.
 
 `mcp.auth.methods` relaxes single methods, e.g. `tools/list: {required: false}`;
-every other method requires authentication. See
-[MCP tools](./mcp-tools.md) and [MCP_REFERENCE § 8](../MCP_REFERENCE.md).
+every other method requires authentication, except `server/discover`, which is
+always public. See [MCP tools](./mcp-tools.md) and
+[MCP_REFERENCE § 8](../MCP_REFERENCE.md).
 
-## 7. CORS, rate limits and the audit log
+## 6. CORS, rate limits and the audit log
+
+Back in the `shop` project.
 
 **CORS.** Without a `cors:` block, every origin is allowed: a page on any site
 can call the API from a visitor's browser with a credential it holds and read
@@ -636,9 +623,11 @@ cors:
 ```
 
 Preflights (`OPTIONS` with `Access-Control-Request-Method`) from that origin
-get the `Access-Control-Allow-*` headers on REST paths and `/mcp/jsonrpc`, and
-the requested headers are echoed, so `Authorization` passes. Other origins get
-no `Access-Control-Allow-Origin`. Details: [CONFIG_REFERENCE § 2.9.1](../CONFIG_REFERENCE.md#291-cors).
+get the `Access-Control-Allow-*` headers on REST paths and `/mcp/jsonrpc`.
+While `cors.allow-headers` is unset (or contains `*`) the requested headers are
+echoed, so `Authorization` passes; a list of your own must name it. Other
+origins get no `Access-Control-Allow-Origin`. Details:
+[CONFIG_REFERENCE § 2.9.1](../CONFIG_REFERENCE.md#291-cors).
 
 **Rate limits per caller.** `key: user` gives every caller a bucket of its own:
 
@@ -652,27 +641,294 @@ rate-limit:
   enabled: true
   max: 2                             # requests per caller ...
   interval: 60                       # ... per 60 seconds
-  key: user                          # ip (default) | user | user-or-ip
+  key: user                          # ip | user | user-or-ip
 ```
 <!-- flapi: check group=shop GET /export?limit=1 user=bob:builder -> 200 -->
 <!-- flapi: check group=shop GET /export?limit=1 user=bob:builder -> 200 -->
 <!-- flapi: check group=shop GET /export?limit=1 user=bob:builder -> 429 contains "Rate limit exceeded" -->
 <!-- flapi: check group=shop GET /export?limit=1 user=alice:wonderland -> 200 -->
 
-bob's third request within a minute gets `429` with `Retry-After`; alice still
-gets `200`. The limit runs **before** authentication, so the bucket is the
-`Authorization` header as sent, and requests with wrong credentials count too.
-Anonymous requests share one bucket under `user`; `user-or-ip` gives them
-their address's bucket instead. Every request also counts against its IP with a
-ceiling of ten times `max`, so rotating made-up credentials does not escape the
-limit. The global block is `rate_limit:` (underscore) in `flapi.yaml`;
-[CONFIG_REFERENCE § 2.8](../CONFIG_REFERENCE.md#28-rate-limiting-global).
+Restart flAPI and call it three times as bob, then once as alice:
 
-**Audit log.** `audit: {enabled: true}` writes one JSON line per request, with
-the principal (`anonymous` for a `401`), route, status and `request_id`. It is
-off by default. See [Observability](./observability.md).
+```bash
+for i in 1 2 3; do curl -s -o /dev/null -w '%{http_code}\n' -u bob:builder 'http://localhost:8080/export?limit=1'; done
+curl -s -o /dev/null -w '%{http_code}\n' -u alice:wonderland 'http://localhost:8080/export?limit=1'
+```
+
+```text
+200
+200
+429
+200
+```
+
+The `429` carries `Retry-After`. The limit runs **before** authentication, so
+the bucket is the `Authorization` header as sent, and requests with wrong
+credentials count too. Anonymous requests share one bucket under `user`;
+`user-or-ip` gives them their address's bucket instead. Every request also
+counts against its IP with a ceiling of ten times `max`, so rotating made-up
+credentials does not escape the limit. `key` defaults to the global
+`rate_limit.key`, else `ip`. The global block is `rate_limit:` (underscore) in
+`flapi.yaml`; [CONFIG_REFERENCE § 2.8](../CONFIG_REFERENCE.md#28-rate-limiting-global).
+REST limits do not apply to `/mcp/jsonrpc`; tools take `mcp-tool.rate-limit`.
+
+**Audit log.** `audit: {enabled: true}` writes one JSON line per request (off
+by default). `principal` is the user, `anonymous` for a request without
+credentials, and a bearer token's `sub` even when it was then refused for
+missing roles. `status` is `success`, `denied`, `rate_limited` or `error:NNN`;
+a `429` line has `target` `<unmatched>`, because the limit fires before routing
+is recorded. See [Observability](./observability.md).
+
+## 7. Choose another method
+
+| Method | `type:` | Use it when | The caller sends |
+|---|---|---|---|
+| Basic | `basic` | a handful of known callers; users in YAML or in AWS Secrets Manager | `Authorization: Basic <base64 user:password>` |
+| Bearer | `bearer` (alias `jwt`) | you mint HS256 tokens yourself with a shared secret | `Authorization: Bearer <jwt>` |
+| OIDC | `oidc` | an identity provider (Entra ID, Keycloak, Auth0, Okta, Google) signs the tokens | `Authorization: Bearer <jwt>` |
+
+One scheme applies per block. Keys the chosen type never reads (`users:` under
+`bearer`, `jwt-secret:` under `basic`) are named in a startup warning. A
+`type:` flAPI does not know (`basci`) stops startup with `AUTH_UNKNOWN_TYPE`.
+There is no API-key header and no opaque shared-secret token: a bearer token
+must be a JWT that verifies.
+
+### Bearer (HS256 JWT)
+
+A project of its own:
+
+```bash
+cd .. && mkdir -p reports-jwt/sqls && cp -r shop/data reports-jwt/ && cd reports-jwt
+```
+
+```yaml
+# flapi.yaml
+project-name: reports
+project-description: Reports for token holders
+template:
+  path: ./sqls
+  environment-whitelist:
+    - '^JWT_SECRET$'
+connections:
+  customers:
+    properties:
+      path: ./data/customers.parquet
+cors:
+  allow-origins: ['https://app.example.com']
+```
+
+```yaml
+# sqls/reports.yaml
+url-path: /reports
+template-source: reports.sql
+connection: [customers]
+auth:
+  enabled: true
+  type: bearer
+  jwt-secret: '{{env.JWT_SECRET}}'
+  jwt-issuer: https://auth.example.com
+  roles: [analyst]
+```
+
+```sql
+-- sqls/reports.sql
+SELECT '{{{ auth.username }}}' AS caller, count(*) AS customers
+FROM read_parquet('{{{ conn.path }}}')
+```
+
+The secret is exported **before** the server starts. Print it once, so the
+second terminal can mint tokens with the same value:
+
+```bash
+export JWT_SECRET=$(openssl rand -hex 32)
+echo "$JWT_SECRET"
+flapi -c flapi.yaml --host 127.0.0.1
+```
+
+In the second terminal, paste that value and mint a one-hour token with PyJWT:
+
+```bash
+export JWT_SECRET='<the value printed above>'
+TOKEN=$(uvx --with pyjwt python -c "import jwt, os, time; print(jwt.encode({'sub': 'dana', 'iss': 'https://auth.example.com', 'roles': ['analyst'], 'exp': int(time.time()) + 3600}, os.environ['JWT_SECRET'], algorithm='HS256'))")
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8080/reports
+```
+
+```json
+{"data":[{"caller":"dana","customers":1500}],"next":"","total_count":1}
+```
+
+A token is accepted when all of this holds:
+
+| Check | Fails with |
+|---|---|
+| signed with HS256 and `jwt-secret` | `401` |
+| `iss` equals `jwt-issuer` exactly | `401` |
+| `sub` is a string: it becomes `auth.username` | `401` |
+| `roles` is an array of strings, possibly empty: it becomes `auth.roles` | `401` (a missing claim, or a single string) |
+| `exp`, when the token has one, is in the future | `401` |
+| `nbf` and `iat`, when present, are not in the future | `401` |
+| one of the endpoint's `roles` is in the token | `403` |
+
+`aud` is not checked, and a token without `exp` never expires, so mint tokens
+with one. An empty `jwt-secret` (an unset variable) refuses every token and
+the auditor reports `AUTH_EMPTY_JWT_SECRET`. A refused token gets
+`WWW-Authenticate: Bearer realm="flAPI", error="invalid_token"`; no token at all
+gets the bare `Bearer realm="flAPI"`.
+
+There is one secret per block. Rotating it means changing it and restarting
+flAPI, and every token signed with the old one stops working at once.
+
+### OIDC
+
+flAPI validates tokens your identity provider issues. It fetches
+`<issuer-url>/.well-known/openid-configuration` on the first request, then the
+JWKS it names, and checks each token against them.
+
+```yaml
+# flapi.yaml (the top-level auth: block)
+auth:
+  enabled: true
+  type: oidc
+  oidc:
+    provider-type: keycloak          # fills issuer-url, username and roles claims
+    domain: kc.example.com
+    realm: acme                      # issuer: https://kc.example.com/realms/acme
+    client-id: flapi-api
+    allowed-audiences: [flapi-api]
+```
+
+A token is accepted when:
+
+- its header has a `kid` found in the JWKS and an `alg` of RS256, RS384 or
+  RS512 (EC keys such as ES256 are refused). The JWKS is kept for
+  `jwks-cache-hours` (default 24); a token with an unknown `kid` refetches it,
+  up to three times per request and with no cooldown;
+- `iss` equals `issuer-url` exactly, trailing slash included;
+- `aud` holds one of `allowed-audiences`. **Without `allowed-audiences`, any
+  token from that issuer is accepted**, including ones minted for other
+  applications;
+- it has an `exp` no older than `clock-skew-seconds` (default 300). A token
+  without `exp` is refused unless `verify-expiration: false`;
+- it has a `sub`.
+
+Claims become template variables like this:
+
+| Variable | Claim | Default |
+|---|---|---|
+| `auth.username` | `username-claim`, else `sub` | `sub`; the presets use `preferred_username` (Microsoft, Keycloak, Okta) or `email` (Google, Auth0) |
+| `auth.email` | `email-claim` | `email` |
+| `auth.roles` | `role-claim-path` if set, else `roles-claim` | `roles` |
+
+A dot in `role-claim-path` or `roles-claim` means nesting (`realm_access.roles`),
+so a claim name that itself contains a dot cannot be read. `groups-claim` is
+read but grants nothing: only the roles claim counts for `roles:` and
+`allowed-roles`.
+
+`provider-type` fills in `issuer-url` and claim defaults:
+
+| `provider-type` | `issuer-url` it fills | Placeholders |
+|---|---|---|
+| `microsoft` (aliases `azure`, `azure-ad`, `entra`) | `https://login.microsoftonline.com/{tenant}/v2.0` | `tenant-id`: the tenant GUID |
+| `keycloak` | `https://{domain}/realms/{realm}` | `domain`: the full host; `realm` |
+| `auth0` | `https://{domain}.auth0.com` | `domain`: the tenant subdomain. Auth0's `iss` ends in `/`, so set `issuer-url: https://<tenant>.auth0.com/` yourself |
+| `okta` | `https://{domain}.okta.com/oauth2/default` | `domain`: the tenant subdomain |
+| `google` | `https://accounts.google.com` | none |
+| `generic` | none: set `issuer-url` | none |
+
+A placeholder left unfilled stops startup with an error naming the key. The
+presets replace `username-claim: sub` with their own default even when you
+write it, and Keycloak's always sets `role-claim-path: realm_access.roles`, so
+`roles-claim` has no effect there; set `role-claim-path` to change it.
+`github` is accepted as a value but cannot validate tokens: GitHub publishes no
+OIDC discovery document. flAPI only validates tokens: `client-secret`,
+`scopes`, `enable-client-credentials` and `enable-refresh-tokens` do not take
+part in it.
+
+The full key list is in [CONFIG_REFERENCE § 7.4](../CONFIG_REFERENCE.md#74-oidc-authentication).
+
+### Users from AWS Secrets Manager
+
+The user list can live in a Secrets Manager secret instead of YAML. Only a
+`type: basic` block reads it:
+
+```yaml
+# flapi.yaml (the top-level auth: block), or an endpoint's own block
+auth:
+  enabled: true
+  type: basic
+  from-aws-secretmanager:
+    secret-name: prod/flapi/users
+    region: eu-central-1               # else AWS_REGION, AWS_DEFAULT_REGION, the profile's region
+```
+
+The secret's value is a JSON object with an `auth` array. `username` and
+`password` are required strings; `password` takes the formats of step 2:
+
+```json
+{"auth": [
+  {"username": "alice", "password": "$pbkdf2-sha256$600000$...", "roles": ["admin"]},
+  {"username": "bob",   "password": "$pbkdf2-sha256$600000$...", "roles": ["sales"]}
+]}
+```
+
+Create it from a file, and give flAPI's AWS identity read access to it:
+
+```bash
+aws secretsmanager create-secret --name prod/flapi/users --region eu-central-1 \
+  --secret-string file://users.json
+```
+
+```json
+{"Version": "2012-10-17",
+ "Statement": [{"Effect": "Allow", "Action": "secretsmanager:GetSecretValue",
+   "Resource": "arn:aws:secretsmanager:eu-central-1:123456789012:secret:prod/flapi/users-*"}]}
+```
+
+AWS appends a random six-character suffix to a secret's ARN, hence the `-*`.
+A secret encrypted with a customer-managed KMS key also needs `kms:Decrypt` on
+that key.
+
+- **AWS credentials:** `secret-id` and `secret-key` in the block (both or
+  neither, e.g. from `{{env.NAME}}`), else the AWS SDK's default chain
+  (environment, `AWS_PROFILE`, SSO, web identity, container or instance role).
+  The deprecated `init:` creates a DuckDB S3 secret named after `secret-name`
+  (`prod/flapi/users` becomes `prod_flapi_users`) in a private DuckDB.
+- **When it is read:** once at startup per `secret-name`, however many
+  endpoints share it, for every `basic` block that names it. A failure stops
+  startup.
+- **Rotating users:** write the new list and restart flAPI; there is no
+  periodic refresh. flAPI reads the version labelled `AWSCURRENT`, so the
+  previous list stays available as `AWSPREVIOUS` should you need to roll back.
+  Restart replicas one by one behind a load balancer to avoid downtime.
+
+  ```bash
+  aws secretsmanager update-secret --secret-id prod/flapi/users --region eu-central-1 \
+    --secret-string file://users.json
+  ```
+- **Where it is kept:** in flAPI's memory. Neither the users nor the AWS
+  credentials are in the DuckDB database templates run on, and neither is
+  logged. `secret-table` from older configs is ignored with a warning (it
+  has no effect), and tables an older version left in a file `db_path` are
+  dropped at startup; if that file was in use, rotate those passwords.
+- **Inline users win for logins:** a block with `users:` never checks a
+  password against the secret, but the secret is still fetched at startup, and
+  a failed fetch still stops it.
+- **Endpoint override:** `AWS_ENDPOINT_URL_SECRETS_MANAGER` (LocalStack, a VPC
+  endpoint) is honoured with a startup warning; plain `http://` only to a
+  loopback host or with `FLAPI_ALLOW_INSECURE_SECRETS_ENDPOINT=1`.
+  `AWS_ENDPOINT_URL` is not used for it.
+
+The rest is in [CONFIG_REFERENCE § 7.5](../CONFIG_REFERENCE.md#75-aws-secrets-manager).
 
 ## 8. Test it
+
+Restart `shop` with the config service, flAPI's admin API that `flapii` talks
+to, and a token of your own:
+
+```bash
+export FLAPI_CONFIG_SERVICE_TOKEN=$(openssl rand -hex 16)
+flapi -c flapi.yaml --host 127.0.0.1 --config-service --config-service-token "$FLAPI_CONFIG_SERVICE_TOKEN"
+```
 
 **With curl**, one request per outcome:
 
@@ -683,20 +939,11 @@ curl -i -u bob:builder http://localhost:8080/admin/balances        # 403: no adm
 curl -s -u alice:wonderland http://localhost:8080/admin/balances   # 200
 ```
 
-For an MCP tool, send the same `Authorization` header with the JSON-RPC body:
+**With flapii**, in a terminal with the same token exported, see how an
+endpoint ended up protected:
 
 ```bash
-curl -s -u alice:wonderland http://localhost:8080/mcp/jsonrpc \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"segment_balances","arguments":{}}}'
-```
-
-**With flapii.** `flapii` talks to the config service, which has its own
-token (`flapi --config-service --config-service-token <token>`), not to your
-endpoints. It shows how each endpoint ended up protected:
-
-```bash
-flapii -t "$FLAPI_CONFIG_SERVICE_TOKEN" endpoints get /customers
+flapii endpoints get /customers
 ```
 
 ```json
@@ -710,15 +957,48 @@ flapii -t "$FLAPI_CONFIG_SERVICE_TOKEN" endpoints get /customers
 
 `inherited: true` means the top-level block applies. `/segments` shows
 `"enabled": false`, `/admin/balances` `"roles": ["admin"]`. Users and secrets
-are never shown. `flapii metrics -o table` counts the rejections per
-endpoint:
+are never shown. `flapii metrics -o table` counts the four requests above:
 
 ```text
-2 requests, 0 server errors, 0 cache-not-ready 503s · rejected: 1 × 401, 1 × 403, 0 × 429
+4 requests, 0 server errors, 0 cache-not-ready 503s · rejected: 2 × 401, 1 × 403, 0 × 429
 ```
 
 `flapi --validate-config` prints the security warnings without starting the
 server.
+
+## Production checklist
+
+- **TLS:** `enforce-https` with a certificate, or a TLS proxy in front. Basic
+  passwords and tokens are readable on plain HTTP. Bind with `--host` to the
+  interface you mean.
+- **Passwords:** PBKDF2 hashes, from `{{env.NAME}}` or AWS Secrets Manager.
+- **Bearer:** `jwt-issuer` set, every token carries `exp`, a secret of at
+  least 32 random bytes. Rotation is a new secret and a restart, which ends all
+  tokens.
+- **MCP:** `mcp.auth` on and `allowed-roles` on every tool, or no `mcp-tool`
+  at all.
+- **Templates:** fail closed, with `list_contains(string_split(...))` and only
+  immutable claims.
+- **Rate limits:** `rate-limit` with `key: user-or-ip`, and
+  `mcp-tool.rate-limit` for tools.
+- **CORS:** `cors.allow-origins` lists your front ends.
+- **Audit:** `audit.enabled: true`.
+- **Config service:** off, or bound to loopback with a long token. It is an
+  admin interface: it can create endpoints with authentication off.
+- **CI:** `flapi --validate-config` with zero `SECURITY WARNINGS`.
+
+## Limits you should know
+
+- Bearer checks no `aud`, and a token without `exp` never expires.
+- OIDC accepts RS256, RS384 and RS512 only, and exactly one `iss` per block,
+  so it cannot accept tokens from several Entra ID tenants.
+- An OIDC `groups` claim grants nothing.
+- Only `sub`/user name, email and roles reach templates; custom claims such as
+  `tid` do not.
+- flAPI does not read `X-Forwarded-For`: behind a load balancer every caller
+  has the balancer's address, so `key: ip` puts everyone in one bucket.
+- Rate-limit buckets are keyed on the raw `Authorization` header per route: a
+  new token is a new bucket. They live in memory, per replica.
 
 ## Common mistakes
 
@@ -728,11 +1008,12 @@ server.
 - **A filter that disappears for anonymous callers.** `{{#auth.username}}`
   sections render nothing when the value is empty. Write conditions that match
   no row when `auth.*` is empty.
-- **Expecting REST `auth:` to protect a tool.** It does not. Enable `mcp.auth`
-  and give every tool `allowed-roles`.
+- **Expecting REST `auth:` to protect a tool.** It does not (step 5). Enable
+  `mcp.auth` and give every tool `allowed-roles`.
 - **An endpoint block with `type:` but no users.** It replaces the top-level
   block, users included, and every login fails. Name only `roles:` to keep the
   top-level users.
+- **Editing a file and not restarting.** flAPI reads its config at startup.
 - **Bearer without `jwt-issuer`.** The token's `iss` must then be the empty
   string, so ordinary tokens get `401`. Always set `jwt-issuer`.
 - **A token without a `roles` array.** REST bearer refuses it with `401`; send
