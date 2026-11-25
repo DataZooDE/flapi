@@ -18,8 +18,8 @@ DuckDB as **bound parameters**, and which as **SQL text**.
 
 An endpoint is a YAML file and a SQL file in `sqls/`:
 
+<!-- flapi: endpoint group=first file=customer.yaml -->
 ```yaml
-# flapi: endpoint group=first file=customer.yaml
 url-path: /customers/:id
 request:
   - field-name: id
@@ -30,12 +30,12 @@ request:
         min: 1
 template-source: customer.sql
 connection: [customers]
-# flapi: check GET /customers/7 -> 200 contains "Customer#000000007"
-# flapi: check GET /customers/abc -> 400
 ```
+<!-- flapi: check GET /customers/7 -> 200 contains "Customer#000000007" -->
+<!-- flapi: check GET /customers/abc -> 400 -->
 
+<!-- flapi: template group=first file=customer.sql -->
 ```sql
--- flapi: template group=first file=customer.sql
 SELECT c_custkey, c_name, c_nationkey, c_acctbal
 FROM read_parquet('{{{ conn.path }}}')
 WHERE c_custkey = {{ params.id }}
@@ -147,8 +147,8 @@ So the rule of thumb is:
 
 Here is an endpoint that uses each kind:
 
+<!-- flapi: endpoint group=search file=customers.yaml allow=MCP_UNAUTHENTICATED_TOOLS -->
 ```yaml
-# flapi: endpoint group=search file=customers.yaml allow=MCP_UNAUTHENTICATED_TOOLS
 url-path: /customers
 request:
   - field-name: name
@@ -172,17 +172,17 @@ connection: [customers]
 mcp-tool:
   name: search_customers
   description: Find customers by part of their name and by nation
-# flapi: check GET /customers?name=000000007 -> 200 contains "Customer#000000007"
-# flapi: check GET /customers?name=O%27Brien -> 200
-# flapi: check GET /customers?nation=15&sort=c_acctbal -> 200
-# flapi: check GET /customers?nation=99 -> 400
-# flapi: check GET /customers?sort=c_phone -> 400
-# flapi: check GET /customers?limit=2&offset=2 -> 200 contains "offset=4&limit=2"
-# flapi: check-mcp search_customers {"name": "000000007", "_dryRun": true} -> ok contains "rendered_sql"
 ```
+<!-- flapi: check GET /customers?name=000000007 -> 200 contains "Customer#000000007" -->
+<!-- flapi: check GET /customers?name=O%27Brien -> 200 -->
+<!-- flapi: check GET /customers?nation=15&sort=c_acctbal -> 200 -->
+<!-- flapi: check GET /customers?nation=99 -> 400 -->
+<!-- flapi: check GET /customers?sort=c_phone -> 400 -->
+<!-- flapi: check GET /customers?limit=2&offset=2 -> 200 contains "offset=4&limit=2" -->
+<!-- flapi: check-mcp search_customers {"name": "000000007", "_dryRun": true} -> ok contains "rendered_sql" -->
 
+<!-- flapi: template group=search file=customers.sql -->
 ```sql
--- flapi: template group=search file=customers.sql
 SELECT c_custkey, c_name, c_nationkey, c_acctbal
 FROM read_parquet('{{{ conn.path }}}')
 WHERE c_name LIKE '%{{{ params.name }}}%'
@@ -234,8 +234,8 @@ inside a section sends `c_name = 'O'Brien'` to DuckDB, which fails with a
 `500`. To keep an optional value bound, leave it outside the section and let
 `NULL` switch the filter off:
 
+<!-- flapi: endpoint group=exact file=customers-exact.yaml -->
 ```yaml
-# flapi: endpoint group=exact file=customers-exact.yaml
 url-path: /customers-exact
 request:
   - field-name: name
@@ -245,13 +245,13 @@ request:
         max-length: 50
 template-source: customers-exact.sql
 connection: [customers]
-# flapi: check GET /customers-exact?name=Customer%23000000007 -> 200 contains "Customer#000000007"
-# flapi: check GET /customers-exact?name=O%27Brien -> 200
-# flapi: check GET /customers-exact?limit=1 -> 200 contains "Customer#000000001"
 ```
+<!-- flapi: check GET /customers-exact?name=Customer%23000000007 -> 200 contains "Customer#000000007" -->
+<!-- flapi: check GET /customers-exact?name=O%27Brien -> 200 -->
+<!-- flapi: check GET /customers-exact?limit=1 -> 200 contains "Customer#000000001" -->
 
+<!-- flapi: template group=exact file=customers-exact.sql -->
 ```sql
--- flapi: template group=exact file=customers-exact.sql
 SELECT c_custkey, c_name
 FROM read_parquet('{{{ conn.path }}}')
 WHERE ({{ params.name }} IS NULL OR c_name = {{ params.name }})
@@ -276,8 +276,8 @@ On an anonymous request none of them is set. `env.*` holds only the variables
 that match a pattern in `template.environment-whitelist`; with an empty
 whitelist it holds none.
 
+<!-- flapi: config group=who env="FLAPI_REGION=eu-west" -->
 ```yaml
-# flapi: config group=who env="FLAPI_REGION=eu-west"
 project-name: who-am-i
 template:
   path: ./sqls
@@ -290,8 +290,8 @@ cors:
   allow-origins: [https://app.example.com]
 ```
 
+<!-- flapi: endpoint group=who file=me.yaml -->
 ```yaml
-# flapi: endpoint group=who file=me.yaml
 url-path: /me
 with-pagination: false
 template-source: me.sql
@@ -303,13 +303,13 @@ auth:
     - username: reader      # password: reader-pass
       password: '$pbkdf2-sha256$600000$FpkEyJklqXpwdoxWhoRzvw$RA15LygYf0O0yiG8OPQ91NWeeSNqcxTwMl4pRXLcmq0'
       roles: [read, sales]
-# flapi: check GET /me -> 401
-# flapi: check GET /me user=reader:reader-pass -> 200 contains "read,sales"
-# flapi: check GET /me user=reader:reader-pass -> 200 contains "eu-west"
 ```
+<!-- flapi: check GET /me -> 401 -->
+<!-- flapi: check GET /me user=reader:reader-pass -> 200 contains "read,sales" -->
+<!-- flapi: check GET /me user=reader:reader-pass -> 200 contains "eu-west" -->
 
+<!-- flapi: template group=who file=me.sql -->
 ```sql
--- flapi: template group=who file=me.sql
 SELECT '{{{ auth.username }}}'      AS username,
        '{{{ auth.roles }}}'         AS roles,
        '{{{ auth.type }}}'          AS auth_type,
@@ -364,8 +364,8 @@ The same template rules apply to writes. A write endpoint answers with
 `rows_affected` and, when a statement has a `RETURNING` clause, its rows as
 `data`. `POST` answers `201`, the others `200`.
 
+<!-- flapi: config group=notes -->
 ```yaml
-# flapi: config group=notes
 project-name: notes-api
 template:
   path: ./sqls
@@ -376,8 +376,8 @@ connections:
       CREATE TABLE IF NOT EXISTS notesdb.notes (id INTEGER PRIMARY KEY, title VARCHAR NOT NULL);
 ```
 
+<!-- flapi: endpoint group=notes file=notes-create.yaml -->
 ```yaml
-# flapi: endpoint group=notes file=notes-create.yaml
 url-path: /notes
 method: POST
 request:
@@ -397,12 +397,12 @@ operation:
   returns-data: true
 template-source: notes-create.sql
 connection: [notes]
-# flapi: check POST /notes body={"id":1,"title":"O'Brien's list"} -> 201 contains "O'Brien's list"
-# flapi: check POST /notes body={"id":2,"title":"second"} -> 201
 ```
+<!-- flapi: check POST /notes body={"id":1,"title":"O'Brien's list"} -> 201 contains "O'Brien's list" -->
+<!-- flapi: check POST /notes body={"id":2,"title":"second"} -> 201 -->
 
+<!-- flapi: template group=notes file=notes-create.sql -->
 ```sql
--- flapi: template group=notes file=notes-create.sql
 INSERT INTO notesdb.notes (id, title)
 VALUES ({{ params.id }}, {{ params.title }})
 RETURNING id, title;
@@ -421,8 +421,8 @@ makes `data` always present (`[]` when `RETURNING` matched no row); without it,
 A `DELETE` is written the same way, and `rows_affected` tells you whether
 anything matched:
 
+<!-- flapi: endpoint group=notes file=notes-delete.yaml -->
 ```yaml
-# flapi: endpoint group=notes file=notes-delete.yaml
 url-path: /notes/:id
 method: DELETE
 request:
@@ -434,12 +434,12 @@ request:
         min: 1
 template-source: notes-delete.sql
 connection: [notes]
-# flapi: check DELETE /notes/2 -> 200 contains "{"rows_affected":1}"
-# flapi: check DELETE /notes/99 -> 200 contains "{"rows_affected":0}"
 ```
+<!-- flapi: check DELETE /notes/2 -> 200 contains "{"rows_affected":1}" -->
+<!-- flapi: check DELETE /notes/99 -> 200 contains "{"rows_affected":0}" -->
 
+<!-- flapi: template group=notes file=notes-delete.sql -->
 ```sql
--- flapi: template group=notes file=notes-delete.sql
 DELETE FROM notesdb.notes WHERE id = {{ params.id }}
 ```
 
@@ -453,8 +453,8 @@ or `"data": []` with `returns-data: true`. A search that takes its input as a
 JSON body hits this. Until it is fixed, make the `SELECT` the second statement;
 with `returns-data: true` the rows of a final `SELECT` become `data`:
 
+<!-- flapi: endpoint group=notes file=notes-search.yaml -->
 ```yaml
-# flapi: endpoint group=notes file=notes-search.yaml
 url-path: /notes/search
 method: POST
 request:
@@ -468,11 +468,11 @@ operation:
   returns-data: true
 template-source: notes-search.sql
 connection: [notes]
-# flapi: check POST /notes/search body={"q":"Brien"} -> 201 contains "O'Brien's list"
 ```
+<!-- flapi: check POST /notes/search body={"q":"Brien"} -> 201 contains "O'Brien's list" -->
 
+<!-- flapi: template group=notes file=notes-search.sql -->
 ```sql
--- flapi: template group=notes file=notes-search.sql
 SET VARIABLE q = {{ params.q }};
 SELECT id, title FROM notesdb.notes
 WHERE title ILIKE '%' || getvariable('q') || '%'

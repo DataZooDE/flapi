@@ -27,8 +27,8 @@ Tracing, the audit log and the DuckDB HTTP log are all off until you turn them o
 
 A `500` never carries the SQL or the database error. It carries an id:
 
+<!-- flapi: config group=logs -->
 ```yaml
-# flapi: config group=logs
 project-name: observability-guide
 template:
   path: ./sqls
@@ -40,17 +40,17 @@ log-level: info
 log-format: json        # one JSON object per line; the default is text
 ```
 
+<!-- flapi: endpoint group=logs file=broken.yaml -->
 ```yaml
-# flapi: endpoint group=logs file=broken.yaml
-# flapi: check GET /broken -> 500 contains "request_id"
-# flapi: check GET /broken -> 500 contains "The details are in the server log"
 url-path: /broken
 template-source: broken.sql
 connection: [customers]
 ```
+<!-- flapi: check GET /broken -> 500 contains "request_id" -->
+<!-- flapi: check GET /broken -> 500 contains "The details are in the server log" -->
 
+<!-- flapi: template group=logs file=broken.sql -->
 ```sql
--- flapi: template group=logs file=broken.sql
 SELECT no_such_column FROM read_parquet('{{{ conn.path }}}')
 ```
 
@@ -126,13 +126,8 @@ There are two probes, and they answer different questions.
 
 None of them needs a token, and none produces a trace span or an audit line.
 
+<!-- flapi: endpoint group=probes file=nation-counts.yaml -->
 ```yaml
-# flapi: endpoint group=probes file=nation-counts.yaml
-# flapi: check GET /health/live -> 200 contains "live"
-# flapi: check GET /health -> 200 contains ""status":"ready""
-# flapi: check GET /health -> 200 contains ""ready":1"
-# flapi: check GET /mcp/health -> 200 contains "tools_count"
-# flapi: check GET /api/v1/_config/metrics -> 401
 url-path: /nation-counts
 template-source: nation-counts.sql
 connection: [customers]
@@ -142,14 +137,19 @@ cache:
   schedule: 1h
   template-file: nation-counts-cache.sql
 ```
+<!-- flapi: check GET /health/live -> 200 contains "live" -->
+<!-- flapi: check GET /health -> 200 contains ""status":"ready"" -->
+<!-- flapi: check GET /health -> 200 contains ""ready":1" -->
+<!-- flapi: check GET /mcp/health -> 200 contains "tools_count" -->
+<!-- flapi: check GET /api/v1/_config/metrics -> 401 -->
 
+<!-- flapi: template group=probes file=nation-counts.sql -->
 ```sql
--- flapi: template group=probes file=nation-counts.sql
 SELECT * FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
 ```
 
+<!-- flapi: template group=probes file=nation-counts-cache.sql -->
 ```sql
--- flapi: template group=probes file=nation-counts-cache.sql
 CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS
 SELECT c_nationkey, count(*) AS customers
 FROM read_parquet('{{{ conn.path }}}')
@@ -169,11 +169,8 @@ While the cache is still building, `/health` answers `503` with
 answers `503 {"error":"cache_warming",...}` with `Retry-After: 5`. If the first
 build fails, both stay `503`:
 
+<!-- flapi: endpoint group=failed-cache file=nation-counts.yaml -->
 ```yaml
-# flapi: endpoint group=failed-cache file=nation-counts.yaml
-# flapi: check GET /health -> 503 contains ""status":"degraded""
-# flapi: check GET /health -> 503 contains ""failed":1"
-# flapi: check GET /nation-counts -> 503 contains "cache_build_failed"
 url-path: /nation-counts
 template-source: nation-counts.sql
 connection: [customers]
@@ -183,14 +180,17 @@ cache:
   schedule: 1h
   template-file: nation-counts-cache.sql
 ```
+<!-- flapi: check GET /health -> 503 contains ""status":"degraded"" -->
+<!-- flapi: check GET /health -> 503 contains ""failed":1" -->
+<!-- flapi: check GET /nation-counts -> 503 contains "cache_build_failed" -->
 
+<!-- flapi: template group=failed-cache file=nation-counts.sql -->
 ```sql
--- flapi: template group=failed-cache file=nation-counts.sql
 SELECT * FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
 ```
 
+<!-- flapi: template group=failed-cache file=nation-counts-cache.sql -->
 ```sql
--- flapi: template group=failed-cache file=nation-counts-cache.sql
 CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS
 SELECT no_such_column FROM read_parquet('{{{ conn.path }}}')
 ```
@@ -286,8 +286,8 @@ The `tracing:` block is read once at startup; changing it needs a restart.
 
 The quickest way to look at spans needs no collector: write them to a file.
 
+<!-- flapi: config group=trace-file -->
 ```yaml
-# flapi: config group=trace-file
 project-name: observability-guide
 template:
   path: ./sqls
@@ -305,9 +305,8 @@ tracing:
   db_profiling: summary       # DuckDB's own timings on the query span
 ```
 
+<!-- flapi: endpoint group=trace-file file=customers.yaml -->
 ```yaml
-# flapi: endpoint group=trace-file file=customers.yaml
-# flapi: check GET /customers?id=3 -> 200 contains "Customer#000000003"
 url-path: /customers
 request:
   - field-name: id
@@ -319,9 +318,10 @@ request:
 template-source: customers.sql
 connection: [customers]
 ```
+<!-- flapi: check GET /customers?id=3 -> 200 contains "Customer#000000003" -->
 
+<!-- flapi: template group=trace-file file=customers.sql -->
 ```sql
--- flapi: template group=trace-file file=customers.sql
 SELECT c_custkey, c_name FROM read_parquet('{{{ conn.path }}}')
 WHERE 1=1
 {{#params.id}}
@@ -454,8 +454,8 @@ Azure (`az://`, `abfss://`) is not verified. The details are in
 The audit log writes one JSON line per REST request and MCP call: who, what,
 which parameters, the outcome and the latency.
 
+<!-- flapi: config group=audit -->
 ```yaml
-# flapi: config group=audit
 project-name: observability-guide
 template:
   path: ./sqls
@@ -470,10 +470,8 @@ audit:
   redact: [password, tax_id]
 ```
 
+<!-- flapi: endpoint group=audit file=customers.yaml -->
 ```yaml
-# flapi: endpoint group=audit file=customers.yaml
-# flapi: check GET /customers?id=3 -> 200
-# flapi: check GET /customers?id=abc -> 400
 url-path: /customers
 request:
   - field-name: id
@@ -485,9 +483,11 @@ request:
 template-source: customers.sql
 connection: [customers]
 ```
+<!-- flapi: check GET /customers?id=3 -> 200 -->
+<!-- flapi: check GET /customers?id=abc -> 400 -->
 
+<!-- flapi: template group=audit file=customers.sql -->
 ```sql
--- flapi: template group=audit file=customers.sql
 SELECT c_custkey, c_name FROM read_parquet('{{{ conn.path }}}')
 WHERE 1=1
 {{#params.id}}

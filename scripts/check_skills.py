@@ -51,7 +51,10 @@ Check lines (anywhere inside a tagged endpoint/config block):
     # flapi: check-mcp get_orders [{"id": 1}] [user=name:pw] -> ok|error|401 [contains "text"]
 Group attributes on any tag: `env="NAME=value ..."` (exported for the group, as the
 text tells the reader to) and `allow=CODE,...` (auditor warnings it demonstrates).
-Guides under docs/guides/ are run the same way; each guide is its own namespace.
+Guides under docs/guides/ are run the same way; each guide is its own namespace, but their
+tags are HTML comments a reader never copies, and every group brings its own config:
+    <!-- flapi: endpoint group=g file=x.yaml -->      (the line before the fence)
+    <!-- flapi: check GET /x -> 200 contains "..." --> (after the block it tests)
 
 A group without its own config uses scripts/skill_snippets/fixture/flapi.yaml
 (connections `customers` -> ./data/customers.parquet, `northwind` -> the
@@ -116,6 +119,7 @@ class Snippet:
     body: str
     tag: str | None = None
     attrs: dict = field(default_factory=dict)
+    checks: list = field(default_factory=list)   # from <!-- flapi: check ... --> after the block
 
 
 @dataclass
@@ -162,23 +166,57 @@ def doc_markdown() -> list[Path]:
     return [f for f in files if f.exists()]
 
 
+# In guides the tags are HTML comments a reader never sees or copies:
+#   <!-- flapi: endpoint group=g file=sqls/x.yaml -->   on the line before a fence
+#   <!-- flapi: check GET /x -> 200 contains "..." -->  anywhere after it; belongs to the
+#                                                        tagged block above (or group=g)
+HTML_TAG = re.compile(r"^<!--\s*flapi:\s*([\w-]+)(.*?)\s*-->\s*$")
+
+
+def _attrs(raw: str) -> dict:
+    out = {}
+    for kv in shlex.split(raw):
+        if "=" in kv:
+            k, v = kv.split("=", 1)
+            out[k] = v
+    return out
+
+
 def extract_snippets(path: Path) -> list[Snippet]:
     text = path.read_text(encoding="utf-8")
     out = []
-    for m in FENCE.finditer(text):
+    fences = list(FENCE.finditer(text))
+    for m in fences:
         lang = (m.group(1) or "").lower()
         body = m.group(2)
         line = text.count("\n", 0, m.start()) + 1
         snip = Snippet(path, line, lang, body)
         first = body.splitlines()[0] if body.strip() else ""
         t = TAG.match(first)
+        before = text[:m.start()].rstrip("\n").rsplit("\n", 1)[-1]
+        h = HTML_TAG.match(before)
         if t:
-            snip.tag = t.group(1)
-            for kv in shlex.split(t.group(2)):
-                if "=" in kv:
-                    k, v = kv.split("=", 1)
-                    snip.attrs[k] = v
+            snip.tag, snip.attrs = t.group(1), _attrs(t.group(2))
+        elif h and h.group(1) not in ("check", "check-mcp", "quickstart"):
+            snip.tag, snip.attrs = h.group(1), _attrs(h.group(2))
         out.append(snip)
+    # Check comments outside fences attach to the nearest tagged block above them.
+    inside = [(m.start(), m.end()) for m in fences]
+    for cm in re.finditer(r"^<!--\s*flapi:\s*(check|check-mcp)\s+(.*?)\s*-->\s*$", text, re.M):
+        if any(a <= cm.start() < b for a, b in inside):
+            continue
+        spec = cm.group(2)
+        g = re.match(r"^group=(\S+)\s+(.*)$", spec)
+        group, spec = (g.group(1), g.group(2)) if g else (None, spec)
+        owner = None
+        for s in out:
+            if s.tag and (s.line - 1) <= text.count("\n", 0, cm.start()) and \
+                    (group is None or s.attrs.get("group") == group):
+                owner = s
+        if owner is None:
+            out.append(Snippet(path, text.count("\n", 0, cm.start()) + 1, "", "", tag="orphan-check"))
+            continue
+        owner.checks.append(("mcp " if cm.group(1) == "check-mcp" else "") + spec)
     return out
 
 
@@ -312,6 +350,18 @@ def walk_keys(node, path=()):
     elif isinstance(node, list):
         for item in node:
             yield from walk_keys(item, path)
+
+
+def check_guide_tags(rep: Report, snippets: list[Snippet]):
+    """Guides keep their test annotations out of what a reader copies."""
+    for s in snippets:
+        if not s.path.is_relative_to(GUIDES):
+            continue
+        for k, line in enumerate(s.body.splitlines()):
+            if TAG.match(line):
+                rep.fail(f"{rel(s.path)}:{s.line + 1 + k}",
+                         "a `flapi:` tag inside a guide's code block gets copied by readers; put it in an "
+                         "HTML comment (<!-- flapi: ... -->) on the line before the fence, or after it for checks")
 
 
 def check_yaml_keys(rep: Report, snippets: list[Snippet], known: set[str]):
@@ -742,6 +792,9 @@ def free_port() -> int:
 def run_groups(rep: Report, snippets: list[Snippet], flapi: Path):
     groups: dict[str, list[Snippet]] = {}
     for s in snippets:
+        if s.tag == "orphan-check":
+            rep.fail(f"{rel(s.path)}:{s.line}", "a <!-- flapi: check --> with no tagged block above it")
+            continue
         if s.tag in ("config", "endpoint", "template", "file"):
             g = s.attrs.get("group")
             if not g:
@@ -773,8 +826,13 @@ def run_group(rep: Report, name: str, members: list[Snippet], flapi: Path):
         (root / "data").symlink_to(REPO / "examples" / "data", target_is_directory=True)
         (root / "sqls").mkdir(exist_ok=True)
         checks = []
+        # A guide's reader never sees the fixture config, so a guide group brings its own.
+        if members[0].path.is_relative_to(GUIDES) and not any(s.tag == "config" for s in members):
+            rep.fail(where, "a guide group needs its own `flapi: config` block (the reader has no fixture)")
+            return
         for s in members:
             body = strip_tag(s.body)
+            checks.extend(s.checks)
             if s.tag == "config":
                 (root / "flapi.yaml").write_text(body)
                 continue
@@ -814,7 +872,7 @@ def run_group(rep: Report, name: str, members: list[Snippet], flapi: Path):
             run_checks(rep, where, root, flapi, checks, env)
 
 
-CHECK = re.compile(r"^(GET|POST|PUT|PATCH|DELETE)\s+(\S+)(?:\s+body=(\{.*?\}))?(?:\s+user=(\S+))?"
+CHECK = re.compile(r"^(GET|POST|PUT|PATCH|DELETE)\s+(\S+)(?:\s+body=(\{.*?\}))?(?:\s+user=(\S+))?(?:\s+header=(\S+?):(\S+))?"
                    r"\s*->\s*(\d{3})(?:\s+contains\s+\"(.*)\")?$")
 MCP_CHECK = re.compile(r"^mcp\s+([A-Za-z0-9_.-]+)(?:\s+(\{.*?\}))?(?:\s+user=(\S+))?"
                        r"\s*->\s*(ok|error|\d{3})(?:\s+contains\s+\"(.*)\")?$")
@@ -823,7 +881,8 @@ MCP_CHECK = re.compile(r"^mcp\s+([A-Za-z0-9_.-]+)(?:\s+(\{.*?\}))?(?:\s+user=(\S
 def run_one_check(rep: Report, where: str, root: Path, base: str, check: str, log):
     """One `# flapi: check` / `# flapi: check-mcp` line against the live server.
 
-      GET /path [body={json}] [user=name:password] -> 200 [contains "text"]
+      GET /path [body={json}] [user=name:password] [header=Name:value] -> 200 [contains "text"]
+      (the server runs with --config-service-token skill-check-token: header=X-Config-Token:skill-check-token)
       (check-mcp) tool_name [{arguments}] [user=name:password] -> ok|error|401 [contains "text"]
     """
     import base64
@@ -838,8 +897,10 @@ def run_one_check(rep: Report, where: str, root: Path, base: str, check: str, lo
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                            "params": {"name": tool, "arguments": json.loads(args or "{}")}})
     else:
-        method, url, body, user, expect, needle = rest.groups()
+        method, url, body, user, hname, hvalue, expect, needle = rest.groups()
     headers = {"Content-Type": "application/json"} if body else {}
+    if not mcp and hname:
+        headers[hname] = hvalue
     if user:
         headers["Authorization"] = "Basic " + base64.b64encode(user.encode()).decode()
     req = urllib.request.Request(base + url, method=method, data=body.encode() if body else None, headers=headers)
@@ -970,6 +1031,7 @@ def main() -> int:
     version = check_manifests(rep)
     check_versions(rep, version)
     check_yaml_keys(rep, snippets + guide_snippets, parser_keys())
+    check_guide_tags(rep, guide_snippets)
     check_forbidden(rep, files)
     check_template_vars(rep, files, cache_template_vars())
 

@@ -16,8 +16,8 @@ optional parts: properties your templates can read, and SQL that sets DuckDB up.
 
 ## 1. How a connection works
 
+<!-- flapi: config group=basics -->
 ```yaml
-# flapi: config group=basics
 project-name: sources-demo
 project-description: Connecting data sources
 template:
@@ -47,8 +47,8 @@ The parts:
 - An endpoint names its connection in **`connection: [name]`**. A name that is not
   under `connections:` fails validation (`Connection 'x' not found in configuration`).
 
+<!-- flapi: endpoint group=basics file=customers.yaml -->
 ```yaml
-# flapi: endpoint group=basics file=customers.yaml
 url-path: /customers
 request:
   - field-name: segment
@@ -59,11 +59,11 @@ request:
         allowedValues: [AUTOMOBILE, BUILDING, FURNITURE, HOUSEHOLD, MACHINERY]
 template-source: customers.sql
 connection: [customers]
-# flapi: check GET /customers?segment=BUILDING&limit=2 -> 200 contains "BUILDING"
 ```
+<!-- flapi: check GET /customers?segment=BUILDING&limit=2 -> 200 contains "BUILDING" -->
 
+<!-- flapi: template group=basics file=customers.sql -->
 ```sql
--- flapi: template group=basics file=customers.sql
 SELECT c_custkey, c_name, c_mktsegment
 FROM read_parquet('{{{ conn.path }}}')
 WHERE 1=1
@@ -104,30 +104,30 @@ A file needs no `init`: put its path in `properties` and read it with DuckDB's
 `read_parquet`, `read_csv` or `read_json`. A glob (`*`, `**`) reads many files as
 one table. Create these three files next to `flapi.yaml`:
 
+<!-- flapi: file group=files file=files/orders/2026-01.csv -->
 ```text
-# flapi: file group=files file=files/orders/2026-01.csv
 order_id,customer_id,order_date,amount
 1,ALFKI,2026-01-05,120.50
 2,ANATR,2026-01-17,64.00
 3,ALFKI,2026-01-28,310.25
 ```
 
+<!-- flapi: file group=files file=files/orders/2026-02.csv -->
 ```text
-# flapi: file group=files file=files/orders/2026-02.csv
 order_id,customer_id,order_date,amount
 4,BERGS,2026-02-02,89.90
 5,ALFKI,2026-02-14,42.00
 ```
 
+<!-- flapi: file group=files file=files/events.jsonl -->
 ```text
-# flapi: file group=files file=files/events.jsonl
 {"id": 1, "kind": "signup", "customer_id": "ALFKI", "ts": "2026-01-03T10:00:00"}
 {"id": 2, "kind": "login", "customer_id": "ALFKI", "ts": "2026-01-04T08:12:00"}
 {"id": 3, "kind": "signup", "customer_id": "BERGS", "ts": "2026-01-30T16:45:00"}
 ```
 
+<!-- flapi: config group=files -->
 ```yaml
-# flapi: config group=files
 project-name: files-demo
 project-description: CSV and JSON files
 template:
@@ -146,8 +146,8 @@ connections:
       ATTACH IF NOT EXISTS './data/northwind.sqlite' AS nw (TYPE sqlite, READ_ONLY);
 ```
 
+<!-- flapi: endpoint group=files file=orders.yaml -->
 ```yaml
-# flapi: endpoint group=files file=orders.yaml
 url-path: /orders
 request:
   - field-name: month
@@ -158,13 +158,13 @@ request:
         regex: '^[0-9]{4}-[0-9]{2}$'
 template-source: orders.sql
 connection: [orders]
-# flapi: check GET /orders -> 200 contains "order_id":5,"
-# flapi: check GET /orders?month=2026-02 -> 200 contains "BERGS"
-# flapi: check GET /orders?month=February -> 400
 ```
+<!-- flapi: check GET /orders -> 200 contains "order_id":5," -->
+<!-- flapi: check GET /orders?month=2026-02 -> 200 contains "BERGS" -->
+<!-- flapi: check GET /orders?month=February -> 400 -->
 
+<!-- flapi: template group=files file=orders.sql -->
 ```sql
--- flapi: template group=files file=orders.sql
 SELECT order_id, customer_id, order_date, amount,
        regexp_extract(filename, '([0-9]{4}-[0-9]{2})\.csv$', 1) AS month
 FROM read_csv('{{{ conn.path }}}', header = true, filename = true)
@@ -186,8 +186,8 @@ here it gives each order its month. `curl 'http://localhost:8080/orders?month=20
 
 JSON works the same way. `read_json` detects newline-delimited JSON by itself:
 
+<!-- flapi: endpoint group=files file=events.yaml -->
 ```yaml
-# flapi: endpoint group=files file=events.yaml
 url-path: /events
 request:
   - field-name: kind
@@ -198,11 +198,11 @@ request:
         allowedValues: [signup, login]
 template-source: events.sql
 connection: [events]
-# flapi: check GET /events?kind=signup -> 200 contains "BERGS"
 ```
+<!-- flapi: check GET /events?kind=signup -> 200 contains "BERGS" -->
 
+<!-- flapi: template group=files file=events.sql -->
 ```sql
--- flapi: template group=files file=events.sql
 SELECT id, kind, customer_id, ts
 FROM read_json('{{{ conn.path }}}')
 WHERE 1=1
@@ -234,8 +234,8 @@ same way once credentials are in place: see [Reading from cloud storage](./cloud
 SQLite is attached in `init`, as the `northwind` connection in step 1 does. The
 `basics` project already has it; add an endpoint:
 
+<!-- flapi: endpoint group=basics file=products.yaml -->
 ```yaml
-# flapi: endpoint group=basics file=products.yaml
 url-path: /products
 request:
   - field-name: category_id
@@ -247,11 +247,11 @@ request:
         max: 8
 template-source: products.sql
 connection: [northwind]
-# flapi: check GET /products?category_id=1&limit=2 -> 200 contains "Chai"
 ```
+<!-- flapi: check GET /products?category_id=1&limit=2 -> 200 contains "Chai" -->
 
+<!-- flapi: template group=basics file=products.sql -->
 ```sql
--- flapi: template group=basics file=products.sql
 SELECT p.ProductID, p.ProductName, c.CategoryName, p.UnitPrice
 FROM nw.Products p
 JOIN nw.Categories c ON c.CategoryID = p.CategoryID
@@ -296,16 +296,16 @@ whose `conn.*` you use first.
 
 Join the CSV orders from step 2 to the Northwind customers in SQLite:
 
+<!-- flapi: endpoint group=files file=order-customers.yaml -->
 ```yaml
-# flapi: endpoint group=files file=order-customers.yaml
 url-path: /order-customers
 template-source: order-customers.sql
 connection: [orders, northwind]         # conn.path is the orders glob
-# flapi: check GET /order-customers -> 200 contains "Alfreds Futterkiste"
 ```
+<!-- flapi: check GET /order-customers -> 200 contains "Alfreds Futterkiste" -->
 
+<!-- flapi: template group=files file=order-customers.sql -->
 ```sql
--- flapi: template group=files file=order-customers.sql
 SELECT o.order_id, o.amount, c.CompanyName, c.Country
 FROM read_csv('{{{ conn.path }}}', header = true) o
 JOIN nw.Customers c ON c.CustomerID = o.customer_id
@@ -548,8 +548,8 @@ run with DuckDB's external access **restricted**: they may read and write only
 under the config's own prefix, `template.path`, the DuckLake `data-path` and what
 you list. A local config runs with full access unless you ask for the same:
 
+<!-- flapi: config group=hardened -->
 ```yaml
-# flapi: config group=hardened
 project-name: hardened-demo
 project-description: Restricted external access
 template:
@@ -566,23 +566,23 @@ connections:
       path: ./files/orders.csv
 ```
 
+<!-- flapi: file group=hardened file=files/orders.csv -->
 ```text
-# flapi: file group=hardened file=files/orders.csv
 order_id,customer_id,amount
 1,ALFKI,120.50
 2,ANATR,64.00
 ```
 
+<!-- flapi: endpoint group=hardened file=orders.yaml -->
 ```yaml
-# flapi: endpoint group=hardened file=orders.yaml
 url-path: /orders
 template-source: orders.sql
 connection: [orders]
-# flapi: check GET /orders -> 200 contains "ANATR"
 ```
+<!-- flapi: check GET /orders -> 200 contains "ANATR" -->
 
+<!-- flapi: template group=hardened file=orders.sql -->
 ```sql
--- flapi: template group=hardened file=orders.sql
 SELECT order_id, customer_id, amount
 FROM read_csv('{{{ conn.path }}}', header = true)
 ORDER BY order_id
