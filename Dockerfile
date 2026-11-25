@@ -22,11 +22,11 @@ RUN chmod +x /app/flapi
 
 # Add labels
 LABEL org.opencontainers.image.title="flAPI"
-LABEL org.opencontainers.image.description="flAPI is a powerful service that automatically generates read-only APIs for datasets by utilizing SQL templates. Built on top of DuckDB and leveraging its SQL engine and extension ecosystem, flAPI offers a seamless way to connect to various data sources and expose them as RESTful APIs."
-LABEL org.opencontainers.image.version="0.2.0"
-LABEL org.opencontainers.image.authors="DataZoo GmbH <hello@datazoo.com>"
-LABEL org.opencontainers.image.url="https://github.com/datazoo/flapi"
-LABEL org.opencontainers.image.source="https://github.com/datazoo/flapi"
+LABEL org.opencontainers.image.description="flAPI serves SQL templates as REST endpoints and MCP tools, from one YAML config. One binary with DuckDB inside."
+# The version label is set by docker/metadata-action in CI (build.yaml), from the tag or commit.
+LABEL org.opencontainers.image.authors="DataZoo GmbH <contact@data-zoo.de>"
+LABEL org.opencontainers.image.url="https://github.com/DataZooDE/flapi"
+LABEL org.opencontainers.image.source="https://github.com/DataZooDE/flapi"
 LABEL org.opencontainers.image.licenses="BUSL-1.1"
 
 ENTRYPOINT ["/app/flapi"]

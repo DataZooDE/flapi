@@ -56,6 +56,13 @@ flAPI additionally stamps `install_kind = "server"` on every event.
 Sampled events additionally carry `sample_rate` (number) so aggregate counts
 scale back up.
 
+`rest_endpoint_served`, `mcp_tool_called` and `auth_enforced` are **aggregated**:
+flAPI sends one event per distinct property set (route, method, status class and
+cache flag; tool and outcome; auth kind and outcome) per minute, not one per
+request. Each carries `count` (the requests it stands for) and, where a duration
+applies, `duration_ms` as the mean and `duration_ms_max`. Pending aggregates are
+flushed at shutdown.
+
 ### Groups
 
 - **`deployment`** — always associated at boot; key is the pseudonymous

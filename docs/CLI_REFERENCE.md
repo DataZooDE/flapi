@@ -1,7 +1,6 @@
 # flAPI Server - CLI Reference
 
-**Version:** 1.0.0
-**flAPI Version:** >= 1.0.0
+**flAPI Version:** v26.11.25 (releases are numbered `vYY.MM.DD`)
 
 This document provides a complete reference for the `flapi` server executable's command-line options and runtime behavior.
 
@@ -13,8 +12,8 @@ This document provides a complete reference for the `flapi` server executable's 
    - [Server Architecture](#server-architecture)
    - [Quick Start](#quick-start)
 2. [Command-Line Options](#2-command-line-options)
-   - [Configuration File](#configuration-file---c---config)
-   - [Server Port](#server-port---p---port)
+   - [Configuration File](#configuration-file--c---config)
+   - [Server Port](#server-port--p---port)
    - [Bind Host](#bind-host---host)
    - [Log Level](#log-level---log-level)
    - [Validate Configuration](#validate-configuration---validate-config)
@@ -460,7 +459,7 @@ the unbuilt caches). An invalid value exits with code 1. `ducklake.read-only: tr
 
 ### Disable Telemetry (`--no-telemetry`)
 
-Disables startup and shutdown telemetry events.
+Disables all telemetry events.
 
 | Property | Value |
 |----------|-------|
@@ -472,7 +471,7 @@ Disables startup and shutdown telemetry events.
 
 **Description:**
 
-When set, flapi will not send `application_start` or `application_stop` events to PostHog. Telemetry can also be disabled via the `FLAPI_NO_TELEMETRY` environment variable or via `telemetry.enabled: false` in `flapi.yaml`.
+When set, flapi sends no telemetry at all (no `server_started`, no per-route counts; see [TELEMETRY.md](../TELEMETRY.md)). Telemetry can also be disabled via the `FLAPI_NO_TELEMETRY` environment variable or via `telemetry.enabled: false` in `flapi.yaml`.
 
 **Precedence (highest wins):**
 1. `--no-telemetry` CLI flag

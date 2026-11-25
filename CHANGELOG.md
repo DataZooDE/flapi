@@ -2,6 +2,33 @@
 
 All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (the date the binary set was cut). Earlier history is in the git log.
 
+## Unreleased
+
+### Documentation
+
+- **The Readme is the entry point again (#268).** A Quick Start that needs only `uv`
+  (`flapii project init`, then the same endpoint over REST and as an MCP tool), the
+  v26.11 features (`duckdb-hardening`, `log-http-requests`, shipped extensions, the
+  `-runtime` image, remote configs), an example that protects REST and MCP the way
+  flAPI actually does (`auth:` for REST, `mcp.auth` plus `allowed-roles` for tools,
+  no literal passwords), and corrected build, telemetry and `/mcp/health` facts.
+- `make check-skills` now also checks `Readme.md`, `TELEMETRY.md` and `docs/`
+  (not `docs/archive`, `docs/blog`, `docs/promotion`): forbidden facts, cache
+  template variables, `flapi`/`flapii` commands and options, relative links and
+  `#anchors`, and it runs the Readme Quick Start against the built binaries.
+- Fixed: broken table-of-contents anchors in CONFIG_REFERENCE and CLI_REFERENCE;
+  telemetry described as startup/shutdown events (it is `server_started` plus
+  per-minute aggregates; `telemetry.sample_rate` is now documented); a "scheme
+  whitelisting" section describing a check that never ran (template reads are
+  governed by `duckdb-hardening`); MCP_REFERENCE's protocol table now lists
+  `2026-07-28`, and `Mcp-Session-Id` is no longer described as required.
+- `flapii project init` linked to a docs host that does not exist; it now links
+  the guides on GitHub.
+- The Docker image labels name the DataZooDE repository; the stale `version`
+  label is gone (CI sets it from the tag).
+- The `posthog-telemetry` submodule is cloned over HTTPS, so
+  `git clone --recurse-submodules` works without a GitHub SSH key.
+
 ## v26.11.25 — templates of remote configs are sandboxed, a DuckDB HTTP request log, and Secrets-Manager users out of SQL reach
 
 ### Added

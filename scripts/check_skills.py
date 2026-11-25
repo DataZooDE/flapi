@@ -346,9 +346,11 @@ def check_template_vars(rep: Report, files: list[Path], allowed: set[str]):
 
 def github_slug(heading: str, seen: dict[str, int]) -> str:
     """The anchor GitHub generates for a Markdown heading."""
-    text = re.sub(r"<[^>]+>", "", heading)                   # inline HTML
+    # Inline HTML goes, except inside code spans (`--to <dir>` keeps "dir").
+    parts = heading.split("`")
+    text = "".join(p if i % 2 else re.sub(r"<[^>]+>", "", p) for i, p in enumerate(parts))
     text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", text)   # links and images keep their text
-    text = text.replace("`", "").strip().lower()
+    text = text.strip().lower()
     slug = re.sub(r"[^\w\- ]", "", text, flags=re.UNICODE).replace(" ", "-")
     n = seen.get(slug, 0)
     seen[slug] = n + 1
@@ -403,7 +405,8 @@ def run_quickstart(rep: Report, flapi: Path, flapii: list[str]):
       <!-- flapi: quickstart run -->              run with bash, must exit 0
       <!-- flapi: quickstart serve -->            started in the background; the server must come up
       <!-- flapi: quickstart try expect="x" -->   run once the server is up; must exit 0 and print x
-    `uvx --from flapi-io <cmd>` resolves to the binaries under test, and port 8080 to a free port.
+    `uvx --from flapi-io <cmd>` resolves to the binaries under test, and port 8080 to a free port
+    (FLAPI_PORT for the server, a text substitution in the blocks).
     """
     readme = REPO / "Readme.md"
     blocks = [(m.group(1), dict(re.findall(r'(\w+)="([^"]*)"', m.group(2))), m.group(3),
@@ -421,7 +424,9 @@ def run_quickstart(rep: Report, flapi: Path, flapii: list[str]):
         '  case "$cmd" in flapi) "$FLAPI_BIN" "$@";; flapii) "${FLAPII_BIN[@]}" "$@";;\n'
         '  *) echo "quickstart: unexpected uvx command $cmd" >&2; return 2;; esac; }\n'
     )
-    env = {**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1", "FLAPI_NO_TELEMETRY": "1", "NO_COLOR": "1"}
+    # FLAPI_PORT moves a server the Readme starts on its default port.
+    env = {**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1", "FLAPI_NO_TELEMETRY": "1", "NO_COLOR": "1",
+           "FLAPI_PORT": str(port)}
     with tempfile.TemporaryDirectory(prefix="flapi-quickstart-") as tmp:
         server = None
         log = Path(tmp) / "server.log"
