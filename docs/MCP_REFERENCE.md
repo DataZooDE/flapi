@@ -1,7 +1,7 @@
 # flAPI - MCP Protocol Reference
 
 **Protocol Versions:** 2026-07-28 (modern, stateless) and 2024-11-05 … 2025-11-25 (legacy) — flAPI is a **dual-era** server
-**flAPI Version:** v26.11.25 (releases are numbered `vYY.MM.DD`)
+**flAPI Version:** v26.11.26 (releases are numbered `vYY.MM.DD`)
 
 This document provides a comprehensive reference for flAPI's MCP (Model Context Protocol) implementation, covering protocol details, configuration, and usage.
 

@@ -10,13 +10,13 @@ description: >
   playbooks for 404, 400, 401/403, 429, 500, 503, startup failures, DuckLake locks,
   slow requests and memory. Use when a server misbehaves, a probe fails, an endpoint
   is slow or erroring, or a user asks how to monitor flAPI.
-version: 26.11.25
+version: 26.11.26
 user-invocable: false
 ---
 
 # flAPI Operations Cheat Sheet
 
-**flAPI:** v26.11.25 | **Skill:** Operate | **See also:** `flapi-live-config`, `flapi-cache-design`, `flapi-cache-tuning`, `flapi-deploy`, `flapi-auth`, `flapi-mcp`
+**flAPI:** v26.11.26 | **Skill:** Operate | **See also:** `flapi-live-config`, `flapi-cache-design`, `flapi-cache-tuning`, `flapi-deploy`, `flapi-auth`, `flapi-mcp`
 
 ## Critical gotchas
 

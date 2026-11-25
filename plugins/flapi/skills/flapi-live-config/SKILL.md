@@ -8,13 +8,13 @@ description: >
   schema introspection, runtime log level, and the plugin's validate-and-reload hook.
   Use when a user wants to list, inspect, edit, reload or test endpoints, templates
   and caches on a live server, run flapii, or script the config API.
-version: 26.11.25
+version: 26.11.26
 user-invocable: false
 ---
 
 # flAPI Live Configuration Cheat Sheet
 
-**flAPI:** v26.11.25 | **Skill:** Develop | **See also:** `flapi-operate`, `flapi-mcp`, `flapi-rest`, `flapi-cache-design`, `flapi-testing`
+**flAPI:** v26.11.26 | **Skill:** Develop | **See also:** `flapi-operate`, `flapi-mcp`, `flapi-rest`, `flapi-cache-design`, `flapi-testing`
 
 The config service is a token-protected REST API (`/api/v1/_config/...`) and a set of MCP
 tools (`flapi_*`) inside the server. `flapii` is its CLI client. It is **off by default**.

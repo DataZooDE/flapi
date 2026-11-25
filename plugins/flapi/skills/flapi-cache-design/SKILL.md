@@ -11,13 +11,13 @@ description: >
   time travel.
   Use when a user wants to cache an endpoint, pick a refresh mode, write or debug
   a cache template, or serve a cache from several instances.
-version: 26.11.25
+version: 26.11.26
 user-invocable: false
 ---
 
 # flAPI Cache Design Cheat Sheet
 
-**flAPI:** v26.11.25 | **Skill:** Develop | **See also:** `flapi-cache-tuning`, `flapi-rest`, `flapi-setup`, `flapi-deploy`, `flapi-testing`
+**flAPI:** v26.11.26 | **Skill:** Develop | **See also:** `flapi-cache-tuning`, `flapi-rest`, `flapi-setup`, `flapi-deploy`, `flapi-testing`
 
 A flAPI cache is a **DuckLake table that you populate with your own SQL**. The
 populate template (`cache.template-file`) runs at warm-up, on a schedule or on

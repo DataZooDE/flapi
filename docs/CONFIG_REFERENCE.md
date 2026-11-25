@@ -1,6 +1,6 @@
 # flAPI Configuration Reference
 
-**flAPI Version:** v26.11.25 (releases are numbered `vYY.MM.DD`)
+**flAPI Version:** v26.11.26 (releases are numbered `vYY.MM.DD`)
 **DuckDB Version:** 2.0.1
 
 This document provides a complete reference for all configuration options in flAPI, the SQL-to-API framework that generates REST APIs and MCP tools from SQL templates.

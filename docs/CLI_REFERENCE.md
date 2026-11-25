@@ -1,6 +1,6 @@
 # flAPI Server - CLI Reference
 
-**flAPI Version:** v26.11.25 (releases are numbered `vYY.MM.DD`)
+**flAPI Version:** v26.11.26 (releases are numbered `vYY.MM.DD`)
 
 This document provides a complete reference for the `flapi` server executable's command-line options and runtime behavior.
 
