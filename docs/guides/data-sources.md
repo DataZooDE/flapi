@@ -531,7 +531,7 @@ directory (or a specific `metadata.json`). In a bucket, the credentials come fro
 
 ## 9. SAP via ERPL
 
-*Not run here; needs an SAP system and the SAP NetWeaver RFC SDK on the host.*
+*Not run here; needs a reachable SAP system. The ERPL trampoline extracts the SAP NetWeaver RFC libraries it needs into the extension directory itself.*
 
 [ERPL](https://erpl.io) is a DuckDB extension from its own repository, and it is
 **unsigned**. flAPI always starts DuckDB with `allow_unsigned_extensions` enabled,
