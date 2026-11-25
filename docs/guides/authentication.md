@@ -780,10 +780,8 @@ flAPI, and every token signed with the old one stops working at once.
 
 ### OIDC
 
-> **Known issue in v26.11.25: OIDC rejects every token, valid ones included**
-> ([#273](https://github.com/DataZooDE/flapi/issues/273)). The server logs `JWT header missing 'alg' field`.
-> Until a release fixes it, use Bearer (`jwt-secret`) or Basic. The configuration below is what a fixed
-> release will accept.
+> In v26.11.25 OIDC rejected every token, valid ones included
+> ([#273](https://github.com/DataZooDE/flapi/issues/273)); upgrade to a later release.
 
 flAPI validates tokens your identity provider issues. It fetches
 `<issuer-url>/.well-known/openid-configuration` on the first request, then the
