@@ -326,8 +326,11 @@ connections:
 ```
 
 **Notes:**
-- Connection properties are accessible in templates as `{{ conn.property_name }}`
-- The `init` SQL runs once when the connection is first used
+- Connection properties are accessible in templates as `{{{ conn.property_name }}}` (triple braces: `{{ }}`
+  HTML-escapes `/` and `'`), for the endpoint's first listed connection only
+- The `init` SQL runs once at startup, in the shared DuckDB, before the external-access policy applies; it is
+  not a template (`{{ conn.x }}` inside it stays literal text). Relative paths in `init` resolve against the
+  server's working directory, while `./` paths in `properties` resolve against the config file's directory
 
 **Serialised access (`serialize-access`)**
 
@@ -695,11 +698,11 @@ mcp:
 | `mcp-tool.response.max-rows` | integer | - | Cap result-set size |
 | `mcp-tool.response.redact-columns` | array | - | Replace listed columns with the redaction sentinel before returning rows |
 | `mcp-tool.response.sample` | boolean | `false` | Return only summary metadata (`row_count`, `columns`, `sampled: true`), never row data |
-| `mcp-tool.rate-limit.enabled` | boolean | `false` | Per-tool rate limit (keyed on authenticated principal, falling back to anonymous) |
-| `mcp-tool.rate-limit.max` | integer | `60` | Maximum tool invocations per interval |
+| `mcp-tool.rate-limit.enabled` | boolean | `true` when the block is present | Per-tool rate limit (keyed on authenticated principal, falling back to anonymous) |
+| `mcp-tool.rate-limit.max` | integer | `100` | Maximum tool invocations per interval |
 | `mcp-tool.rate-limit.interval` | integer | `60` | Window in seconds |
 
-**Dry-run / shadow mode:** any `tools/call` request may include `"arguments": { ..., "_dryRun": true }`. flAPI runs validators and template expansion (`?` placeholders rendered, `EXPLAIN` requested) and returns the rendered SQL + plan as a JSON payload, but never executes the query. Maps 1:1 onto the audit/shadow-mode use case for batch validation before promoting an endpoint to production.
+**Dry-run / shadow mode:** any `tools/call` request may include `"arguments": { ..., "_dryRun": true }`. flAPI runs validators and template expansion (`?` placeholders rendered) and returns `rendered_sql`, `bindings` and `parameters` as a JSON payload; it never executes the query and runs no `EXPLAIN`. Maps 1:1 onto the audit/shadow-mode use case for batch validation before promoting an endpoint to production.
 
 **Notes:**
 - MCP server is auto-enabled when endpoints define `mcp-tool`, `mcp-resource`, or `mcp-prompt`
@@ -873,8 +876,13 @@ audit:
 
 Each event is a single JSON line of the shape:
 ```json
-{"ts":"2026-05-17T05:32:11Z","request_id":"…","principal":"alice","method":"tools/call","target":"customer_lookup","params":{"id":"42"},"status":"ok","row_count":1,"latency_ms":12}
+{"timestamp":"2026-05-17T05:32:11Z","request_id":"…","trace_id":"…","span_id":"…","principal":"alice","method":"tools/call","target":"customer_lookup","status":"success","row_count":1,"latency_ms":12,"params":{"id":"42"}}
 ```
+
+`status` is `success`, `denied` (REST 401/403), `rate_limited` (429), `dry_run` (MCP `_dryRun`),
+`error:<HTTP status>` (other REST failures) or `error:<reason>` (MCP, e.g. `error:invalid_arguments`).
+`trace_id` / `span_id` appear when the request has a
+trace. `row_count` is `-1` when the row count is not known (REST requests today).
 
 > **Implementation:** `src/audit_logger.cpp` | **Tests:** `test/cpp/audit_logger_test.cpp`, `test/integration/test_audit_log.py`
 
@@ -2263,7 +2271,8 @@ Read operations (queries) are the default for `GET`, `HEAD`, and `OPTIONS` metho
 
 Write operations are auto-detected for `POST`, `PUT`, `PATCH`, and `DELETE` methods. All four run the
 write path: parameters are extracted and validated, the template is rendered and executed, and the
-response is `200 {"rows_affected": n}` (or the `RETURNING` rows with `returns-data: true`). `n` is the number
+response is `{"rows_affected": n}` with status `201` for `POST` and `200` for `PUT`/`PATCH`/`DELETE`; rows a
+`RETURNING` sends back come under `data` (`returns-data: true` makes `data` present, `[]`, even when there are none). `n` is the number
 of rows changed - DuckDB's count, summed over the template's statements; for a `RETURNING` statement, the rows
 it returned - so an `UPDATE` of five rows answers 5 and a `DELETE` that matched nothing answers 0. A `DELETE`
 endpoint is no different — its template is the `DELETE FROM …` statement, and as an MCP tool it is a write
@@ -2289,8 +2298,12 @@ operation:
   transaction: true
   validate-before-write: true
 
-# Additional cache settings for write endpoints
+# The cache this write refreshes: name the read endpoint's table and populate template.
+# A write refreshes only the cache its OWN block names; without `table` nothing is refreshed.
 cache:
+  enabled: true
+  table: products_cache
+  template-file: products_cache.sql
   invalidate-on-write: true   # refresh the cache synchronously, before the response
 ```
 

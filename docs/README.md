@@ -17,13 +17,15 @@ New to flAPI? Start with [Getting started](./guides/getting-started.md).
 | Install flAPI and serve my first endpoint | [guides/getting-started.md](./guides/getting-started.md) |
 | Understand the config file layout | [CONFIG_REFERENCE.md § 1](./CONFIG_REFERENCE.md#1-overview) |
 | Run the server with the right flags | [CLI_REFERENCE.md](./CLI_REFERENCE.md) |
+| Manage a running server with `flapii`, or script it in CI | [guides/cli.md](./guides/cli.md) |
 
 ### Build an API
 
 | Goal | Start here |
 |---|---|
 | Add a REST endpoint | [guides/rest-endpoints.md](./guides/rest-endpoints.md) |
-| Write a SQL template safely | [guides/rest-endpoints.md#writing-the-sql-template](./guides/rest-endpoints.md#writing-the-sql-template) · [CONFIG_REFERENCE.md § 9](./CONFIG_REFERENCE.md) |
+| Write a SQL template safely | [guides/sql-templates.md](./guides/sql-templates.md) |
+| Connect a database, files or a warehouse | [guides/data-sources.md](./guides/data-sources.md) |
 | Validate incoming parameters | [CONFIG_REFERENCE.md § 5](./CONFIG_REFERENCE.md) |
 | Reuse config across endpoints, or read secrets from the environment | [guides/yaml-includes.md](./guides/yaml-includes.md) |
 | Read from S3, GCS or Azure | [guides/cloud-storage.md](./guides/cloud-storage.md) |
@@ -47,7 +49,7 @@ New to flAPI? Start with [Getting started](./guides/getting-started.md).
 | Handle deleted rows in an incremental cache | [guides/caching.md#deletes-in-merge-mode](./guides/caching.md#deletes-in-merge-mode) |
 | Rebuild a cache from scratch, or understand when it refreshes | [guides/caching.md#when-it-refreshes](./guides/caching.md#when-it-refreshes) |
 | Measure and shorten cache refresh time | [guides/caching.md#measuring-and-tuning-refresh-time](./guides/caching.md#measuring-and-tuning-refresh-time) |
-| Understand cache snapshots and time travel | [spec/components/caching.md](./spec/components/caching.md) |
+| Understand cache snapshots and time travel | [guides/caching.md](./guides/caching.md) · [spec/components/caching.md](./spec/components/caching.md) |
 | Run on Cloud Run / scale-to-zero without loading data at startup | [guides/serverless.md](./guides/serverless.md) |
 
 ### Secure it
@@ -55,13 +57,14 @@ New to flAPI? Start with [Getting started](./guides/getting-started.md).
 | Goal | Start here |
 |---|---|
 | Require authentication | [guides/authentication.md](./guides/authentication.md) · [CONFIG_REFERENCE.md § 7](./CONFIG_REFERENCE.md) |
-| Restrict an endpoint by role | [guides/authentication.md#roles](./guides/authentication.md#roles) |
+| Restrict an endpoint by role, or filter rows per caller | [guides/authentication.md](./guides/authentication.md) · [guides/sql-templates.md](./guides/sql-templates.md) |
 | Understand the layered defences | [spec/components/security.md](./spec/components/security.md) |
 
 ### Operate it
 
 | Goal | Start here |
 |---|---|
+| Debug a failed request, probe health, alert in production | [guides/observability.md](./guides/observability.md) |
 | See request counts, error rates, latency and cache refresh times | [OBSERVABILITY.md § Runtime metrics](./OBSERVABILITY.md#runtime-metrics) · `flapii metrics` |
 | Trace requests, find a slow one, join logs to traces | [OBSERVABILITY.md](./OBSERVABILITY.md) |
 | See where the time went inside a query | [OBSERVABILITY.md § 4](./OBSERVABILITY.md#4-seeing-inside-a-slow-query) |

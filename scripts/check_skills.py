@@ -46,6 +46,16 @@ Snippet tags (first line of a fenced block)
     ```sql
     -- flapi: template group=orders file=orders.sql
 
+Check lines (skills: inside any tagged block; guides: as HTML comments after the block):
+    # flapi: check GET /orders?id=1 [body={...}] [user=name:pw] -> 200 [contains "text"]
+    # flapi: check-mcp get_orders [{"id": 1}] [user=name:pw] -> ok|error|401 [contains "text"]
+Group attributes on any tag: `env="NAME=value ..."` (exported for the group, as the
+text tells the reader to) and `allow=CODE,...` (auditor warnings it demonstrates).
+Guides under docs/guides/ are run the same way; each guide is its own namespace, but their
+tags are HTML comments a reader never copies, and every group brings its own config:
+    <!-- flapi: endpoint group=g file=x.yaml -->      (the line before the fence)
+    <!-- flapi: check GET /x -> 200 contains "..." --> (after the block it tests)
+
 A group without its own config uses scripts/skill_snippets/fixture/flapi.yaml
 (connections `customers` -> ./data/customers.parquet, `northwind` -> the
 northwind sqlite attached as `nw`, DuckLake enabled). `./data` is linked to
@@ -81,9 +91,10 @@ except ImportError:  # pragma: no cover - CI installs it
 
 REPO = Path(__file__).resolve().parent.parent
 PLUGIN = REPO / "plugins" / "flapi"
+GUIDES = REPO / "docs" / "guides"
 SUPPORT = REPO / "scripts" / "skill_snippets"
 FENCE = re.compile(r"^```(\w+)?[^\n]*\n(.*?)^```", re.S | re.M)
-TAG = re.compile(r"^\s*(?:#|--)\s*flapi:\s*(\w+)(.*)$")
+TAG = re.compile(r"^\s*(?:#|--)\s*flapi:\s*([\w-]+)(.*)$")
 
 # Keys whose CHILDREN are names the user chooses, not config keys.
 USER_NAMED_CHILDREN = {
@@ -97,7 +108,8 @@ USER_NAMED_CHILDREN = {
 # `duckdb:` passes any other key straight to DuckDB as a setting (threads,
 # max_memory, ...), so its children are DuckDB's namespace, not flAPI's.
 OPAQUE_SUBTREES = {"duckdb", "input_schema", "inputSchema", "input-schema", "output_schema",
-                   "outputSchema", "output-schema", "schema-properties", "items", "annotations"}
+                   "outputSchema", "output-schema", "schema-properties", "items", "annotations",
+                   "resource_attributes"}   # tracing.resource_attributes: OTel attribute names
 
 
 @dataclass
@@ -108,6 +120,7 @@ class Snippet:
     body: str
     tag: str | None = None
     attrs: dict = field(default_factory=dict)
+    checks: list = field(default_factory=list)   # from <!-- flapi: check ... --> after the block
 
 
 @dataclass
@@ -154,23 +167,57 @@ def doc_markdown() -> list[Path]:
     return [f for f in files if f.exists()]
 
 
+# In guides the tags are HTML comments a reader never sees or copies:
+#   <!-- flapi: endpoint group=g file=sqls/x.yaml -->   on the line before a fence
+#   <!-- flapi: check GET /x -> 200 contains "..." -->  anywhere after it; belongs to the
+#                                                        tagged block above (or group=g)
+HTML_TAG = re.compile(r"^<!--\s*flapi:\s*([\w-]+)(.*?)\s*-->\s*$")
+
+
+def _attrs(raw: str) -> dict:
+    out = {}
+    for kv in shlex.split(raw):
+        if "=" in kv:
+            k, v = kv.split("=", 1)
+            out[k] = v
+    return out
+
+
 def extract_snippets(path: Path) -> list[Snippet]:
     text = path.read_text(encoding="utf-8")
     out = []
-    for m in FENCE.finditer(text):
+    fences = list(FENCE.finditer(text))
+    for m in fences:
         lang = (m.group(1) or "").lower()
         body = m.group(2)
         line = text.count("\n", 0, m.start()) + 1
         snip = Snippet(path, line, lang, body)
         first = body.splitlines()[0] if body.strip() else ""
         t = TAG.match(first)
+        before = text[:m.start()].rstrip("\n").rsplit("\n", 1)[-1]
+        h = HTML_TAG.match(before)
         if t:
-            snip.tag = t.group(1)
-            for kv in shlex.split(t.group(2)):
-                if "=" in kv:
-                    k, v = kv.split("=", 1)
-                    snip.attrs[k] = v
+            snip.tag, snip.attrs = t.group(1), _attrs(t.group(2))
+        elif h and h.group(1) not in ("check", "check-mcp", "quickstart"):
+            snip.tag, snip.attrs = h.group(1), _attrs(h.group(2))
         out.append(snip)
+    # Check comments outside fences attach to the nearest tagged block above them.
+    inside = [(m.start(), m.end()) for m in fences]
+    for cm in re.finditer(r"^<!--\s*flapi:\s*(check|check-mcp)\s+(.*?)\s*-->\s*$", text, re.M):
+        if any(a <= cm.start() < b for a, b in inside):
+            continue
+        spec = cm.group(2)
+        g = re.match(r"^group=(\S+)\s+(.*)$", spec)
+        group, spec = (g.group(1), g.group(2)) if g else (None, spec)
+        owner = None
+        for s in out:
+            if s.tag and (s.line - 1) <= text.count("\n", 0, cm.start()) and \
+                    (group is None or s.attrs.get("group") == group):
+                owner = s
+        if owner is None:
+            out.append(Snippet(path, text.count("\n", 0, cm.start()) + 1, "", "", tag="orphan-check"))
+            continue
+        owner.checks.append(("mcp " if cm.group(1) == "check-mcp" else "") + spec)
     return out
 
 
@@ -306,13 +353,50 @@ def walk_keys(node, path=()):
             yield from walk_keys(item, path)
 
 
+def check_guide_tags(rep: Report, snippets: list[Snippet]):
+    """Guides keep their test annotations out of what a reader copies."""
+    for s in snippets:
+        if not s.path.is_relative_to(GUIDES):
+            continue
+        for k, line in enumerate(s.body.splitlines()):
+            if TAG.match(line):
+                rep.fail(f"{rel(s.path)}:{s.line + 1 + k}",
+                         "a `flapi:` tag inside a guide's code block gets copied by readers; put it in an "
+                         "HTML comment (<!-- flapi: ... -->) on the line before the fence, or after it for checks")
+
+
+def check_guide_checks_visible(rep: Report, snippets: list[Snippet]):
+    """What CI requests, the reader must see: every check's path (or MCP tool) is in a visible code block."""
+    by_file: dict[Path, list[Snippet]] = {}
+    for s in snippets:
+        if s.path.is_relative_to(GUIDES):
+            by_file.setdefault(s.path, []).append(s)
+    for path, snips in by_file.items():
+        visible = "\n".join(s.body for s in snips if s.lang in ("bash", "sh", "shell", "console", ""))
+        for s in snips:
+            for check in s.checks:
+                m = MCP_CHECK.match(check)
+                if m:
+                    needle = m.group(1)
+                else:
+                    r = CHECK.match(check)
+                    if not r:
+                        continue
+                    needle = r.group(2).split("?", 1)[0]
+                if needle not in visible:
+                    rep.fail(f"{rel(path)}:{s.line}", f"CI checks `{check[:60]}` but no visible command shows "
+                                                      f"`{needle}`; give the reader the curl/flapii line too")
+
+
 def check_yaml_keys(rep: Report, snippets: list[Snippet], known: set[str]):
     for s in snippets:
         if s.lang not in ("yaml", "yml"):
             continue
         where = f"{rel(s.path)}:{s.line}"
+        # A line that is only an {{include ...}} directive is spliced in before parsing.
+        body = re.sub(r"(?m)^[ \t]*\{\{include[^\n]*\}\}[ \t]*$", "", s.body)
         # Mustache sections are not YAML; blank them before parsing.
-        body = re.sub(r"\{\{[^}]*\}\}\}?", "x", s.body)
+        body = re.sub(r"\{\{[^}]*\}\}\}?", "x", body)
         try:
             docs = list(yaml.safe_load_all(body))
         except yaml.YAMLError as exc:
@@ -732,12 +816,20 @@ def free_port() -> int:
 def run_groups(rep: Report, snippets: list[Snippet], flapi: Path):
     groups: dict[str, list[Snippet]] = {}
     for s in snippets:
+        if s.tag == "orphan-check":
+            rep.fail(f"{rel(s.path)}:{s.line}", "a <!-- flapi: check --> with no tagged block above it")
+            continue
         if s.tag in ("config", "endpoint", "template", "file"):
             g = s.attrs.get("group")
             if not g:
                 rep.fail(f"{rel(s.path)}:{s.line}", f"`flapi: {s.tag}` needs group=")
                 continue
-            skill = s.path.relative_to(PLUGIN).parts[1] if s.path.is_relative_to(PLUGIN / "skills") else s.path.parent.name
+            if s.path.is_relative_to(PLUGIN / "skills"):
+                skill = s.path.relative_to(PLUGIN).parts[1]
+            elif s.path.is_relative_to(GUIDES):
+                skill = f"guide:{s.path.stem}"        # every guide is its own namespace
+            else:
+                skill = s.path.parent.name
             groups.setdefault(f"{skill}/{g}", []).append(s)
     for name, members in sorted(groups.items()):
         run_group(rep, name, members, flapi)
@@ -758,8 +850,17 @@ def run_group(rep: Report, name: str, members: list[Snippet], flapi: Path):
         (root / "data").symlink_to(REPO / "examples" / "data", target_is_directory=True)
         (root / "sqls").mkdir(exist_ok=True)
         checks = []
+        # A guide's reader never sees the fixture config, so a guide group brings its own.
+        if members[0].path.is_relative_to(GUIDES) and not any(s.tag == "config" for s in members):
+            rep.fail(where, "a guide group needs its own `flapi: config` block (the reader has no fixture)")
+            return
         for s in members:
             body = strip_tag(s.body)
+            checks.extend(s.checks)
+            for line in body.splitlines():   # inline check lines (skills), in any block kind
+                t = TAG.match(line)
+                if t and t.group(1) in ("check", "check-mcp"):
+                    checks.append(("mcp " if t.group(1) == "check-mcp" else "") + t.group(2).strip())
             if s.tag == "config":
                 (root / "flapi.yaml").write_text(body)
                 continue
@@ -771,11 +872,9 @@ def run_group(rep: Report, name: str, members: list[Snippet], flapi: Path):
             dest = base / target
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(body)
-            for line in body.splitlines():
-                t = TAG.match(line)
-                if t and t.group(1) == "check":
-                    checks.append(t.group(2).strip())
-        env = {**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1", "FLAPI_NO_TELEMETRY": "1"}
+        # `env="NAME=value OTHER=value"` on any tag of the group: what a guide tells the reader to export.
+        group_env = dict(kv.split("=", 1) for m in members for kv in shlex.split(m.attrs.get("env", "")) if "=" in kv)
+        env = {**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1", "FLAPI_NO_TELEMETRY": "1", **group_env}
         proc = subprocess.run([str(flapi), "-c", "flapi.yaml", "--validate-config"], cwd=root,
                               capture_output=True, text=True, timeout=120, env=env)
         out = proc.stdout + proc.stderr
@@ -795,6 +894,69 @@ def run_group(rep: Report, name: str, members: list[Snippet], flapi: Path):
         rep.ok(where, "validate-config")
         if checks:
             run_checks(rep, where, root, flapi, checks, env)
+
+
+CHECK = re.compile(r"^(GET|POST|PUT|PATCH|DELETE)\s+(\S+)(?:\s+body=(\{.*?\}))?(?:\s+user=(\S+))?(?:\s+header=(\S+?):(\S+))?"
+                   r"\s*->\s*(\d{3})(?:\s+contains\s+(?:\"(.*)\"|'(.*)'))?$")
+MCP_CHECK = re.compile(r"^mcp\s+([A-Za-z0-9_.-]+)(?:\s+(\{.*?\}))?(?:\s+user=(\S+))?"
+                       r"\s*->\s*(ok|error|\d{3})(?:\s+contains\s+(?:\"(.*)\"|'(.*)'))?$")
+
+
+def run_one_check(rep: Report, where: str, root: Path, base: str, check: str, log):
+    """One `# flapi: check` / `# flapi: check-mcp` line against the live server.
+
+      GET /path [body={json}] [user=name:password] [header=Name:value] -> 200 [contains "text" | contains 'text with "quotes"']
+      (the server runs with --config-service-token skill-check-token: header=X-Config-Token:skill-check-token)
+      (check-mcp) tool_name [{arguments}] [user=name:password] -> ok|error|401 [contains "text"]
+    """
+    import base64
+    mcp = MCP_CHECK.match(check)
+    rest = None if mcp else CHECK.match(check)
+    if not mcp and not rest:
+        rep.fail(where, f"malformed check: {check!r}")
+        return
+    if mcp:
+        tool, args, user, expect, needle, needle_sq = mcp.groups()
+        needle = needle or needle_sq
+        method, url = "POST", "/mcp/jsonrpc"
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                           "params": {"name": tool, "arguments": json.loads(args or "{}")}})
+    else:
+        method, url, body, user, hname, hvalue, expect, needle, needle_sq = rest.groups()
+        needle = needle or needle_sq
+    headers = {"Content-Type": "application/json"} if body else {}
+    if not mcp and hname:
+        headers[hname] = hvalue
+    if user:
+        headers["Authorization"] = "Basic " + base64.b64encode(user.encode()).decode()
+    req = urllib.request.Request(base + url, method=method, data=body.encode() if body else None, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            code, text = r.status, r.read().decode(errors="replace")
+    except urllib.error.HTTPError as exc:
+        code, text = exc.code, exc.read().decode(errors="replace")
+    except (urllib.error.URLError, OSError) as exc:
+        code, text = -1, str(exc)
+    label = f"MCP {mcp.group(1)}" if mcp else f"{method} {url}"
+    if mcp and expect in ("ok", "error"):
+        try:
+            result = json.loads(text).get("result") or {}
+            got = "error" if (code != 200 or result.get("isError") or "error" in json.loads(text)) else "ok"
+        except ValueError:
+            got = f"unparsable ({code})"
+    else:
+        got = str(code)
+    problem = None
+    if got != expect:
+        problem = f"{label} -> {got}, expected {expect}: {text[:300]}"
+    elif needle and needle not in text:
+        problem = f"{label} -> {got}, but the body lacks {needle!r}: {text[:300]}"
+    if problem:
+        log.flush()
+        tail = (root / "server.log").read_text(errors="replace")[-800:]
+        rep.fail(where, f"{problem}\n--- server log tail ---\n{tail}")
+    else:
+        rep.ok(where, f"{label} -> {got}")
 
 
 def run_checks(rep: Report, where: str, root: Path, flapi: Path, checks: list[str], env: dict):
@@ -825,27 +987,7 @@ def run_checks(rep: Report, where: str, root: Path, flapi: Path, checks: list[st
                 pass
             time.sleep(0.3)
         for check in checks:
-            m = re.match(r"^(GET|POST|PUT|PATCH|DELETE)\s+(\S+)(?:\s+body=(\{.*\}))?\s*->\s*(\d{3})$", check)
-            if not m:
-                rep.fail(where, f"malformed check: {check!r}")
-                continue
-            method, url, body, expect = m.groups()
-            req = urllib.request.Request(base + url, method=method,
-                                         data=body.encode() if body else None,
-                                         headers={"Content-Type": "application/json"} if body else {})
-            try:
-                with urllib.request.urlopen(req, timeout=60) as r:
-                    code, text = r.status, r.read().decode(errors="replace")
-            except urllib.error.HTTPError as exc:
-                code, text = exc.code, exc.read().decode(errors="replace")
-            except (urllib.error.URLError, OSError) as exc:
-                code, text = -1, str(exc)
-            if str(code) != expect:
-                log.flush()
-                tail = (root / "server.log").read_text(errors="replace")[-800:]
-                rep.fail(where, f"{method} {url} -> {code}, expected {expect}: {text[:300]}\n--- server log tail ---\n{tail}")
-            else:
-                rep.ok(where, f"{method} {url} -> {code}")
+            run_one_check(rep, where, root, base, check, log)
     finally:
         stop_group(server)
         log.close()
@@ -908,10 +1050,15 @@ def main() -> int:
     rep = Report(verbose=args.verbose)
     files = plugin_markdown()
     snippets = [s for f in files for s in extract_snippets(f)]
+    # Guides carry runnable examples too: their yaml keys are checked and their
+    # tagged groups run like the skills'.
+    guide_snippets = [s for f in sorted(GUIDES.glob("*.md")) for s in extract_snippets(f)]
 
     version = check_manifests(rep)
     check_versions(rep, version)
-    check_yaml_keys(rep, snippets, parser_keys())
+    check_yaml_keys(rep, snippets + guide_snippets, parser_keys())
+    check_guide_tags(rep, guide_snippets)
+    check_guide_checks_visible(rep, guide_snippets)
     check_forbidden(rep, files)
     check_template_vars(rep, files, cache_template_vars())
 
@@ -931,7 +1078,7 @@ def main() -> int:
             flapi_help = HelpModel([str(flapi)], "argparse")
             check_cli(rep, files, "flapi", flapi_help)
             check_cli(rep, docs, "flapi", flapi_help, prose_ok=False)
-            run_groups(rep, snippets, flapi)
+            run_groups(rep, snippets + guide_snippets, flapi)
         flapii = resolve_flapii(args.flapii)
         if flapii is None:
             rep.fail("flapii", "CLI not found (PATH, FLAPII_BIN, or cli/dist after `npm run build`)")

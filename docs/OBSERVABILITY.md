@@ -166,7 +166,7 @@ database-wide figure, not this query's, and on a concurrent workload it would
 read as if one query had used all of it.
 
 `flapi.db.result_set_bytes` existed up to DuckDB 1.5: DuckDB 2.0 has no result-size metric. The
-response size is on the request span as `flapi.result.bytes`.
+response size is on the request span as `http.response.body.size`.
 
 A metric DuckDB does not report is **omitted**, never exported as `0` — a
 fabricated zero reads as "instant" on every dashboard.

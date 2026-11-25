@@ -6,6 +6,24 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ### Documentation
 
+- **A task guide for every feature area (#272), each run in CI.** New: Writing SQL
+  templates, Connecting data sources, Observability, Managing flAPI from the command
+  line. Reworked: Caching, Creating MCP tools, Authentication and authorization. Each
+  guide has its own projects, a data download, the commands a reader runs and their
+  real output, common mistakes and a production section; an agent crew (newcomer,
+  fact-check against src, adopter) reviewed each one. Every Readme feature area links
+  its guide.
+- `make check-skills` runs the guides' examples: each project passes
+  `--validate-config` with no warnings and its requests (REST, MCP `tools/call`, with
+  credentials or headers) are checked against a live server. Test annotations are
+  HTML comments readers never copy, every guide brings its own config, and every
+  request CI makes is also shown to the reader.
+- Reference fixes found while writing them: POST answers `201`; audit `status` values
+  and fields; the response size is `http.response.body.size` (`flapi.result.bytes` is
+  never set); `init` runs at startup; MCP denial is `-32000`/403; `_dryRun` runs no
+  `EXPLAIN`; per-tool rate-limit defaults; `tasks/cancel` interrupts a running query;
+  included files get `{{env.*}}` substitution.
+
 - **The Readme is the entry point again (#268).** A Quick Start that needs only `uv`
   (`flapii project init`, then the same endpoint over REST and as an MCP tool), the
   v26.11 features (`duckdb-hardening`, `log-http-requests`, shipped extensions, the
