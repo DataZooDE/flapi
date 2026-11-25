@@ -18,11 +18,21 @@ request ever triggers a refresh.
 Three steps: enable DuckLake once, add a `cache:` block to the endpoint, and
 write the template that fills the table.
 
-**Enable DuckLake** in `flapi.yaml`. This is the catalog every cache table
+The examples run as written. Make a project directory `shop/` with a `sqls/`
+and a `data/` directory, and fetch the sample data (or clone the
+[flAPI repository](https://github.com/DataZooDE/flapi) and use its `examples/data/`):
+
+```bash
+mkdir -p shop/sqls shop/data && cd shop
+curl -L -o data/customers.parquet https://github.com/DataZooDE/flapi/raw/main/examples/data/customers.parquet
+```
+
+**Enable DuckLake** in `shop/flapi.yaml`. This is the catalog every cache table
 lives in:
 
 <!-- flapi: config group=quick -->
 ```yaml
+# flapi.yaml
 project-name: shop
 project-description: Customer balances, served from a cache
 template:
@@ -225,6 +235,15 @@ flapii cache refresh /segments --full    # drop the table and rebuild it from sc
 The REST form is `POST /api/v1/_config/endpoints/-segments/cache/refresh`
 (`?full=true` for a rebuild), with the token as `X-Config-Token` or
 `Authorization: Bearer` ([API reference](../CONFIG_SERVICE_API_REFERENCE.md)).
+The slug is the path with `/` turned into `-` (`/segments` is `-segments`);
+`flapii` builds it for you.
+
+```bash
+curl -s -X POST -H "X-Config-Token: $FLAPI_CONFIG_SERVICE_TOKEN" \
+  localhost:8080/api/v1/_config/endpoints/-segments/cache/refresh
+```
+<!-- flapi: check group=quick POST /api/v1/_config/endpoints/-segments/cache/refresh header=X-Config-Token:skill-check-token -> 200 contains "refreshed" -->
+<!-- flapi: check group=quick POST /api/v1/_config/endpoints/-segments/cache/refresh?full=true header=X-Config-Token:skill-check-token -> 200 contains "refreshed" -->
 
 `--full` erases the incremental watermark **and** drops the cache table, in
 the same transaction, so the template's first-run branch rebuilds it: an
@@ -289,7 +308,35 @@ Quote the watermark for its type: bare for an integer cursor,
 
 ### Append
 
-`cursor` only. Here the Northwind orders, with the order id as cursor:
+`cursor` only. This example is a new project directory `orders/`, over the
+Northwind sample database:
+
+```bash
+mkdir -p orders/sqls orders/data && cd orders
+curl -L -o data/northwind.sqlite https://github.com/DataZooDE/flapi/raw/main/examples/data/northwind.sqlite
+```
+
+<!-- flapi: config group=append -->
+```yaml
+# flapi.yaml
+project-name: orders
+project-description: Northwind orders, appended to a cache
+template:
+  path: ./sqls
+connections:
+  northwind:
+    init: |
+      INSTALL sqlite;
+      LOAD sqlite;
+      ATTACH IF NOT EXISTS './data/northwind.sqlite' AS nw (TYPE sqlite, READ_ONLY);
+ducklake:
+  enabled: true
+  alias: cache
+  metadata-path: ./cache.ducklake
+  data-path: ./cache_data
+```
+
+The order id is the cursor:
 
 <!-- flapi: endpoint group=append file=orders.yaml -->
 ```yaml
@@ -310,6 +357,7 @@ cache:
 
 <!-- flapi: template group=append file=orders_cache.sql -->
 ```sql
+-- sqls/orders_cache.sql
 {{^cache.previousSnapshotTimestamp}}
 CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS
 SELECT OrderID, CustomerID, OrderDate, Freight, ShipCountry
@@ -325,6 +373,7 @@ WHERE OrderID > {{{cache.previousSnapshotTimestamp}}};
 
 <!-- flapi: template group=append file=orders.sql -->
 ```sql
+-- sqls/orders.sql
 SELECT * FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
 ORDER BY OrderID DESC
 ```
@@ -366,11 +415,12 @@ ANTI JOIN cache.cache.events_cache c ON s.id = c.id;   -- rows the cache is miss
 
 ### Merge
 
-`cursor` and `primary-key`. This example reads a CSV extract with a soft-delete
-flag. Its own `flapi.yaml`:
+`cursor` and `primary-key`. This example is a new project directory `crm/`
+that reads a CSV extract with a soft-delete flag. Its `flapi.yaml`:
 
 <!-- flapi: config group=crm -->
 ```yaml
+# flapi.yaml
 project-name: crm-cache
 project-description: Merge cache over a CSV extract
 template:
@@ -385,6 +435,8 @@ ducklake:
   metadata-path: ./cache.ducklake
   data-path: ./cache_data
 ```
+
+The extract, `src/customers.csv`:
 
 <!-- flapi: file group=crm file=src/customers.csv -->
 ```text
@@ -414,6 +466,7 @@ cache:
 
 <!-- flapi: template group=crm file=customers_cache.sql -->
 ```sql
+-- sqls/customers_cache.sql
 {{^cache.previousSnapshotTimestamp}}
 CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS
 SELECT id, name, tier, updated_at, is_deleted
@@ -435,6 +488,7 @@ WHEN NOT MATCHED THEN INSERT *;
 
 <!-- flapi: template group=crm file=customers.sql -->
 ```sql
+-- sqls/customers.sql
 SELECT id, name, tier, updated_at
 FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
 WHERE NOT is_deleted
@@ -501,6 +555,7 @@ cache:
 
 <!-- flapi: template group=crm file=customers-live_cache.sql -->
 ```sql
+-- sqls/customers-live_cache.sql
 {{^cache.previousSnapshotTimestamp}}
 CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS
 SELECT id, name, tier, updated_at, is_deleted
@@ -527,6 +582,7 @@ WHEN NOT MATCHED THEN INSERT *;
 
 <!-- flapi: template group=crm file=customers-live.sql -->
 ```sql
+-- sqls/customers-live.sql
 SELECT id, name, tier, updated_at
 FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
 ORDER BY id
@@ -577,8 +633,12 @@ block needs `table`: give the write endpoint a `cache:` block with the **same
 
 MCP tool calls that write follow the same rules.
 
+This example is a new project directory `items/`. Its source is a DuckDB table
+the connection creates, so it needs no data files. Its `flapi.yaml`:
+
 <!-- flapi: config group=write-through -->
 ```yaml
+# flapi.yaml
 project-name: items-write-through
 project-description: Cache refreshed after every write
 template:
@@ -611,12 +671,14 @@ cache:
 
 <!-- flapi: template group=write-through file=items_cache.sql -->
 ```sql
+-- sqls/items_cache.sql
 CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS
 SELECT id, name FROM items;
 ```
 
 <!-- flapi: template group=write-through file=items.sql -->
 ```sql
+-- sqls/items.sql
 SELECT * FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}} ORDER BY id
 ```
 
@@ -647,6 +709,7 @@ cache:
 
 <!-- flapi: template group=write-through file=items-create.sql -->
 ```sql
+-- sqls/items-create.sql
 INSERT INTO items SELECT COALESCE(MAX(id), 0) + 1, '{{{ params.name }}}' FROM items
 ```
 
@@ -678,6 +741,7 @@ cache:
 
 <!-- flapi: template group=write-through file=items-delete.sql -->
 ```sql
+-- sqls/items-delete.sql
 DELETE FROM items WHERE id = {{ params.id }}
 ```
 
@@ -702,9 +766,10 @@ always see a whole snapshot, never a half-finished refresh.
 ### Time travel
 
 A serving template can read an older snapshot with `AT (VERSION => n)` or
-`AT (TIMESTAMP => ...)`, placed right after the table name:
+`AT (TIMESTAMP => ...)`, placed right after the table name. Back in the `shop`
+project from section 1, add a second cached endpoint:
 
-<!-- flapi: endpoint group=history file=segments-history.yaml -->
+<!-- flapi: endpoint group=quick file=segments-history.yaml -->
 ```yaml
 # sqls/segments-history.yaml
 url-path: /segments-history
@@ -737,16 +802,18 @@ cache:
 <!-- flapi: check GET /segments-history?at=2999-01-01%2000:00:00 -> 400 contains "snapshot_in_future" -->
 <!-- flapi: check GET /segments-history?at=yesterday -> 400 -->
 
-<!-- flapi: template group=history file=segments-history_cache.sql -->
+<!-- flapi: template group=quick file=segments-history_cache.sql -->
 ```sql
+-- sqls/segments-history_cache.sql
 CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS
 SELECT c_mktsegment AS segment, count(*) AS customers
 FROM read_parquet('{{{ conn.path }}}')
 GROUP BY c_mktsegment;
 ```
 
-<!-- flapi: template group=history file=segments-history.sql -->
+<!-- flapi: template group=quick file=segments-history.sql -->
 ```sql
+-- sqls/segments-history.sql
 SELECT * FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
 {{#params.version}}AT (VERSION => {{ params.version }}){{/params.version}}
 {{#params.at}}AT (TIMESTAMP => TIMESTAMP '{{{ params.at }}}'){{/params.at}}
@@ -763,7 +830,7 @@ ORDER BY segment
   keeps the ids of snapshots retention has expired. List the live ones with an
   uncached endpoint over `ducklake_snapshots('<alias>')`:
 
-<!-- flapi: endpoint group=history file=snapshots.yaml -->
+<!-- flapi: endpoint group=quick file=snapshots.yaml -->
 ```yaml
 # sqls/snapshots.yaml
 url-path: /snapshots
@@ -772,8 +839,9 @@ connection: [customers]
 ```
 <!-- flapi: check GET /snapshots -> 200 contains "snapshot_id" -->
 
-<!-- flapi: template group=history file=snapshots.sql -->
+<!-- flapi: template group=quick file=snapshots.sql -->
 ```sql
+-- sqls/snapshots.sql
 SELECT snapshot_id, snapshot_time, changes
 FROM ducklake_snapshots('cache')
 ORDER BY snapshot_id DESC
