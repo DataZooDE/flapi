@@ -25,36 +25,50 @@ Write a SQL template and a few lines of YAML. flAPI serves the result as a REST 
 ## ✨ Key Features
 
 ### 🔌 REST and MCP from one config
+*Guides: [Building a REST endpoint](docs/guides/rest-endpoints.md) · [Creating MCP tools](docs/guides/mcp-tools.md)*
+
 - **One file, two protocols**: `url-path` makes a REST endpoint, and `mcp-tool` makes the same SQL an MCP tool. `mcp-resource` and `mcp-prompt` complete the set
 - **Current MCP (`2026-07-28`) and older clients on the same endpoint**, with long-running tools (Tasks), typed results and OAuth discovery
 - **Agent safety**: roles per tool, dry runs, per-tool rate limits, and a scanner that flags prompt injection in tool descriptions
 - **OpenAPI 3.0** document at `/doc.yaml` and a Swagger UI at `/doc`
 
 ### 🗄️ Data sources
+*Guides: [Connecting data sources](docs/guides/data-sources.md) · [Reading from cloud storage](docs/guides/cloud-storage.md)*
+
 - **Everything DuckDB reads**: Parquet, CSV, JSON, [Iceberg](https://github.com/duckdb/duckdb-iceberg), Delta, [Postgres](https://github.com/duckdb/duckdb-postgres), [MySQL](https://github.com/duckdb/duckdb-mysql), SQLite, [BigQuery](https://github.com/hafenkran/duckdb-bigquery), SAP ERP and BW (via [ERPL](https://github.com/datazoode/erpl)), and S3 / GCS / Azure / HTTP
 - **Configs and templates can live in object storage**: `flapi -c s3://bucket/flapi.yaml` (also `gs://`, `az://`, `https://`)
 
 ### 🧩 SQL templates and validation
+*Guide: [Writing SQL templates](docs/guides/sql-templates.md)*
+
 - **Mustache templates** with `params.*`, `conn.*`, `auth.*` and whitelisted `env.*`
 - **Typed parameters are bound as prepared statements**: a `{{ params.x }}` (or `{{{ }}}` at a value site) on a typed field, outside a `{{#…}}` section, becomes a bound `?`, so it cannot inject SQL. Inside a section, the validator is the defence
 - **Validators** for int, number, boolean, string (length, regex), email, uuid, enum, date and time. A bad request gets a 400 before any SQL runs
 - **Writes** (POST/PUT/PATCH/DELETE) with `RETURNING` rows and cache invalidation
 
 ### ⚡ Caching (DuckLake)
+*Guide: [Caching an expensive query](docs/guides/caching.md)*
+
 - **Full refresh, append or merge**, inferred from `cursor` / `primary-key`, on a schedule
 - **Snapshots and time travel**, retention and garbage collection, refresh on demand (`flapii cache refresh`), and prebuilt caches for serverless
 
 ### 🔐 Security
+*Guide: [Authentication and authorization](docs/guides/authentication.md)*
+
 - **Auth**: Basic, Bearer/JWT and OIDC, with roles per endpoint, PBKDF2 password hashes, users from AWS Secrets Manager, and `{{env.X}}` for every secret
 - **Hardened by default where it matters**: SQL templates of a remote config run with DuckDB external access restricted (`duckdb-hardening`), so they can't read other files, buckets or hosts
 - CORS allowlist, per-user rate limits, a JSONL audit log, direct TLS, and a config auditor that runs at startup
 
 ### 🔭 Observability
+*Guide: [Observability](docs/guides/observability.md)*
+
 - **OpenTelemetry tracing**: one span per request with the query inside, joined to the calling agent's trace
 - **`request_id`** on every response and log line, runtime metrics, `/health` and `/health/live`
 - **`log-http-requests`** logs every HTTP request DuckDB makes (S3, GCS, HTTP), with userinfo and query strings redacted (a debugging switch)
 
 ### 📦 Deployment
+*Guides: [Shipping one self-contained binary](docs/guides/self-packaging.md) · [Serverless](docs/guides/serverless.md) · [Managing flAPI from the command line](docs/guides/cli.md)*
+
 - **One binary**, with the DuckDB extensions it needs shipped next to it in `extensions/`
 - **[Self-packaging](docs/guides/self-packaging.md)**: `flapi pack` folds the config, templates and small data files, and optionally the extensions (`--with-extensions`), into the binary itself. Then `scp` is the whole deploy. Secrets stay out: `pack` refuses `*.env`, `.env.*`, `secrets/*`, `*.pem` and `*.key`. Builds are reproducible (`SOURCE_DATE_EPOCH`), and macOS builds can be notarised
 - **Docker** (`ghcr.io/datazoode/flapi`), **[scale-to-zero platforms](docs/guides/serverless.md)** (Cloud Run, App Runner, Container Apps, Knative) and **PyPI** (`flapi-io`)
@@ -210,7 +224,7 @@ WHERE 1=1
 {{/params.id}}
 ```
 
-GET endpoints are paginated by default (`?limit=` / `?offset=`, 100 rows per page), so the template has no `LIMIT`. MCP is on by default on the same port (`mcp: {enabled: false}` turns it off; `GET /mcp/health` reports its state). Files can also define an `mcp-resource` or `mcp-prompt` alone. For the `mcp.auth` block, see [Exposing an endpoint as an MCP tool](docs/guides/mcp-tools.md#limiting-who-can-call-it).
+GET endpoints are paginated by default (`?limit=` / `?offset=`, 100 rows per page), so the template has no `LIMIT`. MCP is on by default on the same port (`mcp: {enabled: false}` turns it off; `GET /mcp/health` reports its state). Files can also define an `mcp-resource` or `mcp-prompt` alone. For the `mcp.auth` block, see [Creating MCP tools](docs/guides/mcp-tools.md#protect-it).
 
 ## 📚 Documentation
 
@@ -220,14 +234,17 @@ GET endpoints are paginated by default (`?limit=` / `?offset=`, 100 rows per pag
 |---|---|
 | Serve my first endpoint | [Getting started](docs/guides/getting-started.md) |
 | Add validation, filters, pagination | [Building a REST endpoint](docs/guides/rest-endpoints.md) |
-| Let an AI agent call it | [Exposing an endpoint as an MCP tool](docs/guides/mcp-tools.md) |
+| Write templates that are safe and fast | [Writing SQL templates](docs/guides/sql-templates.md) |
+| Connect Postgres, SQLite, BigQuery, Snowflake, files … | [Connecting data sources](docs/guides/data-sources.md) |
+| Let an AI agent call it | [Creating MCP tools for AI agents](docs/guides/mcp-tools.md) |
 | Make a slow query fast | [Caching an expensive query](docs/guides/caching.md) |
-| Require a token, restrict by role | [Requiring authentication](docs/guides/authentication.md) |
+| Require a login, restrict by role, filter rows per caller | [Authentication and authorization](docs/guides/authentication.md) |
 | Read from S3, GCS or Azure | [Reading from cloud storage](docs/guides/cloud-storage.md) |
 | Stop copy-pasting config blocks | [Reusing config and reading the environment](docs/guides/yaml-includes.md) |
 | Deploy one self-contained binary | [Shipping one self-contained binary](docs/guides/self-packaging.md) |
 | Run on Cloud Run and other scale-to-zero platforms | [Serverless](docs/guides/serverless.md) |
-| Trace requests and keep an audit trail | [Observability](docs/OBSERVABILITY.md) |
+| Debug a failed request, probe health, trace, audit | [Observability](docs/guides/observability.md) |
+| Manage a running server from the shell or CI | [Managing flAPI from the command line](docs/guides/cli.md) |
 | Let Claude Code build and run it with me | [Using flAPI with Claude Code](docs/guides/claude-code.md) |
 
 | Reference | Covers |
