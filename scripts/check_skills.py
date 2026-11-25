@@ -14,7 +14,8 @@ Checks
    directory has a SKILL.md whose frontmatter `name` matches its directory.
 2. Version: plugin.json `version`, every SKILL.md frontmatter `version` and its
    `**flAPI:** v<version>` banner equal the newest released heading in
-   CHANGELOG.md (`## v<version> ...`). Drift fails.
+   CHANGELOG.md (`## v<version> ...`), and so does the `**flAPI Version:**` header
+   of docs/{CONFIG,CLI,CONFIG_SERVICE_API,MCP}_REFERENCE.md. Drift fails.
 3. Config keys: every mapping key in every ```yaml block must be READ by the
    parser somewhere in src/ (a subscript `["key"]`, `safeGet(...,"key")`,
    `has("key")`, or a key list). Children of user-named maps (connection
@@ -226,7 +227,7 @@ def forbidden_terms() -> list[tuple[str, str]]:
         for line in f.read_text(encoding="utf-8").splitlines():
             if line.strip() and not line.startswith("#"):
                 term, _, why = line.partition("\t")
-                items.append((term.strip(), why.strip()))
+                items.append((term.strip(), why.strip()))   # a `re:` prefix makes it a regex
     return items
 
 
@@ -256,11 +257,18 @@ def check_manifests(rep: Report) -> str | None:
     return plugin.get("version")
 
 
+REFERENCE_DOCS = [REPO / "docs" / n for n in ("CONFIG_REFERENCE.md", "CLI_REFERENCE.md",
+                                               "CONFIG_SERVICE_API_REFERENCE.md", "MCP_REFERENCE.md")]
+
+
 def check_versions(rep: Report, plugin_version: str | None):
     expected = released_version()
     if not expected:
         rep.fail("CHANGELOG.md", "no '## vX.Y.Z' release heading found")
         return
+    for doc in REFERENCE_DOCS:
+        if f"**flAPI Version:** v{expected}" not in doc.read_text(encoding="utf-8"):
+            rep.fail(rel(doc), f"header '**flAPI Version:** v{expected}' missing (--set-version stamps it)")
     if plugin_version != expected:
         rep.fail("plugin.json", f"version {plugin_version} != latest release v{expected} in CHANGELOG.md")
     for skill_dir in sorted((PLUGIN / "skills").iterdir()):
@@ -319,14 +327,21 @@ def check_yaml_keys(rep: Report, snippets: list[Snippet], known: set[str]):
 
 # A forbidden term may be named where its sentence says it is gone. Sentences wrap,
 # so the sentence may continue on the next line, but it ends at the first period.
-GONE = re.compile(r"\b(deprecated|no effect|ignored|removed|dropped|drops|existed|earlier version|"
-                  r"does not exist)\b", re.I)
+# "deprecated" / "no effect" anywhere in the sentence; the everyday words
+# ("removed", "ignored", ...) only within a few words of the term, so "removed
+# snapshots" elsewhere in the sentence does not excuse it.
+GONE_STRONG = re.compile(r"\b(deprecated|no effect|does not exist|earlier version)\b", re.I)
+# "is ignored", "are dropped", "was removed": said of the subject, anywhere in the sentence.
+GONE_PASSIVE = re.compile(r"\b(is|are|was|were|be|been|gets?|got)\s+(\w+\s+)?(ignored|removed|dropped)\b", re.I)
+GONE_NEAR = re.compile(r"\b(drops|existed|ignored)\b", re.I)
+NEAR = 40   # characters on either side of the term
 
 
 def says_gone(lines: list[str], n: int, term: str) -> bool:
     """Whether the sentence holding `term` (on 1-based line n) says the term is gone."""
     if lines[n - 1].lstrip().startswith("|"):          # a table row is one statement
-        return bool(GONE.search(lines[n - 1]))
+        row = lines[n - 1]
+        return bool(GONE_STRONG.search(row) or GONE_PASSIVE.search(row) or GONE_NEAR.search(row))
     nxt = lines[n] if n < len(lines) else ""
     # The sentence goes on to the next line unless that line starts a new one (or a block).
     continues = bool(re.match(r"^\s*[a-z`(]", nxt))
@@ -334,7 +349,11 @@ def says_gone(lines: list[str], n: int, term: str) -> bool:
     i = text.find(term)
     start = text.rfind(". ", 0, i) + 1
     end = text.find(". ", i)
-    return bool(GONE.search(text[start:end if end >= 0 else len(text)]))
+    sentence = text[start:end if end >= 0 else len(text)]
+    if GONE_STRONG.search(sentence) or GONE_PASSIVE.search(sentence):
+        return True
+    j = sentence.find(term)
+    return bool(GONE_NEAR.search(sentence[max(0, j - NEAR):j + len(term) + NEAR]))
 
 
 def check_forbidden(rep: Report, files: list[Path]):
@@ -343,8 +362,13 @@ def check_forbidden(rep: Report, files: list[Path]):
         lines = f.read_text(encoding="utf-8").splitlines()
         for n, line in enumerate(lines, 1):
             for term, why in terms:
-                if term in line and not says_gone(lines, n, term):
-                    rep.fail(f"{rel(f)}:{n}", f"'{term}' ({why})")
+                if term.startswith("re:"):
+                    m = re.search(term[3:], line)
+                    found = m.group(0) if m else None
+                else:
+                    found = term if term in line else None
+                if found and not says_gone(lines, n, found):
+                    rep.fail(f"{rel(f)}:{n}", f"'{found}' ({why})")
 
 
 def check_template_vars(rep: Report, files: list[Path], allowed: set[str]):
@@ -362,9 +386,11 @@ def github_slug(heading: str, seen: dict[str, int]) -> str:
     """The anchor GitHub generates for a Markdown heading (github-slugger rules)."""
     # Inline HTML goes, except inside code spans (`--to <dir>` keeps "dir").
     parts = heading.split("`")
-    text = "".join(p if i % 2 else re.sub(r"<[^>]+>", "", p) for i, p in enumerate(parts))
+    text = "`".join(p if i % 2 else re.sub(r"<[^>]+>", "", p) for i, p in enumerate(parts))
     text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", text)   # links and images keep their text
-    text = re.sub(r"(\*\*|__|\*|\b_)(.+?)\1", r"\2", text)    # emphasis markers go, the words stay
+    parts = text.split("`")                                   # emphasis markers go, outside code
+    text = "".join(p if i % 2 else re.sub(r"(\*\*|__|\*|\b_)(.+?)\1", r"\2", p) for i, p in enumerate(parts))
+    # (the join drops the backticks themselves, as GitHub does)
     text = text.strip().lower()
     # Letters, digits, `_`, `-`, spaces and combining marks (the U+FE0F of an emoji) stay.
     slug = "".join(ch for ch in text if ch.isalnum() or ch in "_- " or unicodedata.category(ch).startswith("M"))
@@ -383,9 +409,10 @@ def anchors_of(path: Path, cache: dict[Path, set[str]]) -> set[str]:
     if path not in cache:
         text = path.read_text(encoding="utf-8")
         text = FENCE.sub("", text)  # a `# comment` in a code block is not a heading
+        text = re.sub(r"\A---\n.*?\n---\n", "", text, flags=re.S)   # front matter
         seen: dict[str, int] = {}
         headings = re.findall(r"^#{1,6}\s+(.*?)\s*#*\s*$", text, re.M)
-        headings += re.findall(r"^(\S.*?)\s*\n(?:=+|-+)\s*$", text, re.M)   # setext
+        headings += re.findall(r"^(\S[^\n]*?)[ \t]*\n(?:=+|-+)[ \t]*$", text, re.M)   # setext
         found = {github_slug(h, seen) for h in headings}
         found |= {a.lower() for a in re.findall(r"""<a\s+(?:name|id)=["']([^"']+)["']""", text)}
         cache[path] = found
@@ -507,9 +534,13 @@ def run_quickstart(rep: Report, flapi: Path, flapii: list[str]):
                 where = f"Readme.md:{line} (quickstart {kind})"
                 script = shim + re.sub(r"\b(localhost|127\.0\.0\.1):8080\b", rf"\1:{port}", body)
                 if kind == "serve":
-                    server = subprocess.Popen(["bash", "-c", script], cwd=tmp, env=env,
-                                              stdout=log.open("w"), stderr=subprocess.STDOUT,
-                                              start_new_session=True)
+                    if server is not None:
+                        rep.fail(where, "a second quickstart serve block; the Quick Start starts one server")
+                        return
+                    with log.open("w") as log_out:   # the child keeps its own descriptor
+                        server = subprocess.Popen(["bash", "-c", script], cwd=tmp, env=env,
+                                                  stdout=log_out, stderr=subprocess.STDOUT,
+                                                  start_new_session=True)
                     deadline = time.time() + 90
                     up = False
                     while time.time() < deadline and server.poll() is None:
@@ -823,10 +854,11 @@ def run_checks(rep: Report, where: str, root: Path, flapi: Path, checks: list[st
 # ---------------------------------------------------------------------- main
 
 def resolve_flapii(arg: str | None) -> list[str] | None:
-    if arg:
-        return shlex.split(arg)
-    if os.environ.get("FLAPII_BIN"):
-        return shlex.split(os.environ["FLAPII_BIN"])
+    spec = arg or os.environ.get("FLAPII_BIN")
+    if spec:
+        # `node cli/dist/index.js` is relative to where check_skills runs, but the
+        # Quick Start runs in a temp dir: make every existing path absolute.
+        return [str(Path(t).resolve()) if ("/" in t and Path(t).exists()) else t for t in shlex.split(spec)]
     if shutil.which("flapii"):
         return ["flapii"]
     dist = REPO / "cli" / "dist" / "index.js"
@@ -848,6 +880,10 @@ def set_version(version: str) -> int:
         text = re.sub(r"(?m)^version: .*$", f"version: {version}", text, count=1)
         text = re.sub(r"\*\*flAPI:\*\* v[0-9.]+", f"**flAPI:** v{version}", text)
         skill.write_text(text, encoding="utf-8")
+    for doc in REFERENCE_DOCS:
+        text = doc.read_text(encoding="utf-8")
+        doc.write_text(re.sub(r"\*\*flAPI Version:\*\* v[0-9.]+", f"**flAPI Version:** v{version}", text),
+                       encoding="utf-8")
     print(f"stamped plugin version {version}")
     return 0
 

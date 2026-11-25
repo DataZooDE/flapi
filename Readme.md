@@ -196,8 +196,8 @@ auth:                              # REST only
   type: basic
   users:
     - username: reader
-      password: '{{env.READER_PASSWORD}}'   # never a literal (or a $pbkdf2-sha256$ hash);
-                                            # READER_PASSWORD must match template.environment-whitelist
+      password: '{{env.READER_PASSWORD}}'   # never a literal password; the variable may hold a
+                                            # $pbkdf2-sha256$ hash, and must match template.environment-whitelist
       roles: [reader]
 ```
 

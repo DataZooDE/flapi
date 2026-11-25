@@ -1,5 +1,8 @@
-# term<TAB>why. A term may appear only where its line (or the next one) says it is gone:
-# "deprecated", "no effect", "ignored", "removed", "dropped", "existed", "earlier version", "does not exist".
+# term<TAB>why. `re:<regex>` makes the term a regular expression. A term may appear only where
+# its sentence says it is gone (see says_gone in check_skills.py): "deprecated", "no effect",
+# "does not exist" or "earlier version" anywhere in the sentence, or "ignored", "removed",
+# "dropped", "drops", "existed" within a few words of the term. A sentence continues onto the
+# next line when that line starts lowercase; a table row is one statement.
 rollback-window	parsed but never read; deprecated
 delete-handling	parsed but never read; deprecated; handle deletes in the MERGE template
 rollbackWindow	parsed but never read; deprecated
@@ -14,7 +17,7 @@ application_stop	not a telemetry event; flAPI sends server_started, rest_endpoin
 Swagger 2.0	/doc.yaml is an OpenAPI 3.0 document
 "protocol_version":"2024-11-05"	/mcp/health reports the current default protocol version, not 2024-11-05
 "version":"0.3.0"	the MCP server reports the build version (FLAPI_VERSION)
-port: 8081	MCP has no port of its own; it is served on the HTTP port at /mcp/jsonrpc
+re:(?<![\w-])port: 8081	MCP has no port of its own; it is served on the HTTP port at /mcp/jsonrpc
 pip install flapii	there is no flapii PyPI package; pip install flapi-io installs both commands
 result_set_bytes	removed; the result size is flapi.result.bytes on the request span
 "returned_data"	the write response carries RETURNING rows under data (returns-data: true)

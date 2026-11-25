@@ -1461,7 +1461,8 @@ Versioning: `v*` tags (e.g., `v0.5.0`). Tag push triggers the full release pipel
 1. Ensure all CI builds pass on `main` (`gh run list`)
    - In the release-prep commit, after rolling `## Unreleased` into `## v{version}`,
      stamp the Claude Code plugin: `python3 scripts/check_skills.py --set-version {version}`
-     (rewrites plugin.json, every SKILL.md `version:` and banner), then
+     (rewrites plugin.json, every SKILL.md `version:` and banner, and the `**flAPI Version:**`
+     header of the four reference docs), then
      `python3 scripts/check_skills.py --static-only` must pass.
 2. Tag and push: `git tag v{version} && git push origin v{version}`
 3. `.github/workflows/build.yaml` triggers on `v*` tag push (there is no separate `release.yaml`):
