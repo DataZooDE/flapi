@@ -1749,12 +1749,12 @@ or `cancelled`. `tasks/cancel` (`{taskId}`) requests cancellation. A `taskId` is
 scoped to its creating principal — `tasks/get`/`tasks/cancel` re-check ownership.
 A task result stops being returned once it is past `ttlMs`.
 
-> **Cancellation is cooperative.** `tasks/cancel` cancels a task that has not
-> started yet and marks a running one for cancellation, but it cannot interrupt a
-> SQL statement already executing — that query runs to completion (and, for a
-> write tool, may commit) before the task is marked `cancelled`. Interrupting an
-> in-flight query (via `duckdb_interrupt`) is a planned follow-up. `server/discover`
-> and the `tasks/*` methods are modern-only; a legacy request sees `-32601`.
+> **Cancellation.** `tasks/cancel` answers `{"status":"cancelling"}`. A task that has
+> not started is cancelled at once; a running one has its DuckDB query interrupted
+> (`QueryExecutor::interrupt`, via the hook in `src/mcp_task_manager.cpp`) and ends
+> `cancelled`. A remote source (Postgres, BigQuery) may finish its own side of the work.
+> A tool whose SQL fails ends `completed` with an `isError` result, not `failed`.
+> `server/discover` and the `tasks/*` methods are modern-only; a legacy request sees `-32601`.
 
 ```yaml
 mcp:
