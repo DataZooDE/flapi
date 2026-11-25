@@ -246,6 +246,8 @@ changed at runtime.
 None of them needs a token, and none produces a trace span or an audit line.
 
 ```bash
+curl -s http://localhost:8080/health/live    # {"status":"live"}
+curl -s http://localhost:8080/mcp/health     # ..."tools_count":...
 curl -s http://localhost:8080/health
 ```
 
