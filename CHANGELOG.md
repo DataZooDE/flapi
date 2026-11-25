@@ -2,7 +2,7 @@
 
 All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (the date the binary set was cut). Earlier history is in the git log.
 
-## Unreleased
+## v26.11.25 — templates of remote configs are sandboxed, a DuckDB HTTP request log, and Secrets-Manager users out of SQL reach
 
 ### Added
 
@@ -78,6 +78,8 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   `PRAGMA` and `SET GLOBAL` in templates fail.
 - Under `restricted`, an endpoint's `auth.from-aws-secretmanager.init` runs with external access off and a locked
   configuration in its private DuckDB: creating its secret works; `INSTALL`, file and network access in it fail.
+- Under `restricted`, `duckdb_extensions()` in a template fails: it scans the extension directory, which is not
+  allowed (allowed directories are writable, and a file planted there would load at the next start).
 
 ### Fixed
 

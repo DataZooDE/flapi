@@ -9,13 +9,13 @@ description: >
   compaction, snapshot retention and file cleanup, DuckDB threads and memory.
   Use when a cache refresh is slow, overlaps its schedule, grows storage, or a
   user asks how to make cache updates faster or cheaper.
-version: 26.11.23
+version: 26.11.25
 user-invocable: false
 ---
 
 # flAPI Cache Tuning Cheat Sheet
 
-**flAPI:** v26.11.23 | **Skill:** Operate | **See also:** `flapi-cache-design`, `flapi-deploy`, `flapi-testing`
+**flAPI:** v26.11.25 | **Skill:** Operate | **See also:** `flapi-cache-design`, `flapi-deploy`, `flapi-testing`
 
 Tune in a loop: **measure → change one lever → refresh twice → measure again.**
 Designing the cache (mode, templates, deletes) is `flapi-cache-design`.
