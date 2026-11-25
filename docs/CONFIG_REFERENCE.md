@@ -698,11 +698,11 @@ mcp:
 | `mcp-tool.response.max-rows` | integer | - | Cap result-set size |
 | `mcp-tool.response.redact-columns` | array | - | Replace listed columns with the redaction sentinel before returning rows |
 | `mcp-tool.response.sample` | boolean | `false` | Return only summary metadata (`row_count`, `columns`, `sampled: true`), never row data |
-| `mcp-tool.rate-limit.enabled` | boolean | `false` | Per-tool rate limit (keyed on authenticated principal, falling back to anonymous) |
-| `mcp-tool.rate-limit.max` | integer | `60` | Maximum tool invocations per interval |
+| `mcp-tool.rate-limit.enabled` | boolean | `true` when the block is present | Per-tool rate limit (keyed on authenticated principal, falling back to anonymous) |
+| `mcp-tool.rate-limit.max` | integer | `100` | Maximum tool invocations per interval |
 | `mcp-tool.rate-limit.interval` | integer | `60` | Window in seconds |
 
-**Dry-run / shadow mode:** any `tools/call` request may include `"arguments": { ..., "_dryRun": true }`. flAPI runs validators and template expansion (`?` placeholders rendered, `EXPLAIN` requested) and returns the rendered SQL + plan as a JSON payload, but never executes the query. Maps 1:1 onto the audit/shadow-mode use case for batch validation before promoting an endpoint to production.
+**Dry-run / shadow mode:** any `tools/call` request may include `"arguments": { ..., "_dryRun": true }`. flAPI runs validators and template expansion (`?` placeholders rendered) and returns `rendered_sql`, `bindings` and `parameters` as a JSON payload; it never executes the query and runs no `EXPLAIN`. Maps 1:1 onto the audit/shadow-mode use case for batch validation before promoting an endpoint to production.
 
 **Notes:**
 - MCP server is auto-enabled when endpoints define `mcp-tool`, `mcp-resource`, or `mcp-prompt`
@@ -879,7 +879,9 @@ Each event is a single JSON line of the shape:
 {"timestamp":"2026-05-17T05:32:11Z","request_id":"…","trace_id":"…","span_id":"…","principal":"alice","method":"tools/call","target":"customer_lookup","status":"success","row_count":1,"latency_ms":12,"params":{"id":"42"}}
 ```
 
-`status` is `success` or `error:<code>`. `trace_id` / `span_id` appear when the request has a
+`status` is `success`, `denied` (REST 401/403), `rate_limited` (429), `dry_run` (MCP `_dryRun`),
+`error:<HTTP status>` (other REST failures) or `error:<reason>` (MCP, e.g. `error:invalid_arguments`).
+`trace_id` / `span_id` appear when the request has a
 trace. `row_count` is `-1` when the row count is not known (REST requests today).
 
 > **Implementation:** `src/audit_logger.cpp` | **Tests:** `test/cpp/audit_logger_test.cpp`, `test/integration/test_audit_log.py`
@@ -2296,8 +2298,12 @@ operation:
   transaction: true
   validate-before-write: true
 
-# Additional cache settings for write endpoints
+# The cache this write refreshes: name the read endpoint's table and populate template.
+# A write refreshes only the cache its OWN block names; without `table` nothing is refreshed.
 cache:
+  enabled: true
+  table: products_cache
+  template-file: products_cache.sql
   invalidate-on-write: true   # refresh the cache synchronously, before the response
 ```
 

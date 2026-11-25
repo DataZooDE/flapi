@@ -570,7 +570,7 @@ Executes an MCP tool with provided arguments.
 |-----------|------|----------|-------------|
 | `name` | string | Yes | Tool name to execute |
 | `arguments` | object | No | Tool input arguments |
-| `arguments._dryRun` | boolean | No | Reserved flag. When `true`, flAPI renders the SQL (with `?` placeholders for typed params), validates inputs, and returns the rendered SQL + execution plan as a JSON payload **without** executing the query. Use for shadow-mode auditing and pre-production batch validation. See [§ 4.4.1 Dry-run mode](#441-dry-run-mode) |
+| `arguments._dryRun` | boolean | No | Reserved flag. When `true`, flAPI renders the SQL (with `?` placeholders for typed params), validates inputs, and returns the rendered SQL, its `bindings` and the `parameters` as a JSON payload **without** executing the query (no `EXPLAIN`, no plan). Use for shadow-mode auditing and pre-production batch validation. See [§ 4.4.1 Dry-run mode](#441-dry-run-mode) |
 
 **Response:**
 
@@ -591,15 +591,15 @@ Executes an MCP tool with provided arguments.
 
 Tool results are returned as content blocks (see [Content Types](#9-content-types)).
 
-**Authorization:** when `mcp.auth.enabled: true`, every tool MUST declare `mcp-tool.allowed-roles` in its YAML. Calls from a JWT/OIDC principal whose `roles` claim doesn't intersect the allowed list return:
+**Authorization:** when `mcp.auth.enabled: true`, every tool MUST declare `mcp-tool.allowed-roles` in its YAML. Calls from a principal whose roles don't intersect the allowed list return HTTP 403 with:
 
 ```json
-{"jsonrpc":"2.0","id":4,"error":{"code":-32603,"message":"Permission denied: Tool 'X' requires one of [analyst]; caller has [reader]."}}
+{"jsonrpc":"2.0","id":4,"error":{"code":-32000,"message":"Permission denied: Tool 'X' requires one of [analyst]; caller has [reader]."}}
 ```
 
 Tools without `allowed-roles` are denied — this is the secure-by-default stance.
 
-**Per-tool rate limit:** if `mcp-tool.rate-limit.enabled: true`, requests over the configured budget receive a JSON-RPC error similar to the RBAC denial. Rate limits are keyed on the authenticated principal (with an anonymous fallback bucket per tool).
+**Per-tool rate limit:** with an `mcp-tool.rate-limit` block (enabled unless `enabled: false`), a call over the budget gets a tool result with `isError: true` and `retry_after_seconds`, not a JSON-RPC error, so an agent can wait and retry. Rate limits are keyed on the authenticated principal (with an anonymous fallback bucket per tool).
 
 **Response shaping:** the tool's `mcp-tool.response` block (see [CONFIG_REFERENCE § 2.6](./CONFIG_REFERENCE.md#26-mcp-configuration)) applies redaction, row-count caps, or summary-only sampling to the result before it enters the content block.
 
