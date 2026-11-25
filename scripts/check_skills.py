@@ -873,15 +873,15 @@ def run_group(rep: Report, name: str, members: list[Snippet], flapi: Path):
 
 
 CHECK = re.compile(r"^(GET|POST|PUT|PATCH|DELETE)\s+(\S+)(?:\s+body=(\{.*?\}))?(?:\s+user=(\S+))?(?:\s+header=(\S+?):(\S+))?"
-                   r"\s*->\s*(\d{3})(?:\s+contains\s+\"(.*)\")?$")
+                   r"\s*->\s*(\d{3})(?:\s+contains\s+(?:\"(.*)\"|'(.*)'))?$")
 MCP_CHECK = re.compile(r"^mcp\s+([A-Za-z0-9_.-]+)(?:\s+(\{.*?\}))?(?:\s+user=(\S+))?"
-                       r"\s*->\s*(ok|error|\d{3})(?:\s+contains\s+\"(.*)\")?$")
+                       r"\s*->\s*(ok|error|\d{3})(?:\s+contains\s+(?:\"(.*)\"|'(.*)'))?$")
 
 
 def run_one_check(rep: Report, where: str, root: Path, base: str, check: str, log):
     """One `# flapi: check` / `# flapi: check-mcp` line against the live server.
 
-      GET /path [body={json}] [user=name:password] [header=Name:value] -> 200 [contains "text"]
+      GET /path [body={json}] [user=name:password] [header=Name:value] -> 200 [contains "text" | contains 'text with "quotes"']
       (the server runs with --config-service-token skill-check-token: header=X-Config-Token:skill-check-token)
       (check-mcp) tool_name [{arguments}] [user=name:password] -> ok|error|401 [contains "text"]
     """
@@ -892,12 +892,14 @@ def run_one_check(rep: Report, where: str, root: Path, base: str, check: str, lo
         rep.fail(where, f"malformed check: {check!r}")
         return
     if mcp:
-        tool, args, user, expect, needle = mcp.groups()
+        tool, args, user, expect, needle, needle_sq = mcp.groups()
+        needle = needle or needle_sq
         method, url = "POST", "/mcp/jsonrpc"
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                            "params": {"name": tool, "arguments": json.loads(args or "{}")}})
     else:
-        method, url, body, user, hname, hvalue, expect, needle = rest.groups()
+        method, url, body, user, hname, hvalue, expect, needle, needle_sq = rest.groups()
+        needle = needle or needle_sq
     headers = {"Content-Type": "application/json"} if body else {}
     if not mcp and hname:
         headers[hname] = hvalue
