@@ -365,6 +365,29 @@ def check_guide_tags(rep: Report, snippets: list[Snippet]):
                          "HTML comment (<!-- flapi: ... -->) on the line before the fence, or after it for checks")
 
 
+def check_guide_checks_visible(rep: Report, snippets: list[Snippet]):
+    """What CI requests, the reader must see: every check's path (or MCP tool) is in a visible code block."""
+    by_file: dict[Path, list[Snippet]] = {}
+    for s in snippets:
+        if s.path.is_relative_to(GUIDES):
+            by_file.setdefault(s.path, []).append(s)
+    for path, snips in by_file.items():
+        visible = "\n".join(s.body for s in snips if s.lang in ("bash", "sh", "shell", "console", ""))
+        for s in snips:
+            for check in s.checks:
+                m = MCP_CHECK.match(check)
+                if m:
+                    needle = m.group(1)
+                else:
+                    r = CHECK.match(check)
+                    if not r:
+                        continue
+                    needle = r.group(2).split("?", 1)[0]
+                if needle not in visible:
+                    rep.fail(f"{rel(path)}:{s.line}", f"CI checks `{check[:60]}` but no visible command shows "
+                                                      f"`{needle}`; give the reader the curl/flapii line too")
+
+
 def check_yaml_keys(rep: Report, snippets: list[Snippet], known: set[str]):
     for s in snippets:
         if s.lang not in ("yaml", "yml"):
@@ -1035,6 +1058,7 @@ def main() -> int:
     check_versions(rep, version)
     check_yaml_keys(rep, snippets + guide_snippets, parser_keys())
     check_guide_tags(rep, guide_snippets)
+    check_guide_checks_visible(rep, guide_snippets)
     check_forbidden(rep, files)
     check_template_vars(rep, files, cache_template_vars())
 
