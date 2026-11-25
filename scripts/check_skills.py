@@ -20,8 +20,14 @@ Checks
    `has("key")`, or a key list). Children of user-named maps (connection
    names, `properties`, JSON-schema `properties`, ...) are skipped.
 4. Forbidden facts: deprecated keys and known-wrong forms
-   (scripts/skill_snippets/forbidden.txt) may appear only on a line that
-   also says "deprecated" or "no effect".
+   (scripts/skill_snippets/forbidden.txt) may appear only where the text
+   says they are gone ("deprecated", "no effect", "ignored", ...). This and
+   checks 5, 6 and 8 also cover Readme.md, TELEMETRY.md and docs/ (not
+   docs/archive, docs/blog, docs/promotion).
+8. Links: every relative link and #anchor in the plugin and the docs resolves
+   (anchors as GitHub generates them from headings).
+9. Quick Start: the Readme's `<!-- flapi: quickstart ... -->` blocks run in a
+   clean directory against the built binaries, as a newcomer would run them.
 5. Template variables: every `{{cache.X}}` names a variable the template
    processor actually sets (src/sql_template_processor.cpp).
 6. CLI: every `flapii ...` and `flapi ...` invocation in a code block or inline
@@ -129,6 +135,20 @@ def plugin_markdown() -> list[Path]:
     files = sorted((PLUGIN / "skills").glob("*/**/*.md")) + sorted((PLUGIN / "commands").glob("*.md"))
     readme = PLUGIN / "README.md"
     return ([readme] if readme.exists() else []) + files
+
+
+def doc_markdown() -> list[Path]:
+    """The user-facing docs outside the plugin: the Readme and the maintained docs/ tree.
+
+    docs/archive/ is unmaintained by design, docs/blog/ and docs/promotion/ are dated
+    writing that describes the release they shipped with.
+    """
+    skip = ("archive", "blog", "promotion")
+    files = [REPO / "Readme.md", REPO / "TELEMETRY.md"]
+    for f in sorted((REPO / "docs").rglob("*.md")):
+        if f.relative_to(REPO / "docs").parts[0] not in skip:
+            files.append(f)
+    return [f for f in files if f.exists()]
 
 
 def extract_snippets(path: Path) -> list[Snippet]:
@@ -295,24 +315,155 @@ def check_yaml_keys(rep: Report, snippets: list[Snippet], known: set[str]):
             rep.ok(where, "yaml keys")
 
 
+# A forbidden term may be named where the text says it is gone (sentences wrap,
+# so the next line counts too).
+GONE = ("deprecated", "no effect", "ignored", "removed", "dropped", "existed",
+        "earlier version", "does not exist", "drops")
+
+
 def check_forbidden(rep: Report, files: list[Path]):
     terms = forbidden_terms()
     for f in files:
-        for n, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
-            low = line.lower()
+        lines = f.read_text(encoding="utf-8").splitlines()
+        for n, line in enumerate(lines, 1):
+            context = (line + " " + (lines[n] if n < len(lines) else "")).lower()
             for term, why in terms:
-                if term in line and "deprecated" not in low and "no effect" not in low:
+                if term in line and not any(w in context for w in GONE):
                     rep.fail(f"{rel(f)}:{n}", f"'{term}' ({why})")
 
 
 def check_template_vars(rep: Report, files: list[Path], allowed: set[str]):
     pat = re.compile(r"\{\{\{?\s*[#^/]?\s*cache\.([A-Za-z]+)")
     for f in files:
-        for n, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+        lines = f.read_text(encoding="utf-8").splitlines()
+        for n, line in enumerate(lines, 1):
+            context = (line + " " + (lines[n] if n < len(lines) else "")).lower()
             for var in pat.findall(line):
-                if var not in allowed:
+                if var not in allowed and not any(w in context for w in GONE):
                     rep.fail(f"{rel(f)}:{n}", f"{{{{cache.{var}}}}} is not set by the template processor "
                                               f"(known: {', '.join(sorted(allowed))})")
+
+
+def github_slug(heading: str, seen: dict[str, int]) -> str:
+    """The anchor GitHub generates for a Markdown heading."""
+    text = re.sub(r"<[^>]+>", "", heading)                   # inline HTML
+    text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", text)   # links and images keep their text
+    text = text.replace("`", "").strip().lower()
+    slug = re.sub(r"[^\w\- ]", "", text, flags=re.UNICODE).replace(" ", "-")
+    n = seen.get(slug, 0)
+    seen[slug] = n + 1
+    return slug if n == 0 else f"{slug}-{n}"
+
+
+def anchors_of(path: Path, cache: dict[Path, set[str]]) -> set[str]:
+    if path not in cache:
+        text = path.read_text(encoding="utf-8")
+        text = FENCE.sub("", text)  # a `# comment` in a code block is not a heading
+        seen: dict[str, int] = {}
+        found = {github_slug(m.group(1), seen) for m in re.finditer(r"^#{1,6}\s+(.*?)\s*#*\s*$", text, re.M)}
+        found |= set(re.findall(r"""<a\s+(?:name|id)=["']([^"']+)["']""", text))
+        cache[path] = found
+    return cache[path]
+
+
+LINK = re.compile(r"(?<!!)\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)|<img[^>]+src=\"([^\"]+)\"|<a[^>]+href=\"([^\"]+)\"")
+
+
+def check_links(rep: Report, files: list[Path]):
+    """Every relative link resolves to a file, and every #anchor to a heading in it."""
+    cache: dict[Path, set[str]] = {}
+    for f in files:
+        text = FENCE.sub(lambda m: "\n" * m.group(0).count("\n"), f.read_text(encoding="utf-8"))
+        for n, line in enumerate(text.splitlines(), 1):
+            for m in LINK.finditer(line):
+                target = next(g for g in m.groups() if g)
+                if re.match(r"^[a-z][a-z0-9+.-]*:", target, re.I):   # http:, mailto:, ...
+                    continue
+                path_part, _, anchor = target.partition("#")
+                dest = f if not path_part else (f.parent / path_part).resolve()
+                where = f"{rel(f)}:{n}"
+                if not dest.exists():
+                    rep.fail(where, f"link target {target} does not exist")
+                    continue
+                if anchor and dest.suffix == ".md" and anchor.lower() not in anchors_of(dest, cache):
+                    rep.fail(where, f"anchor #{anchor} is not a heading in {rel(dest)}")
+                    continue
+                rep.ok(where, f"link {target}")
+
+
+# ------------------------------------------------------------------ Readme Quick Start
+
+QUICKSTART = re.compile(r"^<!--\s*flapi:\s*quickstart\s+(\w+)([^>]*)-->\s*\n```\w*\n(.*?)^```", re.S | re.M)
+
+
+def run_quickstart(rep: Report, flapi: Path, flapii: list[str]):
+    """Run the Readme Quick Start as a newcomer would, against the built binaries.
+
+    Blocks are marked with an HTML comment on the line before the fence:
+      <!-- flapi: quickstart run -->              run with bash, must exit 0
+      <!-- flapi: quickstart serve -->            started in the background; the server must come up
+      <!-- flapi: quickstart try expect="x" -->   run once the server is up; must exit 0 and print x
+    `uvx --from flapi-io <cmd>` resolves to the binaries under test, and port 8080 to a free port.
+    """
+    readme = REPO / "Readme.md"
+    blocks = [(m.group(1), dict(re.findall(r'(\w+)="([^"]*)"', m.group(2))), m.group(3),
+               readme.read_text(encoding="utf-8").count("\n", 0, m.start()) + 1)
+              for m in QUICKSTART.finditer(readme.read_text(encoding="utf-8"))]
+    if not any(k == "serve" for k, *_ in blocks) or not any(k == "try" for k, *_ in blocks):
+        rep.fail("Readme.md", "no runnable Quick Start (<!-- flapi: quickstart serve/try --> blocks)")
+        return
+    port = free_port()
+    shim = (
+        "set -euo pipefail\n"
+        f"FLAPI_BIN={shlex.quote(str(flapi))}\n"
+        f"FLAPII_BIN=({' '.join(shlex.quote(a) for a in flapii)})\n"
+        'uvx() { [ "${1:-}" = --from ] && shift 2; local cmd=$1; shift\n'
+        '  case "$cmd" in flapi) "$FLAPI_BIN" "$@";; flapii) "${FLAPII_BIN[@]}" "$@";;\n'
+        '  *) echo "quickstart: unexpected uvx command $cmd" >&2; return 2;; esac; }\n'
+    )
+    env = {**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1", "FLAPI_NO_TELEMETRY": "1", "NO_COLOR": "1"}
+    with tempfile.TemporaryDirectory(prefix="flapi-quickstart-") as tmp:
+        server = None
+        log = Path(tmp) / "server.log"
+        try:
+            for kind, attrs, body, line in blocks:
+                where = f"Readme.md:{line} (quickstart {kind})"
+                script = shim + body.replace("8080", str(port))
+                if kind == "serve":
+                    server = subprocess.Popen(["bash", "-c", script], cwd=tmp, env=env,
+                                              stdout=log.open("w"), stderr=subprocess.STDOUT,
+                                              start_new_session=True)
+                    deadline = time.time() + 90
+                    up = False
+                    while time.time() < deadline and server.poll() is None:
+                        try:
+                            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health/live", timeout=2):
+                                up = True
+                                break
+                        except (urllib.error.URLError, OSError):
+                            time.sleep(0.3)
+                    if not up:
+                        rep.fail(where, "server did not come up:\n" + log.read_text(errors="replace")[-1500:])
+                        return
+                    rep.ok(where, "server up")
+                    continue
+                proc = subprocess.run(["bash", "-c", script], cwd=tmp, env=env, capture_output=True,
+                                      text=True, timeout=300)
+                out = proc.stdout + proc.stderr
+                if proc.returncode != 0:
+                    rep.fail(where, f"exit {proc.returncode}:\n{out[-1500:]}")
+                    return
+                if "expect" in attrs and attrs["expect"] not in out:
+                    rep.fail(where, f"output lacks {attrs['expect']!r}:\n{out[-1500:]}")
+                    return
+                rep.ok(where)
+        finally:
+            if server is not None:
+                try:
+                    os.killpg(server.pid, signal.SIGTERM)
+                    server.wait(timeout=15)
+                except (ProcessLookupError, subprocess.TimeoutExpired):
+                    os.killpg(server.pid, signal.SIGKILL)
 
 
 # ------------------------------------------------------------------ CLI help model
@@ -395,11 +546,31 @@ class HelpModel:
         return not self.help(path)[0]
 
 
-def cli_invocations(files: list[Path], binary: str) -> list[tuple[Path, int, list[str]]]:
+def code_only(text: str) -> str:
+    """Keep fenced blocks and inline `code`; blank the prose ("flapi holds the lock" is no command)."""
+    out, fenced = [], False
+    for line in text.splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            out.append("")
+        elif fenced:
+            out.append(line)
+        else:
+            out.append(" ".join(f"`{m}`" for m in re.findall(r"`([^`]+)`", line)))
+    return "\n".join(out)
+
+
+def cli_invocations(files: list[Path], binary: str, prose_ok: bool = True) -> list[tuple[Path, int, list[str]]]:
     found = []
     pat = re.compile(rf"(?:^|[\s`$(]){re.escape(binary)}\s+([^`\n]*)")
+    if not prose_ok:
+        # In docs a command starts a line or a code span (after an optional prompt or
+        # `&&`); "a running flapi holds the lock" inside a quoted message is no call.
+        pat = re.compile(rf"(?:^\s*(?:[$>]\s+)?|`|&&\s*|\|\s*|\$\()(?:\./)?{re.escape(binary)}\s+([^`\n]*)")
     for f in files:
         text = f.read_text(encoding="utf-8")
+        if not prose_ok:
+            text = code_only(text)
         for n, line in enumerate(text.splitlines(), 1):
             for m in pat.finditer(line):
                 rest = m.group(1).split("#", 1)[0].strip()
@@ -428,10 +599,10 @@ def cli_invocations(files: list[Path], binary: str) -> list[tuple[Path, int, lis
     return found
 
 
-def check_cli(rep: Report, files: list[Path], name: str, model: HelpModel | None):
+def check_cli(rep: Report, files: list[Path], name: str, model: HelpModel | None, prose_ok: bool = True):
     if model is None:
         return
-    for f, n, tokens in cli_invocations(files, name):
+    for f, n, tokens in cli_invocations(files, name, prose_ok):
         problem = model.check(tokens)
         where = f"{rel(f)}:{n}"
         if problem:
@@ -633,19 +804,32 @@ def main() -> int:
     check_forbidden(rep, files)
     check_template_vars(rep, files, cache_template_vars())
 
+    # The Readme and docs/ teach the same facts, so they get the same checks,
+    # minus the runnable groups (their examples are not tagged).
+    docs = doc_markdown()
+    check_forbidden(rep, docs)
+    check_template_vars(rep, docs, cache_template_vars())
+    check_links(rep, docs + files)
+
     if not args.static_only:
         # Resolved now: groups run with cwd set to a temp project directory.
         flapi = Path(args.flapi).resolve()
         if not flapi.exists():
             rep.fail("flapi", f"{flapi} not found; build it (make release) or pass --static-only")
         else:
-            check_cli(rep, files, "flapi", HelpModel([str(flapi)], "argparse"))
+            flapi_help = HelpModel([str(flapi)], "argparse")
+            check_cli(rep, files, "flapi", flapi_help)
+            check_cli(rep, docs, "flapi", flapi_help, prose_ok=False)
             run_groups(rep, snippets, flapi)
         flapii = resolve_flapii(args.flapii)
         if flapii is None:
             rep.fail("flapii", "CLI not found (PATH, FLAPII_BIN, or cli/dist after `npm run build`)")
         else:
-            check_cli(rep, files, "flapii", HelpModel(flapii, "commander"))
+            flapii_help = HelpModel(flapii, "commander")
+            check_cli(rep, files, "flapii", flapii_help)
+            check_cli(rep, docs, "flapii", flapii_help, prose_ok=False)
+            if flapi.exists():
+                run_quickstart(rep, flapi, flapii)
 
     # Claude Code's own validator, when the CLI is installed (it is not in CI).
     if not args.static_only and shutil.which("claude"):
@@ -660,7 +844,7 @@ def main() -> int:
     for line in rep.failures:
         print(line)
     print(f"check_skills: {rep.passes} passed, {len(rep.failures)} failed "
-          f"({len(files)} files, {len(snippets)} snippets)")
+          f"({len(files)} plugin files, {len(docs)} doc files, {len(snippets)} snippets)")
     return 1 if rep.failures else 0
 
 
