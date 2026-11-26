@@ -23,3 +23,4 @@ result_set_bytes	removed; the response size is http.response.body.size on the re
 flapi.result.bytes	never set; the response size is http.response.body.size on the request span
 "returned_data"	the write response carries RETURNING rows under data (returns-data: true)
 docs.datazoo.dev	that host does not exist; link the docs on GitHub
+re:\{\{ ?[\w.]+ ?\}\}\W{0,3} HTML-escapes	{{ }} in a SQL template doubles single quotes since #277; it is not HTML-escaped

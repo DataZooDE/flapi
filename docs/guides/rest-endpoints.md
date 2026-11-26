@@ -79,23 +79,24 @@ in `flapi --validate-config` and on every request - and names the file and line
 
 This is the rule people get wrong.
 
-- **`{{{ value }}}`** renders the raw value. Use it inside single-quoted SQL
-  string literals.
-- **`{{ value }}`** HTML-escapes the value (`<` becomes `&lt;`). Use it only for
-  numbers or known-safe identifiers.
+- **`{{ value }}`** doubles every single quote in the value and changes nothing
+  else, so inside a `'...'` literal the value stays a string: `O'Brien` renders
+  `'O''Brien'`. Use it for strings, in quotes.
+- **`{{{ value }}}`** renders the value as it is. Use it for numbers and for
+  identifiers pinned by an `enum` or a strict `regex`.
 
-> **Neither form escapes SQL.** Mustache does not know what a SQL string literal
-> is. Where a value stays raw text, your defence against injection is the
-> **validator** on each field — typed, range-checked, pattern-matched — plus
-> quoting string parameters in the template. When in doubt, tighten the
-> validator rather than relying on the braces.
+> **Quote-doubling protects a `'...'` literal only.** Unquoted, in a comment or in
+> an `E'...'` string, neither form is a defence; there your defence against
+> injection is the **validator** on each field — typed, range-checked,
+> pattern-matched. When in doubt, tighten the validator rather than relying on
+> the braces.
 >
 > **Typed fields are bound where they can be.** For a field with a typed
-> validator, a value site outside a `{{#...}}` section — `= {{{ params.x }}}`,
-> `= '{{{ params.x }}}'`, `LIKE '%{{{ params.x }}}%'` — is sent to DuckDB as a
-> bound parameter, so the value cannot change the statement. Inside sections,
-> for enum-validated identifiers and typed literals (`DATE '{{{ params.d }}}'`)
-> it is still substituted as text.
+> validator, a value site outside a `{{#...}}` section — `= {{ params.x }}`,
+> `= '{{ params.x }}'`, `LIKE '%{{ params.x }}%'`, and the same with triple
+> braces — is sent to DuckDB as a bound parameter, so the value cannot change the
+> statement. Inside sections, for enum-validated identifiers and typed literals
+> (`DATE '{{ params.d }}'`) it is still substituted as text.
 
 ### The conditional filter idiom
 
@@ -103,7 +104,7 @@ This is the rule people get wrong.
 SELECT * FROM read_parquet('{{{ conn.path }}}')
 WHERE 1=1
 {{#params.status}}
-  AND status = '{{{ params.status }}}'
+  AND status = '{{ params.status }}'
 {{/params.status}}
 {{#params.min_price}}
   AND price >= {{ params.min_price }}

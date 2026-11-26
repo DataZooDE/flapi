@@ -28,7 +28,8 @@ becomes a route.
   `string`, `enum`, `email`, `uuid`). `c = '{{ params.name }}'` binds as a whole
   (`c = ?`). Where SQL wants a name or a typed literal it stays text:
   `ORDER BY {{ params.sort }}` (an `enum`), `DATE '{{ params.d }}'`, `FROM ...`.
-  Inside `{{#...}}...{{/...}}` it is NOT bound; it is pasted in, HTML-escaped.
+  Inside `{{#...}}...{{/...}}` it is NOT bound; it is pasted in with single
+  quotes doubled, so `'{{ params.name }}'` there matches `O'Brien`.
 - **`{{{ params.x }}}` binds at the same value sites; elsewhere it is raw text.**
   Use raw sites only for values pinned by an `enum` or a strict `regex`.
 - **Do not write `LIMIT`/`OFFSET` in a template.** `with-pagination` defaults to
@@ -196,9 +197,10 @@ Every section needs its `{{/x}}` (closed in reverse order) and `{{{` needs `}}}`
 an unbalanced template fails startup, reload, a template PUT and
 `--validate-config` with `Invalid template <file>:<line>:<col>: ...`. Partials
 (`{{> x}}`) and `{{= =}}` are refused.
-Values inside sections are interpolated, never bound: keep them to `int`,
-`number`, `enum` or strict-`regex` fields, and put string values in quotes
-with triple braces (`'{{{ params.code }}}'`) only after such a validator.
+Values inside sections are interpolated, never bound: keep unquoted ones to
+`int`, `number`, `enum` or strict-`regex` fields, and put string values in
+quotes with double braces (`'{{ params.code }}'`), which doubles their single
+quotes. A triple-brace free-text value there draws a startup warning.
 Prefer the bound `(? IS NULL OR ...)` form above for plain filters.
 
 ## Path parameters (runnable)

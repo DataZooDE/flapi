@@ -75,13 +75,18 @@ Only the validator (and the SQL-injection screen) stands between the value and t
 double-brace one (`?`, `?`, `('%' || ? || '%')`); inside sections, SQL comments, enum identifiers, typed
 literals (`DATE '...'`), names after `FROM`/`JOIN`/..., and `AT (VERSION|TIMESTAMP => ...)` it is raw.
 
-**Double Braces (bound or HTML-escaped):**
+**Double Braces (bound or quote-doubled):**
 ```sql
--- Outside a section, on a field with a typed validator: replaced by `?` and bound
+-- Outside a section, on a field with a typed validator, at a value site: replaced by `?` and bound
 WHERE id = {{ params.id }}
--- Inside a {{#...}} section, or without a typed validator: HTML-escaped text
--- Input: O'Brien → Output: O&#39;Brien
+WHERE name = '{{ params.name }}'          -- the whole literal becomes ?
+-- Inside a {{#...}} section, or without a typed validator: text, single quotes doubled
+-- Input: O'Brien → Output: O''Brien
 ```
+
+`SQLTemplateProcessor::compileTemplate` sets that escape on crow's `template_t`
+(`EscapeSqlTemplateValue`, through the `ports/crow/settable-mustache-escape.patch`
+overlay); crow's default HTML escaping stays for the Swagger UI page.
 
 **Conditional Sections:**
 ```sql

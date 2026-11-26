@@ -43,8 +43,8 @@ available: a cache is built once, not per request.
 
 - Mustache, not Handlebars: `{{#x}}...{{/x}}` (present), `{{^x}}...{{/x}}`
   (absent). `{{#if x}}` is not a conditional.
-- `{{ x }}` HTML-escapes, `{{{ x }}}` does not. Use triple braces inside SQL
-  string literals: `TIMESTAMP '{{{cache.previousSnapshotTimestamp}}}'`.
+- `{{ x }}` doubles single quotes, `{{{ x }}}` pastes the value as it is. Both
+  work inside SQL string literals: `TIMESTAMP '{{{cache.previousSnapshotTimestamp}}}'`.
 - The rendered text runs as one multi-statement script in one transaction
   (a failure changes nothing); separate statements with `;`. `rows_affected` is
   the sum of the DML statements' counts, NULL if there is none.

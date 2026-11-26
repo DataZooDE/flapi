@@ -1081,8 +1081,8 @@ cache_table_in_use` while an endpoint still names it).
   so `?limit=2&offset=2` returns `data: []`.
 - **An incremental template without the `{{^cache.previousSnapshotTimestamp}}`
   branch.** `INSERT` and `MERGE` fail on the first run, before the table exists.
-- **Double braces around a quoted watermark.** `{{cache.previousSnapshotTimestamp}}`
-  HTML-escapes; use `'{{{cache.previousSnapshotTimestamp}}}'` inside quotes.
+- **An unquoted watermark.** `{{{cache.previousSnapshotTimestamp}}}` is text, not a
+  timestamp: write it inside quotes, `TIMESTAMP '{{{cache.previousSnapshotTimestamp}}}'`.
 
 ## Next
 

@@ -110,8 +110,9 @@ braces, outside any section) is bound as a prepared-statement parameter:
 | `time` | TIME |
 | `string`, `enum`, `email`, `uuid` | VARCHAR |
 
-A field with no validator is not bound: `{{ params.x }}` is then plain
-HTML-escaped text substitution. An absent optional field binds NULL.
+A field with no validator is not bound: `{{ params.x }}` is then plain text
+substitution with single quotes doubled (safe inside `'...'` only). An absent
+optional field binds NULL.
 
 ## The SQL-injection screen (`preventSqlInjection`)
 

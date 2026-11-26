@@ -285,10 +285,10 @@ Templates are **Mustache files** that generate SQL from request parameters.
 - `env.*` - Whitelisted environment variables
 
 **Key Rule: Triple vs. Double Braces**
-- **Triple braces `{{{ }}}`** for strings: Renders the raw value (no HTML entity escaping). Use inside single-quoted SQL string literals.
-- **Double braces `{{ }}`** for numbers/identifiers: HTML-escapes the value (turns `<` into `&lt;` etc.), which is harmless but not SQL-aware — use only where the value is a number or known-safe identifier.
+- **Double braces `{{ }}`**: doubles every single quote in the value and changes nothing else (SQL, not HTML, escaping since #277). Safe inside a single-quoted SQL literal (`'{{ params.name }}'` matches `O'Brien`), no defence anywhere else.
+- **Triple braces `{{{ }}}`**: renders the raw value, no escaping at all. Use for numbers and enum/regex-pinned identifiers.
 
-> **Security note:** Neither form performs SQL-specific escaping. Mustache does not understand SQL string literals, quote-doubling, or comment syntax. Defense against injection comes from the `RequestValidator` (typed fields, regex/range/enum checks) and disciplined template authoring (quote string params, parameterise numerics). When in doubt, add a stricter validator rather than relying on rendering.
+> **Security note:** Quote-doubling protects a plain `'...'` literal only; it does not understand comments, `E'...'` strings or identifiers. Defense against injection comes from the `RequestValidator` (typed fields, regex/range/enum checks) and disciplined template authoring (quote string params, parameterise numerics). When in doubt, add a stricter validator rather than relying on rendering.
 
 **Example Template:**
 ```sql
@@ -522,8 +522,8 @@ ORDER BY created_at DESC
 - `WHERE 1=1` allows adding any number of AND conditions
 - Each condition wrapped in conditional section (only rendered if parameter exists)
 - No `LIMIT`: default pagination adds it (see the warning in §3)
-- Triple braces for strings, double for numbers
-- Injection defence is the validator (plus prepared-statement binding for a bare `{{ params.x }}` outside sections); neither brace form escapes SQL
+- Double braces in quotes for strings (`'{{ params.x }}'`: bound outside sections, quote-doubled inside)
+- Injection defence is the validator plus prepared-statement binding at value sites outside sections; quote-doubling protects a `'...'` literal only
 
 ### Template Variable Types
 

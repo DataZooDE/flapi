@@ -126,7 +126,7 @@ Type getType() const {
 
 **Implementation:**
 - Triple braces `{{{ }}}` - raw output, no escaping of any kind (used inside quoted string literals; the validator is the defence)
-- Double braces `{{ }}` - HTML-escaped output; outside a section and on a field with a typed validator it is replaced by `?` and bound as a prepared-statement parameter
+- Double braces `{{ }}` - single quotes doubled, nothing else escaped (SQL, not HTML, #277); outside a section, at a value site and on a field with a typed validator it is replaced by `?` and bound as a prepared-statement parameter
 - Sections `{{#param}}...{{/param}}` - Conditional rendering
 
 **Example:**

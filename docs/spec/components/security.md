@@ -431,7 +431,11 @@ WHERE name = '{{{ params.name }}}'
 
 Outside a `{{#...}}` section, on a field with a typed validator, `{{ }}` is
 replaced by `?` and bound as a prepared-statement parameter. Elsewhere it is
-HTML-escaped text (`'` becomes `&#39;`), which is not SQL escaping:
+text with every single quote doubled (`O'Brien` becomes `O''Brien`), which keeps
+a value inside a plain `'...'` literal and protects nothing outside one (#277;
+`SQLTemplateProcessor::EscapeSqlTemplateValue`, set on crow's template through
+the `ports/crow/settable-mustache-escape.patch` overlay; the Swagger UI page keeps
+crow's HTML escaping):
 
 ```sql
 -- Template (field `id` has `validators: [{type: int}]`)
@@ -446,10 +450,10 @@ WHERE id = {{ params.id }}
 SELECT * FROM customers
 WHERE 1=1
 {{#params.name}}
-  AND name = '{{{ params.name }}}'   -- String: raw text, relies on the validator
+  AND name = '{{ params.name }}'     -- String: quote-doubled text inside its literal
 {{/params.name}}
 {{#params.id}}
-  AND id = {{ params.id }}           -- Number: HTML-escaped text (inside a section, not bound)
+  AND id = {{ params.id }}           -- Number: text (inside a section, not bound); the int validator is the defence
 {{/params.id}}
 ```
 

@@ -11,12 +11,22 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   or `AS`, a comment or an identifier it is glued to stay text instead of a `?` that DuckDB
   refuses (`Parameter not supported in ORDER BY clause`, `Failed to bind parameter`, a `500`).
   A quoted `c = '{{ params.name }}'` binds as a whole literal (`c = ?`), so `O'Brien` matches.
+- **`{{ }}` escapes for SQL, not HTML (#277).** A double-brace value is rendered with every
+  single quote doubled and nothing else changed. Inside a section, `c = '{{ params.name }}'`
+  now matches `O'Brien` (it rendered `O&#39;Brien` and silently matched nothing), and
+  `{{ conn.path }}` is a real path (it rendered `&#x2F;data&#x2F;...`). The Swagger UI page
+  at `/doc` keeps HTML escaping. This uses a new crow overlay patch,
+  `ports/crow/settable-mustache-escape.patch`.
 
 ### Upgrade notes
 
 - **An unquoted `enum` in `{{ }}` is text unless it follows a comparison or `(`.**
   `ORDER BY {{ params.sort }}` now works; `status = {{ params.k }}` and
   `IN ({{ params.k }})` are still bound.
+- **Rendered SQL for `{{ }}` changes from HTML entities to quote-doubled text.** A template
+  that relied on `&#39;`, `&amp;`, `&lt;`, `&#x2F;` and so on in its output (comparing against
+  stored entities, say) now sees the real characters. A `{{ }}` value outside a `'...'`
+  literal is pasted with its quotes doubled, which is no defence there: keep the validator.
 
 ## v26.11.26 — auth.* identity values stay inside their SQL literal, OIDC works again, and a task guide for every feature
 

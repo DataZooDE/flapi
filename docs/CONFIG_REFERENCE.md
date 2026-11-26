@@ -326,8 +326,9 @@ connections:
 ```
 
 **Notes:**
-- Connection properties are accessible in templates as `{{{ conn.property_name }}}` (triple braces: `{{ }}`
-  HTML-escapes `/` and `'`), for the endpoint's first listed connection only
+- Connection properties are accessible in templates as `{{ conn.property_name }}` or
+  `{{{ conn.property_name }}}` (`{{ }}` doubles single quotes, `{{{ }}}` pastes the value as it is), for the
+  endpoint's first listed connection only
 - The `init` SQL runs once at startup, in the shared DuckDB, before the external-access policy applies; it is
   not a template (`{{ conn.x }}` inside it stays literal text). Relative paths in `init` resolve against the
   server's working directory, while `./` paths in `properties` resolve against the config file's directory
@@ -1765,7 +1766,7 @@ parameter, so the value can never change the SQL — but only when all of these 
 (`src/prepared_template_rewriter.cpp`, `src/sql_parameter_classifier.cpp`):
 
 - the reference is **outside** every `{{#...}}` / `{{^...}}` section. Inside a section it is rendered as
-  text (HTML-escaped, unquoted), exactly like any other Mustache value;
+  text, exactly like any other Mustache value (`{{ }}` with its single quotes doubled, `{{{ }}}` as it is);
 - the field is declared under `request:` and has a validator whose `type` is one of `int`/`integer`,
   `number`/`float`/`double`, `boolean`/`bool`, `date`, `time`, `string`, `uuid`, `email` or `enum`. A
   field without such a validator is rendered as text;
@@ -2034,9 +2035,8 @@ Special variables available in cache-enabled SQL templates:
 > **Note:** the value is rendered raw, so quote or cast it in the template as
 > its type requires — the `TIMESTAMP '...'` form in the example below is right
 > for a timestamp cursor only. Use the **triple**-brace form
-> `{{{cache.previousSnapshotTimestamp}}}` inside a quoted SQL literal: the
-> double-brace form HTML-escapes what it renders, which corrupts any value
-> containing a quote.
+> `{{{cache.previousSnapshotTimestamp}}}` or the double-brace form inside a quoted SQL literal; the
+> double-brace form doubles any single quote in the value, which is right inside `'...'`.
 >
 > **`{{cache.snapshotTimestamp}}` is a different value.** It is still the
 > snapshot commit time, so a template using it as a watermark keeps the
@@ -2331,7 +2331,10 @@ SQL templates use Mustache syntax for dynamic query generation.
 
 ### 9.1 Variable Syntax
 
-**Double Braces `{{ }}`** - For numeric values and identifiers. **When the field has a typed validator that flAPI recognises (`int`, `double`, `boolean`, `date`, `time`, `uuid`, `enum`, `email`, `string`), the renderer replaces this site with a DuckDB `?` placeholder and binds the value via `duckdb_bind_*`** — the rendered SQL is then executed as a prepared statement, and the value can never alter the SQL's structure.
+**Double Braces `{{ }}`** - Renders the value with every single quote doubled and nothing else changed
+(#277; before, it was HTML-escaped: `'` became `&#39;`, `/` became `&#x2F;`). That keeps a value inside a
+plain `'...'` literal: `'{{ params.name }}'` in a section matches `O'Brien`. It is no defence unquoted, in a
+comment or in an `E'...'` string. **When the field has a typed validator that flAPI recognises (`int`, `double`, `boolean`, `date`, `time`, `uuid`, `enum`, `email`, `string`), the renderer replaces this site with a DuckDB `?` placeholder and binds the value via `duckdb_bind_*`** — the rendered SQL is then executed as a prepared statement, and the value can never alter the SQL's structure.
 
 ```sql
 SELECT * FROM table
@@ -2343,18 +2346,18 @@ The placeholder is only used **outside** `{{#...}}`/`{{^...}}` sections and at v
 `DATE '{{ params.d }}'` and `FROM {{ params.t }}` stay text. See
 [§5.9](#59-the-sql-injection-screen-is-a-safety-net-not-the-defence).
 
-**Triple Braces `{{{ }}}`** - Renders the raw value with no HTML entity escaping. For a typed field at a plain value site outside every section (`= {{{ params.x }}}`, `= '{{{ params.x }}}'`, `LIKE '%{{{ params.x }}}%'`) the rewriter binds the value just like `{{ }}` does (see [§5.9](#59-the-sql-injection-screen-is-a-safety-net-not-the-defence)); everywhere else (inside sections, identifiers, typed literals such as `DATE '...'`, `AT (VERSION|TIMESTAMP => ...)`) it is raw text:
+**Triple Braces `{{{ }}}`** - Renders the raw value, with no escaping of any kind. For a typed field at a plain value site outside every section (`= {{{ params.x }}}`, `= '{{{ params.x }}}'`, `LIKE '%{{{ params.x }}}%'`) the rewriter binds the value just like `{{ }}` does (see [§5.9](#59-the-sql-injection-screen-is-a-safety-net-not-the-defence)); everywhere else (inside sections, identifiers, typed literals such as `DATE '...'`, `AT (VERSION|TIMESTAMP => ...)`) it is raw text:
 
 ```sql
 SELECT * FROM table
 WHERE name LIKE '%{{{ params.name }}}%'
 ```
 
-> **Security note:** Neither brace form performs SQL-specific escaping; Mustache doesn't understand SQL string literals, quote-doubling, or comment syntax. flAPI's SQL-injection defense is **layered**:
+> **Security note:** `{{ }}` doubles single quotes, which protects a plain `'...'` literal only; `{{{ }}}` escapes nothing. Neither understands comments, `E'...'` strings or identifiers. flAPI's SQL-injection defense is **layered**:
 >
 > 1. `RequestValidator` rejects obviously-bad input before SQL is rendered (typed fields, regex/range/enum/format checks). Strict integer/date/time parsing rejects trailing garbage so `1; DROP TABLE` cannot slip through as `1` and `2024-03-15' OR 1=1` cannot slip through as `2024-03-15`.
 > 2. For double-brace references on typed fields, the **DuckDB prepared-statement bind** is the hard boundary — the value travels as a primitive, not as text, and cannot smuggle SQL. This applies uniformly to **GET, POST, PUT, PATCH, and Arrow-streaming endpoints** (multi-statement write templates have their binding plan sliced across statements based on `?` count).
-> 3. For triple-brace references that stay raw text (inside sections, identifiers, typed literals) and for non-typed fields, the legacy keyword regex still rejects obvious injection patterns. (It is demoted to a debug-level log only for fields the prepared-statement path already protects — Integer / Double / Boolean / Date / Time — because the regex is a known false-positive source for clean numeric and temporal values.)
+> 3. For references that stay text (inside sections, identifiers, typed literals) and for non-typed fields, the legacy keyword regex still rejects obvious injection patterns, and a double-brace value in a `'...'` literal has its quotes doubled. (It is demoted to a debug-level log only for fields the prepared-statement path already protects — Integer / Double / Boolean / Date / Time — because the regex is a known false-positive source for clean numeric and temporal values.)
 >
 > The end-to-end injection corpus at `test/integration/test_sql_injection_corpus.py` (99 GET-path payloads spanning all 9 validator types + pagination wraps) and `test/integration/test_sql_injection_write_corpus.py` (19 POST-path payloads including multi-statement RETURNING) exercise these layers. Bind-conversion failures on typed params return HTTP 400 (client error) rather than 500.
 

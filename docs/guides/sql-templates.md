@@ -155,8 +155,10 @@ The rule of thumb:
   `'{{ params.x }}'` in quotes. Outside sections, flAPI binds both.
 - **Names and keywords** (`ORDER BY`, a table, `DATE '...'`): these stay text.
   Restrict the field with an `enum` or a strict `regex` validator.
-- **`conn.*`, `env.*`, `auth.*`**: write `'{{{ ... }}}'`. These are never bound.
-  `auth.*` must be in a plain `'...'` literal of the outer query (step 6).
+- **Text in quotes**: `'{{ x }}'` doubles single quotes, so the value stays a
+  string. Use it for a string in a section and for `conn.*` and `env.*`.
+- **`auth.*`**: write `'{{{ auth.x }}}'` (or `'{{ auth.x }}'`, the same). It is
+  never bound and must be in a plain `'...'` literal of the outer query (step 6).
 
 Two terms used below. A **section** is a block between `{{#name}}` (or
 `{{^name}}`) and `{{/name}}` that Mustache renders or skips (step 4). A
@@ -166,13 +168,14 @@ Two terms used below. A **section** is a block between `{{#name}}` (or
 
 The rest of this step explains the rule. Mustache has two forms:
 
-- **`{{ x }}`** HTML-escapes the value. It replaces `&`, `<`, `>`, `"`, `'`,
-  `/`, `` ` `` and `=` with entities: `'` becomes `&#39;`, `/` becomes `&#x2F;`.
+- **`{{ x }}`** doubles every single quote and changes nothing else: `O'Brien`
+  renders `O''Brien`, `/data/x.parquet` stays `/data/x.parquet`.
 - **`{{{ x }}}`** inserts the value as it is.
 
-Neither form escapes SQL. What protects you is that flAPI rewrites a
-`params.*` reference into a bound `?` wherever it can. It can when **all** of
-these hold:
+Quote-doubling keeps a value inside a plain `'...'` literal, and nowhere else:
+unquoted, in a comment or in an `E'...'` string it is no defence. What protects
+you first is that flAPI rewrites a `params.*` reference into a bound `?`
+wherever it can. It can when **all** of these hold:
 
 1. The field has a typed validator: `int`, `number`, `boolean`, `date`, `time`,
    `string`, `email`, `uuid` or `enum`. A field without one is always text.
@@ -308,10 +311,55 @@ request:
 Do not use a default for `limit` or `offset`; see step 7.
 
 A section is the natural way to make a filter optional, but everything inside
-it is text. For a free-text value that is a problem: `'{{{ params.name }}}'`
-inside a section sends `c_name = 'O'Brien'` to DuckDB, which fails with a
-`500`. To keep an optional value bound, leave it outside the section and let
-`NULL` switch the filter off.
+it is text. For a free-text value, write it in quotes with double braces:
+`'{{ params.name }}'` doubles the quote in `O'Brien`, so the value stays one
+string. (`'{{{ params.name }}}'` would paste `c_name = 'O'Brien'`, which fails
+with a `500`; startup warns about it.)
+
+`sqls/customers-named.yaml`:
+
+<!-- flapi: endpoint group=customers file=customers-named.yaml -->
+```yaml
+url-path: /customers-named
+request:
+  - field-name: name
+    field-in: query
+    validators:
+      - type: string
+        max-length: 50
+template-source: customers-named.sql
+connection: [customers]
+```
+<!-- flapi: check GET /customers-named?name=Customer%23000000007 -> 200 contains "Customer#000000007" -->
+<!-- flapi: check GET /customers-named?name=O%27Brien -> 200 contains '"data":[]' -->
+<!-- flapi: check POST /api/v1/_config/endpoints/-customers-named/template/expand body={"parameters":{"name":"O'Brien"}} header=X-Config-Token:skill-check-token -> 200 contains "c_name = 'O''Brien'" -->
+
+`sqls/customers-named.sql`:
+
+<!-- flapi: template group=customers file=customers-named.sql -->
+```sql
+SELECT c_custkey, c_name
+FROM read_parquet('{{ conn.path }}')
+WHERE 1=1
+{{#params.name}}
+  AND c_name = '{{ params.name }}'
+{{/params.name}}
+ORDER BY c_custkey
+```
+
+```bash
+curl -s 'http://localhost:8080/customers-named?name=Customer%23000000007'   # one row
+curl -s "http://localhost:8080/customers-named?name=O%27Brien"              # no row, no error
+curl -s -X POST http://localhost:8080/api/v1/_config/endpoints/-customers-named/template/expand \
+  -H "X-Config-Token: $FLAPI_CONFIG_SERVICE_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"parameters": {"name": "O'\''Brien"}}'
+# "expanded": "... AND c_name = 'O''Brien'\n..."
+```
+
+`?name=O'Brien` renders `AND c_name = 'O''Brien'`: no customer has that name,
+so the answer is an empty page, not an error. The value is still text, though:
+every value makes new SQL and a new plan. To keep an optional value bound, leave
+it outside the section and let `NULL` switch the filter off.
 
 `sqls/customers-exact.yaml`:
 
@@ -749,15 +797,13 @@ curl -s -X POST http://localhost:8080/notes/search -H 'Content-Type: application
 - **A name from a free-text field.** `ORDER BY {{ params.sort }}` or
   `FROM {{ params.t }}` is text, not a parameter: a column or table name cannot
   be bound. Give the field an `enum` validator (or a strict `regex`).
-- **`{{ conn.path }}`, or `{{ }}` on a string inside a section.** HTML escaping
-  turns `/srv/data/x.parquet` into `&#x2F;srv&#x2F;data&#x2F;x.parquet` (a
-  `./data/...` path too, since it is made absolute first) and `O'Brien` into
-  `O&#39;Brien`. Nothing reports an escaping problem; the file is just not found,
-  or the row does not match. Use `{{{ }}}` for every non-`params` variable and
-  for strings in sections.
-- **Free text in a section.** `'{{{ params.name }}}'` inside `{{#params.name}}`
-  is pasted as written, so a quote in the value breaks the SQL. Keep the value
-  outside the section (step 4), or restrict it with a `regex` validator.
+- **Free text in a section with triple braces.** `'{{{ params.name }}}'` inside
+  `{{#params.name}}` is pasted as written, so a quote in the value breaks the
+  SQL. Write `'{{ params.name }}'` (step 4); startup and `--validate-config`
+  warn about the triple form.
+- **Free text without quotes in a section.** `c = {{ params.name }}` inside a
+  section is pasted unquoted, and quote-doubling does not help there. Quote it,
+  or keep it outside the section where it binds.
 - **`LIMIT {{ params.limit }}` in a GET template.** Pagination owns `limit` and
   `offset` (step 7).
 - **A parameter the endpoint does not declare.** `{{ params.region }}` without
