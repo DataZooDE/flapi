@@ -83,6 +83,24 @@ std::string SecurityAuditor::classifyPassword(const std::string& password) {
     return "AUTH_PLAINTEXT_PASSWORD";
 }
 
+std::optional<std::string> SecurityAuditor::strictRefusal(const std::vector<SecurityWarning>& warnings) {
+    if (warnings.empty()) {
+        return std::nullopt;
+    }
+    std::vector<std::string> codes;
+    for (const auto& w : warnings) {
+        if (std::find(codes.begin(), codes.end(), w.code) == codes.end()) {
+            codes.push_back(w.code);
+        }
+    }
+    std::string joined;
+    for (const auto& code : codes) {
+        joined += (joined.empty() ? "" : ", ") + code;
+    }
+    return "--strict: " + std::to_string(warnings.size()) + " security warning(s) (" + joined +
+           "). Fix them, or run without --strict.";
+}
+
 std::vector<SecurityWarning> SecurityAuditor::audit(const ConfigManager& config) const {
     std::vector<SecurityWarning> warnings;
 
