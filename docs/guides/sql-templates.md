@@ -703,11 +703,11 @@ A write template may hold several `;`-separated statements. They run in one
 transaction (`operation.transaction`, on by default), each as its own prepared
 statement.
 
-> **Known limitation: a POST cannot serve a plain `SELECT` ([#271](https://github.com/DataZooDE/flapi/issues/271)).**
-> A `POST` whose template is a single `SELECT` returns no rows: `{"rows_affected":0}`,
-> or `"data": []` with `returns-data: true`. A search that takes its input as a
-> JSON body hits this. Until it is fixed, make the `SELECT` the second statement;
-> with `returns-data: true` the rows of a final `SELECT` become `data`.
+With `returns-data: true`, the rows of the template's last statement become
+`data` when that statement is a `SELECT`. This also holds when the `SELECT` is the
+only statement, and whatever it starts with: `WITH`, `FROM`, or a comment. DuckDB's
+parser decides what counts as a `SELECT`. A search that takes its input as a JSON
+body is written this way:
 
 `sqls/notes-search.yaml`:
 
@@ -733,14 +733,45 @@ connection: [notes]
 
 <!-- flapi: template group=notes file=notes-search.sql -->
 ```sql
-SET VARIABLE q = {{ params.q }};
 SELECT id, title FROM notesdb.notes
-WHERE title ILIKE '%' || getvariable('q') || '%'
+WHERE title ILIKE '%' || {{ params.q }} || '%'
 ```
 
 ```bash
 curl -s -X POST http://localhost:8080/notes/search -H 'Content-Type: application/json' -d '{"q":"Brien"}'
 # {"rows_affected":0,"data":[{"id":1,"title":"O'Brien's list"}]}
+```
+
+That answer has the write's shape (`201`, `rows_affected`) and runs in a write
+transaction. To serve a body-driven query as a read, declare `operation.type: read`
+on the `POST`. It then answers `200` with the read envelope
+(`{"data": [...], "next": ..., "total_count": n}`). Validators apply, a configured
+cache serves it, and `limit`/`offset` page it; send them in the body, like the other
+parameters. MCP and `/doc.yaml` already treated such an endpoint as a read.
+
+`sqls/notes-find.yaml`, the same template as a read:
+
+<!-- flapi: endpoint group=notes file=notes-find.yaml -->
+```yaml
+url-path: /notes/find
+method: POST
+operation:
+  type: read
+request:
+  - field-name: q
+    field-in: body
+    required: true
+    validators:
+      - type: string
+        max-length: 100
+template-source: notes-search.sql
+connection: [notes]
+```
+<!-- flapi: check POST /notes/find body={"q":"Brien"} -> 200 contains ""total_count":1" -->
+
+```bash
+curl -s -X POST http://localhost:8080/notes/find -H 'Content-Type: application/json' -d '{"q":"Brien"}'
+# {"data":[{"id":1,"title":"O'Brien's list"}],"next":"","total_count":1}
 ```
 
 ## Common mistakes

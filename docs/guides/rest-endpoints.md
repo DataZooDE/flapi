@@ -184,7 +184,12 @@ is `{"rows_affected": n}`, with status `201` for `POST` and `200` for the others
 (DuckDB's count, summed over a multi-statement template; with `RETURNING`, the
 number of returned rows), so a `DELETE` of a missing id answers `0`. Rows a
 `RETURNING` sends back come as `"data"` after `rows_affected`, their keys in the
-`RETURNING` column order (`[]` with `returns-data: true` and no row). A `DELETE`
+`RETURNING` column order (`[]` with `returns-data: true` and no row). With
+`returns-data: true`, a template whose last statement is a `SELECT` returns that
+`SELECT`'s rows as `data`, also when it is the only statement. A search that takes a
+JSON body but should answer like a `GET` (`200`, `{"data", "next", "total_count"}`,
+cache, pagination) declares `operation.type: read` instead; see
+[Writing SQL templates](./sql-templates.md). A `DELETE`
 endpoint is written like the others:
 
 ```yaml

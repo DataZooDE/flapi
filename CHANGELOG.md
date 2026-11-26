@@ -2,6 +2,37 @@
 
 All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (the date the binary set was cut). Earlier history is in the git log.
 
+## Unreleased
+
+### Fixed
+
+- **A POST whose template is one `SELECT` returns its rows (#271).** With
+  `operation.returns-data: true` the rows of the template's last statement are `data`
+  when DuckDB's parser reads it as a `SELECT`, also when it is the only statement and
+  whatever it starts with (`WITH`, `FROM`, a comment). It used to need a second
+  statement beginning with the word `SELECT`; anything else answered `"data": []`.
+- **`operation.type: read` on a POST is a read over REST too (#271).** Such an endpoint
+  now runs the read path with its parameters taken from the JSON body: validators,
+  cache serving, pagination (`limit`/`offset`, also in the body) and the
+  `{data, next, total_count}` envelope with `200`. MCP `tools/call` and `/doc.yaml`
+  already treated it as a read; REST ran it as a write.
+- **`RETURNING` is recognised from the statement's result, not its text (#277).** A
+  column such as `returning_note`, a `'returning'` literal or a comment made a plain
+  `UPDATE` report `rows_affected: 1` and return DuckDB's `Count` row as `data`, and
+  hid a final `SELECT`.
+- **`DatabaseManager::getTableColumns` binds its schema and table (#264).** It passed
+  them to a call that never binds, so it returned no columns, and the names it would
+  have returned were JSON-quoted.
+
+### Upgrade notes
+
+- A POST endpoint with `operation.type: read` now answers `200` and the read envelope
+  instead of `201` and `{"rows_affected": ...}`, and its template no longer runs in a
+  write transaction. Remove `type: read` to keep the write behaviour.
+- A write endpoint with `returns-data: true` whose last statement is a `SELECT` that
+  starts with `WITH`, `FROM` or a comment, or is the only statement, now returns that
+  `SELECT`'s rows in `data` where it returned `[]`.
+
 ## v26.11.26 — auth.* identity values stay inside their SQL literal, OIDC works again, and a task guide for every feature
 
 ### Security

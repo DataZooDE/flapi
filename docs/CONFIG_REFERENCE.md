@@ -2267,6 +2267,29 @@ Read operations (queries) are the default for `GET`, `HEAD`, and `OPTIONS` metho
 |-----------|------|---------|-------------|
 | `operation.type` | string | `Read` | Operation type (auto-detected) |
 
+**A read over `POST`.** `operation.type: read` on a `POST` (or `PUT`/`PATCH`/`DELETE`) endpoint makes
+it a read that takes its input as a JSON body. Over REST it then runs the read path: validators apply,
+a configured cache serves it, and it answers `200` with the pagination envelope
+(`{"data": [...], "next": ..., "total_count": n}`). Parameters are read as for a write: from the body, the
+path and the query string, each declared field only from its `field-in`. `limit` and `offset` page it and
+may be sent in the body. MCP `tools/call` and `/doc.yaml` already treated such an endpoint as a read. Without
+`type: read` these methods are writes (§8.2).
+
+```yaml
+url-path: /customers/search
+method: POST
+operation:
+  type: read
+request:
+  - field-name: name
+    field-in: body
+    required: true
+    validators:
+      - type: string
+        max-length: 100
+template-source: customers-search.sql   # a SELECT, paginated like a GET
+```
+
 ### 8.2 Write Operations
 
 Write operations are auto-detected for `POST`, `PUT`, `PATCH`, and `DELETE` methods. All four run the
@@ -2279,10 +2302,17 @@ endpoint is no different — its template is the `DELETE FROM …` statement, an
 too (cache maintenance after it, write result). With `returns-data: true` the body always has `data`:
 `[]` when the `RETURNING` matched no row.
 
+With `returns-data: true`, the rows of the template's **last statement** become `data` when it is a
+`SELECT`, also when it is the only statement. DuckDB's parser decides what counts as a `SELECT`, so
+`WITH ... SELECT`, `FROM ...` and a `SELECT` behind a comment all count. A `RETURNING` clause is
+recognised from what DuckDB says the statement returned, not from its text, so a column such as
+`returning_note`, a `'returning'` literal or a comment is not mistaken for one. When a `RETURNING`
+returned rows, they are the `data` and a final `SELECT` is not run.
+
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `operation.type` | string | `Write` | Operation type |
-| `operation.returns-data` | boolean | `false` | Whether operation returns results (RETURNING clause) |
+| `operation.type` | string | `Write` | Operation type; `read` makes the endpoint a read (§8.1) |
+| `operation.returns-data` | boolean | `false` | Always answer `data`: the `RETURNING` rows, else the rows of a final `SELECT` |
 | `operation.transaction` | boolean | `true` | Wrap in transaction |
 | `operation.validate-before-write` | boolean | `true` | Apply strict validation |
 
@@ -2315,7 +2345,7 @@ cache:
 
 MCP tool calls that write follow the same rules.
 
-> **Implementation:** `src/request_handler.cpp`, `src/query_executor.cpp` | **Tests:** `test/integration/test_write_operations.tavern.yaml`
+> **Implementation:** `src/request_handler.cpp`, `src/database_manager.cpp` (`executeWrite`) | **Tests:** `test/integration/test_write_operations.tavern.yaml`, `test/integration/test_post_select_and_read.py`
 
 ---
 

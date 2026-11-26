@@ -260,7 +260,9 @@ FROM read_parquet('{{{ conn.path }}}')
 
 ## Write endpoints (runnable)
 
-POST, PUT, PATCH and DELETE are writes (`operation.type: write` is implied). Defaults:
+POST, PUT, PATCH and DELETE are writes (`operation.type: write` is implied;
+`operation.type: read` makes a POST a read with body parameters: 200, the
+`{data, next, total_count}` envelope, validators, cache). Defaults:
 `transaction: true` (BEGIN/COMMIT, ROLLBACK on error), `validate-before-write:
 true` (missing required fields AND undeclared body keys are 400),
 `returns-data: false` (rows from `RETURNING` are still returned). POST answers
@@ -387,8 +389,9 @@ DELETE FROM notesdb.notes WHERE id = {{ params.id }}
 ```
 
 - A write template may hold several `;`-separated statements; each runs as its
-  own prepared statement. With `returns-data: true` and a final `SELECT`, that
-  SELECT's rows become `data`.
+  own prepared statement. With `returns-data: true` and a final `SELECT` (also
+  the only statement; `WITH`/`FROM`/a leading comment count), that SELECT's rows
+  become `data`.
 - A database error (constraint, missing table) is a 500 with the generic body
   and a `request_id`; the detail is only in the server log under that id.
   SQLite/DuckDB lock contention is a 503 + `Retry-After`.
