@@ -22,6 +22,9 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 - **A dry run's `structuredContent` has no `rows` or `row_count` (#275).** `_dryRun: true`
   added `"rows": []` and `"row_count": 0`, which read as a query that matched nothing; the
   query never ran. `structuredContent` is now the preview itself, with `dry_run: true`.
+- **MCP under `mcp.auth.type: basic` challenges with Basic (#275).** A `401` said
+  `WWW-Authenticate: Bearer`, and a role denial `Bearer error="insufficient_scope"`. A `401`
+  now says `Basic realm="flAPI"`, as REST does, and a `403` carries no challenge.
 
 ### Upgrade notes
 

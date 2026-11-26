@@ -609,6 +609,10 @@ The same endpoint answers REST too, through the top-level `auth:`: bob gets the
 same two segments from `GET /segment-balances`. Remove `url-path` if the tool
 should be the only way in.
 
+The `401` names the scheme `mcp.auth.type` accepts: `WWW-Authenticate: Basic realm="flAPI"`
+for `basic`, `Bearer` for `bearer` and `oidc`. A `403` under `basic` has no
+`WWW-Authenticate`; under `bearer` it says `error="insufficient_scope"`.
+
 `mcp.auth.methods` relaxes single methods, e.g. `tools/list: {required: false}`;
 every other method requires authentication, except `server/discover`, which is
 always public. See [MCP tools](./mcp-tools.md) and

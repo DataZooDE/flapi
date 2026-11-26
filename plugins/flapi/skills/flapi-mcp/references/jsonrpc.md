@@ -58,9 +58,9 @@ curl -s $B -H 'Content-Type: application/json' \
 | Unknown tool | 200 | error `-32602` `Tool not found: x` |
 | Unknown method | 200 | `-32601` |
 | Bad JSON | 400 | `-32700` `Parse error: Invalid JSON` |
-| MCP auth on, no credentials | 401 + `WWW-Authenticate` | `-32000` `Authentication required for method: tools/call` |
+| MCP auth on, no credentials | 401 + `WWW-Authenticate` (`Basic realm="flAPI"` under `type: basic`, else `Bearer`) | `-32000` `Authentication required for method: tools/call` |
 | MCP auth on, credentials refused (bad/expired JWT, wrong password) | 401 + `WWW-Authenticate` | `-32000` `The credentials sent were not accepted.` |
-| Caller lacks the tool's `allowed-roles` | 403 (`insufficient_scope`) | `-32000` `Permission denied: ...` |
+| Caller lacks the tool's `allowed-roles` | 403 (`Bearer error="insufficient_scope"`; no `WWW-Authenticate` under `mcp.auth.type: basic`) | `-32000` `Permission denied: ...` |
 | `flapi_*` tool without the config-service token (`X-Config-Token` or `Authorization: Bearer`) | 200 | `-32603` `Tool execution failed: Authentication required for tool: flapi_x` |
 | `flapi_*` tool with a wrong token | 200 | `-32603` `Tool execution failed: Authentication validation failed: Invalid authentication token` |
 | Per-tool rate limit exceeded | 200 | JSON-RPC error, like the RBAC denial |

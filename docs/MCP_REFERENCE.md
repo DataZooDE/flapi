@@ -1717,6 +1717,11 @@ When `mcp.auth.type: oidc` is configured, flAPI serves
 `WWW-Authenticate: Bearer[ resource_metadata="…"]`; authorization (role) denials
 return HTTP `403` with `error="insufficient_scope"`.
 
+The challenge follows `mcp.auth.type`. Under `type: basic` a `401` carries
+`WWW-Authenticate: Basic realm="flAPI"` (the value REST sends), and a `403` carries no
+`WWW-Authenticate` at all: `insufficient_scope` is a Bearer (RFC 6750) error and Basic has no
+scopes. Under `bearer` and `oidc` the values above apply.
+
 ```yaml
 mcp:
   auth:
