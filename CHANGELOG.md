@@ -64,6 +64,12 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 - **`flapi.result.bytes` is gone from the code (#279).** It was declared, and described
   in a comment as the response size, but never set. The response size is
   `http.response.body.size` on the request span.
+- **Documented what a paginated GET of a remote file costs (#279).** A full page runs the
+  page query and a `COUNT(*)`. With DuckDB 2.0.1's external file cache (on by default) the
+  body is fetched once and revalidated with `HEAD`s while the store sends an `ETag`; without
+  one it is fetched by both queries. `total-count: false` halves the requests;
+  `enable_http_metadata_cache` is not enabled because it serves a changed file stale. See
+  the cloud-storage guide.
 - **A request value can no longer fake a field of a text log line (#259).** An error
   line quoted DuckDB's error text verbatim, so a parameter that reached a failing URL
   could carry ` request_id=FAKE` (or `trace_id=`/`span_id=`) into it, ahead of the real

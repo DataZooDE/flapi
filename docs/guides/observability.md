@@ -555,7 +555,11 @@ CSV over HTTP from a template whose URL ends in `?sig=...`:
   logged without it.
 - One file often shows up several times. DuckDB checks the file (`HEAD`)
   separately from reading it, and a full page runs a second query
-  (`count query`) for `total_count`.
+  (`count query`) for `total_count`: about 4 `HEAD`s per full page. The body
+  (`GET`) is fetched once and then reused while the server's `ETag` is
+  unchanged; a server that sends no `ETag` gets it fetched again by every
+  query. `total-count: false` drops the count query
+  ([cloud-storage](cloud-storage.md#running-it-in-production)).
 
 **This is a debugging switch.** Turn it on to answer a question, then off again:
 

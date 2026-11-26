@@ -57,7 +57,9 @@ want to return a bare array and control `LIMIT` yourself.
 page; a shorter page tells the total by itself, so the last page and small
 results run one query. For endpoints whose clients only page forward, set
 `total-count: false`: the response then has `data` and `next` only (no
-`total_count`, no `X-Total-Count`) and no count query ever runs.
+`total_count`, no `X-Total-Count`) and no count query ever runs. Over a
+remote file the count query also repeats the file's HTTP requests (see
+[cloud-storage](cloud-storage.md#running-it-in-production)).
 
 The full key list is in [CONFIG_REFERENCE § 3](../CONFIG_REFERENCE.md).
 

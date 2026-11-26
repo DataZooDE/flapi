@@ -138,6 +138,14 @@ Treat the bucket like a deployment target, not a shared folder:
   fetch. A refresh that fails serves the last good copy for up to 15 s per retry (and logs a warning) instead of
   failing the request; with no cached copy the request is a 500 whose log
   line carries the store's status and the redacted URL. `/health` does not probe the store.
+- **Requests per paginated GET.** A full page runs your SQL twice, the page and a `COUNT(*)` for
+  `total_count`, and each opens the file. DuckDB's external file cache (on by default) keeps the body when
+  the store sends an `ETag` (S3, GCS and Azure do): the count query and later requests reuse it after a
+  `HEAD` check, so a full page costs about 4 `HEAD`s and the body once until the object changes. A plain
+  HTTP server without an `ETag` (Python's `http.server`) gets the whole body fetched again for every query,
+  twice per full page. `total-count: false` on the endpoint drops the count query and halves both.
+  `duckdb: {enable_http_metadata_cache: true}` saves the `HEAD`s but keeps the first size and date it saw for
+  the life of the process: a file that changes is then served stale. Use it only for files that never change.
 - **Credentials** are read from the environment at startup only: short-lived STS tokens are not refreshed, so
   restart (or use a role the SDK chain refreshes) before they expire.
 - **Offline hosts.** Set `FLAPI_EXTENSIONS_OFFLINE=1` and pre-populate `FLAPI_EXTENSION_DIRECTORY` with the

@@ -243,6 +243,10 @@ SELECT * FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
   width. It takes over DuckDB's logging config (`duckdb_logs` stays empty). Only the env var
   covers a remote `-c s3://.../flapi.yaml` and the includes of a local config. Read at
   startup; off by default and free when off. Azure: unverified.
+- A full page over a remote file runs two queries (page + `COUNT(*)`): ~4 `HEAD`s, and the
+  body once while the store's `ETag` holds (S3/GCS/Azure); a server without `ETag` gets the
+  body fetched per query. `total-count: false` halves it. Do not set
+  `enable_http_metadata_cache: true` for files that change: it serves them stale.
 
 Tracing (OpenTelemetry, off by default):
 
