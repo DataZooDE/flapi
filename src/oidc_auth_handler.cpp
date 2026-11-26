@@ -6,6 +6,8 @@
 #include <openssl/err.h>
 #include <openssl/rsa.h>
 #include <sstream>
+#include <cmath>
+#include <cstdint>
 #include <ctime>
 
 namespace flapi {
@@ -30,6 +32,14 @@ const JwsAlgorithm* FindJwsAlgorithm(const std::string& name) {
 }
 
 namespace {
+
+// A JWT NumericDate as a time_point, clamped to [1970, 2255]: system_clock
+// counts nanoseconds in 64 bits, so a larger value would overflow.
+std::chrono::system_clock::time_point NumericDate(double seconds) {
+    constexpr double kMax = 9.0e9;
+    const double clamped = std::isnan(seconds) ? 0.0 : std::min(std::max(std::floor(seconds), 0.0), kMax);
+    return std::chrono::system_clock::time_point(std::chrono::seconds(static_cast<std::int64_t>(clamped)));
+}
 
 // A failed discovery is not retried sooner than this.
 constexpr auto kDiscoveryRetry = std::chrono::seconds(5);
@@ -204,15 +214,11 @@ std::optional<OIDCTokenClaims> OIDCAuthHandler::validateToken(const std::string&
         return std::nullopt;
     }
     if (payload.has("exp")) {
-        try {
-            uint64_t exp_seconds = (uint64_t)payload["exp"].i();
-            claims.expires_at = std::chrono::system_clock::time_point(
-                std::chrono::seconds(exp_seconds)
-            );
-        } catch (...) {
-            logError("Failed to parse 'exp' claim");
+        if (payload["exp"].t() != crow::json::type::Number) {
+            logError("Token 'exp' claim is not a number");
             return std::nullopt;
         }
+        claims.expires_at = NumericDate(payload["exp"].d());
     }
 
     // Validate expiration
@@ -233,7 +239,9 @@ std::optional<OIDCTokenClaims> OIDCAuthHandler::validateToken(const std::string&
             logError(std::string("Token '") + name + "' claim is not a number");
             return std::nullopt;
         }
-        const auto at = std::chrono::system_clock::time_point(std::chrono::seconds(payload[name].i()));
+        // d(), not i(): i() reads "1e+16" as 1, which would put a far-future
+        // nbf written in exponent form in 1970.
+        const auto at = NumericDate(payload[name].d());
         if (at > now + skew) {
             logError(std::string("Token '") + name + "' is in the future");
             return std::nullopt;
