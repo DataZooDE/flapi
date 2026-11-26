@@ -40,7 +40,8 @@ std::optional<MCPSession::AuthContext> MCPAuthHandler::authenticate(const crow::
     // refused, as on REST (AuthMiddleware). See auth_params.hpp.
     if (authenticated) {
         if (const char* refusal =
-                IdentityRefusal(authenticated->username, authenticated->email, authenticated->roles)) {
+                IdentityRefusal(authenticated->username, authenticated->email, authenticated->roles,
+                                authenticated->groups)) {
             CROW_LOG_WARNING << "MCP " << mcp_auth.type << " authentication refused: " << refusal;
             return std::nullopt;
         }
@@ -263,6 +264,7 @@ std::optional<MCPSession::AuthContext> MCPAuthHandler::authenticateOIDC(
     ctx.username = claims->username;
     ctx.email = claims->email;
     ctx.roles = claims->roles;
+    ctx.groups = claims->groups;
     ctx.auth_type = "oidc";
     ctx.auth_time = std::chrono::steady_clock::now();
 

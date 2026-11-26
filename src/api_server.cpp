@@ -16,6 +16,7 @@
 #include "in_flight_registry.hpp"
 #include "request_context.hpp"
 #include "auth_middleware.hpp"
+#include "auth_params.hpp"
 #include "database_manager.hpp"
 #include "flapi_telemetry.hpp"
 
@@ -600,6 +601,7 @@ void APIServer::handleDynamicRequest(const crow::request& req, crow::response& r
             roles += r;
         }
         auth_params["__auth_roles"] = roles;
+        auth_params["__auth_groups"] = JoinIdentityList(auth_ctx.groups);
     }
 
     // A database invalidated by an internal error fails every query until the

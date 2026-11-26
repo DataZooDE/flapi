@@ -17,6 +17,15 @@ void replaceAll(std::string& text, const std::string& from, const std::string& t
     }
 }
 
+// GitHub OAuth apps hand out opaque access tokens, not OIDC ID tokens: there
+// is no discovery document or JWKS at https://github.com, so the preset could
+// never validate a token. GitHub Actions does issue OIDC tokens, from its own
+// issuer, and those work with the generic provider.
+constexpr const char* kGitHubUnsupported =
+    "provider-type: github is not supported: GitHub OAuth apps issue no OIDC tokens flAPI could "
+    "validate. For GitHub Actions OIDC tokens use provider-type: generic with "
+    "issuer-url: https://token.actions.githubusercontent.com and allowed-audiences.";
+
 }  // namespace
 
 std::string OIDCProviderPresets::normalizeProviderType(const std::string& provider_type) {
@@ -53,7 +62,8 @@ bool OIDCProviderPresets::applyPreset(OIDCConfig& config) {
     } else if (config.provider_type == "okta") {
         applyOktaPreset(config);
     } else if (config.provider_type == "github") {
-        applyGitHubPreset(config);
+        // Recognised, and refused by validateProviderConfig: GitHub OAuth
+        // apps issue no OIDC ID tokens to validate.
     } else {
         CROW_LOG_WARNING << "Unknown OIDC provider type: " << config.provider_type;
         recognised = false;
@@ -63,6 +73,14 @@ bool OIDCProviderPresets::applyPreset(OIDCConfig& config) {
     // placeholders these fill. Nothing substituted them before, so a preset
     // issuer-url was never a usable URL.
     substitutePlaceholders(config);
+
+    // Auth0 issues `iss` with a trailing slash ("https://acme.auth0.com/"),
+    // and the issuer comparison is exact: without the slash every Auth0 token
+    // was refused.
+    if (config.provider_type == "auth0" && !config.issuer_url.empty() && !hasPlaceholders(config.issuer_url) &&
+        config.issuer_url.back() != '/') {
+        config.issuer_url += '/';
+    }
     return recognised;
 }
 
@@ -75,7 +93,7 @@ void OIDCProviderPresets::applyGooglePreset(OIDCConfig& config) {
     }
 
     // Default claim mappings for Google
-    if (config.username_claim.empty() || config.username_claim == "sub") {
+    if (!config.username_claim_explicit && (config.username_claim.empty() || config.username_claim == "sub")) {
         config.username_claim = "email";  // Google: use email as username
     }
 
@@ -112,7 +130,7 @@ void OIDCProviderPresets::applyMicrosoftPreset(OIDCConfig& config) {
     }
 
     // Microsoft claim mappings
-    if (config.username_claim.empty() || config.username_claim == "sub") {
+    if (!config.username_claim_explicit && (config.username_claim.empty() || config.username_claim == "sub")) {
         config.username_claim = "preferred_username";  // Azure AD: use preferred_username
     }
 
@@ -148,7 +166,7 @@ void OIDCProviderPresets::applyKeycloakPreset(OIDCConfig& config) {
     }
 
     // Keycloak claim mappings
-    if (config.username_claim.empty() || config.username_claim == "sub") {
+    if (!config.username_claim_explicit && (config.username_claim.empty() || config.username_claim == "sub")) {
         config.username_claim = "preferred_username";  // Keycloak: use preferred_username
     }
 
@@ -186,14 +204,18 @@ void OIDCProviderPresets::applyAuth0Preset(OIDCConfig& config) {
     // Example: https://your-domain.auth0.com
     if (config.issuer_url.empty() || config.issuer_url.find("{") != std::string::npos) {
         if (config.issuer_url.empty()) {
-            config.issuer_url = "https://{domain}.auth0.com";
+            // `domain: acme` is the tenant name; a domain with a dot in it is
+            // already the full host (a regional tenant such as
+            // acme.eu.auth0.com, or a custom domain).
+            config.issuer_url = config.domain.find('.') != std::string::npos ? "https://{domain}/"
+                                                                             : "https://{domain}.auth0.com/";
         }
         CROW_LOG_DEBUG << "Auth0 preset requires domain substitution in issuer_url: "
                       << config.issuer_url;
     }
 
     // Auth0 claim mappings
-    if (config.username_claim.empty() || config.username_claim == "sub") {
+    if (!config.username_claim_explicit && (config.username_claim.empty() || config.username_claim == "sub")) {
         config.username_claim = "email";  // Auth0: typically use email
     }
 
@@ -201,12 +223,11 @@ void OIDCProviderPresets::applyAuth0Preset(OIDCConfig& config) {
         config.email_claim = "email";
     }
 
-    // Auth0 supports custom claims with namespace prefix
-    // Default path for roles: https://your-namespace/roles
-    if (config.role_claim_path.empty() && config.roles_claim.empty()) {
-        config.role_claim_path = "https://your-namespace/roles";
-        CROW_LOG_DEBUG << "Auth0 preset: Configure role_claim_path for custom roles claim";
-    }
+    // Auth0 has no standard roles claim: roles come from a namespaced custom
+    // claim an Action adds, such as `https://example.com/roles`. Set it with
+    // `roles-claim`; a claim name with dots in it is read as a name first
+    // (OIDCAuthHandler::findClaim). The preset used to set a placeholder path
+    // here, behind a condition that was never true.
 
     // Default scopes for Auth0
     if (config.scopes.empty()) {
@@ -231,7 +252,7 @@ void OIDCProviderPresets::applyOktaPreset(OIDCConfig& config) {
     }
 
     // Okta claim mappings
-    if (config.username_claim.empty() || config.username_claim == "sub") {
+    if (!config.username_claim_explicit && (config.username_claim.empty() || config.username_claim == "sub")) {
         config.username_claim = "preferred_username";  // Okta: use preferred_username
     }
 
@@ -258,40 +279,6 @@ void OIDCProviderPresets::applyOktaPreset(OIDCConfig& config) {
                    << ", username_claim=" << config.username_claim;
 }
 
-void OIDCProviderPresets::applyGitHubPreset(OIDCConfig& config) {
-    CROW_LOG_DEBUG << "Applying GitHub OAuth preset";
-
-    // GitHub uses OAuth 2.0 (not full OIDC)
-    // GitHub doesn't provide OIDC discovery endpoint
-    // Must use GitHub-specific endpoints
-    if (config.issuer_url.empty()) {
-        config.issuer_url = "https://github.com";
-    }
-
-    // GitHub claim mappings (custom extraction needed)
-    if (config.username_claim.empty()) {
-        config.username_claim = "login";  // GitHub: use login as username
-    }
-
-    if (config.email_claim.empty()) {
-        config.email_claim = "email";
-    }
-
-    // GitHub roles would come from team/org membership
-    if (config.roles_claim.empty()) {
-        config.roles_claim = "roles";
-    }
-
-    // Default scopes for GitHub (read:user)
-    if (config.scopes.empty()) {
-        config.scopes = {"read:user", "user:email"};
-    }
-
-    CROW_LOG_WARNING << "GitHub is OAuth 2.0 (not full OIDC) - Token validation requires custom handling";
-    CROW_LOG_DEBUG << "GitHub preset: issuer=" << config.issuer_url
-                   << ", username_claim=" << config.username_claim;
-}
-
 std::string OIDCProviderPresets::getRequiredParameters(const std::string& raw_provider_type) {
     const std::string provider_type = normalizeProviderType(raw_provider_type);
     if (provider_type == "google") {
@@ -305,7 +292,7 @@ std::string OIDCProviderPresets::getRequiredParameters(const std::string& raw_pr
     } else if (provider_type == "okta") {
         return "Requires: client-id, and domain (or a literal issuer-url)\nOptional: client-secret";
     } else if (provider_type == "github") {
-        return "Requires: client-id\nOptional: client-secret";
+        return kGitHubUnsupported;
     } else {
         return "Generic OIDC: Requires issuer-url (discovery endpoint), client-id\nOptional: client-secret";
     }
@@ -319,6 +306,10 @@ std::string OIDCProviderPresets::validateProviderConfig(const OIDCConfig& config
     // present - which nothing ever substituted - so a correct, literal
     // issuer URL logged "OIDC configuration error" on every handler.
     const std::string provider = normalizeProviderType(config.provider_type);
+
+    if (provider == "github") {
+        return kGitHubUnsupported;
+    }
 
     if (config.issuer_url.empty()) {
         return (provider.empty() || provider == "generic")

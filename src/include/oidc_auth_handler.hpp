@@ -185,6 +185,13 @@ private:
     std::optional<DecodedJWT> decodeJWT(const std::string& token);
 
     /**
+     * The claim `claim_path` names: the literal key first, then a dotted
+     * path into nested objects. The result points into `object`'s buffer.
+     */
+    static std::optional<crow::json::rvalue> findClaim(const crow::json::rvalue& object,
+                                                       const std::string& claim_path);
+
+    /**
      * Extract claim value from token payload (supports nested paths)
      */
     std::optional<std::string> getClaimValue(

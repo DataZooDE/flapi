@@ -2202,6 +2202,7 @@ OIDCConfig ConfigManager::parseOIDCConfigNode(const YAML::Node& oidc_node, const
     // Claim mapping
     if (oidc_node["username-claim"]) {
         oidc_config.username_claim = oidc_node["username-claim"].as<std::string>();
+        oidc_config.username_claim_explicit = true;
     }
 
     if (oidc_node["email-claim"]) {
@@ -2237,6 +2238,18 @@ OIDCConfig ConfigManager::parseOIDCConfigNode(const YAML::Node& oidc_node, const
     // JWKS caching
     if (oidc_node["jwks-cache-hours"]) {
         oidc_config.jwks_cache_hours = oidc_node["jwks-cache-hours"].as<int>();
+    }
+
+    // flAPI is a resource server: it validates the bearer tokens it is sent
+    // and never talks to the token endpoint, so these keys are read into the
+    // config and then nothing uses them. Say so rather than let a config
+    // read as if it configured something.
+    for (const char* key : {"client-secret", "scopes", "enable-client-credentials", "enable-refresh-tokens"}) {
+        if (oidc_node[key]) {
+            CROW_LOG_WARNING << log_prefix << "OIDC: `" << key
+                             << "` is parsed but has no effect: flAPI only validates the bearer tokens "
+                                "it receives and never requests tokens itself. Remove it.";
+        }
     }
 
     // Validate at LOAD, against the preset as it will be applied at request

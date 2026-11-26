@@ -132,6 +132,11 @@ struct OIDCConfig {
 
     // Claim mapping
     std::string username_claim = "sub";               // Which claim contains username
+    // `username-claim` was written in the config. A preset then leaves it
+    // alone: `username-claim: sub` under `provider-type: keycloak` used to be
+    // replaced by the preset's preferred_username, because the preset could
+    // not tell "sub" written from "sub" defaulted.
+    bool username_claim_explicit = false;
     std::string email_claim = "email";
     std::string roles_claim = "roles";
     std::string groups_claim = "groups";

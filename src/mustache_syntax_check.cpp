@@ -605,7 +605,8 @@ std::string ResolveTagName(const std::string& name, const std::vector<OpenAuthSc
         return name;
     }
     const std::string first = name.substr(0, name.find('.'));
-    static const std::vector<std::string> kAuthFields = {"username", "email", "roles", "type", "authenticated"};
+    static const std::vector<std::string> kAuthFields = {"username", "email", "roles", "groups", "type",
+                                                               "authenticated"};
     for (auto it = sections.rbegin(); it != sections.rend(); ++it) {
         if (!it->inverted && it->resolved == "auth") {
             for (const auto& field : kAuthFields) {
@@ -827,12 +828,14 @@ std::optional<std::string> CheckAuthPlacement(const std::string& body, const std
             const std::vector<AuthMarker> markers = {{prefix + "az", "auth.username", ""},
                                                      {prefix + "bz", "auth.roles", ""},
                                                      {prefix + "cz", "auth.email", ""},
-                                                     {prefix + "dz", "auth.type", ""}};
+                                                     {prefix + "dz", "auth.type", ""},
+                                                     {prefix + "ez", "auth.groups", ""}};
             crow::mustache::context ctx;
             ctx["auth"]["username"] = markers[0].marker;
             ctx["auth"]["roles"] = markers[1].marker;
             ctx["auth"]["email"] = markers[2].marker;
             ctx["auth"]["type"] = markers[3].marker;
+            ctx["auth"]["groups"] = markers[4].marker;
             ctx["auth"]["authenticated"] = "true";
             const std::string sql = crow::mustache::compile(body).render(ctx).dump();
             problems = FindUnsafeAuthMarkers(sql, prefix, markers);

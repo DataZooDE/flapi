@@ -684,7 +684,8 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
     // containing a comma is refused, not cleaned up: it reaches SQL templates
     // as auth.*, stripping would turn "bob\n" into another principal's name,
     // and a comma would split one role into two. See auth_params.hpp.
-    const char* refusal = ctx.authenticated ? IdentityRefusal(ctx.username, ctx.email, ctx.roles) : nullptr;
+    const char* refusal = ctx.authenticated ? IdentityRefusal(ctx.username, ctx.email, ctx.roles, ctx.groups)
+                                            : nullptr;
     if (refusal != nullptr) {
         CROW_LOG_WARNING << "Authentication refused on " << endpoint->getIdentifier()
                          << " (" << ctx.auth_type << "): " << refusal;
@@ -692,6 +693,7 @@ void AuthMiddleware::before_handle(crow::request& req, crow::response& res, cont
         ctx.username.clear();
         ctx.email.clear();
         ctx.roles.clear();
+        ctx.groups.clear();
     }
 
     if (!ctx.authenticated) {
@@ -1009,6 +1011,7 @@ bool AuthMiddleware::authenticateOIDC(const std::string& auth_header, const Endp
     ctx.username = claims->username;
     ctx.email = claims->email;
     ctx.roles = claims->roles;
+    ctx.groups = claims->groups;
     ctx.authenticated = true;
 
     CROW_LOG_DEBUG << "OIDC authentication successful for user: " << ctx.username;

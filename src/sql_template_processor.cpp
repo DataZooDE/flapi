@@ -478,6 +478,7 @@ crow::mustache::context SQLTemplateProcessor::createTemplateContext(const Endpoi
         {"__auth_roles",         "roles",    'b'},
         {"__auth_email",         "email",    'c'},
         {"__auth_type",          "type",     'd'},
+        {"__auth_groups",        "groups",   'e'},
         {"__auth_authenticated", "authenticated", '\0'},
     };
     if (auth != nullptr) {

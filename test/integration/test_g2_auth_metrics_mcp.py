@@ -406,7 +406,8 @@ def test_plugin_headers_work_without_mcp_auth(server):
 
 
 def test_plugin_headers_work_with_mcp_auth(mcp_auth_server):
-    token = jwt.encode({"sub": "agent", "iss": "g2", "roles": ["agent"]}, JWT_SECRET, algorithm="HS256")
+    token = jwt.encode({"sub": "agent", "iss": "g2", "roles": ["agent"], "exp": int(time.time()) + 600},
+                       JWT_SECRET, algorithm="HS256")
     headers = plugin_headers(token)
     r = mcp(mcp_auth_server, "tools/call", {"name": "open_tool", "arguments": {}}, headers)
     assert r.status_code == 200 and "isError" not in r.json()["result"], r.text

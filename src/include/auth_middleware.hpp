@@ -96,6 +96,7 @@ public:
         std::string email;       // populated for OIDC auth, empty otherwise
         std::string auth_type;   // "basic", "bearer", or "oidc"
         std::vector<std::string> roles;
+        std::vector<std::string> groups;   // OIDC `groups-claim`; empty otherwise
     };
 
     void initialize(std::shared_ptr<ConfigManager> config_manager);

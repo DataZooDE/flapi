@@ -61,7 +61,7 @@ struct AuthMarker {
 // malformed tag ends the scan instead of being reported.
 std::vector<MustacheVariable> CollectMustacheVariables(const std::string& body);
 
-// Every auth.* value tag (auth.username, auth.email, auth.roles, auth.type,
+// Every auth.* value tag (auth.username, auth.email, auth.roles, auth.groups, auth.type,
 // and the same names resolved inside a `{{#auth}}` section or as `{{.}}`)
 // that is NOT inside a plain top-level single-quoted SQL literal: unquoted, in
 // a comment, an E'...' escape string, a "..." identifier, a $$ string, a

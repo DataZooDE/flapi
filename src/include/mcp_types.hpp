@@ -79,6 +79,7 @@ struct MCPSession {
         /// field over. mcp_auth_handler already resolves an email_claim.
         std::string email;
         std::vector<std::string> roles;
+        std::vector<std::string> groups;  // OIDC `groups-claim`; empty otherwise
         std::chrono::steady_clock::time_point auth_time;
         std::string auth_type;  // "basic", "bearer", or "oidc"
 

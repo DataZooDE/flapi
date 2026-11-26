@@ -35,6 +35,9 @@ std::unordered_map<std::string, std::string> mcpAuthContextFrom(
     if (!auth->email.empty()) {
         context[MCPToolCallRequest::kEmailContextKey] = auth->email;
     }
+    if (!auth->groups.empty()) {
+        context[MCPToolCallRequest::kGroupsContextKey] = JoinIdentityList(auth->groups);
+    }
     if (!auth->roles.empty()) {
         std::string roles_csv;
         for (std::size_t i = 0; i < auth->roles.size(); ++i) {
@@ -89,6 +92,7 @@ void applyMcpAuthContext(std::map<std::string, std::string>& params,
     params["__auth_roles"] = value(MCPToolCallRequest::kRolesContextKey);
     params["__auth_type"] = value(MCPToolCallRequest::kAuthTypeContextKey);
     params["__auth_email"] = value(MCPToolCallRequest::kEmailContextKey);
+    params["__auth_groups"] = value(MCPToolCallRequest::kGroupsContextKey);
 }
 
 MCPToolExecutionResult MCPToolHandler::executeTool(const MCPToolCallRequest& request) {

@@ -157,15 +157,25 @@ std::optional<OIDCTokenClaims> OIDCAuthHandler::validateToken(const std::string&
         return std::nullopt;
     }
 
-    // Issued at
-    if (payload.has("iat")) {
-        try {
-            uint64_t iat_seconds = (uint64_t)payload["iat"].i();
-            claims.issued_at = std::chrono::system_clock::time_point(
-                std::chrono::seconds(iat_seconds)
-            );
-        } catch (...) {
-            CROW_LOG_DEBUG << "Failed to parse 'iat' claim";
+    // Issued at, and not before: neither may lie in the future (beyond the
+    // clock skew). Both used to be ignored.
+    const auto skew = std::chrono::seconds(config_.clock_skew_seconds);
+    const auto now = std::chrono::system_clock::now();
+    for (const char* name : {"iat", "nbf"}) {
+        if (!payload.has(name)) {
+            continue;
+        }
+        if (payload[name].t() != crow::json::type::Number) {
+            logError(std::string("Token '") + name + "' claim is not a number");
+            return std::nullopt;
+        }
+        const auto at = std::chrono::system_clock::time_point(std::chrono::seconds(payload[name].i()));
+        if (at > now + skew) {
+            logError(std::string("Token '") + name + "' is in the future");
+            return std::nullopt;
+        }
+        if (std::string(name) == "iat") {
+            claims.issued_at = at;
         }
     }
 
@@ -224,13 +234,19 @@ bool OIDCAuthHandler::isTokenExpired(const OIDCTokenClaims& claims) const {
 }
 
 bool OIDCAuthHandler::validateAudience(const OIDCTokenClaims& claims) const {
-    if (config_.allowed_audiences.empty()) {
-        // No audience restrictions
-        return true;
+    // Without allowed-audiences the client id is the audience, as OIDC has it
+    // for an ID token. "No audiences listed" used to mean "any audience", so
+    // any token the issuer minted for any other application got in.
+    std::vector<std::string> allowed_audiences = config_.allowed_audiences;
+    if (allowed_audiences.empty()) {
+        if (config_.client_id.empty()) {
+            return true;   // generic provider with neither: nothing to check against
+        }
+        allowed_audiences.push_back(config_.client_id);
     }
 
     for (const auto& aud : claims.audience) {
-        for (const auto& allowed : config_.allowed_audiences) {
+        for (const auto& allowed : allowed_audiences) {
             if (aud == allowed) {
                 return true;
             }
@@ -301,37 +317,40 @@ std::optional<DecodedJWT> OIDCAuthHandler::decodeJWT(const std::string& token) {
     }
 }
 
+std::optional<crow::json::rvalue> OIDCAuthHandler::findClaim(const crow::json::rvalue& object,
+                                                             const std::string& claim_path) {
+    if (object.t() != crow::json::type::Object || claim_path.empty()) {
+        return std::nullopt;
+    }
+    // The name as written first: "https://example.com/roles" is ONE claim
+    // (Auth0's namespaced custom claims), and splitting it at its dots found
+    // nothing. Then "a.b.c" as a path, trying each dot from the left, so a
+    // nested object whose own key contains a dot is found too.
+    if (object.has(claim_path)) {
+        return object[claim_path];
+    }
+    for (std::size_t dot = claim_path.find('.'); dot != std::string::npos; dot = claim_path.find('.', dot + 1)) {
+        const std::string parent = claim_path.substr(0, dot);
+        if (object.has(parent)) {
+            auto found = findClaim(object[parent], claim_path.substr(dot + 1));
+            if (found) {
+                return found;
+            }
+        }
+    }
+    return std::nullopt;
+}
+
 std::optional<std::string> OIDCAuthHandler::getClaimValue(
     const crow::json::rvalue& payload,
     const std::string& claim_path) {
 
     try {
-        // Handle nested claims (e.g., "realm_access.roles")
-        size_t dot_pos = claim_path.find('.');
-        if (dot_pos != std::string::npos) {
-            std::string parent = claim_path.substr(0, dot_pos);
-            std::string child = claim_path.substr(dot_pos + 1);
-
-            if (!payload.has(parent)) {
-                return std::nullopt;
-            }
-
-            auto parent_obj = payload[parent.c_str()];
-            return getClaimValue(parent_obj, child);
+        auto value = findClaim(payload, claim_path);
+        if (value && value->t() == crow::json::type::String) {
+            return value->s();
         }
-
-        // Simple claim lookup
-        if (!payload.has(claim_path.c_str())) {
-            return std::nullopt;
-        }
-
-        auto value = payload[claim_path.c_str()];
-        if (value.t() == crow::json::type::String) {
-            return value.s();
-        }
-
         return std::nullopt;
-
     } catch (const std::exception& e) {
         CROW_LOG_DEBUG << "Error extracting claim '" << claim_path << "': " << e.what();
         return std::nullopt;
@@ -343,42 +362,25 @@ std::optional<std::vector<std::string>> OIDCAuthHandler::getClaimArray(
     const std::string& claim_path) {
 
     try {
-        // Handle nested claims
-        size_t dot_pos = claim_path.find('.');
-        if (dot_pos != std::string::npos) {
-            std::string parent = claim_path.substr(0, dot_pos);
-            std::string child = claim_path.substr(dot_pos + 1);
-
-            if (!payload.has(parent.c_str())) {
-                return std::nullopt;
-            }
-
-            auto parent_obj = payload[parent.c_str()];
-            return getClaimArray(parent_obj, child);
-        }
-
-        if (!payload.has(claim_path.c_str())) {
+        auto value = findClaim(payload, claim_path);
+        if (!value) {
             return std::nullopt;
         }
-
-        auto value = payload[claim_path.c_str()];
         std::vector<std::string> result;
-
-        if (value.t() == crow::json::type::List) {
-            for (const auto& item : value) {
+        if (value->t() == crow::json::type::List) {
+            for (const auto& item : *value) {
                 if (item.t() == crow::json::type::String) {
                     result.push_back(item.s());
                 }
             }
             return result;
-        } else if (value.t() == crow::json::type::String) {
+        }
+        if (value->t() == crow::json::type::String) {
             // Single value treated as array of one
-            result.push_back(value.s());
+            result.push_back(value->s());
             return result;
         }
-
         return std::nullopt;
-
     } catch (const std::exception& e) {
         CROW_LOG_DEBUG << "Error extracting array claim '" << claim_path << "': " << e.what();
         return std::nullopt;

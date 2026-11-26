@@ -69,11 +69,6 @@ private:
     static void applyOktaPreset(OIDCConfig& config);
 
     /**
-     * Apply GitHub OAuth preset
-     */
-    static void applyGitHubPreset(OIDCConfig& config);
-
-    /**
      * Check if issuer URL contains placeholder that needs substitution
      * @param issuer_url URL with potential placeholders like {domain}, {tenant}, {realm}
      * @return true if placeholders found
