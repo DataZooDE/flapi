@@ -54,22 +54,22 @@ def _project(files):
     return root
 
 
-def _spawn(root, port):
+def _spawn(root, port, log_level="info"):
     log = os.path.join(root, "server.log")
     proc = subprocess.Popen(
         [flapi_binary(), "-c", os.path.join(root, "flapi.yaml"), "-p", str(port),
-         "--config-service", "--config-service-token", TOKEN, "--log-level", "info"],
+         "--config-service", "--config-service-token", TOKEN, "--log-level", log_level],
         stdout=open(log, "w"), stderr=subprocess.STDOUT, cwd=root,
         env={**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"})
     return proc, log
 
 
 class _Server:
-    def __init__(self, files):
+    def __init__(self, files, log_level="info"):
         self.root = _project(files)
         self.port = free_port()
         self.base = f"http://127.0.0.1:{self.port}"
-        self.proc, self.log = _spawn(self.root, self.port)
+        self.proc, self.log = _spawn(self.root, self.port, log_level)
         for _ in range(300):
             if self.proc.poll() is not None:
                 pytest.fail("server exited:\n" + self.output())
@@ -125,6 +125,27 @@ class TestRuntimeLogLevel:
         r = requests.put(f"{server.base}/api/v1/_config/log-level", headers=server.h,
                          json={"level": "verbose"}, timeout=10)
         assert r.status_code == 400
+
+
+class TestLogLevelReadsTheRunningLevel:
+    # #279: GET answered "info" whatever the server was started with, until a PUT.
+    @pytest.mark.parametrize("started,expected", [("debug", "debug"), ("warn", "warning"),
+                                                  ("error", "error"), ("info", "info")])
+    def test_get_reports_the_startup_level(self, started, expected):
+        s = _Server({"sqls/a.yaml": ENDPOINT_A}, log_level=started)
+        try:
+            r = requests.get(f"{s.base}/api/v1/_config/log-level", headers=s.h, timeout=10)
+            assert r.status_code == 200, r.text
+            assert r.json()["level"] == expected, r.text
+        finally:
+            s.stop()
+
+    def test_get_follows_a_put(self, server):
+        r = requests.put(f"{server.base}/api/v1/_config/log-level", headers=server.h,
+                         json={"level": "error"}, timeout=10)
+        assert r.status_code == 200, r.text
+        r = requests.get(f"{server.base}/api/v1/_config/log-level", headers=server.h, timeout=10)
+        assert r.json()["level"] == "error", r.text
 
 
 class TestPartialUpdate:

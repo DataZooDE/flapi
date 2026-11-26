@@ -162,3 +162,20 @@ TEST_CASE("ConfigService: a cache-config update installs a new snapshot",
         REQUIRE(pinned->cache.table != "t_after");
     }
 }
+
+TEST_CASE("the log-level route names the running level (#279)", "[config_service]") {
+    // GET /_config/log-level answered a member initialised to "info", so a
+    // server started with --log-level debug reported info until a PUT.
+    const auto saved = crow::logger::get_current_log_level();
+    crow::logger::setLogLevel(crow::LogLevel::Debug);
+    REQUIRE(ConfigService::CurrentLogLevelName() == "debug");
+    crow::logger::setLogLevel(crow::LogLevel::Warning);
+    REQUIRE(ConfigService::CurrentLogLevelName() == "warning");
+    crow::logger::setLogLevel(crow::LogLevel::Error);
+    REQUIRE(ConfigService::CurrentLogLevelName() == "error");
+    crow::logger::setLogLevel(crow::LogLevel::Critical);
+    REQUIRE(ConfigService::CurrentLogLevelName() == "error");
+    crow::logger::setLogLevel(crow::LogLevel::Info);
+    REQUIRE(ConfigService::CurrentLogLevelName() == "info");
+    crow::logger::setLogLevel(saved);
+}
