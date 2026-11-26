@@ -51,6 +51,8 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   have returned were JSON-quoted.
 - **`flapi.url.has_query` is `true` on a request with a query string (#279).** It was
   read from Crow's path-only `url`, so it was `false` on every span.
+- **`GET /api/v1/_config/log-level` reports the running level (#279).** It answered
+  `info` until a `PUT`, whatever `--log-level`, `FLAPI_LOG_LEVEL` or `log-level:` set.
 
 ### Upgrade notes
 

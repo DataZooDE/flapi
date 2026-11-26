@@ -226,7 +226,8 @@ SELECT * FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
   `grep req-3f1812a93deaa6c1 server.log`. A 500 body carries the same id as `request_id`;
   the DuckDB error is only in the log.
 - Change the level at runtime: `flapii config log-level set debug` (until restart). `debug`
-  logs the template context and the rendered SQL of each request.
+  logs the template context and the rendered SQL of each request. `flapii config log-level
+  get` reports the level the server runs at, however it was set.
 - Precedence: `--log-level`, then `FLAPI_LOG_LEVEL`, then `log-level:` in the config.
 - Which object store requests did a call cause? `log-http-requests: true` (or
   `FLAPI_LOG_HTTP_REQUESTS=1`, which wins over the key both ways) logs one `info` line per

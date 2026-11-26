@@ -233,7 +233,10 @@ curl -X PUT -H "Authorization: Bearer $FLAPI_CONFIG_SERVICE_TOKEN" \
 ```
 
 A level set this way lasts until the process exits. `log-format` cannot be
-changed at runtime.
+changed at runtime. `flapii config log-level get` (`GET .../_config/log-level`)
+reports the level the server runs at, whether it came from the flag, the
+variable, the config or a runtime change. Up to v26.11.26 it answered `info`
+until a level was set at runtime.
 
 ## 2. Check that the server is up and ready
 
@@ -680,9 +683,6 @@ Before you build alerts on these, know the limits:
   `request_id`.
 - **`FLAPI_LOG_LEVEL=DEBUG`.** Startup refuses it. The flag, the variable and
   `log-level:` take lower case. `flapii config log-level set` accepts any case.
-- **Trusting `flapii config log-level get` after startup.** It reports `info`
-  until a level is set at runtime, even when the server started with
-  `--log-level debug`.
 - **Changing `tracing:` without a restart.** flAPI reads the block only at startup.
 - **Leaving `log-http-requests` on.** URL paths, and the parameters in them, end
   up in your log store.
