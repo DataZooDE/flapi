@@ -710,7 +710,7 @@ error in the response.
 server log ([Observability](./observability.md#1-find-out-why-a-request-failed)).
 To catch errors before a request does, run `flapi -c flapi.yaml --validate-config`
 in CI: it checks every template's sections and warns about undeclared
-parameters.
+parameters and about free text pasted where it cannot bind.
 
 A `DELETE` is written the same way, and `rows_affected` tells you whether
 anything matched.

@@ -17,6 +17,10 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   `{{ conn.path }}` is a real path (it rendered `&#x2F;data&#x2F;...`). The Swagger UI page
   at `/doc` keeps HTML escaping. This uses a new crow overlay patch,
   `ports/crow/settable-mustache-escape.patch`.
+- **Startup and `--validate-config` warn about free text pasted where it cannot bind (#277).**
+  A free-text field (no typed, `enum` or `regex` validator) in a `{{{ }}}` that is not bound,
+  or in a `{{ }}` outside a plain `'...'` literal, names its file, line and column and the fix
+  (usually `'{{ params.x }}'`). The shipped northwind examples now use that form.
 
 ### Upgrade notes
 

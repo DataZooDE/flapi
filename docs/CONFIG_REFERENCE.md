@@ -1800,7 +1800,22 @@ WHERE born = DATE '{{ params.d }}'
 {{#params.city}} AND city = '{{ params.city }}' {{/params.city}}
 ```
 Reserve raw `{{{ }}}` text for identifiers and fragments you validate with an `enum` or a strict
-`regex`, and for optional filters inside sections. Set
+`regex`; for a string in a section write `'{{ params.x }}'`, whose single quotes are doubled.
+
+**Startup and `--validate-config` warn about the remaining risky sites** (#277,
+`FindRiskyTemplateSites` in `src/prepared_template_rewriter.cpp`): a reference to a free-text field (one
+without an `int`, `number`, `boolean`, `date`, `time`, `uuid`, `email` or `enum` validator, or a `string`
+validator with a `regex`) that stays text, when it is a `{{{ }}}` (pasted as it is) or a `{{ }}` outside a
+plain `'...'` literal (unquoted, a comment, `E'...'`). For example:
+
+```
+Template sqls/orders.sql:7:18: '{{{ params.name }}}' uses the free-text field 'name' (no typed, enum or
+regex validator) and is inside a section, where it is not bound, and is pasted into its '...' literal as it
+is: a quote in the value ends the literal. Fix: move it out of the section, where it binds, or write
+'{{ params.name }}' (its single quotes are doubled), or restrict the field with an enum or regex validator
+```
+
+It is a warning, not an error: the validator may still be enough for your data. Set
 `preventSqlInjection: false` on a field only when every reference to it is a bound `{{ }}` and it
 legitimately contains such characters (e.g. a free-text name with an apostrophe and parentheses).
 
