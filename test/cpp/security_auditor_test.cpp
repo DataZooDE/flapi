@@ -645,5 +645,45 @@ TEST_CASE("SecurityAuditor::strictRefusal: --strict refuses any warning and name
             "Fix them, or run without --strict.");
 }
 
+TEST_CASE("SecurityAuditor: an endpoint whose YAML had auth twice is flagged, and --strict refuses it",
+          "[security][audit][strict]") {
+    // The first `auth:` wins silently, so a later `{{include:auth-prod as auth}}`
+    // can be ignored and leave the endpoint public.
+    TempTestConfig temp(kMcpAuthOffConfig, "audit_dup_auth");
+    temp.writeEndpoint("orders.yaml", R"(
+url-path: /orders
+method: GET
+template-source: q.sql
+connection: [test]
+)");
+    temp.writeEndpoint("other.yaml", R"(
+url-path: /other
+method: GET
+template-source: q.sql
+connection: [test]
+)");
+    temp.writeSqlTemplate("q.sql", "SELECT 1 AS id");
+    auto config_manager = temp.createConfigManager();
+
+    // The parser records top-level keys seen more than once after include
+    // expansion (EndpointConfig::duplicate_keys).
+    const auto snapshot = config_manager->getEndpoints();  // pinned: replaceEndpoint swaps it
+    for (const auto& endpoint : *snapshot) {
+        EndpointConfig copy = endpoint;
+        copy.duplicate_keys = endpoint.urlPath == "/orders" ? std::vector<std::string>{"auth"}
+                                                            : std::vector<std::string>{"description"};
+        REQUIRE(config_manager->replaceEndpoint(copy));
+    }
+
+    const auto warnings = SecurityAuditor().audit(*config_manager);
+    const auto found = withCode(warnings, "ENDPOINT_DUPLICATE_AUTH_KEY");
+    REQUIRE(found.size() == 1);
+    REQUIRE(found[0].location == "endpoint GET /orders");
+
+    const auto refusal = SecurityAuditor::strictRefusal(warnings);
+    REQUIRE(refusal.has_value());
+    REQUIRE(refusal->find("ENDPOINT_DUPLICATE_AUTH_KEY") != std::string::npos);
+}
+
 } // namespace test
 } // namespace flapi
