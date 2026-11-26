@@ -157,12 +157,36 @@ mcp-prompt:
     return os.path.join(dirpath, "flapi.yaml")
 
 
-@pytest.fixture
-def auth_server() -> Iterator[str]:
+BASIC_USER = "basic-admin"
+BASIC_PASSWORD = "basic-admin-password"
+
+
+def _write_basic_config_tree(dirpath: str, port: int) -> str:
+    """The same entities behind `mcp.auth.type: basic`: one user, role admin."""
+    config_path = _write_config_tree(dirpath, port)
+    with open(config_path) as f:
+        text = f.read()
+    text = text.replace(
+        f"""    type: bearer
+    jwt-secret: {JWT_SECRET}
+    jwt-issuer: {JWT_ISSUER}
+""",
+        f"""    type: basic
+    users:
+      - username: {BASIC_USER}
+        password: {BASIC_PASSWORD}
+        roles: [admin]
+""")
+    with open(config_path, "w") as f:
+        f.write(text)
+    return config_path
+
+
+def _boot_server(writer) -> Iterator[str]:
     binary = _flapi_binary()
     port = _free_port()
     with tempfile.TemporaryDirectory(prefix="flapi_authmatrix_") as tmpdir:
-        config_path = _write_config_tree(tmpdir, port)
+        config_path = writer(tmpdir, port)
         log_path = os.path.join(tmpdir, "server.log")
         log_file = open(log_path, "w")
         proc = subprocess.Popen(
@@ -208,6 +232,16 @@ def auth_server() -> Iterator[str]:
             except subprocess.TimeoutExpired:
                 proc.kill()
             log_file.close()
+
+
+@pytest.fixture
+def auth_server() -> Iterator[str]:
+    yield from _boot_server(_write_config_tree)
+
+
+@pytest.fixture
+def basic_auth_server() -> Iterator[str]:
+    yield from _boot_server(_write_basic_config_tree)
 
 
 def _post(base_url: str, method: str, params: dict, token: Optional[str] = None,
@@ -324,3 +358,49 @@ class TestMcpAuthMatrix:
         # protected-resource metadata document is not served.
         r = requests.get(f"{auth_server}/.well-known/oauth-protected-resource", timeout=10)
         assert r.status_code == 404
+
+
+def _basic(user: str, password: str) -> str:
+    return "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
+
+
+def _post_basic(base_url: str, method: str, params: dict, authorization: Optional[str]) -> requests.Response:
+    headers = {"Content-Type": "application/json"}
+    if authorization:
+        headers["Authorization"] = authorization
+    return requests.post(
+        f"{base_url}/mcp/jsonrpc",
+        headers=headers,
+        json={"jsonrpc": "2.0", "id": "m", "method": method, "params": params},
+        timeout=10,
+    )
+
+
+@pytest.mark.standalone_server
+class TestMcpBasicAuthChallenge:
+    """#275: under `mcp.auth.type: basic` the challenge is Basic, not Bearer."""
+
+    def test_unauthenticated_gets_basic_challenge(self, basic_auth_server):
+        r = _post_basic(basic_auth_server, *READ_GATED, authorization=None)
+        assert r.status_code == 401, r.text
+        assert r.headers.get("WWW-Authenticate") == 'Basic realm="flAPI"', dict(r.headers)
+
+    def test_wrong_password_gets_basic_challenge(self, basic_auth_server):
+        r = _post_basic(basic_auth_server, *READ_GATED, authorization=_basic(BASIC_USER, "wrong"))
+        assert r.status_code == 401, r.text
+        assert r.headers.get("WWW-Authenticate") == 'Basic realm="flAPI"', dict(r.headers)
+
+    def test_valid_basic_credentials_reach_the_tool(self, basic_auth_server):
+        r = _post_basic(basic_auth_server, *CALL_TOOL, authorization=_basic(BASIC_USER, BASIC_PASSWORD))
+        assert r.status_code == 200, r.text
+        assert "admin-result" in r.text
+
+    @pytest.mark.parametrize("method,params", [READ_GATED, GET_PROMPT])
+    def test_wrong_role_403_has_no_bearer_terms(self, basic_auth_server, method, params):
+        # `insufficient_scope` is an RFC 6750 (Bearer) error code; a Basic
+        # server has no scopes to be insufficient.
+        r = _post_basic(basic_auth_server, method, params, authorization=_basic(BASIC_USER, BASIC_PASSWORD))
+        assert r.status_code == 403, r.text
+        challenge = r.headers.get("WWW-Authenticate", "")
+        assert "insufficient_scope" not in challenge, dict(r.headers)
+        assert not challenge.startswith("Bearer"), dict(r.headers)

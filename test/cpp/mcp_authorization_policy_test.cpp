@@ -2,6 +2,7 @@
 
 #include "config_manager.hpp"
 #include "mcp_authorization_policy.hpp"
+#include "mcp_route_handlers.hpp"
 #include "mcp_tool_handler.hpp"
 
 namespace flapi {
@@ -160,6 +161,24 @@ TEST_CASE("MCPAuthorizationPolicy: non-MCP endpoint short-circuits to allowed",
     auto decision = policy.authorize(rest, {"admin"}, /*mcp_auth_enabled=*/true);
 
     REQUIRE(decision.allowed);
+}
+
+TEST_CASE("mcpWwwAuthenticate: the challenge follows mcp.auth.type", "[mcp][auth][issue275]") {
+    SECTION("basic: a Basic challenge on 401, nothing Bearer on 403") {
+        REQUIRE(mcpWwwAuthenticate("basic", "", false) == "Basic realm=\"flAPI\"");
+        // insufficient_scope is an RFC 6750 (Bearer) error; Basic has no scopes.
+        REQUIRE(mcpWwwAuthenticate("basic", "", true).empty());
+    }
+    SECTION("bearer: unchanged") {
+        REQUIRE(mcpWwwAuthenticate("bearer", "", false) == "Bearer");
+        REQUIRE(mcpWwwAuthenticate("bearer", "", true) == "Bearer error=\"insufficient_scope\"");
+    }
+    SECTION("oidc: points at the protected-resource metadata") {
+        const std::string url = "https://h/.well-known/oauth-protected-resource";
+        REQUIRE(mcpWwwAuthenticate("oidc", url, false) == "Bearer resource_metadata=\"" + url + "\"");
+        REQUIRE(mcpWwwAuthenticate("oidc", url, true) ==
+                "Bearer resource_metadata=\"" + url + "\", error=\"insufficient_scope\"");
+    }
 }
 
 } // namespace test
