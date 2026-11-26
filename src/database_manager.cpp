@@ -2455,10 +2455,21 @@ WriteResult DatabaseManager::executeWrite(QueryExecutor& executor, const Endpoin
     for (size_t i = 0; i < statementsToExecute; ++i) {
         runStatement(i, "write operation statement " + std::to_string(i + 1));
 
-        std::string currentStatement = trim(statements[i]);
-        std::string upperStatement = currentStatement;
-        std::transform(upperStatement.begin(), upperStatement.end(), upperStatement.begin(), ::toupper);
-        bool hasReturningClause = upperStatement.find("RETURNING") != std::string::npos;
+        // What the statement is and what it answered with, as DuckDB bound it
+        // (#277): RETURNING used to be found by substring, so a column
+        // `returning_note`, a 'returning' literal or a comment made a plain
+        // UPDATE report its one `Count` row as data and as rows_affected.
+        // A DML statement answers CHANGED_ROWS (one BIGINT `Count` row), and
+        // QUERY_RESULT (the changed rows themselves) with RETURNING.
+        const duckdb_statement_type statement_type =
+            executor.has_result ? duckdb_result_statement_type(executor.result) : DUCKDB_STATEMENT_TYPE_INVALID;
+        const duckdb_result_type return_type =
+            executor.has_result ? duckdb_result_return_type(executor.result) : DUCKDB_RESULT_TYPE_INVALID;
+        const bool is_dml = statement_type == DUCKDB_STATEMENT_TYPE_INSERT ||
+                            statement_type == DUCKDB_STATEMENT_TYPE_UPDATE ||
+                            statement_type == DUCKDB_STATEMENT_TYPE_DELETE ||
+                            statement_type == DUCKDB_STATEMENT_TYPE_MERGE_INTO;
+        const bool hasReturningClause = is_dml && return_type == DUCKDB_RESULT_TYPE_QUERY_RESULT;
 
         // rows_affected is what the DML changed, summed over the statements.
         // It used to be the RESULT's row count - and a DML statement without
@@ -2467,8 +2478,8 @@ WriteResult DatabaseManager::executeWrite(QueryExecutor& executor, const Endpoin
         // With RETURNING the result is the changed rows themselves.
         if (hasReturningClause) {
             result.rows_affected += static_cast<int64_t>(executor.rowCount());
-        } else if (executor.columnCount() == 1 && executor.rowCount() == 1 &&
-                   std::string(duckdb_column_name(&executor.result, 0)) == "Count") {
+        } else if (return_type == DUCKDB_RESULT_TYPE_CHANGED_ROWS && executor.columnCount() == 1 &&
+                   executor.rowCount() == 1) {
             result.rows_affected += duckdb_value_int64(&executor.result, 0, 0);
         }
 
