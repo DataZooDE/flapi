@@ -12,14 +12,30 @@ DuckLake lock immediately.
 """
 
 import os
+import shutil
 import signal
 import subprocess
 import tempfile
 import time
 
+import pytest
 import requests
 
 from otel_helpers import flapi_binary, free_port
+
+
+@pytest.fixture
+def scratch():
+    """mkdtemp() factory; every dir it hands out is removed after the test (#263)."""
+    made = []
+
+    def make(prefix):
+        made.append(tempfile.mkdtemp(prefix=prefix))
+        return made[-1]
+
+    yield make
+    for d in made:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def _write_config(tmp, port):
@@ -92,8 +108,8 @@ def _assert_crow_stopped_once(log):
 
 class TestGracefulShutdown:
 
-    def test_sigterm_detaches_and_checkpoints_while_logging_is_alive(self):
-        tmp = tempfile.mkdtemp(prefix="flapi_graceful_")
+    def test_sigterm_detaches_and_checkpoints_while_logging_is_alive(self, scratch):
+        tmp = scratch("flapi_graceful_")
         port = free_port()
         cfg = _write_config(tmp, port)
         log_path = os.path.join(tmp, "server.log")
@@ -114,12 +130,12 @@ class TestGracefulShutdown:
         finally:
             _terminate(proc)
 
-    def test_a_restart_takes_the_ducklake_lock_immediately(self):
+    def test_a_restart_takes_the_ducklake_lock_immediately(self, scratch):
         """The operational property: a restart must not race the previous
         process for the DuckLake file lock. With #145, losing that race is a
         prompt, logged non-zero exit - better than a core dump, but still an
         outage a clean shutdown should never cause."""
-        tmp = tempfile.mkdtemp(prefix="flapi_graceful_restart_")
+        tmp = scratch("flapi_graceful_restart_")
         port = free_port()
         cfg = _write_config(tmp, port)
         first = _start(cfg, tmp, port, os.path.join(tmp, "first.log"))
@@ -164,8 +180,8 @@ class TestShutdownWithAnAsyncTaskInFlight:
     manager interrupts and joins it. Measured with the task confirmed
     `working` at SIGTERM: 15 of 15 exited 0, in about 60ms each."""
 
-    def test_sigterm_with_a_long_task_running_interrupts_it_and_exits_cleanly(self):
-        tmp = tempfile.mkdtemp(prefix="flapi_graceful_task_")
+    def test_sigterm_with_a_long_task_running_interrupts_it_and_exits_cleanly(self, scratch):
+        tmp = scratch("flapi_graceful_task_")
         port = free_port()
         cfg = _write_tasks_config(tmp, port)
         log_path = os.path.join(tmp, "server.log")

@@ -15,6 +15,7 @@ Each server here runs over its own temporary project. Covered:
 import json
 import os
 import subprocess
+import shutil
 import tempfile
 import time
 
@@ -99,6 +100,7 @@ class _Server:
     def stop(self):
         self.proc.terminate()
         self.proc.wait(timeout=30)
+        shutil.rmtree(self.root, ignore_errors=True)
 
 
 ENDPOINT_A = "url-path: /a\nmethod: GET\ntemplate-source: a.sql\nconnection: [inmem]\n"

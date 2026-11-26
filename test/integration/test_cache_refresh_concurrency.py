@@ -21,6 +21,7 @@ one after another and all succeed.
 """
 import concurrent.futures
 import os
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -137,7 +138,9 @@ def server():
             proc.wait(timeout=15)
         except subprocess.TimeoutExpired:
             os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait(timeout=15)
         log.close()
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def refresh(s, name):

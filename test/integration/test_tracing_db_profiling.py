@@ -17,6 +17,8 @@ here:
    query, so this costs a round trip per query. It is off by default and gated
    on the span actually recording.
 """
+import re
+
 import pytest
 import requests
 
@@ -24,8 +26,36 @@ from otel_helpers import traced_server
 
 pytestmark = pytest.mark.standalone_server
 
-# Decimal-only digits that cannot appear inside a hex trace/span id.
+# The bound value the leak tests look for. Its digits CAN occur inside other
+# numbers in an export (19-digit UnixNano timestamps, durations) and inside hex
+# trace/span ids, so it is matched as a whole token, never as a substring.
 SENTINEL = 99899
+_SENTINEL_TOKEN = re.compile(rf"(?<![0-9A-Fa-f]){SENTINEL}(?![0-9A-Fa-f])")
+
+
+def _leaks(blob: str) -> bool:
+    """True if SENTINEL appears in `blob` as a value of its own."""
+    return _SENTINEL_TOKEN.search(blob) is not None
+
+
+class TestSentinelCheck:
+    """The leak check must not fire on a number that merely contains the
+    sentinel's digits (#265): exports are full of 19-digit UnixNano
+    timestamps, durations and hex ids."""
+
+    TIMESTAMP = "1732612345998990000"
+
+    def test_a_plain_substring_check_would_flag_a_timestamp(self):
+        # Why the helper exists: this is the flake.
+        assert str(SENTINEL) in self.TIMESTAMP
+
+    def test_a_timestamp_containing_the_digits_is_not_a_leak(self):
+        assert not _leaks(f'"startTimeUnixNano":"{self.TIMESTAMP}"')
+        assert not _leaks("span_id 0a99899f")
+
+    def test_the_bound_value_itself_is_a_leak(self):
+        assert _leaks("id = 99899")
+        assert _leaks('"db.query.text":"WHERE id = 99899"')
 
 ENDPOINTS = {
     "typed.yaml": (
@@ -129,13 +159,13 @@ class TestDbProfiling:
             assert r.status_code == 200, r.text
             server.wait_for_server_span(route="/filtered")
 
-            assert str(SENTINEL) not in server.raw_traces(), (
+            assert not _leaks(server.raw_traces()), (
                 "a bound parameter value reached the trace via profiling metrics"
             )
             # And not via the log either: DuckDB will happily print its query
             # tree to stderr when profiling is on, which bypasses the capture
             # tiers entirely.
-            assert str(SENTINEL) not in server.log(), (
+            assert not _leaks(server.log()), (
                 "a bound parameter value reached the server log"
             )
 
