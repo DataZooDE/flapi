@@ -399,6 +399,11 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
         if (shaped) {
             metadata["response_shaped"] = "true";
         }
+        if (shape_config.sample) {
+            // The result is a summary object, not rows: it is the tool's
+            // structuredContent as is (toolPayloadOf).
+            metadata["response_sampled"] = "true";
+        }
 
         emit_audit("success", static_cast<std::int64_t>(query_result.rowCount()));
         return createSuccessResult(formatted_result, metadata);

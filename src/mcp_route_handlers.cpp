@@ -284,28 +284,43 @@ std::string mcpAuthFailureError(const crow::request& http_req, const std::string
     return err.dump();
 }
 
+}  // namespace
+
 // A successful tools/call result: the rows as a text block and, when they are
 // JSON, as structuredContent too. The rows go in as the TEXT the tool handler
 // produced (columns in SELECT/RETURNING order, shortest doubles); routing them
 // through a wvalue scrambled the keys of every row object.
-std::string toolSuccessResultJson(const std::string& result_text) {
+std::string toolSuccessResultJson(const std::string& result_text, ToolPayload payload) {
     mcp::ContentResponse content_response;
     content_response.addText(result_text);
     std::string out = content_response.toJson().dump();
-    const auto rows = crow::json::load(result_text);
-    if (!rows) {
+    const auto parsed = crow::json::load(result_text);
+    if (!parsed) {
         return out;
     }
-    std::string structured = "{\"rows\":" + result_text;
-    if (rows.t() == crow::json::type::List) {
-        structured += ",\"row_count\":" + std::to_string(rows.size());
+    std::string structured;
+    if (payload == ToolPayload::Summary && parsed.t() == crow::json::type::Object) {
+        // A summary describes the call; wrapping it as `rows` made `rows` an
+        // object, against an outputSchema that says it is an array.
+        structured = result_text;
+    } else {
+        structured = "{\"rows\":" + result_text;
+        if (parsed.t() == crow::json::type::List) {
+            structured += ",\"row_count\":" + std::to_string(parsed.size());
+        }
+        structured += '}';
     }
-    structured += '}';
     const auto close = out.find_last_of('}');
     return out.substr(0, close) + ",\"structuredContent\":" + structured + out.substr(close);
 }
 
-}  // namespace
+ToolPayload toolPayloadOf(const std::unordered_map<std::string, std::string>& metadata) {
+    const auto sampled = metadata.find("response_sampled");
+    if (sampled != metadata.end() && sampled->second == "true") {
+        return ToolPayload::Summary;
+    }
+    return ToolPayload::Rows;
+}
 
 // ========== End helper functions ==========
 
@@ -1761,7 +1776,7 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                         });
                         auto r = handler->executeTool(tool_request);
                         if (r.success) {
-                            return toolSuccessResultJson(r.result);
+                            return toolSuccessResultJson(r.result, toolPayloadOf(r.metadata));
                         }
                         // A tool that ran and failed ends the task `failed`
                         // (it used to end `completed`), keeping the isError
@@ -1846,7 +1861,7 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                         content_response.setStructuredContent(std::move(structured));
                         response.result = content_response.toJson().dump();
                     } else {
-                        response.result = toolSuccessResultJson(result.result);
+                        response.result = toolSuccessResultJson(result.result, toolPayloadOf(result.metadata));
                     }
                     // Learn this tool's outputSchema from the real result columns
                     // so a subsequent tools/list can advertise it - never from a

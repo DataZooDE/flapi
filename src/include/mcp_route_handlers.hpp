@@ -33,6 +33,23 @@ namespace flapi {
 /// MCPResourceInfo::kDefaultMaxRows. Never a no-op cap-wise.
 ResponseShape resourceResponseShape(const EndpointConfig& endpoint);
 
+/// What a successful tool result's text is, for its structuredContent.
+///  - Rows: a JSON array of rows (or a write's object). structuredContent is
+///    {"rows": <text>, "row_count": N}.
+///  - Summary: an object that describes the call instead of returning rows (a
+///    `sample: true` summary). structuredContent IS that object; it has no
+///    `rows`, because there are none.
+enum class ToolPayload { Rows, Summary };
+
+/// The JSON text of a successful tools/call result: `result_text` as the text
+/// block and, when it is JSON, as structuredContent too. The text is spliced
+/// in, never re-parsed into a crow value (which re-orders row keys and
+/// re-prints doubles).
+std::string toolSuccessResultJson(const std::string& result_text, ToolPayload payload = ToolPayload::Rows);
+
+/// The payload kind a tool handler's result metadata says it produced.
+ToolPayload toolPayloadOf(const std::unordered_map<std::string, std::string>& metadata);
+
 /**
  * MCPRouteHandlers provides HTTP route handlers for MCP (Model Context Protocol) endpoints.
  * These handlers can be registered with any Crow application to provide MCP functionality.
