@@ -247,3 +247,69 @@ class TestShortCredentialWarning:
         result = _run_validate(flapi_binary, config)
         output = result.stdout + result.stderr
         assert "CREDENTIAL_TOO_SHORT_TO_REDACT" not in output, output
+
+
+MCP_AUTH_ON = {
+    "mcp": {
+        "enabled": True,
+        "auth": {
+            "enabled": True,
+            "type": "bearer",
+            "jwt-secret": "test-secret-long-enough",
+            "jwt-issuer": "test-issuer",
+        },
+    }
+}
+
+
+class TestMcpRoleAndBypassWarnings:
+    """#275: startup warnings for MCP entities nobody can use, or that skip REST auth."""
+
+    def test_tool_without_allowed_roles_under_mcp_auth(self, flapi_binary, temp_config_dir):
+        config_path = _write_main_config(temp_config_dir, extra=MCP_AUTH_ON)
+        _write_endpoint(temp_config_dir, "lookup", """
+template-source: lookup.sql
+connection: [test]
+mcp-tool:
+  name: customer_lookup
+  description: Look up a customer by id
+""")
+        result = _run_validate(flapi_binary, config_path)
+        combined = result.stderr + result.stdout
+        assert "MCP_TOOL_NO_ALLOWED_ROLES" in combined, combined
+        assert "customer_lookup" in combined, combined
+
+    def test_tool_with_allowed_roles_is_not_flagged(self, flapi_binary, temp_config_dir):
+        config_path = _write_main_config(temp_config_dir, extra=MCP_AUTH_ON)
+        _write_endpoint(temp_config_dir, "lookup", """
+template-source: lookup.sql
+connection: [test]
+mcp-tool:
+  name: customer_lookup
+  description: Look up a customer by id
+  allowed-roles: [analyst]
+""")
+        result = _run_validate(flapi_binary, config_path)
+        assert "MCP_TOOL_NO_ALLOWED_ROLES" not in result.stderr + result.stdout
+
+    def test_tool_bypassing_rest_auth(self, flapi_binary, temp_config_dir):
+        config_path = _write_main_config(temp_config_dir, extra={
+            "mcp": {"enabled": True, "auth": {"enabled": False}}
+        })
+        _write_endpoint(temp_config_dir, "orders", """
+url-path: /orders
+method: GET
+template-source: orders.sql
+connection: [test]
+auth:
+  enabled: true
+  type: bearer
+  jwt-secret: rest-secret-long-enough
+mcp-tool:
+  name: orders_tool
+  description: Orders
+""")
+        result = _run_validate(flapi_binary, config_path)
+        combined = result.stderr + result.stdout
+        assert "MCP_TOOL_BYPASSES_REST_AUTH" in combined, combined
+        assert "GET /orders" in combined, combined

@@ -15,6 +15,55 @@ bool hasWarning(const std::vector<SecurityWarning>& warnings, const std::string&
                        [&](const SecurityWarning& w) { return w.code == code; });
 }
 
+std::vector<SecurityWarning> withCode(const std::vector<SecurityWarning>& warnings, const std::string& code) {
+    std::vector<SecurityWarning> out;
+    for (const auto& w : warnings) {
+        if (w.code == code) {
+            out.push_back(w);
+        }
+    }
+    return out;
+}
+
+const char* kMcpAuthOnConfig = R"(
+project-name: mcp-roles-project
+project-description: MCP auth on
+http-port: 8080
+template:
+  path: ./sqls
+connections:
+  test:
+    properties:
+      path: ./data.parquet
+cors:
+  allow-origins: ["https://app.example.com"]
+mcp:
+  enabled: true
+  auth:
+    enabled: true
+    type: bearer
+    jwt-secret: test-secret-long-enough
+    jwt-issuer: test-issuer
+)";
+
+const char* kMcpAuthOffConfig = R"(
+project-name: mcp-bypass-project
+project-description: MCP auth off
+http-port: 8080
+template:
+  path: ./sqls
+connections:
+  test:
+    properties:
+      path: ./data.parquet
+cors:
+  allow-origins: ["https://app.example.com"]
+mcp:
+  enabled: true
+  auth:
+    enabled: false
+)";
+
 } // namespace
 
 TEST_CASE("SecurityAuditor: clean config produces no warnings", "[security][audit]") {
@@ -419,6 +468,165 @@ auth:
     const auto n = std::count_if(warnings.begin(), warnings.end(),
                                  [](const SecurityWarning& w) { return w.code == "AUTH_PLAINTEXT_PASSWORD"; });
     REQUIRE(n == 1);
+}
+
+// ---- #275: new auditor codes ------------------------------------------------
+
+TEST_CASE("SecurityAuditor: an MCP tool without allowed-roles under mcp.auth is flagged",
+          "[security][audit][mcp][issue275]") {
+    // MCPAuthorizationPolicy denies such a tool to EVERY caller, so a tool
+    // that reads as exposed is unusable; say so at startup.
+    TempTestConfig temp(kMcpAuthOnConfig, "audit_mcp_no_roles");
+    temp.writeEndpoint("open.yaml", R"(
+template-source: q.sql
+connection: [test]
+mcp-tool:
+  name: roleless_tool
+  description: No allowed-roles
+)");
+    temp.writeEndpoint("gated.yaml", R"(
+template-source: q.sql
+connection: [test]
+mcp-tool:
+  name: gated_tool
+  description: Has allowed-roles
+  allowed-roles: [analyst]
+)");
+    temp.writeEndpoint("res.yaml", R"(
+template-source: q.sql
+connection: [test]
+mcp-resource:
+  name: roleless_resource
+  description: No allowed-roles
+)");
+    temp.writeSqlTemplate("q.sql", "SELECT 1 AS id");
+
+    auto warnings = SecurityAuditor().audit(*temp.createConfigManager());
+    const auto found = withCode(warnings, "MCP_TOOL_NO_ALLOWED_ROLES");
+    REQUIRE(found.size() == 2);
+    const auto names = [&](const std::string& needle) {
+        return std::any_of(found.begin(), found.end(), [&](const SecurityWarning& w) {
+            return w.message.find(needle) != std::string::npos;
+        });
+    };
+    REQUIRE(names("roleless_tool"));
+    REQUIRE(names("roleless_resource"));
+    REQUIRE_FALSE(names("gated_tool"));
+}
+
+TEST_CASE("SecurityAuditor: no MCP_TOOL_NO_ALLOWED_ROLES while mcp.auth is off",
+          "[security][audit][mcp][issue275]") {
+    TempTestConfig temp(kMcpAuthOffConfig, "audit_mcp_no_roles_off");
+    temp.writeEndpoint("open.yaml", R"(
+template-source: q.sql
+connection: [test]
+mcp-tool:
+  name: roleless_tool
+  description: No allowed-roles
+)");
+    temp.writeSqlTemplate("q.sql", "SELECT 1 AS id");
+
+    auto warnings = SecurityAuditor().audit(*temp.createConfigManager());
+    REQUIRE_FALSE(hasWarning(warnings, "MCP_TOOL_NO_ALLOWED_ROLES"));
+}
+
+TEST_CASE("SecurityAuditor: an MCP tool on a REST-protected endpoint with mcp.auth off is flagged",
+          "[security][audit][mcp][issue275]") {
+    // The REST route asks for credentials; the same SQL as a tool does not.
+    TempTestConfig temp(kMcpAuthOffConfig, "audit_mcp_bypass");
+    temp.writeEndpoint("orders.yaml", R"(
+url-path: /orders
+method: GET
+template-source: q.sql
+connection: [test]
+auth:
+  enabled: true
+  type: bearer
+  jwt-secret: rest-secret-long-enough
+mcp-tool:
+  name: orders_tool
+  description: Orders
+)");
+    temp.writeEndpoint("public.yaml", R"(
+url-path: /public
+method: GET
+template-source: q.sql
+connection: [test]
+mcp-tool:
+  name: public_tool
+  description: Public
+)");
+    temp.writeSqlTemplate("q.sql", "SELECT 1 AS id");
+
+    auto warnings = SecurityAuditor().audit(*temp.createConfigManager());
+    const auto found = withCode(warnings, "MCP_TOOL_BYPASSES_REST_AUTH");
+    REQUIRE(found.size() == 1);
+    REQUIRE(found[0].location == "endpoint GET /orders");
+    REQUIRE(found[0].message.find("orders_tool") != std::string::npos);
+}
+
+TEST_CASE("SecurityAuditor: no MCP_TOOL_BYPASSES_REST_AUTH when mcp.auth is on",
+          "[security][audit][mcp][issue275]") {
+    TempTestConfig temp(kMcpAuthOnConfig, "audit_mcp_bypass_on");
+    temp.writeEndpoint("orders.yaml", R"(
+url-path: /orders
+method: GET
+template-source: q.sql
+connection: [test]
+auth:
+  enabled: true
+  type: bearer
+  jwt-secret: rest-secret-long-enough
+mcp-tool:
+  name: orders_tool
+  description: Orders
+  allowed-roles: [analyst]
+)");
+    temp.writeSqlTemplate("q.sql", "SELECT 1 AS id");
+
+    auto warnings = SecurityAuditor().audit(*temp.createConfigManager());
+    REQUIRE_FALSE(hasWarning(warnings, "MCP_TOOL_BYPASSES_REST_AUTH"));
+}
+
+TEST_CASE("SecurityAuditor: an auth-like unknown key without an auth block is flagged",
+          "[security][audit][issue275]") {
+    // `authentication:` / `Auth:` is read by nothing: the endpoint is open (or
+    // inherits the top-level auth) while its file reads as protected.
+    TempTestConfig temp(kMcpAuthOffConfig, "audit_auth_key_ignored");
+    temp.writeEndpoint("orders.yaml", R"(
+url-path: /orders
+method: GET
+template-source: q.sql
+connection: [test]
+)");
+    temp.writeEndpoint("declared.yaml", R"(
+url-path: /declared
+method: GET
+template-source: q.sql
+connection: [test]
+auth:
+  enabled: true
+  type: bearer
+  jwt-secret: rest-secret-long-enough
+)");
+    temp.writeSqlTemplate("q.sql", "SELECT 1 AS id");
+    auto config_manager = temp.createConfigManager();
+
+    // The parser records the unknown top-level keys (EndpointConfig::unknown_keys).
+    const auto snapshot = config_manager->getEndpoints();  // pinned: replaceEndpoint swaps it
+    for (const auto& endpoint : *snapshot) {
+        EndpointConfig copy = endpoint;
+        copy.unknown_keys = {"Authentication", "descripton"};
+        REQUIRE(config_manager->replaceEndpoint(copy));
+    }
+
+    auto warnings = SecurityAuditor().audit(*config_manager);
+    const auto found = withCode(warnings, "ENDPOINT_AUTH_KEY_IGNORED");
+    // Only the endpoint WITHOUT an auth block: the other one's block is read.
+    REQUIRE(found.size() == 1);
+    REQUIRE(found[0].location == "endpoint GET /orders");
+    REQUIRE(found[0].message.find("Authentication") != std::string::npos);
+    REQUIRE(found[0].message.find("descripton") == std::string::npos);
 }
 
 } // namespace test
