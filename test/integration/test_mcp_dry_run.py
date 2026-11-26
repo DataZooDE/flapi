@@ -240,6 +240,22 @@ class TestDryRunMode:
         assert inner["bindings"][0]["value"] == 42, inner
         assert inner["parameters"]["id"] == 42, inner
 
+    def test_dry_run_structured_content_is_the_preview_without_rows(self, dry_run_server):
+        # A dry run returns no rows, so it says nothing about them: no `rows: []`,
+        # no `row_count: 0`, which read as "the query matched nothing".
+        token = _make_jwt()
+        sid = _initialize(dry_run_server, token)
+
+        r = _tools_call(dry_run_server, token, sid, {"id": 42, "_dryRun": True})
+        assert r.status_code == 200, r.text
+        result = r.json()["result"]
+        structured = result["structuredContent"]
+        assert structured["dry_run"] is True, structured
+        assert "rows" not in structured, structured
+        assert "row_count" not in structured, structured
+        # structuredContent is the preview itself, field for field.
+        assert structured == json.loads(result["content"][0]["text"]), structured
+
     def test_normal_call_does_not_emit_dry_run_payload(self, dry_run_server):
         # Sanity: a regular call still works against the in-mem connection
         # and does NOT include the dry-run markers.

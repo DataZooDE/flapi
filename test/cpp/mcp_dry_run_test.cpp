@@ -2,6 +2,7 @@
 #include <crow/json.h>
 
 #include "mcp_dry_run.hpp"
+#include "mcp_route_handlers.hpp"
 
 namespace flapi {
 namespace test {
@@ -91,6 +92,34 @@ TEST_CASE("MCPDryRun::formatResult: empty parameter map still emits a parameters
     REQUIRE(parsed);
     REQUIRE(parsed["dry_run"].b() == true);
     REQUIRE(parsed.has("parameters"));
+}
+
+TEST_CASE("toolPayloadOf: a dry-run result is a summary, not rows",
+          "[mcp][dryrun][issue275]") {
+    // The tool handler marks a dry run with metadata dry_run=true; its preview
+    // object must not be wrapped as rows (or padded with rows: []).
+    REQUIRE(toolPayloadOf({{"dry_run", "true"}}) == ToolPayload::Summary);
+    REQUIRE(toolPayloadOf({{"tool_name", "x"}}) == ToolPayload::Rows);
+}
+
+TEST_CASE("toolSuccessResultJson: a dry-run preview is the structuredContent, with no rows",
+          "[mcp][dryrun][issue275]") {
+    const std::string preview = MCPDryRun::formatResult("customer_lookup", "SELECT 1", {{"id", "42"}});
+    const auto out = crow::json::load(toolSuccessResultJson(preview, toolPayloadOf({{"dry_run", "true"}})));
+    REQUIRE(out);
+    REQUIRE(out["content"][0]["text"].s() == preview);
+    const auto& structured = out["structuredContent"];
+    REQUIRE(structured["dry_run"].b() == true);
+    REQUIRE_FALSE(structured.has("rows"));
+    REQUIRE_FALSE(structured.has("row_count"));
+}
+
+TEST_CASE("toolSuccessResultJson: rows go under structuredContent.rows with a row_count",
+          "[mcp][issue275]") {
+    const std::string rows = R"([{"zeta":1,"alpha":711.56}])";
+    const std::string out = toolSuccessResultJson(rows, ToolPayload::Rows);
+    REQUIRE(out.find(R"("structuredContent":{"rows":[{"zeta":1,"alpha":711.56}],"row_count":1})") !=
+            std::string::npos);
 }
 
 } // namespace test
