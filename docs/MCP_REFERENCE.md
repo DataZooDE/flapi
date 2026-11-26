@@ -635,7 +635,8 @@ Set `arguments._dryRun: true` to run the validate → render → plan pipeline w
 
 `rendered_sql` is the statement the tool would RUN: a `{{ params.x }}` whose field has a typed
 validator is a `?` and its value is listed in `bindings` (`value: null` when absent). `parameters` is
-typed by the field's validators (an `int` field is `42`, not `"42"`). `structuredContent` is the same
+typed by the field's validators (an `int` field is `42`, not `"42"`), and holds only the call's arguments
+(and field defaults): the `__auth_*` identity the server injects for `auth.*` is not echoed. `structuredContent` is the same
 object, field for field: no `rows` and no `row_count`, since nothing ran (it used to add `"rows": []` and
 `"row_count": 0`, which read as an empty result). A dry run never teaches the tool's `outputSchema`.
 

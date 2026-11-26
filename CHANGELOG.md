@@ -22,6 +22,10 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 - **A dry run's `structuredContent` has no `rows` or `row_count` (#275).** `_dryRun: true`
   added `"rows": []` and `"row_count": 0`, which read as a query that matched nothing; the
   query never ran. `structuredContent` is now the preview itself, with `dry_run: true`.
+- **A dry run no longer echoes the injected identity.** `parameters` in a `_dryRun` preview
+  listed the `__auth_username`, `__auth_roles`, `__auth_email`, `__auth_type` and
+  `__auth_authenticated` values the server injects for `auth.*`; it now holds only the call's
+  arguments.
 - **MCP under `mcp.auth.type: basic` challenges with Basic (#275).** A `401` said
   `WWW-Authenticate: Bearer`, and a role denial `Bearer error="insufficient_scope"`. A `401`
   now says `Basic realm="flAPI"`, as REST does, and a `403` carries no challenge.
