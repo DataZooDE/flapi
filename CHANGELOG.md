@@ -64,6 +64,12 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 - **`flapi.result.bytes` is gone from the code (#279).** It was declared, and described
   in a comment as the response size, but never set. The response size is
   `http.response.body.size` on the request span.
+- **A request value can no longer fake a field of a text log line (#259).** An error
+  line quoted DuckDB's error text verbatim, so a parameter that reached a failing URL
+  could carry ` request_id=FAKE` (or `trace_id=`/`span_id=`) into it, ahead of the real
+  field. Error lines now read `<context> error="<detail>"` with `"` and `\` escaped, and
+  the text formatter writes `request_id%3D`, `trace_id%3D` and `span_id%3D` for those
+  names at a token start inside any message.
 
 ### Upgrade notes
 
@@ -87,6 +93,12 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 - `--validate-config` with `audit.sink: file` and no `audit.path` now fails validation
   (it failed loading before). The server still refuses to start when the audit file
   cannot be opened, now after the database is up rather than while parsing.
+- Text log lines for failures changed shape: `Error handling request: <detail>` is now
+  `Error handling request error="<detail>"` (also `Error handling write request`,
+  `Tool execution error for tool <name>`, `Resource read error for resource <name>`, and
+  the `Bad request (read|write)`, lock-contention and time-travel warnings). A
+  `request_id=`, `trace_id=` or `span_id=` inside a message now reads
+  `request_id%3D...`. Update log parsers or alerts that matched the old text.
 
 ## v26.11.26 — auth.* identity values stay inside their SQL literal, OIDC works again, and a task guide for every feature
 

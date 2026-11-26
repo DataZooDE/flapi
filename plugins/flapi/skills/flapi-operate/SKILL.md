@@ -224,7 +224,9 @@ SELECT * FROM {{cache.catalog}}.{{cache.schema}}.{{cache.table}}
   before the id exists; it shares the connection pointer (`0x7fd2800095e0`) with its
   `Response:` line. To debug a failed call: take the header, then
   `grep req-3f1812a93deaa6c1 server.log`. A 500 body carries the same id as `request_id`;
-  the DuckDB error is only in the log.
+  the DuckDB error is only in the log, quoted: `Error handling request error="<detail>"`.
+  In text lines a `request_id=`/`trace_id=`/`span_id=` inside a message is written
+  `request_id%3D...`, so only the appended fields parse as fields.
 - Change the level at runtime: `flapii config log-level set debug` (until restart). `debug`
   logs the template context and the rendered SQL of each request. `flapii config log-level
   get` reports the level the server runs at, however it was set.

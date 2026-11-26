@@ -427,6 +427,26 @@ line: Crow writes it before any middleware has run, so the handler holds it for 
 few instructions until the request has an id and then writes it - once - with the id
 attached.
 
+### Text lines carry each field once
+
+In `log-format: text` the handler appends ` request_id=`, ` trace_id=` and
+` span_id=` to the message. The message itself cannot add a second copy:
+
+- An error line quotes the failure as one value,
+  `Error handling request error="<detail>"`, with `"` and `\` in it escaped as
+  `\"` and `\\`. The detail is DuckDB's error text, which quotes the failing
+  URL or statement, request values included.
+- Anywhere in a message, `request_id=`, `trace_id=` or `span_id=` at the start
+  of a whitespace-separated token is written with its `=` percent-encoded:
+  `request_id%3DFAKE`. Only the fields the handler appends have a literal `=`.
+- CR and LF are written as `\r` and `\n`, so a message is one line.
+
+So a parser that splits on whitespace, or a `grep 'request_id=req-...'`, sees
+only the real id. Up to v26.11.26 a request parameter that reached a failing URL
+could carry a space-separated `request_id=FAKE` into the error line ahead of the
+real field (#259). `log-format: json` is unchanged: the fields are JSON keys and
+the message is a string.
+
 ### Which object store requests did a request cause?
 
 When a template or a remote configuration reads from S3, GCS or HTTP(S), DuckDB

@@ -193,13 +193,16 @@ grep req-9248425d44c3d9f6 flapi.log
 
 ```json
 {"message":"Request: 127.0.0.1:37986 0x7fc61c01bd10 HTTP/1.1 GET /broken","request_id":"req-9248425d44c3d9f6","level":"info","timestamp":"2026-11-25T12:53:32.495685Z"}
-{"message":"Error handling request: Query execution failed during main query: Binder Error: Referenced column \"no_such_column\" not found in FROM clause! ...","request_id":"req-9248425d44c3d9f6","span_id":"5452a8c331fbb598","trace_id":"3efbd06af66dffb89f25a1cb3cbe6777","level":"error","timestamp":"2026-11-25T12:53:32.497912Z"}
+{"message":"Error handling request error=\"Query execution failed during main query: Binder Error: Referenced column \"no_such_column\" not found in FROM clause! ...\"","request_id":"req-9248425d44c3d9f6","span_id":"5452a8c331fbb598","trace_id":"3efbd06af66dffb89f25a1cb3cbe6777","level":"error","timestamp":"2026-11-25T12:53:32.497912Z"}
 {"message":"Response: 0x7fc61c01bd10 /broken 500 0","request_id":"req-9248425d44c3d9f6","span_id":"5452a8c331fbb598","trace_id":"3efbd06af66dffb89f25a1cb3cbe6777","level":"info","timestamp":"2026-11-25T12:53:32.498068Z"}
 ```
 
 `log-format: json` writes one JSON object per line, which a log collector can
 ingest directly. With the default `log-format: text`, the same line reads
-`(2026-11-25T12:53:32.497912Z) [error] Error handling request: ... request_id=req-9248425d44c3d9f6`.
+`(2026-11-25T12:53:32.497912Z) [error] Error handling request error="..." request_id=req-9248425d44c3d9f6`:
+the database error is one quoted value, and a `request_id=` inside it is written
+`request_id%3D...`, so the only `request_id=` field is the real one
+([OBSERVABILITY § 8](../OBSERVABILITY.md#text-lines-carry-each-field-once)).
 `trace_id` and `span_id` are there because tracing is on (task 3).
 
 A `400` means validation failed. Its body names the field that failed
