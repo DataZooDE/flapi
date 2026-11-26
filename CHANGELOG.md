@@ -25,6 +25,12 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 - **MCP under `mcp.auth.type: basic` challenges with Basic (#275).** A `401` said
   `WWW-Authenticate: Bearer`, and a role denial `Bearer error="insufficient_scope"`. A `401`
   now says `Basic realm="flAPI"`, as REST does, and a `403` carries no challenge.
+- **Three new startup security warnings (#275).** `MCP_TOOL_NO_ALLOWED_ROLES`: `mcp.auth` is
+  on and a tool, resource or prompt has no `allowed-roles`, so every caller is refused.
+  `MCP_TOOL_BYPASSES_REST_AUTH`: `mcp.auth` is off and an endpoint whose REST route requires
+  authentication is also an `mcp-tool` (the warning names the endpoint).
+  `ENDPOINT_AUTH_KEY_IGNORED`: an endpoint file has an unread `auth*` key (`authentication:`)
+  and no `auth:` block.
 
 ### Upgrade notes
 

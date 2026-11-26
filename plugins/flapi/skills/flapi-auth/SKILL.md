@@ -469,6 +469,9 @@ load error, `AUTH_UNKNOWN_TYPE`, see above.)
 | `AUTH_EMPTY_JWT_SECRET` | bearer endpoint, global block or `mcp.auth` with empty `jwt-secret`: fails closed, every token is refused |
 | `CORS_WILDCARD_WITH_AUTH` | `cors.allow-origins` empty or `"*"` while any auth is enabled |
 | `MCP_UNAUTHENTICATED_TOOLS` | `mcp.enabled` with tools and `mcp.auth.enabled: false` |
+| `MCP_TOOL_NO_ALLOWED_ROLES` | `mcp.auth` on and a tool, resource or prompt without `allowed-roles`: everyone gets 403 |
+| `MCP_TOOL_BYPASSES_REST_AUTH` | `mcp.auth` off and an `mcp-tool` on an endpoint whose REST route requires auth (names the endpoint) |
+| `ENDPOINT_AUTH_KEY_IGNORED` | an unread top-level `auth*` key (`authentication:`, `Auth:`) on an endpoint without an `auth:` block |
 | `CREDENTIAL_TOO_SHORT_TO_REDACT` | a credential connection property under 4 chars: error detail is withheld |
 
 ## Canonical auth setup

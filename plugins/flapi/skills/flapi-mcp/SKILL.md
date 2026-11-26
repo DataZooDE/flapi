@@ -136,7 +136,7 @@ become `string` with `format`. A string validator's `regex` becomes `pattern`, a
 | `name` | required | Tool name in `tools/list` / `tools/call` |
 | `description` | required | What the agent reads. Scanned (below) |
 | `result-mime-type` | `application/json` | MIME type of the result |
-| `allowed-roles` | unset | Roles that may call it. **Required on every tool once `mcp.auth.enabled: true`**: a tool without it is denied. `[]` denies everyone. Ignored while MCP auth is off |
+| `allowed-roles` | unset | Roles that may call it. **Required on every tool once `mcp.auth.enabled: true`**: a tool without it is denied (startup warns `MCP_TOOL_NO_ALLOWED_ROLES`). `[]` denies everyone. Ignored while MCP auth is off; then a tool on a REST-protected endpoint warns `MCP_TOOL_BYPASSES_REST_AUTH` |
 | `response.max-rows` | unset | Cap rows returned to the agent |
 | `response.redact-columns` | `[]` | Replace these columns' values with `"<redacted>"` (the key stays; columns stay in SELECT order) |
 | `response.sample` | `false` | Return only `{sampled, row_count, columns}`, never rows (also as `structuredContent`, no `rows` key) |

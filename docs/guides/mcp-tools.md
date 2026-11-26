@@ -549,7 +549,7 @@ curl -L -o data/customers.parquet \
 ```
 
 `flapi.yaml`:
-<!-- flapi: config group=secure -->
+<!-- flapi: config group=secure allow=MCP_TOOL_NO_ALLOWED_ROLES -->
 ```yaml
 project-name: mcp-secured
 template:
@@ -697,6 +697,14 @@ Make your CI stop instead:
 ```bash
 flapi -c flapi.yaml --validate-config 2>&1 | grep MCP_UNAUTHENTICATED_TOOLS && exit 1
 ```
+
+Two more warnings are about MCP:
+
+- `MCP_TOOL_NO_ALLOWED_ROLES`: `mcp.auth` is on and a tool, resource or prompt has no
+  `allowed-roles`, so every caller gets a 403 (the `no_roles` tool above).
+- `MCP_TOOL_BYPASSES_REST_AUTH`: `mcp.auth` is off and an endpoint whose REST route
+  requires authentication is also an `mcp-tool`. The warning names the endpoint: its
+  data is open through `/mcp/jsonrpc`.
 
 ## Threat model and safe defaults
 

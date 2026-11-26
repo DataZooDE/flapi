@@ -597,7 +597,11 @@ Tool results are returned as content blocks (see [Content Types](#9-content-type
 {"jsonrpc":"2.0","id":4,"error":{"code":-32000,"message":"Permission denied: Tool 'X' requires one of [analyst]; caller has [reader]."}}
 ```
 
-Tools without `allowed-roles` are denied — this is the secure-by-default stance.
+Tools without `allowed-roles` are denied — this is the secure-by-default stance. Startup warns
+`MCP_TOOL_NO_ALLOWED_ROLES` for each tool, resource and prompt without `allowed-roles` while
+`mcp.auth.enabled` is true. With `mcp.auth` off, an `mcp-tool` on an endpoint whose REST route
+requires authentication warns `MCP_TOOL_BYPASSES_REST_AUTH`, naming the endpoint: the tool serves
+the same data without credentials.
 
 **Per-tool rate limit:** with an `mcp-tool.rate-limit` block (enabled unless `enabled: false`), a call over the budget gets a tool result with `isError: true` and `retry_after_seconds`, not a JSON-RPC error, so an agent can wait and retry. Rate limits are keyed on the authenticated principal (with an anonymous fallback bucket per tool).
 

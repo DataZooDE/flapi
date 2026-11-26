@@ -434,7 +434,7 @@ cd .. && mkdir -p shop-agents/sqls && cp -r shop/data shop-agents/ && cd shop-ag
 
 Start it with REST authentication only. alice is the one user:
 
-<!-- flapi: config group=leak allow=MCP_UNAUTHENTICATED_TOOLS -->
+<!-- flapi: config group=leak allow=MCP_UNAUTHENTICATED_TOOLS,MCP_TOOL_BYPASSES_REST_AUTH -->
 ```yaml
 # flapi.yaml (first version)
 project-name: shop-agents
@@ -479,8 +479,9 @@ FROM read_parquet('{{{ conn.path }}}')
 <!-- flapi: check group=leak GET /customer-count user=alice:wonderland -> 200 contains ""customers":1500" -->
 <!-- flapi: check-mcp group=leak customer_count -> ok contains ""customers":1500" -->
 
-Startup warns `MCP_UNAUTHENTICATED_TOOLS`, and it means it. REST refuses an
-anonymous caller, the tool does not:
+Startup warns `MCP_UNAUTHENTICATED_TOOLS`, and `MCP_TOOL_BYPASSES_REST_AUTH` naming
+`endpoint GET /customer-count`, and it means it. REST refuses an anonymous caller, the
+tool does not:
 
 ```bash
 curl -s http://localhost:8080/customer-count
