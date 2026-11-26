@@ -208,3 +208,14 @@ class TestHasQuery:
         requests.get(f"{server.base_url}/open?f={marker}", timeout=10)
         server.wait_for_server_span()
         assert marker not in server.raw_traces()
+
+
+class TestReturnedRows:
+    # #279: db.response.returned_rows was never on a REST request span.
+    def test_a_rest_read_exports_its_row_count(self, server):
+        r = requests.get(f"{server.base_url}/open", timeout=10)
+        assert r.status_code == 200
+        server.wait_for_server_span()
+        span = find_span(server.spans(), attrs={"http.route": "/open"})
+        assert span is not None
+        assert span.attributes.get("db.response.returned_rows") == 1, span.attributes

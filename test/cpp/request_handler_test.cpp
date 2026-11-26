@@ -396,3 +396,20 @@ TEST_CASE("RequestHandler: combineWriteParameters preserves empty-string body va
         REQUIRE(params.at("description") == "\t\n");
     }
 }
+
+TEST_CASE("RequestHandler::RecordRowCount stamps the ambient request (#279)", "[request_handler][audit]") {
+    // Nothing set RequestContext::row_count on the REST path, so the audit
+    // line said -1 and the span had no db.response.returned_rows.
+    RequestContext rc;
+    REQUIRE(rc.row_count == -1);
+    {
+        RequestContextScope scope(&rc);
+        RequestHandler::RecordRowCount(7);
+    }
+    REQUIRE(rc.row_count == 7);
+
+    // No request in flight: a no-op, not a crash.
+    REQUIRE(RequestContextScope::current() == nullptr);
+    RequestHandler::RecordRowCount(3);
+    REQUIRE(rc.row_count == 7);
+}

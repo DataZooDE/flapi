@@ -87,6 +87,20 @@ def _write_config(dirpath: str, port: int, audit_path: str) -> str:
     with open(os.path.join(sqls, "open.sql"), "w") as f:
         f.write("SELECT 1 AS n\n")
 
+    # Row counts (#279): five rows, paged or not; a write; a read over POST.
+    with open(os.path.join(sqls, "rows.yaml"), "w") as f:
+        f.write("url-path: /rows\nmethod: GET\ntemplate-source: rows.sql\nconnection: [inmem]\n")
+    with open(os.path.join(sqls, "rows.sql"), "w") as f:
+        f.write("SELECT range AS n FROM range(5) ORDER BY n\n")
+    with open(os.path.join(sqls, "write.yaml"), "w") as f:
+        f.write("url-path: /write\nmethod: POST\ntemplate-source: write.sql\nconnection: [inmem]\n")
+    with open(os.path.join(sqls, "write.sql"), "w") as f:
+        f.write("CREATE TABLE IF NOT EXISTS w (n INTEGER);\n"
+                "INSERT INTO w SELECT range FROM range(3)\n")
+    with open(os.path.join(sqls, "postread.yaml"), "w") as f:
+        f.write("url-path: /postread\nmethod: POST\ntemplate-source: rows.sql\n"
+                "connection: [inmem]\noperation:\n  type: read\n")
+
     # A basic-auth endpoint, to reach AuthMiddleware's res.end() 401 path.
     with open(os.path.join(sqls, "guarded.yaml"), "w") as f:
         f.write(
@@ -261,3 +275,58 @@ class TestRestAuditCoverage:
                 "the audit schema must be unchanged for operators who never "
                 "enable tracing"
             )
+
+
+@pytest.mark.standalone_server
+class TestRestAuditRowCount:
+    """#279: nothing set the REST row count, so every REST line said -1."""
+
+    def _event(self, server, response, target):
+        rid = response.headers["X-Request-Id"]
+        events = [e for e in _audit_lines(server["audit_path"]) if e["request_id"] == rid]
+        assert len(events) == 1, events
+        assert events[0]["target"] == target
+        return events[0]
+
+    def test_a_get_records_the_rows_it_returned(self, audit_rest_server):
+        r = requests.get(f"{audit_rest_server['base_url']}/rows", timeout=10)
+        assert r.status_code == 200 and len(r.json()["data"]) == 5, r.text
+        assert self._event(audit_rest_server, r, "/rows")["row_count"] == 5
+
+    def test_a_page_records_the_page_not_the_total(self, audit_rest_server):
+        r = requests.get(f"{audit_rest_server['base_url']}/rows?limit=2&offset=1", timeout=10)
+        body = r.json()
+        assert r.status_code == 200 and len(body["data"]) == 2 and body["total_count"] == 5, r.text
+        assert self._event(audit_rest_server, r, "/rows")["row_count"] == 2
+
+    def test_an_empty_page_records_zero(self, audit_rest_server):
+        r = requests.get(f"{audit_rest_server['base_url']}/rows?offset=10", timeout=10)
+        assert r.status_code == 200 and r.json()["data"] == [], r.text
+        assert self._event(audit_rest_server, r, "/rows")["row_count"] == 0
+
+    def test_a_csv_read_records_its_rows(self, audit_rest_server):
+        r = requests.get(f"{audit_rest_server['base_url']}/rows?format=csv", timeout=10)
+        assert r.status_code == 200, r.text
+        assert self._event(audit_rest_server, r, "/rows")["row_count"] == 5
+
+    def test_an_arrow_read_records_its_rows(self, audit_rest_server):
+        r = requests.get(f"{audit_rest_server['base_url']}/rows",
+                         headers={"Accept": "application/vnd.apache.arrow.stream"}, timeout=10)
+        assert r.status_code == 200, r.text
+        assert r.headers.get("X-Arrow-Rows") == "5"
+        assert self._event(audit_rest_server, r, "/rows")["row_count"] == 5
+
+    def test_a_write_records_the_rows_it_changed(self, audit_rest_server):
+        r = requests.post(f"{audit_rest_server['base_url']}/write", json={}, timeout=10)
+        assert r.status_code == 201 and r.json()["rows_affected"] == 3, r.text
+        assert self._event(audit_rest_server, r, "/write")["row_count"] == 3
+
+    def test_a_post_read_records_the_rows_it_returned(self, audit_rest_server):
+        r = requests.post(f"{audit_rest_server['base_url']}/postread?limit=3", json={}, timeout=10)
+        assert r.status_code == 200 and len(r.json()["data"]) == 3, r.text
+        assert self._event(audit_rest_server, r, "/postread")["row_count"] == 3
+
+    def test_a_failed_request_keeps_minus_one(self, audit_rest_server):
+        r = requests.get(f"{audit_rest_server['base_url']}/rows?limit=abc", timeout=10)
+        assert r.status_code == 400, r.text
+        assert self._event(audit_rest_server, r, "/rows")["row_count"] == -1
