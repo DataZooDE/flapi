@@ -107,6 +107,10 @@ public:
                              bool with_pagination = true, TotalCount total = TotalCount::Exact,
                              const ResultSink* sink = nullptr);
     QueryResult executeCacheQuery(const EndpointConfig& endpoint, const CacheConfig& cacheConfig, std::map<std::string, std::string>& params);
+    // Runs `query` as written. `params` is the pagination / template context
+    // (offset, limit, the next link) and is NEVER bound: a `?` in `query`
+    // stays unbound and the query fails. To bind values, use
+    // executeQueryWithBindings (#264).
     QueryResult executeQuery(const std::string& query, const std::map<std::string, std::string>& params = {},
                              bool with_pagination = true, TotalCount total = TotalCount::Exact,
                              const ResultSink* sink = nullptr);

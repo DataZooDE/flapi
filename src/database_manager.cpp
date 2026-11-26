@@ -2631,22 +2631,31 @@ std::vector<ColumnInfo> DatabaseManager::getTableColumns(const std::string& sche
                     "WHERE table_schema = ? AND table_name = ? "
                     "ORDER BY ordinal_position";
         
-        // Create parameter map with numbered placeholders
-        std::map<std::string, std::string> params;
-        params["1"] = schema;
-        params["2"] = table;
-        
-        auto result = executeQuery(query, params, false);
-        
+        // Bound as prepared parameters (#264). executeQuery(string, params)
+        // never binds - its params are the pagination context - so the `?`
+        // stayed unbound and this answered nothing.
+        std::vector<PreparedBindingSpec> bindings(2);
+        bindings[0].field_name = "schema";
+        bindings[0].type = SqlParameterType::Varchar;
+        bindings[0].position = 0;
+        bindings[1].field_name = "table";
+        bindings[1].type = SqlParameterType::Varchar;
+        bindings[1].position = 1;
+        const std::map<std::string, std::string> values{{"schema", schema}, {"table", table}};
+
+        auto result = executeQueryWithBindings(query, bindings, values, {}, false, TotalCount::Exact);
+
         if (result.data.t() == crow::json::type::Null || result.data.size() == 0) {
             return columns;
         }
 
         for (std::size_t i = 0; i < result.data.size(); ++i) {
+            // .s(), not .dump(): dump() JSON-quotes the names ("\"id\"").
+            const crow::json::rvalue row = crow::json::load(result.data[i].dump());
             ColumnInfo col;
-            col.name = result.data[i]["column_name"].dump();
-            col.type = result.data[i]["data_type"].dump();
-            col.nullable = result.data[i]["is_nullable"].dump() == "YES";
+            col.name = row["column_name"].s();
+            col.type = row["data_type"].s();
+            col.nullable = std::string(row["is_nullable"].s()) == "YES";
             columns.push_back(std::move(col));
         }
     } catch (const std::exception& e) {
