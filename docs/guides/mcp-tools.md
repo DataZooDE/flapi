@@ -606,7 +606,7 @@ connection: [customers]
 <!-- flapi: check-mcp my_balances {"limit": 1} user=analyst:s3cret -> ok -->
 <!-- flapi: check-mcp my_balances {"limit": 1} user=analyst:s3cret -> ok -->
 <!-- flapi: check-mcp my_balances {"limit": 1} user=analyst:s3cret -> error contains "Rate limit exceeded" -->
-<!-- flapi: check-mcp no_roles {} user=analyst:s3cret -> 403 contains "has no allowed-roles configured" -->
+<!-- flapi: check-mcp no_roles {} user=analyst:s3cret -> 403 contains "is not available to your roles" -->
 
 `sqls/balances.sql`:
 <!-- flapi: template group=secure file=balances.sql -->
@@ -855,7 +855,7 @@ never gets a session. On the modern path `ping` and `logging/setLevel` are gone
 - **Relying on REST `auth:` to protect a tool.** It does not. Turn on `mcp.auth` and give
   every tool `allowed-roles`.
 - **Turning on `mcp.auth` and forgetting `allowed-roles`.** Every call then answers 403
-  `has no allowed-roles configured`.
+  `Tool 'x' is not available to your roles.`; startup warns `MCP_TOOL_NO_ALLOWED_ROLES`.
 - **Assuming a tool is paginated.** A tool returns every row. Set `max-rows` and tell the
   agent about `limit` and `offset`.
 - **`LIMIT {{ params.limit }}` in the template.** `limit` belongs to flAPI's pagination.

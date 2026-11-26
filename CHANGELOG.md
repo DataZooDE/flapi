@@ -29,6 +29,9 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 - **MCP under `mcp.auth.type: basic` challenges with Basic (#275).** A `401` said
   `WWW-Authenticate: Bearer`, and a role denial `Bearer error="insufficient_scope"`. A `401`
   now says `Basic realm="flAPI"`, as REST does, and a `403` carries no challenge.
+- **A 403 for a missing `allowed-roles` no longer advises the caller.** It said "... or
+  disable mcp.auth to allow anonymous access" to the agent; it now says
+  `Tool 'x' is not available to your roles.` The operator hint is in the startup warning.
 - **Four new startup security warnings (#275).** `MCP_TOOL_NO_ALLOWED_ROLES`: `mcp.auth` is
   on and a tool, resource or prompt has no `allowed-roles`, so every caller is refused.
   `MCP_TOOL_BYPASSES_REST_AUTH`: `mcp.auth` is off and an endpoint whose REST route requires

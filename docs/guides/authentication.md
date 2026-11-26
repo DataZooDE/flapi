@@ -534,7 +534,8 @@ mcp:
 ```
 
 With `mcp.auth` enabled, **a tool without `allowed-roles` is refused to
-everyone** (`403`, "has no allowed-roles configured"). Give the tool its roles:
+everyone** (`403`, "Tool 'x' is not available to your roles.", and the startup warning
+`MCP_TOOL_NO_ALLOWED_ROLES` names the file). Give the tool its roles:
 
 <!-- flapi: endpoint group=agents file=customer-count.yaml -->
 ```yaml
