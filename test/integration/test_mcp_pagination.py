@@ -71,6 +71,12 @@ mcp-tool:
                 "request:\n  - field-name: choice\n    field-in: query\n"
                 "    validators:\n      - type: enum\n        allowedValues: [" + ", ".join(enum_values) + "]\n"
                 "mcp-tool:\n  name: pick\n  description: pick one\n")
+    # A NULL column, for the learned outputSchema.
+    with open(os.path.join(sqls, "nully.sql"), "w") as f:
+        f.write("SELECT NULL AS nul, 1 AS x\n")
+    with open(os.path.join(sqls, "nully.yaml"), "w") as f:
+        f.write("template-source: nully.sql\nconnection: [inmem]\n"
+                "mcp-tool:\n  name: nully\n  description: a null column\n")
     # A URI-templated resource.
     with open(os.path.join(sqls, "cust.sql"), "w") as f:
         f.write("SELECT {{{params.id}}} AS customer_id\n")
@@ -140,7 +146,7 @@ def _rpc(base: str, method: str, params: dict, id_="x") -> dict:
 class TestPaginationAndTemplates:
     def test_unpaged_returns_all_tools_without_cursor(self, server_unpaged):
         r = _rpc(server_unpaged, "tools/list", {})["result"]
-        assert len(r["tools"]) == 4
+        assert len(r["tools"]) == 5
         assert "nextCursor" not in r
 
     def test_paged_walks_all_tools_via_cursor(self, server_paged):
@@ -154,7 +160,7 @@ class TestPaginationAndTemplates:
             cursor = r.get("nextCursor")
             if not cursor:
                 break
-        assert sorted(seen) == ["pick", "tool_a", "tool_b", "tool_c"]
+        assert sorted(seen) == ["nully", "pick", "tool_a", "tool_b", "tool_c"]
 
     def test_stale_cursor_is_rejected(self, server_paged):
         import base64, json
@@ -231,3 +237,32 @@ class TestCompletionCounts:
     def test_no_match(self, server_unpaged):
         c = _complete(server_unpaged, "zzz")
         assert c == {"values": [], "total": 0, "hasMore": False}, c
+
+
+@pytest.mark.standalone_server
+class TestCompletionSpecShapeAndSchema:
+    def test_spec_shaped_completion_request(self, server_unpaged):
+        # MCP shape: ref {type, name}, argument {name, value}.
+        body = _rpc(server_unpaged, "completion/complete",
+                    {"ref": {"type": "ref/prompt", "name": "pick"},
+                     "argument": {"name": "choice", "value": "other"}})
+        assert "result" in body, body
+        c = body["result"]["completion"]
+        assert c["total"] == 10 and len(c["values"]) == 10, c
+
+    def test_unknown_reference_is_a_valid_json_error(self, server_unpaged):
+        r = requests.post(f"{server_unpaged}/mcp/jsonrpc", headers={"Content-Type": "application/json"},
+                          json={"jsonrpc": "2.0", "id": "x", "method": "completion/complete",
+                                "params": {"ref": 'x","code":1,"y":"', "argument": "a"}}, timeout=10)
+        body = r.json()  # the name used to be pasted into the error JSON unescaped
+        assert body["error"]["code"] == -32602, body
+        assert 'x","code":1,"y":"' in body["error"]["message"], body
+
+    def test_learned_output_schema_has_no_null_property_schema(self, server_unpaged):
+        call = _rpc(server_unpaged, "tools/call", {"name": "nully", "arguments": {}})
+        assert "result" in call, call
+        tools = {t["name"]: t for t in _rpc(server_unpaged, "tools/list", {})["result"]["tools"]}
+        props = tools["nully"]["outputSchema"]["properties"]["rows"]["items"]["properties"]
+        # A JSON Schema must be an object or a boolean; null is not one.
+        assert props["nul"] == {}, props
+        assert props["x"] == {"type": "number"}, props

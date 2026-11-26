@@ -303,6 +303,12 @@ class TestMcpAuthMatrix:
         assert "error" in body, f"secret_data should deny-by-default: {body}"
         assert "TOP-SECRET" not in r.text
 
+    def test_unauthenticated_initialize_names_the_method_like_other_methods(self, auth_server):
+        r = _post(auth_server, "initialize", {"protocolVersion": "2024-11-05", "capabilities": {},
+                                              "clientInfo": {"name": "t", "version": "1"}})
+        assert r.status_code == 401, r.text
+        assert r.json()["error"]["message"] == "Authentication required for method: initialize", r.text
+
     def test_no_allowed_roles_denial_does_not_coach_the_caller(self, auth_server):
         # The 403 text reaches the agent: no "disable mcp.auth" advice.
         token = _make_jwt(roles=["admin"])
