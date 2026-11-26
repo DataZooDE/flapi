@@ -4,10 +4,36 @@ import os
 import subprocess
 import tempfile
 
+import pytest
+
 from otel_helpers import flapi_binary
 
 GOOD = ("project-name: p\nproject-description: d\ntemplate:\n  path: ./sqls\n"
         "connections:\n  inmem:\n    properties:\n      database: ':memory:'\n")
+
+
+@pytest.fixture(scope="module", autouse=True)
+def no_pack_dirs_left_behind():
+    """Every scratch dir this module makes must be gone when it ends (#263).
+
+    A pack output is a copy of the ~120 MB flapi binary; leaking one per test
+    filled /tmp by gigabytes over a few runs.
+    """
+    made = []
+    real_mkdtemp = tempfile.mkdtemp
+
+    def recording_mkdtemp(*args, **kwargs):
+        path = real_mkdtemp(*args, **kwargs)
+        if os.path.basename(path).startswith("flapi_packval_"):
+            made.append(path)
+        return path
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(tempfile, "mkdtemp", recording_mkdtemp)
+        yield
+    left = [p for p in made if os.path.exists(p)]
+    assert made, "the module made no scratch dir; the check is not watching anything"
+    assert not left, f"pack scratch dirs left behind: {left}"
 
 
 def _pack(config, *extra):
