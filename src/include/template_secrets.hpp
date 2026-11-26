@@ -92,4 +92,15 @@ std::string publicErrorMessage(const std::string& context,
                                const std::string& detail,
                                const TemplateSecrets& secrets);
 
+/// `"<text>"` with `"` and `\` backslash-escaped, for a value from DuckDB or
+/// from the request inside a log line (#259). Quoted, a space-separated
+/// `request_id=FAKE` in the text is part of one value, not a field of its own.
+std::string quoteLogValue(const std::string& text);
+
+/// The log line for a failure: `<context> error="<detail>"`, the detail
+/// scrubbed (or withheld) as publicErrorMessage does, then quoted.
+std::string errorLogMessage(const std::string& context,
+                            const std::string& detail,
+                            const TemplateSecrets& secrets);
+
 }  // namespace flapi

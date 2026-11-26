@@ -1,4 +1,7 @@
 #include "flapi_log_handler.hpp"
+
+#include <cctype>
+#include <string_view>
 #include "vfs_adapter.hpp"
 
 #include <chrono>
@@ -143,14 +146,40 @@ std::string FlapiLogHandler::format(const std::string& message, crow::LogLevel l
         // One record per line: a CR or LF from anywhere (a URL, a parameter, a
         // DuckDB error) must not end the line and let what follows pose as a
         // record of its own.
-        for (const char c : message) {
+        //
+        // And one set of fields per line (#259): `request_id=`, `trace_id=` and
+        // `span_id=` at the start of a whitespace-separated token are the
+        // fields appended below. Inside the message their `=` is written as
+        // `%3D` (`request_id%3DFAKE`), so a parser that splits on whitespace
+        // finds only the handler's own.
+        for (std::size_t i = 0; i < message.size(); ++i) {
+            const char c = message[i];
             if (c == '\n') {
                 out += "\\n";
-            } else if (c == '\r') {
-                out += "\\r";
-            } else {
-                out += c;
+                continue;
             }
+            if (c == '\r') {
+                out += "\\r";
+                continue;
+            }
+            if (i == 0 || std::isspace(static_cast<unsigned char>(message[i - 1])) != 0) {
+                const std::string_view rest = std::string_view(message).substr(i);
+                bool defused = false;
+                for (const std::string_view key : {std::string_view("request_id="), std::string_view("trace_id="),
+                                                   std::string_view("span_id=")}) {
+                    if (rest.substr(0, key.size()) == key) {
+                        out.append(key.substr(0, key.size() - 1));
+                        out += "%3D";
+                        i += key.size() - 1;
+                        defused = true;
+                        break;
+                    }
+                }
+                if (defused) {
+                    continue;
+                }
+            }
+            out += c;
         }
         if (!request_id.empty()) {
             out += " request_id=";

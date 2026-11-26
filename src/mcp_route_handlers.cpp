@@ -2049,13 +2049,15 @@ MCPResponse MCPRouteHandlers::handleResourcesReadRequest(const MCPRequest& reque
             // The tools/call fix did not reach here because it was written
             // inline rather than as a shared helper; the same mistake as the
             // auth injection, in the same handler.
-            const std::string public_detail = publicErrorMessage(
-                "Resource read error", e.what(),
-                collectTemplateSecrets(config_manager_.get(), *resource_config,
-                                       bound_params));
-            // Scrubbed before logging too - see the REST and tools/call paths.
-            CROW_LOG_ERROR << "for resource "
-                           << resource_config->mcp_resource->name << ": " << public_detail;
+            const auto secrets =
+                collectTemplateSecrets(config_manager_.get(), *resource_config, bound_params);
+            const std::string public_detail =
+                publicErrorMessage("Resource read error", e.what(), secrets);
+            // Scrubbed before logging too - see the REST and tools/call paths -
+            // and quoted (#259).
+            CROW_LOG_ERROR << errorLogMessage(
+                "Resource read error for resource " + resource_config->mcp_resource->name, e.what(),
+                secrets);
             response.error = formatJsonRpcError(-32603, public_detail);
         }
     } catch (const std::exception& e) {
@@ -2063,7 +2065,7 @@ MCPResponse MCPRouteHandlers::handleResourcesReadRequest(const MCPRequest& reque
         // thrown during URI-template binding or resource lookup bypassed it.
         // There is no endpoint in scope here - the lookup may be what failed -
         // so there are no secrets to enumerate, and the detail goes to the log.
-        CROW_LOG_ERROR << "Resource read error: " << e.what();
+        CROW_LOG_ERROR << "Resource read failed error=" << quoteLogValue(e.what());
         response.error = formatJsonRpcError(
             -32603, "Resource read error: see the server log for details.");
     }

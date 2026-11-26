@@ -257,4 +257,28 @@ std::string publicErrorMessage(const std::string& context,
     return context + ": " + secrets.scrub(detail);
 }
 
+std::string quoteLogValue(const std::string& text) {
+    std::string out;
+    out.reserve(text.size() + 2);
+    out += '"';
+    for (const char c : text) {
+        if (c == '"' || c == '\\') {
+            out += '\\';
+        }
+        out += c;
+    }
+    out += '"';
+    return out;
+}
+
+std::string errorLogMessage(const std::string& context,
+                            const std::string& detail,
+                            const TemplateSecrets& secrets) {
+    const std::string text = secrets.withhold()
+                                 ? std::string("the server could not describe this failure without "
+                                               "risking disclosure")
+                                 : secrets.scrub(detail);
+    return context + " error=" + quoteLogValue(text);
+}
+
 }  // namespace flapi

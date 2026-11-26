@@ -241,7 +241,7 @@ void RequestHandler::handleWriteRequest(const crow::request& req, crow::response
         return;
         
     } catch (const BadRequestError& e) {
-        CROW_LOG_WARNING << "Bad request (write): " << e.what();
+        CROW_LOG_WARNING << "Bad request (write) error=" << quoteLogValue(e.what());
         crow::json::wvalue body;
         body["error"] = std::string(e.what());
         res.code = 400;
@@ -256,7 +256,7 @@ void RequestHandler::handleWriteRequest(const crow::request& req, crow::response
         // 500 told clients their request was wrong and discouraged the retry
         // that would have worked.
         if (isLockContentionMessage(e.what())) {
-            CROW_LOG_WARNING << "write contended on a locked backend: " << e.what();
+            CROW_LOG_WARNING << "write contended on a locked backend error=" << quoteLogValue(e.what());
             res.code = 503;
             res.set_header("Retry-After", "1");
             res.set_header("Content-Type", "application/json");
@@ -271,9 +271,9 @@ void RequestHandler::handleWriteRequest(const crow::request& req, crow::response
         // indexed and read by people who are not entitled to the
         // credentials a template interpolated.
         const auto secrets = collectTemplateSecrets(config_manager.get(), endpoint, params);
-        const std::string public_detail =
-            publicErrorMessage("Error handling write request", e.what(), secrets);
-        CROW_LOG_ERROR << public_detail;
+        // Quoted (#259): the detail quotes DuckDB's text, URLs and request
+        // values included, which must not read as fields of this line.
+        CROW_LOG_ERROR << errorLogMessage("Error handling write request", e.what(), secrets);
         // The body carries NO part of the failure text. A database error
         // quotes the statement that failed, which IS the rendered template,
         // and names absolute file paths ("No files found that match the
@@ -554,7 +554,7 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
         res.end();
         return;
     } catch (const BadRequestError& e) {
-        CROW_LOG_WARNING << "Bad request (read): " << e.what();
+        CROW_LOG_WARNING << "Bad request (read) error=" << quoteLogValue(e.what());
         crow::json::wvalue body;
         body["error"] = std::string(e.what());
         res.code = 400;
@@ -567,7 +567,7 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
         // failing because an unrelated POST held a lock is the least defensible
         // outcome of the lot. Same treatment as the write path.
         if (isLockContentionMessage(e.what())) {
-            CROW_LOG_WARNING << "read contended on a locked backend: " << e.what();
+            CROW_LOG_WARNING << "read contended on a locked backend error=" << quoteLogValue(e.what());
             res.code = 503;
             res.set_header("Retry-After", "1");
             res.set_header("Content-Type", "application/json");
@@ -581,7 +581,7 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
         // 1.0 extension answered the latest snapshot. The caller's value is the problem: a 400.
         if (endpoint.cache.enabled &&
             std::string(e.what()).find("Cannot time travel to a future timestamp") != std::string::npos) {
-            CROW_LOG_INFO << "time travel to a future timestamp: " << e.what();
+            CROW_LOG_INFO << "time travel to a future timestamp error=" << quoteLogValue(e.what());
             res.code = 400;
             res.set_header("Content-Type", "application/json");
             crow::json::wvalue body;
@@ -597,7 +597,7 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
         // a server fault: it was a 500.
         if (endpoint.cache.enabled &&
             (isSnapshotNotFoundMessage(e.what()) || isSchemaBeforeSnapshotMessage(e.what(), endpoint))) {
-            CROW_LOG_INFO << "time travel to an unknown snapshot: " << e.what();
+            CROW_LOG_INFO << "time travel to an unknown snapshot error=" << quoteLogValue(e.what());
             res.code = 404;
             res.set_header("Content-Type", "application/json");
             crow::json::wvalue body;
@@ -613,9 +613,9 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
         // indexed and read by people who are not entitled to the
         // credentials a template interpolated.
         const auto secrets = collectTemplateSecrets(config_manager.get(), endpoint, params);
-        const std::string public_detail =
-            publicErrorMessage("Error handling request", e.what(), secrets);
-        CROW_LOG_ERROR << public_detail;
+        // Quoted (#259): the detail quotes DuckDB's text, URLs and request
+        // values included, which must not read as fields of this line.
+        CROW_LOG_ERROR << errorLogMessage("Error handling request", e.what(), secrets);
         // The body carries NO part of the failure text. A database error
         // quotes the statement that failed, which IS the rendered template,
         // and names absolute file paths ("No files found that match the
