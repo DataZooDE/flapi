@@ -2460,15 +2460,32 @@ WriteResult DatabaseManager::executeWrite(QueryExecutor& executor, const Endpoin
         // `returning_note`, a 'returning' literal or a comment made a plain
         // UPDATE report its one `Count` row as data and as rows_affected.
         // A DML statement answers CHANGED_ROWS (one BIGINT `Count` row), and
-        // QUERY_RESULT (the changed rows themselves) with RETURNING.
+        // QUERY_RESULT (the changed rows themselves) with RETURNING. A prepared
+        // statement's result says EXECUTE, so its own type comes from the parser.
         const duckdb_statement_type statement_type =
             executor.has_result ? duckdb_result_statement_type(executor.result) : DUCKDB_STATEMENT_TYPE_INVALID;
         const duckdb_result_type return_type =
             executor.has_result ? duckdb_result_return_type(executor.result) : DUCKDB_RESULT_TYPE_INVALID;
-        const bool is_dml = statement_type == DUCKDB_STATEMENT_TYPE_INSERT ||
-                            statement_type == DUCKDB_STATEMENT_TYPE_UPDATE ||
-                            statement_type == DUCKDB_STATEMENT_TYPE_DELETE ||
-                            statement_type == DUCKDB_STATEMENT_TYPE_MERGE_INTO;
+        bool is_dml = statement_type == DUCKDB_STATEMENT_TYPE_INSERT ||
+                      statement_type == DUCKDB_STATEMENT_TYPE_UPDATE ||
+                      statement_type == DUCKDB_STATEMENT_TYPE_DELETE ||
+                      statement_type == DUCKDB_STATEMENT_TYPE_MERGE_INTO;
+        if (statement_type == DUCKDB_STATEMENT_TYPE_EXECUTE && return_type == DUCKDB_RESULT_TYPE_QUERY_RESULT) {
+            try {
+                auto parser = duckdb::Parser::GetBuiltinParser();
+                parser.ParseQuery(statements[i]);
+                if (parser.statements.size() == 1 && parser.statements[0]) {
+                    const auto type = parser.statements[0]->type;
+                    is_dml = type == duckdb::StatementType::INSERT_STATEMENT ||
+                             type == duckdb::StatementType::UPDATE_STATEMENT ||
+                             type == duckdb::StatementType::DELETE_STATEMENT ||
+                             type == duckdb::StatementType::MERGE_INTO_STATEMENT;
+                }
+            } catch (const std::exception&) {
+                // It ran, so DuckDB read it; a text the standalone parser cannot
+                // read (an extension's syntax) is not a RETURNING we can vouch for.
+            }
+        }
         const bool hasReturningClause = is_dml && return_type == DUCKDB_RESULT_TYPE_QUERY_RESULT;
 
         // rows_affected is what the DML changed, summed over the statements.
