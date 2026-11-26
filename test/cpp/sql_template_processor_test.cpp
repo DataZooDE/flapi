@@ -1176,3 +1176,38 @@ TEST_CASE("SQLTemplateProcessor: a marker inside a token is still found at rende
         }
     }
 }
+
+TEST_CASE("SQLTemplateProcessor: {{ }} doubles single quotes instead of HTML-escaping (#277)",
+          "[sql_template_processor][escaping]") {
+    auto config_manager = std::make_shared<MockConfigManager>();
+    SQLTemplateProcessor processor(config_manager);
+    crow::mustache::context ctx;
+    ctx["params"]["name"] = "O'Brien";
+    ctx["params"]["sym"] = "a&b<c>\"d\"=`e`/f\\g";
+    ctx["conn"]["path"] = "/data/x.parquet";
+
+    SECTION("a quote is doubled, so the value stays inside its literal") {
+        REQUIRE(processor.processTemplate("SELECT '{{ params.name }}'", ctx) == "SELECT 'O''Brien'");
+        REQUIRE(processor.processTemplate("SELECT '{{params.name}}' AS n", ctx) == "SELECT 'O''Brien' AS n");
+    }
+    SECTION("nothing else is escaped: a path is a real path") {
+        REQUIRE(processor.processTemplate("FROM read_parquet('{{ conn.path }}')", ctx) ==
+                "FROM read_parquet('/data/x.parquet')");
+        REQUIRE(processor.processTemplate("'{{ params.sym }}'", ctx) == "'a&b<c>\"d\"=`e`/f\\g'");
+    }
+    SECTION("inside a section too") {
+        REQUIRE(processor.processTemplate("{{#params.name}}c = '{{ params.name }}'{{/params.name}}", ctx) ==
+                "c = 'O''Brien'");
+    }
+    SECTION("triple braces and {{& }} still paste the value as it is") {
+        REQUIRE(processor.processTemplate("{{{ params.name }}} {{& params.name }}", ctx) == "O'Brien O'Brien");
+    }
+}
+
+TEST_CASE("crow mustache keeps HTML escaping by default (the Swagger UI page) (#277)",
+          "[sql_template_processor][escaping]") {
+    crow::mustache::context ctx;
+    ctx["x"] = "<b>'&\"/=`";
+    REQUIRE(crow::mustache::compile("{{x}}").render_string(ctx) == "&lt;b&gt;&#39;&amp;&quot;&#x2F;&#x3D;&#x60;");
+    REQUIRE(crow::mustache::compile("{{{x}}}").render_string(ctx) == "<b>'&\"/=`");
+}

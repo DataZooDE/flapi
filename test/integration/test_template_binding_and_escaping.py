@@ -3,6 +3,9 @@
 * (a) a `{{ params.x }}` binds only where SQL takes a value: an `enum` in
   `ORDER BY` and a `DATE '{{ d }}'` stay text instead of a `?` DuckDB refuses,
   and `c = '{{ params.name }}'` binds as a whole literal, as the triple form does.
+* (b) `{{ }}` doubles single quotes instead of HTML-escaping: a section-scoped
+  `c = '{{ params.name }}'` matches O'Brien and `{{ conn.path }}` is a real path,
+  while the Swagger UI page keeps HTML escaping.
 """
 import os
 import shutil
@@ -83,6 +86,12 @@ FILES = {
     "exact.sql": "SELECT id FROM people WHERE name = '{{ params.name }}' ORDER BY id",
     "like.yaml": endpoint("/like", "like.sql", NAME),
     "like.sql": "SELECT id FROM people WHERE name LIKE '%{{ params.name }}%' ORDER BY id",
+    # (b) SQL escaping
+    "section.yaml": endpoint("/section", "section.sql", NAME),
+    "section.sql": ("SELECT id FROM people WHERE 1=1\n"
+                    "{{#params.name}}  AND name = '{{ params.name }}'\n{{/params.name}}ORDER BY id"),
+    "path.yaml": endpoint("/path", "path.sql", connection="files"),
+    "path.sql": "SELECT count(*) AS n FROM read_csv('{{ conn.path }}')",
 }
 
 
@@ -195,3 +204,36 @@ def test_the_quoted_double_brace_value_is_a_bound_parameter(server):
     body = r.json()
     assert "name = ?" in body["expanded"], body
     assert [b["value"] for b in body["bindings"]] == ["O'Brien"], body
+
+
+# ------------------------------------------------------------------ (b) SQL escaping
+
+def test_a_section_scoped_quoted_double_brace_matches_an_apostrophe(server):
+    assert get(server, "/section", name="O'Brien") == [{"id": 1}]
+    assert get(server, "/section", name="A/B") == [{"id": 3}]
+    assert [r["id"] for r in get(server, "/section")] == [1, 2, 3]
+
+
+def test_a_quote_cannot_leave_the_section_scoped_literal(server):
+    r = requests.get(f"{server.base}/section", params={"name": "x' OR 'a'='a"}, timeout=30)
+    assert r.status_code in (200, 400), r.text
+    if r.status_code == 200:
+        assert r.json() == [], r.text
+
+
+def test_the_section_scoped_value_renders_quote_doubled(server):
+    r = requests.post(f"{server.base}/api/v1/_config/endpoints/-section/template/expand",
+                      headers=AUTH, json={"parameters": {"name": "O'Brien"}}, timeout=30)
+    assert r.status_code == 200, r.text
+    assert "name = 'O''Brien'" in r.json()["expanded"], r.text
+
+
+def test_a_double_brace_connection_path_is_a_real_path(server):
+    assert get(server, "/path") == [{"n": 2}]
+
+
+def test_the_swagger_page_still_html_escapes(server):
+    r = requests.get(f"{server.base}/doc", timeout=30)
+    assert r.status_code == 200, r.text[:300]
+    assert "esc &lt;b&gt;bold&lt;&#x2F;b&gt; &amp; &#39;q&#39;" in r.text, r.text[:800]
+    assert "<b>bold</b>" not in r.text
