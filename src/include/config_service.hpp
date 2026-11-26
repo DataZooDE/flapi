@@ -287,6 +287,9 @@ public:
     // The bounded route template ("/api/v1/_config/endpoints/<string>/reload")
     // for a config-service request URL; used to label its span.
     static std::string RouteTemplateFor(const std::string& url);
+    // The level Crow's logger runs at, as GET /_config/log-level names it:
+    // debug, info, warning or error (critical reads as error).
+    static std::string CurrentLogLevelName();
 
     std::shared_ptr<ConfigManager> config_manager;
     
@@ -315,9 +318,6 @@ private:
     // Authentication
     bool enabled_;
     std::string auth_token_;
-    
-    // Runtime configuration
-    std::string current_log_level_ = "info";
-};
+    };
 
 } // namespace flapi

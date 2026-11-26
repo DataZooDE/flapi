@@ -655,6 +655,19 @@ void ConfigService::setDocGenerator(std::shared_ptr<OpenAPIDocGenerator> doc_gen
     doc_generator_ = doc_gen;
 }
 
+std::string ConfigService::CurrentLogLevelName() {
+    switch (crow::logger::get_current_log_level()) {
+        case crow::LogLevel::Debug:
+            return "debug";
+        case crow::LogLevel::Info:
+            return "info";
+        case crow::LogLevel::Warning:
+            return "warning";
+        default:
+            return "error";   // Error, and Critical, which no flAPI setting selects
+    }
+}
+
 std::string ConfigService::RouteTemplateFor(const std::string& url) {
     // The route TEMPLATE for a config-service URL, for the http.route span
     // attribute and span name. Only ever applied to a request a config route
@@ -1146,8 +1159,10 @@ CROW_ROUTE(app, "/api/v1/_config/cache/audit")
             
             if (req.method == crow::HTTPMethod::Get) {
                 // Get current log level
+                // Read from the logger itself: the level comes from --log-level,
+                // FLAPI_LOG_LEVEL or `log-level:` at startup, and from a PUT later.
                 crow::json::wvalue response;
-                response["level"] = current_log_level_;
+                response["level"] = CurrentLogLevelName();
                 return crow::response(200, response);
             } else {
                 // Set new log level
@@ -1168,24 +1183,20 @@ CROW_ROUTE(app, "/api/v1/_config/cache/audit")
                 // Validate and set log level
                 if (level_str == "debug") {
                     crow::logger::setLogLevel(crow::LogLevel::Debug);
-                    current_log_level_ = "debug";
                 } else if (level_str == "info") {
                     crow::logger::setLogLevel(crow::LogLevel::Info);
-                    current_log_level_ = "info";
                 } else if (level_str == "warning") {
                     crow::logger::setLogLevel(crow::LogLevel::Warning);
-                    current_log_level_ = "warning";
                 } else if (level_str == "error") {
                     crow::logger::setLogLevel(crow::LogLevel::Error);
-                    current_log_level_ = "error";
                 } else {
                     return crow::response(400, "Invalid log level. Use: debug, info, warning (or warn), error");
                 }
                 
-                CROW_LOG_INFO << "Log level changed to: " << current_log_level_;
-                
+                CROW_LOG_INFO << "Log level changed to: " << level_str;
+
                 crow::json::wvalue response;
-                response["level"] = current_log_level_;
+                response["level"] = level_str;
                 response["message"] = "Log level updated successfully";
                 return crow::response(200, response);
             }
