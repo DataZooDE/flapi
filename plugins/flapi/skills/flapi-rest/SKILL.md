@@ -160,13 +160,15 @@ Every user value is a bound parameter; an absent optional binds NULL, so
 
 ```bash
 curl 'http://localhost:8080/customers?nation=5&limit=2&offset=2'
-# {"next":"/customers?offset=4&limit=2&nation=5&sort=id","total_count":57,"data":[...]}
+# {"next":"/customers?offset=4&limit=2&nation=5","total_count":57,"data":[...]}
 # headers: X-Total-Count, X-Offset, X-Limit, X-Next
 curl 'http://localhost:8080/customers?format=csv'   # or Accept: text/csv; Arrow via application/vnd.apache.arrow.stream
 ```
 
-`limit`/`offset` must be plain non-negative integers (else 400). `next` is
-empty on the last page and for `limit=0` (count only). With
+`limit`/`offset` must be plain non-negative integers (else a JSON 400
+`{"errors":[{"field":"limit",...}]}`). `next` is your own query string with the
+new offset/limit (percent-encoded; no header/path fields, no server defaults); it
+is empty on the last page and for `limit=0` (count only). With
 `with-pagination: false` the body is a bare JSON array and no count query runs.
 The count query runs only when the page cannot tell the total (a full page, or an
 empty page past the end); on a DuckLake-cached endpoint it is reused until the

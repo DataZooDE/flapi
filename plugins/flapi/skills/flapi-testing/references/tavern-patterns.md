@@ -13,7 +13,7 @@ flAPI config.
 | paginated GET (default) | 200 | `{"data":[...],"next":"/path?offset=..&limit=..&...","total_count":N}`; `next` is `""` on the last page |
 | GET with `with-pagination: false` | 200 | bare JSON array `[...]` |
 | validator failure | 400 | `{"errors":[{"field":"x","message":"..."}]}` (messages: flapi-rest `references/validators.md`) |
-| bad `limit` / `offset` | 400 | plain text `Invalid pagination parameters: ...` |
+| bad `limit` / `offset` | 400 | JSON `{"errors":[{"field":"limit","message":"limit must be a non-negative integer"}]}` |
 | POST write | 201 | `{"rows_affected":n,"data":[RETURNING rows]}` |
 | PUT / PATCH write | 200 | same as POST |
 | DELETE write | 200 | `{"rows_affected":n}` |

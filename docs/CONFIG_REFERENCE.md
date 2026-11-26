@@ -1206,7 +1206,7 @@ REST endpoints expose SQL queries as HTTP APIs.
 | `description` | string | - | The operation's description in `/doc.yaml`. Without it, `mcp-tool.description` is used; without either, the operation has none |
 | `template-source` | string | **required** | Path to SQL template file |
 | `connection` | array[string] | **required** | Connection name(s) from flapi.yaml |
-| `with-pagination` | boolean | `true` | Wrap the query in `?limit=` (default `100`) / `?offset=` paging; the body is `{"next", "total_count", "data"}` plus `X-Total-Count`/`X-Limit`/`X-Offset`/`X-Next` headers. `limit`/`offset` are reserved; do not use them in the template. `limit=0` returns no rows and an empty `next` (the count only). `next` is the path with `offset`, `limit` and the endpoint's declared query fields (declaration order, percent-encoded); undeclared parameters, header fields and server-injected keys are never in it. `false` returns a bare JSON array |
+| `with-pagination` | boolean | `true` | Wrap the query in `?limit=` (default `100`) / `?offset=` paging; the body is `{"next", "total_count", "data"}` plus `X-Total-Count`/`X-Limit`/`X-Offset`/`X-Next` headers. `limit`/`offset` are reserved; do not use them in the template. `limit=0` returns no rows and an empty `next` (the count only). `next` is the path with the new `offset`/`limit` followed by the client's own query string as sent (percent-encoded), without names the endpoint reads from a header, the body or the path and without server-injected keys; a field's `default:` is never in it. A bad `limit`/`offset` is a `400` `{"errors": [{"field": "limit", "message": "limit must be a non-negative integer"}]}`. A repeated query parameter is a `400`. `false` returns a bare JSON array |
 | `total-count` | boolean | `true` | `false`: paginated responses carry no `total_count` and no `X-Total-Count`, and flAPI never runs the `COUNT` query for them; `next` is found by reading one row past the page. For endpoints whose clients only page forward. With `true`, the `COUNT` runs only for a full page or an empty page past the end: a shorter page gives the total itself. On a DuckLake-cached endpoint whose query reads only DuckLake tables, the count is reused until the catalog's next snapshot (exact; see [caching.md](spec/components/caching.md#total_count-of-a-cached-endpoint-242)) |
 | `request-fields-validation` | boolean | `false` | Reject (400) a query parameter that is not a declared `field-name`. `limit`, `offset` and `format` are always allowed |
 
@@ -2265,7 +2265,7 @@ Read operations (queries) are the default for `GET`, `HEAD`, and `OPTIONS` metho
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `operation.type` | string | `Read` | Operation type (auto-detected) |
+| `operation.type` | string | `Read` | `read` or `write`, any case (auto-detected from the method when absent). Any other value stops startup and `--validate-config` |
 
 **A read over `POST`.** `operation.type: read` on a `POST` (or `PUT`/`PATCH`/`DELETE`) endpoint makes
 it a read that takes its input as a JSON body. Over REST it then runs the read path: validators apply,
@@ -2275,9 +2275,17 @@ path and the query string, each declared field only from its `field-in`. `limit`
 may be sent in the body. MCP `tools/call` and `/doc.yaml` already treated such an endpoint as a read. Without
 `type: read` these methods are writes (§8.2).
 
-Its `next` link holds the window only, `"/customers/search?offset=100&limit=100"`: the filters are in the
-body, and a URL must not carry them. To get the next page, `POST` the same body to `next`. An `offset` or
-`limit` in the query string applies when the body does not give one; when it does, the body wins.
+Its `next` link is the path with the new window and the client's own query string, e.g.
+`"/customers/search?offset=100&limit=100&min_balance=5"`; the body's fields are not in it. To get the next
+page, `POST` the same body to `next`: an `offset`/`limit` in the query string wins over the body's, so the
+same body (even one holding `"offset": 0`) moves forward. A `limit`/`offset` in the body may be a number or
+a numeric string (`"2"`); either must be a plain non-negative integer. Arrow (`?format=arrow`) pages with
+the client's window from the query string or the body.
+
+The body must be a JSON object: anything else (malformed JSON, an array, a bare string) is a `400`
+`request body is not a JSON object`. A body key the endpoint does not declare is a `400`, as on the write
+path, while `operation.validate-before-write` is on (the default; `request-fields-validation: true` also
+turns it on). A repeated query parameter is a `400`, as on a `GET`.
 
 ```yaml
 url-path: /customers/search
@@ -2311,7 +2319,12 @@ With `returns-data: true`, the rows of the template's **last statement** become 
 `WITH ... SELECT`, `FROM ...` and a `SELECT` behind a comment all count. A `RETURNING` clause is
 recognised from what DuckDB says the statement returned, not from its text, so a column such as
 `returning_note`, a `'returning'` literal or a comment is not mistaken for one. When a `RETURNING`
-returned rows, they are the `data` and a final `SELECT` is not run.
+returned rows, they are the `data` and a final `SELECT` is not run. A trailing piece that is only a
+comment (`...; SELECT ...;\n-- done`) is ignored.
+
+A write's body must be a JSON object (else `400` `request body is not a JSON object`). `?limit=` and
+`?offset=` never reach a write template; a `limit`/`offset` in the body does, and must then be a plain
+non-negative integer (else the validators' `400`).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
