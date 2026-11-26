@@ -1346,15 +1346,17 @@ mcp:
     enabled: true
     type: oidc
     oidc:
-      provider-type: auth0  # or: okta, google, microsoft (alias azure), keycloak, github, generic
+      provider-type: auth0  # or: okta, google, microsoft (alias azure), keycloak, generic
       issuer-url: "https://your-tenant.auth0.com/"
       client-id: "your-client-id"
-      client-secret: "{{env.OIDC_CLIENT_SECRET}}"
-      allowed-audiences:
+      allowed-audiences:              # empty: aud must contain client-id
         - "your-api-audience"
-      username-claim: email
-      roles-claim: "https://your-app/roles"
+      username-claim: email           # an explicit claim wins over the preset
+      roles-claim: "https://your-app/roles"   # read as one claim name, dots and all
 ```
+
+The claims fill the same `auth.*` template variables as on REST, `auth.groups` (the `groups-claim`,
+comma-joined) included. The token checks are CONFIG_REFERENCE §7.4; `provider-type: github` stops startup.
 
 **Provider Presets:**
 

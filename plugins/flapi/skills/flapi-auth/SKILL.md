@@ -2,8 +2,8 @@
 name: flapi-auth
 description: >
   Securing flAPI: per-endpoint Basic auth with PBKDF2 hashes, bearer (HS256 JWT)
-  auth, OIDC with provider presets (google, microsoft, keycloak, auth0, okta,
-  github), roles and the auth context in SQL templates, MCP authentication and
+  auth, OIDC with provider presets (google, microsoft, keycloak, auth0, okta),
+  roles and the auth context in SQL templates, MCP authentication and
   allowed-roles, OAuth protected-resource metadata, the config-service token,
   CORS, TLS (enforce-https) and the startup security warnings. Covers global
   auth inherited by every endpoint, opt-out, and REST roles (403). Use when a user
@@ -54,7 +54,7 @@ Three independent gates: the endpoint's own `auth:` block (REST), `mcp.auth`
   by the caller in its SQL:
   `AND (id <> 7 OR list_contains(string_split('{{{ auth.roles }}}', ','), 'admin'))`.
 - **`auth.*` goes inside a plain top-level `'...'` literal of the outer query.**
-  `auth.username`, `auth.email`, `auth.roles` and `auth.type` have every `'` doubled
+  `auth.username`, `auth.email`, `auth.roles`, `auth.groups` and `auth.type` have every `'` doubled
   (`O'Brien` -> `O''Brien`), so write `WHERE owner = '{{{ auth.username }}}'`. Refused
   (startup, reload, `--validate-config`, the config service, and on the rendered SQL of every
   request): unquoted, `E'...'`, a `--` or `/* */` comment, a `"..."` identifier, a `$$`
@@ -63,8 +63,8 @@ Three independent gates: the endpoint's own `auth:` block (REST), `mcp.auth`
   `''`, `$$` or `"`, or one beside such a literal in a call (a macro handed SQL). Push down
   without `auth.*` and filter in the outer query. A quoted value still means something to
   `LIKE` (`%`, `_`), regexes, `GLOB` and file paths (`*`, `?`, `[`): compare with `=`. An
-  identity holding a control character (newline, NUL, ...) or a role containing a comma is
-  refused with 401.
+  identity holding a control character (newline, NUL, ...) or a role or group containing a
+  comma is refused with 401.
 - **A 401 names the endpoint's scheme**: `WWW-Authenticate: Basic realm="flAPI"`
   or `Bearer realm="flAPI"` (`, error="invalid_token"` for a refused token), body
   `{"error":"Unauthorized","message":...}`.
@@ -105,9 +105,14 @@ Three independent gates: the endpoint's own `auth:` block (REST), `mcp.auth`
   `/mcp/jsonrpc`) answer 204 with Allow-Origin, Allow-Methods, Allow-Headers
   (requested headers echoed unless `cors.allow-headers` is set), Max-Age 600 and
   `Vary: Origin`.
-- **OIDC: `issuer-url` must equal the token's `iss` byte for byte** (Auth0 has a
-  trailing `/`). Preset placeholders `{tenant}`/`{realm}`/`{domain}` are filled
-  from `tenant-id`/`realm`/`domain`; one left over stops startup naming the key.
+- **OIDC: `issuer-url` must equal the token's `iss` byte for byte** (the Auth0
+  preset adds Auth0's trailing `/`). Preset placeholders `{tenant}`/`{realm}`/`{domain}`
+  are filled from `tenant-id`/`realm`/`domain`; one left over stops startup naming the key.
+- **OIDC without `allowed-audiences`: `aud` must contain `client-id`.** Access
+  tokens usually name the API (`api://...`), so list it in `allowed-audiences`.
+- **`provider-type: github` stops startup** (GitHub OAuth apps issue no OIDC
+  tokens). GitHub Actions tokens: `generic` + `issuer-url:
+  https://token.actions.githubusercontent.com` + `allowed-audiences`.
 
 ## Basic auth with global inheritance (runnable)
 
@@ -253,36 +258,38 @@ auth:
   enabled: true
   type: oidc
   oidc:
-    provider-type: keycloak                      # generic | google | microsoft (azure, azure-ad, entra) | keycloak | auth0 | okta | github
+    provider-type: keycloak                      # generic | google | microsoft (azure, azure-ad, entra) | keycloak | auth0 | okta
     domain: sso.example.com                      # fills {domain}; issuer https://sso.example.com/realms/sales
     realm: sales                                 # fills {realm}
     client-id: flapi-api
-    allowed-audiences: [flapi-api]               # empty = any audience
-    # optional overrides:
+    allowed-audiences: [flapi-api]               # empty = aud must contain client-id
+    # optional overrides (an explicit claim wins over the preset):
     username-claim: preferred_username
-    roles-claim: roles
+    roles-claim: roles                           # name as written first: https://x.io/roles works
     role-claim-path: realm_access.roles          # dotted path, wins over roles-claim
+    groups-claim: groups                         # -> auth.groups (comma-joined), grants nothing
     verify-expiration: true                      # default true
     clock-skew-seconds: 300                      # default 300
     jwks-cache-hours: 24                         # default 24
 ```
 
 Keys discovered from `<issuer-url>/.well-known/openid-configuration`; JWKS
-cached. Other keys read: `client-secret`, `email-claim`, `groups-claim`,
-`scopes`, `enable-client-credentials`, `enable-refresh-tokens` (groups are not
-merged into roles). A global `auth:` block with `type: oidc` protects every
+cached. Also read: `email-claim`. `client-secret`, `scopes`,
+`enable-client-credentials` and `enable-refresh-tokens` have no effect (startup
+warns `parsed but has no effect`): flAPI only validates tokens. `nbf`/`iat`
+more than `clock-skew-seconds` in the future are refused. A role or group with
+a comma or control character refuses the token (401). A global `auth:` block with `type: oidc` protects every
 endpoint without its own block (see the gotchas); an endpoint with `type: oidc`
 and no `oidc:` of its own uses the global `auth.oidc`.
 
-| `provider-type` | Default `issuer-url` (when empty) | `username-claim` (when unset/`sub`) | Roles from |
+| `provider-type` | Default `issuer-url` (when empty) | `username-claim` (when not written) | Roles from |
 |---|---|---|---|
 | `generic` / unset | none, required | `sub` | `roles` |
 | `google` | `https://accounts.google.com` | `email` | `roles` |
 | `microsoft` (`azure`, `azure-ad`, `entra`) | `https://login.microsoftonline.com/{tenant}/v2.0` | `preferred_username` | `roles` |
 | `keycloak` | `https://{domain}/realms/{realm}` | `preferred_username` | `realm_access.roles` |
-| `auth0` | `https://{domain}.auth0.com` | `email` | set `roles-claim` / `role-claim-path` (default path `https://your-namespace/roles`) |
+| `auth0` | `https://{domain}.auth0.com/` (a dotted `domain` is the full host; always a trailing `/`) | `email` | set `roles-claim` to your namespaced claim, e.g. `https://example.com/roles` |
 | `okta` | `https://{domain}.okta.com/oauth2/default` | `preferred_username` | `roles` |
-| `github` | `https://github.com` | `login` | `roles` (not real OIDC; logs a warning) |
 
 Placeholders in the default (or your own) `issuer-url` are substituted from
 `tenant-id` (alias `tenant`), `realm` and `domain`. A placeholder left unfilled
@@ -317,7 +324,8 @@ the block came from `flapi.yaml`).
 ## The auth context in SQL
 
 After authentication the template sees `auth.username`, `auth.roles`
-(comma-joined), `auth.email`, `auth.type`, `auth.authenticated` (`"true"`).
+(comma-joined), `auth.groups` (OIDC `groups-claim`, comma-joined), `auth.email`,
+`auth.type`, `auth.authenticated` (`"true"`).
 Clients cannot spoof them: `__auth_*` query/body keys are dropped. Each `'` in a
 value is doubled, so put them inside a plain `'...'` literal of the outer query
 (`{{ }}` and `{{{ }}}` render the same value); any other place is refused:

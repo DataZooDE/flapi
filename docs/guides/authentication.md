@@ -346,6 +346,7 @@ After authentication the template sees who is calling:
 | `auth.username` | the user name, token `sub`, or OIDC `username-claim` | every authenticated request |
 | `auth.roles` | the roles, **joined with commas**: `sales,building,furniture` | every authenticated request |
 | `auth.email` | the OIDC `email-claim`, or a bearer token's `email` | OIDC and bearer, when the token has one; empty otherwise |
+| `auth.groups` | the OIDC `groups-claim`, **joined with commas** | OIDC; empty otherwise |
 | `auth.type` | `basic`, `bearer` or `oidc` | every authenticated request |
 | `auth.authenticated` | `true` | every authenticated request |
 
@@ -823,11 +824,13 @@ A token is accepted when:
   `jwks-cache-hours` (default 24); a token with an unknown `kid` refetches it,
   up to three times per request and with no cooldown;
 - `iss` equals `issuer-url` exactly, trailing slash included;
-- `aud` holds one of `allowed-audiences`. **Without `allowed-audiences`, any
-  token from that issuer is accepted**, including ones minted for other
-  applications;
+- `aud` holds one of `allowed-audiences`. Without `allowed-audiences`, `aud`
+  must hold the `client-id` (an ID token's audience); with neither, `aud` is
+  not checked;
 - it has an `exp` no older than `clock-skew-seconds` (default 300). A token
   without `exp` is refused unless `verify-expiration: false`;
+- `nbf` and `iat`, when present, are not more than `clock-skew-seconds` in the
+  future;
 - it has a `sub`.
 
 Claims become template variables like this:
@@ -837,11 +840,15 @@ Claims become template variables like this:
 | `auth.username` | `username-claim`, else `sub` | `sub`; the presets use `preferred_username` (Microsoft, Keycloak, Okta) or `email` (Google, Auth0) |
 | `auth.email` | `email-claim` | `email` |
 | `auth.roles` | `role-claim-path` if set, else `roles-claim` | `roles` |
+| `auth.groups` | `groups-claim` | `groups` |
 
-A dot in `role-claim-path` or `roles-claim` means nesting (`realm_access.roles`),
-so a claim name that itself contains a dot cannot be read. `groups-claim` is
-read but grants nothing: only the roles claim counts for `roles:` and
-`allowed-roles`.
+A claim name is looked up as written first, so a namespaced claim such as
+`roles-claim: https://example.com/roles` (Auth0) is read as one claim; only
+when no claim has that name does a dot mean nesting (`realm_access.roles`).
+Groups are comma-joined like roles and quote-doubled like every `auth.*`
+value, but grant nothing: only the roles claim counts for `roles:` and
+`allowed-roles`. A group (or role) containing a comma or a control character
+refuses the whole token with `401`.
 
 `provider-type` fills in `issuer-url` and claim defaults:
 
@@ -849,19 +856,22 @@ read but grants nothing: only the roles claim counts for `roles:` and
 |---|---|---|
 | `microsoft` (aliases `azure`, `azure-ad`, `entra`) | `https://login.microsoftonline.com/{tenant}/v2.0` | `tenant-id`: the tenant GUID |
 | `keycloak` | `https://{domain}/realms/{realm}` | `domain`: the full host; `realm` |
-| `auth0` | `https://{domain}.auth0.com` | `domain`: the tenant subdomain. Auth0's `iss` ends in `/`, so set `issuer-url: https://<tenant>.auth0.com/` yourself |
+| `auth0` | `https://{domain}.auth0.com/` | `domain`: the tenant name, or a full host with a dot in it (`acme.eu.auth0.com`, a custom domain) used as is. The issuer always gets Auth0's trailing `/` |
 | `okta` | `https://{domain}.okta.com/oauth2/default` | `domain`: the tenant subdomain |
 | `google` | `https://accounts.google.com` | none |
 | `generic` | none: set `issuer-url` | none |
 
-A placeholder left unfilled stops startup with an error naming the key. The
-presets replace `username-claim: sub` with their own default even when you
-write it, and Keycloak's always sets `role-claim-path: realm_access.roles`, so
-`roles-claim` has no effect there; set `role-claim-path` to change it.
-`github` is accepted as a value but cannot validate tokens: GitHub publishes no
-OIDC discovery document. flAPI only validates tokens: `client-secret`,
-`scopes`, `enable-client-credentials` and `enable-refresh-tokens` do not take
-part in it.
+A placeholder left unfilled stops startup with an error naming the key. A
+`username-claim` you write wins over the preset's. Keycloak's preset sets
+`role-claim-path: realm_access.roles`, which wins over `roles-claim`; set
+`role-claim-path` to change it. Auth0 has no standard roles claim: name the
+namespaced claim your Action adds with `roles-claim`. `provider-type: github`
+stops startup: GitHub OAuth apps issue no OIDC tokens. GitHub Actions does;
+for those use the generic provider with
+`issuer-url: https://token.actions.githubusercontent.com` and
+`allowed-audiences`. flAPI only validates tokens: `client-secret`, `scopes`,
+`enable-client-credentials` and `enable-refresh-tokens` have no effect, and
+startup says so for each one set.
 
 The full key list is in [CONFIG_REFERENCE § 7.4](../CONFIG_REFERENCE.md#74-oidc-authentication).
 
@@ -1010,9 +1020,9 @@ server.
 
 - OIDC accepts RS256, RS384 and RS512 only, and exactly one `iss` per block,
   so it cannot accept tokens from several Entra ID tenants.
-- An OIDC `groups` claim grants nothing.
-- Only `sub`/user name, email and roles reach templates; custom claims such as
-  `tid` do not.
+- An OIDC `groups` claim grants nothing; it reaches templates as `auth.groups`.
+- Only `sub`/user name, email, roles and groups reach templates; custom claims
+  such as `tid` do not.
 - flAPI does not read `X-Forwarded-For`: behind a load balancer every caller
   has the balancer's address, so `key: ip` puts everyone in one bucket.
 - Rate-limit buckets are keyed on the raw `Authorization` header per route: a
@@ -1036,10 +1046,11 @@ server.
   accepted, whoever issued it (`AUTH_JWT_ISSUER_UNCHECKED`). Set `jwt-issuer`.
 - **A bearer token without `exp`.** Refused with `401`. Mint every token with
   one; `jwt-require-exp: false` exists for tokens you cannot change.
-- **OIDC without `allowed-audiences`.** Any token from the issuer passes,
-  including tokens for other applications.
+- **OIDC without `allowed-audiences`, for an access token.** `aud` must then
+  be the `client-id`; access tokens usually name the API instead (Entra ID's
+  `api://...`, Auth0's API identifier), so set `allowed-audiences` to it.
 - **An OIDC `issuer-url` that differs from `iss` by a trailing slash.** The
-  comparison is exact.
+  comparison is exact (the Auth0 preset adds the slash for you).
 - **A 32-character hex password.** It is taken for an MD5 digest, so the
   password itself no longer logs in. Hash it.
 - **A bcrypt hash.** Every login as that user is refused. Re-hash with PBKDF2.

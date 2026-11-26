@@ -11,6 +11,16 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   and `"flapi"` on MCP; it now means the issuer is not checked, on both. A token without a
   `roles` claim authenticates with no roles on REST too (it was 401), and a bearer token's
   `email` claim fills `auth.email` on REST as it did on MCP.
+- **OIDC claims are read as configured (#281).** An explicit `username-claim` wins over the
+  provider preset (`username-claim: sub` under `keycloak` used to become
+  `preferred_username`). A claim name is looked up as written before a dot means nesting, so
+  namespaced claims such as `https://example.com/roles` work. The Auth0 preset's issuer ends
+  with Auth0's `/` (every Auth0 token was refused without it), a dotted `domain` is the full
+  host, and the preset no longer sets a placeholder role path.
+- **`auth.groups` (#281):** the OIDC `groups-claim`, comma-joined, on REST and MCP, under the
+  same quoting and placement rules as `auth.roles`. It was read and dropped.
+- `client-secret`, `scopes`, `enable-client-credentials` and `enable-refresh-tokens` in an
+  `oidc:` block log `parsed but has no effect` at startup.
 
 ### Security
 
@@ -20,12 +30,27 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   or a list; the token's `aud` must contain one of them. An empty entry (an unset
   `{{env.X}}`) stops startup instead of switching the check off.
 - **Startup reports `AUTH_JWT_ISSUER_UNCHECKED`** for a bearer block without `jwt-issuer`.
+- **OIDC without `allowed-audiences` checks `aud` against `client-id` (#281).** It accepted a
+  token the issuer minted for any application.
+- **OIDC refuses `nbf` and `iat` in the future** (beyond `clock-skew-seconds`).
+- **A group containing a comma or a control character refuses the identity**, as a role does.
 
 ### Upgrade notes
 
 - **Bearer tokens without `exp` now get 401** unless the block sets `jwt-require-exp: false`.
 - **`mcp.auth.jwt-issuer` no longer defaults to `flapi`.** Unset, any issuer is accepted
   (with a startup warning); set `jwt-issuer: flapi` to keep checking it.
+- **OIDC blocks without `allowed-audiences` whose tokens' `aud` is not the client id** (most
+  access tokens: Entra ID `api://...`, Auth0 API identifiers) now get 401: list the audience
+  in `allowed-audiences`.
+- **`provider-type: github` stops startup.** It could never validate a token; GitHub Actions
+  OIDC works with `generic` and `issuer-url: https://token.actions.githubusercontent.com`.
+- **An explicit `username-claim` now applies under a preset**, so `auth.username` changes for
+  configs that wrote `username-claim: sub` with `google`, `microsoft`, `keycloak`, `auth0` or
+  `okta`.
+- **An identity provider sending group names with commas** (LDAP distinguished names) gets 401
+  for those users: map groups to comma-free names, or point `groups-claim` at a claim without
+  them.
 
 ## v26.11.26 — auth.* identity values stay inside their SQL literal, OIDC works again, and a task guide for every feature
 

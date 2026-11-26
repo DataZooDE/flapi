@@ -2176,23 +2176,23 @@ OpenID Connect authentication with external identity providers.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `auth.oidc.issuer-url` | string | preset / **required** for `generic` | OIDC provider URL. May contain `{tenant}`, `{realm}`, `{domain}` placeholders |
-| `auth.oidc.client-id` | string | **required** | OAuth client ID |
-| `auth.oidc.client-secret` | string | - | OAuth client secret |
-| `auth.oidc.provider-type` | string | `generic` | Provider: `google`, `microsoft` (aliases `azure`, `azure-ad`, `entra`), `keycloak`, `auth0`, `okta`, `github`, `generic` |
+| `auth.oidc.client-id` | string | **required** for presets | OAuth client ID; the expected `aud` when `allowed-audiences` is empty |
+| `auth.oidc.client-secret` | string | - | Parsed but has no effect (flAPI never calls the token endpoint); startup warns |
+| `auth.oidc.provider-type` | string | `generic` | Provider: `google`, `microsoft` (aliases `azure`, `azure-ad`, `entra`), `keycloak`, `auth0`, `okta`, `generic`. `github` stops startup: GitHub OAuth apps issue no OIDC tokens; for GitHub Actions use `generic` with `issuer-url: https://token.actions.githubusercontent.com` |
 | `auth.oidc.tenant-id` | string | - | Substituted for `{tenant}` in `issuer-url` (alias key `tenant`). Microsoft's default issuer is `https://login.microsoftonline.com/{tenant}/v2.0` |
 | `auth.oidc.realm` | string | - | Substituted for `{realm}`. Keycloak's default issuer is `https://{domain}/realms/{realm}` |
-| `auth.oidc.domain` | string | - | Substituted for `{domain}` (Keycloak host, Auth0/Okta tenant name) |
-| `auth.oidc.allowed-audiences` | array[string] | - | Acceptable `aud` claims |
+| `auth.oidc.domain` | string | - | Substituted for `{domain}` (Keycloak host, Auth0/Okta tenant name). Auth0: a domain with a dot is the full host, and the issuer always ends with `/` |
+| `auth.oidc.allowed-audiences` | array[string] | `[client-id]` | Acceptable `aud` claims; one must be in the token. Empty: `aud` must contain `client-id` (no check only when that is empty too) |
 | `auth.oidc.verify-expiration` | boolean | `true` | Verify token expiration |
-| `auth.oidc.clock-skew-seconds` | integer | `300` | Allowed clock skew |
-| `auth.oidc.username-claim` | string | `sub` | Claim for username |
-| `auth.oidc.email-claim` | string | `email` | Claim for email |
-| `auth.oidc.roles-claim` | string | `roles` | Claim for roles |
-| `auth.oidc.groups-claim` | string | `groups` | Claim for groups |
-| `auth.oidc.role-claim-path` | string | - | Path for nested claims |
-| `auth.oidc.enable-client-credentials` | boolean | `false` | Enable client credentials flow |
-| `auth.oidc.enable-refresh-tokens` | boolean | `false` | Enable refresh tokens |
-| `auth.oidc.scopes` | array[string] | - | OAuth scopes |
+| `auth.oidc.clock-skew-seconds` | integer | `300` | Allowed clock skew for `exp`, `nbf` and `iat` (the latter two may not be in the future) |
+| `auth.oidc.username-claim` | string | `sub` | Claim for username (`auth.username`). Written here, it wins over the preset's default |
+| `auth.oidc.email-claim` | string | `email` | Claim for email (`auth.email`) |
+| `auth.oidc.roles-claim` | string | `roles` | Claim for roles (`auth.roles`) |
+| `auth.oidc.groups-claim` | string | `groups` | Claim for groups: `auth.groups` (comma-joined); grants nothing |
+| `auth.oidc.role-claim-path` | string | - | Roles claim that wins over `roles-claim` (Keycloak preset: `realm_access.roles`) |
+| `auth.oidc.enable-client-credentials` | boolean | `false` | Parsed but has no effect; startup warns |
+| `auth.oidc.enable-refresh-tokens` | boolean | `false` | Parsed but has no effect; startup warns |
+| `auth.oidc.scopes` | array[string] | - | Parsed but has no effect; startup warns |
 | `auth.oidc.jwks-cache-hours` | integer | `24` | JWKS cache duration |
 
 **Example:**
@@ -2223,6 +2223,11 @@ auth:
     client-id: my-api
     role-claim-path: realm_access.roles
 ```
+
+Claim names (`username-claim`, `roles-claim`, ...) are looked up as written first, so
+`https://example.com/roles` is one claim; only when no claim has that name is a dot a path into nested
+objects (`realm_access.roles`). A role or group containing a comma or a control character refuses the
+token (401).
 
 A placeholder left in `issuer-url` after substitution stops startup with an error naming the key to set,
 e.g. `'issuer-url' (https://login.microsoftonline.com/{tenant}/v2.0) still contains the {tenant} placeholder. Set tenant-id in the oidc block, or write the provider's real issuer URL into issuer-url.`
