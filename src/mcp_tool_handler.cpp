@@ -367,29 +367,28 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
             return createSuccessResult(write_response, metadata);
         } else {
             // Execute read query
-        QueryResult query_result = executeQueryWithEndpoint(*endpoint_config, params);
+        // W2.4 response shaping: redact columns / cap rows / collapse to sample
+        // summary per the tool's `mcp-tool.response` config. No-op when the
+        // operator hasn't configured anything.
+        ResponseShape shape_config;
+        if (endpoint_config->mcp_tool) {
+            const auto& shape_yaml = endpoint_config->mcp_tool->response;
+            shape_config.max_rows = shape_yaml.max_rows;
+            shape_config.redact_columns = shape_yaml.redact_columns;
+            shape_config.sample = shape_yaml.sample;
+        }
+        const bool shaped = !shape_config.isNoOp();
+
+        // A shaped result is shaped from the rows themselves (data + columns),
+        // never by re-parsing the JSON text: that scrambled the column order
+        // and re-printed every double with 21 digits (#275).
+        QueryResult query_result = executeQueryWithEndpoint(*endpoint_config, params, /*stream=*/!shaped);
 
         // Empty result sets are valid - they just mean no rows matched the criteria
         // Format the result (will be an empty array if no data)
         std::string result_format = endpoint_config->mcp_tool ? endpoint_config->mcp_tool->result_mime_type : "application/json";
-        std::string formatted_result = formatResult(query_result, result_format);
-
-        // W2.4 response shaping: redact columns / cap rows / collapse to sample
-        // summary per the tool's `mcp-tool.response` config. No-op when the
-        // operator hasn't configured anything.
-        bool shaped = false;
-        if (endpoint_config->mcp_tool) {
-            const auto& shape_yaml = endpoint_config->mcp_tool->response;
-            ResponseShape shape_config;
-            shape_config.max_rows = shape_yaml.max_rows;
-            shape_config.redact_columns = shape_yaml.redact_columns;
-            shape_config.sample = shape_yaml.sample;
-            if (!shape_config.isNoOp()) {
-                MCPResponseShaper shaper;
-                formatted_result = shaper.shape(formatted_result, shape_config);
-                shaped = true;
-            }
-        }
+        std::string formatted_result = shaped ? MCPResponseShaper().shape(query_result, shape_config)
+                                              : formatResult(query_result, result_format);
 
         // Create metadata
         std::unordered_map<std::string, std::string> metadata;
@@ -594,10 +593,14 @@ std::map<std::string, std::string> MCPToolHandler::prepareParameters(
 }
 
 QueryResult MCPToolHandler::executeQueryWithEndpoint(const EndpointConfig& endpoint_config,
-                                                   std::map<std::string, std::string>& params) const {
+                                                   std::map<std::string, std::string>& params,
+                                                   bool stream) const {
     // Use the database manager to execute the query
     // The tool result carries only the rows (formatResult), so the COUNT a REST page runs for
     // total_count would be thrown away: skip it.
+    if (!stream) {
+        return db_manager->executeQuery(endpoint_config, params, true, DatabaseManager::TotalCount::Skip);
+    }
     // Rows go straight into JSON text (no JSON tree of the whole result).
     std::string text = "[";
     std::vector<std::string> columns;

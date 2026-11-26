@@ -148,8 +148,12 @@ private:
         const EndpointConfig& endpoint_config,
         const crow::json::wvalue& arguments,
         const std::unordered_map<std::string, std::string>& context = {}) const;
-QueryResult executeQueryWithEndpoint(const EndpointConfig& endpoint_config,
-                                   std::map<std::string, std::string>& params) const;
+    // `stream`: rows go straight into JSON text (QueryResult::streamed_json)
+    // instead of a JSON tree. A tool with response shaping needs the rows
+    // themselves (data + columns), so it passes false.
+    QueryResult executeQueryWithEndpoint(const EndpointConfig& endpoint_config,
+                                         std::map<std::string, std::string>& params,
+                                         bool stream = true) const;
     std::string formatResult(const QueryResult& query_result,
                            const std::string& format) const;
 

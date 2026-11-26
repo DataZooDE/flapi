@@ -1423,12 +1423,16 @@ MCPResponse MCPRouteHandlers::handleTasksGetRequest(const MCPRequest& request, c
 
         crow::json::wvalue result;
         result["task"] = taskToJson(task);
-        if (task.status == MCPTaskManager::Status::Completed) {
-            result["result"] = crow::json::load(task.result_json);
-        } else if (task.status == MCPTaskManager::Status::Failed) {
+        if (task.status == MCPTaskManager::Status::Failed) {
             result["error"] = task.error_message;
         }
-        response.result = result.dump();
+        std::string text = result.dump();
+        // The tool result is spliced in as TEXT: loading it into a crow value
+        // re-ordered the row keys and re-printed the doubles (#275).
+        if (task.status == MCPTaskManager::Status::Completed && crow::json::load(task.result_json)) {
+            text.insert(text.find_last_of('}'), ",\"result\":" + task.result_json);
+        }
+        response.result = text;
     } catch (const std::exception& e) {
         response.error = formatJsonRpcError(-32603, "tasks/get error: " + std::string(e.what()));
     }
@@ -2205,14 +2209,16 @@ crow::json::wvalue MCPRouteHandlers::readResourceContent(
             // it used to throw "Resource query returned no data" -> -32603.
             // dumpData(): columns in SELECT order, shortest doubles.
             const size_t row_count = query_result.data.size();
-            std::string result_text = row_count > 0 ? query_result.dumpData() : std::string("[]");
 
             // Response shaping: mcp-resource.response, else the same file's
             // mcp-tool.response, and max-rows defaults to a cap either way.
+            // Shaped from the rows, not from re-parsed text: that scrambled
+            // the column order and re-printed doubles with 21 digits (#275).
             const auto shape = resourceResponseShape(resource_config);
             const bool truncated = shape.max_rows.has_value() && row_count > *shape.max_rows;
-            if (!shape.isNoOp() && row_count > 0) {
-                result_text = MCPResponseShaper().shape(result_text, shape);
+            std::string result_text = "[]";
+            if (row_count > 0) {
+                result_text = MCPResponseShaper().shape(query_result, shape);
             }
 
             // Convert the result to MCP resource content format

@@ -31,15 +31,29 @@ struct ResponseShape {
     }
 };
 
-// Pure transformer: takes a JSON payload (typically a top-level array
-// emitted by MCPToolHandler::formatResult) and applies the shape config.
-// No dependency on QueryResult, ConfigManager, or any handler internals —
-// the only contract is "JSON string in, JSON string out".
+class QueryResult;
+
+// Pure transformer: takes a query result (rows in `data`, column names in
+// SELECT order in `columns`) and writes it as JSON text with the shape
+// applied.
+//
+// It shapes the QueryResult, not JSON text (#275). Shaping text meant parsing
+// it back into crow values: crow's rvalue sorts an object's keys on the first
+// lookup and its wvalue object is an unordered map, so every shaped row came
+// back in a different column order, and re-printing re-formatted every double
+// with 21 significant digits (711.56 became 711.55999999999994543). Rows are
+// written here the way QueryResult::dumpData() writes them: columns in SELECT
+// order, doubles in their shortest round-trip form.
+//
+// The sample payload is `{"sampled":true,"row_count":N,"columns":[...]}`, in
+// that key order. A streamed result (rows already sent to a ResultSink as
+// text) cannot be redacted or capped and is refused with std::logic_error
+// rather than returned unshaped.
 class MCPResponseShaper {
 public:
     static constexpr const char* kRedactedSentinel = "<redacted>";
 
-    std::string shape(const std::string& json_payload, const ResponseShape& config) const;
+    std::string shape(const QueryResult& result, const ResponseShape& config) const;
 };
 
 } // namespace flapi
