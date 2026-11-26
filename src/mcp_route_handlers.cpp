@@ -21,25 +21,12 @@ namespace flapi {
 // ========== Helper function implementations ==========
 
 std::string MCPRouteHandlers::formatJsonRpcError(int code, const std::string& message) {
-    // Escape quotes in message for JSON safety
-    std::string escaped_message;
-    escaped_message.reserve(message.size());
-    for (char c : message) {
-        if (c == '"') {
-            escaped_message += "\\\"";
-        } else if (c == '\\') {
-            escaped_message += "\\\\";
-        } else if (c == '\n') {
-            escaped_message += "\\n";
-        } else if (c == '\r') {
-            escaped_message += "\\r";
-        } else if (c == '\t') {
-            escaped_message += "\\t";
-        } else {
-            escaped_message += c;
-        }
-    }
-    return "{\"code\":" + std::to_string(code) + ",\"message\":\"" + escaped_message + "\"}";
+    // crow's escaper: quotes, backslashes and every control character, so a
+    // caller-supplied name in the message cannot break out of the string.
+    std::string out = "{\"code\":" + std::to_string(code) + ",\"message\":\"";
+    crow::json::escape(message, out);
+    out += "\"}";
+    return out;
 }
 
 MCPResponse MCPRouteHandlers::initResponse(const MCPRequest& request) {
@@ -635,7 +622,7 @@ void MCPRouteHandlers::registerRoutes(flapi::FlapiApp& app, int port) {
                             CROW_LOG_WARNING << "MCP initialize: authentication required but failed";
                             MCPResponse mcp_response;
                             mcp_response.id = mcp_request->id;
-                            mcp_response.error = mcpAuthFailureError(req, "initialize");
+                            mcp_response.error = mcpAuthFailureError(req, "method: initialize");
                             mcp_response.http_status = 401;
                             mcp_response.www_authenticate = buildWwwAuthenticate(req, /*insufficient_scope=*/false);
                             return createJsonRpcResponse(*mcp_request, mcp_response, session_id);
@@ -847,7 +834,11 @@ void MCPRouteHandlers::cacheOutputSchemaFromRows(const std::string& tool_name,
             case crow::json::type::String: col["type"] = "string"; break;
             case crow::json::type::List:   col["type"] = "array"; break;
             case crow::json::type::Object: col["type"] = "object"; break;
-            default: break;  // null/unknown: leave type unset
+            default:
+                // NULL in the first row: the empty schema (any value). A bare
+                // null is not a JSON Schema at all.
+                col = crow::json::wvalue::object();
+                break;
         }
         row_props[key] = std::move(col);
     }
@@ -1538,7 +1529,7 @@ MCPResponse MCPRouteHandlers::handleInitializeRequest(const MCPRequest& request,
         auth_context = auth_handler_->authenticate(http_req);
         if (!auth_context) {
             CROW_LOG_WARNING << "MCP initialize: authentication required but failed";
-            response.error = mcpAuthFailureError(http_req, "initialize");
+            response.error = mcpAuthFailureError(http_req, "method: initialize");
             response.http_status = 401;
             response.www_authenticate = buildWwwAuthenticate(http_req, /*insufficient_scope=*/false);
             return response;
@@ -2585,33 +2576,45 @@ MCPResponse MCPRouteHandlers::handleCompletionCompleteRequest(const MCPRequest& 
             return response;
         }
 
-        // Extract ref (reference to tool/prompt)
-        auto ref_value = request.params["ref"];
-        std::string ref_str;
-        if (JsonUtils::isString(ref_value)) {
-            ref_str = JsonUtils::extractString(ref_value);
-        } else {
-            response.error = "{\"code\":-32602,\"message\":\"Invalid params: 'ref' must be a string\"}";
-            return response;
-        }
-
-        // Extract argument name
-        auto arg_value = request.params["argument"];
-        std::string argument_name;
-        if (JsonUtils::isString(arg_value)) {
-            argument_name = JsonUtils::extractString(arg_value);
-        } else {
-            response.error = "{\"code\":-32602,\"message\":\"Invalid params: 'argument' must be a string\"}";
-            return response;
-        }
-
-        // Extract optional value (prefix) for filtering
-        std::string value_prefix;
-        if (request.params.count("value") > 0) {
-            auto value_val = request.params["value"];
-            if (JsonUtils::isString(value_val)) {
-                value_prefix = JsonUtils::extractString(value_val);
+        // Two request shapes are accepted:
+        //  - MCP:   ref {type, name}, argument {name, value}
+        //  - flAPI: ref "<name>", argument "<name>", value "<prefix>"
+        // Strings are read through a parse of the wvalue's JSON text, so a
+        // name holding a quote or backslash is the real string, not its
+        // escaped form.
+        const auto readString = [](const crow::json::wvalue& v, std::string& out) {
+            const auto parsed = crow::json::load(v.dump());
+            if (!parsed || parsed.t() != crow::json::type::String) {
+                return false;
             }
+            out = std::string(parsed.s());
+            return true;
+        };
+        const auto memberString = [&](const crow::json::wvalue& obj, const char* key, std::string& out) {
+            return obj.t() == crow::json::type::Object && obj.count(key) > 0 && readString(obj[key], out);
+        };
+
+        const auto& ref_value = request.params["ref"];
+        std::string ref_str;
+        if (!readString(ref_value, ref_str) && !memberString(ref_value, "name", ref_str)) {
+            response.error = formatJsonRpcError(
+                -32602, "Invalid params: 'ref' must be a name or an object with a 'name'");
+            return response;
+        }
+
+        const auto& arg_value = request.params["argument"];
+        std::string argument_name;
+        std::string value_prefix;
+        if (readString(arg_value, argument_name)) {
+            if (request.params.count("value") > 0) {
+                readString(request.params["value"], value_prefix);
+            }
+        } else if (memberString(arg_value, "name", argument_name)) {
+            memberString(arg_value, "value", value_prefix);
+        } else {
+            response.error = formatJsonRpcError(
+                -32602, "Invalid params: 'argument' must be a name or an object with a 'name'");
+            return response;
         }
 
         CROW_LOG_DEBUG << "Completion request: ref=" << ref_str << ", argument=" << argument_name
@@ -2629,7 +2632,7 @@ MCPResponse MCPRouteHandlers::handleCompletionCompleteRequest(const MCPRequest& 
         }
 
         if (!endpoint) {
-            response.error = "{\"code\":-32602,\"message\":\"Reference not found: " + ref_str + "\"}";
+            response.error = formatJsonRpcError(-32602, "Reference not found: " + ref_str);
             return response;
         }
 
@@ -2643,7 +2646,7 @@ MCPResponse MCPRouteHandlers::handleCompletionCompleteRequest(const MCPRequest& 
         }
 
         if (!matching_field) {
-            response.error = "{\"code\":-32602,\"message\":\"Argument not found: " + argument_name + "\"}";
+            response.error = formatJsonRpcError(-32602, "Argument not found: " + argument_name);
             return response;
         }
 

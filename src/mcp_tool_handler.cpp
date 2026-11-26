@@ -424,7 +424,7 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
         // and indexed.
         const std::string public_detail =
             publicErrorMessage("Tool execution error", e.what(), secrets);
-        CROW_LOG_ERROR << "for tool " << request.tool_name << ": " << public_detail;
+        CROW_LOG_ERROR << "MCP tool '" << request.tool_name << "' failed: " << public_detail;
         // What reaches the CALLER is what a REST client gets for the same
         // failure. A bad argument the model can fix keeps its message; anything
         // else is a generic line plus the request id. The detail used to go

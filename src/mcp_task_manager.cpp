@@ -39,9 +39,11 @@ std::shared_ptr<RequestContext> CopySubmitterIdentity() {
 
 void MCPTaskManager::markFinishedLocked(Entry& entry) {
     entry.task.finished_at = std::chrono::steady_clock::now();
-    // The tool series times the execution alone (a worker has no request in
-    // scope). This is the number a caller experienced: submit to terminal,
-    // including the wait behind busy workers.
+    // The tool series times the execution alone (the worker's request context
+    // starts its clock when the work starts). This is the number a caller
+    // experienced: submit to terminal, including the wait behind busy
+    // workers. A task that ended failed, including a tool's isError result,
+    // counts as not ok.
     RuntimeMetrics::instance().recordMcpTask(
         entry.task.tool_name, entry.task.status != Status::Failed,
         std::chrono::duration_cast<std::chrono::microseconds>(entry.task.finished_at - entry.task.created_at));
