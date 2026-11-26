@@ -23,3 +23,6 @@ result_set_bytes	removed; the response size is http.response.body.size on the re
 flapi.result.bytes	never set; the response size is http.response.body.size on the request span
 "returned_data"	the write response carries RETURNING rows under data (returns-data: true)
 docs.datazoo.dev	that host does not exist; link the docs on GitHub
+re:jwt-issuer`? \(default	mcp.auth.jwt-issuer has no default since #281: unset means the issuer is not checked
+three times per request	since #284 a request fetches the JWKS at most once, and unknown kids at most once per jwks-refetch-cooldown-seconds
+re:EC keys such as ES256 are refused	ES256/384/512 are verified since #281
