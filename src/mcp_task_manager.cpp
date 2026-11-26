@@ -1,5 +1,6 @@
 #include "mcp_task_manager.hpp"
 
+#include "request_context.hpp"
 #include "runtime_metrics.hpp"
 
 #include <iomanip>
@@ -7,6 +8,34 @@
 #include <sstream>
 
 namespace flapi {
+
+namespace {
+
+// The identity of the request on this thread, without its per-request state
+// (route snapshot, audit params): what a worker needs to say whose work it
+// runs. The clock starts when the worker starts, so a tool's metrics time the
+// execution, as they did without a context.
+std::shared_ptr<RequestContext> CopySubmitterIdentity() {
+    const RequestContext* current = RequestContextScope::current();
+    if (current == nullptr) {
+        return nullptr;
+    }
+    auto copy = std::make_shared<RequestContext>();
+    copy->request_id = current->request_id;
+    copy->trace_id = current->trace_id;
+    copy->span_id = current->span_id;
+    copy->sampled = current->sampled;
+    copy->auth_kind = current->auth_kind;
+    copy->principal = current->principal;
+    copy->mcp_method = current->mcp_method;
+    copy->mcp_tool = current->mcp_tool;
+    copy->mcp_session_id = current->mcp_session_id;
+    copy->trace_context_source = current->trace_context_source;
+    copy->endpoint_capture = current->endpoint_capture;
+    return copy;
+}
+
+}  // namespace
 
 void MCPTaskManager::markFinishedLocked(Entry& entry) {
     entry.task.finished_at = std::chrono::steady_clock::now();
@@ -193,6 +222,7 @@ std::string MCPTaskManager::submit(const std::string& tool_name, const std::stri
     entry->task.ttl_ms = ttl_ms;
     entry->task.poll_interval_ms = poll_interval_ms;
     entry->work = std::move(work);
+    entry->context = CopySubmitterIdentity();
 
     {
         std::unique_lock<std::mutex> lock(mu_);
@@ -250,10 +280,23 @@ void MCPTaskManager::workerLoop() {
 
         std::string result;
         std::string error;
-        try {
-            result = entry->work(entry->cancelled, set_interrupt);
-        } catch (const std::exception& e) {
-            error = e.what();
+        bool failed = false;
+        {
+            std::optional<RequestContextScope> scope;
+            if (entry->context) {
+                entry->context->t0 = std::chrono::steady_clock::now();
+                scope.emplace(entry->context.get());
+            }
+            try {
+                result = entry->work(entry->cancelled, set_interrupt);
+            } catch (const FailedResult& e) {
+                failed = true;
+                error = e.what();
+                result = e.resultJson();
+            } catch (const std::exception& e) {
+                failed = true;
+                error = e.what();
+            }
         }
 
         {
@@ -262,9 +305,10 @@ void MCPTaskManager::workerLoop() {
             entry->interrupt = nullptr;
             if (entry->cancelled.load()) {
                 entry->task.status = Status::Cancelled;
-            } else if (!error.empty()) {
+            } else if (failed) {
                 entry->task.status = Status::Failed;
                 entry->task.error_message = error;
+                entry->task.result_json = std::move(result);
             } else {
                 entry->task.status = Status::Completed;
                 entry->task.result_json = std::move(result);

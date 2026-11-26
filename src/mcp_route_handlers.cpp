@@ -1428,8 +1428,11 @@ MCPResponse MCPRouteHandlers::handleTasksGetRequest(const MCPRequest& request, c
         }
         std::string text = result.dump();
         // The tool result is spliced in as TEXT: loading it into a crow value
-        // re-ordered the row keys and re-printed the doubles (#275).
-        if (task.status == MCPTaskManager::Status::Completed && crow::json::load(task.result_json)) {
+        // re-ordered the row keys and re-printed the doubles (#275). A task
+        // that failed because the tool returned isError keeps that result too.
+        const bool has_result = task.status == MCPTaskManager::Status::Completed
+            || task.status == MCPTaskManager::Status::Failed;
+        if (has_result && !task.result_json.empty() && crow::json::load(task.result_json)) {
             text.insert(text.find_last_of('}'), ",\"result\":" + task.result_json);
         }
         response.result = text;
@@ -1760,10 +1763,18 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                         if (r.success) {
                             return toolSuccessResultJson(r.result);
                         }
+                        // A tool that ran and failed ends the task `failed`
+                        // (it used to end `completed`), keeping the isError
+                        // result so the client still gets the tool's text.
+                        std::string message = r.error_message;
+                        auto rl = r.metadata.find("retry_after_seconds");
+                        if (rl != r.metadata.end()) {
+                            message += " (retry_after_seconds=" + rl->second + ")";
+                        }
                         mcp::ContentResponse cr;
-                        cr.addText(r.error_message);
+                        cr.addText(message);
                         cr.setError(true);
-                        return cr.toJson().dump();
+                        throw MCPTaskManager::FailedResult(message, cr.toJson().dump());
                     };
 
                     std::string task_id = task_manager_->submit(
@@ -1787,10 +1798,14 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                             if (task_manager_->get(task_id, principal, t, found)
                                 && t.status != MCPTaskManager::Status::Working) {
                                 // Reached a terminal state within the grace window:
-                                // return the result inline if completed, otherwise
-                                // stop waiting and hand back the task (whose status
-                                // is failed/cancelled) so the client polls it.
-                                if (t.status == MCPTaskManager::Status::Completed) {
+                                // return the result inline if completed, or if the
+                                // tool failed with an isError result (as a
+                                // synchronous call would answer); otherwise stop
+                                // waiting and hand back the task so the client
+                                // polls it.
+                                const bool tool_failed = t.status == MCPTaskManager::Status::Failed
+                                    && !t.result_json.empty();
+                                if (t.status == MCPTaskManager::Status::Completed || tool_failed) {
                                     response.result = t.result_json;
                                     return response;
                                 }

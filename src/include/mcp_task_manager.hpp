@@ -8,12 +8,15 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
 
 namespace flapi {
+
+struct RequestContext;
 
 // In-memory store + bounded worker pool for the MCP 2026-07-28 Tasks extension.
 //
@@ -42,7 +45,9 @@ public:
         std::chrono::steady_clock::time_point finished_at{};
         int64_t ttl_ms = 0;
         int64_t poll_interval_ms = 0;
-        std::string result_json;  // MCP tool result envelope, when Completed
+        // MCP tool result envelope: when Completed, and when Failed because the
+        // tool returned an isError result (FailedResult).
+        std::string result_json;
         std::string error_message; // when Failed
     };
 
@@ -60,6 +65,21 @@ public:
     using Work = std::function<std::string(const std::atomic<bool>& cancelled,
                                            const SetInterrupt& set_interrupt)>;
 
+    // Thrown by a Work whose tool ran and FAILED without throwing: a tool
+    // result with `isError: true` (a SQL error, a bad argument, a rate limit).
+    // The task ends `failed` (MCP Tasks: a call that fails ends the task
+    // failed), with what() as Task::error_message and the tool result envelope
+    // kept in Task::result_json so the client still sees the tool's text.
+    class FailedResult : public std::runtime_error {
+    public:
+        FailedResult(const std::string& message, std::string result_json)
+            : std::runtime_error(message), _result_json(std::move(result_json)) {}
+        const std::string& resultJson() const { return _result_json; }
+
+    private:
+        std::string _result_json;
+    };
+
     // Optional durability: a callback that runs a SQL statement and returns its
     // rows (each a column->string map). When provided, tasks are persisted to a
     // `flapi_mcp_tasks` table on creation and on every terminal transition, and
@@ -74,6 +94,10 @@ public:
 
     // Submit work; returns the new task_id, or empty string if the queue is
     // full (backpressure — the caller should fall back to synchronous or error).
+    // The identity of the request in scope on the calling thread (request id,
+    // trace and span id, principal) is copied and made ambient on the worker
+    // while the work runs, so the work's log lines and error text carry the
+    // request id of the call that submitted it.
     std::string submit(const std::string& tool_name, const std::string& principal,
                        int64_t ttl_ms, int64_t poll_interval_ms, Work work);
 
@@ -98,6 +122,9 @@ private:
         // finishes; guarded by the manager mutex (mu_). Empty when the task is
         // queued or already terminal.
         std::function<void()> interrupt;
+        // The submitting request's identity, activated on the worker around
+        // the work. Null when nothing was in scope at submit time.
+        std::shared_ptr<RequestContext> context;
     };
 
     void workerLoop();

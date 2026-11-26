@@ -95,8 +95,9 @@ MCPToolExecutionResult MCPToolHandler::executeTool(const MCPToolCallRequest& req
     const auto t0 = std::chrono::steady_clock::now();
     // The metric is the request's latency as the client sees it: from the
     // first middleware, so MCP authentication (a PBKDF2 check under Basic) is
-    // inside it. A task worker thread has no request in scope and measures
-    // the execution alone.
+    // inside it. A task worker thread runs under a copy of the submitting
+    // request's identity whose clock starts with the work (MCPTaskManager), so
+    // it measures the execution alone.
     const auto* request_ctx = RequestContextScope::current();
     const auto metric_t0 = request_ctx != nullptr ? request_ctx->t0 : t0;
     MCPToolExecutionResult result = executeToolImpl(request);
