@@ -510,11 +510,20 @@ TEST_CASE("A cache without template-file materialises its serving SELECT", "[cac
         REQUIRE(adapter->count("CREATE OR REPLACE TABLE \"cache\"") == 0);
         REQUIRE(adapter->count("'merge', 'success'") == 1);
     }
-    SECTION("a multi-statement serving template is not rewritten") {
+    SECTION("a multi-statement serving template that modifies data is neither rewritten nor run") {
+        // Review of #276: "DELETE FROM x; SELECT 1" used to run as the populate
+        // script, deleting on every refresh. Data-modifying: refused.
         adapter->render_result = "DELETE FROM x; SELECT 1";
         std::map<std::string, std::string> params;
-        REQUIRE(cache_manager.refreshCache(cm, endpoint, params));
+        REQUIRE_THROWS(cache_manager.refreshCache(cm, endpoint, params));
         REQUIRE(adapter->count("CREATE OR REPLACE TABLE \"cache\"") == 0);
+        REQUIRE(adapter->count("DELETE FROM x") == 0);
+    }
+    SECTION("a multi-statement serving template that only reads still runs as before") {
+        adapter->render_result = "SET threads = 2; CREATE OR REPLACE TABLE cache.main.orders AS SELECT 1";
+        std::map<std::string, std::string> params;
+        REQUIRE(cache_manager.refreshCache(cm, endpoint, params));
+        REQUIRE(adapter->count("SET threads = 2") == 1);
     }
     REQUIRE(DatabaseManager::MaterialiseSelect("SELECT 1;", PopulateTarget{"c", "s", "t"}) ==
             std::optional<std::string>("CREATE OR REPLACE TABLE \"c\".\"s\".\"t\" AS\nSELECT 1;"));
@@ -557,4 +566,33 @@ TEST_CASE("A cache without template-file never runs a non-SELECT endpoint templa
     adapter->render_result = "SELECT 1 AS id";
     REQUIRE(cache_manager.refreshCache(cm, endpoint, params));
     REQUIRE(adapter->count("CREATE OR REPLACE TABLE \"cache\".\"main\".\"orders\" AS\nSELECT 1 AS id") == 1);
+}
+
+// Review of #276: the guard keyed on operation.type, but an MCP-only tool with
+// `method: POST` and no `operation:` is a Read - its INSERT ran as the populate
+// script. Any data-modifying serving template is refused, whatever the type.
+TEST_CASE("A cache without template-file never runs a data-modifying template of a read endpoint",
+          "[cache_manager][populate][review]") {
+    TempTestConfig temp(ducklakeConfig(""), "refuse_read_insert_populate");
+    auto cm = temp.createConfigManager();
+    auto adapter = std::make_shared<SchedulerCacheAdapter>();
+    adapter->render_result = "INSERT INTO app.items (id) VALUES (7)";
+    CacheManager cache_manager(adapter);
+    auto endpoint = cachedEndpoint("orders");
+    endpoint.urlPath.clear();
+    EndpointConfig::MCPToolInfo tool;
+    tool.name = "add_item";
+    endpoint.mcp_tool = tool;
+    REQUIRE(endpoint.operation.type == OperationConfig::Read);
+
+    std::map<std::string, std::string> params;
+    std::string refused;
+    try {
+        cache_manager.refreshCache(cm, endpoint, params);
+    } catch (const std::exception& ex) {
+        refused = ex.what();
+    }
+    REQUIRE(refused.find("add_item") != std::string::npos);
+    REQUIRE(refused.find("INSERT") != std::string::npos);
+    REQUIRE(adapter->count("INSERT INTO app.items") == 0);
 }

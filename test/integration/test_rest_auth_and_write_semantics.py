@@ -538,3 +538,75 @@ class TestWriteCacheNeedsTemplateFile:
         assert [row["id"] for row in rows].count(501) == 1
         TestWrites()._prime_cache(server)
         assert TestWrites()._cached_ids(server).count(501) == 1
+
+
+def _start(root):
+    port = free_port()
+    log_path = os.path.join(root, "server.log")
+    log = open(log_path, "w")
+    proc = subprocess.Popen(
+        [flapi_binary(), "-c", "flapi.yaml", "-p", str(port), "--log-level", "info",
+         "--config-service", "--config-service-token", TOKEN],
+        cwd=root, stdout=log, stderr=subprocess.STDOUT, preexec_fn=os.setsid,
+        env={**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"},
+    )
+    base = f"http://127.0.0.1:{port}"
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            pytest.fail("server exited:\n" + open(log_path).read())
+        try:
+            if requests.get(f"{base}/health/live", timeout=1).status_code == 200:
+                return proc, base, log
+        except requests.RequestException:
+            time.sleep(0.3)
+    pytest.fail("server never became live")
+
+
+def _stop(proc, log):
+    os.killpg(proc.pid, signal.SIGTERM)
+    try:
+        proc.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+    log.close()
+
+
+class TestWriteCacheReview:
+    """Review of #276: refuse only a template that modifies data."""
+
+    def _validate(self, endpoints):
+        root = _write_root(endpoints)
+        r = subprocess.run([flapi_binary(), "-c", "flapi.yaml", "--validate-config"],
+                           cwd=root, capture_output=True, text=True, timeout=60,
+                           env={**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"})
+        return r.returncode, r.stdout + r.stderr
+
+    def test_a_write_endpoint_with_a_select_template_loads(self):
+        # What `flapii endpoints wizard` writes: POST + cache, no template-file.
+        body = ENDPOINTS["write_sync.yaml"].replace("  template-file: items_cache.sql\n", "") \
+                                           .replace("template-source: create.sql", "template-source: one.sql")
+        code, out = self._validate({**ENDPOINTS, "write_sync.yaml": body})
+        assert code == 0, out[-2000:]
+        assert "needs template-file" not in out, out[-2000:]
+
+    def test_the_error_names_method_and_path(self):
+        code, out = self._validate(TestWriteCacheNeedsTemplateFile.ENDPOINTS)
+        assert code != 0
+        assert "POST /items_sync: a write endpoint's cache needs template-file" in out, out[-2000:]
+        assert "INSERT" in out, out[-2000:]
+
+    def test_the_legacy_in_memory_update_is_validated(self):
+        root = _write_root(ENDPOINTS)
+        proc, base, log = _start(root)
+        try:
+            # camelCase body: the legacy path that replaced the endpoint in memory unvalidated.
+            body = {"urlPath": "/items_sync", "method": "POST",
+                    "cache": {"enabled": True, "table": "items_cache", "schema": "main",
+                              "invalidateOnWrite": True}}
+            r = requests.put(f"{base}/api/v1/_config/endpoints/-items_sync?method=POST",
+                             json=body, headers=CS_AUTH, timeout=10)
+            assert r.status_code == 400, r.text
+            assert "needs template-file" in r.text, r.text
+        finally:
+            _stop(proc, log)

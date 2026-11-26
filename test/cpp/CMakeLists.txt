@@ -33,6 +33,7 @@ add_executable(flapi_tests
     database_manager_default_order_test.cpp
     embedded_archive_file_provider_test.cpp
     endpoint_config_parser_test.cpp
+    endpoint_load_review_test.cpp
     extended_yaml_parser_test.cpp
     https_config_test.cpp
     macho_bundle_test.cpp

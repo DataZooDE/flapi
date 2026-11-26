@@ -108,6 +108,30 @@ class TestValidateConfig:
         assert checked == 2
 
 
+class TestReview:
+    """Review of #282: duplicates, mistyped endpoint files, the skipped count."""
+
+    def test_a_duplicate_auth_is_a_security_warning(self):
+        code, out = validate({"e.yaml": endpoint("/e", "auth:\n  enabled: false\n"
+                                                       "{{include:auth-prod as auth from common.yaml}}\n")})
+        assert code == 0, out
+        assert "SECURITY: endpoint key `auth` appears 2 times" in out, out[-2000:]
+
+    @pytest.mark.parametrize("key", ["urlpath", "url_path"])
+    def test_a_mistyped_url_path_is_not_skipped_silently(self, key):
+        code, out = validate({"typo.yaml": f"{key}: /typo\ntemplate-source: one.sql\nconnection: [inmem]\n"})
+        assert code == 0, out
+        assert "typo.yaml" in out, out[-2000:]
+        assert "did you mean `url-path`?" in out, out[-2000:]
+
+    def test_files_that_fail_to_load_are_not_counted_as_skipped(self):
+        code, out = validate({"broken.yaml": "url-path: /b\nmethod: FETCH\ntemplate-source: one.sql\n"
+                                             "connection: [inmem]\n"})
+        assert code != 0, out
+        # common.yaml is the only non-endpoint file.
+        assert "Skipped 1 non-endpoint YAML files" in out, out[-2000:]
+
+
 @pytest.fixture(scope="module")
 def server():
     root = make_root({
