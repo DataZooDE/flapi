@@ -1,0 +1,118 @@
+Make the escaping of `{{ name }}` settable per template.
+
+crow::mustache::template_t::escape is private and always HTML-escapes
+(& < > " ' / ` =). flAPI renders SQL with the same engine, where HTML
+entities are wrong: '{{ name }}' with O'Brien became 'O&#39;Brien' and
+{{ conn.path }} rendered /data as &#x2F;data. flAPI also renders an HTML
+page (Swagger UI) with it, which must keep HTML escaping.
+
+This adds a public escape_function (a plain function pointer), a static
+template_t::html_escape (the old body, unchanged), and set_escape() /
+get_escape(). The default stays html_escape, so every existing caller renders
+exactly as before. Partials and lambda results rendered by a template inherit
+its escape function.
+
+Not yet submitted upstream (https://github.com/CrowCpp/crow).
+
+--- a/include/crow/mustache.h	2026-11-26 05:41:09.721668747 +0100
++++ b/include/crow/mustache.h	2026-11-26 05:41:22.030244773 +0100
+@@ -156,6 +156,10 @@
+         class template_t
+         {
+         public:
++            /// How a `{{ name }}` tag (not `{{{ }}}` / `{{& }}`) escapes a
++            /// string value: append the escaped form of `in` to `out`.
++            using escape_function = void (*)(const std::string& in, std::string& out);
++
+             template_t(std::string body):
+               body_(std::move(body))
+             {
+@@ -163,6 +167,39 @@
+                 parse();
+             }
+ 
++            /// The HTML escaping every template uses unless told otherwise.
++            static void html_escape(const std::string& in, std::string& out)
++            {
++                out.reserve(out.size() + in.size());
++                for (auto it = in.begin(); it != in.end(); ++it)
++                {
++                    switch (*it)
++                    {
++                        case '&': out += "&amp;"; break;
++                        case '<': out += "&lt;"; break;
++                        case '>': out += "&gt;"; break;
++                        case '"': out += "&quot;"; break;
++                        case '\'': out += "&#39;"; break;
++                        case '/': out += "&#x2F;"; break;
++                        case '`': out += "&#x60;"; break;
++                        case '=': out += "&#x3D;"; break;
++                        default: out += *it; break;
++                    }
++                }
++            }
++
++            /// Replaces the escaping of `{{ name }}` for this template (and the
++            /// partials and lambdas it renders). nullptr restores HTML escaping.
++            void set_escape(escape_function fn)
++            {
++                escape_fn_ = fn != nullptr ? fn : &template_t::html_escape;
++            }
++
++            escape_function get_escape() const
++            {
++                return escape_fn_;
++            }
++
+         private:
+             std::string tag_name(const Action& action) const
+             {
+@@ -235,22 +272,7 @@
+ 
+             void escape(const std::string& in, std::string& out) const
+             {
+-                out.reserve(out.size() + in.size());
+-                for (auto it = in.begin(); it != in.end(); ++it)
+-                {
+-                    switch (*it)
+-                    {
+-                        case '&': out += "&amp;"; break;
+-                        case '<': out += "&lt;"; break;
+-                        case '>': out += "&gt;"; break;
+-                        case '"': out += "&quot;"; break;
+-                        case '\'': out += "&#39;"; break;
+-                        case '/': out += "&#x2F;"; break;
+-                        case '`': out += "&#x60;"; break;
+-                        case '=': out += "&#x3D;"; break;
+-                        default: out += *it; break;
+-                    }
+-                }
++                escape_fn_(in, out);
+             }
+ 
+             bool isTagInsideObjectBlock(const int& current, const std::vector<const context*>& stack) const
+@@ -298,6 +320,7 @@
+                         {
+                             std::string partial_name = tag_name(action);
+                             auto partial_templ = load(partial_name);
++                            partial_templ.set_escape(escape_fn_);
+                             int partial_indent = action.pos;
+                             partial_templ.render_internal(0, partial_templ.fragments_.size() - 1, stack, out, partial_indent ? indent + partial_indent : 0);
+                         }
+@@ -331,6 +354,7 @@
+                                     while (execute_result.find("{{") != std::string::npos)
+                                     {
+                                         template_t result_plug(execute_result);
++                                        result_plug.set_escape(escape_fn_);
+                                         execute_result = result_plug.render_string(*(stack[0]));
+                                     }
+ 
+@@ -492,6 +516,8 @@
+             }
+ 
+         private:
++            escape_function escape_fn_ = &template_t::html_escape;
++
+             void parse()
+             {
+                 std::string tag_open = "{{";

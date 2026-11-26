@@ -271,13 +271,31 @@ std::string SQLTemplateProcessor::processTemplate(const std::string& templateCon
     return renderedTemplate;
 }
 
+void SQLTemplateProcessor::EscapeSqlTemplateValue(const std::string& in, std::string& out) {
+    out.reserve(out.size() + in.size());
+    for (const char c : in) {
+        out += c;
+        if (c == '\'') {
+            out += '\'';
+        }
+    }
+}
+
 crow::mustache::template_t SQLTemplateProcessor::compileTemplate(const std::string& templateSource) {
     // The one road into crow::mustache::compile. Templates are revalidated
     // against the file on every render, so a file edited after load (without
     // a reload) reaches this point unchecked; crow itself would segfault or hang on an
     // unbalanced section (see mustache_syntax_check.hpp).
     RequireValidMustacheSyntax(templateSource, "");
-    return crow::mustache::compile(templateSource);
+    auto compiled = crow::mustache::compile(templateSource);
+    // SQL, not HTML: crow's default turned O'Brien into O&#39;Brien and /data
+    // into &#x2F;data (#277). The settable escape is our crow overlay patch
+    // (ports/crow/settable-mustache-escape.patch); the Swagger UI page keeps
+    // the HTML default. auth.* markers are letters and digits, so they pass
+    // through unchanged and their values are substituted, quote-doubled once,
+    // after this render.
+    compiled.set_escape(&SQLTemplateProcessor::EscapeSqlTemplateValue);
+    return compiled;
 }
 
 std::string SQLTemplateProcessor::loadTemplateContent(const std::string& templatePath) {

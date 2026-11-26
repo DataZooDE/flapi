@@ -1,8 +1,8 @@
 {
   "name": "crow",
   "version": "1.3.4",
-  "port-version": 0,
-  "description": "Very fast and easy to use C++ micro web framework (flAPI overlay: adds a public keepalive handle so a response can be completed from another thread - see async-completion-keepalive.patch)",
+  "port-version": 1,
+  "description": "Very fast and easy to use C++ micro web framework (flAPI overlay: adds a public keepalive handle so a response can be completed from another thread - see async-completion-keepalive.patch; and a settable escape for {{ name }} in mustache templates - see settable-mustache-escape.patch)",
   "homepage": "https://github.com/CrowCpp/crow",
   "license": "BSD-3-Clause",
   "dependencies": [

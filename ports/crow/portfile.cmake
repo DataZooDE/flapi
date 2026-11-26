@@ -4,10 +4,11 @@ vcpkg_from_github(
     REF "v${VERSION}"
     SHA512 1d12cfe1a6c2c928d9397e2e3bdb57c5bc425f1509a388d5b3bd68f52aaeb3950f564cd6c5612331cb389165feb0d2a1c6e593ea8f14f68072658376e71f14c3
     HEAD_REF master
-    # Only our patch. 1.3.4 includes CPM only for its tests and SBOM, both off
+    # Only our patches. 1.3.4 includes CPM only for its tests and SBOM, both off
     # here, so the upstream port's remove-cpm.patch is not needed.
     PATCHES
         async-completion-keepalive.patch
+        settable-mustache-escape.patch
 )
 
 vcpkg_cmake_configure(

@@ -1211,3 +1211,43 @@ TEST_CASE("crow mustache keeps HTML escaping by default (the Swagger UI page) (#
     REQUIRE(crow::mustache::compile("{{x}}").render_string(ctx) == "&lt;b&gt;&#39;&amp;&quot;&#x2F;&#x3D;&#x60;");
     REQUIRE(crow::mustache::compile("{{{x}}}").render_string(ctx) == "<b>'&\"/=`");
 }
+
+TEST_CASE("EscapeSqlTemplateValue doubles single quotes and nothing else (#277)",
+          "[sql_template_processor][escaping]") {
+    const auto esc = [](const std::string& in) {
+        std::string out = "<";   // appends
+        SQLTemplateProcessor::EscapeSqlTemplateValue(in, out);
+        return out;
+    };
+    REQUIRE(esc("") == "<");
+    REQUIRE(esc("plain") == "<plain");
+    REQUIRE(esc("O'Brien") == "<O''Brien");
+    REQUIRE(esc("''") == "<''''");
+    REQUIRE(esc("a&b<c>\"/=`\\") == "<a&b<c>\"/=`\\");
+    REQUIRE(esc("flapiauth0123abcdqaz") == "<flapiauth0123abcdqaz");   // auth markers pass through
+}
+
+namespace {
+void BracketEscape(const std::string& in, std::string& out) {
+    out += "[" + in + "]";
+}
+}  // namespace
+
+TEST_CASE("crow template_t takes a per-template escape function (#277 overlay patch)",
+          "[sql_template_processor][escaping]") {
+    crow::mustache::context ctx;
+    ctx["x"] = "a'b/";
+    ctx["list"] = std::vector<std::string>{"p'", "q"};
+
+    auto custom = crow::mustache::compile("{{x}} {{{x}}} {{#list}}{{.}}{{/list}}");
+    REQUIRE(custom.get_escape() == &crow::mustache::template_t::html_escape);
+    custom.set_escape(&BracketEscape);
+    REQUIRE(custom.render_string(ctx) == "[a'b/] a'b/ [p'][q]");
+    custom.set_escape(nullptr);   // back to HTML
+    REQUIRE(custom.render_string(ctx) == "a&#39;b&#x2F; a'b/ p&#39;q");
+
+    SQLTemplateProcessor processor(std::make_shared<MockConfigManager>());
+    auto sql = processor.compileTemplate("'{{x}}'");
+    REQUIRE(sql.get_escape() == &SQLTemplateProcessor::EscapeSqlTemplateValue);
+    REQUIRE(sql.render_string(ctx) == "'a''b/'");
+}

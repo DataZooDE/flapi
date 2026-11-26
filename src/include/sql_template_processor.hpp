@@ -80,8 +80,13 @@ public:
     crow::mustache::context createTemplateContext(const EndpointConfig& endpoint, std::map<std::string, std::string>& params);
     std::string processTemplate(const std::string& templateContent, const crow::mustache::context& ctx);
     
-    // Add these two declarations
+    // Compiles a SQL template whose `{{ name }}` tags escape with
+    // EscapeSqlTemplateValue (not crow's HTML default, #277).
     crow::mustache::template_t compileTemplate(const std::string& templateSource);
+    /// How `{{ name }}` renders a value in SQL: every single quote doubled,
+    /// nothing else changed. Safe inside a plain '...' literal; anywhere else
+    /// it is no defence (validators and binding are). Appends to `out`.
+    static void EscapeSqlTemplateValue(const std::string& in, std::string& out);
     /// The environment variables `whitelist` exposes to templates, straight
     /// from `environ` (no copy of the environment). Static: the secret
     /// collector needs it from call sites that hold no template processor.
