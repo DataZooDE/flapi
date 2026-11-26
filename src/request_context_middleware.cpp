@@ -253,8 +253,9 @@ void RequestContextMiddleware::before_handle(crow::request& req, crow::response&
             }
             ctx.span.setAttr(semconv::http::kRequestMethod, ctx.rc.http_method);
             ctx.span.setAttr(semconv::net::kProtocolName, "http");
-            ctx.span.setAttr(semconv::flapix::kHasQuery,
-                             ctx.rc.raw_path.find('?') != std::string_view::npos);
+            // raw_path is Crow's `url`, the path without the query string (it
+            // is what route exclusion matches); the query is only in raw_url.
+            ctx.span.setAttr(semconv::flapix::kHasQuery, hasQueryString(req));
             if (const auto ua = req.get_header_value("User-Agent"); !ua.empty()) {
                 ctx.span.setAttr(semconv::kUserAgent, std::string_view(ua).substr(0, 256));
             }

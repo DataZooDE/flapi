@@ -65,6 +65,12 @@ public:
     void before_handle(crow::request& req, crow::response& res, context& ctx);
     void after_handle(crow::request& req, crow::response& res, context& ctx);
 
+    // Whether the request carried a query string (`flapi.url.has_query`).
+    // Crow's `url` is the path alone; only `raw_url` keeps the `?...` part.
+    static bool hasQueryString(const crow::request& req) noexcept {
+        return req.raw_url.find('?') != std::string::npos;
+    }
+
     // Shared by the server bootstrap so the audit sink is reachable.
     void setConfigManager(std::shared_ptr<ConfigManager> config_manager);
 
