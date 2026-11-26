@@ -32,7 +32,8 @@ import time
 import pytest
 import requests
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
+from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 
 from otel_helpers import flapi_binary, free_port
 
@@ -51,18 +52,63 @@ def _uint_b64url(value: int) -> str:
     return _b64url(value.to_bytes((value.bit_length() + 7) // 8, "big"))
 
 
+_HASHES = {"256": hashes.SHA256, "384": hashes.SHA384, "512": hashes.SHA512}
+
+
 class _Key:
-    def __init__(self, kid: str):
+    """An RSA key. `alg` is what its JWK names (None: the JWK names none)."""
+
+    def __init__(self, kid: str, alg="RS256"):
         self.kid = kid
+        self.alg = alg
+        self.default_alg = alg or "RS256"
         self.private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
     def jwk(self) -> dict:
         numbers = self.private.public_key().public_numbers()
-        return {"kty": "RSA", "use": "sig", "alg": "RS256", "kid": self.kid,
-                "n": _uint_b64url(numbers.n), "e": _uint_b64url(numbers.e)}
+        jwk = {"kty": "RSA", "use": "sig", "kid": self.kid,
+               "n": _uint_b64url(numbers.n), "e": _uint_b64url(numbers.e)}
+        if self.alg:
+            jwk["alg"] = self.alg
+        return jwk
 
-    def sign(self, signing_input: bytes) -> bytes:
-        return self.private.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())
+    def sign(self, signing_input: bytes, alg=None) -> bytes:
+        alg = alg or self.default_alg
+        digest = _HASHES[alg[2:]]()
+        if alg.startswith("PS"):
+            pad = padding.PSS(mgf=padding.MGF1(digest), salt_length=digest.digest_size)
+            return self.private.sign(signing_input, pad, digest)
+        return self.private.sign(signing_input, padding.PKCS1v15(), digest)
+
+
+class _EcKey:
+    """An EC key: P-256 (ES256), P-384 (ES384) or P-521 (ES512)."""
+
+    CURVES = {"P-256": (ec.SECP256R1, "ES256", 32), "P-384": (ec.SECP384R1, "ES384", 48),
+              "P-521": (ec.SECP521R1, "ES512", 66)}
+
+    def __init__(self, kid: str, crv="P-256", with_alg=True):
+        self.kid = kid
+        self.crv = crv
+        curve, self.default_alg, self.size = self.CURVES[crv]
+        self.with_alg = with_alg
+        self.private = ec.generate_private_key(curve())
+
+    def jwk(self) -> dict:
+        numbers = self.private.public_key().public_numbers()
+        jwk = {"kty": "EC", "use": "sig", "kid": self.kid, "crv": self.crv,
+               "x": _b64url(numbers.x.to_bytes(self.size, "big")),
+               "y": _b64url(numbers.y.to_bytes(self.size, "big"))}
+        if self.with_alg:
+            jwk["alg"] = self.default_alg
+        return jwk
+
+    def sign(self, signing_input: bytes, alg=None) -> bytes:
+        alg = alg or self.default_alg
+        der = self.private.sign(signing_input, ec.ECDSA(_HASHES[alg[2:]]()))
+        r, s_ = decode_dss_signature(der)
+        # JOSE carries r || s, each the curve size, not DER.
+        return r.to_bytes(self.size, "big") + s_.to_bytes(self.size, "big")
 
 
 class MockIssuer:
@@ -71,7 +117,9 @@ class MockIssuer:
     def __init__(self):
         self.port = free_port()
         self.url = f"http://127.0.0.1:{self.port}"
-        self.keys = [_Key("k1")]
+        self.keys = [_Key("k1"), _EcKey("ec256"), _EcKey("ec384", "P-384"),
+                     _EcKey("ec521", "P-521", with_alg=False), _Key("ps1", alg="PS256"),
+                     _Key("rsa-noalg", alg=None)]
         self.jwks_fetches = 0
         issuer = self
 
@@ -114,8 +162,11 @@ class MockIssuer:
         self.httpd.shutdown()
         self.httpd.server_close()
 
-    def token(self, key=None, header=None, drop=(), **overrides) -> str:
-        """An RS256 token that is valid unless the caller says otherwise."""
+    def key(self, kid):
+        return next(k for k in self.keys if k.kid == kid)
+
+    def token(self, key=None, header=None, drop=(), alg=None, **overrides) -> str:
+        """A token signed with `key` (default k1, RS256) that is valid unless the caller says otherwise."""
         key = key or self.keys[0]
         now = int(time.time())
         claims = {"iss": self.url, "aud": AUDIENCE, "sub": "user-42",
@@ -123,10 +174,11 @@ class MockIssuer:
         claims.update(overrides)
         for name in drop:
             claims.pop(name, None)
-        hdr = header or {"alg": "RS256", "typ": "JWT", "kid": key.kid}
+        sign_alg = alg or key.default_alg
+        hdr = header or {"alg": sign_alg, "typ": "JWT", "kid": key.kid}
         signing_input = (_b64url(json.dumps(hdr, separators=(",", ":")).encode()) + "." +
                          _b64url(json.dumps(claims, separators=(",", ":")).encode()))
-        return signing_input + "." + _b64url(key.sign(signing_input.encode()))
+        return signing_input + "." + _b64url(key.sign(signing_input.encode(), sign_alg))
 
 
 class FlapiServer:
@@ -419,3 +471,66 @@ class TestOidcClaims:
 
     def test_unused_keys_are_reported_at_startup(self, server):
         assert "`scopes` is parsed but has no effect" in server.log()
+
+
+def _tamper(token: str) -> str:
+    """The same signature over a payload that now claims `admin`."""
+    head, payload, sig = token.split(".")
+    claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    claims["roles"] = ["admin"]
+    return f"{head}.{_b64url(json.dumps(claims).encode())}.{sig}"
+
+
+class TestOidcAlgorithms:
+    """ES256/384/512 and PS256/384/512 next to RS*, and alg/key agreement."""
+
+    @pytest.mark.parametrize("kid,alg", [
+        ("ec256", "ES256"), ("ec384", "ES384"), ("ec521", "ES512"),
+        ("ps1", "PS256"), ("rsa-noalg", "PS384"), ("rsa-noalg", "PS512"),
+        ("rsa-noalg", "RS384"), ("k1", "RS256"),
+    ])
+    def test_a_valid_token_is_accepted(self, server, issuer, kid, alg):
+        r = server.get(issuer.token(key=issuer.key(kid), alg=alg, sub=f"{kid}-{alg}"))
+        assert r.status_code == 200, f"{kid}/{alg}: {r.status_code} {r.text[:200]}\n{server.log()[-1500:]}"
+        assert _row(r)["who"] == f"{kid}-{alg}"
+
+    def test_es256_over_mcp(self, server, issuer):
+        r = server.mcp("tools/call", {"name": "whoami", "arguments": {}},
+                       token=issuer.token(key=issuer.key("ec256"), sub="ec-mcp"))
+        assert r.status_code == 200, f"{r.status_code} {r.text[:300]}"
+        assert "ec-mcp" in json.dumps(r.json()["result"])
+
+    @pytest.mark.parametrize("kid,alg", [("ec256", "ES256"), ("ec384", "ES384"), ("ps1", "PS256")])
+    def test_a_tampered_token_is_refused(self, server, issuer, kid, alg):
+        tok = _tamper(issuer.token(key=issuer.key(kid), alg=alg))
+        assert server.get(tok).status_code == 401
+
+    @pytest.mark.parametrize("kid,alg,why", [
+        ("k1", "PS256", "the JWK says RS256"),
+        ("ps1", "RS256", "the JWK says PS256"),
+        ("ec256", "ES384", "the JWK says ES256"),
+        ("ec521", "ES256", "a P-521 key cannot verify ES256"),
+        ("ec256", "RS256", "an EC key cannot verify RS256"),
+        ("rsa-noalg", "ES256", "an RSA key cannot verify ES256"),
+    ])
+    def test_an_alg_the_key_does_not_allow_is_refused(self, server, issuer, kid, alg, why):
+        key = issuer.key(kid)
+        if alg[:2] in (("ES",) if isinstance(key, _EcKey) else ("RS", "PS")):
+            # A genuine signature with `alg`: only the key's own rules refuse it.
+            tok = issuer.token(key=key, alg=alg)
+        else:
+            # The key cannot produce `alg` at all: the header claims it anyway.
+            tok = issuer.token(key=key, header={"alg": alg, "typ": "JWT", "kid": kid})
+        assert server.get(tok).status_code == 401, why
+
+    def test_hs256_with_the_public_key_as_secret_is_refused(self, server, issuer):
+        import hashlib
+        import hmac
+        key = issuer.key("rsa-noalg")
+        secret = json.dumps(key.jwk()).encode()
+        head = _b64url(json.dumps({"alg": "HS256", "typ": "JWT", "kid": key.kid}).encode())
+        now = int(time.time())
+        body = _b64url(json.dumps({"iss": issuer.url, "aud": AUDIENCE, "sub": "x",
+                                   "exp": now + 600}).encode())
+        sig = _b64url(hmac.new(secret, f"{head}.{body}".encode(), hashlib.sha256).digest())
+        assert server.get(f"{head}.{body}.{sig}").status_code == 401
