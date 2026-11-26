@@ -237,3 +237,33 @@ def test_the_swagger_page_still_html_escapes(server):
     assert r.status_code == 200, r.text[:300]
     assert "esc &lt;b&gt;bold&lt;&#x2F;b&gt; &amp; &#39;q&#39;" in r.text, r.text[:800]
     assert "<b>bold</b>" not in r.text
+
+
+# ------------------------------------------------------------------ (c) lint
+
+LINT_FILES = {
+    "risky.yaml": endpoint("/risky", "risky.sql", NAME),
+    "risky.sql": ("SELECT id FROM people WHERE 1=1\n"
+                  "{{#params.name}}  AND name = '{{{ params.name }}}'\n{{/params.name}}ORDER BY id"),
+    "safe.yaml": endpoint("/safe", "safe.sql", NAME),
+    "safe.sql": ("SELECT id FROM people WHERE 1=1\n"
+                 "{{#params.name}}  AND name = '{{ params.name }}'\n{{/params.name}}ORDER BY id"),
+}
+
+
+def test_validate_config_warns_about_free_text_pasted_where_it_cannot_bind(tmp_path):
+    root = str(tmp_path)
+    write_project(root)
+    for name, body in LINT_FILES.items():
+        (tmp_path / "sqls" / name).write_text(body)
+    proc = subprocess.run([flapi_binary(), "-c", "flapi.yaml", "--validate-config"], cwd=root,
+                          capture_output=True, text=True, timeout=120,
+                          env={**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"})
+    out = proc.stdout + proc.stderr
+    risky = [l for l in out.splitlines() if "free-text field 'name'" in l]
+    assert risky, out[-3000:]
+    assert all("risky.sql:2:" in l for l in risky), risky
+    assert any("write '{{ params.name }}'" in l for l in risky), risky
+    assert not any("safe.sql" in l for l in risky), risky
+    # The (a)/(b) project itself is clean: every free-text site there binds or is quote-doubled.
+    assert not any(f"{n}.sql" in l for l in risky for n in ("exact", "like", "section", "sorted", "born")), risky

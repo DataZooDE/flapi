@@ -1,5 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+
 #include "config_manager.hpp"
 #include "prepared_template_rewriter.hpp"
 
@@ -567,3 +569,75 @@ TEST_CASE("PreparedTemplateRewriter: param names not starting with 'params.' are
 
 } // namespace test
 } // namespace flapi
+
+namespace flapi {
+namespace test {
+
+namespace {
+RequestFieldConfig regexField(const std::string& name) {
+    RequestFieldConfig f = typedField(name, "string");
+    f.validators[0].regex = "^[a-z]+$";
+    return f;
+}
+
+std::size_t CountMentioning(const std::vector<std::string>& warnings, const std::string& needle) {
+    return static_cast<std::size_t>(std::count_if(warnings.begin(), warnings.end(), [&](const std::string& w) {
+        return w.find(needle) != std::string::npos;
+    }));
+}
+}  // namespace
+
+TEST_CASE("FindRiskyTemplateSites: free text that stays text outside a '...' literal (#277)",
+          "[security][prepared][rewriter][lint]") {
+    const std::vector<RequestFieldConfig> fields = {typedField("name", "string"), bareField("free"),
+                                                    typedField("n", "int"), typedField("k", "enum"),
+                                                    regexField("code")};
+    SECTION("a triple brace in a section, quoted or not") {
+        const auto w = FindRiskyTemplateSites(
+            "SELECT 1 WHERE 1=1\n{{#params.name}} AND c = '{{{ params.name }}}'{{/params.name}}", fields, "t.sql");
+        REQUIRE(w.size() == 1);
+        REQUIRE(w[0].rfind("t.sql:2:", 0) == 0);
+        REQUIRE(w[0].find("'{{{ params.name }}}'") != std::string::npos);
+        REQUIRE(w[0].find("write '{{ params.name }}'") != std::string::npos);
+        REQUIRE(FindRiskyTemplateSites("{{#params.name}} AND c = {{{ params.name }}}{{/params.name}}", fields, "t")
+                    .size() == 1);
+    }
+    SECTION("a double brace in a section outside quotes") {
+        const auto w = FindRiskyTemplateSites("{{#params.name}} AND c = {{ params.name }}{{/params.name}}", fields, "t");
+        REQUIRE(w.size() == 1);
+        REQUIRE(w[0].find("protects nothing") != std::string::npos);
+    }
+    SECTION("a field without a validator, unquoted, even outside a section") {
+        REQUIRE(CountMentioning(FindRiskyTemplateSites("SELECT {{ params.free }}", fields, "t"), "'free'") == 1);
+        REQUIRE(CountMentioning(FindRiskyTemplateSites("SELECT {{{ params.free }}}", fields, "t"), "'free'") == 1);
+    }
+    SECTION("an E'...' string is not a plain literal") {
+        REQUIRE(FindRiskyTemplateSites("{{#params.name}}c = E'{{ params.name }}'{{/params.name}}", fields, "t")
+                    .size() == 1);
+    }
+}
+
+TEST_CASE("FindRiskyTemplateSites: what is safe now is not reported (#277)", "[security][prepared][rewriter][lint]") {
+    const std::vector<RequestFieldConfig> fields = {typedField("name", "string"), bareField("free"),
+                                                    typedField("n", "int"), typedField("k", "enum"),
+                                                    regexField("code")};
+    const std::vector<std::string> safe = {
+        "SELECT * FROM t WHERE c = {{ params.name }}",                          // bound
+        "SELECT * FROM t WHERE c = '{{{ params.name }}}'",                      // bound
+        "SELECT * FROM t WHERE c LIKE '%{{ params.name }}%'",                   // bound
+        "{{#params.name}} AND c = '{{ params.name }}'{{/params.name}}",         // quote-doubled in its literal
+        "SELECT * FROM t WHERE c = '{{ params.free }}'",                        // quote-doubled in its literal
+        "{{#params.n}} AND id = {{{ params.n }}}{{/params.n}}",                 // int
+        "ORDER BY {{{ params.k }}}",                                            // enum
+        "{{#params.code}} AND c = {{{ params.code }}}{{/params.code}}",         // regex
+        "SELECT {{{ params.undeclared }}}",                                     // has its own warning
+        "SELECT '{{{ conn.path }}}'",                                           // not params.*
+    };
+    for (const auto& text : safe) {
+        INFO(text);
+        REQUIRE(FindRiskyTemplateSites(text, fields, "t").empty());
+    }
+}
+
+}  // namespace test
+}  // namespace flapi
