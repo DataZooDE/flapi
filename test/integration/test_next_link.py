@@ -10,9 +10,11 @@
   filters, and following it re-ran page 1: the defaults for offset/limit beat
   the query string.
 
-Now `next` holds `offset`, `limit` and the endpoint's declared query fields,
-percent-encoded. A POST read's `next` holds only `offset` and `limit`: POST the
-same body to it.
+Now `next` echoes the client's own query string with offset/limit replaced by
+the new window, percent-encoded. It drops `__auth_*` and any name declared as a
+header, body or path field, and never takes a value from the server side, so a
+field's `default:` stays out of it. A POST read's `next` carries the client's
+query string too; POST the same body to it: the query's offset/limit win.
 """
 import os
 import signal
@@ -70,6 +72,10 @@ request:
   - field-name: tenant
     field-in: header
     required: false
+  - field-name: region
+    field-in: query
+    required: false
+    default: secret-default
 """,
     "items.sql": "SELECT id, name FROM app.items WHERE name = {{ params.name }} ORDER BY id",
     "find.yaml": """\
@@ -86,8 +92,14 @@ request:
     validators:
       - type: string
         max-length: 20
+  - field-name: min_id
+    field-in: query
+    required: false
+    validators:
+      - type: int
 """,
-    "find.sql": "SELECT id, name FROM app.items WHERE name = {{ params.name }} ORDER BY id",
+    "find.sql": "SELECT id, name FROM app.items WHERE name = {{ params.name }}\n"
+                "{{#params.min_id}} AND id >= {{{ params.min_id }}} {{/params.min_id}} ORDER BY id",
 }
 
 
@@ -146,18 +158,20 @@ def server():
 
 
 AUTH = ("alice", "alice-pw")
-EXPECTED_NEXT = "/items?offset=1&limit=1&name=a%26b%20%23c"
+EXPECTED_NEXT = "/items?offset=1&limit=1&name=a%26b%20%23c&undeclared=x&format=json"
 
 
 class TestGetNextLink:
     def _first(self, server):
+        # requests sends the params in this order.
         r = requests.get(f"{server.base}/items", auth=AUTH, timeout=10,
-                         params={"name": NAME, "limit": 1, "undeclared": "x"},
+                         params=[("name", NAME), ("limit", 1), ("undeclared", "x"),
+                                 ("format", "json"), ("tenant", "spoof")],
                          headers={"tenant": "acme"})
         assert r.status_code == 200, r.text
         return r
 
-    def test_next_is_exact(self, server):
+    def test_next_echoes_the_client_query(self, server):
         r = self._first(server)
         body = r.json()
         assert body["data"] == [{"id": 1, "name": NAME}], r.text
@@ -165,9 +179,9 @@ class TestGetNextLink:
         assert body["next"] == EXPECTED_NEXT, r.text
         assert r.headers["X-Next"] == EXPECTED_NEXT
 
-    def test_next_carries_no_identity_or_internal_keys(self, server):
+    def test_next_carries_no_identity_header_field_or_default(self, server):
         nxt = self._first(server).json()["next"]
-        for leaked in ("__auth", "alice", "reader", "undeclared", "tenant", "acme"):
+        for leaked in ("__auth", "alice", "reader", "tenant", "acme", "spoof", "region", "secret-default"):
             assert leaked not in nxt, nxt
 
     def test_following_next_gives_page_two_with_the_same_filter(self, server):
@@ -177,28 +191,31 @@ class TestGetNextLink:
         body = r.json()
         assert body["data"] == [{"id": 2, "name": NAME}], r.text
         assert body["total_count"] == 3
-        assert body["next"] == "/items?offset=2&limit=1&name=a%26b%20%23c", r.text
+        assert body["next"] == "/items?offset=2&limit=1&name=a%26b%20%23c&undeclared=x&format=json", r.text
 
 
 class TestPostReadNextLink:
-    def test_next_holds_only_offset_and_limit(self, server):
-        r = requests.post(f"{server.base}/find", auth=AUTH, json={"name": NAME, "limit": 1}, timeout=10)
-        assert r.status_code == 200, r.text
-        body = r.json()
-        assert body["data"] == [{"id": 1, "name": NAME}], r.text
-        assert body["next"] == "/find?offset=1&limit=1", r.text
-
-    def test_posting_the_body_to_next_gives_page_two(self, server):
-        nxt = requests.post(f"{server.base}/find", auth=AUTH, json={"name": NAME, "limit": 1},
-                            timeout=10).json()["next"]
-        r = requests.post(server.base + nxt, auth=AUTH, json={"name": NAME}, timeout=10)
+    def test_next_holds_the_window_and_the_client_query(self, server):
+        r = requests.post(f"{server.base}/find?min_id=2", auth=AUTH, json={"name": NAME, "limit": 1}, timeout=10)
         assert r.status_code == 200, r.text
         body = r.json()
         assert body["data"] == [{"id": 2, "name": NAME}], r.text
-        assert body["next"] == "/find?offset=2&limit=1", r.text
+        assert body["next"] == "/find?offset=1&limit=1&min_id=2", r.text
 
-    def test_offset_in_the_body_wins_over_the_query(self, server):
-        r = requests.post(f"{server.base}/find?offset=0", auth=AUTH,
-                          json={"name": NAME, "limit": 1, "offset": 2}, timeout=10)
+    def test_posting_the_body_to_next_keeps_the_query_filter(self, server):
+        body = {"name": NAME, "limit": 1}
+        nxt = requests.post(f"{server.base}/find?min_id=2", auth=AUTH, json=body, timeout=10).json()["next"]
+        r = requests.post(server.base + nxt, auth=AUTH, json=body, timeout=10)
         assert r.status_code == 200, r.text
         assert r.json()["data"] == [{"id": 3, "name": NAME}], r.text
+        assert r.json()["next"] == "", r.text
+
+    def test_query_window_wins_over_the_body_window(self, server):
+        # The same body, offset 0 included, POSTed to `next` must move forward.
+        body = {"name": NAME, "limit": 1, "offset": 0}
+        first = requests.post(f"{server.base}/find", auth=AUTH, json=body, timeout=10).json()
+        assert first["next"] == "/find?offset=1&limit=1", first
+        r = requests.post(server.base + first["next"], auth=AUTH, json=body, timeout=10)
+        assert r.status_code == 200, r.text
+        assert r.json()["data"] == [{"id": 2, "name": NAME}], r.text
+        assert r.json()["next"] == "/find?offset=2&limit=1", r.text

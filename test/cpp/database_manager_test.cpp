@@ -483,6 +483,12 @@ TEST_CASE_METHOD(TestFixture, "DatabaseManager executeWrite returns the rows of 
         CHECK(ids(r) == std::vector<std::string>{"3", "4"});
         CHECK(r.rows_affected == 1);
     }
+    SECTION("a trailing comment after the final SELECT") {
+        auto r = write("UPDATE test_sel SET name = 'x' WHERE id = 1; "
+                       "SELECT id FROM test_sel WHERE id >= 2 ORDER BY id;\n-- done");
+        CHECK(ids(r) == two_three);
+        CHECK(r.rows_affected == 1);
+    }
     SECTION("without returns-data a SELECT is not data") {
         endpoint.operation.returns_data = false;
         auto r = write("SELECT id FROM test_sel");
