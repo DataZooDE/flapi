@@ -12,6 +12,7 @@ Exercised against a real server for all three cache modes, with the source
 changing between refreshes so the incremental paths are the ones measured.
 """
 import os
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -234,7 +235,9 @@ def server():
             proc.wait(timeout=15)
         except subprocess.TimeoutExpired:
             os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait(timeout=15)
         log.close()
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def refresh(s, path):

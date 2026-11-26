@@ -10,6 +10,7 @@ re-enabled a disabled cache; `?limit=1;SELECT 1` was spliced into
 
 import os
 import subprocess
+import shutil
 import tempfile
 import time
 
@@ -69,6 +70,7 @@ def server():
     yield base
     proc.terminate()
     proc.wait(timeout=30)
+    shutil.rmtree(tmp, ignore_errors=True)
 
 
 H = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}

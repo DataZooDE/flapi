@@ -20,6 +20,7 @@ nothing under examples/ is touched.
 """
 import os
 import signal
+import shutil
 import subprocess
 import tempfile
 import time
@@ -43,6 +44,20 @@ ABORT_EXIT_CODES = (134, -int(signal.SIGABRT))
 # subprocess timeouts: a lock conflict is detected before any query runs, so
 # a startup failure that takes this long is a hang, not slowness.
 PROMPT_EXIT_SECONDS = 30
+
+
+@pytest.fixture
+def scratch():
+    """mkdtemp() factory; every dir it hands out is removed after the test (#263)."""
+    made = []
+
+    def make(prefix):
+        made.append(tempfile.mkdtemp(prefix=prefix))
+        return made[-1]
+
+    yield make
+    for d in made:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def _write_config(tmp, port, ducklake_dir):
@@ -176,14 +191,14 @@ class TestLockedCacheFile:
 class TestPortAlreadyBound:
     """Requirement 2: a bind failure used to exit 0."""
 
-    def test_an_already_bound_port_exits_non_zero(self):
+    def test_an_already_bound_port_exits_non_zero(self, scratch):
         with _Holder() as first:
             # A SEPARATE DuckLake directory, so the database initialises
             # cleanly and the bind is the only thing that can fail. Without
             # this the process would die at the lock instead and the test
             # would be a duplicate of the one above.
-            tmp = tempfile.mkdtemp(prefix="flapi_startup_bind_")
-            ducklake = tempfile.mkdtemp(prefix="flapi_startup_bind_dl_")
+            tmp = scratch("flapi_startup_bind_")
+            ducklake = scratch("flapi_startup_bind_dl_")
             cfg = _write_config(tmp, first.port, ducklake)
             r, elapsed = _run_second(cfg, tmp, first.port)
 
@@ -196,10 +211,10 @@ class TestPortAlreadyBound:
         assert elapsed < PROMPT_EXIT_SECONDS, (
             f"took {elapsed:.1f}s to give up on a bound port")
 
-    def test_the_error_names_the_bind(self):
+    def test_the_error_names_the_bind(self, scratch):
         with _Holder() as first:
-            tmp = tempfile.mkdtemp(prefix="flapi_startup_bind_")
-            ducklake = tempfile.mkdtemp(prefix="flapi_startup_bind_dl_")
+            tmp = scratch("flapi_startup_bind_")
+            ducklake = scratch("flapi_startup_bind_dl_")
             cfg = _write_config(tmp, first.port, ducklake)
             r, _ = _run_second(cfg, tmp, first.port)
         combined = r.stdout + r.stderr

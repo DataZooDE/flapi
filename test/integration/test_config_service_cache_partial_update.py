@@ -7,6 +7,7 @@
 
 import os
 import subprocess
+import shutil
 import tempfile
 import time
 
@@ -53,6 +54,7 @@ def server():
     yield base
     proc.terminate()
     proc.wait(timeout=30)
+    shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _cache(base):

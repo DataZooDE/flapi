@@ -10,6 +10,7 @@ Found by the crew review of the server and reproduced against a real binary:
 import json
 import os
 import subprocess
+import shutil
 import tempfile
 import time
 
@@ -78,12 +79,18 @@ class _Server:
         self.proc.terminate()
         self.proc.wait(timeout=30)
 
+    def cleanup(self):
+        """Remove both scratch dirs; separate from stop() so the log can be read first."""
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        shutil.rmtree(self.outside, ignore_errors=True)
+
 
 @pytest.fixture(scope="module")
 def server():
     s = _Server("cors:\n  allow-origins:\n    - 'https://allowed.example'\n")
     yield s
     s.stop()
+    s.cleanup()
 
 
 class TestTemplatePathContainment:
@@ -147,7 +154,9 @@ class TestCorsAllowlist:
 def test_a_supplied_token_is_not_printed():
     s = _Server()
     s.stop()  # stdout is block-buffered into the file: stopping flushes it
-    out = open(s.log).read()
+    with open(s.log) as f:
+        out = f.read()
+    s.cleanup()
     assert "CONFIG SERVICE ENABLED" in out, out[-500:]
     assert TOKEN not in out, "the supplied config-service token was written to stdout"
 

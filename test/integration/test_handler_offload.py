@@ -20,6 +20,7 @@ FLAPI_DISABLE_HANDLER_OFFLOAD=1 and must fail there.
 import json
 import os
 import subprocess
+import shutil
 import tempfile
 import threading
 import time
@@ -89,6 +90,7 @@ class _Server:
             except ProcessLookupError:
                 pass
             self.proc.wait(timeout=30)
+        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def __enter__(self):
         return self.start()

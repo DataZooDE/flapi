@@ -14,6 +14,7 @@ Each test starts its own server over its own DuckLake catalog. Covered:
 import glob
 import json
 import os
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -72,8 +73,20 @@ def endpoint(path, table, template, cache_extra=""):
     ), template
 
 
+_ROOTS = []
+
+
+@pytest.fixture(autouse=True)
+def _remove_roots():
+    """A root outlives stop() (tests restart on it), so drop them per test (#263)."""
+    yield
+    while _ROOTS:
+        shutil.rmtree(_ROOTS.pop(), ignore_errors=True)
+
+
 def make_root(cfg, endpoints):
     root = tempfile.mkdtemp(prefix="flapi_sched_")
+    _ROOTS.append(root)
     os.makedirs(os.path.join(root, "sqls"))
     with open(os.path.join(root, "flapi.yaml"), "w") as f:
         f.write(cfg)
