@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <map>
 #include <string>
 #include <string_view>
@@ -9,8 +10,8 @@ namespace flapi {
 
 /// The reserved prefix under which flAPI injects the authenticated principal
 /// into a template context, surfaced to templates as `auth.username`,
-/// `auth.roles`, `auth.groups`, `auth.email`, `auth.type` and
-/// `auth.authenticated`.
+/// `auth.roles`, `auth.role_list`, `auth.roles_sql`, `auth.groups`,
+/// `auth.groups_sql`, `auth.email`, `auth.type` and `auth.authenticated`.
 ///
 /// It is SERVER data. A caller must never be able to supply it - a template
 /// filtering rows on `'{{{ auth.username }}}'`, the documented multi-tenant
@@ -43,10 +44,11 @@ inline bool ContainsControlCharacter(std::string_view value) {
 }
 
 /// Why an authenticated identity is refused, or nullptr when it is fine: a
-/// control character in any value, or a comma in a role or group. Roles and
-/// groups are joined with commas for `auth.roles` / `auth.groups` and split on
-/// them again (MCP allowed-roles, `string_split('{{{ auth.roles }}}', ',')`),
-/// so a role "reader,admin" would read as two roles.
+/// control character in any value, or a comma in a role. Roles are joined
+/// with commas for `auth.roles` and split on them again (MCP allowed-roles,
+/// `string_split('{{{ auth.roles }}}', ',')`), so a role "reader,admin" would
+/// read as two roles. Groups are a list (`auth.groups`), never joined with
+/// commas, so a comma in a group name ("CN=admins,OU=staff") is fine.
 inline const char* IdentityRefusal(std::string_view username, std::string_view email,
                                    const std::vector<std::string>& roles,
                                    const std::vector<std::string>& groups) {
@@ -65,22 +67,40 @@ inline const char* IdentityRefusal(std::string_view username, std::string_view e
         if (ContainsControlCharacter(group)) {
             return "the identity contains a control character";
         }
-        if (group.find(',') != std::string::npos) {
-            return "a group contains a comma";
-        }
     }
     return nullptr;
 }
 
-/// `values` joined with commas: how `auth.roles` and `auth.groups` reach a
-/// template.
-inline std::string JoinIdentityList(const std::vector<std::string>& values) {
+/// Separates the items of a list-valued `__auth_*` parameter (`__auth_groups`).
+/// A control character: IdentityRefusal guarantees no item contains one.
+inline constexpr char kIdentityListSeparator = '\x1f';
+
+/// `values` joined with `separator`, empty items dropped: `,` for
+/// `auth.roles`, kIdentityListSeparator for `__auth_groups`.
+inline std::string JoinIdentityList(const std::vector<std::string>& values, char separator = ',') {
     std::string out;
     for (const auto& value : values) {
+        if (value.empty()) {
+            continue;
+        }
         if (!out.empty()) {
-            out += ',';
+            out += separator;
         }
         out += value;
+    }
+    return out;
+}
+
+/// The non-empty items of `joined`, split at `separator`.
+inline std::vector<std::string> SplitIdentityList(const std::string& joined, char separator) {
+    std::vector<std::string> out;
+    std::size_t start = 0;
+    while (start <= joined.size()) {
+        const std::size_t end = std::min(joined.find(separator, start), joined.size());
+        if (end > start) {
+            out.push_back(joined.substr(start, end - start));
+        }
+        start = end + 1;
     }
     return out;
 }

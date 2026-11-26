@@ -478,6 +478,35 @@ public:
         _problems.push_back(MustacheVariable{name, 1, 1, detail, offset});
     }
 
+    // A SQL expression (auth.groups_sql): it must stand where a value does,
+    // in code, and not in any call whose text another function executes
+    // (directly, or by an argument literal that holds SQL quoting).
+    void Expression(const std::string& name, std::size_t offset, SqlScan& scan) {
+        MustacheVariable value{name, 1, 1, "", offset};
+        if (scan.region != SqlRegion::Code) {
+            value.detail = DescribeRegion(scan.region) +
+                           std::string(" (a SQL list literal stands where a value does, outside quotes, "
+                                       "comments and identifiers)");
+            _problems.push_back(std::move(value));
+            return;
+        }
+        for (const auto& call : scan.calls) {
+            if (call.executes_sql) {
+                value.detail = "inside a call to " + call.name + "(...), SQL text another function executes. " +
+                               kExecutedText;
+                _problems.push_back(std::move(value));
+                return;
+            }
+        }
+        // Judged when the enclosing call closes, like a literal argument.
+        for (auto it = scan.calls.rbegin(); it != scan.calls.rend(); ++it) {
+            if (it->is_call) {
+                it->pending.push_back(std::move(value));
+                return;
+            }
+        }
+    }
+
     void Handle(SqlEvent event, SqlScan& scan) {
         if (event == SqlEvent::LiteralClosed) {
             LiteralClosed(scan);
@@ -605,8 +634,8 @@ std::string ResolveTagName(const std::string& name, const std::vector<OpenAuthSc
         return name;
     }
     const std::string first = name.substr(0, name.find('.'));
-    static const std::vector<std::string> kAuthFields = {"username", "email", "roles", "groups", "type",
-                                                               "authenticated"};
+    static const std::vector<std::string> kAuthFields = {"username", "email", "roles", "role_list", "roles_sql",
+                                                         "groups", "groups_sql", "type", "authenticated"};
     for (auto it = sections.rbegin(); it != sections.rend(); ++it) {
         if (!it->inverted && it->resolved == "auth") {
             for (const auto& field : kAuthFields) {
@@ -619,6 +648,23 @@ std::string ResolveTagName(const std::string& name, const std::vector<OpenAuthSc
     }
     return name;
 }
+
+bool IsAuthField(const std::string& resolved, const char* field) {
+    const std::string name = std::string("auth.") + field;
+    return resolved == name || resolved.rfind(name + ".", 0) == 0;
+}
+
+} // namespace
+
+bool IsAuthListName(const std::string& resolved) {
+    return resolved == "auth.groups" || resolved == "auth.role_list";
+}
+
+bool IsAuthExpressionName(const std::string& resolved) {
+    return IsAuthField(resolved, "groups_sql") || IsAuthField(resolved, "roles_sql");
+}
+
+namespace {
 
 // auth.authenticated is "true" or empty, set by the server: safe anywhere.
 bool IsIdentityValue(const std::string& resolved) {
@@ -700,10 +746,22 @@ std::vector<MustacheVariable> FindUnquotedAuthVariables(const std::string& body)
                 ++next;
             }
         }
-        const std::string resolved = ResolveTagName(TrimSpaces(body, name_begin, close), sections);
+        const std::string tag = TrimSpaces(body, name_begin, close);
+        const std::string resolved = ResolveTagName(tag, sections);
         if (IsIdentityValue(resolved)) {
             mentions_auth = true;
-            collector.Value(resolved, i, scan);
+            if (tag != "." && IsAuthListName(resolved)) {
+                // A list as a value: crow cannot render it, and its items
+                // need a literal each.
+                collector.Problem(resolved, i,
+                                  "a list, not a value: write {{#" + resolved + "}}'{{.}}'{{/" + resolved +
+                                      "}} or use " +
+                                      (resolved == "auth.groups" ? "auth.groups_sql" : "auth.roles_sql"));
+            } else if (IsAuthExpressionName(resolved)) {
+                collector.Expression(resolved, i, scan);
+            } else {
+                collector.Value(resolved, i, scan);
+            }
         }
         i = next;
     }
@@ -753,7 +811,11 @@ std::vector<MustacheVariable> FindUnsafeAuthMarkers(const std::string& sql, cons
                     break;
                 }
             }
-            collector.Value(found != nullptr ? found->name : std::string("auth.*"), i, scan);
+            if (found != nullptr && found->expression) {
+                collector.Expression(found->name, i, scan);
+            } else {
+                collector.Value(found != nullptr ? found->name : std::string("auth.*"), i, scan);
+            }
             ++seen;
             i += found != nullptr ? found->marker.size() : prefix.size();
             continue;
@@ -829,13 +891,23 @@ std::optional<std::string> CheckAuthPlacement(const std::string& body, const std
                                                      {prefix + "bz", "auth.roles", ""},
                                                      {prefix + "cz", "auth.email", ""},
                                                      {prefix + "dz", "auth.type", ""},
-                                                     {prefix + "ez", "auth.groups", ""}};
+                                                     {prefix + "e0z", "auth.groups", ""},
+                                                     {prefix + "f0z", "auth.role_list", ""},
+                                                     {prefix + "gz", "auth.groups_sql", "", true},
+                                                     {prefix + "hz", "auth.roles_sql", "", true}};
             crow::mustache::context ctx;
             ctx["auth"]["username"] = markers[0].marker;
             ctx["auth"]["roles"] = markers[1].marker;
             ctx["auth"]["email"] = markers[2].marker;
             ctx["auth"]["type"] = markers[3].marker;
-            ctx["auth"]["groups"] = markers[4].marker;
+            crow::json::wvalue::list groups;
+            groups.emplace_back(markers[4].marker);
+            ctx["auth"]["groups"] = std::move(groups);
+            crow::json::wvalue::list role_list;
+            role_list.emplace_back(markers[5].marker);
+            ctx["auth"]["role_list"] = std::move(role_list);
+            ctx["auth"]["groups_sql"] = markers[6].marker;
+            ctx["auth"]["roles_sql"] = markers[7].marker;
             ctx["auth"]["authenticated"] = "true";
             const std::string sql = crow::mustache::compile(body).render(ctx).dump();
             problems = FindUnsafeAuthMarkers(sql, prefix, markers);

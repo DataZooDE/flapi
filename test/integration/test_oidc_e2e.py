@@ -216,7 +216,9 @@ class FlapiServer:
                     "'{{#auth.groups}}{{.}}|{{/auth.groups}}' AS groups, "
                     "'{{#auth.role_list}}{{.}}|{{/auth.role_list}}' AS role_items, "
                     "list_contains({{{ auth.groups_sql }}}, 'CN=admins,OU=staff') AS ldap_admin, "
-                    "list_contains({{{ auth.groups_sql }}}, 'O''Brien''s team') AS quoted_group, "
+                    # chr(39), not '': a literal holding '' beside auth.* is refused as SQL text.
+                    "list_contains({{{ auth.groups_sql }}}, 'O' || chr(39) || 'Brien' || chr(39) || 's team') "
+                    "AS quoted_group, "
                     "list_contains({{{ auth.roles_sql }}}, 'analyst') AS analyst, "
                     "len({{{ auth.groups_sql }}}) AS group_count, "
                     "'{{{ auth.type }}}' AS auth_type\n")

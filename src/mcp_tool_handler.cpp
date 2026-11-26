@@ -36,7 +36,7 @@ std::unordered_map<std::string, std::string> mcpAuthContextFrom(
         context[MCPToolCallRequest::kEmailContextKey] = auth->email;
     }
     if (!auth->groups.empty()) {
-        context[MCPToolCallRequest::kGroupsContextKey] = JoinIdentityList(auth->groups);
+        context[MCPToolCallRequest::kGroupsContextKey] = JoinIdentityList(auth->groups, kIdentityListSeparator);
     }
     if (!auth->roles.empty()) {
         std::string roles_csv;

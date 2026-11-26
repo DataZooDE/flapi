@@ -478,13 +478,73 @@ crow::mustache::context SQLTemplateProcessor::createTemplateContext(const Endpoi
         {"__auth_roles",         "roles",    'b'},
         {"__auth_email",         "email",    'c'},
         {"__auth_type",          "type",     'd'},
-        {"__auth_groups",        "groups",   'e'},
         {"__auth_authenticated", "authenticated", '\0'},
     };
     if (auth != nullptr) {
         auth->prefix = NewAuthMarkerPrefix();
         auth->markers.clear();
     }
+    // The lists: auth.groups (from __auth_groups, items separated by
+    // kIdentityListSeparator, so a comma in a group name is fine) and
+    // auth.role_list (from the comma-joined __auth_roles). Read before the
+    // scalar loop below erases __auth_roles.
+    const auto list_param = [&params](const char* key, char separator) {
+        const auto it = params.find(key);
+        return it == params.end() ? std::vector<std::string>() : SplitIdentityList(it->second, separator);
+    };
+    const std::vector<std::string> group_items = list_param("__auth_groups", kIdentityListSeparator);
+    const std::vector<std::string> role_items = list_param("__auth_roles", ',');
+    params.erase("__auth_groups");
+    for (const auto& item : group_items) {
+        if (ContainsControlCharacter(item)) {
+            throw std::invalid_argument("auth.groups contains a control character; refusing to render it");
+        }
+    }
+    const auto quote = [](const std::string& value) {
+        std::string quoted;
+        quoted.reserve(value.size());
+        for (const char c : value) {
+            quoted += c;
+            if (c == '\'') {
+                quoted += '\'';
+            }
+        }
+        return quoted;
+    };
+    // ['a','b']::VARCHAR[] - typed, so an empty list is a VARCHAR[] too.
+    const auto sql_list = [&quote](const std::vector<std::string>& items) {
+        std::string out = "[";
+        for (std::size_t i = 0; i < items.size(); ++i) {
+            out += (i == 0 ? "'" : ",'") + quote(items[i]) + "'";
+        }
+        return out + "]::VARCHAR[]";
+    };
+    const auto put_list = [&](const char* ctx_key, char letter, const std::vector<std::string>& items) {
+        crow::json::wvalue::list list;
+        if (auth != nullptr) {
+            for (std::size_t i = 0; i < items.size(); ++i) {
+                std::string marker = auth->prefix + letter + std::to_string(i) + 'z';
+                list.emplace_back(marker);
+                auth->markers.push_back(
+                    AuthMarker{std::move(marker), std::string("auth.") + ctx_key, quote(items[i])});
+            }
+        }
+        ctx["auth"][ctx_key] = std::move(list);
+    };
+    const auto put_expression = [&](const char* ctx_key, char letter, const std::vector<std::string>& items) {
+        if (auth == nullptr) {
+            ctx["auth"][ctx_key] = "[]::VARCHAR[]";   // no identity: an empty list
+            return;
+        }
+        std::string marker = auth->prefix + letter + 'z';
+        ctx["auth"][ctx_key] = marker;
+        auth->markers.push_back(AuthMarker{std::move(marker), std::string("auth.") + ctx_key, sql_list(items), true});
+    };
+    put_list("groups", 'e', group_items);
+    put_list("role_list", 'f', role_items);
+    put_expression("groups_sql", 'g', group_items);
+    put_expression("roles_sql", 'h', role_items);
+
     for (const auto& [param_key, ctx_key, letter] : auth_keys) {
         auto it = params.find(param_key);
         if (it == params.end()) {

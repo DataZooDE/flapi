@@ -53,7 +53,15 @@ struct AuthMarker {
     std::string marker;  // prefix + one letter + 'z'
     std::string name;    // "auth.username"
     std::string value;   // what replaces it once the SQL is checked (already SQL-quoted)
+    // A whole SQL expression (auth.groups_sql: ['a','b']::VARCHAR[]), checked
+    // to stand where a value does, instead of a value inside a '...' literal.
+    bool expression = false;
 };
+
+/// The auth.* names that are lists, for a section only (`{{#auth.groups}}'{{.}}'{{/auth.groups}}`).
+bool IsAuthListName(const std::string& resolved);
+/// The auth.* names that render a SQL list expression (auth.groups_sql, auth.roles_sql).
+bool IsAuthExpressionName(const std::string& resolved);
 
 // Every variable (`{{x}}`, `{{{x}}}`, `{{&x}}`) and section (`{{#x}}`, `{{^x}}`)
 // name in `body`, in source order. Closing tags, comments, partials and

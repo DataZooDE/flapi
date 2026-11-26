@@ -601,7 +601,7 @@ void APIServer::handleDynamicRequest(const crow::request& req, crow::response& r
             roles += r;
         }
         auth_params["__auth_roles"] = roles;
-        auth_params["__auth_groups"] = JoinIdentityList(auth_ctx.groups);
+        auth_params["__auth_groups"] = JoinIdentityList(auth_ctx.groups, kIdentityListSeparator);
     }
 
     // A database invalidated by an internal error fails every query until the

@@ -53,7 +53,7 @@ struct MCPToolCallRequest {
     static constexpr const char* kUsernameContextKey = "auth.username";
     static constexpr const char* kAuthTypeContextKey = "auth.type";
     static constexpr const char* kEmailContextKey = "auth.email";
-    static constexpr const char* kGroupsContextKey = "auth.groups";   // comma-joined, like roles
+    static constexpr const char* kGroupsContextKey = "auth.groups";   // joined with kIdentityListSeparator
 
     /// True once the caller has been authenticated. Set alongside the keys
     /// above so a tool can distinguish "anonymous" from "authenticated with an
