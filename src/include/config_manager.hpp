@@ -905,6 +905,16 @@ public:
     /// digests and never appear in the message.
     ///
     /// `replacing`: the endpoint an update replaces, which is not compared.
+    /// `flapi --strict`, once the startup audit passed: endpoints that arrive
+    /// LATER (config-service create/update, reload, reload-file) are audited
+    /// too, and refused when they carry a security warning.
+    void setStrictSecurity(bool strict) { strict_security_ = strict; }
+    bool isStrictSecurity() const { return strict_security_; }
+    /// "" or why `candidate` is refused under --strict: the SecurityAuditor
+    /// codes and messages of its endpoint-level findings. Always "" without
+    /// --strict.
+    std::string StrictSecurityProblem(const EndpointConfig& candidate) const;
+
     std::string DuplicateEndpointProblem(const EndpointConfig& candidate,
                                          const EndpointConfig* replacing = nullptr) const;
     /// Logs every allowed overlap of `candidate` with a loaded endpoint: a
@@ -1029,6 +1039,8 @@ protected:
     std::unordered_map<std::string, ConnectionConfig> connections;
     RateLimitConfig rate_limit_config;
     bool auth_enabled;
+    // Set once by main() before the server starts serving; read-only after.
+    bool strict_security_ = false;
     AuthConfig global_auth_config;
     // Copy-on-write; never mutated in place once published. Guarded by
     // endpoints_mutex for writers; readers take the shared_ptr under the same

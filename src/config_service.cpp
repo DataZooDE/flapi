@@ -1969,6 +1969,12 @@ Outcome CreateFromDocument(ConfigManager& cm, const YAML::Node& doc) {
             outcome.error = duplicate;
             return outcome;
         }
+        if (const auto refused = cm.StrictSecurityProblem(outcome.config); !refused.empty()) {
+            cleanup();
+            outcome.status = 400;
+            outcome.error = refused;
+            return outcome;
+        }
         cm.LogRouteOverlaps(outcome.config);
         cm.addEndpoint(outcome.config);
     } catch (const std::exception& e) {
@@ -2082,6 +2088,12 @@ Outcome UpdateFromPatch(ConfigManager& cm, const EndpointConfig& existing, const
             restore();
             outcome.status = 409;
             outcome.error = problem;
+            return outcome;
+        }
+        if (const auto refused = cm.StrictSecurityProblem(outcome.config); !refused.empty()) {
+            restore();
+            outcome.status = 400;
+            outcome.error = refused;
             return outcome;
         }
         cm.LogRouteOverlaps(outcome.config, &existing);
@@ -2335,6 +2347,9 @@ crow::response EndpointConfigHandler::updateExisting(const crow::request& req, c
     }
     if (const auto problem = config_manager_->DuplicateEndpointProblem(updated_config, &existing); !problem.empty()) {
         return jsonError(409, problem);
+    }
+    if (const auto refused = config_manager_->StrictSecurityProblem(updated_config); !refused.empty()) {
+        return jsonError(400, refused);
     }
     for (const auto& source : {updated_config.templateSource,
                                updated_config.cache.template_file.value_or(std::string())}) {

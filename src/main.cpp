@@ -1327,6 +1327,9 @@ int main(int argc, char* argv[])
         std::cerr << "✗ Refusing to start. " << *strict_refusal << std::endl;
         return 1;
     }
+    // From here on, an endpoint created or reloaded at run time is audited
+    // too and refused when it has a security warning.
+    config_manager->setStrictSecurity(strict);
 
     // Resolve no_telemetry: CLI flag > FLAPI_NO_TELEMETRY env > config file
     if (!no_telemetry) {
