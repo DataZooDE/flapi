@@ -1867,13 +1867,8 @@ void ConfigManager::parseEndpointCache(const YAML::Node& endpoint_config, const 
         }
     }
 
-    if (endpoint.cache.enabled && !endpoint.cache.table.empty() && !endpoint.cache.template_file) {
-        const std::string name = !endpoint.urlPath.empty() ? endpoint.urlPath : endpoint.templateSource;
-        CROW_LOG_WARNING << "cache on " << name
-                         << " has no template-file: its endpoint template is materialised with a full refresh; "
-                            "declare template-file for incremental refreshes and read the cache table from "
-                            "template-source";
-    }
+    // A cache without template-file is checked by EndpointConfigParser once the
+    // operation type is known (a write endpoint's is a load error, #276).
 
     CROW_LOG_DEBUG << "\t\tCache Enabled: " << (endpoint.cache.enabled ? "true" : "false");
     CROW_LOG_DEBUG << "\t\tCache Table: " << endpoint.cache.table;
@@ -4339,7 +4334,16 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
             result.errors.push_back(*syntax);
         }
     }
-    
+    // #276: the YAML load refuses this too; repeated here for endpoints that
+    // reach validation without it (config-service create/update from JSON).
+    if (config.cache.enabled && !config.cache.table.empty() && !config.cache.template_file &&
+        config.operation.type == OperationConfig::Write) {
+        result.valid = false;
+        result.errors.emplace_back(
+            "a write endpoint's cache needs template-file: without one the populate SQL would be the "
+            "endpoint's own write template, run again on every refresh");
+    }
+
     return result;
 }
 

@@ -101,7 +101,9 @@ void writeCached(TempTestConfig& temp, const std::string& file, const std::strin
                  const std::string& method = "GET") {
     temp.writeEndpoint(file, "url-path: " + path + "\nmethod: " + method +
                                  "\ntemplate-source: serve.sql\nconnection: [test]\ncache:\n  enabled: true\n"
-                                 "  schema: main\n  table: " + table + "\n");
+                                 "  schema: main\n  table: " + table + "\n" +
+                                 // A write endpoint's cache needs one (#276).
+                                 (method == "GET" ? "" : "  template-file: serve.sql\n"));
 }
 
 const EndpointConfig& endpointFor(const std::shared_ptr<ConfigManager>& cm, const std::string& table) {

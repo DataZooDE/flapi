@@ -173,6 +173,13 @@ private:
         const YAML::Node& yaml_node,
         EndpointConfig& config
     );
+
+    /**
+     * @brief A cache without template-file: a load error on a write endpoint
+     *        (#276), a warning otherwise. Needs the operation type, so it runs
+     *        after parseOperationConfig.
+     */
+    static void checkCacheTemplateFile(const EndpointConfig& config);
 };
 
 } // namespace flapi

@@ -33,6 +33,7 @@ connection:
 cache:
   enabled: true
   table: customers_cache
+  template-file: customers_cache.sql   # Required on a write endpoint: rebuilds the cache table
   invalidate-on-write: true
   refresh-on-write: false
 

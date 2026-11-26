@@ -28,6 +28,7 @@ connection:
 cache:
   enabled: true
   table: orders_cache
+  template-file: orders_cache.sql   # Required on a write endpoint: rebuilds the cache table
   invalidate-on-write: true   # Refresh the cache before the delete's response
   refresh-on-write: false
 

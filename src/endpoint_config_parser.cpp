@@ -489,6 +489,32 @@ void EndpointConfigParser::parseCommonFields(
     
     // Parse operation configuration (can override method-based defaults)
     parseOperationConfig(yaml_node, config);
+
+    // Checked here, after parseOperationConfig: only now is it known whether this
+    // is a write endpoint (an explicit operation.type overrides the method).
+    checkCacheTemplateFile(config);
+}
+
+void EndpointConfigParser::checkCacheTemplateFile(const EndpointConfig& config) {
+    const auto& cache = config.cache;
+    if (!cache.enabled || cache.table.empty() || cache.template_file) {
+        return;
+    }
+    const std::string name = !config.urlPath.empty() ? config.urlPath : config.getName();
+    if (config.operation.type == OperationConfig::Write) {
+        // #276: without template-file the populate SQL is the endpoint's own
+        // template - here the INSERT/UPDATE/DELETE - and every refresh (warm-up,
+        // schedule, refresh-on-write) ran the write again.
+        throw std::runtime_error(
+            "endpoint " + name + ": a write endpoint's cache needs template-file: without one the populate "
+            "SQL would be the endpoint's own write template, run again on every refresh. Declare "
+            "cache.template-file with SQL that rebuilds " + cache.table +
+            " (e.g. CREATE OR REPLACE TABLE {{cache.catalog}}.{{cache.schema}}.{{cache.table}} AS SELECT ...)");
+    }
+    CROW_LOG_WARNING << "cache on " << name
+                     << " has no template-file: the endpoint's own template is the populate SQL; a single "
+                        "SELECT is materialised into the cache table with a full refresh, whatever "
+                        "primary-key/cursor imply. Declare template-file for an incremental refresh";
 }
 
 void EndpointConfigParser::parseOperationConfig(
