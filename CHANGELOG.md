@@ -48,8 +48,11 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 ### Added
 
 - **`flapi --strict` (#275).** Security warnings become errors: `--validate-config --strict`
-  exits `1` when the auditor reports any, and `flapi --strict` refuses to start. Without the
-  flag nothing changes.
+  exits `1` when the auditor reports any, and `flapi --strict` refuses to start. A `--strict`
+  server also refuses (400) a config-service create/update or a `reload-file` whose endpoint
+  has a finding. The description scanner's findings now appear as security warnings
+  (`MCP_DESCRIPTION_*`) and count too. The `examples/` demo configs fail under `--strict` on
+  purpose. Without the flag nothing changes.
 
 ### Upgrade notes
 

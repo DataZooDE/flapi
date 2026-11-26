@@ -705,9 +705,24 @@ Two more warnings are about MCP:
 
 - `MCP_TOOL_NO_ALLOWED_ROLES`: `mcp.auth` is on and a tool, resource or prompt has no
   `allowed-roles`, so every caller gets a 403 (the `no_roles` tool above).
-- `MCP_TOOL_BYPASSES_REST_AUTH`: `mcp.auth` is off and an endpoint whose REST route
-  requires authentication is also an `mcp-tool`. The warning names the endpoint: its
-  data is open through `/mcp/jsonrpc`.
+- `MCP_TOOL_BYPASSES_REST_AUTH`: `mcp.auth` is off and an endpoint with an `auth:` block
+  (or the top-level `auth:`) is also an `mcp-tool`. An endpoint's `auth:` block does not
+  apply to MCP, so its data is open through `/mcp/jsonrpc`. The warning names the file.
+- `MCP_DESCRIPTION_PROMPT_INJECTION`, `MCP_DESCRIPTION_CONTROL_CHARACTER`,
+  `MCP_DESCRIPTION_TOO_LONG`: the description scanner's findings on a tool description.
+
+Two warnings are about the endpoint file itself, and matter for tools too:
+
+- `ENDPOINT_AUTH_KEY_IGNORED`: the file has a key flAPI does not read that starts with `auth`
+  (`authentication:`, `Auth:`) and no `auth:` block. The endpoint is open (or uses the
+  top-level `auth:`) although the file reads as protected. Rename the key to `auth:`.
+- `ENDPOINT_DUPLICATE_AUTH_KEY`: the file has `auth` more than once after include expansion
+  (two blocks, or an `{{include:... as auth}}` beside one). Only the first counts, so the
+  block you meant can be the one ignored. Keep one.
+
+`flapi --validate-config --strict` fails on any of these, and on every other security
+warning; `flapi --strict` refuses to start, and refuses (400) an endpoint created or
+reloaded later that has one. See [CLI_REFERENCE § --strict](../CLI_REFERENCE.md#strict-security---strict).
 
 ## Threat model and safe defaults
 

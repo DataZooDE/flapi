@@ -348,17 +348,35 @@ Treats the security auditor's warnings as errors.
 
 **Description:**
 
-Every run prints the auditor's `SECURITY WARNINGS` banner (plaintext passwords,
-`MCP_UNAUTHENTICATED_TOOLS`, `MCP_TOOL_NO_ALLOWED_ROLES`, `MCP_TOOL_BYPASSES_REST_AUTH`,
-`ENDPOINT_DUPLICATE_AUTH_KEY`,
-`CORS_WILDCARD_WITH_AUTH`, ...). Without `--strict` they never stop anything. With it:
+Every run prints the auditor's `SECURITY WARNINGS` banner. Without `--strict` they never stop
+anything. With it, **every** security finding counts:
+
+- the auth warnings: `AUTH_PLAINTEXT_PASSWORD`, `AUTH_MD5_PASSWORD`, `AUTH_BCRYPT_UNSUPPORTED`,
+  `AUTH_EMPTY_JWT_SECRET`, `AUTH_UNKNOWN_TYPE`, `CORS_WILDCARD_WITH_AUTH`,
+  `CREDENTIAL_TOO_SHORT_TO_REDACT`;
+- the MCP warnings: `MCP_UNAUTHENTICATED_TOOLS`, `MCP_TOOL_NO_ALLOWED_ROLES` (no or empty
+  `allowed-roles` under `mcp.auth`), `MCP_TOOL_BYPASSES_REST_AUTH`;
+- the endpoint-file warnings: `ENDPOINT_AUTH_KEY_IGNORED` (an unread `auth*` key and no `auth:`
+  block), `ENDPOINT_DUPLICATE_AUTH_KEY` (`auth` more than once after include expansion);
+- the MCP description scanner's findings: `MCP_DESCRIPTION_CONTROL_CHARACTER`,
+  `MCP_DESCRIPTION_TOO_LONG`, `MCP_DESCRIPTION_PROMPT_INJECTION`. (`mcp.strict-descriptions: true`
+  refuses those at load, with or without `--strict`.)
+
+What happens:
 
 - `--validate-config --strict` still prints the full validation, then exits `1` if there was any
   security warning: `✗ --strict: 2 security warning(s) (AUTH_PLAINTEXT_PASSWORD, MCP_TOOL_NO_ALLOWED_ROLES). Fix them, or run without --strict.`
 - `flapi --strict` refuses to start the server (exit `1`, before the port is bound) with
   `✗ Refusing to start. --strict: ...`.
+- A server started with `--strict` audits endpoints that arrive later too. A config-service
+  create or update (`POST`/`PUT /api/v1/_config/endpoints...`) or a `reload-file` whose endpoint
+  has a finding is refused with **400** and `Refused under --strict: the endpoint has N security
+  warning(s): [CODE] message ...`; nothing is loaded. A full reload fails that endpoint the same
+  way.
 
-A config with no warning behaves exactly as without the flag.
+A config with no warning behaves exactly as without the flag. The demo configs in `examples/`
+(`flapi.yaml`, `flapi-test.yaml`) **fail** under `--strict` on purpose: they use plaintext
+passwords, an open MCP server and a wildcard CORS origin to keep the first run simple.
 
 **Example:**
 

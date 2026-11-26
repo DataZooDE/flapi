@@ -611,6 +611,12 @@ The same endpoint answers REST too, through the top-level `auth:`: bob gets the
 same two segments from `GET /segment-balances`. Remove `url-path` if the tool
 should be the only way in.
 
+Two startup warnings catch an endpoint file that reads as protected and is not:
+`ENDPOINT_AUTH_KEY_IGNORED` (a key such as `authentication:` or `Auth:` that flAPI does not
+read, and no `auth:` block: rename it to `auth:`) and `ENDPOINT_DUPLICATE_AUTH_KEY` (`auth`
+twice after include expansion: only the first counts). `--strict` turns these, and every other
+security warning, into a failure.
+
 The `401` names the scheme `mcp.auth.type` accepts: `WWW-Authenticate: Basic realm="flAPI"`
 for `basic`, `Bearer` for `bearer` and `oidc`. A `403` under `basic` has no
 `WWW-Authenticate`; under `bearer` it says `error="insufficient_scope"`.
