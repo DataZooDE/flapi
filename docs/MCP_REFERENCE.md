@@ -601,7 +601,7 @@ Tools without `allowed-roles` are denied — this is the secure-by-default stanc
 
 **Per-tool rate limit:** with an `mcp-tool.rate-limit` block (enabled unless `enabled: false`), a call over the budget gets a tool result with `isError: true` and `retry_after_seconds`, not a JSON-RPC error, so an agent can wait and retry. Rate limits are keyed on the authenticated principal (with an anonymous fallback bucket per tool).
 
-**Response shaping:** the tool's `mcp-tool.response` block (see [CONFIG_REFERENCE § 2.6](./CONFIG_REFERENCE.md#26-mcp-configuration)) applies redaction, row-count caps, or summary-only sampling to the result before it enters the content block.
+**Response shaping:** the tool's `mcp-tool.response` block (see [CONFIG_REFERENCE § 2.6](./CONFIG_REFERENCE.md#26-mcp-configuration)) applies redaction, row-count caps, or summary-only sampling to the result before it enters the content block. A shaped result keeps what an unshaped one has: every row's keys in SELECT column order, and every double in its shortest round-trip form (`711.56`, not `711.55999999999994543`). The same holds for `resources/read` and for a task's result under `tasks/get`.
 
 #### 4.4.1 Dry-run mode
 
@@ -739,7 +739,8 @@ unvalidated - a `{{{ params.id }}}` was open to injection on this surface only. 
 `mcp-tool.response`; without it the same file's `mcp-tool.response` applies, and `max-rows` defaults
 to **1000**. A capped read says so on the content item:
 `"_meta": {"truncated": true, "row_count": 16282, "max_rows": 1000}`. An empty result is
-`"text": "[]"` (it was a `-32603` internal error).
+`"text": "[]"` (it was a `-32603` internal error). The rows keep their SELECT column order and
+exact doubles, as on `tools/call`.
 
 > **Implementation:** `src/mcp_route_handlers.cpp`, `src/mcp_content_types.cpp` | **Tests:** `test/integration/test_mcp_integration.py`, `test/integration/test_cluster_e2_config_mcp.py`
 

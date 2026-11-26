@@ -2,6 +2,16 @@
 
 All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (the date the binary set was cut). Earlier history is in the git log.
 
+## Unreleased
+
+### Fixed
+
+- **Shaped MCP results keep the column order and the exact numbers (#275).** A tool with
+  `mcp-tool.response` (`redact-columns`, `max-rows`, `sample`), every `resources/read`, and a
+  task's result under `tasks/get` came back with each row's keys in a different order and
+  doubles re-printed with 21 digits (`711.56` as `711.55999999999994543`). They now match an
+  unshaped `tools/call`: SELECT column order, shortest round-trip doubles.
+
 ## v26.11.26 — auth.* identity values stay inside their SQL literal, OIDC works again, and a task guide for every feature
 
 ### Security

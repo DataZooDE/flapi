@@ -138,7 +138,7 @@ become `string` with `format`. A string validator's `regex` becomes `pattern`, a
 | `result-mime-type` | `application/json` | MIME type of the result |
 | `allowed-roles` | unset | Roles that may call it. **Required on every tool once `mcp.auth.enabled: true`**: a tool without it is denied. `[]` denies everyone. Ignored while MCP auth is off |
 | `response.max-rows` | unset | Cap rows returned to the agent |
-| `response.redact-columns` | `[]` | Replace these columns' values with `"<redacted>"` (the key stays) |
+| `response.redact-columns` | `[]` | Replace these columns' values with `"<redacted>"` (the key stays; columns stay in SELECT order) |
 | `response.sample` | `false` | Return only `{sampled, row_count, columns}`, never rows |
 | `rate-limit` | off | `{enabled, max, interval}`: per tool, per principal (anonymous callers share one bucket) |
 | `tracing.capture` | global | `off`/`metadata`/`payload` for this tool's spans |

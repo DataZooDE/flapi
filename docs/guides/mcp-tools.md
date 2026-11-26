@@ -382,7 +382,8 @@ mcp '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"customer_co
 # ... "c_phone":"<redacted>" ... "row_count":20
 ```
 
-`redact-columns` keeps the column, so the agent can see that it exists. The database still
+`redact-columns` keeps the column, so the agent can see that it exists. A shaped result keeps
+the columns in SELECT order and the numbers as the database returned them. The database still
 computes the full result before `max-rows` cuts it, so put a filter in front of a big
 query.
 
