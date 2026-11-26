@@ -539,6 +539,24 @@ TEST_CASE_METHOD(TestFixture, "DatabaseManager executeWrite knows RETURNING from
         REQUIRE(r.returned_data.has_value());
         CHECK(r.returned_data->size() == 2);
     }
+    SECTION("a real RETURNING with bound values, as a prepared statement") {
+        RequestFieldConfig id_field;
+        id_field.fieldName = "id";
+        id_field.fieldIn = "body";
+        ValidatorConfig int_validator;
+        int_validator.type = "int";
+        id_field.validators.push_back(int_validator);
+        endpoint.request_fields.push_back(id_field);
+        std::ofstream template_file(templates_dir / "ret_test.sql");
+        template_file << "INSERT INTO test_ret (id, returning_note) VALUES ({{ params.id }}, 'b') RETURNING id;";
+        template_file.close();
+        std::map<std::string, std::string> params{{"id", "7"}};
+        auto r = db_manager->executeWrite(endpoint, params);
+        CHECK(r.rows_affected == 1);
+        REQUIRE(r.returned_data.has_value());
+        REQUIRE(r.returned_data->size() == 1);
+        CHECK((*r.returned_data)[0]["id"].dump() == "7");
+    }
 }
 
 // #264: getTableColumns handed its schema/table to executeQuery(string, params),
