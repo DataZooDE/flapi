@@ -7,6 +7,7 @@
 #include "query_executor.hpp"
 #include "request_context.hpp"
 
+#include <cctype>
 #include <iostream>
 #include <map>
 #include <fstream>
@@ -459,10 +460,10 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
             if (endpoint.with_pagination && !endpoint.total_count) {
                 // `total-count: false`: no COUNT ran, so there is no total to report.
                 res.body = "{\"data\":" + rows_text +
-                           ",\"next\":" + crow::json::wvalue(createNextUrl(req, queryResult)).dump() + "}";
+                           ",\"next\":" + crow::json::wvalue(createNextUrl(req, queryResult, endpoint, params)).dump() + "}";
             } else if (endpoint.with_pagination) {
                 std::string body;
-                const std::string next = crow::json::wvalue(createNextUrl(req, queryResult)).dump();
+                const std::string next = crow::json::wvalue(createNextUrl(req, queryResult, endpoint, params)).dump();
                 body.reserve(rows_text.size() + next.size() + 48);
                 body += "{\"data\":";
                 body += rows_text;
@@ -482,7 +483,7 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
         }
         res.add_header("X-Offset", std::to_string(offset));
         res.add_header("X-Limit", std::to_string(limit));
-        res.add_header("X-Next", createNextUrl(req, queryResult));
+        res.add_header("X-Next", createNextUrl(req, queryResult, endpoint, params));
         res.end();
         return;
     } catch (const BadRequestError& e) {
@@ -576,16 +577,61 @@ void RequestHandler::parsePaginationParams(std::map<std::string, std::string>& p
     params["limit"] = std::to_string(limit);
 }
 
-std::string RequestHandler::createNextUrl(const crow::request& req, const QueryResult& queryResult) 
+namespace {
+
+// RFC 3986 percent-encoding of everything but the unreserved characters.
+std::string PercentEncode(const std::string& text) {
+    static const char* hex = "0123456789ABCDEF";
+    std::string out;
+    out.reserve(text.size());
+    for (const char c : text) {
+        const auto u = static_cast<unsigned char>(c);
+        if (std::isalnum(u) || c == '-' || c == '.' || c == '_' || c == '~') {
+            out += c;
+        } else {
+            out += '%';
+            out += hex[u >> 4];
+            out += hex[u & 0x0F];
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+std::string RequestHandler::createNextUrl(const crow::request& req, const QueryResult& queryResult,
+                                          const EndpointConfig& endpoint,
+                                          const std::map<std::string, std::string>& params)
 {
     if (queryResult.next.empty()) {
         return "";
     }
 
-    std::string baseUrl = req.url.substr(0, req.url.find('?'));
-    if (baseUrl.empty()) 
-        baseUrl = req.url;
-    return baseUrl + queryResult.next;
+    std::string url = req.url.substr(0, req.url.find('?'));
+    if (url.empty()) {
+        url = req.url;
+    }
+    url += queryResult.next;   // ?offset=N[&limit=M]
+    if (req.method != crow::HTTPMethod::Get && req.method != crow::HTTPMethod::Head) {
+        return url;            // a POST read: the filters are in the body
+    }
+    for (const auto& field : endpoint.request_fields) {
+        const std::string& name = field.fieldName;
+        if (name == "offset" || name == "limit" || isReservedAuthKey(name)) {
+            continue;
+        }
+        // Only a field the query string may carry: a path field is in the
+        // path already, a header or body field never belongs in a URL.
+        if (field.fieldIn == "path" || field.fieldIn == "header" || field.fieldIn == "body") {
+            continue;
+        }
+        const auto it = params.find(name);
+        if (it == params.end()) {
+            continue;
+        }
+        url += "&" + PercentEncode(name) + "=" + PercentEncode(it->second);
+    }
+    return url;
 }
 
 // The `__auth_*` rule lives in auth_params.hpp - see the comment there for
@@ -680,6 +726,14 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
                                                                           const std::map<std::string, std::string>& pathParams,
                                                                           const EndpointConfig& endpoint) {
     std::map<std::string, std::string> params = defaultParams;
+    // offset/limit start as the server's defaults; a query value may replace
+    // those (below) unless the body or path set them. They used to count as
+    // set, so `?offset=` never reached a read over POST and following its
+    // `next` link re-ran page one.
+    std::set<std::string> server_defaults;
+    for (const auto& [key, value] : defaultParams) {
+        server_defaults.insert(key);
+    }
 
     // Add path parameters first (lowest precedence for body params)
     for (const auto& [key, value] : pathParams) {
@@ -687,6 +741,7 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
             continue;
         }
         params[key] = value;
+        server_defaults.erase(key);
     }
 
     // Extract parameters from JSON body (highest precedence for write operations).
@@ -800,6 +855,7 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
                         }
                         std::string value = jsonValueToString(fieldName);
                         params[fieldName] = value;
+                        server_defaults.erase(fieldName);
                     }
                 }
             } catch (const std::exception& e) {
@@ -826,8 +882,9 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
         if (pathParams.find(key) != pathParams.end() || !mayComeFrom(endpoint, key, "query")) {
             continue;
         }
-        if (params.find(key) == params.end()) {
+        if (params.find(key) == params.end() || server_defaults.count(key)) {
             params[key] = req.url_params.get(key);
+            server_defaults.erase(key);
         }
     }
 

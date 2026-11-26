@@ -54,7 +54,13 @@ private:
     // One row (plus the header before the first) as convertToCSV writes it.
     static void appendCSVRow(const crow::json::wvalue& row, const std::vector<std::string>& columns,
                              bool first_row, std::string& out);
-    std::string createNextUrl(const crow::request& req, const QueryResult& queryResult);
+    // The `next` link: the path, the page window and, for a GET, the endpoint's
+    // declared query fields from `params`, percent-encoded. Nothing else - no
+    // undeclared parameter, header field or server-injected key. A read over
+    // POST gets the window only: its filters are in the body, re-sent to `next`.
+    static std::string createNextUrl(const crow::request& req, const QueryResult& queryResult,
+                                     const EndpointConfig& endpoint,
+                                     const std::map<std::string, std::string>& params);
 
     
 

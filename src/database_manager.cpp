@@ -2102,15 +2102,16 @@ PageWindow ReadPageWindow(bool with_pagination, const std::map<std::string, std:
     return window;
 }
 
+// Only the page window. It used to append every entry of the template context,
+// unencoded - undeclared parameters, header fields and whatever else reached
+// it, with `&`, ` ` and `#` breaking the link. The request handler adds the
+// endpoint's declared query fields, percent-encoded (createNextUrl).
 std::string NextLink(const PageWindow& window, const std::map<std::string, std::string>& params) {
-    std::stringstream next_ss;
-    next_ss << "?offset=" << (window.offset + window.limit);
-    for (const auto& [key, value] : params) {
-        if (key != "offset") {
-            next_ss << "&" << key << "=" << value;
-        }
+    std::string next = "?offset=" + std::to_string(window.offset + window.limit);
+    if (params.count("limit")) {
+        next += "&limit=" + std::to_string(window.limit);
     }
-    return next_ss.str();
+    return next;
 }
 }  // namespace
 
