@@ -490,3 +490,53 @@ TEST_CASE_METHOD(TestFixture, "DatabaseManager executeWrite returns the rows of 
         CHECK_FALSE(r.returned_data.has_value());
     }
 }
+
+// #277: RETURNING was found by substring, so a column `returning_note`, a
+// 'returning' literal or a comment made a plain DML look like it returned rows:
+// rows_affected became the result's ONE row, and that row (`Count`) became data.
+TEST_CASE_METHOD(TestFixture, "DatabaseManager executeWrite knows RETURNING from the result, not the text", "[database_manager][write]") {
+    db_manager->executeQuery("CREATE TABLE test_ret (id INTEGER, returning_note VARCHAR)", {}, false);
+    db_manager->executeQuery("INSERT INTO test_ret SELECT i, 'n' FROM range(3) t(i)", {}, false);
+
+    EndpointConfig endpoint;
+    endpoint.templateSource = (templates_dir / "ret_test.sql").string();
+    endpoint.operation.type = OperationConfig::Write;
+    endpoint.operation.returns_data = true;
+    endpoint.connection.push_back("default");
+    const auto write = [&](const std::string& sql) {
+        std::ofstream template_file(templates_dir / "ret_test.sql");
+        template_file << sql;
+        template_file.close();
+        std::map<std::string, std::string> params;
+        return db_manager->executeWrite(endpoint, params);
+    };
+
+    SECTION("a column named returning_*") {
+        auto r = write("UPDATE test_ret SET returning_note = 'x'");
+        CHECK(r.rows_affected == 3);
+        CHECK((!r.returned_data || r.returned_data->size() == 0));
+    }
+    SECTION("a 'returning' string literal") {
+        auto r = write("UPDATE test_ret SET returning_note = 'RETURNING id'");
+        CHECK(r.rows_affected == 3);
+        CHECK((!r.returned_data || r.returned_data->size() == 0));
+    }
+    SECTION("a comment mentioning RETURNING") {
+        auto r = write("-- no RETURNING here\nDELETE FROM test_ret WHERE id = 0");
+        CHECK(r.rows_affected == 1);
+        CHECK((!r.returned_data || r.returned_data->size() == 0));
+    }
+    SECTION("a false RETURNING does not hide the final SELECT") {
+        auto r = write("UPDATE test_ret SET returning_note = 'y'; SELECT count(*) AS n FROM test_ret WHERE returning_note = 'y'");
+        CHECK(r.rows_affected == 3);
+        REQUIRE(r.returned_data.has_value());
+        REQUIRE(r.returned_data->size() == 1);
+        CHECK((*r.returned_data)[0]["n"].dump() == "3");
+    }
+    SECTION("a real RETURNING still returns its rows") {
+        auto r = write("UPDATE test_ret SET returning_note = 'z' WHERE id < 2 RETURNING id");
+        CHECK(r.rows_affected == 2);
+        REQUIRE(r.returned_data.has_value());
+        CHECK(r.returned_data->size() == 2);
+    }
+}

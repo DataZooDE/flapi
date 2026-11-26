@@ -202,6 +202,20 @@ class TestSingleSelectPost:
         assert ids(payload["data"]) == [1, 2], payload
 
 
+class TestReturningIsTheClauseNotTheWord:
+    def test_update_mentioning_returning_counts_and_selects(self, server):
+        r = requests.post(f"{server.base}/touch", json={}, timeout=10)
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["rows_affected"] == 3, r.text
+        assert body["data"] == [{"marked": 3}], r.text
+
+    def test_mcp_tool_counts_and_selects(self, server):
+        payload = mcp_call(server, "touch_items", {})
+        assert payload["rows_affected"] == 3, payload
+        assert payload["data"] == [{"marked": 3}], payload
+
+
 class TestPostRead:
     def test_runs_the_read_path_with_body_params(self, server):
         r = requests.post(f"{server.base}/find", json={"q": "ap"}, timeout=10)
