@@ -11,6 +11,16 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   task's result under `tasks/get` came back with each row's keys in a different order and
   doubles re-printed with 21 digits (`711.56` as `711.55999999999994543`). They now match an
   unshaped `tools/call`: SELECT column order, shortest round-trip doubles.
+- **An async MCP tool that fails ends its task `failed` (#275).** It ended `completed` with
+  an `isError` result. `tasks/get` now answers `status: "failed"` with the message under
+  `error` and the `isError` result under `result`. The worker also runs under the identity of
+  the `tools/call` that submitted the task, so the message names its `request_id` (it said
+  only "The details are in the server log.").
+
+### Upgrade notes
+
+- **A failing async tool's task is `failed`, not `completed`.** A client that read the
+  `isError` result of a `completed` task finds it under `result` of the `failed` task.
 
 ## v26.11.26 — auth.* identity values stay inside their SQL literal, OIDC works again, and a task guide for every feature
 

@@ -1746,7 +1746,11 @@ mcp-tool:
 Flow: `tools/call` returns `resultType: "task"` with `{ task: { taskId, status,
 pollIntervalMs, ttlMs } }`. The client polls `tasks/get` (`{taskId}`) until
 `status` is `completed` (the tool result is under `result`), `failed` (`error`),
-or `cancelled`. `tasks/cancel` (`{taskId}`) requests cancellation. A `taskId` is
+or `cancelled`. A tool that fails (its SQL or template fails, an argument is
+refused, its rate limit is hit) ends the task `failed`: `error` holds the same
+text a synchronous call returns, and `result` keeps that `isError: true` tool
+result. This follows the Tasks semantics, where a task whose underlying request
+fails ends `failed`. `tasks/cancel` (`{taskId}`) requests cancellation. A `taskId` is
 scoped to its creating principal — `tasks/get`/`tasks/cancel` re-check ownership.
 A task result stops being returned once it is past `ttlMs`.
 
@@ -1754,7 +1758,10 @@ A task result stops being returned once it is past `ttlMs`.
 > not started is cancelled at once; a running one has its DuckDB query interrupted
 > (`QueryExecutor::interrupt`, via the hook in `src/mcp_task_manager.cpp`) and ends
 > `cancelled`. A remote source (Postgres, BigQuery) may finish its own side of the work.
-> A tool whose SQL fails ends `completed` with an `isError` result, not `failed`.
+> The work runs on a worker thread under the identity of the `tools/call` that submitted
+> it, so the error text says `... under request_id req-...` with that call's `X-Request-Id`,
+> and its log lines carry the same id. With `async-after-ms`, a failure inside the grace
+> window is answered inline as an `isError` result, like a synchronous call.
 > `server/discover` and the `tasks/*` methods are modern-only; a legacy request sees `-32601`.
 
 ```yaml

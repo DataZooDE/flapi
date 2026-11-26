@@ -766,8 +766,9 @@ mcp '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"segment_tot
 A modern client gets `"resultType": "task"` and `{"task": {"taskId": "task_...", "status":
 "working", "pollIntervalMs": 1000, "ttlMs": 3600000}}`. It polls `tasks/get` with that
 `taskId` until `status` is `completed` (the tool result, same shape as a synchronous call,
-is under `result`; a failed query still completes, with `isError` in the result), `failed`
-or `cancelled`. `tasks/cancel` interrupts the query, and the task ends `cancelled`. A
+is under `result`), `failed` or `cancelled`. A failed query ends the task `failed`:
+`error` has the message (with the request id of the `tools/call`), and `result` still
+holds the `isError` tool result. `tasks/cancel` interrupts the query, and the task ends `cancelled`. A
 task ID belongs to the principal who created it. The curl commands are in
 [The 2026-07-28 protocol](#the-2026-07-28-protocol).
 
