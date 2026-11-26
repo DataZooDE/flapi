@@ -481,6 +481,12 @@ class TestOidcClaims:
         later = int(time.time()) + 3600
         assert server.get(issuer.token(iat=later, exp=later + 600)).status_code == 401
 
+    def test_time_claims_in_exponent_form_are_read_as_numbers(self, server, issuer):
+        # json.dumps writes 1e16 as "1e+16"; read as an integer prefix it was 1 (1970).
+        assert server.get(issuer.token(nbf=1e16)).status_code == 401
+        assert server.get(issuer.token(exp=float(int(time.time()) + 600))).status_code == 200
+        assert server.get(issuer.token(exp="9999999999")).status_code == 401
+
     def test_unused_keys_are_reported_at_startup(self, server):
         assert "`scopes` is parsed but has no effect" in server.log()
 
