@@ -39,6 +39,7 @@ from otel_helpers import flapi_binary, free_port
 pytestmark = pytest.mark.standalone_server
 
 CLIENT_ID = "flapi-e2e"
+NOAUD_CLIENT = "flapi-noaud"
 AUDIENCE = "flapi-api"
 
 
@@ -147,7 +148,29 @@ class FlapiServer:
         with open(os.path.join(sqls, "whoami.sql"), "w") as f:
             f.write("SELECT '{{{ auth.username }}}' AS who, "
                     "'{{{ auth.roles }}}' AS roles, "
+                    "'{{{ auth.groups }}}' AS groups, "
                     "'{{{ auth.type }}}' AS auth_type\n")
+        # Endpoints with an OIDC block of their own (#281), each with its own
+        # client id so that no two share an issuer and client.
+        extra = {
+            # No allowed-audiences: `aud` must then contain the client id.
+            "noaud": (f"issuer-url: {issuer.url}\nclient-id: {NOAUD_CLIENT}\n"
+                      "scopes: [openid, profile]\n"),
+            # An explicit username-claim beats the keycloak preset's preferred_username.
+            "kc": (f"provider-type: keycloak\nissuer-url: {issuer.url}\nclient-id: flapi-kc\n"
+                   f"allowed-audiences: [{AUDIENCE}]\nusername-claim: sub\n"),
+            # A claim NAME with dots in it (Auth0-style namespaced claim).
+            "ns": (f"issuer-url: {issuer.url}\nclient-id: flapi-ns\n"
+                   f"allowed-audiences: [{AUDIENCE}]\nroles-claim: https://flapi.example/roles\n"),
+            # A real nested path still works.
+            "nested": (f"issuer-url: {issuer.url}\nclient-id: flapi-nested\n"
+                       f"allowed-audiences: [{AUDIENCE}]\nrole-claim-path: realm_access.roles\n"),
+        }
+        for name, block in extra.items():
+            with open(os.path.join(sqls, f"{name}.yaml"), "w") as f:
+                f.write(f"url-path: /{name}\nmethod: GET\ntemplate-source: whoami.sql\n"
+                        "connection: [inmem]\nauth:\n  enabled: true\n  type: oidc\n  oidc:\n" +
+                        "".join(f"    {line}\n" for line in block.splitlines()))
         with open(os.path.join(self.tmp, "flapi.yaml"), "w") as f:
             f.write("project-name: oidc-e2e\n"
                     "project-description: OIDC against a mock issuer\n"
@@ -190,9 +213,9 @@ class FlapiServer:
         with open(self.log_path) as f:
             return f.read()
 
-    def get(self, token=None):
+    def get(self, token=None, path="/whoami"):
         headers = {"Authorization": f"Bearer {token}"} if token else {}
-        return requests.get(f"{self.base_url}/whoami", headers=headers, timeout=15)
+        return requests.get(f"{self.base_url}{path}", headers=headers, timeout=15)
 
     def mcp(self, method, params, token=None):
         headers = {"Content-Type": "application/json"}
@@ -333,3 +356,66 @@ class TestOidcMcp:
         r = server.mcp("tools/call", {"name": "whoami", "arguments": {}})
         assert r.status_code == 401, f"{r.status_code} {r.text[:300]}"
         assert "error" in r.json() and "result" not in r.json()
+
+
+class TestOidcClaims:
+    """Claim mapping and audience defaults (#281)."""
+
+    def test_without_allowed_audiences_the_client_id_is_the_audience(self, server, issuer):
+        assert server.get(issuer.token(aud=NOAUD_CLIENT), path="/noaud").status_code == 200
+        assert server.get(issuer.token(aud=["x", NOAUD_CLIENT]), path="/noaud").status_code == 200
+
+    def test_without_allowed_audiences_another_audience_is_refused(self, server, issuer):
+        r = server.get(issuer.token(aud="another-app"), path="/noaud")
+        assert r.status_code == 401, r.text[:200]
+        assert server.get(issuer.token(drop=("aud",)), path="/noaud").status_code == 401
+
+    def test_an_explicit_username_claim_beats_the_preset(self, server, issuer):
+        r = server.get(issuer.token(sub="the-sub", preferred_username="the-preferred"), path="/kc")
+        assert r.status_code == 200, f"{r.text[:200]}\n{server.log()[-1500:]}"
+        assert _row(r)["who"] == "the-sub"
+
+    def test_a_claim_name_with_dots_is_read_literally(self, server, issuer):
+        tok = issuer.token(drop=("roles",), **{"https://flapi.example/roles": ["ns-admin", "ns-read"]})
+        r = server.get(tok, path="/ns")
+        assert r.status_code == 200, r.text[:200]
+        assert _row(r)["roles"] == "ns-admin,ns-read"
+
+    def test_a_nested_role_path_still_works(self, server, issuer):
+        r = server.get(issuer.token(realm_access={"roles": ["kc-admin"]}), path="/nested")
+        assert r.status_code == 200, r.text[:200]
+        assert _row(r)["roles"] == "kc-admin"
+
+    def test_groups_reach_the_template(self, server, issuer):
+        r = server.get(issuer.token(groups=["team-a", "team-b"]))
+        assert r.status_code == 200, r.text[:200]
+        assert _row(r)["groups"] == "team-a,team-b"
+
+    def test_groups_reach_the_template_over_mcp(self, server, issuer):
+        r = server.mcp("tools/call", {"name": "whoami", "arguments": {}},
+                       token=issuer.token(sub="mcp-groups", groups=["team-mcp"]))
+        assert r.status_code == 200, f"{r.status_code} {r.text[:300]}"
+        assert "team-mcp" in json.dumps(r.json()["result"]), r.text[:300]
+
+    def test_a_group_with_a_comma_is_refused(self, server, issuer):
+        tok = issuer.token(groups=["team-a,admin"])
+        assert server.get(tok).status_code == 401
+        r = server.mcp("tools/call", {"name": "whoami", "arguments": {}}, token=tok)
+        assert r.status_code == 401, f"{r.status_code} {r.text[:300]}"
+
+    def test_a_group_with_a_control_character_is_refused(self, server, issuer):
+        tok = issuer.token(groups=["team-a\nOR 1=1"])
+        assert server.get(tok).status_code == 401
+        r = server.mcp("tools/call", {"name": "whoami", "arguments": {}}, token=tok)
+        assert r.status_code == 401, f"{r.status_code} {r.text[:300]}"
+
+    def test_nbf_in_the_future_is_refused(self, server, issuer):
+        later = int(time.time()) + 3600
+        assert server.get(issuer.token(nbf=later)).status_code == 401
+
+    def test_iat_in_the_future_is_refused(self, server, issuer):
+        later = int(time.time()) + 3600
+        assert server.get(issuer.token(iat=later, exp=later + 600)).status_code == 401
+
+    def test_unused_keys_are_reported_at_startup(self, server):
+        assert "`scopes` is parsed but has no effect" in server.log()
