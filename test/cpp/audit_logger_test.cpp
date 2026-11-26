@@ -1,6 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 #include <crow/json.h>
 #include <filesystem>
+#include <memory>
 #include <fstream>
 #include <sstream>
 #include <thread>
@@ -214,6 +216,82 @@ TEST_CASE("AuditLogger: null sink is honoured (no I/O)",
     cfg.sink = "null";
     AuditLogger logger(cfg);
     REQUIRE_NOTHROW(logger.log(sampleEvent()));
+}
+
+TEST_CASE("AuditLogger: constructing a file sink creates no file; open() does (#279)",
+          "[security][audit]") {
+    // --validate-config builds the logger while parsing the configuration; the
+    // constructor opened the file, so a validation run created it.
+    TempAuditFile sink;
+    AuditConfig cfg;
+    cfg.enabled = true;
+    cfg.sink = "file";
+    cfg.path = sink.path().string();
+
+    AuditLogger logger(cfg);
+    REQUIRE_FALSE(fs::exists(sink.path()));
+
+    logger.open();
+    REQUIRE(fs::exists(sink.path()));
+    logger.open();   // idempotent
+    logger.log(sampleEvent());
+    REQUIRE(sink.readLines().size() == 1);
+}
+
+TEST_CASE("AuditLogger: a missing directory fails open(), not the constructor (#279)",
+          "[security][audit]") {
+    const auto missing = fs::temp_directory_path() / ("flapi_audit_nodir_" + std::to_string(::rand()));
+    AuditConfig cfg;
+    cfg.enabled = true;
+    cfg.sink = "file";
+    cfg.path = (missing / "audit.jsonl").string();
+
+    std::unique_ptr<AuditLogger> logger;
+    REQUIRE_NOTHROW(logger = std::make_unique<AuditLogger>(cfg));
+    REQUIRE_THROWS_WITH(logger->open(), Catch::Matchers::ContainsSubstring("cannot open"));
+    REQUIRE_FALSE(fs::exists(missing));
+}
+
+TEST_CASE("AuditLogger::ValidateConfig reports what would stop the server (#279)",
+          "[security][audit]") {
+    AuditConfig cfg;
+    cfg.enabled = true;
+    cfg.sink = "file";
+
+    SECTION("an existing directory is fine and creates nothing") {
+        TempAuditFile sink;
+        cfg.path = sink.path().string();
+        REQUIRE(AuditLogger::ValidateConfig(cfg).empty());
+        REQUIRE_FALSE(fs::exists(sink.path()));
+    }
+    SECTION("a missing directory is an error naming it") {
+        const auto missing = fs::temp_directory_path() / ("flapi_audit_nodir_" + std::to_string(::rand()));
+        cfg.path = (missing / "audit.jsonl").string();
+        const auto errors = AuditLogger::ValidateConfig(cfg);
+        REQUIRE(errors.size() == 1);
+        REQUIRE_THAT(errors[0], Catch::Matchers::ContainsSubstring("audit.path"));
+        REQUIRE_THAT(errors[0], Catch::Matchers::ContainsSubstring(missing.string()));
+    }
+    SECTION("a file sink without a path is an error") {
+        const auto errors = AuditLogger::ValidateConfig(cfg);
+        REQUIRE(errors.size() == 1);
+        REQUIRE_THAT(errors[0], Catch::Matchers::ContainsSubstring("audit.path"));
+    }
+    SECTION("a relative path in the working directory is fine") {
+        cfg.path = "audit.jsonl";
+        REQUIRE(AuditLogger::ValidateConfig(cfg).empty());
+    }
+    SECTION("a disabled audit is never checked") {
+        cfg.enabled = false;
+        cfg.path = "/nonexistent-dir-for-flapi/audit.jsonl";
+        REQUIRE(AuditLogger::ValidateConfig(cfg).empty());
+    }
+    SECTION("stdout and null need no path") {
+        cfg.sink = "stdout";
+        REQUIRE(AuditLogger::ValidateConfig(cfg).empty());
+        cfg.sink = "null";
+        REQUIRE(AuditLogger::ValidateConfig(cfg).empty());
+    }
 }
 
 } // namespace test
