@@ -789,9 +789,14 @@ and then checked, **never run**:
 | `not_checked` | The statement uses a table an earlier statement would create and this check could not (e.g. `CREATE INDEX`), or its parameter types could not be determined |
 | `stale` | `target=cache`: the template's `ATTACH ... AS alias` names a database the server attached earlier (connection `init`) from a file that has since been replaced by an atomic rename (detected on Linux: the file the server holds open has been unlinked from its path). The check ran against the OLD file; a bind error in a statement reading that alias is reported as this warning instead, because the next refresh re-attaches and may succeed. Not an error |
 | `watermark_dropped` | `target=cache`: the `watermark_dropped_reason` of the plain expansion |
-| `undefined_variable` | Serving template: a `{{ name }}` the context may not define |
+| `undefined_variable` | Serving template: a variable or section name the render context does not define, with its `variable`, `line` and `column`. Names are looked up as Mustache resolves them (#277): `{{ x }}`, `{{{ x }}}`, `{{& x }}`, `{{#x}}` and `{{^x}}` count, closing tags and comments do not; a name relative to an enclosing section (`{{.}}`, `{{name}}` inside `{{#params.items}}`) is not looked up; a declared request field (or a `:name` of the url-path, `limit`, `offset`) that the request did not send, and the `auth.*` fields, are not reported. Each name is reported once |
 
 `valid` is `true` exactly when `errors` is empty. `bindings` is not returned.
+
+**The status is `200` whenever the check ran, also when `valid` is `false`.** The answer is the
+validation result, not a failed request: read `valid`. (The VS Code extension relies on this.) A `400`
+or `404` means the request itself was wrong: no `parameters`, an unknown endpoint, or `target=cache` on
+an endpoint without a cache.
 
 **CLI:** `flapii templates expand /customers -p '{"id":"123"}' [--cache] [--method GET]`
 

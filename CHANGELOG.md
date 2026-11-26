@@ -21,6 +21,12 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   A free-text field (no typed, `enum` or `regex` validator) in a `{{{ }}}` that is not bound,
   or in a `{{ }}` outside a plain `'...'` literal, names its file, line and column and the fix
   (usually `'{{ params.x }}'`). The shipped northwind examples now use that form.
+- **`template/expand?validate_only` reports only variables that are undefined (#277).** It read
+  `{conn.path` out of every triple brace, `#x`, `/x` and `!comment` out of sections and comments,
+  and warned about `params.x` even when `x` was passed. Variables are now found as Mustache
+  resolves them; names relative to a section, declared parameters the request did not send and
+  `auth.*` are not reported, and each warning carries `line` and `column`. The answer stays
+  `200` when `valid` is `false` (documented).
 
 ### Upgrade notes
 
