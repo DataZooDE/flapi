@@ -29,12 +29,14 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 - **MCP under `mcp.auth.type: basic` challenges with Basic (#275).** A `401` said
   `WWW-Authenticate: Bearer`, and a role denial `Bearer error="insufficient_scope"`. A `401`
   now says `Basic realm="flAPI"`, as REST does, and a `403` carries no challenge.
-- **Three new startup security warnings (#275).** `MCP_TOOL_NO_ALLOWED_ROLES`: `mcp.auth` is
+- **Four new startup security warnings (#275).** `MCP_TOOL_NO_ALLOWED_ROLES`: `mcp.auth` is
   on and a tool, resource or prompt has no `allowed-roles`, so every caller is refused.
   `MCP_TOOL_BYPASSES_REST_AUTH`: `mcp.auth` is off and an endpoint whose REST route requires
   authentication is also an `mcp-tool` (the warning names the endpoint).
   `ENDPOINT_AUTH_KEY_IGNORED`: an endpoint file has an unread `auth*` key (`authentication:`)
-  and no `auth:` block.
+  and no `auth:` block. `ENDPOINT_DUPLICATE_AUTH_KEY`: an endpoint file has `auth` more than
+  once after include expansion; only the first is used, so a later `{{include:... as auth}}`
+  could leave the endpoint public.
 - **`completion/complete` counts the matches (#275).** `total` counted every enum value
   whatever the prefix, and the list (and the count) stopped at 50. `values` now holds up to
   100 matching values, `total` is the number of matches, and `hasMore` says whether some were
@@ -54,9 +56,9 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   `columns` from `structuredContent` itself, not from `structuredContent.rows`.
 - **A dry run's `structuredContent` has no `rows` or `row_count`.** Tell a preview from a
   real result by `structuredContent.dry_run`, not by an empty `rows`.
-- **`--strict` is opt-in.** Run `flapi --validate-config --strict` first: the three new
+- **`--strict` is opt-in.** Run `flapi --validate-config --strict` first: the four new
   warnings (`MCP_TOOL_NO_ALLOWED_ROLES`, `MCP_TOOL_BYPASSES_REST_AUTH`,
-  `ENDPOINT_AUTH_KEY_IGNORED`) may appear on a config that printed none before, and with
+  `ENDPOINT_AUTH_KEY_IGNORED`, `ENDPOINT_DUPLICATE_AUTH_KEY`) may appear on a config that printed none before, and with
   `--strict` each one stops the start.
 
 ## v26.11.26 — auth.* identity values stay inside their SQL literal, OIDC works again, and a task guide for every feature

@@ -472,6 +472,7 @@ load error, `AUTH_UNKNOWN_TYPE`, see above.)
 | `MCP_UNAUTHENTICATED_TOOLS` | `mcp.enabled` with tools and `mcp.auth.enabled: false` |
 | `MCP_TOOL_NO_ALLOWED_ROLES` | `mcp.auth` on and a tool, resource or prompt without `allowed-roles`: everyone gets 403 |
 | `MCP_TOOL_BYPASSES_REST_AUTH` | `mcp.auth` off and an `mcp-tool` on an endpoint whose REST route requires auth (names the endpoint) |
+| `ENDPOINT_DUPLICATE_AUTH_KEY` | an endpoint file has `auth` more than once (e.g. an `{{include:... as auth}}` beside a block): only the first is used |
 | `ENDPOINT_AUTH_KEY_IGNORED` | an unread top-level `auth*` key (`authentication:`, `Auth:`) on an endpoint without an `auth:` block |
 | `CREDENTIAL_TOO_SHORT_TO_REDACT` | a credential connection property under 4 chars: error detail is withheld |
 

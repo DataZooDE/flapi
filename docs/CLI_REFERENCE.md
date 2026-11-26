@@ -350,6 +350,7 @@ Treats the security auditor's warnings as errors.
 
 Every run prints the auditor's `SECURITY WARNINGS` banner (plaintext passwords,
 `MCP_UNAUTHENTICATED_TOOLS`, `MCP_TOOL_NO_ALLOWED_ROLES`, `MCP_TOOL_BYPASSES_REST_AUTH`,
+`ENDPOINT_DUPLICATE_AUTH_KEY`,
 `CORS_WILDCARD_WITH_AUTH`, ...). Without `--strict` they never stop anything. With it:
 
 - `--validate-config --strict` still prints the full validation, then exits `1` if there was any
