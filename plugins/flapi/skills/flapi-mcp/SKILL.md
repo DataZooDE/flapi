@@ -322,7 +322,7 @@ Real `tools/call` result (trimmed):
 - **Dry-run:** add `"_dryRun": true` to `arguments`. Validators, roles and rate limits still
   run; the SQL does not. The result text is `{"dry_run":true,"tool_name":...,"rendered_sql":...,"bindings":[...],"parameters":{...}}`:
   typed params are `?` in `rendered_sql` with their values in `bindings`, and `parameters`
-  are typed (`3`, not `"3"`). `structuredContent.rows` is `[]`.
+  are typed (`3`, not `"3"`). `structuredContent` is that same object: no `rows`, no `row_count`.
   The SQL is withheld if it would expose a secret too short to redact.
 - Other methods: `resources/list`, `resources/read` (`{"uri":"flapi://segment_summary"}`),
   `prompts/list`, `prompts/get` (`{"name":..,"arguments":{..}}`), `ping`,

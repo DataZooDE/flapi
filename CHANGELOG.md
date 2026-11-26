@@ -19,6 +19,9 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 - **A `sample: true` tool's `structuredContent` is its summary (#275).** It was
   `{"rows": {"sampled": true, ...}}`, a `rows` that is an object; it is now
   `{"sampled": true, "row_count": N, "columns": [...]}`. The text block is unchanged.
+- **A dry run's `structuredContent` has no `rows` or `row_count` (#275).** `_dryRun: true`
+  added `"rows": []` and `"row_count": 0`, which read as a query that matched nothing; the
+  query never ran. `structuredContent` is now the preview itself, with `dry_run: true`.
 
 ### Upgrade notes
 
@@ -26,6 +29,8 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   `isError` result of a `completed` task finds it under `result` of the `failed` task.
 - **`structuredContent` of a `sample: true` tool has no `rows`.** Read `row_count` and
   `columns` from `structuredContent` itself, not from `structuredContent.rows`.
+- **A dry run's `structuredContent` has no `rows` or `row_count`.** Tell a preview from a
+  real result by `structuredContent.dry_run`, not by an empty `rows`.
 
 ## v26.11.26 — auth.* identity values stay inside their SQL literal, OIDC works again, and a task guide for every feature
 

@@ -519,7 +519,7 @@ mcp '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"find_custom
 ```
 
 The result holds `dry_run: true`, `tool_name`, `rendered_sql`, `bindings` and the typed
-`parameters`; `structuredContent` also holds `rows: []`. A bare `{{ params.x }}` outside a
+`parameters`; `structuredContent` is the same object, with no `rows` (nothing ran). A bare `{{ params.x }}` outside a
 section is a prepared-statement parameter, so it appears as `?` with its value in
 `bindings`. Values inside a `{{#...}}` section, like `id` here, are rendered into the SQL.
 Role checks, rate limits and validators all still apply, and credentials that the

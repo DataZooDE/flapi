@@ -631,9 +631,9 @@ Set `arguments._dryRun: true` to run the validate → render → plan pipeline w
 
 `rendered_sql` is the statement the tool would RUN: a `{{ params.x }}` whose field has a typed
 validator is a `?` and its value is listed in `bindings` (`value: null` when absent). `parameters` is
-typed by the field's validators (an `int` field is `42`, not `"42"`). `structuredContent` holds the same
-fields plus `"rows": []` and `"row_count": 0`, so `rows` is always an array; a dry run never teaches the
-tool's `outputSchema`.
+typed by the field's validators (an `int` field is `42`, not `"42"`). `structuredContent` is the same
+object, field for field: no `rows` and no `row_count`, since nothing ran (it used to add `"rows": []` and
+`"row_count": 0`, which read as an empty result). A dry run never teaches the tool's `outputSchema`.
 
 The dry-run path does NOT skip validators, role checks, or rate limits — it skips only the SQL execution step. A caller that lacks the role to invoke the tool gets the same `Permission denied` from a dry-run as from a real call.
 
