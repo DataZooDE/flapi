@@ -141,6 +141,61 @@ mcp-tool:
     sample: true
 """)
 
+    # Column order and number precision (#275). The column names are chosen so
+    # that neither alphabetical nor hash order matches the SELECT order, and
+    # the doubles are ones a 21-digit printer mangles (711.56 -> 711.5599...).
+    with open(os.path.join(sqls, "order.sql"), "w") as f:
+        f.write(
+            "SELECT * FROM (VALUES "
+            "(1, 711.56::DOUBLE, 'a', 0.1::DOUBLE, 's1', 7), "
+            "(2, 2.675::DOUBLE, 'b', 1.1::DOUBLE, 's2', 8), "
+            "(3, 3.3::DOUBLE, 'c', 0.3::DOUBLE, 's3', 9)"
+            ") AS t(zeta, alpha, mid, beta, secret, kappa)\n"
+        )
+    with open(os.path.join(sqls, "order_redact.yaml"), "w") as f:
+        f.write("""
+template-source: order.sql
+connection: [inmem]
+mcp-tool:
+  name: order_redact_tool
+  description: Ordered columns with one redacted
+  allowed-roles: [analyst]
+  response:
+    redact-columns: [secret]
+""")
+    with open(os.path.join(sqls, "order_cap.yaml"), "w") as f:
+        f.write("""
+template-source: order.sql
+connection: [inmem]
+mcp-tool:
+  name: order_cap_tool
+  description: Ordered columns capped at two rows
+  allowed-roles: [analyst]
+  response:
+    max-rows: 2
+""")
+    with open(os.path.join(sqls, "order_sample.yaml"), "w") as f:
+        f.write("""
+template-source: order.sql
+connection: [inmem]
+mcp-tool:
+  name: order_sample_tool
+  description: Ordered columns, summary only
+  allowed-roles: [analyst]
+  response:
+    sample: true
+""")
+    with open(os.path.join(sqls, "order_resource.yaml"), "w") as f:
+        f.write("""
+template-source: order.sql
+connection: [inmem]
+mcp-resource:
+  name: order_resource
+  description: Ordered columns as a resource (default max-rows cap applies)
+  mime-type: application/json
+  allowed-roles: [analyst]
+""")
+
     # All three tools share the same fixed SELECT — three rows, three columns.
     with open(os.path.join(sqls, "people.sql"), "w") as f:
         f.write(
@@ -296,3 +351,103 @@ class TestResponseShaping:
         # None of the per-row values should appear anywhere in the response.
         assert "alice" not in r.text, r.text
         assert "bob" not in r.text, r.text
+
+
+ORDER_COLUMNS = ["zeta", "alpha", "mid", "beta", "secret", "kappa"]
+
+
+def _ordered(text: str):
+    """json.loads that keeps object keys in document order."""
+    return json.loads(text, object_pairs_hook=lambda pairs: pairs)
+
+
+def _keys(pairs) -> list:
+    return [k for k, _ in pairs]
+
+
+def _value(pairs, key):
+    for k, v in pairs:
+        if k == key:
+            return v
+    raise KeyError(key)
+
+
+def _rpc(base_url: str, token: str, session_id: str, method: str, params: dict) -> requests.Response:
+    return requests.post(
+        f"{base_url}/mcp/jsonrpc",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Mcp-Session-Id": session_id,
+        },
+        json={"jsonrpc": "2.0", "id": f"rpc-{method}", "method": method, "params": params},
+        timeout=10,
+    )
+
+
+def _assert_rows_in_select_order(rows, expected_rows: int, redacted=()):
+    assert len(rows) == expected_rows, rows
+    for row in rows:
+        # Every row: the SELECT order, not alphabetical, not hash order, and
+        # the same order in every row.
+        assert _keys(row) == ORDER_COLUMNS, row
+        for col in redacted:
+            assert _value(row, col) == "<redacted>", row
+
+
+@pytest.mark.standalone_server
+class TestShapedColumnOrderAndPrecision:
+    """#275: a shaped result keeps the SELECT column order and exact doubles."""
+
+    def _call(self, shape_server, tool):
+        token = _make_jwt()
+        sid = _open_session(shape_server, token)
+        r = _tools_call(shape_server, token, sid, tool)
+        assert r.status_code == 200, r.text
+        body = json.loads(r.text)
+        assert "error" not in body, body
+        assert body["result"].get("isError") is not True, body
+        return r
+
+    def test_redacted_tool_keeps_select_order_and_doubles(self, shape_server):
+        r = self._call(shape_server, "order_redact_tool")
+        result = _value(_ordered(r.text), "result")
+        text = _value(_value(result, "content")[0], "text")
+        _assert_rows_in_select_order(_ordered(text), 3, redacted=("secret",))
+        # The structured rows carry the same order.
+        structured = _value(result, "structuredContent")
+        _assert_rows_in_select_order(_value(structured, "rows"), 3, redacted=("secret",))
+        # Doubles exactly as DuckDB returned them, not 21-digit re-prints.
+        assert '"alpha":711.56,' in text, text
+        assert '"beta":0.1,' in text, text
+        assert '"alpha":2.675,' in text, text
+        assert "711.5599" not in r.text, r.text
+        assert "0.1000000" not in r.text, r.text
+        assert "s1" not in r.text, r.text
+
+    def test_capped_tool_keeps_select_order_and_doubles(self, shape_server):
+        r = self._call(shape_server, "order_cap_tool")
+        result = _value(_ordered(r.text), "result")
+        text = _value(_value(result, "content")[0], "text")
+        _assert_rows_in_select_order(_ordered(text), 2)
+        assert '"alpha":711.56,' in text, text
+        assert "711.5599" not in r.text, r.text
+
+    def test_sample_lists_columns_in_select_order(self, shape_server):
+        r = self._call(shape_server, "order_sample_tool")
+        result = json.loads(r.text)["result"]
+        inner = json.loads(result["content"][0]["text"])
+        assert inner["columns"] == ORDER_COLUMNS, inner
+
+    def test_resource_read_keeps_select_order_and_doubles(self, shape_server):
+        token = _make_jwt()
+        sid = _open_session(shape_server, token)
+        r = _rpc(shape_server, token, sid, "resources/read", {"uri": "flapi://order_resource"})
+        assert r.status_code == 200, r.text
+        body = json.loads(r.text)
+        assert "error" not in body, body
+        text = body["result"]["contents"][0]["text"]
+        _assert_rows_in_select_order(_ordered(text), 3)
+        assert '"alpha":711.56,' in text, text
+        assert '"beta":0.1,' in text, text
+        assert "711.5599" not in text, text

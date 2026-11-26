@@ -2,6 +2,7 @@
 #include <crow/json.h>
 
 #include "mcp_response_shaper.hpp"
+#include "query_executor.hpp"
 
 namespace flapi {
 namespace test {
@@ -14,13 +15,46 @@ const std::string kThreeRowsJson = R"([
     {"id": 3, "name": "carol", "salary": 300}
 ])";
 
+// A QueryResult as the database manager builds one: the rows in `data` and
+// the column names, in SELECT order, in `columns`.
+QueryResult makeResult(const std::string& rows_json, const std::vector<std::string>& columns) {
+    QueryResult result;
+    result.data = crow::json::wvalue(crow::json::load(rows_json));
+    result.columns = columns;
+    return result;
+}
+
+QueryResult threeRows() {
+    return makeResult(kThreeRowsJson, {"id", "name", "salary"});
+}
+
+// Columns whose SELECT order is neither alphabetical nor what a hash map
+// iterates, and doubles a 21-digit printer turns into 711.55999999999994543.
+QueryResult orderedRows() {
+    QueryResult result;
+    result.columns = {"zeta", "alpha", "mid", "beta"};
+    result.data = crow::json::wvalue::list();
+    const double alphas[] = {711.56, 2.675};
+    const double betas[] = {0.1, 1.1};
+    const char* mids[] = {"a", "b"};
+    for (int i = 0; i < 2; ++i) {
+        crow::json::wvalue row;
+        row["zeta"] = static_cast<int64_t>(i + 1);
+        row["alpha"] = alphas[i];
+        row["mid"] = std::string(mids[i]);
+        row["beta"] = betas[i];
+        result.data[i] = std::move(row);
+    }
+    return result;
+}
+
 } // namespace
 
 TEST_CASE("MCPResponseShaper: default config leaves the data unchanged",
           "[security][mcp][response_shape]") {
     MCPResponseShaper shaper;
     ResponseShape config;  // all defaults
-    auto out = shaper.shape(kThreeRowsJson, config);
+    auto out = shaper.shape(threeRows(), config);
 
     auto parsed = crow::json::load(out);
     REQUIRE(parsed);
@@ -34,7 +68,7 @@ TEST_CASE("MCPResponseShaper: max_rows truncates the array",
     MCPResponseShaper shaper;
     ResponseShape config;
     config.max_rows = 2;
-    auto out = shaper.shape(kThreeRowsJson, config);
+    auto out = shaper.shape(threeRows(), config);
 
     auto parsed = crow::json::load(out);
     REQUIRE(parsed);
@@ -48,7 +82,7 @@ TEST_CASE("MCPResponseShaper: redact_columns masks values in every row",
     MCPResponseShaper shaper;
     ResponseShape config;
     config.redact_columns = {"salary"};
-    auto out = shaper.shape(kThreeRowsJson, config);
+    auto out = shaper.shape(threeRows(), config);
 
     auto parsed = crow::json::load(out);
     REQUIRE(parsed);
@@ -66,7 +100,7 @@ TEST_CASE("MCPResponseShaper: redact + max_rows compose correctly",
     ResponseShape config;
     config.max_rows = 1;
     config.redact_columns = {"salary", "name"};
-    auto out = shaper.shape(kThreeRowsJson, config);
+    auto out = shaper.shape(threeRows(), config);
 
     auto parsed = crow::json::load(out);
     REQUIRE(parsed);
@@ -82,7 +116,7 @@ TEST_CASE("MCPResponseShaper: sample=true returns row count + column names only"
     MCPResponseShaper shaper;
     ResponseShape config;
     config.sample = true;
-    auto out = shaper.shape(kThreeRowsJson, config);
+    auto out = shaper.shape(threeRows(), config);
 
     auto parsed = crow::json::load(out);
     REQUIRE(parsed);
@@ -104,7 +138,7 @@ TEST_CASE("MCPResponseShaper: sample wins over redact and max_rows",
     config.sample = true;
     config.max_rows = 1;
     config.redact_columns = {"name"};
-    auto out = shaper.shape(kThreeRowsJson, config);
+    auto out = shaper.shape(threeRows(), config);
 
     auto parsed = crow::json::load(out);
     REQUIRE(parsed);
@@ -112,31 +146,15 @@ TEST_CASE("MCPResponseShaper: sample wins over redact and max_rows",
     REQUIRE_FALSE(parsed.has("rows"));
 }
 
-TEST_CASE("MCPResponseShaper: non-array input is returned unchanged",
-          "[security][mcp][response_shape]") {
-    // Defensive: handlers that already produced a non-array payload (e.g.
-    // dry-run results or empty wrapper objects) must not be corrupted.
-    MCPResponseShaper shaper;
-    ResponseShape config;
-    config.max_rows = 10;
-    auto out = shaper.shape(R"({"some":"object"})", config);
-
-    auto parsed = crow::json::load(out);
-    REQUIRE(parsed);
-    REQUIRE(parsed["some"].s() == std::string("object"));
-}
-
-TEST_CASE("MCPResponseShaper: empty array stays empty",
+TEST_CASE("MCPResponseShaper: empty result stays empty",
           "[security][mcp][response_shape]") {
     MCPResponseShaper shaper;
     ResponseShape config;
     config.max_rows = 10;
     config.redact_columns = {"anything"};
-    auto out = shaper.shape("[]", config);
+    auto out = shaper.shape(makeResult("[]", {"anything"}), config);
 
-    auto parsed = crow::json::load(out);
-    REQUIRE(parsed);
-    REQUIRE(parsed.size() == 0);
+    REQUIRE(out == "[]");
 }
 
 TEST_CASE("MCPResponseShaper: max_rows of 0 truncates everything",
@@ -144,11 +162,9 @@ TEST_CASE("MCPResponseShaper: max_rows of 0 truncates everything",
     MCPResponseShaper shaper;
     ResponseShape config;
     config.max_rows = 0;
-    auto out = shaper.shape(kThreeRowsJson, config);
+    auto out = shaper.shape(threeRows(), config);
 
-    auto parsed = crow::json::load(out);
-    REQUIRE(parsed);
-    REQUIRE(parsed.size() == 0);
+    REQUIRE(out == "[]");
 }
 
 TEST_CASE("MCPResponseShaper: redact-columns referring to absent column is a no-op",
@@ -157,12 +173,59 @@ TEST_CASE("MCPResponseShaper: redact-columns referring to absent column is a no-
     MCPResponseShaper shaper;
     ResponseShape config;
     config.redact_columns = {"not_present"};
-    auto out = shaper.shape(kThreeRowsJson, config);
+    auto out = shaper.shape(threeRows(), config);
 
     auto parsed = crow::json::load(out);
     REQUIRE(parsed);
     REQUIRE(parsed.size() == 3);
     REQUIRE(parsed[0]["name"].s() == std::string("alice"));
+}
+
+// ---- #275: column order and number precision -------------------------------
+
+TEST_CASE("MCPResponseShaper: redacted rows keep the SELECT column order and exact doubles",
+          "[security][mcp][response_shape][issue275]") {
+    MCPResponseShaper shaper;
+    ResponseShape config;
+    config.redact_columns = {"mid"};
+    auto out = shaper.shape(orderedRows(), config);
+
+    REQUIRE(out ==
+            R"([{"zeta":1,"alpha":711.56,"mid":"<redacted>","beta":0.1},)"
+            R"({"zeta":2,"alpha":2.675,"mid":"<redacted>","beta":1.1}])");
+}
+
+TEST_CASE("MCPResponseShaper: capped rows keep the SELECT column order and exact doubles",
+          "[security][mcp][response_shape][issue275]") {
+    MCPResponseShaper shaper;
+    ResponseShape config;
+    config.max_rows = 1;
+    auto out = shaper.shape(orderedRows(), config);
+
+    REQUIRE(out == R"([{"zeta":1,"alpha":711.56,"mid":"a","beta":0.1}])");
+}
+
+TEST_CASE("MCPResponseShaper: sample lists the columns in SELECT order",
+          "[security][mcp][response_shape][issue275]") {
+    MCPResponseShaper shaper;
+    ResponseShape config;
+    config.sample = true;
+    auto out = shaper.shape(orderedRows(), config);
+
+    REQUIRE(out == R"({"sampled":true,"row_count":2,"columns":["zeta","alpha","mid","beta"]})");
+}
+
+TEST_CASE("MCPResponseShaper: a streamed result cannot be shaped silently",
+          "[security][mcp][response_shape][issue275]") {
+    // Rows that went to a sink are only text; redaction must never be skipped
+    // because the shaper had no rows to look at.
+    QueryResult streamed;
+    streamed.streamed = true;
+    streamed.streamed_json = R"([{"salary":1}])";
+    streamed.columns = {"salary"};
+    ResponseShape config;
+    config.redact_columns = {"salary"};
+    REQUIRE_THROWS(MCPResponseShaper().shape(streamed, config));
 }
 
 } // namespace test
