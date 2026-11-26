@@ -819,8 +819,10 @@ auth:
 
 A token is accepted when:
 
-- its header has a `kid` found in the JWKS and an `alg` of RS256, RS384 or
-  RS512 (EC keys such as ES256 are refused). The JWKS is kept for
+- its header has an `alg` of RS256/384/512, PS256/384/512 (RSA keys) or
+  ES256/384/512 (EC keys on P-256/P-384/P-521), and a `kid` found in the
+  JWKS whose key fits that `alg`: the right key type and curve, and the JWK's
+  own `alg` when it names one. `none` and HS256 are refused. The JWKS is kept for
   `jwks-cache-hours` (default 24); a token with an unknown `kid` refetches it,
   up to three times per request and with no cooldown;
 - `iss` equals `issuer-url` exactly, trailing slash included;
@@ -1018,7 +1020,7 @@ server.
 
 ## Limits you should know
 
-- OIDC accepts RS256, RS384 and RS512 only, and exactly one `iss` per block,
+- OIDC accepts RS*, PS* and ES* (no EdDSA), and exactly one `iss` per block,
   so it cannot accept tokens from several Entra ID tenants.
 - An OIDC `groups` claim grants nothing; it reaches templates as `auth.groups`.
 - Only `sub`/user name, email, roles and groups reach templates; custom claims

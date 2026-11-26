@@ -19,6 +19,9 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   host, and the preset no longer sets a placeholder role path.
 - **`auth.groups` (#281):** the OIDC `groups-claim`, comma-joined, on REST and MCP, under the
   same quoting and placement rules as `auth.roles`. It was read and dropped.
+- **OIDC verifies ES256/ES384/ES512 and PS256/PS384/PS512 tokens.** EC keys in the JWKS were
+  skipped and RSA-PSS was refused, so issuers that sign with them (many Okta, Auth0 and
+  Keycloak setups) could authenticate nobody. RS256/384/512 are unchanged.
 - `client-secret`, `scopes`, `enable-client-credentials` and `enable-refresh-tokens` in an
   `oidc:` block log `parsed but has no effect` at startup.
 
@@ -34,6 +37,9 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   token the issuer minted for any application.
 - **OIDC refuses `nbf` and `iat` in the future** (beyond `clock-skew-seconds`).
 - **A group containing a comma or a control character refuses the identity**, as a role does.
+- **An OIDC token's `alg` must fit its key:** the key type, the EC curve, and the JWK's own `alg`
+  when it names one (a JWK without `alg` used to count as RS256, and a token could pick any RSA
+  algorithm for any RSA key). `none` and HS* are refused before any JWKS lookup.
 
 ### Upgrade notes
 

@@ -2224,6 +2224,10 @@ auth:
     role-claim-path: realm_access.roles
 ```
 
+Token signatures: RS256/384/512 and PS256/384/512 with RSA keys, ES256/384/512 with EC keys on
+P-256/P-384/P-521. The token's `alg` must fit the key its `kid` names: the key type, the EC curve, and the
+JWK's own `alg` when it has one. `none`, HS* and anything else are refused.
+
 Claim names (`username-claim`, `roles-claim`, ...) are looked up as written first, so
 `https://example.com/roles` is one claim; only when no claim has that name is a dot a path into nested
 objects (`realm_access.roles`). A role or group containing a comma or a control character refuses the

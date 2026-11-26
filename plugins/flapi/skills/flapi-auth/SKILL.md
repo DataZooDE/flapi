@@ -274,7 +274,9 @@ auth:
 ```
 
 Keys discovered from `<issuer-url>/.well-known/openid-configuration`; JWKS
-cached. Also read: `email-claim`. `client-secret`, `scopes`,
+cached. Signatures: RS256/384/512, PS256/384/512 (RSA), ES256/384/512 (EC
+P-256/P-384/P-521); the token `alg` must fit its key (type, curve, and the
+JWK `alg` if set); `none`/HS* refused. Also read: `email-claim`. `client-secret`, `scopes`,
 `enable-client-credentials` and `enable-refresh-tokens` have no effect (startup
 warns `parsed but has no effect`): flAPI only validates tokens. `nbf`/`iat`
 more than `clock-skew-seconds` in the future are refused. A role or group with
