@@ -27,7 +27,6 @@ public:
 
 private:
     std::shared_ptr<ConfigManager> config_manager_;
-    std::unordered_map<std::string, std::shared_ptr<OIDCAuthHandler>> oidc_handlers;  // Cache per issuer
 
     std::optional<MCPSession::AuthContext> authenticateBasic(const std::string& auth_header);
     std::optional<MCPSession::AuthContext> authenticateBearer(const std::string& auth_header);

@@ -4,7 +4,9 @@
 #include <vector>
 #include <optional>
 #include <memory>
+#include <atomic>
 #include <chrono>
+#include <mutex>
 #include <crow.h>
 #include "oidc_discovery_client.hpp"
 #include "oidc_jwks_manager.hpp"
@@ -86,6 +88,51 @@ struct JwsAlgorithm {
 const JwsAlgorithm* FindJwsAlgorithm(const std::string& name);
 
 /**
+ * One identity provider's keys: its discovery document and its JWKS.
+ *
+ * Thread-safe, and shared by every OIDCAuthHandler for that issuer (REST and
+ * MCP alike; OIDCHandlerRegistry). Discovery runs once, behind a lock, so
+ * concurrent first requests wait for one fetch instead of each making their
+ * own; a failed discovery is not retried for a few seconds. The
+ * unsynchronised `cached_metadata_` this replaces was written by every
+ * request thread at once.
+ */
+class OIDCProviderKeys {
+public:
+    struct Options {
+        int jwks_cache_hours = 24;
+        int jwks_refetch_cooldown_seconds = 60;
+    };
+
+    OIDCProviderKeys(std::string issuer_url, const Options& options);
+
+    /** The discovery document, fetched on first use. */
+    std::optional<OIDCProviderMetadata> metadata();
+
+    /** The key `kid` from the issuer's JWKS: at most one JWKS fetch. */
+    std::shared_ptr<const JWKSKey> key(const std::string& kid);
+
+    /** Refetch the JWKS now. */
+    bool refreshJWKS();
+
+    /** Discovery fetches attempted so far. */
+    std::size_t discoveryCount() const { return discovery_count_.load(); }
+
+    OIDCJWKSManager& jwks() { return jwks_; }
+    const std::string& issuerUrl() const { return issuer_url_; }
+
+private:
+    std::string issuer_url_;
+    OIDCDiscoveryClient discovery_;
+    OIDCJWKSManager jwks_;
+    std::mutex metadata_mutex_;
+    std::optional<OIDCProviderMetadata> metadata_;
+    bool discovery_failed_ = false;
+    std::chrono::steady_clock::time_point discovery_failed_at_;
+    std::atomic<std::size_t> discovery_count_{0};
+};
+
+/**
  * OIDCAuthHandler validates OIDC/OAuth 2.0 tokens
  * Supports RSA signature verification and claims validation
  */
@@ -107,9 +154,13 @@ public:
         bool enable_refresh_tokens = false;
         std::vector<std::string> scopes;
         int jwks_cache_hours = 24;
+        int jwks_refetch_cooldown_seconds = 60;
     };
 
+    /** A handler with provider keys of its own. */
     explicit OIDCAuthHandler(const Config& config);
+    /** A handler on shared provider keys (OIDCHandlerRegistry). */
+    OIDCAuthHandler(const Config& config, std::shared_ptr<OIDCProviderKeys> keys);
     ~OIDCAuthHandler();
 
     /**
@@ -184,9 +235,7 @@ public:
 
 private:
     Config config_;
-    std::unique_ptr<OIDCDiscoveryClient> discovery_client_;
-    std::unique_ptr<OIDCJWKSManager> jwks_manager_;
-    std::optional<OIDCProviderMetadata> cached_metadata_;
+    std::shared_ptr<OIDCProviderKeys> keys_;
     ErrorCallback error_callback_;
 
     /**

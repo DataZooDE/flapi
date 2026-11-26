@@ -151,6 +151,9 @@ struct OIDCConfig {
 
     // JWKS caching
     int jwks_cache_hours = 24;                        // How long to cache JWKS
+    // Minimum seconds between two JWKS fetches for a kid the cached set does
+    // not hold (`jwks-refetch-cooldown-seconds`); 0 refetches every time.
+    int jwks_refetch_cooldown_seconds = 60;
 };
 
 struct AuthConfig {

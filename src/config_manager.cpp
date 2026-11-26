@@ -2239,6 +2239,13 @@ OIDCConfig ConfigManager::parseOIDCConfigNode(const YAML::Node& oidc_node, const
     if (oidc_node["jwks-cache-hours"]) {
         oidc_config.jwks_cache_hours = oidc_node["jwks-cache-hours"].as<int>();
     }
+    if (oidc_node["jwks-refetch-cooldown-seconds"]) {
+        oidc_config.jwks_refetch_cooldown_seconds = oidc_node["jwks-refetch-cooldown-seconds"].as<int>();
+        if (oidc_config.jwks_refetch_cooldown_seconds < 0) {
+            throw ConfigurationError(log_prefix + "OIDC: jwks-refetch-cooldown-seconds must be 0 or more",
+                                     "auth.oidc.jwks-refetch-cooldown-seconds");
+        }
+    }
 
     // flAPI is a resource server: it validates the bearer tokens it is sent
     // and never talks to the token endpoint, so these keys are read into the

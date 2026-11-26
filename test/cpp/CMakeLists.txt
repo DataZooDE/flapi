@@ -12,6 +12,7 @@ add_executable(flapi_tests
     oidc_decode_jwt_test.cpp
     bearer_token_verifier_test.cpp
     oidc_claims_config_test.cpp
+    oidc_jwks_manager_test.cpp
     archive_io_test.cpp
     audit_logger_test.cpp
     bundle_locator_test.cpp

@@ -5,7 +5,10 @@
 #include <optional>
 #include <memory>
 #include <mutex>
+#include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <functional>
 #include <unordered_map>
 #include <openssl/evp.h>
 #include <openssl/rsa.h>
@@ -68,67 +71,87 @@ struct JWKSKey {
 };
 
 /**
- * OIDCJWKSManager manages JWKS (JSON Web Key Set) fetching and caching
- * Handles key rotation and automatic refresh
+ * OIDCJWKSManager fetches and caches JWKS (JSON Web Key Sets), per JWKS URL.
+ *
+ * Thread-safe. A key set is held as a `shared_ptr<const vector<JWKSKey>>`
+ * and replaced, never edited, when it is refetched; getKey hands out an
+ * aliasing `shared_ptr<const JWKSKey>` that keeps its set alive. It used to
+ * return `&key` into a vector a concurrent refresh replaced (and freed) -
+ * a use-after-free on every key rotation under load.
+ *
+ * Fetches are bounded (#284). One getKey fetches at most once, concurrent
+ * callers share one fetch, and after a fetch the next one for an unknown kid
+ * waits for the refetch cooldown (default 60 s; a failed fetch is retried
+ * after min(cooldown, 5 s)). Within the cooldown an unknown kid is refused
+ * from a negative cache instead of reaching the issuer, so a flood of tokens
+ * with invented kids costs the issuer one request per cooldown.
  */
 class OIDCJWKSManager {
 public:
+    /// The JWKS document at `url`, or nullopt when it cannot be fetched. The
+    /// default GETs it with HTTPClient and wants status 200.
+    using Fetcher = std::function<std::optional<std::string>(const std::string& url)>;
+
     OIDCJWKSManager();
     ~OIDCJWKSManager();
 
     /**
-     * Fetch and cache JWKS from the provided URL
-     * @param jwks_url URL to fetch JWKS from (e.g., from discovery endpoint)
-     * @return true if successful, false otherwise
+     * Fetch the JWKS now, whatever the cooldown (shares a fetch already
+     * running). true when the key set was replaced.
      */
     bool refreshJWKS(const std::string& jwks_url);
 
     /**
-     * Get a specific key by kid (key ID)
-     * Will attempt to refresh if key not found (for key rotation)
-     * @param kid Key ID to lookup
-     * @param jwks_url URL to refresh from if needed
-     * @return Pointer to key or nullptr if not found
+     * The key `kid`, or nullptr. Fetches the JWKS at most once, and only when
+     * it was never fetched, has outlived the cache TTL, or does not hold
+     * `kid` - each subject to the refetch cooldown.
      */
-    const JWKSKey* getKey(const std::string& kid, const std::string& jwks_url);
+    std::shared_ptr<const JWKSKey> getKey(const std::string& kid, const std::string& jwks_url);
 
     /**
-     * Check if JWKS cache needs refresh
-     * @param jwks_url URL to check
-     * @return true if needs refresh
+     * Check if JWKS cache needs refresh (never fetched, or older than the TTL)
      */
     bool needsRefresh(const std::string& jwks_url) const;
 
-    /**
-     * Clear cache for a specific URL
-     */
     void clearCache(const std::string& jwks_url);
-
-    /**
-     * Clear all caches
-     */
     void clearAllCaches();
 
-    /**
-     * Set cache TTL in hours (default: 24)
-     */
+    /** Cache TTL in hours (default 24). */
     void setCacheTTL(int hours) { cache_ttl_hours_ = hours; }
 
+    /** Minimum time between two fetches for an unknown kid (default 60 s; 0 = none). */
+    void setRefetchCooldown(std::chrono::seconds cooldown) { refetch_cooldown_ = cooldown; }
+
+    /** Replace how a JWKS document is fetched (tests). */
+    void setFetcher(Fetcher fetcher) { fetcher_ = std::move(fetcher); }
+
+    /** JWKS fetches attempted so far, failed ones included. */
+    std::size_t fetchCount() const { return fetch_count_.load(); }
+
+    /** Parse a JWKS document: RSA (n, e) and EC (crv, x, y) signature keys. */
+    std::optional<std::vector<JWKSKey>> parseJWKSResponse(const std::string& json_content);
+
 private:
+    using KeySet = std::shared_ptr<const std::vector<JWKSKey>>;
+
     struct JWKSCache {
-        std::vector<JWKSKey> keys;
-        std::chrono::steady_clock::time_point refreshed_at;
+        KeySet keys;                                          // null until a fetch succeeds
+        std::chrono::steady_clock::time_point refreshed_at;   // last successful fetch
+        std::chrono::steady_clock::time_point attempted_at;   // last fetch, successful or not
+        bool attempted = false;
+        bool last_ok = false;
+        std::uint64_t generation = 0;                         // bumped by every fetch
+        std::unordered_map<std::string, std::chrono::steady_clock::time_point> unknown_kids;
+        std::shared_ptr<std::mutex> fetch_mutex = std::make_shared<std::mutex>();
     };
 
-    /**
-     * Fetch JWKS from remote endpoint
-     */
-    std::optional<std::vector<JWKSKey>> fetchJWKS(const std::string& jwks_url);
+    /** Fetch, parse and store (caller holds the entry's fetch_mutex). */
+    bool fetchAndStore(const std::string& jwks_url);
 
-    /**
-     * Parse JWKS JSON response
-     */
-    std::optional<std::vector<JWKSKey>> parseJWKSResponse(const std::string& json_content);
+    static std::shared_ptr<const JWKSKey> findKey(const KeySet& keys, const std::string& kid);
+    bool fresh(const JWKSCache& entry, std::chrono::steady_clock::time_point now) const;
+    std::chrono::steady_clock::duration retryDelay(const JWKSCache& entry) const;
+    void rememberUnknown(JWKSCache& entry, const std::string& kid, std::chrono::steady_clock::time_point now);
 
     /**
      * Convert an RSA JWK (n, e) to EVP_PKEY for OpenSSL verification
@@ -148,7 +171,10 @@ private:
 
     mutable std::mutex cache_mutex_;
     std::unordered_map<std::string, JWKSCache> jwks_cache_;
-    int cache_ttl_hours_ = 24;
+    std::atomic<int> cache_ttl_hours_{24};
+    std::atomic<std::chrono::seconds> refetch_cooldown_{std::chrono::seconds(60)};
+    Fetcher fetcher_;
+    std::atomic<std::size_t> fetch_count_{0};
 };
 
 } // namespace flapi

@@ -107,7 +107,6 @@ private:
     std::shared_ptr<ConfigManager> config_manager;
     std::shared_ptr<DatabaseManager> db_manager;
     std::shared_ptr<AwsHelper> aws_helper;
-    std::unordered_map<std::string, std::shared_ptr<OIDCAuthHandler>> oidc_handlers;  // Cache per issuer
 
     // Initalize AWS secrets
     void initializeAwsSecretsManager();

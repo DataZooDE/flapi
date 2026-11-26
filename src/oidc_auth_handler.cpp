@@ -29,15 +29,62 @@ const JwsAlgorithm* FindJwsAlgorithm(const std::string& name) {
     return nullptr;
 }
 
-OIDCAuthHandler::OIDCAuthHandler(const Config& config)
-    : config_(config) {
-    discovery_client_ = std::make_unique<OIDCDiscoveryClient>();
-    jwks_manager_ = std::make_unique<OIDCJWKSManager>();
+namespace {
 
-    if (config_.jwks_cache_hours > 0) {
-        jwks_manager_->setCacheTTL(config_.jwks_cache_hours);
+// A failed discovery is not retried sooner than this.
+constexpr auto kDiscoveryRetry = std::chrono::seconds(5);
+
+}  // namespace
+
+OIDCProviderKeys::OIDCProviderKeys(std::string issuer_url, const Options& options)
+    : issuer_url_(std::move(issuer_url)) {
+    if (options.jwks_cache_hours > 0) {
+        jwks_.setCacheTTL(options.jwks_cache_hours);
     }
+    jwks_.setRefetchCooldown(std::chrono::seconds(std::max(0, options.jwks_refetch_cooldown_seconds)));
+}
 
+std::optional<OIDCProviderMetadata> OIDCProviderKeys::metadata() {
+    // Held across the fetch: concurrent first requests wait for this one.
+    std::lock_guard<std::mutex> lock(metadata_mutex_);
+    if (metadata_) {
+        return metadata_;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (discovery_failed_ && now - discovery_failed_at_ < kDiscoveryRetry) {
+        return std::nullopt;
+    }
+    ++discovery_count_;
+    metadata_ = discovery_.getProviderMetadata(issuer_url_);
+    discovery_failed_ = !metadata_;
+    discovery_failed_at_ = now;
+    if (metadata_ && metadata_->jwks_uri.empty()) {
+        CROW_LOG_WARNING << "OIDC discovery document of " << issuer_url_ << " names no jwks_uri";
+    }
+    return metadata_;
+}
+
+std::shared_ptr<const JWKSKey> OIDCProviderKeys::key(const std::string& kid) {
+    auto md = metadata();
+    if (!md || md->jwks_uri.empty()) {
+        return nullptr;
+    }
+    return jwks_.getKey(kid, md->jwks_uri);
+}
+
+bool OIDCProviderKeys::refreshJWKS() {
+    auto md = metadata();
+    return md && !md->jwks_uri.empty() && jwks_.refreshJWKS(md->jwks_uri);
+}
+
+OIDCAuthHandler::OIDCAuthHandler(const Config& config)
+    : OIDCAuthHandler(config, std::make_shared<OIDCProviderKeys>(
+                                  config.issuer_url,
+                                  OIDCProviderKeys::Options{config.jwks_cache_hours,
+                                                            config.jwks_refetch_cooldown_seconds})) {}
+
+OIDCAuthHandler::OIDCAuthHandler(const Config& config, std::shared_ptr<OIDCProviderKeys> keys)
+    : config_(config), keys_(std::move(keys)) {
     CROW_LOG_INFO << "Initialized OIDCAuthHandler for issuer: " << config_.issuer_url;
 }
 
@@ -87,32 +134,22 @@ std::optional<OIDCTokenClaims> OIDCAuthHandler::validateToken(const std::string&
         return std::nullopt;
     }
 
-    // Get provider metadata if not cached
-    if (!cached_metadata_) {
-        cached_metadata_ = getProviderMetadata();
-        if (!cached_metadata_) {
-            logError("Failed to get provider metadata");
-            return std::nullopt;
-        }
+    if (!keys_->metadata()) {
+        logError("Failed to get provider metadata");
+        return std::nullopt;
     }
 
-    // Ensure JWKS is loaded
-    if (!jwks_manager_->getKey(kid, cached_metadata_->jwks_uri)) {
-        if (!refreshJWKS()) {
-            logError("Failed to load JWKS for token validation");
-            return std::nullopt;
-        }
-    }
-
-    // Get the public key
-    const JWKSKey* key = jwks_manager_->getKey(kid, cached_metadata_->jwks_uri);
+    // The public key: at most one JWKS fetch for this request, and none
+    // within the refetch cooldown (OIDCJWKSManager). Held by shared_ptr, so a
+    // concurrent refresh cannot free it under us.
+    const std::shared_ptr<const JWKSKey> key = keys_->key(kid);
     if (!key) {
         logError("Key not found in JWKS: " + kid);
         return std::nullopt;
     }
 
     // Verify JWT signature
-    if (!verifySignature(actual_token, alg, key)) {
+    if (!verifySignature(actual_token, alg, key.get())) {
         logError("JWT signature verification failed");
         return std::nullopt;
     }
@@ -250,7 +287,7 @@ std::optional<OIDCTokenClaims> OIDCAuthHandler::validateToken(const std::string&
 }
 
 std::optional<OIDCProviderMetadata> OIDCAuthHandler::getProviderMetadata() {
-    return discovery_client_->getProviderMetadata(config_.issuer_url);
+    return keys_->metadata();
 }
 
 bool OIDCAuthHandler::isTokenExpired(const OIDCTokenClaims& claims) const {
@@ -285,14 +322,7 @@ bool OIDCAuthHandler::validateAudience(const OIDCTokenClaims& claims) const {
 }
 
 bool OIDCAuthHandler::refreshJWKS() {
-    if (!cached_metadata_) {
-        cached_metadata_ = getProviderMetadata();
-        if (!cached_metadata_) {
-            return false;
-        }
-    }
-
-    return jwks_manager_->refreshJWKS(cached_metadata_->jwks_uri);
+    return keys_->refreshJWKS();
 }
 
 std::string OIDCAuthHandler::extractTokenFromHeader(const std::string& auth_header) {

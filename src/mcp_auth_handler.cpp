@@ -2,6 +2,7 @@
 #include "auth_middleware.hpp"
 #include "auth_params.hpp"
 #include "bearer_token_verifier.hpp"
+#include "oidc_handler_registry.hpp"
 #include "oidc_provider_presets.hpp"
 #include <crow/logging.h>
 #include <crow/utility.h>
@@ -180,54 +181,9 @@ std::optional<MCPSession::AuthContext> MCPAuthHandler::authenticateBearer(
 }
 
 std::shared_ptr<OIDCAuthHandler> MCPAuthHandler::getOIDCHandler(const OIDCConfig& oidc_config) {
-    // Make a mutable copy to apply presets
-    OIDCConfig config = oidc_config;
-
-    // Apply provider presets if specified
-    if (!config.provider_type.empty() && config.provider_type != "generic") {
-        bool preset_applied = OIDCProviderPresets::applyPreset(config);
-        if (preset_applied) {
-            CROW_LOG_DEBUG << "Applied OIDC preset for provider: " << config.provider_type;
-        }
-    }
-
-    // Validate provider configuration
-    std::string validation_error = OIDCProviderPresets::validateProviderConfig(config);
-    if (!validation_error.empty()) {
-        CROW_LOG_ERROR << "OIDC configuration error: " << validation_error;
-        // Note: In production, should throw or return nullopt, but for now log and continue
-        // The handler will fail during token validation with clearer errors
-    }
-
-    auto key = config.issuer_url + ":" + config.client_id;
-
-    auto it = oidc_handlers.find(key);
-    if (it != oidc_handlers.end()) {
-        return it->second;
-    }
-
-    // Convert OIDCConfig to OIDCAuthHandler::Config
-    OIDCAuthHandler::Config handler_config;
-    handler_config.issuer_url = config.issuer_url;
-    handler_config.client_id = config.client_id;
-    handler_config.client_secret = config.client_secret;
-    handler_config.allowed_audiences = config.allowed_audiences;
-    handler_config.verify_expiration = config.verify_expiration;
-    handler_config.clock_skew_seconds = config.clock_skew_seconds;
-    handler_config.username_claim = config.username_claim;
-    handler_config.email_claim = config.email_claim;
-    handler_config.roles_claim = config.roles_claim;
-    handler_config.groups_claim = config.groups_claim;
-    handler_config.role_claim_path = config.role_claim_path;
-    handler_config.enable_client_credentials = config.enable_client_credentials;
-    handler_config.enable_refresh_tokens = config.enable_refresh_tokens;
-    handler_config.scopes = config.scopes;
-    handler_config.jwks_cache_hours = config.jwks_cache_hours;
-
-    // Create new handler for this issuer
-    auto handler = std::make_shared<OIDCAuthHandler>(handler_config);
-    oidc_handlers[key] = handler;
-    return handler;
+    // One locked registry for REST and MCP, keyed on the whole effective
+    // config. The provider config was validated at load (parseOIDCConfigNode).
+    return OIDCHandlerRegistry::instance().handlerFor(oidc_config);
 }
 
 std::optional<MCPSession::AuthContext> MCPAuthHandler::authenticateOIDC(

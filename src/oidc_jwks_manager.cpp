@@ -10,85 +10,169 @@
 
 namespace flapi {
 
-OIDCJWKSManager::OIDCJWKSManager() {}
+namespace {
+
+// A failed fetch is retried sooner than a successful one is repeated: the
+// issuer may only have blipped, and until it answers no token verifies.
+constexpr auto kFailedFetchRetry = std::chrono::seconds(5);
+// Bound on remembered unknown kids per JWKS URL; past it the list starts over.
+constexpr std::size_t kMaxUnknownKids = 1024;
+
+}  // namespace
+
+OIDCJWKSManager::OIDCJWKSManager()
+    : fetcher_([](const std::string& url) -> std::optional<std::string> {
+          auto response = HTTPClient::get(url);
+          if (!response) {
+              CROW_LOG_ERROR << "Failed to fetch JWKS from: " << url;
+              return std::nullopt;
+          }
+          if (response->status_code != 200) {
+              CROW_LOG_ERROR << "JWKS endpoint returned status " << response->status_code << " from: " << url;
+              return std::nullopt;
+          }
+          return response->body;
+      }) {}
 
 OIDCJWKSManager::~OIDCJWKSManager() {}
 
-bool OIDCJWKSManager::refreshJWKS(const std::string& jwks_url) {
-    auto keys = fetchJWKS(jwks_url);
+std::shared_ptr<const JWKSKey> OIDCJWKSManager::findKey(const KeySet& keys, const std::string& kid) {
     if (!keys) {
+        return nullptr;
+    }
+    for (const auto& key : *keys) {
+        if (key.kid == kid) {
+            // Aliasing: shares ownership of the whole set, points at one key.
+            return std::shared_ptr<const JWKSKey>(keys, &key);
+        }
+    }
+    return nullptr;
+}
+
+bool OIDCJWKSManager::fresh(const JWKSCache& entry, std::chrono::steady_clock::time_point now) const {
+    return entry.keys && now - entry.refreshed_at < std::chrono::hours(cache_ttl_hours_.load());
+}
+
+std::chrono::steady_clock::duration OIDCJWKSManager::retryDelay(const JWKSCache& entry) const {
+    const std::chrono::steady_clock::duration cooldown = refetch_cooldown_.load();
+    if (entry.last_ok) {
+        return cooldown;
+    }
+    return std::min<std::chrono::steady_clock::duration>(cooldown, kFailedFetchRetry);
+}
+
+void OIDCJWKSManager::rememberUnknown(JWKSCache& entry, const std::string& kid,
+                                      std::chrono::steady_clock::time_point now) {
+    if (entry.unknown_kids.size() >= kMaxUnknownKids) {
+        entry.unknown_kids.clear();
+    }
+    entry.unknown_kids[kid] = now;
+}
+
+bool OIDCJWKSManager::fetchAndStore(const std::string& jwks_url) {
+    ++fetch_count_;
+    CROW_LOG_DEBUG << "Fetching JWKS from: " << jwks_url;
+    std::optional<std::vector<JWKSKey>> keys;
+    if (auto body = fetcher_(jwks_url)) {
+        keys = parseJWKSResponse(*body);
+        if (!keys) {
+            CROW_LOG_ERROR << "Failed to parse JWKS response from: " << jwks_url;
+        }
+    }
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+    auto& entry = jwks_cache_[jwks_url];
+    entry.attempted = true;
+    entry.attempted_at = now;
+    entry.last_ok = keys.has_value();
+    ++entry.generation;
+    if (!keys) {
+        // The keys we had stay usable: a failed refetch does not log
+        // everybody out.
         CROW_LOG_WARNING << "Failed to fetch JWKS from: " << jwks_url;
         return false;
     }
-
-    {
-        std::lock_guard<std::mutex> lock(cache_mutex_);
-        jwks_cache_[jwks_url] = {
-            std::move(*keys),
-            std::chrono::steady_clock::now()
-        };
-    }
-
-    CROW_LOG_DEBUG << "Successfully refreshed JWKS from: " << jwks_url;
+    CROW_LOG_DEBUG << "Fetched " << keys->size() << " keys from: " << jwks_url;
+    entry.keys = std::make_shared<const std::vector<JWKSKey>>(std::move(*keys));
+    entry.refreshed_at = now;
+    entry.unknown_kids.clear();
     return true;
 }
 
-const JWKSKey* OIDCJWKSManager::getKey(
-    const std::string& kid,
-    const std::string& jwks_url) {
-
+bool OIDCJWKSManager::refreshJWKS(const std::string& jwks_url) {
+    std::shared_ptr<std::mutex> fetch_mutex;
+    std::uint64_t generation = 0;
     {
         std::lock_guard<std::mutex> lock(cache_mutex_);
-        auto it = jwks_cache_.find(jwks_url);
-        if (it != jwks_cache_.end()) {
-            // Check if cache is still valid
-            auto age = std::chrono::steady_clock::now() - it->second.refreshed_at;
-            if (age.count() < cache_ttl_hours_ * 3600LL * 1000000000LL) {  // nanoseconds
-                // Search for key in cache
-                for (auto& key : it->second.keys) {
-                    if (key.kid == kid) {
-                        CROW_LOG_DEBUG << "Found key in JWKS cache: " << kid;
-                        return &key;
-                    }
-                }
-            }
-        }
+        auto& entry = jwks_cache_[jwks_url];
+        fetch_mutex = entry.fetch_mutex;
+        generation = entry.generation;
     }
-
-    // Key not found in cache, try to refresh (for key rotation)
-    CROW_LOG_DEBUG << "Key not found in cache, attempting refresh: " << kid;
-    if (!refreshJWKS(jwks_url)) {
-        CROW_LOG_WARNING << "Failed to refresh JWKS, key not found: " << kid;
-        return nullptr;
-    }
-
-    // Try again after refresh
+    std::lock_guard<std::mutex> fetching(*fetch_mutex);
     {
         std::lock_guard<std::mutex> lock(cache_mutex_);
-        auto it = jwks_cache_.find(jwks_url);
-        if (it != jwks_cache_.end()) {
-            for (auto& key : it->second.keys) {
-                if (key.kid == kid) {
-                    CROW_LOG_DEBUG << "Found key after JWKS refresh: " << kid;
-                    return &key;
-                }
-            }
+        const auto& entry = jwks_cache_[jwks_url];
+        if (entry.generation != generation) {
+            return entry.last_ok;   // fetched while we waited
         }
     }
+    return fetchAndStore(jwks_url);
+}
 
-    CROW_LOG_WARNING << "Key not found in JWKS even after refresh: " << kid;
-    return nullptr;
+std::shared_ptr<const JWKSKey> OIDCJWKSManager::getKey(const std::string& kid, const std::string& jwks_url) {
+    const auto now = std::chrono::steady_clock::now();
+    std::shared_ptr<std::mutex> fetch_mutex;
+    std::uint64_t generation = 0;
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        auto& entry = jwks_cache_[jwks_url];
+        auto key = findKey(entry.keys, kid);
+        if (key && fresh(entry, now)) {
+            return key;
+        }
+        const auto unknown = entry.unknown_kids.find(kid);
+        if (!key && unknown != entry.unknown_kids.end() && now - unknown->second < refetch_cooldown_.load()) {
+            CROW_LOG_DEBUG << "JWKS kid known to be absent (negative cache): " << kid;
+            return nullptr;
+        }
+        if (entry.attempted && now - entry.attempted_at < retryDelay(entry)) {
+            // Within the cooldown: answer from what we have (a stale key
+            // still verifies), never from the issuer.
+            if (!key) {
+                CROW_LOG_DEBUG << "JWKS kid not found, refetch cooldown active: " << kid;
+                rememberUnknown(entry, kid, now);
+            }
+            return key;
+        }
+        fetch_mutex = entry.fetch_mutex;
+        generation = entry.generation;
+    }
+
+    // One fetch at a time per URL; whoever waited uses its result.
+    std::lock_guard<std::mutex> fetching(*fetch_mutex);
+    bool fetched_by_other = false;
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        fetched_by_other = jwks_cache_[jwks_url].generation != generation;
+    }
+    if (!fetched_by_other) {
+        CROW_LOG_DEBUG << "Fetching JWKS for kid: " << kid;
+        fetchAndStore(jwks_url);
+    }
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+    auto& entry = jwks_cache_[jwks_url];
+    auto key = findKey(entry.keys, kid);
+    if (!key) {
+        CROW_LOG_WARNING << "Key not found in JWKS: " << kid;
+        rememberUnknown(entry, kid, now);
+    }
+    return key;
 }
 
 bool OIDCJWKSManager::needsRefresh(const std::string& jwks_url) const {
     std::lock_guard<std::mutex> lock(cache_mutex_);
     auto it = jwks_cache_.find(jwks_url);
-    if (it == jwks_cache_.end()) {
-        return true;  // No cache entry, needs refresh
-    }
-
-    auto age = std::chrono::steady_clock::now() - it->second.refreshed_at;
-    return age.count() >= cache_ttl_hours_ * 3600LL * 1000000000LL;  // nanoseconds
+    return it == jwks_cache_.end() || !fresh(it->second, std::chrono::steady_clock::now());
 }
 
 void OIDCJWKSManager::clearCache(const std::string& jwks_url) {
@@ -101,36 +185,6 @@ void OIDCJWKSManager::clearAllCaches() {
     std::lock_guard<std::mutex> lock(cache_mutex_);
     jwks_cache_.clear();
     CROW_LOG_DEBUG << "Cleared all JWKS caches";
-}
-
-std::optional<std::vector<JWKSKey>> OIDCJWKSManager::fetchJWKS(
-    const std::string& jwks_url) {
-
-    CROW_LOG_DEBUG << "Fetching JWKS from: " << jwks_url;
-
-    // Fetch JWKS via HTTP GET
-    auto response = HTTPClient::get(jwks_url);
-    if (!response) {
-        CROW_LOG_ERROR << "Failed to fetch JWKS from: " << jwks_url;
-        return std::nullopt;
-    }
-
-    // Check HTTP status
-    if (response->status_code != 200) {
-        CROW_LOG_ERROR << "JWKS endpoint returned status " << response->status_code
-                       << " from: " << jwks_url;
-        return std::nullopt;
-    }
-
-    // Parse JSON response
-    auto keys = parseJWKSResponse(response->body);
-    if (!keys) {
-        CROW_LOG_ERROR << "Failed to parse JWKS response from: " << jwks_url;
-        return std::nullopt;
-    }
-
-    CROW_LOG_DEBUG << "Successfully fetched " << keys->size() << " keys from: " << jwks_url;
-    return keys;
 }
 
 std::optional<std::vector<JWKSKey>> OIDCJWKSManager::parseJWKSResponse(

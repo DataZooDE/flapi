@@ -418,6 +418,7 @@ add_library(flapi-lib STATIC
     src/oidc_jwks_manager.cpp
     src/oidc_auth_handler.cpp
     src/oidc_provider_presets.cpp
+    src/oidc_handler_registry.cpp
     src/http_client.cpp
     src/config_token_utils.cpp
     src/type_converter.cpp
