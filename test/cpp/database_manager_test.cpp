@@ -540,3 +540,24 @@ TEST_CASE_METHOD(TestFixture, "DatabaseManager executeWrite knows RETURNING from
         CHECK(r.returned_data->size() == 2);
     }
 }
+
+// #264: getTableColumns handed its schema/table to executeQuery(string, params),
+// which never binds, so the `?` placeholders failed and it returned nothing; and
+// names came back JSON-quoted.
+TEST_CASE_METHOD(TestFixture, "DatabaseManager getTableColumns binds schema and table", "[database_manager]") {
+    db_manager->executeQuery("CREATE TABLE test_cols (id INTEGER NOT NULL, name VARCHAR)", {}, false);
+    db_manager->executeQuery("CREATE TABLE test_cols_other (x INTEGER)", {}, false);
+
+    auto columns = db_manager->getTableColumns("main", "test_cols");
+    REQUIRE(columns.size() == 2);
+    CHECK(columns[0].name == "id");
+    CHECK(columns[0].type == "INTEGER");
+    CHECK_FALSE(columns[0].nullable);
+    CHECK(columns[1].name == "name");
+    CHECK(columns[1].type == "VARCHAR");
+    CHECK(columns[1].nullable);
+
+    CHECK(db_manager->getTableColumns("main", "does_not_exist").empty());
+    // A quote in the name is data, not SQL.
+    CHECK(db_manager->getTableColumns("main", "test_cols' OR '1'='1").empty());
+}
