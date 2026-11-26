@@ -53,6 +53,9 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   read from Crow's path-only `url`, so it was `false` on every span.
 - **`GET /api/v1/_config/log-level` reports the running level (#279).** It answered
   `info` until a `PUT`, whatever `--log-level`, `FLAPI_LOG_LEVEL` or `log-level:` set.
+- **REST audit lines carry a row count (#279).** `row_count` was `-1` on every REST
+  line, and the request span had no `db.response.returned_rows`. A read records the
+  rows of the page it returned (not `total_count`), a write its `rows_affected`.
 
 ### Upgrade notes
 
@@ -69,6 +72,10 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 - A write endpoint with `returns-data: true` whose last statement is a `SELECT` that
   starts with `WITH`, `FROM` or a comment, or is the only statement, now returns that
   `SELECT`'s rows in `data` where it returned `[]`.
+- REST audit lines now carry `row_count` (rows returned by a read, `rows_affected` by a
+  write) where they said `-1`, and REST request spans gain `db.response.returned_rows`.
+  A dashboard that filtered on `row_count = -1` to find REST traffic must filter on
+  `method` instead.
 
 ## v26.11.26 — auth.* identity values stay inside their SQL literal, OIDC works again, and a task guide for every feature
 

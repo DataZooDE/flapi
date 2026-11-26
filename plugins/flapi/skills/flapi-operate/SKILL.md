@@ -253,6 +253,10 @@ tracing:
   db_profiling: summary                   # off | summary | detailed: DuckDB timings on the query span
 ```
 
+Audit lines (`audit:`) carry `row_count`: the rows of the page a REST read returned (not
+`total_count`), `rows_affected` for a REST write, the result rows of an MCP tool call, `-1`
+for a denial or an error. The request span has the same number as `db.response.returned_rows`.
+
 A traced response also carries `X-Trace-Id` (the caller's trace id if it sent
 `traceparent`). An MCP client can pass `traceparent` in `params._meta`. With `otlp_http`,
 export failures do not show in the metrics counters: alert on

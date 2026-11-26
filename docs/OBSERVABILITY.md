@@ -113,6 +113,7 @@ The request span carries the request's shape, never its values:
 |---|---|
 | `http.request.method`, `http.route`, `url.path` | The method and the route template (never a filled path) |
 | `http.response.status_code`, `http.response.body.size` | The outcome and the response size in bytes |
+| `db.response.returned_rows` | The audit line's `row_count`: rows of the page a read returned, rows a write changed. Absent when there is no count. (REST requests never had it up to v26.11.26.) |
 | `flapi.url.has_query` | `true` when the request had a query string. The query string itself is never exported. (It was always `false` up to v26.11.26.) |
 | `flapi.auth.kind`, `flapi.trace.context_source` | How the caller authenticated, and where the trace context came from |
 | `user_agent.original` | The `User-Agent` header, cut to 256 bytes |

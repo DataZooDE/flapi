@@ -882,7 +882,9 @@ Each event is a single JSON line of the shape:
 `status` is `success`, `denied` (REST 401/403), `rate_limited` (429), `dry_run` (MCP `_dryRun`),
 `error:<HTTP status>` (other REST failures) or `error:<reason>` (MCP, e.g. `error:invalid_arguments`).
 `trace_id` / `span_id` appear when the request has a
-trace. `row_count` is `-1` when the row count is not known (REST requests today).
+trace. `row_count` is the number of rows returned: the page for a REST read (not
+`total_count`), the result of an MCP tool call. A REST write records `rows_affected`. It is
+`-1` when there is no count (a denial, a validation error, a failed query).
 
 > **Implementation:** `src/audit_logger.cpp` | **Tests:** `test/cpp/audit_logger_test.cpp`, `test/integration/test_audit_log.py`
 

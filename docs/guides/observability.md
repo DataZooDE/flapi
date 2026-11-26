@@ -576,7 +576,7 @@ cat audit.jsonl
 ```
 
 ```json
-{"params":{"id":"3"},"latency_ms":3,"target":"/customers","row_count":-1,"status":"success","method":"GET","principal":"anonymous","span_id":"7e9f64b9b93597f9","request_id":"req-bc8a5c39c9237e45","trace_id":"373c9c086ef9553fefc36d88f1fc99ea","timestamp":"2026-11-25T12:53:32.473659Z"}
+{"params":{"id":"3"},"latency_ms":3,"target":"/customers","row_count":1,"status":"success","method":"GET","principal":"anonymous","span_id":"7e9f64b9b93597f9","request_id":"req-bc8a5c39c9237e45","trace_id":"373c9c086ef9553fefc36d88f1fc99ea","timestamp":"2026-11-25T12:53:32.473659Z"}
 {"params":{"id":"abc"},"latency_ms":0,"target":"/customers","row_count":-1,"status":"error:400","method":"GET","principal":"anonymous","span_id":"7c257f1a3097e480","request_id":"req-15b1a41f0ee12c4d","trace_id":"a1ba7bf180c2b389bfa63c590277e260","timestamp":"2026-11-25T12:53:32.479336Z"}
 {"params":{},"latency_ms":2,"target":"/broken","row_count":-1,"status":"error:500","method":"GET","principal":"anonymous","span_id":"5452a8c331fbb598","request_id":"req-9248425d44c3d9f6","trace_id":"3efbd06af66dffb89f25a1cb3cbe6777","timestamp":"2026-11-25T12:53:32.498142Z"}
 ```
@@ -593,8 +593,11 @@ cat audit.jsonl
   - for MCP, `dry_run` or `error:<reason>`.
 - `principal` is the authenticated user, or `anonymous`. `target` is the route
   or the MCP tool name, and `method` is the HTTP method or `tools/call`.
-- `row_count` is filled for MCP tool calls. **REST requests always log `-1`**,
-  a known limitation.
+- `row_count` is the number of rows the request returned: the rows of the page
+  for a REST read (GET, CSV, Arrow or a read over POST), not `total_count`, and
+  the rows of an MCP tool result. For a REST write it is `rows_affected`, the
+  rows the write changed. It is `-1` when there is no count: a denial, a `400`,
+  a failed query. Up to v26.11.26 every REST line said `-1`.
 - `trace_id` and `span_id` are present when the request has a trace context.
 - `redact` replaces the value of each listed parameter with `<redacted>`.
   Names are matched whole, ignoring case, `-` and `_`, so `tax_id` covers
