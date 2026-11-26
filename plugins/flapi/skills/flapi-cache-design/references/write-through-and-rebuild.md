@@ -10,6 +10,8 @@ populate SQL:
   requested while one runs are coalesced per endpoint. The next GET may still
   see the old data for the length of the refresh.
 - Both set: synchronous only. REST and MCP tool calls follow the same rules.
+- `template-file` is **required** on the write endpoint's block: without it the
+  endpoint fails to load, since the populate SQL would be the write template.
 
 ```yaml
 # flapi: config group=cache-items

@@ -371,7 +371,10 @@ Details: [references/write-through-and-rebuild.md](references/write-through-and-
 Give the POST/PUT/PATCH/DELETE endpoint its own `cache:` block with the same `table`
 and `template-file`, plus `invalidate-on-write: true` (populate runs before the
 response: read-your-write) or `refresh-on-write: true` (after the response,
-coalesced). Example: [references/write-through-and-rebuild.md](references/write-through-and-rebuild.md).
+coalesced). `template-file` is required there: a write endpoint's cache without
+one fails to load (`a write endpoint's cache needs template-file`), because its
+populate SQL would be the write itself, re-run on every refresh.
+Example: [references/write-through-and-rebuild.md](references/write-through-and-rebuild.md).
 
 ## Replicas and prebuilt caches
 

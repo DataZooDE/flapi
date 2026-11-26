@@ -1813,7 +1813,7 @@ DuckLake caching enables snapshot-based query result caching with automatic refr
 | `cache.table` | string | **required** | Cache table name |
 | `cache.schema` | string | `"cache"` | DuckDB schema name |
 | `cache.schedule` | string | - | Refresh schedule (e.g., `5m`, `1h`, `30s`) |
-| `cache.template-file` | string | - | Cache populate SQL template. Without it the endpoint's `template-source` is materialised with a full refresh (startup warns) |
+| `cache.template-file` | string | - | Cache populate SQL template. Without it the endpoint's `template-source` is materialised with a full refresh (startup warns). **Required on a write endpoint**: without it the endpoint fails to load ([§8.2](#82-write-operations)) |
 | `cache.warmup` | string | - | Overrides `ducklake.warmup` for this endpoint: `always`, `if-empty` or `never` |
 
 **Schedule Format:**
@@ -1882,6 +1882,13 @@ Without `cache.template-file` the endpoint's `template-source` is the populate S
 refresh every time, whatever `primary-key`/`cursor` imply (audited as `full`) - and startup warns
 `cache on <endpoint> has no template-file: ...`. The bare-`SELECT` refusal applies only to an explicit
 `template-file`.
+
+A **write endpoint** (`POST`/`PUT`/`PATCH`/`DELETE`, or `operation.type: write`) with an enabled cache and
+a `table` must declare `template-file`. Its own template is the `INSERT`/`UPDATE`/`DELETE`: used as the
+populate SQL, every warm-up, scheduled refresh and refresh-on-write ran the write again (#276). Such an
+endpoint fails to load - startup, reload and `--validate-config` name it: `a write endpoint's cache needs
+template-file`. A refresh that reaches one anyway (the config service) is refused and audited as an
+`error`; the template is not run.
 
 Shared tables (several endpoints with the same `cache.table`) are warmed once, not once per endpoint.
 
@@ -2300,6 +2307,8 @@ operation:
 
 # The cache this write refreshes: name the read endpoint's table and populate template.
 # A write refreshes only the cache its OWN block names; without `table` nothing is refreshed.
+# `template-file` is required here: without it the endpoint fails to load, since the
+# populate SQL would otherwise be this endpoint's own write, run again on every refresh.
 cache:
   enabled: true
   table: products_cache

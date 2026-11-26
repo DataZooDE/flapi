@@ -2,6 +2,25 @@
 
 All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (the date the binary set was cut). Earlier history is in the git log.
 
+## Unreleased
+
+### Fixed
+
+- **A write endpoint's cache without `template-file` no longer runs the write again (#276).**
+  Its populate SQL fell back to the endpoint's own template - the `INSERT`/`UPDATE`/`DELETE` -
+  so every warm-up, scheduled refresh and refresh-on-write repeated the write and recorded the
+  refresh as a success. Such an endpoint now fails to load (startup, reload and
+  `--validate-config` name it: `a write endpoint's cache needs template-file`), and a refresh
+  that reaches one anyway (the config service) is refused and audited as an error without
+  running the template. The startup warning for a read endpoint's cache without
+  `template-file` now says that only a single `SELECT` is materialised.
+
+### Upgrade notes
+
+- **A write endpoint (`POST`/`PUT`/`PATCH`/`DELETE` or `operation.type: write`) whose `cache:`
+  block has `enabled` and `table` but no `template-file` stops startup.** Copy the reading
+  endpoint's `template-file` into it (the populate SQL that rebuilds the table).
+
 ## v26.11.26 — auth.* identity values stay inside their SQL literal, OIDC works again, and a task guide for every feature
 
 ### Security
