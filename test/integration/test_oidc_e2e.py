@@ -212,7 +212,13 @@ class FlapiServer:
         with open(os.path.join(sqls, "whoami.sql"), "w") as f:
             f.write("SELECT '{{{ auth.username }}}' AS who, "
                     "'{{{ auth.roles }}}' AS roles, "
-                    "'{{{ auth.groups }}}' AS groups, "
+                    # auth.groups / auth.role_list are lists: one marker per item.
+                    "'{{#auth.groups}}{{.}}|{{/auth.groups}}' AS groups, "
+                    "'{{#auth.role_list}}{{.}}|{{/auth.role_list}}' AS role_items, "
+                    "list_contains({{{ auth.groups_sql }}}, 'CN=admins,OU=staff') AS ldap_admin, "
+                    "list_contains({{{ auth.groups_sql }}}, 'O''Brien''s team') AS quoted_group, "
+                    "list_contains({{{ auth.roles_sql }}}, 'analyst') AS analyst, "
+                    "len({{{ auth.groups_sql }}}) AS group_count, "
                     "'{{{ auth.type }}}' AS auth_type\n")
         # Endpoints with an OIDC block of their own (#281), each with its own
         # client id so that no two share an issuer and client.
@@ -450,19 +456,65 @@ class TestOidcClaims:
         assert r.status_code == 200, r.text[:200]
         assert _row(r)["roles"] == "kc-admin"
 
-    def test_groups_reach_the_template(self, server, issuer):
+    def test_groups_reach_the_template_as_a_list(self, server, issuer):
         r = server.get(issuer.token(groups=["team-a", "team-b"]))
         assert r.status_code == 200, r.text[:200]
-        assert _row(r)["groups"] == "team-a,team-b"
+        row = _row(r)
+        assert row["groups"] == "team-a|team-b|"
+        assert row["group_count"] == 2
+        assert row["ldap_admin"] is False
 
-    def test_groups_reach_the_template_over_mcp(self, server, issuer):
+    def test_an_ldap_group_with_commas_is_accepted_and_matched(self, server, issuer):
+        tok = issuer.token(groups=["CN=admins,OU=staff", "CN=users,OU=staff"])
+        r = server.get(tok)
+        assert r.status_code == 200, f"{r.status_code} {r.text[:200]}"
+        row = _row(r)
+        assert row["groups"] == "CN=admins,OU=staff|CN=users,OU=staff|"
+        assert row["ldap_admin"] is True
+        assert row["group_count"] == 2
+
+    def test_an_ldap_group_over_mcp(self, server, issuer):
         r = server.mcp("tools/call", {"name": "whoami", "arguments": {}},
-                       token=issuer.token(sub="mcp-groups", groups=["team-mcp"]))
+                       token=issuer.token(sub="mcp-groups", groups=["CN=admins,OU=staff"]))
         assert r.status_code == 200, f"{r.status_code} {r.text[:300]}"
-        assert "team-mcp" in json.dumps(r.json()["result"]), r.text[:300]
+        text = json.dumps(r.json()["result"])
+        assert "CN=admins,OU=staff|" in text, text[:400]
+        assert "ldap_admin" in text and "true" in text.lower(), text[:400]
 
-    def test_a_group_with_a_comma_is_refused(self, server, issuer):
-        tok = issuer.token(groups=["team-a,admin"])
+    def test_a_group_with_a_quote_stays_inside_its_literal(self, server, issuer):
+        hostile = "x') OR true OR ('"
+        r = server.get(issuer.token(groups=["O'Brien's team", hostile, "a]b\\c,d", "Jürgen"]))
+        assert r.status_code == 200, f"{r.status_code} {r.text[:200]}"
+        row = _row(r)
+        assert row["groups"] == "O'Brien's team|" + hostile + "|a]b\\c,d|Jürgen|"
+        assert row["quoted_group"] is True
+        assert row["ldap_admin"] is False
+        assert row["group_count"] == 4
+
+    def test_role_list_and_roles_sql(self, server, issuer):
+        r = server.get(issuer.token(roles=["analyst", "viewer"]))
+        assert r.status_code == 200, r.text[:200]
+        row = _row(r)
+        assert row["role_items"] == "analyst|viewer|"
+        assert row["roles"] == "analyst,viewer"
+        assert row["analyst"] is True
+        r = server.get(issuer.token(roles=["viewer"]))
+        assert _row(r)["analyst"] is False
+
+    def test_role_list_over_mcp(self, server, issuer):
+        r = server.mcp("tools/call", {"name": "whoami", "arguments": {}},
+                       token=issuer.token(sub="mcp-roles", roles=["analyst", "viewer"]))
+        assert r.status_code == 200, f"{r.status_code} {r.text[:300]}"
+        assert "analyst|viewer|" in json.dumps(r.json()["result"])
+
+    def test_no_groups_is_an_empty_list(self, server, issuer):
+        r = server.get(issuer.token())
+        assert r.status_code == 200, r.text[:200]
+        row = _row(r)
+        assert row["groups"] == "" and row["group_count"] == 0 and row["ldap_admin"] is False
+
+    def test_a_role_with_a_comma_is_still_refused(self, server, issuer):
+        tok = issuer.token(roles=["reader,admin"])
         assert server.get(tok).status_code == 401
         r = server.mcp("tools/call", {"name": "whoami", "arguments": {}}, token=tok)
         assert r.status_code == 401, f"{r.status_code} {r.text[:300]}"

@@ -161,7 +161,12 @@ TEST_CASE("OIDC keys flAPI never reads are reported at load", "[oidc][oidc_claim
     }
 }
 
-TEST_CASE("auth.groups renders quote-doubled, and only in a plain literal", "[oidc][oidc_claims][auth_quoting]") {
+// Groups travel as one __auth_groups value, items separated by U+001F (a
+// control character, which no identity value may contain).
+#define US "\x1f"
+
+TEST_CASE("auth.groups and auth.role_list are lists, one quote-doubled item each",
+          "[oidc][oidc_claims][auth_quoting][auth_lists]") {
     TempTestConfig temp(kBase, "oidc_auth_groups_render");
     auto cm = temp.createConfigManager();
     SQLTemplateProcessor processor(cm);
@@ -171,25 +176,72 @@ TEST_CASE("auth.groups renders quote-doubled, and only in a plain literal", "[oi
         endpoint.templateSource = "g.sql";
         return processor.loadAndProcessTemplate(endpoint, params);
     };
+    const std::string hostile = "a'b,c]d\\e \xC3\xBC";   // ' , ] \ and a UTF-8 letter
+    const std::string doubled = "a''b,c]d\\e \xC3\xBC";
 
-    SECTION("rendered from __auth_groups, quotes doubled") {
-        REQUIRE(Render("SELECT '{{{ auth.groups }}}' AS g",
-                       {{"__auth_groups", "staff,x' OR 1=1 --"}}) == "SELECT 'staff,x'' OR 1=1 --' AS g");
+    SECTION("the section form renders each item in its own literal") {
+        REQUIRE(Render("SELECT {{#auth.groups}}'{{.}}', {{/auth.groups}}1",
+                       {{"__auth_groups", "CN=x,OU=y" US "O'Brien"}}) == "SELECT 'CN=x,OU=y', 'O''Brien', 1");
+        REQUIRE(Render("SELECT {{#auth.groups}}'{{.}}' {{/auth.groups}}", {{"__auth_groups", hostile}}) ==
+                "SELECT '" + doubled + "' ");
     }
-    SECTION("a control character is refused") {
-        REQUIRE_THROWS_AS(Render("SELECT '{{{ auth.groups }}}' AS g",
-                                 {{"__auth_groups", "staff\nOR 1=1"}}),
+    SECTION("auth.groups_sql is a ready list literal") {
+        REQUIRE(Render("SELECT list_contains({{{ auth.groups_sql }}}, 'admin')",
+                       {{"__auth_groups", "CN=x,OU=y" US + hostile}}) ==
+                "SELECT list_contains(['CN=x,OU=y','" + doubled + "']::VARCHAR[], 'admin')");
+        REQUIRE(Render("SELECT {{ auth.groups_sql }}", {{"__auth_authenticated", "true"}}) ==
+                "SELECT []::VARCHAR[]");
+        REQUIRE(Render("SELECT {{{ auth.groups_sql }}}", {}) == "SELECT []::VARCHAR[]");
+    }
+    SECTION("roles: the comma string stays, role_list and roles_sql are new") {
+        const std::map<std::string, std::string> p = {{"__auth_roles", "analyst,O'Neil"}};
+        REQUIRE(Render("SELECT '{{{ auth.roles }}}'", p) == "SELECT 'analyst,O''Neil'");
+        REQUIRE(Render("SELECT {{#auth.role_list}}'{{.}}' {{/auth.role_list}}", p) == "SELECT 'analyst' 'O''Neil' ");
+        REQUIRE(Render("SELECT {{{ auth.roles_sql }}}", p) == "SELECT ['analyst','O''Neil']::VARCHAR[]");
+    }
+    SECTION("no groups: the section is skipped, the inverted one renders") {
+        REQUIRE(Render("SELECT {{#auth.groups}}'{{.}}'{{/auth.groups}}{{^auth.groups}}0{{/auth.groups}}",
+                       {{"__auth_authenticated", "true"}}) == "SELECT 0");
+    }
+    SECTION("a control character in a group is refused") {
+        REQUIRE_THROWS_AS(Render("SELECT {{#auth.groups}}'{{.}}'{{/auth.groups}}",
+                                 {{"__auth_groups", "staff" US "bad\nOR 1=1"}}),
+                          std::invalid_argument);
+        REQUIRE_THROWS_AS(Render("SELECT {{{ auth.groups_sql }}}", {{"__auth_groups", "bad\rx"}}),
                           std::invalid_argument);
     }
-    SECTION("unquoted is refused") {
-        REQUIRE_THROWS_AS(Render("SELECT * FROM t WHERE g = {{{ auth.groups }}}",
-                                 {{"__auth_groups", "staff"}}),
-                          std::invalid_argument);
+}
+
+TEST_CASE("Placement of list items and SQL list literals", "[oidc][oidc_claims][auth_quoting][auth_lists]") {
+    const auto refused = [](const std::string& tpl) { return CheckAuthPlacement(tpl, "t.sql").has_value(); };
+    SECTION("items must sit in a plain literal") {
+        REQUIRE_FALSE(refused("SELECT * FROM t WHERE g IN ({{#auth.groups}}'{{.}}',{{/auth.groups}} '')"));
+        REQUIRE(refused("SELECT * FROM t WHERE g IN ({{#auth.groups}}{{.}},{{/auth.groups}} '')"));
+        REQUIRE(refused("SELECT {{#auth.groups}}E'{{.}}'{{/auth.groups}}"));
+        REQUIRE(refused("SELECT {{#auth.role_list}}\"{{.}}\"{{/auth.role_list}}"));
+        REQUIRE(refused("SELECT * FROM query('SELECT 1 WHERE g = ''{{#auth.groups}}{{.}}{{/auth.groups}}''')"));
     }
-    SECTION("the placement checks know groups") {
-        REQUIRE(CheckAuthPlacement("SELECT * FROM t WHERE o = E{{! c }}'{{{ auth.groups }}}'", "t.sql").has_value());
-        REQUIRE_FALSE(FindUnquotedAuthVariables("{{#auth}}WHERE g = {{groups}}{{/auth}}").empty());
-        REQUIRE_FALSE(CheckAuthPlacement("SELECT * FROM t WHERE g = '{{{ auth.groups }}}'", "t.sql").has_value());
+    SECTION("a list is not a value: a plain tag on it is refused") {
+        REQUIRE(refused("SELECT '{{{ auth.groups }}}'"));
+        REQUIRE(refused("SELECT {{{ auth.role_list }}}"));
+        REQUIRE(refused("{{#auth}}SELECT '{{groups}}'{{/auth}}"));
+    }
+    SECTION("the _sql forms stand where a value does") {
+        REQUIRE_FALSE(refused("SELECT * FROM t WHERE list_contains({{{ auth.groups_sql }}}, 'admin')"));
+        REQUIRE_FALSE(refused("SELECT * FROM t WHERE region IN (SELECT unnest({{ auth.roles_sql }}))"));
+        REQUIRE_FALSE(refused("{{#auth}}SELECT {{{groups_sql}}}{{/auth}}"));
+    }
+    SECTION("...and nowhere else") {
+        REQUIRE(refused("SELECT '{{{ auth.groups_sql }}}'"));
+        REQUIRE(refused("SELECT 1 -- {{{ auth.groups_sql }}}"));
+        REQUIRE(refused("SELECT 1 /* {{{ auth.roles_sql }}} */"));
+        REQUIRE(refused("SELECT 1 AS \"{{{ auth.groups_sql }}}\""));
+        REQUIRE(refused("SELECT $${{{ auth.groups_sql }}}$$"));
+        REQUIRE(refused("SELECT * FROM query({{{ auth.groups_sql }}})"));
+        REQUIRE(refused("SELECT * FROM postgres_query('db', {{{ auth.roles_sql }}})"));
+        REQUIRE(refused("SELECT * FROM query('SELECT ' || {{{ auth.groups_sql }}})"));
+        REQUIRE(refused("SELECT my_macro('SELECT $q$', {{{ auth.groups_sql }}})"));
+        REQUIRE(refused("SELECT E{{! c }}'{{{ auth.groups_sql }}}'"));
     }
 }
 
