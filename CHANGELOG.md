@@ -14,12 +14,28 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   that reaches one anyway (the config service) is refused and audited as an error without
   running the template. The startup warning for a read endpoint's cache without
   `template-file` now says that only a single `SELECT` is materialised.
+- **An unknown key in an endpoint file is reported (#282).** It used to pass validation silently.
+  A section include keeps the section's own name, so `{{include:auth-prod from common.yaml}}`
+  added an `auth-prod:` key nothing reads and left the endpoint without its `auth:` (public,
+  unless the top-level `auth:` applied). Every top-level endpoint key flAPI does not read now
+  warns at startup, in `--validate-config` (a warning: validation still passes) and in the
+  config-service validate API, with a near-miss hint (`auth-prod` → `as auth`, `rate_limit` →
+  `rate-limit`).
+
+### Added
+
+- **`{{include:SECTION as KEY from FILE}}`** inserts a section under another key, also with
+  `if env.X` (#282): a shared file can hold `auth-prod:` and `auth-dev:`, and an endpoint takes
+  one as its `auth:`.
 
 ### Upgrade notes
 
 - **A write endpoint (`POST`/`PUT`/`PATCH`/`DELETE` or `operation.type: write`) whose `cache:`
   block has `enabled` and `table` but no `template-file` stops startup.** Copy the reading
   endpoint's `template-file` into it (the populate SQL that rebuilds the table).
+- **Check `--validate-config` for `Unknown endpoint key` warnings.** A mis-named section include
+  (`{{include:auth-prod from ...}}`) never applied; write `{{include:auth-prod as auth from ...}}`
+  and the endpoint's auth takes effect, so clients without credentials then get `401`.
 
 ## v26.11.26 — auth.* identity values stay inside their SQL literal, OIDC works again, and a task guide for every feature
 

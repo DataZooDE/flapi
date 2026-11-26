@@ -405,8 +405,10 @@ DELETE FROM notesdb.notes WHERE id = {{ params.id }}
 
 ## YAML includes and environment variables
 
-`{{include from f.yaml}}` / `{{include:key from f.yaml}}` (optionally `if env.VAR`) splice
-text before parsing, relative to the including file, without recursion. `{{env.VAR}}` works
+`{{include from f.yaml}}` / `{{include:key from f.yaml}}` / `{{include:key as other from
+f.yaml}}` (optionally `if env.VAR`) splice text before parsing, relative to the including file,
+without recursion. A section include keeps the key's own name: `auth-prod` needs `as auth`, or
+nothing reads it (startup and `--validate-config` warn `Unknown endpoint key`). `{{env.VAR}}` works
 in any YAML value only when `VAR` matches `template.environment-whitelist`; `${VAR}` stays
 literal. Runnable example and the rules: [references/includes.md](references/includes.md).
 

@@ -1435,8 +1435,26 @@ Reuse common configuration across endpoints using the include syntax.
 **Syntax:**
 
 ```yaml
-{{include:section_name from filename.yaml}}
+{{include from filename.yaml}}                          # the whole file
+{{include:section_name from filename.yaml}}             # one top-level key, under its own name
+{{include:section_name as key from filename.yaml}}      # that key's value, under `key:`
+{{include:section_name as key from filename.yaml if env.FLAPI_ENV}}   # any form, conditionally
 ```
+
+A section include keeps the section's name. `as key` inserts it under `key` instead, so a shared file
+can hold variants (`auth-prod:`, `auth-dev:`) and an endpoint picks one as its `auth:`. See
+[the includes guide](guides/yaml-includes.md#one-shared-file-several-variants-as).
+
+**Unknown endpoint keys warn.** After includes are expanded, every top-level key of an endpoint file
+that flAPI does not read is reported, at startup (in the log, naming the file), by `--validate-config`
+(as a warning under the endpoint: validation still passes) and by the config-service validate API (in
+`warnings`): ``Unknown endpoint key `auth-prod` is ignored; nothing reads it: did you mean `auth`? ...``.
+Near misses get a hint (`rate_limit` → `rate-limit`, `urlpath` → `url-path`, `auth-prod` → `as auth`).
+The keys read are `url-path`, `method`, `allow-shadowing`, `description`, `with-pagination`,
+`total-count`, `request-fields-validation`, `template-source`, `request`, `connection`, `rate-limit`,
+`auth`, `cache`, `heartbeat`, `operation`, `mcp-tool`, `mcp-resource` and `mcp-prompt`
+(`EndpointConfigParser::KnownEndpointKeys()`). A shared fragment file (no `url-path` and no `mcp-*`
+key) is not an endpoint and is never checked.
 
 **Example:**
 

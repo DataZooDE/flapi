@@ -187,6 +187,11 @@ Parses endpoint YAML into `EndpointConfig` structs:
 - Parses validator configurations
 - Parses cache, auth, and rate limit settings
 - Handles MCP-specific fields
+- Records top-level keys it does not read (`KnownEndpointKeys()`) in
+  `EndpointConfig::unknown_keys`; `loadEndpointConfig` logs a warning per key
+  and `validateEndpointConfig` returns one (#282)
+- Refuses a write endpoint whose cache has a `table` but no `template-file`
+  (`checkCacheTemplateFile`, after `parseOperationConfig`; #276)
 
 **Key methods:**
 ```cpp
@@ -324,6 +329,10 @@ struct EndpointConfig {
     std::optional<MCPToolInfo> mcp_tool;
     std::optional<MCPResourceInfo> mcp_resource;
     std::optional<MCPPromptInfo> mcp_prompt;
+
+    // Top-level YAML keys nothing reads, in file order (parser only; empty
+    // for an endpoint built from JSON). Warned about; usable by audits.
+    std::vector<std::string> unknown_keys;
 
     // Helper methods
     Type getType() const;
