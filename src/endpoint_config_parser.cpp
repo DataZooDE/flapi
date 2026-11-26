@@ -510,8 +510,11 @@ void EndpointConfigParser::parseOperationConfig(
             config.operation.type = OperationConfig::Write;
         } else if (type_str == "read") {
             config.operation.type = OperationConfig::Read;
+        } else {
+            // A typo (`raed`) used to keep the method default silently.
+            throw std::runtime_error("operation.type '" + operation_node["type"].as<std::string>() +
+                                     "' is not one of: read, write");
         }
-        // Otherwise keep existing value (from method-based detection)
     }
     
     // Parse returns_data

@@ -2428,6 +2428,26 @@ WriteResult DatabaseManager::executeWrite(QueryExecutor& executor, const Endpoin
             std::to_string(prepared.bindings.size()) + " bindings)");
     }
 
+    // A trailing piece the parser reads as no statement at all (`SELECT ...;
+    // -- done`) is dropped: it stood where the final SELECT is looked for and
+    // hid its rows. A piece that does not parse is kept - executing it reports
+    // what is wrong.
+    while (statements.size() > 1 && bindings_per_stmt.back().empty()) {
+        bool empty = false;
+        try {
+            auto parser = duckdb::Parser::GetBuiltinParser();
+            parser.ParseQuery(statements.back());
+            empty = parser.statements.empty();
+        } catch (const std::exception&) {
+            empty = false;
+        }
+        if (!empty) {
+            break;
+        }
+        statements.pop_back();
+        bindings_per_stmt.pop_back();
+    }
+
     auto runStatement = [&](size_t idx, const std::string& label) {
         if (bindings_per_stmt[idx].empty()) {
             executor.execute(statements[idx], label);

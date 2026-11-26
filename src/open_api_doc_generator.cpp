@@ -183,8 +183,9 @@ YAML::Node OpenAPIDocGenerator::generateOperation(const EndpointConfig& endpoint
         addSecurity(operation, endpoint.auth.type);
     }
 
-    // For write operations, document the JSON body.
-    if (!is_read && (method == "post" || method == "put" || method == "patch" || method == "delete")) {
+    // Document the JSON body of every method that has one: a read over POST
+    // (`operation.type: read`) takes its parameters from the body as well.
+    if (method == "post" || method == "put" || method == "patch" || method == "delete") {
         YAML::Node schema;
         schema["type"] = "object";
         YAML::Node properties(YAML::NodeType::Map);
@@ -205,7 +206,9 @@ YAML::Node OpenAPIDocGenerator::generateOperation(const EndpointConfig& endpoint
             operation["requestBody"] = requestBody;
         }
 
-        if (method == "post") {
+        if (is_read) {
+            // A read answers 200 with the read envelope, whatever its method.
+        } else if (method == "post") {
             YAML::Node createdResponse = operation["responses"]["200"];
             createdResponse["description"] = "Created successfully";
             operation["responses"]["201"] = createdResponse;

@@ -211,9 +211,7 @@ TEST_CASE("RequestHandler: combineWriteParameters merges sources with precedence
     REQUIRE(params.at("name") == "PathName"); // a path value is not overridable by the body (#192)
     REQUIRE(params.at("email") == "body@example.com"); // body overrides query parameter
     REQUIRE(params.at("offset") == "0"); // default from handler
-    // A query limit replaces the server's default (a POST read follows `next`
-    // with ?offset=&limit=); a body or path value would still win.
-    REQUIRE(params.at("limit") == "50");
+    REQUIRE(params.at("limit") == "100"); // default preserved: a query limit never reaches a write
     REQUIRE(params.at("ignored") == "value"); // path param retained when not overridden
 }
 

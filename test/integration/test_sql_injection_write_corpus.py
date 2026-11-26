@@ -89,7 +89,7 @@ method: POST
 template-source: widget_create.sql
 connection: [inmem]
 operation:
-  type: insert
+  type: write
   transaction: false
   validate-before-write: true
 request:
@@ -124,7 +124,7 @@ method: POST
 template-source: widget_create_ret.sql
 connection: [inmem]
 operation:
-  type: insert
+  type: write
   transaction: false
   validate-before-write: true
   returns-data: true

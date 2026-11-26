@@ -42,6 +42,19 @@ bool ParsePlainNonNegativeInt(const std::string& text, int64_t& out) {
     return true;
 }
 
+// offset/limit that are present but not a plain non-negative integer, as
+// validator errors: the same `{"errors": [...]}` 400 as any other field.
+void AddPaginationErrors(const std::map<std::string, std::string>& params,
+                         std::vector<ValidationError>& errors) {
+    for (const char* key : {"offset", "limit"}) {
+        const auto it = params.find(key);
+        int64_t ignored = 0;
+        if (it != params.end() && !ParsePlainNonNegativeInt(it->second, ignored)) {
+            errors.push_back({key, std::string(key) + " must be a non-negative integer"});
+        }
+    }
+}
+
 // DuckLake's answers to time travel (`AT (VERSION => n)` / `AT (TIMESTAMP => t)`)
 // to a snapshot that never existed or that retention has expired.
 bool isSnapshotNotFoundMessage(const std::string& message) {
@@ -76,6 +89,12 @@ void writeInternalError(crow::response& res) {
 }
 
 }  // namespace
+
+std::vector<ValidationError> RequestHandler::PaginationErrors(const std::map<std::string, std::string>& params) {
+    std::vector<ValidationError> errors;
+    AddPaginationErrors(params, errors);
+    return errors;
+}
 
 RequestHandler::RequestHandler(std::shared_ptr<DatabaseManager> db_manager, std::shared_ptr<ConfigManager> config_manager)
     : db_manager(db_manager), config_manager(config_manager), validator(std::make_shared<RequestValidator>()) 
@@ -151,6 +170,8 @@ void RequestHandler::handleWriteRequest(const crow::request& req, crow::response
 
         // Validate parameters
         auto validationErrors = validator->validateRequestParameters(endpoint.request_fields, params);
+        // A body offset/limit reaches the template as params.*: a plain integer only.
+        AddPaginationErrors(params, validationErrors);
         
         // For write operations, enforce stricter validation if configured
         if (endpoint.operation.validate_before_write) {
@@ -265,8 +286,33 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
         // query string, and `field-in: body` fields may not come from there.
         const bool body_read = req.method == crow::HTTPMethod::Post || req.method == crow::HTTPMethod::Put ||
                                req.method == crow::HTTPMethod::Patch || req.method == crow::HTTPMethod::Delete;
-        params = body_read ? combineWriteParameters(req, pathParams, endpoint)
-                           : combineParameters(req, defaultParams, pathParams, endpoint);
+        // Whether the client chose the window itself (Arrow pages only then).
+        bool client_limit = req.url_params.get("limit") != nullptr;
+        bool client_offset = req.url_params.get("offset") != nullptr;
+        if (body_read) {
+            // As on a GET: ?x=1&x=2 is ambiguous input.
+            std::set<std::string> seen;
+            for (const auto& key : req.url_params.keys()) {
+                if (!seen.insert(key).second) {
+                    throw BadRequestError("Duplicate query parameter: " + key);
+                }
+            }
+            params = combineWriteParameters(req, pathParams, endpoint);
+            if (const auto body = crow::json::load(req.body); body && body.t() == crow::json::type::Object) {
+                client_limit = client_limit || body.has("limit");
+                client_offset = client_offset || body.has("offset");
+            }
+            // The query window wins over the body's: `next` carries the new
+            // window in its query string, so re-POSTing the same body to it
+            // (even one holding "offset": 0) moves forward.
+            for (const char* key : {"offset", "limit"}) {
+                if (const char* value = req.url_params.get(key)) {
+                    params[key] = value;
+                }
+            }
+        } else {
+            params = combineParameters(req, defaultParams, pathParams, endpoint);
+        }
         // Inject auth context as reserved params for template rendering
         for (const auto& [k, v] : authParams) {
             params[k] = v;
@@ -275,14 +321,21 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
         // First validate the known parameters
         auto validationErrors = validator->validateRequestParameters(endpoint.request_fields, params);
         
-        // If strict parameter checking is enabled, validate for unknown parameters
-        if (endpoint.request_fields_validation) {
+        // If strict parameter checking is enabled, validate for unknown parameters.
+        // A read over POST checks its body like the write it would otherwise be
+        // (`validate-before-write`, on by default) and like MCP: a misspelt
+        // filter must not silently widen the result.
+        if (endpoint.request_fields_validation || (body_read && endpoint.operation.validate_before_write)) {
             auto unknownParamErrors = validator->validateRequestFields(endpoint.request_fields, params);
             validationErrors.insert(validationErrors.end(), 
                                     unknownParamErrors.begin(), 
                                     unknownParamErrors.end());
         }
         
+        // A bad offset/limit is reported like any other field (it was a
+        // plain-text 400 without a Content-Type).
+        AddPaginationErrors(params, validationErrors);
+
         // If there are validation errors, return a 400 Bad Request response
         if (!validationErrors.empty()) {
             crow::json::wvalue errorResponse;
@@ -302,15 +355,14 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
             return;
         }
 
-        // Parse pagination parameters
+        // Validated above.
         int64_t offset = 0;
         int64_t limit = 100;
-        if ((params.count("offset") && !ParsePlainNonNegativeInt(params["offset"], offset)) ||
-            (params.count("limit") && !ParsePlainNonNegativeInt(params["limit"], limit))) {
-            res.code = 400;
-            res.body = "Invalid pagination parameters: offset and limit must be non-negative integers";
-            res.end();
-            return;
+        if (params.count("offset")) {
+            ParsePlainNonNegativeInt(params["offset"], offset);
+        }
+        if (params.count("limit")) {
+            ParsePlainNonNegativeInt(params["limit"], limit);
         }
         // The template renders these, so hand it the normalised numbers, not the raw text.
         params["offset"] = std::to_string(offset);
@@ -350,15 +402,16 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
                 return;
             }
 
-            // Only the client's own ?limit= / ?offset= page an Arrow stream (already validated by
-            // parsePaginationParams); the JSON default page of 100 never truncates it.
+            // Only the client's own limit / offset (the query string, or a POST
+            // read's body) page an Arrow stream; the JSON default page of 100
+            // never truncates it.
             std::optional<int64_t> arrow_limit;
             std::optional<int64_t> arrow_offset;
-            if (req.url_params.get("limit") != nullptr) {
-                arrow_limit = std::stoll(params["limit"]);
+            if (client_limit) {
+                arrow_limit = limit;
             }
-            if (req.url_params.get("offset") != nullptr) {
-                arrow_offset = std::stoll(params["offset"]);
+            if (client_offset) {
+                arrow_offset = offset;
             }
             auto executor = db_manager->executeQueryRaw(endpoint, params, arrow_limit, arrow_offset);
 
@@ -460,10 +513,10 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
             if (endpoint.with_pagination && !endpoint.total_count) {
                 // `total-count: false`: no COUNT ran, so there is no total to report.
                 res.body = "{\"data\":" + rows_text +
-                           ",\"next\":" + crow::json::wvalue(createNextUrl(req, queryResult, endpoint, params)).dump() + "}";
+                           ",\"next\":" + crow::json::wvalue(createNextUrl(req, queryResult, endpoint)).dump() + "}";
             } else if (endpoint.with_pagination) {
                 std::string body;
-                const std::string next = crow::json::wvalue(createNextUrl(req, queryResult, endpoint, params)).dump();
+                const std::string next = crow::json::wvalue(createNextUrl(req, queryResult, endpoint)).dump();
                 body.reserve(rows_text.size() + next.size() + 48);
                 body += "{\"data\":";
                 body += rows_text;
@@ -483,7 +536,7 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
         }
         res.add_header("X-Offset", std::to_string(offset));
         res.add_header("X-Limit", std::to_string(limit));
-        res.add_header("X-Next", createNextUrl(req, queryResult, endpoint, params));
+        res.add_header("X-Next", createNextUrl(req, queryResult, endpoint));
         res.end();
         return;
     } catch (const BadRequestError& e) {
@@ -600,8 +653,7 @@ std::string PercentEncode(const std::string& text) {
 }  // namespace
 
 std::string RequestHandler::createNextUrl(const crow::request& req, const QueryResult& queryResult,
-                                          const EndpointConfig& endpoint,
-                                          const std::map<std::string, std::string>& params)
+                                          const EndpointConfig& endpoint)
 {
     if (queryResult.next.empty()) {
         return "";
@@ -612,24 +664,23 @@ std::string RequestHandler::createNextUrl(const crow::request& req, const QueryR
         url = req.url;
     }
     url += queryResult.next;   // ?offset=N[&limit=M]
-    if (req.method != crow::HTTPMethod::Get && req.method != crow::HTTPMethod::Head) {
-        return url;            // a POST read: the filters are in the body
-    }
+    // The client's own query string, as sent (a repeated name is refused
+    // before this), minus the window and anything a URL must not carry: the
+    // server-injected identity, and names the endpoint reads from a header,
+    // the body or the path.
+    std::set<std::string> excluded{"offset", "limit"};
     for (const auto& field : endpoint.request_fields) {
-        const std::string& name = field.fieldName;
-        if (name == "offset" || name == "limit" || isReservedAuthKey(name)) {
+        if (field.fieldIn == "header" || field.fieldIn == "body" || field.fieldIn == "path") {
+            excluded.insert(field.fieldName);
+        }
+    }
+    for (const auto& key : req.url_params.keys()) {
+        if (excluded.count(key) || isReservedAuthKey(key)) {
             continue;
         }
-        // Only a field the query string may carry: a path field is in the
-        // path already, a header or body field never belongs in a URL.
-        if (field.fieldIn == "path" || field.fieldIn == "header" || field.fieldIn == "body") {
-            continue;
-        }
-        const auto it = params.find(name);
-        if (it == params.end()) {
-            continue;
-        }
-        url += "&" + PercentEncode(name) + "=" + PercentEncode(it->second);
+        const char* value = req.url_params.get(key);
+        url += "&" + PercentEncode(key) + "=" + PercentEncode(value ? value : "");
+        excluded.insert(key);
     }
     return url;
 }
@@ -726,14 +777,6 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
                                                                           const std::map<std::string, std::string>& pathParams,
                                                                           const EndpointConfig& endpoint) {
     std::map<std::string, std::string> params = defaultParams;
-    // offset/limit start as the server's defaults; a query value may replace
-    // those (below) unless the body or path set them. They used to count as
-    // set, so `?offset=` never reached a read over POST and following its
-    // `next` link re-ran page one.
-    std::set<std::string> server_defaults;
-    for (const auto& [key, value] : defaultParams) {
-        server_defaults.insert(key);
-    }
 
     // Add path parameters first (lowest precedence for body params)
     for (const auto& [key, value] : pathParams) {
@@ -741,7 +784,6 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
             continue;
         }
         params[key] = value;
-        server_defaults.erase(key);
     }
 
     // Extract parameters from JSON body (highest precedence for write operations).
@@ -751,9 +793,16 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
         req.method == crow::HTTPMethod::Patch ||
         req.method == crow::HTTPMethod::Delete) {
         
-        if (!req.body.empty()) {
+        const bool has_body = req.body.find_first_not_of(" \t\r\n") != std::string::npos;
+        if (has_body) {
+            // A body that is not a JSON object was read as empty: a read then
+            // returned every row, a write reported its fields missing.
+            const auto parsed = crow::json::load(req.body);
+            if (!parsed || parsed.t() != crow::json::type::Object) {
+                throw BadRequestError("request body is not a JSON object");
+            }
             try {
-                auto bodyJson = crow::json::load(req.body);
+                auto bodyJson = parsed;
                 if (bodyJson) {
                     // A nested number, keeping its fraction: i() truncates 9.99 to 9.
                     auto jsonNumber = [](const crow::json::rvalue& v) -> crow::json::wvalue {
@@ -855,7 +904,6 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
                         }
                         std::string value = jsonValueToString(fieldName);
                         params[fieldName] = value;
-                        server_defaults.erase(fieldName);
                     }
                 }
             } catch (const std::exception& e) {
@@ -882,9 +930,11 @@ std::map<std::string, std::string> RequestHandler::combineWriteParameters(const 
         if (pathParams.find(key) != pathParams.end() || !mayComeFrom(endpoint, key, "query")) {
             continue;
         }
-        if (params.find(key) == params.end() || server_defaults.count(key)) {
+        // Never offset/limit: the server's defaults are set already, so a
+        // `?limit=` cannot reach a write template. A read over POST takes the
+        // query window itself (handleGetRequest).
+        if (params.find(key) == params.end()) {
             params[key] = req.url_params.get(key);
-            server_defaults.erase(key);
         }
     }
 

@@ -366,7 +366,14 @@ MCPToolExecutionResult MCPToolHandler::executeToolImpl(const MCPToolCallRequest&
             emit_audit("success", static_cast<std::int64_t>(write_result.rows_affected));
             return createSuccessResult(write_response, metadata);
         } else {
-            // Execute read query
+            // Execute read query. A limit/offset that is not a plain
+            // non-negative integer failed deep in the pager ("stoll"), and -1
+            // answered no rows; it is the caller's error, said plainly.
+            if (const auto errors = RequestHandler::PaginationErrors(params); !errors.empty()) {
+                emit_audit("error:invalid_arguments", -1);
+                return createErrorResult(errors.front().errorMessage,
+                                         MCPToolExecutionResult::FailureKind::InvalidArguments);
+            }
         QueryResult query_result = executeQueryWithEndpoint(*endpoint_config, params);
 
         // Empty result sets are valid - they just mean no rows matched the criteria

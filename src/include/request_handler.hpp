@@ -26,6 +26,9 @@ public:
     // wvalue dump scrambles the keys). `data` is present when rows came back,
     // and as [] when `always_include_data` is set and none did.
     static std::string formatWriteResultJson(const WriteResult& result, bool always_include_data);
+    // `offset` / `limit` in `params` that are not a plain non-negative integer,
+    // one error each ("limit must be a non-negative integer"). REST and MCP.
+    static std::vector<ValidationError> PaginationErrors(const std::map<std::string, std::string>& params);
 
     // Fills `field-in: header` fields from the request headers (case-insensitive).
     static void applyHeaderFields(const crow::request& req, const EndpointConfig& endpoint,
@@ -54,13 +57,12 @@ private:
     // One row (plus the header before the first) as convertToCSV writes it.
     static void appendCSVRow(const crow::json::wvalue& row, const std::vector<std::string>& columns,
                              bool first_row, std::string& out);
-    // The `next` link: the path, the page window and, for a GET, the endpoint's
-    // declared query fields from `params`, percent-encoded. Nothing else - no
-    // undeclared parameter, header field or server-injected key. A read over
-    // POST gets the window only: its filters are in the body, re-sent to `next`.
+    // The `next` link: the path, the new window and the client's own query
+    // string as sent, percent-encoded, without `__auth_*` keys and names the
+    // endpoint reads from a header, the body or the path. Never a server-side
+    // value: a field's `default:` stays out of the URL.
     static std::string createNextUrl(const crow::request& req, const QueryResult& queryResult,
-                                     const EndpointConfig& endpoint,
-                                     const std::map<std::string, std::string>& params);
+                                     const EndpointConfig& endpoint);
 
     
 
