@@ -414,7 +414,7 @@ std::string ExtendedYamlParser::preprocessContent(const std::string& content,
                 // For section includes, we need to preserve the section name
                 // Create a temporary node with the section name as the key
                 YAML::Node temp_node;
-                temp_node[include_info.section_name] = included_node;
+                temp_node[include_info.insertedKey()] = included_node;
                 replacement = YAML::Dump(temp_node);
                 
                 // Remove the YAML document markers (---, ...)
@@ -626,16 +626,18 @@ std::string ExtendedYamlParser::processIncludeDirectives(const std::string& inpu
                 // For section includes, we need to preserve the section name
                 // Create a temporary node with the section name as the key
                 YAML::Node temp_node;
-                temp_node[include_info.section_name] = included_node;
+                temp_node[include_info.insertedKey()] = included_node;
                 replacement = YAML::Dump(temp_node);
                 
-                // Remove the leading "---" and trailing "..." that YAML::Dump adds
-                replacement = replacement.substr(replacement.find('\n') + 1);
-                replacement = replacement.substr(0, replacement.rfind('\n'));
-                // Remove extra indentation
-                size_t indent_pos = replacement.find(include_info.section_name + ":");
-                if (indent_pos != std::string::npos) {
-                    replacement = replacement.substr(indent_pos);
+                // Remove the document markers ("---", "...") YAML::Dump may add.
+                // This used to drop the first and last LINE unconditionally, and
+                // a dump has no "---": the section's own key line went with it.
+                if (replacement.rfind("---\n", 0) == 0) {
+                    replacement = replacement.substr(4);
+                }
+                const size_t dots_pos = replacement.rfind("\n...");
+                if (dots_pos != std::string::npos) {
+                    replacement = replacement.substr(0, dots_pos);
                 }
             } else {
                 replacement = YAML::Dump(included_node);
@@ -683,10 +685,27 @@ std::optional<ExtendedYamlParser::IncludeInfo> ExtendedYamlParser::parseIncludeD
     CROW_LOG_DEBUG << "  match[3]='" << match[3].str() << "'";
     CROW_LOG_DEBUG << "  match.size()=" << match.size();
 
+    // `SECTION as KEY` (#282): the section is inserted under KEY. A section
+    // include otherwise keeps the section's own name, so `auth-prod` from a
+    // shared file could never become an endpoint's `auth:`.
+    std::string target_key;
+    {
+        static const std::regex as_regex(R"(^\s*(\S+)\s+as\s+(\S+)\s*$)");
+        std::smatch as_match;
+        if (std::regex_match(section, as_match, as_regex)) {
+            target_key = as_match[2].str();
+            section = as_match[1].str();
+        } else if (std::regex_search(section, std::regex(R"(\sas(\s|$))"))) {
+            throw std::runtime_error("Invalid include directive '" + directive +
+                                     "': write {{include:SECTION as KEY from FILE}}");
+        }
+    }
+
     bool is_section_include = !section.empty();
     bool is_conditional = !condition.empty();
 
     IncludeInfo info(section, std::filesystem::path(file_path), is_section_include);
+    info.target_key = target_key;
     info.is_conditional = is_conditional;
     info.condition = condition;
 

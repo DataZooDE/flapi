@@ -155,6 +155,9 @@ public:
      */
     struct IncludeInfo {
         std::string section_name;
+        // `{{include:SECTION as KEY from FILE}}`: the key the section is
+        // inserted under (#282). Empty: the section keeps its own name.
+        std::string target_key;
         std::filesystem::path file_path;
         bool is_section_include = false;
         bool is_conditional = false;
@@ -163,6 +166,8 @@ public:
         IncludeInfo() = default;
         IncludeInfo(const std::string& section, const std::filesystem::path& path, bool section_include = false)
             : section_name(section), file_path(path), is_section_include(section_include) {}
+
+        const std::string& insertedKey() const { return target_key.empty() ? section_name : target_key; }
     };
 
     std::optional<IncludeInfo> parseIncludeDirective(const std::string& directive) const;

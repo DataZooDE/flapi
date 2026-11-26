@@ -69,6 +69,25 @@ public:
      */
     ParseResult parseFromString(const std::string& yaml_content);
 
+    /**
+     * @brief Every top-level key an endpoint file may carry (#282).
+     *
+     * scripts/check_known_config_keys.sh fails when a reader of an endpoint key
+     * is added without listing it here.
+     */
+    static const std::vector<std::string>& KnownEndpointKeys();
+
+    /**
+     * @brief The keys of an endpoint YAML map that are not in KnownEndpointKeys().
+     */
+    static std::vector<std::string> FindUnknownEndpointKeys(const YAML::Node& yaml_node);
+
+    /**
+     * @brief The warning for one unknown endpoint key, with a near-miss hint
+     *        ("did you mean `auth`?") where one applies.
+     */
+    static std::string UnknownEndpointKeyWarning(const std::string& key);
+
 private:
     ExtendedYamlParser& yaml_parser_;
     ConfigManager* config_manager_;

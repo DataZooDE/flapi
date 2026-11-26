@@ -766,3 +766,33 @@ TEST_CASE("EndpointConfigParser: unknown endpoint keys are reported", "[endpoint
     fs::remove_all(dir);
     fs::remove(config_file);
 }
+
+TEST_CASE("EndpointConfigParser: unknown_keys and their hints", "[endpoint_parser][unknown_keys]") {
+    std::string config_file = createMinimalFlapiConfig();
+    ConfigManager manager{fs::path(config_file)};
+    EndpointConfigParser parser(manager.getYamlParser(), &manager);
+
+    auto yaml_file = createTempYamlFile(
+        "url-path: /t\ntemplate-source: test.sql\nconnection: [test_db]\nauth-prod:\n  enabled: true\nnote: x\n",
+        "endpoint_unknown_keys_field.yaml");
+    auto result = parser.parseFromFile(yaml_file);
+    REQUIRE(result.success);
+    // In file order; what the security auditor reads to flag an ignored auth* key.
+    REQUIRE(result.config.unknown_keys == std::vector<std::string>{"auth-prod", "note"});
+    fs::remove(yaml_file);
+
+    using P = EndpointConfigParser;
+    REQUIRE(P::UnknownEndpointKeyWarning("note") == "Unknown endpoint key `note` is ignored; nothing reads it");
+    REQUIRE(P::UnknownEndpointKeyWarning("auth-prod").find("use `{{include:auth-prod as auth from ...}}`") !=
+            std::string::npos);
+    REQUIRE(P::UnknownEndpointKeyWarning("prod_cache").find("did you mean `cache`?") != std::string::npos);
+    REQUIRE(P::UnknownEndpointKeyWarning("mcp-tool-v2").find("did you mean `mcp-tool`?") != std::string::npos);
+    REQUIRE(P::UnknownEndpointKeyWarning("Method").find("did you mean `method`?") != std::string::npos);
+    REQUIRE(P::UnknownEndpointKeyWarning("conection").find("did you mean `connection`?") != std::string::npos);
+    REQUIRE(P::UnknownEndpointKeyWarning("params").find("did you mean `request`?") != std::string::npos);
+    REQUIRE(P::FindUnknownEndpointKeys(YAML::Load("[1, 2]")).empty());
+    for (const auto& key : P::KnownEndpointKeys()) {
+        REQUIRE(P::FindUnknownEndpointKeys(YAML::Load(key + ": x")).empty());
+    }
+    fs::remove(config_file);
+}

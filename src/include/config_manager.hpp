@@ -283,6 +283,12 @@ struct EndpointConfig {
     // Path to the YAML configuration file for this endpoint (for reloading)
     std::string config_file_path;
 
+    // Top-level keys of the endpoint YAML (after includes) that nothing reads,
+    // in file order (#282). Filled by EndpointConfigParser only - empty for an
+    // endpoint built from JSON. Startup and --validate-config warn about each;
+    // the security auditor can use it to flag an ignored `auth*` key.
+    std::vector<std::string> unknown_keys;
+
     // MCP-specific metadata (optional)
     struct MCPToolInfo {
         std::string name;

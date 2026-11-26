@@ -82,6 +82,115 @@ EndpointConfigParser::ParseResult EndpointConfigParser::parseFromString(
     return result;
 }
 
+const std::vector<std::string>& EndpointConfigParser::KnownEndpointKeys() {
+    // Every top-level key an endpoint file is read for, here and in the
+    // ConfigManager::parseEndpoint* helpers. scripts/check_known_config_keys.sh
+    // fails when a reader is added without its key being listed here.
+    static const std::vector<std::string> keys = {
+        "url-path", "method", "allow-shadowing", "description", "with-pagination", "total-count",
+        "request-fields-validation", "template-source", "request", "connection", "rate-limit", "auth",
+        "cache", "heartbeat", "operation", "mcp-tool", "mcp-resource", "mcp-prompt"};
+    return keys;
+}
+
+std::vector<std::string> EndpointConfigParser::FindUnknownEndpointKeys(const YAML::Node& yaml_node) {
+    std::vector<std::string> unknown;
+    if (!yaml_node.IsMap()) {
+        return unknown;
+    }
+    const auto& known = KnownEndpointKeys();
+    for (const auto& entry : yaml_node) {
+        if (!entry.first.IsScalar()) {
+            continue;
+        }
+        const std::string key = entry.first.Scalar();
+        if (std::find(known.begin(), known.end(), key) == known.end()) {
+            unknown.push_back(key);
+        }
+    }
+    return unknown;
+}
+
+namespace {
+
+std::size_t EditDistance(const std::string& a, const std::string& b) {
+    std::vector<std::size_t> row(b.size() + 1);
+    for (std::size_t j = 0; j <= b.size(); ++j) {
+        row[j] = j;
+    }
+    for (std::size_t i = 1; i <= a.size(); ++i) {
+        std::size_t diagonal = row[0];
+        row[0] = i;
+        for (std::size_t j = 1; j <= b.size(); ++j) {
+            const std::size_t above = row[j];
+            row[j] = std::min({row[j] + 1, row[j - 1] + 1, diagonal + (a[i - 1] == b[j - 1] ? 0 : 1)});
+            diagonal = above;
+        }
+    }
+    return row[b.size()];
+}
+
+std::string UnknownEndpointKeyHint(const std::string& key) {
+    // Keys people write for another one, which no distance metric finds.
+    static const std::vector<std::pair<std::string, std::string>> synonyms = {
+        {"path", "url-path"},        {"url", "url-path"},          {"params", "request"},
+        {"parameters", "request"},   {"fields", "request"},        {"connections", "connection"},
+        {"template", "template-source"}, {"sql", "template-source"}, {"mcp", "mcp-tool"},
+        {"pagination", "with-pagination"}, {"rate_limit", "rate-limit"}, {"ratelimit", "rate-limit"},
+    };
+    for (const auto& [wrong, right] : synonyms) {
+        if (key == wrong) {
+            return "did you mean `" + right + "`?";
+        }
+    }
+
+    const auto& known = EndpointConfigParser::KnownEndpointKeys();
+    std::string normalised = key;
+    std::transform(normalised.begin(), normalised.end(), normalised.begin(), [](unsigned char c) {
+        return c == '_' ? '-' : static_cast<char>(std::tolower(c));
+    });
+    if (std::find(known.begin(), known.end(), normalised) != known.end()) {
+        return "did you mean `" + normalised + "`?";
+    }
+
+    // `auth-prod`, `cache_eu`, `prod-auth`: a section of a shared file, which a
+    // section include inserts under its OWN name.
+    static const std::vector<std::string> sections = {
+        "mcp-resource", "mcp-prompt", "mcp-tool", "rate-limit", "connection", "heartbeat",
+        "operation", "request", "cache", "auth"};
+    for (const auto& section : sections) {
+        const bool prefixed = normalised.size() > section.size() + 1 &&
+                              normalised.compare(0, section.size() + 1, section + "-") == 0;
+        const bool suffixed = normalised.size() > section.size() + 1 &&
+                              normalised.compare(normalised.size() - section.size() - 1, std::string::npos,
+                                                 "-" + section) == 0;
+        if (prefixed || suffixed) {
+            return "did you mean `" + section + "`? included sections keep their own name; use `{{include:" +
+                   key + " as " + section + " from ...}}` to insert it as `" + section + ":`";
+        }
+    }
+
+    std::string best;
+    std::size_t best_distance = 3;
+    if (normalised.size() > 3) {
+        for (const auto& candidate : known) {
+            const auto distance = EditDistance(normalised, candidate);
+            if (distance < best_distance) {
+                best_distance = distance;
+                best = candidate;
+            }
+        }
+    }
+    return best.empty() ? std::string() : "did you mean `" + best + "`?";
+}
+
+} // namespace
+
+std::string EndpointConfigParser::UnknownEndpointKeyWarning(const std::string& key) {
+    const std::string hint = UnknownEndpointKeyHint(key);
+    return "Unknown endpoint key `" + key + "` is ignored; nothing reads it" + (hint.empty() ? "" : ": " + hint);
+}
+
 EndpointConfigParser::EndpointType EndpointConfigParser::detectEndpointType(
     const YAML::Node& yaml_node
 ) const {
@@ -163,6 +272,10 @@ void EndpointConfigParser::parseEndpointFromYaml(
                 }
             }
         }
+
+        // Keys nothing reads (#282): reported by startup and --validate-config,
+        // never an error - operators keep their own annotation keys.
+        config.unknown_keys = FindUnknownEndpointKeys(yaml_node);
 
         result.success = true;
         

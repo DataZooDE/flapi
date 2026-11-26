@@ -1328,6 +1328,16 @@ void ConfigManager::loadEndpointConfig(const std::string& config_file) {
         
         // Log parsed endpoint details
         CROW_LOG_DEBUG << "\t\t" << endpoint.getShortDescription();
+
+        // Surfaced at startup too, not only on reload: a key nothing reads
+        // (#282) - `auth-prod:` from a section include leaves the endpoint public.
+        for (const auto& warning : parse_result.warnings) {
+            CROW_LOG_WARNING << PathSchemeUtils::RedactUrl(config_file) << ": " << RedactUrlsInText(warning);
+        }
+        for (const auto& key : endpoint.unknown_keys) {
+            CROW_LOG_WARNING << PathSchemeUtils::RedactUrl(config_file) << ": "
+                             << EndpointConfigParser::UnknownEndpointKeyWarning(key);
+        }
         
         if (endpoint.isMCPPrompt()) {
             CROW_LOG_DEBUG << "\t\tTemplate Content: embedded in config";
@@ -4111,6 +4121,11 @@ ConfigManager::ValidationResult ConfigManager::validateEndpointConfig(const Endp
     if (!self_errors.empty()) {
         result.valid = false;
         result.errors.insert(result.errors.end(), self_errors.begin(), self_errors.end());
+    }
+
+    // A key nothing reads (#282) - a warning, never an error.
+    for (const auto& key : config.unknown_keys) {
+        result.warnings.push_back(EndpointConfigParser::UnknownEndpointKeyWarning(key));
     }
     
     // Whether a template file exists, and the path to name when it does not.
