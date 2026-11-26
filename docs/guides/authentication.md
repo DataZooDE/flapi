@@ -346,9 +346,29 @@ After authentication the template sees who is calling:
 | `auth.username` | the user name, token `sub`, or OIDC `username-claim` | every authenticated request |
 | `auth.roles` | the roles, **joined with commas**: `sales,building,furniture` | every authenticated request |
 | `auth.email` | the OIDC `email-claim`, or a bearer token's `email` | OIDC and bearer, when the token has one; empty otherwise |
-| `auth.groups` | the OIDC `groups-claim`, **joined with commas** | OIDC; empty otherwise |
+| `auth.role_list` | the roles as a **list**, for a section | every authenticated request |
+| `auth.roles_sql` | the roles as a SQL list value: `['sales','eu']::VARCHAR[]` | always (`[]::VARCHAR[]` when none) |
+| `auth.groups` | the OIDC `groups-claim` as a **list**, for a section | OIDC; empty otherwise |
+| `auth.groups_sql` | the groups as a SQL list value | always (`[]::VARCHAR[]` when none) |
 | `auth.type` | `basic`, `bearer` or `oidc` | every authenticated request |
 | `auth.authenticated` | `true` | every authenticated request |
+
+`auth.groups` and `auth.role_list` are **lists**, used as a section with each
+item in a literal of its own; `auth.groups_sql` and `auth.roles_sql` are the
+same lists as one ready SQL value, `['sales','CN=admins,OU=staff']::VARCHAR[]`
+(`[]::VARCHAR[]` when empty), written **without** quotes where a value goes:
+
+```sql
+WHERE list_contains({{{ auth.groups_sql }}}, 'CN=admins,OU=staff')
+   OR owner_group IN ({{#auth.groups}}'{{.}}', {{/auth.groups}}'')
+```
+
+Every item is quote-doubled. A group name may contain commas (LDAP
+distinguished names do); a role may not, because `auth.roles` joins with them.
+`auth.groups_sql` is refused inside a `'...'` literal, a comment, an
+identifier, a `$$` string, and in any call whose SQL another function runs
+(`query()`, `*_query`, or a call whose literals hold `''`, `$$` or `"`). A
+plain `{{{ auth.groups }}}` tag is refused at load: it is a list.
 
 No other claim reaches the template. On an anonymous request (an endpoint with
 `enabled: false`, or an MCP call with `mcp.auth` off) every one of them is
@@ -852,10 +872,11 @@ Claims become template variables like this:
 A claim name is looked up as written first, so a namespaced claim such as
 `roles-claim: https://example.com/roles` (Auth0) is read as one claim; only
 when no claim has that name does a dot mean nesting (`realm_access.roles`).
-Groups are comma-joined like roles and quote-doubled like every `auth.*`
-value, but grant nothing: only the roles claim counts for `roles:` and
-`allowed-roles`. A group (or role) containing a comma or a control character
-refuses the whole token with `401`.
+Groups reach templates as the list `auth.groups` and the SQL value
+`auth.groups_sql` (step 4), each item quote-doubled, but grant nothing: only
+the roles claim counts for `roles:` and `allowed-roles`. A group may contain
+commas (`CN=admins,OU=staff`); a role may not. A role or group containing a
+control character refuses the whole token with `401`.
 
 `provider-type` fills in `issuer-url` and claim defaults:
 

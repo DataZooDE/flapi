@@ -54,7 +54,7 @@ Three independent gates: the endpoint's own `auth:` block (REST), `mcp.auth`
   by the caller in its SQL:
   `AND (id <> 7 OR list_contains(string_split('{{{ auth.roles }}}', ','), 'admin'))`.
 - **`auth.*` goes inside a plain top-level `'...'` literal of the outer query.**
-  `auth.username`, `auth.email`, `auth.roles`, `auth.groups` and `auth.type` have every `'` doubled
+  `auth.username`, `auth.email`, `auth.roles`, `auth.type` and each list item have every `'` doubled
   (`O'Brien` -> `O''Brien`), so write `WHERE owner = '{{{ auth.username }}}'`. Refused
   (startup, reload, `--validate-config`, the config service, and on the rendered SQL of every
   request): unquoted, `E'...'`, a `--` or `/* */` comment, a `"..."` identifier, a `$$`
@@ -63,8 +63,8 @@ Three independent gates: the endpoint's own `auth:` block (REST), `mcp.auth`
   `''`, `$$` or `"`, or one beside such a literal in a call (a macro handed SQL). Push down
   without `auth.*` and filter in the outer query. A quoted value still means something to
   `LIKE` (`%`, `_`), regexes, `GLOB` and file paths (`*`, `?`, `[`): compare with `=`. An
-  identity holding a control character (newline, NUL, ...) or a role or group containing a
-  comma is refused with 401.
+  identity holding a control character (newline, NUL, ...) or a role containing a comma is
+  refused with 401 (a comma in a group is fine).
 - **A 401 names the endpoint's scheme**: `WWW-Authenticate: Basic realm="flAPI"`
   or `Bearer realm="flAPI"` (`, error="invalid_token"` for a refused token), body
   `{"error":"Unauthorized","message":...}`.
@@ -267,7 +267,7 @@ auth:
     username-claim: preferred_username
     roles-claim: roles                           # name as written first: https://x.io/roles works
     role-claim-path: realm_access.roles          # dotted path, wins over roles-claim
-    groups-claim: groups                         # -> auth.groups (comma-joined), grants nothing
+    groups-claim: groups                         # -> list auth.groups / auth.groups_sql, grants nothing
     verify-expiration: true                      # default true
     clock-skew-seconds: 300                      # default 300
     jwks-cache-hours: 24                         # default 24
@@ -282,8 +282,8 @@ P-256/P-384/P-521); the token `alg` must fit its key (type, curve, and the
 JWK `alg` if set); `none`/HS* refused. Also read: `email-claim`. `client-secret`, `scopes`,
 `enable-client-credentials` and `enable-refresh-tokens` have no effect (startup
 warns `parsed but has no effect`): flAPI only validates tokens. `nbf`/`iat`
-more than `clock-skew-seconds` in the future are refused. A role or group with
-a comma or control character refuses the token (401). A global `auth:` block with `type: oidc` protects every
+more than `clock-skew-seconds` in the future are refused. A role with a comma,
+or any value with a control character, refuses the token (401). A global `auth:` block with `type: oidc` protects every
 endpoint without its own block (see the gotchas); an endpoint with `type: oidc`
 and no `oidc:` of its own uses the global `auth.oidc`.
 
@@ -329,8 +329,14 @@ the block came from `flapi.yaml`).
 ## The auth context in SQL
 
 After authentication the template sees `auth.username`, `auth.roles`
-(comma-joined), `auth.groups` (OIDC `groups-claim`, comma-joined), `auth.email`,
-`auth.type`, `auth.authenticated` (`"true"`).
+(comma-joined), `auth.email`, `auth.type`, `auth.authenticated` (`"true"`), and
+the lists `auth.role_list` and `auth.groups` (OIDC `groups-claim`; commas in a
+group name are fine) for a section, `{{#auth.groups}}'{{.}}', {{/auth.groups}}`.
+`auth.roles_sql` / `auth.groups_sql` render them as one SQL value,
+`['a','CN=x,OU=y']::VARCHAR[]`, written UNQUOTED where a value goes:
+`list_contains({{{ auth.groups_sql }}}, 'CN=admins,OU=staff')`; refused inside
+quotes, comments, identifiers and SQL another function runs. A plain
+`{{{ auth.groups }}}` tag is refused at load (it is a list).
 Clients cannot spoof them: `__auth_*` query/body keys are dropped. Each `'` in a
 value is doubled, so put them inside a plain `'...'` literal of the outer query
 (`{{ }}` and `{{{ }}}` render the same value); any other place is refused:

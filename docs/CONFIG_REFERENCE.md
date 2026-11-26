@@ -2188,7 +2188,7 @@ OpenID Connect authentication with external identity providers.
 | `auth.oidc.username-claim` | string | `sub` | Claim for username (`auth.username`). Written here, it wins over the preset's default |
 | `auth.oidc.email-claim` | string | `email` | Claim for email (`auth.email`) |
 | `auth.oidc.roles-claim` | string | `roles` | Claim for roles (`auth.roles`) |
-| `auth.oidc.groups-claim` | string | `groups` | Claim for groups: `auth.groups` (comma-joined); grants nothing |
+| `auth.oidc.groups-claim` | string | `groups` | Claim for groups: the list `auth.groups` and `auth.groups_sql` (§5); grants nothing. Commas in names are fine |
 | `auth.oidc.role-claim-path` | string | - | Roles claim that wins over `roles-claim` (Keycloak preset: `realm_access.roles`) |
 | `auth.oidc.enable-client-credentials` | boolean | `false` | Parsed but has no effect; startup warns |
 | `auth.oidc.enable-refresh-tokens` | boolean | `false` | Parsed but has no effect; startup warns |
@@ -2235,8 +2235,8 @@ JWK's own `alg` when it has one. `none`, HS* and anything else are refused.
 
 Claim names (`username-claim`, `roles-claim`, ...) are looked up as written first, so
 `https://example.com/roles` is one claim; only when no claim has that name is a dot a path into nested
-objects (`realm_access.roles`). A role or group containing a comma or a control character refuses the
-token (401).
+objects (`realm_access.roles`). A role containing a comma, or a role or group containing a control
+character, refuses the token (401).
 
 A placeholder left in `issuer-url` after substitution stops startup with an error naming the key to set,
 e.g. `'issuer-url' (https://login.microsoftonline.com/{tenant}/v2.0) still contains the {tenant} placeholder. Set tenant-id in the oidc block, or write the provider's real issuer URL into issuer-url.`
@@ -2388,7 +2388,7 @@ WHERE name LIKE '%{{{ params.name }}}%'
 | `conn.*` | Connection properties | `{{{ conn.path }}}` |
 | `cache.*` | Cache metadata | `{{ cache.table }}` |
 | `env.*` | Whitelisted environment variables | `{{{ env.API_KEY }}}` |
-| `auth.*` | Authentication context | `'{{{ auth.username }}}'`, `'{{{ auth.roles }}}'`, `'{{{ auth.email }}}'`, `'{{{ auth.type }}}'` |
+| `auth.*` | Authentication context | `'{{{ auth.username }}}'`, `'{{{ auth.roles }}}'`, `'{{{ auth.email }}}'`, `'{{{ auth.type }}}'`; lists `{{#auth.groups}}'{{.}}'{{/auth.groups}}`, `{{#auth.role_list}}'{{.}}'{{/auth.role_list}}`; SQL list values `{{{ auth.groups_sql }}}`, `{{{ auth.roles_sql }}}` |
 
 **`auth.*` values are SQL-quoted for a plain top-level `'...'` literal of the outer query
 only.** `auth.username`, `auth.email`, `auth.roles` and `auth.type` come from the identity
@@ -2425,9 +2425,18 @@ expression metacharacters in `regexp_matches`, glob characters (`*`, `?`, `[`) i
 in file paths such as `read_csv('data/{{{ auth.username }}}.csv')`, and path segments in a
 file URL. Compare with `=`, and do not build file paths from `auth.*`.
 
+**Lists.** `auth.groups` (OIDC `groups-claim`) and `auth.role_list` (the roles) are lists for a
+section, `{{#auth.groups}}'{{.}}', {{/auth.groups}}`: each item is quote-doubled and must sit in a
+plain literal like any `auth.*` value. A plain tag on a list (`{{{ auth.groups }}}`) is refused at
+load. `auth.groups_sql` and `auth.roles_sql` render the same lists as one SQL value,
+`['a','CN=x,OU=y']::VARCHAR[]` (`[]::VARCHAR[]` when empty, and on an anonymous request), written
+unquoted where a value stands: `list_contains({{{ auth.groups_sql }}}, 'admin')`. They are refused
+inside a `'...'` literal, `E'...'`, a comment, an identifier or a `$$` string, as an argument of a
+SQL-executing function, and in a call whose literals hold SQL quoting (`''`, `$$`, `"`).
+
 An identity containing a control character (newline, carriage return, NUL, ...), or a role
 containing a comma (roles are comma-joined in `auth.roles`), is refused with 401 on REST and
-MCP, never cleaned up. `auth.authenticated` is `true` or empty and may be
+MCP, never cleaned up. A comma in a group name is fine: groups exist only as lists. `auth.authenticated` is `true` or empty and may be
 used anywhere.
 
 ### 9.3 Conditional Sections

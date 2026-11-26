@@ -1355,8 +1355,8 @@ mcp:
       roles-claim: "https://your-app/roles"   # read as one claim name, dots and all
 ```
 
-The claims fill the same `auth.*` template variables as on REST, `auth.groups` (the `groups-claim`,
-comma-joined) included. The token checks are CONFIG_REFERENCE §7.4; `provider-type: github` stops startup.
+The claims fill the same `auth.*` template variables as on REST, the lists `auth.groups` / `auth.role_list`
+and the SQL list values `auth.groups_sql` / `auth.roles_sql` included. The token checks are CONFIG_REFERENCE §7.4; `provider-type: github` stops startup.
 
 **Provider Presets:**
 

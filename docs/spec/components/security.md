@@ -176,8 +176,10 @@ lookup), a `kid` whose key fits the `alg` (key type, EC curve, the JWK `alg` whe
 signature, `iss` equal to `issuer-url`, `aud` in `allowed-audiences` (or containing `client-id` when
 that list is empty), `exp`, `nbf`/`iat` not in the future (all with `clock-skew-seconds`), a `sub`.
 Claims are found by literal name first, then as a dotted path (`findClaim`). `groups-claim` fills
-`auth.groups`; a role or group with a comma or control character refuses the identity
-(`IdentityRefusal`, `src/include/auth_params.hpp`).
+the list `auth.groups` (one marker per item) and the SQL value `auth.groups_sql` (an expression
+marker, accepted only where a value stands); `auth.role_list` / `auth.roles_sql` likewise. Groups
+travel as `__auth_groups` separated by U+001F, so a comma in a group is fine; a comma in a role, or a
+control character anywhere, refuses the identity (`IdentityRefusal`, `src/include/auth_params.hpp`).
 
 ### AWS Secrets Manager Integration
 

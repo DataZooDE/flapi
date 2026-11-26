@@ -17,8 +17,15 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   namespaced claims such as `https://example.com/roles` work. The Auth0 preset's issuer ends
   with Auth0's `/` (every Auth0 token was refused without it), a dotted `domain` is the full
   host, and the preset no longer sets a placeholder role path.
-- **`auth.groups` (#281):** the OIDC `groups-claim`, comma-joined, on REST and MCP, under the
-  same quoting and placement rules as `auth.roles`. It was read and dropped.
+- **`auth.groups` (#281):** the OIDC `groups-claim` reaches templates on REST and MCP (it was
+  read and dropped) as a list for a section, `{{#auth.groups}}'{{.}}', {{/auth.groups}}`, each
+  item quote-doubled and placement-checked like any `auth.*` value. A comma in a group name
+  (`CN=admins,OU=staff`) is fine.
+- **New `auth.role_list`, `auth.groups_sql` and `auth.roles_sql`.** `auth.role_list` is the roles
+  as a list; the `_sql` forms render a ready SQL value, `['sales','CN=x,OU=y']::VARCHAR[]`
+  (`[]::VARCHAR[]` when empty), for `list_contains({{{ auth.groups_sql }}}, 'admin')`. They are
+  accepted only where a value stands: not inside quotes, comments or identifiers, and not in SQL
+  another function runs. `auth.roles` stays the comma-joined string.
 - **OIDC verifies ES256/ES384/ES512 and PS256/PS384/PS512 tokens.** EC keys in the JWKS were
   skipped and RSA-PSS was refused, so issuers that sign with them (many Okta, Auth0 and
   Keycloak setups) could authenticate nobody. RS256/384/512 are unchanged.
@@ -43,7 +50,7 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 - **OIDC without `allowed-audiences` checks `aud` against `client-id` (#281).** It accepted a
   token the issuer minted for any application.
 - **OIDC refuses `nbf` and `iat` in the future** (beyond `clock-skew-seconds`).
-- **A group containing a comma or a control character refuses the identity**, as a role does.
+- **A group containing a control character refuses the identity**, as a role does.
 - **Tokens with unknown `kid`s can no longer make flAPI hammer the issuer (#284).** Each one
   caused up to three JWKS fetches. Now a request fetches at most once, concurrent requests share a
   fetch, and an unknown `kid` refetches at most once per `jwks-refetch-cooldown-seconds` (new,
@@ -68,9 +75,6 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 - **A key rotated in at the issuer is picked up within `jwks-refetch-cooldown-seconds`** (60 s by
   default) of the previous JWKS fetch, not on the first token that names it; lower the setting if
   your issuer starts signing with a new key the moment it publishes it.
-- **An identity provider sending group names with commas** (LDAP distinguished names) gets 401
-  for those users: map groups to comma-free names, or point `groups-claim` at a claim without
-  them.
 
 ## v26.11.26 — auth.* identity values stay inside their SQL literal, OIDC works again, and a task guide for every feature
 

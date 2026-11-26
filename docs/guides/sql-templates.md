@@ -395,7 +395,11 @@ a caller cannot set it through parameters.
 |---|---|
 | `auth.username` | The user name (for a JWT, its `sub` claim) |
 | `auth.roles` | The roles, joined with commas: `sales,eu` |
-| `auth.email` | The email claim, only with `type: oidc`; empty for `basic` and `bearer` |
+| `auth.role_list` | The roles as a list, for a section: `{{#auth.role_list}}'{{.}}'{{/auth.role_list}}` |
+| `auth.roles_sql` | The roles as a SQL list value, unquoted: `['sales','eu']::VARCHAR[]` |
+| `auth.groups` | The OIDC groups as a list, for a section |
+| `auth.groups_sql` | The OIDC groups as a SQL list value: `['CN=admins,OU=staff']::VARCHAR[]` |
+| `auth.email` | The email claim (OIDC `email-claim`, a bearer token's `email`); empty for `basic` |
 | `auth.type` | `basic`, `bearer` (also for `type: jwt`) or `oidc` |
 | `auth.authenticated` | `true` |
 
@@ -489,9 +493,15 @@ rules:
   string or SQL text run by `query()`/`*_query` is refused at startup and by
   `--validate-config`. An identity with a control character, or a role with a
   comma, gets `401`.
-- **Test roles as a list.** `auth.roles` is one string, so split it:
-  `list_contains(string_split('{{{ auth.roles }}}', ','), 'admin')`. Do not write
-  `'{{{ auth.roles }}}' LIKE '%admin%'`: it also matches a role named `notadmin`.
+- **Test roles as a list.** `auth.roles` is one string; use the list value
+  `list_contains({{{ auth.roles_sql }}}, 'admin')` (no quotes around it), or
+  split the string: `list_contains(string_split('{{{ auth.roles }}}', ','), 'admin')`.
+  Do not write `'{{{ auth.roles }}}' LIKE '%admin%'`: it also matches a role
+  named `notadmin`. Groups exist only as lists, since a group name may contain
+  commas: `list_contains({{{ auth.groups_sql }}}, 'CN=admins,OU=staff')`, or
+  `{{#auth.groups}}'{{.}}', {{/auth.groups}}` for an `IN (...)` list. The `_sql`
+  forms are refused inside quotes, comments and identifiers, and in SQL another
+  function runs; a plain `{{{ auth.groups }}}` tag is refused at load.
 - **Fail closed.** Write the filter without a section around it. An anonymous
   request has an empty `auth.username`, so it matches no owner. Do not wrap the
   filter in `{{#auth.username}}`: with no user, the filter would vanish and
