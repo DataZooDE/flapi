@@ -352,6 +352,21 @@ class TestResponseShaping:
         assert "alice" not in r.text, r.text
         assert "bob" not in r.text, r.text
 
+    def test_sample_structured_content_is_the_summary(self, shape_server):
+        # The summary object went into structuredContent as `rows`, so `rows`
+        # was an object: {"rows": {"sampled": true, ...}}, against an
+        # outputSchema that says `rows` is an array.
+        token = _make_jwt()
+        sid = _open_session(shape_server, token)
+        r = _tools_call(shape_server, token, sid, "sample_tool")
+        assert r.status_code == 200, r.text
+        result = r.json()["result"]
+        structured = result["structuredContent"]
+        assert "rows" not in structured, structured
+        assert structured == {"sampled": True, "row_count": 3, "columns": ["id", "name", "salary"]}, structured
+        # The text block is unchanged: the same summary.
+        assert json.loads(result["content"][0]["text"]) == structured
+
 
 ORDER_COLUMNS = ["zeta", "alpha", "mid", "beta", "secret", "kappa"]
 

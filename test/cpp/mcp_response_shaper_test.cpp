@@ -2,6 +2,7 @@
 #include <crow/json.h>
 
 #include "mcp_response_shaper.hpp"
+#include "mcp_route_handlers.hpp"
 #include "query_executor.hpp"
 
 namespace flapi {
@@ -226,6 +227,20 @@ TEST_CASE("MCPResponseShaper: a streamed result cannot be shaped silently",
     ResponseShape config;
     config.redact_columns = {"salary"};
     REQUIRE_THROWS(MCPResponseShaper().shape(streamed, config));
+}
+
+TEST_CASE("toolSuccessResultJson: a sample summary is the structuredContent, with no rows key",
+          "[security][mcp][response_shape][issue275]") {
+    ResponseShape config;
+    config.sample = true;
+    const std::string summary = MCPResponseShaper().shape(orderedRows(), config);
+    const std::string out = toolSuccessResultJson(summary, ToolPayload::Summary);
+    REQUIRE(out.find(R"("structuredContent":{"sampled":true,"row_count":2,"columns":["zeta","alpha","mid","beta"]})") !=
+            std::string::npos);
+    const auto parsed = crow::json::load(out);
+    REQUIRE(parsed);
+    REQUIRE(parsed["content"][0]["text"].s() == summary);
+    REQUIRE_FALSE(parsed["structuredContent"].has("rows"));
 }
 
 } // namespace test
