@@ -629,5 +629,21 @@ auth:
     REQUIRE(found[0].message.find("descripton") == std::string::npos);
 }
 
+TEST_CASE("SecurityAuditor::strictRefusal: --strict refuses any warning and names the codes",
+          "[security][audit][strict][issue275]") {
+    REQUIRE_FALSE(SecurityAuditor::strictRefusal({}).has_value());
+
+    const std::vector<SecurityWarning> warnings = {
+        {"AUTH_PLAINTEXT_PASSWORD", "m1", "endpoint GET /a"},
+        {"MCP_TOOL_NO_ALLOWED_ROLES", "m2", "endpoint MCP tool: t"},
+        {"AUTH_PLAINTEXT_PASSWORD", "m3", "endpoint GET /b"},
+    };
+    const auto refusal = SecurityAuditor::strictRefusal(warnings);
+    REQUIRE(refusal.has_value());
+    REQUIRE(*refusal ==
+            "--strict: 3 security warning(s) (AUTH_PLAINTEXT_PASSWORD, MCP_TOOL_NO_ALLOWED_ROLES). "
+            "Fix them, or run without --strict.");
+}
+
 } // namespace test
 } // namespace flapi

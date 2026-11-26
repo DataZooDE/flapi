@@ -313,3 +313,101 @@ mcp-tool:
         combined = result.stderr + result.stdout
         assert "MCP_TOOL_BYPASSES_REST_AUTH" in combined, combined
         assert "GET /orders" in combined, combined
+
+
+PLAINTEXT_ENDPOINT = """
+url-path: /secret
+method: GET
+template-source: secret.sql
+connection: [test]
+auth:
+  enabled: true
+  type: basic
+  users:
+    - username: alice
+      password: hunter2
+      roles: [admin]
+"""
+
+
+def _strict_port(offset: int) -> int:
+    """A port in this suite's 31200-31299 range that is free right now."""
+    import socket
+    for port in range(31240 + offset, 31300):
+        with socket.socket() as s:
+            try:
+                s.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return port
+    pytest.skip("no free port in 31240-31299")
+
+
+class TestStrictFlag:
+    """#275: --strict turns security warnings into a failure."""
+
+    def test_validate_config_strict_fails_on_a_warning(self, flapi_binary, temp_config_dir):
+        config_path = _write_main_config(temp_config_dir)
+        _write_endpoint(temp_config_dir, "secret", PLAINTEXT_ENDPOINT)
+        result = subprocess.run(
+            [flapi_binary, "-c", config_path, "--validate-config", "--strict"],
+            capture_output=True, text=True, cwd=temp_config_dir, timeout=30)
+        combined = result.stderr + result.stdout
+        assert result.returncode != 0, combined
+        assert "AUTH_PLAINTEXT_PASSWORD" in combined, combined
+        assert "--strict" in combined, combined
+
+    def test_validate_config_without_strict_still_passes(self, flapi_binary, temp_config_dir):
+        config_path = _write_main_config(temp_config_dir)
+        _write_endpoint(temp_config_dir, "secret", PLAINTEXT_ENDPOINT)
+        result = _run_validate(flapi_binary, config_path)
+        assert result.returncode == 0, result.stderr
+
+    def test_validate_config_strict_passes_a_clean_config(self, flapi_binary, temp_config_dir):
+        config_path = _write_main_config(temp_config_dir)
+        result = subprocess.run(
+            [flapi_binary, "-c", config_path, "--validate-config", "--strict"],
+            capture_output=True, text=True, cwd=temp_config_dir, timeout=30)
+        assert result.returncode == 0, result.stderr + result.stdout
+
+    def test_strict_startup_refuses_a_config_with_warnings(self, flapi_binary, temp_config_dir):
+        config_path = _write_main_config(temp_config_dir, extra={"http-port": _strict_port(0)})
+        _write_endpoint(temp_config_dir, "secret", PLAINTEXT_ENDPOINT)
+        proc = subprocess.Popen(
+            [flapi_binary, "-c", config_path, "--strict", "--no-telemetry"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=temp_config_dir)
+        try:
+            out, _ = proc.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, _ = proc.communicate()
+            pytest.fail("flapi --strict started a server despite a security warning:\n" + out)
+        assert proc.returncode != 0, out
+        assert "AUTH_PLAINTEXT_PASSWORD" in out, out
+        assert "--strict" in out, out
+
+    def test_strict_startup_serves_a_clean_config(self, flapi_binary, temp_config_dir):
+        import time
+        import requests
+        port = _strict_port(1)
+        config_path = _write_main_config(temp_config_dir, extra={"http-port": port})
+        proc = subprocess.Popen(
+            [flapi_binary, "-c", config_path, "--strict", "--no-telemetry"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=temp_config_dir)
+        try:
+            deadline = time.time() + 30
+            up = False
+            while time.time() < deadline and proc.poll() is None:
+                try:
+                    requests.get(f"http://127.0.0.1:{port}/", timeout=1)
+                    up = True
+                    break
+                except requests.exceptions.RequestException:
+                    time.sleep(0.3)
+            assert up, f"server did not come up (exit {proc.poll()})"
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
