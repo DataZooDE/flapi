@@ -40,6 +40,12 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   and no `auth:` block. `ENDPOINT_DUPLICATE_AUTH_KEY`: an endpoint file has `auth` more than
   once after include expansion; only the first is used, so a later `{{include:... as auth}}`
   could leave the endpoint public.
+- **`completion/complete` accepts the MCP request shape.** `ref: {type, name}` and
+  `argument: {name, value}` work beside flAPI's plain strings, and its errors are escaped JSON.
+- **The learned `outputSchema` of a NULL column is `{}`.** It was `null`, which is not a JSON
+  Schema.
+- **An unauthenticated `initialize` says `Authentication required for method: initialize`**,
+  like every other method (it said `... for initialize`).
 - **`completion/complete` counts the matches (#275).** `total` counted every enum value
   whatever the prefix, and the list (and the count) stopped at 50. `values` now holds up to
   100 matching values, `total` is the number of matches, and `hasMore` says whether some were
@@ -62,6 +68,10 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   `columns` from `structuredContent` itself, not from `structuredContent.rows`.
 - **A dry run's `structuredContent` has no `rows` or `row_count`.** Tell a preview from a
   real result by `structuredContent.dry_run`, not by an empty `rows`.
+- **MCP task metrics.** The `mcp_task` series counts a task that ended `failed` because its
+  tool returned `isError` as a failure (it was a success). A task worker now runs under the
+  submitting request's identity with a clock that starts with the work, so the `mcp_tool`
+  latency of an async call is the execution alone, measured from the worker start.
 - **`--strict` is opt-in.** Run `flapi --validate-config --strict` first: the four new
   warnings (`MCP_TOOL_NO_ALLOWED_ROLES`, `MCP_TOOL_BYPASSES_REST_AUTH`,
   `ENDPOINT_AUTH_KEY_IGNORED`, `ENDPOINT_DUPLICATE_AUTH_KEY`) may appear on a config that printed none before, and with

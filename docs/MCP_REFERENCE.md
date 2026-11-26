@@ -375,8 +375,8 @@ flAPI uses standard JSON-RPC error codes plus MCP-specific codes:
 | `-32601` | Method Not Found | Unknown method name |
 | `-32602` | Invalid Params | Invalid method parameters |
 | `-32603` | Internal Error | Internal server error |
-| `-32001` | Authentication Required | Method requires authentication |
-| `-32000` | Session Error | Session-related errors |
+| `-32000` | Authentication / Session Error | `mcp.auth` refused the call (HTTP 401/403), or a session-related error |
+| `-32001` | Config-service token | An `flapi_*` config tool was called without (or with a wrong) config-service token |
 
 ### 3.4 Protocol Negotiation
 
@@ -605,7 +605,7 @@ the same data without credentials.
 
 **Per-tool rate limit:** with an `mcp-tool.rate-limit` block (enabled unless `enabled: false`), a call over the budget gets a tool result with `isError: true` and `retry_after_seconds`, not a JSON-RPC error, so an agent can wait and retry. Rate limits are keyed on the authenticated principal (with an anonymous fallback bucket per tool).
 
-**Response shaping:** the tool's `mcp-tool.response` block (see [CONFIG_REFERENCE § 2.6](./CONFIG_REFERENCE.md#26-mcp-configuration)) applies redaction, row-count caps, or summary-only sampling to the result before it enters the content block. A shaped result keeps what an unshaped one has: every row's keys in SELECT column order, and every double in its shortest round-trip form (`711.56`, not `711.55999999999994543`). The same holds for `resources/read` and for a task's result under `tasks/get`. With `sample: true` the text block is `{"sampled":true,"row_count":N,"columns":[...]}` and `structuredContent` is that same object, with no `rows` key (it used to be `{"rows": {"sampled": true, ...}}`).
+**Response shaping:** the tool's `mcp-tool.response` block (see [CONFIG_REFERENCE § 2.6](./CONFIG_REFERENCE.md#26-mcp-configuration)) applies redaction, row-count caps, or summary-only sampling to the result before it enters the content block. A shaped result keeps what an unshaped one has: every row's keys in SELECT column order, and every double in its shortest round-trip form (`711.56`, not `711.55999999999994543`). The same holds for `resources/read` and for a task's result under `tasks/get`. A `sample: true` tool never gets a learned `outputSchema` (its result has no rows to learn from). With `sample: true` the text block is `{"sampled":true,"row_count":N,"columns":[...]}` and `structuredContent` is that same object, with no `rows` key (it used to be `{"rows": {"sampled": true, ...}}`).
 
 #### 4.4.1 Dry-run mode
 
@@ -913,9 +913,11 @@ Provides argument completion suggestions for tools and prompts.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `ref` | string | Yes | Tool or prompt name |
-| `argument` | string | Yes | Argument name to complete |
-| `value` | string | No | Partial value prefix for filtering |
+| `ref` | string or object | Yes | Tool or prompt name, or the MCP form `{"type": "ref/prompt", "name": "..."}` |
+| `argument` | string or object | Yes | Argument name, or the MCP form `{"name": "...", "value": "<prefix>"}` |
+| `value` | string | No | Partial value prefix, with the string form of `argument` |
+
+An unknown name answers `-32602` `Reference not found: <name>` / `Argument not found: <name>`.
 
 **Response:**
 
@@ -1295,10 +1297,11 @@ mcp:
     type: basic
     users:
       - username: admin
-        password: "$apr1$xyz..."  # MD5 hashed
+        # PBKDF2-SHA256 (passlib pbkdf2_sha256) - the format flAPI verifies; password: wonderland
+        password: '$pbkdf2-sha256$600000$ozRmzJmTci5lTIkxptQ6Zw$MLAFJ2P.1Tf285q/gCCNFLbb/giQPB71ksNz79pRVVc'
         roles: [admin, read, write]
       - username: reader
-        password: plaintext123    # Plain text (not recommended)
+        password: plaintext123    # Plain text: works, but startup warns AUTH_PLAINTEXT_PASSWORD
         roles: [read]
 ```
 
@@ -1307,6 +1310,10 @@ mcp:
 ```
 Authorization: Basic YWRtaW46cGFzc3dvcmQ=
 ```
+
+A refused request answers HTTP `401` with `WWW-Authenticate: Basic realm="flAPI"` (the value REST
+sends). A role denial answers `403` with no `WWW-Authenticate` header: `insufficient_scope` is a
+Bearer term and Basic has no scopes.
 
 ### 8.2 Bearer/JWT Auth
 
@@ -1766,7 +1773,12 @@ or `cancelled`. A tool that fails (its SQL or template fails, an argument is
 refused, its rate limit is hit) ends the task `failed`: `error` holds the same
 text a synchronous call returns, and `result` keeps that `isError: true` tool
 result. This follows the Tasks semantics, where a task whose underlying request
-fails ends `failed`. `tasks/cancel` (`{taskId}`) requests cancellation. A `taskId` is
+fails ends `failed`.
+
+`error` is a string: the same text the synchronous call's `isError` result carries. For a SQL or
+template failure that is `Tool execution failed on the server. The details are in the server log
+under request_id req-...`, naming the `X-Request-Id` of the `tools/call` that submitted the task. A
+refused argument or a rate limit carries its own message and no request id. `tasks/cancel` (`{taskId}`) requests cancellation. A `taskId` is
 scoped to its creating principal — `tasks/get`/`tasks/cancel` re-check ownership.
 A task result stops being returned once it is past `ttlMs`.
 
@@ -1979,7 +1991,7 @@ template `LIMIT {{ params.limit }}` would break REST paging (`?limit=2&offset=2`
 | `-32601` | Method not found | Unknown MCP method | Check method name spelling |
 | `-32602` | Invalid params | Missing or invalid parameters | Check required params for method |
 | `-32603` | Internal error | Server-side error | Check server logs |
-| `-32001` | Authentication required | Method requires auth | Provide Authorization header |
+| `-32001` | `Authentication required for tool: flapi_x` | An `flapi_*` config tool without the config-service token | Send `X-Config-Token` |
 | `-32000` | Session error | Session-related issue | Re-initialize session |
 | `-32000` (HTTP 401) | `Authentication required for method: <m>` | `mcp.auth` on, no credentials sent | Send `Authorization` |
 | `-32000` (HTTP 401) | `The credentials sent were not accepted.` | `mcp.auth` on, credentials refused (bad or expired JWT, wrong password) | Fix the credential |

@@ -299,7 +299,8 @@ clients that want JSON get `structuredContent`:
 
 After the first successful call of a tool, `tools/list` also advertises an `outputSchema`
 for it: `{rows: array of objects, row_count: integer}`. The column types come from the
-first row (every number is typed as `number`). A dry run never sets the schema, and a
+first row (every number is typed as `number`; a column that is NULL there gets the empty
+schema `{}`, which accepts any value). A dry run or a `sample: true` tool never sets the schema, and a
 config reload clears it. A write tool returns the same body as the REST write
 (`rows_affected`, plus `data` with the `RETURNING` rows).
 
@@ -639,9 +640,11 @@ curl -s $URL -H 'Content-Type: application/json' -u analyst:s3cret -d '{"jsonrpc
 curl -s $URL -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":3,"method":"tools/list"}'   # open
 ```
 
-- **401 or 403.** A missing or rejected credential gets HTTP 401 with JSON-RPC `-32000`. An
-  authenticated caller without one of the tool's `allowed-roles` gets HTTP 403
-  `Permission denied: ...`. A tool with no `allowed-roles` refuses every call while
+- **401 or 403.** A missing or rejected credential gets HTTP 401 with JSON-RPC `-32000` and
+  a `WWW-Authenticate` naming the scheme (`Basic realm="flAPI"` under `mcp.auth.type: basic`,
+  `Bearer` otherwise). An authenticated caller without one of the tool's `allowed-roles` gets
+  HTTP 403 `Permission denied: ...` (with `Bearer error="insufficient_scope"`, or no challenge
+  under basic). A tool with no `allowed-roles` refuses every call while
   `mcp.auth` is on, and so do an `mcp-resource` or `mcp-prompt` without one. An empty list
   (`allowed-roles: []`) lets no one in. Without `mcp.auth`, flAPI does not check roles.
 - **Per-method requirements.** `mcp.auth.methods.<method>.required: false` opens one
