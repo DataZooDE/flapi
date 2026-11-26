@@ -115,22 +115,28 @@ const RequestFieldConfig* findField(const std::string& name,
 }
 
 // ---------------------------------------------------------------------------
-// Triple-brace binding (#192)
+// Binding sites (#192 for triple braces, #277 for double braces)
 //
-// `{{{ params.x }}}` is raw substitution: whatever the validators let through
-// is spliced into the SQL text. For a typed field outside a Mustache section
-// the rewriter binds it instead, so the value can never change the statement:
+// A `params.x` tag of a typed field outside a Mustache section is bound
+// instead of pasted, so the value can never change the statement. Both brace
+// forms bind at the same sites:
 //
-//   n = {{{ params.x }}}          ->  n = ?
-//   n = '{{{ params.x }}}'        ->  n = ?             (quotes dropped)
-//   n LIKE '%{{{ params.x }}}%'   ->  n LIKE ('%' || ? || '%')
+//   n = {{ params.x }}            ->  n = ?
+//   n = '{{ params.x }}'          ->  n = ?             (quotes dropped)
+//   n LIKE '%{{ params.x }}%'     ->  n LIKE ('%' || ? || '%')
 //
 // Sites where a `?` is not a value stay literal: inside a section (the number
-// of `?` would then depend on the data), inside `AT (VERSION|TIMESTAMP => ...)`
-// (DuckLake resolves it before parameters are bound, #217), after a keyword
+// of `?` would then depend on the data), a triple brace or a quoted literal
+// inside `AT (VERSION|TIMESTAMP => ...)` (DuckLake cannot take a bound string
+// there, #217; an unquoted `{{ params.x }}` there stays bound, which works for
+// the int and date fields it is used with), after a keyword
 // that makes the next token a name or a typed literal (`FROM`, `DATE '...'`,
-// `INTERVAL '...'`, `ATTACH '...'`), glued to an identifier, or for an `enum`
-// field used unquoted (a whitelisted identifier such as `ORDER BY`).
+// `INTERVAL '...'`, `ATTACH '...'`), glued to an identifier, in a comment, or
+// for an `enum` field used unquoted (a whitelisted identifier such as
+// `ORDER BY`). A double-brace enum that follows a comparison or `(` is still a
+// value (`status = {{ params.k }}`, `IN ({{ params.k }})`), as it always was.
+// A tag left literal is rendered by Mustache: `{{ }}` doubles single quotes
+// (SQLTemplateProcessor), `{{{ }}}` pastes the value as it is.
 // ---------------------------------------------------------------------------
 
 struct Span {
@@ -319,6 +325,17 @@ bool hasValidatorType(const RequestFieldConfig& field, const char* type) {
                        [type](const ValidatorConfig& v) { return v.type == type; });
 }
 
+// An unquoted enum is a whitelisted name unless it plainly sits on the right of
+// a comparison or opens a list: `= {{ k }}`, `<> {{ k }}`, `IN ({{ k }})`.
+// Triple braces never had this exemption (an unquoted enum there is a name).
+bool enumIsAValue(const std::string& s, const TagScan& tag) {
+    if (tag.kind != TagKind::DoubleBrace) {
+        return false;
+    }
+    const Preceding before = precedingToken(s, tag.start);
+    return before.last == '=' || before.last == '<' || before.last == '>' || before.last == '(';
+}
+
 } // namespace
 
 PreparedRewriteResult PreparedTemplateRewriter::rewrite(
@@ -352,7 +369,8 @@ PreparedRewriteResult PreparedTemplateRewriter::rewrite(
                 break;
             }
             const TagScan inner = nextTag(template_text, brace);
-            if (inner.kind != TagKind::TripleBrace || inner.end > lit.close) {
+            if ((inner.kind != TagKind::TripleBrace && inner.kind != TagKind::DoubleBrace) ||
+                inner.end > lit.close) {
                 return false;
             }
             const std::string name = paramName(inner.inner);
@@ -437,45 +455,20 @@ PreparedRewriteResult PreparedTemplateRewriter::rewrite(
                 }
                 appendRange(result.rewritten_template, template_text, tag.start, tag.end);
                 break;
-            case TagKind::TripleBrace: {
-                // An unquoted value site binds like a double-brace one. A tag in
-                // a literal that was not bound as a whole stays raw (the literal
-                // may be a typed literal such as DATE '...').
+            case TagKind::TripleBrace:
+            case TagKind::DoubleBrace: {
+                // An unquoted value site binds. A tag in a literal that was not
+                // bound as a whole stays text (the literal may be a typed literal
+                // such as DATE '...'); so does every site that is not a value.
                 const std::string name = paramName(tag.inner);
                 const RequestFieldConfig* field = name.empty() ? nullptr : findField(name, request_fields);
                 // A `?` in a comment is not a placeholder, so it must not enter the plan.
                 const Bindability bindability = field != nullptr ? classifier.classify(*field) : Bindability{};
                 if (section_depth > 0 || field == nullptr || !bindability.bindable ||
-                    hasValidatorType(*field, "enum") || within(literals, tag.start) || within(comments, tag.start) ||
-                    within(time_travel, tag.start) || !unquotedIsAValue(template_text, tag)) {
-                    appendRange(result.rewritten_template, template_text, tag.start, tag.end);
-                    break;
-                }
-                result.rewritten_template += '?';
-                PreparedBindingSpec spec;
-                spec.field_name = name;
-                spec.type = bindability.type;
-                spec.position = result.bindings.size();
-                result.bindings.push_back(std::move(spec));
-                break;
-            }
-            case TagKind::DoubleBrace: {
-                if (section_depth > 0 || within(comments, tag.start)) {
-                    appendRange(result.rewritten_template, template_text, tag.start, tag.end);
-                    break;
-                }
-                const std::string name = paramName(tag.inner);
-                if (name.empty()) {
-                    appendRange(result.rewritten_template, template_text, tag.start, tag.end);
-                    break;
-                }
-                const RequestFieldConfig* field = findField(name, request_fields);
-                if (field == nullptr) {
-                    appendRange(result.rewritten_template, template_text, tag.start, tag.end);
-                    break;
-                }
-                const auto bindability = classifier.classify(*field);
-                if (!bindability.bindable) {
+                    (hasValidatorType(*field, "enum") && !enumIsAValue(template_text, tag)) ||
+                    within(literals, tag.start) || within(comments, tag.start) ||
+                    (tag.kind == TagKind::TripleBrace && within(time_travel, tag.start)) ||
+                    !unquotedIsAValue(template_text, tag)) {
                     appendRange(result.rewritten_template, template_text, tag.start, tag.end);
                     break;
                 }
