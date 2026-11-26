@@ -316,27 +316,27 @@ it is text. For a free-text value, write it in quotes with double braces:
 string. (`'{{{ params.name }}}'` would paste `c_name = 'O'Brien'`, which fails
 with a `500`; startup warns about it.)
 
-`sqls/customers-named.yaml`:
+`sqls/named.yaml`:
 
-<!-- flapi: endpoint group=customers file=customers-named.yaml -->
+<!-- flapi: endpoint group=customers file=named.yaml -->
 ```yaml
-url-path: /customers-named
+url-path: /named
 request:
   - field-name: name
     field-in: query
     validators:
       - type: string
         max-length: 50
-template-source: customers-named.sql
+template-source: named.sql
 connection: [customers]
 ```
-<!-- flapi: check GET /customers-named?name=Customer%23000000007 -> 200 contains "Customer#000000007" -->
-<!-- flapi: check GET /customers-named?name=O%27Brien -> 200 contains '"data":[]' -->
-<!-- flapi: check POST /api/v1/_config/endpoints/-customers-named/template/expand body={"parameters":{"name":"O'Brien"}} header=X-Config-Token:skill-check-token -> 200 contains "c_name = 'O''Brien'" -->
+<!-- flapi: check GET /named?name=Customer%23000000007 -> 200 contains "Customer#000000007" -->
+<!-- flapi: check GET /named?name=O%27Brien -> 200 contains '"data":[]' -->
+<!-- flapi: check POST /api/v1/_config/endpoints/-named/template/expand body={"parameters":{"name":"O'Brien"}} header=X-Config-Token:skill-check-token -> 200 contains "c_name = 'O''Brien'" -->
 
-`sqls/customers-named.sql`:
+`sqls/named.sql`:
 
-<!-- flapi: template group=customers file=customers-named.sql -->
+<!-- flapi: template group=customers file=named.sql -->
 ```sql
 SELECT c_custkey, c_name
 FROM read_parquet('{{ conn.path }}')
@@ -348,9 +348,9 @@ ORDER BY c_custkey
 ```
 
 ```bash
-curl -s 'http://localhost:8080/customers-named?name=Customer%23000000007'   # one row
-curl -s "http://localhost:8080/customers-named?name=O%27Brien"              # no row, no error
-curl -s -X POST http://localhost:8080/api/v1/_config/endpoints/-customers-named/template/expand \
+curl -s 'http://localhost:8080/named?name=Customer%23000000007'   # one row
+curl -s "http://localhost:8080/named?name=O%27Brien"              # no row, no error
+curl -s -X POST http://localhost:8080/api/v1/_config/endpoints/-named/template/expand \
   -H "X-Config-Token: $FLAPI_CONFIG_SERVICE_TOKEN" -H 'Content-Type: application/json' \
   -d '{"parameters": {"name": "O'\''Brien"}}'
 # "expanded": "... AND c_name = 'O''Brien'\n..."
