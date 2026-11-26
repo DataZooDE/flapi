@@ -120,6 +120,16 @@ to insert it as `auth:`
 
 It is a warning, not an error: `--validate-config` still passes, so check its output.
 
+**The variants must exclude each other.** Exactly one `auth:` may end up in the
+expanded file: give the two includes opposite conditions (`if env.X` and
+`if !env.X`, as above), and do not also write an `auth:` of your own. When a key
+occurs twice only the **first** is read, so `auth: {enabled: false}` above
+`{{include:auth-prod as auth from common.yaml}}` leaves the endpoint public.
+flAPI warns: ``SECURITY: endpoint key `auth` appears more than once ...``.
+
+The directive is lower-case `as`; `AS` is a syntax error. Spaces inside the
+braces are fine: `{{ include:auth-prod as auth from common.yaml }}`.
+
 Resolution rules and behavior:
 - Paths are resolved relative to the current file first; absolute paths are supported.
 - Includes inside YAML comments are ignored (e.g., lines starting with `#`).

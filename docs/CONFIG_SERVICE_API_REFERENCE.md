@@ -434,10 +434,22 @@ connection: [customers-db]
 {"valid": true}
 ```
 
+A valid file can still carry `warnings` (the request is `200`): a key nothing reads, a key that
+occurs twice after includes (`SECURITY: endpoint key `auth` appears more than once ...`), a missing
+template file:
+
+```json
+{"valid": true,
+ "warnings": ["Unknown endpoint key `auth-prod` is ignored; nothing reads it: did you mean `auth`? included sections keep their own name; use `{{include:auth-prod as auth from ...}}` to insert it as `auth:`"]}
+```
+
 **Response (400):**
 ```json
 {"valid": false, "errors": ["Parse error: Configuration error at template-source: Missing required key: template-source"]}
 ```
+
+In a packed bundle, where no scratch file can be written, the YAML is validated without expanding
+`{{include}}`s; unknown and duplicate keys are still reported, for the file as sent.
 
 An empty body gives `400` with `"No YAML given: send the endpoint YAML as the request body"`.
 

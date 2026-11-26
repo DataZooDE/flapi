@@ -55,7 +55,7 @@ connection:
 cache:
   enabled: true
   table: customers_cache
-  template-file: customers_cache.sql   # Required on a write endpoint: rebuilds the cache table
+  template-file: customers_cache.sql   # Required: this template writes, so it cannot be the populate SQL
   invalidate-on-write: true   # Refresh synchronously before the response
   refresh-on-write: true      # Refresh in the background after the response
 

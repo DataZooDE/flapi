@@ -188,10 +188,16 @@ Parses endpoint YAML into `EndpointConfig` structs:
 - Parses cache, auth, and rate limit settings
 - Handles MCP-specific fields
 - Records top-level keys it does not read (`KnownEndpointKeys()`) in
-  `EndpointConfig::unknown_keys`; `loadEndpointConfig` logs a warning per key
-  and `validateEndpointConfig` returns one (#282)
-- Refuses a write endpoint whose cache has a `table` but no `template-file`
-  (`checkCacheTemplateFile`, after `parseOperationConfig`; #276)
+  `EndpointConfig::unknown_keys` and keys that occur twice in
+  `EndpointConfig::duplicate_keys`; `loadEndpointConfig` logs a warning per key
+  and `validateEndpointConfig` returns one (a duplicate `auth` as SECURITY; #282)
+- A file that is not an endpoint but looks like a mistyped one (`urlpath:`, or
+  `template-source`/`connection` that no endpoint includes) is reported in
+  `ConfigManager::getLoadWarnings()`, which `--validate-config` prints
+- Refuses an endpoint whose cache has a `table` but no `template-file` when its
+  template modifies data (`CacheTemplateFileProblem`, judged with
+  `DatabaseManager::ServingScriptModification`; checked after
+  `parseOperationConfig`, and again in `validateEndpointConfig`; #276)
 
 **Key methods:**
 ```cpp
@@ -333,6 +339,8 @@ struct EndpointConfig {
     // Top-level YAML keys nothing reads, in file order (parser only; empty
     // for an endpoint built from JSON). Warned about; usable by audits.
     std::vector<std::string> unknown_keys;
+    // Top-level keys that occur more than once (only the first is read).
+    std::vector<std::string> duplicate_keys;
 
     // Helper methods
     Type getType() const;

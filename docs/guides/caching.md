@@ -783,12 +783,13 @@ curl -s localhost:8080/items              # widget is there: the refresh ran bef
 curl -s -X DELETE localhost:8080/items/1  # {"rows_affected":1}; the refresh follows the response
 ```
 
-- Without `table` in the write endpoint's block nothing is refreshed. Without
+- Every `cache:` block needs `table` (startup fails without it). Without
   `template-file` the "populate" SQL would be the write endpoint's own
-  template, so every refresh would run the write again: such an endpoint
-  **fails to load** (startup, reload and `--validate-config` all name it:
-  `a write endpoint's cache needs template-file`). Always copy both from the
-  reading endpoint.
+  template, so every refresh would run the write again: when that template
+  modifies data (an `INSERT`, `UPDATE`, `DELETE`, ...) **the whole server
+  refuses to start**, and reload and `--validate-config` name the endpoint
+  (`POST /items: a write endpoint's cache needs template-file ...`). Always
+  copy both `table` and `template-file` from the reading endpoint.
 - The write's latency now includes the populate SQL. With a big table use an
   incremental template, or drop write-through and refresh on a schedule.
 - Endpoints that name the same table share one warm-up and one schedule; put

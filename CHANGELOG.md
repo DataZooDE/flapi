@@ -9,10 +9,13 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 - **A write endpoint's cache without `template-file` no longer runs the write again (#276).**
   Its populate SQL fell back to the endpoint's own template - the `INSERT`/`UPDATE`/`DELETE` -
   so every warm-up, scheduled refresh and refresh-on-write repeated the write and recorded the
-  refresh as a success. Such an endpoint now fails to load (startup, reload and
-  `--validate-config` name it: `a write endpoint's cache needs template-file`), and a refresh
-  that reaches one anyway (the config service) is refused and audited as an error without
-  running the template. The startup warning for a read endpoint's cache without
+  refresh as a success. An endpoint whose template modifies data (judged by DuckDB's parser;
+  a read endpoint's too) and whose cache has no `template-file` now stops startup and fails
+  reload, `--validate-config` and config-service updates, naming it (`POST /items: a write
+  endpoint's cache needs template-file ...`, plus the reader's `template-file` when one serves
+  the table). A refresh that reaches one anyway is refused and audited as an error without
+  running the template. A write endpoint whose template is a single `SELECT` (what
+  `flapii endpoints wizard` writes) still works. The startup warning for a read endpoint's cache without
   `template-file` now says that only a single `SELECT` is materialised.
 - **An unknown key in an endpoint file is reported (#282).** It used to pass validation silently.
   A section include keeps the section's own name, so `{{include:auth-prod from common.yaml}}`
@@ -20,7 +23,10 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   unless the top-level `auth:` applied). Every top-level endpoint key flAPI does not read now
   warns at startup, in `--validate-config` (a warning: validation still passes) and in the
   config-service validate API, with a near-miss hint (`auth-prod` → `as auth`, `rate_limit` →
-  `rate-limit`).
+  `rate-limit`). A key that occurs twice after includes warns too (only the first is read; a
+  duplicate `auth` is a `SECURITY:` warning), and so does a file skipped as "not an endpoint"
+  that looks like one (`urlpath:`, `mcp_tool:`, or `template-source` that no endpoint includes).
+  The startup count of skipped files no longer includes files that failed to load.
 
 ### Added
 
@@ -30,9 +36,10 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 
 ### Upgrade notes
 
-- **A write endpoint (`POST`/`PUT`/`PATCH`/`DELETE` or `operation.type: write`) whose `cache:`
-  block has `enabled` and `table` but no `template-file` stops startup.** Copy the reading
-  endpoint's `template-file` into it (the populate SQL that rebuilds the table).
+- **An endpoint with an enabled `cache:` block but no `template-file`, whose template modifies
+  data (a write endpoint's `INSERT`/`UPDATE`/`DELETE`, or a read whose template writes), stops
+  startup.** Copy the reading endpoint's `template-file` into its `cache:` block (the populate
+  SQL that rebuilds the table). Run `flapi --validate-config` before upgrading.
 - **Check `--validate-config` for `Unknown endpoint key` warnings.** A mis-named section include
   (`{{include:auth-prod from ...}}`) never applied; write `{{include:auth-prod as auth from ...}}`
   and the endpoint's auth takes effect, so clients without credentials then get `401`.
