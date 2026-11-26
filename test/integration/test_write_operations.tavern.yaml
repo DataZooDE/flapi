@@ -21,8 +21,18 @@ stages:
         content-type: "application/json"
       json:
         rows_affected: 1
-        # returns-data: true always answers `data`, [] when nothing came back
-        data: []
+        # The rows of the final SELECT. It begins with a comment, and used to be
+        # missed for that (#271): `data` was [].
+        data:
+          - id: !anyint
+            name: "Test User"
+            segment: "BUILDING"
+            balance: !anything
+            comment: null
+            email: "test@example.com"
+            registration_date: null
+            last_login_time: null
+            uuid: null
 
   - name: Test PUT endpoint updates record
     request:

@@ -113,6 +113,15 @@ void RequestHandler::handleRequest(const crow::request& req, crow::response& res
         case crow::HTTPMethod::Put:
         case crow::HTTPMethod::Patch:
         case crow::HTTPMethod::Delete:
+            // `operation.type: read` on a POST (or PUT/PATCH/DELETE) is a read
+            // that takes its input as a body (#271): validators, cache serving
+            // and the pagination envelope, as MCP and /doc.yaml already treat
+            // it. These methods default to write, so only an explicit
+            // `type: read` gets here.
+            if (endpoint.operation.type == OperationConfig::Read) {
+                handleGetRequest(req, res, endpoint, pathParams, authParams);
+                break;
+            }
             // DELETE runs its template like every other write. It used to skip
             // the template entirely: a cached endpoint got its cache refreshed
             // ("Cache invalidated"), anything else got 405, and the row the
@@ -250,7 +259,13 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
     // secrets this request's template could interpolate.
     std::map<std::string, std::string> params;
     try {
-        params = combineParameters(req, defaultParams, pathParams, endpoint);
+        // A read over POST (`operation.type: read`, #271) takes its parameters
+        // from the JSON body as a write does; combineParameters reads only the
+        // query string, and `field-in: body` fields may not come from there.
+        const bool body_read = req.method == crow::HTTPMethod::Post || req.method == crow::HTTPMethod::Put ||
+                               req.method == crow::HTTPMethod::Patch || req.method == crow::HTTPMethod::Delete;
+        params = body_read ? combineWriteParameters(req, pathParams, endpoint)
+                           : combineParameters(req, defaultParams, pathParams, endpoint);
         // Inject auth context as reserved params for template rendering
         for (const auto& [k, v] : authParams) {
             params[k] = v;

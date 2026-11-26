@@ -2395,14 +2395,6 @@ WriteResult DatabaseManager::executeWrite(QueryExecutor& executor, const Endpoin
         size_t last = str.find_last_not_of(" \t\n\r");
         return str.substr(first, (last - first + 1));
     };
-    auto startsWith = [](const std::string& str, const std::string& prefix) -> bool {
-        if (str.length() < prefix.length()) return false;
-        std::string strLower = str;
-        std::string prefixLower = prefix;
-        std::transform(strLower.begin(), strLower.end(), strLower.begin(), ::tolower);
-        std::transform(prefixLower.begin(), prefixLower.end(), prefixLower.begin(), ::tolower);
-        return strLower.compare(0, prefixLower.length(), prefixLower) == 0;
-    };
 
     std::vector<std::string> statements = splitSqlStatements(processedQuery);
     if (statements.empty()) {
@@ -2447,9 +2439,14 @@ WriteResult DatabaseManager::executeWrite(QueryExecutor& executor, const Endpoin
     size_t statementsToExecute = statements.size();
     bool lastStatementIsSelect = false;
 
-    if (statements.size() > 1 && endpoint.operation.returns_data) {
-        std::string lastStatement = trim(statements.back());
-        lastStatementIsSelect = startsWith(lastStatement, "SELECT");
+    // #271: the rows of a final SELECT are the data - also when it is the only
+    // statement (a search that takes its input as a body), and whatever it
+    // starts with (WITH, FROM, a comment). DuckDB's parser decides, not the
+    // first keyword; a statement it cannot parse is not treated as a SELECT.
+    if (endpoint.operation.returns_data) {
+        std::size_t parsed = 0;
+        const auto select_at = FindSelectStatement(statements.back(), &parsed);
+        lastStatementIsSelect = select_at.has_value() && parsed == 1;
         if (lastStatementIsSelect) {
             statementsToExecute = statements.size() - 1;
         }
@@ -2482,7 +2479,7 @@ WriteResult DatabaseManager::executeWrite(QueryExecutor& executor, const Endpoin
         }
     }
 
-    if (endpoint.operation.returns_data && !hasReturningData && lastStatementIsSelect && statements.size() > 1) {
+    if (endpoint.operation.returns_data && !hasReturningData && lastStatementIsSelect) {
         runStatement(statements.size() - 1, "select returning data");
         if (executor.columnCount() > 0 && executor.rowCount() > 0) {
             result.returned_data = executor.toJson();
