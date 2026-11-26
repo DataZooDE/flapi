@@ -326,7 +326,8 @@ Real `tools/call` result (trimmed):
   The SQL is withheld if it would expose a secret too short to redact.
 - Other methods: `resources/list`, `resources/read` (`{"uri":"flapi://segment_summary"}`),
   `prompts/list`, `prompts/get` (`{"name":..,"arguments":{..}}`), `ping`,
-  `logging/setLevel`, `completion/complete`.
+  `logging/setLevel`, `completion/complete` (enum values matching the prefix, at most 100;
+  `total` counts the matches, `hasMore` when more matched).
 
 Async tasks (modern 2026-07-28 era, headers, `tasks/get`, `tasks/cancel`), error codes and a
 Python client: [references/jsonrpc.md](references/jsonrpc.md).

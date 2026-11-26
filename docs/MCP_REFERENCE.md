@@ -923,16 +923,22 @@ Provides argument completion suggestions for tools and prompts.
   "jsonrpc": "2.0",
   "id": 10,
   "result": {
-    "values": ["active", "inactive"],
-    "total": 2,
-    "hasMore": false
+    "completion": {
+      "values": ["active", "activated"],
+      "total": 2,
+      "hasMore": false
+    }
   }
 }
 ```
 
-Completions are generated from `enum` validators defined on the argument.
+Completions are generated from `enum` validators defined on the argument: the allowed values that
+start with `value`, in their declared order. `values` holds at most **100** of them (the MCP limit),
+`total` is the number of values that match, and `hasMore` is `true` when `total` is larger than the
+number returned. (`total` used to count every enum value whatever the prefix, and the list stopped
+at 50.)
 
-> **Implementation:** `src/mcp_route_handlers.cpp` | **Tests:** `test/integration/test_mcp_methods.py`
+> **Implementation:** `src/mcp_route_handlers.cpp` (`completeEnumValues`) | **Tests:** `test/integration/test_mcp_methods.py`, `test/integration/test_mcp_pagination.py`, `test/cpp/mcp_tool_handler_test.cpp`
 
 ---
 

@@ -31,6 +31,10 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   authentication is also an `mcp-tool` (the warning names the endpoint).
   `ENDPOINT_AUTH_KEY_IGNORED`: an endpoint file has an unread `auth*` key (`authentication:`)
   and no `auth:` block.
+- **`completion/complete` counts the matches (#275).** `total` counted every enum value
+  whatever the prefix, and the list (and the count) stopped at 50. `values` now holds up to
+  100 matching values, `total` is the number of matches, and `hasMore` says whether some were
+  left out.
 
 ### Added
 
