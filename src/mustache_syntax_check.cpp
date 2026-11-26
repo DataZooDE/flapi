@@ -862,6 +862,7 @@ std::optional<std::string> CheckAuthPlacementInTemplateFile(const std::string& p
 std::vector<MustacheVariable> CollectMustacheVariables(const std::string& body) {
     std::vector<MustacheVariable> out;
     std::size_t current = 0;
+    std::size_t depth = 0;
     while (true) {
         const std::size_t tag_start = body.find(kOpen, current);
         if (tag_start == std::string::npos) {
@@ -875,9 +876,13 @@ std::vector<MustacheVariable> CollectMustacheVariables(const std::string& body) 
         current = close + kDelimiterSize;
 
         std::size_t name_begin = idx;
+        std::size_t tag_depth = depth;
         switch (body[idx]) {
             case '#':
             case '^':
+                name_begin = idx + 1;
+                ++depth;   // the section's own name is looked up outside it
+                break;
             case '&':
                 name_begin = idx + 1;
                 break;
@@ -886,6 +891,10 @@ std::vector<MustacheVariable> CollectMustacheVariables(const std::string& body) 
                 current++;   // the third brace
                 break;
             case '/':
+                if (depth > 0) {
+                    --depth;
+                }
+                continue;
             case '!':
             case '>':
             case '=':
@@ -898,7 +907,57 @@ std::vector<MustacheVariable> CollectMustacheVariables(const std::string& body) 
             continue;
         }
         const auto at = ErrorAt(body, tag_start, "");
-        out.push_back(MustacheVariable{std::move(name), at.line, at.column});
+        MustacheVariable variable{std::move(name), at.line, at.column};
+        variable.section_depth = tag_depth;
+        out.push_back(std::move(variable));
+    }
+    return out;
+}
+
+std::vector<MustacheVariable> FindUndefinedTemplateVariables(const std::string& body,
+                                                             const crow::mustache::context& ctx,
+                                                             const std::set<std::string>& declared_params) {
+    static const std::set<std::string> kRoots = {"params", "conn", "env", "auth", "cache"};
+    static const std::set<std::string> kAuthFields = {"username", "roles", "email", "type", "authenticated"};
+    std::vector<MustacheVariable> out;
+    std::set<std::string> reported;
+    for (const auto& variable : CollectMustacheVariables(body)) {
+        const std::string& name = variable.name;
+        if (name == "." || reported.count(name) != 0) {
+            continue;
+        }
+        std::vector<std::string> parts;
+        for (std::size_t start = 0;;) {
+            const std::size_t dot = name.find('.', start);
+            parts.push_back(name.substr(start, dot == std::string::npos ? std::string::npos : dot - start));
+            if (dot == std::string::npos) {
+                break;
+            }
+            start = dot + 1;
+        }
+        if (kRoots.count(parts.front()) == 0 && variable.section_depth > 0) {
+            continue;   // resolved against the enclosing section's value first
+        }
+        const crow::mustache::context* at = &ctx;
+        bool found = true;
+        for (const auto& part : parts) {
+            if (at->t() != crow::json::type::Object || at->count(part) == 0) {
+                found = false;
+                break;
+            }
+            at = &(*at)[part];
+        }
+        if (found) {
+            continue;
+        }
+        if (parts.size() >= 2 && parts[0] == "params" && declared_params.count(parts[1]) != 0) {
+            continue;   // a declared parameter the request did not send: absent, as it may be
+        }
+        if (parts.size() == 2 && parts[0] == "auth" && kAuthFields.count(parts[1]) != 0) {
+            continue;   // set on an authenticated request; the config service has no caller
+        }
+        reported.insert(name);
+        out.push_back(variable);
     }
     return out;
 }

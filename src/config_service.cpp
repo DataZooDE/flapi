@@ -3094,29 +3094,31 @@ crow::response TemplateHandler::expandTemplate(const crow::request& req, const s
                 // 2. Validate variable references by creating template context
                 if (is_valid) {
                     try {
+                        // The context a render would see, cache.* included. Each
+                        // variable is found as Mustache resolves it (#277): the
+                        // regex this replaced read `{conn.path` out of a triple
+                        // brace, `#x` / `/x` out of sections and comments, and
+                        // searched the nested context for a flat "params.x".
                         std::map<std::string, std::string> context_params = params;
+                        addCacheTargetParams(config_manager_, *endpoint, context_params);
                         crow::mustache::context ctx = sql_processor->createTemplateContext(*endpoint, context_params);
-                        
-                        // Check if all variables in template are available in context
-                        // This is a simple check - we could enhance this with proper Mustache parsing
-                        std::regex var_regex(R"(\{\{([^}]+)\}\})");
-                        std::sregex_iterator iter(template_content.begin(), template_content.end(), var_regex);
-                        std::sregex_iterator end;
-                        
-                        for (; iter != end; ++iter) {
-                            std::string var_name = (*iter)[1].str();
-                            // Remove whitespace
-                            var_name.erase(std::remove_if(var_name.begin(), var_name.end(), ::isspace), var_name.end());
-                            
-                            // Check if variable exists in context (simplified check)
-                            std::string context_dump = ctx.dump();
-                            if (context_dump.find("\"" + var_name + "\"") == std::string::npos) {
-                                crow::json::wvalue warning;
-                                warning["type"] = "undefined_variable";
-                                warning["message"] = "Variable '" + var_name + "' may not be defined in context";
-                                warning["variable"] = var_name;
-                                warnings[warnings.size()] = std::move(warning);
-                            }
+                        std::set<std::string> declared{"limit", "offset"};
+                        for (const auto& field : endpoint->request_fields) {
+                            declared.insert(field.fieldName);
+                        }
+                        std::vector<std::string> path_names;
+                        RouteTranslator::translateRoutePath(endpoint->urlPath, path_names);
+                        declared.insert(path_names.begin(), path_names.end());
+                        for (const auto& variable : FindUndefinedTemplateVariables(template_content, ctx, declared)) {
+                            crow::json::wvalue warning;
+                            warning["type"] = "undefined_variable";
+                            warning["message"] = "Variable '" + variable.name + "' (line " +
+                                                 std::to_string(variable.line) + ", column " +
+                                                 std::to_string(variable.column) + ") is not defined in context";
+                            warning["variable"] = variable.name;
+                            warning["line"] = static_cast<uint64_t>(variable.line);
+                            warning["column"] = static_cast<uint64_t>(variable.column);
+                            warnings[warnings.size()] = std::move(warning);
                         }
                     } catch (const std::exception& e) {
                         crow::json::wvalue error;

@@ -3,7 +3,10 @@
 #include <cstddef>
 #include <optional>
 #include <string>
+#include <set>
 #include <vector>
+
+#include <crow/mustache.h>
 
 namespace flapi {
 
@@ -46,6 +49,7 @@ struct MustacheVariable {
     std::size_t column = 1;  // 1-based
     std::string detail;      // FindUnquotedAuthVariables: where the tag sits
     std::size_t offset = 0;  // FindUnquotedAuthVariables: byte offset in the text
+    std::size_t section_depth = 0;  // CollectMustacheVariables: sections open around the tag
 };
 
 // A placeholder rendered in place of an auth.* value (see NewAuthMarkerPrefix).
@@ -60,6 +64,16 @@ struct AuthMarker {
 // delimiter tags name nothing. Meant for a body CheckMustacheSyntax accepted; a
 // malformed tag ends the scan instead of being reported.
 std::vector<MustacheVariable> CollectMustacheVariables(const std::string& body);
+
+// For template/expand?validate_only (#277): the variables (and section names)
+// of `body` that `ctx` does not define, each reported once by its own name.
+// A name relative to an enclosing section ({{.}}, {{name}} inside
+// {{#params.items}}) is not looked up; `params.x` for a declared parameter
+// (`declared_params`) that the request did not send is fine, and so is a known
+// auth.* field (empty without a caller).
+std::vector<MustacheVariable> FindUndefinedTemplateVariables(const std::string& body,
+                                                             const crow::mustache::context& ctx,
+                                                             const std::set<std::string>& declared_params);
 
 // Every auth.* value tag (auth.username, auth.email, auth.roles, auth.type,
 // and the same names resolved inside a `{{#auth}}` section or as `{{.}}`)
