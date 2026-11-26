@@ -271,10 +271,13 @@ auth:
     verify-expiration: true                      # default true
     clock-skew-seconds: 300                      # default 300
     jwks-cache-hours: 24                         # default 24
+    jwks-refetch-cooldown-seconds: 60            # default 60: unknown kid -> at most 1 JWKS fetch per minute
 ```
 
-Keys discovered from `<issuer-url>/.well-known/openid-configuration`; JWKS
-cached. Signatures: RS256/384/512, PS256/384/512 (RSA), ES256/384/512 (EC
+Keys discovered from `<issuer-url>/.well-known/openid-configuration` once per
+issuer (REST and MCP share it); JWKS cached, and a token with an unknown `kid`
+triggers at most one refetch per cooldown (within it: 401, the issuer is not
+asked, so a rotated-in key works within a minute). Signatures: RS256/384/512, PS256/384/512 (RSA), ES256/384/512 (EC
 P-256/P-384/P-521); the token `alg` must fit its key (type, curve, and the
 JWK `alg` if set); `none`/HS* refused. Also read: `email-claim`. `client-secret`, `scopes`,
 `enable-client-credentials` and `enable-refresh-tokens` have no effect (startup

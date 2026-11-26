@@ -88,17 +88,11 @@ auth:
   jwt-issuer: my-app
 ```
 
-**Token validation:**
-```cpp
-bool validateJWT(const std::string& token) {
-    auto decoded = jwt::decode(token);
-    auto verifier = jwt::verify()
-        .allow_algorithm(jwt::algorithm::hs256{jwt_secret_})
-        .with_issuer(jwt_issuer_);
-    verifier.verify(decoded);
-    return true;
-}
-```
+**Token validation** (`VerifyBearerToken`, `src/bearer_token_verifier.cpp`): one function for REST
+(`AuthMiddleware::authenticateBearer`) and MCP (`MCPAuthHandler::authenticateBearer`). HS256 only;
+`exp` required unless `jwt-require-exp: false`; `nbf`/`iat` not in the future; `iss` checked when
+`jwt-issuer` is set (unset: the auditor reports `AUTH_JWT_ISSUER_UNCHECKED`); `aud` must contain one
+of `jwt-audience` when set; a string `sub`. `roles` (array or string) and `email` are optional.
 
 **Expected header:**
 ```
@@ -151,7 +145,7 @@ auth:
   enabled: true
   type: oidc
   oidc:
-    provider-type: google          # or microsoft (azure, azure-ad, entra), keycloak, auth0, okta, github, generic
+    provider-type: google          # or microsoft (azure, azure-ad, entra), keycloak, auth0, okta, generic
     issuer-url: https://accounts.google.com
     client-id: '{{env.GOOGLE_CLIENT_ID}}'
     allowed-audiences:
@@ -165,9 +159,25 @@ Presets with a templated issuer take `tenant-id` (alias `tenant`), `realm` and `
 A placeholder still present after substitution is a startup error naming the key to set.
 
 **OIDC components:**
+- `OIDCHandlerRegistry` (`src/oidc_handler_registry.cpp`) - process-wide, locked; one
+  `OIDCAuthHandler` per effective config (preset applied; issuer, client, audiences, claims, expiry,
+  key-cache settings), shared by REST and MCP. Handlers of one issuer share an `OIDCProviderKeys`.
+- `OIDCProviderKeys` - discovery once per issuer behind a lock (a failure is retried after 5 s),
+  and the issuer's `OIDCJWKSManager`
 - `OIDCDiscoveryClient` - Fetches `.well-known/openid-configuration`
-- `OIDCJWKSManager` - Caches and refreshes JWKS keys
-- `OIDCProviderPresets` - Pre-configured settings for Google, Microsoft, etc.
+- `OIDCJWKSManager` - key sets as `shared_ptr<const vector<JWKSKey>>`, keys handed out as aliasing
+  `shared_ptr<const JWKSKey>` (a refresh never frees a key in use); single-flight fetches, at most
+  one per request, then `jwks-refetch-cooldown-seconds` (default 60) with a negative cache of
+  unknown kids. RSA and EC (P-256/384/521) keys; `use` other than `sig` is skipped
+- `OIDCProviderPresets` - Pre-configured settings for Google, Microsoft, etc. (`github` is refused)
+
+**Token checks** (`OIDCAuthHandler::validateToken`): `alg` in RS*/PS*/ES* (checked before any key
+lookup), a `kid` whose key fits the `alg` (key type, EC curve, the JWK `alg` when set), the
+signature, `iss` equal to `issuer-url`, `aud` in `allowed-audiences` (or containing `client-id` when
+that list is empty), `exp`, `nbf`/`iat` not in the future (all with `clock-skew-seconds`), a `sub`.
+Claims are found by literal name first, then as a dotted path (`findClaim`). `groups-claim` fills
+`auth.groups`; a role or group with a comma or control character refuses the identity
+(`IdentityRefusal`, `src/include/auth_params.hpp`).
 
 ### AWS Secrets Manager Integration
 
@@ -742,7 +752,9 @@ for the broader rationale and
 |------|---------|
 | `src/auth_middleware.cpp` | HTTP auth middleware |
 | `src/mcp_auth_handler.cpp` | MCP auth handler |
-| `src/oidc_auth_handler.cpp` | OIDC token validation |
+| `src/bearer_token_verifier.cpp` | HS256 bearer token check (REST and MCP) |
+| `src/oidc_handler_registry.cpp` | Shared, locked OIDC handler registry |
+| `src/oidc_auth_handler.cpp` | OIDC token validation, `OIDCProviderKeys` |
 | `src/oidc_discovery_client.cpp` | OIDC discovery |
 | `src/oidc_jwks_manager.cpp` | JWKS key management |
 | `src/request_validator.cpp` | Input validation |

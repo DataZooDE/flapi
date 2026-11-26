@@ -2194,6 +2194,7 @@ OpenID Connect authentication with external identity providers.
 | `auth.oidc.enable-refresh-tokens` | boolean | `false` | Parsed but has no effect; startup warns |
 | `auth.oidc.scopes` | array[string] | - | Parsed but has no effect; startup warns |
 | `auth.oidc.jwks-cache-hours` | integer | `24` | JWKS cache duration |
+| `auth.oidc.jwks-refetch-cooldown-seconds` | integer | `60` | Minimum time between two JWKS fetches for a `kid` the cached set lacks; within it such a token is refused without asking the issuer. `0` refetches every time. A failed fetch is retried after `min(cooldown, 5)` seconds |
 
 **Example:**
 
@@ -2223,6 +2224,10 @@ auth:
     client-id: my-api
     role-claim-path: realm_access.roles
 ```
+
+Discovery and JWKS are fetched once per issuer for the whole process (REST, MCP and every endpoint naming
+the issuer share them, `src/oidc_handler_registry.cpp`); a token never causes more than one JWKS fetch.
+Each distinct OIDC block (issuer, client, audiences, claims, ...) has a validator of its own.
 
 Token signatures: RS256/384/512 and PS256/384/512 with RSA keys, ES256/384/512 with EC keys on
 P-256/P-384/P-521. The token's `alg` must fit the key its `kid` names: the key type, the EC curve, and the

@@ -22,6 +22,13 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 - **OIDC verifies ES256/ES384/ES512 and PS256/PS384/PS512 tokens.** EC keys in the JWKS were
   skipped and RSA-PSS was refused, so issuers that sign with them (many Okta, Auth0 and
   Keycloak setups) could authenticate nobody. RS256/384/512 are unchanged.
+- **Two endpoints with the same OIDC issuer and client but different audiences or claims
+  (#281)** shared whichever validator was built first, so one checked tokens against the other's
+  audience. Each distinct OIDC block now has its own; REST and MCP share them.
+- **Concurrent first OIDC requests are safe (#284).** The REST and MCP handler maps and the
+  cached discovery document were written by request threads without a lock, and a JWKS refresh
+  freed keys another request was verifying with. Discovery and JWKS are now fetched once per
+  issuer behind a lock, and keys stay alive while in use.
 - `client-secret`, `scopes`, `enable-client-credentials` and `enable-refresh-tokens` in an
   `oidc:` block log `parsed but has no effect` at startup.
 
@@ -37,6 +44,10 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   token the issuer minted for any application.
 - **OIDC refuses `nbf` and `iat` in the future** (beyond `clock-skew-seconds`).
 - **A group containing a comma or a control character refuses the identity**, as a role does.
+- **Tokens with unknown `kid`s can no longer make flAPI hammer the issuer (#284).** Each one
+  caused up to three JWKS fetches. Now a request fetches at most once, concurrent requests share a
+  fetch, and an unknown `kid` refetches at most once per `jwks-refetch-cooldown-seconds` (new,
+  default 60, `0` = every time) per issuer; within it the token is refused from a negative cache.
 - **An OIDC token's `alg` must fit its key:** the key type, the EC curve, and the JWK's own `alg`
   when it names one (a JWK without `alg` used to count as RS256, and a token could pick any RSA
   algorithm for any RSA key). `none` and HS* are refused before any JWKS lookup.
@@ -54,6 +65,9 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 - **An explicit `username-claim` now applies under a preset**, so `auth.username` changes for
   configs that wrote `username-claim: sub` with `google`, `microsoft`, `keycloak`, `auth0` or
   `okta`.
+- **A key rotated in at the issuer is picked up within `jwks-refetch-cooldown-seconds`** (60 s by
+  default) of the previous JWKS fetch, not on the first token that names it; lower the setting if
+  your issuer starts signing with a new key the moment it publishes it.
 - **An identity provider sending group names with commas** (LDAP distinguished names) gets 401
   for those users: map groups to comma-free names, or point `groups-claim` at a claim without
   them.

@@ -802,7 +802,9 @@ flAPI, and every token signed with the old one stops working at once.
 
 flAPI validates tokens your identity provider issues. It fetches
 `<issuer-url>/.well-known/openid-configuration` on the first request, then the
-JWKS it names, and checks each token against them.
+JWKS it names, and checks each token against them. Both are fetched once per
+issuer for the whole server: REST and MCP, and every endpoint naming that
+issuer, share them, however many requests arrive at once.
 
 ```yaml
 # flapi.yaml (the top-level auth: block)
@@ -823,8 +825,11 @@ A token is accepted when:
   ES256/384/512 (EC keys on P-256/P-384/P-521), and a `kid` found in the
   JWKS whose key fits that `alg`: the right key type and curve, and the JWK's
   own `alg` when it names one. `none` and HS256 are refused. The JWKS is kept for
-  `jwks-cache-hours` (default 24); a token with an unknown `kid` refetches it,
-  up to three times per request and with no cooldown;
+  `jwks-cache-hours` (default 24). A token with an unknown `kid` refetches it
+  at most once, and at most once per `jwks-refetch-cooldown-seconds` (default
+  60) for the whole process: within the cooldown an unknown `kid` is `401`
+  without asking the issuer, so a newly rotated-in key is picked up within a
+  minute;
 - `iss` equals `issuer-url` exactly, trailing slash included;
 - `aud` holds one of `allowed-audiences`. Without `allowed-audiences`, `aud`
   must hold the `client-id` (an ID token's audience); with neither, `aud` is

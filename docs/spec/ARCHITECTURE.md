@@ -149,6 +149,8 @@ Storage and external data access:
 | **MCPToolHandler** | `src/mcp_tool_handler.cpp` | MCP tool execution |
 | **MCPSessionManager** | `src/mcp_session_manager.cpp` | MCP session state |
 | **AuthMiddleware** | `src/auth_middleware.cpp` | JWT/Basic/OIDC authentication |
+| **VerifyBearerToken** | `src/bearer_token_verifier.cpp` | The HS256 bearer check REST and MCP share |
+| **OIDCHandlerRegistry** | `src/oidc_handler_registry.cpp` | Process-wide, locked OIDC validators (one per effective config) and per-issuer discovery/JWKS, shared by REST and MCP |
 | **RateLimitMiddleware** | `src/rate_limit_middleware.cpp` | Request rate limiting |
 | **FlapiApp** | `src/include/flapi_app.hpp` | The single spelling of the Crow middleware tuple (CI-guarded) |
 
