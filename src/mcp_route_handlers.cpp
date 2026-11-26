@@ -315,9 +315,12 @@ std::string toolSuccessResultJson(const std::string& result_text, ToolPayload pa
 }
 
 ToolPayload toolPayloadOf(const std::unordered_map<std::string, std::string>& metadata) {
-    const auto sampled = metadata.find("response_sampled");
-    if (sampled != metadata.end() && sampled->second == "true") {
-        return ToolPayload::Summary;
+    // A sample summary and a dry-run preview describe the call; neither has rows.
+    for (const char* key : {"response_sampled", "dry_run"}) {
+        const auto it = metadata.find(key);
+        if (it != metadata.end() && it->second == "true") {
+            return ToolPayload::Summary;
+        }
     }
     return ToolPayload::Rows;
 }
@@ -1848,21 +1851,11 @@ MCPResponse MCPRouteHandlers::handleToolsCallRequest(const MCPRequest& request, 
                     // text block.
                     const auto dry = result.metadata.find("dry_run");
                     const bool is_dry_run = dry != result.metadata.end() && dry->second == "true";
-                    auto parsed_rows = is_dry_run ? crow::json::load(result.result) : crow::json::rvalue();
-                    if (parsed_rows && is_dry_run) {
-                        // A dry run returned no rows: `rows` stays the array the
-                        // outputSchema promises (it was the preview OBJECT), and
-                        // the preview fields sit beside it.
-                        mcp::ContentResponse content_response;
-                        content_response.addText(result.result);
-                        crow::json::wvalue structured(parsed_rows);
-                        structured["rows"] = crow::json::wvalue::list();
-                        structured["row_count"] = 0;
-                        content_response.setStructuredContent(std::move(structured));
-                        response.result = content_response.toJson().dump();
-                    } else {
-                        response.result = toolSuccessResultJson(result.result, toolPayloadOf(result.metadata));
-                    }
+                    // A dry run's structuredContent is the preview itself
+                    // (dry_run: true, rendered_sql, bindings, parameters). It
+                    // used to add rows: [] and row_count: 0, which read as
+                    // "the query matched nothing" when it never ran.
+                    response.result = toolSuccessResultJson(result.result, toolPayloadOf(result.metadata));
                     // Learn this tool's outputSchema from the real result columns
                     // so a subsequent tools/list can advertise it - never from a
                     // dry-run preview, whose shape is not the tool's.
