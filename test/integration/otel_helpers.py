@@ -10,6 +10,7 @@ fixed config, so every tracing test spawns its own server.
 """
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -223,16 +224,18 @@ class TracedServer:
         pytest.fail(f"server never became live:\n{self.log()}")
 
     def stop(self) -> None:
-        if self.proc is None:
-            return
-        try:
-            os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
-            self.proc.wait(timeout=10)
-        except Exception:
+        """Stop the server and remove its scratch dir (config, log, traces)."""
+        if self.proc is not None:
             try:
-                os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
+                os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
+                self.proc.wait(timeout=10)
             except Exception:
-                pass
+                try:
+                    os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
+                    self.proc.wait(timeout=10)
+                except Exception:
+                    pass
+        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def log(self) -> str:
         try:
