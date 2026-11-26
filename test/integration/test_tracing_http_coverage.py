@@ -182,3 +182,29 @@ class TestNoLeak:
         blob = server.raw_traces()
         for where, value in sentinels.items():
             assert value not in blob, f"{where} value leaked into an exported span"
+
+
+class TestHasQuery:
+    # #279: flapi.url.has_query was computed from Crow's `url`, which never
+    # carries the query string, so it was false on every span.
+    def test_a_query_string_sets_has_query(self, server):
+        r = requests.get(f"{server.base_url}/open?x=1", timeout=10)
+        assert r.status_code == 200
+        server.wait_for_server_span()
+        span = find_span(server.spans(), attrs={"http.route": "/open"})
+        assert span is not None
+        assert span.attributes.get("flapi.url.has_query") is True, span.attributes
+
+    def test_no_query_string_leaves_has_query_false(self, server):
+        r = requests.get(f"{server.base_url}/open", timeout=10)
+        assert r.status_code == 200
+        server.wait_for_server_span()
+        span = find_span(server.spans(), attrs={"http.route": "/open"})
+        assert span is not None
+        assert span.attributes.get("flapi.url.has_query") is False, span.attributes
+
+    def test_the_query_string_value_still_never_reaches_a_span(self, server):
+        marker = "Q" + uuid.uuid4().hex
+        requests.get(f"{server.base_url}/open?f={marker}", timeout=10)
+        server.wait_for_server_span()
+        assert marker not in server.raw_traces()

@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "request_context.hpp"
+#include "request_context_middleware.hpp"
 
 using namespace flapi;
 
@@ -142,4 +143,18 @@ TEST_CASE("a default RequestContext does not allocate", "[request_context][perf]
     RequestContext rc;
     RequestContext::mintRequestId(rc.request_id);
     REQUIRE(rc.requestIdView().size() == 20);
+}
+
+TEST_CASE("has_query comes from the raw url, not Crow's path-only url", "[request_context]") {
+    // #279: Crow's request.url never carries the query string (raw_url does),
+    // so a check on url alone reported has_query=false on every span.
+    crow::request with_query;
+    with_query.raw_url = "/open?x=1";
+    with_query.url = "/open";
+    REQUIRE(RequestContextMiddleware::hasQueryString(with_query));
+
+    crow::request without_query;
+    without_query.raw_url = "/open";
+    without_query.url = "/open";
+    REQUIRE_FALSE(RequestContextMiddleware::hasQueryString(without_query));
 }
