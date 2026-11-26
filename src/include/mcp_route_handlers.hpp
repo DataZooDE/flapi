@@ -47,6 +47,17 @@ enum class ToolPayload { Rows, Summary };
 /// re-prints doubles).
 std::string toolSuccessResultJson(const std::string& result_text, ToolPayload payload = ToolPayload::Rows);
 
+/// The WWW-Authenticate value of a refused MCP request under `mcp.auth.type`
+/// `auth_type`. `resource_metadata_url` is named (oidc only) when non-empty.
+///  - basic: `Basic realm="flAPI"` on 401 (AuthMiddleware::challengeFor, as
+///    REST answers); EMPTY on 403 (insufficient_scope), so no header is sent:
+///    `error="insufficient_scope"` is an RFC 6750 Bearer term and Basic has
+///    no scopes.
+///  - bearer / oidc (and anything else): `Bearer[ resource_metadata="..."]`,
+///    plus `error="insufficient_scope"` on 403.
+std::string mcpWwwAuthenticate(const std::string& auth_type, const std::string& resource_metadata_url,
+                               bool insufficient_scope);
+
 /// The payload kind a tool handler's result metadata says it produced.
 ToolPayload toolPayloadOf(const std::unordered_map<std::string, std::string>& metadata);
 

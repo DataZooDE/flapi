@@ -1,4 +1,5 @@
 #include "mcp_route_handlers.hpp"
+#include "auth_middleware.hpp"
 #include "template_secrets.hpp"
 #include "request_context.hpp"
 #include "trace_context.hpp"
@@ -248,19 +249,36 @@ std::string MCPRouteHandlers::buildResourceMetadataUrl(const crow::request& http
     return origin + "/.well-known/oauth-protected-resource";
 }
 
-std::string MCPRouteHandlers::buildWwwAuthenticate(const crow::request& http_req, bool insufficient_scope) const {
+std::string mcpWwwAuthenticate(const std::string& auth_type, const std::string& resource_metadata_url,
+                               bool insufficient_scope) {
+    if (auth_type == "basic") {
+        // The scheme the server accepts. It always said Bearer, so a client
+        // configured for Basic was told to send a token it cannot have.
+        if (insufficient_scope) {
+            return "";
+        }
+        return AuthMiddleware::challengeFor("basic", /*credentials_sent=*/false);
+    }
     std::string value = "Bearer";
-    const auto& auth = config_manager_->getMCPConfig().auth;
-    // Point clients at the metadata document only when there is an OAuth/OIDC
-    // authorization server to discover.
-    if (auth.type == "oidc" && auth.oidc.has_value()) {
-        value += " resource_metadata=\"" + buildResourceMetadataUrl(http_req) + "\"";
+    if (!resource_metadata_url.empty()) {
+        value += " resource_metadata=\"" + resource_metadata_url + "\"";
     }
     if (insufficient_scope) {
         value += (value == "Bearer" ? " " : ", ");
         value += "error=\"insufficient_scope\"";
     }
     return value;
+}
+
+std::string MCPRouteHandlers::buildWwwAuthenticate(const crow::request& http_req, bool insufficient_scope) const {
+    const auto& auth = config_manager_->getMCPConfig().auth;
+    // Point clients at the metadata document only when there is an OAuth/OIDC
+    // authorization server to discover.
+    std::string metadata_url;
+    if (auth.type == "oidc" && auth.oidc.has_value()) {
+        metadata_url = buildResourceMetadataUrl(http_req);
+    }
+    return mcpWwwAuthenticate(auth.type, metadata_url, insufficient_scope);
 }
 
 namespace {
