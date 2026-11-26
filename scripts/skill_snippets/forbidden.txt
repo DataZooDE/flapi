@@ -20,6 +20,6 @@ Swagger 2.0	/doc.yaml is an OpenAPI 3.0 document
 re:(?<![\w-])port: 8081	MCP has no port of its own; it is served on the HTTP port at /mcp/jsonrpc
 pip install flapii	there is no flapii PyPI package; pip install flapi-io installs both commands
 result_set_bytes	removed; the response size is http.response.body.size on the request span
-flapi.result.bytes	never set; the response size is http.response.body.size on the request span
+flapi.result.bytes	removed (it was never set); the response size is http.response.body.size on the request span
 "returned_data"	the write response carries RETURNING rows under data (returns-data: true)
 docs.datazoo.dev	that host does not exist; link the docs on GitHub

@@ -63,7 +63,7 @@ inline constexpr auto kExecuteTool   = "execute_tool";
 namespace dbprof {
 constexpr const char* kLatencyMs        = "flapi.db.latency_ms";
 constexpr const char* kBlockedMs        = "flapi.db.blocked_thread_time_ms";
-constexpr const char* kResultBytes      = "flapi.db.result_set_bytes";
+// flapi.db.result_set_bytes is gone: DuckDB 2.0 has no result-size metric.
 constexpr const char* kBytesRead        = "flapi.db.bytes_read";
 constexpr const char* kCpuTimeMs        = "flapi.db.cpu_time_ms";        // detailed only
 constexpr const char* kRowsScanned      = "flapi.db.rows_scanned";       // detailed only
@@ -92,7 +92,6 @@ inline constexpr auto kTemplateBytes   = "flapi.template.bytes";
 inline constexpr auto kParamsCount     = "flapi.params.count";
 inline constexpr auto kPreparedCount   = "flapi.params.prepared_count";
 inline constexpr auto kInterpolatedCount = "flapi.params.interpolated_count";
-inline constexpr auto kResultBytes     = "flapi.result.bytes";
 inline constexpr auto kSerializeFormat = "flapi.serialize.format";
 // Deliberately "backed", not "hit": TELEMETRY.md already documents that flAPI
 // has no per-request cache hit/miss signal, and a span must not imply one.

@@ -404,7 +404,8 @@ struct ProfMetric {
 constexpr std::array<ProfMetric, 5> kProfMetrics{{
     // DuckDB 2.0 names metrics `<group>.<metric>` and enables them with the tracked_metrics
     // glob list (custom_profiling_settings and the UPPERCASE names are gone). 1.x's
-    // RESULT_SET_SIZE has no 2.0 counterpart; flapi.result.bytes carries the response size.
+    // RESULT_SET_SIZE has no 2.0 counterpart; the request span's
+    // http.response.body.size carries the response size.
     // Summary: query-level only.
     {"query.total_time",          flapi::semconv::dbprof::kLatencyMs,       true,  false},
     {"system.blocked_thread_time", flapi::semconv::dbprof::kBlockedMs,      true,  false},
