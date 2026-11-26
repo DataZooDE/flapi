@@ -698,6 +698,9 @@ Make your CI stop instead:
 flapi -c flapi.yaml --validate-config 2>&1 | grep MCP_UNAUTHENTICATED_TOOLS && exit 1
 ```
 
+Or fail on every security warning: `flapi -c flapi.yaml --validate-config --strict` exits
+`1` when there is any, and `flapi --strict` refuses to start the server.
+
 Two more warnings are about MCP:
 
 - `MCP_TOOL_NO_ALLOWED_ROLES`: `mcp.auth` is on and a tool, resource or prompt has no

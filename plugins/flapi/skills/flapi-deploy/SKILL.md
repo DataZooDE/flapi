@@ -364,7 +364,8 @@ and audit logs are covered in `flapi-operate`.
 ## Canonical deploy workflow
 
 1. `flapi -c flapi.yaml --validate-config` must show no errors, and every warning must be
-   understood.
+   understood. `--validate-config --strict` exits 1 on any security warning; start production
+   with `--strict` to refuse a config that has one.
 2. Check for secrets: no literal credentials in YAML or SQL, and every `{{env.X}}` is
    whitelisted. `.env`, `*.pem` and `*.key` stay out of the tree that is shipped.
 3. Expose the server deliberately. Put a global `auth:` in `flapi.yaml` (or one per

@@ -17,6 +17,7 @@ This document provides a complete reference for the `flapi` server executable's 
    - [Bind Host](#bind-host---host)
    - [Log Level](#log-level---log-level)
    - [Validate Configuration](#validate-configuration---validate-config)
+   - [Strict Security](#strict-security---strict)
    - [Configuration Service](#configuration-service---config-service)
    - [Configuration Service Token](#configuration-service-token---config-service-token)
    - [Cache Warm-up](#cache-warm-up---cache-warmup---no-cache-warmup)
@@ -331,6 +332,44 @@ Exit code: 0
 ```
 
 > **Implementation:** `src/config_manager.cpp` | **Tests:** `test/cpp/config_manager_yaml_validation_test.cpp`
+
+---
+
+### Strict Security (`--strict`)
+
+Treats the security auditor's warnings as errors.
+
+| Property | Value |
+|----------|-------|
+| Long form | `--strict` |
+| Type | boolean flag |
+| Default | `false` |
+| Required | No |
+
+**Description:**
+
+Every run prints the auditor's `SECURITY WARNINGS` banner (plaintext passwords,
+`MCP_UNAUTHENTICATED_TOOLS`, `MCP_TOOL_NO_ALLOWED_ROLES`, `MCP_TOOL_BYPASSES_REST_AUTH`,
+`CORS_WILDCARD_WITH_AUTH`, ...). Without `--strict` they never stop anything. With it:
+
+- `--validate-config --strict` still prints the full validation, then exits `1` if there was any
+  security warning: `✗ --strict: 2 security warning(s) (AUTH_PLAINTEXT_PASSWORD, MCP_TOOL_NO_ALLOWED_ROLES). Fix them, or run without --strict.`
+- `flapi --strict` refuses to start the server (exit `1`, before the port is bound) with
+  `✗ Refusing to start. --strict: ...`.
+
+A config with no warning behaves exactly as without the flag.
+
+**Example:**
+
+```bash
+# CI: fail the build on any security warning
+./flapi -c flapi.yaml --validate-config --strict
+
+# Production: never start with a known security gap
+./flapi -c flapi.yaml --strict
+```
+
+> **Implementation:** `src/main.cpp`, `src/security_auditor.cpp` (`SecurityAuditor::strictRefusal`) | **Tests:** `test/integration/test_security_warnings.py` (`TestStrictFlag`), `test/cpp/security_auditor_test.cpp`
 
 ---
 
@@ -938,7 +977,7 @@ On receiving a shutdown signal, the server:
 | Code | Description |
 |------|-------------|
 | `0` | Success (normal exit or validation passed) |
-| `1` | General error (configuration error, startup failure, validation failed) |
+| `1` | General error (configuration error, startup failure, validation failed, a security warning under `--strict`) |
 
 **Validation Exit Codes:**
 

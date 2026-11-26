@@ -32,6 +32,12 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   `ENDPOINT_AUTH_KEY_IGNORED`: an endpoint file has an unread `auth*` key (`authentication:`)
   and no `auth:` block.
 
+### Added
+
+- **`flapi --strict` (#275).** Security warnings become errors: `--validate-config --strict`
+  exits `1` when the auditor reports any, and `flapi --strict` refuses to start. Without the
+  flag nothing changes.
+
 ### Upgrade notes
 
 - **A failing async tool's task is `failed`, not `completed`.** A client that read the
@@ -40,6 +46,10 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
   `columns` from `structuredContent` itself, not from `structuredContent.rows`.
 - **A dry run's `structuredContent` has no `rows` or `row_count`.** Tell a preview from a
   real result by `structuredContent.dry_run`, not by an empty `rows`.
+- **`--strict` is opt-in.** Run `flapi --validate-config --strict` first: the three new
+  warnings (`MCP_TOOL_NO_ALLOWED_ROLES`, `MCP_TOOL_BYPASSES_REST_AUTH`,
+  `ENDPOINT_AUTH_KEY_IGNORED`) may appear on a config that printed none before, and with
+  `--strict` each one stops the start.
 
 ## v26.11.26 — auth.* identity values stay inside their SQL literal, OIDC works again, and a task guide for every feature
 

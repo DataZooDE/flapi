@@ -458,7 +458,8 @@ top-level `https:` block is ignored with a warning.
 ## Startup security warnings
 
 Printed to stderr as `SECURITY WARNINGS (n)` on every start and on
-`--validate-config`; they never stop startup. (An unknown `auth.type` is not a warning but a
+`--validate-config`; they stop nothing unless `--strict` is passed (then
+`--validate-config` exits 1 and the server refuses to start). (An unknown `auth.type` is not a warning but a
 load error, `AUTH_UNKNOWN_TYPE`, see above.)
 
 | Code | Meaning |
