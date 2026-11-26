@@ -3,6 +3,8 @@
 #include <crow/logging.h>
 #include <openssl/err.h>
 #include <openssl/bn.h>
+#include <openssl/ec.h>
+#include <openssl/obj_mac.h>
 #include <sstream>
 #include <algorithm>
 
@@ -150,36 +152,50 @@ std::optional<std::vector<JWKSKey>> OIDCJWKSManager::parseJWKSResponse(
 
         std::vector<JWKSKey> keys;
 
+        // A string member of the JWK, or "" when absent or not a string.
+        const auto text = [](const crow::json::rvalue& jwk, const char* name) -> std::string {
+            if (!jwk.has(name) || jwk[name].t() != crow::json::type::String) {
+                return {};
+            }
+            return jwk[name].s();
+        };
+
         for (const auto& jwk : keys_array) {
-            if (!jwk.has("kid")) {
+            if (jwk.t() != crow::json::type::Object) {
+                continue;
+            }
+            JWKSKey key;
+            key.kid = text(jwk, "kid");
+            if (key.kid.empty()) {
                 CROW_LOG_DEBUG << "Skipping JWK without 'kid' field";
                 continue;
             }
+            key.kty = text(jwk, "kty");
+            key.use = text(jwk, "use");
+            // No default: a JWK without `alg` may verify any algorithm its key
+            // type allows; one with `alg` only that one (verifySignature).
+            key.alg = text(jwk, "alg");
 
-            JWKSKey key;
-            key.kid = jwk["kid"].s();
-            key.kty = jwk.has("kty") ? std::string(jwk["kty"].s()) : "RSA";
-
-            // Only process RSA keys for signature verification
-            if (key.kty != "RSA") {
-                CROW_LOG_DEBUG << "Skipping non-RSA key: " << key.kid;
+            if (!key.use.empty() && key.use != "sig") {
+                CROW_LOG_DEBUG << "Skipping JWK not meant for signatures: " << key.kid;
                 continue;
             }
 
-            key.use = jwk.has("use") ? std::string(jwk["use"].s()) : "sig";
-            key.alg = jwk.has("alg") ? std::string(jwk["alg"].s()) : "RS256";
-
-            // Extract RSA modulus and exponent
-            if (!jwk.has("n") || !jwk.has("e")) {
-                CROW_LOG_WARNING << "RSA key missing 'n' or 'e' field: " << key.kid;
+            if (key.kty == "RSA") {
+                key.n = text(jwk, "n");
+                key.e = text(jwk, "e");
+                if (key.n.empty() || key.e.empty()) {
+                    CROW_LOG_WARNING << "RSA key missing 'n' or 'e' field: " << key.kid;
+                    continue;
+                }
+                key.evp_key = jwkToEVPKey(jwk);
+            } else if (key.kty == "EC") {
+                key.crv = text(jwk, "crv");
+                key.evp_key = ecJwkToEVPKey(key.crv, text(jwk, "x"), text(jwk, "y"));
+            } else {
+                CROW_LOG_DEBUG << "Skipping JWK of unsupported type '" << key.kty << "': " << key.kid;
                 continue;
             }
-
-            key.n = jwk["n"].s();
-            key.e = jwk["e"].s();
-
-            // Convert JWK to EVP_PKEY for OpenSSL verification
-            key.evp_key = jwkToEVPKey(jwk);
             if (!key.evp_key) {
                 CROW_LOG_WARNING << "Failed to convert JWK to EVP_PKEY: " << key.kid;
                 continue;
@@ -275,6 +291,54 @@ EVP_PKEY* OIDCJWKSManager::jwkToEVPKey(const crow::json::rvalue& jwk) {
         CROW_LOG_WARNING << "Exception converting JWK to EVP_PKEY: " << e.what();
         return nullptr;
     }
+}
+
+EVP_PKEY* OIDCJWKSManager::ecJwkToEVPKey(const std::string& crv, const std::string& x_b64url,
+                                        const std::string& y_b64url) {
+    int nid = NID_undef;
+    std::size_t size = 0;
+    if (crv == "P-256") {
+        nid = NID_X9_62_prime256v1;
+        size = 32;
+    } else if (crv == "P-384") {
+        nid = NID_secp384r1;
+        size = 48;
+    } else if (crv == "P-521") {
+        nid = NID_secp521r1;
+        size = 66;
+    } else {
+        CROW_LOG_WARNING << "EC JWK with unsupported curve '" << crv << "'";
+        return nullptr;
+    }
+    const std::string x = base64urlDecode(x_b64url);
+    const std::string y = base64urlDecode(y_b64url);
+    if (x.size() != size || y.size() != size) {
+        CROW_LOG_WARNING << "EC JWK coordinates do not have the size of curve " << crv;
+        return nullptr;
+    }
+
+    EC_KEY* ec_key = EC_KEY_new_by_curve_name(nid);
+    BIGNUM* bn_x = BN_bin2bn(reinterpret_cast<const unsigned char*>(x.data()), static_cast<int>(x.size()), nullptr);
+    BIGNUM* bn_y = BN_bin2bn(reinterpret_cast<const unsigned char*>(y.data()), static_cast<int>(y.size()), nullptr);
+    EVP_PKEY* pkey = nullptr;
+    // set_public_key_affine_coordinates refuses a point that is not on the
+    // curve (an invalid-curve attack needs one).
+    if (ec_key && bn_x && bn_y && EC_KEY_set_public_key_affine_coordinates(ec_key, bn_x, bn_y) == 1 &&
+        EC_KEY_check_key(ec_key) == 1) {
+        pkey = EVP_PKEY_new();
+        if (pkey && EVP_PKEY_assign_EC_KEY(pkey, ec_key) == 1) {
+            ec_key = nullptr;   // owned by pkey now
+        } else if (pkey) {
+            EVP_PKEY_free(pkey);
+            pkey = nullptr;
+        }
+    }
+    BN_free(bn_x);
+    BN_free(bn_y);
+    if (ec_key) {
+        EC_KEY_free(ec_key);
+    }
+    return pkey;
 }
 
 std::string OIDCJWKSManager::base64urlDecode(const std::string& input) {

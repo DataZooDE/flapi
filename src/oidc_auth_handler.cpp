@@ -2,10 +2,32 @@
 #include "include/http_client.hpp"
 #include <crow/logging.h>
 #include <openssl/evp.h>
+#include <openssl/ec.h>
+#include <openssl/err.h>
+#include <openssl/rsa.h>
 #include <sstream>
 #include <ctime>
 
 namespace flapi {
+
+const JwsAlgorithm* FindJwsAlgorithm(const std::string& name) {
+    // RS* and PS* need an RSA key, ES* an EC key on its curve. `none` and
+    // HS* are not here: an OIDC token is signed by the issuer's private key,
+    // and HS* with a public key as the "secret" is the classic forgery.
+    static const JwsAlgorithm kAlgorithms[] = {
+        {"RS256", EVP_sha256, false, nullptr, 0}, {"RS384", EVP_sha384, false, nullptr, 0},
+        {"RS512", EVP_sha512, false, nullptr, 0}, {"PS256", EVP_sha256, true, nullptr, 0},
+        {"PS384", EVP_sha384, true, nullptr, 0},  {"PS512", EVP_sha512, true, nullptr, 0},
+        {"ES256", EVP_sha256, false, "P-256", 32}, {"ES384", EVP_sha384, false, "P-384", 48},
+        {"ES512", EVP_sha512, false, "P-521", 66},
+    };
+    for (const auto& alg : kAlgorithms) {
+        if (name == alg.name) {
+            return &alg;
+        }
+    }
+    return nullptr;
+}
 
 OIDCAuthHandler::OIDCAuthHandler(const Config& config)
     : config_(config) {
@@ -51,6 +73,20 @@ std::optional<OIDCTokenClaims> OIDCAuthHandler::validateToken(const std::string&
         return std::nullopt;
     }
 
+    // The algorithm, before any key is looked up: `none`, HS256 or anything
+    // else flAPI cannot verify is refused without touching the JWKS.
+    std::string alg;
+    if (header.has("alg") && header["alg"].t() == crow::json::type::String) {
+        alg = header["alg"].s();
+    } else {
+        logError("JWT header missing 'alg' field");
+        return std::nullopt;
+    }
+    if (FindJwsAlgorithm(alg) == nullptr) {
+        logError("Unsupported signature algorithm: " + alg);
+        return std::nullopt;
+    }
+
     // Get provider metadata if not cached
     if (!cached_metadata_) {
         cached_metadata_ = getProviderMetadata();
@@ -72,15 +108,6 @@ std::optional<OIDCTokenClaims> OIDCAuthHandler::validateToken(const std::string&
     const JWKSKey* key = jwks_manager_->getKey(kid, cached_metadata_->jwks_uri);
     if (!key) {
         logError("Key not found in JWKS: " + kid);
-        return std::nullopt;
-    }
-
-    // Get algorithm from header
-    std::string alg;
-    if (header.has("alg") && header["alg"].t() == crow::json::type::String) {
-        alg = header["alg"].s();
-    } else {
-        logError("JWT header missing 'alg' field");
         return std::nullopt;
     }
 
@@ -396,84 +423,90 @@ bool OIDCAuthHandler::verifySignature(
         logError("Invalid key for signature verification");
         return false;
     }
-
-    try {
-        // Determine hash function based on algorithm
-        const EVP_MD* md = nullptr;
-        if (algorithm == "RS256") {
-            md = EVP_sha256();
-        } else if (algorithm == "RS384") {
-            md = EVP_sha384();
-        } else if (algorithm == "RS512") {
-            md = EVP_sha512();
-        } else {
-            logError("Unsupported signature algorithm: " + algorithm);
-            return false;
-        }
-
-        if (!md) {
-            logError("Failed to get message digest for: " + algorithm);
-            return false;
-        }
-
-        // Split token into parts
-        size_t first_dot = token_to_verify.find('.');
-        size_t second_dot = token_to_verify.find('.', first_dot + 1);
-
-        if (first_dot == std::string::npos || second_dot == std::string::npos) {
-            logError("Invalid token format for signature verification");
-            return false;
-        }
-
-        std::string header_payload = token_to_verify.substr(0, second_dot);
-        std::string signature_b64 = token_to_verify.substr(second_dot + 1);
-
-        // Decode signature
-        std::string signature = crow::utility::base64decode(signature_b64);
-
-        // Create EVP context
-        EVP_MD_CTX* mdctx = EVP_MD_CTX_new();
-        if (!mdctx) {
-            logError("Failed to create EVP_MD_CTX");
-            return false;
-        }
-
-        // Verify signature
-        int result = EVP_VerifyInit_ex(mdctx, md, nullptr);
-        if (result != 1) {
-            EVP_MD_CTX_free(mdctx);
-            logError("EVP_VerifyInit failed");
-            return false;
-        }
-
-        result = EVP_VerifyUpdate(mdctx, header_payload.data(), header_payload.size());
-        if (result != 1) {
-            EVP_MD_CTX_free(mdctx);
-            logError("EVP_VerifyUpdate failed");
-            return false;
-        }
-
-        result = EVP_VerifyFinal(
-            mdctx,
-            reinterpret_cast<const unsigned char*>(signature.data()),
-            signature.size(),
-            key->evp_key
-        );
-
-        EVP_MD_CTX_free(mdctx);
-
-        if (result != 1) {
-            logError("EVP_VerifyFinal failed - signature verification error");
-            return false;
-        }
-
-        CROW_LOG_DEBUG << "Signature verification successful with algorithm: " << algorithm;
-        return true;
-
-    } catch (const std::exception& e) {
-        logError("Exception during signature verification: " + std::string(e.what()));
+    const JwsAlgorithm* alg = FindJwsAlgorithm(algorithm);
+    if (alg == nullptr) {
+        logError("Unsupported signature algorithm: " + algorithm);
         return false;
     }
+    // The key decides which algorithm may use it, not the token: a JWK that
+    // names an `alg` verifies that one only, and every key only algorithms
+    // of its own type (and, for EC, its own curve).
+    if (!key->alg.empty() && key->alg != algorithm) {
+        logError("Token alg " + algorithm + " does not match the key's alg " + key->alg + " (kid " + key->kid + ")");
+        return false;
+    }
+    const int key_type = EVP_PKEY_base_id(key->evp_key);
+    if (alg->ec_curve == nullptr ? key_type != EVP_PKEY_RSA
+                                 : (key_type != EVP_PKEY_EC || key->crv != alg->ec_curve)) {
+        logError("Token alg " + algorithm + " cannot be verified with key " + key->kid + " (" + key->kty +
+                 (key->crv.empty() ? "" : " " + key->crv) + ")");
+        return false;
+    }
+
+    const size_t second_dot = token_to_verify.rfind('.');
+    if (second_dot == std::string::npos || second_dot == 0) {
+        logError("Invalid token format for signature verification");
+        return false;
+    }
+    const std::string header_payload = token_to_verify.substr(0, second_dot);
+    std::string signature = crow::utility::base64decode(token_to_verify.substr(second_dot + 1));
+
+    if (alg->ec_curve != nullptr) {
+        // JWS carries an ECDSA signature as r || s, each the curve size;
+        // OpenSSL verifies DER. A wrong length is refused, not padded.
+        if (signature.size() != 2 * alg->ec_size) {
+            logError("ECDSA signature has the wrong length for " + algorithm);
+            return false;
+        }
+        ECDSA_SIG* sig = ECDSA_SIG_new();
+        BIGNUM* r = BN_bin2bn(reinterpret_cast<const unsigned char*>(signature.data()),
+                              static_cast<int>(alg->ec_size), nullptr);
+        BIGNUM* s = BN_bin2bn(reinterpret_cast<const unsigned char*>(signature.data()) + alg->ec_size,
+                              static_cast<int>(alg->ec_size), nullptr);
+        if (!sig || !r || !s || ECDSA_SIG_set0(sig, r, s) != 1) {
+            BN_free(r);
+            BN_free(s);
+            ECDSA_SIG_free(sig);
+            logError("Failed to build the ECDSA signature");
+            return false;
+        }
+        unsigned char* der = nullptr;
+        const int der_len = i2d_ECDSA_SIG(sig, &der);
+        ECDSA_SIG_free(sig);   // frees r and s
+        if (der_len <= 0) {
+            logError("Failed to encode the ECDSA signature");
+            return false;
+        }
+        signature.assign(reinterpret_cast<const char*>(der), static_cast<size_t>(der_len));
+        OPENSSL_free(der);
+    }
+
+    EVP_MD_CTX* mdctx = EVP_MD_CTX_new();
+    if (!mdctx) {
+        logError("Failed to create EVP_MD_CTX");
+        return false;
+    }
+    EVP_PKEY_CTX* pctx = nullptr;
+    bool ok = EVP_DigestVerifyInit(mdctx, &pctx, alg->md(), nullptr, key->evp_key) == 1;
+    if (ok && alg->pss) {
+        // RFC 7518 3.5: MGF1 with the same hash, salt as long as the hash.
+        ok = EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_PKCS1_PSS_PADDING) == 1 &&
+             EVP_PKEY_CTX_set_rsa_pss_saltlen(pctx, RSA_PSS_SALTLEN_DIGEST) == 1 &&
+             EVP_PKEY_CTX_set_rsa_mgf1_md(pctx, alg->md()) == 1;
+    } else if (ok && alg->ec_curve == nullptr) {
+        ok = EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_PKCS1_PADDING) == 1;
+    }
+    ok = ok && EVP_DigestVerify(mdctx, reinterpret_cast<const unsigned char*>(signature.data()), signature.size(),
+                                reinterpret_cast<const unsigned char*>(header_payload.data()),
+                                header_payload.size()) == 1;
+    EVP_MD_CTX_free(mdctx);
+    ERR_clear_error();
+    if (!ok) {
+        logError("Signature verification failed (" + algorithm + ", kid " + key->kid + ")");
+        return false;
+    }
+    CROW_LOG_DEBUG << "Signature verification successful with algorithm: " << algorithm;
+    return true;
 }
 
 void OIDCAuthHandler::logError(const std::string& error) const {

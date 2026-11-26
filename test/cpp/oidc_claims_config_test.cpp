@@ -11,6 +11,7 @@
 
 #include "config_manager.hpp"
 #include "mustache_syntax_check.hpp"
+#include "oidc_auth_handler.hpp"
 #include "oidc_provider_presets.hpp"
 #include "sql_template_processor.hpp"
 #include "test_utils.hpp"
@@ -189,6 +190,25 @@ TEST_CASE("auth.groups renders quote-doubled, and only in a plain literal", "[oi
         REQUIRE(CheckAuthPlacement("SELECT * FROM t WHERE o = E{{! c }}'{{{ auth.groups }}}'", "t.sql").has_value());
         REQUIRE_FALSE(FindUnquotedAuthVariables("{{#auth}}WHERE g = {{groups}}{{/auth}}").empty());
         REQUIRE_FALSE(CheckAuthPlacement("SELECT * FROM t WHERE g = '{{{ auth.groups }}}'", "t.sql").has_value());
+    }
+}
+
+TEST_CASE("OIDC accepts RS*, PS* and ES* and nothing else", "[oidc][oidc_algorithms]") {
+    for (const std::string name : {"RS256", "RS384", "RS512", "PS256", "PS384", "PS512"}) {
+        DYNAMIC_SECTION(name) {
+            const auto* alg = FindJwsAlgorithm(name);
+            REQUIRE(alg != nullptr);
+            REQUIRE(alg->ec_curve == nullptr);
+            REQUIRE(alg->pss == (name[0] == 'P'));
+        }
+    }
+    REQUIRE(std::string(FindJwsAlgorithm("ES256")->ec_curve) == "P-256");
+    REQUIRE(FindJwsAlgorithm("ES384")->ec_size == 48);
+    REQUIRE(FindJwsAlgorithm("ES512")->ec_size == 66);
+    for (const std::string refused : {"none", "None", "HS256", "HS384", "HS512", "EdDSA", "ES256K", "rs256", ""}) {
+        DYNAMIC_SECTION("refused: " << refused) {
+            REQUIRE(FindJwsAlgorithm(refused) == nullptr);
+        }
     }
 }
 

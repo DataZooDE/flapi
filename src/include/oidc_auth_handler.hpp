@@ -70,6 +70,21 @@ private:
     crow::json::rvalue payload_;
 };
 
+/// A JWS algorithm flAPI verifies OIDC tokens with: RS256/384/512
+/// (RSASSA-PKCS1-v1_5), PS256/384/512 (RSASSA-PSS) and ES256/384/512
+/// (ECDSA on P-256/P-384/P-521).
+struct JwsAlgorithm {
+    const char* name;
+    const EVP_MD* (*md)();
+    bool pss;                 // RSA-PSS padding (else PKCS#1 v1.5 for RSA)
+    const char* ec_curve;     // JWK `crv` for ES*, nullptr for RSA algorithms
+    std::size_t ec_size;      // bytes of r and of s for ES*
+};
+
+/// The algorithm named `name`, or nullptr when flAPI does not accept it
+/// (`none`, HS*, anything unknown).
+const JwsAlgorithm* FindJwsAlgorithm(const std::string& name);
+
 /**
  * OIDCAuthHandler validates OIDC/OAuth 2.0 tokens
  * Supports RSA signature verification and claims validation

@@ -19,9 +19,10 @@ namespace flapi {
  */
 struct JWKSKey {
     std::string kid;              // Key ID
-    std::string kty;              // Key type (RSA)
+    std::string kty;              // Key type: RSA or EC
     std::string use;              // Use (sig for signature)
-    std::string alg;              // Algorithm (RS256, RS384, RS512)
+    std::string alg;              // The JWK's `alg`, or empty when it names none
+    std::string crv;              // EC curve: P-256, P-384 or P-521 (empty for RSA)
     std::string n;                // Modulus (base64url encoded)
     std::string e;                // Exponent (base64url encoded)
     EVP_PKEY* evp_key = nullptr;  // OpenSSL EVP_PKEY for verification
@@ -42,7 +43,7 @@ struct JWKSKey {
     JWKSKey(JWKSKey&& other) noexcept
         : kid(std::move(other.kid)), kty(std::move(other.kty)),
           use(std::move(other.use)), alg(std::move(other.alg)),
-          n(std::move(other.n)), e(std::move(other.e)),
+          crv(std::move(other.crv)), n(std::move(other.n)), e(std::move(other.e)),
           evp_key(other.evp_key) {
         other.evp_key = nullptr;
     }
@@ -56,6 +57,7 @@ struct JWKSKey {
             kty = std::move(other.kty);
             use = std::move(other.use);
             alg = std::move(other.alg);
+            crv = std::move(other.crv);
             n = std::move(other.n);
             e = std::move(other.e);
             evp_key = other.evp_key;
@@ -129,9 +131,15 @@ private:
     std::optional<std::vector<JWKSKey>> parseJWKSResponse(const std::string& json_content);
 
     /**
-     * Convert JWK to EVP_PKEY for OpenSSL verification
+     * Convert an RSA JWK (n, e) to EVP_PKEY for OpenSSL verification
      */
     EVP_PKEY* jwkToEVPKey(const crow::json::rvalue& jwk);
+
+    /**
+     * Convert an EC JWK (crv, x, y) to EVP_PKEY; nullptr unless the point is
+     * on the named curve.
+     */
+    EVP_PKEY* ecJwkToEVPKey(const std::string& crv, const std::string& x_b64url, const std::string& y_b64url);
 
     /**
      * Base64URL decode helper
