@@ -118,13 +118,107 @@ TEST_CASE("PreparedTemplateRewriter: triple-brace sites that are not plain value
         "SELECT * FROM t AT (VERSION => {{{ params.x }}})",  // DuckLake resolves AT before binding
         "SELECT * FROM t AT (TIMESTAMP => CAST('{{{ params.x }}}' AS TIMESTAMP))",
         "SELECT * FROM t {{#params.x}}WHERE n = '{{{ params.x }}}'{{/params.x}}",   // inside a section
-        "SELECT '{{ params.x }} and {{{ params.x }}}'",      // mixed tags: left to the ordinary route
     };
     for (const auto& text : kept) {
         INFO(text);
         auto r = rewriter.rewrite(text, fields, classifier);
         REQUIRE(r.rewritten_template.find("{{{ params.") != std::string::npos);
     }
+}
+
+TEST_CASE("PreparedTemplateRewriter: a quoted double-brace site binds as a whole literal (#277)",
+          "[security][prepared][rewriter]") {
+    PreparedTemplateRewriter rewriter;
+    SqlParameterClassifier classifier;
+    auto r = rewriter.rewrite("SELECT * FROM t WHERE n = '{{ params.name }}'",
+                              {typedField("name", "string")}, classifier);
+    REQUIRE(r.rewritten_template == "SELECT * FROM t WHERE n = ?");
+    REQUIRE(r.bindings.size() == 1);
+    REQUIRE(r.bindings[0].field_name == "name");
+    REQUIRE(r.bindings[0].type == SqlParameterType::Varchar);
+    REQUIRE(r.bindings[0].absent_as_empty);
+}
+
+TEST_CASE("PreparedTemplateRewriter: a double-brace LIKE pattern becomes a concatenation (#277)",
+          "[security][prepared][rewriter]") {
+    PreparedTemplateRewriter rewriter;
+    SqlParameterClassifier classifier;
+    auto r = rewriter.rewrite("WHERE a LIKE '%{{ params.x }}%' AND b LIKE '{{params.x}}_' AND c = 1",
+                              {typedField("x", "string")}, classifier);
+    REQUIRE(r.rewritten_template == "WHERE a LIKE ('%' || ? || '%') AND b LIKE (? || '_') AND c = 1");
+    REQUIRE(r.bindings.size() == 2);
+    REQUIRE(r.bindings[1].position == 1);
+}
+
+TEST_CASE("PreparedTemplateRewriter: a literal mixing double and triple braces binds as a whole (#277)",
+          "[security][prepared][rewriter]") {
+    PreparedTemplateRewriter rewriter;
+    SqlParameterClassifier classifier;
+    auto r = rewriter.rewrite("SELECT '{{ params.x }} and {{{ params.x }}}'", {typedField("x", "string")},
+                              classifier);
+    REQUIRE(r.rewritten_template == "SELECT (? || ' and ' || ?)");
+    REQUIRE(r.bindings.size() == 2);
+}
+
+TEST_CASE("PreparedTemplateRewriter: double-brace sites that are not plain values stay literal (#277)",
+          "[security][prepared][rewriter]") {
+    PreparedTemplateRewriter rewriter;
+    SqlParameterClassifier classifier;
+    const std::vector<RequestFieldConfig> fields = {typedField("x", "string"), typedField("d", "date"),
+                                                    typedField("k", "enum")};
+    const std::vector<std::string> kept = {
+        "SELECT DATE '{{ params.d }}'",                      // typed literal
+        "SELECT INTERVAL '{{ params.x }}' DAY",              // typed literal
+        "ATTACH '{{ params.x }}' AS a",                      // statement argument
+        "SELECT * FROM '{{ params.x }}'",                    // replacement scan
+        "SELECT * FROM {{ params.x }}",                      // a name
+        "SELECT * FROM t ORDER BY {{ params.k }}",           // whitelisted identifier
+        "SELECT * FROM t ORDER BY a, {{ params.k }}",        // an enum in a list is a name too
+        "SELECT * FROM t ORDER BY a {{ params.k }}",         // e.g. ASC / DESC
+        "SELECT * FROM t_{{ params.x }}",                    // part of a name
+        "SELECT * FROM t AT (TIMESTAMP => CAST('{{ params.x }}' AS TIMESTAMP))",   // a string in AT
+        "SELECT * FROM t {{#params.x}}WHERE n = '{{ params.x }}'{{/params.x}}",   // inside a section
+        "SELECT 1 -- n = {{ params.x }}",                    // a comment
+    };
+    for (const auto& text : kept) {
+        INFO(text);
+        auto r = rewriter.rewrite(text, fields, classifier);
+        REQUIRE(r.rewritten_template == text);
+        REQUIRE(r.bindings.empty());
+    }
+}
+
+TEST_CASE("PreparedTemplateRewriter: an unquoted double brace in AT (...) stays bound (#277)",
+          "[security][prepared][rewriter]") {
+    // DuckLake takes a bound int or date there (a VERSION, a day); rendered as
+    // text, an unquoted 2024-01-02 would be integer arithmetic.
+    PreparedTemplateRewriter rewriter;
+    SqlParameterClassifier classifier;
+    auto r = rewriter.rewrite("SELECT * FROM t AT (VERSION => {{ params.v }})", {typedField("v", "int")},
+                              classifier);
+    REQUIRE(r.rewritten_template == "SELECT * FROM t AT (VERSION => ?)");
+    REQUIRE(r.bindings.size() == 1);
+}
+
+TEST_CASE("PreparedTemplateRewriter: an enum after a comparison is still a bound value (#277)",
+          "[security][prepared][rewriter]") {
+    PreparedTemplateRewriter rewriter;
+    SqlParameterClassifier classifier;
+    auto r = rewriter.rewrite("SELECT * FROM t WHERE status = {{ params.k }} OR s IN ({{ params.k }})",
+                              {typedField("k", "enum")}, classifier);
+    REQUIRE(r.rewritten_template == "SELECT * FROM t WHERE status = ? OR s IN (?)");
+    REQUIRE(r.bindings.size() == 2);
+    REQUIRE(r.bindings[0].type == SqlParameterType::Varchar);
+}
+
+TEST_CASE("PreparedTemplateRewriter: a double-brace literal with an undeclared or untyped param is left alone (#277)",
+          "[security][prepared][rewriter]") {
+    PreparedTemplateRewriter rewriter;
+    SqlParameterClassifier classifier;
+    const std::string in = "WHERE n = '{{ params.free }}' AND m = '{{ params.nope }}' AND p = '{{ conn.x }}'";
+    auto r = rewriter.rewrite(in, {bareField("free")}, classifier);
+    REQUIRE(r.rewritten_template == in);
+    REQUIRE(r.bindings.empty());
 }
 
 TEST_CASE("PreparedTemplateRewriter: a literal with an undeclared or untyped param is left alone (#192)",
