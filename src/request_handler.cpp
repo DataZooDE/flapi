@@ -90,6 +90,12 @@ void writeInternalError(crow::response& res) {
 
 }  // namespace
 
+void RequestHandler::RecordRowCount(std::int64_t rows) noexcept {
+    if (auto* rc = RequestContextScope::current()) {
+        rc->row_count = rows;
+    }
+}
+
 std::vector<ValidationError> RequestHandler::PaginationErrors(const std::map<std::string, std::string>& params) {
     std::vector<ValidationError> errors;
     AddPaginationErrors(params, errors);
@@ -223,6 +229,10 @@ void RequestHandler::handleWriteRequest(const crow::request& req, crow::response
             res.code = 200;  // OK for PUT/PATCH
         }
         
+        // A write's row count is what it changed (rows_affected): with
+        // RETURNING that is also the number of rows it returned.
+        RecordRowCount(writeResult.rows_affected);
+
         // Handle cache operations after successful write
         handleCacheAfterWrite(db_manager, endpoint);
         
@@ -437,6 +447,7 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
             res.compressed = false;
 
             res.set_header("Content-Type", "application/vnd.apache.arrow.stream");
+            RecordRowCount(static_cast<std::int64_t>(arrowResult.rowCount));
             res.set_header("X-Arrow-Rows", std::to_string(arrowResult.rowCount));
             res.set_header("X-Arrow-Batches", std::to_string(arrowResult.batchCount));
             res.set_header("X-Arrow-Bytes", std::to_string(arrowResult.bytesWritten));
@@ -492,6 +503,9 @@ void RequestHandler::handleGetRequest(const crow::request& req, crow::response& 
         if (!csv) {
             rows_text += ']';
         }
+        // The rows of this page (or of the whole result without pagination),
+        // not total_count. Covers GET and a read over POST alike.
+        RecordRowCount(static_cast<std::int64_t>(queryResult.rowCount()));
         // limit=0 asks for the count alone. Its "next page" starts at the same
         // offset, so `next` pointed at the request itself and a client
         // following it looped forever.

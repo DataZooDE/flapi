@@ -28,6 +28,10 @@ public:
     static std::string formatWriteResultJson(const WriteResult& result, bool always_include_data);
     // `offset` / `limit` in `params` that are not a plain non-negative integer,
     // one error each ("limit must be a non-negative integer"). REST and MCP.
+    // The rows this request returned (a read) or changed (a write), for the
+    // audit line's row_count and the span's db.response.returned_rows. A no-op
+    // when no request context is ambient.
+    static void RecordRowCount(std::int64_t rows) noexcept;
     static std::vector<ValidationError> PaginationErrors(const std::map<std::string, std::string>& params);
 
     // Fills `field-in: header` fields from the request headers (case-insensitive).
