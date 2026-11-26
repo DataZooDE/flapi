@@ -482,3 +482,59 @@ class TestLogLevelAlias:
                              env={**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"})
         assert out.returncode != 0
         assert "log-level" in out.stdout + out.stderr
+
+
+def _write_root(endpoints):
+    root = tempfile.mkdtemp(prefix="flapi_write_cache_")
+    os.makedirs(os.path.join(root, "sqls"))
+    with open(os.path.join(root, "flapi.yaml"), "w") as f:
+        f.write(CONFIG)
+    for name, body in endpoints.items():
+        with open(os.path.join(root, "sqls", name), "w") as f:
+            f.write(body)
+    return root
+
+
+class TestWriteCacheNeedsTemplateFile:
+    """#276: a write endpoint's cache without template-file ran the write again.
+
+    Its populate SQL fell back to the endpoint's own template - the INSERT - so
+    every warm-up, scheduled refresh and refresh-on-write repeated the write and
+    recorded the refresh as a success. Such an endpoint is now a load error.
+    """
+
+    ENDPOINTS = {
+        **ENDPOINTS,
+        "write_sync.yaml": ENDPOINTS["write_sync.yaml"].replace("  template-file: items_cache.sql\n", ""),
+    }
+
+    def test_validate_config_names_the_endpoint(self):
+        assert "template-file" not in self.ENDPOINTS["write_sync.yaml"]
+        root = _write_root(self.ENDPOINTS)
+        r = subprocess.run([flapi_binary(), "-c", "flapi.yaml", "--validate-config"],
+                           cwd=root, capture_output=True, text=True, timeout=60,
+                           env={**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"})
+        out = r.stdout + r.stderr
+        assert r.returncode != 0, out
+        assert "/items_sync" in out, out[-2000:]
+        assert "a write endpoint's cache needs template-file" in out, out[-2000:]
+
+    def test_the_server_refuses_to_start(self):
+        root = _write_root(self.ENDPOINTS)
+        r = subprocess.run([flapi_binary(), "-c", "flapi.yaml", "-p", str(free_port())],
+                           cwd=root, capture_output=True, text=True, timeout=60,
+                           env={**os.environ, "DATAZOO_DISABLE_TELEMETRY": "1"})
+        out = r.stdout + r.stderr
+        assert r.returncode != 0, out[-2000:]
+        assert "a write endpoint's cache needs template-file" in out, out[-2000:]
+
+    def test_the_shipped_write_endpoints_still_load(self, server):
+        # The module's own write_sync/write_async declare template-file: they
+        # load, and a write runs once however often the cache refreshes.
+        TestWrites()._prime_cache(server)
+        r = requests.post(f"{server.base}/items_sync", json={"id": 501, "name": "once"}, timeout=30)
+        assert r.status_code == 201, r.text + "\n" + log_text(server)[-3000:]
+        rows = requests.get(f"{server.base}/items", auth=BOB, timeout=10).json()["data"]
+        assert [row["id"] for row in rows].count(501) == 1
+        TestWrites()._prime_cache(server)
+        assert TestWrites()._cached_ids(server).count(501) == 1

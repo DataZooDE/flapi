@@ -520,3 +520,41 @@ TEST_CASE("A cache without template-file materialises its serving SELECT", "[cac
             std::optional<std::string>("CREATE OR REPLACE TABLE \"c\".\"s\".\"t\" AS\nSELECT 1;"));
     REQUIRE_FALSE(DatabaseManager::MaterialiseSelect("CREATE TABLE x AS SELECT 1", PopulateTarget{"c", "s", "t"}).has_value());
 }
+
+// #276: a write endpoint's cache without template-file rendered the endpoint's
+// own INSERT as its populate SQL. MaterialiseSelect declined it (not a SELECT)
+// and the INSERT then ran as the populate script and was recorded as success -
+// every warm-up, scheduled refresh and refresh-on-write wrote the row again.
+// The load refuses such an endpoint; this guard covers what bypasses the load
+// (the config service, a reload of an edited file).
+TEST_CASE("A cache without template-file never runs a non-SELECT endpoint template", "[cache_manager][populate]") {
+    TempTestConfig temp(ducklakeConfig(""), "refuse_write_populate");
+    auto cm = temp.createConfigManager();
+    auto adapter = std::make_shared<SchedulerCacheAdapter>();
+    adapter->render_result = "INSERT INTO app.items (id, name) VALUES (7, 'x')";
+    CacheManager cache_manager(adapter);
+    auto endpoint = cachedEndpoint("orders");
+    endpoint.method = "POST";
+    endpoint.operation.type = OperationConfig::Write;
+
+    std::map<std::string, std::string> params;
+    std::string refused;
+    try {
+        cache_manager.refreshCache(cm, endpoint, params);
+    } catch (const std::exception& ex) {
+        refused = ex.what();
+    }
+    REQUIRE(refused.find("has no template-file") != std::string::npos);
+    REQUIRE(refused.find("not a single SELECT") != std::string::npos);
+    // The write never ran as a populate script...
+    REQUIRE(adapter->count("INSERT INTO app.items") == 0);
+    // ...and the refusal is audited as a failed refresh, not a success.
+    REQUIRE(adapter->count("'success'") == 0);
+    REQUIRE(adapter->count("'error'") == 1);
+
+    // A write endpoint whose template IS a single SELECT (operation.type: write
+    // over a read-only query) is still materialised.
+    adapter->render_result = "SELECT 1 AS id";
+    REQUIRE(cache_manager.refreshCache(cm, endpoint, params));
+    REQUIRE(adapter->count("CREATE OR REPLACE TABLE \"cache\".\"main\".\"orders\" AS\nSELECT 1 AS id") == 1);
+}
