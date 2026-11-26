@@ -49,6 +49,8 @@ All notable changes to flAPI are documented here. Versions follow `vYY.MM.DD` (t
 - **`DatabaseManager::getTableColumns` binds its schema and table (#264).** It passed
   them to a call that never binds, so it returned no columns, and the names it would
   have returned were JSON-quoted.
+- **`flapi.url.has_query` is `true` on a request with a query string (#279).** It was
+  read from Crow's path-only `url`, so it was `false` on every span.
 
 ### Upgrade notes
 

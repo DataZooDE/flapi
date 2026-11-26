@@ -107,6 +107,16 @@ rejected in middleware (401, 403, 429), CORS preflights, static routes, the
 config service, and unmatched 404s. Instrumenting only the request handler would
 miss all of those, which is why the span lives in the first middleware.
 
+The request span carries the request's shape, never its values:
+
+| Attribute | Meaning |
+|---|---|
+| `http.request.method`, `http.route`, `url.path` | The method and the route template (never a filled path) |
+| `http.response.status_code`, `http.response.body.size` | The outcome and the response size in bytes |
+| `flapi.url.has_query` | `true` when the request had a query string. The query string itself is never exported. (It was always `false` up to v26.11.26.) |
+| `flapi.auth.kind`, `flapi.trace.context_source` | How the caller authenticated, and where the trace context came from |
+| `user_agent.original` | The `User-Agent` header, cut to 256 bytes |
+
 Children of that span:
 
 | Span | Kind | What it tells you |
